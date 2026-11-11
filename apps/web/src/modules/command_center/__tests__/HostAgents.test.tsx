@@ -242,6 +242,20 @@ describe('HostAgents', () => {
     expect(screen.queryByRole('button', { name: /Enable and install/ })).toBeNull()
   })
 
+  it('reports an install whose Host outcome is unknown as an error, never as installed', async () => {
+    const { toast } = await import('sonner')
+    vi.mocked(toast.success).mockClear(); vi.mocked(toast.error).mockClear(); installRuntime.mockClear()
+    const { ApiRequestError } = await import('../../../api/client')
+    installRuntime.mockRejectedValueOnce(new ApiRequestError("Installation: the Host may have acted, but its outcome is unknown. Check the Host's current state before repeating.", 409, 'operation_conflict'))
+    render(<HostAgents host={HOST} adapters={ADAPTERS} isInstanceAdmin={false} manageable onChanged={vi.fn()} />)
+    await userEvent.click(screen.getByRole('button', { name: 'Add a managed copy of OpenCode on Laptop' }))
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/may have acted/)))
+    expect(toast.success).not.toHaveBeenCalled()
+    // The row is released for the person to check and decide; nothing was retried for them.
+    expect(installRuntime).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Add a managed copy of OpenCode on Laptop' })).toBeEnabled())
+  })
+
   it('logs a copy in through the terminal, relaying the PTY stream and typed input', async () => {
     render(<HostAgents host={HOST} adapters={ADAPTERS} isInstanceAdmin={false}
           manageable onChanged={vi.fn()} />)

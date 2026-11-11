@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
+import { AgentMutationError } from "./agentMutationError.js";
 import type { ServerConfig } from "../../config.js";
-import { getDbPool, type Pool } from "../../db/pool.js";
-import { withTransaction } from "../../db/tx.js";
-import { HttpError, type SpaceUserIdentity } from "../routeUtils/common.js";
+import { getDbPool } from "../../db/pool.js";
+import { HttpError, withQueryableTransaction, type SpaceUserIdentity } from "../routeUtils/common.js";
 import {
   ScopedSettingsStore,
   SETTINGS_KEYS,
@@ -348,7 +348,7 @@ function enumStringOrNull(value: unknown, allowed: ReadonlySet<string>, field: s
   if (value === null || value === undefined) return null;
   if (typeof value !== "string") return null;
   if (allowed.has(value)) return value;
-  throw new HttpError(422, `Invalid assistant ${field}`);
+  throw new AgentMutationError(422, `Invalid assistant ${field}`);
 }
 
 function parseAssistantSettings(value: unknown): AssistantSettingsValue {
@@ -447,7 +447,8 @@ export class PgAgentChatRepository {
 }
 
 export class PgAgentRepository {
-  constructor(private readonly pool: Pool) {}
+  /** A Pool opens its own transaction; a client or core transaction port is joined. */
+  constructor(private readonly pool: Queryable) {}
 
   static fromConfig(config: ServerConfig): PgAgentRepository {
     if (!config.databaseUrl) {
@@ -607,7 +608,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       [agentId, spaceId, displayName],
     );
     if (!result.rows[0]) {
-      throw new HttpError(409, "Managed Assistant actor identity is unavailable");
+      throw new AgentMutationError(409, "Managed Assistant actor identity is unavailable");
     }
   }
 
@@ -711,7 +712,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     },
   ): Promise<AgentRuntimeProfileOut> {
     await this.requireAgent(spaceId, agentId, { allowSystemAssistant: true });
-    return withTransaction(this.pool, async (client) => {
+    return withQueryableTransaction(this.pool, async (client) => {
       // Lock first, validate second. Two concurrent creates that both claim
       // the default would otherwise race the partial unique index and surface
       // as a raw constraint error, and input resolved outside the transaction
@@ -736,7 +737,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
    * the reusable persisted representation, not a separate prerequisite.
    */
   async ensureHostRuntimeProfile(input: HostRuntimeProfileTarget): Promise<AgentRuntimeProfileOut> {
-    return withTransaction(this.pool, (client) => this.ensureHostRuntimeProfileInTransaction(client, input));
+    return withQueryableTransaction(this.pool, (client) => this.ensureHostRuntimeProfileInTransaction(client, input));
   }
 
   async ensureHostRuntimeProfileInTransaction(
@@ -814,7 +815,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
   ): Promise<AgentRuntimeProfileOut> {
     const runtimeConfigPatch = patch.runtimeConfigJson ?? null;
     const runtimePolicyPatch = patch.runtimePolicyJson ?? null;
-    return withTransaction(this.pool, async (client) => {
+    return withQueryableTransaction(this.pool, async (client) => {
       await lockAgentForRuntimeProfileWrite(client, spaceId, agentId);
       const existing = await getRuntimeProfileRecord(client, spaceId, agentId, profileId, true);
       if (!existing) throw new HttpError(404, "Runtime profile not found");
@@ -859,10 +860,10 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
         actorUserId: patch.actorUserId,
       });
       if (normalized.isDefault && !normalized.enabled) {
-        throw new HttpError(422, "A default runtime profile must be enabled");
+        throw new AgentMutationError(422, "A default runtime profile must be enabled");
       }
       if (existing.is_default && (!normalized.isDefault || !normalized.enabled)) {
-        throw new HttpError(409, "Choose another enabled default runtime profile before disabling or unsetting this profile");
+        throw new AgentMutationError(409, "Choose another enabled default runtime profile before disabling or unsetting this profile");
       }
       if (normalized.isDefault) {
         await clearDefaultRuntimeProfile(client, spaceId, agentId);
@@ -877,7 +878,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
   }
 
   async create(input: AgentCreateInput): Promise<AgentOut> {
-    return withTransaction(this.pool, (client) => this.createInTransaction(client, input));
+    return withQueryableTransaction(this.pool, (client) => this.createInTransaction(client, input));
   }
 
   /**
@@ -933,14 +934,14 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     },
   ): Promise<SpaceAgentRuntimeDefaultRecord> {
     const definition = getAgentRuntimeDefinition(input.runtimeKey);
-    if (!definition) throw new HttpError(422, `Unknown or non-ACP runtime_key ${JSON.stringify(input.runtimeKey)}`);
+    if (!definition) throw new AgentMutationError(422, `Unknown or non-ACP runtime_key ${JSON.stringify(input.runtimeKey)}`);
     const modelProviderId = input.modelProviderId ?? null;
     const modelName = input.modelName?.trim() || null;
     // The template answers the same question as the Profile it will create,
     // so it admits through the Profile's rules rather than a second copy.
     assertBackendModeBinding(input.runtimeKey, input.backendMode, modelProviderId, modelName);
     const runtimeConfigJson = runtimeConfigRecord(input.runtimeConfigJson);
-    return withTransaction(this.pool, async (client) => {
+    return withQueryableTransaction(this.pool, async (client) => {
       await validateRuntimeProfileSelection(client, {
         spaceId,
         runtimeKey: input.runtimeKey,
@@ -981,7 +982,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
 
   async createInTransaction(client: Queryable, input: AgentCreateInput): Promise<AgentOut> {
     if (input.visibility && !isContentVisibility(input.visibility)) {
-      throw new HttpError(422, "Invalid visibility");
+      throw new AgentMutationError(422, "Invalid visibility");
     }
     const template = await client.query<{
       runtime_key: string;
@@ -1000,7 +1001,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     const runtimeKey = templateRow?.runtime_key ?? "opencode";
     const runtimeDefinition = getAgentRuntimeDefinition(runtimeKey);
     if (!runtimeDefinition) {
-      throw new HttpError(422, `Runtime '${runtimeKey}' is not a registered ACP runtime`);
+      throw new AgentMutationError(422, `Runtime '${runtimeKey}' is not a registered ACP runtime`);
     }
     const providerId = templateRow?.model_provider_id ?? null;
     const modelName = templateRow?.model_name ?? null;
@@ -1017,7 +1018,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     const riskLevel = input.riskLevel ?? DEFAULT_AGENT_RISK_LEVEL;
     const maxRunTimeSeconds = input.maxRunTimeSeconds ?? DEFAULT_AGENT_MAX_RUN_TIME_SECONDS;
     if (!Number.isInteger(maxRunTimeSeconds) || maxRunTimeSeconds < 1 || maxRunTimeSeconds > 3600) {
-      throw new HttpError(422, "max_run_time_seconds must be an integer from 1 to 3600");
+      throw new AgentMutationError(422, "max_run_time_seconds must be an integer from 1 to 3600");
     }
     // Provisioning admission runs on the template *before* an Agent row
     // exists, so that an unusable template fails as itself rather than as an
@@ -1212,7 +1213,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     },
   ): Promise<AgentOut> {
     await assertAgentOwner(this.pool, { spaceId, userId: patch.userId }, agentId);
-    return withTransaction(this.pool, async (client) => {
+    return withQueryableTransaction(this.pool, async (client) => {
       const current = await this.lockCurrentVersion(client, spaceId, agentId);
       if (!current) throw new HttpError(404, "Agent has no current version");
       const now = new Date().toISOString();
@@ -1303,7 +1304,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     systemPrompt: string;
     promptProvenanceJson?: PromptProvenance | null;
   }): Promise<{ changed: boolean; versionId: string }> {
-    return withTransaction(this.pool, client => this.publishSystemManagedPromptInTransaction(client,input));
+    return withQueryableTransaction(this.pool, client => this.publishSystemManagedPromptInTransaction(client,input));
   }
 
   async publishSystemManagedPromptInTransaction(client: Queryable, input: {
@@ -1318,7 +1319,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       // `follows_seed_key`. Publishing an unmarked version here would detach
       // the instance from its seed as a side effect, and nothing would say so.
       if ((input.agentKind as string) === "system_assistant") {
-        throw new HttpError(422, "Use the Assistant provisioner to publish a system_assistant prompt");
+        throw new AgentMutationError(422, "Use the Assistant provisioner to publish a system_assistant prompt");
       }
       const current = await this.lockCurrentVersion(
         client,
@@ -1520,7 +1521,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
   ): Promise<AgentOut> {
     await assertAgentOwner(this.pool, { spaceId, userId }, agentId);
     const source = await this.loadVersionRow(spaceId, agentId, versionId);
-    return withTransaction(this.pool, async (client) => {
+    return withQueryableTransaction(this.pool, async (client) => {
       if (!(await this.lockCurrentVersion(client, spaceId, agentId))) {
         throw new HttpError(404, "Agent has no current version");
       }
@@ -1671,7 +1672,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     actorUserId: string,
   ): Promise<void> {
     if (target.projectId && projectId !== target.projectId) {
-      throw new HttpError(422, "A Project Assistant's default Project is its own Project");
+      throw new AgentMutationError(422, "A Project Assistant's default Project is its own Project");
     }
     const project = await this.pool.query<{ id: string }>(
       `SELECT id FROM projects
@@ -1680,7 +1681,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       [projectId, target.spaceId],
     );
     if (!project.rows[0] || !(await canReadProject(this.pool, target.spaceId, projectId, actorUserId))) {
-      throw new HttpError(422, "default_project_id must name an active Project of this Space that you can read");
+      throw new AgentMutationError(422, "default_project_id must name an active Project of this Space that you can read");
     }
   }
 

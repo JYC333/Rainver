@@ -4,7 +4,7 @@ import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import { getDbPool, type PoolClient } from "../../db/pool.js";
 import { assertProjectWriter } from "../projects/access.js";
 import { HttpError, params, resolveIdentity, sendRouteError, withDbTransaction } from "../routeUtils/common.js";
-import { continueHeldRuns, conversationQuota } from "./quotaGate.js";
+import { conversationQuota } from "./quotaGate.js";
 import { PgRoomRepository } from "./repository.js";
 
 /**
@@ -32,20 +32,6 @@ export function registerQuotaRoutes(app: FastifyInstance, context: ModuleContext
     }
   });
 
-  app.post(`${base}/continue`, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const quota = await withDbTransaction(pool(context), async (client) => {
-        await requireConversation(client, identity, request, true);
-        await continueHeldRuns(client, { spaceId: identity.spaceId, sessionId: sessionId(request), userId: identity.userId });
-        return conversationQuota(client, identity.spaceId, sessionId(request), identity.userId);
-      });
-      return reply.send(protocol.RoomConversationQuotaSchema.parse(quota));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 }
 
 /**

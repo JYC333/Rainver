@@ -17,18 +17,61 @@ brokered, or mounted from here, so there is nothing here to broker.
 Managed subscriptions, and only those:
 
 - `GET /api/v1/providers/subscriptions/login/stream?type=anthropic|openai_codex`
-- `POST /api/v1/providers/subscriptions/login/input?type=…`
-- `POST /api/v1/providers/{provider_id}/subscription/quota`
-- `DELETE /api/v1/providers/{provider_id}/subscription`
+- `POST /api/v1/providers/subscriptions/login/input?type=…` (an exact transport
+  exemption: keystrokes into the live in-process login, never persisted or replayed)
+- `POST /api/v1/providers/{provider_id}/subscription/quota` — `provider.subscription.quota.refresh`,
+  a system command: the vendor read (and any OAuth refresh under its row lock) runs in the
+  worker after commit; the provider is released by `GET /api/v1/system/commands/:commandId`
+- `DELETE /api/v1/providers/{provider_id}/subscription` — `provider.subscription.disconnect`,
+  transactional (the credential is deleted with the operation's audit and receipt)
+
+The login stream is a stateful GET (cross-site checked, instance admin): it is
+an interactive session, not a replayable command, and writes the encrypted
+credential only when the vendor login completes. That write is the canonical
+writer and rechecks, in its own transaction, that the person is still active,
+still an active member of the Space and still the instance admin (and the
+Provider it reuses is theirs); otherwise nothing — credential, Provider, grant
+— is written and the stream reports a generic failure. The DTO it releases is
+read in that same transaction. The `login/input` keystroke relay stays exempt. Every command above is the
+instance admin's own, keyed, with the hidden 404 for anyone else
+(`SYSTEM_ACTIONS.md` "System settings and tool configuration commands").
 
 The OAuth flow runs in-process (`providers/subscriptionOAuth.ts`), the quota
 read for those credentials is an HTTP call against the vendor's own endpoint
 (`providers/subscriptionQuota.ts`), and the access/refresh state is refreshed
-under a database row lock. These credentials are owner-only, never pooled, and
+by the once-only protocol below. These credentials are owner-only, never pooled, and
 never handed to a subprocess: ADR 0008's rule is that a provider key does not
 travel through a CLI's environment, and a managed subscription is spent through
 the provider proxy instead. Decrypted material is resolved in-process only;
 no HTTP route, including `/internal/*`, returns an API key or OAuth token.
+
+## OAuth refresh
+
+`resolveManagedSubscriptionCredential` (`providers/subscriptionOAuth.ts`) is
+the only path to a managed subscription's tokens — a Run's provider call
+(`ProviderCommandStore.getInvocationTarget`) and the quota system command both
+use it. A vendor refresh rotates the grant remotely, so it is treated as a
+once-only effect and never runs inside a database transaction:
+
+1. a short transaction locks the credential row; if the access token is not
+   within 60 s of expiry it is returned. Otherwise it records
+   `metadata_json.oauth_refresh = {state:'in_flight', attempt_id, from, started_at,
+   lease_until}` (`from` is the keyed HMAC fingerprint of the refresh token being
+   spent, never the token) and commits;
+2. the vendor call runs outside every transaction (30 s timeout);
+3. a second short transaction stores the new encrypted `secret_ref` and clears
+   the record, only if the same attempt is still current (a login meanwhile
+   wins; the resolve starts over).
+
+Another caller that finds a live `in_flight` record waits for it (bounded by the
+lease), then re-reads. A record whose lease ran out (a crash or lost database
+connection between rotation and the local commit) and a vendor call that ended
+without a definite refusal (network error, timeout) become `state:'unknown'`:
+the old token may already be spent, so it is never sent again, every use answers
+`subscription_reconnect_required`, and the admin reconnects (login replaces the
+credential and clears the record). A definite vendor refusal (4xx /
+`invalid_grant`) clears the record and surfaces the refusal. Only `quota` from
+the metadata is ever projected to a DTO.
 
 ## What a CLI's login is instead
 

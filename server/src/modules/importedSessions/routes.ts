@@ -1,10 +1,10 @@
+import { registerOperationAdapterRoutes } from "../projects/monitoring/operationRoutes.js";
 import type { FastifyInstance } from "fastify";
-import { AmbientImportPolicyEntrySchema, AmbientSyncReportSchema, ExtractionOutcomeSchema } from "@rainver/protocol";
+import { registerOperationAdapters } from "../systemActions/operations/routeAdapter.js";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
   HttpError,
   dbPool,
-  jsonBody,
   params,
   resolveIdentity,
   sendRouteError,
@@ -27,6 +27,17 @@ import { importedSessionRecordToWire, importedSessionToWire } from "./wire.js";
  * with its owner by the same predicate.
  */
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
+  registerOperationAdapterRoutes(app, context, [['POST', '/api/v1/projects/:projectId/imported-sessions/extraction', 'project.imported_sessions.extract']]);
+  // Consent, import and session changes are core operations (`operations.ts`, `hosts/operations.ts`);
+  // a sync is a durable Host command whose report is read from its status.
+  const location = { locationId: 'location_id' };
+  registerOperationAdapters(app, context.config, [
+    { method: 'PUT', url: '/api/v1/workspace-locations/:locationId/ambient-sessions/policy', operation: 'host.location.ambient.policy.set', params: location },
+    { method: 'POST', url: '/api/v1/workspace-locations/:locationId/ambient-sessions/dismiss', operation: 'host.location.ambient.dismiss', params: location },
+    { method: 'POST', url: '/api/v1/workspace-locations/:locationId/ambient-sessions/sync', operation: 'host.location.ambient.sync', params: location },
+    { method: 'PATCH', url: '/api/v1/imported-sessions/:sessionId', operation: 'imported_session.visibility.set', params: { sessionId: 'session_id' } },
+    { method: 'POST', url: '/api/v1/imported-sessions/delete', operation: 'imported_session.delete' },
+  ]);
   const service = () => ImportedSessionService.fromConfig(context.config);
   const extraction = () => new ImportedHistoryExtractionService(dbPool(context.config), context.config);
   const locationId = (request: Parameters<typeof params>[0]): string => {
@@ -38,11 +49,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const value = params(request).sessionId;
     if (typeof value !== "string" || !value) throw new HttpError(422, "sessionId is required");
     return value;
-  };
-  const visibility = (value: unknown): "private" | "space_shared" | undefined => {
-    if (value === undefined || value === null) return undefined;
-    if (value === "private" || value === "space_shared") return value;
-    throw new HttpError(422, "visibility must be private or space_shared");
   };
 
   app.get("/api/v1/workspace-locations/:locationId/ambient-sessions/offer", async (request, reply) => {
@@ -60,45 +66,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.put("/api/v1/workspace-locations/:locationId/ambient-sessions/policy", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const body = jsonBody(request);
-      const runtimeKey = body.runtime_key;
-      if (typeof runtimeKey !== "string" || !runtimeKey) throw new HttpError(422, "runtime_key is required");
-      if (typeof body.sync !== "boolean") throw new HttpError(422, "sync must be a boolean");
-      // The stored policy is read back through the strict entry schema, and
-      // one entry it refuses empties the whole Location's consent. Admit only
-      // what that read will accept.
-      if (!AmbientImportPolicyEntrySchema.shape.runtime_key.safeParse(runtimeKey).success) {
-        throw new HttpError(422, "runtime_key is not a valid runtime key");
-      }
-      if (body.installation !== undefined
-        && !AmbientImportPolicyEntrySchema.shape.installation.safeParse(body.installation).success) {
-        throw new HttpError(422, "installation must be 1 to 64 characters");
-      }
-      return reply.send(await service().setPolicy(identity, locationId(request), {
-        runtime_key: runtimeKey,
-        installation: typeof body.installation === "string" ? body.installation : undefined,
-        sync: body.sync,
-        default_visibility: visibility(body.default_visibility),
-        auto_extract: typeof body.auto_extract === "boolean" ? body.auto_extract : undefined,
-      }));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.post("/api/v1/workspace-locations/:locationId/ambient-sessions/dismiss", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(await service().dismissOffer(identity, locationId(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
   app.get("/api/v1/workspace-locations/:locationId/ambient-sessions", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -110,26 +78,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/workspace-locations/:locationId/ambient-sessions/sync", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const body = jsonBody(request);
-      const runtimeKey = body.runtime_key;
-      if (typeof runtimeKey !== "string" || !runtimeKey) throw new HttpError(422, "runtime_key is required");
-      const sessionIds = Array.isArray(body.session_ids)
-        ? body.session_ids.filter((value): value is string => typeof value === "string")
-        : null;
-      return reply.send(AmbientSyncReportSchema.parse(await service().sync(identity, locationId(request), {
-        runtime_key: runtimeKey,
-        installation: typeof body.installation === "string" ? body.installation : undefined,
-        session_ids: sessionIds,
-        visibility: visibility(body.visibility),
-      })));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
   app.get("/api/v1/projects/:projectId/imported-sessions", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -155,17 +103,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/projects/:projectId/imported-sessions/extraction", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const projectId = params(request).projectId;
-      if (typeof projectId !== "string" || !projectId) throw new HttpError(422, "projectId is required");
-      return reply.send(ExtractionOutcomeSchema.parse(await extraction().extract(identity, projectId, { kind: "person", user_id: identity.userId })));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
   app.get("/api/v1/imported-sessions/:sessionId", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -182,29 +119,5 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.patch("/api/v1/imported-sessions/:sessionId", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const wanted = visibility(jsonBody(request).visibility);
-      if (!wanted) throw new HttpError(422, "visibility is required");
-      return reply.send(importedSessionToWire(await service().setVisibility(identity, sessionId(request), wanted)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.post("/api/v1/imported-sessions/delete", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const ids = jsonBody(request).session_ids;
-      if (!Array.isArray(ids) || ids.some((value) => typeof value !== "string")) {
-        throw new HttpError(422, "session_ids must be an array of ids");
-      }
-      return reply.send({ deleted: await service().remove(identity, ids as string[]) });
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 }

@@ -1,9 +1,58 @@
-import { mkdir, readdir, rename, rm, stat } from "node:fs/promises";
+import { lstat, mkdir, readdir, rename, rm, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { ensureGitRepository } from "@rainver/folder-read";
 import { configDir } from "./config.js";
 
 const ARCHIVE_MARKER = ".removed-";
+// Archive/restore/cache eviction share one local lifecycle queue. Never evict a
+// path while another daemon operation is bringing it back into service.
+let lifecycleTail: Promise<unknown> = Promise.resolve();
+function lifecycle<T>(work: () => Promise<T>): Promise<T> {
+  const next = lifecycleTail.then(work, work);
+  lifecycleTail = next.catch(() => undefined);
+  return next;
+}
+
+/** Follow no links on the way to a disposable cache (including the cache itself). */
+async function realDirectory(path: string): Promise<boolean> {
+  return (await lstat(path).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }))?.isDirectory() ?? false;
+}
+
+// Vendor downloads/catalogs only. Sessions, SQLite (including WAL/SHM), login,
+// skills, installed-plugin registration and user work never enter this list.
+const PROFILE_CACHES = {
+  codex_cli: [
+    [".codex", "cache", "remote_plugin_catalog"],
+    [".codex", "cache", "codex_apps_tools"],
+    [".codex", "cache", "codex_apps_server_info"],
+    [".codex", "plugins", "cache", "openai-curated-remote"],
+  ],
+} as const;
+
+async function trimProfileCaches(archive: string): Promise<void> {
+  if (!await realDirectory(archive)) return;
+  for (const [runtime, paths] of Object.entries(PROFILE_CACHES)) {
+    const runtimeRoot = join(archive, runtime);
+    if (!await realDirectory(runtimeRoot)) continue;
+    for (const provider of await readdir(runtimeRoot, { withFileTypes: true })) {
+      if (!provider.isDirectory()) continue;
+      const providerRoot = join(runtimeRoot, provider.name);
+      for (const parts of paths) {
+        let target = providerRoot;
+        let safe = true;
+        for (const part of parts) {
+          target = join(target, part);
+          if (!await realDirectory(target)) { safe = false; break; }
+        }
+        if (safe) await rm(target, { recursive: true, force: true });
+      }
+    }
+  }
+}
+
 const MANAGED_WORKSPACE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 export type ManagedWorkspaceContainerKind = "direct" | "conversation";
@@ -86,27 +135,35 @@ function agentProfilesRoot(agentId: string): string {
 }
 
 /** Moves one live directory aside under the archive marker. False when there was none. */
-async function archiveDirectory(live: string): Promise<boolean> {
-  const info = await stat(live).catch(() => null);
-  if (!info) return false;
-  if (!info.isDirectory()) throw new Error(`Not a directory: ${live}`);
-  const timestamp = new Date().toISOString().replace(/:/g, "-");
-  await rename(live, `${live}${ARCHIVE_MARKER}${timestamp}`);
-  return true;
+async function archiveDirectory(live: string, profile = false): Promise<boolean> {
+  return lifecycle(async () => {
+    const info = await stat(live).catch(() => null);
+    if (!info) return false;
+    if (!info.isDirectory()) throw new Error(`Not a directory: ${live}`);
+    const timestamp = new Date().toISOString().replace(/:/g, "-");
+    const archived = `${live}${ARCHIVE_MARKER}${timestamp}`;
+    await rename(live, archived);
+    // Cache failure must not turn a successful archive into a failed lifecycle
+    // command. The connection/hourly sweep retries it and reports any error.
+    if (profile) await trimProfileCaches(archived).catch(() => undefined);
+    return true;
+  });
 }
 
 /** Brings the newest archive of one directory back, if the live one is gone. */
 async function restoreDirectory(live: string, base: string, id: string): Promise<boolean> {
-  if (await stat(live).then(() => true).catch(() => false)) {
-    throw new Error(`Already exists: ${live}`);
-  }
-  const entries = await readdir(base, { withFileTypes: true }).catch(() => []);
-  const newest = entries
-    .filter((entry) => entry.isDirectory() && entry.name.startsWith(archivePrefix(id)))
-    .sort((a, b) => b.name.localeCompare(a.name))[0];
-  if (!newest) return false;
-  await rename(join(base, newest.name), live);
-  return true;
+  return lifecycle(async () => {
+    if (await stat(live).then(() => true).catch(() => false)) {
+      throw new Error(`Already exists: ${live}`);
+    }
+    const entries = await readdir(base, { withFileTypes: true }).catch(() => []);
+    const newest = entries
+      .filter((entry) => entry.isDirectory() && entry.name.startsWith(archivePrefix(id)))
+      .sort((a, b) => b.name.localeCompare(a.name))[0];
+    if (!newest) return false;
+    await rename(join(base, newest.name), live);
+    return true;
+  });
 }
 
 /**
@@ -124,7 +181,7 @@ export async function archiveManagedWorkspace(
   includeWorkspace: boolean,
 ): Promise<boolean> {
   const profileMoved = await archiveDirectory(
-    runtimeProfileContainerPath(agentId, container.kind, container.id),
+    runtimeProfileContainerPath(agentId, container.kind, container.id), true,
   );
   if (!includeWorkspace) return profileMoved;
   const workspaceMoved = await archiveDirectory(managedWorkspacePath(agentId, container));
@@ -166,7 +223,7 @@ export async function restoreManagedWorkspace(
  * still has what was there.
  */
 export async function archiveRuntimeProfileContainer(agentId:string,kind:RuntimeProfileContainerKind,id:string){
- return archiveDirectory(runtimeProfileContainerPath(agentId,kind,id));
+ return archiveDirectory(runtimeProfileContainerPath(agentId,kind,id), true);
 }
 
 export async function archiveAgentProfiles(agentId: string): Promise<boolean> {
@@ -178,7 +235,7 @@ export async function archiveAgentProfiles(agentId: string): Promise<boolean> {
     const base = join(profilesRoot, kind.name);
     for (const entry of await readdir(base, { withFileTypes: true }).catch(() => [])) {
       if (!entry.isDirectory() || !UUID_LIKE.test(entry.name)) continue;
-      if (await archiveDirectory(join(base, entry.name))) moved = true;
+      if (await archiveDirectory(join(base, entry.name), true)) moved = true;
     }
   }
   return moved;
@@ -198,20 +255,25 @@ function archivedAtFromName(name: string): number | null {
 }
 
 /** Removes every archive under one directory that is past the retention window. */
-async function sweepArchivesIn(base: string, now: Date): Promise<number> {
-  let removed = 0;
-  for (const entry of await readdir(base, { withFileTypes: true }).catch(() => [])) {
-    if (!entry.isDirectory() || !entry.name.includes(ARCHIVE_MARKER)) continue;
-    const path = join(base, entry.name);
-    const archivedAt = archivedAtFromName(entry.name)
-      ?? (await stat(path).catch(() => null))?.mtimeMs
-      ?? null;
-    if (archivedAt !== null && now.getTime() - archivedAt > MANAGED_WORKSPACE_RETENTION_MS) {
-      await rm(path, { recursive: true, force: true });
-      removed += 1;
+async function sweepArchivesIn(base: string, now: Date, profiles = false): Promise<number> {
+  return lifecycle(async () => {
+    if (!await realDirectory(base)) return 0;
+    let removed = 0;
+    for (const entry of await readdir(base, { withFileTypes: true }).catch(() => [])) {
+      if (!entry.isDirectory() || !entry.name.includes(ARCHIVE_MARKER)) continue;
+      const path = join(base, entry.name);
+      const archivedAt = archivedAtFromName(entry.name)
+        ?? (await stat(path).catch(() => null))?.mtimeMs
+        ?? null;
+      if (archivedAt !== null && now.getTime() - archivedAt > MANAGED_WORKSPACE_RETENTION_MS) {
+        await rm(path, { recursive: true, force: true });
+        removed += 1;
+      } else if (profiles) {
+        await trimProfileCaches(path);
+      }
     }
-  }
-  return removed;
+    return removed;
+  });
 }
 
 /**
@@ -221,12 +283,20 @@ async function sweepArchivesIn(base: string, now: Date): Promise<number> {
  * the machine. False when there was nothing to move.
  */
 export async function archiveLegacyProfileTree(): Promise<boolean> {
-  return archiveDirectory(join(configDir(), "profiles"));
+  return archiveDirectory(join(configDir(), "profiles"), true);
 }
 
-export async function sweepManagedWorkspaceArchives(now = new Date()): Promise<number> {
+let archiveSweep: Promise<number> | null = null;
+/** Concurrent triggers join the current pass instead of queuing more scans. */
+export function sweepManagedWorkspaceArchives(now = new Date()): Promise<number> {
+  if (archiveSweep) return archiveSweep;
+  archiveSweep = sweepAllArchives(now).finally(() => { archiveSweep = null; });
+  return archiveSweep;
+}
+
+async function sweepAllArchives(now: Date): Promise<number> {
   // The archived profile tree sits at the config root.
-  let removed = await sweepArchivesIn(configDir(), now);
+  let removed = await sweepArchivesIn(configDir(), now, true);
   const agentsRoot = join(configDir(), "agents");
   const agents = await readdir(agentsRoot, { withFileTypes: true }).catch(() => []);
   for (const agent of agents) {
@@ -237,9 +307,10 @@ export async function sweepManagedWorkspaceArchives(now = new Date()): Promise<n
     // deleted, or a `host-state/reset` a person ran by mistake all leave one,
     // and nothing else would ever remove it.
     const profilesRoot = join(agentsRoot, agent.name, "profiles");
+    if (!await realDirectory(profilesRoot)) continue;
     for (const kind of await readdir(profilesRoot, { withFileTypes: true }).catch(() => [])) {
       if (!kind.isDirectory()) continue;
-      removed += await sweepArchivesIn(join(profilesRoot, kind.name), now);
+      removed += await sweepArchivesIn(join(profilesRoot, kind.name), now, true);
     }
   }
   removed += await sweepArchivesIn(join(configDir(), "conversations"), now);

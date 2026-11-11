@@ -29,7 +29,20 @@ import { PgProposalApplyService } from "../src/modules/proposals/applyService.js
 import { PgSessionRepository } from "../src/modules/sessions/repository.js";
 import { PgRunRepository } from "../src/modules/runs/repository.js";
 import { registerRunLiveInput } from "../src/modules/runs/liveInput.js";
-import { submitRunLiveInput } from "../src/modules/runs/liveInputService.js";
+import { deliverRunLiveInput, liveInputDeliveryState, RUN_LIVE_INPUT_DELIVERY_JOB, settleOrphanedRunLiveInputs } from "../src/modules/runs/liveInputService.js";
+import { operationRuntime } from "../src/modules/systemActions/operations/runtime.js";
+import { sessionActor } from "../src/modules/systemActions/operations/actor.js";
+
+/** The person's live input through the core command: recorded in its transaction, delivered after commit. */
+async function submitRunLiveInput(_pool: unknown, _config: unknown, identity: { spaceId: string; userId: string }, runId: string, bindingId: string, content: string) {
+  const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri });
+  const out = await (await operationRuntime(config)).execute("run.live_input.submit", { run_id: runId, binding_id: bindingId, content }, sessionActor(identity), randomUUID(), randomUUID());
+  if (!("status" in out.body) || out.body.status !== "succeeded") throw Object.assign(new Error("refused"), { statusCode: out.http_status, body: out.body });
+  const messageId = (out.body.data as { message_id: string }).message_id;
+  const state = await liveInputDeliveryState(db.pool, identity.spaceId, runId, messageId);
+  const event = (await db.pool.query<{ delivery_id: string | null }>(`SELECT metadata_json->>'delivery_id' AS delivery_id FROM run_events WHERE run_id=$1 AND event_type='action_completed' AND metadata_json->>'message_id'=$2`, [runId, messageId])).rows[0];
+  return { state, message_id: messageId, delivery_id: event?.delivery_id ?? null };
+}
 
 const SPACE = "30000000-0000-4000-8000-000000000001";
 const USER = "30000000-0000-4000-8000-000000000002";
@@ -1733,6 +1746,81 @@ describe("Invocation Delivery and Snapshot persistence", () => {
           .find(snapshot => snapshot.delivery_id === late.delivery_id)?.acknowledgement?.status).toBe("rejected");
         expect(received).toHaveLength(1);
 
+        const liveConfig = loadConfig({ SERVER_DATABASE_URL: db.connectionUri });
+        const identity = { spaceId: SPACE, userId: USER };
+        const completions = async (messageId: string) => (await db.pool.query<{ state: string }>(
+          `SELECT metadata_json->>'state' AS state FROM run_events WHERE run_id=$1 AND event_type='action_completed' AND metadata_json->>'message_id'=$2`,
+          [RUN, messageId])).rows.map(row => row.state);
+        channel.inject = async blocks => { received.push(JSON.stringify(blocks)); return "injected"; };
+
+        // Injected, then the acknowledgement write fails in PostgreSQL: the delivered fact stands.
+        await db.pool.query(`CREATE OR REPLACE FUNCTION test_fail_live_input_ack() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'acknowledgement store unavailable'; END $$`);
+        await db.pool.query(`CREATE TRIGGER test_fail_live_input_ack BEFORE UPDATE OF acknowledgement_fingerprint ON invocation_snapshots FOR EACH ROW
+          WHEN (NEW.invocation_id = '${RUN}' AND NEW.acknowledgement_fingerprint IS DISTINCT FROM OLD.acknowledgement_fingerprint) EXECUTE FUNCTION test_fail_live_input_ack()`);
+        let acked: Awaited<ReturnType<typeof submitRunLiveInput>>;
+        try {
+          acked = await submitRunLiveInput(db.pool, liveConfig, identity, RUN, delivery.id, "Ack store fails");
+        } finally {
+          await db.pool.query(`DROP TRIGGER test_fail_live_input_ack ON invocation_snapshots`);
+          await db.pool.query(`DROP FUNCTION test_fail_live_input_ack()`);
+        }
+        expect(acked.state).toBe("injected");
+        expect(received).toHaveLength(2);
+        // The delivery Job running again finds the outcome; nothing is injected twice.
+        await expect(deliverRunLiveInput(db.pool, liveConfig, identity, RUN, delivery.id, acked.message_id)).resolves.toBe("injected");
+        expect(received).toHaveLength(2);
+        expect(await completions(acked.message_id)).toEqual(["injected"]);
+
+        // The immediate attempt after commit misses (the channel is busy, as if the process were
+        // elsewhere): the input stays pending with its committed Job, which delivers it later.
+        let release!: () => void;
+        const busy = channel.during(() => new Promise<void>(resolve => { release = resolve; }));
+        const waiting = await submitRunLiveInput(db.pool, liveConfig, identity, RUN, delivery.id, "Delivered by the Job");
+        expect(waiting.state).toBe("pending");
+        expect((await db.pool.query(`SELECT status FROM jobs WHERE job_type=$1 AND payload_json->>'message_id'=$2`, [RUN_LIVE_INPUT_DELIVERY_JOB, waiting.message_id])).rows)
+          .toEqual([{ status: "pending" }]);
+        release(); await busy;
+        await expect(deliverRunLiveInput(db.pool, liveConfig, identity, RUN, delivery.id, waiting.message_id)).resolves.toBe("injected");
+        expect(received).toHaveLength(3);
+        expect(received[2]).toContain("Delivered by the Job");
+
+        // A claim with no outcome means an attempt died after handing the input over: it may have
+        // arrived, so it is settled unconfirmed and never injected again.
+        const busyAgain = channel.during(() => new Promise<void>(resolve => { release = resolve; }));
+        const interrupted = await submitRunLiveInput(db.pool, liveConfig, identity, RUN, delivery.id, "Interrupted after claim");
+        release(); await busyAgain;
+        await new PgRunRepository(db.pool).appendRunEvent({ run_id: RUN, space_id: SPACE, event_type: "action_invoked", status: "running",
+          metadata_json: { action_name: "run.live_input", message_id: interrupted.message_id, binding_id: delivery.id, state: "delivering" } });
+        await expect(deliverRunLiveInput(db.pool, liveConfig, identity, RUN, delivery.id, interrupted.message_id)).resolves.toBe("unconfirmed");
+        expect(received).toHaveLength(3);
+        expect(await liveInputDeliveryState(db.pool, SPACE, RUN, interrupted.message_id)).toBe("unconfirmed");
+
+        // The binding is lost before delivery: it ends not delivered and never enters the next binding.
+        const busyLast = channel.during(() => new Promise<void>(resolve => { release = resolve; }));
+        const orphan = await submitRunLiveInput(db.pool, liveConfig, identity, RUN, delivery.id, "Binding lost");
+        release(); await busyLast;
+        // A running Run's inputs are not the recovery sweep's: their channel may still deliver them.
+        expect(await settleOrphanedRunLiveInputs(db.pool, liveConfig)).toBe(0);
+        await channel.close();
+        const nextReceived: string[] = [];
+        const next = registerRunLiveInput(RUN, { ...delivery, id: randomUUID() }, {
+          start() {}, async receive() {}, reject() {}, result: () => ({ completed: false, error: null, text: "" }),
+          canSteer: () => true, steer: async blocks => { nextReceived.push(JSON.stringify(blocks)); return "injected"; },
+        });
+        try {
+          await expect(deliverRunLiveInput(db.pool, liveConfig, identity, RUN, delivery.id, orphan.message_id)).resolves.toBe("not_injected");
+          expect(nextReceived).toEqual([]);
+        } finally { await next.close(); }
+        // With the Run out of execution, a never-delivered input is settled by recovery, once.
+        const stranded = (await sessions.addMessage(SPACE, USER, session.id, { content: "Stranded", role: "user", run_id: RUN }))!;
+        await new PgRunRepository(db.pool).appendRunEvent({ run_id: RUN, space_id: SPACE, event_type: "action_invoked", status: "pending",
+          metadata_json: { action_name: "run.live_input", message_id: stranded.id, binding_id: delivery.id, user_id: USER } });
+        await db.pool.query(`UPDATE runs SET status='failed' WHERE id=$1`, [RUN]);
+        try {
+          expect(await settleOrphanedRunLiveInputs(db.pool, liveConfig)).toBe(1);
+          expect(await settleOrphanedRunLiveInputs(db.pool, liveConfig)).toBe(0);
+          expect(await liveInputDeliveryState(db.pool, SPACE, RUN, stranded.id)).toBe("not_injected");
+        } finally { await db.pool.query(`UPDATE runs SET status='running' WHERE id=$1`, [RUN]); }
       } finally { await channel.close(); }
     }
     const deliveredText = delivery.message_blocks.map((block) => block.content).join("\n");

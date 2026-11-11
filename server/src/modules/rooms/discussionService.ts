@@ -1,4 +1,5 @@
 import {withRunTerminalOwner} from '../systemActions/operations/proposalTransitions.js';
+import { RoomMutationError } from "./roomMutationError.js";
 import {PgRunRepository} from '../runs/repository.js';
 import {
   parseAgentMentions,
@@ -11,10 +12,9 @@ import {
   type RoomDiscussionNotice,
 } from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
-import type { Pool } from "../../db/pool.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
 import { assertProjectWriter } from "../projects/access.js";
-import { HttpError, type Queryable, withDbTransaction } from "../routeUtils/common.js";
+import { HttpError, independentPool, type Queryable, withQueryableTransaction } from "../routeUtils/common.js";
 import { conversationTurnTaken, ConversationTurnInProgressError, isConversationTurnInProgressError } from "../sessions/conversationRuntimeSessionRepository.js";
 import { PgSessionRepository } from "../sessions/repository.js";
 import { discussionOut, PgRoomDiscussionRepository, type DiscussionRecord } from "./discussionRepository.js";
@@ -58,7 +58,7 @@ const ADVANCE_RETRY_DELAY_MS = 4_000;
 export class RoomDiscussionService {
   constructor(
     private readonly config: ServerConfig,
-    private readonly pool: Pool,
+    private readonly pool: Queryable,
   ) {}
 
   // -------------------------------------------------------------------------
@@ -80,7 +80,7 @@ export class RoomDiscussionService {
       const current = await discussions.getOpenForSession(identity.spaceId, sessionId, { forUpdate: true });
       if (current?.status === "active") {
         const detail = `Another discussion is running in this conversation (${current.id}); stop it or wait for it to end`;
-        throw new HttpError(409, detail, {
+        throw new RoomMutationError(409, detail, {
           detail,
           code: "room_discussion_active",
           discussion_id: current.id,
@@ -96,11 +96,11 @@ export class RoomDiscussionService {
         ? roster.map((member) => member.agent_id)
         : [...new Set(request.participant_agent_ids)];
       if (participants.length > ROOM_DISCUSSION_MAX_PARTICIPANTS) {
-        throw new HttpError(422, `A discussion seats at most ${ROOM_DISCUSSION_MAX_PARTICIPANTS} Agents; this Room has ${participants.length}. Choose who takes part.`);
+        throw new RoomMutationError(422, `A discussion seats at most ${ROOM_DISCUSSION_MAX_PARTICIPANTS} Agents; this Room has ${participants.length}. Choose who takes part.`);
       }
       const rosterIds = new Set(roster.map((member) => member.agent_id));
       if (participants.length === 0 || participants.some((agentId) => !rosterIds.has(agentId))) {
-        throw new HttpError(422, "Discussion participants must be active Agents of this Room");
+        throw new RoomMutationError(422, "Discussion participants must be active Agents of this Room");
       }
       const roundCap = request.round_cap ?? ROOM_DISCUSSION_DEFAULT_ROUND_CAP[request.shape];
       const dispatched = await new RoomService(this.config, this.pool).sendMessageInTransaction(client, identity, roomId, sessionId, {
@@ -144,7 +144,7 @@ export class RoomDiscussionService {
   }
 
   async list(identity: RoomIdentity, roomId: string, sessionId: string) {
-    return withDbTransaction(this.pool, async (client) => {
+    return withQueryableTransaction(this.pool, async (client) => {
       await this.requireMember(client, identity, roomId, sessionId);
       const items = await new PgRoomDiscussionRepository(client).listForSession(identity.spaceId, sessionId);
       return { items: items.map(discussionOut) };
@@ -152,7 +152,7 @@ export class RoomDiscussionService {
   }
 
   async get(identity: RoomIdentity, roomId: string, sessionId: string, discussionId: string): Promise<RoomDiscussionDetail> {
-    return withDbTransaction(this.pool, async (client) => {
+    return withQueryableTransaction(this.pool, async (client) => {
       await this.requireMember(client, identity, roomId, sessionId);
       const discussions = new PgRoomDiscussionRepository(client);
       const discussion = await discussions.get(identity.spaceId, discussionId);
@@ -225,7 +225,7 @@ export class RoomDiscussionService {
     if (stopped.close) {
       // When no wave is running the closing turn goes out now; otherwise the
       // wave that is running dispatches it when it ends.
-      const idle = await withDbTransaction(this.pool, (client) => this.latestGroupIdle(client, stopped.discussion));
+      const idle = await withQueryableTransaction(this.pool, (client) => this.latestGroupIdle(client, stopped.discussion));
       if (idle) await this.advanceGroup(stopped.discussion.space_id, idle);
     }
     return discussionOut(await this.reload(stopped.discussion));
@@ -244,7 +244,7 @@ export class RoomDiscussionService {
       const discussion = await requireDiscussion(discussions, identity.spaceId, roomId, sessionId, discussionId);
       if (discussion.status === "active") {
         if (discussion.opened_by_user_id !== identity.userId) {
-          throw new HttpError(409, "A running discussion is given more rounds by the person it runs for; add them once it stops at its cap");
+          throw new RoomMutationError(409, "A running discussion is given more rounds by the person it runs for; add them once it stops at its cap");
         }
         return discussionOut(await discussions.update(identity.spaceId, discussion.id, {
           roundCap: discussion.round_cap + rounds,
@@ -252,11 +252,11 @@ export class RoomDiscussionService {
         }));
       }
       if (discussion.status !== "cap_reached") {
-        throw new HttpError(409, "Only a running discussion, or one stopped at its cap, can be given more rounds");
+        throw new RoomMutationError(409, "Only a running discussion, or one stopped at its cap, can be given more rounds");
       }
       const debateContinues = discussion.shape === "debate";
       if (discussion.held_mentions.length === 0 && !debateContinues) {
-        throw new HttpError(409, "Nothing is waiting to continue in this discussion");
+        throw new RoomMutationError(409, "Nothing is waiting to continue in this discussion");
       }
       // The closing turn dispatched at the cap and still waiting for the
       // subscription window concludes nothing now: it would run first once
@@ -293,7 +293,7 @@ export class RoomDiscussionService {
         : extended.held_mentions.map((held) => ({ ...held }));
       const admitted = await this.admissible(client, extended, roster, candidates, lastWave);
       if (admitted.targets.length === 0) {
-        throw new HttpError(409, "None of the Agents waiting to continue can be set working by you");
+        throw new RoomMutationError(409, "None of the Agents waiting to continue can be set working by you");
       }
       extended = await discussions.update(identity.spaceId, extended.id, { heldMentions: admitted.held });
       await this.dispatchWave(client, extended, roster, {
@@ -325,7 +325,7 @@ export class RoomDiscussionService {
     if (sessionId) {
       await this.releaseQueued(run.space_id, sessionId);
       // And an Agent's Run parked for this turn to be over (`enqueueWhenTurnFree`).
-      await admitTurnParkedRuns(this.pool, { spaceId: run.space_id, sessionId });
+      await admitTurnParkedRuns(independentPool(this.pool, "Turn-boundary admission"), { spaceId: run.space_id, sessionId });
     }
   }
 
@@ -338,7 +338,7 @@ export class RoomDiscussionService {
    */
   async releaseQueued(spaceId: string, sessionId: string, afterFailedAdvance = false): Promise<"released" | "busy" | "empty"> {
     let failedAdvance: { groupId: string; error: unknown } | null = null;
-    const outcome = await withDbTransaction(this.pool, async (client) => {
+    const outcome = await withQueryableTransaction(this.pool, async (client) => {
       await lockRoomConversationQueue(client, spaceId, sessionId);
       if (!await hasQueuedRoomMessage(client, spaceId, sessionId)) return "empty" as const;
       const discussion = await new PgRoomDiscussionRepository(client).getOpenForSession(spaceId, sessionId);
@@ -371,7 +371,7 @@ export class RoomDiscussionService {
     // Anything else ends the discussion, visibly, as a failed advance does.
     const failed = failedAdvance as { groupId: string; error: unknown } | null;
     if (failed) {
-      await withDbTransaction(this.pool, (client) => this.failAdvance(client, spaceId, failed.groupId, failed.error));
+      await withQueryableTransaction(this.pool, (client) => this.failAdvance(client, spaceId, failed.groupId, failed.error));
       // The discussion has ended: what waited for it is posted now (once).
       if (!afterFailedAdvance) return this.releaseQueued(spaceId, sessionId, true);
     }
@@ -384,12 +384,12 @@ export class RoomDiscussionService {
     options: { enqueueRetry?: boolean } = {},
   ): Promise<"advanced" | "busy" | "failed"> {
     try {
-      await withDbTransaction(this.pool, (client) => this.advanceInTransaction(client, spaceId, groupId));
+      await withQueryableTransaction(this.pool, (client) => this.advanceInTransaction(client, spaceId, groupId));
       return "advanced";
     } catch (error) {
       if (isConversationTurnInProgressError(error) || isTurnBusyHttpError(error) || isTransientDatabaseError(error)) {
         if (options.enqueueRetry === false) return "busy";
-        await withDbTransaction(this.pool, (client) => new PgJobQueueRepository(client).enqueue({
+        await withQueryableTransaction(this.pool, (client) => new PgJobQueueRepository(client).enqueue({
           job_type: ROOM_DISCUSSION_ADVANCE_RETRY_JOB,
           space_id: spaceId,
           user_id: null,
@@ -400,7 +400,7 @@ export class RoomDiscussionService {
       }
       // Anything else would leave the discussion running with no wave behind
       // it, holding the conversation's one open slot. It ends, visibly.
-      await withDbTransaction(this.pool, (client) => this.failAdvance(client, spaceId, groupId, error));
+      await withQueryableTransaction(this.pool, (client) => this.failAdvance(client, spaceId, groupId, error));
       return "failed";
     }
   }
@@ -889,7 +889,7 @@ export class RoomDiscussionService {
   }
 
   private async reload(discussion: DiscussionRecord): Promise<DiscussionRecord> {
-    return withDbTransaction(this.pool, async (client) =>
+    return withQueryableTransaction(this.pool, async (client) =>
       await new PgRoomDiscussionRepository(client).get(discussion.space_id, discussion.id) ?? discussion);
   }
 
@@ -1294,7 +1294,7 @@ async function cancelHeldClosing(client: Queryable, spaceId: string, discussionI
       // finally releases it. Persist cancellation for the existing recovery loop;
       // do not claim terminal success or remove another worker's lock.
       const requested=await new PgRunRepository(client).markRunCancelling({space_id:spaceId,run_id:run.id,requested_at:new Date().toISOString(),reason:'Discussion closing turn withdrawn',requested_by_user_id:requestedBy});
-      if(!requested)throw new HttpError(409,'Closing Run could not be cancelled');
+      if(!requested)throw new RoomMutationError(409,'Closing Run could not be cancelled');
     }
   }
   if (cancelled.rows.length === 0) return;
@@ -1497,7 +1497,7 @@ function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
-async function heldClosingRunRefs(db:import('../routeUtils/common.js').Queryable,spaceId:string,sessionId:string){
+export async function heldClosingRunRefs(db:import('../routeUtils/common.js').Queryable,spaceId:string,sessionId:string){
  return (await db.query<{id:string;space_id:string}>(`SELECT run.id,run.space_id FROM runs run
  JOIN agent_run_groups grp ON grp.id=run.run_group_id AND grp.space_id=run.space_id
  JOIN room_discussions d ON d.id=grp.discussion_id AND d.space_id=grp.space_id

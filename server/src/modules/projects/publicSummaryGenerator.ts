@@ -1,21 +1,15 @@
-import type { ServerConfig } from "../../config.js";
-import { getDbPool } from "../../db/pool.js";
 import {
   HttpError,
   type Queryable,
   type SpaceUserIdentity,
 } from "../routeUtils/common.js";
-import { resolveProviderCommandStore, type ProviderCommandStore } from "../providers/commands/store.js";
-import {
-  ProviderInvocationError,
-  completeProviderText,
-} from "../providers/invocation/invocation.js";
-import type { CredentialSpendBasis } from "../policy/credentialSpend.js";
+import { readProviderTaskChain } from "../providers/commands/store.js";
 import type { MemoryAuthFields } from "../memory/memoryReadAuth.js";
 import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 import { contentAccessLevelSql, contentReadSql, roomRunReadAccessSql } from "../access/contentAccessSql.js";
 import { writePolicyAudit } from "../policy/auditWriter.js";
 import { assertProjectWriter } from "./access.js";
+import { ProjectManagementMutationError } from "./managementErrors.js";
 import {
   PROJECT_PUBLIC_SUMMARY_PROMPT_VERSION,
   buildProjectPublicSummaryPrompt,
@@ -25,6 +19,12 @@ import {
   type PublicSummarySourceRef,
 } from "./publicSummaryPrompt.js";
 import { PgProjectRepository } from "./repository.js";
+import { memoryExcerptIncluded } from "./publicSummaryPrompt.js";
+import {
+  lockPublicSummarySourceClosure,
+  requiredSourceLevel,
+  type FrozenSourceAccess,
+} from "./publicSummarySourceClosure.js";
 
 const PROJECT_PUBLIC_SUMMARY_TASK = "project_public_summary";
 import type { ContentAccessLevel } from "../access/contentAccessTypes.js";
@@ -49,6 +49,11 @@ interface GeneratorMemoryRow extends MemoryAuthFields {
   effective_access_level: ContentAccessLevel;
 }
 const MEMORY_DEFINITION = contentResourceDefinition("memory")!;
+const ACTIVITY_DEFINITION = contentResourceDefinition("activity")!;
+const ARTIFACT_DEFINITION = contentResourceDefinition("artifact")!;
+const PROPOSAL_DEFINITION = contentResourceDefinition("proposal")!;
+const levelSql = (definition: NonNullable<ReturnType<typeof contentResourceDefinition>>, alias: string) =>
+  contentAccessLevelSql({ definition, alias, userExpr: "$3", includeOversight: false });
 
 interface ActivityContextRow {
   id: string;
@@ -60,6 +65,7 @@ interface ActivityContextRow {
   user_id: string | null;
   subject_user_id: string | null;
   occurred_at: unknown;
+  effective_access_level: ContentAccessLevel;
 }
 
 interface ArtifactContextRow {
@@ -82,6 +88,17 @@ interface ProposalContextRow {
   created_by_user_id: string | null;
   instructed_by_user_id: string | null;
   created_at: unknown;
+  effective_access_level: ContentAccessLevel;
+}
+
+export interface PreparedPublicSummaryDraft {
+  providerId: string;
+  model: string | null;
+  prompt: { system: string; user: string };
+  allowedSourceRefs: PublicSummarySourceRef[];
+  /** The level each source needs for what the prompt carries from it. */
+  sourceAccess: FrozenSourceAccess;
+  sourceCounts: Record<string, number>;
 }
 
 interface GeneratorContext extends PublicSummaryPromptContext {
@@ -94,111 +111,140 @@ interface GeneratorContext extends PublicSummaryPromptContext {
   allowedSourceRefs: Map<string, PublicSummarySourceRef>;
 }
 
-interface GeneratePublicSummaryInput {
-  providerId?: string | null;
-  model?: string | null;
-  maxTokens?: number | null;
-  generatedByRunId?: string | null;
-}
-
-type CompleteText = (
-  spaceId: string,
-  input: {
-    providerId: string;
-    model: string | null;
-    system: string;
-    user: string;
-    maxTokens?: number | null;
-    subjectUserId: string;
-    spend: CredentialSpendBasis;
-  },
-) => Promise<{ text: string; model: string; usage: Record<string, unknown> }>;
-
 export class ProjectPublicSummaryGenerator {
   constructor(
     private readonly db: Queryable,
-    private readonly store: ProviderCommandStore,
-    private readonly completeText: CompleteText = providerCompleteText(store),
-    // Set in `fromConfig`; left null in unit tests so the best-effort audit
-    // write is skipped without a real connection.
+    // Null in unit tests, so the best-effort provider-call audit is skipped.
     private readonly databaseUrl: string | null = null,
   ) {}
 
-  static fromConfig(config: ServerConfig): ProjectPublicSummaryGenerator {
-    if (!config.databaseUrl) throw new HttpError(502, "SERVER_DATABASE_URL is required");
-    const store = resolveProviderCommandStore(config);
-    return new ProjectPublicSummaryGenerator(
-      getDbPool(config.databaseUrl),
-      store,
-      providerCompleteText(store),
-      config.databaseUrl,
-    );
-  }
 
-  async generateDraft(
+  /**
+   * Admission half of draft generation: authorized context and the frozen
+   * prompt. The provider call runs later in the bounded ProviderTask worker,
+   * never inside the admitting transaction.
+   */
+  async prepareDraft(
     identity: SpaceUserIdentity,
     projectId: string,
-    input: GeneratePublicSummaryInput,
-  ): Promise<Record<string, unknown>> {
+    input: { providerId?: string | null; model?: string | null },
+  ): Promise<PreparedPublicSummaryDraft> {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     const providerId = input.providerId ?? "";
-    const taskChain = await this.store.getTaskChain(identity.spaceId, PROJECT_PUBLIC_SUMMARY_TASK);
-    if (!providerId && !taskChain) {
-      throw new HttpError(
+    if (!providerId && !(await readProviderTaskChain(this.db, identity.spaceId, PROJECT_PUBLIC_SUMMARY_TASK))) {
+      throw new ProjectManagementMutationError(
         422,
         `model_provider_id is required unless provider task policy '${PROJECT_PUBLIC_SUMMARY_TASK}' is configured`,
       );
     }
-
     const context = await this.loadContext(identity, projectId);
-    const prompt = buildProjectPublicSummaryPrompt(context);
-    let completion: { text: string; model: string; usage: Record<string, unknown> };
-    try {
-      completion = await this.completeText(identity.spaceId, {
-        providerId,
-        model: input.model ?? null,
-        system: prompt.system,
-        user: prompt.user,
-        maxTokens: input.maxTokens,
-        subjectUserId: identity.userId,
-        spend: { kind: "person", user_id: identity.userId },
-      });
-    } catch (error) {
-      if (error instanceof ProviderInvocationError) {
-        throw new HttpError(error.statusCode, error.message);
-      }
-      throw new HttpError(502, "Project public summary generation failed");
-    }
-
-    const generated = parseGeneratedPublicSummary(completion.text, context.allowedSourceRefs);
-    const summary = await new PgProjectRepository(this.db).upsertPublicSummary(identity, projectId, {
-      ...generated,
-      generated_by_run_id: input.generatedByRunId ?? undefined,
-    });
-    await this.recordGenerationAudit(identity, projectId, {
+    return {
       providerId,
-      model: completion.model,
+      model: input.model ?? null,
+      prompt: buildProjectPublicSummaryPrompt(context),
+      allowedSourceRefs: [...context.allowedSourceRefs.values()],
+      sourceAccess: frozenSourceAccess(context),
       sourceCounts: {
         memories: context.memories.length,
         activities: context.activities.length,
         artifacts: context.artifacts.length,
         proposals: context.proposals.length,
       },
-    });
-    return {
-      ...summary,
-      generator: {
-        prompt_version: PROJECT_PUBLIC_SUMMARY_PROMPT_VERSION,
-        model: completion.model,
-        usage: completion.usage,
-        source_counts: {
-          memories: context.memories.length,
-          activities: context.activities.length,
-          artifacts: context.artifacts.length,
-          proposals: context.proposals.length,
-        },
-      },
     };
+  }
+
+  /**
+   * The frozen prompt embeds the bodies of every admitted source, so the person
+   * must still reach the *whole* closure, by the same non-oversight predicates
+   * admission used, whenever that prompt is about to leave the server or its
+   * reply is about to be published. Filtering the reply's references is not
+   * enough: a revoked Memory, a Room the person left or a hidden Artifact
+   * would still have been sent to the provider.
+   *
+   * Readable is not enough either: a source whose body is in the prompt must
+   * still be readable at `full`. A source narrowed to `summary` after
+   * admission is still listed, but its frozen excerpt or rationale is no
+   * longer the person's to send.
+   *
+   * The caller has admitted the closure's Projects (`lockPublicSummaryProjects`).
+   * The closure is share-locked first (`lockPublicSummarySourceClosure`), so
+   * a concurrent revocation either commits before these reads and is refused
+   * here, or waits until the attempt or draft that rests on them commits.
+   * The caller must run this inside that transaction.
+   */
+  async assertFrozenSourcesReadable(
+    identity: SpaceUserIdentity,
+    projectId: string,
+    refs: readonly PublicSummarySourceRef[],
+    access: FrozenSourceAccess | undefined,
+    admittedProjects: ReadonlySet<string>,
+  ): Promise<void> {
+    if (!(await this.loadProject(identity.spaceId, projectId))) throw new HttpError(404, "Project not found");
+    await lockPublicSummarySourceClosure(this.db, identity.spaceId, projectId, identity.userId, refs, admittedProjects);
+    const wantedRefs = (type: string) => {
+      const byId = new Map<string, PublicSummarySourceRef>();
+      for (const ref of refs) if (ref.source_type === type) byId.set(ref.source_id, ref);
+      return [...byId.values()];
+    };
+    const checks: Array<[string, string]> = [
+      ["memory", `SELECT me.id, ${levelSql(MEMORY_DEFINITION, "me")} AS level FROM memory_entries me
+          WHERE me.space_id = $1 AND me.project_id = $2 AND me.id = ANY($4::varchar[])
+            AND me.status = 'active' AND me.deleted_at IS NULL AND me.sensitivity_level <> 'highly_restricted'
+            AND ${contentReadSql("memory", "me", "$3", { includeOversight: false })}`],
+      ["activity", `SELECT ar.id, ${levelSql(ACTIVITY_DEFINITION, "ar")} AS level FROM activity_records ar
+          WHERE ar.space_id = $1 AND ar.project_id = $2 AND ar.id = ANY($4::varchar[]) AND ar.status <> 'archived'
+            AND ${contentReadSql("activity", "ar", "$3", { includeOversight: false })}`],
+      ["artifact", `SELECT a.id, ${levelSql(ARTIFACT_DEFINITION, "a")} AS level FROM artifacts a
+          WHERE a.space_id = $1 AND a.project_id = $2 AND a.id = ANY($4::varchar[])
+            AND ${contentReadSql("artifact", "a", "$3", { includeOversight: false })}
+            AND ${roomRunReadAccessSql("a.run_id", "a.space_id", "$3")}`],
+      ["proposal", `SELECT p.id, ${levelSql(PROPOSAL_DEFINITION, "p")} AS level FROM proposals p
+          WHERE p.space_id = $1 AND p.project_id = $2 AND p.id = ANY($4::varchar[])
+            AND ${contentReadSql("proposal", "p", "$3", { includeOversight: false })}
+            AND ${roomRunReadAccessSql("p.created_by_run_id", "p.space_id", "$3")}`],
+    ];
+    for (const [type, sql] of checks) {
+      const wanted = wantedRefs(type);
+      if (!wanted.length) continue;
+      const found = new Map((await this.db.query<{ id: string; level: ContentAccessLevel }>(
+        sql,
+        [identity.spaceId, projectId, identity.userId, wanted.map(ref => ref.source_id)],
+      )).rows.map(row => [row.id, row.level]));
+      for (const ref of wanted) {
+        const level = found.get(ref.source_id);
+        if (!level) throw new HttpError(403, `A ${type} frozen into this draft request is no longer readable`);
+        if (requiredSourceLevel(access, ref) === "full" && level !== "full") {
+          throw new HttpError(403, `A ${type} whose content is frozen into this draft request is no longer readable in full`);
+        }
+      }
+    }
+  }
+
+  /** Worker half: only references frozen at admission may survive into the draft. */
+  async applyDraft(
+    identity: SpaceUserIdentity,
+    projectId: string,
+    completion: { text: string; providerId: string; model: string },
+    prepared: Pick<PreparedPublicSummaryDraft, "allowedSourceRefs" | "sourceCounts">,
+    generatedByRunId: string,
+  ): Promise<Record<string, unknown>> {
+    const allowed = new Map<string, PublicSummarySourceRef>();
+    for (const ref of prepared.allowedSourceRefs) addAllowedSource(allowed, ref);
+    const generated = parseGeneratedPublicSummary(completion.text, allowed);
+    const summary = await new PgProjectRepository(this.db).upsertPublicSummary(identity, projectId, {
+      ...generated,
+      generated_by_run_id: generatedByRunId,
+    });
+    return summary;
+  }
+
+  /** Best-effort pointer audit, written after the draft's transaction commits. */
+  async auditGeneration(
+    identity: SpaceUserIdentity,
+    projectId: string,
+    info: { providerId: string; model: string; sourceCounts: Record<string, number> },
+  ): Promise<void> {
+    await this.recordGenerationAudit(identity, projectId, info);
   }
 
   /**
@@ -243,12 +289,11 @@ export class ProjectPublicSummaryGenerator {
   private async loadContext(identity: SpaceUserIdentity, projectId: string): Promise<GeneratorContext> {
     const project = await this.loadProject(identity.spaceId, projectId);
     if (!project) throw new HttpError(404, "Project not found");
-    const [memories, activities, artifacts, proposals] = await Promise.all([
-      this.loadMemories(identity, projectId),
-      this.loadActivities(identity, projectId),
-      this.loadArtifacts(identity, projectId),
-      this.loadProposals(identity, projectId),
-    ]);
+    // Sequential: admission runs on one transaction client.
+    const memories = await this.loadMemories(identity, projectId);
+    const activities = await this.loadActivities(identity, projectId);
+    const artifacts = await this.loadArtifacts(identity, projectId);
+    const proposals = await this.loadProposals(identity, projectId);
     const allowedSourceRefs = new Map<string, PublicSummarySourceRef>();
     addAllowedSource(allowedSourceRefs, {
       source_type: "project",
@@ -342,8 +387,11 @@ export class ProjectPublicSummaryGenerator {
 
   private async loadActivities(identity: SpaceUserIdentity, projectId: string): Promise<ActivityContextRow[]> {
     const result = await this.db.query<ActivityContextRow>(
-      `SELECT id, activity_type, title, content, visibility, owner_user_id,
-              user_id, subject_user_id, occurred_at
+      `SELECT id, activity_type, title, visibility, owner_user_id,
+              user_id, subject_user_id, occurred_at,
+              ${levelSql(ACTIVITY_DEFINITION, "ar")} AS effective_access_level,
+              -- A summary-level reader is not served the body (B-access: summary withholds content).
+              CASE WHEN ${levelSql(ACTIVITY_DEFINITION, "ar")} = 'full' THEN content END AS content
          FROM activity_records ar
         WHERE space_id = $1
           AND project_id = $2
@@ -365,6 +413,8 @@ export class ProjectPublicSummaryGenerator {
           AND ${contentReadSql("artifact", "a", "$3", { includeOversight: false })}
           -- A Room's outputs stay with its members (ADR 0018 decision 3).
           AND ${roomRunReadAccessSql("a.run_id", "a.space_id", "$3")}
+          -- A research-call output Artifact passes this gate only while every
+          -- Source it read stays fully readable (researchArtifactReadableSql).
         ORDER BY created_at DESC, id DESC
         LIMIT 16`,
       [identity.spaceId, projectId, identity.userId],
@@ -374,9 +424,10 @@ export class ProjectPublicSummaryGenerator {
 
   private async loadProposals(identity: SpaceUserIdentity, projectId: string): Promise<ProposalContextRow[]> {
     const result = await this.db.query<ProposalContextRow>(
-      `SELECT p.id, p.proposal_type, p.status, p.title, p.rationale, p.visibility,
+      `SELECT p.id, p.proposal_type, p.status, p.title, p.visibility,
               p.created_by_user_id, run_for_instructed.instructed_by_user_id,
-              p.created_at
+              p.created_at, ${levelSql(PROPOSAL_DEFINITION, "p")} AS effective_access_level,
+              CASE WHEN ${levelSql(PROPOSAL_DEFINITION, "p")} = 'full' THEN p.rationale END AS rationale
          FROM proposals p
          LEFT JOIN runs run_for_instructed
            ON run_for_instructed.id = p.created_by_run_id
@@ -393,19 +444,18 @@ export class ProjectPublicSummaryGenerator {
   }
 }
 
-function addAllowedSource(refs: Map<string, PublicSummarySourceRef>, ref: PublicSummarySourceRef): void {
-  refs.set(sourceKey(ref.source_type, ref.source_id), ref);
+/** What the prompt actually carries from each source decides the level it needs. */
+function frozenSourceAccess(context: GeneratorContext): FrozenSourceAccess {
+  const access: FrozenSourceAccess = {};
+  for (const memory of context.memories) {
+    access[sourceKey("memory", memory.id)] = memoryExcerptIncluded(memory, context.viewerUserId) ? "full" : "summary";
+  }
+  for (const activity of context.activities) access[sourceKey("activity", activity.id)] = activity.content ? "full" : "summary";
+  for (const artifact of context.artifacts) access[sourceKey("artifact", artifact.id)] = "summary";
+  for (const proposal of context.proposals) access[sourceKey("proposal", proposal.id)] = proposal.rationale ? "full" : "summary";
+  return access;
 }
 
-function providerCompleteText(store: ProviderCommandStore): CompleteText {
-  return async (spaceId, input) => completeProviderText(store, spaceId, {
-    provider_id: input.providerId,
-    model: input.model,
-    system: input.system,
-    user: input.user,
-    max_tokens: input.maxTokens ?? undefined,
-    task: PROJECT_PUBLIC_SUMMARY_TASK,
-    metering: { subject_user_id: input.subjectUserId },
-    spend: input.spend,
-  });
+function addAllowedSource(refs: Map<string, PublicSummarySourceRef>, ref: PublicSummarySourceRef): void {
+  refs.set(sourceKey(ref.source_type, ref.source_id), ref);
 }

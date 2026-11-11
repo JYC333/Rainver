@@ -9,6 +9,7 @@ import { ordinaryAccountKey } from "../src/modules/hosts/ordinaryToolAccountRout
 import { loadConfig } from "../src/config.js";
 import { __setAuthIdentityForTests, __setAuthRepositoryForTests, type AuthRepository, type CurrentUser } from "../src/modules/auth/identity.js";
 import { MIN_HOST_DAEMON_VERSION } from "../src/modules/hosts/daemonCompatibility.js";
+import { hostCommandHarness, seedHostCommandSpace } from "./support/hostCommandHarness.js";
 
 // Real-Postgres coverage for personal ordinary-tool accounts: who may reach
 // whose account, what the daemon is told (a key derived from the session
@@ -128,12 +129,13 @@ async function openStream(hostId: string, flow: string, headers: Record<string, 
 beforeAll(async () => {
   if (!db.available) return;
   app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: db.connectionUri, INSTANCE_ADMIN_EMAIL: "admin@example.test" }), [hostsModule]);
+  commands = hostCommandHarness(db.pool, loadConfig({ SERVER_DATABASE_URL: db.connectionUri, INSTANCE_ADMIN_EMAIL: "admin@example.test" }));
   await app.listen({ port: 0, host: "127.0.0.1" });
 });
 
 beforeEach(async () => {
   if (!db.available) return;
-  await resetTables(db.pool, ["hosts", "machines", "settings", "spaces", "users"], { cascade: true });
+  await resetTables(db.pool, ["host_command_intents", "jobs", "hosts", "machines", "settings", "space_memberships", "spaces", "users"], { cascade: true });
   const users: Record<string, CurrentUser> = {};
   for (const [id, email] of [[ADMIN, "admin@example.test"], [OWNER, "owner@example.test"], [MEMBER, "member@example.test"]] as const) {
     await db.pool.query(
@@ -142,6 +144,7 @@ beforeEach(async () => {
     );
     users[TOKENS[id]!] = user(id, email);
   }
+  await seedHostCommandSpace(db.pool, SPACE, [{ user: ADMIN }, { user: OWNER }, { user: MEMBER }]);
   __setAuthRepositoryForTests({
     async getCurrentUser(sessionToken?: string) {
       return (sessionToken && users[sessionToken]) || { statusCode: 401, detail: "Not authenticated" };
@@ -170,6 +173,8 @@ async function pairHost(): Promise<{ hostId: string; token: string }> {
   return { hostId, token: register.json().token };
 }
 
+let commands: ReturnType<typeof hostCommandHarness>;
+const logout = (hostId: string) => commands.run(app!, { method: "POST", url: `/api/v1/hosts/${hostId}/ordinary-tools/lark_cli/account/logout` }, hostId);
 const account = (hostId: string) => app!.inject({ method: "GET", url: `/api/v1/hosts/${hostId}/ordinary-tools/lark_cli/account` });
 
 describe("personal ordinary-tool accounts on a paired Host", () => {
@@ -208,8 +213,11 @@ describe("personal ordinary-tool accounts on a paired Host", () => {
     expect(JSON.stringify(daemon.frames)).not.toContain(OWNER);
     expect((await app.inject({ method: "POST", url: `/api/v1/hosts/${hostId}/ordinary-tools/lark_cli/account/verify` })).json())
       .toMatchObject({ status: { account: { verified: true } } });
-    expect((await app.inject({ method: "POST", url: `/api/v1/hosts/${hostId}/ordinary-tools/lark_cli/account/logout` })).json())
-      .toMatchObject({ status: { state: "not_logged_in" }, logout: { local_cleared: true, remote_revocation: "attempted_unconfirmed" } });
+    // Logging out changes the account: a durable command, released through its status read.
+    expect((await logout(hostId)).status).toMatchObject({ status: "succeeded", result: { tool_id: "lark_cli", status: { state: "not_logged_in" }, logout: { local_cleared: true, remote_revocation: "attempted_unconfirmed" } } });
+    expect(daemon.frames.filter((frame) => frame.type === "ordinary_account_request").at(-1)).toEqual({
+      type: "ordinary_account_request", request_id: expect.any(String), tool_id: "lark_cli", account_key: ordinaryAccountKey(OWNER), action: "logout",
+    });
     expect((await app.inject({ method: "GET", url: `/api/v1/hosts/${hostId}/ordinary-tools/jq/account` })).statusCode).toBe(422);
     expect((await openStream(hostId, "bot")).status).toBe(422);
     // A cross-site page cannot start a login: no fetch metadata and none of our headers.
@@ -222,6 +230,7 @@ describe("personal ordinary-tool accounts on a paired Host", () => {
       expect((await account(hostId)).statusCode).toBe(404);
       expect((await openStream(hostId, "login")).status).toBe(404);
       expect((await app.inject({ method: "POST", url: `/api/v1/hosts/${hostId}/ordinary-tools/lark_cli/account/session/cancel` })).statusCode).toBe(404);
+      expect((await commands.submit(app, { method: "POST", url: `/api/v1/hosts/${hostId}/ordinary-tools/lark_cli/account/logout` })).statusCode).toBe(404);
     }
     expect(daemon.frames).toHaveLength(before);
 
@@ -249,7 +258,7 @@ describe("personal ordinary-tool accounts on the built-in Host", () => {
     asUser(MEMBER);
     expect((await account(BUILTIN_HOST)).json()).toMatchObject({ availability: "live", status: { account: { user_name: "Member" } } });
     // Their own account, yes; the shared binary, no.
-    expect((await app.inject({ method: "POST", url: `/api/v1/hosts/${BUILTIN_HOST}/ordinary-tools/lark_cli/install` })).statusCode).toBe(403);
+    expect((await commands.submit(app, { method: "POST", url: `/api/v1/hosts/${BUILTIN_HOST}/ordinary-tools/lark_cli/install` })).statusCode).toBe(404);
 
     const setup = await openStream(BUILTIN_HOST, "init");
     await setup.done;
@@ -299,8 +308,9 @@ describe("what an account answer can carry", () => {
 
     const status = await account(hostId);
     expect(status.json()).toMatchObject({ availability: "live", status: { state: "signed_in", account: { user_name: "Owner" } } });
-    const logout = await app.inject({ method: "POST", url: `/api/v1/hosts/${hostId}/ordinary-tools/lark_cli/account/logout` });
-    expect(logout.json()).toMatchObject({ logout: { local_cleared: true, remote_revocation: "attempted_unconfirmed" } });
+    const loggedOut = await logout(hostId);
+    expect(loggedOut.status).toMatchObject({ result: { logout: { local_cleared: true, remote_revocation: "attempted_unconfirmed" } } });
+    const released = await commands.status(app, hostId, loggedOut.receipt.id);
 
     const setup = await openStream(hostId, "init");
     await setup.done;
@@ -308,7 +318,8 @@ describe("what an account answer can carry", () => {
       { type: "authorization", url: expect.stringMatching(/^https:\/\/accounts\.feishu\.cn\//), user_code: ordinaryAccountKey(OWNER).slice(0, 4), expires_in: 600 },
       { type: "exit", outcome: "completed", error: null, status: { state: "not_logged_in", account: null, reason: null } },
     ]);
-    for (const body of [status.body, logout.body, JSON.stringify(setup.events)]) expect(body).not.toMatch(/LEAKED|LEAK"|access_token|refresh_token|stdout/);
+    const stored = JSON.stringify((await db.pool.query("SELECT result_json FROM host_command_intents WHERE id = $1", [loggedOut.receipt.id])).rows);
+    for (const body of [status.body, released.body, stored, JSON.stringify(setup.events)]) expect(body).not.toMatch(/LEAKED|LEAK"|access_token|refresh_token|stdout/);
     // The refused event was answered as an invalid frame, not forwarded.
     expect(daemon.frames.some((frame) => frame.type === "error" && /invalid_frame ordinary_account_session_event/.test(String(frame.detail)))).toBe(true);
   });

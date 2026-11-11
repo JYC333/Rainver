@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { PROJECT_SUMMARY_DRAFT_SCHEMAS } from "@rainver/protocol";
 import type { FastifyInstance } from "fastify";
 import { seedSpaceMember, seedSpaceOwnerProject } from "./support/domainSeeds.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -16,6 +17,10 @@ import type { Queryable } from "../src/modules/routeUtils/common.js";
 import { buildModuleServer } from "./support/moduleServer.js";
 import { resetTables } from "./support/resetTables.js";
 import { useTestDatabase } from "./support/testDatabase.js";
+import { jobsModule } from "../src/modules/jobs/index.js";
+import { systemActionsModule } from "../src/modules/systemActions/index.js";
+import { JobHandlerRegistry } from "../src/modules/jobs/handlerRegistry.js";
+import { PROJECT_SUMMARY_BRIEF_JOB, registerProjectSummaryBriefJob } from "../src/modules/projects/summaryBriefOperation.js";
 import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 describe("projectPublicSummariesDb", () => {
@@ -399,49 +404,17 @@ describe("projectPublicSummaryRoutes", () => {
   }
 
   describe("Project public summary routes", () => {
-    it("rejects a draft request with a non-numeric max_tokens", async () => {
-      __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
-      app = buildModuleServer(config(), [projectsModule]);
-
-      const res = await app.inject({
-        method: "POST",
-        url: "/api/v1/projects/project-1/public-summary/draft",
-        headers: { "content-type": "application/json" },
-        payload: JSON.stringify({ max_tokens: "lots" }),
-      });
-
-      expect(res.statusCode).toBe(422);
-      expect(res.json().detail).toContain("max_tokens");
+    it("accepts only the strict draft admission contract", () => {
+      const schema = PROJECT_SUMMARY_DRAFT_SCHEMAS["project.public_summary.draft.generate"].input;
+      expect(schema.safeParse({ project_id: "project-1", max_tokens: "lots" }).success).toBe(false);
+      expect(schema.safeParse({ project_id: "project-1", generated_by_run_id: "run-1" }).success).toBe(false);
+      expect(schema.safeParse({ project_id: "project-1", model_provider_id: "provider-1" }).success).toBe(true);
     });
 
-    it("rejects a public-summary search for any other object type", async () => {
-      __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
-      app = buildModuleServer(config(), [projectsModule]);
-
-      const res = await app.inject({
-        method: "POST",
-        url: "/api/v1/projects/public-summaries/search",
-        headers: { "content-type": "application/json" },
-        payload: JSON.stringify({ query: "alpha", object_types: ["memory_entry"] }),
-      });
-
-      expect(res.statusCode).toBe(422);
-      expect(res.json().detail).toContain("project_public_summary");
-    });
-
-    it("rejects a project retrieval brief for any other object type", async () => {
-      __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
-      app = buildModuleServer(config(), [projectsModule]);
-
-      const res = await app.inject({
-        method: "POST",
-        url: "/api/v1/projects/retrieval/brief",
-        headers: { "content-type": "application/json" },
-        payload: JSON.stringify({ query: "alpha", object_types: ["memory_entry"] }),
-      });
-
-      expect(res.statusCode).toBe(422);
-      expect(res.json().detail).toContain("project_public_summary");
+    it("accepts only public-summary briefs in the strict brief admission contract", () => {
+      const schema = PROJECT_SUMMARY_DRAFT_SCHEMAS["project.summary.brief.request"].input;
+      expect(schema.safeParse({ query: "alpha", object_types: ["memory_entry"] }).success).toBe(false);
+      expect(schema.safeParse({ query: "alpha", object_types: ["project_public_summary"], persist_artifact: true }).success).toBe(true);
     });
 
     it("requires authentication for the draft route", async () => {
@@ -507,5 +480,40 @@ describe("projectReadersRoute", () => {
     expect(missing.statusCode).toBe(404);
     // No roster and no existence signal: the two bodies are identical.
     expect(notReader.json()).toEqual(missing.json());
+  });
+});
+
+describe("projectSummaryBriefOperation", () => {
+  // The public-summary Context Brief is admitted by the core and built by its Job,
+  // so embedding/rerank/synthesis never run inside a core transaction.
+  const db=useTestDatabase(`${import.meta.filename}#projectSummaryBriefOperation`,{max:6});
+  let space:string,owner:string,app:ReturnType<typeof buildModuleServer>,config:ReturnType<typeof loadConfig>;
+  const brief=(payload:object,key=randomUUID())=>app.inject({method:'POST',url:'/api/v1/projects/retrieval/brief',payload,headers:{'idempotency-key':key}});
+  beforeEach(async()=>{
+   await resetTables(db.pool,['spaces','users'],{cascade:true});
+   space=randomUUID();owner=randomUUID();
+   await seedSpaceOwnerProject(db.pool,{space,owner,project:randomUUID(),spaceType:'team'});
+   config=loadConfig({SERVER_DATABASE_URL:db.connectionUri,RAINVER_HOME:'/tmp/rainver-p5-tests'});
+   app=buildModuleServer(config,[projectsModule,jobsModule,systemActionsModule]);__setAuthIdentityForTests({spaceId:space,userId:owner});
+  });
+  afterEach(async()=>{__setAuthIdentityForTests(null);await app?.close();});
+
+  it('queues one requester-owned brief Job per key and refuses other object types before admission',async()=>{
+   const key=randomUUID(),first=await brief({query:'project discovery',persist_artifact:true},key);
+   expect(first.statusCode,first.body).toBe(202);
+   const receipt=first.json().data;expect(receipt).toEqual({id:receipt.job_id,space_id:space,job_id:receipt.job_id});
+   expect((await brief({query:'project discovery',persist_artifact:true},key)).json()).toEqual(first.json());
+   expect((await brief({query:'other',persist_artifact:true},key)).statusCode).toBe(422);
+   expect((await brief({query:'q',object_types:['memory_entry']})).statusCode).toBe(422);
+   expect((await db.pool.query('SELECT job_type,user_id,payload_json FROM jobs WHERE space_id=$1',[space])).rows).toEqual([{job_type:PROJECT_SUMMARY_BRIEF_JOB,user_id:owner,payload_json:{request:{query:'project discovery',persist_artifact:true}}}]);
+   // The result is the requester's alone.
+   const peer=randomUUID();await seedSpaceMember(db.pool,{space,user:peer});__setAuthIdentityForTests({spaceId:space,userId:peer});
+   expect((await app.inject({method:'GET',url:`/api/v1/jobs/${receipt.job_id}`})).statusCode).toBe(404);
+   expect((await brief({query:'project discovery',persist_artifact:true},key)).json().data.job_id).not.toBe(receipt.job_id);
+  });
+
+  it('registers the worker that builds the brief outside the admitting transaction',()=>{
+   const registry=new JobHandlerRegistry();registerProjectSummaryBriefJob(registry,config);
+   expect(registry.get(PROJECT_SUMMARY_BRIEF_JOB)).toBeTypeOf('function');
   });
 });

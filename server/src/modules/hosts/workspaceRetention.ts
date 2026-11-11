@@ -18,7 +18,7 @@ export function configureWorkspaceRetention(config:{workspaceReclaimGraceMinutes
 }
 
 export interface RetentionAssessment {
- state:'active'|'grace'|'reclaimable'|'retained'|'held';
+ state:'active'|'grace'|'reclaimable'|'retained'|'held'|'missing';
  reason:string;
  reclaim_after:string|null;
  hold_until:string|null;
@@ -28,7 +28,14 @@ const ACTIVE_MERGE=`('queued','rebasing','resolving','verifying','waiting_local_
 
 /** One snapshot of durable facts; call inside the transaction that acts on it. */
 export async function assessWorkspaceRetention(db:Queryable,workspaceId:string):Promise<RetentionAssessment>{
- const f=(await db.query<{owner_state:string;generation:number;head_commit:string|null;baseline_mode:string|null;quarantined:boolean;target_moved_since_refusal:boolean;retention_json:Record<string,unknown>;run_active:boolean;checkpoint_owed:boolean;checkpoint_blocked:boolean;change_pending:boolean;unpublished:boolean;blocked_change:boolean;kept:boolean;integration_active:boolean;child_dependency:boolean;dependent_cleanup:boolean;merged:boolean;last_activity:string|null;now:string}>(`SELECT w.state AS owner_state,w.generation,w.retention_json,w.head_commit,w.baseline_mode,now()::text AS now,
+ const f=(await db.query<{owner_state:string;generation:number;head_commit:string|null;baseline_mode:string|null;quarantined:boolean;discard:boolean;target_moved_since_refusal:boolean;retention_json:Record<string,unknown>;run_active:boolean;checkpoint_owed:boolean;checkpoint_blocked:boolean;change_pending:boolean;unpublished:boolean;blocked_change:boolean;kept:boolean;integration_active:boolean;child_dependency:boolean;dependent_cleanup:boolean;merged:boolean;branch_missing:boolean;last_activity:string|null;now:string}>(`SELECT w.state AS owner_state,w.generation,w.retention_json,w.head_commit,w.baseline_mode,now()::text AS now,
+  COALESCE(w.retention_json->'discard_intent'->>'source_commit','')=w.head_commit
+   AND w.retention_json->'discard_intent'->>'generation'=w.generation::text
+   AND EXISTS(SELECT 1 FROM workspace_change_sets c WHERE c.id=w.retention_json->'discard_intent'->>'change_set_id' AND c.workspace_id=w.id AND c.generation=w.generation AND c.state='abandoned' AND c.source_commit=w.head_commit AND c.verification_json->'closure_review'->>'disposition'='discard_requested')
+   AND NOT EXISTS(SELECT 1 FROM workspace_change_sets c WHERE c.workspace_id=w.id AND c.state IN ('open','ready','integrating','blocked'))
+   AND NOT EXISTS(SELECT 1 FROM execution_workspace_runs b WHERE b.workspace_id=w.id AND b.checkpoint_state<>'saved') AS discard,
+  -- The Host's last inventory found neither branch nor worktree of a never-released generation.
+  COALESCE(w.inventory_json->>'branch','')='false' AND COALESCE(w.inventory_json->>'worktree','')='false' AND COALESCE(w.retention_json->>'state','') NOT IN ('reclaimed','reclaiming') AND w.head_commit IS NOT NULL AS branch_missing,
   COALESCE((w.inventory_json->>'quarantined_whole')::int,0)>0 AS quarantined,
   -- A refused proof is retried only once the Location's target moved through a later integration.
   EXISTS(SELECT 1 FROM task_merges m WHERE m.workspace_location_id=w.workspace_location_id AND m.status IN ('merged','no_changes')
@@ -59,9 +66,17 @@ export async function assessWorkspaceRetention(db:Queryable,workspaceId:string):
  if(f.checkpoint_owed)return result('active','checkpoint_pending');
  if(f.integration_active||f.change_pending)return result('active','integration_pending');
  if(f.dependent_cleanup)return result('active','dependent_cleanup');
+ // Removed outside Rainver while unfinished work had no adoption proof: never
+ // merged, never silently expired; the person may close the records explicitly.
+ if(f.branch_missing&&!f.discard&&(f.unpublished||f.blocked_change||f.kept||f.checkpoint_blocked))return result('missing',typeof f.retention_json.missing_acknowledged_at==='string'?'missing_acknowledged':'branch_missing');
  if(f.child_dependency)return result('retained','child_workspace_dependency');
  if(f.blocked_change||f.checkpoint_blocked)return result('retained','blocked_changes');
  if(f.unpublished)return result('retained','unpublished_changes');
+ // Explicit discard never proves adoption and cannot bypass physical safety or children.
+ if(f.discard&&!f.quarantined){
+  if(hold&&Date.parse(hold)>Date.parse(f.now))return result('held','held_by_user',hold);
+  return result('reclaimable','discarded');
+ }
  if(f.kept)return result('retained','kept_without_merging');
  // A snapshot baseline holds the person's uncommitted source edits: the
  // branch may be their only committed copy, whatever its merge facts say.
@@ -93,6 +108,8 @@ export async function reclaimProofCommits(db:Queryable,workspaceId:string,genera
    UNION ALL SELECT task_commit FROM task_merges WHERE workspace_id=$1 AND generation=$2 AND status='merged'
    UNION ALL SELECT onto_commit FROM task_merges WHERE workspace_id=$1 AND generation=$2 AND status='no_changes'
    UNION ALL SELECT detail_json->>'already_present_at' FROM task_merges WHERE workspace_id=$1 AND generation=$2 AND status='no_changes'
+   -- Target tips recorded by exact adoption proof of settled saved work.
+   UNION ALL SELECT verification_json->>'already_present_at' FROM workspace_change_sets WHERE workspace_id=$1 AND generation=$2 AND state='no_changes'
   ) x WHERE x.commit ~ '^[0-9a-f]{40}([0-9a-f]{24})?$' LIMIT 50`,[workspaceId,generation])).rows;
  return rows.map(r=>r.commit);
 }
@@ -146,7 +163,9 @@ export async function refReleasePlan(db:Queryable,w:{id:string;generation:number
  const release:RefRelease[]=[...owned.release];let shared=0;
  const merges=(await db.query<{id:string;commits:string[]}>(`SELECT id,ARRAY[source_commit,task_commit,merged_commit] AS commits FROM task_merges WHERE workspace_id=$1 AND generation=$2 AND status IN ('merged','no_changes')`,[w.id,w.generation])).rows;
  for(const m of merges)release.push({ref:`refs/rainver/recovery/${m.id}`});
- const candidates=[...new Set(merges.flatMap(m=>m.commits).filter((c):c is string=>typeof c==='string'&&COMMIT.test(c)))];
+ const discarded=(await db.query<{commit:string}>(`SELECT c.source_commit AS commit FROM workspace_change_sets c JOIN execution_workspaces w ON w.id=c.workspace_id WHERE w.id=$1 AND c.generation=$2 AND c.state='abandoned'
+  AND w.retention_json->'discard_intent'->>'source_commit'=w.head_commit`,[w.id,w.generation])).rows.map(r=>r.commit);
+ const candidates=[...new Set([...discarded,...merges.flatMap(m=>m.commits).filter((c):c is string=>typeof c==='string'&&COMMIT.test(c))])];
  const sources:RefRelease[]=[];
  if(candidates.length){
   const free=await freeSourceCommits(db,{hostId:w.execution_host_id,workspaceId:w.id,generation:w.generation},candidates);
@@ -178,6 +197,7 @@ export async function freeSourceCommits(db:Queryable,w:{hostId:string;workspaceI
     WHERE l.execution_host_id=$2 AND (o.workspace_id IS DISTINCT FROM $3 OR o.generation IS DISTINCT FROM $4) AND o.status NOT IN ('merged','no_changes') AND c=ANY(workspace_merge_dependent_commits(o.source_commit,o.task_commit,o.merged_commit)))
    AND NOT EXISTS(SELECT 1 FROM workspace_change_sets oc JOIN execution_workspaces ow ON ow.id=oc.workspace_id
     WHERE ow.execution_host_id=$2 AND oc.state NOT IN ('integrated','no_changes') AND (oc.workspace_id<>$3 OR oc.state<>'abandoned')
+     AND NOT COALESCE((oc.state='abandoned' AND ow.retention_json->'discard_intent'->>'source_commit'=ow.head_commit AND ow.retention_json->'discard_intent'->>'generation'=ow.generation::text AND ow.inventory_json->>'branch'='false'),false)
      AND c=ANY(workspace_source_dependent_commits(oc.source_commit,oc.base_commit,oc.verification_json)))`,[valid,w.hostId,w.workspaceId,w.generation])).rows.map(r=>r.commit);
 }
 /** The attributable part of one page of the workspace's owned refs (Host inventory, by name). */
@@ -206,13 +226,16 @@ export async function localPreimageReleases(db:Queryable,workspaceId:string,gene
  * refs are retained with an explicit reason; nothing here deletes a ref.
  */
 export async function classifyLocationRefs(db:Queryable,hostId:string,refs:ReadonlyArray<{ref:string;commit:string}>){
- const workspaceIds=new Set<string>(),mergeIds=new Set<string>(),commits=new Set<string>();
+ const workspaceIds=new Set<string>(),mergeIds=new Set<string>(),commits=new Set<string>(),alignIds=new Set<string>();
  for(const {ref} of refs){
   const p=ref.split('/');
   if((p[2]==='recovery'||p[2]==='native-preimages'||p[2]==='run-history'||p[2]==='source-keepers')&&p.length>=5)workspaceIds.add(p[3]!);
   else if(p[2]==='recovery'&&p.length===4)mergeIds.add(p[3]!);
   else if((p[2]==='sources'||p[2]==='local-preimages')&&p.length===4)commits.add(p[3]!.replace(/-index$/,''));
+  else if(p[2]==='branch-backups'&&p.length===4)alignIds.add(p[3]!);
  }
+ // Recovery refs of person-authorized branch alignments: kept, never released automatically.
+ const knownAligns=new Set((await db.query<{id:string}>("SELECT id FROM project_folder_io_intents WHERE id=ANY($1::varchar[]) AND kind='branch_align'",[[...alignIds]])).rows.map(r=>r.id));
  const knownWorkspaces=new Set((await db.query<{id:string}>('SELECT id FROM execution_workspaces WHERE id=ANY($1::varchar[]) AND execution_host_id=$2',[[...workspaceIds],hostId])).rows.map(r=>r.id));
  const knownMerges=new Set((await db.query<{id:string}>('SELECT m.id FROM task_merges m JOIN workspace_locations l ON l.id=m.workspace_location_id WHERE m.id=ANY($1::varchar[]) AND l.execution_host_id=$2',[[...mergeIds],hostId])).rows.map(r=>r.id));
  const knownCommits=new Set((await db.query<{commit:string}>(`SELECT DISTINCT c AS commit FROM unnest($1::text[]) c WHERE EXISTS(SELECT 1 FROM task_merges m JOIN workspace_locations l ON l.id=m.workspace_location_id WHERE l.execution_host_id=$2 AND c=ANY(workspace_merge_dependent_commits(m.source_commit,m.task_commit,m.merged_commit)))
@@ -222,7 +245,8 @@ export async function classifyLocationRefs(db:Queryable,hostId:string,refs:Reado
   const p=ref.split('/');
   const owner=(p[2]==='recovery'||p[2]==='native-preimages'||p[2]==='run-history'||p[2]==='source-keepers')&&p.length>=5?knownWorkspaces.has(p[3]!)
    :p[2]==='recovery'&&p.length===4?knownMerges.has(p[3]!)
-   :(p[2]==='sources'||p[2]==='local-preimages')&&p.length===4?knownCommits.has(p[3]!.replace(/-index$/,'')):false;
+   :(p[2]==='sources'||p[2]==='local-preimages')&&p.length===4?knownCommits.has(p[3]!.replace(/-index$/,''))
+   :p[2]==='branch-backups'&&p.length===4?knownAligns.has(p[3]!):false;
   if(!owner)unclaimed.push({ref,reason:'unknown_owner'});
  }
  return unclaimed;

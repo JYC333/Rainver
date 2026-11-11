@@ -13,7 +13,7 @@ it("preserves small measured consumption for display-time rounding", () => {
   expect(quota.windows?.[0].used_pct).toBeCloseTo(0.14852, 5);
 });
 
-it("retains model-family windows and aggregates only explicit cadences", () => {
+it("retains independent model-family windows without inventing an account total", () => {
   const quota = parseAntigravityQuota({ response: { groups: [
     { displayName: "Gemini", buckets: [
       { bucketId: "g-week", window: "weekly", remaining: { remainingFraction: 0.7 } },
@@ -23,7 +23,7 @@ it("retains model-family windows and aggregates only explicit cadences", () => {
     ] },
     { displayName: "Claude/GPT", buckets: [{ bucketId: "c-week", window: "weekly", remainingFraction: 0.1 }] },
   ] } });
-  expect(quota).toMatchObject({ available: true, session_pct: 75, week_pct: 90 });
+  expect(quota).toMatchObject({ available: true, session_pct: null, week_pct: null });
   expect(quota.windows).toHaveLength(4);
   expect(quota.windows?.find(w => w.id === "unknown")?.used_pct).toBeNull();
 });
@@ -68,7 +68,7 @@ it.each(["private@example.invalid", "a.@x.com"])("reads native quota even if its
     `);
     const quota = await probeAntigravity(home, null, 5, process.execPath, [cli]);
     expect(quota.available).toBe(true);
-    expect(quota.week_pct).toBe(40);
+    expect(quota.week_pct).toBeNull();
     expect(quota.windows?.[0].used_pct).toBe(40);
     expect(quota.account).toMatchObject({ provider: "google", product: "antigravity", identity_kind: "email", organization_id: null });
     expect(quota.account?.account_id).toMatch(/^[a-f0-9]{64}$/);
@@ -99,4 +99,15 @@ it("does not confuse Claude product usage shares with independent Fable allowanc
   expect(quota.week_pct).toBe(49);
   expect(quota.windows).toHaveLength(1);
   expect(quota.windows?.some(window => /fable|breakdown/.test(window.id))).toBe(false);
+});
+
+it("does not let an exhausted Argon allowance consume other model families", () => {
+  const quota = parseAntigravityQuota({ groups: [{ buckets: [
+    { bucketId: "gemini-argon-wtu-weekly", remainingFraction: 0 },
+    { bucketId: "gemini-weekly", remainingFraction: 0.8 },
+    { bucketId: "3p-weekly", remainingFraction: 0.9 },
+  ] }] });
+  expect(quota.week_pct).toBeNull();
+  expect(quota.windows?.map(w => w.scope)).toEqual(["family", "family", "family"]);
+  expect(quota.windows?.[0].used_pct).toBe(100);
 });

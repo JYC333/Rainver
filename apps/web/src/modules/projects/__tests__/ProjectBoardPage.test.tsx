@@ -14,7 +14,7 @@ vi.mock('../../../api/client', async () => {
   const actual = await vi.importActual<typeof import('../../../api/client')>('../../../api/client')
   return {
     ApiRequestError: actual.ApiRequestError,
-    projectsApi: { getBoard: vi.fn(), configureBoard: vi.fn() },
+    projectsApi: { streamUpdates:vi.fn(()=>new Promise<void>(()=>{})), getBoard: vi.fn(), configureBoard: vi.fn() },
     tasksApi: { moveToColumn: vi.fn(), update: vi.fn(), create: vi.fn(), get: vi.fn(), delete: vi.fn() },
     agentsApi: { list: vi.fn().mockResolvedValue([]) },
   }
@@ -113,29 +113,17 @@ beforeEach(() => {
 })
 
 describe('Project Board', () => {
-  it('re-reads the Board on an interval and when the tab comes back, without a skeleton', async () => {
-    // Cards an Agent creates from the Room arrive while this page is open.
-    // The page polls; it does not load once on arrival.
-    const intervals: Array<() => void> = []
-    const spy = vi.spyOn(window, 'setInterval').mockImplementation(((fn: () => void) => {
-      intervals.push(fn)
-      return 42 as unknown as ReturnType<typeof window.setInterval>
-    }) as typeof window.setInterval)
-    try {
-      renderBoard()
-      await waitFor(() => expect(screen.getByText('Run the depth repair')).toBeInTheDocument())
-      expect(projectsApi.getBoard).toHaveBeenCalledTimes(1)
-
-      intervals.forEach(fn => fn())
-      await waitFor(() => expect(projectsApi.getBoard).toHaveBeenCalledTimes(2))
-      // Quiet: what was drawn stays drawn while the read is in flight.
-      expect(screen.getByText('Run the depth repair')).toBeInTheDocument()
-
-      document.dispatchEvent(new Event('visibilitychange'))
-      await waitFor(() => expect(projectsApi.getBoard).toHaveBeenCalledTimes(3))
-    } finally {
-      spy.mockRestore()
-    }
+  it('re-reads the Board on a Project event and foreground return without a skeleton',async()=>{
+    let changed:(frame:{type:'changed'})=>void=()=>{}
+    vi.mocked(projectsApi.streamUpdates).mockImplementation(async(_project,emit)=>{changed=emit;await new Promise<void>(()=>{})})
+    renderBoard()
+    await waitFor(()=>expect(screen.getByText('Run the depth repair')).toBeInTheDocument())
+    expect(projectsApi.getBoard).toHaveBeenCalledTimes(1)
+    changed({type:'changed'})
+    await waitFor(()=>expect(projectsApi.getBoard).toHaveBeenCalledTimes(2))
+    expect(screen.getByText('Run the depth repair')).toBeInTheDocument()
+    document.dispatchEvent(new Event('visibilitychange'))
+    await waitFor(()=>expect(projectsApi.getBoard).toHaveBeenCalledTimes(3))
   })
 
   it('renders one lane per column with its cards and status meanings', async () => {

@@ -16,6 +16,9 @@ import { OperationError, OperationBusinessError, hidden } from './errors.js';
 import { reserve, record, reconcile, requestScope, fingerprint } from './repository.js';
 import type { OperationRegistration } from './types.js';
 
+/** Durable new-content commands whose Personal/Project placement the access owner chooses
+ * exactly as their retained REST adapters always did. Never an arbitrary Space resolver. */
+const DURABLE_PLACEMENT_COMMANDS = new Set(['source.channel.create', 'agent.create', 'agent.template.instantiate', 'agent.run.create', 'agent.chat.send', 'session.create']);
 /** Stateless per invocation; registry/executors are composed once and retain no caller. */
 export class OperationExecutor {
   readonly registrations: ReadonlyMap<string, OperationRegistration>;
@@ -25,7 +28,7 @@ export class OperationExecutor {
       const d = item.definition;
       if (map.has(d.id) || !d.execution || d.execution.tx !== 'core_owned' || d.execution.kind === 'query' && (d.side_effects !== 'none' || d.idempotency_required || d.gate_class !== null || d.proposal_type !== null || !item.readKind || item.readKind === 'content' && !item.readAudit || !!item.afterCommit) || item.approval?.gate.kind === 'hard_gate' && item.approval.gate.gate_class !== d.gate_class) throw new Error('Invalid migrated operation registration');
       if (item.approval && (d.execution.kind !== 'command' || item.approval.atomicStatusWritersVerified !== true || !item.approval.proposalType || item.approval.mode === 'blocked_command' && !item.approval.gate.policy_rule_id)) throw new Error('Approval mapping has not passed canonical transition enablement');
-      if (item.userContentCreation && (d.execution.kind !== 'command' || (d.side_effects !== 'draft' && !(d.id === 'source.channel.create' && d.side_effects === 'durable')) || d.allowed_actor_types.length !== 1 || d.allowed_actor_types[0] !== 'user' || d.grantable || d.gate_class !== null || d.proposal_type !== null || item.approval || [...d.visibility].some(surface => surface !== 'public_api'))) throw new Error('Human content creation requires an ungrantable user-only draft or canonical Monitor creation command');
+      if (item.userContentCreation && (d.execution.kind !== 'command' || (d.side_effects !== 'draft' && !(DURABLE_PLACEMENT_COMMANDS.has(d.id) && d.side_effects === 'durable')) || d.allowed_actor_types.length !== 1 || d.allowed_actor_types[0] !== 'user' || d.grantable || d.gate_class !== null || d.proposal_type !== null || item.approval || [...d.visibility].some(surface => surface !== 'public_api'))) throw new Error('Human content creation requires an ungrantable user-only draft or canonical Monitor creation command');
       if(item.runTerminalOwner&&(d.execution.kind!=='command'||item.approval||item.userContentCreation))throw new Error('Run terminal preparation requires a direct command transaction owner');
       map.set(d.id, item);
     }
@@ -116,7 +119,7 @@ export class OperationExecutor {
           decisionId = policy.policy_decision_record_id ?? null;
           if (policy.decision?.decision === 'deny') throw hidden();
           if (policy.status === 'error' || !decisionId) throw new OperationError('operation_audit_unavailable', 503, true);
-          const hash = fingerprint(version ?? d.version, input, scope.targets);
+          const hash = fingerprint(version ?? d.version, item.fingerprintInput ? await runOperationWork(async()=>item.fingerprintInput!(input)) : input, scope.targets);
           if (previous) {
             previous = await reconcile(client, previous);
             if (previous.operation_version !== d.version) throw new OperationError('operation_version_unsupported', 409);

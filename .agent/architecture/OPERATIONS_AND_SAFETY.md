@@ -135,7 +135,10 @@ conversion.
 
 **Manual trigger** (instance administrator session; not a space-member API):
 ```bash
-curl -X POST http://localhost:3000/api/v1/system/backups/manual --cookie 'better-auth.session_token=<admin-session>'
+curl -X POST http://localhost:3000/api/v1/system/backups/manual --cookie 'better-auth.session_token=<admin-session>' \
+  -H "Idempotency-Key: $(uuidgen)"
+# 202 receipt {status:"succeeded",data:{id,...,status:"pending"}}; the archive is written after commit:
+curl http://localhost:3000/api/v1/system/commands/<command-id> --cookie 'better-auth.session_token=<admin-session>'
 ```
 
 ## Backup — Offline: ops/scripts/system/backup.sh

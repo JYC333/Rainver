@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { AgentMutationError } from "./agentMutationError.js";
 import {
   RuntimeProfileConfigJsonSchema,
   RuntimeProfilePolicyJsonSchema,
@@ -407,10 +408,10 @@ export async function normalizeRuntimeProfileInput(
   input: RuntimeProfileAdmissionInput,
 ): Promise<NormalizedRuntimeProfile> {
   const name = input.name.trim();
-  if (!name) throw new HttpError(422, "name is required");
+  if (!name) throw new AgentMutationError(422, "name is required");
   const runtimeKey = input.runtimeKey.trim();
   if (!getAgentRuntimeDefinition(runtimeKey)) {
-    throw new HttpError(422, `Runtime '${runtimeKey}' is not a registered ACP runtime`);
+    throw new AgentMutationError(422, `Runtime '${runtimeKey}' is not a registered ACP runtime`);
   }
   const modelProviderId = input.modelProviderId ?? null;
   const modelName = input.modelName ?? null;
@@ -427,7 +428,7 @@ export async function normalizeRuntimeProfileInput(
     || input.runtimeInstallation != null;
   if (hostBound) {
     if (workspaceMode !== "location" && workspaceMode !== "managed") {
-      throw new HttpError(422, "Host-bound runtime profiles require workspace_mode to be 'location' or 'managed'");
+      throw new AgentMutationError(422, "Host-bound runtime profiles require workspace_mode to be 'location' or 'managed'");
     }
     const context = input.agentContext ?? await loadAgentContext(db, spaceId, input.agentId ?? "");
     await validateHostExecutionBinding(db, {
@@ -447,7 +448,7 @@ export async function normalizeRuntimeProfileInput(
   const enabled = input.enabled ?? true;
   const isDefault = input.isDefault ?? false;
   if (isDefault && !enabled) {
-    throw new HttpError(422, "A default runtime profile must be enabled");
+    throw new AgentMutationError(422, "A default runtime profile must be enabled");
   }
   return {
     name,
@@ -481,13 +482,13 @@ export function assertBackendModeBinding(
   modelName: string | null,
 ): void {
   if (!supportsRuntimeBackendMode(runtimeKey, backendMode)) {
-    throw new HttpError(422, `Runtime '${runtimeKey}' does not support ${backendMode} mode`);
+    throw new AgentMutationError(422, `Runtime '${runtimeKey}' does not support ${backendMode} mode`);
   }
   if (backendMode === "runtime_native" && (modelProviderId !== null || modelName !== null)) {
-    throw new HttpError(422, "runtime_native profiles cannot bind a ModelProvider or model");
+    throw new AgentMutationError(422, "runtime_native profiles cannot bind a ModelProvider or model");
   }
   if (backendMode === "model_provider" && (!modelProviderId || !modelName?.trim())) {
-    throw new HttpError(422, "model_provider profiles require a same-Space ModelProvider and explicit model");
+    throw new AgentMutationError(422, "model_provider profiles require a same-Space ModelProvider and explicit model");
   }
 }
 
@@ -529,16 +530,16 @@ async function validateHostExecutionBinding(
   },
 ): Promise<"server" | "remote"> {
   if (!input.executionHostId || !input.runtimeInstallation || !input.workspaceMode) {
-    throw new HttpError(422, "Host-bound runtime profiles require execution_host_id, workspace_mode, and runtime_installation");
+    throw new AgentMutationError(422, "Host-bound runtime profiles require execution_host_id, workspace_mode, and runtime_installation");
   }
   if (input.workspaceMode === "location" && !input.workspaceLocationId) {
-    throw new HttpError(422, "Location-mode runtime profiles require workspace_location_id");
+    throw new AgentMutationError(422, "Location-mode runtime profiles require workspace_location_id");
   }
   if (input.workspaceMode === "managed" && input.workspaceLocationId) {
-    throw new HttpError(422, "Managed-mode runtime profiles cannot select a Workspace Location");
+    throw new AgentMutationError(422, "Managed-mode runtime profiles cannot select a Workspace Location");
   }
   if (input.workspaceMode === "location" && !input.projectId) {
-    throw new HttpError(422, "A Location-mode host-bound Agent must belong to a Project");
+    throw new AgentMutationError(422, "A Location-mode host-bound Agent must belong to a Project");
   }
   if (!input.actorUserId) throw new HttpError(403, "Host-bound execution requires an owning user");
   const target = input.workspaceMode === "managed"
@@ -595,28 +596,28 @@ async function validateHostExecutionBinding(
     throw new HttpError(403, "The execution host must belong to the caller");
   }
   if ((row.host_kind !== "remote" && row.host_kind !== "server") || row.host_status === "revoked") {
-    throw new HttpError(422, "Host-bound Agents require a live execution host");
+    throw new AgentMutationError(422, "Host-bound Agents require a live execution host");
   }
   if (input.workspaceMode === "location") {
     if (row.location_space_id !== input.spaceId || row.folder_space_id !== input.spaceId) {
       throw new HttpError(404, "Host or Workspace Location not found");
     }
     if (row.location_host_id !== input.executionHostId || row.location_status !== "active") {
-      throw new HttpError(422, "Workspace Location is not active on the selected host");
+      throw new AgentMutationError(422, "Workspace Location is not active on the selected host");
     }
     if (row.folder_project_id !== input.projectId) {
-      throw new HttpError(422, "Workspace Location must belong to the Agent's Project");
+      throw new AgentMutationError(422, "Workspace Location must belong to the Agent's Project");
     }
   }
   const spec = getLocalCliRuntimeAdapterSpec(input.runtimeKey);
   if (!spec || spec.implementation_status !== "implemented" || spec.invocation.protocol !== "acp") {
-    throw new HttpError(422, `Runtime '${input.runtimeKey}' is not supported on a paired host`);
+    throw new AgentMutationError(422, `Runtime '${input.runtimeKey}' is not supported on a paired host`);
   }
   if (!hostInstallationIds(row.capabilities_json, input.runtimeKey).includes(input.runtimeInstallation)
     && !(input.allowPendingServerInstallation === true
       && row.host_kind === "server"
       && input.runtimeInstallation === "managed:pending")) {
-    throw new HttpError(422, `Host does not report installation '${input.runtimeInstallation}' of '${input.runtimeKey}'`);
+    throw new AgentMutationError(422, `Host does not report installation '${input.runtimeInstallation}' of '${input.runtimeKey}'`);
   }
   return row.host_kind;
 }
@@ -640,7 +641,7 @@ export async function validateRuntimeProfileSelection(
 ): Promise<void> {
   const { spaceId, runtimeKey, providerId } = input;
   if (!getAgentRuntimeDefinition(runtimeKey)) {
-    throw new HttpError(422, `Runtime '${runtimeKey}' is not a registered ACP runtime`);
+    throw new AgentMutationError(422, `Runtime '${runtimeKey}' is not a registered ACP runtime`);
   }
   // Provider/model pairing is `assertBackendModeBinding`'s answer and every
   // caller asks it first, so by here a provider is present exactly when the
@@ -658,6 +659,6 @@ export async function validateRuntimeProfileSelection(
     [spaceId, providerId],
   );
   if (!provider.rows[0]) {
-    throw new HttpError(400, "Model provider is not selectable in this space");
+    throw new AgentMutationError(400, "Model provider is not selectable in this space");
   }
 }

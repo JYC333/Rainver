@@ -6,6 +6,7 @@ import type {
 } from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
+import type { Queryable } from "../routeUtils/common.js";
 import {
   defineScopedSetting,
   ScopedSettingsStore,
@@ -125,9 +126,10 @@ function descriptor(config: ServerConfig): ScopedSettingsDescriptor<InstanceOper
 export class InstanceOperationsSettingsService {
   private readonly store: ScopedSettingsStore;
 
-  constructor(private readonly config: ServerConfig) {
-    if (!config.databaseUrl) throw new Error("Instance operations settings require a database");
-    this.store = new ScopedSettingsStore(getDbPool(config.databaseUrl));
+  /** `db` binds the service to a caller's transaction (`system.instance_settings.update`). */
+  constructor(private readonly config: ServerConfig, db?: Queryable) {
+    if (!db && !config.databaseUrl) throw new Error("Instance operations settings require a database");
+    this.store = new ScopedSettingsStore(db ?? getDbPool(config.databaseUrl!));
   }
 
   async get(): Promise<InstanceOperationsSettings> {
@@ -160,8 +162,12 @@ export class InstanceOperationsSettingsService {
 
 export async function readInstanceOperationsPolicy(config: ServerConfig): Promise<InstanceOperationsPolicy> {
   if (!config.databaseUrl) return instanceOperationsDefaults(config);
-  const store = new ScopedSettingsStore(getDbPool(config.databaseUrl));
-  return (await store.get(descriptor(config), INSTANCE_SCOPE_ID)).value;
+  return readInstanceOperationsPolicyIn(getDbPool(config.databaseUrl), config);
+}
+
+/** The same read through a caller's transaction (an operation core command freezing it into an intent). */
+export async function readInstanceOperationsPolicyIn(db: Queryable, config: ServerConfig): Promise<InstanceOperationsPolicy> {
+  return (await new ScopedSettingsStore(db).get(descriptor(config), INSTANCE_SCOPE_ID)).value;
 }
 
 export function managedHostEgressTransport(policy: InstanceOperationsPolicy): HostEgressTransport {

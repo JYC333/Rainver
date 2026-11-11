@@ -117,14 +117,14 @@ export function parseClaudeOAuthUsage(value: unknown): HostUsageQuota {
       const label = kind === "session" ? "Session" : kind === "weekly_all" ? "Weekly"
         : kind === "weekly_scoped" ? `${name} weekly`
         : `${name ? `${name} · ` : ""}${kind.replaceAll("_", " ")}`;
-      return [{ id, label: label.slice(0, 256), used_pct: pct(used), resets: oauthResetText({
+      return [{ id, scope: kind === "session" || kind === "weekly_all" ? "account" as const : "model" as const, label: label.slice(0, 256), used_pct: pct(used), resets: oauthResetText({
         utilization: used, resetsAt: typeof row?.resets_at === "string" ? row.resets_at : null,
       }) }];
     })
     : Object.entries(payload).filter(([key]) => /^(five_hour|seven_day)(_|$)/.test(key))
       .flatMap(([key, value]) => {
         const window = parseOAuthWindow(value);
-        return window ? [{ id: key, label: key === "five_hour" ? "Session" : key === "seven_day" ? "Weekly" : key.startsWith("seven_day_") ? `${key.slice(10).replaceAll("_", " ")} weekly` : key.replaceAll("_", " "), used_pct: pct(window.utilization), resets: oauthResetText(window) }] : [];
+        return window ? [{ id: key, scope: key === "five_hour" || key === "seven_day" || key === "seven_day_oauth_apps" ? "account" as const : "model" as const, label: key === "five_hour" ? "Session" : key === "seven_day" ? "Weekly" : key.startsWith("seven_day_") ? `${key.slice(10).replaceAll("_", " ")} weekly` : key.replaceAll("_", " "), used_pct: pct(window.utilization), resets: oauthResetText(window) }] : [];
       });
   if (!nativeRows && Array.isArray(payload.model_scoped)) {
     for (const value of payload.model_scoped.slice(0, 64)) {
@@ -132,7 +132,7 @@ export function parseClaudeOAuthUsage(value: unknown): HostUsageQuota {
       const name = typeof model?.display_name === "string" ? model.display_name.trim() : "";
       const window = parseOAuthWindow(model);
       if (!name || !window || window.utilization < 0) continue;
-      windows.push({ id: `seven_day_${claudeScopeKey(name)}`, label: `${name} weekly`.slice(0, 256), used_pct: pct(window.utilization), resets: oauthResetText(window) });
+      windows.push({ id: `seven_day_${claudeScopeKey(name)}`, scope: "model", label: `${name} weekly`.slice(0, 256), used_pct: pct(window.utilization), resets: oauthResetText(window) });
     }
   }
   const measured = [...new Map(windows.map(window => [window.id, window])).values()].slice(0, 64);

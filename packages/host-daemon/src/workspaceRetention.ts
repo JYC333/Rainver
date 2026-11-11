@@ -84,20 +84,20 @@ export async function completedRelease(locationId:string,key:string,ref:Executio
  * target, proof inputs, history and the exact ref list. Order and duplicates
  * do not change it; any changed content does.
  */
-export interface ReleaseRequest {id:string;generation:number;locationId:string;integrationId?:string|null;expected?:string|null;retain:boolean;epoch?:number;target?:string|null;history?:readonly string[];proof?:readonly string[];bases?:readonly string[];refs?:readonly RefRelease[]}
+export interface ReleaseRequest {discard?:string;id:string;generation:number;locationId:string;integrationId?:string|null;expected?:string|null;retain:boolean;epoch?:number;target?:string|null;history?:readonly string[];proof?:readonly string[];bases?:readonly string[];refs?:readonly RefRelease[]}
 export function releaseRequestDigest(input:ReleaseRequest){
  const set=(v:readonly string[]|undefined)=>[...new Set(v??[])].sort();
  // v2 adds every remaining field that changes execution: each ref's kept_epoch and the integration identity.
  const refs=[...new Set((input.refs??[]).map(r=>JSON.stringify([r.ref,r.expected_commit??null,Boolean(r.prefix),r.kept_epoch??null])))].sort();
  return createHash('sha256').update(JSON.stringify({v:2,id:input.id,generation:input.generation,location:input.locationId,integration:input.integrationId??null,expected:input.expected??null,retain:input.retain,epoch:input.epoch??null,
-  target:input.target??null,history:set(input.history),proof:set(input.proof),bases:set(input.bases),refs})).digest('hex');
+  target:input.target??null,history:set(input.history),proof:set(input.proof),bases:set(input.bases),refs,...(input.discard?{discard:input.discard}:{})})).digest('hex');
 }
 /** The v1 digest records written before v2 carry (no `digest_version`); used only to recognise them. */
 export function legacyReleaseRequestDigest(input:ReleaseRequest){
  const set=(v:readonly string[]|undefined)=>[...new Set(v??[])].sort();
  const refs=[...new Map((input.refs??[]).map(r=>[JSON.stringify([r.ref,r.expected_commit??null,Boolean(r.prefix)]),1])).keys()].sort();
  return createHash('sha256').update(JSON.stringify({v:1,id:input.id,generation:input.generation,location:input.locationId,expected:input.expected??null,retain:input.retain,epoch:input.epoch??null,
-  target:input.target??null,history:set(input.history),proof:set(input.proof),bases:set(input.bases),refs})).digest('hex');
+  target:input.target??null,history:set(input.history),proof:set(input.proof),bases:set(input.bases),refs,...(input.discard?{discard:input.discard}:{})})).digest('hex');
 }
 /**
  * The current digest and how a stored record is recognised as this same

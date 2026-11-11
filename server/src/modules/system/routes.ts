@@ -1,3 +1,4 @@
+import { registerOperationAdapters } from "../systemActions/operations/routeAdapter.js";
 /**
  * System module routes (server-owned).
  *
@@ -20,12 +21,15 @@ import {
   isDatabaseReachable,
 } from "./statusService.js";
 import { getDbPool } from "../../db/pool.js";
-import { jsonBody, resolveIdentity } from "../routeUtils/common.js";
+import { resolveIdentity } from "../routeUtils/common.js";
 import { requireInstanceAdmin } from "../routeUtils/access.js";
-import { InstanceOperationsSettingsUpdateSchema } from "@rainver/protocol";
 import { InstanceOperationsSettingsService } from "../settings/index.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
+  // `system.instance_settings.update` (`settingsOperations.ts`): the instance admin's operating policy.
+  registerOperationAdapters(app, context.config, [
+    { method: "PUT", url: "/api/v1/system/instance-settings", operation: "system.instance_settings.update" },
+  ]);
   const health = async (_request: FastifyRequest, reply: FastifyReply) => {
     const body = await healthBody(context.config);
     if (body.status !== "ok") reply.code(503);
@@ -71,15 +75,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!identity) return reply;
     if (!(await requireInstanceAdmin(context.config, identity, reply))) return reply;
     return reply.send(await new InstanceOperationsSettingsService(context.config).get());
-  });
-
-  app.put("/api/v1/system/instance-settings", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    if (!(await requireInstanceAdmin(context.config, identity, reply))) return reply;
-    const parsed = InstanceOperationsSettingsUpdateSchema.safeParse(jsonBody(request));
-    if (!parsed.success) return reply.code(422).send({ detail: "Invalid instance operations settings" });
-    return reply.send(await new InstanceOperationsSettingsService(context.config).update(identity.userId, parsed.data));
   });
 }
 

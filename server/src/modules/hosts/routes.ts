@@ -1,10 +1,9 @@
-import {reconcileExecutionWorkspaces} from './workspaceReconcile.js';
-import {randomUUID} from 'node:crypto';
-import {workspaceProfileFrame} from './workspaceLocation.js';
-import {workspaceReference,type ExecutionWorkspaceRow} from '../projectFolders/executionWorkspaces.js';
-import { manageNativeCli } from "./managedCli.js";
+import {reconcilePendingManagedWorkspaceArchives} from './managedWorkspaceArchiveRecovery.js';
+import { cutOffRevokedHost } from "./revocation.js";
+import { activeRuntimeCommands, registerHostOperationRoutes } from "./operationRoutes.js";
+import { isRemoteDispatchEligible, remoteInstallableRuntimeKeys } from "./runtimeEligibility.js";
+import { wakeHostCommandsForHost } from "./hostCommandWorker.js";
 import { ownCliReleases } from "./ownCliReleases.js";
-import { AcpAgentService } from "../acpAgents/index.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { stateChangingReadAllowed } from "../../gateway/csrfOrigin.js";
 import websocketPlugin from "@fastify/websocket";
@@ -12,7 +11,7 @@ import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
 import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext.js";
 import { HostDaemonFrameSchema, HostHelloInfoSchema, HostRunDiffUploadSchema,
-  HostRunOutputsUploadSchema, repositoryAcpAdapter, type HostHelloInfo, isOwnCliUpdateRuntimeKey, LOGIN_CALLBACK_URL_MAX_CHARS, LOGIN_INPUT_MAX_CHARS } from "@rainver/protocol";
+  HostRunOutputsUploadSchema, repositoryAcpAdapter, type HostHelloInfo, LOGIN_CALLBACK_URL_MAX_CHARS, LOGIN_INPUT_MAX_CHARS } from "@rainver/protocol";
 import { scheduleAmbientSyncs } from "../importedSessions/syncScheduler.js";
 import { authRepositoryFromConfig, sessionRefreshSink, sessionTokenFromRequest, introspectIdentity, type AuthFailure } from "../auth/identity.js";
 import { hostRepositoryFromConfig, type HostFailure, type DaemonHelloInfo, type HostRow, type HostUploadRefusal } from "./repository.js";
@@ -26,19 +25,16 @@ import type { Pool } from "../../db/pool.js";
 import { sharedHostConnectionRegistry, type HostFrameSink } from "./connectionRegistry.js";
 import { parseFolderReadResultFrame } from "./folderReadFrames.js";
 import { parseFolderWriteResultFrame } from "./folderWriteFrames.js";
-import { PgHostThreadRepository } from "./threadRepository.js";
 import { hostProviderProxyBaseUrl } from "../runs/hostProviderProxyAddress.js";
-import { providerProxyLeases } from "../providers/proxy/lease.js";
-import { assertProjectWriter, assertProjectReadable } from "../projects/access.js";
+import { assertProjectReadable } from "../projects/access.js";
 import { getDbPool } from "../../db/pool.js";
-import { hasSubscriptionQuota, invalidateHostUsage, listHostRuntimeChanges, readHostUsage, recordHostRuntimeChange, refreshHostUsage } from "./usageService.js";
-import { getAgentRuntimeDefinition, getRuntimeAdapterSpec, listRuntimeAdapterSpecs } from "../runtimeAdapters/index.js";
+import { invalidateHostUsage, listHostRuntimeChanges, readHostUsage } from "./usageService.js";
+import { getAgentRuntimeDefinition, listRuntimeAdapterSpecs } from "../runtimeAdapters/index.js";
 import { acpRuntimeProbe, acpRuntimeProbes, type ProbeHostKind } from "./runtimeProbes.js";
-import { hostInstallationAuthMethods, hostInstallationCliLoginAvailable, hostInstallationIds, normalizeHostCapabilities } from "./capabilities.js";
+import { hostInstallationAuthMethods, hostInstallationCliLoginAvailable, normalizeHostCapabilities } from "./capabilities.js";
 import { PgRuntimeProvisioningRepository } from "./runtimeProvisioningRepository.js";
-import { serverOpenCodeProvisioningStatus, sharedServerOpenCodeProvisioner } from "./serverOpenCodeProvisioner.js";
+import { serverOpenCodeProvisioningStatus } from "./serverOpenCodeProvisioner.js";
 import { sseResponseHeaders } from "../../gateway/sse.js";
-import { managedHostEgressTransport, readInstanceOperationsPolicy } from "../settings/index.js";
 import { wakeTaskBranchJobs } from "./taskBranchJobs.js";
 import { wakeTaskMergesForHost } from "./taskMerges.js";
 
@@ -73,25 +69,6 @@ function loginSessionKey(hostId: string, runtimeKey: string, installation: strin
   return `${hostId}/${runtimeKey}/${installation}`;
 }
 
-function remoteInstallableRuntimeKeys(): string[] {
-  return listRuntimeAdapterSpecs()
-    .filter((spec) =>
-      spec.runtime_kind === "local_cli"
-      && spec.implementation_status === "implemented"
-      && spec.invocation?.protocol === "acp")
-    .map((spec) => spec.runtime_key);
-}
-
-function isRemoteDispatchEligible(runtimeKey: string): boolean {
-  const spec = getRuntimeAdapterSpec(runtimeKey);
-  return spec?.runtime_kind === "local_cli"
-    && spec.implementation_status === "implemented"
-    && spec.invocation?.protocol === "acp"
-    // An unbound host run needs this contract to give each Agent a separate
-    // state root without losing the installation's login. Login itself may
-    // be a CLI command or ACP Agent Auth; the boundary is what dispatch needs.
-    && spec.credentials?.state !== undefined;
-}
 
 /**
  * Space-scoped identity plus proof the caller may manage this host. For a
@@ -108,20 +85,6 @@ function isRemoteDispatchEligible(runtimeKey: string): boolean {
  *
  * Returns null after having already answered the request.
  */
-/** `managed:<version>` → the version; anything else (including `own`) is not a managed copy. */
-function managedVersionOf(installation: string | null): string | null {
-  return installation?.startsWith("managed:") ? installation.slice("managed:".length) : null;
-}
-
-/** The managed version a host currently reports for one adapter, for the change record. */
-async function currentManagedVersion(pool: Pool, hostId: string, runtimeKey: string): Promise<string | null> {
-  const row = await pool.query<{ capabilities_json: unknown }>(
-    "SELECT capabilities_json FROM hosts WHERE id = $1",
-    [hostId],
-  );
-  const installed = hostInstallationIds(row.rows[0]?.capabilities_json, runtimeKey);
-  return installed.map(managedVersionOf).find((version): version is string => version !== null) ?? null;
-}
 
 export async function resolveOwnedHost(
   context: ModuleContext,
@@ -192,12 +155,6 @@ function bearerToken(request: FastifyRequest): string | null {
   return header.slice("Bearer ".length).trim() || null;
 }
 
-/** Applies the process-local consequences shared by owner revoke and host self-revoke. */
-function cutOffRevokedHost(hostId: string): void {
-  sharedHostConnectionRegistry.closeConnection(hostId, 1008, "host_revoked");
-  sharedHostConnectionRegistry.forgetRevokedHost(hostId);
-  providerProxyLeases.revokeHost(hostId);
-}
 
 const wsUpgradeHosts = new WeakMap<FastifyRequest, string>();
 
@@ -221,49 +178,9 @@ function daemonHelloInfo(frame: HostHelloInfo): DaemonHelloInfo {
   };
 }
 
-async function reconcilePendingManagedWorkspaceArchives(pool: Pool, hostId: string,workspaceRoot?:string): Promise<void> {
-  const failures:unknown[]=[];
-  // Reconciliation and profile archival are independent recoveries. An invalid
-  // Location may fail its inventory without preventing other caches retiring.
-  if(workspaceRoot){
-    try{const result=await reconcileExecutionWorkspaces(pool,workspaceRoot,{hostId});failures.push(...result.failures);}
-    catch(error){failures.push(error);}
-  }
-  const pending = await new PgHostThreadRepository(pool).listPendingManagedWorkspaceArchives(hostId);
-  for (const item of pending) {
-    try{
-    if(item.execution_workspace_json&&item.space_id){
-      const ref=item.execution_workspace_json;
-      const w=(await pool.query<ExecutionWorkspaceRow & {archive_actor_id:string}>(`SELECT w.*,t.created_by_user_id AS archive_actor_id FROM execution_workspaces w
-        JOIN host_threads t ON t.id=$5 AND t.execution_host_id=w.execution_host_id AND t.agent_id=$6
-        WHERE w.id=$1 AND w.space_id=$2 AND w.generation=$3 AND w.execution_host_id=$4
-         AND t.status='closed' AND t.pending_archive_at IS NOT NULL
-         AND t.execution_workspace_json->>'id'=w.id AND t.execution_workspace_json->>'generation'=w.generation::text`,[ref.id,item.space_id,ref.generation,hostId,item.id,item.agent_id])).rows[0];
-      if(!w)continue;
-      const result=await sharedHostConnectionRegistry.requestTaskBranch(hostId,'execution_workspace_command',{
-        workspace:await workspaceProfileFrame(pool,w,{...workspaceReference(w),...(ref.profile_container_id&&ref.profile_container_id!==ref.id?{integration_id:ref.profile_container_id}:{})},w.archive_actor_id),
-        action:'archive_profiles',operation_id:randomUUID(),profile_agents:[item.agent_id],retain_branch:true});
-      if(result.ok)await new PgHostThreadRepository(pool).acknowledgeManagedWorkspaceArchive(item.id);
-      continue;
-    }
-    const result = await sharedHostConnectionRegistry.requestManagedWorkspaceAction(
-      hostId,
-      "managed_workspace_archive",
-      {
-        agent_id: item.agent_id,
-        container_kind: item.container_kind,
-        container_id: item.container_id,
-        include_workspace: item.include_workspace,
-      },
-    );
-    if (result.ok) await new PgHostThreadRepository(pool).acknowledgeManagedWorkspaceArchive(item.id);
-    }catch(error){failures.push(error);}
-  }
-  if(failures.length)throw new AggregateError(failures,'Host workspace recovery needs attention');
-}
-
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   app.register(websocketPlugin);
+  registerHostOperationRoutes(app, context);
 
   app.post("/api/v1/hosts/pairing-codes", async (request, reply) => {
     const requestId = resolveRequestId(request);
@@ -367,8 +284,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     return reply.send({ targets });
   });
 
-
-
   // Static catalog of ACP runtime definitions and their dispatch eligibility.
   // The single source of truth the frontend reads instead of hardcoding the
   // same ACP-only eligibility rule the dispatch endpoint above already
@@ -427,126 +342,19 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const payload = body<{ path?: string }>(request);
     const listing = await sharedHostConnectionRegistry.listHostDirectories(resolved.hostId, payload.path ?? null);
     if (!listing.ok) {
-      const offline = listing.error === "host_offline" || listing.error === "host_timeout";
+      // `host_disconnected`: the request left, then the connection dropped; for a listing that is still "no answer".
+      const offline = listing.error === "host_offline" || listing.error === "host_disconnected" || listing.error === "host_timeout";
       return reply.code(offline ? 409 : 422).send({ detail: offline ? "The host is offline or did not respond." : listing.error, code: offline ? listing.error : undefined });
     }
     return reply.send({ path: listing.path, parent: listing.parent, dirs: listing.dirs, truncated: listing.truncated });
   });
 
-  app.post("/api/v1/hosts/:hostId/workspaces", async (request, reply) => {
-    const resolved = await resolveOwnedHost(context, request, reply);
-    if (!resolved) return reply;
-    const payload = body<{ path?: string; project_id?: string; name?: string }>(request);
-    if (!payload.project_id || typeof payload.project_id !== "string") return reply.code(422).send({ detail: "project_id is required" });
-    if (!payload.path || typeof payload.path !== "string") return reply.code(422).send({ detail: "path is required" });
-    if (!payload.name || typeof payload.name !== "string" || !payload.name.trim()) return reply.code(422).send({ detail: "name is required" });
-    try {
-      await assertProjectWriter(resolved.pool, resolved.spaceId, payload.project_id, resolved.userId);
-    } catch (error) {
-      if (error instanceof HttpError) return reply.code(error.statusCode).send({ detail: error.message });
-      throw error;
-    }
-    const registration = await sharedHostConnectionRegistry.registerHostWorkspace(resolved.hostId, {
-      path: payload.path,
-      projectId: payload.project_id,
-      name: payload.name.trim(),
-    });
-    if (!registration.ok) {
-      const offline = registration.error === "host_offline" || registration.error === "host_timeout";
-      return reply.code(offline ? 409 : 422).send({ detail: offline ? "The host is offline or did not respond." : registration.error, code: offline ? registration.error : undefined });
-    }
-    return reply.code(201).send({ workspace_id: registration.workspace_id, display_path: registration.display_path });
-  });
-
-
   app.get("/api/v1/hosts/:hostId/tool-operations", async (request, reply) => {
     const resolved = await resolveOwnedHost(context, request, reply, { allowBuiltin: true });
     if (!resolved) return reply;
-    return { items: sharedHostConnectionRegistry.toolOperations(resolved.hostId) };
-  });
-
-  app.post("/api/v1/hosts/:hostId/installations/:runtimeKey/own/update", async (request, reply) => {
-    const resolved = await resolveOwnedHost(context, request, reply);
-    if (!resolved) return reply;
-    const runtimeKey = params(request).runtimeKey;
-    if (!runtimeKey || !isOwnCliUpdateRuntimeKey(runtimeKey)) return reply.code(422).send({ detail: "Updating this own CLI is not supported yet" });
-    // No daemon-version check here: a daemon below MIN_HOST_DAEMON_VERSION is
-    // refused at hello (`daemonCompatibility.ts`), so it is never online to ask.
-    const result = await sharedHostConnectionRegistry.requestToolAction(resolved.hostId, "update_own_tool", { runtime_key: runtimeKey });
-    const fromVersion = result.from_version ?? null;
-    const toVersion = result.to_version ?? null;
-    // An updater that found the CLI already current changed nothing; the
-    // Updates page lists changes, not button presses.
-    const changed = !(fromVersion !== null && fromVersion === toVersion);
-    if (result.ok && changed) {
-      await recordHostRuntimeChange(resolved.pool, { hostId: resolved.hostId, runtimeKey, action: "upgrade", fromVersion, toVersion, actorUserId: resolved.userId });
-    }
-    return reply.code(result.ok ? 200 : 502).send({
-      host_id: resolved.hostId, runtime_key: runtimeKey, ...result,
-      ...(result.ok ? { changed } : { detail: result.error }),
-    });
-  });
-
-  app.post("/api/v1/hosts/:hostId/installations/:runtimeKey/managed/update", (request, reply) => manageNativeCli(context, request, reply, "update"));
-
-  // A managed copy of a runtime on a host, installed and removed by its
-  // daemon on the owner's request. Any ACP adapter with a distribution
-  // qualifies — a builtin CLI as much as a registry agent — and each managed
-  // copy keeps its own login state apart from the machine's own install.
-  app.post("/api/v1/hosts/:hostId/installations/:runtimeKey", async (request, reply) => {
-    const resolved = await resolveOwnedHost(context, request, reply, { allowBuiltin: true });
-    if (!resolved) return reply;
-    const runtimeKey = params(request).runtimeKey ?? "";
-    if (!remoteInstallableRuntimeKeys().includes(runtimeKey)) {
-      return reply.code(422).send({ detail: `Runtime adapter '${runtimeKey}' is not eligible for remote dispatch` });
-    }
-    // Installation is explicit. Refresh release metadata here; ordinary
-    // capability reads and running copies never install an upstream update.
-    if (!repositoryAcpAdapter(runtimeKey)) await new AcpAgentService(resolved.pool).refreshRegistryCache();
-    const targetHost = await resolved.pool.query<{ kind: string }>(
-      "SELECT kind FROM hosts WHERE id = $1 LIMIT 1",
-      [resolved.hostId],
-    );
-    // Install the distribution resolved for this Host.
-    const probe = acpRuntimeProbe(runtimeKey, targetHost.rows[0]?.kind === "server" ? "server" : "remote");
-    const distribution = probe?.distribution;
-    const version = probe?.version;
-    if (!probe || !distribution || !version) {
-      return reply.code(422).send({ detail: `Runtime adapter '${runtimeKey}' has no distribution to install from` });
-    }
-    const expectedVersion = body<{ expected_version: string }>(request).expected_version;
-    if (repositoryAcpAdapter(runtimeKey) && expectedVersion !== undefined) return reply.code(400).send({ detail: "ACP adapter versions are managed by the Rainver release" });
-    if (expectedVersion !== undefined && expectedVersion !== version) {
-      return reply.code(409).send({ detail: "The available ACP version changed. Refresh the agent list before installing." });
-    }
-    const before = await currentManagedVersion(resolved.pool, resolved.hostId, runtimeKey);
-    if (repositoryAcpAdapter(runtimeKey) && before) return reply.code(409).send({ detail: "Use the native CLI update action; ACP adapters follow the Rainver release" });
-    const egressTransport = targetHost.rows[0]?.kind === "server"
-      ? managedHostEgressTransport(await readInstanceOperationsPolicy(context.config))
-      : { mode: "direct" as const };
-    const result = await sharedHostConnectionRegistry.requestToolAction(resolved.hostId, "install_tool", {
-      runtime_key: runtimeKey,
-      version,
-      distribution,
-      login: probe.login,
-      runtime_version_command: getRuntimeAdapterSpec(runtimeKey)?.managed_runtime_version_command ?? null,
-      health_check_protocol: getRuntimeAdapterSpec(runtimeKey)?.invocation?.protocol === "acp" ? "acp" : null,
-      egress_transport: egressTransport,
-    });
-    if (result.ok) {
-      await recordHostRuntimeChange(resolved.pool, {
-        hostId: resolved.hostId,
-        runtimeKey,
-        action: before ? "upgrade" : "install",
-        fromVersion: before,
-        toVersion: managedVersionOf(result.installation),
-        actorUserId: resolved.userId,
-      });
-    }
-    // The web client reads `detail`. Copy `error` there on failure. Do not
-    // send only `error`.
-    return reply.code(result.ok ? 200 : 502)
-      .send({ host_id: resolved.hostId, runtime_key: runtimeKey, ...result, ...(result.ok ? {} : { detail: result.error }) });
+    // On the socket now, or committed and waiting for its Job: one entry per runtime.
+    const items = [...await activeRuntimeCommands(resolved.pool, resolved.hostId), ...sharedHostConnectionRegistry.toolOperations(resolved.hostId)];
+    return { items: [...new Map(items.map((item) => [item.runtime_key, item] as const)).values()] };
   });
 
   app.get("/api/v1/hosts/:hostId/runtime-provisioning/opencode", async (request, reply) => {
@@ -571,59 +379,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     return reply.send(status);
   });
 
-  app.post("/api/v1/hosts/:hostId/runtime-provisioning/opencode/retry", async (request, reply) => {
-    const resolved = await resolveOwnedHost(context, request, reply, { allowBuiltin: true });
-    if (!resolved) return reply;
-    const target = await resolved.pool.query<{ kind: string }>(
-      "SELECT kind FROM hosts WHERE id = $1 LIMIT 1",
-      [resolved.hostId],
-    );
-    if (target.rows[0]?.kind !== "server") return reply.code(404).send({ detail: "Host not found" });
-    const provisioning = new PgRuntimeProvisioningRepository(resolved.pool);
-    const existing = await provisioning.get(resolved.hostId, "opencode");
-    const state = existing ? await provisioning.retry(resolved.hostId, "opencode", existing.desired_version) : null;
-    if (!state) {
-      return reply.code(409).send({ detail: "Only a failed Server OpenCode installation can be retried." });
-    }
-    // Wake the process-wide provisioner rather than building a one-shot one:
-    // only the instance that owns a claim heartbeats it, so a throwaway
-    // instance's install would be failed as interrupted by the scheduler's.
-    void sharedServerOpenCodeProvisioner(resolved.pool, { config: context.config }).reconcile();
-    return reply.code(202).send({
-      host_id: resolved.hostId,
-      runtime_key: "opencode",
-      state: state.state,
-      desired_version: state.desired_version,
-    });
-  });
-
-  /**
-   * Undoes the last upgrade of a managed copy by promoting the version the
-   * host kept behind it; both versions use the adapter's stable managed HOME.
-   */
-  app.post("/api/v1/hosts/:hostId/installations/:runtimeKey/rollback", async (request, reply) => {
-    if (repositoryAcpAdapter(params(request).runtimeKey ?? "")) return manageNativeCli(context, request, reply, "rollback");
-    const resolved = await resolveOwnedHost(context, request, reply, { allowBuiltin: true });
-    if (!resolved) return reply;
-    const runtimeKey = params(request).runtimeKey ?? "";
-    const before = await currentManagedVersion(resolved.pool, resolved.hostId, runtimeKey);
-    const result = await sharedHostConnectionRegistry.requestToolAction(resolved.hostId, "rollback_tool", { runtime_key: runtimeKey });
-    if (result.ok) {
-      await recordHostRuntimeChange(resolved.pool, {
-        hostId: resolved.hostId,
-        runtimeKey,
-        action: "rollback",
-        fromVersion: before,
-        toVersion: managedVersionOf(result.installation),
-        actorUserId: resolved.userId,
-      });
-    }
-    // The web client reads `detail`. Copy `error` there on failure. Do not
-    // send only `error`.
-    return reply.code(result.ok ? 200 : 502)
-      .send({ host_id: resolved.hostId, runtime_key: runtimeKey, ...result, ...(result.ok ? {} : { detail: result.error }) });
-  });
-
   /** What has changed about the hosts this viewer can see, newest first; the Updates page reads it. */
   app.get("/api/v1/hosts/runtime-changes", async (request, reply) => {
     const requestId = resolveRequestId(request);
@@ -634,33 +389,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await introspectIdentity(context.config, request);
     if (!identity.ok) return reply.code(identity.reason === "denied" ? identity.statusCode : 502).send({ detail: "Unauthorized" });
     return reply.send({ items: await listHostRuntimeChanges(getDbPool(context.config.databaseUrl), identity.userId) });
-  });
-
-  app.delete("/api/v1/hosts/:hostId/installations/:runtimeKey/:installation", async (request, reply) => {
-    const resolved = await resolveOwnedHost(context, request, reply, { allowBuiltin: true });
-    if (!resolved) return reply;
-    const { runtimeKey, installation } = params(request);
-    if (!runtimeKey || !installation?.startsWith("managed:")) {
-      return reply.code(422).send({ detail: "Only a managed installation can be removed" });
-    }
-    const result = await sharedHostConnectionRegistry.requestToolAction(resolved.hostId, "uninstall_tool", {
-      runtime_key: runtimeKey,
-      version: installation.slice("managed:".length),
-    });
-    if (result.ok) {
-      await recordHostRuntimeChange(resolved.pool, {
-        hostId: resolved.hostId,
-        runtimeKey,
-        action: "remove",
-        fromVersion: installation.slice("managed:".length),
-        toVersion: null,
-        actorUserId: resolved.userId,
-      });
-    }
-    // The web client reads `detail`. Copy `error` there on failure. Do not
-    // send only `error`.
-    return reply.code(result.ok ? 200 : 502)
-      .send({ host_id: resolved.hostId, runtime_key: runtimeKey, ...result, ...(result.ok ? {} : { detail: result.error }) });
   });
 
   /**
@@ -674,41 +402,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const resolved = await resolveOwnedHost(context, request, reply, { allowBuiltin: true });
     if (!resolved) return reply;
     return reply.send({ items: await readHostUsage(resolved.pool, resolved.hostId) });
-  });
-
-  /** Asks one copy now. Host owner only, like every other action on their machine. */
-  app.post("/api/v1/hosts/:hostId/installations/:runtimeKey/:installation/usage", async (request, reply) => {
-    const resolved = await resolveOwnedHost(context, request, reply, { allowBuiltin: true });
-    if (!resolved) return reply;
-    const { runtimeKey, installation } = params(request);
-    if (!runtimeKey || !installation) {
-      return reply.code(400).send({ detail: "runtimeKey and installation are required" });
-    }
-    if (!hasSubscriptionQuota(runtimeKey)) {
-      return reply.code(422).send({ detail: `Runtime adapter '${runtimeKey}' reports no subscription quota` });
-    }
-    // Checked against what the host reports, not taken on trust: an arbitrary
-    // string would spend a probe timeout to learn nothing and leave a row
-    // keyed by a copy that does not exist.
-    const host = await resolved.pool.query<{ capabilities_json: unknown }>(
-      "SELECT capabilities_json FROM hosts WHERE id = $1",
-      [resolved.hostId],
-    );
-    if (!hostInstallationIds(host.rows[0]?.capabilities_json, runtimeKey).includes(installation)) {
-      return reply.code(422).send({ detail: `Host does not report installation '${installation}' of '${runtimeKey}'` });
-    }
-    const row = await refreshHostUsage(resolved.pool, resolved.hostId, runtimeKey, installation);
-    // The probe can take the host's full timeout and is shared with other
-    // callers. Authorize again after it, from the database rather than this
-    // request's first answer: a session, admin role, host or copy lost
-    // meanwhile gets the same refusal a new request would, not the account.
-    const again = await resolveOwnedHost(context, request, reply, { allowBuiltin: true });
-    if (!again) return reply;
-    const current = await again.pool.query<{ capabilities_json: unknown }>("SELECT capabilities_json FROM hosts WHERE id = $1", [again.hostId]);
-    if (!hostInstallationIds(current.rows[0]?.capabilities_json, runtimeKey).includes(installation)) {
-      return reply.code(404).send({ detail: `Host no longer reports installation '${installation}' of '${runtimeKey}'` });
-    }
-    return reply.send(row);
   });
 
   // An interactive login for one copy of a runtime on a host, as a terminal
@@ -853,58 +546,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     return reply.code(204).send();
   });
 
-  // The address this paired host should use to reach the provider proxy.
-  // Normally the instance-wide setting or an address derived from
-  // FRONTEND_URL, so this is only for a deployment neither covers: a reverse
-  // proxy in front of the API, or the proxy published somewhere else.
-  app.put("/api/v1/hosts/:hostId/provider-proxy-url", async (request, reply) => {
-    const resolved = await resolveOwnedHost(context, request, reply);
-    if (!resolved) return reply;
-    const payload = body<{ base_url?: string | null }>(request);
-    const raw = typeof payload.base_url === "string" ? payload.base_url.trim() : "";
-    let baseUrl: string | null = null;
-    if (raw) {
-      let parsed: URL;
-      try {
-        parsed = new URL(raw);
-      } catch {
-        return reply.code(422).send({ detail: "base_url must be an absolute http(s) URL" });
-      }
-      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-        return reply.code(422).send({ detail: "base_url must be http or https" });
-      }
-      baseUrl = raw.replace(/\/+$/, "");
-    }
-    await resolved.pool.query(
-      `UPDATE hosts SET provider_proxy_base_url = $2, updated_at = now() WHERE id = $1`,
-      [resolved.hostId, baseUrl],
-    );
-    return reply.send({ host_id: resolved.hostId, provider_proxy_base_url: baseUrl });
-  });
-
-  app.post("/api/v1/hosts/:hostId/revoke", async (request, reply) => {
-    const requestId = resolveRequestId(request);
-    reply.header(REQUEST_ID_HEADER, requestId);
-    const auth = authRepositoryFromConfig(context.config);
-    const hosts = hostRepositoryFromConfig(context.config);
-    if (!auth || !hosts) {
-      return sendErrorEnvelope(reply, 502, errorEnvelope("identity_db_unavailable", "Identity database is unavailable", requestId));
-    }
-    const user = await auth.getCurrentUser(sessionTokenFromRequest(request), sessionRefreshSink(reply));
-    if (isFailure(user)) return reply.code(user.statusCode).send({ detail: user.detail });
-    const hostId = params(request).hostId;
-    if (!hostId) return reply.code(400).send({ detail: "hostId is required" });
-    const revoked = await hosts.revoke(user.id, hostId);
-    if (!revoked) return reply.code(404).send({ detail: "Host not found" });
-    // A daemon already connected when its token is revoked keeps executing
-    // dispatched runs and heartbeating on that socket. Token revocation blocks
-    // the next connect only.
-    // Cutting the socket stops new work; revoking leases also stops an
-    // in-flight bound runtime from spending server-held provider credentials.
-    cutOffRevokedHost(hostId);
-    return reply.code(204).send();
-  });
-
   // `workspace add/list/remove`: authenticated by the host's own bearer
   // token, never a user session — the daemon has no session to present.
   async function authenticateHost(request: FastifyRequest, hostsRepo: ReturnType<typeof hostRepositoryFromConfig>): Promise<HostRow | null> {
@@ -1035,9 +676,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!outcome.ok) return sendUploadRefusal(reply, outcome.reason);
     return reply.code(201).send(outcome.result);
   });
-
-
-
 
 
   // Hello, heartbeat, job dispatch, output, and complete. This handler
@@ -1172,6 +810,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
                 .catch(() => undefined);
               void wakeTaskMergesForHost(getDbPool(context.config.databaseUrl!), host.id)
                 .catch(() => undefined);
+              void wakeHostCommandsForHost(getDbPool(context.config.databaseUrl!), host.id)
+                .catch(() => undefined);
             } finally {
               helloInProgress = false;
             }
@@ -1184,7 +824,12 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           }
           switch (frame.type) {
             case "heartbeat": {
-              await hosts.recordHeartbeat(upgradeHostId, daemonHelloInfo(frame));
+              // A revoke this process did not see (or whose immediate cut-off was lost) is
+              // enforced here: the row is revoked, so the connection ends.
+              if (!await hosts.recordHeartbeat(upgradeHostId, daemonHelloInfo(frame))) {
+                cutOffRevokedHost(upgradeHostId);
+                return;
+              }
               frameSink.send({ type: "heartbeat_ack", runtime_probes: acpRuntimeProbes(probeHostKind) });
               void reconcilePendingManagedWorkspaceArchives(getDbPool(context.config.databaseUrl!), hostId,context.config.workspaceRoot)
                 .catch(() => undefined);
@@ -1305,6 +950,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
                 ok: frame.ok,
                 changed: frame.changed,
                 error: frame.error,
+                ...(frame.error_code ? { error_code: frame.error_code } : {}),
               });
               return;
             case "ordinary_account_result": {
@@ -1320,6 +966,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
               sharedHostConnectionRegistry.receiveOrdinaryToolResult(hostId, request_id, result);
               return;
             }
+            case "host_command_result":
+              sharedHostConnectionRegistry.receiveHostCommandResult(hostId, frame);
+              return;
             case "tool_result":
               sharedHostConnectionRegistry.receiveToolResult(hostId, frame.request_id, {
                 ok: frame.ok,

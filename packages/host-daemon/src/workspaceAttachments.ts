@@ -14,6 +14,8 @@ export async function prepareWorkspaceAttachments(input:{
  attachments:HostLaunchWorkspaceAccess[];workspaces:Record<string,string>;sharedRoot:string|null;
  runId:string;launchId:string;onQueued:()=>void;
  primary?:{ref:ExecutionWorkspaceRef;locationId:string;worktree:TaskWorktree}|null;
+ /** Repositories the caller holds at the repository gate and admitted; nothing else is prepared. */
+ gated:ReadonlySet<string>;
 }){
  const entries:Array<{workspace_location_id:string;access_mode:'read'|'write';path:string}>=[],prepared:PreparedAttachment[]=[];
  const repos=new Map<string,{ref:ExecutionWorkspaceRef;locationId:string;root:string}>();
@@ -24,6 +26,7 @@ export async function prepareWorkspaceAttachments(input:{
   let path=source;
   if(attachment.execution_workspace){
    const check=await checkLocationRepository(source);if(check.kind!=='repository')throw new Error('execution_workspace_attachment_repository_unavailable');
+   if(!input.gated.has(check.repo.gitCommonDir))throw new Error('execution_workspace_attachment_repository_not_gated');
    const existing=repos.get(check.repo.gitCommonDir),ref=attachment.execution_workspace;
    if(existing){
     if(existing.ref.id!==ref.id||existing.ref.generation!==ref.generation||existing.locationId!==attachment.workspace_location_id)throw new Error('execution_workspace_overlapping_aliases_require_canonical_location');

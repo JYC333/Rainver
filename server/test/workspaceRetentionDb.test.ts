@@ -130,6 +130,35 @@ describe('isolated source retention',()=>{
   expect(after.cleanup_json['local-preimages-g1']).toMatchObject({kind:'local_preimages',state:'pending',release_refs:expect.arrayContaining([{ref:`refs/rainver/local-preimages/${C}`,prefix:true,due_at:expect.any(String)}])});
  });
 
+ it('journals explicit discard through cleanup and ref pages, expires recovery history, and never transfers it to a moved tip',async ctx=>{
+  if(!db.available)return ctx.skip();
+  const {w}=await settled('abandoned',30);
+  await db.pool.query(`UPDATE hosts SET capabilities_json=jsonb_set(capabilities_json,'{execution_workspaces,reclaim}','5') WHERE id=$1`,[HOST]);
+  await db.pool.query(`UPDATE workspace_change_sets SET verification_json='{"closure_review":{"disposition":"discard_requested"}}' WHERE id=$1`,[w.changeSetId]);
+  await db.pool.query(`UPDATE execution_workspaces SET state='retired',baseline_mode='snapshot',retention_json=jsonb_build_object('discard_intent',jsonb_build_object('generation',1,'source_commit',$2::text,'change_set_id',$3::text)) WHERE id=$1`,[w.workspace.id,B,w.changeSetId]);
+  const first=await queued(w.workspace.id);
+  const hosts=confirmingHosts(),frames:any[]=[];let moved=true;
+  hosts.requestTaskBranch=async(_h,_t,frame):Promise<any>=>{
+   const f=frame as any;frames.push(f);
+   if(f.action==='inspect')return {ok:true,commit:moved?C:B,inventory:inventory(),error:null};
+   return {ok:true,commit:null,cleanup_state:'cleaned',inventory:cleaned({history_refs:[B],history_epochs:{[B]:0}}),error:null};
+  };
+  await expect(advanceWorkspaceCleanup(db.pool,w.workspace.id,'source-g1',first.operation_id,OWNER,hosts)).rejects.toThrow('workspace_discard_tip_changed');
+  expect(frames.some(f=>f.action==='cleanup')).toBe(false);
+  expect((await resource(w.workspace.id)).expected_commit).toBe(B);
+  moved=false;
+  await advanceWorkspaceCleanup(db.pool,w.workspace.id,'source-g1',first.operation_id,OWNER,hosts);
+  const release=frames.find(f=>f.action==='cleanup');
+  expect(release).toMatchObject({discard_commit:B,expected_commit:B,retain_branch:false});
+  expect(release.history_commits).toEqual(expect.arrayContaining([A,B]));
+  expect(release.reclaim_proof).not.toContain(B);
+  await drainPages(w.workspace.id,hosts);
+  const after=await workspace(w.workspace.id);
+  expect(after.retention_json).toMatchObject({state:'reclaimed',reason:'discarded',history_until:expect.any(String)});
+  expect(after.cleanup_json['run-history-g1']).toMatchObject({kind:'run_history',state:'pending',release_refs:expect.arrayContaining([expect.objectContaining({expected_commit:B,due_at:expect.any(String)})])});
+  expect(frames.filter(f=>f.action==='release_refs').flatMap(f=>f.release_refs)).toContainEqual(expect.objectContaining({ref:`refs/rainver/sources/${B}`}));
+ });
+
  it.for([
   ['open','unpublished_changes'],['blocked','blocked_changes'],['abandoned','kept_without_merging'],
  ] as const)('never releases a %s source by age',async([state,reason],ctx)=>{

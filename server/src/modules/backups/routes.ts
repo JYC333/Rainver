@@ -2,10 +2,16 @@ import type { FastifyInstance } from "fastify";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import { resolveIdentity, sendRouteError } from "../routeUtils/common.js";
 import { requireInstanceAdmin } from "../routeUtils/access.js";
-import { BackupInProgressError, BackupService } from "./service.js";
+import { BackupService } from "./service.js";
+import { registerOperationAdapters } from "../systemActions/operations/routeAdapter.js";
 import { readInstanceOperationsPolicy } from "../settings/index.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
+  // `system.backup.create` (`system/settingsOperations.ts`): a system command receipt; the
+  // archive name is released by `GET /api/v1/system/commands/:commandId`.
+  registerOperationAdapters(app, context.config, [
+    { method: "POST", url: "/api/v1/system/backups/manual", operation: "system.backup.create" },
+  ]);
   const service = async () => new BackupService(
     context.config,
     await readInstanceOperationsPolicy(context.config),
@@ -29,29 +35,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         })),
       );
     } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.post("/api/v1/system/backups/manual", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    if (!(await requireInstanceAdmin(context.config, identity, reply))) return reply;
-    if (!context.config.backupEnabled) {
-      return reply.code(503).send({
-        detail: "Backup service not running — set BACKUP_ENABLED=true to enable",
-      });
-    }
-    try {
-      const backupService = await service();
-      const archivePath = await backupService.createBackup("manual");
-      await backupService.pruneOldBackups();
-      return reply.code(202).send({
-        status: "ok",
-        backup: archivePath.split("/").pop() ?? archivePath,
-      });
-    } catch (error) {
-      if (error instanceof BackupInProgressError) return reply.code(409).send({ detail: error.message });
       return sendRouteError(reply, error);
     }
   });

@@ -151,6 +151,7 @@ function ChatPanelContent({
   const [backendOptions, setBackendOptions] = useState<ConversationBackendOption[]>([])
   const [backend, setBackend] = useState<ConversationBackendBinding | null>(null)
   const [loadingBackends, setLoadingBackends] = useState(true)
+  const [allowQuotaModelSwitch, setAllowQuotaModelSwitch] = useState(false)
   const [savedSessionConfig, setSavedSessionConfig] = useState<SessionConfigSelection[]>([])
   const [sessionConfig, setSessionConfig] = useState<SessionConfigSelection[]>([])
   const [hosts, setHosts] = useState<Awaited<ReturnType<typeof hostsApi.list>>['items']>([])
@@ -176,6 +177,7 @@ function ChatPanelContent({
         setBackend(selected)
         const option = catalog.options.find(candidate => candidate.runtime_profile_id === selected?.runtime_profile_id)
         setSavedSessionConfig(catalog.session_config ?? [])
+        setAllowQuotaModelSwitch(catalog.allow_quota_model_switch ?? false)
         setSessionConfig(mergeSessionConfig(option?.session_config_options ?? [], catalog.session_config ?? []))
       })
       .catch(error => {
@@ -691,14 +693,16 @@ function ChatPanelContent({
             options={selectedBackendOption.session_config_options}
             value={sessionConfig}
             persistedValue={savedSessionConfig}
+            allowQuotaModelSwitch={allowQuotaModelSwitch}
+            quotaModelSwitchAvailable={allowQuotaModelSwitch || selectedBackendOption.session_config_options.some(option => option.category === 'model' && option.type === 'select' && option.options.length > 1)}
             onChange={setSessionConfig}
-            onSave={sessionId && backend ? async value => {
+            onSave={sessionId && backend ? async (value, allowSwitch?: boolean) => {
               setSavingSettings(true)
               try {
                 await agentsApi.saveConversationSessionConfig(agent.id, {
-                  session_id: sessionId, runtime_profile_id: backend.runtime_profile_id, session_config: value,
+                  session_id: sessionId, runtime_profile_id: backend.runtime_profile_id, session_config: value, ...(allowSwitch !== undefined ? { allow_quota_model_switch: allowSwitch } : {}),
                 }, scope)
-                if (!scope.signal?.aborted) setSavedSessionConfig(value)
+                if (!scope.signal?.aborted) { setSavedSessionConfig(value); if (allowSwitch !== undefined) setAllowQuotaModelSwitch(allowSwitch) }
               } finally { setSavingSettings(false) }
             } : undefined}
             disabled={sending || loadingBackends || hostBlocked}

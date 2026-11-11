@@ -13,6 +13,22 @@ function Editor({ save, persisted }: { save: (value: SessionConfigSelection[]) =
 }
 
 describe('explicit conversation settings', () => {
+  it('defaults model switching off, saves explicit consent and reads it back', async () => {
+    const save = vi.fn().mockResolvedValue(undefined)
+    const view = render(<SavedConversationSessionConfig options={[]} value={[]} onChange={vi.fn()} onSave={save}
+      persistedValue={[]} quotaModelSwitchAvailable />)
+    const checkbox = screen.getByRole('checkbox', { name: /Automatically switch models/ })
+    expect(checkbox).not.toBeChecked()
+    fireEvent.click(checkbox)
+    expect(save).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(save).toHaveBeenCalledWith([], true))
+    view.unmount()
+    render(<SavedConversationSessionConfig options={[]} value={[]} onChange={vi.fn()} onSave={save}
+      persistedValue={[]} quotaModelSwitchAvailable allowQuotaModelSwitch />)
+    expect(screen.getByRole('checkbox')).toBeChecked()
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+  })
   it('shows unsaved, saving and confirmed saved states', async () => {
     let finish!: () => void
     const save = vi.fn(() => new Promise<void>(resolve => { finish = resolve }))

@@ -9,6 +9,7 @@ import { hostsModule } from "../src/modules/hosts/index.js";
 import { loadConfig } from "../src/config.js";
 import { __setAuthIdentityForTests, __setAuthRepositoryForTests, type AuthRepository, type CurrentUser } from "../src/modules/auth/identity.js";
 import { MIN_HOST_DAEMON_VERSION } from "../src/modules/hosts/daemonCompatibility.js";
+import { hostCommandHarness, seedHostCommandSpace } from "./support/hostCommandHarness.js";
 
 // Real-Postgres coverage for ordinary CLI tools on a Host: Host visibility and
 // management authority, capability negotiation with daemons that predate the
@@ -46,7 +47,10 @@ const REPORT: OrdinaryToolsHostReport = {
 };
 
 let app: FastifyInstance | undefined;
+let commands: ReturnType<typeof hostCommandHarness>;
 const db = useTestDatabase(import.meta.filename);
+/** One keyed command at its retained URL. */
+const command = (method: "POST" | "DELETE", url: string, payload?: unknown) => commands.submit(app!, { method, url, ...(payload === undefined ? {} : { payload: payload as Record<string, unknown> }) });
 const sockets: WebSocket[] = [];
 
 function user(id: string, email: string): CurrentUser {
@@ -95,12 +99,13 @@ beforeAll(async () => {
     loadConfig({ SERVER_DATABASE_URL: db.connectionUri, INSTANCE_ADMIN_EMAIL: "admin@example.test" }),
     [hostsModule],
   );
+  commands = hostCommandHarness(db.pool, loadConfig({ SERVER_DATABASE_URL: db.connectionUri, INSTANCE_ADMIN_EMAIL: "admin@example.test" }));
   await app.listen({ port: 0, host: "127.0.0.1" });
 });
 
 beforeEach(async () => {
   if (!db.available) return;
-  await resetTables(db.pool, ["hosts", "machines", "settings", "spaces", "users"], { cascade: true });
+  await resetTables(db.pool, ["host_command_intents", "jobs", "hosts", "machines", "settings", "space_memberships", "spaces", "users"], { cascade: true });
   const now = new Date().toISOString();
   const users: Record<string, CurrentUser> = {};
   for (const [id, email] of [[ADMIN, "admin@example.test"], [OWNER, "owner@example.test"], [OTHER, "other@example.test"]] as const) {
@@ -110,6 +115,7 @@ beforeEach(async () => {
     );
     users[TOKENS[id]!] = user(id, email);
   }
+  await seedHostCommandSpace(db.pool, SPACE, [{ user: ADMIN }, { user: OWNER }, { user: OTHER }]);
   __setAuthRepositoryForTests({
     async getCurrentUser(sessionToken?: string) {
       return (sessionToken && users[sessionToken]) || { statusCode: 401, detail: "Not authenticated" };
@@ -149,9 +155,9 @@ describe("ordinary CLI tools on a paired Host", () => {
     const old = await connectDaemon(token, { runtimes: ["git"], versions: { git: "git version 2.43.0" }, installations: {} });
     const updateRequired = (await app.inject({ method: "GET", url: `/api/v1/hosts/${hostId}/ordinary-tools` })).json();
     expect(updateRequired.host_state).toBe("update_required");
-    const refused = await app.inject({ method: "POST", url: `/api/v1/hosts/${hostId}/ordinary-tools/lark_cli/install` });
+    const refused = await command("POST", `/api/v1/hosts/${hostId}/ordinary-tools/lark_cli/install`);
     expect(refused.statusCode).toBe(409);
-    expect(refused.json()).toMatchObject({ code: "host_update_required" });
+    expect(refused.json().error).toMatchObject({ metadata: { code: "host_update_required" } });
     expect(old.frames.some((frame) => frame.type === "ordinary_tool_request")).toBe(false);
     await closeDaemon(old.socket, hostId);
 
@@ -177,60 +183,72 @@ describe("ordinary CLI tools on a paired Host", () => {
     expect(view.tools.find((tool: { tool_id: string }) => tool.tool_id === "curl")).toMatchObject({ host_status: "unknown" });
     expect(view.tools.find((tool: { tool_id: string }) => tool.tool_id === "jq")).toMatchObject({ host_status: "missing", account_status: "not_applicable" });
 
-    const installed = await app.inject({ method: "POST", url: `/api/v1/hosts/${hostId}/ordinary-tools/lark_cli/install` });
-    expect(installed.statusCode).toBe(200);
-    expect(installed.json()).toMatchObject({ ok: true, tool: { version: LARK_VERSION } });
-    // The catalog's pinned version and nothing else; a paired Host downloads directly.
+    // Admitted, then sent by the worker; the status read releases the daemon's answer.
+    const installed = await commands.run(app, { method: "POST", url: `/api/v1/hosts/${hostId}/ordinary-tools/lark_cli/install` }, hostId);
+    expect(installed.status).toMatchObject({ status: "succeeded", result: { ok: true, tool_id: "lark_cli", tool: { version: LARK_VERSION } } });
+    // The catalog's pinned version and nothing else; a paired Host downloads directly. A daemon
+    // without command receipts gets the bare frame, once.
     expect(current.frames.find((frame) => frame.type === "ordinary_tool_request")).toEqual({
       type: "ordinary_tool_request", request_id: expect.any(String),
       operation: { action: "install", tool_id: "lark_cli", version: LARK_VERSION },
     });
 
-    const notFound = await app.inject({ method: "POST", url: `/api/v1/hosts/${hostId}/ordinary-tools/jq/register`, payload: {} });
-    expect(notFound.statusCode).toBe(502);
-    expect(notFound.json().detail).toMatch(/not found on this Host's PATH/);
+    const notFound = await commands.run(app, { method: "POST", url: `/api/v1/hosts/${hostId}/ordinary-tools/jq/register`, payload: {} }, hostId);
+    expect(notFound.status).toMatchObject({ status: "failed", error: { code: "host_command_failed" }, result: null });
+    expect(notFound.status.error?.detail).toMatch(/not found on this Host's PATH/);
     expect(current.frames.at(-1)).toMatchObject({ operation: { action: "register", tool_id: "jq", path: null } });
 
-    expect((await app.inject({ method: "POST", url: `/api/v1/hosts/${hostId}/ordinary-tools/jq/install` })).statusCode).toBe(422);
-    expect((await app.inject({ method: "POST", url: `/api/v1/hosts/${hostId}/ordinary-tools/bash/register`, payload: { path: "/bin/bash" } })).statusCode).toBe(422);
-    expect((await app.inject({ method: "POST", url: `/api/v1/hosts/${hostId}/ordinary-tools/jq/register`, payload: { path: ["/usr/bin/jq"] } })).statusCode).toBe(422);
-    expect((await app.inject({ method: "DELETE", url: `/api/v1/hosts/${hostId}/ordinary-tools/jq` })).statusCode).toBe(422);
-    // Path syntax is the caller's mistake: 422 and nothing reaches the daemon.
+    expect((await command("POST", `/api/v1/hosts/${hostId}/ordinary-tools/jq/install`)).statusCode).toBe(422);
+    expect((await command("POST", `/api/v1/hosts/${hostId}/ordinary-tools/bash/register`, { path: "/bin/bash" })).statusCode).toBe(422);
+    expect((await command("POST", `/api/v1/hosts/${hostId}/ordinary-tools/jq/register`, { path: ["/usr/bin/jq"] })).statusCode).toBe(422);
+    expect((await command("DELETE", `/api/v1/hosts/${hostId}/ordinary-tools/jq`)).statusCode).toBe(422);
+    // Path syntax is the caller's mistake: 422 and nothing is admitted or reaches the daemon.
     const framesBeforeBadPaths = current.frames.length;
+    const intentsBefore = (await db.pool.query("SELECT 1 FROM host_command_intents")).rowCount;
     for (const path of ["usr/bin/jq", "./jq", "C:\\tools\\jq.exe", "/usr/bin/jq\u0000x", `/${"a".repeat(4096)}`]) {
-      const refusedPath = await app.inject({ method: "POST", url: `/api/v1/hosts/${hostId}/ordinary-tools/jq/register`, payload: { path } });
+      const refusedPath = await command("POST", `/api/v1/hosts/${hostId}/ordinary-tools/jq/register`, { path });
       expect(refusedPath.statusCode).toBe(422);
     }
     expect(current.frames).toHaveLength(framesBeforeBadPaths);
-    // A syntactically valid path is the daemon's to judge.
-    await app.inject({ method: "POST", url: `/api/v1/hosts/${hostId}/ordinary-tools/jq/register`, payload: { path: "/opt/tools/jq" } });
+    expect((await db.pool.query("SELECT 1 FROM host_command_intents")).rowCount).toBe(intentsBefore);
+    // A syntactically valid path is the daemon's to judge; a settled command keeps no Host path.
+    const registered = await commands.run(app, { method: "POST", url: `/api/v1/hosts/${hostId}/ordinary-tools/jq/register`, payload: { path: "/opt/tools/jq" } }, hostId);
     expect(current.frames.at(-1)).toMatchObject({ operation: { action: "register", tool_id: "jq", path: "/opt/tools/jq" } });
+    expect(JSON.stringify((await db.pool.query("SELECT frozen_json FROM host_command_intents WHERE id = $1", [registered.receipt.id])).rows[0])).not.toContain("/opt/tools/jq");
     const requestsBefore = current.frames.filter((frame) => frame.type === "ordinary_tool_request").length;
 
-    // Someone else's paired Host does not exist for them, for reading or managing.
+    // Someone else's paired Host does not exist for them, for reading, managing or reading a command.
     asUser(OTHER);
     expect((await app.inject({ method: "GET", url: `/api/v1/hosts/${hostId}/ordinary-tools` })).statusCode).toBe(404);
-    expect((await app.inject({ method: "POST", url: `/api/v1/hosts/${hostId}/ordinary-tools/lark_cli/install` })).statusCode).toBe(404);
-    expect((await app.inject({ method: "DELETE", url: `/api/v1/hosts/${hostId}/ordinary-tools/lark_cli?source=managed` })).statusCode).toBe(404);
+    expect((await command("POST", `/api/v1/hosts/${hostId}/ordinary-tools/lark_cli/install`)).statusCode).toBe(404);
+    expect((await command("DELETE", `/api/v1/hosts/${hostId}/ordinary-tools/lark_cli?source=managed`)).statusCode).toBe(404);
+    expect((await commands.status(app, hostId, installed.receipt.id)).statusCode).toBe(404);
+    await commands.process();
     expect(current.frames.filter((frame) => frame.type === "ordinary_tool_request")).toHaveLength(requestsBefore);
 
     // A Windows Host is not offered ordinary-tool management at all.
     asUser(OWNER);
     await db.pool.query("UPDATE hosts SET platform = 'win32' WHERE id = $1", [hostId]);
-    const windows = await app.inject({ method: "POST", url: `/api/v1/hosts/${hostId}/ordinary-tools/lark_cli/install` });
+    const windows = await command("POST", `/api/v1/hosts/${hostId}/ordinary-tools/lark_cli/install`);
     expect(windows.statusCode).toBe(422);
-    expect(windows.json().detail).toMatch(/Linux and macOS Hosts only/);
+    expect(windows.json().error.message).toMatch(/Linux and macOS Hosts only/);
     expect(current.frames.filter((frame) => frame.type === "ordinary_tool_request")).toHaveLength(requestsBefore);
     await db.pool.query("UPDATE hosts SET platform = 'linux' WHERE id = $1", [hostId]);
 
-    // Offline: the last report, marked as not live; management answers without a fallback.
+    // Offline: the last report, marked as not live. A command is admitted and waits for its Host:
+    // nothing is sent, nothing reads as done.
     asUser(OWNER);
     await closeDaemon(current.socket, hostId);
     const offline = (await app.inject({ method: "GET", url: `/api/v1/hosts/${hostId}/ordinary-tools` })).json();
     expect(offline.tools.find((tool: { tool_id: string }) => tool.tool_id === "git")).toMatchObject({ host_status: "available", reported_live: false });
-    const offlineInstall = await app.inject({ method: "POST", url: `/api/v1/hosts/${hostId}/ordinary-tools/lark_cli/install` });
-    expect(offlineInstall.statusCode).toBe(409);
-    expect(offlineInstall.json()).toMatchObject({ ok: false, error: "host_offline" });
+    const offlineInstall = await command("POST", `/api/v1/hosts/${hostId}/ordinary-tools/lark_cli/install`);
+    expect(offlineInstall.statusCode).toBe(202);
+    await commands.process();
+    const waiting = await commands.status(app, hostId, offlineInstall.json().data.id);
+    expect(waiting.json()).toMatchObject({ status: "pending", result: null });
+    // The durable command is what the Host card shows in flight.
+    expect((await app.inject({ method: "GET", url: `/api/v1/hosts/${hostId}/ordinary-tools` })).json().operations).toEqual([{ tool_id: "lark_cli", action: "install" }]);
+    expect(current.frames.filter((frame) => frame.type === "ordinary_tool_request")).toHaveLength(requestsBefore);
   });
 });
 
@@ -246,9 +264,12 @@ describe("ordinary CLI tools on the built-in Host", () => {
        VALUES ($1, NULL, 'machine-builtin', 'Server', 'server', 'server', 'offline', $2, '{}'::jsonb, now(), now())`,
       [BUILTIN_HOST, createHash("sha256").update(BUILTIN_TOKEN).digest("hex")],
     );
-    const daemon = await connectDaemon(BUILTIN_TOKEN, { runtimes: [], versions: {}, installations: {}, ordinary_tools: REPORT }, (frame, socket) => {
-      if (frame.type === "ordinary_tool_request") {
-        socket.send(JSON.stringify({ type: "ordinary_tool_result", request_id: frame.request_id, ok: true, error: null, tool: null }));
+    // A daemon with command receipts: every command arrives as one journaled `host_command`.
+    const daemon = await connectDaemon(BUILTIN_TOKEN, { runtimes: [], versions: {}, installations: {}, ordinary_tools: REPORT, host_command_receipts: 1 }, (frame, socket) => {
+      if (frame.type === "host_command") {
+        const inner = frame.command as { request_id: string };
+        socket.send(JSON.stringify({ type: "host_command_result", request_id: frame.request_id, command_id: frame.command_id, outcome: "completed", replayed: false, error: null,
+          result: { type: "ordinary_tool_result", request_id: inner.request_id, ok: true, error: null, tool: null } }));
       }
     });
 
@@ -256,17 +277,25 @@ describe("ordinary CLI tools on the built-in Host", () => {
     const memberView = await app.inject({ method: "GET", url: `/api/v1/hosts/${BUILTIN_HOST}/ordinary-tools` });
     expect(memberView.statusCode).toBe(200);
     expect(memberView.json()).toMatchObject({ host_state: "online", can_manage: false });
-    expect((await app.inject({ method: "POST", url: `/api/v1/hosts/${BUILTIN_HOST}/ordinary-tools/lark_cli/install` })).statusCode).toBe(403);
-    expect(daemon.frames.some((frame) => frame.type === "ordinary_tool_request")).toBe(false);
+    // Managing it is instance-admin work: a member gets the hidden 404 and nothing is admitted.
+    expect((await command("POST", `/api/v1/hosts/${BUILTIN_HOST}/ordinary-tools/lark_cli/install`)).statusCode).toBe(404);
+    expect(daemon.frames.some((frame) => frame.type === "host_command")).toBe(false);
 
     asUser(ADMIN);
     expect((await app.inject({ method: "GET", url: `/api/v1/hosts/${BUILTIN_HOST}/ordinary-tools` })).json().can_manage).toBe(true);
-    const installed = await app.inject({ method: "POST", url: `/api/v1/hosts/${BUILTIN_HOST}/ordinary-tools/lark_cli/install` });
-    expect(installed.statusCode).toBe(200);
-    // The built-in Host carries the admin-selected download route, as Runtime installs do.
-    expect(daemon.frames.find((frame) => frame.type === "ordinary_tool_request")).toMatchObject({
-      operation: { action: "install", tool_id: "lark_cli", version: LARK_VERSION },
-      egress_transport: { mode: "direct" },
+    const installed = await commands.run(app, { method: "POST", url: `/api/v1/hosts/${BUILTIN_HOST}/ordinary-tools/lark_cli/install` }, BUILTIN_HOST);
+    expect(installed.status).toMatchObject({ status: "succeeded", result: { ok: true, tool_id: "lark_cli" } });
+    // One journaled send carrying the intent's identity; the built-in Host carries the
+    // admin-selected download route frozen when the command was admitted.
+    const sent = daemon.frames.filter((frame) => frame.type === "host_command");
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      command_id: installed.receipt.id, fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+      command: { type: "ordinary_tool_request", operation: { action: "install", tool_id: "lark_cli", version: LARK_VERSION }, egress_transport: { mode: "direct" } },
     });
+    // Settled, the intent keeps neither the egress route (a proxy URL may carry credentials) nor any path.
+    const frozen = (await db.pool.query<{ frozen_json: Record<string, unknown> }>("SELECT frozen_json FROM host_command_intents WHERE id = $1", [installed.receipt.id])).rows[0]!.frozen_json;
+    expect(frozen).not.toHaveProperty("egress_transport");
+    expect(frozen).toMatchObject({ operation: { action: "install", tool_id: "lark_cli" } });
   });
 });

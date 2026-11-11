@@ -206,3 +206,14 @@ export function decryptModelProviderOAuthSecretRefV1(
   }
   return parsed as ModelProviderOAuthSecretV1;
 }
+
+/**
+ * A keyed, non-reversible digest of a secret for request fingerprints
+ * (`providers/operations.ts`): equal for the same secret, unusable to test a
+ * guess without this instance's master key. Never stored beside the secret.
+ */
+export async function secretFingerprint(rainverHome: string, secret: string): Promise<string> {
+  const { createHmac } = await import("node:crypto");
+  const key = await loadOrCreateModelProviderApiKeyMasterKey(rainverHome);
+  return `hmac-sha256:${createHmac("sha256", key).update("rainver.operation-fingerprint.v1\0").update(secret, "utf8").digest("hex")}`;
+}

@@ -241,6 +241,8 @@ PRE_MIGRATION_BACKUP=1 ./ops/scripts/db/migrate.sh --mode dev
 # Stop frontend, server, and deployer first; postgres must remain running.
 # When the server is running, the BackupService API is canonical:
 #   POST /api/v1/system/backups/manual
+# It is `system.backup.create`: send an Idempotency-Key, then read the receipt's
+#   GET /api/v1/system/commands/<command-id> for the archive name.
 ./ops/scripts/system/backup.sh [--mode dev|test|prod] [--include-logs] [--force-running]
 
 # Full-system restore (database + files) from one archive.
@@ -329,6 +331,7 @@ curl -X POST http://localhost:3000/api/v1/hosts/<host-id>/installations/claude_c
 curl http://localhost:3000/api/v1/providers/subscription-quota-policy -H "Authorization: Bearer <token>"
 curl -X PUT http://localhost:3000/api/v1/providers/subscription-quota-policy \
   -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
+  -H "Idempotency-Key: $(uuidgen)" \
   -d '{"warn_pct":70,"reserve_pct":85}'
 
 # A conversation's logins, windows and held Agent-triggered turns; continue anyway (Project writer).
@@ -488,9 +491,9 @@ file; real Git repositories in a temporary Host config for the daemon file):
 
 ```bash
 cd packages/host-daemon
-pnpm exec vitest run test/workspaceRetention.test.ts test/taskWorktree.test.ts
+pnpm exec vitest run test/workspaceRetention.test.ts test/taskWorktree.test.ts test/workspaceReview.test.ts
 cd ../../server
-pnpm exec vitest run test/workspaceRetentionDb.test.ts test/workspaceSourceFenceDb.test.ts test/hostThreadsDb.test.ts test/agentWorkspacesDb.test.ts
+pnpm exec vitest run test/workspaceRetentionDb.test.ts test/workspaceSourceFenceDb.test.ts test/hostThreadsDb.test.ts test/agentWorkspacesDb.test.ts test/delegatedWorkspacePlacementDb.test.ts test/hostUploads.test.ts
 cd ../apps/web
 pnpm exec vitest run src/modules/runs/WorkspaceChangesCard.test.tsx src/modules/conversation/TurnWorkspaceSummary.test.tsx src/modules/project_files/ProjectAgentWorkspacesPage.test.tsx
 pnpm run build
@@ -498,9 +501,21 @@ node --test src/__tests__/workspace-concurrency.browser.mjs
 node --test src/__tests__/agent-workspaces.browser.mjs
 ```
 
+Controlled publication, adoption reconciliation and Active management add:
+
+```bash
+cd packages/host-daemon
+pnpm exec vitest run test/publicationChain.test.ts test/gitBranchAlign.test.ts test/repositoryGate.test.ts test/branchAlignIsolation.test.ts test/branchAlignDurability.test.ts test/workspaceNativeIntegration.test.ts
+cd ../../server
+pnpm exec vitest run test/workspaceActiveManagementDb.test.ts test/operationExecutorDb.test.ts
+```
+
 Browser screenshots go to `/tmp/rainver-workspace-shots` (`WORKSPACE_SHOTS`
 overrides it) and `/tmp/rainver-agent-workspace-shots` (`AGENT_WORKSPACE_SHOTS`);
-all APIs are synthetic. The second fixture covers the per-request collapsed
+all APIs are synthetic. Frozen-review regressions additionally exercise real-PG
+checkpoint contributors, recursive adoption authorization, replay after parent movement,
+Host refusal and basis uploads; the browser fixture includes refused-review messages.
+The second fixture covers the per-request collapsed
 summary with an explicit delegation, the conversation pending-work entry and
 Files & Code › Agent workspaces (entry, details, history, return).
 

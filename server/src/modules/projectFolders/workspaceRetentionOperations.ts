@@ -65,6 +65,22 @@ export function workspaceRetentionRegistration(definitions:ReadonlyMap<string,Re
     if(!tip)throw conflict();
     // Immediately: replacing the resource fences any Job still waiting on the old grace/idle timer.
     await enqueueWorkspaceCleanup(db,w,{id:w.id,generation:w.generation},tip,true,user,undefined,undefined,'now');
+   }else if(input.action==='acknowledge_missing'){
+    // The branch was removed outside Rainver and no exact adoption proof exists.
+    // Close the unfinished records explicitly as kept-without-merging: never
+    // merged/no_changes, evidence and audit kept, nothing deleted on the Host.
+    const assessment=await assessWorkspaceRetention(db,w.id);
+    if(assessment.state!=='missing'||assessment.reason!=='branch_missing')throw conflict();
+    const closed=(await db.query<{id:string}>(`UPDATE workspace_change_sets c SET state='abandoned',revision=revision+1,
+      verification_json=verification_json||jsonb_build_object('abandon_reason','branch_missing_acknowledged','missing_acknowledged',true,'missing_acknowledged_by',$2::text,'blocked_bindings_retained',true),updated_at=now()
+     WHERE c.workspace_id=$1 AND c.state IN ('open','ready','blocked')
+      AND NOT EXISTS(SELECT 1 FROM execution_workspace_runs b JOIN runs r ON r.id=b.run_id AND r.space_id=b.space_id WHERE b.change_set_id=c.id AND r.status IN ('queued','running','cancelling','waiting_for_review','waiting_for_dependency'))
+      AND NOT EXISTS(SELECT 1 FROM task_merges m WHERE m.change_set_id=c.id AND m.status NOT IN ('conflict','verification_failed','failed','superseded'))
+     RETURNING c.id`,[w.id,user])).rows;
+    if(closed.length)await db.query("UPDATE task_merges SET status='superseded',completed_at=now(),updated_at=now() WHERE change_set_id=ANY($1::varchar[]) AND status IN ('conflict','verification_failed','failed')",[closed.map(r=>r.id)]);
+    await recordRetention(db,w.id,{missing_acknowledged_at:new Date().toISOString(),missing_acknowledged_by:user});
+    const after=await assessWorkspaceRetention(db,w.id);
+    await recordRetention(db,w.id,{state:after.state,reason:after.reason,reclaim_after:after.reclaim_after});
    }else{
     // Retry re-delivers blocked cleanup with a fresh operation identity and
     // budget; the Job still re-checks tip, generation, leases and proof.

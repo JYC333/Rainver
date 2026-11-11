@@ -27,7 +27,11 @@ export async function executeWorkspaceIntegration(locationRoot:string|null,frame
  }
  if(frame.action==='finish'){
   if(!frame.onto_commit||!frame.candidate_commit)return {...empty,ok:false,outcome:null,error:'integration_finish_input_missing'};
-  const result=await finishTaskMerge({...target,mainBranch:frame.target_ref.replace(/^refs\/heads\//,''),ontoCommit:frame.onto_commit,taskCommit:frame.candidate_commit});
+  // A frozen chain plan is published as that chain, never as the squash candidate.
+  const strategy=frame.publication_strategy??'squash';
+  if(strategy!=='squash'&&(!frame.publication_chain_tip||!frame.publication_chain_length))return {...empty,ok:false,outcome:null,error:'native_publication_chain_unrecorded'};
+  const publication=strategy==='squash'?undefined:{strategy,chainTip:frame.publication_chain_tip!,chainLength:frame.publication_chain_length!};
+  const result=await finishTaskMerge({...target,mainBranch:frame.target_ref.replace(/^refs\/heads\//,''),ontoCommit:frame.onto_commit,taskCommit:frame.candidate_commit,publication});
   return {...empty,...result,candidate_commit:result.merged_commit,conflicted_files:result.overlapping_files};
  }
  const step=frame.action==='prepare'?await prepareTaskMerge({...target,author:frame.author,message:frame.message}):await continueTaskMerge(target);

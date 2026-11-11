@@ -261,6 +261,14 @@ export const AmbientSyncReportSchema = z.object({
   malformed_sessions: z.number().int().nonnegative(),
   /** Sessions that could not be written; the rest of the sync still stands. */
   failed_sessions: z.number().int().nonnegative(),
+  /**
+   * Sessions written whose replay stopped part way (`load_state: partial`):
+   * what was read is kept and the next sync retries them, but this sync did
+   * not import them whole, so it is not a clean success. Absent from reports
+   * recorded before it was counted (and from writers built before it): read
+   * absence as 0. Optional rather than defaulted, so those writers still type.
+   */
+  partial_sessions: z.number().int().nonnegative().optional(),
   error: z.string().nullable(),
 }).strict();
 export type AmbientSyncReport = z.infer<typeof AmbientSyncReportSchema>;

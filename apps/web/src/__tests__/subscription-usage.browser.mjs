@@ -26,6 +26,9 @@ before(async () => {
 after(async () => { await browser?.close(); if (server) await new Promise(resolve => server.httpServer.close(resolve)) })
 
 async function fixtures(page, state) {
+  const scoped = { id: 'seven_day_opus', scope: 'model', label: 'Opus weekly', used_pct: 100, resets: null, checked_at: now }
+  const selectedPool = state.modelFull ? { ...pool, windows: [...pool.windows, scoped] } : pool
+  const selectedUsage = state.modelFull ? usage.map(item => ({ ...item, quota: { ...item.quota, windows: [scoped] } })) : usage
   await page.route('**/api/v1/**', async route => {
     const path = new URL(route.request().url()).pathname.replace('/api/v1', '')
     let data
@@ -35,22 +38,39 @@ async function fixtures(page, state) {
     else if (path === '/hosts') data = { items: [host] }
     else if (path === '/providers/plan-usage') data = { items: state.apiPlans ? [{ provider_id: 'mini', name: 'My MiniMax Token Plan', vendor: 'minimax' }] : [] }
     else if (path === '/providers/mini/plan-usage') {
+      // `provider.plan_usage.refresh` is a system command: the keyed POST admits it, the issuer's
+      // status read carries the snapshot. Someone it is not theirs to read gets the hidden 404.
+      assert.equal(route.request().method(), 'POST')
+      assert.ok(route.request().headers()['idempotency-key'])
       state.apiRefreshes = (state.apiRefreshes ?? 0) + 1
-      if (state.apiDenied) return route.fulfill({ status: 403, json: { detail: 'Access denied' } })
-      data = { provider_id: 'mini', checked_at: now, windows: [{ id: 'session', label: '5h', used_pct: 1, resets_at: '2026-11-07T16:00:00Z' }, { id: 'week', label: '7d', used_pct: 1, resets_at: '2026-11-08T16:00:00Z' }] }
+      if (state.apiDenied) return route.fulfill({ status: 404, json: { error: { code: 'operation_not_found', domain: 'operations', message: 'operation not found', metadata: {}, retryable: false, request_id: 'r' } } })
+      const id = `plan-${state.apiRefreshes}`
+      state.commands = { ...state.commands, [id]: { provider_id: 'mini', checked_at: now, windows: [{ id: 'session', label: '5h', used_pct: 1, resets_at: '2026-11-07T16:00:00Z' }, { id: 'week', label: '7d', used_pct: 1, resets_at: '2026-11-08T16:00:00Z' }] } }
+      data = { status: 'succeeded', data: { id, space_id: space, kind: 'provider_plan_usage_refresh', job_id: `job-${id}`, status: 'pending' } }
+    }
+    else if (path.startsWith('/system/commands/')) {
+      const id = decodeURIComponent(path.split('/').pop())
+      data = { id, space_id: space, kind: 'provider_plan_usage_refresh', job_id: `job-${id}`, status: 'succeeded', error: null, result: state.commands[id], created_at: now, updated_at: now }
     }
     else if (path === '/hosts/subscription-usage') {
       if (state.denied) return route.fulfill({ status: 403, json: { detail: 'Access denied' } })
-      data = { items: state.unavailable ? [{ ...pool, account: null, windows: [], connections: pool.connections.map(c => ({ ...c, online: false, error: 'Host offline' })) }] : [pool] }
+      data = { items: state.unavailable ? [{ ...pool, account: null, windows: [], connections: pool.connections.map(c => ({ ...c, online: false, error: 'Host offline' })) }] : [selectedPool] }
     }
     else if (path === '/hosts/runtime-definitions') data = { items: [{ runtime_key: 'claude_code', display_name: 'Claude Code', command: 'claude', remote_eligible: true, reports_managed_cli_version: true, supports_runtime_native: true, supports_model_provider: false }] }
-    else if (path === '/hosts/desk/usage') data = { items: usage }
+    else if (path === '/hosts/desk/usage') data = { items: selectedUsage }
     else if (path === '/hosts/desk/cli-tools') data = { tools: [], operations: [], installable: false, availability: 'online' }
     else if (path === '/hosts/desk/tool-operations') data = { items: [] }
     else if (path.endsWith('/usage') && route.request().method() === 'POST') {
+      // A quota check is a durable Host command: the POST admits it, the status read carries its
+      // frozen outcome. A Host that did not answer still succeeds, with the reason in quota.error.
       state.refreshes++
-      if (state.probeFailure) return route.fulfill({ status: 502, json: { detail: state.probeFailure } })
-      data = usage[0]
+      const id = `quota-check-${state.refreshes}`, row = selectedUsage[0]
+      state.commands = { ...state.commands, [id]: state.probeFailure ? { ...row, quota: { ...row.quota, error: state.probeFailure } } : row }
+      data = { status: 'succeeded', data: { id, space_id: space, host_id: host.id, kind: 'runtime_usage_refresh', job_id: `job-${id}`, status: 'pending' } }
+    }
+    else if (path.startsWith(`/hosts/${host.id}/commands/`)) {
+      const id = decodeURIComponent(path.split('/').pop())
+      data = { id, space_id: space, host_id: host.id, kind: 'runtime_usage_refresh', job_id: `job-${id}`, status: 'succeeded', error: null, result: state.commands[id], created_at: now, updated_at: now }
     }
     else if (path.endsWith('/attention')) data = { items: [], counts: { needs_you: 0, unread: 0 } }
     else if (path.endsWith('/quota')) data = { warn_pct: 70, reserve_pct: 100, logins: [], holds: [] }
@@ -241,6 +261,27 @@ for (const locale of ['en', 'zh-CN']) for (const theme of ['dark', 'light']) for
       await panel.getByRole('alert').waitFor()
       assert.equal(await panel.getByRole('progressbar').count(), 0)
       await capture(page, `api-denied-${locale}-${theme}-${width}`)
+    } finally { await context.close() }
+  })
+}
+
+for (const locale of ['en', 'zh-CN']) for (const theme of ['dark', 'light']) for (const width of [390, 1280]) {
+  test(`independent model exhaustion: ${locale}/${theme}/${width}`, async () => {
+    const context = await browser.newContext({ viewport: { width, height: 960 }, serviceWorkers: 'block' })
+    await context.addInitScript(({ locale }) => localStorage.setItem('rainver:locale', locale), { locale })
+    const page = await context.newPage()
+    try {
+      await fixtures(page, { refreshes: 0, modelFull: true })
+      await page.goto(`${baseUrl}/spaces/${space}/command-center?host=desk`)
+      if (theme === 'light') await page.evaluate(() => document.documentElement.classList.add('theme-light'))
+      const warning = page.getByRole('link', { name: locale === 'en' ? /Some model allowances are full/ : /部分模型额度已用尽/ })
+      await warning.waitFor()
+      await capture(page, `model-entry-${locale}-${theme}-${width}`)
+      await warning.click()
+      await page.getByRole('progressbar', { name: 'Opus weekly' }).waitFor()
+      assert.equal(await page.getByRole('progressbar', { name: 'Opus weekly' }).getAttribute('aria-valuenow'), '100')
+      assert.equal(await page.getByRole('progressbar', { name: 'Weekly', exact: true }).getAttribute('aria-valuenow'), '68')
+      await capture(page, `model-detail-${locale}-${theme}-${width}`)
     } finally { await context.close() }
   })
 }

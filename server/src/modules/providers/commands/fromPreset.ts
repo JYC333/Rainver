@@ -1,14 +1,10 @@
 import type {
   ProviderFromPresetCreateRequest,
 } from "@rainver/protocol";
-import type { ServerConfig } from "../../../config.js";
-import { getDbPool } from "../db.js";
-import { isSpaceOwnerOrAdmin } from "../../access/roles.js";
+import { isSpaceOwnerOrAdminIn } from "../../routeUtils/access.js";
+import type { Queryable } from "../../routeUtils/common.js";
 import { updateSpaceRetrievalSettings } from "../../retrieval/settings.js";
-import {
-  enqueueRetrievalEmbeddingBackfill,
-  resetRetrievalEmbeddingsForSpace,
-} from "../../retrieval/embedding/job.js";
+import { resetAndQueueRetrievalEmbeddingsIn } from "../../retrieval/embedding/job.js";
 import { providerPresetById, type ProviderPreset } from "../presets/index.js";
 import {
   ProviderCommandForbiddenError,
@@ -62,33 +58,6 @@ function embeddingDimensions(
   return dimensions;
 }
 
-async function assertCanConfigureRetrievalPreset(
-  config: ServerConfig,
-  spaceId: string,
-  userId: string,
-): Promise<void> {
-  if (!config.databaseUrl) {
-    throw new Error("Provider preset creation requires SERVER_DATABASE_URL");
-  }
-  const result = await getDbPool(config.databaseUrl).query<{ role: string }>(
-    `SELECT role
-       FROM space_memberships
-      WHERE user_id = $1 AND space_id = $2 AND status = 'active'
-      LIMIT 1`,
-    [userId, spaceId],
-  );
-  if (!isSpaceOwnerOrAdmin(result.rows[0]?.role ?? null)) {
-    throw new ProviderCommandForbiddenError("Requires space owner or admin role");
-  }
-}
-
-function providerDb(config: ServerConfig) {
-  if (!config.databaseUrl) {
-    throw new Error("Provider preset creation requires SERVER_DATABASE_URL");
-  }
-  return getDbPool(config.databaseUrl);
-}
-
 function createInputForPreset(
   preset: ProviderPreset,
   input: ProviderFromPresetCreateRequest,
@@ -107,8 +76,14 @@ function createInputForPreset(
   };
 }
 
+/**
+ * Creates a Provider from a preset and, for a retrieval preset, wires the
+ * Space's retrieval settings and task chain — all in the caller's transaction
+ * (an operation command's port), so a failed step leaves nothing behind and
+ * no compensating delete is needed.
+ */
 export async function createProviderFromPreset(
-  config: ServerConfig,
+  db: Queryable,
   store: ProviderCommandStore,
   spaceId: string,
   userId: string,
@@ -119,12 +94,10 @@ export async function createProviderFromPreset(
     throw new ProviderCommandNotFoundError(`Provider preset '${input.preset_id}' not found`);
   }
 
-  if (preset.mode === "embedding" || preset.mode === "rerank") {
-    await assertCanConfigureRetrievalPreset(config, spaceId, userId);
+  if ((preset.mode === "embedding" || preset.mode === "rerank") && !(await isSpaceOwnerOrAdminIn(db, spaceId, userId))) {
+    throw new ProviderCommandForbiddenError("Requires space owner or admin role");
   }
-  // Pure input validation belongs before the first write. A rejected dimension
-  // must not leave a disabled provider, its credential, and a cleared Space
-  // default with nothing in its place.
+  // Pure input validation belongs before the first write.
   const dimensions = preset.mode === "embedding" ? embeddingDimensions(preset, input) : null;
 
   const provider = await store.createProvider(
@@ -133,45 +106,25 @@ export async function createProviderFromPreset(
     createInputForPreset(preset, input),
   );
   const providerId = providerIdFromCreated(provider);
-  try {
-    if (preset.mode === "embedding" && dimensions !== null) {
-      await updateSpaceRetrievalSettings(
-        providerDb(config),
-        spaceId,
-        { embedding_dimensions: dimensions },
-        { actorUserId: userId },
-      );
-      await store.putTaskPolicy(
-        spaceId,
-        userId,
-        "retrieval_embedding",
-        [{ provider_id: providerId, model: selectedModel(preset, input) }],
-        true,
-      );
-      await resetRetrievalEmbeddingsForSpace(config, spaceId);
-      await enqueueRetrievalEmbeddingBackfill(config, {
-        spaceId,
-        userId,
-        trigger: "retrieval_embedding_preset_create",
-      });
-    } else if (preset.mode === "rerank") {
-      await updateSpaceRetrievalSettings(
-        providerDb(config),
-        spaceId,
-        { rerank_enabled: true },
-        { actorUserId: userId },
-      );
-      await store.putTaskPolicy(
-        spaceId,
-        userId,
-        "retrieval_rerank",
-        [{ provider_id: providerId, model: selectedModel(preset, input) }],
-        true,
-      );
-    }
-  } catch (error) {
-    await store.deleteProvider(spaceId, userId, providerId).catch(() => undefined);
-    throw error;
+  if (preset.mode === "embedding" && dimensions !== null) {
+    await updateSpaceRetrievalSettings(db, spaceId, { embedding_dimensions: dimensions }, { actorUserId: userId });
+    await store.putTaskPolicy(
+      spaceId,
+      userId,
+      "retrieval_embedding",
+      [{ provider_id: providerId, model: selectedModel(preset, input) }],
+      true,
+    );
+    await resetAndQueueRetrievalEmbeddingsIn(db, { spaceId, userId, trigger: "retrieval_embedding_preset_create" });
+  } else if (preset.mode === "rerank") {
+    await updateSpaceRetrievalSettings(db, spaceId, { rerank_enabled: true }, { actorUserId: userId });
+    await store.putTaskPolicy(
+      spaceId,
+      userId,
+      "retrieval_rerank",
+      [{ provider_id: providerId, model: selectedModel(preset, input) }],
+      true,
+    );
   }
   return { provider };
 }

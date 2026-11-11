@@ -859,7 +859,15 @@ business-pool connection needed by finalization dependencies.
 
 ### API
 
-- **`POST /api/v1/runs/{run_id}/finalize`** — finalize a terminal run; idempotent.
+Person Run controls (`stop`, `abandon`, `resume`, `execute`, `finalize`,
+`quota-recovery`, `live-input`) are operation-core commands (`runs/operations.ts`,
+SYSTEM_ACTIONS "Agent and Room commands"): each takes a required
+`Idempotency-Key`, answers an identity receipt, and runs process/Host/finalization
+work only after its transaction commits. `POST /runs/{run_id}/execute` records the
+Run's `agent_run` Job; the worker executes it (the request no longer runs the Run).
+
+- **`POST /api/v1/runs/{run_id}/finalize`** — finalize a terminal run after the
+  command commits; idempotent, and owed finalizations are also swept.
 - **`GET /api/v1/runs/{run_id}/finalization`** — latest `RunFinalization` for the run.
 - **`GET /api/v1/runs/{run_id}/finalizations`** — all `RunFinalization` records, newest first.
 - **`POST /api/v1/runs/{run_id}/resume`** — human-approved requeue for a

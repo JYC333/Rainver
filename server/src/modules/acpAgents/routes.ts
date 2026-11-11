@@ -5,14 +5,12 @@ import { getDbPool } from "../../db/pool.js";
 import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
 import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext.js";
 import { introspectIdentity } from "../auth/identity.js";
-import { requireInstanceAdmin } from "../routeUtils/access.js";
+import { isInstanceAdmin } from "../routeUtils/access.js";
+import { registerOperationAdapters } from "../systemActions/operations/routeAdapter.js";
 import { AcpRegistryError, fetchAcpRegistry } from "./registry.js";
 import { AcpAgentService, acpAgentRuntimeKey } from "./service.js";
 import type { EnabledAcpAgent } from "./settings.js";
 
-function params(request: FastifyRequest): Record<string, string | undefined> {
-  return request.params as Record<string, string | undefined>;
-}
 
 async function resolveIdentity(
   context: ModuleContext,
@@ -47,6 +45,17 @@ function sendError(reply: FastifyReply, error: unknown): FastifyReply {
  * (`hosts` module, `POST /api/v1/hosts/:hostId/installations/:runtimeKey`).
  */
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
+  registerOperationAdapters(app, context.config, [
+    {
+      method: "PUT", url: "/api/v1/acp-agents/:registryId", operation: "acp_agent.enable", params: { registryId: "registry_id" },
+      // The registry is read before, never inside, the transaction, and only for the instance
+      // admin (nobody else spends the fetch). A failed read leaves the operation to refuse.
+      prepare: async (identity) => {
+        if (await isInstanceAdmin(context.config, identity.userId)) await fetchAcpRegistry().catch(() => undefined);
+      },
+    },
+    { method: "DELETE", url: "/api/v1/acp-agents/:registryId", operation: "acp_agent.disable", params: { registryId: "registry_id" } },
+  ]);
   const service = () => {
     if (!context.config.databaseUrl) throw new AcpRegistryError("database_unavailable", "SERVER_DATABASE_URL is required.", 502);
     return new AcpAgentService(getDbPool(context.config.databaseUrl));
@@ -67,30 +76,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       const agents = service();
       const items = await Promise.all((await agents.listEnabled()).map(async (agent) => agentOut(agent, await agents.installedOn(agent.id))));
       return reply.send({ items });
-    } catch (error) {
-      return sendError(reply, error);
-    }
-  });
-
-  app.put("/api/v1/acp-agents/:registryId", async (request, reply) => {
-    const identity = await resolveIdentity(context, request, reply);
-    if (!identity) return reply;
-    if (!(await requireInstanceAdmin(context.config, identity, reply))) return reply;
-    try {
-      const agent = await service().enable(params(request).registryId ?? "", identity.userId);
-      return reply.code(201).send(agentOut(agent));
-    } catch (error) {
-      return sendError(reply, error);
-    }
-  });
-
-  app.delete("/api/v1/acp-agents/:registryId", async (request, reply) => {
-    const identity = await resolveIdentity(context, request, reply);
-    if (!identity) return reply;
-    if (!(await requireInstanceAdmin(context.config, identity, reply))) return reply;
-    try {
-      const removed = await service().disable(params(request).registryId ?? "", identity.userId);
-      return removed ? reply.code(204).send() : reply.code(404).send({ detail: "ACP agent is not enabled" });
     } catch (error) {
       return sendError(reply, error);
     }

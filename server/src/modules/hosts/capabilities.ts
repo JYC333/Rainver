@@ -184,6 +184,7 @@ export function normalizeHostCapabilities(raw: unknown): HostCapabilities {
   return HostCapabilitiesSchema.parse({
     runtimes, versions, installations,
     ...(source.native_workspace_integration===true?{native_workspace_integration:true}:{}),
+    ...(source.native_workspace_rebase===true?{native_workspace_rebase:true}:{}),
     ...(source.managed_cli_updates === true ? { managed_cli_updates: true } : {}),
     ...(HostCapabilitiesSchema.shape.workspace_read_only.safeParse(source.workspace_read_only).success?{workspace_read_only:source.workspace_read_only}:{}),
     ...(HostCapabilitiesSchema.shape.execution_workspaces.safeParse(source.execution_workspaces).success?{execution_workspaces:source.execution_workspaces}:{}),
@@ -196,6 +197,10 @@ export function normalizeHostCapabilities(raw: unknown): HostCapabilities {
       ? { ordinary_tool_accounts: source.ordinary_tool_accounts } : {}),
     ...(HostCapabilitiesSchema.shape.ordinary_tools_runs.safeParse(source.ordinary_tools_runs).success && source.ordinary_tools_runs
       ? { ordinary_tools_runs: source.ordinary_tools_runs } : {}),
+    ...(source.managed_workspace_operations === 1 ? { managed_workspace_operations: 1 as const } : {}),
+    ...(source.workspace_profile_operations === 1 ? { workspace_profile_operations: 1 as const } : {}),
+    ...(source.legacy_archive_drain === 1 ? { legacy_archive_drain: 1 as const } : {}),
+    ...(source.host_command_receipts === 1 ? { host_command_receipts: 1 as const } : {}),
   });
 }
 

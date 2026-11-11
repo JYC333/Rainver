@@ -150,14 +150,57 @@ export interface PluginScope {
   spaceId: string;
   userId: string;
 }
+/** A handle on a Job's scope hold that outlives the handler; the hold stays a durable cleanup obligation until `release`. */
+export interface PluginRetainedEffects {
+  readonly signal: AbortSignal;
+  /** Same contract as `PluginBackgroundContext.onDispose`; after `release` it throws `PluginRegistrationClosed`. */
+  onDispose(dispose: () => Promise<void> | void): () => Promise<void>;
+  release(): void;
+}
 export interface PluginBackgroundContext extends PluginOperationContext {
   readonly signal: AbortSignal;
   readonly jobId: string;
+  /**
+   * Registers a dispose callback for a resource of this Job; it runs outside
+   * every transaction, only in an attempt the host claimed against the hold's
+   * durable counter (at most three per cleanup round). Registration is open
+   * while the handler runs. With `disposeRegistration: 'handler'` it closes
+   * when the handler settles, and a later call throws an error named
+   * `PluginRegistrationClosed` (use `retain()` before creating a resource that
+   * outlives the handler). Without it (the original contract) it stays open
+   * until the process ends, so the Job's scope hold remains a cleanup
+   * obligation: after a disable it is never recorded released and the scope
+   * cannot be re-enabled until this process has ended.
+   *
+   * The returned function disposes that resource early, through the same
+   * claimed attempts: it resolves at once once the callback succeeded (never
+   * run again) and shares an invocation in flight. It rejects with an error
+   * named `PluginDisposeRefused`, without running the callback, inside the
+   * Job's open transaction and when no attempt can be claimed (not due after a
+   * failure, the round's three attempts spent, no owner lease); the host's
+   * cleanup round, or a new disable round, retries it. A rejected invocation
+   * may be retried.
+   */
   onDispose(dispose: () => Promise<void> | void): () => Promise<void>;
+  /**
+   * For a resource created after the handler returns: resolves once the host
+   * durably confirmed this Job's hold as a cleanup obligation of its
+   * generation (so no enable can see the scope clean); rejects, with nothing
+   * registered, when it cannot (the generation already ended, no lease, a DB
+   * fault).
+   */
+  retain(): Promise<PluginRetainedEffects>;
+}
+export interface PluginJobOptions {
+  /**
+   * `'handler'`: the bounded registration contract (see
+   * `PluginBackgroundContext.onDispose`). Omitted: the original contract.
+   */
+  readonly disposeRegistration?: 'handler';
 }
 export interface PluginLifecyclePort {
   jobs: {
-    register(id: string, handler: (payload: unknown, ctx: PluginBackgroundContext) => Promise<Record<string, unknown>>): () => void;
+    register(id: string, handler: (payload: unknown, ctx: PluginBackgroundContext) => Promise<Record<string, unknown>>, options?: PluginJobOptions): () => void;
   };
   schedules: {
     register(id: string, payload: (scope: PluginScope) => Promise<Record<string, unknown>>): () => void;

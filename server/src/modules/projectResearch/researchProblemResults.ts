@@ -1,3 +1,4 @@
+import {ResearchWorkspaceMutationError} from './workspaceErrors.js';
 import { PgUsageRepository } from "../usage/repository.js";
 import { resolveResearchReportReferences } from "./reportReferenceResolver.js";
 import { ResearchResultSchema, ResearchResultAdoptionSchema, type ProblemReference } from "@rainver/protocol";
@@ -22,7 +23,7 @@ export class ResearchProblemResultService {
   const rows=await this.db.query<Record<string,unknown>>(`SELECT * FROM project_operations WHERE id=$1 AND space_id=$2 AND project_id=$3 AND kind='research'`,[operationId,identity.spaceId,projectId]);
   const op=rows.rows[0];if(!op)throw new HttpError(404,"Research result not found");
   const call=await assertResearchCallReadable(this.db,identity,projectId,op.research_call_json,op.progress_json);
-  if(!call)throw new HttpError(409,"This Research is not a problem call; it has no problem result to assess");
+  if(!call)throw new ResearchWorkspaceMutationError(409,"This Research is not a problem call; it has no problem result to assess");
   // A result pointer is itself content-bearing. Keep producing Run and all
   // source-item consent/retention gates, including for partial results.
   const state=objectValue(op.progress_json);
@@ -60,11 +61,11 @@ export class ResearchProblemResultService {
   return ResearchResultSchema.parse({schema_version:'research_result.v1',call,attempt:op.research_attempt,execution_id:op.current_execution_id??null,status:op.status,applicability:stale?'requires_assessment':'current_snapshot',findings,evidence_refs:refs,limitations:["Execution outcome is not an accepted problem judgment; assess linked reports explicitly.",...reportLimits],unresolved_gaps:state.partial?["Research returned partial material; coverage remains incomplete."]:[],usage:{...usage},diagnostics:{error:state.error??null,reconciliation:op.research_reconcile_json,cancellation:state.cancellation??null,process_stop_state:preparationPending?"requested":cancellation===null?null:cancellation===undefined?"unknown":cancellation==="completed"?"confirmed":["pending","claimed","running"].includes(cancellation)?"requested":"needs_attention"},partial:state.partial===true||(['failed','cancelled'].includes(String(op.status))&&refs.length>0)});
  }
  async adopt(identity:SpaceUserIdentity,projectId:string,operationId:string,body:unknown,provenance?:ThreadEventProvenance){
-  const parsed=ResearchResultAdoptionSchema.safeParse(body);if(!parsed.success)throw new HttpError(422,parsed.error.message);
+  const parsed=ResearchResultAdoptionSchema.safeParse(body);if(!parsed.success)throw new ResearchWorkspaceMutationError(422,parsed.error.message);
   return withQueryableTransaction(this.db,async tx=>{
    const result=await new ResearchProblemResultService(tx).read(identity,projectId,operationId);
    await lockProblem(tx,identity,projectId,result.call.thread_id);
-   if(!['completed','failed','cancelled'].includes(result.status))throw new HttpError(409,"Research must have a terminal outcome before result assessment");
+   if(!['completed','failed','cancelled'].includes(result.status))throw new ResearchWorkspaceMutationError(409,"Research must have a terminal outcome before result assessment");
    const input=parsed.data;
    // This is an explicit current-round Verify fact. Protected cognition stays
    // exclusively with recordIteration; successful execution cannot write it.

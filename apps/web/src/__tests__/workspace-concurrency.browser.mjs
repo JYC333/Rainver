@@ -90,11 +90,16 @@ async function fixtures(page, counts, recoveryRun = failed, blockedReason = null
       ] })
       return route.fulfill({ headers: { 'content-type': 'text/event-stream' }, body: `event: turn.snapshot\ndata: ${JSON.stringify({ type: 'turn.snapshot', turn: live })}\n\n` })
     }
+    // One keyed core command persists the input; its delivery state is then read for that message.
+    else if (path === '/actions/run.live_input.submit') {
+      const { run_id: runId, ...input } = route.request().postDataJSON()
+      counts.input = input
+      data = { status: 'succeeded', data: { id: '30000000-0000-4000-8000-000000000091', space_id: space, run_id: runId, message_id: '30000000-0000-4000-8000-000000000091', binding_id: input.binding_id } }
+    }
     else if (path === `/runs/${failed.id}/live-input`) {
-      data = route.request().method() === 'POST'
-        ? { state: 'injected', message_id: '30000000-0000-4000-8000-000000000091', delivery_id: '30000000-0000-4000-8000-000000000092' }
+      data = new URL(route.request().url()).searchParams.get('message_id')
+        ? { available: recoveryRun.status === 'running', binding_id: '30000000-0000-4000-8000-000000000093', delivery_state: 'injected' }
         : { available: recoveryRun.status === 'running', binding_id: '30000000-0000-4000-8000-000000000093' }
-      if (route.request().method() === 'POST') counts.input = route.request().postDataJSON()
     }
     else if (path === `/runs/${failed.id}/turn`) data = recoveryRun.status === 'running'
       ? turn({ run_id: failed.id, state: 'working', source: 'host_thread_events', parts: [

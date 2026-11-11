@@ -56,20 +56,18 @@ const roomDetail = {
 };
 
 describe("Room contracts", () => {
-  it("carries the Host's restore and archive outcomes on a roster change", () => {
-    // The Agent is added either way; a restore that failed has to reach the
-    // client, which the strict contract would otherwise have no field for.
-    const added = RoomAgentMutationResponseSchema.parse({
+  it("keeps Host archive and restore outcomes out of a roster change's response", () => {
+    // Host work runs after the roster commits (a restore Job, an archive retried
+    // until settled); the response cannot claim an outcome that has not happened.
+    expect(RoomAgentMutationResponseSchema.parse({ ...roomDetail, revoked_grant_count: 1 }).revoked_grant_count).toBe(1);
+    expect(RoomAgentMutationResponseSchema.safeParse({
       ...roomDetail,
       managed_workspace_restore: { agent_id: "agent-2", ok: false, changed: false, error: "host_offline" },
-    });
-    expect(added.managed_workspace_restore).toEqual({ agent_id: "agent-2", ok: false, changed: false, error: "host_offline" });
-    const removed = RoomAgentMutationResponseSchema.parse({
+    }).success).toBe(false);
+    expect(RoomAgentMutationResponseSchema.safeParse({
       ...roomDetail,
-      revoked_grant_count: 1,
       managed_workspace_archive: [{ agent_id: "agent-2", ok: true, changed: true, error: null }],
-    });
-    expect(removed.managed_workspace_archive).toHaveLength(1);
+    }).success).toBe(false);
   });
 
   it("parses project-bound rooms and per-recipient backend selections", () => {

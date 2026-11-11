@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Bot, CircleAlert, CircleDot, Compass, Loader2, RefreshCw, User } from 'lucide-react'
 import { toast } from 'sonner'
 import { projectsApi } from '../../api/client'
-import { usePeriodicRefresh } from '../../hooks/usePeriodicRefresh'
+import { useProjectLiveRefresh } from '../../hooks/useProjectLiveRefresh'
 import { errMsg } from '../../lib/utils'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import type { ProjectBoard, ProjectOverview, ProjectWorkUpdate } from '../../types/api'
@@ -47,8 +47,6 @@ const ATTENTION_CLASS_LABELS: Record<(typeof ATTENTION_CLASS_ORDER)[number], str
 const SETTLED_STATUSES = new Set(['done', 'cancelled'])
 
 
-/** Read refresh cadence; the same five seconds the Inquiry Area uses for a live Thread. */
-const PULSE_REFRESH_MS = 5_000
 
 export default function ProjectPulse({
   projectId,
@@ -73,8 +71,11 @@ export default function ProjectPulse({
   const [failed, setFailed] = useState(false)
 
   const showingRef = useRef(projectId)
+  showingRef.current=projectId
+  const readVersion=useRef(0)
+  useEffect(()=>()=>{readVersion.current+=1},[projectId])
   const load = useCallback(async (quiet = false) => {
-    showingRef.current = projectId
+    const version=++readVersion.current
     if (!quiet) setLoading(true)
     setFailed(false)
     try {
@@ -84,17 +85,18 @@ export default function ProjectPulse({
       ])
       // A late answer for a Project the person has since left says nothing
       // about the one they are looking at.
-      if (showingRef.current !== projectId) return
+      if (showingRef.current !== projectId||version!==readVersion.current) return
       setBoard(nextBoard)
       setUpdates(nextUpdates.items)
     } catch (error) {
+      if(showingRef.current!==projectId||version!==readVersion.current)return
       // A failed read must never render as "nothing is happening". On the one
       // surface whose whole job is situational awareness, a confident all-clear
       // that is really an error is the worst answer available.
       setFailed(true)
       if (!quiet) toast.error(errMsg(error))
     } finally {
-      setLoading(false)
+      if(showingRef.current===projectId&&version===readVersion.current)setLoading(false)
     }
   }, [projectId])
 
@@ -105,7 +107,7 @@ export default function ProjectPulse({
     await load(true)
     onOverviewChanged?.()
   }, [load, onOverviewChanged])
-  usePeriodicRefresh(refresh, PULSE_REFRESH_MS)
+  useProjectLiveRefresh(projectId,refresh)
 
   if (loading) return <Skeleton className="h-40 w-full" />
 

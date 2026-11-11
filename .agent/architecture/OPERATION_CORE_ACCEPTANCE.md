@@ -1140,7 +1140,7 @@ added: the existing action_completed event/writer carries a named domain receipt
 This closes this extraction owner family only. Managed Channel/Recipe activation
 have distinct existing Agent proposal and human envelope semantics, and consent/
 egress/material invalid attempts remain independent checkpoint5 work. They are not
-claimed complete, nor is checkpoint5. Existing Note-link choice stays pending.
+claimed complete, nor is checkpoint5. Human Note-link permission is resolved; core migration remains separate work.
 
 Scoped evidence: new knowledgeExtractionOperationDb19 real-PG tests pass, existing
 knowledgePromotionDb12, operationRoutes12 and Run orchestration unit regression60
@@ -1231,3 +1231,807 @@ channel-retirement races, and Folder uncertain-effect/cancel recovery gaps.
 These engineering cross-checks do not replace the planned independent
 Claude/Antigravity package review; no stage acceptance or production mapping is
 enabled by this continuation.
+
+### Project package — remaining 29 URL closure (working tree on 886b1aaf)
+
+The final 29 Project rows are settled: 28 retained URLs are formal core adapters
+and the unused `POST /projects/public-summaries/search` endpoint is retired with
+its only test caller (Agents keep the separate `project.summary.search` tool).
+Inventory is 636 = 418 legacy + 39 exemptions + 179 core, with no Project legacy
+row; excluding the 15 plugin writes leaves 403 P5 legacy entries.
+
+- DB-only commands (15 Research controls, Corpus rebuild on two URLs, five
+  monitoring and two Source-proposal commands, private summary feedback) reuse
+  the owning writers inside the core transaction. Workflow/Thread/Operation
+  closures are discovered read-only, locked after the Project writer lock and
+  rechecked; Run-owning paths declare the host Run-terminal owner. Deterministic
+  domain 409/422 sites are marked explicitly; other errors stay uncached.
+- Provider-backed writes are admission + durable work, never provider IO inside a
+  core transaction: public-summary draft queues a private `provider_task` Run; every
+  provider attempt re-checks writer authority and the complete frozen source
+  closure (no oversight) after admitting every Project it names in one id order
+  (own Project exclusive, others shared; a Project reached later refuses 409) and
+  share-locking the rest, at the access level each frozen
+  body needs (full→summary refuses a frozen excerpt/rationale), and finalize writes the draft with server-authored
+  `generated_by_run_id` and the Run's success in one Run-terminal-owner
+  transaction, only while that Run is still `running`; imported
+  history extraction commits its claim with a Job, the worker refreshes the claim,
+  releases unshared records and writes the canonical Brief/memory proposals;
+  question refine commits the pending turn with its frozen request and a
+  single-attempt Job, and the worker recovery pass fails a pending turn whose Job
+  was cancelled or reclaimed-exhausted without re-enqueuing it, and completion is
+  fenced on the Job's running claim/attempt so a late provider return after
+  cancel/reclaim writes nothing; each completed
+  assistant turn carries its own refinement and only the newest completed turn
+  replaces the session projection; the
+  public-summary Context Brief runs in a requester-owned Job.
+- Evidence: `researchControlOperationDb` (13 real-PG cases, including incremental
+  trigger with named scanned items: business-key replay across transport keys,
+  transport-key reuse refused, unmonitored/unknown/revoked/summary-only items
+  refused, list bound, another Workflow's business key 409),
+  `publicSummaryDraftOperationDb` (20: admission/idempotent finalize, revoked source closure, cancelled Run and
+  rolled-back terminal failure, grant revocation held mid-transaction against
+  attempt and publish, a checked attempt holding off revocation, Room removal
+  held mid-roster-transaction, Activity and Proposal full→summary through the
+  content access policy, summary-level admission by title; research-call output
+  Artifact admitted by title and refused after its researched Source narrows
+  full→summary, researched Source grant revocation held mid-transaction against
+  attempt and publish, a checked attempt holding off that revocation, research
+  closure growing while the attempt waits (409 rebuild), a Run frozen
+  without levels; and over real connection → channel → subscription → window →
+  item chains: two Projects whose research read each other's Sources attempted
+  and published concurrently behind a held Space row (deadlocked on the prior
+  order, both succeed now), a connection revocation in the other Project held off
+  by a checked attempt and one held mid-transaction against attempt and publish,
+  a closure growing into a third, externally locked Project refused 409 without
+  waiting on it, and a research request's Room removal held mid-roster against
+  the attempt), `projectSummaryBriefOperationDb` (2), extended
+  `importedSessionsExtractionDb` (+2), refine route suite (+5: cancelled Job,
+  dead worker reclaim, concurrent turns, provider call held open across reclaim
+  and across cancel then released before the sweep), the web receipt-turn consumer case,
+  adapted acquisition HTTP suites, plus the unchanged domain
+  suites recorded in the original P5 plan. No production approval mapping, Agent
+  grant or public proposal decision permission is enabled.
+
+### Project package — verification gate on 06cf3cfc (2026-11-10)
+
+The checks below were run by Claude on the full candidate (71 files over 886b1aaf), with Node 24
+and the shared real-PG test container. Every check passed except the
+server suite's exit code. All 7,616 server tests pass (5 smoke tests are skipped as usual). The
+unchanged budget reporter still exits 1, because `pluginFrontendDb` takes
+48.8–52.0s against the 30s per-test limit. That test is ~24s run alone, and has been 48–88s
+in every full run since 2026-11-08 on unrelated branches, so the overrun predates this
+candidate rather than coming from it. Halving the worker count did not remove it. No threshold, reporter or coverage was changed,
+so the full server gate is **not** green. Exact commands and counts are in the
+[P5 plan](../plans/operation-core/05-core-module-operation-migration.md#project-package--verification-gate-on-06cf3cfc-2026-11-10).
+The Codex run reviewed all 71 files / 29 routes statically and found no executable blocker. That is not test or global acyclicity
+evidence. Antigravity has not reviewed (quota exhausted), so there is no dual
+review. This does not complete P5 or the four packages.
+
+### Project package — review completion and accepted verification exception (2026-11-10)
+
+Antigravity subsequently reviewed the full 71-file / 29-URL candidate
+248b88d2 independently and reported no new actionable blockers. Codex and
+Antigravity reviews were static, not independent test executions. The user
+explicitly accepted the existing pluginFrontendDb duration-budget failure and
+authorized committing this block and continuing in the previously agreed order.
+The server suite still exited 1; this acceptance does not turn that check green
+or change its threshold. Project implementation/review is complete for this
+block (28 adapters migrated, one unused search URL retired). Remaining work now
+moves to Agent/Room, then Host, then system settings/tool configuration. No shared
+branch publication or deployment is implied by this local commit authorization.
+
+## Agent/Room block (working tree on fb827016)
+
+All 59 in-scope Agent, Agent-template, Room, Agent-group, Run and direct-session
+write URLs are settled: 58 formal core adapters and one reviewed transport
+exemption (`POST /runs/:runId/tools/:actionId`, the Run bearer-token Agent tool
+transport). Inventory 636 = 359 legacy + 40 exemptions + 237 core; `host-state/reset`
+and the `/me/agent-attention/*` markers stay with the Host and personal blocks.
+The Agent tools `research.start_acquisition` / `research.adopt_result` are
+core-owned. Behavior, IO placement and retired transport replay tables are
+described in [SYSTEM_ACTIONS](SYSTEM_ACTIONS.md#agent-and-room-commands).
+
+Evidence (shared real PG unless noted):
+
+- `agentOperationsDb` (7): Personal/Project placement, formal/generic same-key
+  replay and changed-input 422, kept definition policies, identity+config
+  rollback on an invalid field, owner-only edits hidden from members, version
+  restore, Runtime Profile credential/egress refusal, explicit-null clears,
+  cached default conflict, Space default and Assistant configurer gates,
+  server-owned Run origin, template creation, direct reset 409 during dispatch.
+- `agentChatOperationsDb` (4): session+message+Run+Job in one transaction with
+  replay, frozen restore request, Job-insert failure rollback, hidden sessions /
+  Agents, retry once per key keeping the restore request; `promptProvenanceAcceptanceDb`
+  direct turn and retry through the synthetic ACP Host and real worker;
+  `remoteHostCliAdapter` restore-before-launch and no launch on a failed restore.
+- `roomsDb` "Room commands through the operation core" (4): Room create replay
+  across entries, personal-Room reuse, viewer hidden; private-share refusal
+  metadata, roster receipts, owner self-removal refusal, outsider hidden; turn
+  send/queue/withdraw receipts with structured `conversation_turn_in_progress`;
+  Agent-group create/edit/message (restated `group_id`)/pause/resume/cancel;
+  the discussion route test under the Run terminal owner and the quota route.
+- `runOperationsDb` (4): `run.execute` queues a Job (no synchronous execution,
+  `?runtime=` still refused), stop settles before the reply, abandon under the
+  terminal owner with a linked Proposal request plus after-commit finalization,
+  resume with its Job; `runtimeContextDeliveryDb` live input through the core
+  (record, deliver after commit, delivery read); `sharedAuthorizersDb` and
+  `quotaRecoveryDb` standing and race through the adapters.
+- `sessionOperationsDb` (2) and `conversationExecutionContextDb` (+1): placement,
+  message/reflect (pending private `memory_create`), delete, hidden foreign
+  conversations, read-only preflight/GET writing no draft row, keyed initialize.
+- `researchOperationRepairDb` / `agentIdDiscoveryReadsDb`: Agent acquisition and
+  adoption through the core (call-key domain key, replay, key reuse, grant
+  revocation, Run provenance) and the visible-Thread hint.
+- Web: typed helper tests (`chat-api`, `conversation-scope-api`) and the Chromium
+  `runtime-recovery` / `workspace-concurrency` live-input flows use keyed
+  commands and reads.
+
+No production approval mapping, Agent grant or public proposal decision is enabled.
+
+### Agent/Room review repairs (on candidate 72f5ff4a)
+
+Two independent reviews of the block found reproducible gaps; all seven are
+repaired, and every after-commit effect of the block was re-audited for durable
+recovery. Behaviour is described in
+[SYSTEM_ACTIONS](SYSTEM_ACTIONS.md#agent-and-room-commands).
+
+| Finding | Repair | Evidence (shared real PG unless noted) |
+|---|---|---|
+| Room authorize applied roster visibility to every command | `room.invitation.decide` / `room.owner.claim` admit and replay on Room visibility or `hasRoomCommandStanding`, re-read each time | `roomsDb` special-standing case: non-member approval owner decides, same-key replay, exact invitation read, replay 404 after Project access revoked, unrelated reader 404, non-member Project owner claims and replays; negative control without the fix returns 404 |
+| `room.agent.add` restore lived only in after-commit memory | `room_agent_workspace_restore` Job committed with the membership (exact thread/Host/conversation, one pending per thread) | `roomsDb` restore case: no Host call in the command, replay adds no Job, offline/timeout/unsent defer under one operation identity ordered after the archive, restore, empty restore noticed, `live_conflict` and missing Host capability definite, a week unsettled warned once and still pending until the receipt settles it, removed-before-run `withdrawn`, newer thread `superseded`; `managedWorkspaceRestoreHostDb` drives the daemon's real journal on a real filesystem: crash between workspace and profile, lost reply, server crash before Job completion, a held archive delivered after the restore, and a fenced older generation |
+| Live input delivered once after commit, pending forever on loss | `run_live_input_deliver` Job committed with the message; exact-binding owner delivers; recovery settles inputs of non-running Runs | `runtimeContextDeliveryDb`: missed first attempt stays `pending` with its Job and is delivered later; binding replaced → `not_injected`, nothing enters the new binding; stranded input settled once by recovery, running Runs untouched |
+| Injected input recorded `not_injected` when its acknowledgement failed | durable claim before injection; acknowledgement never rewrites the outcome and is retried before finalization | PG trigger fails the acknowledgement write: outcome `injected`, Job retry injects nothing; a claim without outcome settles `unconfirmed` without injecting |
+| `run.resume` replay refused 409 once queued | visibility-only authorize; state/authority in execution; replay re-checks current standing or approval authority for the granted `risk_level` | `runOperationsDb`: supervisor resume replays 202 with one Job, new key 409; approval resume records `risk_level`, replays, 404 after the role loses approval authority |
+| Group resume wake lived only in after-commit memory | `agent_group_resume_wake` Job committed with the status | `roomsDb` wake case: Job-only wake, replay adds none, repeat queues no second Run Job, cancel before wake and lost management wake nothing; an injected management-read failure leaves the Job pending and a later attempt wakes |
+| Browser read-backs used the newest 200 invitations/messages | exact `invitation_id` / `message_id` reads under the page's access | web `conversation-scope-api`: decision and continuation read their own old object; live input stays `pending` instead of `not_injected` |
+
+After-commit audit: archive intents (`pending_archive_at`) are also retried for
+Hosts that stay connected (`retryPendingArchivesForConnectedHosts`,
+`roomAgentHostStateRestoreDb`: online-only, acknowledged once, fresh intents
+left to their first attempt); `run.stop`, `run.abandon` / `run.finalize` and
+native workspace integration already had sweeps or Jobs. Trailing blank lines
+at four documentation/test EOFs were removed, and a `roomsDb.suite` type error
+(`it.each` context) was fixed with `it.for`.
+
+### Agent/Room verification close-out (2026-11-10)
+
+Production candidate: `77c72840`; block base: Project commit `fb827016`.
+Codex (`d38ba8f0`) and Antigravity (`ce45081d`) independently reviewed the
+whole candidate and reported no new actionable code blockers. Their static
+reviews are not evidence of executing the suites.
+
+The coordinator ran the complete server suite in this worktree using Node
+24.22.2, real shared PostgreSQL, and
+`REQUIRE_TEST_POSTGRES=true node node_modules/vitest/vitest.mjs run --maxWorkers=4`
+from `server/`, after building the web app. Result: 606 files passed, one
+skipped; 7629 tests passed, five skipped, zero failed. Exit 1 is retained:
+the unchanged budget reporter flags pluginFrontendDb (55.1s / 30s) and the
+killed-worker deep-reading recovery case (33.4s / 30s). The person explicitly
+accepted duration-budget overruns on 2026-11-10 and instructed continuation
+when tests do not fail. No budget, reporter, coverage or production code was
+changed to obtain this result. A prior missing-web-build Task Detail failure
+passed after building the actual web app (23.0s); the earlier sandbox run
+without Docker access, which skipped database tests, is not acceptance evidence.
+
+Same-candidate implementation-run terminal evidence additionally records:
+protocol 442 passed; web 2515 passed; daemon 779 passed / 22 skipped, all exit 0;
+protocol/daemon/server/web type checks and web build exit 0. Focused daemon
+filesystem tests cover concurrent drains and file/directory fsync failure and
+retry; real-PG/daemon restore tests include the held legacy direct-restore
+request across an upgrade. Runtime logs remain outside the repository
+(`/tmp/rv-logs/c93`, `cb71-*`, `parent-server-pg4.log`).
+
+Browser limitation: the 18-file comparison has nine failing groups on both
+candidate and the earlier c7 candidate, not a green browser suite. The recorded
+failure-name comparison has no candidate-only failures (reader journeys has
+three versus four). The 62 differently formatted messages normalize to the
+same assertions; an inspected recovery-fixture API error is identical on both
+sides, and that API call already exists at Project base `fb827016`. Because the
+comparison base already contains migration changes, this alone does not prove
+absence of every browser regression against the Project base. These failures
+remain explicitly recorded; they are not reported as passing tests. Host and
+settings/tool migration blocks remain outstanding.
+
+## Host block (working tree on 1127954190bd)
+
+All 32 Host-, Location- and execution-host-owned write URLs are settled:
+20 formal core adapters (13 durable Host commands, 7 transactional) and 12
+exact exemptions. Inventory 636 = 327 legacy + 52 exemptions + 257 core. The
+exact list, the fourth-block boundary and the narrowings are in the
+[P5 plan](../plans/operation-core/05-core-module-operation-migration.md);
+behaviour in [SYSTEM_ACTIONS](SYSTEM_ACTIONS.md#host-commands) and
+[hosts.md](../modules/hosts.md), section "Host commands".
+
+Evidence (shared real PG unless noted):
+
+- `hostCommandWorkerDb` (10): unsent first send returns to pending then one
+  effect with exact result and runtime-change readback; unjournaled lost answer
+  `needs_attention`, never resent; dispatch marker without a known send is
+  unknown; journal `interrupted` / `mismatch` / `refused` / not-ok mapping;
+  journaled repeat across disconnect, offline and timeout with one identical
+  frame; revocation before send (failed, transport replay 404) and during send
+  (needs attention, result withheld); actor removed from the Space; cancelled
+  Job before/after send; transport key replay vs `host_command_busy` vs
+  `idempotency_key_reused`, other member / other Space hidden; Location
+  registration under Project write with the private path dropped once settled.
+- `agentHostStateResetDb` (9): hidden Host/Agent, receipt capability required,
+  ownerless Agent, dispatch-lock and in-flight Run refusals, unfinished Room
+  restore refusal with rollback, fence while offline / answer lost, replay of
+  the same command, cancelled-after-send fence.
+- `remoteHostCliAdapter`: a pending reset blocks a direct turn's restore and
+  the launch before any Host frame. `roomsDb` restore case: the restore Job
+  defers on an unsettled reset without a Host request.
+- `hostsRoutes`, `builtinHostRoutes`, `hostOrdinaryToolsRoutes` (egress route
+  dropped once settled), `hostOrdinaryToolAccountsRoutes`, `hostRuntimeUsageDb`,
+  `importedSessionsDb`, `acpAgentsRoutes`, `operationExecutorDb` (catalog),
+  `operationRoutes` (exact exemption pairs and inventory).
+- Daemon `hostCommandJournal` (8, real filesystem with the durable-IO seam):
+  start fsynced before the effect and outcome before the answer, replay in a
+  restarted process, concurrent repeat runs once, mismatch, interrupted never
+  re-run, interrupted reset finished by running again, unrecordable start
+  refused with no effect, unreadable receipt refused, prune keeps in-progress.
+- Web: `host-command-api` (real client, stubbed HTTP: keyed command, status
+  polling in the receipt Space, needs-attention error, no resubmit, logout
+  readback, transactional outputs) and `HostAgents` (unknown install outcome
+  shown as an error, never as installed).
+
+No production approval mapping, Agent grant or public proposal decision is
+enabled. Browser (Chromium) suites do not cover Host surfaces; none were run
+for this block.
+
+### Host block fix checkpoint (review 319dfcc7, four blockers)
+
+Source parent `809a0cfe` (tree identical to the Host candidate `7aea6597`,
+`c517a46a`); formal base `1127954190bd`. The Project (`fb827016`) and
+Agent/Room (`11279541`) migrations are unchanged by this checkpoint.
+
+1. Receipt durability (`hostCommandJournal.ts`, protocol `HostCommandOutcome`):
+   `completed` only for a durably `done` receipt. The final write is retried,
+   and a replayed `done` passes `syncExistingDurable` first; otherwise the
+   answer is `unrecorded` (new outcome, no result), the outcome is held in
+   process memory and a repeat records it without a second effect. The worker
+   reads `unrecorded` as not answered (repeat, no `effect_json.receipt`, so the
+   reset fence holds), and `reconcileEarlierResets` reads it as `waiting`.
+2. Stale settlement redaction: `settleStaleHostCommand` (cancelled / exhausted
+   Job) applies the shared `REDACTED_FROZEN`, exactly like the worker's
+   terminal writes; ids the read authority needs are kept.
+3. Unsent expiry: checked inside the dispatch transaction before the first
+   send, online or offline (`host_command_expired` / `host_offline`), so no frame
+   is sent; a sent command is never settled by it.
+4. Partial history replay: `AmbientSyncReport.partial_sessions` (defaults to 0
+   for older recorded reports); a written `load_state: partial` session sets the
+   report error → `needs_attention` `ambient_sync_partial` with the real report,
+   not repeated; the panel never shows it as success.
+
+Evidence (Node 24.22.2, the pinned engine; shared real PG, none skipped):
+
+- Daemon `hostCommandJournal` 12/12 (real filesystem, faults only through the
+  durable-IO seam): file-fsync failure retried, then `completed`; persistent
+  file-fsync failure → `unrecorded` with the receipt still `in_progress`,
+  concurrent repeats single-flight and still `unrecorded`, then `completed` once
+  the write succeeds, effect once; directory-fsync failure after rename →
+  `unrecorded` in the process and after a restart (replay barrier), then
+  `completed`, effect once; an unrecorded reset is not re-run in its process and
+  is finished by a restarted process.
+- `agentHostResetReconcileHostDb` 6/6, including real journal + real
+  `archiveAgentProfiles`: an unrecordable reset keeps the command `dispatched`
+  and the fence closed; after a daemon restart the repeat finishes it and its
+  own receipt opens the fence; a late copy then only replays and a profile
+  created since stays live.
+- `hostCommandWorkerDb` 16/16: unsent >10 min with the Host online → `failed`
+  `host_command_expired`, no send, no runtime change; sent before expiry and
+  older than 10 min → identical frame repeated → `succeeded`; `unrecorded` twice
+  → `dispatched`, no receipt or result, then `completed` → `succeeded` with one
+  runtime change.
+- `hostCommandAuthorityDb` 16/16: cancel and exhaust, sent and unsent,
+  `workspace_register` / `ordinary_tool_register` / `ordinary_tool_install`,
+  settled through the status read and through a barrier transaction: no `path`,
+  `operation.path` or `egress_transport` (credential proxy URL) remains, and the
+  same kept ids as a normal terminal write; a live Job is not touched. Partial
+  import through the real connection registry, with daemon frames parsed as
+  `HostDaemonFrameSchema` (`ambient_import_result` `ok`, one session
+  `load_state: partial`) → `needs_attention` `ambient_sync_partial`, report
+  `sessions_written 2, partial_sessions 1`, both sessions committed (one
+  `partial` with its error), not repeated by its Job; a later full sync →
+  `succeeded`, no duplicates, no partial left.
+- `agentHostStateResetDb` 9/9, `importedSessionsDb` 33/33.
+- Web 37/37: `AmbientSessionImportPanel` (new: a partial report shows an error
+  naming what it kept, never success; a whole import shows success),
+  `host-command-api`, `HostAgents`.
+- Typecheck: protocol, host-daemon, server (`tsconfig.typecheck.json`), web;
+  protocol suite 442/442; `agentGuides` 8/8.
+- Mutation checks: reverting each fix makes its new tests fail (journal 3,
+  reconcile 1, redaction 1, partial 1, expiry 2). The worker's `unrecorded` line
+  is explicit for clarity: its fall-through was already "not answered".
+
+Not run: the full suites (deferred to the block's final pre-commit gate), and
+browser (Chromium) suites (none cover Host surfaces). Under Node 25 the web
+jsdom suites fail on `localStorage.clear` (environmental); the pinned Node 24
+run above passes.
+
+### Host block final pre-commit gate (2026-11-11, on `edbbba21`)
+
+Candidate `edbbba21` (tree `a58ac828`; source parent `809a0cfe`, formal base
+`1127954190bd`; Project `fb827016` and Agent/Room `11279541` unchanged).
+Codex (`59533e86`) and Antigravity (`88e76b0b`) reviewed the whole block with
+no new actionable blockers; that static review covers `edbbba21`, not the
+gate repairs below. Node 24.22.2, shared real PostgreSQL (testcontainers,
+`REQUIRE_TEST_POSTGRES=true`). The worktree path contains `:`, so pnpm cannot
+put `node_modules/.bin` on PATH; each command ran as `node <pkg>/node_modules/…`
+in the dependency order of COMMANDS (protocol, outbound-guard, folder-read,
+reader-document, agent-cli builds → server → daemon → web). Logs:
+`/tmp/rainver-gate-edbb/` (`summary.txt`, per-command logs; `targeted/` for
+the repair re-checks; scripts under `scripts/`).
+
+Full runs on `edbbba21` (unchanged tree):
+
+| Command | Result |
+|---|---|
+| builds (5 workspace deps, server, daemon), server/daemon/web typecheck, web build | exit 0 |
+| daemon `vitest run` | exit 0: 72 files passed, 2 skipped; 791 tests passed, 22 skipped |
+| web `vitest run` (alone) | exit 1: 2523 passed, 2 failed (`ProjectExecutionAreas` Pulse badge ×2) |
+| server `vitest run --maxWorkers=4` | exit 1: 7669 passed, 2 failed, 5 skipped; 607 files passed, 1 skipped |
+
+Failures, located and handled:
+
+1. `hostFolderReadRegistry` expected `host_offline` for a generic Host action
+   lost to a disconnect; the block deliberately answers `host_disconnected`
+   (sent, outcome unknown). Stale expectation updated. Tracing its callers found
+   `POST /hosts/:id/browse-directories` still mapping only `host_offline` /
+   `host_timeout` to 409, so a disconnect mid-listing became a 422 with a raw
+   code: **production fix** (`hosts/routes.ts`, one condition), new
+   `hostsRoutes` case (409, `code: host_disconnected`); reverting the fix fails
+   it (422).
+2. `operationFaultsDb` pre-core case: the immutable `95d61d90` server source no
+   longer compiled against the current protocol because the fix round declared
+   `AmbientSyncReport.partial_sessions` `.default(0)` (required in the inferred
+   type). **Protocol/production fix**: `.optional()` (nothing parses the schema
+   at runtime on the server; older recorded reports lack it; the web panel
+   already reads `?? 0`; `needs_attention` is decided by `report.error`), and the
+   single writer increments `(partial_sessions ?? 0) + 1`.
+3. Web `ProjectExecutionAreas` (Project block, untouched by Host): fails only
+   under the full parallel run; alone 3/3 passes (5/5 tests) and the whole
+   `src/modules/projects` directory passes 383/383. `ProjectAreaLayout` and
+   this test are identical in the formal base `1127954` and the candidate.
+   Located afterwards as a test synchronization race; test-only repair, no
+   production change. Both failed cases waited 15s for a badge refresh that
+   never came: the triggering event was lost. Cause: the tests fired it
+   (`notifyReviewAttentionChanged()`, or the captured SSE `emit`) as soon as
+   the badge showed `2`. React commits that text before it runs the commit's
+   effects. Both the review-event listener bound to the loaded Project and the
+   `useProjectLiveRefresh` subscription are attached by those effects. On a
+   loaded event loop, RTL `waitFor`'s `setTimeout(0)` drain can resolve
+   before React's scheduler task. The event then reaches the pre-load listener
+   (`loadedScope !== scope`, returns) or the not-yet-captured `emit` no-op.
+   Measured with a scratch probe (deleted) rendering the layout 80× under
+   64 busy-loop processes on 32 cores: the subscription was missing when the
+   badge appeared in 1/80 (2/60 in an earlier run). The review event was lost
+   in exactly those cases (1/80). After waiting for the subscription request,
+   it was missing 0/80 and lost 0/80. Unloaded: 0/40. A second, cascading
+   defect: a failed review-event case left its unconsumed
+   `getOverview.mockResolvedValueOnce` queued (`vi.clearAllMocks` keeps
+   it), which the next case inherited. Repair (test file only): wait for the
+   badge **and** `streamUpdates('project-1', …)` before firing the event. Both
+   effects belong to the same commit, so the call shows the listener is
+   current. `getOverview` is `mockReset()` in `beforeEach`. No sleep, timeout,
+   budget, skip or assertion change.
+4. Browser, Host entries only: `subscription-usage` failed 4/37 (the en
+   "transient refresh failure → retry" cases); the formal base passes 37/37, so
+   it is block-introduced. Cause: its fixture still answered the quota-check
+   POST with the pre-block synchronous row. Test fixture updated to the real
+   contract (admitted receipt in the operation envelope, then the status read
+   with the frozen row; a Host timeout succeeds with `quota.error`, as
+   `connectionRegistry` produces it). The Host Agent catalog case
+   (`conversation-layout`) passed with the same stale shape only because it
+   does not assert the install outcome; its fixture now admits and settles the
+   install/rollback commands too, and the screenshot shows the success notice.
+
+Targeted re-checks after the repairs (`targeted/summary.txt`, all exit 0, none
+skipped): protocol build/typecheck and suite 442/442; server, daemon and web
+typecheck; server build; server PG `hostFolderReadRegistry`, `hostsRoutes`,
+`operationFaultsDb`, `hostCommandAuthorityDb`, `importedSessionsDb`,
+`hostCommandWorkerDb`, `agentGuides` 116/116; web `AmbientSessionImportPanel`,
+`host-command-api`, `HostAgents`, `modules/usage` 75/75; web build; browser
+`subscription-usage` 37/37 and Host Agent catalog 1/1 (Chromium, synthetic
+APIs).
+
+`ProjectExecutionAreas` targeted checks after its repair (Node 24; logs in
+`/tmp/rainver-pea-fix/summary.txt`). The file ran 5× under the same 64-process
+CPU load, exit 0 each, 5/5. `src/modules/projects` exit 0, 383/383.
+`useProjectLiveRefresh` + `testHygiene` exit 0, 7/7. Web `tsc --noEmit` exit 0.
+Server `agentGuides` exit 0, 8/8.
+Mutation: with the layout's review-event `addEventListener` removed, the file
+exits 1 with only the review-event case failing (4 passed). Before the
+`mockReset` repair, the next case also failed. Production restored and
+unchanged. The full web suite was not rerun, so its recorded exit 1 above
+stands. Not addressed: a review event that arrives while the shell's first
+overview read is still in flight is dropped by the `loadedScope` guard.
+That is pre-existing and not the cause here.
+
+Limits: the full server and web suites were not rerun after these narrow
+repairs. Server exit 1 also carries the accepted budget overrun
+(`pluginFrontendDb` 64.3s / 30s, import total 203.7s / 190s); no budget was
+changed. The 18-file browser comparison was not rerun; its earlier
+failing groups remain as recorded. The browser checks use synthetic APIs. The
+Host evidence is registry + real PG with constructed daemon frames and the
+daemon journal on a real filesystem, not an end-to-end run with a live daemon
+process. The production repairs (route condition, protocol optionality,
+writer) were made after the dual review and need that review again.
+
+## Settings / tool configuration block (working tree on `fd454edd`)
+
+Scope, outcomes and narrowings: [SYSTEM_ACTIONS](SYSTEM_ACTIONS.md#system-settings-and-tool-configuration-commands)
+and the plan's "Fourth block" section. Inventory **636 = 293 legacy + 53
+exemptions + 290 core** (was 327 / 52 / 257); exactly the 34 listed rows
+changed classification, no route was added or removed.
+
+Acceptance evidence (Node 24.22.2, shared real PostgreSQL; vendor, webhook and
+backup effects are local fakes, nothing reached an external service):
+
+| Check | Evidence |
+|---|---|
+| Strict input, key required, replay vs key reuse, hidden 404, authority revoked before replay | `settingsOperationsDb`, `instanceOperationsSettings`, `deploymentGroup`, `acpAgentsRoutes` |
+| No API key / proxy credential in receipts, audit, intents, Jobs; key encrypted only | `settingsOperationsDb` (`persistedText`), `instanceOperationsSettings` |
+| Embedding chain change resets and queues backfill in the same transaction | `settingsOperationsDb` |
+| System command: receipt, worker after commit, issuer-only status read | `settingsOperationsDb`, `apiPlanUsageDb` |
+| Unknown outcome never repeated; expiry; cancelled Job; foreign Job refused | `settingsOperationsDb` |
+| Session signed out / account disabled during vendor wait; concurrent same read is `system_command_busy` | `apiPlanUsageDb` |
+| Plugin install migrations atomic with settlement; operation-package enable/disable local effects outside the transaction | `settingsOperationsDb`, `pluginLifecycleDb`, `pluginFrontendDb` (real Chromium + PG + HTTP) |
+| Browser helpers: keyed submit, exact status read, never resubmit | web `settings-command-api.test.ts`; `subscription-usage.browser.mjs` (page-route fixtures, not a live server) |
+
+Not covered: a real vendor, a real webhook target, a real `pg_dump` archive
+through the command (the backup service has its own tests), and the
+managed-subscription quota command beyond its authority checks.
+
+### Settings block review repair (Codex 8cba3638, five blockers; working tree = `8265c920` + repair)
+
+Source: full tree of `8265c9205ac7` (parent formal Host `fd454edd`), applied in
+this worktree; Project `fb827016`, Agent/Room `11279541` and Host `fd454edd`
+are inherited unchanged. Only the five findings' owners changed; no migration
+(0020–0025 untouched, none added — the cleanup obligation is a Job and the
+refresh record lives in the existing `credentials.metadata_json`).
+
+| # | Finding | Repair | Evidence (shared real PG) |
+|---|---|---|---|
+| 1 P1 | plugin disable closed local effects before the operation validated key/input/authority | `lifecycle.ts`: nothing local before a new outcome commits; the disable transaction records a delayed `official_plugin_scope_cleanup` Job (generation `disabled_at`); after commit the request cleans under a share lock and retires it; the Job recovers a crash/lost commit and skips a newer generation | `pluginLifecycleDb` "touches no local effect before a new disable commits, and never cleans a newer generation" (no key, malformed, non-admin 404, reused key, replay after re-enable, crash-retry of the old obligation, committed-without-cleanup recovered once then superseded) + the existing LIFO/deadline/concurrency cases |
+| 2 P2 | disconnect replay 404 after the credential was deleted | admission/replay/release = instance admin + Provider owner + managed-channel marker (`connected:false`); "still connected" only in the first execution | `settingsOperationsDb` "replays a successful disconnect by key…" (replay equal, second key 404, admin withdrawn → 404) |
+| 3 P2 | grant revoke admitted and released without current writer authority | `assertGrantRevokerIn`: Provider owner or target Space owner/admin, from the Provider row and target Space (not the grant row), at admission, replay and release | `settingsOperationsDb` "re-authorizes a grant revoke replay…" (target admin replay, grant row deleted, demotion → 404; owner replay, ownership moved, target-admin path, demotion → 404) |
+| 4 P1 | quota command `repeatable` while the OAuth refresh (rotating vendor IO) ran inside a row-lock transaction | `resolveManagedSubscriptionCredential`: durable `oauth_refresh` intent (HMAC `from`, attempt, lease) → vendor call outside every transaction → guarded settle; stale lease or ambiguous failure → `unknown` → `subscription_reconnect_required`, never re-sent; both consumers (Run invocation target, quota command) use it | `managedSubscriptionOAuthDb` (no `credentials` lock held and row `NOWAIT`-lockable during the vendor call, no token in the record; real `pg_terminate_backend` of the settle backend after rotation → in-flight → unknown → refused twice, vendor saw the old token once; ambiguous failure vs definite refusal; relogin clears; original concurrent single-refresh case) + `settingsOperationsDb` quota command `failed subscription_reconnect_required`, not repeated |
+| 5 P1 | login stream persisted after the vendor wait without rechecking authority | `persistSubscription` rechecks active user + active Space membership (share-locked) + instance admin in its write transaction; DTO read in it; stream reports a generic failure for 403/404 | `managedSubscriptionOAuthDb` three barrier cases (user disabled / membership removed / admin email withdrawn while the login waited → 404, zero Provider/credential/grant rows); normal login cases unchanged |
+
+Targeted commands (server, real PG; no full server/web/daemon/protocol suite,
+no browser suite): `pluginLifecycleDb` 29/29 (one case first failed only because
+this fresh worktree lacked `packages/agent-cli/dist`; rerun after building it
+passed); `managedSubscriptionOAuthDb` 8/8; `settingsOperationsDb` 15/15;
+consumers `providerGroup providersCredentialsAuthority pluginFrontendDb
+pluginInvocationDb pluginOperationsDb plugins pluginHost operationRoutes
+deploymentGroup sourceGoalCompatibilityDb researchAreaDb
+projectResearchSynthesisReconcileDb researchAdhocOperationDb apiPlanUsageDb
+instanceOperationsSettings acpAgentsRoutes` 16 files / 251 tests passed;
+`tsc -p tsconfig.typecheck.json` exit 0. Limits: the vendor is a local
+rotating fake; a refresh that failed before sending (DNS) is also classified
+unknown (fail-closed: reconnect); `cleanup_pending` is reported on the first
+response only, the durable record is `scope_cleanup_failed`.
+
+### Settings block plugin cleanup repair (Codex a0982f79, two P1; working tree = `044588fc` + repair)
+
+Source: full tree of candidate `044588fc` (itself `8265c920` + the five-blocker
+repair above), applied in this worktree on branch HEAD `809a0cfe`; Host
+`fd454edd`, Agent/Room `11279541` and Project `fb827016` unchanged. Only the
+plugin lifecycle owners changed; no migration (0020–0025 untouched, none
+added — the obligation stays the existing Job, events reuse
+`official_plugin_events`). The other findings of the block (provider
+disconnect/revoke, OAuth refresh, login stream, route/core coverage, HMAC
+secret) were not touched.
+
+| # | Finding | Repair | Evidence (shared real PG) |
+|---|---|---|---|
+| 1 P1 | `runScopeCleanup` awaited arbitrary async dispose inside a transaction holding the enablement row `FOR SHARE` | `lifecycle.ts`: short claim txn (generation current?) → dispose with no transaction/lock → short settle txn (generation fenced again; event or Job retirement). Ordering against a concurrent enable/newer disable is the existing per-scope process serialization + admission hold; `background.ts` Job disposal moved after its transaction | `pluginLifecycleDb` "disposes outside every DB transaction…": inside the dispose, zero other-backend locks on `official_plugin_enablements`, zero idle-in-transaction backends, and a `lock_timeout 1s` UPDATE of the same row in another connection succeeds; a concurrent enable stays uncommitted during the slow dispose, then both finish (no deadlock), Job retired |
+| 2 P1 | a rejected dispose deleted the scope and cached the rejected promise; the Job's next empty scan completed | `effectScopes.ts`: per-callback state (done / retry-after-reject / in-flight awaited, never re-invoked); a rejected scope is retained and quarantined (`enter` refused, reenable 409); `unreleased()` reports failed/in-flight. Job: retries only what is not done, never completes while anything is unreleased, 3 bounded attempts, last records `scope_cleanup_needs_attention` and ends `failed`; repair = a new disable; payload carries `process_instance`, a different process reports `origin_process_not_current` | `pluginLifecycleDb` "retains a failed, unreleased scope…" (two scopes, one released, one retained; real `JobWorker` retries only the failed callback → `{cleaned:true}`, then reenable/write 200); "never completes an unreleased cleanup…" (3 real worker attempts → Job `failed` attempts 3, one `scope_cleanup_needs_attention`, 4 `scope_cleanup_failed`, reenable still 409; new disable releases it); deadline case extended (Job during an in-flight callback rejects, callback invoked once, reenable 409; after it settles the Job → cleaned, still once); "recovers an obligation recorded by another process…" (`origin_process_not_current`; payload without identity refused) |
+
+Targeted commands (server, real PG; no full suite, no browser suite, OAuth
+consumers not rerun): `vitest run test/pluginHost.test.ts
+test/pluginLifecycleDb.test.ts test/pluginFrontendDb.test.ts
+test/pluginInvocationDb.test.ts test/settingsOperationsDb.test.ts
+test/agentGuides.test.ts` 6 files / 68 tests passed (pluginLifecycleDb 32/32;
+final evidence run with `--no-file-parallelism`, exit 0; pluginLifecycleDb alone
+3/3 runs 32/32). Run with file parallelism the same set passed 2 of 4 times; the
+failures were install/role-DDL cases (`tuple concurrently updated`, `requires
+explicit offline repair`) where pluginLifecycleDb and pluginInvocationDb race on
+the same cluster-wide `operation_probe` roles/journal — not cleanup cases, and
+not compared against the base tree; `tsc -p tsconfig.typecheck.json` exit 0. This fresh worktree needed workspace
+packages and `packages/agent-cli/dist` built by direct `tsc` (its path contains
+`:`, which breaks `node_modules/.bin` on PATH). Limits: local effects are
+process-local, so a restart is reported, not proven cleaned; a retained scope
+whose Job exhausted stays quarantined until a new disable or a restart;
+dispose callbacks must tolerate retry after their own rejection.
+
+### Settings block plugin cleanup repair (Codex 465e2745, three P1 + one P2; working tree = `d2fb7f89` + repair)
+
+Source: full tree of `d2fb7f89` (the a0982f79 repair above), applied in this
+worktree on branch HEAD `809a0cfe`; Host `fd454edd`, Agent/Room `11279541`
+and Project `fb827016` unchanged. Only the plugin lifecycle owners, the plugin
+list read and its card changed; migration **0026** (`official_plugin_scope_holds`)
+is appended, 0000–0025 untouched. Provider/OAuth/HMAC/system-command code and
+the route/core coverage were not touched.
+
+| # | Finding | Repair | Evidence (shared real PG unless noted) |
+|---|---|---|---|
+| 1 P1 | claim/settle fenced only in-process; another process's enable → new work → disable let an old scope-wide cleanup close the new work | resources bound to a durable hold (package, scope, owner process, generation); admission is a short transaction serialized with enable/disable by the scope row locks; a disable marks holds `releasing` in its transaction (release round); a cleanup closes only its round's holds, a newer enable admits under a new hold, an old-generation Job's final transaction refuses once its hold is not `active`; enable 409 while any hold is releasing in any process; dispose stays outside every transaction | `pluginLifecycleDb` "fences generations across processes…": two independent host compositions (own effects/lease); B's disable releases B's hold only, A's stays releasing; B's reenable 409 twice, including while A's dispose is held by a barrier with zero idle-in-transaction backends; A's recovery releases it; B enables, A admits a new hold; the old round replayed by both processes and A's recovery leave it untouched; the old hold no longer commits; the next disable releases exactly the new hold. "disposes outside every DB transaction…" (no lock on enablement/hold tables, `lock_timeout` writes to both succeed) |
+| 2 P1 | a Job in another instance returned `cleaned:false` normally and ended the obligation while the owner still held failed resources | the obligation is the hold row; owner = session advisory lock lease; only the owner releases (after commit, own recovery pass, or the Job in its process); another worker defers while the owner is alive (no attempt spent), never completes for a missing plugin, settles only `owner_gone` after the lease was free across a 15 s grace; owner attempts are bounded (3 → `needs_attention`, automatic retries stop); Job exhaustion leaves holds `releasing`; lease loss self-fences the owner (abort, drain, new lease) | "keeps an obligation of a live owner…": two live owners with failed resources; a third process's real `JobWorker` claim → `deferred`, attempts 0, nothing settled; Job cancelled → read still `pending 2`, enable 409; B recovers its own; A's 3 attempts → `needs_attention`; retry round via the HTTP route; the third process at attempt 3 → fails, hold still releasing; A's process closes; a restarted process has a new identity; first free-lease observation → deferred, after grace → `owner_gone`, read empty, enable 200. "fences an owner whose lease session ended…" (`pg_terminate_backend` of the lease) and "never completes an unreleased cleanup…" (3 real worker attempts → Job `failed`, hold `needs_attention`, owner pass does not retry) |
+| 3 P1 | `onDispose` after the drain snapshot was never disposed while the scope reported released | per-hold drain loops until no undone callback remains; a callback registered after the snapshot, after a completed drain or after the deadline is tracked and drained; a hold is released only when every callback is done and no entered Job remains (`leave`); done callbacks never rerun, rejected ones are retried by the next owner attempt, in-flight ones are awaited, not re-entered | `pluginHost` (no DB, barriers/fake timers): late registration inside a held drain and after it, not released until the Job leaves; registration after the deadline while in flight, failure kept `failed`, retry runs only the failed callback; newer hold untouched. `pluginLifecycleDb` "drains a resource a running Job registers…": a real canonical Job registers `late` after its SQL was cancelled; the disable reports `cleanup_pending:false` only after it ran (`second, first, late`) |
+| 4 P2 | attention was an event only; the disabled card offered only Enable (409) | `GET /api/v1/plugins` and `/:id` add `cleanup` (state, pending/attention counts, last attempt) for the plugin's administrators (B53), no owner/path/error text; the card shows it under the text with **Retry cleanup** (shared `Button`), which is a new disable round; Enable is visibly disabled while it is present | server: the read in the two retain/attention cases (`needs_attention`, private error text absent) and `null` after repair/`owner_gone`; web `PluginsPage.test.tsx` 6/6 (status + Enable disabled, retry → `disable('probe')` → reload clears, retry still pending → message and status kept, retry rejected → action failed, zh-CN); one-off Chromium screenshots (built app, synthetic API, dark/light × en/zh-CN × 390/1280) |
+
+Targeted commands (all exit 0): server `tsc -p tsconfig.typecheck.json`;
+`vitest run --no-file-parallelism test/pluginHost.test.ts
+test/pluginLifecycleDb.test.ts test/pluginFrontendDb.test.ts
+test/pluginInvocationDb.test.ts test/pluginOperationsDb.test.ts
+test/plugins.test.ts test/pluginSessionReuseDb.test.ts
+test/settingsOperationsDb.test.ts test/agentGuides.test.ts
+test/migrationArtifacts.test.ts test/baselineSchema.test.ts` 11 files / 172
+tests; `pluginLifecycleDb` alone twice more 35/35; web `tsc --noEmit` and
+`vitest run src/modules/plugins/PluginsPage.test.tsx` 6/6 (with
+`NODE_OPTIONS=--no-experimental-webstorage`: Node 25's own `localStorage`
+otherwise shadows jsdom's for every web test file); `vite build`. No full
+server/web/daemon/protocol suite and no browser suite. Limits: the grace
+period trusts an owner that lost its lease to drain within 15 s (it fences on
+its next 2 s pass); released/owner_gone hold rows are retained (no pruning);
+a resource held after an install-state change (not a disable) is not a release
+round; at 390 px English the legacy inline action group already lets
+Enable/Disable cross the card edge without any cleanup state (pre-existing, not
+restyled here).
+
+### Settings block plugin cleanup repair (Codex e566d3a3, two P1 + two P2; working tree = `667bf04b` + repair)
+
+Source: full tree of `667bf04b` (the 465e2745 repair above), applied in this
+worktree on branch HEAD `809a0cfe`; Host `fd454edd`, Agent/Room `11279541` and
+Project `fb827016` unchanged. Only `plugins/{lifecycle,effectScopes,background}.ts`,
+their two test files and the plugin guides changed. No migration (0026 columns
+suffice; 0000–0026 untouched), no protocol/DTO or web change, no
+Provider/OAuth/HMAC/system-command code touched.
+
+| # | Finding | Repair | Evidence (shared real PG unless noted) |
+|---|---|---|---|
+| 1 P1 | lease checked once per recovery pass, then up to 50 serial 3 s holds; admission awaited only the first `ready`; Job commit/background check only `state='active'`: a lost lease could keep admitting/committing past a foreign 15 s grace | separate 1 s lease timer (never behind cleanup); lease = (instance, dedicated session pid); admission proves it in its transaction after the scope lock, the Job's commit and 1 s abort check prove hold `active` + current instance + lease held by that pid (`pluginScopeHoldCurrent`); errors fail closed; a lost lease fences at once (abort all holds, drains outside transactions), renews without waiting for the old unlock, adopts still-held holds as `releasing`, records the rest released | "checks its lease apart from a busy cleanup pass…": two Spaces; the recovery pass is provably inside a 3 s in-flight attempt; lease backend `pg_terminate_backend`; before any lease check the in-transaction commit check is false; admission rejects (`lease is not held`); the lease check answers < 1 s while the pass is still blocked; the active hold aborts; a running real Job is not committed; process B sees the old instance free → grace → `owner_gone`; the old instance's holds cannot commit; A's next pass under a new instance adopts the in-flight hold (`scope_cleanup_reopened` from `owner_gone`), records the drained one released, enable of that Space 409; new admission works; after the drain → released, enable 200 |
+| 2 P1 | a saved `onDispose` after state deletion / DB `released` revived only memory; nothing durable, enable allowed | lifecycle per hold: open → closing → released; a late registration on a released hold revives it (`onRevive`), drains again, and the owner immediately (and on each pass until done) makes the row `releasing` under its current instance as a new round (attempts 0) with `scope_cleanup_reopened`; read/write of a hold's outcome is ordered per hold (`holdOp`) so adoption never lands between a `released` read and its write | "keeps a callback registered after its hold was released…": Job entry leaves → disable → row `released`, local released; saved reference registers a failing callback → row `releasing`, card `pending 1`, enable 409; owner pass retries only it → released, card empty; re-enable, new hold; saved reference registers an in-flight callback → old row `releasing` (card pending), owner attempt 1 in flight, new hold `active`, not aborted, still commits a real write; after it ends → released; new hold untouched. `pluginHost` (no DB): revive reported once, `closingHolds`, refusal to re-enter, `abortAll` |
+| 3 P2 | the Job called the owner settle unconditionally: after three timer failures it ran a fourth | every entry (request, timer, Job) claims one attempt in one short write: due, not attention, below 3, `next_attempt_at` moved forward; the claim of the third marks `needs_attention` (crash-safe), a release clears it; the Job defers while an own retry is pending, fails when all remaining need attention | "shares one durable attempt counter…": owner process with its real interval timer under fake `setInterval` + DB due clock; (a) request 1, timer 2–3, then three real `JobWorker` runs → 0 more calls, Job `failed`, timer → 0 more; (b) new round: request 1, Job runs → `deferred`, `deferred`, `failed` (2nd, 3rd), timer → 0 more; (c) new round: timer + two handler calls + direct pass concurrently ×3 → exactly 2 more calls; (d) repair round → released, no rerun of the done callback, enable |
+| 4 P2 | foreign owner judged only by the round's Job: cancel/exhaust Job then owner crash → hold releasing forever, enable 409 | every process's recovery pass judges foreign owners of any `releasing` hold (one probe per instance, ≤ 20 per pass): alive → reset grace, free → mark, after 15 s → `owner_gone`; failed probe/write settles nothing; no Job needed; Job keeps the same judgement scoped to its round | "recovers a crashed owner releasing hold with no cleanup Job left…": (1) Job cancelled, live owner B: A's passes (even with a forced-old `owner_lost_at`) leave it releasing and reset grace, enable 409; B closes; a fresh process **without the plugin** → first pass grace, then `owner_gone`, enable 200; (2) owner C reaches attention, three real Job runs → `failed`; A's pass leaves the live C alone; C closes; A's passes → grace → `owner_gone`; no cleanup Job pending at the end |
+
+Targeted commands (exit codes as stated): server `tsc -p tsconfig.typecheck.json`
+exit 0; final `vitest run --no-file-parallelism test/pluginHost.test.ts
+test/pluginLifecycleDb.test.ts test/pluginFrontendDb.test.ts
+test/pluginInvocationDb.test.ts test/agentGuides.test.ts` exit 0, 5 files / 61
+tests; `pluginLifecycleDb` alone twice more (before the last one-line pruning
+change) exit 0, 37/37 each. `packages/agent-cli` dist was built for the Agent Run bearer case
+(environment only). Not run: full server/web/daemon/protocol suites, browser
+suite, OAuth consumers, web tests (no web or DTO change). Limits: a DB fault
+during the foreign probe is handled by code (no settlement), not
+fault-injected; a process that loses its lease cannot cancel callbacks still
+running (writes are fenced, the hold is adopted and stays visible); the
+third attempt shows `needs_attention` on the card while it runs; released and
+`owner_gone` rows are retained.
+
+### Settings block plugin cleanup repair (Codex fdb60e89, two P1 + two P2; working tree = `3e16e561` + repair)
+
+Source: full tree of `3e16e561` (the e566d3a3 repair above), applied in this
+worktree on branch HEAD `809a0cfe`; Host `fd454edd`, Agent/Room `11279541` and
+Project `fb827016` unchanged. Changed: `plugins/{lifecycle,effectScopes,background}.ts`,
+`db/operationTransaction.ts` (one host-only helper), `protocol` `PluginBackgroundContext`
+(`retain()`, `PluginRetainedEffects`), the lifecycle fixture and its two test files,
+and the plugin guides. No migration (0026 columns suffice; 0000–0026 untouched,
+no 0027), no route, DTO read model or web change, no Provider/OAuth/HMAC/system-command code touched.
+
+| # | Finding | Repair | Evidence (shared real PG) |
+|---|---|---|---|
+| 1 P1 | `leaseHeldBy` was a `pg_locks` read before COMMIT: the lease backend could be terminated after it, and a paused old transaction commit after a foreign/own settlement; admission the same; the foreign probe acquired the old key (a reused pid could look like the owner) | the commit check reads the hold `active`, owned by the admitting instance, lease held by its pid, **`FOR SHARE`** in the Job's transaction: the row lock lasts through COMMIT, so disable rounds, adoption, own release and `owner_gone` all wait for it (or skip it) and fail the check after it; admission's INSERT and every claim/reopen prove the lease in the same statement/transaction; probes only read `pg_locks` (no one but the owner session ever takes a key); errors fail closed | check passed → barrier → lease backend terminated → own lease check/renewal + adoption, process B's disable and B's foreign pass all wait (hold untouched, disable unresolved, no callback after 300 ms) → old COMMIT first (`disabledAt ≥ commit`), then `releasing`, one claimed drain; a failed statement in the transaction throws; an impersonating session holding the old key does not make the old instance current |
+| 2 P1 | a saved `onDispose` after release revived only memory, adoption async with errors swallowed, reopen without scope lock: an enable could see "clean" | a closed handle refuses registration synchronously (before the caller creates anything); late resources use `ctx.retain()`: pin locally, then one transaction with the scope's write locks + hold row lock + lease proof makes the hold `releasing` (new round, `scope_cleanup_reopened`) and only then resolves; failure unpins and rejects; adoption after lease loss uses the same reopen (immediately after renewal and every pass) | saved `onDispose` after DB `released` throws, nothing revived; injected trigger failure → `retain()` rejects, still released; reservation stuck on the hold row while process B enables → B waits, then 409; this process's enable checked but uncommitted → reservation waits for it, then reopens only the old hold, newer generation active and committing; owner exit drains the retained resource and the newer generation's own in one claimed exit attempt each |
+| 3 P2 | a revived hold drained without a SQL claim: the late callback's first failure stayed `attempts 0`, then three more | callbacks run only in a drain started by a claimed attempt (`closeHold` after the claim); registration, leave, lease loss and shutdown never start one; inside an attempt's bounded wait a registration/leave continues it; exit claims without waiting for due | a retained late callback does not run before a claim; first failure = attempt 1; not due → neither timer nor Job runs it; Job attempt 2, concurrent timer+Job+timer attempt 3 → `needs_attention`; no fourth; only the product retry route's new round runs it (4 calls total); a real Job's `ctx.retain()` drains in the disable's attempt; unit: closed handle, pin, no callback outside a claim, a registration after an attempt waits for the next |
+| 4 P2 | foreign scan `ORDER BY min(updated_at) LIMIT 20`: live owners never update the field and starve the rest | rotation by `owner_instance` after a per-process cursor (per-round cursor for the Job), wrapping, ≤ 20 per pass; lease read inside each settling statement; locked rows skipped; a DB error ends the pass with the cursor at the last finished owner | 20 live owners (real advisory locks, oldest rows, attention) + 1 crashed owner without Job: injected DB fault on the crashed rows over 3 passes settles nothing and returns; then observed within 2 passes, `owner_gone` within 2 more after grace; live owners never marked; one live lease ending is reached too |
+
+Targeted commands (this worktree, Node 25, shared real PG): `packages/protocol`
+`tsc -p tsconfig.build.json` exit 0; server `tsc --noEmit -p tsconfig.typecheck.json`
+exit 0; `vitest run --no-file-parallelism test/pluginHost.test.ts
+test/pluginLifecycleDb.test.ts test/pluginFrontendDb.test.ts
+test/pluginInvocationDb.test.ts test/agentGuides.test.ts` exit 0, 5 files / 65
+passed, 0 failed, 0 skipped; after the guide updates `pluginLifecycleDb` +
+`agentGuides` once more exit 0, 2 files / 48 passed; whole-tree `git diff --check`
+against `809a0cfe` clean (the earlier extra blank line at this file's end removed). Environment only: dependencies installed offline
+from the lockfile and `packages/agent-cli` dist built (the Agent Run bearer case
+needs it; its first run failed for that missing file, then passed). Not run:
+full server/web/daemon suites, browser suite, OAuth consumers, web tests
+(`PluginsPage` unchanged; the cleanup read model is unchanged).
+
+Limits (honest): the fences cover PostgreSQL state only. A plugin effect
+outside PostgreSQL that was already issued is not undone; a process paused or
+cut off past the 15 s grace is presumed gone (`owner_gone`) and what it
+registers on return is adopted again, but an enable may have run in between;
+external effects that must never act for a stale owner need an outbox row in
+the Job's transaction or a fencing token checked by the resource. A process
+that lost its lease runs no callbacks until it can claim (DB reachable). The
+rotation cursor is per process and resets on restart. A hold row a commit
+still share-locks is skipped by background settlement until it ends. Real pid
+reuse is not reproducible in a test; it is excluded by construction (only the
+owner session takes its key).
+
+### Settings block worker-authority and late-resource repair (Codex c80caf46, two P1 + one P2; working tree = `958d897e` + repair)
+
+Source: full tree of `958d897e` (the fdb60e89 repair above; Host `fd454edd`,
+Agent/Room `11279541` and Project `fb827016` inherited unchanged), materialized
+in this worktree on branch HEAD `809a0cfe`, plus this repair: 16 files vs
+`958d897e` (+645/−86, including this section and plan 05): `systemCommands/{worker,routes}.ts`,
+`plugins/{effectScopes,lifecycle,background}.ts`, `protocol`
+`pluginOperations.ts` (comments only: no type or signature change), the
+lifecycle fixture (an original-contract consumer) and manifest, three test files,
+and the guides (`SYSTEM_ACTIONS`, `OFFICIAL_OPTIONAL_MODULES`,
+`DATABASE_AND_TRANSACTIONS`). No migration (0000–0026 untouched, no 0027), no
+route, DTO read model or web change, no Host/OAuth code touched. The
+c80caf46-confirmed pieces (hold `FOR SHARE` through COMMIT and transition order,
+three-attempt drain main path, foreign-owner fair cursor) are unchanged.
+
+| # | Finding | Repair | Evidence (shared real PG) |
+|---|---|---|---|
+| 1 P1 | the system-command worker's actor check did not lock: after it passed, another transaction could disable the user, remove the membership or withdraw instance administration and commit while the install DDL ran, and the install still succeeded | the worker's single authority door (`owner`, used by dispatch, settle and `atomic`) calls `assertCurrentActor(…, lock=true)`: user and membership rows `FOR SHARE` before the kind's own check (the users row also carries the instance-admin email), held until that transaction commits; the status read share-locks the same rows. Other kinds use the same door (their external effect still runs after the dispatch commit; a later revocation withholds the result) | for each revocation (admin email changed, user disabled, membership removed): install authorized and paused inside its DDL/settlement transaction (`plugin_installs` locked by a blocker) → the revoking UPDATE is observed waiting on a lock → blocker released → the revoking transaction, once through, reads the intent `succeeded` (the install committed first); afterwards the status read and a keyed replay are 404. Revocation first (uncommitted while the worker waits on `FOR SHARE OF m,u`) → `failed system_command_authority_withdrawn`, `plugin_installs` row unchanged. Negative control: with `lock=false` all four cases fail |
+| 2 P1 | `onDispose` through a closed handle threw synchronously, but the original contract (`809a0cfe`) let a handler return, create its resource, then register: that resource existed and was never cleaned | a closed handle takes the callback over: it is tracked locally at once (a released state is restored), so no owner path records the hold released; a release write rechecks the local state inside its own transaction and rolls back (`writeReleased`); a closing hold is reopened through the scope-locked reopen, entered synchronously into this process's scope transition queue; an enable is refused while such a takeover is pending locally (`localCleanupPending`); after the owner exited it is recorded `releasing` under the ended instance (`scope_cleanup_reopened`, `after_exit`) and settles `owner_gone`. The takeover runs as host work outside the plugin's operation work. Protocol types unchanged | real fixture consumer (handler returns → resource created after a test gate → saved `call.onDispose`): taken over while active, the owner pass does not release it, the disable's claimed attempt disposes it once, the saved dispose then replays success with no second effect; after release → same-tick in-process enable refused 409 (ordered after the reopen), process B's enable 409, cleanup card `pending`, disposed only by the next claimed attempt, then B enables; registration while the release write is paused in its transaction (trigger on an advisory lock) → that write rolls back, hold stays `releasing` attempt 1, disposed by attempt 2; owner B exits, then the resource appears → durably `releasing`, enable 409, `owner_gone` after grace, never disposed. Negative control: without the in-transaction recheck the paused-release case fails |
+| 3 P2 | the function `onDispose` returns ran the callback directly: unlimited calls after failures, even after `needs_attention`, and inside the Job's transaction | it goes through the same counted invocation as drains: a callback is invoked at most three times per durable round (`DISPOSER_ATTEMPTS`, reset when a claimed attempt of a new round starts), an invocation in flight is shared, a success is never re-run, after the round's last claimed attempt failed nothing is invoked until a new round; inside an open Job transaction (`inJobTransaction`, inherited by continuations, cleared after the transaction ended) it rejects `PluginDisposeRefused` without running; invocations run outside any inherited transaction mark | failing original-contract resource: claimed attempt 1, the saved dispose as invocation 2 (rejects with the callback's error), claimed attempt 2 as invocation 3; the third claimed attempt invokes nothing and marks `needs_attention`; three concurrent saved calls then reject `PluginDisposeRefused` with no fourth invocation; the product retry route's new round invokes it once (4 total) and releases; a saved call then resolves with no effect. Job calling its early dispose inside its transaction: refused, not run, resolved promise not observed (no deadlock), disposed once by the disable. Negative control: without the transaction check that case fails |
+
+Targeted commands (this worktree, Node 25, shared real PG): `packages/protocol`
+`tsc -p tsconfig.build.json` exit 0; server `tsc --noEmit -p tsconfig.typecheck.json`
+exit 0; `vitest run --no-file-parallelism test/settingsOperationsDb.test.ts
+test/pluginHost.test.ts test/pluginLifecycleDb.test.ts test/pluginFrontendDb.test.ts
+test/pluginInvocationDb.test.ts test/agentGuides.test.ts` exit 0, 6 files / 90
+passed, 0 failed, 0 skipped; after the typing fix of the revocation cases
+`settingsOperationsDb` alone exit 0, 19/19. Whole-tree `git diff --check`
+against `809a0cfe` clean. Environment only: dependencies installed offline
+from the lockfile; `packages/{protocol,folder-read,outbound-guard,reader-document,agent-cli}`
+built locally (the Agent Run bearer case first failed on the missing CLI dist,
+then passed). Not run: full server/web/daemon/protocol suites, browser suite,
+OAuth consumers, web tests (no web, DTO or read-model change).
+
+Limits (honest): a registration made after its resource already exists cannot
+be atomic with that resource. A resource an original-contract consumer creates
+after its hold's cleanup released it is taken over and reopened, but an enable
+that committed before that reopen (in another process, or past its check in
+this one) saw the scope clean; the old hold then shows as pending cleanup on
+the enabled scope. `ctx.retain()` before creating the resource has no such
+window. A taken-over resource of an exhausted round waits for a new disable
+round. The per-callback budget is process-local (callbacks are process-local);
+the hold's durable counter still bounds claimed attempts. A system command's
+external effect (connection test, backup, webhook) runs after its dispatch
+commit; a revocation after that withholds only the result.
+
+### Settings block registration-window and early-dispose repair (Codex 4a3d2805, one P1 + one P2; working tree = `53d4c3a9` + repair)
+
+Source: full tree of `53d4c3a94fa0f5cfad9719d20a2738696716c330` (the c80caf46
+repair above, with the system-command worker repair; Host `fd454edd`,
+Agent/Room `11279541`, Project `fb827016` inherited unchanged), materialized in
+this worktree on branch HEAD `809a0cfe`, plus this repair: 11 files vs
+`53d4c3a9` (code, tests, guides, this section and plan 05):
+`plugins/{effectScopes,lifecycle,background}.ts`, protocol
+`pluginOperations.ts` (new optional `PluginJobOptions` third argument of
+`jobs.register`, contract comments), the lifecycle fixture runtime,
+`pluginHost.test.ts`, `pluginLifecycleDb.test.ts`, `OFFICIAL_OPTIONAL_MODULES`
+(invariants A1–A2, R1–R4 written first), `DATABASE_AND_TRANSACTIONS`. No
+migration (0000–0026 untouched, no 0027 needed), no route, DTO read model or
+web change; system-command, OAuth, hold `FOR SHARE`, fair rotation, owner
+lease and retry UI untouched.
+
+| # | Finding | Repair (design) | Evidence (shared real PG) |
+|---|---|---|---|
+| 1 P1 | a legacy registration after the handler returned was tracked locally, then reopened asynchronously: a foreign enable reading `released` (or past its check) could commit first; the release write's local recheck had its own window | no compensation path remains. **R1/R2**: a handle opens only while its hold is durably an obligation (the Job's entry right after admission; a `retain()` handle confirmed under scope write locks + row lock + lease before the plugin gets it, refusing an ended generation instead of reopening it), and no owner path records a hold released while a handle on it is open. **R3**: the bounded contract (`jobs.register(id, h, {disposeRegistration: 'handler'})`) closes the Job handle when the handler settles; the original contract keeps it open (`linger`, local status `registering`) until the process ends, so its hold stays `releasing` — enable 409 in every process — until the owner exited and its lease was free past the grace (`owner_gone`). **R4**: a closed handle throws `PluginRegistrationClosed`. Removed: `takeOver`, `lateHook`, `recordAfterExit`, `localCleanupPending`. The fixture (the only in-repo producer) uses the bounded contract; its original-contract variant is kept for evidence | original-contract producer in process B: handler returns; disable → attempt 1 `registering` in <2.5 s, foreign (this process) and B enable 409; resource created only then → hold never left `releasing`, no `scope_cleanup_reopened`; drained in a claimed attempt (2); attempt 3 → attention; B exits (no attempt left) → still `releasing`, enable 409 → `owner_gone` after grace → enable succeeds. Failed round write (trigger) → disable rejected, hold `active`, nothing run; exit with the window open → `releasing` attempt 1; a registration after exit is tracked, its early dispose refused, `owner_gone` after grace, never released. Bounded producer registering after its handler → `PluginRegistrationClosed`, disable releases. `retain()`: injected write failure → rejected, nothing pinned; stuck behind the hold row lock while B disables → B waits behind the scope locks, the reservation confirms `active`, B's round makes it `releasing`, B's enable 409 until the owner disposes it; an ended generation behind this process's checked-but-uncommitted enable → waits, then refused, never reopened; exit drains a retained resource. Negative control: Job handle closed instead of lingering → both original-contract cases fail |
+| 2 P2 | the function `onDispose` returns invoked the callback with a memory budget; DB attempts could be 0, and the first claimed round reset it (callback 3 vs DB 2 accepted by the test) | **A1/A2**: every invocation runs under an attempt claimed by the one SQL statement (`claimHoldAttempt`: round, due, attention, < 3, lease in-statement), at most once per claim key; no local budget (`DISPOSER_ATTEMPTS`, per-callback rounds removed). The early dispose asks the owner (`earlyAttempt`, host work outside operation work): on a `releasing` hold it is a full `settleOwnHold` attempt; on an `active` hold it claims the active counter (`release_round` null), invokes the requested callbacks (concurrent requests join one claim) and resets the counter only when nothing of the hold failed. Kept: done → resolve without running, in flight shared, refused inside the Job transaction, invocations outside every transaction, new disable round retries | each invocation records the durable `(release_round, attempts)` it ran under: two concurrent early disposes → one active claim `[1]`, counter reset (`disposed`); failing resource: active `[1, 2]` (a repeat before due refused unrun; three concurrent saved calls share one claim), then the disable round `[1, 2, 3]` with saved calls, the timer pass and the cleanup Job interleaved (not due: none; due: exactly one claim); after attention two saved calls are refused and timer/Job invoke nothing; product retry route → one run in a new round, a saved call then resolves with no effect. Negative control: early dispose invoking directly → the case fails |
+
+Targeted commands (this worktree, Node 25, shared real PG): `packages/protocol`
+`tsc -p tsconfig.build.json` exit 0; server `tsc -p tsconfig.typecheck.json`
+exit 0; `vitest run --no-file-parallelism test/pluginHost.test.ts
+test/pluginLifecycleDb.test.ts test/pluginFrontendDb.test.ts
+test/pluginInvocationDb.test.ts test/pluginSessionReuseDb.test.ts
+test/agentGuides.test.ts` exit 0, 6 files / 71 passed, 0 failed, 0 skipped;
+`pluginHost` + `pluginLifecycleDb` twice more exit 0, 52/52 each; the two
+negative controls exit 1 (2 and 1 failed, as intended) and were reverted.
+`git diff --check` against `53d4c3a9` clean. Environment only: offline install
+from the lockfile; `packages/{protocol,folder-read,outbound-guard,reader-document,agent-cli}`
+built locally. Not run (by instruction): full server/web/daemon/protocol
+suites, browser suites, OAuth consumers, `settingsOperationsDb` (no
+system-command change).
+
+Limits (honest): an original-contract package can be re-enabled after a
+disable only once its owning process ended (plus the 15 s grace); its disable
+rounds report `registering` and reach attention after three attempts. Effects
+outside PostgreSQL remain unfenced, as before. An early dispose that finds no
+claimable attempt (not due, attention, an attempt claimed by another entry) is
+refused and left to the host's round.
+
+### Settings block early-runner hand-off and process-held cleanup read (Codex 77c87dab, one P1 + one P2; working tree = `b7224475` + repair)
+
+Source: full tree of `b7224475db635d7ceb3a43a1262c64a4d3a45782` (the 4a3d2805
+repair above; Host `fd454edd`, Agent/Room `11279541`, Project `fb827016`
+inherited unchanged), materialized in this worktree on branch HEAD `809a0cfe`
+(`git diff --check b7224475` clean before the repair), plus this repair. The
+registration-window design, hold reservation (`retain()` refusing an ended
+generation), the single SQL claim for every invocation (round/due/attention/
+< 3/lease), three attempts with disposal outside transactions, the hold
+`FOR SHARE` commit fence, fair foreign rotation, the owner lease, OAuth and the
+34 settled routes are unchanged. No migration (0000–0026 untouched): the new
+read count is derived from existing `last_outcome` / `owner_lost_at`.
+
+| # | Finding | Repair | Evidence |
+|---|---|---|---|
+| 1 P1 | `runEarly` settled its callers, then an outer `.finally` cleared `state.early` a few microtasks later: `await a(); b()` let `b` see the old runner, register `b.early` and never be claimed | the runner owns a boolean scheduling right; it clears it in the same synchronous step that found no request pending (no await between check and release), so a request from a settled caller's continuation is either seen by the running loop or starts the next runner; a claim fault refuses the requests it considered; an unexpected fault refuses every pending request and releases the right; the runner promise never rejects (no unhandled rejection). SQL claim and Job-transaction refusal unchanged | Node repro first (vitest on Node 25, temporary file, deleted): `await A(); B()` → B never settled (exit 1); after the fix exit 0. `pluginHost.test.ts` new `Plugin early dispose runner` (6 cases, bounded by event-loop turns, no sleep/timeout): `await a(); await b()` serial, 2 claims, ≤1 runner; caught failure → next request at once, failed one retried by a later claim; repeated/concurrent requests of one callback share one invocation (in flight never re-entered); a request registered in the runner's last step gets a second claim; claims refused (not due/attention/no lease) or faulting → every request refused, none pending, later claimable runs; inside the Job transaction refused with no claim. Negative control (b722 `effectScopes.ts` restored): the serial and caught-failure cases fail (2 failed, exit 1), restored. Real PG (`pluginLifecycleDb`): sequential `await s1(); await s2()` on an active hold → two active claims `[1]`, counter reset |
+| 2 P2 | the original contract keeps a hold `releasing` until its process exits, but the card showed it as a generic failure with **Retry cleanup** and "try again later" | `OfficialPluginCleanupStatus` adds `awaiting_restart` (count) and state `awaiting_restart`: a `releasing` hold with last outcome `registering` whose owner is not known lost; `attention` now counts only retryable holds (attention, not `registering`, owner not lost); a hold whose owner is known lost is `pending` (settles `owner_gone` by itself). Counts only, same B53 filter, no process detail. The card shows one line per count; `awaiting_restart` offers only **Refresh status** and says that a retry cannot release it and that it is released after the service process restarts or exits (no restart/deploy action); a retryable part keeps **Retry cleanup**; the retry-still-pending text now points to the status above; Enable stays disabled | real PG legacy case: attempts 3 → `{state:'awaiting_restart', attention:0, awaiting_restart:1}` (was `needs_attention`); owner exited and observed lost → `{state:'pending', pending:1}`; `owner_gone` → `cleanup` null, enable succeeds. Bounded failing holds stay `needs_attention` with `awaiting_restart:0`. `PluginsPage.test.tsx` (9): process-held en (no Retry, Refresh, Enable disabled, refresh → recovered, no disable call), mixed failed + process-held (Retry kept, both lines), zh-CN process-held, updated retry-failed copy. Built-app Chromium one-off (synthetic API, outside repo, not the 18 suites): `awaiting_restart` and mixed × en/zh-CN × dark/light × 390/1280 → 16 screenshots, no overflow, no page errors; inspected restart en dark 1280 and mixed zh-CN light 390 with the neighbouring Enable |
+
+Limits: a hold of a live owner that is both `registering` and has a failed
+callback reports `failed` (retryable) until that callback succeeds, then
+`awaiting_restart`. The card's legacy inline white surface in dark theme is
+pre-existing and was not restyled. A crashed owner shows `awaiting_restart`
+until a recovery pass observes its free lease (≤ 2 s pass interval).
+
+### Settings block final pre-commit gate (2026-11-11, on `84d72b1c`)
+
+Candidate `84d72b1c` (tree `25b6aa2a`; source parent `809a0cfe`; Host
+`fd454edd`, Agent/Room `11279541` and Project `fb827016` inherited). Two static
+reviews of the whole candidate left no blockers; they do not cover the gate
+repair below. Node 24.22.2, shared real PostgreSQL (`REQUIRE_TEST_POSTGRES=true`),
+each command run as `node <pkg>/node_modules/…` (the worktree path contains `:`).
+The 18 browser suites were not part of this gate.
+
+The first run (`/tmp/rainver-gate-84d7/`, worktree of the candidate, clean
+tree) recorded the builds, protocol/server/daemon typechecks, protocol tests
+and the schema check below, then its process was killed during the daemon tests
+(task output ends `[killed]`, no summary line): that daemon run has **no exit
+code (unknown)** and web and server never started. The resume
+(`/tmp/rainver-gate-84d7-resume/`, `gate-resume.sh`, the same tree `25b6aa2a` in
+a fresh worktree) ran only the items without a terminal state, once each, after
+an offline install and the dependency builds a fresh worktree needs.
+
+| Command | Run | Result |
+|---|---|---|
+| builds: protocol, outbound-guard, folder-read, reader-document, agent-cli, server, daemon | first | exit 0 |
+| protocol / server / daemon typecheck | first | exit 0 |
+| protocol `vitest run` | first | exit 0: 75 files, 442 tests passed |
+| server schema-migrations check + drizzle-kit check | first | exit 0 (27 migrations in sync) |
+| daemon `vitest run` | first | killed, exit unknown |
+| daemon `vitest run` | resume | exit 0: 72 files passed, 2 skipped; 791 passed, 22 skipped |
+| web typecheck, web `vite build` | resume | exit 0 |
+| web `vitest run` (alone) | resume | exit 0: 278 files, 2536 tests passed; budget within limits |
+| server `vitest run --maxWorkers=4` | resume | **exit 1**: 609 files passed, 1 failed, 1 skipped; 7719 passed, 1 failed, 5 skipped; plus 2 budget violations |
+
+Server failures:
+
+1. `testHygiene` "does not wait on real time for more than 100ms" named
+   `pluginLifecycleDb.test.ts` (new in this block): five sleeps of 150–300 ms
+   used to show a writer was still blocked. **Test-only repair**: four of them
+   now wait on the shared `support/lockWait.ts` observation (`waitForBlockedBy`
+   the blocker's pid; `waitForLockWaiter` for the disable behind the open Job
+   transaction, the disable queued behind the reservation, and the retain behind
+   the uncommitted enable), which proves the PostgreSQL wait instead of
+   assuming it. The concurrent enable behind the slow cleanup is queued in
+   process (`serialized`), with no PostgreSQL wait to observe — a lock-waiter
+   wait there hit the enable's own pending-cleanup refusal — so it keeps a
+   bounded 100 ms window. Assertions unchanged. Targeted:
+   `vitest run test/pluginLifecycleDb.test.ts test/testHygiene.test.ts` exit 0
+   (2 files, 57 tests); server typecheck exit 0. No production code changed.
+2. Budget (`tools/vitest/budgetReporter.mjs`), reported, not changed:
+   `pluginFrontendDb` "renders the real Project entry and bundled slot…" 51.2 s
+   (limit 30 s), and suite import total 224.5 s over baseline 95 s × 2 = 190 s.
+   `test/perf-budget.json` was not edited, and the full server suite was not re-run, so
+   the gate's server result stays exit 1.
+
+Not run: the 18 browser suites, OAuth consumers, a second full server run.
+
+### Rebase onto dev (2026-11-11)
+
+Replayed the four completed blocks onto dev `068d0320`. Preserved dev's
+`0020_delegated_workspace_reviews` unchanged; the seven P5 migrations are now
+0021–0027, with byte-identical SQL under shifted names and snapshots carrying
+the delegated-review table. The Run launch conflict keeps
+`ensurePrimaryExecutionWorkspace` plus managed restore/cwd/profile barriers.
+Updated the historical-upgrade regression's two migration filenames.
+
+Checks in this worktree, Node 24.22.2: four dependency builds and server
+typecheck exit 0; schema check exit 0 (28 migrations in sync); diff check exit 0.
+Real shared PostgreSQL targeted checks: remoteHostCliAdapter 48,
+managedWorkspaceRestoreHostDb 13, agentGuides 8 passed; profile barrier initially
+failed because its old migration filename was missing, then all 18 passed after
+the reference correction. Dev workspace placement/reuse regressions passed
+26/26. No full-suite rerun; previous final-gate budget limitations remain.

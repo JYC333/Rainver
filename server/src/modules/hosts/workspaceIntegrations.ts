@@ -1,3 +1,4 @@
+import {assertWorkspaceContributorsReadable} from '../projectFolders/workspaceContributors.js';
 import {deferIfSourceReleasePending} from './workspaceSourceFence.js';
 import {verifyBasicWorkspaceCandidate} from './workspaceBasicVerification.js';
 import {workspaceVerificationFolder} from '../projectFolders/workspaceVerificationFolder.js';
@@ -33,6 +34,7 @@ export interface WorkspaceIntegrationRow {
  onto_commit:string|null;task_commit:string|null;resolution_run_id:string|null;requested_by_user_id:string;
  detail_json:Record<string,unknown>;
 }
+import {frozenPublicationDetail,frozenPublicationPlan,requiresNativePublication} from '../projectFolders/workspacePublicationPlan.js';
 export const integrationWorkspaceReference=(m:WorkspaceIntegrationRow):ExecutionWorkspaceRef=>({id:m.workspace_id,generation:m.generation,integration_id:m.attempt_id});
 export async function enqueueWorkspaceIntegration(db:Queryable,changeId:string,spaceId:string,userId:string,replyOwnerRunId?:string){
  return withQueryableTransaction(db,async tx=>{
@@ -82,7 +84,8 @@ export async function advanceWorkspaceIntegration(pool:Pool,config:ServerConfig,
   if(!change||change.state==='abandoned')return {skipped:true};
   const visibleOrigin=await new PgRunRepository(client).getVisibleRun(spaceId,m.requested_by_user_id,change.originating_run_id);
   const origin=visibleOrigin?await completedWorkspaceRun(client,m.change_set_id,spaceId):null;
-  if(!origin)throw new Error('integration_origin_no_longer_visible');
+  if(!origin||!visibleOrigin||bodyWithheld(visibleOrigin.effective_access_level))throw new Error('integration_origin_no_longer_visible');
+  await assertWorkspaceContributorsReadable(client,spaceId,m.requested_by_user_id,m.change_set_id);
   const originRunId=origin.id;
   const completedRepairs=()=>Array.isArray(m.detail_json.completed_repair_runs)?(m.detail_json.completed_repair_runs as unknown[]).filter((id):id is string=>typeof id==='string').slice(0,20):[];
   const ref=integrationWorkspaceReference(m),author=agentGitIdentity(origin.agent_id,null);
@@ -137,6 +140,7 @@ export async function advanceWorkspaceIntegration(pool:Pool,config:ServerConfig,
   }
   let repairOrigin:RunRecord|null=null;
   async function assertPublicationAuthority(){
+   await assertWorkspaceContributorsReadable(client,spaceId,m.requested_by_user_id,m.change_set_id);
    if((await client.query("SELECT 1 FROM execution_workspaces w WHERE w.id=$1 AND (w.state IN ('blocked','retired') OR EXISTS(SELECT 1 FROM execution_workspace_runs b WHERE b.change_set_id=$2 AND b.checkpoint_state<>'saved'))",[w.id,m.change_set_id])).rowCount)throw new Error('workspace_checkpoint_blocked');
    await assertProjectWriterForMutation(client,spaceId,w.project_id,m.requested_by_user_id);
    const host=(await client.query<{kind:string;owner_user_id:string|null}>('SELECT kind,owner_user_id FROM hosts WHERE id=$1',[w.execution_host_id])).rows[0];
@@ -150,6 +154,16 @@ export async function advanceWorkspaceIntegration(pool:Pool,config:ServerConfig,
   }
   async function publicationTainted(){
    return workspacePublicationNeedsReview(client,{spaceId,changeSetId:m.change_set_id,requesterId:m.requested_by_user_id,repairRunId:m.resolution_run_id,instructionRunId:repairOrigin?.id,verificationRunIds:completedRepairs()});
+  }
+  // A frozen fast-forward/merge plan is never published here as a squash
+  // (hosts.md, "Controlled Git publication"): the Host's finish publishes the
+  // recorded chain itself, or the batch stays blocked with its evidence when
+  // the chain was never recorded.
+  const plan=frozenPublicationPlan(m.detail_json),chain=m.detail_json.publication as {chain_tip?:unknown;chain_length?:unknown}|undefined;
+  let chainPublication:Partial<HostRequestPayload<'workspace_integration'>>={};
+  if(requiresNativePublication(plan)){
+   if(typeof chain?.chain_tip!=='string'||typeof chain.chain_length!=='number'||chain.chain_length<1)return block('failed',{error:'native_publication_chain_unrecorded'});
+   chainPublication={publication_strategy:plan!.strategy,publication_chain_tip:chain.chain_tip,publication_chain_length:chain.chain_length};
   }
   const replyOwner=m.detail_json.reply_owner_run_id;
   if(typeof replyOwner==='string'){
@@ -177,6 +191,9 @@ export async function advanceWorkspaceIntegration(pool:Pool,config:ServerConfig,
    if(m.detail_json.reconcile_only===true)return block(reply.outcome==='conflict'||reply.outcome==='unresolved'?'conflict':'failed',{error:'integration_not_yet_adopted',conflicted_files:reply.conflicted_files});
    if(reply.outcome==='conflict'||reply.outcome==='unresolved'){
     await save('rebasing',{conflicted_files:reply.conflicted_files},{onto:reply.onto_commit});
+    // A fast-forward (and a rebase chain, fast-forwarded) publishes the recorded chain unchanged:
+    // no repair here can make it apply to a moved target; a rebase is replayed again only in an Agent session.
+    if(plan?.strategy==='fast_forward'||plan?.strategy==='rebase')return block('conflict',{error:'native_publication_fast_forward_target_moved',conflicted_files:reply.conflicted_files});
     const resolution=(m.detail_json.human_resolution??m.detail_json.agent_repair) as {instruction?:unknown;user_id?:unknown;paths?:unknown}|undefined;
     if(resolution){
      if(typeof resolution.instruction!=='string'||resolution.user_id!==m.requested_by_user_id||!Array.isArray(resolution.paths)||JSON.stringify([...resolution.paths].sort())!==JSON.stringify([...reply.conflicted_files].sort()))return block('conflict',{error:'integration_resolution_scope_changed',conflicted_files:reply.conflicted_files});
@@ -307,7 +324,7 @@ export async function advanceWorkspaceIntegration(pool:Pool,config:ServerConfig,
    // Recheck the actual completion/repair and its taint immediately at publish.
    await assertPublicationAuthority();
    if(await publicationTainted())return {ok:false,outcome:null,main_branch:null,onto_commit:null,candidate_commit:null,conflicted_files:[],error:'workspace_egress_review_required'};
-   return request('finish',{onto_commit:m.onto_commit!,candidate_commit:m.task_commit!});
+   return request('finish',{onto_commit:m.onto_commit!,candidate_commit:m.task_commit!,...chainPublication});
   };
   let reply:Awaited<ReturnType<typeof publish>>;
   if(!w.parent_workspace_id){
@@ -326,7 +343,7 @@ export async function advanceWorkspaceIntegration(pool:Pool,config:ServerConfig,
    const evidence=await request('preserve');
    await transaction(async()=>{
     await enqueueCandidateCleanup(evidence.ok?evidence.candidate_commit:null,false);
-    await client.query(`UPDATE task_merges SET status='queued',revision=revision+1,attempt_id=$2,onto_commit=NULL,task_commit=NULL,resolution_run_id=NULL,detail_json=$3::jsonb,updated_at=now() WHERE id=$1`,[m.id,randomUUID(),JSON.stringify({target_moves:moves,automatic_repairs:Number(m.detail_json.automatic_repairs??0),...(m.detail_json.human_resolution?{human_resolution:m.detail_json.human_resolution}:{}),...(m.detail_json.agent_repair?{agent_repair:m.detail_json.agent_repair}:{}),...(m.detail_json.verification_request?{verification_request:m.detail_json.verification_request}:{}),...(m.detail_json.reply_owner_run_id?{reply_owner_run_id:m.detail_json.reply_owner_run_id}:{}),completed_repair_runs:completedRepairs(),verification_repairs:Number(m.detail_json.verification_repairs??0)})]);
+    await client.query(`UPDATE task_merges SET status='queued',revision=revision+1,attempt_id=$2,onto_commit=NULL,task_commit=NULL,resolution_run_id=NULL,detail_json=$3::jsonb,updated_at=now() WHERE id=$1`,[m.id,randomUUID(),JSON.stringify({...frozenPublicationDetail(m.detail_json),target_moves:moves,automatic_repairs:Number(m.detail_json.automatic_repairs??0),...(m.detail_json.human_resolution?{human_resolution:m.detail_json.human_resolution}:{}),...(m.detail_json.agent_repair?{agent_repair:m.detail_json.agent_repair}:{}),...(m.detail_json.verification_request?{verification_request:m.detail_json.verification_request}:{}),...(m.detail_json.reply_owner_run_id?{reply_owner_run_id:m.detail_json.reply_owner_run_id}:{}),completed_repair_runs:completedRepairs(),verification_repairs:Number(m.detail_json.verification_repairs??0)})]);
    });
    throw new JobDeferredError('integration_target_moved',1000);
   }

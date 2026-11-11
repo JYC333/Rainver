@@ -1,9 +1,17 @@
-import type { OrdinaryAccountResult, OrdinaryAccountSessionEvent, OrdinaryToolAction, OrdinaryToolId, OrdinaryToolResult, SourceExecution, SourceExecutionResult, SourceRequest, SourceResponse } from "@rainver/protocol";
+import type { ManagedWorkspaceErrorCode, OrdinaryAccountResult, OrdinaryAccountSessionEvent, OrdinaryToolAction, OrdinaryToolId, OrdinaryToolResult, SourceExecution, SourceExecutionResult, SourceRequest, SourceResponse } from "@rainver/protocol";
 import { randomUUID } from "node:crypto";
 import type { FileContent, FileNode, GitDiff, GitStatus } from "@rainver/folder-read";
 import type { FolderWriteDaemonError, HostDaemonFrameOf, HostLaunchFrame, HostLaunchPayload, HostServerFrame, HostServerFrameOf, HostUsageQuota } from "@rainver/protocol";
 
 /** A request frame's payload: everything but the tag and the id the registry assigns. */
+/** The daemon's answer to one journaled Host command send. `outcome: null`: no receipt reached this process. */
+export interface HostCommandAnswer {
+  sent: boolean;
+  outcome: HostDaemonFrameOf<"host_command_result">["outcome"] | null;
+  replayed: boolean;
+  result: Record<string, unknown> | null;
+  error: string | null;
+}
 export type HostRequestPayload<T extends HostServerFrame["type"]> = Omit<HostServerFrameOf<T>, "type" | "request_id">;
 
 /**
@@ -20,6 +28,7 @@ export type HostRunCompletion = Pick<HostDaemonFrameOf<"complete">, "exit_code" 
 const TASK_BRANCH_REPLIES = {
   workspace_scope:"workspace_scope_result",
   workspace_integration: "workspace_integration_result",
+  git_branch_align: "git_branch_align_result",
   execution_workspace_command: "execution_workspace_result",
   task_run_settle: "task_run_settle_result",
   task_branch_delete: "task_branch_delete_result",
@@ -39,6 +48,7 @@ function failedTaskBranchRequest(type: TaskBranchRequestType, error: string): An
   switch (TASK_BRANCH_REPLIES[type]) {
     case "workspace_scope_result":return {ok:false,error,root_location_id:null,cwd_subpath:null};
     case "workspace_integration_result": return {ok:false,outcome:null,main_branch:null,onto_commit:null,candidate_commit:null,conflicted_files:[],error};
+    case "git_branch_align_result": return {ok:false,error,outcome:null,previous_commit:null,aligned_commit:null,backup_ref:null,worktree_updated:false};
     case "execution_workspace_result": return {ok:false,branch:null,commit:null,error};
     case "task_run_settle_result": return { ok: false, branch: null, commit: null, error };
     case "task_branch_delete_result": return { ok: false, deleted: false, error };
@@ -197,10 +207,12 @@ export type FolderWriteSuccess = {
 };
 export type FolderWriteResult = FolderWriteSuccess | { ok: false; error: FolderWriteFailureCode; message?: string };
 
-interface ManagedWorkspaceResult {
+export interface ManagedWorkspaceResult {
   ok: boolean;
   changed: boolean;
   error: string | null;
+  /** Journaled operations only (`managedWorkspaceOperations.ts`). */
+  error_code?: ManagedWorkspaceErrorCode;
 }
 
 interface HostDirectoryListing {
@@ -269,6 +281,8 @@ export class HostConnectionRegistry {
   }>();
   private readonly connections = new Map<string, HostConnection>();
   private readonly pending = new Map<string, PendingRun>();
+  /** Journaled Host commands awaiting `host_command_result`; one per send. */
+  private readonly pendingHostCommands = new Map<string, { hostId: string; resolve: (answer: HostCommandAnswer) => void; timer: ReturnType<typeof setTimeout> }>();
   private readonly pendingInstalls = new Map<string, { hostId: string; runtimeKey: string; action: string; resolve: (result: ToolInstallResult) => void; timer: ReturnType<typeof setTimeout> }>();
   private readonly pendingOrdinaryAccounts = new Map<string, { hostId: string; resolve: (result: OrdinaryAccountResult) => void; timer: ReturnType<typeof setTimeout> }>();
   private readonly ordinaryAccountSessions = new Map<string, { hostId: string; onEvent: (event: OrdinaryAccountSessionEvent) => void }>();
@@ -340,6 +354,13 @@ export class HostConnectionRegistry {
       // against a host that is known gone is a hang, not patience.
       pending.resolve({ ok: false, error: "host_disconnected", exit_code: 1, stdout: "", stderr: "", timed_out: false });
     }
+    for (const [requestId, pending] of this.pendingHostCommands) {
+      if (pending.hostId !== hostId) continue;
+      this.pendingHostCommands.delete(requestId);
+      clearTimeout(pending.timer);
+      // Sent, and now unanswerable on this connection: the journal still knows.
+      pending.resolve({ sent: true, outcome: null, replayed: false, result: null, error: "host_disconnected" });
+    }
     for (const [requestId, pending] of this.pendingInstalls) {
       if (pending.hostId !== hostId) continue;
       this.pendingInstalls.delete(requestId);
@@ -398,7 +419,8 @@ export class HostConnectionRegistry {
       if (pending.hostId !== hostId) continue;
       this.pendingHostActions.delete(requestId);
       clearTimeout(pending.timer);
-      pending.resolve(failedHostAction(pending.type, "host_offline"));
+      // The frame already left: whether the Host acted is unknown, which `host_offline` ("never sent") would deny.
+      pending.resolve(failedHostAction(pending.type, "host_disconnected"));
     }
     for (const [requestId, pending] of this.pendingTaskBranchRequests) {
       if (pending.hostId !== hostId) continue;
@@ -719,6 +741,42 @@ export class HostConnectionRegistry {
     });
   }
 
+  /**
+   * Sends one journaled Host command (`host_command`) and resolves with the
+   * daemon's receipt. `sent: false` only when no frame left (no connection,
+   * or the socket refused it synchronously); every other answer — including a
+   * timeout or a disconnect — means the Host may hold the command, and a
+   * repeat of the same `command_id` is what resolves it.
+   */
+  requestHostCommand(hostId: string, frame: Omit<HostServerFrameOf<"host_command">, "type" | "request_id">, timeoutMs: number): Promise<HostCommandAnswer> {
+    const connection = this.connections.get(hostId);
+    if (!connection?.sink) return Promise.resolve({ sent: false, outcome: null, replayed: false, result: null, error: "host_offline" });
+    const requestId = randomUUID();
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.pendingHostCommands.delete(requestId);
+        resolve({ sent: true, outcome: null, replayed: false, result: null, error: "host_timeout" });
+      }, timeoutMs);
+      timer.unref?.();
+      this.pendingHostCommands.set(requestId, { hostId, resolve, timer });
+      try {
+        connection.sink!.send({ type: "host_command", request_id: requestId, ...frame, command: { ...frame.command, request_id: requestId } } as HostServerFrameOf<"host_command">);
+      } catch {
+        clearTimeout(timer);
+        this.pendingHostCommands.delete(requestId);
+        resolve({ sent: false, outcome: null, replayed: false, result: null, error: "host_send_failed" });
+      }
+    });
+  }
+
+  receiveHostCommandResult(hostId: string, frame: HostDaemonFrameOf<"host_command_result">): void {
+    const pending = this.pendingHostCommands.get(frame.request_id);
+    if (!pending || pending.hostId !== hostId) return;
+    clearTimeout(pending.timer);
+    this.pendingHostCommands.delete(frame.request_id);
+    pending.resolve({ sent: true, outcome: frame.outcome, replayed: frame.replayed, result: frame.result, error: frame.error });
+  }
+
   /** Ordinary CLI tool operations in flight on this host, one per tool at most. */
   ordinaryToolOperations(hostId: string): Array<{ tool_id: OrdinaryToolId; action: OrdinaryToolAction["action"] }> {
     return [...this.pendingOrdinaryTools.values()].filter(item => item.hostId === hostId)
@@ -1012,7 +1070,41 @@ export class HostConnectionRegistry {
       }, MANAGED_WORKSPACE_TIMEOUT_MS);
       timer.unref?.();
       this.pendingManagedWorkspaces.set(requestId, { hostId, resolve, timer });
-      connection.sink!.send({ ...frame, type, request_id: requestId });
+      try {
+        connection.sink!.send({ ...frame, type, request_id: requestId });
+      } catch {
+        // Whether the frame left is unknown: the caller repeats the same operation.
+        clearTimeout(timer);
+        this.pendingManagedWorkspaces.delete(requestId);
+        resolve({ ok: false, changed: false, error: "host_send_failed" });
+      }
+    });
+  }
+
+  /**
+   * Asks the connected daemon to prove its identity-less archives drained
+   * (`managed_workspace_legacy_drain`): it closes them for good, then answers
+   * once none it admitted is still running. Shares the managed-workspace
+   * request/reply channel; only an `ok` answer is the proof.
+   */
+  drainLegacyManagedWorkspaceArchives(hostId: string): Promise<ManagedWorkspaceResult> {
+    const connection = this.connections.get(hostId);
+    if (!connection?.sink) return Promise.resolve({ ok: false, changed: false, error: "host_offline" });
+    const requestId = randomUUID();
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.pendingManagedWorkspaces.delete(requestId);
+        resolve({ ok: false, changed: false, error: "host_timeout" });
+      }, MANAGED_WORKSPACE_TIMEOUT_MS);
+      timer.unref?.();
+      this.pendingManagedWorkspaces.set(requestId, { hostId, resolve, timer });
+      try {
+        connection.sink!.send({ type: "managed_workspace_legacy_drain", request_id: requestId });
+      } catch {
+        clearTimeout(timer);
+        this.pendingManagedWorkspaces.delete(requestId);
+        resolve({ ok: false, changed: false, error: "host_send_failed" });
+      }
     });
   }
 

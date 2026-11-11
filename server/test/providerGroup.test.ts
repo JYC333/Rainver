@@ -259,8 +259,7 @@ describe("providerCommandStoreDb", () => {
     if (!db.available) return;
     // Validation runs before the first write. Do not leave a disabled
     // provider and its credential behind, with the Space default cleared.
-    const config = { databaseUrl: db.connectionUri, rainverHome } as ServerConfig;
-    await expect(createProviderFromPreset(config, store(), SPACE, USER, {
+    await expect(createProviderFromPreset(db.pool, store(), SPACE, USER, {
       preset_id: "cohere_embedding",
       api_key: "sk-test",
       embedding_dimensions: 999,

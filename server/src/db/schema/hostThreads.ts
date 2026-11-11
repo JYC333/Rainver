@@ -1,4 +1,4 @@
-import { pgTable, index, uniqueIndex, check, foreignKey, varchar, timestamp, jsonb, integer, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
+import { pgTable, pgSequence, index, uniqueIndex, check, foreignKey, varchar, timestamp, jsonb, integer, bigint, boolean, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { workspaceLocations } from "./workspaceLocations.js";
 import { agents } from "./agents.js";
@@ -25,6 +25,13 @@ import { artifacts } from "./artifacts.js";
  * Conversation rows are keyed by `(session_id, agent_id)` and never by Room.
  * Room membership is derived through `sessions`.
  */
+/**
+ * Orders managed-workspace archive and restore intents across every target.
+ * A Host refuses an operation older than the newest it admitted for the same
+ * Agent × container, so a late archive cannot undo a later restore.
+ */
+export const managedWorkspaceGenerationSeq = pgSequence("managed_workspace_generation_seq");
+
 export const hostThreads = pgTable("host_threads", {
  executionWorkspaceJson:jsonb("execution_workspace_json"),
  delegationId:varchar("delegation_id",{length:36}),
@@ -85,7 +92,23 @@ export const hostThreads = pgTable("host_threads", {
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
 	pendingArchiveAt: timestamp("pending_archive_at", { withTimezone: true, mode: 'string' }),
-}, (table): PgTableExtraConfigValue[] => [
+	// Generation of the pending archive intent (managed_workspace_generation_seq),
+	// assigned when the intent commits and reused by every retry of it.
+	archiveGeneration: bigint("archive_generation", { mode: "number" }),
+	// Whether that archive intent also takes the shared cwd, fixed with its
+	// generation: every send of the operation carries the same meaning.
+	archiveIncludeWorkspace: boolean("archive_include_workspace"),
+	// True only when this release fixed that value as the intent committed, so
+	// every send carried it. False for one inferred afterwards (an intent from
+	// before the column, whose earlier sends chose per send): the Host's
+	// journal, not the inference, is then what the operation already is.
+	archiveScopeConfirmed: boolean("archive_scope_confirmed").default(false).notNull(),
+	// Set when an archive of this thread was sent without an identity (a Host
+	// that cannot journal or fence it): a copy may still be in flight, so no
+	// launch on that profile or cwd proceeds until the Host reports the fencing
+	// capability (an upgraded process), whatever the acknowledgement said.
+	archiveUnfencedAt: timestamp("archive_unfenced_at", { withTimezone: true, mode: 'string' }),
+},(table): PgTableExtraConfigValue[] => [
 	uniqueIndex("uq_host_threads_delegation_active").on(table.delegationId).where(sql`delegation_id IS NOT NULL AND status IN ('active', 'session_reset')`),
  foreignKey({columns:[table.delegationId,table.spaceId],foreignColumns:[runDelegations.id,runDelegations.spaceId]}).onDelete("cascade"),
  check("ck_host_threads_delegation",sql`delegation_id IS NULL OR (container_kind='conversation' AND workspace_mode='location')`),

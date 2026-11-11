@@ -1,6 +1,6 @@
 import {linkProposalOperation} from './support/linkedProposalOperation.js';
 import { randomUUID } from "node:crypto";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { seedSpaceOwnerProject } from "./support/domainSeeds.js";
@@ -13,6 +13,12 @@ import { registerProjectDefinitionProposalAppliers } from "../src/modules/projec
 import { PgMemoryApplyRepository } from "../src/modules/memory/memoryApplyRepository.js";
 import { withQueryableTransaction } from "../src/modules/routeUtils/common.js";
 import type { AmbientRecord } from "@rainver/protocol";
+import { buildModuleServer } from "./support/moduleServer.js";
+import { importedSessionsModule } from "../src/modules/importedSessions/index.js";
+import { systemActionsModule } from "../src/modules/systemActions/index.js";
+import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
+import { JobHandlerRegistry } from "../src/modules/jobs/handlerRegistry.js";
+import { IMPORTED_HISTORY_EXTRACTION_JOB, registerImportedHistoryExtractionJob } from "../src/modules/importedSessions/extractionOperation.js";
 
 /**
  * Extraction from imported CLI history.
@@ -577,5 +583,56 @@ describe("imported history extraction", () => {
       [SPACE],
     );
     expect(swept.rows[0]!.extracted_in).toBeNull();
+  });
+
+  describe("manual extraction through the operation core", () => {
+    afterEach(() => { __setAuthIdentityForTests(null); });
+    async function admit(key: string) {
+      __setAuthIdentityForTests(identity);
+      const app = buildModuleServer(serverConfig(), [importedSessionsModule, systemActionsModule]);
+      try {
+        return await app.inject({ method: "POST", url: `/api/v1/projects/${PROJECT}/imported-sessions/extraction`, headers: { "idempotency-key": key }, payload: {} });
+      } finally { await app.close(); __setAuthIdentityForTests(null); }
+    }
+    async function runJob(jobId: string) {
+      const registry = new JobHandlerRegistry();
+      registerImportedHistoryExtractionJob(registry, serverConfig());
+      const job = (await db.pool.query("SELECT id,space_id,user_id,payload_json AS payload,attempts,max_attempts FROM jobs WHERE id=$1", [jobId])).rows[0];
+      return registry.get(IMPORTED_HISTORY_EXTRACTION_JOB)!({ ...job, job_type: IMPORTED_HISTORY_EXTRACTION_JOB } as never);
+    }
+
+    it("claims the batch with its Job once per key, and only the worker calls the model and proposes", async () => {
+      if (!db.available) return;
+      await seedSession("space_shared", [record("m1", "we decided to use ACP")]);
+      const stub = stubExtractor((ids) => ({
+        ...extraction(),
+        decisions: [{ id: randomUUID(), text: "Use ACP", confirmation_state: "candidate", source_refs: [{ type: "imported_session_record", id: ids[0] }] }],
+      }));
+      const first = await admit("extract-1");
+      expect(first.statusCode, first.body).toBe(202);
+      const receipt = first.json().data;
+      expect(receipt).toMatchObject({ project_id: PROJECT, records_claimed: 1, job_id: expect.any(String) });
+      expect((await admit("extract-1")).json()).toEqual(first.json());
+      expect(stub).not.toHaveBeenCalled();
+      expect(await service().pending(identity, PROJECT)).toEqual({ records: 0, sessions: 0 });
+      expect((await db.pool.query("SELECT count(*)::int AS n FROM jobs WHERE job_type=$1", [IMPORTED_HISTORY_EXTRACTION_JOB])).rows[0].n).toBe(1);
+
+      const outcome = await runJob(receipt.job_id) as { records_covered: number; brief_proposal_id: string | null };
+      expect(stub).toHaveBeenCalledTimes(1);
+      expect(outcome.records_covered).toBe(1);
+      expect(outcome.brief_proposal_id).toEqual(expect.any(String));
+      expect((await db.pool.query("SELECT extracted_in FROM imported_session_records WHERE space_id=$1", [SPACE])).rows).toEqual([{ extracted_in: receipt.id }]);
+    });
+
+    it("releases, rather than sends, records whose session stopped being shared before the worker ran", async () => {
+      if (!db.available) return;
+      const session = await seedSession("space_shared", [record("m1", "shared then withdrawn")]);
+      const stub = stubExtractor(() => extraction());
+      const receipt = (await admit("extract-2")).json().data;
+      await db.pool.query("UPDATE imported_sessions SET visibility='private' WHERE id=$1", [session]);
+      expect(await runJob(receipt.job_id)).toMatchObject({ records_covered: 0 });
+      expect(stub).not.toHaveBeenCalled();
+      expect((await db.pool.query("SELECT extracted_in FROM imported_session_records WHERE space_id=$1", [SPACE])).rows).toEqual([{ extracted_in: null }]);
+    });
   });
 });

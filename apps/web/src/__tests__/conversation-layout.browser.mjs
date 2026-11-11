@@ -678,6 +678,8 @@ test('Host Agent catalog keeps installed Agents first and upgrades the selected 
   const {mkdir}=await import('node:fs/promises');await mkdir('/tmp/host-agent-catalog',{recursive:true})
   for(const locale of ['en','zh-CN'])for(const theme of ['dark','light'])for(const width of [390,1280]){
     const context=await browser.newContext({viewport:{width,height:1000},serviceWorkers:'block'}),page=await context.newPage();let current='1.2.3',previous='1.0.0',writes=0
+    // Install and rollback are durable Host commands: the POST admits one, its status read carries the frozen result.
+    const commands={},admit=(kind,result)=>{const id=`catalog-command-${writes}`;commands[id]={id,space_id:room.space_id,host_id:'host-catalog',kind,job_id:`job-${id}`,result};return{status:'succeeded',data:{...commands[id],result:undefined,status:'pending'}}}
     const agent={id:'goose',name:'goose',version:'2.0.0',description:'Research agent / 研究助手',distribution:{kind:'npx',package:'goose-acp@2.0.0',args:[],env:{}}}
     try{
       await page.addInitScript(({locale,theme})=>{localStorage.setItem('rainver:locale',locale);localStorage.setItem('rainver:theme',theme)},{locale,theme})
@@ -690,8 +692,9 @@ test('Host Agent catalog keeps installed Agents first and upgrades the selected 
         else if(path==='/acp-agents/registry')data={items:[{...agent,id:'alpha',name:'A new research agent / 新的研究助手'},agent]}
         else if(path==='/acp-agents')data={items:[{...agent,runtime_key:'acp_goose',version:'1.2.3',installed_on:[{host_id:'host-catalog',name:'Laptop'}]}]}
         else if(path==='/hosts/host-catalog/usage')data={items:[]}
-        else if(path==='/hosts/host-catalog/installations/acp_goose/rollback'){writes++;current='1.2.3';previous=null;data={ok:true,installation:'managed:1.2.3',host_id:'host-catalog',runtime_key:'acp_goose',error:null}}
-        else if(path==='/hosts/host-catalog/installations/acp_goose'){assert.equal(route.request().method(),'POST');assert.equal(route.request().postDataJSON().expected_version,'2.0.0');writes++;previous=current;current='2.0.0';data={ok:true,installation:'managed:2.0.0',host_id:'host-catalog',runtime_key:'acp_goose',error:null}}
+        else if(path==='/hosts/host-catalog/installations/acp_goose/rollback'){writes++;current='1.2.3';previous=null;data=admit('runtime_rollback',{ok:true,installation:'managed:1.2.3',host_id:'host-catalog',runtime_key:'acp_goose',error:null})}
+        else if(path==='/hosts/host-catalog/installations/acp_goose'){assert.equal(route.request().method(),'POST');assert.equal(route.request().postDataJSON().expected_version,'2.0.0');writes++;previous=current;current='2.0.0';data=admit('runtime_install',{ok:true,installation:'managed:2.0.0',host_id:'host-catalog',runtime_key:'acp_goose',error:null})}
+        else if(path.startsWith('/hosts/host-catalog/commands/')){const command=commands[decodeURIComponent(path.split('/').pop())];data={...command,status:'succeeded',error:null,created_at:now,updated_at:now}}
         else return route.fallback()
         return route.fulfill({json:data})
       })

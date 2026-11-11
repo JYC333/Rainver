@@ -111,3 +111,16 @@ export async function fsyncExistingFile(path:string):Promise<boolean>{
 }
 /** fsync a directory through the durable I/O layer. */
 export function fsyncDirectory(path:string):Promise<void>{return io.syncDirectory(path);}
+
+/**
+ * Remove a record so that, once this resolves, its absence survives power
+ * loss: the unlink is followed by an fsync of its directory (and that
+ * directory's chain). An already absent file is not a reason to skip the
+ * barrier — a prior unlink whose directory sync failed leaves exactly that
+ * state — so a retry always syncs again. Any failure throws.
+ */
+export async function removeDurable(path:string):Promise<void>{
+ await rm(path,{force:true});
+ await durableDirectory(dirname(path));
+ await io.syncDirectory(dirname(path));
+}

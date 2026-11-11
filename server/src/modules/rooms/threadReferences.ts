@@ -18,6 +18,7 @@
  *    naming who gains access, in the pattern `inviteUser` uses.
  */
 
+import { RoomMutationError } from "./roomMutationError.js";
 import {
   ROOM_SUMMARY_TOKEN_BUDGET,
   fitRoomSummaryToBudget,
@@ -116,7 +117,7 @@ export async function resolveThreadReference(
   budget: number,
 ): Promise<ResolvedThreadReference> {
   // A briefing highlight has its own resolver (`informationDigest/briefing/followUp.ts`) with its own gates.
-  if (pick.kind === "briefing_highlight") throw new HttpError(422, "A briefing reference is resolved by its own scope rules");
+  if (pick.kind === "briefing_highlight") throw new RoomMutationError(422, "A briefing reference is resolved by its own scope rules");
   if (pick.kind === "thread" || pick.kind === "messages") {
     return resolveConversationPick(db, identity, pick, targetProjectId, budget);
   }
@@ -178,7 +179,7 @@ export function assertSameProject(
 ): void {
   if (sourceProjectId && sourceProjectId === targetProjectId) return;
   // A reference into another Project is a non-goal.
-  throw new HttpError(422, "A reference must come from the same Project");
+  throw new RoomMutationError(422, "A reference must come from the same Project");
 }
 
 /**
@@ -293,7 +294,7 @@ async function resolveConversationPick(
 
   if (pick.kind === "messages") {
     const ids = pick.item_ids ?? [];
-    if (ids.length === 0) throw new HttpError(422, "A message reference must name at least one message");
+    if (ids.length === 0) throw new RoomMutationError(422, "A message reference must name at least one message");
     const rows = await new PgSessionRepository(db).roomMessagesByIds(identity.spaceId, pick.id, ids);
     const messages = { rows };
     // Every named message must be in the conversation the pick names. A
@@ -332,7 +333,7 @@ async function resolveConversationPick(
   );
   const text = summary.rows[0]?.content?.trim();
   if (!text) {
-    throw new HttpError(409, "That conversation has no summary yet; ask an Agent in it to summarize its context, or reference its messages instead", {
+    throw new RoomMutationError(409, "That conversation has no summary yet; ask an Agent in it to summarize its context, or reference its messages instead", {
       code: "reference_summary_unavailable",
       detail: "A whole-thread reference carries the summary an Agent wrote of the thread, and none has been written.",
     } satisfies ThreadReferenceSummaryUnavailable);
@@ -364,7 +365,7 @@ async function resolveImportedPick(
 ): Promise<ResolvedThreadReference> {
   const wanted = pick.kind === "imported_records" ? new Set(pick.item_ids ?? []) : null;
   if (wanted && wanted.size === 0) {
-    throw new HttpError(422, "A record reference must name at least one record");
+    throw new RoomMutationError(422, "A record reference must name at least one record");
   }
   const read = await readReferencedImportedSession(db, identity, pick.id);
   assertSameProject(read.session.project_id, targetProjectId);
@@ -375,7 +376,7 @@ async function resolveImportedPick(
     // different semantics under the same name.
     const summary = await currentImportedHistorySummary(db, identity.spaceId, pick.id);
     if (!summary) {
-      throw new HttpError(409, "That imported session has no summary yet; reference its records instead", {
+      throw new RoomMutationError(409, "That imported session has no summary yet; reference its records instead", {
         code: "reference_summary_unavailable",
         detail: "This session could not be summarized — it may have no readable records. Pick the records you want instead.",
       } satisfies ThreadReferenceSummaryUnavailable);
@@ -532,7 +533,7 @@ export function assertDisclosureConfirmed(
   } else if (confirmed === true) {
     return;
   }
-  throw new HttpError(409, "Confirm that this reference discloses its source to this conversation", {
+  throw new RoomMutationError(409, "Confirm that this reference discloses its source to this conversation", {
     code: "reference_disclosure_confirmation_required",
     detail: `Copying this here lets ${gained.length} more ${gained.length === 1 ? "person" : "people"} read it.`,
     gains_access_user_ids: [...gained],

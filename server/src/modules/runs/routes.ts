@@ -4,8 +4,6 @@ import {OperationToolResponse} from "../systemActions/operations/agentResult.js"
 import { stateChangingReadAllowed } from "../../gateway/csrfOrigin.js";
 import { readRunFilePreview } from "./filePreview.js";
 import { randomUUID } from "node:crypto";
-import { RunLiveInputRequestSchema, QuotaRecoveryUpdateSchema } from "@rainver/protocol";
-import { updateQuotaRecovery } from "../rooms/quotaRecovery.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
@@ -15,28 +13,20 @@ import { introspectIdentity } from "../auth/identity.js";
 import { PgActivityRepository } from "../activity/repository.js";
 import { PgArtifactRepository } from "../artifacts/repository.js";
 import { PgProposalRepository } from "../proposals/repository.js";
-import { dbPool, page, sendRouteError, withDbTransaction } from "../routeUtils/common.js";
-import { PgRunRepository, type AgentRunRecord, type RunRecord, type VisibleRunRecord } from "./repository.js";
+import { dbPool, page, sendRouteError } from "../routeUtils/common.js";
+import { PgRunRepository, type AgentRunRecord, type VisibleRunRecord } from "./repository.js";
 import { bodyWithheld } from "../access/contentAccessTypes.js";
-import { authorizeRunCommand, authorizeRunResume } from "./runCommandAuthority.js";
+import { authorizeRunCommand } from "./runCommandAuthority.js";
 import type { RunOrchestrationService } from "./orchestrationService.js";
-import { PgJobQueueRepository } from "../jobs/repository.js";
-import { RunMaterializationService } from "./materializationService.js";
 import { buildRunOrchestration } from "./orchestrationFactory.js";
 import { InvocationSnapshotService } from "../runtimeContext/index.js";
 import { loadRunTurn } from "./turnReadModel.js";
 import { liveInputChannel } from "./liveInput.js";
-import { submitRunLiveInput } from "./liveInputService.js";
-import {
-  canonicalRunOutput,
-  isHardTerminalRunStatus,
-} from "./orchestrationResults.js";
+import { liveInputDeliveryState } from "./liveInputService.js";
+import { registerOperationAdapters } from "../systemActions/operations/routeAdapter.js";
 import { CliAgentToolTransport } from "./cliToolTransport.js";
 import { PgRunToolIdentityRepository } from "./runToolIdentityRepository.js";
 import { assembleRunInputEnvelope, logicalRunInput } from "./runInputEnvelope.js";
-import {
-  NonTerminalRunError,
-} from "./finalizationService.js";
 import {
   artifactSummaryToOut,
   proposalSummaryToOut,
@@ -52,7 +42,6 @@ import {
   verificationResultToOut,
 } from "./runReadModel.js";
 import { resolveRunRemoteness } from "./runRemoteness.js";
-import { finalizedForPostRun } from "./finalizationOutcome.js";
 
 interface RunsCommandServices {
   orchestration: Pick<RunOrchestrationService, "executeRun" | "cancelRun">;
@@ -64,15 +53,9 @@ type RunsIdentity = { spaceId: string; userId: string };
 type RunsIdentityOverride =
   | RunsIdentity
   | ((request: FastifyRequest) => Promise<RunsIdentity | null> | RunsIdentity | null);
-type RunsReadResponseOverride = (
-  runId: string,
-  request: FastifyRequest,
-  reply: FastifyReply,
-) => Promise<FastifyReply> | FastifyReply;
 
 let servicesFactoryOverride: RunsCommandServicesFactory | null = null;
 let identityOverride: RunsIdentityOverride | null = null;
-let readResponseOverride: RunsReadResponseOverride | null = null;
 
 export function __setRunsCommandServicesFactoryForTests(
   factory: RunsCommandServicesFactory | null,
@@ -84,11 +67,6 @@ export function __setRunsIdentityForTests(identity: RunsIdentityOverride | null)
   identityOverride = identity;
 }
 
-export function __setRunsReadResponseForTests(
-  responder: RunsReadResponseOverride | null,
-): void {
-  readResponseOverride = responder;
-}
 
 function params(request: FastifyRequest): Record<string, string | undefined> {
   return request.params as Record<string, string | undefined>;
@@ -152,6 +130,17 @@ function commandServices(context: ModuleContext): RunsCommandServices {
 }
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
+  const run = { runId: "run_id" };
+  registerOperationAdapters(app, context.config, [
+    { method: "PATCH", url: "/api/v1/runs/:runId/stop", operation: "run.stop", params: run },
+    { method: "POST", url: "/api/v1/runs/:runId/abandon", operation: "run.abandon", params: run },
+    { method: "POST", url: "/api/v1/runs/:runId/resume", operation: "run.resume", params: run },
+    // A `?runtime=` override was always refused; binding it makes the strict input refuse it still.
+    { method: "POST", url: "/api/v1/runs/:runId/execute", operation: "run.execute", params: run, query: { runtime: "runtime" } },
+    { method: "POST", url: "/api/v1/runs/:runId/finalize", operation: "run.finalize", params: run },
+    { method: "PATCH", url: "/api/v1/runs/:runId/quota-recovery", operation: "run.quota_recovery.update", params: run },
+    { method: "POST", url: "/api/v1/runs/:runId/live-input", operation: "run.live_input.submit", params: run },
+  ]);
   app.get("/api/v1/runs/:runId/live-input", async (request, reply) => {
     const identity = await resolveIdentity(context, request, reply);
     if (!identity) return reply;
@@ -161,17 +150,10 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       const channel = liveInputChannel(runId);
       reply.header("cache-control", "no-store");
       const available = run.status === "running" && Boolean(run.session_id) && channel?.available() === true;
-      return reply.send({ available, binding_id: available ? channel!.delivery.id : null });
-    } catch (error) { return sendRouteError(reply, error); }
-  });
-  app.post("/api/v1/runs/:runId/live-input", async (request, reply) => {
-    const identity = await resolveIdentity(context, request, reply);
-    if (!identity) return reply;
-    try {
-      const parsed = RunLiveInputRequestSchema.safeParse(jsonBody(request));
-      if (!parsed.success) return reply.code(422).send({ detail: "A binding_id and 1–8000 characters of additional input are required" });
-      const body = parsed.data;
-      return reply.send(await submitRunLiveInput(dbPool(context.config), context.config, identity, params(request).runId!, body.binding_id, body.content));
+      // After a `run.live_input.submit` command, the delivery outcome of that one message.
+      const messageId = query(request).message_id;
+      const delivery = messageId ? await liveInputDeliveryState(dbPool(context.config), identity.spaceId, run.id, messageId) : undefined;
+      return reply.send({ available, binding_id: available ? channel!.delivery.id : null, ...(messageId ? { delivery_state: delivery ?? null } : {}) });
     } catch (error) { return sendRouteError(reply, error); }
   });
   app.get("/api/v1/runs/:runId/file-preview", async (request, reply) => {
@@ -294,41 +276,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/runs/:runId/execute", async (request, reply) => {
-    const identity = await resolveIdentity(context, request, reply);
-    if (!identity) return reply;
-    const runId = params(request).runId ?? "";
-    const runtime = query(request).runtime;
-    if (runtime) {
-      return reply.code(400).send({
-        detail:
-          "Runtime query overrides are not supported by the server runs authority; use the configured runtime adapter.",
-      });
-    }
-    // The Run row and the policy-owned adapter resolution are authoritative.
-    // Execution parameters (prompt, model, adapter config, sandbox, timeouts)
-    // are never accepted from the request body.
-    const services = commandServices(context);
-    try {
-      await authorizeRunCommand(services.repository, identity, runId, "execute");
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-    await services.orchestration.executeRun({
-      run_id: runId,
-      space_id: identity.spaceId,
-      worker_id: `http:${resolveRequestId(request)}`,
-      command_source: "http",
-    });
-    if (readResponseOverride) return readResponseOverride(runId, request, reply);
-    const run = await services.repository.getVisibleRun(identity.spaceId, identity.userId, runId);
-    if (!run) {
-      return reply.code(404).send({ detail: "Run not found in this space" });
-    }
-    return reply.send(runToOut(run, null, {
-      executes_remotely: (await resolveRunRemoteness(dbPool(context.config), [run])).has(run.id),
-    }));
-  });
 
   // Service-authenticated internal execute for synchronous server callers
   // (currently the agents chat turn). Same orchestration authority as the
@@ -354,31 +301,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     return reply.send(result);
   });
 
-  app.patch("/api/v1/runs/:runId/stop", async (request, reply) => {
-    const identity = await resolveIdentity(context, request, reply);
-    if (!identity) return reply;
-    const runId = params(request).runId ?? "";
-    const body = jsonBody(request);
-    const services = commandServices(context);
-    let before: VisibleRunRecord;
-    try {
-      before = await authorizeRunCommand(services.repository, identity, runId, "stop");
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-    const result = await services.orchestration.cancelRun({
-      run_id: runId,
-      space_id: identity.spaceId,
-      requested_by_user_id: identity.userId,
-      reason: stringValue(body.reason),
-    });
-    const after = await services.repository.getVisibleRun(identity.spaceId, identity.userId, runId);
-    const run = after ?? before;
-    if (!run && result.status === "unknown") {
-      return reply.code(404).send({ detail: "Run not found in this space." });
-    }
-    return reply.send(stopResponse(run, result.status, !result.skipped));
-  });
 
   app.get("/api/v1/runs", async (request, reply) => {
     const identity = await resolveIdentity(context, request, reply);
@@ -568,50 +490,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     });
   });
 
-  app.post("/api/v1/runs/:runId/finalize", async (request, reply) => {
-    const identity = await resolveIdentity(context, request, reply);
-    if (!identity) return reply;
-    const runId = params(request).runId ?? "";
-    const repository = PgRunRepository.fromConfig(context.config);
-    let run: VisibleRunRecord;
-    try {
-      run = await authorizeRunCommand(repository, identity, runId, "finalize");
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-    try {
-      if (!isHardTerminalRunStatus(run.status)) {
-        throw new NonTerminalRunError(
-          `Run '${runId}' is not terminal (status='${run.status}').`,
-        );
-      }
-      const result = await RunMaterializationService.fromConfig(
-        context.config,
-      ).finalizeRun(run);
-      if (result.error_code === "finalization_in_progress") {
-        return reply.code(409).send({ detail: result.error_message, error_code: result.error_code });
-      }
-      // Owed settlement is a durable finalization; the sweep settles the rest.
-      if (!finalizedForPostRun(result)) {
-        throw new Error(
-          result.error_message ?? "Run finalization reconciliation failed.",
-        );
-      }
-      const finalization = await repository.getLatestRunFinalization(
-        identity.spaceId,
-        runId,
-      );
-      if (!finalization) {
-        throw new Error("Run finalization completed without a persisted record.");
-      }
-      return reply.send(runFinalizationToOut(finalization, run.effective_access_level));
-    } catch (error) {
-      if (error instanceof NonTerminalRunError) {
-        return reply.code(422).send({ detail: error.message });
-      }
-      throw error;
-    }
-  });
 
   app.get("/api/v1/runs/:runId/finalization", async (request, reply) => {
     const result = await visibleRun(context, request, reply);
@@ -706,142 +584,10 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     });
   });
 
-  app.patch("/api/v1/runs/:runId/quota-recovery", async (request, reply) => {
-    const identity = await resolveIdentity(context, request, reply);
-    if (!identity) return reply;
-    const parsed = QuotaRecoveryUpdateSchema.safeParse(jsonBody(request));
-    if (!parsed.success) return reply.code(422).send({ detail: "Expected auto_continue as a boolean" });
-    const runId = params(request).runId ?? "";
-    try {
-      await authorizeRunCommand(PgRunRepository.fromConfig(context.config), identity, runId, "resume");
-      const recovery = await withDbTransaction(dbPool(context.config), async client => {
-        const result = await updateQuotaRecovery(client, identity.spaceId, runId, parsed.data.auto_continue);
-        await new PgRunRepository(client).appendRunEvent({ run_id: runId, space_id: identity.spaceId,
-          event_type: "state_transition", status: "succeeded", metadata_json: { action: "quota_recovery_updated", auto_continue: result.auto_continue } });
-        return result;
-      });
-      return reply.send(recovery);
-    } catch (error) { return sendRouteError(reply, error); }
-  });
 
-  app.post("/api/v1/runs/:runId/resume", async (request, reply) => {
-    const identity = await resolveIdentity(context, request, reply);
-    if (!identity) return reply;
-    const repository = PgRunRepository.fromConfig(context.config);
-    const runId = params(request).runId ?? "";
-    let authorized: Awaited<ReturnType<typeof authorizeRunResume>>;
-    try {
-      authorized = await authorizeRunResume(dbPool(context.config), repository, identity, runId);
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-    const { run } = authorized;
-    const grantedAt = new Date().toISOString();
-    const supervisorReview = authorized.kind === "supervisor_review";
-    // One transaction for the requeue and its job, as the authorization
-    // reconciliation path does: a Run set to `queued` whose job was never
-    // written has nothing left to run it and no resume left to try.
-    const updated = await withDbTransaction(dbPool(context.config), async (client) => {
-      const runs = new PgRunRepository(client);
-      const requeued = supervisorReview
-        ? await runs.resumeRunAfterSupervisorReview({
-            run_id: runId,
-            space_id: identity.spaceId,
-            resumed_by_user_id: identity.userId,
-            resumed_at: grantedAt,
-          })
-        : await runs.grantRunApprovalAndRequeue({
-            run_id: runId,
-            space_id: identity.spaceId,
-            granted_by_user_id: identity.userId,
-            granted_at: grantedAt,
-          });
-      if (!requeued) return null;
-      await new PgJobQueueRepository(client).ensureAgentRunJob({
-        job_type: "agent_run",
-        space_id: identity.spaceId,
-        user_id: identity.userId,
-        agent_id: run.agent_id,
-        project_folder_id: run.project_folder_id,
-        payload: { run_id: runId },
-      });
-      return requeued;
-    });
-    if (!updated) {
-      return reply.code(409).send({ detail: "Run could not be resumed (status may have changed)" });
-    }
-    return reply.code(202).send({
-      id: updated.id,
-      status: updated.status,
-      resumed_at: grantedAt,
-      resume_kind: supervisorReview ? "new_attempt" : "same_attempt",
-    });
-  });
 
-  app.post("/api/v1/runs/:runId/abandon", async (request, reply) => {
-    const identity = await resolveIdentity(context, request, reply);
-    if (!identity) return reply;
-    const repository = PgRunRepository.fromConfig(context.config);
-    const runId = params(request).runId ?? "";
-    let run: VisibleRunRecord;
-    try {
-      run = await authorizeRunCommand(repository, identity, runId, "abandon");
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-    if (run.status !== "waiting_for_review") {
-      return reply
-        .code(409)
-        .send({ detail: `Run is not waiting for review (current status: ${run.status})` });
-    }
-    const body = jsonBody(request);
-    const abandonedAt = new Date().toISOString();
-    const updated = await repository.markRunTerminal({
-      run_id: runId,
-      space_id: identity.spaceId,
-      status: "cancelled",
-      output_json: canonicalRunOutput({
-        success: false,
-        outputText: "",
-        outputJson: { error_code: "run_abandoned" },
-      }),
-      error_json: {
-        error_code: "run_abandoned",
-        error_text: stringValue(body.reason) ?? "Run abandoned after supervisor review.",
-        abandoned_by_user_id: identity.userId,
-      },
-      exit_code: 1,
-      completed_at: abandonedAt,
-    });
-    if (!updated) {
-      return reply.code(409).send({ detail: "Run could not be abandoned (status may have changed)" });
-    }
-    await RunMaterializationService.fromConfig(context.config).finalizeRun(updated);
-    return reply.code(202).send({
-      id: updated.id,
-      status: updated.status,
-      abandoned_at: abandonedAt,
-    });
-  });
 }
 
-function stopResponse(
-  run: RunRecord | null,
-  fallbackStatus: string,
-  changed: boolean,
-): Record<string, unknown> {
-  return {
-    id: run?.id ?? null,
-    status: run?.status ?? fallbackStatus,
-    mode: run?.mode ?? null,
-    run_type: run?.run_type ?? "agent",
-    trigger_origin: run?.trigger_origin ?? null,
-    started_at: run?.started_at ?? null,
-    ended_at: run?.ended_at ?? null,
-    error_message: run?.error_message ?? null,
-    changed,
-  };
-}
 
 const LOGICAL_RUNTIME_EVENT_TYPES = new Set([
   "assistant_message_completed",

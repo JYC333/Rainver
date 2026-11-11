@@ -338,6 +338,20 @@ export class PgHostThreadRepository {
               retired_vendor_session_ids = CASE WHEN vendor_session_id IS NULL THEN retired_vendor_session_ids ELSE retired_vendor_session_ids || to_jsonb(vendor_session_id) END,
               vendor_session_id = NULL,
               pending_archive_at = COALESCE(thread.pending_archive_at, now()),
+              archive_generation = CASE WHEN thread.pending_archive_at IS NULL OR thread.archive_generation IS NULL
+                                        THEN nextval('managed_workspace_generation_seq') ELSE thread.archive_generation END,
+              -- Fixed with the generation: whatever membership does next, every send of this archive means the same.
+              archive_include_workspace = CASE WHEN thread.pending_archive_at IS NULL OR thread.archive_include_workspace IS NULL
+                THEN (thread.workspace_mode = 'managed' AND NOT EXISTS (
+                  SELECT 1 FROM host_threads other
+                   WHERE other.id <> thread.id
+                     AND other.session_id = thread.session_id
+                     AND other.space_id = thread.space_id
+                     AND other.container_kind = 'conversation'
+                     AND other.status IN ('active', 'session_reset')))
+                ELSE thread.archive_include_workspace END,
+              archive_scope_confirmed = CASE WHEN thread.pending_archive_at IS NULL OR thread.archive_include_workspace IS NULL
+                THEN true ELSE thread.archive_scope_confirmed END,
               updated_at = now()
         FROM sessions conversation
        WHERE thread.session_id = conversation.id
@@ -347,16 +361,7 @@ export class PgHostThreadRepository {
          AND thread.agent_id = $3
          AND thread.container_kind = 'conversation'
          AND thread.status IN ('active', 'session_reset')
-      RETURNING thread.*, (
-        thread.workspace_mode = 'managed' AND NOT EXISTS (
-          SELECT 1 FROM host_threads other
-           WHERE other.id <> thread.id
-             AND other.session_id = thread.session_id
-             AND other.space_id = thread.space_id
-             AND other.container_kind = 'conversation'
-             AND other.status IN ('active', 'session_reset')
-        )
-      ) AS include_workspace`,
+      RETURNING thread.*, thread.archive_include_workspace AS include_workspace`,
       [spaceId, roomId, agentId],
     );
     return result.rows.map((row) => ({ ...normalizeReturnedThread(row), include_workspace: row.include_workspace }));
@@ -412,6 +417,12 @@ export class PgHostThreadRepository {
               retired_vendor_session_ids = CASE WHEN vendor_session_id IS NULL THEN retired_vendor_session_ids ELSE retired_vendor_session_ids || to_jsonb(vendor_session_id) END,
               vendor_session_id = NULL,
               pending_archive_at = CASE WHEN $3::boolean THEN COALESCE(pending_archive_at, now()) ELSE pending_archive_at END,
+              archive_generation = CASE WHEN $3::boolean AND (pending_archive_at IS NULL OR archive_generation IS NULL)
+                                        THEN nextval('managed_workspace_generation_seq') ELSE archive_generation END,
+              archive_include_workspace = CASE WHEN $3::boolean AND (pending_archive_at IS NULL OR archive_include_workspace IS NULL)
+                                               THEN workspace_mode = 'managed' ELSE archive_include_workspace END,
+              archive_scope_confirmed = CASE WHEN $3::boolean AND (pending_archive_at IS NULL OR archive_include_workspace IS NULL)
+                                             THEN true ELSE archive_scope_confirmed END,
               updated_at = now()
         WHERE agent_id = $1 AND container_kind = 'direct' AND container_user_id = $2
           AND status <> 'closed'`,
@@ -492,16 +503,20 @@ export class PgHostThreadRepository {
    * Covers a Conversation pinned to a registered WorkspaceLocation, not only
    * `workspace_mode = 'managed'`. That Conversation has no Rainver-managed
    * cwd, and it still has the Agent's runtime profile on that machine.
-   * Leaving the profile behind leaks it. `include_workspace` says which of
-   * the two the daemon should move.
+   * Leaving the profile behind leaks it. `include_workspace` is the cwd scope
+   * the intent fixed when it committed — null only for one committed before
+   * that was recorded, which its first send fixes.
    */
-  async listPendingManagedWorkspaceArchives(hostId: string): Promise<Array<{
+  /** `withUnfenced`: also threads whose archive was once sent without an identity (`archive_unfenced_at`), for the launch barriers. */
+  async listPendingManagedWorkspaceArchives(hostId: string, agentId: string | null = null, withUnfenced = false): Promise<Array<{
     id: string;
     space_id:string|null;execution_workspace_json:{id:string;generation:number;profile_container_id?:string}|null;
     agent_id: string;
     container_kind: "direct" | "conversation";
     container_id: string;
-    include_workspace: boolean;
+    include_workspace: boolean | null;
+    pending: boolean;
+    unfenced: boolean;
   }>> {
     const result = await this.db.query<{
       id: string;
@@ -509,37 +524,32 @@ export class PgHostThreadRepository {
       agent_id: string;
       container_kind: "direct" | "conversation";
       container_id: string;
-      include_workspace: boolean;
+      include_workspace: boolean | null;
+      pending: boolean;
+      unfenced: boolean;
     }>(
       `SELECT thread.id,thread.space_id,thread.execution_workspace_json,thread.agent_id, thread.container_kind,
               CASE WHEN thread.container_kind = 'direct' THEN thread.container_user_id
                    ELSE thread.session_id END AS container_id,
-              (
-                thread.workspace_mode = 'managed' AND (
-                  thread.container_kind = 'direct' OR NOT EXISTS (
-                    SELECT 1 FROM host_threads other
-                     WHERE other.id <> thread.id
-                       AND other.session_id = thread.session_id
-                       AND other.space_id = thread.space_id
-                       AND other.container_kind = 'conversation'
-                       AND other.status IN ('active', 'session_reset')
-                  )
-                )
-              ) AS include_workspace
+              thread.archive_include_workspace AS include_workspace,
+              thread.pending_archive_at IS NOT NULL AS pending, thread.archive_unfenced_at IS NOT NULL AS unfenced
          FROM host_threads thread
         WHERE thread.execution_host_id = $1
-          AND thread.pending_archive_at IS NOT NULL AND thread.status = 'closed'
-          AND thread.agent_id IS NOT NULL AND thread.container_kind IN ('direct', 'conversation')`,
-      [hostId],
+          AND (thread.pending_archive_at IS NOT NULL OR ($3::boolean AND thread.archive_unfenced_at IS NOT NULL)) AND thread.status = 'closed'
+          AND thread.agent_id IS NOT NULL AND thread.container_kind IN ('direct', 'conversation')
+          AND ($2::varchar IS NULL OR thread.agent_id = $2::varchar)
+        ORDER BY thread.archive_generation NULLS FIRST, thread.id`,
+      [hostId, agentId, withUnfenced],
     );
     return result.rows.filter((row) => Boolean(row.container_id));
   }
 
-  async acknowledgeManagedWorkspaceArchive(threadId: string): Promise<void> {
+  /** Settles the archive intent; with a generation, only that intent, never a newer one. */
+  async acknowledgeManagedWorkspaceArchive(threadId: string, generation: number | null = null): Promise<void> {
     await this.db.query(
       `UPDATE host_threads SET pending_archive_at = NULL, updated_at = now()
-        WHERE id = $1 AND status = 'closed'`,
-      [threadId],
+        WHERE id = $1 AND status = 'closed' AND ($2::bigint IS NULL OR archive_generation = $2::bigint)`,
+      [threadId, generation],
     );
   }
 

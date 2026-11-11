@@ -615,6 +615,14 @@ public config-proposal route:
    requirements, so an Agent definition edit cannot directly grant tools or
    write authority.
 
+Every Agent definition, Runtime Profile, template, Run-start and direct-chat
+write URL is an operation-core command (`agents/operations.ts`,
+`agents/chatOperations.ts`; SYSTEM_ACTIONS "Agent and Room commands"): a required
+`Idempotency-Key`, identity receipts re-read through the Agent/Profile/Run GETs,
+and the same owner/configurer/placement gates below rechecked in the transaction.
+The UI's create body's tool/output/schedule policies are now kept on the initial
+version (the old route silently dropped them).
+
 **Version restore — `POST /api/v1/agents/{agent_id}/versions/{version_id}/restore`.**
    Appends a brand-new `AgentVersion` whose config is copied from the selected prior version,
    then advances `current_version_id`. The selected version is never mutated or reactivated;

@@ -177,6 +177,8 @@ export type RuntimeInstallation = z.infer<typeof RuntimeInstallationSchema>;
 export const HostCapabilitiesSchema = z.object({
   execution_workspaces: ExecutionWorkspaceCapabilitySchema.optional(),
   native_workspace_integration:z.literal(true).optional(),
+  /** Native integration supports the `rebase` publication strategy. */
+  native_workspace_rebase:z.literal(true).optional(),
   managed_cli_updates: z.literal(true).optional(),
   workspace_read_only: z.object({supported:z.boolean(),mechanism:z.literal("bwrap-v1"),reason:z.string().nullable()}).optional(),
   /** PATH binaries the daemon found (vendor CLIs and git), for display only. */
@@ -200,6 +202,34 @@ export const HostCapabilitiesSchema = z.object({
   ordinary_tool_accounts: OrdinaryToolAccountsCapabilitySchema.optional(),
   /** Ordinary tools and personal accounts inside Runs; absent from older daemons. */
   ordinary_tools_runs: OrdinaryToolsRunCapabilitySchema.optional(),
+  /**
+   * Managed-workspace archive/restore with a durable operation journal and
+   * generation fencing (`operation_id`, `generation`). Absent from older
+   * daemons: the control plane sends them legacy archives and no restore.
+   */
+  managed_workspace_operations: z.literal(1).optional(),
+  /**
+   * Isolated-workspace `archive_profiles` journaled per Agent under the
+   * thread's archive identity, with the same generation fence. Absent: the
+   * Host cannot fence a late profile archive, and no launch proceeds on a
+   * profile one is owed or was sent for (`host_update_required`).
+   */
+  workspace_profile_operations: z.literal(1).optional(),
+  /**
+   * `managed_workspace_legacy_drain`: the daemon can prove its identity-less
+   * archives drained and closed. Absent: an archive once sent without an
+   * identity keeps the launch and restore barriers on its target refused
+   * (`host_update_required`), whatever the Host reports otherwise.
+   */
+  legacy_archive_drain: z.literal(1).optional(),
+  /**
+   * Journaled Host commands (`host_command`): durable start/outcome receipts
+   * keyed by the control plane's command id, so a lost answer is replayed
+   * rather than repeated. Absent: a command is sent at most once and a lost
+   * answer leaves it `needs_attention`; a reset of an Agent's profiles is
+   * refused (`host_update_required`).
+   */
+  host_command_receipts: z.literal(1).optional(),
 });
 export type HostCapabilities = z.infer<typeof HostCapabilitiesSchema>;
 
@@ -346,6 +376,8 @@ export const HostUsageQuotaSchema = z.object({
   available: z.boolean(),
   windows: z.array(z.object({
     id: z.string().max(256),
+    /** Independent allowances never become account-wide admission gates. */
+    scope: z.enum(["account", "model", "family"]).optional(),
     label: z.string().max(256),
     used_pct: z.number().finite().nonnegative().nullable(),
     resets: z.string().max(512).nullable(),
@@ -374,7 +406,7 @@ export const SubscriptionQuotaPoolSchema = z.object({
   account_display: SubscriptionAccountDisplaySchema.nullable().optional(),
   label: z.string(),
   windows: z.array(z.object({
-    id: z.string(), label: z.string(), used_pct: z.number().nonnegative().nullable(),
+    id: z.string(), scope: z.enum(["account", "model", "family"]).optional(), label: z.string(), used_pct: z.number().nonnegative().nullable(),
     resets: z.string().nullable(), checked_at: ISODateTimeSchema,
   })),
   connections: z.array(z.object({

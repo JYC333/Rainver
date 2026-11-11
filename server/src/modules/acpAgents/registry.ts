@@ -66,6 +66,17 @@ export function __setAcpRegistryForTests(entries: AcpRegistryEntry[] | "unavaila
   setResolvedRegistryEntries(Array.isArray(entries) ? entries : []);
 }
 
+/**
+ * The registry as this process last fetched it, without the network: what
+ * `acp_agent.enable` snapshots inside its transaction after its adapter
+ * refreshed the registry before the transaction (`fetchAcpRegistry`).
+ */
+export function cachedAcpRegistry(): AcpRegistryEntry[] | null {
+  if (override === "unavailable") return null;
+  if (override) return override;
+  return cache && Date.now() - cache.at < REGISTRY_TTL_MS ? cache.entries : null;
+}
+
 export async function fetchAcpRegistry(): Promise<AcpRegistryEntry[]> {
   if (override === "unavailable") throw new AcpRegistryError("acp_registry_unavailable", "ACP registry could not be fetched (test).");
   if (override) return override;

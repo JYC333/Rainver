@@ -443,3 +443,46 @@ values and total consistency checks. An absent or
 null optional prompt usage is unknown, not an execution failure. Successful
 preauthorization notices remain in the audit trail but are omitted from ordinary
 conversation parts; cancellations and errors remain visible.
+
+Independent quota allowances carry `windows[].scope` (`account`, `model`, or
+`family`). Claude's shared session/week rows remain account meters; its scoped
+weekly rows and Antigravity's model-family buckets never become a maximum-based
+account total. Antigravity exposes no overall meter, so its legacy summary
+percentages remain unknown. The server also corrects older cached Antigravity
+summaries and prefers Claude's named shared meters. A refusal with independently
+scoped allowances is not itself proof that the entire login is exhausted.
+
+Interrupted native-login Runs offer an explicit “allow another model and
+continue” action when the same installation advertises an alternative. The action
+revalidates that catalog, records the selected model in the Run, and enables the
+existing recovery scheduler without waiting for the failed model's reset. It
+keeps the Host, login, workspace, native session and all other session options.
+The existing authority/changed-conversation checks, dispatch locks, cost and
+Supervisor attempt caps still apply. The vendor confirms the replacement through
+normal ACP model selection; availability not exposed by quota telemetry is
+unknown and a further refusal consumes the remaining attempt budget. This is
+consent for this interrupted Run, not a global model-routing preference.
+
+Reuse / Dependency Check: reuses quota recovery, the Supervisor's attempt budget,
+Host-advertised ACP model options and shared Run controls. This is Rainver-owned
+admission/consent behavior, with no new retry engine, dependency or migration.
+
+Explicit “exhausted capacity on this model” / “model quota exhausted” terminal
+refusals share the quota recovery path across registered ACP runtimes, in
+addition to spec-declared vendor wording. Generic 429/rate limits retain their
+existing classification; Provider-bound executions do not enter native-login
+quota recovery.
+
+Conversation settings may save advance model-switch consent. It is off by
+default and scoped to the conversation's Agent, the person saving it, runtime
+profile and runtime key in `sessions.metadata_json.quota_model_switch`. It is
+Rainver recovery policy, never an ACP option. The existing authorized settings
+transaction saves it with the CLI options. Recovery selects an alternative from
+the same installation without another question only when this consent matches;
+the normal Supervisor attempt/cost limits still apply. Revocation is checked
+again before scheduler admission. Changing person/profile/runtime does not
+inherit consent. Without an alternative, recovery retains its waiting controls.
+
+Reuse / Dependency Check: extends the existing settings command, session metadata,
+quota model selection and recovery scheduler; no new dependency, migration or
+retry mechanism.

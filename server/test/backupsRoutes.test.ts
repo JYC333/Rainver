@@ -11,6 +11,7 @@ import {
 import { buildModuleServer } from "./support/moduleServer.js";
 import { resetTables } from "./support/resetTables.js";
 import { useTestDatabase } from "./support/testDatabase.js";
+import { keyed, refused } from "./support/systemCommandHarness.js";
 
 const ADMIN = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const MEMBER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -41,13 +42,18 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   if (!db.available) return;
-  await resetTables(db.pool, ["users"], { cascade: true });
+  await resetTables(db.pool, ["system_command_intents", "jobs", "operation_idempotency", "policy_decision_records", "space_memberships", "spaces", "users"], { cascade: true });
   const now = new Date().toISOString();
   await db.pool.query(
     `INSERT INTO users (id,email,display_name,status,created_at,updated_at, registration_source) VALUES
       ($1,'admin@example.test','Admin','active',$3,$3, 'system'),
       ($2,'member@example.test','Member','active',$3,$3, 'system')`,
     [ADMIN, MEMBER, now],
+  );
+  await db.pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Main','team',$2,$2)`, [SPACE, now]);
+  await db.pool.query(
+    `INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES (gen_random_uuid(),$1,$2,'owner','active',$4,$4),(gen_random_uuid(),$1,$3,'member','active',$4,$4)`,
+    [SPACE, ADMIN, MEMBER, now],
   );
   const users: Record<string, CurrentUser> = {
     [ADMIN]: user(ADMIN, "admin@example.test"),
@@ -72,7 +78,18 @@ describe("backup routes", () => {
     if (!db.available || !app) return ctx.skip();
     __setAuthIdentityForTests({ userId: MEMBER, spaceId: SPACE } as never);
     expect((await app.inject({ method: "GET", url: "/api/v1/system/backups" })).statusCode).toBe(403);
-    expect((await app.inject({ method: "POST", url: "/api/v1/system/backups/manual" })).statusCode).toBe(403);
+    // `system.backup.create` answers a non-admin the hidden 404 and admits nothing.
+    expect(refused(await keyed(app, { method: "POST", url: "/api/v1/system/backups/manual" }), 404)).toBe("operation_not_found");
+    expect((await db.pool.query(`SELECT 1 FROM system_command_intents`)).rowCount).toBe(0);
+  });
+
+  it("refuses a manual backup while the service is disabled, without admitting a command", async (ctx) => {
+    if (!db.available || !app) return ctx.skip();
+    __setAuthIdentityForTests({ userId: ADMIN, spaceId: SPACE } as never);
+    const response = await keyed(app, { method: "POST", url: "/api/v1/system/backups/manual" });
+    expect(refused(response, 409)).toBe("operation_conflict");
+    expect(response.json().error.message).toMatch(/BACKUP_ENABLED/);
+    expect((await db.pool.query(`SELECT 1 FROM system_command_intents`)).rowCount).toBe(0);
   });
 
   it("lets the instance admin list backups when the service is disabled", async (ctx) => {

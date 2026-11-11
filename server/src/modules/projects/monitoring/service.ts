@@ -82,7 +82,7 @@ export class ProjectMonitoringService {
         payload_json: Record<string, unknown>;
       }>(`SELECT id,payload_json FROM proposals WHERE space_id=$1 AND project_id=$2 AND proposal_type IN ('project_information_monitoring_activation','project_information_monitoring_details') AND action_idempotency_key=$3`, [identity.spaceId, projectId, body.idempotency_key]);
       if (previous.rows[0]) {
-        if (previous.rows[0].payload_json.request_hash !== fingerprintOf(body)) throw new HttpError(409, 'Idempotency key has different parameters');
+        if (previous.rows[0].payload_json.request_hash !== fingerprintOf(body)) throw new MonitoringControlError(409, 'Idempotency key has different parameters');
         return {
           proposal: previous.rows[0]
         };
@@ -90,8 +90,8 @@ export class ProjectMonitoringService {
       const project = await tx.query<{
         active_information_monitoring_version_id: string | null;
       }>(`SELECT active_information_monitoring_version_id FROM projects WHERE id=$1 AND space_id=$2`, [projectId, identity.spaceId]);
-      if (project.rows[0]?.active_information_monitoring_version_id !== body.expected_active_version_id) throw new HttpError(409, 'Monitoring version changed');
-      if (actor.proposalKind === 'details' && !body.expected_active_version_id) throw new HttpError(422, "An active version is required for details");
+      if (project.rows[0]?.active_information_monitoring_version_id !== body.expected_active_version_id) throw new MonitoringControlError(409, 'Monitoring version changed');
+      if (actor.proposalKind === 'details' && !body.expected_active_version_id) throw new MonitoringControlError(422, "An active version is required for details");
       if (body.expected_active_version_id && actor.proposalKind !== 'scope') {
         const current = await getVersion(tx, identity.spaceId, projectId, body.expected_active_version_id);
         if (monitoringDetailsOnly(versionOut(current).config, body.config)) {
@@ -137,11 +137,11 @@ export class ProjectMonitoringService {
             dependencies: []
           };
         }
-        if (actor.proposalKind === 'details') throw new HttpError(422, 'Details cannot change execution scope');
+        if (actor.proposalKind === 'details') throw new MonitoringControlError(422, 'Details cannot change execution scope');
       }
       const source = await requireMonitoringSource(tx, identity, projectId, body.config.source_channel_id);
-      if ((source.connector_key === 'web_page') !== (body.config.incremental_strategy === 'page_changes')) throw new HttpError(422, 'Fixed pages require page_changes; feeds and searches require new_items');
-      if (source.connector_key === 'arxiv_api' && Date.parse(body.config.to) > Date.now()) throw new HttpError(422, 'History end must not be in the future');
+      if ((source.connector_key === 'web_page') !== (body.config.incremental_strategy === 'page_changes')) throw new MonitoringControlError(422, 'Fixed pages require page_changes; feeds and searches require new_items');
+      if (source.connector_key === 'arxiv_api' && Date.parse(body.config.to) > Date.now()) throw new MonitoringControlError(422, 'History end must not be in the future');
       const version = await appendVersion(tx, identity.spaceId, projectId, identity.userId, body.config);
       const priorVersion = body.expected_active_version_id ? await getVersion(tx, identity.spaceId, projectId, body.expected_active_version_id) : null;
       const previousConfig = priorVersion ? versionOut(priorVersion).config : null;
@@ -160,7 +160,7 @@ export class ProjectMonitoringService {
           id: string;
           proposal_id: string;
         }>(`SELECT p.id,p.proposal_id FROM source_backfill_plans p JOIN proposals pr ON pr.id=p.proposal_id AND pr.space_id=p.space_id WHERE p.id=$1 AND p.space_id=$2 AND pr.status='accepted'`, [priorVersion.backfill_plan_id, identity.spaceId]);
-        if (!approved.rows[0]) throw new HttpError(409, 'Existing history approval is unavailable');
+        if (!approved.rows[0]) throw new MonitoringControlError(409, 'Existing history approval is unavailable');
         plan = {
           id: approved.rows[0].id
         };
@@ -377,9 +377,10 @@ export class ProjectMonitoringService {
       await lockActiveProjectForMutation(tx, identity.spaceId, projectId);
       await reconcileStoppedMonitoring(tx, identity.spaceId, projectId);
     });
+    // Stopped work stays reconciled even when an active coordinator remains;
+    // the caller reports that remaining work instead of rolling the repair back.
     const state = await this.state(identity, projectId);
-    if (state.latest_run?.status === 'active' && state.can_reconcile) throw new HttpError(409, 'Coordinator or child Run is still active; wait or cancel the child Run before retrying');
-    return state;
+    return { state, coordinatorActive: state.latest_run?.status === 'active' && state.can_reconcile === true };
   }
   async setPaused(identity: SpaceUserIdentity, projectId: string, expected: string, paused: boolean) {
     return withQueryableTransaction(this.db, async tx => {
@@ -400,12 +401,12 @@ export class ProjectMonitoringService {
       await assertProjectWriter(tx, identity.spaceId, projectId, identity.userId);
       await lockActiveProjectForMutation(tx, identity.spaceId, projectId);
       await advisoryLock(tx, identity.spaceId, 'monitoring-run', `${projectId}:${body.idempotency_key}`);
-      const goalOwner=await tx.query(`SELECT 1 FROM projects p JOIN project_information_monitoring_versions v ON v.id=p.active_information_monitoring_version_id JOIN source_goal_bindings b ON b.spec_json->>'source_channel_id'=v.config_json->>'source_channel_id' JOIN source_goals g ON g.id=b.goal_id AND g.space_id=p.space_id WHERE p.id=$1 AND p.space_id=$2 AND g.active_version_id IS NOT NULL AND g.status<>'deleted'`,[projectId,identity.spaceId]);if(goalOwner.rows.length)throw new HttpError(409,'Collection goal owns this source schedule');
+      const goalOwner=await tx.query(`SELECT 1 FROM projects p JOIN project_information_monitoring_versions v ON v.id=p.active_information_monitoring_version_id JOIN source_goal_bindings b ON b.spec_json->>'source_channel_id'=v.config_json->>'source_channel_id' JOIN source_goals g ON g.id=b.goal_id AND g.space_id=p.space_id WHERE p.id=$1 AND p.space_id=$2 AND g.active_version_id IS NOT NULL AND g.status<>'deleted'`,[projectId,identity.spaceId]);if(goalOwner.rows.length)throw new MonitoringControlError(409,'Collection goal owns this source schedule');
       const key = `information_monitoring:${body.idempotency_key}`;
       await reconcileStoppedMonitoring(tx, identity.spaceId, projectId);
       const reused = await findIdempotentOperation(tx, identity.spaceId, projectId, 'custom', key);
       if (reused) {
-        if (reused.fingerprint !== fingerprintOf(body)) throw new HttpError(409, 'Idempotency key has different parameters');
+        if (reused.fingerprint !== fingerprintOf(body)) throw new MonitoringControlError(409, 'Idempotency key has different parameters');
         if (scheduledAt) {
           const recoverable = await tx.query<{
             progress_json: Record<string, unknown>;
@@ -433,17 +434,17 @@ export class ProjectMonitoringService {
         active_information_monitoring_version_id: string;
         information_monitoring_paused: number;
       }>(`SELECT active_information_monitoring_version_id,information_monitoring_paused FROM projects WHERE id=$1 AND space_id=$2`, [projectId, identity.spaceId]);
-      if (p.rows[0]?.active_information_monitoring_version_id !== body.version_id || p.rows[0].information_monitoring_paused) throw new HttpError(409, 'Monitoring not confirmed or paused');
+      if (p.rows[0]?.active_information_monitoring_version_id !== body.version_id || p.rows[0].information_monitoring_paused) throw new MonitoringControlError(409, 'Monitoring not confirmed or paused');
       const version = await getVersion(tx, identity.spaceId, projectId, body.version_id);
-      if (version.config_hash !== body.config_hash) throw new HttpError(409, 'Monitoring hash changed');
+      if (version.config_hash !== body.config_hash) throw new MonitoringControlError(409, 'Monitoring hash changed');
       const source = await requireMonitoringSource(tx, identity, projectId, version.source_channel_id, version.query_fingerprint);
       const plan = await tx.query(`SELECT 1 FROM source_backfill_plans p JOIN proposals pr ON pr.id=p.proposal_id AND pr.space_id=p.space_id WHERE p.id=$1 AND p.space_id=$2 AND pr.status='accepted' AND p.status IN ('approved','running','paused','completed','failed')`, [version.backfill_plan_id, identity.spaceId]);
-      if (!plan.rows[0]) throw new HttpError(409, 'Backfill approval required');
+      if (!plan.rows[0]) throw new MonitoringControlError(409, 'Backfill approval required');
       await reconcileStoppedMonitoring(tx, identity.spaceId, projectId);
       const inflight = await tx.query(`SELECT id FROM project_operations WHERE space_id=$1 AND project_id=$2 AND status='active' AND progress_json->>'purpose'='information_monitoring'`, [identity.spaceId, projectId]);
-      if (inflight.rows[0]) throw new HttpError(409, 'Monitoring run already active');
+      if (inflight.rows[0]) throw new MonitoringControlError(409, 'Monitoring run already active');
       const runKind = scheduledAt ? 'daily' : body.kind;
-      if (scheduledAt && !versionOut(version).config.schedule) throw new HttpError(409, 'Monitoring schedule is not confirmed');
+      if (scheduledAt && !versionOut(version).config.schedule) throw new MonitoringControlError(409, 'Monitoring schedule is not confirmed');
       const acquisitionCutoff = scheduledAt ?? new Date().toISOString();
       if (!scheduledAt) await new SourceBackfillExecutionService(tx).retryMonitoringRanges(identity.spaceId, version.source_channel_id, version.backfill_plan_id!);
       if (runKind !== 'initial' || source.connector_key !== 'arxiv_api' && (await tx.query(`SELECT 1 FROM source_backfill_plans WHERE id=$1 AND space_id=$2 AND status='completed'`,[version.backfill_plan_id, identity.spaceId])).rows.length) await prepareMonitoringRecent(tx, this.config, identity, projectId, version.id, versionOut(version).config, acquisitionCutoff, !!scheduledAt);
@@ -497,9 +498,9 @@ export async function requireMonitoringSource(db: Queryable, identity: SpaceUser
     connector_key: string;
     retention_policy: string | null;
   }>(`SELECT ch.source_connection_id,b.id AS binding_id,COALESCE(ss.query_fingerprint,ch.query_fingerprint) AS query_fingerprint,connector.connector_key,sc.policy_json->>'retention_policy' AS retention_policy FROM source_channels ch JOIN source_connections sc ON sc.id=ch.source_connection_id AND sc.space_id=ch.space_id LEFT JOIN source_search_specs ss ON ss.source_channel_id=ch.id AND ss.space_id=ch.space_id JOIN source_provider_connectors mapping ON mapping.id=sc.provider_connector_id JOIN source_connectors connector ON connector.id=mapping.connector_id JOIN project_source_bindings b ON b.source_channel_id=ch.id AND b.space_id=ch.space_id AND b.project_id=$3 AND b.status='active' WHERE ch.id=$1 AND ch.space_id=$2 AND sc.project_id=$3 AND ch.status='active' AND sc.status='active' AND sc.capture_policy='reference_only' AND ch.fetch_frequency='manual' AND connector.connector_key IN ('arxiv_api','rss','atom','web_page') AND ss.research_query_attempt_id IS NULL AND b.standing_comparison_enabled=false AND NOT EXISTS(SELECT 1 FROM project_research_workflows workflow WHERE workflow.space_id=ch.space_id AND workflow.status='active' AND ((workflow.state_json->'channel_ids') ? ch.id OR (workflow.state_json->'source_channel_ids') ? ch.id)) AND NOT EXISTS(SELECT 1 FROM source_post_processing_rules rule WHERE rule.source_channel_id=ch.id AND rule.space_id=ch.space_id AND rule.status='active' AND NOT EXISTS(SELECT 1 FROM project_information_monitoring_versions mv WHERE mv.space_id=rule.space_id AND mv.rule_id=rule.id))`, [channelId, identity.spaceId, projectId]);
-  if (!r.rows[0]) throw new HttpError(409, 'A bound, active, manual supported source without automatic processing is required');
-  if (r.rows[0].connector_key === 'web_page' && !['full_text','full_snapshot'].includes(r.rows[0].retention_policy ?? '')) throw new HttpError(409,'Fixed page versions require owner-approved full-text retention');
-  if (expectedFingerprint && r.rows[0].query_fingerprint !== expectedFingerprint) throw new HttpError(409, "Confirmed source query changed");
+  if (!r.rows[0]) throw new MonitoringControlError(409, 'A bound, active, manual supported source without automatic processing is required');
+  if (r.rows[0].connector_key === 'web_page' && !['full_text','full_snapshot'].includes(r.rows[0].retention_policy ?? '')) throw new MonitoringControlError(409,'Fixed page versions require owner-approved full-text retention');
+  if (expectedFingerprint && r.rows[0].query_fingerprint !== expectedFingerprint) throw new MonitoringControlError(409, "Confirmed source query changed");
   await assertSourceConnectionManageable(db, identity, r.rows[0].source_connection_id);
   return r.rows[0];
 }

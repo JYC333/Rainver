@@ -15,8 +15,9 @@ import {
 } from "../routeUtils/common.js";
 import { assertProjectReadable } from "../projects/access.js";
 import { PgProjectFolderRepository } from "./repository.js";
-import { AgentWorkspaceListQuerySchema, WorkspaceChangePageQuerySchema } from "@rainver/protocol";
+import { AgentWorkspaceGroupListQuerySchema, AgentWorkspaceListQuerySchema, WorkspaceChangePageQuerySchema } from "@rainver/protocol";
 import { agentWorkspaceDetail, listAgentWorkspaces } from "./workspaceOverview.js";
+import { listAgentWorkspaceGroups } from "./workspaceOverviewGroups.js";
 import { conversationWorkspaceChangesForViewer } from "./workspaceReadModel.js";
 
 interface ProjectFolderServices {
@@ -93,8 +94,20 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       const id = await identity(context, request, reply);
       if (!id) return reply;
       const parsed = AgentWorkspaceListQuerySchema.safeParse(query(request));
-      if (!parsed.success) return reply.code(422).send({ detail: "Expected view=current|history, an opaque cursor and limit 1-50" });
+      if (!parsed.success) return reply.code(422).send({ detail: "Expected view=current|history|all (all with group), an opaque cursor and limit 1-50" });
       return reply.send(await listAgentWorkspaces(dbPool(context.config), id, projectId(request), parsed.data));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+  // Default overview: one entry per conversation × repository (workspaceOverviewGroups).
+  app.get("/api/v1/projects/:projectId/agent-workspace-groups", async (request, reply) => {
+    try {
+      const id = await identity(context, request, reply);
+      if (!id) return reply;
+      const parsed = AgentWorkspaceGroupListQuerySchema.safeParse(query(request));
+      if (!parsed.success) return reply.code(422).send({ detail: "Expected view=current|history, an opaque cursor and limit 1-50" });
+      return reply.send(await listAgentWorkspaceGroups(dbPool(context.config), id, projectId(request), parsed.data));
     } catch (error) {
       return sendRouteError(reply, error);
     }

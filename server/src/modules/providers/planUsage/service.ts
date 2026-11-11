@@ -1,13 +1,16 @@
 import type { ApiPlanUsageProvider, ApiPlanUsageSnapshot } from "@rainver/protocol";
 import type { ServerConfig } from "../../../config.js";
-import { dbPool, HttpError } from "../../routeUtils/common.js";
+import { dbPool, HttpError, type Queryable } from "../../routeUtils/common.js";
 import { fetchWithNetworkProfile, resolveNetworkProfileRepository } from "../../networkProfiles/index.js";
 import { resolveProviderCommandStore } from "../commands/store.js";
 import { collectPlanUsage, planUsageSource, type PlanUsageSource } from "./collectors.js";
 
 type Provider = { id: string; name: string; base_url: string; home_space_id: string; credential_id: string; credential_revision: string; provider_revision: string; network_profile_id: string | null; network_profile_revision: string | null };
 async function ownedProviders(config: ServerConfig, spaceId: string, userId: string): Promise<Provider[]> {
-  const result = await dbPool(config).query<Provider>(
+  return ownedProvidersIn(dbPool(config), spaceId, userId);
+}
+async function ownedProvidersIn(db: Queryable, spaceId: string, userId: string): Promise<Provider[]> {
+  const result = await db.query<Provider>(
     `SELECT p.id, p.name, p.base_url, p.space_id AS home_space_id, p.credential_id, c.updated_at::text AS credential_revision, p.updated_at::text AS provider_revision,
             COALESCE(g.network_profile_id, p.network_profile_id) AS network_profile_id,
             np.updated_at::text AS network_profile_revision
@@ -21,6 +24,18 @@ async function ownedProviders(config: ServerConfig, spaceId: string, userId: str
       ORDER BY p.created_at, p.id`, [spaceId, userId],
   );
   return result.rows;
+}
+
+/**
+ * The plan-usage authority of `provider.plan_usage.refresh`, read through the
+ * caller's transaction: the person's own enabled API-key Provider in this
+ * Space; whether its endpoint is supported is answered for admission to refuse. Rechecked at admission, before the
+ * vendor read, before the snapshot is released and at every status read.
+ */
+export async function assertPlanUsageProviderIn(db: Queryable, spaceId: string, userId: string, providerId: string): Promise<{ supported: boolean }> {
+  const provider = (await ownedProvidersIn(db, spaceId, userId)).find(p => p.id === providerId);
+  if (!provider) throw new HttpError(404, "API plan provider not found");
+  return { supported: planUsageSource(provider.base_url) !== null };
 }
 
 export async function listApiPlanUsageProviders(config: ServerConfig, spaceId: string, userId: string): Promise<ApiPlanUsageProvider[]> {

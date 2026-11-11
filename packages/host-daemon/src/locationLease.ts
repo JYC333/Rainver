@@ -101,6 +101,16 @@ export async function acquireLocationLeases(
     onQueued();
   };
   try {
+    // Registered in `acquiring` first, so no gate can open on these Locations
+    // from here on; one already open is waited out before any lease is taken.
+    const locations = ids.map(leaseKeyLocation);
+    for (let gate = gateAmong(locations); gate && !state.cancelled; gate = gateAmong(locations)) {
+      queued();
+      await new Promise<void>((resolve) => {
+        state.cancelWait = () => { state.cancelWait = null; resolve(); };
+        void gate!.released.then(() => { state.cancelWait = null; resolve(); });
+      });
+    }
     for (const id of ids) {
       if (state.cancelled) break;
       if ((await acquireOne(id, state, exclusive.has(id) ? "exclusive" : "shared", queued)) === "cancelled") break;
@@ -188,9 +198,121 @@ export function tryAcquireLease(key: string, holderId: string): boolean {
   return true;
 }
 
-/** Whether a lease is held, or a launch attempt is waiting to take it. */
+/**
+ * Joins a lease shared without waiting: only while nobody holds it
+ * exclusively or waits for it. For maintenance that must not wait behind the
+ * exclusive holder of a repository gate (`repositoryGate.ts`) yet runs beside
+ * other sharers. Released with `releaseLocationLeases`.
+ */
+export function tryShareLease(key: string, holderId: string): boolean {
+  const lease = leases.get(key);
+  if (!lease) {
+    leases.set(key, { mode: "shared", holders: new Set([holderId]), queue: [] });
+    return true;
+  }
+  if (lease.mode !== "shared" || lease.queue.length > 0) return false;
+  lease.holders.add(holderId);
+  return true;
+}
+
+/** The Location a lease key belongs to: its own id, or one of its Task / workspace worktrees. */
+export function leaseKeyLocation(key: string): string | null {
+  const parts = key.split(":");
+  if (parts.length === 1) return key;
+  return (parts[0] === "task" || parts[0] === "workspace") && parts[1] ? parts[1] : null;
+}
+
+/**
+ * Location gates (hosts.md, "Controlled Git publication"): exclusive
+ * repository maintenance that moves a person's branch. While a Location is
+ * gated no lease of it — the Location, any Task worktree, any isolated
+ * workspace — can be taken: a launch waits at the gate (as "waiting for the
+ * directory") and a non-waiting holder (`tryAcquireLease`, so `withTaskHeld`:
+ * settle, delete, sweep, legacy merge, cleanup) is refused as busy; a host
+ * command waits in `enterLocations`. A gate is taken only when nothing of the
+ * Location is held, awaited, being acquired or in use, in one synchronous
+ * step, so nothing can start between the check and the hold.
+ */
+interface Gate { holder: string; released: Promise<void>; release: () => void }
+const gates = new Map<string, Gate>();
+/** Uses of a Location that hold no lease (host commands), by Location id. */
+const locationUses = new Map<string, number>();
+
+function locationActive(locationId: string): boolean {
+  for (const [key, lease] of leases) {
+    if (leaseKeyLocation(key) !== locationId) continue;
+    if (lease.holders.size > 0 || lease.queue.length > 0) return true;
+  }
+  for (const attempt of acquiring.values()) if (attempt.ids.some((id) => leaseKeyLocation(id) === locationId)) return true;
+  return (locationUses.get(locationId) ?? 0) > 0;
+}
+
+export function locationGated(locationId: string): boolean {
+  return gates.has(locationId);
+}
+
+/**
+ * Gates every named Location and takes each extra key (canonical path and
+ * git-directory keys) exclusively, or does nothing and answers null when any
+ * of them is busy or `busy()` says so. The returned function releases them.
+ */
+export function tryGateLocations(locationIds: readonly string[], keys: readonly string[], holder: string, busy: () => boolean = () => false): (() => void) | null {
+  const ids = [...new Set(locationIds)];
+  if (ids.some((id) => gates.has(id) || locationActive(id)) || keys.some(isLeaseBusy) || busy()) return null;
+  const opened: Gate[] = [];
+  for (const id of ids) {
+    let release!: () => void;
+    const released = new Promise<void>((done) => { release = done; });
+    const gate = { holder, released, release };
+    gates.set(id, gate);
+    opened.push(gate);
+  }
+  const extra = [...new Set(keys)];
+  for (const key of extra) leases.set(key, { mode: "exclusive", holders: new Set([holder]), queue: [] });
+  let done = false;
+  return () => {
+    if (done) return;
+    done = true;
+    for (const id of ids) if (gates.get(id)?.holder === holder) gates.delete(id);
+    releaseLocationLeases(extra, holder);
+    for (const gate of opened) gate.release();
+  };
+}
+
+/** The first gate among these Locations, or null when none is gated. */
+function gateAmong(locationIds: readonly (string | null)[]): Gate | null {
+  for (const id of locationIds) {
+    const gate = id ? gates.get(id) : undefined;
+    if (gate) return gate;
+  }
+  return null;
+}
+
+/**
+ * Marks these Locations in use by work that takes no lease (a host command),
+ * after waiting for any gate on them. The returned function ends the use.
+ */
+export async function enterLocations(locationIds: readonly string[]): Promise<() => void> {
+  const ids = [...new Set(locationIds)];
+  for (let gate = gateAmong(ids); gate; gate = gateAmong(ids)) await gate.released;
+  for (const id of ids) locationUses.set(id, (locationUses.get(id) ?? 0) + 1);
+  let done = false;
+  return () => {
+    if (done) return;
+    done = true;
+    for (const id of ids) {
+      const left = (locationUses.get(id) ?? 1) - 1;
+      if (left > 0) locationUses.set(id, left);
+      else locationUses.delete(id);
+    }
+  };
+}
+
+/** Whether a lease is held, a launch attempt is waiting to take it, or its Location is gated. */
 export function isLeaseBusy(key: string): boolean {
   if (leases.has(key)) return true;
+  const location = leaseKeyLocation(key);
+  if (location && gates.has(location)) return true;
   for (const attempt of acquiring.values()) if (attempt.ids.includes(key)) return true;
   return false;
 }

@@ -323,7 +323,7 @@ export default function HostAgents({
       }).map(item => [item.pool_id ?? `${item.runtime_key}:${item.installation}`, item])).values()].map(item => (
         <p key={item.pool_id ?? `${item.runtime_key}:${item.installation}`} className="rounded-md border border-warning/30 bg-warning/10 p-2 text-xs text-warning" role="status">
           <SpaceLink className="underline" to={`/usage?tab=quotas&${item.pool_id ? `pool=${encodeURIComponent(item.pool_id)}` : `host=${encodeURIComponent(host.id)}&runtime=${encodeURIComponent(item.runtime_key)}&installation=${encodeURIComponent(item.installation)}`}`}>
-            {t('subscription_usage.exhausted', { account: item.quota.account?.account_id.slice(0, 8) ?? item.runtime_key })}
+            {t((item.quota.session_pct ?? 0) >= 100 || (item.quota.week_pct ?? 0) >= 100 ? 'subscription_usage.exhausted' : 'subscription_usage.model_exhausted', { account: item.quota.account?.account_id.slice(0, 8) ?? item.runtime_key })}
           </SpaceLink>
         </p>
       ))}

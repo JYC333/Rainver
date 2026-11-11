@@ -656,20 +656,14 @@ knowledge review gate), while the other two are `durable` direct writes —
 Thread structure stays direct and a `note_link` is navigational with no graph
 authority (B12A).
 
-Of the policy actions they name, `note.link.create` is **`reserved`**, meaning
-declared and not evaluated by any code path. Do not mark it `wired_direct`
-on the grounds that a policy audit would make the operation auditable.
-Enforcement is the route's own Project ACL
-and note read gate, and who performed the write is already on the canonical
-row (`note_links.created_by_user_id`), so a policy audit record would restate
-it. `inquiry.thread.create`, the other one, is `wired_direct`:
-`SystemActionDispatcher` evaluates it when an Agent calls
-`inquiry.create_thread`, origin-gated by `ruleUnattendedProjectWrite` and
-recorded `fail_closed`; the user-facing Note path still relies on the route's
-Project ACL. Wiring them is a decision still to be
-made; `reserved` is what the registry's own vocabulary calls that state.
-Reserved declarations default to `deny`; descriptive registration never grants
-authority before an enforcement point is deliberately wired.
+`note.link.create` allows ordinary human navigation links. The link, unlink
+and atomic-jot HTTP routes call `knowledge/noteLinkPolicy.ts`, which evaluates
+the policy and requires a durable audit before proceeding. The canonical
+repository still requires current Note/Project write authority, a writable
+source for incoming links and readable typed endpoints in the same Space.
+This is not an Agent tool grant or canonical graph write. Core migration of
+these HTTP entries remains separate work. `inquiry.thread.create` is enforced
+through its own core/dispatcher entry points.
 
 Standing Project Research adds one Source action,
 `source.raise_as_question`. A `new_direction` comparison stores this action id
@@ -791,6 +785,13 @@ into one update — backlog first — and leaves the remainder in the workflow's
 `deferred_incremental_items` on the operation so a monitor falling behind is
 visible. A cadence that runs daily drains its own backlog; a question nobody
 is awake to answer would not.
+
+The human `research.workflow.trigger` command keeps that input: optional
+`source_item_ids` (at most 500, each an item of the Workflow's own monitored
+connections that the person still reads in full, locked before the check) and
+an optional business `idempotency_key`, which names one update and replays its
+Operation. That key is separate from the transport Idempotency-Key of the
+request; the deferred-backlog flush keeps its own system key.
 
 The Thread's own statement is the authoritative question. Assessment
 rewrites the question it plans queries from (translating or narrowing it).
@@ -1373,8 +1374,7 @@ Its retained from-note URL and typed NoteEditor API share core admission,
 current Project/Note/Thread authority and one canonical domain transaction.
 Receipt replay never substitutes for current permission. Ordinary Thread
 structure remains a human direct write; no Wiki approval or Agent surface is
-added. The separate note.link.create reserved/default-deny conflict has not
-been changed as part of this command.
+added. Human Note linking is allowed under its separate access gates.
 
 
 The same creation group also registers human-only `inquiry.thread.create`.
@@ -1454,8 +1454,7 @@ ungrantable core commands under the new audited note.edit policy for the
 existing manual capability. Formal rollback POST/Note DELETE and the typed
 Notes client share the same explicit keys and canonical repository/NoteWriter.
 They restore a revision or soft-delete; no Note/Wiki promotion, Note link,
-Memory, Agent or purge permission is added. Note linking remains separately
-reserved/default-denied pending the tracked human choice. Ordinary create/
+Memory, Agent or purge permission is added. Human Note linking has its own policy and object access checks. Ordinary create/
 update/placement/rollback-history reads retain their separate owners.
 
 Current full-readable/writable Note authority is the canonical owner/shared
@@ -1511,6 +1510,18 @@ id, applies the same visibility, Host-owner and Project-writer checks, and recor
 retention intent plus a cleanup Job; it cannot release unmerged work.
 `reclaim_now` schedules that Job immediately; a hold does not mask a retained
 reason; `retry` keeps an issued release's epoch and plan so the Host resumes it.
+`acknowledge_missing` closes the unfinished records of a branch removed outside
+Rainver without adoption proof (never as merged; see hosts.md, *Adoption and
+record reconciliation*).
+
+`workspace.change.list` is an Agent/public query with the Agent workspaces
+overview's visibility and per-item closability; `workspace.branch.align` is a
+person-only durable command (intent + Job, Host-guarded CAS, recovery ref).
+Both are owned by `projectFolders` (hosts.md, *Controlled Git publication* and
+*Active management*). `workspace.change.complete` `publication` freezes a
+rebase (default)/squash/fast_forward/merge plan and optional target branch at
+prepare; squash from an Agent requires a provenance-checked quote of the
+person's current request.
 
 Retry also accepts an Agent-only `repair_instruction` for a blocked conflict.
 This queues a candidate-editing Run through the same Operation, Job and Host
@@ -1626,8 +1637,26 @@ historical message provenance. Corpus commands validate canonical Source origins
 binding history submission creates the existing pending owner Proposal, without
 starting the import or granting approval.
 
-The remaining 29 exact Project URLs retain their legacy owners and explicit
-pending rows in the original P5 plan. No entry is retired to reduce the count.
+The final 29 Project URLs are now settled: 28 are formal core adapters and the
+unused `POST /projects/public-summaries/search` is retired with its test caller.
+Human-only registrations: `research.intake.start`, `research.workflow.trigger`,
+`research.workflow.history_backfill`, `research.question.resolve` (also the
+apply-forward URL), `research.checkpoint.decide`, `research.operation.retry` /
+`.reconcile` / `.item_limit` / `.rescan`, `research.result.adopt`,
+`research.acquisition.start`, `research.standing.action`, `research.report.integrity`,
+`research.question.refine`, `project.corpus.backfill_sources` (Corpus and
+evidence-matrix URLs), `project.monitoring.source.setup` / `.proposal.create` /
+`.reconcile` / `.run.start` / `.feedback`, `project.source.bind.propose`,
+`project.source.setup.propose`, `project.summary.feedback`,
+`project.public_summary.draft.generate`, `project.imported_sessions.extract` and
+`project.summary.brief.request`. Receipts are identifiers/status only; browser
+helpers send one explicit-key command and then read current state (Run, Job or
+owning GET) without resubmitting. Provider-backed work runs in the existing
+`provider_task_run` worker or a dedicated Job after the admission commits.
+Agent tools `research.start_acquisition` / `research.adopt_result` keep their own
+IDs, grants and inputs and are now separate grant-bound core registrations
+(`projectResearch/agentResearchOperations.ts`); they are not widened by these human
+commands (see "Agent and Room commands" below).
 
 Inquiry's existing Agent `record_work`, `close_round`, `record_conclusion`,
 `link_task` and `reference_task_result` IDs now use separate grant-bound core
@@ -1661,8 +1690,259 @@ uses these same Operations in its current Run. See
 
 The existing completion command can admit one explicit independent `commit`
 from published target history, and integration retry supports a non-publishing
-`reconcile_only` check. Both use Operation Core and existing Jobs, not a second
+`reconcile_only` check and an explicit switch to rebase (or squash, on the
+person's request) of a failed chain plan whose chain was never recorded (see
+[hosts](../modules/hosts.md), "Controlled Git publication"). Both use Operation Core and existing Jobs, not a second
 merge channel. Host commit reads and temporary-index Git adoption proofs never
 run inside core transactions or mutate the user's index. Exact candidates still
 require verification and CAS before publication. See
 [Project Files](../modules/project-files.md) for intake, permissions, no-change settlement and UI behavior.
+
+## Agent and Room commands
+
+Every Agent, Agent-template, Room, Agent-group, Run and direct-session write
+URL is a formal adapter (`systemActions/operations/routeAdapter.ts`) for one
+human-only core command; the generic `/api/v1/actions/:opId` entry reaches the
+same registrations. Families and owners:
+
+| Family | Operations | Owner |
+|---|---|---|
+| Agent definition | `agent.create`, `agent.template.instantiate`, `agent.update`, `agent.config.update`, `agent.version.restore`, `agent.runtime_profile.create` / `.update` / `.ensure_host`, `agent.runtime_default.set`, `agent.assistant_settings.update` | `agents/operations.ts` |
+| Direct conversation | `agent.run.create`, `agent.chat.send`, `agent.chat.retry`, `agent.chat.reset_context`, `conversation.session_config.save` | `agents/operations.ts`, `agents/chatOperations.ts` |
+| Room | `room.create`, `room.agent.add` / `.add_preset` / `.remove` / `.reset_context` / `.summarize_context` / `.restart_from_summary`, `room.invitation.create` / `.decide`, `room.member.remove`, `room.owner.transfer` / `.claim`, `room.conversation.create` / `.attach_references`, `room.message.send` / `.withdraw_queued` / `.retry` / `.continue_after_proposal`, `room.quota.continue`, `room.discussion.start` / `.stop` / `.extend` | `rooms/operations.ts` |
+| Agent group | `agent_group.create`, `.update`, `.message.send`, `.status.set` (pause/resume/cancel URLs fix `status`) | `agentGroups/operations.ts` |
+| Run | `run.stop`, `run.abandon`, `run.resume`, `run.execute`, `run.finalize`, `run.quota_recovery.update`, `run.live_input.submit` | `runs/operations.ts` |
+| Session | `session.create`, `session.delete`, `session.message.add`, `session.reflect` (`memory_create` Proposal), `conversation.execution.initialize`, `conversation.execution.attachment.mutate`; query `conversation.execution.preflight` | `sessions/operations.ts` |
+
+Behavior kept from the retained routes: Personal/Project placement for
+`agent.create`, `agent.template.instantiate`, `agent.run.create`,
+`agent.chat.send` and `session.create` is the access owner's (the executor's
+durable-placement allowlist); owner, configurer, Room writer/member, Host-owner
+and Run command standing are rechecked under the transaction; Room sends are
+always the authenticated person's. Receipts carry identities and the state a
+command set; browser helpers send one explicit-key command and re-read through
+the owning GETs. Marked domain refusals (`AgentMutationError`, `ChatTurnError`,
+`RoomMutationError`, `HostDispatchRefusal`, `AgentGroupRefusal`,
+`RunCommandRefusal`, `LiveInputRefusal`, conversation input/session-config
+errors) reflect their person-written message and structured body as
+`OperationRefusal` (for example disclosure or private-sharing confirmations);
+any other `HttpError` stays internal or hidden.
+
+No Host, process or provider IO runs in a core transaction:
+
+- A direct turn's `restore_workspace` is frozen on the Run
+  (`chat_turn.restore_managed_workspace`) and performed by the remote Host
+  dispatch before launch; a failed restore fails that turn, which can be
+  retried (the retry keeps the request).
+- Room Agent removal and session deletion commit the durable
+  `pending_archive_at` intent; the Host archive is attempted after commit and
+  recovered on Host reconnect and, for a Host that stayed connected, by the
+  jobs recovery pass (`hosts/managedWorkspaceArchiveRecovery.ts`, intents older
+  than two minutes). A re-added Agent's restore commits with the membership as a
+  `room_agent_workspace_restore` Job naming the exact closed thread, Host and
+  conversation (`rooms/workspaceRestoreJob.ts`; one pending Job per thread, so a
+  same-key replay or a repeated add adds none). The Job re-checks, before any
+  Host call, that the Agent is still an active member, the requester still sees
+  the Room, writes its Project and owns the non-revoked Host, and the thread is
+  still the closed one with no newer active thread (otherwise it ends
+  `withdrawn`/`superseded` without restoring). An offline or unconfirmed Host
+  defers it until the Host settles it or the request is withdrawn; after a week
+  one overdue notice is posted and reconciliation continues hourly. A retried
+  attempt that finds nothing left to move posts no notice. The receipt still says only `restore_requested`.
+- `run.stop` commits the cancellation intent, then stops the process after
+  commit (stale `cancelling` Runs are swept); `run.abandon` and `run.finalize`
+  finalize after commit (owed finalizations are swept); `run.execute` records
+  the Run's `agent_run` Job instead of executing in the request;
+  `run.live_input.submit` persists the message, its pending event and a
+  `run_live_input_deliver` Job in one transaction; delivery is that Job's, with
+  an immediate first attempt after commit (`GET /runs/:id/live-input?message_id=`
+  reads `pending`/`injected`/`not_injected`/`unconfirmed`). Only the process
+  owning the exact binding's live channel delivers; elsewhere the Job waits.
+  An attempt enters the channel's serialized section, then appends a durable
+  claim (`action_invoked`/`running`) before injecting, so an outcome lost after
+  the claim settles `unconfirmed` and is never injected again; acknowledgement
+  failures after injection never rewrite the outcome (the channel's close
+  retries the acknowledgement before finalizing). A binding replaced by another
+  attempt, or a Run that left execution, settles `not_injected` (the jobs
+  recovery pass sweeps inputs of non-running Runs); input never crosses bindings.
+- `run.resume` authorizes only Run visibility before the replay check; its
+  waiting state and resume authority are the first execution's precondition, so
+  a committed resume replays its receipt. A replay is released only to someone
+  who could give that resume now: Run command standing for `new_attempt`, or
+  approval authority for the risk recorded on the policy grant (`risk_level`,
+  critical when absent) for `same_attempt`.
+- Imported-session summaries a reference needs are generated by the retained
+  references URL's explicit pre-transaction step (importedSessions-owned,
+  owner-funded); the command itself uses an existing current summary or
+  returns the domain's `reference_summary_unavailable` refusal.
+- `agent_group.status.set` to `active` commits an `agent_group_resume_wake` Job
+  with the status (`agentGroups/resumeWakeJob.ts`, one pending per group). It
+  re-evaluates Runs parked on a dependency only while the group is still active
+  and the resumer still manages it; each Run is re-checked in its own
+  transaction, so a repeat after a crash queues nothing twice. Only the domain
+  answer (`managesGroup` false) ends it; a failed read throws to the Job's
+  ordinary retry.
+
+`room.invitation.decide` and `room.owner.claim` are the two Room commands whose
+authority is not the roster: admission and replay accept a visible Room or the
+relation their service decides by, re-read each time
+(`hasRoomCommandStanding`): an invitation party (inviter, invitee, private-Agent
+approval owner) who can read the Project, or the Project owner / Space
+owner-admin for a claim. Every other Room command requires Room visibility.
+Browser read-backs fetch the receipt's exact invitation
+(`GET /rooms/:id/invitations?invitation_id=`) and message
+(`GET .../messages?message_id=`), under the page's access, however old.
+
+Run terminal transitions in `run.abandon` and in Room discussion
+`start`/`stop`/`extend` are admitted by the host's Run terminal owner before
+domain locks. The transport-only replay tables written by the old routes
+(`room_creation_idempotencies`, `room_agent_preset_idempotencies`,
+`conversation_turn_idempotencies`) are no longer written: the scoped core key
+covers every caller. Domain uniqueness (one personal Room per Project, one
+retry per failed Run, dispatch locks, turn claims) is unchanged.
+
+`POST /api/v1/runs/:runId/tools/:actionId` is a reviewed transport exemption:
+the Run bearer-token Agent tool transport, where each action is admitted by its
+own core registration or inventoried legacy executor. `POST
+/agents/:agentId/host-state/reset` moved with the Host block to the journaled
+`agent.host_state.reset` Host command (see "Host commands" below); Agent
+Attention's `/me/agent-attention/*` read markers stay with the other `/me/*` rows.
+
+## Host commands
+
+The Host block's 20 human-only, non-grantable operations
+(`packages/protocol/src/hostOperations.ts`; registrations in
+`server/src/modules/hosts/operations.ts` and
+`server/src/modules/importedSessions/operations.ts`) keep their retained URLs
+as formal adapters. Thirteen have a Host effect and are durable Host commands:
+the core transaction rechecks the legacy authority (paired-Host owner,
+instance admin for the built-in Host, Project write, Agent owner, the caller's
+own ordinary account), freezes the Host frame's parameters and commits one
+`host_command_intents` row plus its `host_command` Job, answering 202 with a
+receipt. The worker performs the Host request outside every transaction and the
+owner-only `GET /api/v1/hosts/:hostId/commands/:commandId` is the only release
+of the outcome; an outcome that cannot be proven is `needs_attention`, never
+success. The full status matrix, journal capability and reset fence are in
+[hosts.md](../modules/hosts.md), section "Host commands".
+Seven are transactional with no Host effect (`host.runtime.provisioning.retry`,
+`host.provider_proxy.set`, `host.revoke`, `host.location.ambient.policy.set`,
+`host.location.ambient.dismiss`, `imported_session.visibility.set`,
+`imported_session.delete`). Policy actions: `host.manage`,
+`host.workspace.register`, `host.account.manage`, `agent.host_state.reset`
+and `host.import.manage` (`packages/protocol/src/policy.ts`).
+
+Narrowings against legacy: results that used to arrive synchronously are read
+from the command status (browser helpers poll; they never resubmit); a Host
+answer lost after the frame left an unjournaled Host is `needs_attention`
+rather than a 502; a non-owner gets the hidden 404 everywhere; a second
+command for the same Host scope while one is active is 409 `host_command_busy`.
+The transport `Idempotency-Key` and this active-scope rule are separate: the
+key replays its receipt only to a caller who may still read the command.
+Exemptions are exact method/path pairs in `server/test/operationRoutes.test.ts`:
+pairing-code issuance, daemon registration and the `/hosts/me/*` bearer-token
+protocol, and five interactive relays whose payload or answer is never stored.
+
+## System settings and tool configuration commands
+
+The settings block's 33 human-only, non-grantable operations
+(`packages/protocol/src/settingsOperations.ts`) keep their retained URLs and
+bodies as formal adapters; each owning module registers its own
+(`providers/operations.ts`, `networkProfiles/operations.ts`,
+`acpAgents/operations.ts`, `plugins/settingsOperations.ts`,
+`system/settingsOperations.ts`, `sources/sourceCatalogOperations.ts`,
+`deployment/operations.ts`, `notifications/operations.ts`). Every one requires
+an Idempotency-Key, uses a strict input schema (unknown fields are 422, no
+longer ignored), rechecks the legacy authority inside its transaction and again
+before a replayed result is released, and answers the hidden 404 to anyone
+without it (several legacy 403s).
+
+| Operations | Authority | Execution |
+|---|---|---|
+| `provider.create`, `.create_from_preset`, `.update`, `.delete`, `.credential.add`, `.credential.remove`, `.pool_config.update`, `.grant.set`, `.grant.revoke` | Provider owner (Space owner/admin for `trusted_local` and retrieval presets). A grant revoke is the Provider owner's or a target Space owner/admin's, rechecked from the Provider row and the target Space (never the grant row) at admission, every same-key replay and result release | transactional: `ProviderCommandStore` bound to the operation port |
+| `provider.task_policy.set`, `.task_policy.delete`, `provider.subscription_quota_policy.set` | Space owner/admin | transactional; an embedding chain change resets the Space's vectors and queues its backfill Job in the same transaction |
+| `provider.subscription.disconnect` | instance admin owning the managed-subscription Provider (its row and channel marker outlive the credential, so a same-key replay is still admitted; a fresh disconnect of a disconnected one is 404) | transactional (credential deleted with the audit and receipt) |
+| `provider.test`, `provider.plan_usage.refresh`, `provider.subscription.quota.refresh` | a Provider the person can see / their own API-key Provider / instance admin's managed subscription | system command: vendor IO after commit |
+| `network_profile.create`, `.update`, `.delete` | Space owner/admin | transactional (credential-free proxy URLs only) |
+| `acp_agent.enable`, `acp_agent.disable` | instance admin | transactional; the registry is read before the transaction (adapter `prepare`), the process catalog republished after commit and by every process's 60 s refresh |
+| `official_plugin.enable`, `.disable`, `.settings.update` | descriptor scope (B53): Space owner/admin, or the user for a user plugin | transactional; nothing local is touched before a new outcome commits (adapter `around`). A disable marks the scope's durable holds `releasing` (a release round) and records a delayed `official_plugin_scope_cleanup` Job in its transaction; each owner process releases its own holds after commit outside every DB transaction, retrying boundedly before `needs_attention`; another process settles a hold only as `owner_gone` after its owner's lease is verifiably free; reenable is 409 while any hold is releasing; a newer generation is a new hold no old round touches. A repeated disable is the retry round; `GET /api/v1/plugins` shows `cleanup` to the plugin's administrators, separating retryable holds from `awaiting_restart` ones (kept by a live original-contract owner process; no retry releases them, they settle after that process restarts or exits) |
+| `official_plugin.install` | instance admin and plugin write scope | system command whose migrations and settlement are one worker transaction |
+| `system.instance_settings.update`, `source_catalog.provider.update`, `.connector.update`, `.mapping.update` | instance admin | transactional |
+| `system.backup.create` | instance admin, service enabled | system command (archive + prune after commit) |
+| `deployment.job.create`, `deployment.job.cancel` | instance admin | transactional job row; the deployer pulls it (B43, ADR 0017/0020) |
+| `notification.webhook.dispatch` | any active member (as before), egress enabled and target allowlisted | system command; the policy is evaluated again before the send |
+
+Policy actions (`packages/protocol/src/policy.ts`): `provider.manage`,
+`provider.space_policy.manage`, `network_profile.manage`,
+`instance.settings.manage`, `official_plugin.manage`, `deployment.job.manage`,
+`notification.webhook.dispatch`. The `plugin.<id>.*` operation namespace stays
+reserved for plugin-owned operations, so official plugin lifecycle commands are
+`official_plugin.*`.
+
+**System commands.** The six effects that are vendor, filesystem or network IO
+(or, for plugin installation, multi-statement DDL the operation port refuses)
+commit one `system_command_intents` row (migration 0025) plus its
+`system_command` Job and answer 202 with a receipt
+(`SystemCommandReceiptSchema`). The worker (`systemCommands/worker.ts`) runs
+under its Job lease: before the effect it rechecks the issuer's live actor and
+the kind's authority, audits the phase and records `dispatched_at`; after it,
+a second short transaction rechecks authority again and records the result.
+Each of these checks first share-locks the issuer's user and membership rows
+(the basis of every kind's check: active user, active membership and its role,
+the instance-admin email) and holds them until its transaction commits, so a
+concurrent disable, membership change or instance-admin revocation is ordered
+around it: it commits first and the check refuses, or it waits until the
+dispatch record, the settlement, or an `atomic` effect (plugin installation's
+DDL) has committed. An effect outside PostgreSQL still runs after the dispatch
+transaction; a revocation then withholds its result. The status read
+share-locks the same rows.
+`GET /api/v1/system/commands/:commandId` is the only release: the issuer, in
+the same Space, while that authority holds. Outcomes:
+
+- never started within 10 minutes → `failed` `system_command_expired`;
+- a definite refusal (backup in progress, webhook denied at send time, vendor
+  refusal written for the person) → `failed` with its code;
+- a non-repeatable effect (connection test, backup, webhook send) found started
+  without an outcome, or one that threw → `needs_attention`
+  `system_command_outcome_unknown`, never repeated;
+- a repeatable read (plan usage, subscription quota) is repeated at most three
+  times, then `needs_attention`. A subscription quota read may first renew the
+  OAuth sign-in; that renewal is the credential channel's once-only step
+  (`credentials.md` "OAuth refresh"), not part of what is repeated: an unknown
+  renewal is `failed` `subscription_reconnect_required`, never re-sent;
+- authority lost after the effect → `needs_attention`
+  `system_command_authority_withdrawn` with no result kept;
+- a cancelled or exhausted Job settles at the status read (`failed` if never
+  started, `needs_attention` otherwise);
+- plugin installation is atomic and never unknown.
+
+One active command per scope (a person's test or plan read of one Provider in
+one Space, one subscription quota read per Provider, one install per plugin,
+one instance backup); a second is 409 `system_command_busy`, with the active
+command's id when it is the same person's. Terminal writes drop a webhook's
+event payload.
+
+**Secrets.** Provider API keys only reach `credentials.secret_ref` through the
+store's encryption (ADR 0008); outputs carry `SecretResponseGuards`; no intent,
+Job payload, audit context or receipt holds one. The request fingerprint
+replaces `api_key`, `proxy_url`, `managed_host_proxy_url` and a webhook
+`target_url` with an HMAC under the instance's Provider master key
+(`fingerprintInput`), so a stored fingerprint never derives from a secret a
+person typed, even one validation then refused.
+
+**Exemption.** `POST /api/v1/providers/subscriptions/login/input` — the instance
+admin's keystrokes into the live in-process OAuth login — is an exact transport
+exemption (nothing persisted or replayed). The login stream itself is a
+reviewed stateful GET (cross-site checked, instance admin, interactive).
+
+Narrowings against legacy: results that were synchronous (connection test, plan
+usage, subscription quota, plugin installation `{install,item}`, manual backup
+name, webhook delivery) are read from the command status; browser helpers poll
+exactly that command with a bounded window and never resubmit. Deletes answer
+200 with `{..., deleted|removed|revoked|disabled: true}` instead of 204. Webhook
+policy refusals are 409/422 refusals (were 403/413). A deployer-offline update is
+409 `deployer_offline` (was 503).
+
+Personal `/me/*` writes (agent attention read markers, capture filing,
+cross-Space retrieval) stay with their owners as legacy: their authority is the
+person across Spaces, not the request Space the operation core scopes actor,
+idempotency and audit to.

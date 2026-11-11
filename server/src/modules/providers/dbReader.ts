@@ -1,3 +1,4 @@
+import type { Queryable } from "../routeUtils/common.js";
 import { providerDeployment } from "./deployment.js";
 /**
  * Provider DB read port.
@@ -10,7 +11,7 @@ import { providerDeployment } from "./deployment.js";
  * This reader does not perform writes or return secret material.
  */
 
-import { getDbPool, type Pool } from "./db.js";
+import { getDbPool } from "./db.js";
 import * as protocol from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import { defaultBaseUrlFor } from "./commands/helpers.js";
@@ -119,10 +120,10 @@ export function mapProviderRowToDto(row: ProviderRow): Record<string, unknown> {
 }
 
 class PgProvidersDbPort implements ProvidersDbPort {
-  private pool: Pool;
+  private pool: Queryable;
 
-  constructor(databaseUrl: string) {
-    this.pool = getDbPool(databaseUrl);
+  constructor(databaseUrl: string, db?: Queryable) {
+    this.pool = db ?? getDbPool(databaseUrl);
   }
 
   private async selectClause(): Promise<{ table: string; columns: string }> {
@@ -231,6 +232,11 @@ export function __setProvidersDbPortForTests(port: ProvidersDbPort | null): void
 }
 
 /** Resolve the DB port for this config, or null when no database is configured. */
+/** The provider read port bound to a caller's transaction (an operation command's own writes are visible). */
+export function providersDbPortIn(db: Queryable): ProvidersDbPort {
+  return new PgProvidersDbPort("", db);
+}
+
 export function resolveProvidersDbPort(config: ServerConfig): ProvidersDbPort | null {
   if (testOverride) return testOverride;
   if (!config.databaseUrl) return null;

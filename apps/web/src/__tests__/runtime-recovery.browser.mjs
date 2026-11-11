@@ -65,7 +65,7 @@ async function fixtures(page, counts, recoveryRun = failed, liveParts = null) {
     else if (path === `/projects/${project.id}/overview`) data = { project, brief: null, attention: [] }
     else if (path === '/rooms') data = pageOf([room])
     else if (path === '/rooms/pending-approvals') data = pageOf([])
-    else if (path === `/rooms/${room.id}`) data = { room, viewer_can_write: true, other_member_names: [], agent_count: 1, agent_members: [{ agent_id: agent.id, agent_name: agent.name }], user_members: [] }
+    else if (path === `/rooms/${room.id}`) data = { room, viewer_can_write: true, other_member_names: [], agent_count: 1, agent_members: [{ agent_id: agent.id, agent_name: agent.name, status: 'active' }], user_members: [] }
     else if (path === `/rooms/${room.id}/conversations`) data = pageOf([session])
     else if (path === `/rooms/${room.id}/agent-candidates`) data = { agents: [], presets: [], total: 0, limit: 100, offset: 0 }
     else if (path === `/rooms/${room.id}/invitations`) data = pageOf([])
@@ -93,11 +93,16 @@ async function fixtures(page, counts, recoveryRun = failed, liveParts = null) {
       ] })
       return route.fulfill({ headers: { 'content-type': 'text/event-stream' }, body: `event: turn.snapshot\ndata: ${JSON.stringify({ type: 'turn.snapshot', turn: live })}\n\n` })
     }
+    // One keyed core command persists the input; its delivery state is then read for that message.
+    else if (path === '/actions/run.live_input.submit') {
+      const { run_id: runId, ...input } = route.request().postDataJSON()
+      counts.input = input
+      data = { status: 'succeeded', data: { id: '30000000-0000-4000-8000-000000000091', space_id: space, run_id: runId, message_id: '30000000-0000-4000-8000-000000000091', binding_id: input.binding_id } }
+    }
     else if (path === `/runs/${failed.id}/live-input`) {
-      data = route.request().method() === 'POST'
-        ? { state: 'injected', message_id: '30000000-0000-4000-8000-000000000091', delivery_id: '30000000-0000-4000-8000-000000000092' }
+      data = new URL(route.request().url()).searchParams.get('message_id')
+        ? { available: recoveryRun.status === 'running', binding_id: '30000000-0000-4000-8000-000000000093', delivery_state: 'injected' }
         : { available: recoveryRun.status === 'running', binding_id: '30000000-0000-4000-8000-000000000093' }
-      if (route.request().method() === 'POST') counts.input = route.request().postDataJSON()
     }
     else if (path === `/runs/${failed.id}/turn`) data = recoveryRun.status === 'running'
       ? turn({ run_id: failed.id, state: 'working', source: 'host_thread_events', parts: liveParts ?? [
@@ -417,7 +422,8 @@ for (const locale of ['en', 'zh-CN']) for (const theme of ['dark', 'light']) for
       await capture(page, `live-dialog-${locale}-${theme}-${width}`)
       await dialog.getByRole('button', { name: locale === 'en' ? 'Send to running turn' : '发送到当前回合' }).click()
       await dialog.getByRole('status').filter({ hasText: locale === 'en' ? 'Delivered to the running turn.' : '已送达当前执行回合。' }).waitFor()
-      assert.deepEqual(counts.writePaths.filter(path => path !== '/me/agent-attention/views'), [`/runs/${failed.id}/live-input`])
+      // One keyed command write; the delivery state is a read.
+      assert.deepEqual(counts.writePaths.filter(path => path !== '/me/agent-attention/views'), ['/actions/run.live_input.submit'])
       assert.equal(counts.input.binding_id, '30000000-0000-4000-8000-000000000093')
       assert.deepEqual(errors, [])
     } catch (error) {
@@ -643,4 +649,93 @@ for(const locale of ['en','zh-CN'])for(const theme of ['dark','light'])for(const
    assert.deepEqual(commands.map(c=>c.path),Array(2).fill(`/rooms/${room.id}/conversations/${session.id}/messages`));assert.ok(commands.every(c=>c.key&&c.input.recipient_segments[0].recipient_agent_ids[0]===agent.id));assert.equal(await page.getByRole('dialog').count(),0);assert.deepEqual(errors,[]);
   }finally{await context.close();}
  });
+}
+
+for (const locale of ['en', 'zh-CN']) for (const theme of ['dark', 'light']) for (const width of [390, 1280]) {
+  test(`quota model-switch consent: ${locale}/${theme}/${width}`, async () => {
+    const context = await browser.newContext({ viewport: { width, height: 1000 }, serviceWorkers: 'block' })
+    await context.addInitScript(({ locale, theme }) => {
+      localStorage.setItem('rainver:locale', locale); localStorage.setItem('rainver:theme', theme)
+    }, { locale, theme })
+    const page = await context.newPage(), counts = { writes: 0, logins: 0 }
+    const recoveryRun = { ...failed, status: 'queued', output_json: { waiting_for_quota: { resets_at: null, recovery: {
+      auto_continue: false, can_switch_model: true, refused_at: now, intent_at: now, next_check_at: now,
+      expires_at: '2026-12-01T00:00:00Z', pause_reason: 'user',
+    } } } }
+    try {
+      await fixtures(page, counts, recoveryRun)
+      let consent
+      await page.route(`**/runs/${failed.id}/quota-recovery`, async route => {
+        consent = route.request().postDataJSON()
+        recoveryRun.output_json.waiting_for_quota.recovery = {
+          ...recoveryRun.output_json.waiting_for_quota.recovery, auto_continue: true, can_switch_model: false,
+          switched_model: 'sonnet', pause_reason: null,
+        }
+        await route.fulfill({ json: recoveryRun.output_json.waiting_for_quota.recovery })
+      })
+      await page.goto(`${baseUrl}/spaces/${space}/projects/${project.id}/rooms?room=${room.id}&conversation=${session.id}`)
+      const button = page.getByRole('button', { name: locale === 'en' ? 'Allow another model on this CLI and continue' : '同意自动换用此 CLI 的其他模型并继续', exact: true }).first()
+      await button.waitFor()
+      assert.equal(consent, undefined)
+      await button.scrollIntoViewIfNeeded()
+      await capture(page, `quota-switch-${locale}-${theme}-${width}`)
+      await button.focus(); await page.keyboard.press('Enter')
+      await page.getByText(locale === 'en' ? 'Continuing with sonnet' : '将使用 sonnet 继续', { exact: true }).first().waitFor()
+      assert.deepEqual(consent, { auto_continue: true, switch_model: true })
+      await capture(page, `quota-switched-${locale}-${theme}-${width}`)
+    } finally { await context.close() }
+  })
+}
+
+for (const locale of ['en', 'zh-CN']) for (const theme of ['dark', 'light']) for (const width of [390, 1280]) {
+  test(`saved quota switch setting: ${locale}/${theme}/${width}`, async () => {
+    const context = await browser.newContext({ viewport: { width, height: 1000 }, serviceWorkers: 'block' })
+    await context.addInitScript(({ locale, theme }) => {
+      localStorage.setItem('rainver:locale', locale); localStorage.setItem('rainver:theme', theme)
+    }, { locale, theme })
+    const page = await context.newPage()
+    page.setDefaultTimeout(10000)
+    let enabled = false, saves = 0
+    const selections = [{ id: 'model', category: 'model', type: 'select', value: 'opus' }]
+    try {
+      await fixtures(page, { writes: 0, logins: 0 })
+      await page.route('**/agents/*/conversation-backends*', route => route.fulfill({ json: {
+        binding: { runtime_profile_id: 'profile-recovery', runtime_key: 'claude_code' },
+        session_config: selections, allow_quota_model_switch: enabled,
+        options: [{ runtime_profile_id: 'profile-recovery', runtime_key: 'claude_code', name: 'Claude Code', usable: true,
+          host_bound: true, host_id: 'desk', host_online: true, host_owner_is_me: true,
+          session_config_options: [{ id: 'model', category: 'model', name: 'Model', description: null, type: 'select', current_value: 'opus',
+            options: ['opus', 'sonnet'].map(value => ({ value, name: value, description: null })) }] }],
+      } }))
+      // One keyed core command saves the setting; the catalog read then shows the persisted choice.
+      await page.route('**/api/v1/actions/conversation.session_config.save', async route => {
+        const body = route.request().postDataJSON()
+        assert.equal(body.runtime_profile_id, 'profile-recovery')
+        enabled = body.allow_quota_model_switch; saves++
+        await route.fulfill({ json: { status: 'succeeded', data: { id: body.session_id, space_id: space, agent_id: body.agent_id, session_id: body.session_id } } })
+      })
+      const url = `${baseUrl}/spaces/${space}/projects/${project.id}/rooms?room=${room.id}&conversation=${session.id}`
+      await page.goto(url)
+      const checkbox = page.getByRole('checkbox', { name: locale === 'en' ? /Automatically switch models when quota runs out/ : /模型额度耗尽时自动切换其他模型/ })
+      await checkbox.waitFor()
+      assert.equal(await checkbox.isChecked(), false)
+      await checkbox.check()
+      assert.equal(saves, 0)
+      await checkbox.scrollIntoViewIfNeeded()
+      await capture(page, `saved-quota-choice-${locale}-${theme}-${width}`)
+      await page.getByRole('button', { name: locale === 'en' ? 'Save' : '保存', exact: true }).click()
+      await page.getByText(locale === 'en' ? 'Saved · applies to future runs' : '已保存 · 对后续运行生效', { exact: true }).waitFor()
+      assert.equal(enabled, true)
+      await page.reload()
+      await checkbox.waitFor()
+      assert.equal(await checkbox.isChecked(), true)
+      await checkbox.scrollIntoViewIfNeeded()
+      await capture(page, `saved-quota-reloaded-${locale}-${theme}-${width}`)
+      await checkbox.uncheck()
+      await page.getByRole('button', { name: locale === 'en' ? 'Save' : '保存', exact: true }).click()
+      await page.getByText(locale === 'en' ? 'Saved · applies to future runs' : '已保存 · 对后续运行生效', { exact: true }).waitFor()
+      assert.equal(enabled, false)
+      assert.equal(saves, 2)
+    } finally { await context.close() }
+  })
 }

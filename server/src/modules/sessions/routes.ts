@@ -1,15 +1,11 @@
+import { registerOperationAdapters } from "../systemActions/operations/routeAdapter.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import * as protocol from "@rainver/protocol";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
 import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext.js";
 import { introspectIdentity } from "../auth/identity.js";
 import { PgSessionRepository } from "./repository.js";
-import { withTransaction } from "../../db/tx.js";
-import { PgHostThreadRepository } from "../hosts/threadRepository.js";
-import { sharedHostConnectionRegistry } from "../hosts/connectionRegistry.js";
-import { dbPool, jsonBody, sendRouteError } from "../routeUtils/common.js";
-import { resolveContentCreationContext } from "../access/creationContext.js";
+import { dbPool, sendRouteError } from "../routeUtils/common.js";
 import { ConversationExecutionContextService } from "./executionContextService.js";
 import { ConversationInputError, ConversationInputService } from "./conversationInputService.js";
 
@@ -19,16 +15,13 @@ interface SessionServices {
     | "listSessions"
     | "getSession"
     | "listMessages"
-    | "createSession"
-    | "addMessage"
-    | "reflectSession"
   >;
 }
 
 type SessionServicesFactory = (context: ModuleContext) => SessionServices;
 type ExecutionContextService = Pick<
   ConversationExecutionContextService,
-  "preflight" | "initialize" | "mutateAttachment"
+  "preview"
 >;
 type ExecutionContextServiceFactory = (context: ModuleContext) => ExecutionContextService;
 type SessionIdentity = { spaceId: string; userId: string };
@@ -69,6 +62,17 @@ function executionContextService(context: ModuleContext): ExecutionContextServic
 }
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
+  const session = { sessionId: "session_id" };
+  registerOperationAdapters(app, context.config, [
+    { method: "POST", url: "/api/v1/sessions", operation: "session.create" },
+    { method: "DELETE", url: "/api/v1/sessions/:sessionId", operation: "session.delete", params: session },
+    { method: "POST", url: "/api/v1/sessions/:sessionId/messages", operation: "session.message.add", params: session },
+    { method: "POST", url: "/api/v1/sessions/:sessionId/reflect", operation: "session.reflect", params: session },
+    { method: "POST", url: "/api/v1/sessions/:sessionId/execution-context/initialize", operation: "conversation.execution.initialize", params: session },
+    { method: "POST", url: "/api/v1/sessions/:sessionId/execution-context/attachments", operation: "conversation.execution.attachment.mutate", params: session },
+    // A read-only query kept at its historical POST URL; it changes nothing.
+    { method: "POST", url: "/api/v1/sessions/:sessionId/execution-context/preflight", operation: "conversation.execution.preflight", params: session },
+  ]);
   app.post("/api/v1/conversation-inputs/media", async (request, reply) => {
     const identity = await resolveIdentity(context, request, reply);
     if (!identity) return reply;
@@ -208,7 +212,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context, request, reply);
     if (!identity) return reply;
     try {
-      const summary = await executionContextService(context).preflight(
+      // A read: no draft row or Host row is written to answer it.
+      const summary = await executionContextService(context).preview(
         identity,
         params(request).sessionId ?? "",
         { selection: null, runtime: null },
@@ -219,260 +224,12 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/sessions/:sessionId/execution-context/preflight", async (request, reply) => {
-    const identity = await resolveIdentity(context, request, reply);
-    if (!identity) return reply;
-    const parsed = protocol.ConversationExecutionPreflightRequestSchema.safeParse(jsonBody(request));
-    if (!parsed.success) return reply.code(422).send({ detail: "Invalid execution-context preflight selection" });
-    try {
-      const result = await executionContextService(context).preflight(
-        identity,
-        params(request).sessionId ?? "",
-        parsed.data,
-      );
-      return reply.send(result);
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.post("/api/v1/sessions/:sessionId/execution-context/initialize", async (request, reply) => {
-    const identity = await resolveIdentity(context, request, reply);
-    if (!identity) return reply;
-    const parsed = protocol.ConversationExecutionInitializeRequestSchema.safeParse(jsonBody(request));
-    if (!parsed.success) return reply.code(422).send({ detail: "A complete Host, Primary Workspace, and CLI selection is required" });
-    try {
-      const result = await executionContextService(context).initialize(
-        identity,
-        params(request).sessionId ?? "",
-        parsed.data,
-      );
-      return reply.send(result);
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.post("/api/v1/sessions/:sessionId/execution-context/attachments", async (request, reply) => {
-    const identity = await resolveIdentity(context, request, reply);
-    if (!identity) return reply;
-    const parsed = protocol.ConversationAttachmentMutationSchema.safeParse(jsonBody(request));
-    if (!parsed.success) return reply.code(422).send({ detail: "Invalid Conversation Folder access change" });
-    try {
-      const result = await executionContextService(context).mutateAttachment(
-        identity,
-        params(request).sessionId ?? "",
-        parsed.data,
-      );
-      return reply.send(result);
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.delete("/api/v1/sessions/:sessionId", async (request, reply) => {
-    const identity = await resolveIdentity(context, request, reply);
-    if (!identity) return reply;
-    const sessionId = params(request).sessionId ?? "";
-    try {
-      const deleted = await withTransaction(dbPool(context.config), async (client) => {
-        const session = await client.query<{ id: string }>(
-          `SELECT s.id
-             FROM sessions s
-            WHERE s.id = $1
-              AND s.space_id = $2
-              AND s.user_id = $3
-              AND s.room_id IS NULL
-              AND s.status = 'active'
-            FOR UPDATE`,
-          [sessionId, identity.spaceId, identity.userId],
-        );
-        if (!session.rows[0]) return null;
 
-        const directThreads = await client.query<{
-          id: string;
-          agent_id: string;
-          execution_host_id: string | null;
-          workspace_mode: "location" | "managed";
-        }>(
-          `SELECT thread.id, thread.agent_id, thread.execution_host_id, thread.workspace_mode
-             FROM session_conversation_backends binding
-             JOIN host_threads thread
-               ON thread.agent_id = binding.agent_id
-              AND thread.container_kind = 'direct'
-              AND thread.container_user_id = binding.bound_by_user_id
-              AND thread.status IN ('active', 'session_reset')
-            WHERE binding.space_id = $1
-              AND binding.session_id = $2
-              AND binding.bound_by_user_id = $3
-            FOR UPDATE OF thread`,
-          [identity.spaceId, sessionId, identity.userId],
-        );
 
-        await client.query(
-          `UPDATE sessions SET status = 'archived', updated_at = now()
-            WHERE id = $1 AND space_id = $2 AND user_id = $3`,
-          [sessionId, identity.spaceId, identity.userId],
-        );
 
-        // A direct thread and its managed workspace are the Agent × person's,
-        // shared by every direct session of that Agent, so — like a Room's
-        // workspace, archived only when the last Agent leaves — they close
-        // only with the person's last active direct session of the Agent.
-        const stillInUse = await client.query<{ agent_id: string }>(
-          `SELECT DISTINCT binding.agent_id
-             FROM session_conversation_backends binding
-             JOIN sessions other ON other.id = binding.session_id AND other.space_id = binding.space_id
-            WHERE binding.space_id = $1
-              AND binding.bound_by_user_id = $2
-              AND binding.session_id <> $3
-              AND binding.agent_id = ANY($4::varchar[])
-              AND other.user_id = $2
-              AND other.room_id IS NULL
-              AND other.status = 'active'`,
-          [identity.spaceId, identity.userId, sessionId, directThreads.rows.map((thread) => thread.agent_id)],
-        );
-        const inUse = new Set(stillInUse.rows.map((row) => row.agent_id));
-        const closing = directThreads.rows.filter((thread) => !inUse.has(thread.agent_id));
-
-        const threadRepository = new PgHostThreadRepository(client);
-        for (const thread of closing) {
-          // Always pending: even a thread with no Rainver-managed cwd has this
-          // Agent's runtime profile on the host to archive.
-          await threadRepository.closeDirectAgent(thread.agent_id, identity.userId, true);
-        }
-        return closing
-          .filter((thread) => thread.execution_host_id)
-          .map((thread) => ({
-            threadId: thread.id,
-            hostId: thread.execution_host_id!,
-            agentId: thread.agent_id,
-            includeWorkspace: thread.workspace_mode === "managed",
-          }));
-      });
-      if (!deleted) return reply.code(404).send({ detail: "Session not found" });
-
-      const archived = [];
-      for (const target of deleted) {
-        const result = await sharedHostConnectionRegistry.requestManagedWorkspaceAction(
-          target.hostId,
-          "managed_workspace_archive",
-          {
-            agent_id: target.agentId,
-            container_kind: "direct",
-            container_id: identity.userId,
-            include_workspace: target.includeWorkspace,
-          },
-        );
-        archived.push({ agent_id: target.agentId, ...result });
-        if (result.ok) {
-          await new PgHostThreadRepository(dbPool(context.config))
-            .acknowledgeManagedWorkspaceArchive(target.threadId)
-            .catch(() => undefined);
-        }
-      }
-      return reply.send({ deleted: true, session_id: sessionId, managed_workspace_archive: archived });
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.post("/api/v1/sessions", async (request, reply) => {
-    const identity = await resolveIdentity(context, request, reply);
-    if (!identity) return reply;
-    const body = jsonBody(request);
-    try {
-      const creation = await resolveContentCreationContext(dbPool(context.config), {
-        userId: identity.userId,
-        requestSpaceId: identity.spaceId,
-        projectId: optionalString(body.project_id),
-      });
-      const services = sessionServices(context);
-      const session = await services.repository.createSession(
-        creation.spaceId,
-        identity.userId,
-        {
-          projectFolderId: creation.projectId ? optionalString(body.project_folder_id) : null,
-          projectId: creation.projectId,
-          title: optionalString(body.title),
-          metadata: optionalRecord(body.metadata),
-        },
-      );
-      return reply.code(201).send(session);
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.post("/api/v1/sessions/:sessionId/messages", async (request, reply) => {
-    const identity = await resolveIdentity(context, request, reply);
-    if (!identity) return reply;
-    const sessionId = params(request).sessionId ?? "";
-    const body = jsonBody(request);
-    const parsed = protocol.MessageCreateRequestSchema.safeParse(body);
-    if (!parsed.success) {
-      return reply.code(422).send({ detail: "a non-empty content or at least one supported input part is required" });
-    }
-    const services = sessionServices(context);
-    try {
-      let message;
-      if (parsed.data.input_parts.length > 0) {
-        message = await withTransaction(dbPool(context.config), async (client) => {
-          const inputService = new ConversationInputService(client, context.config);
-          const prepared = await inputService.prepareMessageParts({
-            spaceId: identity.spaceId,
-            userId: identity.userId,
-            sessionId,
-            parts: parsed.data.input_parts,
-          });
-          const txRepository = new PgSessionRepository(client);
-          const created = await txRepository.addMessage(identity.spaceId, identity.userId, sessionId, {
-            role: "user",
-            content: parsed.data.content,
-          });
-          if (!created) return null;
-          await inputService.attachMessageParts({
-            spaceId: identity.spaceId,
-            userId: identity.userId,
-            sessionId,
-            messageId: created.id,
-            parts: prepared,
-          });
-          // Re-read the persisted projection so a new immutable resource
-          // returns its resource id/capture metadata rather than echoing the
-          // admission request (which intentionally contains no body).
-          return await txRepository.messageById(identity.spaceId, identity.userId, sessionId, created.id)
-            ?? { ...created, input_parts: parsed.data.input_parts };
-        });
-      } else {
-        message = await services.repository.addMessage(
-          identity.spaceId,
-          identity.userId,
-          sessionId,
-          { role: "user", content: parsed.data.content },
-        );
-      }
-      if (message === null) return reply.code(404).send({ detail: "Session not found" });
-      return reply.code(201).send(message);
-    } catch (error) {
-      if (error instanceof ConversationInputError) return reply.code(error.statusCode).send({ detail: error.message });
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.post("/api/v1/sessions/:sessionId/reflect", async (request, reply) => {
-    const identity = await resolveIdentity(context, request, reply);
-    if (!identity) return reply;
-    const sessionId = params(request).sessionId ?? "";
-    const services = sessionServices(context);
-    const result = await services.repository.reflectSession(
-      identity.spaceId,
-      identity.userId,
-      sessionId,
-    );
-    if (!result) return reply.code(404).send({ detail: "Session not found" });
-    return reply.send(result);
-  });
 }
 
 async function resolveIdentity(
@@ -527,15 +284,7 @@ function params(request: FastifyRequest): Record<string, string | undefined> {
   return request.params as Record<string, string | undefined>;
 }
 
-function optionalString(value: unknown): string | null {
-  return typeof value === "string" && value.length > 0 ? value : null;
-}
 
-function optionalRecord(value: unknown): Record<string, unknown> | null {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
 
 function query(request: FastifyRequest): Record<string, string | undefined> {
   return request.query as Record<string, string | undefined>;

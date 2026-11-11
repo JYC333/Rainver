@@ -1,5 +1,8 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { loadConfig } from "../src/config.js";
 import { systemModule } from "../src/modules/system/index.js";
 import {
@@ -11,6 +14,7 @@ import {
 import { buildModuleServer } from "./support/moduleServer.js";
 import { resetTables } from "./support/resetTables.js";
 import { useTestDatabase } from "./support/testDatabase.js";
+import { keyed, refused, succeeded } from "./support/systemCommandHarness.js";
 
 const ADMIN = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const MEMBER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -26,6 +30,8 @@ beforeAll(async () => {
   if (!db.available) return;
   app = buildModuleServer(loadConfig({
     SERVER_DATABASE_URL: db.connectionUri,
+    // The keyed request fingerprint reads the instance key from here; never a real instance home.
+    RAINVER_HOME: mkdtempSync(join(tmpdir(), "rainver-instance-settings-")),
     INSTANCE_ADMIN_EMAIL: "admin@example.test",
     BACKUP_ENABLED: "true",
   }), [systemModule]);
@@ -33,13 +39,19 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   if (!db.available) return;
-  await resetTables(db.pool, ["settings", "users"], { cascade: true });
+  await resetTables(db.pool, ["operation_idempotency", "policy_decision_records", "settings", "space_memberships", "spaces", "users"], { cascade: true });
   const now = new Date().toISOString();
   await db.pool.query(
     `INSERT INTO users (id,email,display_name,status,created_at,updated_at, registration_source) VALUES
       ($1,'admin@example.test','Admin','active',$3,$3, 'system'),
       ($2,'member@example.test','Member','active',$3,$3, 'system')`,
     [ADMIN, MEMBER, now],
+  );
+  // Settings commands are admitted for an active member of the request Space.
+  await db.pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Main','team',$2,$2)`, [SPACE, now]);
+  await db.pool.query(
+    `INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES (gen_random_uuid(),$1,$2,'owner','active',$4,$4),(gen_random_uuid(),$1,$3,'member','active',$4,$4)`,
+    [SPACE, ADMIN, MEMBER, now],
   );
   const users: Record<string, CurrentUser> = {
     [ADMIN]: user(ADMIN, "admin@example.test"),
@@ -80,7 +92,12 @@ describe("instance operations settings", () => {
       updated_at: null,
     });
 
-    const saved = await app.inject({
+    // `system.instance_settings.update`: the member is not told it exists.
+    __setAuthIdentityForTests({ userId: MEMBER, spaceId: SPACE } as never);
+    expect(refused(await keyed(app, { method: "PUT", url: "/api/v1/system/instance-settings", payload: { backup_interval_hours: 12 } }), 404)).toBe("operation_not_found");
+    __setAuthIdentityForTests({ userId: ADMIN, spaceId: SPACE } as never);
+    const key = "instance-settings-1";
+    const savedResponse = await keyed(app, {
       method: "PUT",
       url: "/api/v1/system/instance-settings",
       payload: {
@@ -92,9 +109,9 @@ describe("instance operations settings", () => {
         content_access_log_retention_days: 365,
         managed_host_egress_mode: "system_tun",
       },
-    });
-    expect(saved.statusCode).toBe(200);
-    expect(saved.json()).toMatchObject({
+    }, key);
+    const saved = succeeded<Record<string, unknown>>(savedResponse);
+    expect(saved).toMatchObject({
       backup_interval_hours: 12,
       backup_retention_count: 14,
       backup_include_logs: true,
@@ -104,7 +121,20 @@ describe("instance operations settings", () => {
       managed_host_egress_mode: "system_tun",
       managed_host_proxy_url: null,
     });
-    expect(saved.json().updated_at).toBeTruthy();
+    expect(saved.updated_at).toBeTruthy();
+    // The same key replays the recorded result; a different body under it is refused.
+    const replay = await keyed(app, { method: "PUT", url: "/api/v1/system/instance-settings", payload: {
+      backup_interval_hours: 12, backup_retention_count: 14, backup_include_logs: true, backup_on_startup: false,
+      content_access_log_retention_enabled: false, content_access_log_retention_days: 365, managed_host_egress_mode: "system_tun",
+    } }, key);
+    expect(succeeded(replay)).toEqual(saved);
+    expect(refused(await keyed(app, { method: "PUT", url: "/api/v1/system/instance-settings", payload: { backup_interval_hours: 6 } }, key), 422)).toBe("idempotency_key_reused");
+    // Demoted, the admin no longer receives the recorded result.
+    await db.pool.query(`UPDATE users SET email='former-admin@example.test' WHERE id=$1`, [ADMIN]);
+    expect(refused(await keyed(app, { method: "PUT", url: "/api/v1/system/instance-settings", payload: {
+      backup_interval_hours: 12, backup_retention_count: 14, backup_include_logs: true, backup_on_startup: false,
+      content_access_log_retention_enabled: false, content_access_log_retention_days: 365, managed_host_egress_mode: "system_tun",
+    } }, key), 404)).toBe("operation_not_found");
 
     const row = await db.pool.query<{ settings_key: string; updated_by_user_id: string }>(
       `SELECT settings_key,updated_by_user_id FROM settings WHERE scope_type='instance' AND scope_id='instance'`,
@@ -115,22 +145,22 @@ describe("instance operations settings", () => {
   it("rejects invalid retention and schedule values", async (ctx) => {
     if (!db.available || !app) return ctx.skip();
     __setAuthIdentityForTests({ userId: ADMIN, spaceId: SPACE } as never);
-    const response = await app.inject({ method: "PUT", url: "/api/v1/system/instance-settings", payload: { backup_interval_hours: 0 } });
-    expect(response.statusCode).toBe(422);
+    const response = await keyed(app, { method: "PUT", url: "/api/v1/system/instance-settings", payload: { backup_interval_hours: 0 } });
+    expect(refused(response, 422)).toBe("operation_invalid_input");
   });
 
   it("validates and normalizes the built-in Host route", async (ctx) => {
     if (!db.available || !app) return ctx.skip();
     __setAuthIdentityForTests({ userId: ADMIN, spaceId: SPACE } as never);
 
-    const missing = await app.inject({
+    const missing = await keyed(app, {
       method: "PUT",
       url: "/api/v1/system/instance-settings",
       payload: { managed_host_egress_mode: "http_proxy" },
     });
     expect(missing.statusCode).toBe(422);
 
-    const credentials = await app.inject({
+    const credentials = await keyed(app, {
       method: "PUT",
       url: "/api/v1/system/instance-settings",
       payload: {
@@ -139,8 +169,13 @@ describe("instance operations settings", () => {
       },
     });
     expect(credentials.statusCode).toBe(422);
+    expect(credentials.body).not.toContain("secret");
+    // A refused proxy URL with credentials leaves nothing derived from it alone: the stored
+    // fingerprint covers a keyed digest, and the refusal body does not echo it.
+    const stored = await db.pool.query(`SELECT fingerprint, result_json::text AS body FROM operation_idempotency WHERE operation_id='system.instance_settings.update'`);
+    expect(JSON.stringify(stored.rows)).not.toContain("user:secret");
 
-    const saved = await app.inject({
+    const saved = await keyed(app, {
       method: "PUT",
       url: "/api/v1/system/instance-settings",
       payload: {
@@ -149,8 +184,7 @@ describe("instance operations settings", () => {
         managed_host_no_proxy: " .internal.example ",
       },
     });
-    expect(saved.statusCode).toBe(200);
-    expect(saved.json()).toMatchObject({
+    expect(succeeded(saved)).toMatchObject({
       managed_host_egress_mode: "http_proxy",
       managed_host_proxy_url: "http://proxy.example:7890",
       managed_host_no_proxy: ".internal.example",

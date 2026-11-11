@@ -503,6 +503,85 @@ describe("executeRemoteHostCliAdapter", () => {
     await expect(execution).resolves.toMatchObject({ success: true, exit_code: 0 });
   });
 
+  it("restores a direct turn's archived managed workspace in the dispatch, before launch, and fails the turn without launching when it cannot", async () => {
+    const registry = new HostConnectionRegistry();
+    const sink = new FakeSink();
+    registry.registerConnection("host-1", sink);
+    const threadEventSink = vi.fn().mockResolvedValue(undefined);
+    // The Host reports the journal; this Agent has no direct archive still pending.
+    const db = { query: async (text: string) => /managed_workspace_operations/u.test(text)
+      ? { rows: [{ journaled: true }], rowCount: 1 } : { rows: [], rowCount: 0 } } as never;
+    const restoreRequest = { include_workspace: true, operation_id: "restore:turn-1", generation: 7 };
+    const execution = executeRemoteHostCliAdapter(
+      {
+        run: run({ runtime_key: "opencode", project_folder_id: null, model_override_json: { chat_turn: { user_id: "user-1", agent_id: "agent-1", restore_managed_workspace: restoreRequest } } } as Partial<AgentRunRecord>),
+        prompt: "continue", model: null, resume_session_id: null, thread_event_sink: threadEventSink,
+      },
+      "host-1",
+      null,
+      { connectionRegistry: registry, bindings: NO_PROVIDER_BINDINGS, db },
+    );
+    await vi.waitUntil(() => sink.sent.some((frame) => frame.type === "managed_workspace_restore"));
+    const restore = sink.sent.find((frame) => frame.type === "managed_workspace_restore") as Record<string, unknown>;
+    // The turn's own operation: a retry of the turn repeats it rather than asking again.
+    expect(restore).toMatchObject({ agent_id: "agent-1", container_kind: "direct", container_id: "user-1", include_workspace: true, operation_id: "restore:turn-1", generation: 7 });
+    registry.receiveManagedWorkspaceResult("host-1", String(restore.request_id), { ok: false, changed: false, error: "restore_failed" });
+    await expect(execution).resolves.toMatchObject({ success: false, error_code: "managed_workspace_restore_failed" });
+    expect(sink.sent.some((frame) => frame.type === "launch")).toBe(false);
+    expect(threadEventSink).toHaveBeenCalledWith([{ event_type: "status", status: "run_failed" }]);
+  });
+
+  it("refuses a direct turn's restore that cannot be journaled, without sending it or launching", async () => {
+    for (const [db, restoreRequest] of [
+      // A Host that predates the journal.
+      [{ query: async () => ({ rows: [{ journaled: false }], rowCount: 1 }) }, { include_workspace: true, operation_id: "restore:turn-1", generation: 7 }],
+      // A turn queued before restores carried an identity.
+      [{ query: async () => ({ rows: [{ journaled: true }], rowCount: 1 }) }, { include_workspace: true }],
+    ] as const) {
+      const registry = new HostConnectionRegistry();
+      const sink = new FakeSink();
+      registry.registerConnection("host-1", sink);
+      const execution = executeRemoteHostCliAdapter(
+        {
+          run: run({ runtime_key: "opencode", project_folder_id: null, model_override_json: { chat_turn: { user_id: "user-1", agent_id: "agent-1", restore_managed_workspace: restoreRequest } } } as Partial<AgentRunRecord>),
+          prompt: "continue", model: null, resume_session_id: null, thread_event_sink: vi.fn().mockResolvedValue(undefined),
+        },
+        "host-1",
+        null,
+        { connectionRegistry: registry, bindings: NO_PROVIDER_BINDINGS, db: db as never },
+      );
+      await expect(execution).resolves.toMatchObject({ success: false, error_code: "managed_workspace_restore_failed" });
+      expect(sink.sent.some((frame) => frame.type === "managed_workspace_restore" || frame.type === "launch")).toBe(false);
+    }
+  });
+
+  it("keeps a direct turn's restore and its launch off the profiles while this Agent's Host reset is unsettled", async () => {
+    const registry = new HostConnectionRegistry();
+    const sink = new FakeSink();
+    registry.registerConnection("host-1", sink);
+    const pendingReset = { id: "reset-1", host_id: "host-1", agent_id: "agent-1", kind: "agent_host_state_reset", status: "dispatched",
+      job_id: "job-1", effect_json: { dispatched_at: new Date().toISOString(), journaled: true, sends: 1 }, created_at: new Date().toISOString() };
+    const queries: string[] = [];
+    const db = { query: async (text: string) => {
+      queries.push(text);
+      if (/FROM host_command_intents/u.test(text)) return { rows: [pendingReset], rowCount: 1 };
+      if (/FROM jobs/u.test(text)) return { rows: [{ status: "pending" }], rowCount: 1 };
+      return /managed_workspace_operations/u.test(text) ? { rows: [{ journaled: true }], rowCount: 1 } : { rows: [], rowCount: 0 };
+    } } as never;
+    const execution = executeRemoteHostCliAdapter(
+      {
+        run: run({ runtime_key: "opencode", project_folder_id: null, model_override_json: { chat_turn: { user_id: "user-1", agent_id: "agent-1", restore_managed_workspace: { include_workspace: true, operation_id: "restore:turn-1", generation: 7 } } } } as Partial<AgentRunRecord>),
+        prompt: "continue", model: null, resume_session_id: null, thread_event_sink: vi.fn().mockResolvedValue(undefined),
+      },
+      "host-1",
+      null,
+      { connectionRegistry: registry, bindings: NO_PROVIDER_BINDINGS, db },
+    );
+    await expect(execution).resolves.toMatchObject({ success: false, error_code: "agent_host_state_reset_pending" });
+    expect(sink.sent).toEqual([]);
+    expect(queries.some((text) => /pg_advisory_xact_lock_shared/u.test(text))).toBe(true);
+  });
+
   it("records a permission pre-authorization as a human-readable diagnostic thread event", async () => {
     const registry = new HostConnectionRegistry();
     const sink = new FakeSink();

@@ -32,8 +32,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { SYSTEM_ACTION_REGISTRY, NOTE_OBJECT_SCHEMAS, KNOWLEDGE_OBJECT_SCHEMAS, KNOWLEDGE_REVIEW_SCHEMAS,
   RESEARCH_WORKSPACE_SCHEMAS, INQUIRY_OPERATION_SCHEMAS, PROJECT_EXECUTION_SCHEMAS,
-  PROJECT_FOLDER_SCHEMAS, PROJECT_FOLDER_IO_SCHEMAS, PROJECT_INGRESS_SCHEMAS, PROJECT_MANAGEMENT_SCHEMAS, PROJECT_CORPUS_SCHEMAS, PROJECT_SOURCE_PROPOSAL_SCHEMAS, RESEARCH_EXECUTION_SCHEMAS,
-  type SystemActionDefinition } from '@rainver/protocol';
+  PROJECT_FOLDER_SCHEMAS, PROJECT_FOLDER_IO_SCHEMAS, PROJECT_INGRESS_SCHEMAS,RESEARCH_CONTROL_SCHEMAS,PROJECT_SUMMARY_DRAFT_SCHEMAS,IMPORTED_HISTORY_EXTRACTION_SCHEMAS, PROJECT_MANAGEMENT_SCHEMAS, PROJECT_CORPUS_SCHEMAS, PROJECT_SOURCE_PROPOSAL_SCHEMAS, RESEARCH_EXECUTION_SCHEMAS,
+  type SystemActionDefinition,AGENT_OPERATION_SCHEMAS,AGENT_CHAT_OPERATION_SCHEMAS,ROOM_OPERATION_SCHEMAS,AGENT_GROUP_OPERATION_SCHEMAS,RUN_OPERATION_SCHEMAS,SESSION_OPERATION_SCHEMAS,SESSION_QUERY_SCHEMAS,HOST_COMMAND_OPERATION_SCHEMAS,SETTINGS_COMMAND_OPERATION_SCHEMAS,SETTINGS_DIRECT_OPERATION_SCHEMAS,HOST_DIRECT_OPERATION_SCHEMAS} from '@rainver/protocol';
 import { useTestDatabase } from './support/testDatabase.js';
 import { seedSpaceOwnerProject, seedSpaceMember, seedRun } from './support/domainSeeds.js';
 import { loadConfig } from '../src/config.js';
@@ -50,8 +50,16 @@ ENABLED_USER_OPERATIONS.push('knowledge.candidate.extract','research.ask_ai',...
   ...Object.keys(KNOWLEDGE_OBJECT_SCHEMAS),...Object.keys(KNOWLEDGE_REVIEW_SCHEMAS),
   ...Object.keys(RESEARCH_WORKSPACE_SCHEMAS),...Object.keys(INQUIRY_OPERATION_SCHEMAS),
   ...Object.keys(PROJECT_EXECUTION_SCHEMAS),...Object.keys(PROJECT_FOLDER_SCHEMAS),...Object.keys(PROJECT_FOLDER_IO_SCHEMAS),
-  ...Object.keys(PROJECT_INGRESS_SCHEMAS),...Object.keys(PROJECT_MANAGEMENT_SCHEMAS),...Object.keys(PROJECT_CORPUS_SCHEMAS));
-ENABLED_USER_OPERATIONS.push('workspace.change.abandon','workspace.change.complete','workspace.change.get','workspace.retention.update','workspace.integration.retry','workspace.integration.verification.get','workspace.integration.verification.configure');
+  ...Object.keys(PROJECT_INGRESS_SCHEMAS),...Object.keys(PROJECT_MANAGEMENT_SCHEMAS),...Object.keys(PROJECT_CORPUS_SCHEMAS),
+  ...Object.keys(RESEARCH_CONTROL_SCHEMAS),...Object.keys(PROJECT_SUMMARY_DRAFT_SCHEMAS),...Object.keys(IMPORTED_HISTORY_EXTRACTION_SCHEMAS));
+ENABLED_USER_OPERATIONS.push('workspace.change.abandon','workspace.change.complete','workspace.change.get','workspace.change.list','workspace.branch.align','workspace.retention.update','workspace.integration.retry','workspace.integration.verification.get','workspace.integration.verification.configure');
+// Agent/Room block: human-only Agent, chat, Room, Agent group, Run and session commands plus the preflight query.
+ENABLED_USER_OPERATIONS.push(...Object.keys(AGENT_OPERATION_SCHEMAS),...Object.keys(AGENT_CHAT_OPERATION_SCHEMAS),...Object.keys(ROOM_OPERATION_SCHEMAS),
+  ...Object.keys(AGENT_GROUP_OPERATION_SCHEMAS),...Object.keys(RUN_OPERATION_SCHEMAS),...Object.keys(SESSION_OPERATION_SCHEMAS),...Object.keys(SESSION_QUERY_SCHEMAS));
+// Host block: Host, Location history and imported-session commands (human-only, never grantable).
+ENABLED_USER_OPERATIONS.push(...Object.keys(HOST_COMMAND_OPERATION_SCHEMAS),...Object.keys(HOST_DIRECT_OPERATION_SCHEMAS));
+// Settings block: system settings / tool configuration commands (human-only, never grantable).
+ENABLED_USER_OPERATIONS.push(...Object.keys(SETTINGS_COMMAND_OPERATION_SCHEMAS),...Object.keys(SETTINGS_DIRECT_OPERATION_SCHEMAS));
 ENABLED_USER_OPERATIONS.sort();
 const db = useTestDatabase(import.meta.filename);
 let space: string, owner: string, project: string, operation: string;

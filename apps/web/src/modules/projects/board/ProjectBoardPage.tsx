@@ -21,7 +21,7 @@ import { Button } from '../../../components/ui/button'
 import { Badge } from '../../../components/ui/badge'
 import { Skeleton } from '../../../components/ui/skeleton'
 import { EmptyState } from '../../../components/ui/empty-state'
-import { usePeriodicRefresh } from '../../../hooks/usePeriodicRefresh'
+import { useProjectLiveRefresh } from '../../../hooks/useProjectLiveRefresh'
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '../../../components/ui/dialog'
@@ -36,8 +36,6 @@ const FILTER_LABELS: Record<BoardFilter, string> = {
   needs_me: 'Needs me',
 }
 
-/** Read refresh cadence; the same five seconds the Inquiry Area uses for a live Thread. */
-const BOARD_REFRESH_MS = 5_000
 
 export default function ProjectBoardPage() {
   const { projectId = '' } = useParams()
@@ -89,7 +87,7 @@ function ProjectBoardContent({projectId}:{projectId:string}) {
       setBoard(current => mergeBoard(current, next))
     } catch (error) {
       // A background refresh that fails keeps what is drawn rather than
-      // toasting every five seconds while the server is away.
+      // toasting on every invalidation while the server is away.
       if (showingRef.current === projectId && !quiet) toast.error(errMsg(error))
     } finally {
       if (showingRef.current === projectId) setLoading(false)
@@ -97,9 +95,9 @@ function ProjectBoardContent({projectId}:{projectId:string}) {
   }, [projectId])
 
   useEffect(() => { void load() }, [load])
-  // Cards an Agent creates from the Room arrive while this page is open.
+  // Agent-created, updated and closed Tasks arrive through the shared Project stream.
   const refresh = useCallback(() => load(true), [load])
-  usePeriodicRefresh(refresh, BOARD_REFRESH_MS)
+  useProjectLiveRefresh(projectId,refresh)
 
   const visibleCards = useMemo(() => {
     if (!board) return []

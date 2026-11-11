@@ -179,7 +179,11 @@ log a strong warning. See `server/src/modules/backups/guard.ts`.
 
 ```bash
 # Trigger a manual full-system backup (instance administrator session)
-curl -X POST http://localhost:3000/api/v1/system/backups/manual --cookie 'session_id=<admin-session>'
+curl -X POST http://localhost:3000/api/v1/system/backups/manual --cookie 'session_id=<admin-session>' -H "Idempotency-Key: $(uuidgen)"
+# A keyed system command: 202 {"status":"succeeded","data":{"id":"<command-id>","status":"pending",...}}.
+# The archive is written after commit; its name is the command's result:
+curl -s http://localhost:3000/api/v1/system/commands/<command-id> --cookie 'session_id=<admin-session>'
+# Expected once settled: {"status":"succeeded","result":{"status":"ok","backup":"manual-YYYYMMDD-HHMMSS.tar.gz"},...}
 
 # List backups
 curl http://localhost:3000/api/v1/system/backups --cookie 'session_id=<admin-session>'

@@ -69,13 +69,17 @@ async function executorsFor(projectId: string, instructedBy = OWNER): Promise<Ma
   return executors;
 }
 
-async function coreCancelFor(projectId:string,instructedBy=OWNER) {
+async function coreToolFor(projectId:string,tool:string,instructedBy=OWNER) {
   const id=randomUUID();
   await seedRun(db.pool,{id,space:SPACE,owner:instructedBy,agent:AGENT,version:AGENT_VERSION,existingAgent:true});
-  await db.pool.query("UPDATE runs SET status='running',project_id=$2,instructed_by_user_id=$3,permission_snapshot_json=$4::jsonb WHERE id=$1",[id,projectId,instructedBy,JSON.stringify({tool_grants:[{action_id:'research.cancel_acquisition'}]})]);
+  await db.pool.query("UPDATE runs SET status='running',project_id=$2,instructed_by_user_id=$3,permission_snapshot_json=$4::jsonb WHERE id=$1",[id,projectId,instructedBy,JSON.stringify({tool_grants:[{action_id:tool}]})]);
   const run=(await db.pool.query<AgentRunRecord>('SELECT * FROM runs WHERE id=$1',[id])).rows[0];
   const transport=new CliAgentToolTransport(loadConfig({SERVER_DATABASE_URL:db.connectionUri}));
-  return async (operationId:string,extra:Record<string,unknown>={})=>transport.call(run,{id:randomUUID(),name:'research.cancel_acquisition',arguments:{operation_id:operationId,...extra}}) as Promise<{httpStatus:number;body:{error:{message:string;code:string}}}>;
+  return async (args:Record<string,unknown>,key:string=randomUUID())=>transport.call(run,{id:key,name:tool,arguments:args}) as Promise<{httpStatus:number;body:{ok:boolean;status?:string;data?:Record<string,unknown>;replayed?:boolean;error:{message:string;code:string}}}>;
+}
+async function coreCancelFor(projectId:string,instructedBy=OWNER) {
+  const call=await coreToolFor(projectId,'research.cancel_acquisition',instructedBy);
+  return (operationId:string,extra:Record<string,unknown>={})=>call({operation_id:operationId,...extra});
 }
 async function researchRow(projectId:string,title:string,status='active') {
   const id=randomUUID();
@@ -109,9 +113,17 @@ describe("the reads an Agent gets ids from (real Postgres)", () => {
     const project = await new PgProjectRepository(db.pool).create(identity(), { name: "Agent memory" });
     const question = await new InquiryThreadService(db.pool).createThread(identity(), project.id as string, { kind: "question", statement: "How should agent memory be classified?" });
 
-    const start = (await executorsFor(project.id as string)).get("research.start_acquisition" as SystemActionId)!;
-    await expect(start({ thread_id: "memory-classification" }, { idempotency_key: "call-3" } as never))
-      .rejects.toThrow(`No active Question Thread has id 'memory-classification'. Read inquiry.list_threads for the complete paginated list. First matching ids: ${question.id} — How should agent memory be classified?`);
+    const start = await coreToolFor(project.id as string, "research.start_acquisition");
+    const missing = await start({ thread_id: "memory-classification" });
+    expect(missing.httpStatus).toBe(404);
+    expect(missing.body.error.message).toBe(`No active Question Thread has id 'memory-classification'. Read inquiry.list_threads for the complete paginated list. First matching ids: ${question.id} — How should agent memory be classified?`);
+    // A Thread in another Project is refused with the same hint, never by its own existence.
+    const other = await new PgProjectRepository(db.pool).create(identity(), { name: "Elsewhere" });
+    const foreign = await new InquiryThreadService(db.pool).createThread(identity(), other.id as string, { kind: "question", statement: "Foreign" });
+    const crossProject = await start({ thread_id: foreign.id });
+    expect(crossProject.httpStatus).toBe(404);
+    expect(crossProject.body.error.message).not.toContain("Foreign");
+    expect((await db.pool.query("SELECT count(*)::int AS n FROM project_operations WHERE space_id=$1",[SPACE])).rows[0].n).toBe(0);
   });
 
   it("lists the Project's live research Operations, and answers an invented operation_id with them", async () => {

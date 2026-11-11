@@ -1,3 +1,4 @@
+import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
@@ -191,6 +192,7 @@ describe("Run command authority (real Postgres)", () => {
 
   afterEach(() => {
     __setRunsIdentityForTests(null);
+    __setAuthIdentityForTests(null);
   });
 
   const pause = async (errorJson: Record<string, unknown>) => db.pool.query(
@@ -202,11 +204,14 @@ describe("Run command authority (real Postgres)", () => {
     await pause({ error_code: "policy_requires_approval_runtime_execute", risk_level: "high" });
     const app = buildModuleServer(config(), [runsModule]);
     try {
-      __setRunsIdentityForTests({ spaceId: SPACE, userId: OTHER });
+      __setAuthIdentityForTests({ spaceId: SPACE, userId: OTHER });
+      // Core commands: someone without standing learns nothing about the Run, and nothing changes.
       for (const [method, command] of [["POST", "execute"], ["PATCH", "stop"], ["POST", "finalize"], ["POST", "abandon"], ["POST", "resume"]] as const) {
-        const res = await app.inject({ method, url: `/api/v1/runs/${RUN}/${command}`, payload: {} });
-        expect(res.statusCode, command).toBe(403);
+        const res = await app.inject({ method, url: `/api/v1/runs/${RUN}/${command}`, payload: {}, headers: { "idempotency-key": randomUUID() } });
+        expect(res.statusCode, command).toBe(404);
       }
+      expect((await db.pool.query("SELECT status FROM runs WHERE id=$1", [RUN])).rows[0].status).toBe("waiting_for_review");
+      expect((await db.pool.query("SELECT count(*)::int AS n FROM jobs WHERE payload_json->>'run_id'=$1", [RUN])).rows[0].n).toBe(0);
     } finally {
       await app.close();
     }

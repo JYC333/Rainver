@@ -42,7 +42,11 @@ export const probeManifest: PluginOperationManifest = {
     id: jobId,
     payload_schema: z.object({
       value: z.string(),
-      hold: z.boolean().optional()
+      hold: z.boolean().optional(),
+      late: z.boolean().optional(),
+      retain: z.boolean().optional(),
+      legacy: z.boolean().optional(),
+      dispose_in_txn: z.boolean().optional()
     }).strict()
   }],
   schedules: [{

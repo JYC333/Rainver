@@ -1,6 +1,7 @@
+import {ResearchWorkspaceMutationError} from './workspaceErrors.js';
 import type { ServerConfig } from "../../config.js";
 import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
-import { HttpError, optionalString } from "../routeUtils/common.js";
+import { optionalString } from "../routeUtils/common.js";
 import { PgAgentRepository } from "../agents/repository.js";
 import { providerSupportsStructuredOutput } from "../providers/structuredOutputCapabilities.js";
 
@@ -163,7 +164,7 @@ export class ProjectResearchExecutionProfileService {
       || defaultProfile.workspace_mode !== "managed"
       || !defaultProfile.runtime_installation
     ) {
-      throw new HttpError(409, "The managed Research Agent has no Server Runtime Profile binding");
+      throw new ResearchWorkspaceMutationError(409, "The managed Research Agent has no Server Runtime Profile binding");
     }
     const runtimeConfig = defaultProfile.runtime_config_json
       && typeof defaultProfile.runtime_config_json === "object"
@@ -222,7 +223,7 @@ export async function resolveResearchStageProvider(
       )).rows[0]
     : undefined;
   if (runtimeProfileId && !profile?.model_provider_id) {
-    throw new HttpError(409, "The selected research Runtime Profile is unavailable or no longer provider-bound");
+    throw new ResearchWorkspaceMutationError(409, "The selected research Runtime Profile is unavailable or no longer provider-bound");
   }
   return resolveResearchProvider(db, identity.spaceId, {
     modelProviderId: profile?.model_provider_id ?? null,
@@ -239,10 +240,10 @@ async function resolveResearchProvider(
     ? await getProvider(db, spaceId, selection.modelProviderId)
     : await getDefaultProvider(db, spaceId);
   if (!provider) {
-    throw new HttpError(422, "Select a model provider or configure a space default provider for Auto Research");
+    throw new ResearchWorkspaceMutationError(422, "Select a model provider or configure a space default provider for Auto Research");
   }
   if (!providerSupportsStructuredOutput(provider.provider_type)) {
-    throw new HttpError(422, `Model provider type '${provider.provider_type}' does not support Auto Research structured output`);
+    throw new ResearchWorkspaceMutationError(422, `Model provider type '${provider.provider_type}' does not support Auto Research structured output`);
   }
   return {
     modelProviderId: provider.id,
@@ -260,7 +261,7 @@ async function getProvider(db: Queryable, spaceId: string, providerId: string): 
       WHERE g.space_id=$1 AND g.provider_id=$2 AND g.enabled=true AND p.enabled=true LIMIT 1`,
     [spaceId, providerId],
   );
-  if (!result.rows[0]) throw new HttpError(422, "Model provider is not selectable in this space");
+  if (!result.rows[0]) throw new ResearchWorkspaceMutationError(422, "Model provider is not selectable in this space");
   return result.rows[0];
 }
 

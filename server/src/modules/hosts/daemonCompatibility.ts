@@ -12,6 +12,9 @@
  * 0.4.6 adds personal ordinary-tool accounts (`ordinary_tool_accounts`), negotiated
  * the same way.
  * 0.4.7 adds ordinary tools in Runs (`ordinary_tools_runs`), negotiated the same way.
+ * 0.4.8 journals managed-workspace archive/restore operations with generation fencing
+ * (`managed_workspace_operations`), negotiated the same way: an older daemon gets
+ * legacy archives and no restore.
  *
  * 0.4.0 was the oldest daemon that merges a done Task's branch (ADR 0016 §11): `task_merge_prepare`,
  * `_continue`, `_abort` and `_finish`, and a conflict-resolution Run launched

@@ -2,6 +2,8 @@ import { useEffect, useState, useCallback } from 'react'
 import { pluginsApi } from '../../api/client'
 import { useAppTranslation } from '../../i18n'
 import { formatDate } from '../../i18n/format'
+import { Button } from '../../components/ui/button'
+import type { OfficialPluginCleanupStatus } from '@rainver/protocol'
 
 interface EffectiveState {
   plugin_id: string
@@ -31,9 +33,11 @@ interface PluginDescriptor {
 interface PluginListItem {
   descriptor: PluginDescriptor
   effective: EffectiveState
+  /** Present only for a person who administers the plugin here, while a disable's cleanup is unfinished. */
+  cleanup?: OfficialPluginCleanupStatus | null
 }
 
-type ActionState = Record<string, 'idle' | 'loading' | 'success' | 'error'>
+type ActionState = Record<string, 'idle' | 'loading' | 'success' | 'error' | 'cleanup_failed'>
 
 export default function PluginsPage() {
   const { t } = useAppTranslation()
@@ -99,6 +103,19 @@ export default function PluginsPage() {
     }
   }
 
+  // A retry is a new disable round: it re-releases what the last one could not.
+  const handleRetryCleanup = async (pluginId: string) => {
+    setAction(pluginId, 'loading')
+    try {
+      const out = await pluginsApi.disable(pluginId) as { cleanup_pending?: boolean } | undefined
+      setAction(pluginId, out?.cleanup_pending ? 'cleanup_failed' : 'success')
+      load()
+      notifyShell()
+    } catch {
+      setAction(pluginId, 'error')
+    }
+  }
+
   return (
     <div style={{ maxWidth: 720, margin: '32px auto', padding: '0 24px', fontFamily: 'inherit' }}>
       <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 4 }}>{t('management_ui.plugins.title')}</h1>
@@ -114,7 +131,7 @@ export default function PluginsPage() {
       )}
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-        {items.map(({ descriptor, effective }) => (
+        {items.map(({ descriptor, effective, cleanup }) => (
           <div key={descriptor.id} style={{
             border: '1px solid #e0e0e0', borderRadius: 10, padding: '20px 24px',
             background: '#fff',
@@ -213,12 +230,13 @@ export default function PluginsPage() {
                 ) : (
                   <button
                     onClick={() => handleEnable(descriptor.id)}
-                    disabled={actions[descriptor.id] === 'loading'}
+                    disabled={actions[descriptor.id] === 'loading' || !!cleanup}
                     style={{
                       padding: '6px 14px', borderRadius: 6, border: 'none',
-                      background: '#1976d2', color: '#fff', cursor: 'pointer',
+                      background: '#1976d2', color: '#fff',
                       fontSize: 13, fontWeight: 500,
-                      opacity: actions[descriptor.id] === 'loading' ? 0.6 : 1,
+                      opacity: actions[descriptor.id] === 'loading' || cleanup ? 0.6 : 1,
+                      cursor: cleanup ? 'not-allowed' : 'pointer',
                     }}
                   >
                     {actions[descriptor.id] === 'loading' ? t('management_ui.plugins.enabling') : t('management_ui.plugins.enable')}
@@ -227,6 +245,18 @@ export default function PluginsPage() {
               </div>
             </div>
 
+            {cleanup && (
+              <CleanupNotice
+                cleanup={cleanup}
+                retrying={actions[descriptor.id] === 'loading'}
+                refreshing={loading}
+                onRetry={() => handleRetryCleanup(descriptor.id)}
+                onRefresh={load}
+              />
+            )}
+            {actions[descriptor.id] === 'cleanup_failed' && (
+              <p className="mt-2 mb-0 text-xs text-destructive">{t('management_ui.plugins.cleanup_retry_failed')}</p>
+            )}
             {actions[descriptor.id] === 'error' && (
               <p style={{ margin: '8px 0 0', color: '#b71c1c', fontSize: 13 }}>
                 {t('management_ui.plugins.action_failed')}
@@ -239,6 +269,44 @@ export default function PluginsPage() {
       <p style={{ marginTop: 32, fontSize: 12, color: '#bbb' }}>
         {t('management_ui.plugins.footer')}
       </p>
+    </div>
+  )
+}
+
+/**
+ * The unfinished cleanup of a disable, beside the card's (disabled) Enable.
+ * A failed release is retried by a new disable round; a hold kept by its live
+ * service process is not, so that state offers only a status refresh and
+ * explains that it clears after the process restarts or exits.
+ */
+function CleanupNotice({ cleanup, retrying, refreshing, onRetry, onRefresh }: {
+  cleanup: OfficialPluginCleanupStatus
+  retrying: boolean
+  refreshing: boolean
+  onRetry: () => void
+  onRefresh: () => void
+}) {
+  const { t } = useAppTranslation()
+  const restart = cleanup.awaiting_restart ?? 0
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-2">
+      <div role="status" className="flex flex-1 basis-60 flex-col gap-1 text-xs text-warning">
+        {cleanup.attention > 0 && <p className="m-0">{t('management_ui.plugins.cleanup_attention', { count: cleanup.attention })}</p>}
+        {restart > 0 && <p className="m-0">{t('management_ui.plugins.cleanup_awaiting_restart', { count: restart })}</p>}
+        {cleanup.pending > 0 && <p className="m-0">{t('management_ui.plugins.cleanup_pending', { count: cleanup.pending })}</p>}
+        {cleanup.last_attempt_at && (
+          <span className="text-muted-foreground">{t('management_ui.plugins.cleanup_last_attempt', { date: formatDate(cleanup.last_attempt_at) })}</span>
+        )}
+      </div>
+      {cleanup.state === 'awaiting_restart' ? (
+        <Button size="sm" variant="outline" onClick={onRefresh} disabled={refreshing}>
+          {t('management_ui.plugins.cleanup_refresh')}
+        </Button>
+      ) : (
+        <Button size="sm" variant="outline" onClick={onRetry} disabled={retrying}>
+          {retrying ? t('management_ui.plugins.cleanup_retrying') : t('management_ui.plugins.cleanup_retry')}
+        </Button>
+      )}
     </div>
   )
 }

@@ -49,7 +49,9 @@ A product-level control plane is added **above** (not replacing) the
   holds one row per (plugin, Space) for `space`-scoped modules — shared by all
   members, written by Space owner/admin — or per (plugin, user) for
   `user`-scoped modules, which are self-service and apply across Spaces.
-  `official_plugin_events` is the audit log; `plugin_installs` and
+  `official_plugin_events` is the audit log; `official_plugin_scope_holds`
+  binds operation packages' process-local effects to their generation and
+  owner process (see OFFICIAL_OPTIONAL_MODULES); `plugin_installs` and
   `plugin_migrations` track instance-level install and plugin-owned schema.
 - **Install and enable are separate.** `install` runs plugin-owned migrations
   and records install metadata; `enable` requires an active install and

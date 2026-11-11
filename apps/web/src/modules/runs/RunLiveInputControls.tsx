@@ -49,6 +49,9 @@ export function RunLiveInputControls({ run, scope, onChanged }: { run: Run; scop
       if (result.state === 'injected') {
         setContent(''); setNotice(t('conversation_ui.run.live_input_delivered'))
         onChanged?.(run)
+      } else if (result.state === 'pending') {
+        // Saved and still owed to this turn by the server; clearing the draft prevents a duplicate send.
+        setContent(''); setNotice(t('conversation_ui.run.live_input_pending'))
       } else {
         setBinding(null)
         setNotice(t(result.state === 'unconfirmed' ? 'conversation_ui.run.live_input_unconfirmed' : 'conversation_ui.run.live_input_not_delivered'))

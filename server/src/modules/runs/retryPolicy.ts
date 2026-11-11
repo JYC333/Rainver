@@ -55,7 +55,13 @@ export function classifyRuntimeFailure(
   options: { providerBound: boolean },
 ): typeof SUBSCRIPTION_QUOTA_EXHAUSTED | null {
   if (options.providerBound || !errorText) return null;
-  const patterns = getRuntimeAdapterSpec(runtimeKey)?.usage.quota_exhausted_patterns ?? [];
+  const spec = getRuntimeAdapterSpec(runtimeKey);
+  // Explicit model-capacity refusals have the same meaning across ACP CLIs.
+  // A generic HTTP 429 or "rate limit" still does not prove subscription exhaustion.
+  if (spec && /\b(?:exhausted (?:your |the )?(?:capacity|quota) (?:on|for) (?:this|the selected) model|model quota (?:is |has been )?(?:exhausted|exceeded))\b/i.test(errorText)) {
+    return SUBSCRIPTION_QUOTA_EXHAUSTED;
+  }
+  const patterns = spec?.usage.quota_exhausted_patterns ?? [];
   return patterns.some((pattern) => new RegExp(pattern, "i").test(errorText))
     ? SUBSCRIPTION_QUOTA_EXHAUSTED
     : null;

@@ -125,6 +125,13 @@
       "version": "7",
       "when": 1794167006362,
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "tag": "0018_workspace_operation_core",
+      "version": "7",
+      "when": 1794373999340,
+      "breakpoints": true
     }
   ],
   "version": "7",

@@ -1,35 +1,22 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import * as protocol from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
 import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext.js";
 import { introspectIdentity } from "../auth/identity.js";
+import { registerOperationAdapters, type OperationAdapterRoute } from "../systemActions/operations/routeAdapter.js";
 import { requireSpaceOwnerOrAdmin } from "../routeUtils/access.js";
 import {
   NetworkProfileError,
   resolveNetworkProfileRepository,
-  type NetworkProfileCreateInput,
-  type NetworkProfileUpdateInput,
 } from "./repository.js";
 
 function params(request: FastifyRequest): Record<string, string | undefined> {
   return request.params as Record<string, string | undefined>;
 }
 
-function bodyText(request: FastifyRequest): string {
-  return request.body instanceof Buffer ? request.body.toString("utf8") : "";
-}
 
-function jsonBody(request: FastifyRequest): unknown {
-  const text = bodyText(request);
-  return text ? JSON.parse(text) : {};
-}
 
-async function parseWith<T>(schemaName: string, value: unknown): Promise<T> {
-  const schema = (protocol as unknown as Record<string, { parse(v: unknown): T }>)[schemaName];
-  return schema.parse(value);
-}
 
 async function resolveIdentity(
   config: ServerConfig,
@@ -66,32 +53,21 @@ function sendDomainError(reply: FastifyReply, error: unknown): FastifyReply {
   return reply.code(statusCode).send({ detail: message });
 }
 
+/** Retained write URLs bound to `network_profile.*` (`operations.ts`). */
+export const NETWORK_PROFILE_OPERATION_ROUTES: readonly OperationAdapterRoute[] = [
+  { method: "POST", url: "/api/v1/network-profiles", operation: "network_profile.create" },
+  { method: "PATCH", url: "/api/v1/network-profiles/:profileId", operation: "network_profile.update", params: { profileId: "profile_id" } },
+  { method: "DELETE", url: "/api/v1/network-profiles/:profileId", operation: "network_profile.delete", params: { profileId: "profile_id" } },
+];
+
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
+  registerOperationAdapters(app, context.config, NETWORK_PROFILE_OPERATION_ROUTES);
   app.get("/api/v1/network-profiles", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     if (!(await requireSpaceOwnerOrAdmin(context.config, identity, reply))) return reply;
     try {
       return reply.send(await resolveNetworkProfileRepository(context.config).list(identity.spaceId));
-    } catch (error) {
-      return sendDomainError(reply, error);
-    }
-  });
-
-  app.post("/api/v1/network-profiles", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    if (!(await requireSpaceOwnerOrAdmin(context.config, identity, reply))) return reply;
-    try {
-      const body = await parseWith<NetworkProfileCreateInput>(
-        "NetworkProfileCreateRequestSchema",
-        jsonBody(request),
-      );
-      const value = await resolveNetworkProfileRepository(context.config).create(
-        identity.spaceId,
-        body,
-      );
-      return reply.code(201).send(value);
     } catch (error) {
       return sendDomainError(reply, error);
     }
@@ -113,39 +89,4 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.patch("/api/v1/network-profiles/:profileId", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    if (!(await requireSpaceOwnerOrAdmin(context.config, identity, reply))) return reply;
-    try {
-      const body = await parseWith<NetworkProfileUpdateInput>(
-        "NetworkProfileUpdateRequestSchema",
-        jsonBody(request),
-      );
-      return reply.send(
-        await resolveNetworkProfileRepository(context.config).update(
-          identity.spaceId,
-          params(request).profileId ?? "",
-          body,
-        ),
-      );
-    } catch (error) {
-      return sendDomainError(reply, error);
-    }
-  });
-
-  app.delete("/api/v1/network-profiles/:profileId", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    if (!(await requireSpaceOwnerOrAdmin(context.config, identity, reply))) return reply;
-    try {
-      await resolveNetworkProfileRepository(context.config).delete(
-        identity.spaceId,
-        params(request).profileId ?? "",
-      );
-      return reply.code(204).send();
-    } catch (error) {
-      return sendDomainError(reply, error);
-    }
-  });
 }

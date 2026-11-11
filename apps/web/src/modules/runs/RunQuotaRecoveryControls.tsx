@@ -34,6 +34,12 @@ export function RunQuotaRecoveryControls({ run: supplied, scope, canControl, onC
       onClick={() => void actions.perform({ kind: 'quota_recovery', autoContinue: !recovery.auto_continue })}>
       {t(recovery.auto_continue ? 'conversation_ui.run.quota_cancel' : 'conversation_ui.run.quota_enable')}
     </Button>}
+    {recovery.switched_model && <span>{t('conversation_ui.run.quota_switched', { model: recovery.switched_model })}</span>}
+    {canControl && recovery.can_switch_model && !recovery.switched_model && <Button type="button" size="sm" variant="outline"
+      className="h-auto min-h-7 whitespace-normal text-left" disabled={Boolean(actions.busy)}
+      onClick={() => void actions.perform({ kind: 'quota_recovery', autoContinue: true, switchModel: true })}>
+      {t('conversation_ui.run.quota_switch')}
+    </Button>}
     {actions.error && <span role="alert" className="text-destructive">{actions.error}</span>}
     {actions.refreshError && <span role="status" className="text-muted-foreground">{t('conversation_ui.run.refresh_failed', { message: actions.refreshError })}</span>}
   </div>

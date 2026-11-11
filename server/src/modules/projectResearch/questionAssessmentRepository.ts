@@ -54,6 +54,8 @@ export interface QuestionAssessmentConversation {
     content: string;
     status: "pending" | "complete" | "failed";
     processing_events: QuestionAssessmentProcessingEvent[];
+    /** A completed assistant turn's own structured answer. */
+    refinement?: Record<string, unknown>;
     created_by_user_id: string | null;
     created_at: string;
   }>;
@@ -66,6 +68,31 @@ export interface BegunQuestionAssessmentTurn {
   messageId: string;
   turnIndex: number;
   history: Array<{ role: "user" | "assistant"; content: string }>;
+}
+
+/** The execution a worker call holds: its Job, claim and attempt. */
+export interface QuestionRefineJobLease {
+  jobId: string;
+  jobType: string;
+  workerId: string;
+  attempts: number;
+}
+
+/** Whether `lease` still holds the Job that performs turn `messageId`; `lock` takes the fence share lock. */
+export async function questionRefineLeaseHeld(
+  db: Queryable,
+  spaceId: string,
+  messageId: string,
+  lease: QuestionRefineJobLease,
+  lock: boolean,
+): Promise<boolean> {
+  const held = await db.query(
+    `SELECT id FROM jobs
+      WHERE id=$1 AND space_id=$2 AND job_type=$3 AND status='running'
+        AND claimed_by=$4 AND attempts=$5 AND payload_json->>'message_id'=$6${lock ? " FOR SHARE" : ""}`,
+    [lease.jobId, spaceId, lease.jobType, lease.workerId, lease.attempts, messageId],
+  );
+  return held.rows.length > 0;
 }
 
 export class ProjectResearchQuestionAssessmentRepository {
@@ -161,20 +188,45 @@ export class ProjectResearchQuestionAssessmentRepository {
     turn: BegunQuestionAssessmentTurn,
     result: QuestionRefinementResult,
     establishAssessmentBaseline: boolean,
+    lease: QuestionRefineJobLease,
   ): Promise<void> {
     const now = new Date().toISOString();
+    // The answer is written only by the call that still holds its Job's
+    // execution: running, claimed by this worker on this attempt. The share
+    // lock conflicts with cancel, reclaim and fail, so either they wait for
+    // this commit or this write sees their terminal status and refuses. A
+    // call that outlived its claim (cancelled, reclaimed failed, exhausted)
+    // never writes an answer, and nothing calls the provider again.
+    const held = await questionRefineLeaseHeld(this.db, identity.spaceId, turn.messageId, lease, true);
+    if (!held) throw new HttpError(409, "Question refinement Job no longer owns this turn");
+    // Serializes concurrent turns of one session so the projection below is
+    // decided against every turn already settled.
     await this.db.query(
+      `SELECT id FROM project_research_question_assessment_sessions WHERE id=$1 AND space_id=$2 FOR UPDATE`,
+      [turn.sessionId, identity.spaceId],
+    );
+    const claimed = await this.db.query(
       `UPDATE project_research_question_assessment_messages
           SET status='complete'
         WHERE id=$1 AND session_id=$2 AND space_id=$3 AND role='user' AND status='pending'`,
       [turn.messageId, turn.sessionId, identity.spaceId],
     );
+    // Failed, abandoned or already completed: one turn has at most one answer.
+    if (claimed.rowCount !== 1) throw new HttpError(409, "Question assessment turn is no longer pending");
     await this.db.query(
       `INSERT INTO project_research_question_assessment_messages
          (id,space_id,session_id,turn_index,role,content,status,structured_output_json,created_at)
        VALUES ($1,$2,$3,$4,'assistant',$5,'complete',$6::jsonb,$7)`,
       [randomUUID(), identity.spaceId, turn.sessionId, turn.turnIndex, result.reply, JSON.stringify(result), now],
     );
+    // A turn that finishes after a later turn already answered keeps its own
+    // message but must not replace the session's newer projection.
+    const newer = await this.db.query(
+      `SELECT 1 FROM project_research_question_assessment_messages
+        WHERE session_id=$1 AND space_id=$2 AND role='assistant' AND status='complete' AND turn_index>$3 LIMIT 1`,
+      [turn.sessionId, identity.spaceId, turn.turnIndex],
+    );
+    if (newer.rows.length) return;
     await this.db.query(
       `UPDATE project_research_question_assessment_sessions
           SET recommended_question=$1,
@@ -283,6 +335,9 @@ export class ProjectResearchQuestionAssessmentRepository {
         content: row.content,
         status: row.status,
         processing_events: processingEvents(row.structured_output_json),
+        ...(row.role === "assistant" && row.status === "complete" && row.structured_output_json
+          ? { refinement: row.structured_output_json }
+          : {}),
         created_by_user_id: row.created_by_user_id,
         created_at: dateIso(row.created_at) ?? new Date(0).toISOString(),
       })),

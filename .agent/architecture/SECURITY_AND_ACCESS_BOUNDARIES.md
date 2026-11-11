@@ -37,9 +37,9 @@ All other routes, including system-metadata endpoints, are auth-gated:
 - `POST /api/v1/invitations/accept` — an active account may consume only an unexpired, available invitation addressed to its own normalized email; Space membership (if present) and token consumption commit together. Instance-only invitations grant no membership.
 - `GET /api/v1/skill-packages`, its content/binding reads, and `/api/v1/skills/*` selection/overlay APIs
 - `GET /api/v1/server/catalog`, `/catalog/capabilities`, `/catalog/agent-templates`
-- `GET /api/v1/server/notifications/webhooks/policy`, `POST .../webhooks/dispatch`
+- `GET /api/v1/server/notifications/webhooks/policy`, `POST .../webhooks/dispatch` (`notification.webhook.dispatch`: a keyed system command; the send runs after commit and its result is the issuer's status read)
 - `GET /api/v1/jobs/handlers`
-- `GET /api/v1/system/backups`, `POST /api/v1/system/backups/manual` — instance-admin gated
+- `GET /api/v1/system/backups`, `POST /api/v1/system/backups/manual` — instance-admin gated (the manual backup is `system.backup.create`, a keyed system command; non-admins get the hidden 404)
 - `POST /api/v1/hosts/{hostId}/installations/{runtimeKey}`, `.../rollback`, `DELETE .../{installation}` — instance-admin gated for the built-in host, owner-gated for a paired machine
 - `GET /api/v1/providers/vendors`, `/api/v1/providers/presets`
 

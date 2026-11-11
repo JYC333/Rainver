@@ -80,7 +80,9 @@ export async function freezeSubmittedWorkspaceCommit(db:Queryable,w:ExecutionWor
  */
 export async function pinRegisteredSource(attempt:(argv:string[])=>Promise<string|null>,commit:string){
  const pin=`refs/rainver/sources/${commit}`;
- if(await attempt(['update-ref','-m','rainver: retain submitted workspace commit',pin,commit,''])!==null)return;
+ // All-zero old value: create only while absent. (Git also accepts '', but the
+ // Host refuses an empty command argument and would never answer.)
+ if(await attempt(['update-ref','-m','rainver: retain submitted workspace commit',pin,commit,'0'.repeat(commit.length)])!==null)return;
  const current=await attempt(['rev-parse','--verify','--quiet',`${pin}^{commit}`]);
  if(current?.trim()!==commit)throw new Error('workspace_commit_unavailable');
 }

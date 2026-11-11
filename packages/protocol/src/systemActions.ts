@@ -3,17 +3,28 @@ import {ResearchAdhocInputSchema,ResearchAdhocReceiptSchema} from './researchAdh
 import {PROJECT_SOURCE_PROPOSAL_SCHEMAS,PROJECT_SOURCE_PROPOSAL_TITLES} from './projectSourceProposalOperations.js';
 import {PROJECT_CORPUS_SCHEMAS,PROJECT_CORPUS_TITLES} from './projectCorpusOperations.js';
 import {INQUIRY_AGENT_OPERATION_SCHEMAS} from './inquiryAgentOperations.js';
+import {RESEARCH_AGENT_OPERATION_SCHEMAS} from './researchAgentOperations.js';
+import {ROOM_OPERATION_SCHEMAS,ROOM_OPERATION_TITLES} from './roomOperations.js';
+import {AGENT_GROUP_OPERATION_SCHEMAS,AGENT_GROUP_OPERATION_TITLES} from './agentGroupOperations.js';
+import {RUN_OPERATION_SCHEMAS,RUN_OPERATION_TITLES} from './runOperations.js';
+import {SESSION_OPERATION_SCHEMAS,SESSION_QUERY_SCHEMAS,SESSION_OPERATION_TITLES} from './sessionOperations.js';
+import {AGENT_CHAT_OPERATION_SCHEMAS,AGENT_CHAT_OPERATION_TITLES,AGENT_OPERATION_SCHEMAS,AGENT_OPERATION_TITLES} from './agentOperations.js';
+import {HOST_COMMAND_OPERATION_SCHEMAS,HOST_DIRECT_OPERATION_SCHEMAS,HOST_OPERATION_TITLES} from './hostOperations.js';
+import {SETTINGS_COMMAND_OPERATION_SCHEMAS,SETTINGS_DIRECT_OPERATION_SCHEMAS,SETTINGS_OPERATION_TITLES} from './settingsOperations.js';
 import {PROJECT_FOLDER_SCHEMAS,PROJECT_FOLDER_TITLES} from './projectFolderOperations.js';
 import {PROJECT_FOLDER_IO_SCHEMAS,PROJECT_FOLDER_IO_TITLES} from './projectFolderIoOperations.js';
-import {PROJECT_INGRESS_SCHEMAS,PROJECT_INGRESS_TITLES} from './projectIngressOperations.js';
+import {PROJECT_INGRESS_SCHEMAS,PROJECT_INGRESS_TITLES,PROJECT_INGRESS_POLICY,PROJECT_INGRESS_PROPOSALS} from './projectIngressOperations.js';
 import {PROJECT_EXECUTION_SCHEMAS,PROJECT_EXECUTION_TITLES} from './projectExecutionOperations.js';
 import {PROJECT_MANAGEMENT_SCHEMAS,PROJECT_MANAGEMENT_TITLES} from './projectManagementOperations.js';
 import {INQUIRY_OPERATION_SCHEMAS,INQUIRY_OPERATION_TITLES} from './inquiryOperations.js';
 import {TaskCreateInputSchema} from './taskCreateInput.js';
 export {TaskCreateInputSchema,ProblemTaskLinkRequestSchema} from './taskCreateInput.js';
 import {RESEARCH_WORKSPACE_SCHEMAS,RESEARCH_WORKSPACE_TITLES} from './researchWorkspaceOperations.js';
+import {RESEARCH_CONTROL_SCHEMAS,RESEARCH_CONTROL_TITLES,RESEARCH_CONTROL_POLICY} from './researchControlOperations.js';
+import {PROJECT_SUMMARY_DRAFT_SCHEMAS,PROJECT_SUMMARY_DRAFT_TITLES} from './projectSummaryDraftOperation.js';
+import {IMPORTED_HISTORY_EXTRACTION_SCHEMAS,IMPORTED_HISTORY_EXTRACTION_TITLES} from './importedHistoryExtractionOperation.js';
 import {KnowledgeExtractionInputSchema,KnowledgeExtractionReceiptSchema} from './knowledgeExtractionOperation.js';
-import {WorkspaceVerificationGetInputSchema,WorkspaceVerificationConfigureInputSchema,WorkspaceVerificationViewSchema,WorkspaceChangeStatusSchema,WorkspaceChangeGetInputSchema,WorkspaceChangeCompleteInputSchema,WorkspaceChangeReceiptSchema,WorkspaceIntegrationRetryInputSchema,WorkspaceChangeAbandonInputSchema,WorkspaceRetentionUpdateInputSchema,WorkspaceRetentionReceiptSchema} from "./executionWorkspaces.js";
+import {WorkspaceVerificationGetInputSchema,WorkspaceVerificationConfigureInputSchema,WorkspaceVerificationViewSchema,WorkspaceChangeStatusSchema,WorkspaceChangeGetInputSchema,WorkspaceChangeCompleteInputSchema,WorkspaceChangeReceiptSchema,WorkspaceIntegrationRetryInputSchema,WorkspaceChangeAbandonInputSchema,WorkspaceRetentionUpdateInputSchema,WorkspaceRetentionReceiptSchema,WorkspaceChangeListInputSchema,WorkspaceChangeListSchema,WorkspaceBranchAlignInputSchema,WorkspaceBranchAlignReceiptSchema} from "./executionWorkspaces.js";
 import {KNOWLEDGE_REVIEW_SCHEMAS,KNOWLEDGE_REVIEW_TITLES} from './knowledgeReviewOperations.js';
 import {KNOWLEDGE_OBJECT_SCHEMAS} from './knowledgeObjectOperations.js';
 import {NOTE_OBJECT_SCHEMAS,NOTE_OBJECT_TITLES} from './noteObjectOperations.js';
@@ -30,7 +41,6 @@ import {BoardConfigureOperationInputSchema,BoardConfigureOperationOutputSchema,T
 import {ProjectOperationCreateInputSchema, ProjectOperationCancelInputSchema, ProjectOperationCommandOutputSchema} from './operations.js';
 import {CollaborationParticipantsInputSchema,CollaborationParticipantsOutputSchema,ActionCatalogInputSchema,ActionCatalogOutputSchema,ActionGrantCreateInputSchema,ActionGrantRevokeInputSchema,ActionGrantOutputSchema} from "./operations.js";
 import { PROJECT_READING_RECORD_LIMITS } from './reader.js';
-import { ResearchResultAdoptionSchema } from "./researchCalls.js";
 import {SourceMaterialSubmissionSchema,SourceMaterialInvestigationSchema} from './sourceMaterials.js';
 import {SourceGoalVersionWriteSchema,SourceGoalRepairSchema} from './sourceGoals.js';
 import { ProposeProjectMonitoringSchema } from "./projectInformationMonitoring.js";
@@ -288,6 +298,8 @@ const proposalInputs:Record<string,z.ZodType>={
   "workspace.integration.retry":WorkspaceIntegrationRetryInputSchema,
   "workspace.change.abandon":WorkspaceChangeAbandonInputSchema,
   "workspace.retention.update":WorkspaceRetentionUpdateInputSchema,
+  "workspace.change.list":WorkspaceChangeListInputSchema,
+  "workspace.branch.align":WorkspaceBranchAlignInputSchema,
   "task.complete": TaskCompleteInputSchema,
   "task.request_review": TaskReviewInputSchema,
   "task.plan.propose": z.object({
@@ -391,20 +403,8 @@ const proposalInputs:Record<string,z.ZodType>={
   "project.reading.records": z.object({item_id:z.string().min(1).max(64),offset:z.number().int().min(0).max(PROJECT_READING_RECORD_LIMITS.maxOffset).optional()}).strict(),
   "project.reading.read": z.object({item_id:z.string().min(1).max(64),snapshot_id:z.string().min(1).max(64),offset:z.number().int().min(0).optional(),limit:z.number().int().min(1).max(12000).optional()}).strict(),
   "research.read_result": z.object({operation_id:z.string().min(1)}).strict(),
-  "research.adopt_result": ResearchResultAdoptionSchema.extend({operation_id:z.string().min(1)}),
-  // Scope is the caller's to set. Do not replace it with a server constant:
-  // the caller then has no way to say "only the last year" or "500 is enough"
-  // except cancelling and starting over.
-  "research.start_acquisition": z.object({
-    thread_id: z.string().min(1).describe("The Inquiry Thread id exactly as returned by inquiry.list_threads. Never invent, abbreviate, or derive one from the statement."),
-    intent_note: z.string().trim().min(1).max(2000).optional(),
-    max_items: z.number().int().min(1).max(2000).optional()
-      .describe("How many of the newest matching items this pass reads. Defaults to 200. Raise it only when the user asks for more."),
-    since: z.string().trim().min(1)
-      .refine((value) => !Number.isNaN(Date.parse(value)), "since must be an ISO date")
-      .optional()
-      .describe("ISO date; only material published on or after it is collected. Omit for all available history."),
-  }).strict(),
+  "research.adopt_result": RESEARCH_AGENT_OPERATION_SCHEMAS["research.adopt_result"].input,
+  "research.start_acquisition": RESEARCH_AGENT_OPERATION_SCHEMAS["research.start_acquisition"].input,
   "research.list_operations": z.object({
     include_terminal: z.boolean().optional(),
   }).strict(),
@@ -545,6 +545,8 @@ export const SYSTEM_ACTION_REGISTRY = [
   {...agentAction("workspace.change.abandon","Abandon the isolated change without publishing","projectFolders","workspace.change.abandon","workspace.change.abandon","durable",{resource_type:"project",resource_id_fallback:"project_or_run",check_action_approval_grant:false}),input_schema:WorkspaceChangeAbandonInputSchema,output_schema:WorkspaceChangeReceiptSchema,visibility:visibility("agent_tool","public_api"),allowed_actor_types:["user","agent"],execution:{kind:"command",tx:"core_owned"}},
   // People manage source retention; Agents never reclaim or hold Git metadata.
   {...agentAction("workspace.retention.update","Reclaim a proven merged/unchanged isolated workspace now, hold it, or retry its cleanup","projectFolders","workspace.retention.update","workspace.retention.update","durable",{resource_type:"project",resource_id_fallback:"project_or_run",check_action_approval_grant:false}),input_schema:WorkspaceRetentionUpdateInputSchema,output_schema:WorkspaceRetentionReceiptSchema,visibility:visibility("public_api"),allowed_actor_types:["user"],execution:{kind:"command",tx:"core_owned"}},
+  {...agentAction("workspace.change.list","List this conversation's (or, as metadata, the Project's) visible workspace change sets with ids, revisions, adoption and whether you may close each; page with next_cursor","projectFolders","workspaceChangeList","workspace.change.list","none",{resource_type:"project",resource_id_fallback:"project_or_run",check_action_approval_grant:false}),input_schema:WorkspaceChangeListInputSchema,output_schema:WorkspaceChangeListSchema,idempotency_required:false,visibility:visibility("agent_tool","public_api"),allowed_actor_types:["user","agent"],execution:{kind:"query",tx:"core_owned"}},
+  {...agentAction("workspace.branch.align","Align a local branch of a Folder repository to another branch with frozen expected tips and a recovery ref (person only)","projectFolders","workspaceBranchAlign","workspace.branch.align","durable",{resource_type:"project",resource_id_fallback:"project_or_run",check_action_approval_grant:false}),input_schema:WorkspaceBranchAlignInputSchema,output_schema:WorkspaceBranchAlignReceiptSchema,visibility:visibility("public_api"),allowed_actor_types:["user"],execution:{kind:"command",tx:"core_owned"}},
   {...agentAction("workspace.change.get","Read the actual state of this workspace integration. Wait for pending operations; resolve conflicts and run checks in your current worktree. Only merged/no_changes means publication completed.","projectFolders","workspaceChangeGet","workspace.change.get","none",{resource_type:"project",resource_id_fallback:"project_or_run",check_action_approval_grant:false}),input_schema:WorkspaceChangeGetInputSchema,output_schema:WorkspaceChangeStatusSchema,idempotency_required:false,visibility:visibility("agent_tool","public_api"),allowed_actor_types:["user","agent"],execution:{kind:"query",tx:"core_owned"}},
   {...agentAction("workspace.change.complete","Save privately with checkpoint alone, or integrate in this active Agent session: prepare, fix conflicts and check the saved version in your current worktree, then publish with your verification. Read workspace.change.get for each actual result; finish before answering. No verification configuration or separate Agent is needed.","projectFolders","workspaceChangeComplete","workspace.change.complete","durable",{resource_type:"project",resource_id_fallback:"project_or_run",check_action_approval_grant:false}),input_schema:WorkspaceChangeCompleteInputSchema,output_schema:WorkspaceChangeReceiptSchema,visibility:visibility("agent_tool","public_api"),allowed_actor_types:["user","agent"],execution:{kind:"command",tx:"core_owned"}},
   { ...agentAction("task.complete", "Say a Task's work is finished", "projectWork", "ProjectWorkTaskActions.complete", "task.complete", "durable", { resource_type: "task", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: false }),input_schema:TaskCompleteInputSchema,output_schema:TaskCompleteOutputSchema,execution:{kind:"command",tx:"core_owned"} },
@@ -570,14 +572,26 @@ export const SYSTEM_ACTION_REGISTRY = [
   {...httpAction("knowledge.note.delete", "Move a Note to trash", "knowledge", "PgKnowledgeRepository.deleteNote", "note.edit", "durable"),input_schema:NoteControlTargetSchema,output_schema:NoteControlReceiptSchema,execution:{kind:'command',tx:'core_owned'}},
   ...Object.entries(INQUIRY_OPERATION_SCHEMAS).map(([id,schemas])=>({...httpAction(id as keyof typeof INQUIRY_OPERATION_SCHEMAS,INQUIRY_OPERATION_TITLES[id as keyof typeof INQUIRY_OPERATION_SCHEMAS],'inquiry','Inquiry domain services','inquiry.workspace.update','durable'),input_schema:schemas.input,output_schema:schemas.output,execution:{kind:'command' as const,tx:'core_owned' as const}})),
   ...Object.entries(PROJECT_MANAGEMENT_SCHEMAS).map(([id,schemas])=>({...httpAction(id as keyof typeof PROJECT_MANAGEMENT_SCHEMAS,PROJECT_MANAGEMENT_TITLES[id as keyof typeof PROJECT_MANAGEMENT_SCHEMAS],'projects','Project workspace services','project.management.write','durable'),input_schema:schemas.input,output_schema:schemas.output,execution:{kind:'command' as const,tx:'core_owned' as const}})),
+  ...Object.entries({...SETTINGS_COMMAND_OPERATION_SCHEMAS,...SETTINGS_DIRECT_OPERATION_SCHEMAS}).map(([id,schemas])=>({...httpAction(id as keyof typeof SETTINGS_OPERATION_TITLES,SETTINGS_OPERATION_TITLES[id as keyof typeof SETTINGS_OPERATION_TITLES],settingsOwningModule(id),'System command intents and owning settings/tool configuration services',settingsPolicyAction(id),'durable'),input_schema:schemas.input,output_schema:schemas.output,execution:{kind:'command' as const,tx:'core_owned' as const}})),
+  ...Object.entries({...HOST_COMMAND_OPERATION_SCHEMAS,...HOST_DIRECT_OPERATION_SCHEMAS}).map(([id,schemas])=>({...httpAction(id as keyof typeof HOST_OPERATION_TITLES,HOST_OPERATION_TITLES[id as keyof typeof HOST_OPERATION_TITLES],id.startsWith('host.location.')||id.startsWith('imported_session.')?'importedSessions':'hosts','Host command intents and owning Host/Location services',hostPolicyAction(id),'durable'),input_schema:schemas.input,output_schema:schemas.output,execution:{kind:'command' as const,tx:'core_owned' as const}})),
+  ...Object.entries(AGENT_OPERATION_SCHEMAS).map(([id,schemas])=>({...httpAction(id as keyof typeof AGENT_OPERATION_SCHEMAS,AGENT_OPERATION_TITLES[id as keyof typeof AGENT_OPERATION_SCHEMAS],'agents','Agent definition and conversation services',id==='agent.run.create'?'agent.run.start':id==='agent.chat.reset_context'||id==='conversation.session_config.save'?'agent.conversation.write':'agent.definition.manage','durable'),input_schema:schemas.input,output_schema:schemas.output,execution:{kind:'command' as const,tx:'core_owned' as const}})),
+  ...Object.entries(AGENT_CHAT_OPERATION_SCHEMAS).map(([id,schemas])=>({...httpAction(id as keyof typeof AGENT_CHAT_OPERATION_SCHEMAS,AGENT_CHAT_OPERATION_TITLES[id as keyof typeof AGENT_CHAT_OPERATION_SCHEMAS],'agents','Direct Agent conversation turns','agent.run.start','durable'),input_schema:schemas.input,output_schema:schemas.output,execution:{kind:'command' as const,tx:'core_owned' as const}})),
+  ...Object.entries(ROOM_OPERATION_SCHEMAS).map(([id,schemas])=>({...httpAction(id as keyof typeof ROOM_OPERATION_SCHEMAS,ROOM_OPERATION_TITLES[id as keyof typeof ROOM_OPERATION_SCHEMAS],'rooms','Room roster, conversation and turn services',/^room\.(create|agent\.|invitation\.|member\.|owner\.)/.test(id)?'room.roster.manage':'room.conversation.write','durable'),input_schema:schemas.input,output_schema:schemas.output,execution:{kind:'command' as const,tx:'core_owned' as const}})),
+  ...Object.entries(AGENT_GROUP_OPERATION_SCHEMAS).map(([id,schemas])=>({...httpAction(id as keyof typeof AGENT_GROUP_OPERATION_SCHEMAS,AGENT_GROUP_OPERATION_TITLES[id as keyof typeof AGENT_GROUP_OPERATION_SCHEMAS],'agentGroups','Agent group run services','agent_group.manage','durable'),input_schema:schemas.input,output_schema:schemas.output,execution:{kind:'command' as const,tx:'core_owned' as const}})),
+  ...Object.entries(RUN_OPERATION_SCHEMAS).map(([id,schemas])=>({...httpAction(id as keyof typeof RUN_OPERATION_SCHEMAS,RUN_OPERATION_TITLES[id as keyof typeof RUN_OPERATION_SCHEMAS],'runs','Run command services','run.control','durable'),input_schema:schemas.input,output_schema:schemas.output,execution:{kind:'command' as const,tx:'core_owned' as const}})),
+  ...Object.entries(SESSION_OPERATION_SCHEMAS).map(([id,schemas])=>({...httpAction(id as keyof typeof SESSION_OPERATION_SCHEMAS,SESSION_OPERATION_TITLES[id as keyof typeof SESSION_OPERATION_SCHEMAS],'sessions','Conversation session services',id==='session.reflect'?'proposal.create':'session.write',id==='session.reflect'?'proposal':'durable'),...(id==='session.reflect'?{proposal_type:'memory_create',gate_class:'belief_reach' as const}:{}),input_schema:schemas.input,output_schema:schemas.output,execution:{kind:'command' as const,tx:'core_owned' as const}})),
+  ...Object.entries(SESSION_QUERY_SCHEMAS).map(([id,schemas])=>({...httpAction(id as keyof typeof SESSION_QUERY_SCHEMAS,SESSION_OPERATION_TITLES[id as keyof typeof SESSION_QUERY_SCHEMAS],'sessions','ConversationExecutionContextService.preflight','session.write','none'),input_schema:schemas.input,output_schema:schemas.output,execution:{kind:'query' as const,tx:'core_owned' as const}})),
   ...Object.entries(PROJECT_EXECUTION_SCHEMAS).map(([id,schemas])=>({...httpAction(id as keyof typeof PROJECT_EXECUTION_SCHEMAS,PROJECT_EXECUTION_TITLES[id as keyof typeof PROJECT_EXECUTION_SCHEMAS],'experiments','ExperimentDefinitionService / ExperimentRunService / ExperimentInterpretationService','experiment.command','durable'),input_schema:schemas.input,output_schema:schemas.output,execution:{kind:'command' as const,tx:'core_owned' as const}})),
-  ...Object.entries(PROJECT_INGRESS_SCHEMAS).map(([id,schemas])=>({...httpAction(id as keyof typeof PROJECT_INGRESS_SCHEMAS,PROJECT_INGRESS_TITLES[id as keyof typeof PROJECT_INGRESS_SCHEMAS],'projects','ProjectMonitoringService','project.monitoring.configure','durable'),input_schema:schemas.input,output_schema:schemas.output,execution:{kind:'command' as const,tx:'core_owned' as const}})),
+  ...Object.entries(PROJECT_INGRESS_SCHEMAS).map(([id,schemas])=>{const key=id as keyof typeof PROJECT_INGRESS_SCHEMAS;return {...httpAction(key,PROJECT_INGRESS_TITLES[key],'projects',key.startsWith('project.monitoring.')?'ProjectMonitoringService':key==='project.summary.feedback'?'RetrievalFeedbackService.record':'ProjectSourceProposalService',PROJECT_INGRESS_POLICY[key],key in PROJECT_INGRESS_PROPOSALS?'proposal':'durable'),...(key in PROJECT_INGRESS_PROPOSALS?{proposal_type:PROJECT_INGRESS_PROPOSALS[key as keyof typeof PROJECT_INGRESS_PROPOSALS],gate_class:'money' as const}:{}),input_schema:schemas.input,output_schema:schemas.output,execution:{kind:'command' as const,tx:'core_owned' as const}};}),
   ...Object.entries(PROJECT_FOLDER_SCHEMAS).map(([id,schemas])=>({...httpAction(id as keyof typeof PROJECT_FOLDER_SCHEMAS,PROJECT_FOLDER_TITLES[id as keyof typeof PROJECT_FOLDER_SCHEMAS],'projectFolders','PgProjectFolderRepository / ProjectFolderExecutionConfigRepository','project.folder.command','durable'),input_schema:schemas.input,output_schema:schemas.output,execution:{kind:'command' as const,tx:'core_owned' as const}})),
   ...Object.entries(PROJECT_FOLDER_IO_SCHEMAS).map(([id,schemas])=>({...httpAction(id as keyof typeof PROJECT_FOLDER_IO_SCHEMAS,PROJECT_FOLDER_IO_TITLES[id as keyof typeof PROJECT_FOLDER_IO_SCHEMAS],'projectFolders','Project Folder IO intent and Job owner',id==='project.folder.draft.save'?'project_folder.apply_patch':'project.folder.command','durable'),input_schema:schemas.input,output_schema:schemas.output,execution:{kind:'command' as const,tx:'core_owned' as const}})),
   ...Object.entries(PROJECT_CORPUS_SCHEMAS).map(([id,schemas])=>({...httpAction(id as keyof typeof PROJECT_CORPUS_SCHEMAS,PROJECT_CORPUS_TITLES[id as keyof typeof PROJECT_CORPUS_SCHEMAS],'projects','ProjectCorpusRepository','project.corpus.update','durable'),input_schema:schemas.input,output_schema:schemas.output,execution:{kind:'command' as const,tx:'core_owned' as const}})),
   ...Object.entries(PROJECT_SOURCE_PROPOSAL_SCHEMAS).map(([id,schemas])=>({...httpAction(id as keyof typeof PROJECT_SOURCE_PROPOSAL_SCHEMAS,PROJECT_SOURCE_PROPOSAL_TITLES[id as keyof typeof PROJECT_SOURCE_PROPOSAL_SCHEMAS],'projects','ProjectSourceProposalService.proposeBackfill','source.backfill.plan','proposal'),proposal_type:'source_backfill_start',gate_class:'money' as const,input_schema:schemas.input,output_schema:schemas.output,execution:{kind:'command' as const,tx:'core_owned' as const}})),
   {...httpAction('research.ask_ai','Queue a bounded Research notebook analysis','projectResearch','ProjectResearchAreaService.askAi','research.workspace.update','durable'),input_schema:ResearchAdhocInputSchema,output_schema:ResearchAdhocReceiptSchema,execution:{kind:'command' as const,tx:'core_owned' as const}},
   ...Object.entries(RESEARCH_EXECUTION_SCHEMAS).map(([id,schemas])=>({...httpAction(id as keyof typeof RESEARCH_EXECUTION_SCHEMAS,RESEARCH_EXECUTION_TITLES[id as keyof typeof RESEARCH_EXECUTION_SCHEMAS],'projectResearch','ProjectResearchOrchestrator','research.workspace.update','durable'),input_schema:schemas.input,output_schema:schemas.output,execution:{kind:'command' as const,tx:'core_owned' as const}})),
+  ...Object.entries(IMPORTED_HISTORY_EXTRACTION_SCHEMAS).map(([id,schemas])=>({...httpAction(id as keyof typeof IMPORTED_HISTORY_EXTRACTION_SCHEMAS,IMPORTED_HISTORY_EXTRACTION_TITLES[id as keyof typeof IMPORTED_HISTORY_EXTRACTION_SCHEMAS],'importedSessions','ImportedHistoryExtractionService.claim','project.management.write','proposal'),proposal_type:'project_brief_publish',gate_class:'direction' as const,input_schema:schemas.input,output_schema:schemas.output,execution:{kind:'command' as const,tx:'core_owned' as const}})),
+  ...Object.entries(PROJECT_SUMMARY_DRAFT_SCHEMAS).map(([id,schemas])=>({...httpAction(id as keyof typeof PROJECT_SUMMARY_DRAFT_SCHEMAS,PROJECT_SUMMARY_DRAFT_TITLES[id as keyof typeof PROJECT_SUMMARY_DRAFT_SCHEMAS],'projects',id==='project.summary.brief.request'?'RetrievalSearchService.buildBrief':'ProjectPublicSummaryGenerator.prepareDraft',id==='project.summary.brief.request'?'project.summary.brief.request':'project.management.write','durable'),input_schema:schemas.input,output_schema:schemas.output,execution:{kind:'command' as const,tx:'core_owned' as const}})),
+  ...Object.entries(RESEARCH_CONTROL_SCHEMAS).map(([id,schemas])=>{const key=id as keyof typeof RESEARCH_CONTROL_SCHEMAS;return {...httpAction(key,RESEARCH_CONTROL_TITLES[key],key==='project.corpus.backfill_sources'?'projects':'projectResearch',key==='project.corpus.backfill_sources'?'ProjectCorpusRepository.backfillFromSources':'ProjectResearchOrchestrator / owning Research services',RESEARCH_CONTROL_POLICY[key],'durable'),input_schema:schemas.input,output_schema:schemas.output,execution:{kind:'command' as const,tx:'core_owned' as const}};}),
   ...Object.entries(RESEARCH_WORKSPACE_SCHEMAS).map(([id,schemas])=>({...httpAction(id as keyof typeof RESEARCH_WORKSPACE_SCHEMAS,RESEARCH_WORKSPACE_TITLES[id as keyof typeof RESEARCH_WORKSPACE_SCHEMAS],'projectResearch','ProjectResearchRepository / ProjectResearchAreaService','research.workspace.update','durable'),input_schema:schemas.input,output_schema:schemas.output,execution:{kind:'command' as const,tx:'core_owned' as const}})),
   {...httpAction('knowledge.candidate.extract','Queue Knowledge Candidate extraction','knowledgePromotion','KnowledgeExtractionService.queue','inquiry.knowledge.promote','durable'),input_schema:KnowledgeExtractionInputSchema,output_schema:KnowledgeExtractionReceiptSchema,execution:{kind:'command' as const,tx:'core_owned' as const}},
   ...Object.entries(KNOWLEDGE_REVIEW_SCHEMAS).map(([id,schemas])=>({...httpAction(id as keyof typeof KNOWLEDGE_REVIEW_SCHEMAS,KNOWLEDGE_REVIEW_TITLES[id as keyof typeof KNOWLEDGE_REVIEW_SCHEMAS],'knowledgePromotion','KnowledgePromotionCandidateService / PgKnowledgeRepository',id==='knowledge.candidate.decide'?'proposal.create':id.startsWith('knowledge.evidence.')?'source.item_update':'inquiry.knowledge.promote','durable'),input_schema:schemas.input,output_schema:schemas.output,execution:{kind:'command' as const,tx:'core_owned' as const}})),
@@ -620,12 +634,12 @@ export const SYSTEM_ACTION_REGISTRY = [
   gatedProposalAction("inquiry.promote_knowledge", "Propose promoting a concluded Inquiry round to Knowledge", "inquiry", "KnowledgePromotionCandidateService.proposeFromThreadForAgent", "inquiry.knowledge.promote", "knowledge_create", "exposure"),
   ...(["list", "records", "read"] as const).map(operation => agentAction(`project.reading.${operation}`, {list:"Find this Project's Reading materials by title",records:"List retained originals and existing analyses for a Reading material",read:"Read a retained Reading original or analysis; copy IDs from project.reading.records"}[operation], "sources", "ProjectReadingTools", "project.reading.read", "none", {resource_type:"project",resource_id_fallback:"project_or_run",check_action_approval_grant:false})),
   agentAction("research.read_result","Read bound research result","projectResearch","ResearchProblemResultService.read","research.result.read","none",{resource_type:"project_operation",resource_id_input_field:"operation_id",resource_id_fallback:"run",check_action_approval_grant:false},"research"),
-  agentAction("research.adopt_result","Assess research result in Inquiry Verify","projectResearch","ResearchProblemResultService.adopt","research.result.adopt","durable",{resource_type:"project_operation",resource_id_input_field:"operation_id",resource_id_fallback:"run",check_action_approval_grant:false},"research"),
+  {...agentAction("research.adopt_result","Assess research result in Inquiry Verify","projectResearch","ResearchProblemResultService.adopt","research.result.adopt","durable",{resource_type:"project_operation",resource_id_input_field:"operation_id",resource_id_fallback:"run",check_action_approval_grant:false},"research"),output_schema:RESEARCH_AGENT_OPERATION_SCHEMAS["research.adopt_result"].output,execution:{kind:"command" as const,tx:"core_owned" as const}},
   // Direct execution, no proposal gate. The Thread was already
   // human-accepted at creation, so starting acquisition on it is execution,
   // not an agent-drafted structure/content write. Idempotency guards in the
   // acquisition service are the confirmation.
-  agentAction("research.start_acquisition", "Start tracked research acquisition", "projectResearch", "ResearchAcquisitionService.startAcquisition", "research.acquisition.start", "durable", { resource_type: "inquiry_thread", resource_id_input_field: "thread_id", resource_id_fallback: "run", check_action_approval_grant: false }, "research"),
+  {...agentAction("research.start_acquisition", "Start tracked research acquisition", "projectResearch", "ResearchAcquisitionService.startAcquisition", "research.acquisition.start", "durable", { resource_type: "inquiry_thread", resource_id_input_field: "thread_id", resource_id_fallback: "run", check_action_approval_grant: false }, "research"),output_schema:RESEARCH_AGENT_OPERATION_SCHEMAS["research.start_acquisition"].output,execution:{kind:"command" as const,tx:"core_owned" as const}},
   // The symmetric stop for the action above. Direct execution for the same
   // reason: a stop that waits on a proposal review is not a stop.
   action("research.list_operations", "List this Project's research Operations with their ids", "projectResearch", "ProjectOperationService.list", "research.operation.list", "none", { policyResource: { resource_type: "project", resource_id_fallback: "project_or_run", check_action_approval_grant: false }, agentToolSurface: "research", inputSchema: proposalInputs["research.list_operations"] }),
@@ -669,6 +683,38 @@ function action<const Id extends string>(
     policy_adapter: options.policyAdapter ?? "declared_resource",
     ...(options.policyResource ? { policy_resource: options.policyResource } : {}),
   };
+}
+
+/** The owning module of a system settings / tool configuration operation. */
+function settingsOwningModule(id:string):string{
+  if(id.startsWith('provider.'))return 'providers';
+  if(id.startsWith('network_profile.'))return 'networkProfiles';
+  if(id.startsWith('acp_agent.'))return 'acpAgents';
+  if(id.startsWith('official_plugin.'))return 'plugins';
+  if(id==='system.backup.create')return 'backups';
+  if(id.startsWith('source_catalog.'))return 'sources';
+  if(id.startsWith('deployment.'))return 'deployment';
+  if(id.startsWith('notification.'))return 'notifications';
+  return 'system';
+}
+/** The policy action a settings block operation is enforced under. */
+function settingsPolicyAction(id:string):PolicyActionId{
+  if(id==='provider.task_policy.set'||id==='provider.task_policy.delete'||id==='provider.subscription_quota_policy.set')return 'provider.space_policy.manage';
+  if(id.startsWith('provider.'))return 'provider.manage';
+  if(id.startsWith('network_profile.'))return 'network_profile.manage';
+  if(id.startsWith('official_plugin.'))return 'official_plugin.manage';
+  if(id.startsWith('deployment.'))return 'deployment.job.manage';
+  if(id==='notification.webhook.dispatch')return 'notification.webhook.dispatch';
+  return 'instance.settings.manage';
+}
+
+/** The policy action a Host block operation is enforced under. */
+function hostPolicyAction(id:string):PolicyActionId{
+  if(id==='host.workspace.register')return 'host.workspace.register';
+  if(id==='host.ordinary_tool.account.logout')return 'host.account.manage';
+  if(id==='agent.host_state.reset')return 'agent.host_state.reset';
+  if(id.startsWith('host.location.')||id.startsWith('imported_session.'))return 'host.import.manage';
+  return 'host.manage';
 }
 
 function httpAction<const Id extends string>(

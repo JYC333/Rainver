@@ -109,7 +109,8 @@ CLI subscription logins (a host's copy of Claude Code or Codex running on its
 own login, not bound to a Provider) are rationed by a Space policy rather than
 a spend cap: `subscription_quota { warn_pct: 70, reserve_pct: 85 }`
 (`providers/subscriptionQuotaPolicy.ts`, `GET|PUT
-/api/v1/providers/subscription-quota-policy`, owner/admin to change, shown on
+/api/v1/providers/subscription-quota-policy`, owner/admin to change through
+`provider.subscription_quota_policy.set`, shown on
 the Providers page). Past the reserve line Agent-triggered Room turns wait for
 the window; a person's turns never do (`modules/rooms.md`, "Subscription quota
 gate").
@@ -295,28 +296,37 @@ The Usage page's subscription tab includes owner-only API plan quota, separate
 from the historical Token/cost ledger and CLI account pools. `GET
 /api/v1/providers/plan-usage` lists supported enabled API-key Providers owned by
 the viewer with an enabled grant and active membership in the current Space;
-it never contacts a vendor. `POST /api/v1/providers/:configId/plan-usage` makes
-one read-only quota request using that Provider's primary credential.
+it never contacts a vendor. `POST /api/v1/providers/:configId/plan-usage` is
+`provider.plan_usage.refresh`, a system command (`SYSTEM_ACTIONS.md` "System
+settings and tool configuration commands"): it answers a receipt, the worker
+makes one read-only quota request using that Provider's primary credential
+after commit, and the snapshot is released only by the issuer's status read
+`GET /api/v1/system/commands/:commandId`.
 Sharing permission to invoke a Provider does not share its account quota.
 
 `providers/planUsage/` owns endpoint selection, vendor parsing and the read
 service. It reuses the encrypted Credential resolver and active grant's
-NetworkProfile; there is no new credential store, table, migration, scheduler,
-persistent quota cache, model call, pool rotation or pool health update. The quota page automatically queries every listed API Provider on entry and with
+NetworkProfile; there is no new credential store, scheduler, quota cache table,
+model call, pool rotation or pool health update. The settled snapshot lives
+only in the command's own intent row (`system_command_intents`, the settings
+block's durable command owner) for the issuer's status read. The quota page automatically queries every listed API Provider on entry and with
 its shared "Refresh all quotas" action. At most three API requests run at once
 within the section, each card updating as its own answer arrives, and one
 account's failure does not stop the remaining accounts; a card stops showing
-refresh activity once its own answer settles. Concurrent queries for
-the same owner, Space, Provider, key revision and NetworkProfile share one
-vendor request on the server; nothing is cached after it settles. After the
+refresh activity once its own answer settles. A second refresh by the
+same person for the same Provider and Space while one is active is refused
+(409 `system_command_busy`, with the active command's id) instead of a second
+vendor request; inside one worker, concurrent queries for the same key revision
+still share one request. After the
 vendor answers, the server re-reads the caller's grant and refuses (409) if the
 Provider, key revision, base URL or effective NetworkProfile changed meanwhile —
 a different profile id (a Space grant's profile changes without moving the
 Provider's revision) or the same profile edited or disabled in place (its
-`updated_at`, which every profile edit moves). The route then resolves each
-HTTP caller's own session again, so a caller who joined a shared request is
-judged separately: a session signed out or an account disabled during the
-vendor wait gets the 401 a new request would, not the quota. Existing
+`updated_at`, which every profile edit moves). The worker's settle step then rechecks the
+person's live actor and Provider authority before recording the snapshot, and
+every status read resolves the reader's own session: a session signed out
+during the vendor wait gets the 401 a new request would, and an account
+disabled meanwhile leaves the command `needs_attention` with no snapshot kept. Existing
 same-page readings remain visible with their measured time while refreshing;
 returning to the page always queries again. No browser persistent quota cache or
 background interval is used. Results remain only in the current page. A failed query clears that account's

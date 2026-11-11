@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import * as protocol from "@rainver/protocol";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import { getDbPool } from "../../db/pool.js";
-import { HttpError, jsonBody, params, resolveIdentity, sendRouteError } from "../routeUtils/common.js";
+import { HttpError, params, resolveIdentity, sendRouteError } from "../routeUtils/common.js";
 import { RoomDiscussionService } from "./discussionService.js";
 
 /**
@@ -14,17 +14,6 @@ import { RoomDiscussionService } from "./discussionService.js";
 export function registerDiscussionRoutes(app: FastifyInstance, context: ModuleContext): void {
   const base = "/api/v1/rooms/:roomId/conversations/:sessionId/discussions";
 
-  app.post(base, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const body = protocol.OpenRoomDiscussionRequestSchema.parse(jsonBody(request));
-      const opened = await service(context).open(identity, roomId(request), sessionId(request), body);
-      return reply.code(201).send(protocol.OpenRoomDiscussionResponseSchema.parse(opened));
-    } catch (error) {
-      return sendDiscussionError(reply, error);
-    }
-  });
 
   app.get(base, async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -50,30 +39,7 @@ export function registerDiscussionRoutes(app: FastifyInstance, context: ModuleCo
     }
   });
 
-  app.post(`${base}/:discussionId/stop`, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(protocol.RoomDiscussionSchema.parse(
-        await service(context).stop(identity, roomId(request), sessionId(request), discussionId(request)),
-      ));
-    } catch (error) {
-      return sendDiscussionError(reply, error);
-    }
-  });
 
-  app.post(`${base}/:discussionId/extend`, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const body = protocol.ExtendRoomDiscussionRequestSchema.parse(jsonBody(request));
-      return reply.send(protocol.RoomDiscussionSchema.parse(
-        await service(context).extend(identity, roomId(request), sessionId(request), discussionId(request), body.rounds),
-      ));
-    } catch (error) {
-      return sendDiscussionError(reply, error);
-    }
-  });
 }
 
 function service(context: ModuleContext): RoomDiscussionService {

@@ -695,3 +695,42 @@ in-process calls are not HTTP payloads. Human set_status reason remains an
 accepted input/fingerprint field, not a persisted ProjectWork event reason,
 matching the pre-migration human writer. The existing Agent event reason is
 still recorded. No new human attribution or event mechanism is introduced.
+
+## Live Project read invalidation
+
+`projects/liveUpdates.ts` serves an authenticated, Project-reader SSE at
+`GET /api/v1/projects/:projectId/updates/stream`. Frames are only ready/changed/
+denied: they carry no work content, object identifiers, counts or revisions.
+Every subscriber uses its normal readers after an invalidation. Identity and
+Project authority are checked on notification and the 30-second connection
+heartbeat; denial closes the stream. Notifications are coalesced and slow clients
+reconnect rather than accumulating output. The stream shares one PostgreSQL
+LISTEN client per database pool, releases it when its last viewer leaves, and
+ends on listener failure. Initial ready/reconnect triggers a fresh read, so no
+historical event replay is needed.
+
+Migration `0019_project_live_invalidation` emits transaction-scoped PostgreSQL
+notifications for Tasks, workspace generations/batches/integrations, Run status,
+Project work events, Project metadata/membership and the built-in attention sources (proposals,
+Inquiry candidates, decisions, operational activity, Project memory and Folders).
+Rollbacks emit nothing.
+Run output/token/heartbeat-only writes are excluded. A Project reassignment
+invalidates both old and new Project scopes. No background query polls data.
+Apply the appended migration through the normal migration runner; no startup
+DDL or independent writer path is introduced.
+
+`useProjectLiveRefresh` shares one browser SSE connection per session epoch,
+Space and Project between navigation attention, Pulse, Board and workspaces.
+Bursts collapse into one read per subscriber; overlapping invalidations queue
+one catch-up read. Hidden tabs disconnect, return/focus revalidate, failures
+reconnect with capped jittered backoff and authorization refusals stop retry.
+There is no per-keystroke request and these surfaces no longer poll every five
+seconds. Existing review-decision notifications still refresh attention locally.
+
+Reuse / Dependency Check:
+- Existing capability: SSE headers/reader, Project read gate and session cleanup.
+- Installed dependency: pg and PostgreSQL's transactional LISTEN/NOTIFY.
+- External option: n/a; domain invalidation uses the existing database, not a broker.
+- Chosen approach: extend these mechanisms with content-free Project notifications.
+- Why: catches Agent, UI and background writes after commit across server processes
+  without repeated full-data reads or a new authority/storage subsystem.

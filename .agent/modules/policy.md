@@ -109,6 +109,10 @@ fail-closed defence-in-depth. `current_enforcement_point="not_implemented"`. Not
 to any business code. `computeDecision` (`gateway.ts`) always denies reserved actions
 (`policy_action_not_implemented`) regardless of registry `default_decision`. Not full RBAC/ABAC — they express intent and default risk.
 
+Human Note link/unlink/jot routes enforce `note.link.create` (low risk, allow,
+mandatory fail-closed audit) through `knowledge/noteLinkPolicy.ts`. Canonical
+object/Project access gates remain mandatory; no Agent capability is added.
+
 ### Wired actions
 
 | Action | Resource | Risk | Default Decision | Enforcement |
@@ -248,7 +252,6 @@ reserved actions. The registry is **not** full RBAC/ABAC.
 | `memory.promote_shared` | memory | high | require_approval |
 | `tool_binding.enable` | tool_binding | high | require_approval |
 | `evidence.export` | evidence | high | require_approval |
-| `note.link.create` | note | low | deny |
 | `deployment.propose` | deployment | high | require_approval |
 | `deployment.execute` | deployment | **critical** | require_approval |
 

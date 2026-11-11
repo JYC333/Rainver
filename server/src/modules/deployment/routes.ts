@@ -2,7 +2,6 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import {
   DeploymentDrainResponseSchema,
   DeploymentHeartbeatRequestSchema,
-  DeploymentJobCreateSchema,
   DeploymentStageEventRequestSchema,
 } from "@rainver/protocol";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
@@ -11,6 +10,7 @@ import { getDbPool } from "../../db/pool.js";
 import { requireInstanceAdmin } from "../routeUtils/access.js";
 import { jsonBody, resolveIdentity, sendRouteError } from "../routeUtils/common.js";
 import { DeploymentService } from "./service.js";
+import { registerOperationAdapters } from "../systemActions/operations/routeAdapter.js";
 
 /**
  * Two entries, both without caller arguments beyond a job type (B43):
@@ -21,6 +21,11 @@ import { DeploymentService } from "./service.js";
  *   work and reports stages; it can never create a job.
  */
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
+  // The administrator's job commands (`operations.ts`), same URLs and bodies.
+  registerOperationAdapters(app, context.config, [
+    { method: "POST", url: "/api/v1/deployments/jobs", operation: "deployment.job.create" },
+    { method: "POST", url: "/api/v1/deployments/jobs/:jobId/cancel", operation: "deployment.job.cancel", params: { jobId: "job_id" } },
+  ]);
   function service(reply: FastifyReply): DeploymentService | null {
     if (!context.config.databaseUrl) {
       reply.code(503).send({ detail: "SERVER_DATABASE_URL is required for deployment jobs" });
@@ -79,35 +84,12 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/deployments/jobs", async (request, reply) => {
-    try {
-      const admin = await requireAdmin(request, reply);
-      if (!admin) return reply;
-      const parsed = DeploymentJobCreateSchema.safeParse(jsonBody(request));
-      if (!parsed.success) return reply.code(422).send({ detail: "job_type must be update or check_update" });
-      return reply.code(201).send(await admin.deployment.createJob(parsed.data.job_type, admin.userId));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
   app.get("/api/v1/deployments/jobs/:jobId", async (request, reply) => {
     try {
       const admin = await requireAdmin(request, reply);
       if (!admin) return reply;
       const { jobId } = request.params as { jobId: string };
       return reply.send(await admin.deployment.getJobDetail(jobId));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.post("/api/v1/deployments/jobs/:jobId/cancel", async (request, reply) => {
-    try {
-      const admin = await requireAdmin(request, reply);
-      if (!admin) return reply;
-      const { jobId } = request.params as { jobId: string };
-      return reply.send(await admin.deployment.cancelJob(jobId));
     } catch (error) {
       return sendRouteError(reply, error);
     }

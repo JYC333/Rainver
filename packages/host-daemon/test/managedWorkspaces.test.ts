@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -240,4 +240,68 @@ describe('isolated cache launch and retirement',()=>{
   expect(frames.filter(f=>f.type==='output').map(f=>f.chunk).join('')).toContain(path);
   expect(await archiveRuntimeProfileContainer(AGENT_ID,'workspace',workspaceId)).toBe(true);expect(existsSync(path)).toBe(false);
  });
+});
+
+
+describe("archived CLI cache eviction", () => {
+  async function seed(profile: string) {
+    const home = join(profile, "codex_cli", "ambient", ".codex");
+    for (const cache of ["cache/remote_plugin_catalog", "cache/codex_apps_tools", "plugins/cache/openai-curated-remote"]) {
+      await mkdir(join(home, cache), { recursive: true });
+      await writeFile(join(home, cache, "download.bin"), "rebuildable");
+    }
+    for (const file of ["sessions/history.jsonl", "skills/custom/SKILL.md", "plugins/installed.json",
+      "plugins/cache/local-only/plugin.js", "cache/custom/keep.txt", "state.sqlite", "state.sqlite-wal", "auth.json"]) {
+      await mkdir(join(home, file, ".."), { recursive: true });
+      await writeFile(join(home, file), "preserved");
+    }
+    return home;
+  }
+
+  it("evicts downloads on archive and restores history, registration and database bytes", async () => {
+    const profile = runtimeProfileContainerPath(AGENT_ID, "direct", USER_ID);
+    const home = await seed(profile);
+    await archiveAgentProfiles(AGENT_ID);
+    await restoreManagedWorkspace(AGENT_ID, { kind: "direct", id: USER_ID }, false);
+    expect(existsSync(join(home, "cache/remote_plugin_catalog"))).toBe(false);
+    expect(existsSync(join(home, "plugins/cache/openai-curated-remote"))).toBe(false);
+    for (const file of ["sessions/history.jsonl", "skills/custom/SKILL.md", "plugins/installed.json",
+      "plugins/cache/local-only/plugin.js", "cache/custom/keep.txt", "state.sqlite", "state.sqlite-wal", "auth.json"]) {
+      expect(await readFile(join(home, file), "utf8")).toBe("preserved");
+    }
+  });
+
+  it("backfills recent archives without trimming live profiles or user workspaces", async () => {
+    const live = runtimeProfileContainerPath(AGENT_ID, "direct", USER_ID);
+    const archived = `${live}.removed-${new Date(Date.now() - 10000).toISOString().replace(/:/g, "-")}`;
+    const liveHome = await seed(live), oldHome = await seed(archived);
+    const cwd = await ensureManagedWorkspace(AGENT_ID, { kind: "direct", id: USER_ID });
+    const fakeCache = join(cwd, "codex_cli/ambient/.codex/cache");
+    await mkdir(fakeCache, { recursive: true });
+    await writeFile(join(fakeCache, "user.txt"), "user work");
+    await archiveManagedWorkspace(AGENT_ID, { kind: "direct", id: USER_ID }, true);
+    await seed(live);
+    const passes = [sweepManagedWorkspaceArchives(), sweepManagedWorkspaceArchives()];
+    expect(passes[0]).toBe(passes[1]);
+    expect(await passes[0]).toBe(0);
+    expect(existsSync(join(oldHome, "cache/remote_plugin_catalog"))).toBe(false);
+    expect(existsSync(join(liveHome, "cache/remote_plugin_catalog/download.bin"))).toBe(true);
+    await restoreManagedWorkspace(AGENT_ID, { kind: "direct", id: USER_ID }, true);
+    expect(await readFile(join(fakeCache, "user.txt"), "utf8")).toBe("user work");
+  });
+
+  it("does not follow cache or HOME symlinks into another profile", async () => {
+    const outside = join(stateDir, "live-home");
+    await mkdir(join(outside, "plugins/cache"), { recursive: true });
+    await writeFile(join(outside, "plugins/cache/keep"), "active");
+    const live = runtimeProfileContainerPath(AGENT_ID, "direct", USER_ID);
+    const archived = `${live}.removed-${new Date().toISOString().replace(/:/g, "-")}`;
+    const runtime = join(archived, "codex_cli");
+    await mkdir(join(runtime, "home-link"), { recursive: true });
+    await symlink(outside, join(runtime, "home-link/.codex"));
+    await mkdir(join(runtime, "cache-link/.codex/plugins"), { recursive: true });
+    await symlink(join(outside, "plugins/cache"), join(runtime, "cache-link/.codex/plugins/cache"));
+    await sweepManagedWorkspaceArchives();
+    expect(await readFile(join(outside, "plugins/cache/keep"), "utf8")).toBe("active");
+  });
 });

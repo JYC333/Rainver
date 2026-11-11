@@ -388,8 +388,10 @@ export class PgRoomRosterRepository {
     user_id: string;
     limit: number;
     offset: number;
+    /** One exact invitation, still only among those this person is a party to. */
+    invitation_id?: string;
   }): Promise<{ items: RoomInvitationRecord[]; total: number }> {
-    const params: unknown[] = [input.space_id, input.room_id, input.user_id];
+    const params: unknown[] = [input.space_id, input.room_id, input.user_id, input.invitation_id ?? null];
     const total = await this.db.query<{ total: string }>(
       `SELECT count(*)::text AS total
          FROM room_user_invitations invitation
@@ -401,7 +403,8 @@ export class PgRoomRosterRepository {
                WHERE approval.space_id = invitation.space_id
                  AND approval.invitation_id = invitation.id
                  AND approval.owner_user_id = $3
-            ))`,
+            ))
+          AND ($4::varchar IS NULL OR invitation.id = $4::varchar)`,
       params,
     );
     const rows = await this.db.query<RoomInvitationRecord>(
@@ -416,8 +419,9 @@ export class PgRoomRosterRepository {
                  AND approval.invitation_id = invitation.id
                  AND approval.owner_user_id = $3
             ))
+          AND ($4::varchar IS NULL OR invitation.id = $4::varchar)
         ORDER BY invitation.created_at DESC, invitation.id DESC
-        LIMIT $4 OFFSET $5`,
+        LIMIT $5 OFFSET $6`,
       [...params, input.limit, input.offset],
     );
     return { items: rows.rows, total: Number(total.rows[0]?.total ?? 0) };

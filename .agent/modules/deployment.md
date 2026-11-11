@@ -138,12 +138,16 @@ is the daemon's, not the deployer's own).
 | Route | Effect |
 |---|---|
 | `GET /api/v1/deployments/status` | observations, the non-terminal job, the last terminal job, and four derived answers: `update_available`, `updates_supported`, `deployer_online`, `deployer_behind` |
-| `POST /api/v1/deployments/jobs` | create `update` or `check_update`; 409 when one is already queued or running; 422 for an `update` outside production; 503 for an `update` with no deployer reporting |
+| `POST /api/v1/deployments/jobs` | `deployment.job.create` (keyed operation, 201): create `update` or `check_update`; 409 when one is already queued or running, or (`deployer_offline`) for an `update` with no deployer reporting; 422 for an `update` outside production or any other body |
 | `GET /api/v1/deployments/jobs` | recent jobs |
 | `GET /api/v1/deployments/jobs/:id` | job plus its events |
-| `POST /api/v1/deployments/jobs/:id/cancel` | only from `queued` |
+| `POST /api/v1/deployments/jobs/:id/cancel` | `deployment.job.cancel` (keyed operation): only from `queued`, 409 otherwise |
 
-Creating the row *is* the ADR 0017 §1 human approval. No Proposal, no Agent,
+Both commands go through the operation core (`deployment/operations.ts`): an
+Idempotency-Key is required and a repeat replays the recorded job instead of
+creating another; a non-admin gets the hidden 404 (the GET routes keep 403);
+the instance-admin check is repeated in the transaction and before a replay
+is released. Creating the row *is* the ADR 0017 §1 human approval. No Proposal, no Agent,
 automation, job, or scheduler path can create one.
 
 **Internal routes**, internal token only: `POST /internal/deployment/heartbeat`

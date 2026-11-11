@@ -4,7 +4,7 @@ import { HostDaemonFrameSchema } from "../src/hostWire.js";
 
 it("preserves named quota windows through both host wire and public response", () => {
   const quota = { available: true, session_pct: null, session_resets: null, week_pct: null, week_resets: null, error: null,
-    windows: [{ id: "seven_day_fable", label: "Fable weekly", used_pct: 90, resets: null }],
+    windows: [{ id: "seven_day_fable", scope: "model", label: "Fable weekly", used_pct: 90, resets: null }],
   };
   const wire = HostDaemonFrameSchema.parse({ type: "usage_probe_result", request_id: "request-1", quota });
   expect(wire).toMatchObject({ quota: { windows: quota.windows } });

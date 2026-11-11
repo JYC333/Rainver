@@ -1,4 +1,5 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
+import { AgentMutationError } from "./agentMutationError.js";
 import { HttpError } from "../routeUtils/common.js";
 import type { PgAgentRepository } from "./repository.js";
 import {
@@ -34,10 +35,10 @@ export function jsonBody(request: FastifyRequest): Record<string, unknown> {
   try {
     parsed = JSON.parse(text) as unknown;
   } catch {
-    throw new HttpError(422, "Invalid JSON body");
+    throw new AgentMutationError(422, "Invalid JSON body");
   }
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new HttpError(422, "JSON object body is required");
+    throw new AgentMutationError(422, "JSON object body is required");
   }
   return parsed as Record<string, unknown>;
 }
@@ -61,7 +62,7 @@ export async function applyAgentIdentityPatch(
     patch.description = nullableBodyString(body, "description");
   }
   if (body.visibility !== undefined || body.access_level !== undefined || body.grants !== undefined) {
-    throw new HttpError(422, "Use the content-access API to update agent permissions");
+    throw new AgentMutationError(422, "Use the content-access API to update agent permissions");
   }
   if (Object.hasOwn(body, "role_instruction")) {
     patch.roleInstruction = nullableBodyString(body, "role_instruction");
@@ -104,7 +105,7 @@ export function configPatch(
 export function parseExecutionConstraints(value: unknown): AgentExecutionConstraints {
   const parsed = AgentExecutionConstraintsSchema.safeParse(value ?? {});
   if (!parsed.success) {
-    throw new HttpError(422, `Invalid execution_constraints: ${parsed.error.issues[0]?.message ?? "invalid value"}`);
+    throw new AgentMutationError(422, `Invalid execution_constraints: ${parsed.error.issues[0]?.message ?? "invalid value"}`);
   }
   return parsed.data;
 }
@@ -112,7 +113,7 @@ export function parseExecutionConstraints(value: unknown): AgentExecutionConstra
 function parseExecutionConstraintsPatch(value: unknown): AgentExecutionConstraintsPatch {
   const parsed = AgentExecutionConstraintsPatchSchema.safeParse(value);
   if (!parsed.success) {
-    throw new HttpError(422, `Invalid execution_constraints: ${parsed.error.issues[0]?.message ?? "invalid value"}`);
+    throw new AgentMutationError(422, `Invalid execution_constraints: ${parsed.error.issues[0]?.message ?? "invalid value"}`);
   }
   return parsed.data;
 }
@@ -162,13 +163,13 @@ export function rejectRetiredAgentDeploymentFields(body: Record<string, unknown>
   ];
   const retired = retiredFields.find((field) => Object.hasOwn(body, field));
   if (retired) {
-    throw new HttpError(422, `${retired} is Runtime Profile authority; configure it through the Runtime Profile API`);
+    throw new AgentMutationError(422, `${retired} is Runtime Profile authority; configure it through the Runtime Profile API`);
   }
 }
 
 export function requiredBodyString(body: Record<string, unknown>, key: string): string {
   const value = nullableBodyString(body, key);
-  if (!value) throw new HttpError(422, `${key} is required`);
+  if (!value) throw new AgentMutationError(422, `${key} is required`);
   return value;
 }
 
@@ -176,7 +177,7 @@ export function nullableBodyString(body: Record<string, unknown>, key: string): 
   const value = body[key];
   if (value === null || value === undefined) return null;
   if (typeof value !== "string") {
-    throw new HttpError(422, `${key} must be a string or null`);
+    throw new AgentMutationError(422, `${key} must be a string or null`);
   }
   const normalized = value.trim();
   return normalized ? normalized : null;
@@ -199,7 +200,7 @@ function nullableRecordBody(
   if (typeof value === "object" && !Array.isArray(value)) {
     return value as Record<string, unknown>;
   }
-  throw new HttpError(422, `${key} must be an object or null`);
+  throw new AgentMutationError(422, `${key} must be an object or null`);
 }
 
 export function optionalArrayBody(
@@ -210,7 +211,7 @@ export function optionalArrayBody(
   const value = body[key];
   if (value === null || value === undefined) return null;
   if (Array.isArray(value)) return value;
-  throw new HttpError(422, `${key} must be an array or null`);
+  throw new AgentMutationError(422, `${key} must be an array or null`);
 }
 
 export function recordValue(value: unknown): Record<string, unknown> | null {

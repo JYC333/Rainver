@@ -39,7 +39,7 @@ export interface RunGitOptions {
    */
   maxOutputBytes?: number;
   /** Written to stdin, then stdin is closed (e.g. `cat-file --batch-check`). Without it stdin is ignored. */
-  input?: string;
+  input?: string | Uint8Array;
   /**
    * Stream stdout to the caller instead of holding it: each chunk is handed
    * over and not kept (`stdout` stays empty). Returning false stops the

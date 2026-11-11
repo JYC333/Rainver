@@ -132,3 +132,25 @@ it('replaces the retained-branch cleanup text once the branch was reclaimed',asy
  expect(screen.queryByText(/saved work retained/)).not.toBeInTheDocument()
  expect(screen.queryByRole('button',{name:'Reclaim now'})).not.toBeInTheDocument()
 })
+it('shows an explicit discard as reclaimed without claiming it reached the target',async()=>{
+ const discarded={...run,workspace_changes:[workspaceChange({state:'abandoned',cleanup_state:'cleaned',retention:{state:'reclaimed',reason:'discarded',reclaim_after:null,hold_until:null,reclaimed_at:'2026-11-08T12:20:00.000Z',assessed_at:null,retained_refs:0,unclaimed_refs:0}})]}
+ vi.mocked(runsApi.get).mockResolvedValue(discarded)
+ render(<MemoryRouter><WorkspaceChangesCard run={discarded}/></MemoryRouter>)
+ expect(await screen.findByText(/Discarded by request; workspace and branch reclaimed/)).toBeInTheDocument()
+ expect(screen.queryByText(/content is in the target/)).not.toBeInTheDocument()
+ expect(screen.queryByText(/saved work retained/)).not.toBeInTheDocument()
+})
+it('never labels an empty open batch or externally adopted work as saved privately',async()=>{
+ const {workspaceChangeLabelKey}=await import('./WorkspaceChangeList')
+ expect(workspaceChangeLabelKey(workspaceChange({state:'open',source_commit:'a'.repeat(40),base_commit:'a'.repeat(40)}))).toBe('workspace_ui.execution.no_saved_difference')
+ expect(workspaceChangeLabelKey(workspaceChange({state:'open'}))).toBe('workspace_ui.execution.state.open')
+ expect(workspaceChangeLabelKey(workspaceChange({state:'no_changes',integration_detail:{adoption_proof:'target_paths_match'}}))).toBe('workspace_ui.execution.in_target')
+ expect(workspaceChangeLabelKey(workspaceChange({state:'abandoned',integration_detail:{missing_acknowledged:true}}))).toBe('workspace_ui.execution.missing_closed')
+ expect(workspaceChangeLabelKey(workspaceChange({state:'open',retention:{state:'missing',reason:'branch_missing',reclaim_after:null,hold_until:null,reclaimed_at:null,assessed_at:null,retained_refs:0,unclaimed_refs:0}}))).toBe('workspace_ui.execution.retention.state.missing')
+ const reclaimed={state:'reclaimed' as const,reason:'merged',reclaim_after:null,hold_until:null,reclaimed_at:'2026-11-08T12:00:00Z',assessed_at:null,retained_refs:0,unclaimed_refs:0}
+ const empty={...run,workspace_changes:[workspaceChange({state:'open',source_commit:'a'.repeat(40),base_commit:'a'.repeat(40),retention:reclaimed})]}
+ vi.mocked(runsApi.get).mockResolvedValue(empty)
+ render(<MemoryRouter><WorkspaceChangesCard run={empty}/></MemoryRouter>)
+ expect(await screen.findByText('No saved difference')).toBeInTheDocument()
+ expect(screen.queryByText('Saved privately')).not.toBeInTheDocument()
+})

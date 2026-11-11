@@ -3,7 +3,8 @@ import { isNotFoundError } from '../../lib/utils'
 import ProjectDetailPage from './ProjectDetailPage'
 import {useSpace} from '../../contexts/SpaceContext'
 import {registerInMemoryResidue,sessionEpoch} from '../../lib/sessionResidue'
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import {useProjectLiveRefresh} from '../../hooks/useProjectLiveRefresh'
 import { useAppTranslation } from '../../i18n'
 import { Link, NavLink, Outlet, useLocation, useParams } from 'react-router-dom'
 import { projectsApi } from '../../api/client'
@@ -61,12 +62,13 @@ export default function ProjectAreaLayout() {
   const [project, setProject] = useState<Project | null>(null)
   const [overview, setOverview] = useState<ProjectOverview | null>(null)
 
+  const overviewVersion=useRef(0)
   useEffect(() => {
     // This layout stays mounted across every Area sub-route (Outlet swaps
     // only the child) — resolving an attention item on one Area and
     // navigating to another must refresh the sidebar's attention badge, not
     // just wait for the projectId itself to change.
-    let live=true;const epoch=sessionEpoch()
+    let live=true;const epoch=sessionEpoch(),version=++overviewVersion.current
     projectsApi.get(projectId).then(async metadata => {
       if (metadata.current_user_can_read === false) return [metadata, null] as const
       try { return [metadata, await projectsApi.getOverview(projectId)] as const }
@@ -79,36 +81,35 @@ export default function ProjectAreaLayout() {
         if(!live||epoch!==sessionEpoch())return
         setLoadedScope(scope)
         setProject(nextProject)
-        setOverview(nextOverview)
+        if(version===overviewVersion.current)setOverview(nextOverview)
       })
       .catch(error => {
         if(!live||epoch!==sessionEpoch())return
         setLoadedScope(scope);setProject(null);setOverview(null)
       })
-    return()=>{live=false}
+    return()=>{live=false;overviewVersion.current+=1}
   }, [projectId, pathname,spaceId,userId,cleared])
 
-  useEffect(() => {
-    let active = true;const epoch=sessionEpoch()
-    const refreshOverview = () => {
-      if (project?.current_user_can_read === false) return
-      void projectsApi.getOverview(projectId)
-        .then(nextOverview => {
-          if (active&&epoch===sessionEpoch()) setOverview(nextOverview)
-        })
-        .catch(error => {
-          if (active && epoch === sessionEpoch() && [401, 403, 404].includes(error?.status)) {
-            setOverview(null)
-            setProject(current => current ? { ...current, current_user_can_read: false } : current)
-          }
-        })
+  const refreshOverview=useCallback(async()=>{
+    if(loadedScope!==scope||project?.current_user_can_read===false)return
+    const version=++overviewVersion.current,epoch=sessionEpoch()
+    try{
+      const next=await projectsApi.getOverview(projectId)
+      if(version===overviewVersion.current&&epoch===sessionEpoch())setOverview(next)
+    }catch(error){
+      if(version===overviewVersion.current&&epoch===sessionEpoch()&&[401,403,404].includes((error as {status?:number})?.status??0)){
+        setOverview(null);setProject(current=>current?{...current,current_user_can_read:false}:current)
+      }
     }
-    window.addEventListener(REVIEW_ATTENTION_CHANGED_EVENT, refreshOverview)
-    return () => {
-      active = false
-      window.removeEventListener(REVIEW_ATTENTION_CHANGED_EVENT, refreshOverview)
-    }
-  }, [projectId,spaceId,userId,project?.current_user_can_read])
+  },[projectId,scope,loadedScope,project?.current_user_can_read])
+  useEffect(()=>{
+    const refresh=()=>{void refreshOverview()}
+    window.addEventListener(REVIEW_ATTENTION_CHANGED_EVENT,refresh)
+    return()=>window.removeEventListener(REVIEW_ATTENTION_CHANGED_EVENT,refresh)
+  },[refreshOverview])
+  // The sidebar remains mounted on every Area. It must observe Agent-created,
+  // updated and closed Tasks even when the person never changes the route.
+  useProjectLiveRefresh(projectId,refreshOverview,loadedScope===scope&&project?.current_user_can_read!==false)
 
   // Capture is one affordance in the app shell, not one per Area and not a
   // second one per Project: a thought that arrives while doing an experiment

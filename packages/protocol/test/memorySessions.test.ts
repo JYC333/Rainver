@@ -398,6 +398,8 @@ describe("saved conversation options and model observation", () => {
     const selection = { id: "model", type: "select", category: "model", value: "ops" };
     const body = { session_id: "session", runtime_profile_id: "profile", session_config: [selection] };
     expect(ConversationSessionConfigSaveSchema.parse(body)).toEqual(body);
+    expect(ConversationSessionConfigSaveSchema.parse({ ...body, allow_quota_model_switch: true }).allow_quota_model_switch).toBe(true);
+    expect(ConversationSessionConfigSaveSchema.safeParse({ ...body, allow_quota_model_switch: "true" }).success).toBe(false);
     expect(ConversationSessionConfigSaveSchema.safeParse({ ...body, session_config: Array(33).fill(selection) }).success).toBe(false);
     expect(ConversationSessionConfigSaveSchema.safeParse({ ...body, agent_id: "another" }).success).toBe(false);
   });

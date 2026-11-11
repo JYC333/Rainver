@@ -27,8 +27,8 @@ function own(capabilities: Awaited<ReturnType<typeof detectCapabilities>>, runti
 describe("capability discovery", () => {
   it('does not offer colon-named worktree resources on native Windows',()=>{
     expect(executionWorkspaceCapability('win32')).toBeUndefined();
-    expect(executionWorkspaceCapability('linux')).toEqual({version:2,reclaim:4});
-    expect(executionWorkspaceCapability('darwin')).toEqual({version:2,reclaim:4});
+    expect(executionWorkspaceCapability('linux')).toEqual({version:2,reclaim:5,shared_review:1});
+    expect(executionWorkspaceCapability('darwin')).toEqual({version:2,reclaim:5,shared_review:1});
   });
 
   it("detects git, which every environment running this test suite has installed", async () => {

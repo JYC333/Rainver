@@ -5,7 +5,7 @@ import type { AuthorizationRequest, Run } from '../../types/api'
 import { errMsg } from '../../lib/utils'
 
 export type RunAction = { kind: 'stop' | 'resume' | 'abandon'; reason?: string }
-  | { kind: 'quota_recovery'; autoContinue: boolean }
+  | { kind: 'quota_recovery'; autoContinue: boolean; switchModel?: boolean }
   | { kind: 'approve' | 'reject'; requestId: string }
 
 /** Authorization holds are reconciled by their own endpoint, never generic resume. */
@@ -53,7 +53,10 @@ export function useRunActions(runId: string, scope: RequestOptions, onChanged: (
       try {
         switch (action.kind) {
           case 'stop': await runsApi.stop(runId, options); break
-          case 'quota_recovery': await runsApi.quotaRecovery(runId, action.autoContinue, options); break
+          case 'quota_recovery':
+            if (action.switchModel) await runsApi.quotaRecovery(runId, action.autoContinue, options, true)
+            else await runsApi.quotaRecovery(runId, action.autoContinue, options)
+            break
           case 'resume': await runsApi.resume(runId, options); break
           case 'abandon': await runsApi.abandon(runId, { reason: action.reason }, options); break
           // Authorization reconciliation queues the Run itself. Never also call resume.

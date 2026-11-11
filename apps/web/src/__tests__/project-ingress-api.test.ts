@@ -28,3 +28,17 @@ it('does not repeat an uncertain monitoring pause write',async()=>{
  vi.mocked(fetch).mockRejectedValueOnce(new Error('Connection closed'));
  await expect(projectMonitoringApi.paused('project','v1',true,'pause-event')).rejects.toThrow('Connection closed');expect(fetch).toHaveBeenCalledTimes(1);expect(new Headers(vi.mocked(fetch).mock.calls[0]![1]!.headers).get('Idempotency-Key')).toBe('pause-event');
 });
+it('submits a public summary draft once, reads its Run until settled, and returns the draft that Run wrote',async()=>{
+ const receipt={status:'succeeded',data:{id:'run',run_id:'run',job_id:'job',project_id:'project',space_id:'receipt-space'}};
+ vi.mocked(fetch).mockResolvedValueOnce(response(receipt)).mockResolvedValueOnce(response({id:'run',status:'running'})).mockResolvedValueOnce(response({id:'run',status:'succeeded'}))
+  .mockResolvedValueOnce(response({draft:{project_id:'project',draft_version:2,generated_by_run_id:'run'},published:null,can_publish:true}));
+ vi.useFakeTimers();
+ try{const pending=projectsApi.generatePublicSummaryDraft('project','draft-event');await vi.advanceTimersByTimeAsync(1000);expect(await pending).toMatchObject({draft_version:2,generated_by_run_id:'run'});}finally{vi.useRealTimers();}
+ const calls=vi.mocked(fetch).mock.calls;
+ expect(String(calls[0]![0])).toBe('/api/v1/actions/project.public_summary.draft.generate');expect(new Headers(calls[0]![1]!.headers).get('Idempotency-Key')).toBe('draft-event');
+ expect(calls.filter(([,init])=>init?.method==='POST')).toHaveLength(1);expect(String(calls[1]![0])).toBe('/api/v1/runs/run');
+});
+it('surfaces an active monitoring coordinator after a committed reconcile without retrying it',async()=>{
+ vi.mocked(fetch).mockResolvedValueOnce(response({status:'succeeded',data:{id:'project',project_id:'project',space_id:'s',coordinator_active:true}}));
+ await expect(projectMonitoringApi.reconcile('project','reconcile-event')).rejects.toThrow('still active');expect(fetch).toHaveBeenCalledTimes(1);
+});

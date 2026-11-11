@@ -22,7 +22,7 @@ export function ConversationActivity({ runs, turns, agentName, onChanged, allowC
   if (!runs.length) return null
   return (
     <div role="status" aria-label={t('conversation_ui.surface.current_activity')}
-      className="max-h-28 shrink-0 space-y-1 overflow-y-auto border-t border-border bg-card px-3 py-2 text-xs">
+      className={`${runs.some(run => runQuotaRecovery(run)) ? "max-h-40" : "max-h-28"} shrink-0 space-y-1 overflow-y-auto border-t border-border bg-card px-3 py-2 text-xs`}>
       {runs.map(run => {
         if (runQuotaRecovery(run)) return <div key={run.id} className="space-y-1">
           <div className="flex items-center gap-2"><span className="flex-1">{agentName(run.id) ?? t('conversation_ui.surface.agent')}</span>{allowCommands && (!scope.actionUserId || run.owner_user_id === scope.actionUserId || run.instructed_by_user_id === scope.actionUserId) && <ActivityStop run={run} onChanged={onChanged} />}</div>

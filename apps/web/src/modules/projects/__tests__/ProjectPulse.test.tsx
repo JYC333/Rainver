@@ -10,7 +10,7 @@ vi.mock('../../../contexts/SpaceContext', () => ({
   useSpace: () => ({ spaceId: 'space-1', userId: 'user-1' }),
 }))
 vi.mock('../../../api/client', () => ({
-  projectsApi: { getBoard: vi.fn(), updates: vi.fn() },
+  projectsApi: { streamUpdates:vi.fn(()=>new Promise<void>(()=>{})), getBoard: vi.fn(), updates: vi.fn() },
   inquiryApi: { adoptAdvice: vi.fn() },
 }))
 
@@ -79,24 +79,14 @@ beforeEach(() => {
 })
 
 describe('Project Pulse', () => {
-  it('re-reads the situation on an interval and asks the parent to refresh the overview', async () => {
-    // A definition accepted or a question opened from the Room shows here
-    // without leaving the page; the overview is the parent's read.
-    const intervals: Array<() => void> = []
-    const spy = vi.spyOn(window, 'setInterval').mockImplementation(((fn: () => void) => {
-      intervals.push(fn)
-      return 42 as unknown as ReturnType<typeof window.setInterval>
-    }) as typeof window.setInterval)
-    try {
-      renderPulse()
-      await waitFor(() => expect(projectsApi.getBoard).toHaveBeenCalledTimes(1))
-      expect(overviewChanged).not.toHaveBeenCalled()
-      intervals.forEach(fn => fn())
-      await waitFor(() => expect(projectsApi.getBoard).toHaveBeenCalledTimes(2))
-      await waitFor(() => expect(overviewChanged).toHaveBeenCalledTimes(1))
-    } finally {
-      spy.mockRestore()
-    }
+  it('re-reads on a Project event and asks the parent to refresh attention without navigating',async()=>{
+    let changed:(frame:{type:'changed'})=>void=()=>{}
+    vi.mocked(projectsApi.streamUpdates).mockImplementation(async(_project,emit)=>{changed=emit;await new Promise<void>(()=>{})})
+    renderPulse()
+    await waitFor(()=>expect(projectsApi.getBoard).toHaveBeenCalledTimes(1))
+    changed({type:'changed'})
+    await waitFor(()=>expect(projectsApi.getBoard).toHaveBeenCalledTimes(2))
+    expect(overviewChanged).toHaveBeenCalledTimes(1)
   })
 
   it('asks for a goal until the Project has one, and then stops', async () => {

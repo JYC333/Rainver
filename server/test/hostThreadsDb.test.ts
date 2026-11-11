@@ -1931,6 +1931,38 @@ describe('durable workspace integration',()=>{
   expect((await row(mergeId)).status).toBe('failed');
  });
 
+ it('refuses a frozen chain plan without recorded chain evidence on both person retry and worker paths',async()=>{
+  const {w,mergeId}=await integration(),config=loadConfig({SERVER_DATABASE_URL:db.connectionUri});
+  const plan={publication_plan:{strategy:'fast_forward',target_ref:null}};
+  await db.pool.query("UPDATE task_merges SET status='conflict',detail_json=$2::jsonb WHERE id=$1",[mergeId,JSON.stringify({native_integration:true,conflicted_files:['README.md'],...plan})]);
+  await db.pool.query("UPDATE workspace_change_sets SET state='blocked' WHERE id=$1",[w.changeSetId]);
+  const {operationRuntime}=await import('../src/modules/systemActions/operations/runtime.js');
+  const {sessionActor}=await import('../src/modules/systemActions/operations/actor.js');
+  const engine=await operationRuntime(config),before=await row(mergeId);
+  const queued=(await db.pool.query("SELECT count(*)::int AS n FROM jobs WHERE job_type='task_merge' AND payload_json->>'merge_id'=$1",[mergeId])).rows[0].n;
+  // A missing recorded chain must never turn a fast-forward plan into a squash.
+  const refused=await engine.execute('workspace.integration.retry',{integration_id:mergeId,expected_revision:before.revision,resolution:'Keep both sides of README.md.'},sessionActor({spaceId:SPACE,userId:OWNER}),randomUUID(),randomUUID());
+  expect(refused.http_status).toBe(409);expect((refused.body as any).error.metadata).toEqual({code:'native_publication_chain_unrecorded'});
+  expect(await row(mergeId)).toMatchObject({status:'conflict',revision:before.revision,detail_json:{native_integration:true,...plan}});
+  expect((await db.pool.query("SELECT count(*)::int AS n FROM jobs WHERE job_type='task_merge' AND payload_json->>'merge_id'=$1",[mergeId])).rows[0].n).toBe(queued);
+  // A row that reaches the legacy worker anyway (re-enqueued by reconciliation) is blocked with its plan kept, never published.
+  await db.pool.query("UPDATE task_merges SET status='queued',detail_json=$2::jsonb WHERE id=$1",[mergeId,JSON.stringify({previous_attempt:randomUUID(),previous_detail:{native_integration:true},...plan})]);
+  await db.pool.query("UPDATE workspace_change_sets SET state='integrating' WHERE id=$1",[w.changeSetId]);
+  const {advanceWorkspaceIntegration}=await import('../src/modules/hosts/workspaceIntegrations.js');
+  const hosts=await host(),actions:string[]=[];
+  hosts.requestTaskBranch=async(_host,_type,frame):Promise<any>=>{actions.push((frame as any).action);return {ok:true,outcome:'sealed',candidate_commit:'b'.repeat(40),onto_commit:null,conflicted_files:[],error:null};};
+  expect(await advanceWorkspaceIntegration(db.pool,config,mergeId,SPACE,{hosts,verify:async()=>({status:'passed',checks:[]})})).toMatchObject({status:'failed'});
+  expect(actions).toEqual(['preserve']);
+  expect(await row(mergeId)).toMatchObject({status:'failed',detail_json:{error:'native_publication_chain_unrecorded',...plan}});
+  expect((await db.pool.query('SELECT state FROM workspace_change_sets WHERE id=$1',[w.changeSetId])).rows[0].state).toBe('blocked');
+  // A squash plan to an explicit branch may take the person's route; its frozen plan stays top-level, not only in previous_detail.
+  const squash={publication_plan:{strategy:'squash',target_ref:'refs/heads/release'}};
+  await db.pool.query("UPDATE task_merges SET status='conflict',detail_json=$2::jsonb WHERE id=$1",[mergeId,JSON.stringify({conflicted_files:['README.md'],...squash})]);
+  const retried=await engine.execute('workspace.integration.retry',{integration_id:mergeId,expected_revision:(await row(mergeId)).revision,resolution:'Keep both sides of README.md.'},sessionActor({spaceId:SPACE,userId:OWNER}),randomUUID(),randomUUID());
+  expect(retried.http_status,JSON.stringify(retried.body)).toBe(200);
+  expect((await row(mergeId)).detail_json).toMatchObject({...squash,previous_detail:{...squash}});
+ });
+
  it.for(['host','server','location'] as const)('recovers the same change after bounded %s checkpoint failures without discarding saved work',async(kind)=>{
   const {run,w,mergeId}=await integration(),hosts=await host();
   await db.pool.query('DELETE FROM task_merges WHERE id=$1',[mergeId]);
@@ -2379,7 +2411,7 @@ describe('durable workspace integration',()=>{
    expect(await completeJob(hosts,w.changeSetId)).toMatchObject({state:'integrating'});
    // Parent, published-base and scope reads, then the independent pin before the submission takes effect.
    expect(reads).toHaveLength(4);
-   expect(reads[3]).toEqual(['git','update-ref','-m','rainver: retain submitted workspace commit',`refs/rainver/sources/${'d'.repeat(40)}`,'d'.repeat(40),'']);
+   expect(reads[3]).toEqual(['git','update-ref','-m','rainver: retain submitted workspace commit',`refs/rainver/sources/${'d'.repeat(40)}`,'d'.repeat(40),'0'.repeat(40)]);
    const merge=(await db.pool.query('SELECT * FROM task_merges WHERE change_set_id=$1',[w.changeSetId])).rows[0];
    expect(merge).toMatchObject({base_commit:'c'.repeat(40),source_commit:'d'.repeat(40),target_ref:'refs/heads/dev',status:'queued'});
    const actions:string[]=[];hosts.requestTaskBranch=async(_host,_command,frame):Promise<any>=>{const f=frame as any;actions.push(f.action);expect(f.source_commit??'d'.repeat(40)).toBe('d'.repeat(40));return{ok:true,outcome:f.action==='prepare'?'rebased':f.action==='finish'?'merged':'sealed',onto_commit:'e'.repeat(40),candidate_commit:'f'.repeat(40),conflicted_files:[],error:null};};
@@ -2411,14 +2443,17 @@ describe('durable workspace integration',()=>{
    expect((await db.pool.query('SELECT state FROM workspace_change_sets WHERE id=$1',[w.changeSetId])).rows[0].state).toBe(adopted?'no_changes':'blocked');
    const final=await row(mergeId);expect(adopted?final.detail_json.already_present_at:final.detail_json.error).toBe(adopted?'c'.repeat(40):'integration_not_yet_adopted');
   });
-  it('lets a later authorized conversation Run close a superseded batch while preserving evidence and its own new work',async ctx=>{
-   if(!db.available)return ctx.skip();const {run,w,mergeId}=await integration();await db.pool.query("UPDATE runs SET status='succeeded' WHERE id=$1",[run.id]);await db.pool.query("UPDATE task_merges SET status='conflict' WHERE id=$1",[mergeId]);await db.pool.query("UPDATE workspace_change_sets SET state='blocked' WHERE id=$1",[w.changeSetId]);
+  it.for(['blocked','open'] as const)('lets a later authorized conversation Run close a superseded %s batch while preserving evidence and its own new work',async (batchState,ctx)=>{
+   if(!db.available)return ctx.skip();const {run,w,mergeId}=await integration();await db.pool.query("UPDATE runs SET status='succeeded' WHERE id=$1",[run.id]);await db.pool.query("UPDATE task_merges SET status='conflict' WHERE id=$1",[mergeId]);await db.pool.query("UPDATE workspace_change_sets SET state=$2 WHERE id=$1",[w.changeSetId,batchState]);
+   if(batchState==='open')await db.pool.query("UPDATE execution_workspaces SET state='retired' WHERE id=$1",[w.workspace.id]);
    const nextId=randomUUID();await seedRun(db.pool,{id:nextId,space:SPACE,owner:OWNER,agent:AGENT,version:VERSION,existingAgent:true});await db.pool.query(`UPDATE runs SET status='running',project_id=$2,session_id=$3,instructed_by_user_id=$4,permission_snapshot_json='{"tool_grants":[{"action_id":"workspace.change.abandon"}]}' WHERE id=$1`,[nextId,PROJECT,CONVERSATION,OWNER]);
+   const quote='检查后关闭过时工作区，保留原成果';
+   await db.pool.query("UPDATE runs SET trigger_origin='manual',instruction=$2 WHERE id=$1",[nextId,quote]);
    const next=(await new PgRunRepository(db.pool).getRun(SPACE,nextId))!,{ensureExecutionWorkspace}=await import('../src/modules/projectFolders/executionWorkspaces.js');
    const current=await ensureExecutionWorkspace(db.pool,next,HOST,LOCATION);
    const {operationRuntime}=await import('../src/modules/systemActions/operations/runtime.js'),{runActor}=await import('../src/modules/systemActions/operations/actor.js');
    const engine=await operationRuntime(loadConfig({SERVER_DATABASE_URL:db.connectionUri})),actor=await runActor(db.pool,next),revision=(await db.pool.query('SELECT revision FROM workspace_change_sets WHERE id=$1',[w.changeSetId])).rows[0].revision;
-   const result=await engine.execute('workspace.change.abandon',{change_set_id:w.changeSetId,expected_revision:revision,reason:'Already adopted in dev; the plan was explicitly retired.'},actor,randomUUID(),randomUUID());
+   const result=await engine.execute('workspace.change.abandon',{change_set_id:w.changeSetId,expected_revision:revision,reason:'The obsolete plan was explicitly retired; keep its source.',...(batchState==='open'?{review:{source_commit:'b'.repeat(40),user_request_quote:quote,findings:'Reviewed obsolete version; retain source without asserting adoption.'}}:{})},actor,randomUUID(),randomUUID());
    expect(result.http_status,JSON.stringify(result.body)).toBe(200);expect((await row(mergeId)).status).toBe('superseded');
    expect((await db.pool.query('SELECT state,source_commit FROM workspace_change_sets WHERE id=$1',[w.changeSetId])).rows[0]).toEqual({state:'abandoned',source_commit:'b'.repeat(40)});
    expect((await db.pool.query('SELECT state FROM workspace_change_sets WHERE id=$1',[current.changeSetId])).rows[0].state).toBe('open');
@@ -2506,10 +2541,10 @@ describe('durable workspace integration',()=>{
   expect(results).toHaveLength(1);expect(results[0]).toMatchObject({verifier_type:'output_schema',status:'failed'});
  });
 
- it.for(['normal','conflict','target_moved','cancelled','tainted','old_retry','historical_retry','historical_superseded','ended_prepared','private_checkpoint'] as const)('finishes native integration through unified operations in the active session: %s',async(mode,ctx)=>{
+ it.for(['normal','conflict','target_moved','cancelled','tainted','old_retry','historical_retry','historical_superseded','ended_prepared','private_checkpoint','frozen_chain'] as const)('finishes native integration through unified operations in the active session: %s',async(mode,ctx)=>{
   if(!db.available)return ctx.skip();
   const {run,w,mergeId}=await integration(),config=loadConfig({SERVER_DATABASE_URL:db.connectionUri});
-  await db.pool.query(`UPDATE hosts SET capabilities_json=capabilities_json || '{"execution_workspaces":{"version":2},"native_workspace_integration":true}'::jsonb WHERE id=$1`,[HOST]);
+  await db.pool.query(`UPDATE hosts SET capabilities_json=capabilities_json || '{"execution_workspaces":{"version":2},"native_workspace_integration":true,"native_workspace_rebase":true}'::jsonb WHERE id=$1`,[HOST]);
   await db.pool.query("UPDATE runs SET status='running',permission_snapshot_json=$2::jsonb WHERE id=$1",[run.id,JSON.stringify({tool_grants:['workspace.change.complete','workspace.change.get','workspace.integration.retry'].map(action_id=>({action_id}))})]);
   await db.pool.query("UPDATE execution_workspace_runs SET launch_sequence=1,checkpoint_state='pending' WHERE run_id=$1",[run.id]);
   // A historical batch of the same workspace: blocked, not bound to this Run,
@@ -2519,8 +2554,12 @@ describe('durable workspace integration',()=>{
    await db.pool.query(`INSERT INTO workspace_change_sets(id,workspace_id,space_id,generation,sequence,revision,state,originating_run_id,root_run_id,base_commit,source_commit,completion_basis,summary,source_sequence,verification_json,created_at,updated_at) SELECT $2,workspace_id,space_id,generation,sequence+1000,1,'blocked',originating_run_id,root_run_id,base_commit,$3,NULL,'Historical batch',source_sequence,'{}'::jsonb,now()-interval '1 hour',now() FROM workspace_change_sets WHERE id=$1`,[w.changeSetId,historical.changeId,historical.source]);
    await db.pool.query(`INSERT INTO task_merges(id,space_id,workspace_id,change_set_id,workspace_location_id,basis,generation,attempt_id,source_commit,base_commit,target_ref,status,requested_by_user_id,detail_json,created_at,updated_at) SELECT $2,space_id,workspace_id,$3,workspace_location_id,$3,generation,$4,$5,base_commit,target_ref,'failed',requested_by_user_id,'{"error":"verification_unconfigured"}'::jsonb,now(),now() FROM task_merges WHERE id=$1`,[mergeId,historical.mergeId,historical.changeId,randomUUID(),historical.source]);
   }
-  if(mode==='old_retry'){await db.pool.query("UPDATE task_merges SET status='failed' WHERE id=$1",[mergeId]);await db.pool.query("UPDATE workspace_change_sets SET state='blocked' WHERE id=$1",[w.changeSetId]);}
+  if(mode==='old_retry'||mode==='frozen_chain'){await db.pool.query("UPDATE task_merges SET status='failed' WHERE id=$1",[mergeId]);await db.pool.query("UPDATE workspace_change_sets SET state='blocked' WHERE id=$1",[w.changeSetId]);}
   else{await db.pool.query('DELETE FROM task_merges WHERE id=$1',[mergeId]);await db.pool.query("UPDATE workspace_change_sets SET state='open',completion_basis=NULL WHERE id=$1",[w.changeSetId]);}
+  // A fast-forward plan frozen at an earlier prepare, with the chain the Host reported.
+  if(mode==='frozen_chain'){
+   await db.pool.query("UPDATE task_merges SET detail_json=$2::jsonb WHERE id=$1",[mergeId,JSON.stringify({native_integration:true,error:'native_publication_fast_forward_target_moved',publication_plan:{strategy:'fast_forward',target_ref:null},publication:{strategy:'fast_forward',chain_tip:'c'.repeat(40),chain_length:9}})]);
+  }
   if(mode==='tainted')await db.pool.query("UPDATE runs SET has_context_taint=true WHERE id=$1",[run.id]);
   const {sharedHostConnectionRegistry:hosts}=await import('../src/modules/hosts/connectionRegistry.js'),old=hosts.requestTaskBranch,oldCommand=hosts.runHostCommand,actions:string[]=[];
   let publishes=0;
@@ -2536,7 +2575,17 @@ describe('durable workspace integration',()=>{
    // The bound batch is the worktree itself: never an explicit commit, legacy record or not.
    if(f.action!=='native_inspect')expect(f.submitted_commit).toBeUndefined();
    const outcome=f.action==='native_publish'?(mode==='target_moved'&&publishes++===0?'main_moved':'merged'):f.action==='native_checkpoint'?'sealed':mode==='conflict'?'conflict':'rebased';
-   return {ok:true,outcome,candidate_commit:'c'.repeat(40),onto_commit:'a'.repeat(40),conflicted_files:outcome==='conflict'?['README.md']:[],error:null};
+   // Every native step of a frozen chain carries its strategy; the publish names the recorded chain tip.
+   if(mode==='frozen_chain'&&['native_prepare','native_checkpoint','native_publish'].includes(f.action)){
+    expect(f.publication_strategy).toBe('fast_forward');
+    expect(f.publication_chain_tip).toBe(f.action==='native_publish'?'c'.repeat(40):undefined);
+   }
+   // A new integration rebases by default (a legacy one keeps its squash); like the daemon, a
+   // completed rebase reports its replayed chain, which the publish then names.
+   const strategy=mode==='frozen_chain'?'fast_forward':mode==='old_retry'?undefined:'rebase';
+   if(['native_prepare','native_publish'].includes(f.action))expect(f.publication_strategy).toBe(strategy);
+   const publication=strategy&&outcome!=='conflict'?{publication:{strategy,chain_tip:'c'.repeat(40),chain_length:strategy==='rebase'?1:9}}:{};
+   return {ok:true,outcome,candidate_commit:'c'.repeat(40),onto_commit:'a'.repeat(40),conflicted_files:outcome==='conflict'?['README.md']:[],error:null,...(outcome==='rebased'&&strategy==='rebase'?{source_commit:'c'.repeat(40),base_commit:'a'.repeat(40)}:{}),...publication};
   };
   // Only the pin of an explicit commit runs as a Host command (before the Host uses it); checks never do.
   const pins:string[]=[];
@@ -2562,7 +2611,7 @@ describe('durable workspace integration',()=>{
     await expect(finish!({allowed:false,reason:'usage_recording_failed'})).resolves.toMatchObject({success:false,output_text:'已保存，未合并。',error_code:'usage_recording_failed',error_message:'Workspace reply withheld: usage_recording_failed'});
     return;
    }
-   if(mode==='old_retry'){const m=await row(mergeId),r=await engine.execute('workspace.integration.retry',{integration_id:mergeId,expected_revision:m.revision},actor,randomUUID(),randomUUID());expect(r.http_status,JSON.stringify(r.body)).toBe(200);current=await read();}
+   if(mode==='old_retry'||mode==='frozen_chain'){const m=await row(mergeId),r=await engine.execute('workspace.integration.retry',{integration_id:mergeId,expected_revision:m.revision},actor,randomUUID(),randomUUID());expect(r.http_status,JSON.stringify(r.body)).toBe(200);current=await read();}
    else{
     if(historical){
      const m=await row(historical.mergeId),r=await engine.execute('workspace.integration.retry',{integration_id:historical.mergeId,expected_revision:m.revision},actor,randomUUID(),randomUUID());expect(r.http_status,JSON.stringify(r.body)).toBe(200);
@@ -2598,6 +2647,48 @@ describe('durable workspace integration',()=>{
    const {executeWorkspaceRunReply}=await import('../src/modules/runs/workspaceRunReply.js');let invocations=0;const events:any[]=[];
    const final=await executeWorkspaceRunReply({run:live as any,prompt:'merge',model:null,resume_session_id:'same-session',thread_event_sink:d=>{events.push(...d)}},HOST,LOCATION,{config,db:db.pool},async input=>{invocations++;expect(input.resume_session_id).toBe('same-session');await input.thread_event_sink?.([{event_type:'assistant_text',text:'已合入 dev。'}]);return {runtime_key:'codex_cli',adapter_kind:'local_cli',success:true,output_text:'已合入 dev。',exit_code:0};});
    expect(invocations).toBe(1);expect(final).toMatchObject({success:true,output_text:'已合入 dev。'});expect(events.filter(e=>e.event_type==='assistant_text')).toHaveLength(1);
+  }finally{hosts.requestTaskBranch=old;hosts.runHostCommand=oldCommand;}
+ });
+
+ it('rebases a historical merge batch whose chain the Host refused, never squashing it without the person, and moves the empty bound batch along',async ctx=>{
+  if(!db.available)return ctx.skip();
+  const {run,w,mergeId}=await integration(),config=loadConfig({SERVER_DATABASE_URL:db.connectionUri});
+  const base='a'.repeat(40),source='d'.repeat(40),replayed='e'.repeat(40),onto='f'.repeat(40),historical={changeId:randomUUID(),mergeId:randomUUID()};
+  await db.pool.query(`UPDATE hosts SET capabilities_json=capabilities_json || '{"execution_workspaces":{"version":2},"native_workspace_integration":true,"native_workspace_rebase":true}'::jsonb WHERE id=$1`,[HOST]);
+  await db.pool.query("UPDATE runs SET status='running',permission_snapshot_json=$2::jsonb WHERE id=$1",[run.id,JSON.stringify({tool_grants:['workspace.change.complete','workspace.change.get','workspace.integration.retry'].map(action_id=>({action_id}))})]);
+  await db.pool.query("UPDATE execution_workspace_runs SET launch_sequence=1,checkpoint_state='pending' WHERE run_id=$1",[run.id]);
+  // This Run's bound batch is empty at the historical source the worktree holds.
+  await db.pool.query('DELETE FROM task_merges WHERE id=$1',[mergeId]);
+  await db.pool.query("UPDATE workspace_change_sets SET state='open',completion_basis=NULL,base_commit=$2,source_commit=$2 WHERE id=$1",[w.changeSetId,source]);
+  // The historical batch froze a merge plan whose chain the Host refused (private baseline): no chain was recorded.
+  await db.pool.query(`INSERT INTO workspace_change_sets(id,workspace_id,space_id,generation,sequence,revision,state,originating_run_id,root_run_id,base_commit,source_commit,completion_basis,summary,source_sequence,verification_json,created_at,updated_at) SELECT $2,workspace_id,space_id,generation,sequence+1000,1,'blocked',originating_run_id,root_run_id,$3,$4,NULL,'Historical batch',source_sequence,'{}'::jsonb,now()-interval '1 hour',now() FROM workspace_change_sets WHERE id=$1`,[w.changeSetId,historical.changeId,base,source]);
+  await db.pool.query(`INSERT INTO task_merges(id,space_id,workspace_id,change_set_id,workspace_location_id,basis,generation,attempt_id,source_commit,base_commit,target_ref,status,requested_by_user_id,detail_json,created_at,updated_at) SELECT $1,space_id,id,$2,workspace_location_id,$2,generation,$3,$4,$5,target_ref,'failed',$6,$7::jsonb,now(),now() FROM execution_workspaces WHERE id=$8`,
+   [historical.mergeId,historical.changeId,randomUUID(),source,base,OWNER,JSON.stringify({native_integration:true,error:'native_publication_chain_base_not_target_history',publication_plan:{strategy:'merge',target_ref:null,requested_by_user_id:OWNER,requested_by_run_id:run.id}}),w.workspace.id]);
+  const {sharedHostConnectionRegistry:hosts}=await import('../src/modules/hosts/connectionRegistry.js'),old=hosts.requestTaskBranch,oldCommand=hosts.runHostCommand,frames:any[]=[];
+  hosts.requestTaskBranch=async(_host,type,raw):Promise<any>=>{
+   const f=raw as any;
+   if(type==='execution_workspace_command')return {ok:true,commit:source,error:null,launch_info:{...w.ref,branch:'rainver/workspace',start_commit:source,target_ref:'refs/heads/dev',workspace_location_id:LOCATION,launch_sequence:1}};
+   frames.push(f);
+   // The Host replays the recorded delta onto the target and reports the replayed chain.
+   return {ok:true,outcome:'rebased',main_branch:'dev',candidate_commit:replayed,onto_commit:onto,conflicted_files:[],error:null,source_commit:replayed,base_commit:onto,publication:{strategy:'rebase',chain_tip:replayed,chain_length:2}};
+  };
+  hosts.runHostCommand=async():Promise<any>=>({ok:true,exit_code:0,timed_out:false,stdout:'',stderr:'',error:null});
+  try{
+   const {operationRuntime}=await import('../src/modules/systemActions/operations/runtime.js'),{runActor}=await import('../src/modules/systemActions/operations/actor.js');
+   const engine=await operationRuntime(config),actor=await runActor(db.pool,(await new PgRunRepository(db.pool).getRun(SPACE,run.id))!);
+   const retry=async(publication:Record<string,unknown>)=>engine.execute('workspace.integration.retry',{integration_id:historical.mergeId,expected_revision:(await row(historical.mergeId)).revision,publication},actor,randomUUID(),randomUUID());
+   // The Agent cannot choose squash on its own.
+   const squash=await retry({strategy:'squash'});
+   expect(squash.http_status).toBe(409);expect((squash.body as any).error.metadata).toEqual({code:'workspace_squash_requires_person_request'});
+   const rebased=await retry({strategy:'rebase'});expect(rebased.http_status,JSON.stringify(rebased.body)).toBe(200);
+   expect(frames).toHaveLength(1);expect(frames[0]).toMatchObject({action:'native_prepare',publication_strategy:'rebase',submitted_commit:source,submitted_base:base,base_commit:source});
+   const merge=await row(historical.mergeId);
+   expect(merge).toMatchObject({status:'verifying',base_commit:onto,source_commit:replayed});
+   expect(merge.detail_json).toMatchObject({publication_plan:{strategy:'rebase',target_ref:null,requested_by_run_id:run.id,replaced_plan:{strategy:'merge',error:'native_publication_chain_base_not_target_history'}},publication:{strategy:'rebase',chain_tip:replayed},replayed_from:{base,source}});
+   const sets=async(id:string)=>(await db.pool.query('SELECT state,base_commit,source_commit FROM workspace_change_sets WHERE id=$1',[id])).rows[0];
+   // The batch is now its replayed commits on the target; the empty bound batch moved with the rewritten branch.
+   expect(await sets(historical.changeId)).toEqual({state:'integrating',base_commit:onto,source_commit:replayed});
+   expect(await sets(w.changeSetId)).toEqual({state:'open',base_commit:replayed,source_commit:replayed});
   }finally{hosts.requestTaskBranch=old;hosts.runHostCommand=oldCommand;}
  });
 

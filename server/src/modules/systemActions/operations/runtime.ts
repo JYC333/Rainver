@@ -1,4 +1,22 @@
 import {researchExecutionRegistrations} from '../../projectResearch/executionOperations.js';
+import {researchControlRegistrations} from '../../projectResearch/controlOperations.js';
+import {researchAgentRegistrations} from '../../projectResearch/agentResearchOperations.js';
+import {agentOperationRegistrations} from '../../agents/operations.js';
+import {agentChatRegistrations} from '../../agents/chatOperations.js';
+import {roomOperationRegistrations} from '../../rooms/operations.js';
+import {agentGroupOperationRegistrations} from '../../agentGroups/operations.js';
+import {runOperationRegistrations} from '../../runs/operations.js';
+import {sessionOperationRegistrations} from '../../sessions/operations.js';
+import {hostCommandRegistrations,hostDirectRegistrations} from '../../hosts/operations.js';
+import {providerOperationRegistrations} from '../../providers/operations.js';
+import {networkProfileOperationRegistrations} from '../../networkProfiles/operations.js';
+import {acpAgentOperationRegistrations} from '../../acpAgents/operations.js';
+import {pluginSettingsOperationRegistrations} from '../../plugins/settingsOperations.js';
+import {systemSettingsOperationRegistrations} from '../../system/settingsOperations.js';
+import {sourceCatalogOperationRegistrations} from '../../sources/sourceCatalogOperations.js';
+import {deploymentOperationRegistrations} from '../../deployment/operations.js';
+import {notificationOperationRegistrations} from '../../notifications/operations.js';
+import {importedSessionRegistrations} from '../../importedSessions/operations.js';
 import {researchAdhocRegistration} from '../../projectResearch/adhocOperation.js';
 import {projectSourceProposalRegistrations} from '../../projects/sourceProposalOperations.js';
 import {projectCorpusRegistrations} from '../../projects/corpusOperations.js';
@@ -7,6 +25,10 @@ import {projectFolderRegistrations} from '../../projectFolders/operations.js';
 import {projectFolderIoRegistrations} from '../../projectFolders/ioOperations.js';
 import {inquiryOperationRegistrations} from '../../inquiry/operations.js';
 import {projectIngressRegistrations} from '../../projects/monitoring/operations.js';
+import {projectIngressCommandRegistrations} from '../../projects/ingressOperations.js';
+import {publicSummaryDraftRegistration} from '../../projects/publicSummaryDraftOperation.js';
+import {importedHistoryExtractionRegistration} from '../../importedSessions/extractionOperation.js';
+import {projectSummaryBriefRegistration} from '../../projects/summaryBriefOperation.js';
 import {projectManagementRegistrations} from '../../projects/managementOperations.js';
 import {experimentRegistrations} from '../../experiments/operations.js';
 import {researchWorkspaceRegistrations} from '../../projectResearch/workspaceOperations.js';
@@ -42,7 +64,7 @@ const runtimes = new WeakMap<ServerConfig, Promise<OperationExecutor>>();
 export function operationRuntime(config: ServerConfig): Promise<OperationExecutor> {
   let runtime = runtimes.get(config);
   if (!runtime) {
-    runtime = loadSystemActionRegistry(config).then(definitions => new OperationExecutor(dbPool(config), config, [...workspaceOperationRegistrations(definitions,config),collaborationParticipantsRegistration(definitions),catalogRegistration(config,definitions),...threadCreationRegistrations(definitions),...noteControlRegistrations(definitions),...noteObjectRegistrations(definitions),...knowledgeObjectRegistrations(definitions),...knowledgeReviewRegistrations(definitions),knowledgeExtractionRegistration(definitions),...researchWorkspaceRegistrations(definitions,config),...researchExecutionRegistrations(definitions,config),researchAdhocRegistration(definitions,config),...projectSourceProposalRegistrations(definitions,config),...projectCorpusRegistrations(definitions),...projectFolderRegistrations(definitions,config),...projectFolderIoRegistrations(definitions,config),...inquiryOperationRegistrations(definitions),...inquiryAgentOperationRegistrations(definitions),...projectIngressRegistrations(definitions,config),...projectManagementRegistrations(definitions,config),...experimentRegistrations(definitions), researchCancelRegistration(definitions),...actionGrantRegistrations(config,definitions),...projectOperationRegistrations(definitions),...projectSourceRegistrations(definitions),...boardOperationRegistrations(config,definitions),...taskLifecycleRegistrations(config,definitions),taskSpacePlacementRegistration(config,definitions),...sourceBackfillRegistrations(definitions),...sourceSubscriptionRegistrations(config,definitions),...sourceMonitorRegistrations(config,definitions),sourceRecipeCreateRegistration(config,definitions),sourceChannelCreateRegistration(config,definitions),...sourceProcessingRegistrations(config,definitions),...pluginOperations(config)]));
+    runtime = loadSystemActionRegistry(config).then(definitions => new OperationExecutor(dbPool(config), config, [...workspaceOperationRegistrations(definitions,config),collaborationParticipantsRegistration(definitions),catalogRegistration(config,definitions),...threadCreationRegistrations(definitions),...noteControlRegistrations(definitions),...noteObjectRegistrations(definitions),...knowledgeObjectRegistrations(definitions),...knowledgeReviewRegistrations(definitions),knowledgeExtractionRegistration(definitions),...researchWorkspaceRegistrations(definitions,config),...researchExecutionRegistrations(definitions,config),...researchControlRegistrations(definitions,config),...researchAgentRegistrations(definitions),...agentOperationRegistrations(definitions,config),...agentChatRegistrations(definitions,config),...roomOperationRegistrations(definitions,config),...agentGroupOperationRegistrations(definitions,config),...runOperationRegistrations(definitions,config),...sessionOperationRegistrations(definitions,config),...hostCommandRegistrations(definitions,config),...hostDirectRegistrations(definitions,config),...providerOperationRegistrations(definitions,config),...networkProfileOperationRegistrations(definitions,config),...acpAgentOperationRegistrations(definitions,config),...pluginSettingsOperationRegistrations(definitions,config),...systemSettingsOperationRegistrations(definitions,config),...sourceCatalogOperationRegistrations(definitions,config),...deploymentOperationRegistrations(definitions,config),...notificationOperationRegistrations(definitions,config),...importedSessionRegistrations(definitions,config),researchAdhocRegistration(definitions,config),...projectSourceProposalRegistrations(definitions,config),...projectCorpusRegistrations(definitions),...projectFolderRegistrations(definitions,config),...projectFolderIoRegistrations(definitions,config),...inquiryOperationRegistrations(definitions),...inquiryAgentOperationRegistrations(definitions),...projectIngressRegistrations(definitions,config),...projectIngressCommandRegistrations(definitions,config),publicSummaryDraftRegistration(definitions,config),importedHistoryExtractionRegistration(definitions,config),projectSummaryBriefRegistration(definitions),...projectManagementRegistrations(definitions,config),...experimentRegistrations(definitions), researchCancelRegistration(definitions),...actionGrantRegistrations(config,definitions),...projectOperationRegistrations(definitions),...projectSourceRegistrations(definitions),...boardOperationRegistrations(config,definitions),...taskLifecycleRegistrations(config,definitions),taskSpacePlacementRegistration(config,definitions),...sourceBackfillRegistrations(definitions),...sourceSubscriptionRegistrations(config,definitions),...sourceMonitorRegistrations(config,definitions),sourceRecipeCreateRegistration(config,definitions),sourceChannelCreateRegistration(config,definitions),...sourceProcessingRegistrations(config,definitions),...pluginOperations(config)]));
     runtimes.set(config, runtime);
   }
   return runtime;

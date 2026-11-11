@@ -3,7 +3,7 @@ import type {WorkspaceChangeView} from '@rainver/protocol'
 import {ApiRequestError,runsApi,type RequestOptions} from '../../api/client'
 import type {Run} from '../../types/api'
 import {errMsg} from '../../lib/utils'
-import {TERMINAL_CHANGE_STATES,type WorkspaceChangeEntryView} from './WorkspaceChangeList'
+import {TERMINAL_CHANGE_STATES,workspaceRunActive,type WorkspaceChangeEntryView} from './WorkspaceChangeList'
 
 const POLL_MS=3000,MAX_POLLS=120,FORCED_POLLS=5
 
@@ -64,7 +64,7 @@ export function useRunWorkspaceChanges(runs:readonly Run[],scope:RequestOptions)
   const seen=new Set<string>(),out:WorkspaceChangeEntryView[]=[]
   for(const run of enabledRuns)for(const change of byRun[run.id]??[]){
    if(seen.has(change.change_set_id))continue
-   seen.add(change.change_set_id);out.push({change,runId:run.id,runSucceeded:run.status==='succeeded'})
+   seen.add(change.change_set_id);out.push({change,runId:run.id,runSucceeded:run.status==='succeeded',runActive:workspaceRunActive(run.status)})
   }
   return out
  },[byRun,enabledRuns])

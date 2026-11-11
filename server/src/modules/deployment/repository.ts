@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Pool, PoolClient } from "../../db/pool.js";
+import type { Queryable } from "../routeUtils/common.js";
 import type {
   DeploymentJob,
   DeploymentJobEvent,
@@ -120,7 +120,7 @@ const INTERRUPTED_STAGE = `(
  * hand out a job that was just cancelled.
  */
 export class DeploymentRepository {
-  constructor(private readonly db: Pool | PoolClient) {}
+  constructor(private readonly db: Queryable) {}
 
   async createJob(input: {
     job_type: DeploymentJobType;

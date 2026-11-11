@@ -7,6 +7,8 @@ export const networkProfilesModule: ServerModule = {
 };
 
 export {
+  networkProfileRepositoryIn,
+  NetworkProfileError,
   resolveNetworkProfileRepository,
   type NetworkProfileCreateInput,
   type NetworkProfileUpdateInput,

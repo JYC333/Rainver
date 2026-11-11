@@ -1,47 +1,22 @@
-import {operationPackages} from "./operationRegistry.js";
-import {setOperationPluginEnabled} from "./lifecycle.js";
-import type { FastifyInstance, FastifyReply } from "fastify";
-import type { ServerConfig } from "../../config.js";
+import { registerOperationAdapters } from "../systemActions/operations/routeAdapter.js";
+import { pluginTransitionAround } from "./settingsOperations.js";
+import type { FastifyInstance } from "fastify";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
-import {
-  resolveIdentity,
-  dbPool,
-  HttpError,
-  sendRouteError,
-  jsonBody,
-  objectValue,
-  withDbTransaction,
-} from "../routeUtils/common.js";
-import { requireSpaceOwnerOrAdmin, requireInstanceAdmin } from "../routeUtils/access.js";
+import { resolveIdentity, dbPool, sendRouteError } from "../routeUtils/common.js";
 import { pluginServiceFor } from "./service.js";
 import { getOfficialPlugin } from "./registry.js";
-import { installOfficialPlugin } from "./installer.js";
-import { BUILT_IN_PLUGINS } from "./builtInPlugins.js";
-
-function settingsObject(value: unknown): Record<string, unknown> | undefined {
-  if (value === undefined || value === null) return undefined;
-  if (typeof value !== "object" || Array.isArray(value)) {
-    throw new HttpError(422, "settings must be an object");
-  }
-  return objectValue(value);
-}
-
-async function requirePluginWritePermission(
-  config: ServerConfig,
-  identity: { spaceId: string; userId: string },
-  pluginId: string,
-  reply: FastifyReply,
-): Promise<boolean> {
-  const descriptor = getOfficialPlugin(pluginId,config);
-  if (!descriptor) {
-    reply.code(404).send({ detail: `Plugin not found: ${pluginId}` });
-    return false;
-  }
-  if (descriptor.scope === "user") return true;
-  return requireSpaceOwnerOrAdmin(config, identity, reply);
-}
+import { pluginCleanupStatuses } from "./lifecycle.js";
 
 export function registerRoutes(app: FastifyInstance, { config }: ModuleContext): void {
+  const plugin = { pluginId: "plugin_id" };
+  // Retained write URLs bound to `plugin.*` (`settingsOperations.ts`). `/install` answers a
+  // system command receipt; its `{ install, item }` is released by the command status read.
+  registerOperationAdapters(app, config, [
+    { method: "POST", url: "/api/v1/plugins/:pluginId/install", operation: "official_plugin.install", params: plugin },
+    { method: "POST", url: "/api/v1/plugins/:pluginId/enable", operation: "official_plugin.enable", params: plugin, around: pluginTransitionAround(config, true) },
+    { method: "POST", url: "/api/v1/plugins/:pluginId/disable", operation: "official_plugin.disable", params: plugin, around: pluginTransitionAround(config, false) },
+    { method: "PATCH", url: "/api/v1/plugins/:pluginId/settings", operation: "official_plugin.settings.update", params: plugin },
+  ]);
   const db = () => dbPool(config);
 
   /**
@@ -54,7 +29,9 @@ export function registerRoutes(app: FastifyInstance, { config }: ModuleContext):
       const identity = await resolveIdentity(config, request, reply);
       if (!identity) return;
       const items = await pluginServiceFor(config).listPlugins(db(), identity.spaceId, identity.userId);
-      reply.send({ items });
+      // Cleanup obligations only for plugins this person administers here (B53).
+      const cleanup = await pluginCleanupStatuses(db(), config, identity.spaceId, identity.userId);
+      reply.send({ items: items.map(item => ({ ...item, cleanup: cleanup.get(item.descriptor.id) ?? null })) });
     } catch (err) {
       sendRouteError(reply, err);
     }
@@ -90,143 +67,11 @@ export function registerRoutes(app: FastifyInstance, { config }: ModuleContext):
         return;
       }
       const item = await pluginServiceFor(config).getPlugin(db(), pluginId, identity.spaceId, identity.userId);
-      reply.send(item);
+      const cleanup = await pluginCleanupStatuses(db(), config, identity.spaceId, identity.userId);
+      reply.send({ ...item, cleanup: cleanup.get(pluginId) ?? null });
     } catch (err) {
       sendRouteError(reply, err);
     }
   });
 
-  /**
-   * POST /api/v1/plugins/:pluginId/install
-   * Install an official plugin package on this instance.
-   * Runs plugin-owned migrations and records plugin_installs/plugin_migrations.
-   */
-  app.post("/api/v1/plugins/:pluginId/install", async (request, reply) => {
-    try {
-      const identity = await resolveIdentity(config, request, reply);
-      if (!identity) return;
-      const { pluginId } = request.params as { pluginId: string };
-      if (!(await requirePluginWritePermission(config, identity, pluginId, reply))) return;
-
-      if (!(await requireInstanceAdmin(config, identity, reply, "Plugin install requires instance admin"))) return;
-      const install = await withDbTransaction(
-        db(),
-        (client) =>
-          installOfficialPlugin(client, pluginId, BUILT_IN_PLUGINS, {
-            actorUserId: identity.userId,
-            source: "official",
-          }),
-      );
-      const item = await pluginServiceFor(config).getPlugin(db(), pluginId, identity.spaceId, identity.userId);
-      reply.code(200).send({ install, item });
-    } catch (err) {
-      sendRouteError(reply, err);
-    }
-  });
-
-  /**
-   * POST /api/v1/plugins/:pluginId/enable
-   * Enable a plugin. Scope (space vs user) is determined by the plugin descriptor.
-   * Body: { settings?: Record<string, unknown> }
-   */
-  app.post("/api/v1/plugins/:pluginId/enable", async (request, reply) => {
-    try {
-      const identity = await resolveIdentity(config, request, reply);
-      if (!identity) return;
-      const { pluginId } = request.params as { pluginId: string };
-      const body = jsonBody(request);
-      const settings = settingsObject(body.settings);
-      if (!(await requirePluginWritePermission(config, identity, pluginId, reply))) return;
-
-      const item = operationPackages(config).some(p=>p.id===pluginId||p.operationManifest?.requires.includes(pluginId))?await setOperationPluginEnabled(config,pluginId,identity.spaceId,identity.userId,true,settings):await withDbTransaction(
-        db(),
-        (client) =>
-          pluginServiceFor(config).enablePlugin(
-            client,
-            pluginId,
-            identity.spaceId,
-            identity.userId,
-            { settings },
-          ),
-      );
-      reply.code(200).send(item);
-    } catch (err) {
-      if (err instanceof HttpError && err.statusCode === 404) {
-        reply.code(404).send({ detail: err.message });
-        return;
-      }
-      sendRouteError(reply, err);
-    }
-  });
-
-  /**
-   * POST /api/v1/plugins/:pluginId/disable
-   * Disable a plugin. Does not delete data.
-   * Scope is determined by the plugin descriptor.
-   */
-  app.post("/api/v1/plugins/:pluginId/disable", async (request, reply) => {
-    try {
-      const identity = await resolveIdentity(config, request, reply);
-      if (!identity) return;
-      const { pluginId } = request.params as { pluginId: string };
-      if (!(await requirePluginWritePermission(config, identity, pluginId, reply))) return;
-
-      const item = operationPackages(config).some(p=>p.id===pluginId||p.operationManifest?.requires.includes(pluginId))?await setOperationPluginEnabled(config,pluginId,identity.spaceId,identity.userId,false):await withDbTransaction(
-        db(),
-        (client) =>
-          pluginServiceFor(config).disablePlugin(
-            client,
-            pluginId,
-            identity.spaceId,
-            identity.userId,
-          ),
-      );
-      reply.code(200).send(item);
-    } catch (err) {
-      if (err instanceof HttpError && err.statusCode === 404) {
-        reply.code(404).send({ detail: err.message });
-        return;
-      }
-      sendRouteError(reply, err);
-    }
-  });
-
-  /**
-   * PATCH /api/v1/plugins/:pluginId/settings
-   * Patch settings_json for a plugin. Allowed even when disabled (for pre-configuration).
-   * Body: { settings: Record<string, unknown> }
-   */
-  app.patch("/api/v1/plugins/:pluginId/settings", async (request, reply) => {
-    try {
-      const identity = await resolveIdentity(config, request, reply);
-      if (!identity) return;
-      const { pluginId } = request.params as { pluginId: string };
-      const body = jsonBody(request);
-      if (body.settings === undefined || body.settings === null) {
-        reply.code(422).send({ detail: "settings must be an object" });
-        return;
-      }
-      const settings = settingsObject(body.settings)!;
-      if (!(await requirePluginWritePermission(config, identity, pluginId, reply))) return;
-
-      const item = await withDbTransaction(
-        db(),
-        (client) =>
-          pluginServiceFor(config).patchSettings(
-            client,
-            pluginId,
-            identity.spaceId,
-            identity.userId,
-            settings,
-          ),
-      );
-      reply.code(200).send(item);
-    } catch (err) {
-      if (err instanceof HttpError && err.statusCode === 404) {
-        reply.code(404).send({ detail: err.message });
-        return;
-      }
-      sendRouteError(reply, err);
-    }
-  });
 }

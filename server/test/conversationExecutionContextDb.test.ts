@@ -1,3 +1,4 @@
+import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { seedServerHost, seedSpaceOwnerProject } from "./support/domainSeeds.js";
@@ -256,6 +257,38 @@ describe("Conversation execution schema", () => {
     expect(bound.rows.map((row) => row.agent_id)).toEqual([AGENT, sharedAgent]);
   });
 
+  it("previews without writing and initializes through the core command adapter", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: db.connectionUri }), [sessionsModule]);
+    const contexts = async () => (await db.pool.query(`SELECT state FROM conversation_execution_contexts WHERE session_id = $1`, [SESSION])).rows;
+    const request = {
+      selection: { execution_host_id: HOST, primary: { kind: "managed" as const } },
+      runtime: { agent_id: AGENT, runtime_profile_id: RUNTIME, runtime_key: "claude_code", runtime_installation: "managed:1.0.0" },
+    };
+    try {
+      __setAuthIdentityForTests({ spaceId: SPACE, userId: OWNER });
+      const preview = await app.inject({ method: "POST", url: `/api/v1/sessions/${SESSION}/execution-context/preflight`, payload: request });
+      expect(preview.statusCode, preview.body).toBe(200);
+      expect(preview.json().data.summary).toMatchObject({ session_id: SESSION, state: "draft" });
+      // Previewing (and the GET it backs) writes nothing.
+      expect((await app.inject({ method: "GET", url: `/api/v1/sessions/${SESSION}/execution-context` })).statusCode).toBe(200);
+      expect(await contexts()).toEqual([]);
+      __setAuthIdentityForTests({ spaceId: SPACE, userId: VIEWER });
+      const refused = await app.inject({ method: "POST", url: `/api/v1/sessions/${SESSION}/execution-context/initialize`, payload: request, headers: { "idempotency-key": randomUUID() } });
+      expect(refused.statusCode).toBe(404);
+      __setAuthIdentityForTests({ spaceId: SPACE, userId: OWNER });
+      const key = randomUUID();
+      const initialized = await app.inject({ method: "POST", url: `/api/v1/sessions/${SESSION}/execution-context/initialize`, payload: request, headers: { "idempotency-key": key } });
+      expect(initialized.statusCode, initialized.body).toBe(200);
+      expect(initialized.json().data).toEqual({ id: SESSION, space_id: SPACE, session_id: SESSION });
+      expect((await app.inject({ method: "POST", url: `/api/v1/sessions/${SESSION}/execution-context/initialize`, payload: request, headers: { "idempotency-key": key } })).json()).toEqual(initialized.json());
+      expect(await contexts()).toEqual([{ state: "initialized" }]);
+    } finally {
+      __setAuthIdentityForTests(null);
+      await app.close();
+    }
+  });
+
   it("closes a direct thread and its workspace only with the person's last direct session of the Agent", async (ctx) => {
     if (!db.available) return ctx.skip();
     const now = new Date().toISOString();
@@ -284,20 +317,23 @@ describe("Conversation execution schema", () => {
       `SELECT status FROM host_threads WHERE id = $1`, [thread.id],
     )).rows[0]?.status;
 
-    __setSessionIdentityForTests({ spaceId: SPACE, userId: OWNER });
+    __setAuthIdentityForTests({ spaceId: SPACE, userId: OWNER });
     const app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: db.connectionUri, SERVER_INTERNAL_TOKEN: "test" }), [sessionsModule]);
+    const pending = async () => (await db.pool.query<{ pending: boolean }>(`SELECT pending_archive_at IS NOT NULL AS pending FROM host_threads WHERE id = $1`, [thread.id])).rows[0]?.pending;
     try {
       // The older chat goes; the one still in use keeps its CLI continuity.
-      const deleted = await app.inject({ method: "DELETE", url: `/api/v1/sessions/${first}` });
-      expect(deleted.statusCode).toBe(200);
-      expect(deleted.json()).toMatchObject({ deleted: true, managed_workspace_archive: [] });
+      const deleted = await app.inject({ method: "DELETE", url: `/api/v1/sessions/${first}`, headers: { "idempotency-key": randomUUID() } });
+      expect(deleted.statusCode, deleted.body).toBe(200);
+      expect(deleted.json().data).toMatchObject({ session_id: first });
       expect(await threadStatus()).toBe("active");
 
-      const last = await app.inject({ method: "DELETE", url: `/api/v1/sessions/${second}` });
-      expect(last.statusCode).toBe(200);
-      expect(last.json().managed_workspace_archive).toEqual([expect.objectContaining({ agent_id: AGENT })]);
+      const last = await app.inject({ method: "DELETE", url: `/api/v1/sessions/${second}`, headers: { "idempotency-key": randomUUID() } });
+      expect(last.statusCode, last.body).toBe(200);
+      // The archive intent committed with the deletion; the Host (offline here) archives it on reconnect.
+      expect(await pending()).toBe(true);
       expect(await threadStatus()).toBe("closed");
     } finally {
+      __setAuthIdentityForTests(null);
       await app.close();
     }
   });

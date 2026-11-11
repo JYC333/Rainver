@@ -89,7 +89,7 @@ export class PluginHost {
     const release=installOperationContributions(config,normalized,operations);
     const releaseLifecycle=registerPluginLifecycle(config,this.backgrounds);
     const releaseProposals=registerPluginProposalContributor(config,this);
-    fastify.addHook("onClose",async()=>{const errors:unknown[]=[];try{for(const b of [...this.backgrounds.values()].reverse())try{await b.close();}catch(e){errors.push(e);}}finally{releaseProposals();releaseLifecycle();release();}if(errors.length)throw new AggregateError(errors,"Plugin shutdown cleanup failed");});
+    fastify.addHook("onClose",async()=>{const errors:unknown[]=[];try{for(const b of [...this.backgrounds.values()].reverse())try{await b.close();}catch(e){errors.push(e);}}finally{releaseProposals();try{await releaseLifecycle();}finally{release();}}if(errors.length)throw new AggregateError(errors,"Plugin shutdown cleanup failed");});
     this._activated=true;
   }
 

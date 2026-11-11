@@ -89,9 +89,21 @@ There is no remote package download. Built-in official plugin source lives in
 this monorepo under `plugins/official/*`, is compiled into
 `server/dist/official-plugins/*`, loaded by `builtInPlugins.ts`, and activated
 by `PluginHost` at startup. A plugin is catalog-visible first, then
-`POST /api/v1/plugins/:id/install` runs its plugin-owned schema migrations and
+`POST /api/v1/plugins/:id/install` (`official_plugin.install`, a system command:
+instance admin, its multi-statement migrations run in the worker's own
+transaction together with the command's settlement, read through
+`GET /api/v1/system/commands/:commandId`; the worker share-locks the issuer's
+user and membership rows before its authority check and holds them until the
+install commits, so a concurrent disable, membership removal or instance-admin
+revocation either commits first and the install is refused, or waits for the
+install's commit) runs its plugin-owned schema migrations and
 writes `plugin_installs`/`plugin_migrations`, and only then can
-`POST /api/v1/plugins/:id/enable` enable it for a user or space.
+`POST /api/v1/plugins/:id/enable` (`official_plugin.enable`) enable it for a user or space.
+Enable, disable and settings are keyed operation-core commands at their declared
+scope (B53); an operation package's process-local effects are admitted under
+durable scope holds and released by their owning process only after a disable
+commits (`plugins/lifecycle.ts`, see SQL data-port and lifecycle hardening). The
+`plugin.<id>.*` operation namespace stays reserved for plugin-owned operations.
 
 Install state and plugin schema are managed independently of the core baseline
 migration. `RainverPlugin.activate(ctx)` is the startup activation contract.
@@ -146,7 +158,7 @@ Response for a plugin that is not installed (403):
 ## 4. Data Lifecycle
 
 ### Migrations
-Core plugin control-plane schema (`official_plugin_enablements`, `official_plugin_events`, `plugin_installs`, and `plugin_migrations`) uses the standard `server/migrations/` append-only chain.
+Core plugin control-plane schema (`official_plugin_enablements`, `official_plugin_events`, `official_plugin_scope_holds` (0026), `plugin_installs`, and `plugin_migrations`) uses the standard `server/migrations/` append-only chain.
 
 Plugin-owned domain tables do not live in the core baseline. The `diary` plugin owns `diary_entries` and `diary_reflections` through SQL files under `plugins/official/diary/migrations/`. The `finance_ledger` plugin owns its finance book, account, directive, posting, price, import/export, and metadata tables through SQL files under `plugins/official/finance_ledger/migrations/`. Plugin migrations are copied into `server/dist/official-plugins/<plugin_id>/migrations/` during build. The installer executes those migrations only when the plugin is installed and records their checksums in `plugin_migrations`.
 
@@ -373,13 +385,189 @@ validated; system Job/schedule policy audits retain the responsible human.
 Jobs recheck live authority and enabled dependency closure before commit.
 
 The enable/disable route's canonical lifecycle service serializes install and
-enablement rows in sorted order. It blocks new local effect admission, aborts
-scoped resources, disposes LIFO (continuing after errors), persists disable and cancels canonical pending/claimed/running Jobs for the scope/dependents in that same transaction.
-Cleanup failures record `scope_cleanup_failed` and return `cleanup_pending`;
-disabled data is preserved. Failed enable/disable transactions reopen local
-admission. Re-enable clears only that disable token, preserving other disabled
-dependency blocks. Direct pluginService DB methods remain transaction primitives;
-new operation package routes must use the lifecycle service.
+enablement rows in sorted order. Nothing local is touched until a new outcome
+commits: an unkeyed, malformed, refused, conflicting or replayed command leaves
+local effects as they were.
+
+**Durable scope holds (generation + owner).** Every local effect of an
+operation package is admitted under a row of `official_plugin_scope_holds`
+(migration 0026): one `active` hold per (package, Space, user, owner process).
+Admission (`admitPluginScopeHold`, used by the Job wrapper through
+`PluginBackground.admit`) is a short transaction that share-locks the scope's
+install/enablement rows, checks the live enabled state and returns the current
+hold; resources are entered under that hold id, never under the bare scope.
+A disable, in its own transaction, cancels the scope's canonical Jobs, opens a
+new **release round**: every `active` or still-`releasing` hold of the affected
+packages in the scope becomes `releasing` (`release_plugin_id`, `release_round`,
+attempts reset), and records a delayed `official_plugin_scope_cleanup` Job. A
+later enable admits new work under a **new** hold; a cleanup only ever closes
+the holds of its round, so an old round, replayed or delayed in any process,
+never closes a newer generation, and an old-generation Job's final transaction
+refuses to commit once its hold is no longer `active` (even after re-enable).
+An enable is refused with 409 while any hold of the scope is `releasing`,
+in whichever process it lives.
+
+**Commit fence (the hold row).** Work under a hold commits only if its own
+transaction, after the scope lock, reads the hold `active`, owned by the
+instance that admitted it (still this process's live lease) and that lease
+held by its own session at that statement — with the row read `FOR SHARE`
+(`pluginScopeHoldCurrent`). The row lock lasts through COMMIT, so no
+transition of the hold (disable round, release, adoption, `owner_gone`) can
+take effect before that commit, and every transition after it makes the check
+fail; a failed statement throws (fail closed). This, not a timer or a
+`pg_locks` read, is what orders a Job's COMMIT with every settlement: the
+running Job's 1 s abort check only stops work earlier. Admission's write
+requires the lease in the same statement; an admitted hold is `active`, which
+no foreign settlement touches.
+
+**Owner lease.** A hold belongs to the process instance that admitted it. Its
+owner identity is a lease: the session advisory lock
+`plugin-scope-owner:<instance>` held on a dedicated connection
+(`withDedicatedSessionAdvisoryLock`, backend `pid` recorded at acquisition) for
+the instance's life, released by PostgreSQL when the process or its session
+ends. Only that session ever takes the key — other processes read `pg_locks`
+and never acquire it — so a free lease stays free and a reused pid can never
+appear to hold it. The lease is checked on its own timer (every 1 s,
+`pluginScopeLeaseCheck`) for detection; every claim, admission, reopen and
+commit proves it in its own SQL statement or transaction. A lost lease fences
+the process at once: admission refused and every local signal aborted (no
+callback runs then), and a fresh lease under a new instance follows without
+waiting for the old unlock; right after renewal (and on every recovery pass)
+it **adopts** every hold that still holds something here through the
+scope-locked reopen (made `releasing` under the new instance, a new round if
+it had left `releasing`, `scope_cleanup_reopened`), and records released what
+the old lease left with nothing local (skipping a row a commit still locks).
+
+**Attempts.** Only the owner releases its holds — the disabling request after
+commit, its periodic recovery (`pluginScopeOwnerTick`, every 2 s), the cleanup
+Job in that process, its exit, or an early dispose (the function `onDispose`
+returns). Invariant **A1**: every invocation of a dispose callback, from any of
+these entries, happens inside an attempt claimed by the one SQL claim
+(`claimHoldAttempt`): a single statement against the hold's durable counter for
+its round — only when due (`next_attempt_at`, backoff 5 s × attempt; process
+exit does not wait), not `needs_attention`, below three, owned by the live
+lease and that lease held in the same statement. **A2**: a callback is invoked
+at most once per claimed attempt (each claim has its own key; a callback in
+flight is shared, never re-invoked), so per round it runs at most as often as
+the round's durable `attempts`, never more than three times. There is no
+process-local budget. A timer, a Job, a request, an exit and early disposes, in
+any order or at once, never double count, re-enter or exceed three, and a late
+callback's first run is attempt 1 of its round. The claim of the third attempt
+already marks `needs_attention`; after it nothing is invoked (an early dispose
+is refused with `PluginDisposeRefused`, as it is when the attempt is not due or
+the claim fails) until a new disable round (attempts reset). Registration, a Job
+leaving, a lease loss or a shutdown never start a drain by themselves; inside a
+running attempt's bounded wait a registration or a leave continues that
+attempt's drain. Callbacks run with **no DB transaction or lock held**, and one
+short write records the outcome. A hold is `released` only when every callback
+registered under it is done and no handle on it is open. Callbacks that
+resolved never run again.
+
+**Early dispose.** The function `onDispose` returns goes through the same
+claim. It resolves at once for a callback already done, shares an invocation in
+flight, and is refused without invoking anything inside an open Job
+transaction. On a `releasing` hold it is a full attempt (the same drain and
+outcome write as the host's). On an `active` hold it claims against the hold's
+active counter (`release_round` null) and invokes only the callbacks whose early
+dispose is pending (concurrent requests join one claim); when it succeeds and no
+callback of the hold has failed, the counter is reset (`last_outcome`
+`disposed`), otherwise its backoff and attention apply until the disable round,
+which starts a fresh round.
+
+**Registration windows (late resources).** A resource that outlives a running
+handler must be covered by a durable obligation before it can be registered;
+no asynchronous reopen or takeover compensates afterwards. Invariants:
+
+- **R1** A registration capability exists only on an open handle, and a handle
+  is opened only while its hold is durably an obligation: the Job's entry,
+  opened right after admission committed the hold `active` (an entry of a
+  closing hold is refused), or a `ctx.retain()` handle, pinned locally and then
+  confirmed in one transaction holding the scope's write locks (the order
+  enable and disable use), the hold's row lock and the lease proof, before the
+  plugin receives it. `retain()` refuses a hold whose generation ended
+  (`released`, `owner_gone`) instead of reopening it; a failure (no lease, a DB
+  fault, a lock timeout) unpins and rejects with nothing registered.
+- **R2** While any handle on a hold is open here, no owner path records it
+  released (the local check and the release write are ordered per hold, and
+  the write rechecks inside its transaction); other processes only ever settle
+  it `owner_gone`, after its owner's lease was verifiably free past the grace.
+  So every registration lands on a hold that is `active` or `releasing` in
+  PostgreSQL, and an enable in any process either committed before the hold
+  was admitted or retained (nothing existed yet) or sees it `releasing` (409).
+- **R3** A handle closes only where no registration can follow it. With the
+  bounded contract — `ctx.lifecycle.jobs.register(id, handler,
+  { disposeRegistration: 'handler' })` — the Job's handle closes when the
+  handler settles; a resource created later is reserved with `ctx.retain()`
+  first, and its handle closes at `release()`. A Job registered without the
+  option (the original contract, where a saved `ctx.onDispose` may register at
+  any time) keeps its handle open after the handler returns, until this
+  process ends: its hold is never recorded released here, a disable round
+  drains what is registered (late registrations included, through claimed
+  attempts) and records the outcome `registering`; after three attempts it
+  needs attention, an enable stays refused in every process, and the hold
+  settles `owner_gone` once the owner exited and its lease was free past the
+  grace. The original contract is therefore retained but safe, at the cost of
+  re-enabling a disabled scope only after the owning process restarted.
+- **R4** A registration through a closed handle throws `PluginRegistrationClosed`
+  synchronously (it is reachable only by breaking the declared contract).
+
+Every in-repository producer uses the bounded contract (the lifecycle fixture
+keeps an original-contract variant for evidence).
+
+**Other owners.** While an owner's lease is held it is alive: nothing settles
+its holds (the Job defers without spending an attempt). A lease verifiably free
+is observed twice across `OWNER_LOST_GRACE_MS` (15 s) before its `releasing`
+holds become `owner_gone` (`scope_cleanup_owner_gone`) — not `released`; each
+statement reads the lease itself and skips rows another transaction holds.
+Every process's recovery pass visits foreign owners with a `releasing` hold in
+rotation (ordered by owner instance after a per-process cursor, wrapping
+around, at most 20 per pass), for any round, so whatever the first owners'
+state every owner is visited within ceil(owners / 20) passes, and a cancelled,
+exhausted or missing cleanup Job, a worker that does not host the plugin, or a
+missing plugin descriptor never leaves a crashed owner's hold releasing
+forever. A DB error ends the pass where it is and settles nothing; the next
+pass (2 s) retries. The cursor is per process and resets on restart. The Job
+(its own per-round cursor) defers while an automatic path remains (own retry
+not yet due, live owner not at attention, a free lease inside its grace),
+fails when every remaining hold needs attention, and completes only when no
+hold of its round is `releasing` (`{settled, released, owner_gone}`).
+Graceful shutdown fences, gives every hold still holding something one claimed
+exit attempt (an active one opens a round), records released what holds
+nothing, and ends the lease.
+
+**Not guaranteed.** The fences cover PostgreSQL state. An effect outside it
+that plugin code already issued (a network call, a file) is not undone by the
+abort signal or the grace: a process paused or cut off from PostgreSQL past
+the grace is presumed gone (`owner_gone`), and what it registers on return is
+adopted again but an enable may have run in between. An external effect that
+must never act for a stale owner goes through the Job's transaction (an
+outbox row committed under the fence) or checks a fencing token at its own
+resource.
+
+**Repair surface.** `GET /api/v1/plugins` and `GET /api/v1/plugins/:id` add
+`cleanup` (`OfficialPluginCleanupStatus`) for a person who administers the
+plugin in this context (B53: Space owner/admin for a Space plugin, the user for
+a user plugin): `state`, three counts and the last attempt time; no owner,
+process, path or error text is exposed. Each `releasing` hold counts once, from
+existing columns (no migration):
+
+| Count | Hold | Recovery |
+| --- | --- | --- |
+| `awaiting_restart` | last outcome `registering` (only an original-contract registration window keeps it, R3) and its owner not known lost | none by retry: it settles `owner_gone` after the owning service process restarts or exits and the grace passes |
+| `attention` | needs attention, last outcome not `registering`, owner not known lost (a failed callback) | a new disable round |
+| `pending` | everything else, including any hold whose owner is known lost (`owner_lost_at`) | automatic |
+
+`state` is `needs_attention` when anything is retryable, else
+`awaiting_restart` when a hold waits for its process, else `pending`. The
+Optional Modules card shows one line per non-zero count under the card text.
+Outside `awaiting_restart` it offers **Retry cleanup**, a new disable round
+(`POST /api/v1/plugins/:id/disable`; a still-pending result says to see the
+status above). In `awaiting_restart` it offers only **Refresh status**: the
+copy says that a retry cannot release those resources and that they are
+released after the service process restarts or exits; the page never
+restarts or deploys anything itself. Enable stays visibly disabled while any
+obligation remains, and the read clears once the hold settled. Events remain
+audit, not the repair entry.
 
 In-flight SQL is cancelled through the independent audit pool, fenced by backend
 pid plus transaction ID; cancellation is awaited before returning the data
@@ -440,7 +628,8 @@ The following are out of scope for the current implementation:
 | `server/src/modules/plugins/installer.ts` | Legacy public-table installer (manifest packages refused) |
 | `server/src/modules/plugins/operationMigrations.ts` | Offline operation-package migration/failure journal |
 | `server/src/modules/plugins/roleReconcile.ts` | Offline schema owners/role/ACL recovery |
-| `server/src/modules/plugins/lifecycle.ts` | Scoped enable/disable and cleanup |
+| `server/src/modules/plugins/lifecycle.ts` | Scoped enable/disable, durable scope holds, owner lease, release rounds and the cleanup read |
+| `server/src/modules/plugins/effectScopes.ts` | Per-hold local resource tracking (late registration, entered Jobs, bounded drains) |
 | `server/src/modules/plugins/background.ts` | Canonical Job handlers, scoped resource ports |
 | `server/src/modules/plugins/schedules.ts` | Canonical scheduler scope fanout |
 | `server/src/modules/plugins/proposalContributions.ts` | Canonical proposal schemas/applier wrappers |
@@ -607,13 +796,25 @@ This remains a bounded safeguard for trusted first-party code: custom routines,
 operators, extension functions and tenant predicates require domain SQL review;
 this does not make arbitrary PostgreSQL functions safe or create a sandbox.
 
-Local enable/disable transitions serialize per config/plugin/owning scope across
-cleanup, transaction and gate settlement. Cleanup stays before DB locks so it can
-cancel running Jobs. Each disable owns a temporary admission hold; only a
-successful disable installs the stable disabled hold. Failed transitions remove
-only their own hold; a failed enable cannot reopen a disabled scope. Other
-dependency/shutdown holds remain in force. Live DB checks remain authoritative
-across processes; this queue only orders one process's cooperative resources.
+Plugin local effects are bound to durable scope holds
+(`official_plugin_scope_holds`): admission is a short transaction serialized
+with enable/disable by the scope's install/enablement row locks; a disable
+marks the scope's holds `releasing` in its own transaction (a release round);
+the owning process releases them after commit with no DB transaction or lock
+held across dispose and one short write per outcome. A newer enable admits
+work under a new hold, so an old round never closes it, and an old-generation
+Job cannot commit after its hold left `active`: its commit check share-locks
+the hold row through COMMIT, so every transition of the hold waits for it.
+Ownership is a session advisory lock lease, proven in every admission, claim,
+reopen and commit statement; another process settles a hold only as
+`owner_gone` after that lease is verifiably free for the grace period, visiting
+foreign owners in rotation. Dispose callbacks run only in claimed attempts
+against the hold's durable per-round counter (at most three), early disposes
+included; a callback is registered only through a handle opened while its hold
+is durably an obligation (a late resource is reserved by `ctx.retain()` before
+it exists; an original-contract Job keeps its handle, and so its hold's
+obligation, open until its process ends). Process-local serialization only
+orders one process's own transitions and releases.
 
 The shared operation-session guard also refuses references to `pg_settings`,
 including qualified/quoted names and DML inside WITH. Its UPDATE rewrite is
@@ -630,17 +831,37 @@ these names remains ordinary data. The list follows PostgreSQL's
 The shared session guard also refuses setseed calls in both P1 and PluginDb,
 preventing pooled-session PRNG state from leaking between invocations.
 
-Scope cleanup and Job resource disposal share one tracked cleanup promise and
-each wait at most three seconds. A Job can unwind its transaction at the
-deadline instead of holding locks behind a hung dispose callback. On timeout,
-disable still records cleanup_pending and commits its DB gate/cancellations;
-the unfinished cleanup remains tracked, including callbacks a Job already
-started disposing. Pending scopes cannot enter resources or reenable (409),
-even if a temporary hold is removed. Once the original cleanup settles, an
-explicit enable can reopen the stable disabled hold. Timeouts do not cancel
-arbitrary JavaScript; a callback that never settles keeps its scope quarantined,
-and synchronous event-loop blocking cannot be preempted. Other scopes are not
-queued behind it. Cleanup rejection is observed even after the timeout.
+Local resources are tracked per hold (`effectScopes.ts`). A claimed attempt
+(`closeHold`, called only by `lifecycle.ts` after its SQL claim) aborts the
+hold's signal, refuses any further admission under it and drains its callbacks
+LIFO; a callback registered while that drain runs, or within the attempt's
+bounded wait, is drained by it too, and a hold with an open handle (an entered
+Job, a retained handle) is not released until it closes. A registration after
+the attempt's wait waits for the next claimed attempt; a registration through
+a closed handle throws `PluginRegistrationClosed`, and an original-contract
+Job's handle lingers (`linger`, status `registering`) instead of closing. A
+callback that resolved never runs again, one that rejected is retried by a
+later attempt (callbacks must tolerate a retry after their own rejection), and
+one in flight is shared, never re-invoked. Each invocation carries the key of
+the claimed attempt it runs under and a callback runs at most once per key;
+there is no local budget. The function `onDispose` returns (an early dispose
+of that resource) asks the owner for a claim through the same SQL statement
+(`earlyAttempt` → `claimHoldAttempt`; concurrent requests join one claim),
+resolves on success without running it again, shares the in-flight
+invocation, and is refused without running while the Job's transaction is
+open (`inJobTransaction`, inherited by continuations, cleared once the
+transaction ended) or when no attempt can be claimed. One early runner per
+hold claims attempts until no request is pending; it gives up its scheduling
+right in the same synchronous step that found nothing pending, so a request
+made by the continuation of a caller it just settled (`await a(); await b()`)
+either is seen by that runner or starts the next one, never waits on a runner
+that already finished. The runner never rejects: a claim fault refuses the
+requests it considered, and an unexpected fault refuses every pending request
+and releases the right. Each wait is bounded at three seconds and never inside a DB
+transaction (a Job's handle closes after its own transaction ended); a drain
+may outlive the wait and stays tracked as in flight. Timeouts do not cancel
+arbitrary JavaScript and synchronous event-loop blocking cannot be preempted.
+Cleanup rejection is observed even after the timeout.
 
 Migration failure events identify `phase` (install, provision, migration,
 reconcile or finalize) separately from nullable migration_id. Only failures
@@ -656,9 +877,45 @@ Executable evidence extends `pluginSessionReuseDb.test.ts`: PostgreSQL first
 executes the actual syntax in a rolled-back probe, then PluginDb refuses it and
 reuses the same backend across people without temp/GUC/advisory residue.
 `pluginLifecycleDb.test.ts` covers concurrent enable/disable, new resource
-admission, failed-enable preservation, cleanup deadlines/quarantine and phase-specific
-failure journals. `pluginHost.test.ts` checks deadlines with fake timers and shared
-once-only disposal, without timing sleeps. The shared core consumer also checks
+admission, failed-enable preservation, cleanup deadlines/retention, durable
+holds across independent process compositions (generation fence, live-owner
+obligations, wrong-worker deferral, cancel/exhaustion, owner end/restart as
+`owner_gone`, lease-loss self-fence), the lease barrier (killed lease while the
+recovery pass is busy: admission and commit refused, a running Job not
+committed, no callback outside a claim, foreign `owner_gone` only after grace
+while adoption is held back, then adoption under the new lease), the commit
+fence (check passed → barrier → lease terminated → adoption, foreign disable
+and foreign pass all wait → old COMMIT first; a failed statement throws; an
+impersonating holder of the old key does not revive it), one attempt counter
+across timer (fake-clock interval), Job, request and concurrent entries, late
+resources (`retain()` with an
+injected write failure, stuck behind a row lock while another process
+disables, an ended generation refused behind this process's uncommitted enable
+and never reopened, then owner exit; the newer generation untouched; a
+released retained handle refuses registration), a retained late callback's
+first run counted as attempt 1 (three across request/timer/Job/concurrent,
+then only a new round; a real Job's `ctx.retain()`), original-contract
+consumers of the real fixture in another process (a handler returns, then
+creates a resource after the disable round began: the hold is never released,
+the foreign enable is refused throughout, the resource drains in a claimed
+attempt, three attempts reach attention, no reopen exists, and only the
+owner's exit plus the grace settles it `owner_gone`; a failed round write and
+an exit with the window open never record it released, a registration after
+exit is tracked and settled `owner_gone`), a bounded-contract producer whose
+registration after its handler settled is refused, early disposes through the
+SQL claim (two concurrent requests in one active claim, reset on success; a
+failing one: refused when not due, shared when concurrent, then interleaved
+with the timer pass and the cleanup Job — each invocation records the durable
+round and attempt it ran under: active `[1, 2]`, round `[1, 2, 3]`, nothing
+after attention, then the product retry route once), an early dispose inside
+the Job transaction refused and disposed once afterwards, the foreign-owner
+rotation (twenty live owners at
+attention before a crashed one, an injected DB fault settling nothing),
+recovery with no Job left (cancelled, exhausted, plugin not hosted), a real
+Job's late registration and the `cleanup` read, and phase-specific failure
+journals. `pluginHost.test.ts` checks deadlines with fake timers, closed-handle
+refusal, pins, lingering handles, an early dispose with no owner refused, and
+that no callback runs outside a claimed attempt, without timing sleeps. The shared core consumer also checks
 Unicode identifier refusal in `operationExecutorDb.test.ts`.
 
 Reuse / Dependency Check: keep P1's transaction, savepoint translation, existing

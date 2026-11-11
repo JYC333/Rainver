@@ -11,6 +11,10 @@ import { syncBuiltinPrompts } from "../src/modules/prompts/builtins.js";
 import { __setQuestionRefineInvokerForTests } from "../src/modules/projectResearch/questionRefineService.js";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
 import { useTestDatabase } from "./support/testDatabase.js";
+import { JobHandlerRegistry, type JobEnvelopeForHandler } from "../src/modules/jobs/handlerRegistry.js";
+import { registerProjectResearchHandler } from "../src/modules/projectResearch/orchestrator.js";
+import { QUESTION_REFINE_JOB_TYPE, settleAbandonedQuestionRefineTurns } from "../src/modules/projectResearch/questionRefineService.js";
+import { PgJobQueueRepository } from "../src/modules/jobs/repository.js";
 import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 const CATALOG_ROOT = resolve(process.cwd(), "..", "catalog");
@@ -48,8 +52,50 @@ type RefinementResult = Partial<typeof refinementOutput> & {
 const invoke = vi.fn(async (_request: RefinementInvocation): Promise<RefinementResult> => refinementOutput);
 
 let app: FastifyInstance | undefined;
+let config: ReturnType<typeof loadConfig>;
+/**
+ * Admits one refinement turn through the formal URL (no model call), performs
+ * its Job through the registered handler, then reads the durable session —
+ * the outcome the browser observes.
+ */
+async function refine(options: { payload: Record<string, unknown> }) {
+  const admitted = await app!.inject({ method: "POST", url: `/api/v1/projects/${PROJECT}/research/question/refine`, headers: { "idempotency-key": randomUUID() }, payload: options.payload });
+  expect(admitted.statusCode, admitted.body).toBe(202);
+  const receipt = admitted.json().data;
+  expect(admitted.body).not.toContain(String(options.payload.message));
+  const registry = new JobHandlerRegistry();
+  registerProjectResearchHandler(registry, config);
+  const calls = invoke.mock.calls.length;
+  let failure: (Error & { code?: string }) | null = null;
+  await registry.get(QUESTION_REFINE_JOB_TYPE)!(await claimRefineJob(receipt))
+    .catch((error: Error & { code?: string }) => { failure = error; });
+  expect(invoke.mock.calls.length).toBeGreaterThan(calls);
+  const session = (await app!.inject({ method: "GET", url: `/api/v1/projects/${PROJECT}/research/question/assessment?thread_id=${THREAD}` })).json();
+  return { failure: failure as (Error & { code?: string }) | null, result: failure ? null : { ...session.latest_refinement, assessment_session: session } };
+}
 
 const db = useTestDatabase(import.meta.filename);
+
+/**
+ * Claims and starts this one admitted Job as a worker does (status, claim,
+ * attempt), and returns the envelope the worker hands its handler. The
+ * shared file leaves other turns' Jobs pending, so the claim is targeted.
+ */
+async function claimRefineJob(receipt: { id: string; job_id: string }): Promise<JobEnvelopeForHandler> {
+  const workerId = `question-refine-test-${randomUUID()}`;
+  const claimed = await db.pool.query<{ attempts: number }>(
+    `UPDATE jobs SET status='claimed',claimed_by=$2,claimed_at=now(),heartbeat_at=NULL,attempts=attempts+1,updated_at=now()
+      WHERE id=$1 AND status='pending' AND attempts<max_attempts RETURNING attempts`,
+    [receipt.job_id, workerId],
+  );
+  const last = (await db.pool.query<{ claimed_by: string | null; attempts: number }>("SELECT claimed_by,attempts FROM jobs WHERE id=$1", [receipt.job_id])).rows[0]!;
+  if (claimed.rows.length) expect(await new PgJobQueueRepository(db.pool).startJob(receipt.job_id, workerId)).toBe(true);
+  return {
+    job_id: receipt.job_id, space_id: SPACE, user_id: OWNER, job_type: QUESTION_REFINE_JOB_TYPE,
+    payload: { message_id: receipt.id, project_id: PROJECT }, attempts: last.attempts, max_attempts: 1,
+    worker_id: claimed.rows.length ? workerId : last.claimed_by ?? workerId,
+  };
+}
 
 // Files share a worker: an identity or invoker left in a module-level
 // seam would leak into whichever file runs next.
@@ -89,11 +135,12 @@ beforeAll(async () => {
   await syncBuiltinPrompts(db.pool, CATALOG_ROOT);
   __setAuthIdentityForTests({ spaceId: SPACE, userId: OWNER });
   __setQuestionRefineInvokerForTests(invoke);
-  app = buildModuleServer(loadConfig({
+  config = loadConfig({
     SERVER_DATABASE_URL: db.connectionUri,
     SERVER_INTERNAL_TOKEN: "test-internal-token",
     RAINVER_HOME: "/tmp/rainver-question-refine-test",
-  }), [projectResearchModule, researchModule]);
+  });
+  app = buildModuleServer(config, [projectResearchModule, researchModule]);
 });
 
 describe("POST /projects/:id/research/question/refine (real Postgres)", () => {
@@ -115,9 +162,7 @@ describe("POST /projects/:id/research/question/refine (real Postgres)", () => {
 
   it("returns an actionable structured assessment for an unanswerable query", async () => {
     if (!db.available || !app) return;
-    const response = await app.inject({
-      method: "POST",
-      url: `/api/v1/projects/${PROJECT}/research/question/refine`,
+    const response = await refine({
       payload: {
         thread_id: THREAD,
         research_question: "agent",
@@ -126,7 +171,7 @@ describe("POST /projects/:id/research/question/refine (real Postgres)", () => {
       },
     });
 
-    expect(response.statusCode).toBe(200);
+    expect(response.failure).toBeNull();
     expect(invoke).toHaveBeenCalledWith(expect.objectContaining({
       system: expect.stringMatching(/^You facilitate an ongoing research-question assessment conversation/),
       messages: [
@@ -138,7 +183,7 @@ describe("POST /projects/:id/research/question/refine (real Postgres)", () => {
     }));
     expect(invoke.mock.calls[0]![0].system).not.toContain("Conversation so far");
     expect(invoke.mock.calls[0]![0].system).not.toContain("Project: Research");
-    expect(response.json()).toMatchObject({
+    expect(response.result!).toMatchObject({
       research_context_version_id: expect.any(String),
       reply: expect.stringContaining("too broad"),
       recommended_question: expect.stringContaining("tool-using coding agents"),
@@ -222,9 +267,7 @@ describe("POST /projects/:id/research/question/refine (real Postgres)", () => {
         reply: repairedReply,
         repairs: [{ source_index: 1, replacements: repairedItems }],
       });
-    const followUp = await app.inject({
-      method: "POST",
-      url: `/api/v1/projects/${PROJECT}/research/question/refine`,
+    const followUp = await refine({
       payload: {
         thread_id: THREAD,
         research_question: "How do tool-using coding agents recover from failed API calls?",
@@ -232,11 +275,11 @@ describe("POST /projects/:id/research/question/refine (real Postgres)", () => {
         execution: { model_provider_id: PROVIDER },
       },
     });
-    expect(followUp.statusCode).toBe(200);
+    expect(followUp.failure).toBeNull();
     expect(invoke.mock.calls[1]![0].messages.map(message => message.role)).toEqual(["user", "assistant", "user"]);
     expect(invoke.mock.calls[1]![0].messages[1]?.content).toContain('"assessment"');
     expect(invoke.mock.calls[1]![0].messages[2]?.content).toContain("Focus on Managed API runtimes.");
-    expect(followUp.json()).toMatchObject({
+    expect(followUp.result!).toMatchObject({
       reply: repairedReply,
       sub_questions: repairedSubQuestions,
       scope: followUpOutput.scope,
@@ -245,7 +288,7 @@ describe("POST /projects/:id/research/question/refine (real Postgres)", () => {
         assessment_baseline: { scope: refinementOutput.scope },
       },
     });
-    const repairedTurn = followUp.json().assessment_session.messages.find(
+    const repairedTurn = followUp.result!.assessment_session.messages.find(
       (message: { turn_index: number; role: string }) => message.turn_index === 2 && message.role === "user",
     );
     expect(repairedTurn.processing_events).toMatchObject([
@@ -275,9 +318,7 @@ describe("POST /projects/:id/research/question/refine (real Postgres)", () => {
 
     const repairedFollowUpOutput = { ...followUpOutput, sub_questions: repairedSubQuestions };
     invoke.mockResolvedValueOnce(repairedFollowUpOutput);
-    const reassessment = await app.inject({
-      method: "POST",
-      url: `/api/v1/projects/${PROJECT}/research/question/refine`,
+    const reassessment = await refine({
       payload: {
         thread_id: THREAD,
         research_question: followUpOutput.recommended_question,
@@ -286,8 +327,8 @@ describe("POST /projects/:id/research/question/refine (real Postgres)", () => {
         execution: { model_provider_id: PROVIDER },
       },
     });
-    expect(reassessment.statusCode).toBe(200);
-    expect(reassessment.json()).toMatchObject({
+    expect(reassessment.failure).toBeNull();
+    expect(reassessment.result!).toMatchObject({
       assessment_session: {
         latest_refinement: { scope: followUpOutput.scope },
         assessment_baseline: { scope: followUpOutput.scope },
@@ -368,9 +409,7 @@ describe("POST /projects/:id/research/question/refine (real Postgres)", () => {
         reply: "I split the overlong item.",
         repairs: [{ source_index: 0, replacements: ["x".repeat(2_001)] }],
       });
-    const invalidOutput = await app.inject({
-      method: "POST",
-      url: `/api/v1/projects/${PROJECT}/research/question/refine`,
+    const invalidOutput = await refine({
       payload: {
         thread_id: THREAD,
         research_question: refinementOutput.recommended_question,
@@ -378,10 +417,10 @@ describe("POST /projects/:id/research/question/refine (real Postgres)", () => {
         execution: { model_provider_id: PROVIDER },
       },
     });
-    expect(invalidOutput.statusCode).toBe(502);
-    expect(invalidOutput.json()).toMatchObject({
-      code: "question_refinement_repair_failed",
-      message: "The model could not split the overlong sub-questions into supported lengths.",
+    // The worker raises the same domain failure; the person sees it on the failed turn.
+    expect(invalidOutput.failure).toMatchObject({
+      statusCode: 502,
+      responseBody: { code: "question_refinement_repair_failed", message: "The model could not split the overlong sub-questions into supported lengths." },
     });
     const failedConversation = await app.inject({
       method: "GET",
@@ -402,5 +441,126 @@ describe("POST /projects/:id/research/question/refine (real Postgres)", () => {
       [SPACE, PROJECT],
     );
     expect(contextsAfterInvalidOutput.rows[0]?.count).toBe(contextsBeforeInvalidOutput.rows[0]?.count);
+  });
+
+  // Admission alone: the turn is pending and its single-attempt Job is queued.
+  async function admit(message: string) {
+    const admitted = await app!.inject({ method: "POST", url: `/api/v1/projects/${PROJECT}/research/question/refine`, headers: { "idempotency-key": randomUUID() },
+      payload: { thread_id: THREAD, research_question: "agent", message, execution: { model_provider_id: PROVIDER } } });
+    expect(admitted.statusCode, admitted.body).toBe(202);
+    return admitted.json().data as { id: string; job_id: string };
+  }
+  // Delivers the Job to its handler as the worker would; a Job no longer
+  // claimable is delivered under its last recorded claim, as a late or
+  // replayed delivery would be.
+  const perform = async (receipt: { id: string; job_id: string }) => {
+    const registry = new JobHandlerRegistry();
+    registerProjectResearchHandler(registry, config);
+    return registry.get(QUESTION_REFINE_JOB_TYPE)!(await claimRefineJob(receipt));
+  };
+  const session = async () => (await app!.inject({ method: "GET", url: `/api/v1/projects/${PROJECT}/research/question/assessment?thread_id=${THREAD}` })).json();
+  const turnStatus = async (id: string) => (await session()).messages.find((message: { id: string }) => message.id === id)?.status;
+
+  it("fails a turn whose Job was cancelled before it ran, once, without calling the provider", async () => {
+    if (!db.available || !app) return;
+    const calls = invoke.mock.calls.length;
+    const receipt = await admit("Cancelled before a worker claimed it.");
+    expect(await new PgJobQueueRepository(db.pool).cancelJob(receipt.job_id, null, new Date(), ["pending", "claimed"])).toBe(true);
+    expect(await turnStatus(receipt.id)).toBe("pending");
+    expect(await settleAbandonedQuestionRefineTurns(db.pool)).toBe(1);
+    expect(await turnStatus(receipt.id)).toBe("failed");
+    expect(await settleAbandonedQuestionRefineTurns(db.pool)).toBe(0);
+    // A replayed delivery of the cancelled Job finds no pending turn and spends nothing.
+    await expect(perform(receipt)).resolves.toEqual({ status: "skipped" });
+    expect(invoke.mock.calls.length).toBe(calls);
+  });
+
+  it("fails a turn whose worker process died mid-run when reclaim exhausts its single attempt, without re-consuming the provider", async () => {
+    if (!db.available || !app) return;
+    const calls = invoke.mock.calls.length;
+    const receipt = await admit("The worker process exits while assessing this.");
+    // The claimed attempt is spent and its heartbeat went stale with the process.
+    await db.pool.query(
+      `UPDATE jobs SET status='running',attempts=1,claimed_by='dead-worker',claimed_at=now()-interval '1 hour',
+              started_at=now()-interval '1 hour',heartbeat_at=now()-interval '1 hour' WHERE id=$1`,
+      [receipt.job_id],
+    );
+    const queue = new PgJobQueueRepository(db.pool);
+    await queue.reclaimStuckJobs(60);
+    expect((await db.pool.query("SELECT status FROM jobs WHERE id=$1", [receipt.job_id])).rows[0].status).toBe("failed");
+    // A turn with a live Job is never touched by the sweep.
+    const live = await admit("Still queued.");
+    await settleAbandonedQuestionRefineTurns(db.pool);
+    expect(await turnStatus(receipt.id)).toBe("failed");
+    expect(await turnStatus(live.id)).toBe("pending");
+    expect(invoke.mock.calls.length).toBe(calls);
+    // Nothing re-queued the dead turn; a late completion from the dead process cannot answer it.
+    expect((await db.pool.query("SELECT count(*)::int AS n FROM jobs WHERE payload_json->>'message_id'=$1 AND status IN ('pending','claimed','running')", [receipt.id])).rows[0].n).toBe(0);
+    await expect(perform(receipt)).resolves.toEqual({ status: "skipped" });
+    await perform(live);
+  });
+
+  it("keeps each concurrent turn's own answer and never lets an earlier turn finishing late replace the newer projection", async () => {
+    if (!db.available || !app) return;
+    const earlier = await admit("Earlier turn.");
+    const later = await admit("Later turn.");
+    invoke.mockImplementationOnce(async () => ({ ...refinementOutput, recommended_question: "Which recovery strategies do later agents use?" }));
+    await perform(later);
+    invoke.mockImplementationOnce(async () => ({ ...refinementOutput, recommended_question: "Which recovery strategies did earlier agents use?" }));
+    await perform(earlier);
+    const current = await session();
+    expect(current.latest_refinement.recommended_question).toBe("Which recovery strategies do later agents use?");
+    expect(current.recommended_question).toBe("Which recovery strategies do later agents use?");
+    const answerFor = (id: string) => {
+      const turn = current.messages.find((message: { id: string }) => message.id === id);
+      return current.messages.find((message: { role: string; turn_index: number }) => message.role === "assistant" && message.turn_index === turn.turn_index)?.refinement;
+    };
+    expect(answerFor(earlier.id)?.recommended_question).toBe("Which recovery strategies did earlier agents use?");
+    expect(answerFor(later.id)?.recommended_question).toBe("Which recovery strategies do later agents use?");
+  });
+  // The provider call is held open while the Job loses its execution, then
+  // released before any recovery sweep runs: the late call must not answer.
+  it.each([
+    ["reclaimed as failed after its heartbeat went stale", async (jobId: string): Promise<string> => {
+      await db.pool.query("UPDATE jobs SET heartbeat_at=now()-interval '1 hour',updated_at=now()-interval '1 hour' WHERE id=$1", [jobId]);
+      await new PgJobQueueRepository(db.pool).reclaimStuckJobs(60);
+      return "failed";
+    }],
+    ["cancelled by the person", async (jobId: string): Promise<string> => {
+      expect(await new PgJobQueueRepository(db.pool).cancelJob(jobId, null, new Date(), ["running"])).toBe(true);
+      return "cancelled";
+    }],
+  ] as const)("refuses the answer of a provider call that returns after its Job was %s", async (_label, endJob) => {
+    if (!db.available || !app) return;
+    const before = await session();
+    const contexts = async () => (await db.pool.query<{ n: number }>("SELECT count(*)::int AS n FROM project_research_context_versions WHERE space_id=$1 AND project_id=$2", [SPACE, PROJECT])).rows[0]!.n;
+    const contextsBefore = await contexts();
+    const receipt = await admit("Assess this while the worker loses its claim.");
+    let entered!: () => void, release!: () => void;
+    const inProvider = new Promise<void>(resolve => { entered = resolve; });
+    const released = new Promise<void>(resolve => { release = resolve; });
+    invoke.mockImplementationOnce(async () => {
+      entered();
+      await released;
+      return { ...refinementOutput, recommended_question: "A late answer that must not land?" };
+    });
+    const calls = invoke.mock.calls.length;
+    const running = perform(receipt).then(() => null, (error: { statusCode?: number }) => error);
+    await inProvider;
+    expect(await endJob(receipt.job_id)).toBe((await db.pool.query("SELECT status FROM jobs WHERE id=$1", [receipt.job_id])).rows[0].status);
+    release();
+    expect(await running).toMatchObject({ statusCode: 409 });
+    expect(invoke.mock.calls.length).toBe(calls + 1);
+    const after = await session();
+    expect(after.messages.find((message: { id: string }) => message.id === receipt.id)?.status).toBe("failed");
+    const turnIndex = after.messages.find((message: { id: string }) => message.id === receipt.id)?.turn_index;
+    expect(after.messages.some((message: { role: string; turn_index: number }) => message.role === "assistant" && message.turn_index === turnIndex)).toBe(false);
+    expect(after.recommended_question).toBe(before.recommended_question);
+    expect(after.latest_refinement).toEqual(before.latest_refinement);
+    expect(await contexts()).toBe(contextsBefore);
+    // The later sweep finds nothing left to settle and nothing re-queued the turn.
+    expect(await settleAbandonedQuestionRefineTurns(db.pool)).toBe(0);
+    expect((await db.pool.query("SELECT count(*)::int AS n FROM jobs WHERE payload_json->>'message_id'=$1 AND status IN ('pending','claimed','running')", [receipt.id])).rows[0].n).toBe(0);
+    expect(invoke.mock.calls.length).toBe(calls + 1);
   });
 });

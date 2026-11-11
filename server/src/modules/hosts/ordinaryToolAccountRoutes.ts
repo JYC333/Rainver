@@ -106,7 +106,9 @@ export function registerOrdinaryToolAccountRoutes(app: FastifyInstance, context:
     return reply.send(view(host, result, null));
   });
 
-  for (const action of ["verify", "logout"] as const) {
+  // `verify` is a read the daemon answers (`auth status --verify`) and is relayed, never stored;
+  // `logout` changes the account and is the durable `host.ordinary_tool.account.logout` command.
+  for (const action of ["verify"] as const) {
     app.post(`/api/v1/hosts/:hostId/ordinary-tools/:toolId/account/${action}`, async (request, reply) => {
       const host = await accountHost(context, request, reply);
       if (!host) return reply;

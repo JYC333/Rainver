@@ -5,7 +5,7 @@ import { sharedHostConnectionRegistry, type HostConnectionRegistry } from "./con
 import { hasSubscriptionQuota, normalizeHostCapabilities } from "./capabilities.js";
 export { hasSubscriptionQuota };
 import { acpRuntimeProbe } from "./runtimeProbes.js";
-import { quotaWindows, subscriptionPoolId } from "./subscriptionUsage.js";
+import { accountQuota, quotaWindows, subscriptionPoolId } from "./subscriptionUsage.js";
 import { withTransaction } from "../../db/tx.js";
 import { HttpError } from "../routeUtils/common.js";
 
@@ -62,7 +62,7 @@ export const HOST_USAGE_REFRESH_INTERVAL_SECONDS = 3 * 60 * 60;
 
 function quotaOf(value: unknown): HostUsageQuota {
   const row = (value ?? {}) as Partial<HostUsageQuota>;
-  return {
+  return accountQuota({
     account: HostUsageQuotaSchema.shape.account.safeParse(row.account).data,
     account_display: HostUsageQuotaSchema.shape.account_display.safeParse(row.account_display).data,
     window_checked_at: HostUsageQuotaSchema.shape.window_checked_at.safeParse(row.window_checked_at).data,
@@ -73,7 +73,7 @@ function quotaOf(value: unknown): HostUsageQuota {
     week_pct: typeof row.week_pct === "number" ? row.week_pct : null,
     week_resets: typeof row.week_resets === "string" ? row.week_resets : null,
     error: typeof row.error === "string" ? row.error : null,
-  };
+  });
 }
 
 export async function readHostUsage(pool: Pool, hostId: string): Promise<HostUsageRow[]> {

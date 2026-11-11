@@ -609,6 +609,28 @@ export const HostWorkspaceIntegrationFrameSchema=z.object({
  target_ref:z.string().regex(/^refs\/heads\/[A-Za-z0-9][A-Za-z0-9._\/-]*$/).max(256),
  author:HostGitIdentitySchema,message:z.string().max(16000),
  onto_commit:GitObjectIdSchema.optional(),candidate_commit:GitObjectIdSchema.optional(),
+ /** native_prepare/native_publish: squash (absent), rebase (the batch's own commits replayed onto the target, then fast-forwarded) or a frozen linear commit chain published by fast-forward or an ordinary merge commit. */
+ publication_strategy:z.enum(['squash','fast_forward','merge','rebase']).optional(),
+ /** native_publish of a chain: the chain tip the control plane recorded at prepare; the Host refuses a journal whose frozen chain differs. */
+ publication_chain_tip:GitObjectIdSchema.optional(),
+ /** finish of a frozen chain plan: the chain length recorded at prepare, re-checked against the chain's linear history. */
+ publication_chain_length:z.number().int().positive().max(10000).optional(),
+});
+/**
+ * Person-authorized local branch alignment. Under the Location's
+ * maintenance lease, refused while any Rainver lease of the Location is held,
+ * while the source is checked out dirty or in more than one worktree, or
+ * Rainver-managed. Expected tips are CAS; the old tip is kept under
+ * refs/rainver/branch-backups/<operation_id>. Journaled per operation id: a
+ * redelivery replays the recorded result. Never pushes.
+ */
+export const HostGitBranchAlignFrameSchema=z.object({
+ type:z.literal('git_branch_align'),request_id:IdSchema,
+ workspace:LocationLaunchWorkspaceSchema,operation_id:z.string().uuid(),
+ source_ref:z.string().regex(/^refs\/heads\/[A-Za-z0-9][A-Za-z0-9._\/-]*$/).max(256),
+ target_ref:z.string().regex(/^refs\/heads\/[A-Za-z0-9][A-Za-z0-9._\/-]*$/).max(256),
+ mode:z.enum(['fast_forward','reset']),
+ expected_source_commit:GitObjectIdSchema,expected_target_commit:GitObjectIdSchema,
 });
 export const HostExecutionWorkspaceCommandSchema = z.object({
   type:z.literal("execution_workspace_command"), request_id:IdSchema,
@@ -616,10 +638,15 @@ export const HostExecutionWorkspaceCommandSchema = z.object({
   action:z.enum(["checkpoint","cleanup","inspect","read","archive_profiles","mirror","release_refs","list_refs"]), operation_id:z.string().uuid(),
   run_id:IdSchema.optional(), author:z.object({name:z.string().max(512),email:z.string().max(512)}).optional(),
   profile_agents:z.array(z.string().uuid()).max(100).optional(),
+  /** `archive_profiles` only: the thread's archive intent (`archive:<thread>:<generation>`). A Host reporting
+   * `workspace_profile_operations` journals each Agent's profile archive under it with the managed-workspace
+   * generation fence, so a delayed copy replays its receipt instead of archiving a newer Run's profile. */
+  archive_identity:z.object({operation_id:z.string().regex(/^[A-Za-z0-9:_-]{1,160}$/u),generation:z.number().int().positive()}).optional(),
   path:z.string().min(1).max(4096).optional(),
   message:z.string().max(16000).optional(), expected_commit:GitObjectIdSchema.optional(), retain_branch:z.boolean().default(true),
   /** Server merge facts for a branch release: the tip's tree must equal one of
    * these commits' trees, and that commit must be reachable from target_ref. */
+  discard_commit:GitObjectIdSchema.optional(),
   reclaim_proof:z.array(GitObjectIdSchema).max(50).optional(),
   /** Recorded batch bases. The Host re-proves the tip's delta from each one that
    * is history of both tip and target (and from its own merge-base) against the
@@ -905,7 +932,84 @@ const managedWorkspaceActionFields = {
    * WorkspaceLocation has no managed workspace to archive at all.
    */
   include_workspace: z.boolean(),
+  /**
+   * Durable identity of this archive or restore. A daemon reporting
+   * `managed_workspace_operations` journals it with its staged progress, so a
+   * repeat after a lost reply or a crash replays or finishes the same
+   * operation and never moves anything twice. Sent only with `generation`.
+   */
+  operation_id: z.string().regex(/^[A-Za-z0-9:_-]{1,160}$/u).optional(),
+  /**
+   * The control plane's order of archive/restore intents for one target. The
+   * daemon refuses an operation older than the newest it admitted
+   * (`stale_generation`), so a delayed archive cannot undo a later restore —
+   * including the repeat of one left in progress. A Conversation's shared cwd
+   * is also fenced across Agents: a cwd stage older than another Agent's
+   * operation on that cwd is skipped. The parameters of one `operation_id`
+   * never change between sends.
+   */
+  generation: z.number().int().positive().optional(),
 };
+
+/**
+ * Why a journaled managed-workspace operation did not complete. `live_conflict`,
+ * `stale_generation`, `operation_mismatch` and `invalid_request` are definite;
+ * `io_error` left the operation journaled in progress for a repeat to finish.
+ * `legacy_closed`: a request without an operation identity reached a daemon
+ * whose legacy archives were drained (`managed_workspace_legacy_drain`); it
+ * moved nothing.
+ */
+export const ManagedWorkspaceErrorCodeSchema = z.enum([
+  "live_conflict", "stale_generation", "operation_mismatch", "invalid_request", "io_error", "legacy_closed",
+]);
+export type ManagedWorkspaceErrorCode = z.infer<typeof ManagedWorkspaceErrorCodeSchema>;
+
+export const HostWorkspaceRegisterFrameSchema = z.object({ type: z.literal("workspace_register"), request_id: IdSchema, path: z.string(), project_id: IdSchema, name: z.string() });
+export const HostAgentProfilesResetFrameSchema = z.object({ type: z.literal("agent_profiles_reset"), request_id: IdSchema, agent_id: IdSchema });
+
+/** A Host command identity: the control plane's durable intent id, stable across every send of it. */
+export const HostCommandIdSchema = z.string().regex(/^[A-Za-z0-9:_-]{1,160}$/u);
+/**
+ * One journaled Host command (`host_command_receipts`). The daemon records
+ * the command durably before it starts, and its outcome before it answers;
+ * a repeat of the same `command_id` replays that receipt and never runs the
+ * effect twice. `fingerprint` is the control plane's hash of the frozen
+ * inner command (without `request_id`): a repeat whose fingerprint differs is
+ * refused as `mismatch` and runs nothing. Sent only to a daemon reporting the
+ * capability; an older daemon gets the bare inner frame, at most once.
+ */
+export const HostCommandFrameSchema = z.object({
+  type: z.literal("host_command"),
+  request_id: IdSchema,
+  command_id: HostCommandIdSchema,
+  fingerprint: z.string().regex(/^[a-f0-9]{64}$/u),
+  command: z.discriminatedUnion("type", [
+    HostInstallToolFrameSchema,
+    HostUninstallToolFrameSchema,
+    HostRollbackToolFrameSchema,
+    HostUpdateOwnToolFrameSchema,
+    HostManagedCliFrameSchema,
+    HostOrdinaryToolRequestFrameSchema,
+    HostOrdinaryAccountRequestFrameSchema,
+    HostAgentProfilesResetFrameSchema,
+    HostWorkspaceRegisterFrameSchema,
+  ]),
+}).strict();
+export type HostCommandFrame = z.infer<typeof HostCommandFrameSchema>;
+export type HostCommandInnerFrame = HostCommandFrame["command"];
+/**
+ * - `completed`: `result` is the command's own answer, fresh or replayed.
+ * - `interrupted`: an earlier daemon process recorded the command started and
+ *   stopped before recording its outcome; what it changed is unknown.
+ * - `mismatch`: this id is journaled with a different fingerprint; nothing ran.
+ * - `refused`: the daemon could not record the command durably; nothing ran.
+ * - `unrecorded`: this daemon process ran the command but could not yet make
+ *   its `done` receipt durable. It is not proof the command finished there:
+ *   repeat the same command, whose answer records the held outcome (then
+ *   `completed`) and never runs the effect again. `result` is null.
+ */
+export const HostCommandOutcomeSchema = z.enum(["completed", "interrupted", "mismatch", "refused", "unrecorded"]);
+export type HostCommandOutcome = z.infer<typeof HostCommandOutcomeSchema>;
 
 export const HostServerFrameSchema = z.discriminatedUnion("type", [
   HostSourceExecuteFrameSchema, HostSourceCancelFrameSchema, HostSourceResponseFrameSchema,
@@ -928,7 +1032,7 @@ export const HostServerFrameSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("list_dirs"), request_id: IdSchema, path: z.string().nullable() }),
   z.object({ type: z.literal("skill_scan"), request_id: IdSchema }),
   z.object({ type: z.literal("skill_read"), request_id: IdSchema, skill_id: z.string().regex(/^[a-f0-9]{64}$/) }),
-  z.object({ type: z.literal("workspace_register"), request_id: IdSchema, path: z.string(), project_id: IdSchema, name: z.string() }),
+  HostWorkspaceRegisterFrameSchema,
   z.object({ type: z.literal("workspace_forget"), request_id: IdSchema, workspace_id: z.string() }),
   z.object({ type: z.literal("managed_workspace_archive"), ...managedWorkspaceActionFields }),
   z.object({ type: z.literal("managed_workspace_restore"), ...managedWorkspaceActionFields }),
@@ -939,7 +1043,16 @@ export const HostServerFrameSchema = z.discriminatedUnion("type", [
    * retiring the Agent's vendor sessions through `session_reset` so the next
    * turn starts fresh rather than resuming into a profile that is gone.
    */
-  z.object({ type: z.literal("agent_profiles_reset"), request_id: IdSchema, agent_id: IdSchema }),
+  HostAgentProfilesResetFrameSchema,
+  /**
+   * Proof that no identity-less archive can still move anything on this Host
+   * (`legacy_archive_drain`): the daemon refuses every later one, durably
+   * (`legacy_closed`), then answers `managed_workspace_result` (`drain`) once
+   * every one its process admitted has finished. A reconnect or a reported
+   * capability is no such proof — the daemon runs requests detached from the
+   * connection that delivered them.
+   */
+  z.object({ type: z.literal("managed_workspace_legacy_drain"), request_id: IdSchema }),
   HostCommandRunFrameSchema,
   HostUsageProbeFrameSchema,
   HostRollbackToolFrameSchema,
@@ -971,12 +1084,14 @@ export const HostServerFrameSchema = z.discriminatedUnion("type", [
   HostWorkspaceScopeFrameSchema,
   HostWorkspaceIntegrationFrameSchema,
   HostExecutionWorkspaceCommandSchema,
+  HostGitBranchAlignFrameSchema,
   HostTaskRunSettleFrameSchema,
   HostTaskBranchDeleteFrameSchema,
   HostTaskMergePrepareFrameSchema,
   HostTaskMergeContinueFrameSchema,
   HostTaskMergeAbortFrameSchema,
   HostTaskMergeFinishFrameSchema,
+  HostCommandFrameSchema,
 ]);
 export type HostServerFrame = z.infer<typeof HostServerFrameSchema>;
 export type HostServerFrameOf<T extends HostServerFrame["type"]> = Extract<HostServerFrame, { type: T }>;
@@ -1039,12 +1154,17 @@ export const HostDaemonFrameSchema = z.discriminatedUnion("type", [
       start_commit: GitObjectIdSchema,
     }).optional(),
   }),
+  z.object({type:z.literal('git_branch_align_result'),request_id:IdSchema,ok:z.boolean(),error:z.string().nullable(),
+    outcome:z.enum(['aligned','already_aligned']).nullable(),previous_commit:GitObjectIdSchema.nullable(),aligned_commit:GitObjectIdSchema.nullable(),
+    backup_ref:z.string().max(256).nullable(),worktree_updated:z.boolean()}),
   z.object({type:z.literal("workspace_integration_result"),request_id:IdSchema,ok:z.boolean(),
     outcome:z.enum(["rebased","conflict","unresolved","no_changes","merged","main_moved","waiting_local_changes","sealed","aborted"]).nullable(),
     main_branch:z.string().nullable(),onto_commit:GitObjectIdSchema.nullable(),candidate_commit:GitObjectIdSchema.nullable(),
-    source_commit:GitObjectIdSchema.optional(),base_commit:GitObjectIdSchema.optional(),conflicted_files:z.array(z.string()).max(500),automatic_repair_allowed:z.boolean().optional(),error:z.string().nullable()}),
+    source_commit:GitObjectIdSchema.optional(),base_commit:GitObjectIdSchema.optional(),conflicted_files:z.array(z.string()).max(500),automatic_repair_allowed:z.boolean().optional(),error:z.string().nullable(),
+    /** The frozen strategy and commit chain this integration publishes. */
+    publication:z.object({strategy:z.enum(['squash','fast_forward','merge','rebase']),chain_tip:GitObjectIdSchema.nullable(),chain_length:z.number().int().nonnegative()}).optional()}),
   z.object({type:z.literal('workspace_scope_result'),request_id:IdSchema,ok:z.boolean(),error:z.string().nullable(),root_location_id:IdSchema.nullable(),cwd_subpath:z.string().nullable()}),
-  z.object({type:z.literal("execution_workspace_result"),request_id:IdSchema,ok:z.boolean(),branch:z.string().nullable(),commit:GitObjectIdSchema.nullable(),cleanup_state:z.enum(["cleaned","blocked","retry_wait"]).optional(),inventory:HostWorkspaceInventorySchema.optional(),refs:z.array(HostOwnedRefSchema).max(500).optional(),refs_next:z.string().max(512).nullable().optional(),launch_info:HostWorkspaceLaunchReportSchema.optional(),file:z.object({path:z.string(),content_base64:z.string()}).optional(),error:z.string().nullable()}),
+  z.object({type:z.literal("execution_workspace_result"),request_id:IdSchema,ok:z.boolean(),branch:z.string().nullable(),commit:GitObjectIdSchema.nullable(),cleanup_state:z.enum(["cleaned","blocked","retry_wait"]).optional(),inventory:HostWorkspaceInventorySchema.optional(),refs:z.array(HostOwnedRefSchema).max(500).optional(),refs_next:z.string().max(512).nullable().optional(),launch_info:HostWorkspaceLaunchReportSchema.optional(),file:z.object({path:z.string(),content_base64:z.string()}).optional(),error:z.string().nullable(),error_code:z.lazy(()=>ManagedWorkspaceErrorCodeSchema).optional()}),
   z.object({
     type: z.literal("folder_write_result"),
     request_id: IdSchema,
@@ -1173,14 +1293,26 @@ export const HostDaemonFrameSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("managed_workspace_result"),
     request_id: IdSchema,
-    action: z.enum(["archive", "restore", "reset"]),
+    action: z.enum(["archive", "restore", "reset", "drain"]),
     ok: z.boolean(),
     changed: z.boolean(),
     error: z.string().nullable(),
+    /** Journaled operations only; absent from older daemons and legacy requests. */
+    error_code: ManagedWorkspaceErrorCodeSchema.optional(),
   }),
   OrdinaryToolResultSchema.extend({ type: z.literal("ordinary_tool_result"), request_id: IdSchema }),
   OrdinaryAccountResultSchema.extend({ type: z.literal("ordinary_account_result"), request_id: IdSchema }),
   z.object({ type: z.literal("ordinary_account_session_event"), session_id: IdSchema, event: OrdinaryAccountSessionEventSchema }),
+  z.object({
+    type: z.literal("host_command_result"),
+    request_id: IdSchema,
+    command_id: HostCommandIdSchema,
+    outcome: HostCommandOutcomeSchema,
+    replayed: z.boolean(),
+    /** The inner command's own result frame, as the daemon recorded it. Its `request_id` is the send that ran it. */
+    result: z.record(z.string(), z.unknown()).nullable(),
+    error: z.string().max(1000).nullable(),
+  }).strict(),
   z.object({
     type: z.literal("tool_result"),
     request_id: IdSchema,

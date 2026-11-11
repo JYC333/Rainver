@@ -348,12 +348,14 @@ export type ConversationBackendOption = z.infer<
 >;
 
 export const ConversationSessionConfigSaveSchema = z.object({
+  allow_quota_model_switch: z.boolean().optional(),
   session_id: IdSchema,
   runtime_profile_id: IdSchema,
   session_config: z.array(RuntimeSessionConfigSelectionSchema).max(32),
 }).strict();
 
 export const ConversationBackendCatalogSchema = z.object({
+  allow_quota_model_switch: z.boolean().optional(),
   options: z.array(ConversationBackendOptionSchema),
   binding: ConversationBackendBindingSchema.nullable(),
   session_config: z.array(RuntimeSessionConfigSelectionSchema).optional(),

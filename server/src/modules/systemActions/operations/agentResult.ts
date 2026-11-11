@@ -8,7 +8,7 @@ export function formatOperationForAgent(result:OperationResponse,tool:string):Sy
   const failed='error' in result.body;
   // A missing approval mapping is a policy boundary, not a transient transport fault.
   let body='error' in result.body && result.body.error.code==='operation_approval_mapping_unavailable'
-    && (['board.configure','task.move_to_column','task.set_status','task.delete','task.complete'].includes(tool))
+    && (['board.configure','task.move_to_column','task.set_status','task.delete','task.complete','research.start_acquisition','research.adopt_result'].includes(tool))
     ? {...result.body,error:{...result.body.error,retryable:false,
       message:'This Run source requires human initiation or approval for this change. The approval path has not been migrated. Do not retry automatically or change the Run origin; ask a person to initiate the change.'}}
     : result.body;

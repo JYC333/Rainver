@@ -925,3 +925,11 @@ or anonymous prose after a tool call, replaces the candidate final reply; progre
 still streams separately. On reload the persisted assistant reply is authoritative:
 buffered earlier prose remains work history and only the last reply stays visible
 when work is folded. Usage and other metadata notifications do not split prose.
+
+The saved per-Agent conversation controls also offer advance consent to switch
+models after native CLI quota exhaustion. This is off by default, saved with the
+existing settings command, and stored separately from ACP selections in session
+metadata. It applies only to the saving person, Agent, runtime profile and runtime
+key; ordinary options and other members' preferences are preserved. Recovery
+uses the existing same-installation model alternative and Supervisor budget;
+revoking the setting pauses a settings-authorized successor before admission.

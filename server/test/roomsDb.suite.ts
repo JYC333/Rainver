@@ -1,3 +1,4 @@
+import type { FastifyInstance } from "fastify";
 import {lockRequestKey} from '../src/modules/systemActions/operations/repository.js';
 import {linkProposalOperation} from './support/linkedProposalOperation.js';
 import {insertProposalRow} from '../src/modules/proposals/reviewPackets.js';
@@ -14,7 +15,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import {afterAll,beforeAll,beforeEach,expect} from "vitest";
+import {afterAll,beforeAll,beforeEach,expect,vi} from "vitest";
+import { sharedHostConnectionRegistry } from "../src/modules/hosts/connectionRegistry.js";
+import { processRoomAgentWorkspaceRestore, ROOM_AGENT_WORKSPACE_RESTORE_JOB } from "../src/modules/rooms/workspaceRestoreJob.js";
+import { AGENT_GROUP_RESUME_WAKE_JOB, registerAgentGroupResumeWakeHandler } from "../src/modules/agentGroups/resumeWakeJob.js";
 import { loadConfig } from "../src/config.js";
 import { RoomService } from "../src/modules/rooms/service.js";
 import { PgFrontendSupportService } from "../src/modules/frontendSupport/service.js";
@@ -49,6 +53,8 @@ import { buildModuleServer } from "./support/moduleServer.js";
 import { registerResearchOperationFailureNotifyHandler, RESEARCH_OPERATION_FAILURE_NOTIFY_JOB } from "../src/modules/projectResearch/pipeline/researchOperationFailureNotifyJob.js";
 import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
 import { roomsModule } from "../src/modules/rooms/index.js";
+import { systemActionsModule } from "../src/modules/systemActions/index.js";
+import { agentGroupsModule } from "../src/modules/agentGroups/index.js";
 import { providersModule } from "../src/modules/providers/index.js";
 import { withDbTransaction } from "../src/modules/routeUtils/common.js";
 import type { QuotaSource } from "../src/modules/rooms/subscriptionLogins.js";
@@ -61,6 +67,9 @@ import {
 import { instructionInRunRequest, RUN_REQUEST_INCLUDES_INSTRUCTION } from "../src/modules/runtimeContext/runRequest.js";
 import { PgAgentGroupRepository } from "../src/modules/agentGroups/repository.js";
 import { JobHandlerRegistry } from "../src/modules/jobs/handlerRegistry.js";
+import { JobWorker } from "../src/modules/jobs/worker.js";
+import { PgJobQueueRepository } from "../src/modules/jobs/repository.js";
+import { getDbPool } from "../src/db/pool.js";
 import { PgSessionRepository } from "../src/modules/sessions/repository.js";
 import { ConversationExecutionContextService } from "../src/modules/sessions/executionContextService.js";
 import { ConversationInputResourceService } from "../src/modules/sessions/conversationInputResourceService.js";
@@ -1117,22 +1126,7 @@ describe("Room workflow (real Postgres)", () => {
       "SELECT COUNT(*)::text AS count FROM agent_versions WHERE space_id = 'space-1' AND agent_id = (SELECT id FROM agents WHERE space_id = 'space-1' AND agent_kind = 'system_assistant' AND status = 'active')",
     )).resolves.toMatchObject({ rows: [{ count: "1" }] });
 
-    const retried = await service.createRoom(owner, {
-      project_id: "project-1",
-      title: "Retry-safe",
-      idempotency_key: "room-retry-1",
-    });
-    const replay = await service.createRoom(owner, {
-      project_id: "project-1",
-      title: "Retry-safe",
-      idempotency_key: "room-retry-1",
-    });
-    expect(replay.room.id).toBe(retried.room.id);
-    await expect(service.createRoom(owner, {
-      project_id: "project-1",
-      title: "Different payload",
-      idempotency_key: "room-retry-1",
-    })).rejects.toMatchObject({ statusCode: 409 });
+    // Transport replay of Room creation is the operation core's (roomOperationsDb.test.ts).
   });
 
   it("enforces Project ACL when creating and continuing a Room", async (ctx) => {
@@ -2007,9 +2001,9 @@ describe("Room workflow (real Postgres)", () => {
     await dispatchQueuedRoomRuns(sent.run_ids);
     await db.pool.query("UPDATE runs SET status='failed' WHERE id=$1", [sent.run_ids[0]]);
     await db.pool.query("UPDATE host_threads SET dispatch_lock_id=NULL WHERE session_id=$1", [conversation.id]);
-    const retried = await service.retryMessage(owner, created.room.id, conversation.id, { run_id: sent.run_ids[0]!, idempotency_key: "retry-skill-turn" });
-    expect(retried.value.run_ids).toHaveLength(1);
-    const run = await new PgRunRepository(db.pool).getRun(owner.spaceId, retried.value.run_ids[0]!);
+    const retried = await service.retryMessage(owner, created.room.id, conversation.id, { run_id: sent.run_ids[0]! });
+    expect(retried.run_ids).toHaveLength(1);
+    const run = await new PgRunRepository(db.pool).getRun(owner.spaceId, retried.run_ids[0]!);
     expect(run?.agent_id).toBe("agent-1");
     const messages = await new PgSessionRepository(db.pool).listRoomMessages(owner.spaceId, owner.userId, created.room.id, conversation.id, 50, 0);
     expect(messages?.find(message => message.role === "user")?.input_parts).toEqual([skill]);
@@ -2087,11 +2081,8 @@ describe("Room workflow (real Postgres)", () => {
     expect(failedReply).not.toBeNull();
 
     const retried = await service.retryMessage(owner, created.room.id, conversation.id, {
-      run_id: sent.run_ids[0]!,
-      idempotency_key: "retry-resource-turn",
-    });
+      run_id: sent.run_ids[0]! });
 
-    expect(retried.reused).toBe(false);
     const visibleMessages = await sessions.listRoomMessages(
       "space-1", owner.userId, created.room.id, conversation.id, 50, 0,
     );
@@ -2100,7 +2091,7 @@ describe("Room workflow (real Postgres)", () => {
     );
     expect(visibleMessages?.find(message => message.role === "user")?.metadata_json).toMatchObject({
       retry_superseded_run_ids: [sent.run_ids[0]!],
-      retry_run_ids: retried.value.run_ids,
+      retry_run_ids: retried.run_ids,
     });
     await expect(db.pool.query(
       `SELECT metadata_json->>'retry_superseded' AS superseded
@@ -2115,7 +2106,7 @@ describe("Room workflow (real Postgres)", () => {
       "Room task failed (runtime_nonzero_exit): upstream refused",
     );
 
-    const retriedRun = await runs.getRun("space-1", retried.value.run_ids[0]!);
+    const retriedRun = await runs.getRun("space-1", retried.run_ids[0]!);
     expect(retriedRun?.capabilities_json).toEqual(
       expect.arrayContaining(["input_resource.read", "input_resource.search"]),
     );
@@ -2134,7 +2125,7 @@ describe("Room workflow (real Postgres)", () => {
     const inputResource = new ConversationInputResourceService(db.pool);
     await expect(inputResource.read({
       spaceId: "space-1",
-      runId: retried.value.run_ids[0]!,
+      runId: retried.run_ids[0]!,
       messageId: resource.rows[0]!.message_id,
       request: { resource_id: resource.rows[0]!.id, start_line: 1, line_count: 10 },
     })).resolves.toMatchObject({ content: body });
@@ -2146,7 +2137,7 @@ describe("Room workflow (real Postgres)", () => {
     );
     await expect(inputResource.read({
       spaceId: "space-1",
-      runId: retried.value.run_ids[0]!,
+      runId: retried.run_ids[0]!,
       messageId: resource.rows[0]!.message_id,
       request: { resource_id: resource.rows[0]!.id, start_line: 1, line_count: 10 },
     })).rejects.toMatchObject({ code: "resource_not_found" });
@@ -2653,23 +2644,25 @@ describe("Room workflow (real Postgres)", () => {
       );
       const configRepository = new PgConversationBackendRepository(db.pool);
       const app = await buildModuleServer(loadConfig({ SERVER_DATABASE_URL: db.connectionUri }), [agentsModule]);
-      const save = async (agentId: string, model: string) => {
+      const save = async (agentId: string, model: string, allowSwitch = false) => {
         const binding = await configRepository.findBinding("space-1", "user-1", conversation.id, agentId);
-        return app.inject({ method: "PUT", url: `/api/v1/agents/${agentId}/conversation-session-config`, payload: {
-          session_id: conversation.id, runtime_profile_id: binding!.runtime_profile_id,
+        return app.inject({ method: "PUT", url: `/api/v1/agents/${agentId}/conversation-session-config`, headers: { "idempotency-key": randomUUID() }, payload: {
+          session_id: conversation.id, runtime_profile_id: binding!.runtime_profile_id, allow_quota_model_switch: allowSwitch,
           session_config: [{ id: "model", type: "select", category: "model", value: model }],
         } });
       };
       try {
         __setAuthIdentityForTests(owner);
         expect((await save("agent-1", "fable")).statusCode).toBe(200);
-        expect((await save("agent-2", "ops")).statusCode).toBe(200);
+        expect((await save("agent-2", "ops", true)).statusCode).toBe(200);
         const catalog = await app.inject({ method: "GET", url: `/api/v1/agents/agent-2/conversation-backends?session_id=${conversation.id}` });
         expect(catalog.statusCode).toBe(200);
+        expect(catalog.json().allow_quota_model_switch).toBe(true);
         expect(catalog.json().session_config).toEqual([{ id: "model", type: "select", category: "model", value: "ops" }]);
         expect((await save("agent-2", "unavailable")).statusCode).toBe(422);
         __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-2" });
-        expect((await save("agent-2", "fable")).statusCode).toBe(403);
+        // A Room member without Project write authority learns nothing about the binding.
+        expect((await save("agent-2", "fable")).statusCode).toBe(404);
         __setAuthIdentityForTests({ spaceId: "another-space", userId: "user-1" });
         expect((await save("agent-2", "fable")).statusCode).toBe(404);
         __setAuthIdentityForTests(owner);
@@ -3031,6 +3024,105 @@ describe("Room workflow (real Postgres)", () => {
       expect(await hasRunJob(specialistRun)).toBe(true);
     });
 
+    it("owes a resumed group's parked Runs a committed wake that a later cancel or lost management withdraws", async (ctx) => {
+      if (!db.available || !service || !groupService) return ctx.skip();
+      const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot });
+      const runtime = await operationRuntime(config);
+      const setStatus = async (groupId: string, status: "active" | "paused" | "cancelled", key = randomUUID()) =>
+        runtime.execute("agent_group.status.set", { group_id: groupId, status }, sessionActor({ spaceId: "space-1", userId: "user-1" }), randomUUID(), key);
+      const wakeJobs = async (groupId: string) => (await db.pool.query<{ id: string; user_id: string }>(
+        `SELECT id, user_id FROM jobs WHERE job_type = $1 AND status = 'pending' AND payload_json->>'group_id' = $2`,
+        [AGENT_GROUP_RESUME_WAKE_JOB, groupId])).rows;
+      const registry = new JobHandlerRegistry();
+      registerAgentGroupResumeWakeHandler(registry, config);
+      const runWake = async (groupId: string) => {
+        const [job] = await wakeJobs(groupId);
+        expect(job).toBeDefined();
+        const result = await registry.dispatch({ job_id: job!.id, space_id: "space-1", user_id: job!.user_id, job_type: AGENT_GROUP_RESUME_WAKE_JOB, attempts: 1, max_attempts: 5, worker_id: "test", payload: { group_id: groupId } });
+        await db.pool.query(`UPDATE jobs SET status = 'completed' WHERE id = $1`, [job!.id]);
+        return result;
+      };
+      let seeded = false;
+      const parked = async (title: string) => {
+        const { owner: person, created, conversation } = seeded ? await (async () => {
+          const person = { spaceId: "space-1", userId: "user-1" };
+          const created = await service!.createRoom(person, { project_id: "project-1", title });
+          await db.pool.query(
+            `INSERT INTO room_agent_members (id, space_id, room_id, agent_id, role, status, created_at, updated_at)
+             VALUES ($1, 'space-1', $2, 'agent-2', 'member', 'active', now(), now())`, [randomUUID(), created.room.id]);
+          return { owner: person, created, conversation: await seedConversation(person, created.room.id, title) };
+        })() : await roomWithSpecialist(title);
+        seeded = true;
+        const sent = await service!.sendMessage(person, created.room.id, conversation.id, {
+          content: "Both of you, please.",
+          recipient_segments: [{ recipient_agent_ids: ["agent-1", "agent-2"], content: "Both of you, please." }],
+        });
+        const [managerRun, specialistRun] = sent.run_ids as [string, string];
+        const groupId = sent.task_group_ids[0]!;
+        expect((await setStatus(groupId, "paused")).http_status).toBe(200);
+        await completeTurn(managerRun, "Done here.");
+        expect(await hasRunJob(specialistRun)).toBe(false);
+        return { groupId, specialistRun };
+      };
+
+      // The wake commits with the resume; it is the Job's to perform, and repeating it queues nothing twice.
+      const first = await parked("Core wake");
+      const key = randomUUID();
+      expect((await setStatus(first.groupId, "active", key)).http_status).toBe(200);
+      expect((await setStatus(first.groupId, "active", key)).replayed).toBe(true);
+      expect(await wakeJobs(first.groupId)).toHaveLength(1);
+      expect(await runWake(first.groupId)).toEqual({ group_id: first.groupId, woken: true });
+      expect(await hasRunJob(first.specialistRun)).toBe(true);
+      const runJobs = (await db.pool.query(`SELECT count(*)::int AS n FROM jobs WHERE job_type = 'agent_run' AND payload_json->>'run_id' = $1`, [first.specialistRun])).rows[0].n;
+      await new AgentGroupRunService(config, db.pool).reevaluateParkedRuns("space-1", first.groupId);
+      expect((await db.pool.query(`SELECT count(*)::int AS n FROM jobs WHERE job_type = 'agent_run' AND payload_json->>'run_id' = $1`, [first.specialistRun])).rows[0].n).toBe(runJobs);
+
+      // Cancelled before the wake ran: the parked Run stays parked.
+      const cancelled = await parked("Cancelled wake");
+      expect((await setStatus(cancelled.groupId, "active")).http_status).toBe(200);
+      expect((await setStatus(cancelled.groupId, "cancelled")).http_status).toBe(200);
+      expect(await runWake(cancelled.groupId)).toEqual({ group_id: cancelled.groupId, woken: false, reason: "not_active" });
+      expect(await hasRunJob(cancelled.specialistRun)).toBe(false);
+
+      // The resumer no longer manages the group when the wake runs: nothing is woken on their behalf.
+      const withdrawn = await parked("Withdrawn wake");
+      expect((await setStatus(withdrawn.groupId, "active")).http_status).toBe(200);
+      await db.pool.query(`UPDATE agent_run_groups SET manager_user_id = 'user-2' WHERE id = $1`, [withdrawn.groupId]);
+      await db.pool.query(`UPDATE room_user_members SET status = 'removed' WHERE user_id = 'user-1' AND room_id = (SELECT room_id FROM agent_run_groups WHERE id = $1)`, [withdrawn.groupId]);
+      expect(await runWake(withdrawn.groupId)).toEqual({ group_id: withdrawn.groupId, woken: false, reason: "not_managed" });
+      expect(await hasRunJob(withdrawn.specialistRun)).toBe(false);
+
+      // A failed management read is not a withdrawn permission: the Job is retried, and wakes once the database answers.
+      const faulted = await parked("Faulted wake");
+      expect((await setStatus(faulted.groupId, "active")).http_status).toBe(200);
+      const handlerPool = getDbPool(config.databaseUrl!);
+      const realQuery = handlerPool.query.bind(handlerPool);
+      let failures = 0;
+      const fault = vi.spyOn(handlerPool, "query").mockImplementation(((text: unknown, ...rest: unknown[]) => {
+        // The management read (the group row behind the status check), as a dropped connection would fail it.
+        if (typeof text === "string" && /FROM agent_run_groups/u.test(text) && !/^SELECT status FROM/u.test(text.trim())) {
+          failures += 1;
+          return Promise.reject(Object.assign(new Error("timeout exceeded when trying to connect"), { code: "ETIMEDOUT" }));
+        }
+        return (realQuery as (...args: unknown[]) => unknown)(text, ...rest);
+      }) as never);
+      const worker = new JobWorker(new PgJobQueueRepository(db.pool), registry, "wake-test", [AGENT_GROUP_RESUME_WAKE_JOB]);
+      try {
+        const [job] = await wakeJobs(faulted.groupId);
+        // The real worker claims and runs it: a thrown read fails this attempt and leaves the Job pending.
+        const outcome = await worker.processOne();
+        expect(failures).toBeGreaterThan(0);
+        expect(outcome).toMatchObject({ status: "failed" });
+        // Not completed: still owed, for the next attempt.
+        expect((await db.pool.query(`SELECT status FROM jobs WHERE id = $1`, [job!.id])).rows[0].status).toBe("pending");
+        expect(await hasRunJob(faulted.specialistRun)).toBe(false);
+      } finally {
+        fault.mockRestore();
+      }
+      expect(await runWake(faulted.groupId)).toEqual({ group_id: faulted.groupId, woken: true });
+      expect(await hasRunJob(faulted.specialistRun)).toBe(true);
+    });
+
     /** What the composer sends for `text` with `@Codex` (agent-2) written where it stands. */
     function composedSend(before: string, after: string) {
       const tokens: AgentMentionToken[] = [
@@ -3124,11 +3216,9 @@ describe("Room workflow (real Postgres)", () => {
       await failTurn(sent.run_ids[0]!, "runtime_error", "The CLI exited.");
 
       const retried = await service.retryMessage(owner, created.room.id, conversation.id, {
-        run_id: sent.run_ids[0]!,
-        idempotency_key: "retry-coordination",
-      });
+        run_id: sent.run_ids[0]! });
 
-      const runs = await runsOf(retried.value.run_ids);
+      const runs = await runsOf(retried.run_ids);
       expect(runs.map((run) => run.agent_id)).toEqual(["agent-1"]);
       expect(runs[0]!.prompt).toContain("- Codex (agent id: agent-2)");
       expect(runs[0]!.coordination).toMatchObject({ target_agent_ids: ["agent-2"] });
@@ -3162,14 +3252,12 @@ describe("Room workflow (real Postgres)", () => {
       );
 
       const retried = await service.retryMessage(owner, created.room.id, conversation.id, {
-        run_id: sent.run_ids[0]!,
-        idempotency_key: "retry-two-segments",
-      });
+        run_id: sent.run_ids[0]! });
 
       const tasks = await db.pool.query<{ agent_id: string; task: string }>(
         `SELECT agent_id, model_override_json->'chat_turn'->>'assigned_task' AS task
            FROM runs WHERE id = ANY($1::varchar[]) ORDER BY agent_id`,
-        [retried.value.run_ids],
+        [retried.run_ids],
       );
       expect(tasks.rows).toEqual([
         { agent_id: "agent-1", task: "Plan the release." },
@@ -3618,6 +3706,55 @@ describe("Room workflow (real Postgres)", () => {
         [opened.discussion.id],
       );
       expect(notices.rows).toEqual([{ kind: "not_admitted", agent_ids: ["agent-1"] }]);
+    });
+
+    it.for([false, true])("extends and stops a discussion through its core commands, dispatching the held wave and the closing turn (quota held: %s)", async (held, ctx) => {
+      if (!db.available || !service) return ctx.skip();
+      const { created, conversation, manager } = await roomWithSpecialist(`Steer via core ${held}`);
+      const app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot }), [roomsModule]);
+      const base = `/api/v1/rooms/${created.room.id}/conversations/${conversation.id}/discussions`;
+      const call = (url: string, payload: object = {}) => app.inject({ method: "POST", url, payload, headers: { "idempotency-key": randomUUID() } });
+      try {
+        __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
+        const opened = await call(base, { topic: "Plan the migration", participant_agent_ids: ["agent-2"], shape: "open", round_cap: 1 });
+        expect(opened.statusCode, opened.body).toBe(201);
+        const discussionId = opened.json().data.discussion_id as string;
+        await completeTurn(opened.json().data.run_ids[0], `@${manager} size the downtime.`);
+        const capped = await discussionFor(conversation.id);
+        expect(capped).toMatchObject({ id: discussionId, status: "cap_reached" });
+        expect(capped!.held_mentions_json.map((held) => held.agent_id)).toEqual(["agent-1"]);
+        const [capClosing] = await queuedRunsFor(conversation.id, "agent-1");
+        if (capClosing) await completeTurn(capClosing.id, "Conclusion: pending the sizing.");
+
+        if (held) {
+          // Past the reserve line the core decides from the cached reading (no Host probe in its transaction) and holds the wave.
+          await seedQuota(100, new Date(Date.now() + 2 * 3600_000).toISOString());
+          const extended = await call(`${base}/${discussionId}/extend`, { rounds: 1 });
+          expect(extended.statusCode, extended.body).toBe(200);
+          const [wave] = await queuedRunsFor(conversation.id, "agent-1");
+          expect(wave).toMatchObject({ discussion_id: discussionId });
+          expect(await quotaMarker(wave!.id)).not.toBeNull();
+          expect(await hasRunJob(wave!.id)).toBe(false);
+          return;
+        }
+        // The held Agent's wave is an Agent-origin turn: admitted through the quota gate inside the command.
+        const extended = await call(`${base}/${discussionId}/extend`, { rounds: 1 });
+        expect(extended.statusCode, extended.body).toBe(200);
+        const [wave] = await queuedRunsFor(conversation.id, "agent-1");
+        expect(wave).toMatchObject({ discussion_id: discussionId });
+        expect(wave!.prompt).toContain("size the downtime");
+
+        const stopped = await call(`${base}/${discussionId}/stop`);
+        expect(stopped.statusCode, stopped.body).toBe(200);
+        await completeTurn(wave!.id, "Sized: ten minutes.");
+        const [closing] = await queuedRunsFor(conversation.id, "agent-1");
+        expect(closing).toMatchObject({ discussion_id: discussionId });
+        expect(closing!.assigned_task).toContain("a person stopped it");
+        await expect(discussionFor(conversation.id)).resolves.toMatchObject({ status: "stopped" });
+      } finally {
+        __setAuthIdentityForTests(null);
+        await app.close();
+      }
     });
 
     it("keeps an explicit discussion reply queued while its wave waits for quota", async (ctx) => {
@@ -4744,15 +4881,16 @@ describe("Room workflow (real Postgres)", () => {
         const opened = await app.inject({
           method: "POST",
           url: `/api/v1/rooms/${created.room.id}/conversations/${conversation.id}/discussions`,
+          headers: { "idempotency-key": randomUUID() },
           payload: { topic: "Pick a database", participant_agent_ids: ["agent-2"], shape: "open" },
         });
-        expect(opened.statusCode).toBe(201);
-        expect(opened.json()).toMatchObject({
-          discussion: { status: "active", topic: "Pick a database" },
-          conversation: { id: conversation.id, room_id: created.room.id },
-          message: { content: "Pick a database" },
-        });
-        expect(opened.json().conversation).not.toHaveProperty("user_id");
+        expect(opened.statusCode, opened.body).toBe(201);
+        // A body-free receipt; the discussion and its message are read back through their GETs.
+        const receipt = opened.json().data;
+        expect(receipt).toMatchObject({ room_id: created.room.id, session_id: conversation.id, discussion_id: expect.any(String), run_ids: [expect.any(String)] });
+        expect(opened.body).not.toContain("Pick a database");
+        const detail = await app.inject({ method: "GET", url: `/api/v1/rooms/${created.room.id}/conversations/${conversation.id}/discussions/${receipt.discussion_id}` });
+        expect(detail.json()).toMatchObject({ discussion: { status: "active", topic: "Pick a database" } });
       } finally {
         __setAuthIdentityForTests(null);
         await app.close();
@@ -4785,17 +4923,19 @@ describe("Room workflow (real Postgres)", () => {
         // user-2 is a Room member and a Project viewer.
         __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-2" });
         expect((await app.inject({ method: "GET", url: base })).statusCode).toBe(200);
-        expect((await app.inject({ method: "POST", url: `${base}/continue` })).statusCode).toBe(403);
+        // Continuing is a decision to spend: a non-writer learns nothing (hidden), as for any core command.
+        expect((await app.inject({ method: "POST", url: `${base}/continue`, headers: { "idempotency-key": randomUUID() } })).statusCode).toBe(404);
+        // Moving the lines is `provider.subscription_quota_policy.set`: a non-admin gets the hidden 404.
         expect((await app.inject({
-          method: "PUT", url: "/api/v1/providers/subscription-quota-policy", payload: { warn_pct: 60, reserve_pct: 80 },
-        })).statusCode).toBe(403);
+          method: "PUT", url: "/api/v1/providers/subscription-quota-policy", headers: { "idempotency-key": randomUUID() }, payload: { warn_pct: 60, reserve_pct: 80 },
+        })).statusCode).toBe(404);
         __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
-        expect((await app.inject({ method: "POST", url: `${base}/continue` })).statusCode).toBe(200);
+        expect((await app.inject({ method: "POST", url: `${base}/continue`, headers: { "idempotency-key": randomUUID() } })).statusCode).toBe(200);
         const moved = await app.inject({
-          method: "PUT", url: "/api/v1/providers/subscription-quota-policy", payload: { warn_pct: 60, reserve_pct: 80 },
+          method: "PUT", url: "/api/v1/providers/subscription-quota-policy", headers: { "idempotency-key": randomUUID() }, payload: { warn_pct: 60, reserve_pct: 80 },
         });
-        expect(moved.statusCode).toBe(200);
-        expect(moved.json()).toMatchObject({ warn_pct: 60, reserve_pct: 80 });
+        expect(moved.statusCode, moved.body).toBe(200);
+        expect(moved.json()).toMatchObject({ status: "succeeded", data: { warn_pct: 60, reserve_pct: 80 } });
       } finally {
         __setAuthIdentityForTests(null);
         await app.close();
@@ -5175,7 +5315,6 @@ describe("Room workflow (real Postgres)", () => {
     const created = await openSpokenRoom(owner, { project_id: "project-1", title: "Preset runtime" });
     const preset = await service.addAgentPreset(owner, created.room.id, {
       preset_id: "research-analyst",
-      idempotency_key: "preset-runtime-test",
     });
     const specialist = preset.agent_members.find((row) => row.role === "member")!;
     const managerId = preset.agent_members.find((row) => row.role === "manager")!.agent_id;
@@ -5207,13 +5346,11 @@ describe("Room workflow (real Postgres)", () => {
     await addRoomMember(created.room.id, "user-2");
     await expect(service.addAgentPreset(owner, created.room.id, {
       preset_id: "research-analyst",
-      idempotency_key: "preset-confirmation-test",
     })).rejects.toMatchObject({
       responseBody: { code: "private_agent_share_confirmation_required" },
     });
     const preset = await service.addAgentPreset(owner, created.room.id, {
       preset_id: "research-analyst",
-      idempotency_key: "preset-confirmation-test",
       confirm_room_share: true,
     });
     expect(preset.agent_members).toEqual(expect.arrayContaining([
@@ -5240,7 +5377,7 @@ describe("Room workflow (real Postgres)", () => {
       share_private_with_member_ids: ["user-2"],
       confirm_room_share: true,
     });
-    expect(added.agent_members).toEqual(expect.arrayContaining([
+    expect(added.detail.agent_members).toEqual(expect.arrayContaining([
       expect.objectContaining({ agent_id: "agent-private", role: "member" }),
     ]));
 
@@ -7370,21 +7507,9 @@ describe("Room workflow (real Postgres)", () => {
               ($3, 'space-1', 'project-1', NULL, 'document', 'Project-wide artifact', 'user_output', '[]'::jsonb, now(), now())`,
       [randomUUID(), limitedRun, randomUUID()],
     );
-    let prompt = "";
-    const generator = new ProjectPublicSummaryGenerator(
-      db.pool,
-      { getTaskChain: async () => null } as unknown as ProviderCommandStore,
-      async (_spaceId, input) => {
-        prompt = `${input.system}\n${input.user}`;
-        return {
-          text: JSON.stringify({ summary_text: "A project.", topics: [], highlights: [], source_refs: [] }),
-          model: "test-model",
-          usage: {},
-        };
-      },
-    );
-
-    await generator.generateDraft({ spaceId: "space-1", userId: "user-2" }, "project-1", { providerId: "provider-1" });
+    const generator = new ProjectPublicSummaryGenerator(db.pool);
+    const prepared = await generator.prepareDraft({ spaceId: "space-1", userId: "user-2" }, "project-1", { providerId: "provider-1" });
+    const prompt = `${prepared.prompt.system}\n${prepared.prompt.user}`;
 
     expect(prompt).toContain("Project-wide artifact");
     expect(prompt).not.toContain("Limited Room");
@@ -7702,4 +7827,371 @@ describe("Room workflow (real Postgres)", () => {
       .rejects.toMatchObject({ statusCode: 409 });
   });
 });
+
+describe("Room commands through the operation core", () => {
+  const owner = { spaceId: "space-1", userId: "user-1" };
+  const config = () => loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot });
+  async function withApp<T>(identity: { spaceId: string; userId: string }, work: (call: (method: "POST" | "DELETE" | "PATCH", url: string, payload?: object, key?: string) => Promise<{ statusCode: number; body: string; json(): any }>, app: FastifyInstance) => Promise<T>) {
+    const app = buildModuleServer(config(), [roomsModule, agentGroupsModule, systemActionsModule]);
+    __setAuthIdentityForTests(identity);
+    try {
+      return await work((method, url, payload = {}, key = randomUUID()) => app.inject({ method, url, payload, headers: { "idempotency-key": key } }), app);
+    } finally { __setAuthIdentityForTests(null); await app.close(); }
+  }
+
+  it("creates, replays and hides Rooms across the formal and generic entries", async (ctx) => {
+    if (!db.available || !service) return ctx.skip();
+    await withApp(owner, async (call) => {
+      const key = randomUUID();
+      const formal = await call("POST", "/api/v1/rooms", { project_id: "project-1", title: "Core Room" }, key);
+      expect(formal.statusCode, formal.body).toBe(201);
+      const roomId = formal.json().data.room_id as string;
+      expect((await call("POST", "/api/v1/actions/room.create", { project_id: "project-1", title: "Core Room" }, key)).json()).toEqual(formal.json());
+      expect((await call("POST", "/api/v1/rooms", { project_id: "project-1", title: "Other" }, key)).json().error.code).toBe("idempotency_key_reused");
+      expect((await db.pool.query("SELECT count(*)::int AS n FROM rooms WHERE title = 'Core Room'")).rows[0].n).toBe(1);
+      // A personal Room is reused, not duplicated, under fresh keys: a business rule, not transport replay.
+      const first = await call("POST", "/api/v1/rooms", { project_id: "project-1", title: "Mine", personal: true });
+      const second = await call("POST", "/api/v1/rooms", { project_id: "project-1", title: "Mine again", personal: true });
+      expect(second.json().data.room_id).toBe(first.json().data.room_id);
+      expect(roomId).not.toBe(first.json().data.room_id);
+    });
+    // A Project viewer cannot open a Room; the refusal says nothing about the Project.
+    await withApp({ spaceId: "space-1", userId: "user-2" }, async (call) => {
+      expect((await call("POST", "/api/v1/rooms", { project_id: "project-1", title: "Viewer" })).statusCode).toBe(404);
+    });
+  });
+
+  it("keeps sharing and roster refusals readable and commits the roster before Host work", async (ctx) => {
+    if (!db.available || !service) return ctx.skip();
+    const created = await service.createRoom(owner, { project_id: "project-1", title: "Roster core" });
+    await addRoomMember(created.room.id, "user-2");
+    await db.pool.query(
+      `INSERT INTO agents (id, space_id, owner_user_id, name, status, agent_kind, visibility, created_at, updated_at)
+       VALUES ('agent-core-private', 'space-1', 'user-1', 'Private Core', 'active', 'standard', 'private', now(), now())`,
+    );
+    await withApp(owner, async (call, app) => {
+      const url = `/api/v1/rooms/${created.room.id}/agents`;
+      const refused = await call("POST", url, { agent_id: "agent-core-private" });
+      expect(refused.statusCode).toBe(409);
+      expect(refused.json().error).toMatchObject({ domain: "rooms", metadata: { code: "private_agent_share_confirmation_required" } });
+      const added = await call("POST", url, { agent_id: "agent-core-private", share_private_with_member_ids: ["user-2"], confirm_room_share: true });
+      expect(added.statusCode, added.body).toBe(201);
+      expect(added.json().data).toEqual({ id: created.room.id, space_id: "space-1", room_id: created.room.id, agent_id: "agent-core-private", restore_requested: false });
+      const detail = await app.inject({ method: "GET", url: `/api/v1/rooms/${created.room.id}` });
+      expect(detail.json().agent_members).toEqual(expect.arrayContaining([expect.objectContaining({ agent_id: "agent-core-private" })]));
+      const removed = await call("DELETE", `${url}/agent-core-private`);
+      expect(removed.statusCode, removed.body).toBe(200);
+      expect(removed.json().data).toMatchObject({ agent_id: "agent-core-private", revoked_grant_count: 1 });
+      const owned = await call("DELETE", `/api/v1/rooms/${created.room.id}/members/user-1`);
+      expect(owned.statusCode).toBe(409);
+      // The person-written refusal text is the domain's own; nothing else is reflected.
+      expect(owned.json().error).toMatchObject({ code: "operation_conflict", domain: "rooms", message: "Room members cannot remove themselves through the owner-managed removal endpoint" });
+    });
+    // An outsider learns nothing about the Room.
+    await withApp({ spaceId: "space-1", userId: "user-3" }, async (call) => {
+      expect((await call("POST", `/api/v1/rooms/${created.room.id}/agents`, { agent_id: "agent-core-private" })).statusCode).toBe(404);
+    });
+  });
+
+  it("archives a removed specialist after commit and restores it when re-added through a committed restore Job", async (ctx) => {
+    if (!db.available || !service) return ctx.skip();
+    const now = new Date().toISOString();
+    await seedSpecialist(now, "agent-2", "version-2", "Restore Specialist");
+    const created = await service.createRoom(owner, { project_id: "project-1", title: "Restore core" });
+    await db.pool.query(
+      `INSERT INTO room_agent_members (id, space_id, room_id, agent_id, role, status, created_at, updated_at)
+       VALUES ($1, 'space-1', $2, 'agent-2', 'member', 'active', $3, $3)`,
+      [randomUUID(), created.room.id, now],
+    );
+    const conversation = await seedConversation(owner, created.room.id, "Restore core");
+    // Restoring is the restoring person's Host's: the specialist's thread runs on a Host they own.
+    await db.pool.query(
+      `INSERT INTO machines (id, owner_user_id, display_name, device_kind, created_at, updated_at)
+       VALUES ('machine-restore', 'user-1', 'Owner laptop', 'desktop', $1, $1)`, [now]);
+    await db.pool.query(
+      `INSERT INTO hosts (id, owner_user_id, machine_id, name, kind, environment_kind, status, capabilities_json, last_heartbeat_at, created_at, updated_at)
+       VALUES ('host-restore', 'user-1', 'machine-restore', 'Owner laptop', 'remote', 'linux_native', 'online', '{"managed_workspace_operations":1}'::jsonb, $1, $1, $1)`, [now]);
+    const thread = (await db.pool.query<{ id: string }>(
+      `UPDATE host_threads SET execution_host_id = 'host-restore'
+        WHERE agent_id = 'agent-2' AND session_id = $1 AND container_kind = 'conversation' RETURNING id`, [conversation.id])).rows[0];
+    expect(thread).toBeDefined();
+    const actions: Array<{ action: string; container_id: unknown; committed: boolean }> = [];
+    const identities: Array<{ action: string; operation_id: unknown; generation: unknown }> = [];
+    let restoreAnswer: { ok: boolean; changed: boolean; error: string | null; error_code?: "live_conflict" } = { ok: false, changed: false, error: "host_offline" };
+    const host = vi.spyOn(sharedHostConnectionRegistry, "requestManagedWorkspaceAction").mockImplementation(async (_hostId, action, payload) => {
+      // Host work runs after the roster committed: the change is already readable outside the command.
+      const member = (await db.pool.query<{ status: string }>(
+        `SELECT status FROM room_agent_members WHERE room_id = $1 AND agent_id = 'agent-2'`, [created.room.id])).rows[0];
+      actions.push({ action, container_id: (payload as { container_id?: unknown }).container_id, committed: member?.status === (action === "managed_workspace_archive" ? "removed" : "active") });
+      identities.push({ action, operation_id: (payload as { operation_id?: unknown }).operation_id, generation: (payload as { generation?: unknown }).generation });
+      return action === "managed_workspace_archive" ? { ok: true, changed: true, error: null } : restoreAnswer;
+    });
+    const notices = async () => (await db.pool.query<{ content: string }>(
+      `SELECT content FROM messages WHERE session_id = $1 AND metadata_json->>'host_thread_event' = 'managed_workspace_restore_unavailable' ORDER BY created_at`,
+      [conversation.id])).rows.map((row) => row.content);
+    const restoreJobs = async () => (await db.pool.query<{ id: string; user_id: string; attempts: number; payload_json: Record<string, unknown> }>(
+      `SELECT id, user_id, attempts, payload_json FROM jobs WHERE job_type = $1 AND status = 'pending' ORDER BY created_at`,
+      [ROOM_AGENT_WORKSPACE_RESTORE_JOB])).rows;
+    // The job worker's dispatch, with its claim count: what a restarted process would run.
+    const runRestore = async (attempts = 1) => {
+      const [job] = await restoreJobs();
+      expect(job).toBeDefined();
+      try {
+        const result = await processRoomAgentWorkspaceRestore(db.pool, { job_id: job!.id, space_id: "space-1", user_id: job!.user_id, attempts, payload: job!.payload_json });
+        await db.pool.query(`UPDATE jobs SET status = 'completed' WHERE id = $1`, [job!.id]);
+        return result;
+      } catch (error) {
+        if ((error as Error).name !== "JobDeferredError") throw error;
+        return "deferred" as const;
+      }
+    };
+    try {
+      await withApp(owner, async (call) => {
+        const url = `/api/v1/rooms/${created.room.id}/agents`;
+        expect((await call("DELETE", `${url}/agent-2`)).statusCode).toBe(200);
+        expect(actions).toEqual([{ action: "managed_workspace_archive", container_id: conversation.id, committed: true }]);
+        // An acknowledged archive is no longer retried on reconnect.
+        expect((await db.pool.query(`SELECT pending_archive_at FROM host_threads WHERE id = $1`, [thread!.id])).rows[0].pending_archive_at).toBeNull();
+
+        // The restore commits with the membership as a Job of the exact thread; no Host call happens in the command.
+        const key = randomUUID();
+        const added = await call("POST", url, { agent_id: "agent-2", restore_workspace: true }, key);
+        expect(added.statusCode, added.body).toBe(201);
+        expect(added.json().data).toMatchObject({ agent_id: "agent-2", restore_requested: true });
+        expect(actions).toHaveLength(1);
+        expect((await restoreJobs()).map((job) => job.payload_json)).toEqual([expect.objectContaining({
+          thread_id: thread!.id, host_id: "host-restore", agent_id: "agent-2", conversation_id: conversation.id, room_id: created.room.id,
+        })]);
+        // A same-key replay returns the receipt; the committed promise is the same one, never a second.
+        expect((await call("POST", url, { agent_id: "agent-2", restore_workspace: true }, key)).json()).toEqual(added.json());
+        expect(await restoreJobs()).toHaveLength(1);
+
+        // An unsettled Host reset of this Agent's profiles there goes first: the restore waits without asking the Host.
+        await db.pool.query(
+          `INSERT INTO jobs (id, job_type, space_id, user_id, status, priority, payload_json, attempts, max_attempts, scheduled_at, created_at, updated_at)
+           VALUES ('reset-job', 'host_command', 'space-1', 'user-1', 'pending', 0, '{}'::jsonb, 0, 5, now(), now(), now())`);
+        await db.pool.query(
+          `INSERT INTO host_command_intents (id, space_id, host_id, user_id, agent_id, kind, scope_key, status, job_id, frozen_json, effect_json, created_at, updated_at)
+           VALUES ('reset-intent', 'space-1', 'host-restore', 'user-1', 'agent-2', 'agent_host_state_reset', repeat('a', 64), 'dispatched', 'reset-job', '{}'::jsonb,
+                   jsonb_build_object('dispatched_at', now()::text, 'journaled', true, 'sends', 1), now(), now())`);
+        expect(await runRestore()).toBe("deferred");
+        expect(actions).toHaveLength(1);
+        await db.pool.query(`UPDATE host_command_intents SET status = 'succeeded' WHERE id = 'reset-intent'`);
+        await db.pool.query(`UPDATE jobs SET status = 'completed' WHERE id = 'reset-job'`);
+
+        // An offline Host keeps the restore owed: it waits, silently, instead of reporting a lost effect.
+        expect(await runRestore()).toBe("deferred");
+        expect(actions[1]).toEqual({ action: "managed_workspace_restore", container_id: conversation.id, committed: true });
+        expect(await notices()).toEqual([]);
+        // A timed-out or unsent request is unknown, not failed: the Job keeps the same operation and repeats it.
+        restoreAnswer = { ok: false, changed: false, error: "host_timeout" };
+        expect(await runRestore()).toBe("deferred");
+        restoreAnswer = { ok: false, changed: false, error: "host_send_failed" };
+        expect(await runRestore()).toBe("deferred");
+        expect(await notices()).toEqual([]);
+        restoreAnswer = { ok: true, changed: true, error: null };
+        expect(await runRestore()).toEqual({ outcome: "restored" });
+        expect(await notices()).toEqual([]);
+        // Every attempt was one operation, ordered after the archive it follows.
+        const restoreIdentities = identities.filter((item) => item.action === "managed_workspace_restore");
+        expect(new Set(restoreIdentities.map((item) => item.operation_id)).size).toBe(1);
+        expect(Number(restoreIdentities[0]!.generation)).toBeGreaterThan(Number(identities[0]!.generation));
+        expect(identities[0]!.operation_id).toEqual(`archive:${thread!.id}:${identities[0]!.generation}`);
+
+        // A restore that brought nothing back is told in the conversation, once per Job.
+        expect((await call("DELETE", `${url}/agent-2`)).statusCode).toBe(200);
+        expect((await call("POST", url, { agent_id: "agent-2", restore_workspace: true })).statusCode).toBe(201);
+        restoreAnswer = { ok: true, changed: false, error: null };
+        expect(await runRestore()).toEqual({ outcome: "nothing_restored", error: null });
+        expect(await notices()).toEqual(["Restore Specialist was added, but its previous host state could not be restored."]);
+
+        // A definite Host refusal ends the Job and is told; it is not retried.
+        expect((await call("DELETE", `${url}/agent-2`)).statusCode).toBe(200);
+        expect((await call("POST", url, { agent_id: "agent-2", restore_workspace: true })).statusCode).toBe(201);
+        restoreAnswer = { ok: false, changed: false, error: "Already exists: workspace", error_code: "live_conflict" };
+        expect(await runRestore()).toEqual({ outcome: "unavailable", error: "live_conflict" });
+        expect((await notices()).at(-1)).toBe("Restore Specialist was added, but its previous host state could not be restored (live_conflict).");
+
+        // A Host that cannot journal the operation is sent no restore at all.
+        expect((await call("DELETE", `${url}/agent-2`)).statusCode).toBe(200);
+        expect((await call("POST", url, { agent_id: "agent-2", restore_workspace: true })).statusCode).toBe(201);
+        await db.pool.query(`UPDATE hosts SET capabilities_json = '{}'::jsonb WHERE id = 'host-restore'`);
+        const sentBefore = actions.filter((item) => item.action === "managed_workspace_restore").length;
+        expect(await runRestore()).toEqual({ outcome: "unavailable", error: "host_update_required" });
+        expect(actions.filter((item) => item.action === "managed_workspace_restore")).toHaveLength(sentBefore);
+        await db.pool.query(`UPDATE hosts SET capabilities_json = '{"managed_workspace_operations":1}'::jsonb WHERE id = 'host-restore'`);
+
+        // Still unsettled a week on: the person is warned once, and the Job stays pending —
+        // the deadline never turns an unknown Host outcome into a settled one.
+        expect((await call("DELETE", `${url}/agent-2`)).statusCode).toBe(200);
+        expect((await call("POST", url, { agent_id: "agent-2", restore_workspace: true })).statusCode).toBe(201);
+        await db.pool.query(`UPDATE jobs SET payload_json = payload_json || jsonb_build_object('requested_at', to_char((now() - interval '8 days') AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'))
+          WHERE job_type = $1 AND status = 'pending'`, [ROOM_AGENT_WORKSPACE_RESTORE_JOB]);
+        restoreAnswer = { ok: false, changed: false, error: "host_timeout" };
+        const outcomeNotices = (await notices()).length;
+        expect(await runRestore()).toBe("deferred");
+        expect(await runRestore()).toBe("deferred");
+        expect(await restoreJobs()).toHaveLength(1);
+        expect(await notices()).toHaveLength(outcomeNotices);
+        expect((await db.pool.query<{ content: string }>(
+          `SELECT content FROM messages WHERE session_id = $1 AND metadata_json->>'host_thread_event' = 'managed_workspace_restore_overdue'`,
+          [conversation.id])).rows.map((row) => row.content))
+          .toEqual(["Restore Specialist was added, but whether its previous host state was restored is not confirmed yet (host_timeout). Rainver keeps checking."]);
+        // The Host's receipt finally answers the same operation: the Job settles with what it did.
+        restoreAnswer = { ok: true, changed: true, error: null };
+        expect(await runRestore()).toEqual({ outcome: "restored" });
+
+        // Removed again before the Job ran: the withdrawn request never reaches the Host.
+        expect((await call("DELETE", `${url}/agent-2`)).statusCode).toBe(200);
+        expect((await call("POST", url, { agent_id: "agent-2", restore_workspace: true })).statusCode).toBe(201);
+        expect((await call("DELETE", `${url}/agent-2`)).statusCode).toBe(200);
+        const restoresBefore = actions.filter((item) => item.action === "managed_workspace_restore").length;
+        expect(await runRestore()).toEqual({ outcome: "withdrawn" });
+        expect(actions.filter((item) => item.action === "managed_workspace_restore")).toHaveLength(restoresBefore);
+
+        // A newer thread for the Agent in the conversation is never clobbered by an older archive.
+        expect((await call("POST", url, { agent_id: "agent-2", restore_workspace: true })).statusCode).toBe(201);
+        await db.pool.query(
+          `INSERT INTO host_threads (id, space_id, execution_host_id, container_kind, workspace_mode, session_id, agent_id, runtime_key, runtime_installation, status, created_by_user_id, created_at, updated_at)
+           VALUES ($1, 'space-1', 'host-restore', 'conversation', 'managed', $2, 'agent-2', 'claude_code', 'own', 'active', 'user-1', now(), now())`,
+          [randomUUID(), conversation.id]);
+        expect(await runRestore()).toEqual({ outcome: "superseded" });
+        expect(actions.filter((item) => item.action === "managed_workspace_restore")).toHaveLength(restoresBefore);
+      });
+    } finally {
+      host.mockRestore();
+    }
+  });
+
+  it("admits an invitation decision and an owner claim on the relation that grants them, and re-reads it on replay", async (ctx) => {
+    if (!db.available || !service) return ctx.skip();
+    await db.pool.query(`UPDATE project_members SET role = 'member' WHERE project_id = 'project-1' AND user_id = 'user-2'`);
+    await db.pool.query(
+      `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source)
+       VALUES ('user-4', 'Unrelated Reader', 'active', now(), now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system')`);
+    await db.pool.query(
+      `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
+       VALUES ('membership-4', 'space-1', 'user-4', 'member', 'active', now(), now())`);
+    await db.pool.query(
+      `INSERT INTO project_members (id, space_id, project_id, user_id, role, status, created_at, updated_at)
+       VALUES ('project-member-3s', 'space-1', 'project-1', 'user-3', 'viewer', 'active', now(), now()),
+              ('project-member-4s', 'space-1', 'project-1', 'user-4', 'viewer', 'active', now(), now())`);
+    const created = await service.createRoom(owner, { project_id: "project-1", title: "Special standing" });
+    await addRoomMember(created.room.id, "user-2");
+    await db.pool.query(
+      `INSERT INTO agents (id, space_id, owner_user_id, name, status, agent_kind, visibility, created_at, updated_at)
+       VALUES ('agent-private-2', 'space-1', 'user-2', 'Private Specialist', 'active', 'standard', 'private', now(), now())`);
+    await service.addAgent({ spaceId: "space-1", userId: "user-2" }, created.room.id, {
+      agent_id: "agent-private-2", share_private_with_member_ids: ["user-1"], confirm_room_share: true,
+    });
+    const invitation = await service.inviteUser(owner, created.room.id, { user_id: "user-3" });
+    // The private Agent's owner leaves the roster; the approval is still theirs, read from the relation.
+    await db.pool.query(`UPDATE room_user_members SET status = 'removed' WHERE room_id = $1 AND user_id = 'user-2'`, [created.room.id]);
+    const decision = `/api/v1/rooms/${created.room.id}/invitations/${invitation.id}/decision`;
+    const approve = { agent_id: "agent-private-2", decision: "approved" };
+    await withApp({ spaceId: "space-1", userId: "user-4" }, async (call) => {
+      expect((await call("POST", decision, approve)).statusCode).toBe(404);
+    });
+    const key = randomUUID();
+    await withApp({ spaceId: "space-1", userId: "user-2" }, async (call, app) => {
+      const decided = await call("POST", decision, approve, key);
+      expect(decided.statusCode, decided.body).toBe(200);
+      expect(decided.json().data).toMatchObject({ room_id: created.room.id, invitation_id: invitation.id });
+      expect((await call("POST", decision, approve, key)).json()).toEqual(decided.json());
+      // The receipt's exact invitation reads back for its non-member party.
+      const read = await app.inject({ method: "GET", url: `/api/v1/rooms/${created.room.id}/invitations?limit=1&invitation_id=${invitation.id}` });
+      expect(read.statusCode, read.body).toBe(200);
+      expect(read.json().items.map((item: { id: string }) => item.id)).toEqual([invitation.id]);
+      // Without Project read access the relation no longer stands, and neither does the replay.
+      await db.pool.query(`UPDATE project_members SET status = 'revoked' WHERE project_id = 'project-1' AND user_id = 'user-2'`);
+      expect((await call("POST", decision, approve, key)).statusCode).toBe(404);
+    });
+
+    // The owner of a suspended Room is replaced by the Project owner, who need not be on its roster.
+    const suspended = await service.createRoom(owner, { project_id: "project-1", title: "Suspended owner" });
+    await db.pool.query(`UPDATE project_members SET status = 'active' WHERE project_id = 'project-1' AND user_id = 'user-2'`);
+    await addRoomMember(suspended.room.id, "user-2");
+    await service.transferOwner(owner, suspended.room.id, "user-2");
+    await db.pool.query(`UPDATE project_members SET status = 'revoked' WHERE project_id = 'project-1' AND user_id = 'user-2'`);
+    await db.pool.query(`UPDATE room_user_members SET status = 'removed' WHERE room_id = $1 AND user_id = 'user-1'`, [suspended.room.id]);
+    const claim = `/api/v1/rooms/${suspended.room.id}/owner-claim`;
+    await withApp({ spaceId: "space-1", userId: "user-4" }, async (call) => {
+      expect((await call("POST", claim)).statusCode).toBe(404);
+    });
+    const claimKey = randomUUID();
+    await withApp(owner, async (call) => {
+      const claimed = await call("POST", claim, {}, claimKey);
+      expect(claimed.statusCode, claimed.body).toBe(200);
+      expect((await call("POST", claim, {}, claimKey)).json()).toEqual(claimed.json());
+    });
+    await expect(db.pool.query(`SELECT user_id FROM room_user_members WHERE room_id = $1 AND role = 'owner' AND status = 'active'`, [suspended.room.id]))
+      .resolves.toMatchObject({ rows: [{ user_id: "user-1" }] });
+  });
+
+  it("creates, edits, messages and pauses/resumes/cancels an Agent group through the core", async (ctx) => {
+    if (!db.available || !service) return ctx.skip();
+    const now = new Date().toISOString();
+    await seedSpecialist(now, "agent-2", "version-2", "Group manager");
+    await seedSpecialist(now, "agent-3", "version-3", "Group member");
+    await withApp(owner, async (call) => {
+      const created = await call("POST", "/api/v1/agent-groups", { space_id: "space-1", title: "Core group", manager_agent_id: "agent-2", member_agent_ids: ["agent-3"] });
+      expect(created.statusCode, created.body).toBe(201);
+      const groupId = created.json().data.group_id as string;
+      expect((await call("POST", "/api/v1/agent-groups", { space_id: "space-other", title: "Elsewhere", manager_agent_id: "agent-2", member_agent_ids: ["agent-3"] })).statusCode).toBe(404);
+      expect((await call("PATCH", `/api/v1/agent-groups/${groupId}`, { space_id: "space-1", title: "Renamed group" })).statusCode).toBe(200);
+      const base = `/api/v1/agent-groups/${groupId}`;
+      expect((await call("POST", `${base}/messages`, { space_id: "space-1", group_id: "another-group", content: "Wrong group" })).statusCode).toBe(422);
+      const sent = await call("POST", `${base}/messages`, { space_id: "space-1", group_id: groupId, content: "Coordinate a review" });
+      expect(sent.statusCode, sent.body).toBe(201);
+      expect(sent.json().data).toMatchObject({ group_id: groupId, message_id: expect.any(String) });
+      for (const [action, status] of [["pause", "paused"], ["resume", "active"], ["cancel", "cancelled"]] as const) {
+        const changed = await call("POST", `${base}/${action}`);
+        expect(changed.statusCode, changed.body).toBe(200);
+        expect(changed.json().data.status).toBe(status);
+      }
+      expect((await db.pool.query("SELECT title,status FROM agent_run_groups WHERE id=$1", [groupId])).rows[0]).toEqual({ title: "Renamed group", status: "cancelled" });
+    });
+    await withApp({ spaceId: "space-1", userId: "user-3" }, async (call) => {
+      const other = (await db.pool.query<{ id: string }>("SELECT id FROM agent_run_groups WHERE title='Renamed group'")).rows[0]!.id;
+      expect((await call("POST", `/api/v1/agent-groups/${other}/resume`)).statusCode).toBe(404);
+    });
+  });
+
+  it("sends, queues and withdraws a person's turn and steers a discussion through receipts", async (ctx) => {
+    if (!db.available || !service) return ctx.skip();
+    const now = new Date().toISOString();
+    await seedSpecialist(now, "agent-2", "version-2", "Core Specialist");
+    const created = await service.createRoom(owner, { project_id: "project-1", title: "Turns core" });
+    await db.pool.query(
+      `INSERT INTO room_agent_members (id, space_id, room_id, agent_id, role, status, created_at, updated_at)
+       VALUES ($1, 'space-1', $2, 'agent-2', 'member', 'active', $3, $3)`,
+      [randomUUID(), created.room.id, now],
+    );
+    const conversation = await seedConversation(owner, created.room.id, "Turns core");
+    await withApp(owner, async (call, app) => {
+      const base = `/api/v1/rooms/${created.room.id}/conversations/${conversation.id}`;
+      const sent = await call("POST", `${base}/messages`, { content: "Plan the release", backends: [{ agent_id: "agent-1", runtime_profile_id: "runtime-cli" }] });
+      expect(sent.statusCode, sent.body).toBe(201);
+      expect(sent.json().data).toMatchObject({ status: "sent", session_id: conversation.id, run_ids: [expect.any(String)] });
+      expect(sent.body).not.toContain("Plan the release");
+      const queued = await call("POST", `${base}/messages`, { content: "And the notes", queue: true });
+      expect(queued.statusCode, queued.body).toBe(201);
+      expect(queued.json().data).toMatchObject({ status: "queued", queued_id: expect.any(String) });
+      const withdrawn = await call("DELETE", `${base}/queued-messages/${queued.json().data.queued_id}`);
+      expect(withdrawn.statusCode, withdrawn.body).toBe(200);
+      const busy = await call("POST", `${base}/messages`, { content: "Now" });
+      expect(busy.statusCode, busy.body).toBe(409);
+      expect(busy.json().error.metadata).toMatchObject({ code: "conversation_turn_in_progress" });
+      const draft = await call("POST", `/api/v1/rooms/${created.room.id}/conversations`);
+      expect(draft.statusCode, draft.body).toBe(201);
+      expect(draft.json().data.session_id).not.toBe(conversation.id);
+      expect((await app.inject({ method: "GET", url: `/api/v1/rooms/${created.room.id}/conversations` })).json().items.map((item: { id: string }) => item.id)).toContain(draft.json().data.session_id);
+      // A send into the uninitialized draft is the dispatch's own readable conflict, not an internal error.
+      const early = await call("POST", `/api/v1/rooms/${created.room.id}/conversations/${draft.json().data.session_id}/messages`, { content: "Too early" });
+      expect(early.statusCode, early.body).toBe(409);
+      expect(early.json().error.message).toContain("Initialize the Conversation execution context");
+    });
+  });
+});
+
 }

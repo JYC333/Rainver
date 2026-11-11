@@ -1,6 +1,6 @@
 import { HostDaemonFrameSchema, HostServerFrameSchema, type HostLaunchFrame } from "@rainver/protocol";
 import { describe, expect, it } from "vitest";
-import { parseServerFrame, requestFailureFrame, toLaunchFrame } from "../src/commands/run.js";
+import { parseServerFrame, rejectedFrameReply, requestFailureFrame, toLaunchFrame } from "../src/commands/run.js";
 import type { LaunchFrame } from "../src/execution.js";
 
 // The launch frame is parsed against the shared contract and handed over by
@@ -94,6 +94,30 @@ describe("the launch frame across the wire", () => {
 
   it("is the same contract the server dispatches against", () => {
     expect(HostServerFrameSchema.safeParse(overWire(wire)).success).toBe(true);
+  });
+});
+
+describe("a request frame that fails validation", () => {
+  // Unanswered, the server waits out its timeout and retries the same refused
+  // frame (an empty `git update-ref` old value once looped this way for minutes).
+  it("answers a waiting request with a definite failure the server accepts", () => {
+    const parsed = parseServerFrame({ type: "command_run", request_id: "request-1", command: ["git", "update-ref", ""], timeout_seconds: 30 });
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) return;
+    const reply = HostDaemonFrameSchema.parse(rejectedFrameReply(parsed));
+    expect(reply).toMatchObject({ type: "command_result", request_id: "request-1", exit_code: 1, error: expect.stringContaining("command_run frame rejected: command.2") });
+  });
+
+  it("completes a rejected launch as failed, and only logs a frame nobody waits on", () => {
+    const launch = parseServerFrame({ type: "launch", run_id: "run-9", launch_id: "launch-9" });
+    if (launch.ok) throw new Error("fixture");
+    expect(rejectedFrameReply(launch)).toMatchObject({ type: "complete", run_id: "run-9", launch_id: "launch-9", exit_code: 1 });
+    const anonymous = parseServerFrame({ type: "command_run", command: [""] });
+    if (anonymous.ok) throw new Error("fixture");
+    expect(rejectedFrameReply(anonymous)).toBeNull();
+    const unknown = parseServerFrame({ type: "nonsense", request_id: "request-2" });
+    if (unknown.ok) throw new Error("fixture");
+    expect(rejectedFrameReply(unknown)).toBeNull();
   });
 });
 

@@ -2,6 +2,8 @@ import { readdir, stat } from "node:fs/promises";
 import { isAbsolute, dirname, resolve } from "node:path";
 import { workspaceAdd } from "./commands/workspace.js";
 import { requireConfig, saveConfig } from "./config.js";
+import { holdRepositories } from "./repositoryGate.js";
+import { workspaceGitDirectory } from "./readOnlyWorkspace.js";
 
 /**
  * The daemon side of registering a workspace from the web UI. The control plane forwards
@@ -61,11 +63,17 @@ export async function registerWorkspace(input: { path: unknown; project_id: unkn
   if (typeof input.path !== "string" || !input.path.trim() || !isAbsolute(input.path)) return failure("path must be an absolute path");
   if (typeof input.project_id !== "string" || !input.project_id.trim()) return failure("project_id is required");
   if (typeof input.name !== "string" || !input.name.trim()) return failure("name is required");
+  // A Location of a repository whose branch is being aligned is registered
+  // after the alignment, never beside it (`repositoryGate.ts`).
+  const repository = await holdRepositories([await workspaceGitDirectory(resolve(input.path))], false);
+  if ("refused" in repository) return failure(repository.refused);
   try {
     const created = await workspaceAdd({ path: input.path, projectId: input.project_id, name: input.name.trim() });
     return { ok: true, workspace_id: created.id, display_path: resolve(input.path), error: null };
   } catch (error) {
     return failure(error instanceof Error ? error.message : String(error));
+  } finally {
+    repository.release();
   }
 }
 

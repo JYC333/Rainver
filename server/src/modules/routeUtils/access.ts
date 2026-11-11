@@ -3,6 +3,7 @@ import type { ServerConfig } from "../../config.js";
 import { authRepositoryFromConfig } from "../auth/identity.js";
 import { getDbPool } from "../../db/pool.js";
 import { isSpaceOwnerOrAdmin } from "../access/roles.js";
+import type { Queryable } from "./common.js";
 
 export async function requireSpaceOwnerOrAdmin(
   config: ServerConfig,
@@ -52,4 +53,21 @@ export async function requireInstanceAdmin(
   if (await isInstanceAdmin(config, identity.userId)) return true;
   reply.code(403).send({ detail: message });
   return false;
+}
+
+/**
+ * Instance admin, read through the caller's transaction: an operation command
+ * rechecks it beside its writes, so a demotion committed first refuses it.
+ */
+export async function isInstanceAdminIn(db: Queryable, config: ServerConfig, userId: string): Promise<boolean> {
+  if (!config.instanceAdminEmail) return false;
+  const row = (await db.query<{ email: string | null }>(`SELECT email FROM users WHERE id=$1 AND status='active'`, [userId])).rows[0];
+  return Boolean(row?.email && row.email.trim().toLowerCase() === config.instanceAdminEmail.trim().toLowerCase());
+}
+
+/** Active Space owner or admin, read (and share-locked) through the caller's transaction. */
+export async function isSpaceOwnerOrAdminIn(db: Queryable, spaceId: string, userId: string): Promise<boolean> {
+  const row = (await db.query<{ role: string }>(
+    `SELECT role FROM space_memberships WHERE space_id=$1 AND user_id=$2 AND status='active' LIMIT 1 FOR SHARE`, [spaceId, userId])).rows[0];
+  return isSpaceOwnerOrAdmin(row?.role ?? null);
 }

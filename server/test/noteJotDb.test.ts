@@ -1,3 +1,5 @@
+import { enforceNoteLinkPolicy } from "../src/modules/knowledge/noteLinkPolicy.js";
+import type { ModuleContext } from "../src/gateway/routeRegistry.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
@@ -74,6 +76,16 @@ beforeEach(async () => {
 });
 
 describe("jot a note from an evidence card (real Postgres)", () => {
+  it("allows human navigation and records the policy decision", async () => {
+    if (!db.available) return;
+    await enforceNoteLinkPolicy({ config: { databaseUrl: db.connectionUri } } as ModuleContext, identity);
+    const { rows } = await db.pool.query(
+      "SELECT decision, actor_type, actor_id FROM policy_decision_records WHERE action = 'note.link.create' AND space_id = $1",
+      [SPACE],
+    );
+    expect(rows).toEqual([{ decision: "allow", actor_type: "user", actor_id: USER }]);
+  });
+
   it("creates the note and the link in one call", async () => {
     if (!db.available) return;
     const repository = new PgKnowledgeRepository(db.pool);

@@ -25,7 +25,7 @@ export interface ManagedConversationEntrypoint {
  * decision even though the direct invocation inventory cannot discover it. */
 export const MANAGED_CONVERSATION_ENTRYPOINT_INVENTORY = [
   {
-    source: "agents/routes.ts",
+    source: "agents/chatOperations.ts",
     executionMode: "conversation_lightweight.v1",
     targetBoundary: "runtime_context_gateway",
   },
@@ -55,7 +55,6 @@ export const RUNTIME_INVOCATION_INVENTORY = [
   // Agent task-context entrypoint either.
   providerCall("importedSessions/summary.ts", "completeProviderText", 1, "bounded_provider_task", "importedSessions", "provider_task"),
   providerCall("projectResearch/questionRefineService.ts", "completeProviderMessages", 1, "bounded_provider_task", "projectResearch", "provider_task"),
-  providerCall("projects/publicSummaryGenerator.ts", "completeProviderText", 1, "bounded_provider_task", "projects", "provider_task"),
   providerCall("research/queryPlanning/intentPlanner.ts", "completeProviderMessages", 1, "bounded_provider_task", "research", "provider_task"),
   providerCall("retrieval/embedding/providerEmbedder.ts", "completeProviderEmbedding", 1, "bounded_provider_task", "retrieval", "provider_task"),
   providerCall("retrieval/embedding/queryEmbedder.ts", "completeProviderEmbedding", 1, "bounded_provider_task", "retrieval", "provider_task"),
@@ -63,9 +62,9 @@ export const RUNTIME_INVOCATION_INVENTORY = [
   providerCall("retrieval/rerankProvider/providerReranker.ts", "completeProviderText", 1, "bounded_provider_task", "retrieval", "provider_task"),
   providerCall("retrieval/rerankProvider/providerReranker.ts", "completeProviderRerank", 1, "bounded_provider_task", "retrieval", "provider_task"),
   providerCall("retrieval/synthesisProvider/providerSynthesizer.ts", "completeProviderText", 1, "bounded_provider_task", "retrieval", "provider_task"),
-  providerCall("providers/commands/routes.ts", "completeProviderEmbedding", 1, "bounded_provider_task", "providers", "provider_task"),
-  providerCall("providers/commands/routes.ts", "completeProviderRerank", 1, "bounded_provider_task", "providers", "provider_task"),
-  providerCall("providers/commands/routes.ts", "completeProviderChat", 1, "bounded_provider_task", "providers", "provider_task"),
+  providerCall("providers/connectionTest.ts", "completeProviderEmbedding", 1, "bounded_provider_task", "providers", "provider_task"),
+  providerCall("providers/connectionTest.ts", "completeProviderRerank", 1, "bounded_provider_task", "providers", "provider_task"),
+  providerCall("providers/connectionTest.ts", "completeProviderChat", 1, "bounded_provider_task", "providers", "provider_task"),
   entry("providers/index.ts", "provider_facade", "providers", "provider_task"),
   // The CLI renderer is the remote-host adapter. Every `local_cli` run is
   // dispatched to a host daemon, and the server spawns no vendor CLI of its own.

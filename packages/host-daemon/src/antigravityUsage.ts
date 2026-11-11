@@ -36,7 +36,6 @@ export function parseAntigravityQuota(value: unknown): HostUsageQuota {
   const root = record(value);
   const payload = record(root?.response) ?? record(root?.summary) ?? root;
   const windows: NonNullable<HostUsageQuota["windows"]> = [];
-  const cadences = new Map<string, string>();
   if (Array.isArray(payload?.groups)) {
     for (const groupValue of payload.groups) {
       const group = record(groupValue);
@@ -49,26 +48,18 @@ export function parseAntigravityQuota(value: unknown): HostUsageQuota {
         const used = remaining(bucket.remainingFraction ?? record(bucket.remaining)?.remainingFraction);
         windows.push({
           id: id.slice(0, 256),
+          scope: "family",
           label: NATIVE_QUOTA_LABELS.get(id) ?? `${text(group.displayName) ?? text(group.name) ?? "Quota"} · ${(text(bucket.displayName) ?? text(bucket.name) ?? id).replace(/\s+remaining$/i, "")}`.slice(0, 256),
           used_pct: used, resets: reset(bucket.resetTime),
         });
-        cadences.set(id.slice(0, 256), text(bucket.window) ?? id);
       }
     }
   }
   const result = empty(null);
   result.windows = windows.slice(0, 64);
   result.available = result.windows.some(w => w.used_pct !== null);
-  // Aggregate only explicit cadences; model buckets are not assumed to be weekly.
-  for (const window of result.windows) {
-    if (window.used_pct === null) continue;
-    const cadence = cadences.get(window.id) ?? "";
-    if (/weekly|seven.day/i.test(cadence) && window.used_pct >= (result.week_pct ?? -1)) {
-      result.week_pct = window.used_pct; result.week_resets = window.resets;
-    } else if (/5h|five.hour/i.test(cadence) && window.used_pct >= (result.session_pct ?? -1)) {
-      result.session_pct = window.used_pct; result.session_resets = window.resets;
-    }
-  }
+  // These are independent model/family allowances, not account-wide limits.
+  // Keep them named; neither their maximum nor their sum is an overall meter.
   return result;
 }
 

@@ -345,6 +345,25 @@ export async function bestEffortStep(
  * directly against the given client so nested calls join the existing
  * transaction instead of starting a new one.
  */
+/**
+ * The independent Pool a worker-only step needs (its own per-item
+ * transactions, or work that must outlive the caller). A service constructed
+ * on a caller's transaction never reaches these steps; if it does, this fails
+ * closed rather than opening a second connection or joining the caller.
+ */
+export function independentPool(db: Queryable, purpose: string): Pool {
+  const pool = independentPoolOrNull(db);
+  if (!pool) throw new Error(`${purpose} requires an independent pool`);
+  return pool;
+}
+
+/** `db` as an independent Pool, or null when it is a caller's client or core transaction port. */
+export function independentPoolOrNull(db: Queryable): Pool | null {
+  const candidate = db as Queryable & { connect?: unknown; release?: unknown };
+  if (isOperationTransaction(db) || typeof candidate.connect !== "function" || typeof candidate.release === "function") return null;
+  return db as unknown as Pool;
+}
+
 export async function withQueryableTransaction<T>(
   db: Queryable,
   fn: (db: Queryable) => Promise<T>,

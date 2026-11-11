@@ -488,7 +488,7 @@ all closed as integrated/no changes is reclaimed (tree, Git registration, manage
 branch, owned refs, receipts) a short grace after the last Run exits; the same
 conversation later rebuilds the same workspace identity from the target. Unmerged,
 blocked, kept-without-merging and private-baseline work keeps its branch with no
-automatic expiry. A past Run's file preview reads its exact version through an
+automatic expiry unless the person explicitly requests reviewed discard. A past Run's file preview reads its exact version through an
 owned run-history ref for the configured history period after a reclaim, then
 shows an explicit expired state, only when that exact version is gone after the
 period and Git cleanly reports it missing; a missing file, refused read, a
@@ -511,13 +511,66 @@ Files/Changes tabs (and in the no-Folder empty state). It opens
 `GET /api/v1/projects/:projectId/agent-workspaces?view=current|history&cursor&limit`
 (`workspaceOverview.ts`). One row per workspace generation shows the
 conversation or Task title, Agent, Folder, server-derived work state
-(`attention`, `running`, `integrating`, `saved`, `unsaved`, `merged`, `adopted`,
-`adoption_unverified`, `no_changes`, `kept`, `idle`), retention and activity
-time. *Active & pending* (default) holds running, unfinished, unmerged-but-kept,
-held and attention rows; *History* holds the rest.
+(`attention`, `missing`, `running`, `integrating`, `saved`, `unsaved`, `merged`,
+`adopted`, `in_target`, `adoption_unverified`, `no_changes`, `kept`,
+`missing_closed`, `idle`), retention and activity time. The state is decided
+from live facts first (a blocked batch, a Run working now, a merging batch),
+then an unacknowledged missing branch, then saved/unsaved work, then a closed
+missing record and settled outcomes: a recorded missing reading never outranks
+a later Run or batch, and is not applied at all to open work saved after its
+assessment (`currentRetention`; a launch report also replaces the stale
+inventory, hosts.md "Missing branches"). Conversation summaries and batch rows
+follow the same order and do not repeat a missing reading beside a merging
+batch or working Run. *Active & pending*
+(default) holds running, unfinished, saved-with-a-real-difference, held,
+reclaiming, proof-refused/quarantined/safety-retained and
+attention rows; *History* holds merged, adopted, already-in-target, unchanged,
+reclaimed, kept-without-merging, removed-branch (including unacknowledged) and branch-kept-only-for-a-
+private-baseline or delegated-child rows. An open batch whose saved source
+equals its base is "No saved difference", never "Saved privately", so it cannot
+contradict a reclaimed "content is in the target". Delegated workspaces carry
+`parent_workspace_id` and are grouped under their main workspace when both are
+loaded; otherwise they stay visible on their own, so paging or a parent in the
+other view never hides unfinished delegated work.
+
+The page's default list is server-aggregated: `GET
+/api/v1/projects/:projectId/agent-workspace-groups?view=current|history`
+(`workspaceOverviewGroups.ts`) returns one entry per conversation × repository
+(`group_key` `c:<conversation>:<location>`, or `w:<workspace>` without one)
+with the most urgent member state, the current workspace (the conversation
+workspace with the highest generation, never chosen by activity), the latest result
+(newest visible batch with an outcome or saved difference), issues
+(`attention`, `missing`, `cleanup_blocked`, `unconfirmed`, `host_offline`) and
+up to 20 unconfirmed saved batches (`saved_not_merged`, `kept_without_merging`,
+`adoption_unverified`). A batch is folded away (`proven_duplicates`) only when
+its exact source commit equals one with target proof: published from a root
+workspace, or closed with a target adoption proof (`target_paths_match` on a root workspace, or
+`published_parent_paths` whose adopting parent was published from a root).
+Adoption into a parent batch is not target proof, so the parent's unpublished
+work at that commit stays listed; batches saved at the
+same commit are listed once (`same_commit_count`). Running/merging workspaces'
+open batches are their current state, not unconfirmed. A group is *current*
+when any visible member is; grouping, counting and paging use only the visible
+rows above, and the cursor names only a group the reader was shown. Each entry
+folds its execution history: `agent-workspaces?view=all&group=<key>` pages every
+visible generation of that group (delegations, older generations, reclaims),
+rendered with the per-workspace rows and batch details below. Files:
+`AgentWorkspaceGroupCard.tsx` (entry and history), `AgentWorkspaceRow.tsx`
+(generation row and batches). A `missing` row offers
+**Close missing records** (confirmed; `acknowledge_missing`).
 Visibility is applied before anything is aggregated or paged: every batch and
 every bound Run must pass an owned or server Host, a readable conversation (the
-shared session gate) and a visible, unwithheld (`full`) Run body. The SQL form
+shared session gate) and a visible, unwithheld (`full`) Run body. A batch also
+requires every *contributing* Run to pass that gate
+(`workspaceContributors.ts`): each Run bound to it (later turns and serial
+delegated children checkpoint into the same batch), each Run recorded in
+`verification_json.contributor_run_ids` (checkpoint and native
+prepare/checkpoint record the producing Run), and recursively the origin, bound and recorded Runs of
+every adopted child batch (legacy uncertain adoption stays conservative). The same predicate gates
+`workspace.change.*` authorization (`authorizedWorkspaceChange`: get, list
+closure, publication, retention, verification), so one unreadable contributor
+hides the batch everywhere. Background publication rechecks the same gate,
+and taint assessment uses that same recursive contributor set. The SQL form
 of that Run gate is `runBodyReadableSql` (`runs/runBodyReadSql.ts`). It is
 deliberately narrower than `getVisibleRun`, never wider: it applies the same
 content, Room and access-level (including oversight) layers and requires a
@@ -592,7 +645,7 @@ People use the existing **Finish changes** control or ask the Agent to publish
 the work it prepared. The Agent resolves commit identities itself; there is no
 manual Git ID form. Both Run and conversation controls expose **Check whether already integrated**
 on failed integrations. It calls `workspace.integration.retry` with
-`reconcile_only: true`, which cannot carry repair instructions. Host preparation
+`reconcile_only: true`, which cannot carry repair instructions or a publication change. Host preparation
 checks whether the complete frozen patch can be reversed against a private index
 of the committed target, without touching the user's index or working files.
 A bounded, complete Git proof closes the old record as `no_changes` and records
@@ -644,3 +697,81 @@ of retained work only; completion/retry keep their stricter publication binding.
 Research snapshot provenance projections propagate explicit no-oversight reads to
 both the Workflow and its primary Inquiry Thread. Publication does not inherit an
 administrator's oversight-only access through a nested provenance predicate.
+
+### Reviewed conversational withdrawal
+
+`workspace.change.abandon` accepts optional `review` with the exact saved
+`source_commit`, `user_request_quote` and concrete `findings`. For open batches with saved differences
+an Agent must supply it. Existing withdrawal of failed/blocked work stays compatible. The quote must occur in
+the canonical current user message of its manual Run (the server-owned
+`chat_turn.v1.user_message_id` pointer). The existing Runtime Context message
+reader verifies Space, session, author, direct-chat Run/retry binding and live
+Room membership. Turn session/person/Agent/Project identities must match the Run;
+assistant/system messages, handoffs and delegated/unattended turns are refused.
+Malformed structured input never falls back to matching assembled context. Legacy
+non-chat Runs still use their server-owned prompt/instruction. The audit stores
+the resolved message or Run-request reference alongside the review. The Agent is responsible for interpreting an explicit request
+to close the work; substring matching establishes provenance, not semantic approval.
+Unattended turns cannot use this route. Existing Project/Host/Run-body and
+conversation/delegation-tree authority still applies. List reports `review_required`
+until the caller supplies a review; get supplies the saved source identity.
+Revision and source are rechecked under the workspace/batch locks. Active Runs,
+unfinished integrations and pending checkpoints cannot be bypassed by review.
+
+This withdraws an obsolete record as `abandoned`, retaining the source and review
+in the audit evidence. It is not adoption proof, does not mark the batch merged,
+and does not authorize deletion of unproven unique branches or files. Existing
+retention/cleanup checks keep those sources; exact adoption continues through the
+Host-backed reconciliation path. No schema migration or separate shell API is used.
+
+When the last unfinished batch of a recorded missing source is reviewed and
+withdrawn, the existing missing acknowledgement is recorded too. It leaves the
+unfinished list as missing history; it never becomes a successful integration.
+
+### Event-driven workspace overview
+
+The Agent workspace overview subscribes to the Project's shared content-free
+`/api/v1/projects/:projectId/updates/stream` SSE connection. Agent and background
+workspace writes invalidate the list and any expanded detail; fresh cursors are
+followed for the number of pages the person loaded. Quiet reads retain the visible
+frame, open details and pagination. Late responses from another view/Project are
+ignored; a refusal clears cached rows. Hidden tabs disconnect; reconnect/focus
+revalidates once. There is no interval polling on this surface.
+
+Acknowledged removed branches are labelled closed history, including their
+retention explanation. They are audit records, not remaining branch files to
+remove. Removed-branch records remain accessible in History with their unresolved contents
+and existing recovery controls; moving a row does not close its batches, prove
+adoption or delete any source. Active Runs, integrating or blocked batches and
+cleanup failures still stay in Active & pending. Open work saved after the missing
+assessment is current again; no visibility or retention permission is relaxed.
+
+The current/history projection also lets terminal visible batch facts supersede
+an older unpublished/blocked/unmerged retention explanation. It does not wait
+for a deferred cleanup assessment to move a closed row into history. Any visible
+unfinished batch or active Run still keeps the workspace current.
+
+
+### Explicit discard and physical reclamation
+
+`workspace.change.abandon` with `reclaim: true` and an exact `review` requests
+physical reclamation of an obsolete saved generation (including a previously
+abandoned batch). A normal close still retains source. The existing authorizer
+covers the conversation/delegation tree; Agent requests must quote the current
+canonical direct human request, and this mode requires an explicit request to
+discard the saved source and reclaim branch/files, not merely close its record.
+The batch revision, saved source, current generation and workspace head must
+match; every binding must be saved, no other batch or integration may be active,
+and an unconfirmed earlier cleanup cannot be replaced. The workspace retires so
+a new turn allocates a new generation rather than inheriting the discard grant.
+
+The existing cleanup Job, dependency checks, Host lease, dirty-tree refusal,
+expected-tip CAS, quarantine and materialization fences perform deletion. Host
+reclaim level 5 is required; older Hosts refuse admission and resumed jobs defer.
+A moved tip requires another review, never an automatic transfer of permission.
+The outcome stays `abandoned`, with retention reason `discarded`, never merged or
+adopted. The UI reports deliberate discard without claiming content is in target.
+Recoverable checkpoints/base remain in existing run-history refs for the
+configured period (default 30 days), with durable expiry Jobs; managed branches
+and worktree files do not remain for that period. Other live dependencies still
+protect their shared source refs.

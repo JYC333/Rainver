@@ -45,12 +45,16 @@ function useRunDiffs(runs:readonly Run[],scope:RequestOptions,refresh:number){
 
 type Tone='attention'|'progress'|'neutral'
 /** One status phrase per batch, ordered by how much it needs a person. */
-function changeStatus(c:WorkspaceChangeView):{key:string;rank:number;tone:Tone;target?:string}|null{
+function changeStatus(c:WorkspaceChangeView,runActive:boolean):{key:string;rank:number;tone:Tone;target?:string}|null{
+ // Live batch and Run facts before the recorded retention reading (see workspaceChangeLabelKey).
  if(c.state==='blocked'||c.cleanup_state==='blocked'||c.retention?.state==='blocked')return {key:'attention',rank:0,tone:'attention'}
  if(['ready','integrating'].includes(c.state))return {key:'integrating',rank:1,tone:'progress'}
+ if(c.retention?.state==='missing'&&c.state==='open'&&!runActive)return {key:'missing',rank:0,tone:'attention'}
  if(c.state==='open'&&!c.source_commit)return {key:'unsaved',rank:2,tone:'progress'}
+ // Nothing saved beyond its base: no private result that could contradict the target.
+ if(c.state==='open'&&c.source_commit===c.base_commit)return null
  if(c.state==='open')return {key:'saved',rank:3,tone:'neutral'}
- if(c.state==='abandoned')return {key:'kept',rank:4,tone:'neutral'}
+ if(c.state==='abandoned')return {key:c.retention?.reason==='discarded'?'discarded':'kept',rank:4,tone:'neutral'}
  if(c.state==='integrated'&&c.landing==='parent_unverified')return {key:'adoption_unverified',rank:5,tone:'neutral'}
  if(c.state==='integrated'&&c.landing==='parent')return {key:'adopted',rank:7,tone:'neutral'}
  if(c.state==='integrated')return {key:'merged',rank:6,tone:'neutral',target:c.target_ref?.replace(/^refs\/heads\//,'')}
@@ -87,7 +91,7 @@ export function TurnWorkspaceSummary({runs,projectId,exclude,agentName,onPresent
  useEffect(()=>()=>report.current?.([]),[])
  if(checking||entries.length===0&&recorded.length===0&&unavailable.length===0&&!workspace.error)return null
 
- const statuses=entries.map(e=>changeStatus(e.change)).filter((s):s is NonNullable<typeof s>=>s!==null).sort((a,b)=>a.rank-b.rank)
+ const statuses=entries.map(e=>changeStatus(e.change,Boolean(e.runActive))).filter((s):s is NonNullable<typeof s>=>s!==null).sort((a,b)=>a.rank-b.rank)
  const phrases=[...new Map(statuses.map(s=>[s.key,s])).values()].slice(0,2)
   .map(s=>t(`agent_workspaces_ui.turn_summary.status.${s.key==='merged'&&!s.target?'merged_plain':s.key}`,{target:s.target??''}))
  if(workspace.error)phrases.unshift(t('agent_workspaces_ui.turn_summary.status.read_failed'))

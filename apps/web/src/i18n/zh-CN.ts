@@ -27,6 +27,7 @@ export const zhCN = {
     resets: '{{time}} 恢复', checked: '更新于 {{time}}', connections_one: '{{count}} 个关联连接', connections_other: '{{count}} 个关联连接',
     online: '在线', offline: '离线', not_logged_in: '此 CLI 副本尚未登录。',
     no_measurement: '暂无当前有效的额度读数，可刷新在线连接查询。',
+    model_exhausted: '{{account}} 的部分模型额度已用尽，其他模型仍可能可用。查看各项额度。',
     exhausted: '账号 {{account}} 有额度窗口已耗尽，查看额度以了解受影响的连接。',
     refresh_failed: '刷新失败：{{error}}', showing_previous: '显示的是上次成功测量的读数及其原测量时间。',
   },

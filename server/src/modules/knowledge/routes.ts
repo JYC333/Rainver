@@ -1,3 +1,4 @@
+import { enforceNoteLinkPolicy } from "./noteLinkPolicy.js";
 import {registerKnowledgeReviewRoutes} from '../knowledgePromotion/reviewOperationRoutes.js';
 import {registerNoteObjectOperationRoutes} from './noteObjectOperationRoutes.js';
 import {registerNoteControlOperationRoutes} from './noteControlOperationRoutes.js';
@@ -1416,6 +1417,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
+      await enforceNoteLinkPolicy(context, identity, params(request).noteId);
       return reply.code(201).send(await repository().jotNoteForObject(identity, jsonBody(request)));
     } catch (error) {
       return sendRouteError(reply, error);
@@ -1530,6 +1532,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
+      await enforceNoteLinkPolicy(context, identity, params(request).noteId);
       return reply
         .code(201)
         .send(await repository().createNoteLink(identity, params(request).noteId ?? "", jsonBody(request)));
@@ -1542,6 +1545,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
+      await enforceNoteLinkPolicy(context, identity, params(request).noteId);
       await repository().deleteNoteLink(identity, params(request).noteId ?? "", params(request).linkId ?? "");
       return reply.code(204).send();
     } catch (error) {

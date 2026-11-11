@@ -1,4 +1,5 @@
 import type { HostUsageQuota, SubscriptionQuotaWindow, SubscriptionUsageLine } from "@rainver/protocol";
+import { accountQuota } from "../hosts/subscriptionUsage.js";
 import type { Pool } from "../../db/pool.js";
 import { hasSubscriptionQuota } from "../hosts/capabilities.js";
 import { refreshHostUsage } from "../hosts/usageService.js";
@@ -26,6 +27,9 @@ export interface SubscriptionLogin {
 export interface QuotaReading {
   window: SubscriptionQuotaWindow | null;
   checked_at: string | null;
+  /** A refusal can concern one model; it is not evidence that all models are full. */
+  model_scoped?: boolean;
+  refusal?: boolean;
 }
 
 /** A reading younger than this is used as it is; an older one is probed first. */
@@ -83,6 +87,7 @@ export function resetsAtOf(text: string | null | undefined): string | null {
  */
 export function fullerWindow(quota: HostUsageQuota | null | undefined, now?: Date): SubscriptionQuotaWindow | null {
   if (!quota?.available) return null;
+  quota = accountQuota(quota);
   let session = quota.session_pct === null
     ? null
     : { kind: "session" as const, utilization: clampPct(quota.session_pct), resets_at: resetsAtOf(quota.session_resets) };
@@ -122,7 +127,9 @@ async function cachedQuota(db: Queryable, login: SubscriptionLogin): Promise<Cac
 
 function quotaReading(row: CachedQuota | undefined, now?: Date): QuotaReading {
   if (!row) return { window: null, checked_at: null };
-  return { window: fullerWindow(row.quota_json, now), checked_at: iso(row.checked_at) };
+  return { window: fullerWindow(row.quota_json, now), checked_at: iso(row.checked_at),
+    ...(row.quota_json.windows?.some(w => w.scope === "model" || w.scope === "family" || /^(gemini|3p)-|^seven_day_(?!oauth_apps$)/.test(w.id)) ? { model_scoped: true } : {}),
+  };
 }
 
 /** A vendor's shorter window: how long a refusal is taken to last when no reading says when it resets. */
@@ -208,11 +215,11 @@ export function liveQuotaSource(pool: Pool | null, options: { probeDeadlineMs?: 
       }
       // Refusals after a readable reading overrule it; with nothing readable, any within the week counts.
       const refusedAt = await latestRefusalAt(db, login, reading.window ? reading.checked_at : null);
-      const refused = refusedAt ? refusedWindow(reading, refusedAt, now) : null;
+      const refused = refusedAt && !reading.model_scoped ? refusedWindow(reading, refusedAt, now) : null;
       // The refusal is the evidence behind this window. Keeping the older
       // probe's timestamp would make recovery ignore a later refusal when
       // deciding whether a previously reported reset is still trustworthy.
-      return refused ? { window: refused, checked_at: refusedAt } : quotaReading(cached, now);
+      return refused ? { window: refused, checked_at: refusedAt, refusal: true } : quotaReading(cached, now);
     },
   };
 }

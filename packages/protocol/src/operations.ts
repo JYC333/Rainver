@@ -3,6 +3,14 @@ import {ResearchAdhocInputSchema,ResearchAdhocReceiptSchema} from './researchAdh
 import {PROJECT_SOURCE_PROPOSAL_SCHEMAS} from './projectSourceProposalOperations.js';
 import {PROJECT_CORPUS_SCHEMAS} from './projectCorpusOperations.js';
 import {INQUIRY_AGENT_OPERATION_SCHEMAS} from './inquiryAgentOperations.js';
+import {RESEARCH_AGENT_OPERATION_SCHEMAS} from './researchAgentOperations.js';
+import {AGENT_CHAT_OPERATION_SCHEMAS,AGENT_OPERATION_SCHEMAS} from './agentOperations.js';
+import {HOST_COMMAND_OPERATION_SCHEMAS,HOST_DIRECT_OPERATION_SCHEMAS} from './hostOperations.js';
+import {SETTINGS_COMMAND_OPERATION_SCHEMAS,SETTINGS_DIRECT_OPERATION_SCHEMAS} from './settingsOperations.js';
+import {ROOM_OPERATION_SCHEMAS} from './roomOperations.js';
+import {AGENT_GROUP_OPERATION_SCHEMAS} from './agentGroupOperations.js';
+import {RUN_OPERATION_SCHEMAS} from './runOperations.js';
+import {SESSION_OPERATION_SCHEMAS,SESSION_QUERY_SCHEMAS} from './sessionOperations.js';
 import {PROJECT_FOLDER_SCHEMAS} from './projectFolderOperations.js';
 import {PROJECT_FOLDER_IO_SCHEMAS} from './projectFolderIoOperations.js';
 import {PROJECT_INGRESS_SCHEMAS} from './projectIngressOperations.js';
@@ -10,8 +18,11 @@ import {PROJECT_EXECUTION_SCHEMAS} from './projectExecutionOperations.js';
 import {PROJECT_MANAGEMENT_SCHEMAS} from './projectManagementOperations.js';
 import {INQUIRY_OPERATION_SCHEMAS} from './inquiryOperations.js';
 import {RESEARCH_WORKSPACE_SCHEMAS} from './researchWorkspaceOperations.js';
+import {RESEARCH_CONTROL_SCHEMAS} from './researchControlOperations.js';
+import {PROJECT_SUMMARY_DRAFT_SCHEMAS} from './projectSummaryDraftOperation.js';
+import {IMPORTED_HISTORY_EXTRACTION_SCHEMAS} from './importedHistoryExtractionOperation.js';
 import {KnowledgeExtractionInputSchema,KnowledgeExtractionReceiptSchema} from './knowledgeExtractionOperation.js';
-import {WorkspaceVerificationGetInputSchema,WorkspaceVerificationConfigureInputSchema,WorkspaceVerificationViewSchema,WorkspaceChangeStatusSchema,WorkspaceChangeGetInputSchema,WorkspaceChangeCompleteInputSchema,WorkspaceChangeReceiptSchema,WorkspaceIntegrationRetryInputSchema,WorkspaceChangeAbandonInputSchema,WorkspaceRetentionUpdateInputSchema,WorkspaceRetentionReceiptSchema} from "./executionWorkspaces.js";
+import {WorkspaceVerificationGetInputSchema,WorkspaceVerificationConfigureInputSchema,WorkspaceVerificationViewSchema,WorkspaceChangeStatusSchema,WorkspaceChangeGetInputSchema,WorkspaceChangeCompleteInputSchema,WorkspaceChangeReceiptSchema,WorkspaceIntegrationRetryInputSchema,WorkspaceChangeAbandonInputSchema,WorkspaceRetentionUpdateInputSchema,WorkspaceRetentionReceiptSchema,WorkspaceChangeListInputSchema,WorkspaceChangeListSchema,WorkspaceBranchAlignInputSchema,WorkspaceBranchAlignReceiptSchema} from "./executionWorkspaces.js";
 import {KNOWLEDGE_REVIEW_SCHEMAS} from './knowledgeReviewOperations.js';
 import {KNOWLEDGE_OBJECT_SCHEMAS} from './knowledgeObjectOperations.js';
 import {NOTE_OBJECT_SCHEMAS} from './noteObjectOperations.js';
@@ -164,6 +175,8 @@ export const OPERATION_SCHEMA_TABLE = {
   "workspace.integration.retry":{input:WorkspaceIntegrationRetryInputSchema,output:WorkspaceChangeReceiptSchema},
   "workspace.change.abandon":{input:WorkspaceChangeAbandonInputSchema,output:WorkspaceChangeReceiptSchema},
   "workspace.retention.update":{input:WorkspaceRetentionUpdateInputSchema,output:WorkspaceRetentionReceiptSchema},
+  "workspace.change.list":{input:WorkspaceChangeListInputSchema,output:WorkspaceChangeListSchema},
+  "workspace.branch.align":{input:WorkspaceBranchAlignInputSchema,output:WorkspaceBranchAlignReceiptSchema},
   "workspace.change.get":{input:WorkspaceChangeGetInputSchema,output:WorkspaceChangeStatusSchema},
   "workspace.change.complete":{input:WorkspaceChangeCompleteInputSchema,output:WorkspaceChangeReceiptSchema},
 
@@ -177,6 +190,9 @@ export const OPERATION_SCHEMA_TABLE = {
   ...KNOWLEDGE_REVIEW_SCHEMAS,
   ...RESEARCH_WORKSPACE_SCHEMAS,
   ...RESEARCH_EXECUTION_SCHEMAS,
+  ...RESEARCH_CONTROL_SCHEMAS,
+  ...PROJECT_SUMMARY_DRAFT_SCHEMAS,
+  ...IMPORTED_HISTORY_EXTRACTION_SCHEMAS,
   'research.ask_ai':{input:ResearchAdhocInputSchema,output:ResearchAdhocReceiptSchema},
   ...PROJECT_SOURCE_PROPOSAL_SCHEMAS,
   ...PROJECT_CORPUS_SCHEMAS,
@@ -187,6 +203,18 @@ export const OPERATION_SCHEMA_TABLE = {
   ...PROJECT_MANAGEMENT_SCHEMAS,
   ...INQUIRY_OPERATION_SCHEMAS,
   ...INQUIRY_AGENT_OPERATION_SCHEMAS,
+  ...RESEARCH_AGENT_OPERATION_SCHEMAS,
+  ...AGENT_OPERATION_SCHEMAS,
+  ...HOST_COMMAND_OPERATION_SCHEMAS,
+  ...HOST_DIRECT_OPERATION_SCHEMAS,
+  ...SETTINGS_COMMAND_OPERATION_SCHEMAS,
+  ...SETTINGS_DIRECT_OPERATION_SCHEMAS,
+  ...AGENT_CHAT_OPERATION_SCHEMAS,
+  ...ROOM_OPERATION_SCHEMAS,
+  ...AGENT_GROUP_OPERATION_SCHEMAS,
+  ...RUN_OPERATION_SCHEMAS,
+  ...SESSION_OPERATION_SCHEMAS,
+  ...SESSION_QUERY_SCHEMAS,
   'knowledge.note.rollback':{input:NoteRollbackInputSchema,output:NoteControlReceiptSchema},
   'knowledge.note.delete':{input:NoteControlTargetSchema,output:NoteControlReceiptSchema},
   'source.channel.update':{input:SourceMonitorUpdateSchema,output:SourceMonitorOutputSchema},

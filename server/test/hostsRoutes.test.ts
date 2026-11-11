@@ -18,6 +18,7 @@ import { sharedHostConnectionRegistry } from "../src/modules/hosts/connectionReg
 import { SERVER_OPENCODE_RELEASE } from "../src/modules/runtimeAdapters/opencodeRelease.js";
 import { MIN_HOST_DAEMON_VERSION } from "../src/modules/hosts/daemonCompatibility.js";
 import { supportsRuntimeBackendMode } from "../src/modules/runtimeAdapters/runtimeDefinitions.js";
+import { hostCommandHarness, seedHostCommandSpace } from "./support/hostCommandHarness.js";
 
 /** A daemon's whole hello, as `helloInfo()` sends it; the wire requires all of it. */
 const HELLO_INFO = {
@@ -45,6 +46,8 @@ const OWNER_TOKEN = "owner-session-token";
 const OTHER_TOKEN = "other-session-token";
 
 let app: FastifyInstance | undefined;
+let commands: ReturnType<typeof hostCommandHarness> | undefined;
+const SPACE = "host-route-space";
 
 function stubAuth(): AuthRepository {
   const users: Record<string, CurrentUser> = {
@@ -113,6 +116,7 @@ beforeAll(async () => {
     SERVER_TRUSTED_PROXY_HOST: "localhost",
     INSTANCE_ADMIN_EMAIL: "instance-admin@example.test",
   }), [hostsModule]);
+  commands = hostCommandHarness(db.pool, loadConfig({ SERVER_DATABASE_URL: db.connectionUri, INSTANCE_ADMIN_EMAIL: "instance-admin@example.test" }));
   await app.listen({ port: 0, host: "127.0.0.1" });
 });
 
@@ -132,7 +136,7 @@ beforeEach(async () => {
   if (!db.available) return;
   await resetTables(
     db.pool,
-    ["runs", "agent_versions", "agents", "hosts", "projects", "spaces", "users"],
+    ["host_command_intents", "jobs", "runs", "agent_versions", "agents", "hosts", "projects", "spaces", "users"],
     { cascade: true },
   );
   await db.pool.query(
@@ -140,6 +144,8 @@ beforeEach(async () => {
      VALUES ($1, 'Owner', 'active', now(), now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system'), ($2, 'Other', 'active', now(), now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system')`,
     [OWNER, OTHER_USER],
   );
+  // Host commands are core operations: their actor is a live member of the request Space.
+  await seedHostCommandSpace(db.pool, SPACE, [{ user: OWNER }, { user: OTHER_USER }]);
 });
 
 describe("hosts routes", () => {
@@ -152,11 +158,12 @@ describe("hosts routes", () => {
     const hosts = await app.inject({ method: "GET", url: "/api/v1/hosts", headers: { cookie: authCookie(OWNER_TOKEN) } });
     const hostId = hosts.json().items.find((host: { name: string }) => host.name === "Own updater").id;
     const url = `/api/v1/hosts/${hostId}/installations/codex_cli/own/update`;
-    __setAuthIdentityForTests({ spaceId: "host-route-space", userId: OTHER_USER });
-    expect((await app.inject({ method: "POST", url, headers: { cookie: authCookie(OTHER_TOKEN) } })).statusCode).toBe(404);
+    __setAuthIdentityForTests({ spaceId: SPACE, userId: OTHER_USER });
+    // Not their Host: the hidden 404, and nothing is admitted.
+    expect((await commands!.submit(app, { method: "POST", url })).statusCode).toBe(404);
     const operationsUrl = `/api/v1/hosts/${hostId}/tool-operations`;
     expect((await app.inject({ method: "GET", url: operationsUrl, headers: { cookie: authCookie(OTHER_TOKEN) } })).statusCode).toBe(404);
-    __setAuthIdentityForTests({ spaceId: "host-route-space", userId: OWNER });
+    __setAuthIdentityForTests({ spaceId: SPACE, userId: OWNER });
     const operations = vi.spyOn(sharedHostConnectionRegistry, "toolOperations")
       .mockReturnValue([{ runtime_key: "codex_cli", action: "update_own_tool" }]);
     try {
@@ -166,22 +173,39 @@ describe("hosts routes", () => {
       expect(operations).toHaveBeenCalledWith(hostId);
     } finally { operations.mockRestore(); }
     await db.pool.query("UPDATE hosts SET daemon_version = $2 WHERE id = $1", [hostId, MIN_HOST_DAEMON_VERSION]);
+    vi.spyOn(sharedHostConnectionRegistry, "isOnline").mockReturnValue(true);
     const action = vi.spyOn(sharedHostConnectionRegistry, "requestToolAction")
       .mockResolvedValueOnce({ ok: true, error: null, installation: "own", from_version: "1.2.0", to_version: "1.2.0" })
       .mockResolvedValueOnce({ ok: true, error: null, installation: "own", from_version: "1.2.0", to_version: "1.3.0" });
     const upgrades = async () => (await app!.inject({ method: "GET", url: "/api/v1/hosts/runtime-changes", headers: { cookie: authCookie(OWNER_TOKEN) } }))
       .json().items.filter((row: { host_id: string; action: string }) => row.host_id === hostId && row.action === "upgrade");
+    // Already current: reported, but not listed as a change. A daemon without command receipts gets the bare frame once.
+    const unchanged = await commands!.run(app, { method: "POST", url }, hostId);
+    expect(unchanged.status).toMatchObject({ status: "succeeded", result: { changed: false, from_version: "1.2.0", to_version: "1.2.0" } });
+    expect(action).toHaveBeenCalledWith(hostId, "update_own_tool", { runtime_key: "codex_cli" });
+    expect(await upgrades()).toEqual([]);
+    const changed = await commands!.run(app, { method: "POST", url }, hostId);
+    expect(changed.status).toMatchObject({ status: "succeeded", result: { changed: true } });
+    expect(await upgrades()).toMatchObject([{ from_version: "1.2.0", to_version: "1.3.0" }]);
+    // Only the issuing person reads the outcome.
+    __setAuthIdentityForTests({ spaceId: SPACE, userId: OTHER_USER });
+    expect((await commands!.status(app, hostId, changed.receipt.id)).statusCode).toBe(404);
+  });
+  it("answers a directory listing lost to a disconnect as the Host being unreachable", async (ctx) => {
+    if (!db.available || !app || !db.pool) return ctx.skip();
+    __setAuthRepositoryForTests(stubAuth());
+    __setAuthIdentityForTests({ spaceId: SPACE, userId: OWNER });
+    const issue = await app.inject({ method: "POST", url: "/api/v1/hosts/pairing-codes", headers: { cookie: authCookie(OWNER_TOKEN) }, payload: { name: "Browse disconnect" } });
+    expect((await app.inject({ method: "POST", url: "/api/v1/hosts/register", payload: { pairing_code: issue.json().pairing_code, ...HELLO_INFO } })).statusCode).toBe(201);
+    const hostId = (await app.inject({ method: "GET", url: "/api/v1/hosts", headers: { cookie: authCookie(OWNER_TOKEN) } }))
+      .json().items.find((host: { name: string }) => host.name === "Browse disconnect").id;
+    const listing = vi.spyOn(sharedHostConnectionRegistry, "listHostDirectories")
+      .mockResolvedValueOnce({ ok: false, path: null, parent: null, dirs: [], truncated: false, error: "host_disconnected" } as never);
     try {
-      // Already current: reported, but not listed as a change.
-      const unchanged = await app.inject({ method: "POST", url, headers: { cookie: authCookie(OWNER_TOKEN) } });
-      expect(unchanged.statusCode).toBe(200);
-      expect(unchanged.json()).toMatchObject({ changed: false, from_version: "1.2.0", to_version: "1.2.0" });
-      expect(action).toHaveBeenCalledWith(hostId, "update_own_tool", { runtime_key: "codex_cli" });
-      expect(await upgrades()).toEqual([]);
-      const response = await app.inject({ method: "POST", url, headers: { cookie: authCookie(OWNER_TOKEN) } });
-      expect(response.json()).toMatchObject({ changed: true });
-      expect(await upgrades()).toMatchObject([{ from_version: "1.2.0", to_version: "1.3.0" }]);
-    } finally { action.mockRestore(); }
+      const response = await app.inject({ method: "POST", url: `/api/v1/hosts/${hostId}/browse-directories`, headers: { cookie: authCookie(OWNER_TOKEN) }, payload: { path: "/home" } });
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toMatchObject({ detail: "The host is offline or did not respond.", code: "host_disconnected" });
+    } finally { listing.mockRestore(); }
   });
   it("lets ordinary members read Server Runtime health but forbids them from retrying provisioning", async (ctx) => {
     if (!db.available || !app || !db.pool) return ctx.skip();
@@ -199,12 +223,13 @@ describe("hosts routes", () => {
       installation: { state: "queued" },
     });
 
-    const retry = await app.inject({
+    // Managing the built-in Host is instance-admin work; a member gets the hidden 404 like any unmanaged Host.
+    const retry = await commands!.submit(app, {
       method: "POST",
       url: `/api/v1/hosts/${hostId}/runtime-provisioning/opencode/retry`,
     });
-    expect(retry.statusCode).toBe(403);
-    expect(retry.json()).toMatchObject({ detail: "Managing the built-in host requires instance admin" });
+    expect(retry.statusCode).toBe(404);
+    expect(retry.json()).toMatchObject({ error: { code: "operation_not_found" } });
     expect((await db.pool.query(
       `SELECT 1 FROM host_runtime_provisioning WHERE host_id = $1 AND runtime_key = 'opencode'`,
       [hostId],
@@ -294,19 +319,21 @@ describe("hosts routes", () => {
     const otherItems = listAsOther.json().items as Array<{ id: string }>;
     expect(otherItems.some((h) => h.id === hostId)).toBe(false);
 
-    const revokeAsOther = await app.inject({
-      method: "POST",
-      url: `/api/v1/hosts/${hostId}/revoke`,
-      headers: { cookie: authCookie(OTHER_TOKEN) },
-    });
+    __setAuthIdentityForTests({ spaceId: SPACE, userId: OTHER_USER });
+    const revokeAsOther = await commands!.submit(app, { method: "POST", url: `/api/v1/hosts/${hostId}/revoke` });
     expect(revokeAsOther.statusCode).toBe(404);
 
-    const revokeAsOwner = await app.inject({
-      method: "POST",
-      url: `/api/v1/hosts/${hostId}/revoke`,
-      headers: { cookie: authCookie(OWNER_TOKEN) },
-    });
-    expect(revokeAsOwner.statusCode).toBe(204);
+    __setAuthIdentityForTests({ spaceId: SPACE, userId: OWNER });
+    const key = "revoke-desktop";
+    const revokeAsOwner = await commands!.submit(app, { method: "POST", url: `/api/v1/hosts/${hostId}/revoke` }, key);
+    expect(revokeAsOwner.statusCode).toBe(200);
+    expect(revokeAsOwner.json()).toEqual({ status: "succeeded", data: { host_id: hostId, space_id: SPACE, revoked: true } });
+    // A lost answer is replayed to its owner even though the Host is now revoked; nobody else learns it.
+    const replay = await commands!.submit(app, { method: "POST", url: `/api/v1/hosts/${hostId}/revoke` }, key);
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json()).toEqual(revokeAsOwner.json());
+    const again = await commands!.submit(app, { method: "POST", url: `/api/v1/hosts/${hostId}/revoke` });
+    expect(again.statusCode).toBe(404);
   });
 
   it("rate-limits unauthenticated host registration attempts", async (ctx) => {
@@ -987,12 +1014,9 @@ describe("hosts routes", () => {
     });
 
     const closed = new Promise<number>((resolve) => socket.addEventListener("close", (event) => resolve(event.code)));
-    const revoke = await app.inject({
-      method: "POST",
-      url: `/api/v1/hosts/${hostId}/revoke`,
-      headers: { cookie: authCookie(OWNER_TOKEN) },
-    });
-    expect(revoke.statusCode).toBe(204);
+    __setAuthIdentityForTests({ spaceId: SPACE, userId: OWNER });
+    const revoke = await commands!.submit(app, { method: "POST", url: `/api/v1/hosts/${hostId}/revoke` });
+    expect(revoke.statusCode).toBe(200);
 
     const closeCode = await Promise.race([
       closed,
