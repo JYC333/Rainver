@@ -1,4 +1,5 @@
 import {lockSourceChannelReference} from '../sourceMonitorParent.js';
+import {goalTransaction,lockGoal} from './transaction.js';
 import {computeNextCheckAt} from '../sourceScanCadence.js';
 import {pauseTransfer,restoreTransfer,assertTransferUnchanged,type TransferState} from './transferState.js';
 import {upsertSourceChannelScanTask,getSourceChannelScanTask} from '../sourceConnectionScheduler.js';
@@ -6,15 +7,15 @@ import {computeNextRunAtFromScheduleRule} from '../sourceScheduleInput.js';
 import type {ServerConfig} from '../../../config.js';
 import {randomUUID} from 'node:crypto';
 import {SourceGoalBudgetSchema} from '@rainver/protocol';
-import {HttpError,withDbTransaction,type Queryable,type Pool,type SpaceUserIdentity} from '../../routeUtils/common.js';
+import {HttpError,type Queryable,type Pool,type SpaceUserIdentity} from '../../routeUtils/common.js';
 import {assertSourceConnectionManageable} from '../sourceConnectionAccess.js';
 import {resolveContentCreationContext} from '../../access/creationContext.js';
 import {contentDecisionFromDb} from '../../access/contentAccessQuery.js';
 import {requireGoal,requireLegacyGoalSource} from './access.js';
 /** Metadata-only compatibility mapping. Existing executors, budgets, cursor,
  * subscriptions and items remain authoritative; mapping itself sends nothing. */
-export async function mapLegacyGoal(db:Pool,identity:SpaceUserIdentity,channelId:string,dryRun=false){
- return withDbTransaction(db,async tx=>{
+export async function mapLegacyGoal(db:Queryable,identity:SpaceUserIdentity,channelId:string,dryRun=false){
+ return goalTransaction(db,async tx=>{
   const discover=()=>tx.query(`SELECT ch.*,sc.owner_user_id,sc.project_id,sc.name AS source_name FROM source_channels ch JOIN source_connections sc ON sc.id=ch.source_connection_id AND sc.space_id=ch.space_id WHERE ch.id=$1 AND ch.space_id=$2 AND sc.deleted_at IS NULL`,[channelId,identity.spaceId]);
   const before=(await discover()).rows[0];if(!before || before.owner_user_id!==identity.userId)throw new HttpError(404,'Source not found');
   if(before.project_id)await tx.query('SELECT id FROM projects WHERE id=$1 AND space_id=$2 FOR UPDATE',[before.project_id,identity.spaceId]);
@@ -47,9 +48,9 @@ export async function takeGoalSchedulingOwnership(db:Queryable,goalId:string,spa
 }
 /** Safe rollback refuses after new collection or concurrent legacy edits, rather
  * than guessing an implementation-specific cursor or replaying successful work. */
-export async function rollbackGoalCompatibility(db:Pool,identity:SpaceUserIdentity,goalId:string){
- return withDbTransaction(db,async tx=>{
-  await tx.query('SELECT id FROM source_goals WHERE id=$1 FOR UPDATE',[goalId]);const g=await requireGoal(tx,identity,goalId,true);const compat=g.compatibility_json as {scheduler_owner?:string;transfer?:{tasks:Array<Record<string,unknown>>;channel:{fetch_frequency:string;status:string}}}|null;
+export async function rollbackGoalCompatibility(db:Queryable,identity:SpaceUserIdentity,goalId:string){
+ return goalTransaction(db,async tx=>{
+  await lockGoal(tx,goalId);const g=await requireGoal(tx,identity,goalId,true);const compat=g.compatibility_json as {scheduler_owner?:string;transfer?:{tasks:Array<Record<string,unknown>>;channel:{fetch_frequency:string;status:string}}}|null;
   if(!compat)throw new HttpError(409,'Not a compatibility goal');
   if(compat.scheduler_owner==='legacy')return {status:'legacy',changed:false};
   const used=await tx.query('SELECT 1 FROM source_goal_runs WHERE goal_id=$1 LIMIT 1',[goalId]);if(used.rows.length)throw new HttpError(409,'Collected work exists; safe automatic rollback unavailable');

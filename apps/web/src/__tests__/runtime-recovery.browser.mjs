@@ -220,6 +220,94 @@ for(const locale of ['en','zh-CN'])for(const width of [390,1280]){
  });
 }
 
+for (const locale of ['en', 'zh-CN']) for (const theme of ['dark', 'light']) for (const width of [390, 1280]) {
+  test(`subscription warning shows its reading time and hides for this person only: ${locale}/${theme}/${width}`, async () => {
+    const context = await browser.newContext({ viewport: { width, height: 1000 }, serviceWorkers: 'block' })
+    await context.addInitScript(({ locale, theme }) => {
+      localStorage.setItem('rainver:locale', locale)
+      localStorage.setItem('rainver:theme', theme)
+    }, { locale, theme })
+    const page = await context.newPage(), counts = { writes: 0, logins: 0, writePaths: [] }
+    page.setDefaultTimeout(10000)
+    try {
+      await fixtures(page, counts, { ...failed, status: 'succeeded', error_message: null, error_json: null })
+      const resets = new Date(Date.now() + 2 * 3600_000).toISOString()
+      await page.route(`**/api/v1/rooms/${room.id}`, route=>route.fulfill({json:{room,viewer_can_write:true,other_member_names:[],agent_count:1,agent_members:[{agent_id:agent.id,agent_name:agent.name,status:'active',role:'manager'}],user_members:[]}}))
+      await page.route('**/agents/*/conversation-backends*', route => route.fulfill({ json: { options: [], binding: null } }))
+      let quotaReads = 0
+      await page.route('**/api/v1/rooms/*/conversations/*/quota', route => {
+        quotaReads++
+        return route.fulfill({ json: { warn_pct: 70, reserve_pct: 90, logins: [
+          { account_label: 'Claude Code · Desk workstation', login_key: 'desk-claude', pool_key:'claude-pool', agent_ids:[agent.id], display_windows:[{id:'five_hour',label:'Session',group:'account',utilization:78,resets:resets,checked_at:new Date().toISOString()},{id:'seven_day',label:'Weekly',group:'account',utilization:62,resets:resets,checked_at:new Date().toISOString()}], windows:[{kind:'session',utilization:78,resets_at:resets,checked_at:new Date().toISOString()},{kind:'week',utilization:62,resets_at:resets,checked_at:new Date().toISOString()}], window: { kind: 'session', utilization: 78, resets_at: resets }, checked_at: new Date(Date.now() - 4 * 60_000).toISOString() },
+          { account_label: 'Codex CLI · Desk workstation (managed:0.101.0)', login_key: 'desk-codex', window: { kind: 'week', utilization: 84, resets_at: null }, checked_at: new Date(Date.now() - 52 * 60_000).toISOString() },
+          {account_label:'Antigravity · Desk workstation',login_key:'desk-agy',pool_key:'agy-pool',agent_ids:[],window:null,checked_at:new Date().toISOString(),display_windows:[
+            {id:'gemini-weekly',label:'Gemini · Weekly',group:'native',utilization:42,resets:resets,checked_at:new Date().toISOString()},
+            {id:'3p-weekly',label:'Claude / GPT · Weekly',group:'third_party',utilization:91,resets:resets,checked_at:new Date().toISOString()},
+          ]},
+          ...Array.from({length:5},(_,index)=>({account_label:`Additional account ${index+1}`,login_key:`extra-${index}`,agent_ids:[],window:{kind:'week',utilization:20+index,resets_at:null},checked_at:new Date().toISOString()})),
+        ], holds: [{ account_label: 'Claude Code · Desk workstation', window: 'session', resets_at: resets, run_ids: [failed.id], can_continue: true }] } })
+      })
+      await page.goto(`${baseUrl}/spaces/${space}/projects/${project.id}/rooms?room=${room.id}&conversation=${session.id}`)
+      const line = page.getByTestId('conversation-quota-line')
+      await line.waitFor()
+      await page.getByText(locale === 'en' ? /may be out of date/ : /可能已过时/).waitFor()
+      const hide = page.getByRole('button', { name: locale === 'en' ? 'Hide usage warning' : '隐藏额度提醒' })
+      const composer = page.getByRole('textbox').last()
+      await composer.waitFor()
+      await capture(page, `quota-line-${locale}-${theme}-${width}`)
+      await line.screenshot({ path: `${shots}/quota-line-crop-${locale}-${theme}-${width}.png` })
+      const lineBox = await line.boundingBox(), hideBox = await hide.boundingBox()
+      assert.ok(hideBox && lineBox && hideBox.x + hideBox.width <= lineBox.x + lineBox.width + 1, 'close button stays inside the line')
+      // Opening the conversation independently acknowledges Agent Work attention.
+      const unrelatedAttentionWrite='/me/agent-attention/views'
+      const writesBefore = counts.writePaths.filter(path=>path!==unrelatedAttentionWrite).length
+      await hide.focus()
+      await page.keyboard.press('Enter')
+      assert.equal(await page.getByTestId('conversation-quota-login').count(), 0)
+      // Held turns and their recovery entry stay; hiding is display-only and writes nothing.
+      await page.getByRole('button', { name: locale === 'en' ? 'continue anyway' : '仍然继续' }).waitFor()
+      assert.equal(counts.writePaths.filter(path=>path!==unrelatedAttentionWrite).length, writesBefore, counts.writePaths.join(','))
+      assert.ok(!counts.writePaths.some(path => path.includes('quota')), counts.writePaths.join(','))
+      await capture(page, `quota-line-dismissed-${locale}-${theme}-${width}`)
+      const usage=page.getByRole('button',{name:locale==='en'?/^Usage:/ : /^用量:/})
+      await usage.scrollIntoViewIfNeeded()
+      assert.ok(!/Usage|用量/.test(await usage.innerText()), 'the compact trigger has no visible Usage label')
+      await capture(page, `usage-entry-${locale}-${theme}-${width}`)
+      await usage.click()
+      const usagePanel=page.getByRole('dialog',{name:locale==='en'?'Usage':'用量'})
+      await usagePanel.waitFor()
+      await page.waitForTimeout(300)
+      await usagePanel.getByText(locale==='en'?'62% used':'已用 62%').waitFor()
+      await usagePanel.getByText(locale==='en'?'Short window':'短期窗口',{exact:true}).waitFor()
+      assert.equal(await usagePanel.getByText('Session',{exact:true}).count(),0)
+      assert.equal(await usagePanel.getByText(locale==='en'?/^Other accounts/:/^其他账号/).count(),0)
+      const accountScroller=usagePanel.getByText('Antigravity · Desk workstation',{exact:true}).locator('xpath=ancestor::*[contains(@class,"overflow-y-auto")][1]')
+      const scrollMetrics=await accountScroller.evaluate(el=>({scrollHeight:el.scrollHeight,clientHeight:el.clientHeight,height:el.getBoundingClientRect().height,viewport:innerHeight}))
+      assert.ok(scrollMetrics.scrollHeight>scrollMetrics.clientHeight&&scrollMetrics.height<=scrollMetrics.viewport*0.5+1,`accounts have a bounded internal scroller: ${JSON.stringify(scrollMetrics)}`)
+      const codexCard=usagePanel.getByText('Codex CLI · Desk workstation (managed:0.101.0)',{exact:true}).locator('..')
+      assert.equal(await codexCard.getByText(locale==='en'?'Short window':'短期窗口',{exact:true}).count(),0)
+      await usagePanel.getByText('Gemini · Weekly',{exact:true}).waitFor()
+      const thirdParty=usagePanel.locator('summary').filter({hasText:locale==='en'?'Third-party model allowances':'第三方模型额度'})
+      assert.ok(await thirdParty.evaluate(el=>!el.parentElement.open))
+      assert.ok((await thirdParty.innerText()).includes(locale==='en'?'Limit approaching':'额度偏紧'))
+      await thirdParty.click()
+      await usagePanel.getByText('Claude / GPT · Weekly',{exact:true}).waitFor()
+      await usagePanel.getByText(locale==='en'?'91% used':'已用 91%',{exact:true}).scrollIntoViewIfNeeded()
+
+      await page.screenshot({path:`${shots}/usage-rings-${locale}-${theme}-${width}.png`})
+      assert.ok(await usagePanel.evaluate(el=>el.getBoundingClientRect().left>=-1&&el.getBoundingClientRect().right<=innerWidth+1&&el.getBoundingClientRect().bottom<=innerHeight+1))
+      await page.keyboard.press('Escape')
+      await page.waitForFunction(()=>document.activeElement?.getAttribute('aria-label')?.match(/^(Usage|用量):/))
+      assert.ok(await usage.evaluate(el=>document.activeElement===el), 'focus returns to Usage')
+      const before = quotaReads
+      await page.reload()
+      await line.waitFor()
+      assert.ok(quotaReads > before)
+      assert.equal(await page.getByTestId('conversation-quota-login').count(), 0, 'an ordinary reload keeps the dismissal')
+    } finally { await context.close() }
+  })
+}
+
 for (const scenario of ['provider-auth', 'timeout', 'configuration']) for (const locale of ['en', 'zh-CN']) {
   test(`non-login recovery keeps its diagnosis through navigation: ${scenario}/${locale}`, async () => {
     const width = locale === 'en' ? 390 : 1280

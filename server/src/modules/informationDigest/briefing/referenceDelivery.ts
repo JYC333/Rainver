@@ -107,7 +107,20 @@ export async function lockBriefingReferenceClosure(
   spaceId: string,
   messages: ReadonlyArray<{ id: string; metadata_json?: unknown }>,
 ): Promise<{ attachers: string[]; itemIds: string[]; connectionIds: string[] }> {
-  return lockBriefingClosure(db, spaceId, messages.filter(isBriefingReference).map(referenceOf).map((reference) => ({
+  return lockBriefingClosure(db, spaceId, referenceTargets(messages));
+}
+
+/** The Projects `lockBriefingReferenceClosure` would lock, discovered without locks. */
+export async function briefingReferenceProjects(
+  db: Queryable,
+  spaceId: string,
+  messages: ReadonlyArray<{ id: string; metadata_json?: unknown }>,
+): Promise<string[]> {
+  return briefingClosureProjects(db, spaceId, referenceTargets(messages));
+}
+
+function referenceTargets(messages: ReadonlyArray<{ id: string; metadata_json?: unknown }>): ClosureTarget[] {
+  return messages.filter(isBriefingReference).map(referenceOf).map((reference) => ({
     briefingId: reference.briefingId,
     viewer: reference.attacher,
     refs: (row: BriefingRow) => {
@@ -115,7 +128,7 @@ export async function lockBriefingReferenceClosure(
       const highlight = row.status === "ready" ? result?.highlights[reference.index] : undefined;
       return result && highlight ? new Set([...result.overview.refs, ...highlightDependencies(highlight)]) : null;
     },
-  })));
+  }));
 }
 
 /**
@@ -130,22 +143,63 @@ export async function lockBriefingVersionClosure(
   briefingId: string,
   requester: string,
 ): Promise<{ attachers: string[]; itemIds: string[]; connectionIds: string[] }> {
-  const repository = new PgBriefingRepository(db);
-  const inputs = await repository.inputs(briefingId);
-  return lockBriefingClosure(db, spaceId, [{
+  return lockBriefingClosure(db, spaceId, await versionTargets(db, briefingId, requester));
+}
+
+/** Composition publishes a complete cohort; acquire one union closure rather
+ * than taking one version's locks and extending them in a different order. */
+export async function lockBriefingVersionsClosure(db:Queryable,spaceId:string,versions:readonly {id:string;requester:string}[]){
+  const targets:ClosureTarget[]=[];
+  for(const v of [...versions].sort((a,b)=>a.id.localeCompare(b.id)))targets.push(...await versionTargets(db,v.id,v.requester));
+  return lockBriefingClosure(db,spaceId,targets);
+}
+
+/** The Projects `lockBriefingVersionClosure` would lock, discovered without locks. */
+export async function briefingVersionProjects(db: Queryable, spaceId: string, briefingId: string, requester: string): Promise<string[]> {
+  return briefingClosureProjects(db, spaceId, await versionTargets(db, briefingId, requester));
+}
+
+async function versionTargets(db: Queryable, briefingId: string, requester: string): Promise<ClosureTarget[]> {
+  const inputs = await new PgBriefingRepository(db).inputs(briefingId);
+  return [{
     briefingId,
     viewer: requester,
     refs: (row: BriefingRow) => new Set([
       ...inputs.filter((input) => input.ref_kind === "source_item" && input.ref_key && input.status === "included").map((input) => input.ref_key!),
       ...row.context_json.map((entry) => entry.key),
     ]),
-  }]);
+  }];
+}
+
+type ClosureTarget = { briefingId: string; viewer: string; refs: (row: BriefingRow) => Set<string> | null };
+
+/** The briefing rows' audience: a Project briefing's Project; a personal briefing's owner. */
+function audienceOf(row: BriefingRow, refs: Set<string> | null): { project: string | null; owner: string | null } {
+  if (!refs) return { project: null, owner: null };
+  return {
+    project: row.scope_type === "project" && row.project_id ? row.project_id : null,
+    owner: row.scope_type === "personal" && row.owner_user_id ? row.owner_user_id : null,
+  };
+}
+
+async function briefingClosureProjects(db: Queryable, spaceId: string, targets: readonly ClosureTarget[]): Promise<string[]> {
+  const repository = new PgBriefingRepository(db);
+  const projects = new Set<string>(), owners = new Set<string>();
+  for (const target of targets) {
+    const row = await repository.get(spaceId, target.briefingId);
+    if (!row) continue;
+    const audience = audienceOf(row, target.refs(row));
+    if (audience.project) projects.add(audience.project);
+    if (audience.owner) owners.add(audience.owner);
+  }
+  for (const owner of owners) for (const projectId of await new ReadingPreferences(db).enabled({ spaceId, userId: owner })) projects.add(projectId);
+  return [...projects].sort();
 }
 
 async function lockBriefingClosure(
   db: Queryable,
   spaceId: string,
-  targets: ReadonlyArray<{ briefingId: string; viewer: string; refs: (row: BriefingRow) => Set<string> | null }>,
+  targets: readonly ClosureTarget[],
 ): Promise<{ attachers: string[]; itemIds: string[]; connectionIds: string[] }> {
   const references = targets;
   const repository = new PgBriefingRepository(db);
@@ -164,8 +218,9 @@ async function lockBriefingClosure(
     const row = await repository.get(spaceId, reference.briefingId);
     const refs = row ? reference.refs(row) : null;
     if (!row || !refs) continue; // re-verification refuses it
-    if (row.scope_type === "project" && row.project_id) projects.add(row.project_id);
-    if (row.scope_type === "personal" && row.owner_user_id) owners.add(row.owner_user_id);
+    const audience = audienceOf(row, refs);
+    if (audience.project) projects.add(audience.project);
+    if (audience.owner) owners.add(audience.owner);
     const closure = comparisonClosure((row.comparison_json ?? []) as ComparisonEntry[]);
     const deps: BriefingDeps[] = (await repository.inputs(row.id))
       .filter((input) => input.ref_kind === "source_item" && input.ref_key && refs.has(input.ref_key))

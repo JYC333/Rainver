@@ -6,7 +6,7 @@ import { toast } from 'sonner'
 import { activityApi } from '../../api/client'
 import { useSpace } from '../../contexts/SpaceContext'
 import { errMsg, isNotFoundError } from '../../lib/utils'
-import type { ActivityInboxRecord, Proposal } from '../../types/api'
+import type { ActivityInboxRecord } from '../../types/api'
 import { Card } from '../../components/ui/card'
 import { Button } from '../../components/ui/button'
 import { Badge } from '../../components/ui/badge'
@@ -25,7 +25,7 @@ export default function ActivityDetailPage() {
   const [row, setRow] = useState<ActivityInboxRecord | null>(null)
   const [loading, setLoading] = useState(true)
   const [consolidating, setConsolidating] = useState(false)
-  const [generatedProposals, setGeneratedProposals] = useState<Proposal[] | null>(null)
+  const [generatedProposals, setGeneratedProposals] = useState<Awaited<ReturnType<typeof activityApi.consolidate>> | null>(null)
   const [relocating, setRelocating] = useState(false)
 
   const load = useCallback(async () => {

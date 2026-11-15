@@ -1,3 +1,4 @@
+import { usesIsolatedAgentContext } from "../agents/projectContextIsolation.js";
 import { KNOWLEDGE_RETRIEVAL_OBJECT_TYPES } from "../knowledge/retrievalObjectTypes.js";
 import type {
   CanonicalToolCall,
@@ -155,6 +156,9 @@ export async function resolveRetrievalToolBinding(
   }
   if (!config.databaseUrl) return null;
   const pool = getDbPool(config.databaseUrl);
+  // Interactive search/brief currently has no Project scope before its LLM
+  // stages. Automatic Runtime Context retrieval is separately scoped to B.
+  if (await usesIsolatedAgentContext(pool, run.space_id, run.agent_id, run.project_id)) return null;
   const settings = await readSpaceRetrievalSettings(pool, run.space_id);
   const effectiveMode = runMode ?? (settings.retrievalToolMode === "off" ? null : settings.retrievalToolMode);
   if (!effectiveMode) return null;

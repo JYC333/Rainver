@@ -109,6 +109,7 @@ const ROOM_PROJECT_TOOL_ALLOWANCE: readonly SystemActionId[] = [
   "task.create_batch",
   "task.report",
   "task.handoff",
+  "task.update",
   "task.set_status",
   "task.delete",
   "board.read",
@@ -118,6 +119,7 @@ const ROOM_PROJECT_TOOL_ALLOWANCE: readonly SystemActionId[] = [
   "workspace.change.list",
   "workspace.change.complete",
   "workspace.change.abandon",
+  "workspace.retention.update",
   "workspace.integration.retry",
   "workspace.integration.verification.get",
   "workspace.integration.verification.configure",
@@ -171,6 +173,7 @@ const DISPATCH_BASE_TOOL_ALLOWANCE: readonly SystemActionId[] = [
   "task.create_batch",
   "task.report",
   "task.handoff",
+  "task.update",
   "task.set_status",
   "task.delete",
   "board.read",
@@ -180,6 +183,7 @@ const DISPATCH_BASE_TOOL_ALLOWANCE: readonly SystemActionId[] = [
   "workspace.change.list",
   "workspace.change.complete",
   "workspace.change.abandon",
+  "workspace.retention.update",
   "workspace.integration.retry",
   "workspace.integration.verification.get",
   "workspace.integration.verification.configure",
@@ -214,6 +218,11 @@ export function dispatchToolAllowance(): readonly SystemActionId[] {
 
 export const ROOM_CONVERSATION_TOOL_ALLOWANCE: readonly SystemActionId[] = [
   ...ROOM_PROJECT_TOOL_ALLOWANCE,
+  "room.settings.read",
+  "room.defaults.save",
+  "conversation.execution.preflight",
+  "conversation.execution.initialize",
+  "conversation.session_config.save",
   ...CONVERSATION_TOOL_ALLOWANCE,
 ];
 
@@ -233,6 +242,7 @@ export function conversationToolGrantInput(scope: {
   room_id?: string | null;
   project_id?: string | null;
   has_input_resources?: boolean;
+  delegated?: boolean;
 }): {
   capabilities_json: SystemActionId[];
   scenario_tool_allowance: readonly SystemActionId[];
@@ -243,8 +253,9 @@ export function conversationToolGrantInput(scope: {
   const baseAllowance = scope.room_id || scope.project_id
     ? ROOM_CONVERSATION_TOOL_ALLOWANCE
     : CONVERSATION_TOOL_ALLOWANCE;
+  const scopedAllowance = scope.delegated ? baseAllowance.filter(id=>!["room.defaults.save","conversation.execution.initialize","conversation.session_config.save"].includes(id)) : baseAllowance;
   const allowance = scope.has_input_resources
-    ? [...baseAllowance, ...INPUT_RESOURCE_TOOL_ALLOWANCE]
-    : baseAllowance;
+    ? [...scopedAllowance, ...INPUT_RESOURCE_TOOL_ALLOWANCE]
+    : scopedAllowance;
   return { capabilities_json: [...allowance], scenario_tool_allowance: allowance };
 }

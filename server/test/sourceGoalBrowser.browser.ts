@@ -165,4 +165,4 @@ it.each([['en',1440,1000,false],['zh-CN',390,844,false],['en',1440,1000,true]] a
  const goalRuns=(await db.pool.query("SELECT status FROM runs WHERE contract_snapshot_json->'workflow_input_json'->'source_goal'->>'goal_id'=$1 ORDER BY created_at",[goal.id])).rows.map(r=>r.status);expect(goalRuns).toHaveLength(2);expect(goalRuns[0]).toMatch(/^cancel/);
  expect(errors).toEqual([]);console.info('Topic browser acceptance',{locale,project:!!projectId,hits,items:3,planning_fixture:true,model_calls:0,screenshots:shotDir});await context.close();
  }finally{await browser.close();await new Promise<void>(r=>server.httpServer.close(()=>r()));await app.close();await upstream.close();await rm(root,{recursive:true,force:true});vi.restoreAllMocks();__setAgentChatIdentityForTests(null);__setAuthIdentityForTests(null)}
-},180000);
+});

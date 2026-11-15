@@ -1,3 +1,4 @@
+import {noteReportOutput} from "../retrieval/reportReleasePlan.js";
 import { randomUUID } from "node:crypto";
 import type { Queryable } from "../routeUtils/common.js";
 
@@ -80,5 +81,6 @@ export async function insertArtifactRow(db: Queryable, input: InsertArtifactRowI
       input.surfaceRole ?? "user_output",
     ],
   );
+  noteReportOutput(db,"artifact",id);
   return id;
 }

@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import type { Pool } from "../../db/pool.js";
 import type { ServerConfig } from "../../config.js";
 import {
   contentResourceDefinition,
@@ -13,7 +12,7 @@ import {
   type ContentAccessLevel,
   type ContentVisibility,
 } from "../access/contentAccessTypes.js";
-import { dbPool, HttpError, type Queryable, type SpaceUserIdentity, withDbTransaction } from "../routeUtils/common.js";
+import { dbPool, HttpError, type Queryable, type SpaceUserIdentity, withQueryableTransaction } from "../routeUtils/common.js";
 import { isSpaceOwnerOrAdmin } from "../access/roles.js";
 import { parseRunContextTaint } from "../runs/contextTaint.js";
 import { insertProposalRow } from "../proposals/reviewPackets.js";
@@ -50,7 +49,8 @@ export interface ContentAccessUpdate {
 }
 
 export class ContentAccessService {
-  constructor(private readonly pool: Pool) {}
+  /** A pool, or the operation core's transaction: writes join it instead of opening their own. */
+  constructor(private readonly pool: Queryable) {}
 
   static fromConfig(config: ServerConfig): ContentAccessService {
     return new ContentAccessService(dbPool(config));
@@ -86,6 +86,20 @@ export class ContentAccessService {
     }
     const grants = await this.loadGrants(this.pool, identity.spaceId, resourceType, resourceId);
     return policyOut(resourceType, resource, grants);
+  }
+
+  /** Whether the person may currently manage this active resource's access (owner, or Space owner/admin). */
+  async manages(identity: SpaceUserIdentity, resourceType: string, resourceId: string): Promise<boolean> {
+    const definition = contentResourceDefinition(resourceType);
+    if (!definition) return false;
+    try { await this.rejectManagedAssistant(resourceType, identity.spaceId, resourceId); } catch { return false; }
+    const resource = await this.loadResource(this.pool, definition, identity.spaceId, resourceId);
+    return Boolean(resource && await this.canManage(this.pool, identity, resource));
+  }
+
+  async readDemotionDisclosure(identity: SpaceUserIdentity, resourceType: string, resourceId: string, confirmationId: string) {
+    requireDefinition(resourceType);
+    return new ContentDemotionService(this.pool).read(identity, resourceType, resourceId, confirmationId);
   }
 
   async listAccessLogs(
@@ -129,7 +143,7 @@ export class ContentAccessService {
     await this.rejectManagedAssistant(resourceType, identity.spaceId, resourceId);
     validateUpdate(update);
     if (resourceType === "memory") return this.updateMemoryPolicy(identity, definition, resourceId, update);
-    return withDbTransaction(this.pool, async (client) => {
+    return withQueryableTransaction(this.pool, async (client) => {
       const resource = await this.loadResource(client, definition, identity.spaceId, resourceId, true);
       if (!resource || !(await this.canManage(client, identity, resource))) {
         throw new HttpError(404, "Content not found");
@@ -244,7 +258,7 @@ export class ContentAccessService {
     resourceId: string,
     update: ContentAccessUpdate,
   ) {
-    return withDbTransaction(this.pool, async (client) => {
+    return withQueryableTransaction(this.pool, async (client) => {
       const memory = await lockActiveMemoryForAccess(client, identity.spaceId, resourceId);
       const resource = memory ? await this.loadResource(client, definition, identity.spaceId, resourceId) : null;
       if (!memory || !resource || !(await this.canManage(client, identity, resource))) {
@@ -324,7 +338,7 @@ export class ContentAccessService {
     if (update.visibility !== "space_shared") {
       throw new HttpError(422, "Publication review requires space_shared visibility");
     }
-    return withDbTransaction(this.pool, async (client) => {
+    return withQueryableTransaction(this.pool, async (client) => {
       const resource = await this.loadResource(client, definition, identity.spaceId, resourceId, true);
       if (!resource || !(await this.canManage(client, identity, resource))) {
         throw new HttpError(404, "Content not found");
@@ -484,7 +498,8 @@ export class ContentAccessService {
     if (userIds.length === 0) return;
     const result = await db.query<{ user_id: string }>(
       `SELECT user_id FROM space_memberships
-        WHERE space_id = $1 AND user_id = ANY($2::varchar[]) AND status = 'active'`,
+        WHERE space_id = $1 AND user_id = ANY($2::varchar[]) AND status = 'active'
+        ORDER BY user_id FOR SHARE`,
       [spaceId, userIds],
     );
     const active = new Set(result.rows.map((row) => row.user_id));

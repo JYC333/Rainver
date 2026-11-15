@@ -5,6 +5,7 @@ import type {
 } from "@rainver/protocol";
 import type { Queryable } from "../routeUtils/common.js";
 import { insertArtifactRow } from "../artifacts/reviewArtifactWriter.js";
+import { settleRetrievalArtifact } from "../retrieval/artifactRelease.js";
 
 const ASK_SPACE_SESSION_ARTIFACT_TYPE = "ask_space_session";
 
@@ -15,6 +16,12 @@ interface AskSpaceSessionArtifactContext {
   requestedDomains: AskSpaceDomain[];
   /** Per-domain persisted brief artifact ids (only the domains that persisted). */
   briefArtifactRefs: Array<{ domain: AskSpaceDomain; artifact_id: string }>;
+  /**
+   * Every answering domain's complete contributing refs (items, citations,
+   * gap refs), including a domain whose own Brief failed to save: the combined
+   * answer, gap summary and provenance all derive from them.
+   */
+  contributions: Array<{ domain: AskSpaceDomain; refs: Array<{ object_type: string; object_id: string }> | null }>;
   gapSummary: AskSpaceGapSummary;
   provenance: AskSpaceProvenanceItem[];
   synthesized: boolean;
@@ -23,10 +30,15 @@ interface AskSpaceSessionArtifactContext {
 
 /**
  * Persist an owner-private `ask_space_session` artifact that links the per-domain
- * brief artifacts the Think answer was built from. It is a durable, ref-only
- * record (no raw snippets/content beyond the already-private brief refs) so the
- * session can later seed a Claim Candidate Packet. Owner-private because the
+ * brief artifacts the Think answer was built from, with the derived combined
+ * answer, gap summary and provenance. Owner-private because the
  * answer can derive from the viewer's private/restricted readable scope.
+ *
+ * Settles after the combined synthesis in one short transaction: the owner's
+ * current release closure over every recorded contribution (and nested Brief)
+ * is rechecked before the INSERT; withdrawn authority throws
+ * `RetrievalArtifactWithheld` and writes nothing. Reads re-run the same
+ * closure (`retrievalArtifactWithheld`).
  */
 export async function persistAskSpaceSessionArtifact(
   db: Queryable,
@@ -42,6 +54,7 @@ export async function persistAskSpaceSessionArtifact(
     query: input.query,
     requested_domains: input.requestedDomains,
     brief_artifact_refs: input.briefArtifactRefs,
+    contributions: input.contributions,
     gap_summary: input.gapSummary,
     provenance: input.provenance,
     synthesized: input.synthesized,
@@ -49,7 +62,7 @@ export async function persistAskSpaceSessionArtifact(
     space_id: input.spaceId,
     owner_user_id: ownerUserId,
   };
-  return insertArtifactRow(db, {
+  return settleRetrievalArtifact(db, { spaceId: input.spaceId, userId: ownerUserId }, { artifact_type: ASK_SPACE_SESSION_ARTIFACT_TYPE, metadata_json: payload }, (tx) => insertArtifactRow(tx, {
     spaceId: input.spaceId,
     ownerUserId,
     artifactType: ASK_SPACE_SESSION_ARTIFACT_TYPE,
@@ -58,7 +71,7 @@ export async function persistAskSpaceSessionArtifact(
     metadata: payload,
     canonicalFormat: "ask_space_session.v1",
     visibility: "private",
-  });
+  }));
 }
 
 function titleForSession(query: string): string {

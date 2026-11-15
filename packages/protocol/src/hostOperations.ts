@@ -69,7 +69,7 @@ export const HOST_DIRECT_OPERATION_SCHEMAS={
   'host.provider_proxy.set':{input:z.object({...host,base_url:z.string().max(512).nullable()}).strict(),output:z.object({...host,space_id:id,provider_proxy_base_url:z.string().nullable()}).strict()},
   'host.revoke':{input:z.object(host).strict(),output:z.object({...host,space_id:id,revoked:z.literal(true)}).strict()},
   'host.location.ambient.policy.set':{input:z.object({location_id:id,runtime_key:runtimeKey,installation:installation.optional(),sync:z.boolean(),default_visibility:visibility.nullable().optional(),auto_extract:z.boolean().optional()}).strict(),output:z.object({location_id:id,space_id:id,policy:AmbientImportPolicySchema}).strict()},
-  'host.location.ambient.dismiss':{input:z.object({location_id:id}).strict(),output:z.object({location_id:id,space_id:id,policy:AmbientImportPolicySchema}).strict()},
+  'host.location.ambient.reminder.set':{input:z.object({location_id:id,mode:z.enum(['later','never','enable'])}).strict(),output:z.object({location_id:id,space_id:id,policy:AmbientImportPolicySchema}).strict()},
   'imported_session.visibility.set':{input:z.object({session_id:id,visibility}).strict(),output:z.object({space_id:id,session:ImportedSessionSchema}).strict()},
   'imported_session.delete':{input:z.object({session_ids:z.array(id).min(1).max(200)}).strict(),output:z.object({space_id:id,deleted:z.number().int().nonnegative()}).strict()},
 } as const;
@@ -92,7 +92,7 @@ export const HOST_OPERATION_TITLES:Record<keyof typeof HOST_COMMAND_OPERATION_SC
   'host.provider_proxy.set':"Set a paired Host's provider proxy address",
   'host.revoke':'Revoke a paired Host',
   'host.location.ambient.policy.set':'Set a Location history import policy',
-  'host.location.ambient.dismiss':'Dismiss a Location history import offer',
+  'host.location.ambient.reminder.set':'Set a Location history reminder preference',
   'imported_session.visibility.set':'Change an imported session visibility',
   'imported_session.delete':'Delete imported sessions',
 };

@@ -83,3 +83,39 @@ but the server never retries a write automatically. A linked sibling also makes
 the root's mandatory audit transactional, with the existing failure recovery.
 Import bytes, scope authority and human review gates are unchanged. This writer
 evidence alone enables no production approval mapping.
+
+## Core commands and source requests
+
+The six existing write URLs are formal operation adapters. Protocol contracts
+live in `skillOperations.ts`; `operations.ts` owns binding/review proposal and
+overlay commands, and `sourceRequests.ts` owns scan/preview/import admission and
+result release. Every write needs an explicit idempotency key. The browser API
+unwraps receipts, rereads Proposals through their ordinary reader, and polls
+source requests without resubmitting commands. New review creation returns 201;
+an identical already-pending review returns 200, including on keyed replay.
+Proposal creation does not require approval of creating a Proposal.
+
+`PgSkillsRepository` accepts the transaction query port and joins it through
+`withQueryableTransaction`. Same-person review creation serializes before its
+pending lookup; the existing whole-package review transition gate still precedes
+domain locks. `scopeAuthority.ts` uses the canonical release closure (now also
+accepting Agent references) for Project/person/Space/Folder/content/grants and
+rediscovery before the existing scope owner check. Binding apply checks the
+original proposer's authority for every scope, never the approver's identity.
+Review-with-binding takes that scope closure before the package lock.
+
+Scan, preview and import return 202 and one `skill_source_request` Job. Host and
+GitHub IO run outside transactions, under the existing one-attempt start/effect
+fence. Upload parsing uses the same Job path. Import reacquires the bytes and
+checks the preview hash. Final source/package/files and Job receipt commit in
+one transaction after current person/Host authorization and claim checks.
+A started Job with an unknown outcome is never repeated. The authorized
+`GET /skill-sources/requests/:jobId` reader releases results; generic Job
+payload/result/error and event detail are withheld for this Job type. The source
+reader preserves the fixed `skill_package_changed` refusal without exposing
+arbitrary Host/provider errors. No import bytes grant execution or credentials.
+
+Evidence: `skillsRoutes`, `skillsOverlay`, `skillsApprovalDb`, the protocol
+`skillsFramework` and web `skill-operation-api` tests. The Project-writer race
+fails when the new scope lock is temporarily removed; the restored path passes.
+No production approval mapping is enabled by these adapters.

@@ -94,6 +94,20 @@ require that the caller can read that Task, and execution of a Project Plan also
 requires Project write access, the same gate as a Task-owned Run and an Agent
 planning request.
 
+Both POSTs are formal adapters of core commands (`plan.execute`, 202;
+`plan.reconcile`) with an explicit Idempotency-Key, one policy decision and the
+outcome receipt in the domain transaction. Execute locks Project → source Task
+(share) → Plan, the order Plan revision and Task writers use, and rechecks that
+the Plan did not move; re-executing an executed Plan with a new key returns the
+existing coordinator (`idempotent: true`). Reconcile keeps the retained REST
+contract: a Space owner/admin (which `canWriteProject` already counts as a
+writer) who can read the source Task; it adds no active-Project gate, because it
+runs the same domain function as recovery. The root coordinator's terminal
+transition is admitted before domain locks, and the command runs the same
+`reconcilePlan` the recovery scan and the `plan_checkpoint` applier use.
+Neither command decides a Proposal: `plan_review`/`plan_checkpoint` decisions
+remain with the canonical Proposal applier.
+
 Execution creates a parked coordinator Run and `plan_node_runs` for ready
 nodes. Every layer is scheduled the same way: a node without its own Agent runs
 on the coordinator's Agent (the one execution chose, not necessarily the

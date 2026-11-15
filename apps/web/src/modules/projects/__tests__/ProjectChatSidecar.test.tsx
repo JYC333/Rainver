@@ -98,6 +98,20 @@ const TASK = '11111111-1111-4111-8111-111111111111'
  * does not, `focusRefsFor` never sees a Task path in production no matter what
  * a test renders it at.
  */
+async function openEnvironmentSettings() {
+  fireEvent.click(await screen.findByRole('button', { name: /Conversation settings ·/ }))
+  fireEvent.mouseDown(screen.getByRole('tab', { name: 'Runtime environment' }), { button: 0, ctrlKey: false })
+}
+async function configureConversation() {
+  await openEnvironmentSettings()
+  const configure=screen.getByRole('button', { name: 'Configure conversation' })
+  await waitFor(()=>expect(configure).toBeEnabled())
+  fireEvent.click(configure)
+  await waitFor(() => expect(roomsApi.createConversation).toHaveBeenCalled())
+  // Setup stays open after creation so the person can continue configuring it.
+  fireEvent.click(await screen.findByRole('button', { name: 'Close' }))
+}
+
 function renderAt(path: string) {
   return render(
     <MemoryRouter initialEntries={[path]}>
@@ -183,7 +197,7 @@ beforeEach(() => {
     ], total: 2, limit: 50, offset: 0,
   } as never)
   vi.mocked(roomsApi.get).mockResolvedValue({
-    room: { id: 'room-1', project_id: PROJECT, title: 'Project Room' }, user_members: [], agent_members: [],
+    room: { id: 'room-1', project_id: PROJECT, title: 'Project Room' }, viewer_can_write: true, user_members: [], agent_members: [],
   } as never)
   // The real endpoint always returns `conversation`. Do not omit it here.
   // The panel's handler for it re-triggers the read, and a missing one loops.
@@ -222,6 +236,18 @@ describe('focus refs', () => {
 })
 
 describe('Project chat sidecar', () => {
+  it('sorts the picker by message activity and marks the running thread without disabling it', async () => {
+    vi.mocked(roomsApi.conversations).mockResolvedValue({ items: [
+      { id: 'conv-2', title: 'Newer empty', created_at: '2026-01-02T00:00:00Z' },
+      { id: 'conv-1', title: 'Older active', created_at: '2026-01-01T00:00:00Z', last_message_at: '2026-01-03T00:00:00Z', is_running: true },
+    ], total: 2, limit: 50, offset: 0 } as never)
+    renderAt(`/spaces/space-1/projects/${PROJECT}/board`)
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation' }))
+    const options = screen.getAllByRole('option')
+    expect(options[0]).toHaveTextContent('Older active')
+    expect(within(options[0]).getByRole('status', { name: 'Conversation running' })).toBeInTheDocument()
+    expect(options[0]).not.toBeDisabled()
+  })
   it('binds to the mainline Room and its newest conversation', async () => {
     renderAt(`/spaces/space-1/projects/${PROJECT}/board`)
     // The mainline is the server's answer, not "whichever Room I am in that
@@ -239,8 +265,8 @@ describe('Project chat sidecar', () => {
     vi.mocked(roomsApi.conversations).mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0 } as never)
     renderAt(`/spaces/space-1/projects/${PROJECT}/tasks/${TASK}`)
     expect(await screen.findByLabelText('Room message')).toBeInTheDocument()
-    expect(screen.getByText('Project Agent runtime details')).toBeVisible()
-    expect(screen.getByText('Runtime & workspace').closest('details')).toHaveAttribute('open')
+    expect(screen.getByRole('button', {name:/Conversation settings ·/})).toBeVisible()
+    expect(screen.queryByText('Runtime & workspace')).not.toBeInTheDocument()
     expect(roomsApi.create).not.toHaveBeenCalled()
     // Nothing to load, so nothing was asked for.
     expect(roomsApi.messages).not.toHaveBeenCalled()
@@ -262,11 +288,12 @@ describe('Project chat sidecar', () => {
     renderAt(`/spaces/space-1/projects/${PROJECT}/board`)
     const composer = await screen.findByLabelText('Room message')
     fireEvent.change(composer, { target: { value: 'Please inspect the workspace.' } })
+    await openEnvironmentSettings()
     expect(screen.getByRole('button', { name: 'Configure conversation' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
-    expect(composer).toHaveValue('Please inspect the workspace.')
     expect(screen.getByRole('link', { name: /configure or reconnect host/i })).toHaveAttribute('href', '/spaces/space-1/command-center')
     expect(screen.queryByRole('link', { name: /project runtime settings/i })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', {name:'Close'}))
+    expect(composer).toHaveValue('Please inspect the workspace.')
   })
 
   it('shows a failed mainline read as an error, not as an empty Project', async () => {
@@ -495,8 +522,8 @@ describe('Project chat sidecar', () => {
   it('opens the full Room on the conversation being read', async () => {
     renderAt(`/spaces/space-1/projects/${PROJECT}/board`)
     await waitFor(() => expect(roomsApi.messages).toHaveBeenCalledWith('room-1', 'conv-2', { limit: 50, offset: 0 }, expect.any(Object)))
-    // Full Room opens the conversation being read. Do not land on the Rooms list.
-    expect(screen.getByRole('link', { name: /Full Room/ }))
+    // "Open in Room" opens the conversation being read. Do not land on the Rooms list.
+    expect(screen.getByRole('link', { name: /Open in Room/ }))
       .toHaveAttribute('href', `/projects/${PROJECT}/rooms?room=room-1&conversation=conv-2`)
   })
 
@@ -592,7 +619,7 @@ describe('Project chat sidecar', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Start a separate thread' }))
 
     vi.mocked(roomsApi.createConversation).mockResolvedValue({ id: 'conv-3', room_id: 'room-1', title: 'New conversation' } as never)
-    fireEvent.click(screen.getByRole('button', { name: 'Configure conversation' }))
+    await configureConversation()
     await waitFor(() => expect(roomsApi.createConversation).toHaveBeenCalledWith('room-1', expect.any(Object)))
 
     fireEvent.change(await screen.findByLabelText('Room message'), { target: { value: 'A new topic' } })

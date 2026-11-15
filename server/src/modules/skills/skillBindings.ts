@@ -1,3 +1,4 @@
+import {lockSkillScopeAuthority} from './scopeAuthority.js';
 import { randomUUID } from "node:crypto";
 import { SkillBindingRequestSchema, type SkillBindingRequest, type SkillBinding } from "@rainver/protocol";
 import type { ProposalApplyContext, ProposalApplyResult } from "../proposals/applierRegistry.js";
@@ -64,6 +65,10 @@ export async function applySkillBindingRequest(
   if (binding.scope_type === "user" && binding.scope_id !== context.proposal.created_by_user_id) {
     throw new HttpError(422, "Skill user binding must belong to the proposer");
   }
+  const proposer=context.proposal.created_by_user_id;
+  if(!proposer)throw new HttpError(403,"Skill binding has no responsible proposer");
+  if (binding.scope_type === "agent") await assertAgentBindingTarget(context, binding.scope_id!);
+  await lockSkillScopeAuthority(context.db,{spaceId:context.proposal.space_id,userId:proposer},binding.scope_type,binding.scope_id??null);
   if (binding.scope_type === "agent") await assertAgentBindingTarget(context, binding.scope_id!);
   await lockSkillPackage(context.db, context.proposal.space_id, skillPackageId);
   const pkg = await loadSkillPackageContent(context.db, context.proposal.space_id, skillPackageId);
@@ -129,7 +134,11 @@ export async function resolveSkillBindingsForScopes(
       FROM unnest($2::varchar[], $3::varchar[]) WITH ORDINALITY AS scope(project_id, agent_id, ordinality)
       JOIN skill_bindings binding ON binding.space_id=$1
        AND (binding.project_id IS NULL OR binding.project_id=scope.project_id)
-       AND (binding.agent_id IS NULL OR binding.agent_id=scope.agent_id)
+       AND (binding.agent_id IS NULL OR (binding.agent_id=scope.agent_id AND NOT EXISTS (
+         SELECT 1 FROM agents scope_agent WHERE scope_agent.id=scope.agent_id AND scope_agent.space_id=$1
+           AND scope.project_id IS NOT NULL AND scope_agent.access_project_id IS NOT NULL
+           AND scope_agent.access_project_id<>scope.project_id
+       )))
        AND (binding.user_id IS NULL OR binding.user_id=$4)
      ORDER BY scope.ordinality, binding.skill_package_id, CASE WHEN binding.project_id IS NOT NULL THEN 4
        WHEN binding.agent_id IS NOT NULL THEN 3 WHEN binding.user_id IS NOT NULL THEN 2 ELSE 1 END DESC

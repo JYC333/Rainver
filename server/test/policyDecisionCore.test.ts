@@ -798,3 +798,21 @@ describe('goal setup proposal requests',()=>{
   for(const action_id of ['source.backfill.propose_start','project.source.propose_bind'])expect(engineCheck(registry,req('source.connection.manage',{surface:'managed_run_system_action_gateway',action_id,source_goal_setup_request:true,has_action_approval_grant:false})).decision).toBe('deny');
  });
 });
+
+
+describe('Task text edit origin policy',()=>{
+ it.each(['automation','system','job','autonomous'])('requires approval for %s edits',trigger_origin=>{
+   const decision=engineCheck(registry,{action:'task.content.update',space_id:'s1',resource_space_id:'s1',trigger_origin});
+   expect(decision.decision).toBe('require_approval');
+   expect(decision.policy_rule_id).toBe('unattended_project_write_require_approval');
+ });
+ it('allows a person-requested edit through the origin gate',()=>{
+   expect(engineCheck(registry,{action:'task.content.update',space_id:'s1',resource_space_id:'s1',trigger_origin:'manual'}).decision).toBe('allow');
+ });
+});
+
+describe('workspace recovery origin policy',()=>{
+ it.each(['autonomous','automation','job','system'])('gates %s recovery without weakening human retention authority',trigger_origin=>{
+  expect(engineCheck(registry,{action:'workspace.retention.update',space_id:'s1',resource_space_id:'s1',trigger_origin})).toMatchObject({decision:'require_approval',reason_code:'unattended_project_write',policy_rule_id:'unattended_project_write_require_approval'});
+ });
+});

@@ -393,6 +393,17 @@ Repair auto-activates only when:
   active version (`withinEnvelope: true`);
 - Space policy's `same_envelope_repair_auto_apply` is `true`.
 
+The generate and fixture test run outside any transaction (external I/O). The
+auto-activation, or the proposal below, then commits in one transaction that first
+locks, in order, the Source's Project writer authority (`assertProjectWriterForMutation`),
+the caller's Space membership and the Source connection and its channels
+(`customSourceRepairService.ts#lockRepairCommit`), and refuses with 409 — the tested
+version is not applied — unless the caller still manages the Source, it is not
+deleted, its status and every channel's status are what the repair was admitted
+with, this repair still holds `repair_pending`, and the active version is the one
+tested against. An old test result therefore never re-activates or reschedules a
+Source that was paused, deleted or taken out of the caller's hands while it ran.
+
 Otherwise a proposal is created before activation:
 
 - envelope unchanged but Space policy requires review →

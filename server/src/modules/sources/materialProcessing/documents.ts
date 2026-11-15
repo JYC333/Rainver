@@ -4,6 +4,7 @@ import {randomUUID} from 'node:crypto';
 import {createHash} from 'node:crypto';
 import {PROJECT_READING_RECORD_LIMITS,type SourceMaterialReadingContentSchema} from '@rainver/protocol';
 import type {z} from 'zod';
+import {SourceObjectRefusal} from '../sourceObjectErrors.js';
 import {HttpError,withQueryableTransaction,type Queryable} from '../../routeUtils/common.js';
 import {inheritContentAccessGrants} from '../../access/contentAccessInheritance.js';
 import type {SourceItemRow} from '../sourceRepositoryRows.js';
@@ -38,7 +39,7 @@ export async function saveSourceReadingDocument(db:Queryable,input:{spaceId:stri
 }
 async function writeSourceReadingDocument(db:Queryable,input:Parameters<typeof saveSourceReadingDocument>[1]){
  const item=(await db.query<SourceItemRow>(`SELECT * FROM source_items WHERE id=$1 AND space_id=$2 AND deleted_at IS NULL FOR UPDATE`,[input.itemId,input.spaceId])).rows[0];if(!item)throw new HttpError(404,'Material not found');
- if(input.expectedHash!==undefined&&item.content_hash!==input.expectedHash)throw new HttpError(409,'Material changed while reading');
+ if(input.expectedHash!==undefined&&item.content_hash!==input.expectedHash)throw new SourceObjectRefusal(409,'Material changed while reading');
  if((item.project_id||input.analysisProjectId)&&input.agentProvided)return saveProjectAnalysis(db,item,input);
  const metadata={...input.metadata,reading_method:input.agentProvided?'agent':'extractor',...(!input.agentProvided?{result_provenance:null,reading_method_provenance:null,reading_content_kind:'article',reading_content_format:'source_text',reading_sources:[input.document.source_uri??item.source_uri]}:{}),...(input.agentProvided?{result_provenance:'agent_provided_unverified'}:{})};
  const artifactId=await storeSourceReaderArtifact(db,input.spaceId,item.id,item.title,input.document,metadata);
@@ -58,7 +59,7 @@ async function writeSourceReadingDocument(db:Queryable,input:Parameters<typeof s
 async function saveProjectAnalysis(db:Queryable,item:SourceItemRow,input:Parameters<typeof saveSourceReadingDocument>[1]):Promise<{artifactId:string;snapshotId:string;contentHash:string}>{
  const projectId=item.project_id??input.analysisProjectId!;
  if(!(await db.query('SELECT 1 FROM projects WHERE id=$1 AND space_id=$2 AND deleted_at IS NULL',[projectId,item.space_id])).rows.length)throw new HttpError(403,'Analysis Project unavailable');
- if(input.document.plain_text.length>PROJECT_READING_RECORD_LIMITS.bodyCharacters)throw new HttpError(422,'Analysis exceeds 200000 characters');
+ if(input.document.plain_text.length>PROJECT_READING_RECORD_LIMITS.bodyCharacters)throw new SourceObjectRefusal(422,'Analysis exceeds 200000 characters');
  const runId=typeof input.metadata?.agent_run_id==='string'?input.metadata.agent_run_id:null;
  const run=runId?(await db.query<RunRecord>("SELECT * FROM runs WHERE id=$1 AND space_id=$2",[runId,item.space_id])).rows[0]:null;
  if(runId&&!run)throw new HttpError(403,'Analysis Run unavailable');
@@ -67,7 +68,7 @@ async function saveProjectAnalysis(db:Queryable,item:SourceItemRow,input:Paramet
  const hash=createHash('sha256').update(input.document.plain_text).digest('hex');
  if(runId){
   const old=(await db.query<{id:string;artifact_id:string;content_hash:string}>("SELECT id,artifact_id,content_hash FROM source_snapshots WHERE space_id=$1 AND source_item_id=$2 AND origin_run_id=$3 AND reading_role='analysis'",[item.space_id,item.id,runId])).rows[0];
-  if(old){if(old.content_hash!==hash)throw new HttpError(409,'Analysis Run already published different content');return {snapshotId:old.id,artifactId:old.artifact_id,contentHash:old.content_hash};}
+  if(old){if(old.content_hash!==hash)throw new SourceObjectRefusal(409,'Analysis Run already published different content');return {snapshotId:old.id,artifactId:old.artifact_id,contentHash:old.content_hash};}
  }
  // Association with the original available at settlement, not proof that this
  // Run consumed that version (Goal collection need not supply expectedHash).
@@ -76,7 +77,7 @@ async function saveProjectAnalysis(db:Queryable,item:SourceItemRow,input:Paramet
  WHERE s.space_id=$1 AND s.source_item_id=$2 AND s.snapshot_type='extracted' AND a.metadata_json->>'extraction_method' IN ('structured_html_v1','markdown_v1','plain_text_v1','pdf_text_v1') AND ($3::boolean=false OR s.id=$4::varchar) ORDER BY s.captured_at DESC,s.id DESC LIMIT 1`,[item.space_id,item.id,input.originalSnapshotId!==undefined,input.originalSnapshotId??null])).rows[0];
  const refs=Array.isArray(input.metadata?.reading_history_refs)?input.metadata.reading_history_refs:[];
  const history=original?[...refs,{item_id:item.id,artifact_id:original.artifact_id,content_hash:original.content_hash,snapshot_id:original.id}]:refs;
- if(history.length>PROJECT_READING_RECORD_LIMITS.dependencies)throw new HttpError(422,'Analysis dependency limit is 16');
+ if(history.length>PROJECT_READING_RECORD_LIMITS.dependencies)throw new SourceObjectRefusal(422,'Analysis dependency limit is 16');
  const destination=run?await runDestination(db,item.space_id,run):'external_provider';
  const metadata={...input.metadata,reading_analysis_destination:destination,reading_role:'analysis',reading_method:'agent',result_provenance:'agent_provided_unverified',reading_history_refs:history,original_availability:input.originalSnapshotId===null?'unknown':original?'retained':'not_retained'};
  const artifactId=await storeSourceReaderArtifact(db,item.space_id,item.id,item.title,input.document,metadata,{userId:owner,runId,projectId});

@@ -1,9 +1,9 @@
-import { lockDocumentVersion } from "./documentVersionLock.js";
+import { lockReaderWriteTarget } from "./writeAuthority.js";
 import { randomUUID } from "node:crypto";
 import { ReaderAppearanceSchema, ReaderPositionWriteSchema, type ReaderAppearance, type ReaderPosition, type ReaderPositionMark } from "@rainver/protocol";
 import { HttpError, withQueryableTransaction, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 import { ScopedSettingsStore, defineScopedSetting } from "../settings/scopedSettings.js";
-import { PgReaderRepository, assertDocumentReadable } from "./repository.js";
+import { PgReaderRepository, ReaderPreparationStale, assertDocumentReadable, readerFilesOutsideTransaction, type ReaderFilePreparation } from "./repository.js";
 import type { ServerConfig } from "../../config.js";
 
 interface PositionRow {
@@ -52,7 +52,7 @@ export class ReaderPositionStore {
     return out(result.rows[0]);
   }
 
-  async write(identity: SpaceUserIdentity, documentType: string, documentId: string, body: unknown): Promise<{ position: ReaderPosition | null; accepted: boolean }> {
+  async write(identity: SpaceUserIdentity, documentType: string, documentId: string, body: unknown, prepared?: ReaderFilePreparation): Promise<{ position: ReaderPosition | null; accepted: boolean }> {
     const parsed = ReaderPositionWriteSchema.safeParse(body);
     if (!parsed.success) throw new HttpError(422, parsed.error.issues[0]?.message ?? "Invalid reading position");
     const input = parsed.data;
@@ -61,21 +61,27 @@ export class ReaderPositionStore {
     if (Date.parse(at) > Date.now() + 5 * 60_000) throw new HttpError(422, "Reading position time is in the future");
     const config = this.config;
     if (!config) throw new Error("ReaderPositionStore.write needs the server config");
+    const files = await readerFilesOutsideTransaction(this.db, config, identity, documentType, documentId, prepared);
     return withQueryableTransaction(this.db, async tx => {
       await assertDocumentReadable(tx, identity, documentType, documentId);
       // Lock order: the document's own row (shared), then the position row.
       // Every writer of a document's content updates that row, so while this
       // transaction holds it the version cannot change, and a write that
       // committed before it is seen by the read below.
-      await lockDocumentVersion(tx, identity.spaceId, documentType, documentId);
+      await lockReaderWriteTarget(tx,identity,{document_type:documentType,document_id:documentId});
       // The version the document has now, read the way the Reader reads it but without recording an open.
-      const document = await new PgReaderRepository(tx, config).getDocument(identity, documentType, documentId, { recordOpen: false });
-      if (!document) throw new HttpError(404, "Document not found");
-      const onCurrentVersion = document.content_hash === input.content_hash && document.structure_hash === input.structure_hash;
       const key = [identity.spaceId, identity.userId, documentType, documentId];
       const select = () => tx.query<PositionRow>(
         `SELECT ${COLUMNS} FROM reader_positions WHERE space_id=$1 AND user_id=$2 AND document_type=$3 AND document_id=$4 FOR UPDATE`, key,
       );
+      // The body a sealed preparation never captured was written after it was
+      // prepared: the report cannot be measured on the version the document
+      // has now, so it changes nothing (current access and lock already held).
+      const document = await new PgReaderRepository(tx, config,files).getDocument(identity, documentType, documentId, { recordOpen: false })
+        .catch((error: unknown) => { if (error instanceof ReaderPreparationStale) return "stale" as const; throw error; });
+      if (document === "stale") return { position: out((await select()).rows[0]), accepted: false };
+      if (!document) throw new HttpError(404, "Document not found");
+      const onCurrentVersion = document.content_hash === input.content_hash && document.structure_hash === input.structure_hash;
       // A report measured on a version the document no longer has (an old tab) changes nothing, however late its time.
       if (!onCurrentVersion) return { position: out((await select()).rows[0]), accepted: false };
       const fresh = (dwelled: boolean) => dwelled || input.reset_furthest ? input.current : null;

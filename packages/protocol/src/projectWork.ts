@@ -73,6 +73,7 @@ export const PERSON_ONLY_TASK_STATUSES = ["waiting_for_review", "blocked"] as co
 export const PROJECT_WORK_EVENT_KINDS = [
   // Task lifecycle
   "task.created",
+  "task.content_changed",
   "task.deleted",
   "task.entity_linked",
   "task.flow_changed",

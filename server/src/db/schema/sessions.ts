@@ -1,4 +1,4 @@
-import { pgTable, index, uniqueIndex, unique, check, foreignKey, varchar, text, integer, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
+import { pgTable, index, uniqueIndex, unique, check, foreignKey, varchar, text, integer, boolean, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { agentRuntimeProfiles, agents } from "./agents.js";
 import { users } from "./auth.js";
@@ -105,6 +105,7 @@ export const sessionConversationBackends = pgTable("session_conversation_backend
 	runtimeConfigSnapshotJson: jsonb("runtime_config_snapshot_json").default({}).notNull(),
 	runtimePolicySnapshotJson: jsonb("runtime_policy_snapshot_json").default({}).notNull(),
 	sessionConfigJson: jsonb("session_config_json"),
+	participating: boolean("participating").default(true).notNull(),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [

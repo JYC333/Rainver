@@ -688,4 +688,4 @@ it('renders the real Project entry and bundled slot against actual PG/HTTP/propo
     __setProposalIdentityForTests(null);
     await app.close();
   }
-}, 180000);
+});

@@ -778,6 +778,17 @@ describe("the executor band", () => {
     return result;
   }
 
+  async function createThroughCore(run:any,input:object,key:string){
+    if(!(await db.pool.query('SELECT id FROM runs WHERE id=$1',[run.id])).rowCount)
+      await seedRun(db.pool,{id:run.id,space:SPACE,owner:OWNER,agent:AGENT,version:VERSION,existingAgent:true});
+    await db.pool.query("UPDATE runs SET project_id=$2,instructed_by_user_id=$3,status='running',trigger_origin=$5,permission_snapshot_json=$4::jsonb WHERE id=$1",
+      [run.id,run.project_id,run.instructed_by_user_id,JSON.stringify({tool_grants:[{action_id:'task.create'}]}),run.trigger_origin]);
+    const record=(await db.pool.query('SELECT * FROM runs WHERE id=$1',[run.id])).rows[0];
+    const result:any=await new CliAgentToolTransport(loadConfig({SERVER_DATABASE_URL:db.connectionUri})).call(record,{id:key,name:'task.create',arguments:input});
+    if(result.httpStatus>=400)throw new HttpError(result.httpStatus,result.body.error.message);
+    return result;
+  }
+
   const dispatch = (key: string) => ({
     actor: { type: "agent" as const, id: AGENT },
     visibility: "agent_tool" as const,
@@ -803,7 +814,7 @@ describe("the executor band", () => {
     expect((open.modelResult as { tasks: Array<{ task_id: string }> }).tasks.map((task) => task.task_id)).toEqual([mine]);
   });
 
-  it("corrects an invented Task id with this authorized Project list through core", async (ctx) => {
+  it("keeps a missing Task refusal uniform and directs the Agent to authorized reads", async (ctx) => {
     if (!db.available) return ctx.skip();
     // Safe discovery uses only this authorized Run Project's visible Tasks.
     const real = randomUUID();
@@ -814,13 +825,13 @@ describe("the executor band", () => {
       randomUUID(),
     )).rejects.toMatchObject({
       statusCode: 404,
-      message: `No Task in this Project has id 'memory-chapter'. Use one of these ids exactly: ${real} — Work item`,
+      message: expect.stringContaining('objects returned by authorized reads'),
     });
   });
 
   it("creates the Task in the Run's own Project, recording the Run it came from", async (ctx) => {
     if (!db.available) return ctx.skip();
-    const { executors, run } = executorsFor();
+    const { run } = executorsFor();
     const runId = (run as { id: string }).id;
     // The executing Run exists, as it always does outside a test: the Task
     // records it, so what becomes of the Task can be told where it came from.
@@ -828,10 +839,7 @@ describe("the executor band", () => {
       `INSERT INTO runs (id, space_id, agent_id, agent_version_id, project_id, trust_mode, run_type, trigger_origin, status, mode, owner_user_id, created_at, updated_at, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json) VALUES ($1, $2, $3, $6, $4, 'sandboxed', 'agent', 'manual', 'running', 'live', $5, now(), now(), 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
       [runId, SPACE, AGENT, PROJECT, OWNER, VERSION],
     );
-    await executors.get("task.create" as SystemActionId)!(
-      { title: "Split out by the Agent" },
-      dispatch(randomUUID()),
-    );
+    await createThroughCore(run, { title: "Split out by the Agent" }, randomUUID());
     const row = await db.pool!.query<{ project_id: string; source_run_id: string | null }>(
       `SELECT project_id, source_run_id FROM tasks WHERE title = 'Split out by the Agent'`);
     expect(row.rows[0]).toEqual({ project_id: PROJECT, source_run_id: runId });
@@ -858,7 +866,7 @@ describe("the executor band", () => {
     const rows = await db.pool!.query("SELECT source_run_id, due_at, visibility FROM tasks WHERE project_id = $1", [PROJECT]);
     expect(rows.rows).toHaveLength(8);
     expect(rows.rows.every(row => row.source_run_id === (run as { id: string }).id && row.due_at && row.visibility === "space_shared")).toBe(true);
-    await expect(executors.get("task.create" as SystemActionId)!({ title: "Extra unsolicited task" }, dispatch("extra"))).rejects.toMatchObject({ statusCode: 429 });
+    await expect(createThroughCore(run, { title: "Extra unsolicited task" }, "extra")).rejects.toMatchObject({ statusCode: 429 });
   });
 
   it("serializes concurrent batches without duplicating the same requested Task", async ctx => {
@@ -898,31 +906,25 @@ describe("the executor band", () => {
     if (!db.available) return ctx.skip();
     // Do not take the Project from the input. An Agent could write into one
     // the person it acts for is not a member of.
-    const { executors } = executorsFor();
-    await expect(executors.get("task.create" as SystemActionId)!(
-      { project_id: OTHER_PROJECT, title: "Elsewhere" },
-      dispatch(randomUUID()),
-    )).rejects.toMatchObject({ statusCode: 422 });
+    // The core does not disclose another Project: the refusal is the canonical hidden 404.
+    const { run } = executorsFor();
+    await expect(createThroughCore(run, { project_id: OTHER_PROJECT, title: "Elsewhere" }, randomUUID())).rejects.toMatchObject({ statusCode: 404 });
+    expect((await db.pool!.query("SELECT id FROM tasks WHERE title = 'Elsewhere'")).rows).toEqual([]);
   });
 
   it("refuses to create a Task from a Run with no Project", async (ctx) => {
     if (!db.available) return ctx.skip();
-    const { executors } = executorsFor({ project_id: null });
-    await expect(executors.get("task.create" as SystemActionId)!(
-      { title: "Unscoped" },
-      dispatch(randomUUID()),
-    )).rejects.toMatchObject({ statusCode: 422 });
+    const { run } = executorsFor({ project_id: null });
+    await expect(createThroughCore(run, { title: "Unscoped" }, randomUUID())).rejects.toMatchObject({ statusCode: 404 });
   });
 
   it("refuses when the person it acts for is not a Project writer", async (ctx) => {
     if (!db.available) return ctx.skip();
     // Authority is the instructing person's, re-checked under the aggregate
     // lock rather than assumed from the Run having a Project.
-    const { executors } = executorsFor({ instructed_by_user_id: OUTSIDER });
-    await expect(executors.get("task.create" as SystemActionId)!(
-      { title: "Not mine to make" },
-      dispatch(randomUUID()),
-    )).rejects.toBeInstanceOf(HttpError);
+    const { run } = executorsFor({ instructed_by_user_id: OUTSIDER });
+    await expect(createThroughCore(run, { title: "Not mine to make" }, randomUUID())).rejects.toBeInstanceOf(HttpError);
+    expect((await db.pool!.query("SELECT id FROM tasks WHERE title = 'Not mine to make'")).rows).toEqual([]);
   });
 
   it("refuses to touch a Task the person it acts for cannot see", async (ctx) => {

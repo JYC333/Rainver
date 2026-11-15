@@ -38,7 +38,10 @@ export async function contentDecisionFromDb(
       LIMIT 1`,
     [identity.spaceId, resourceId, identity.userId],
   );
-  if(resourceType==="artifact"&&result.rows[0]){try{await assertResearchArtifactReadable(db,identity,resourceId);}catch(error){if(error instanceof HttpError&&error.statusCode===404)return "deny";throw error;}}
+  if(resourceType==="artifact"&&result.rows[0]){try{await assertResearchArtifactReadable(db,identity,resourceId);}catch(error){if(error instanceof HttpError&&error.statusCode===404)return "deny";throw error;}
+    // Retrieval-derived and persisted report Artifacts follow their contributing refs' current release gate (decision only, no read audit).
+    const derived=(await db.query<{id:string;artifact_type:string;metadata_json:unknown}>(`SELECT id,artifact_type,metadata_json FROM artifacts WHERE space_id=$1 AND id=$2`,[identity.spaceId,resourceId])).rows[0];
+    if(derived){const {retrievalArtifactWithheld}=await import("../retrieval/artifactRelease.js");if(await retrievalArtifactWithheld(db,identity,derived,null))return "deny";}}
   const level = result.rows[0]?.effective_access_level;
   return isContentAccessLevel(level) ? level : "deny";
 }

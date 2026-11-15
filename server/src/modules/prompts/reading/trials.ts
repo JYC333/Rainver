@@ -1,3 +1,5 @@
+import type {ReadingSampleRow,ReadingVersionRow} from './rows.js';
+import { EvolutionAssetRefusal } from "../../evolution/assetRefusal.js";
 import {comparisonPrompt,assertRevisionSample,revisionComparisonText} from './comparisonPrompt.js';
 import {startProviderTrial} from './providerTrial.js';
 import {assertRevisionProvider,type RevisionProvider} from './revisionProvider.js';
@@ -5,7 +7,7 @@ import {isDeepStrictEqual} from 'node:util';
 import type {RuntimeSessionConfigSelection} from '@rainver/protocol';
 import {resolveSessionConfig,sessionConfigRunOverride} from '../../sessions/sessionConfig.js';
 import type {ReadingMethodTrialView,ReadingMethodTrialOutput} from '@rainver/protocol';
-import {HttpError,withQueryableTransaction,withDbTransaction,type Pool,type Queryable,type SpaceUserIdentity} from '../../routeUtils/common.js';
+import {HttpError,withQueryableTransaction,type Queryable,type SpaceUserIdentity} from '../../routeUtils/common.js';
 import type {ServerConfig} from '../../../config.js';
 import {PgRunRepository,type RunRecord} from '../../runs/repository.js';
 import {PgJobQueueRepository} from '../../jobs/repository.js';
@@ -46,11 +48,11 @@ function trialOutputText(run:Pick<RunRecord,'output_json'>,target?:string){
 
 
 /** Same prepared evidence, context and profile, two ordinary Runs; no material-submit/write capability. */
-export async function startReadingTrial(db:Pool,config:ServerConfig,identity:SpaceUserIdentity,raw:unknown){
- const parsed=ReadingMethodTrialSchema.safeParse(raw);if(!parsed.success)throw new HttpError(422,parsed.error.message);const input=parsed.data;
+export async function startReadingTrial(db:Queryable,config:ServerConfig,identity:SpaceUserIdentity,raw:unknown){
+ const parsed=ReadingMethodTrialSchema.safeParse(raw);if(!parsed.success)throw new EvolutionAssetRefusal(422,parsed.error.message);const input=parsed.data;
  if(!input.agent_id&&!input.runtime_profile_id!)return startProviderTrial(db,config,identity,input);
- if(!input.agent_id||!input.runtime_profile_id!)throw new HttpError(422,'Legacy comparison requires both Agent and Profile');
- return withDbTransaction(db,async tx=>{
+ if(!input.agent_id||!input.runtime_profile_id!)throw new EvolutionAssetRefusal(422,'Legacy comparison requires both Agent and Profile');
+ return withQueryableTransaction(db,async tx=>{
   await tx.query(`SELECT pg_advisory_xact_lock(hashtextextended($1,0))`,[`prompt-comparison:${identity.spaceId}:${identity.userId}`]);
   // Same order as promotion/bundle apply: asset first, then Project audience.
   const asset=await readingAsset(tx,identity,true,input.target_key);await lockEvolutionAssets(tx,[asset.id]);
@@ -58,34 +60,34 @@ export async function startReadingTrial(db:Pool,config:ServerConfig,identity:Spa
   if(ctx.projectId){await lockProjectAudience(tx,identity.spaceId,ctx.projectId);ctx=await readingItemContext(tx,identity,input.item_id,input.project_id);}
   const {version}=await readingCandidate(tx,identity,input.candidate_version_id,ctx.projectId,input.target_key);
   // Serialize the candidate content/transition with edits and concurrent starts.
-  const candidate=(await tx.query(`SELECT * FROM evolvable_asset_versions WHERE id=$1 AND asset_id=$2 FOR UPDATE`,[version.id,asset.id])).rows[0];
-  if(candidate.content_hash!==input.candidate_content_hash)throw new HttpError(409,'Candidate changed; reload before starting a paid comparison');
-  const method=readingStrategy(candidate.content_json);if(!method || method.length>12000)throw new HttpError(422,'Candidate must contain a bounded text method');
-  const sample=(await tx.query(`SELECT * FROM evaluation_cases WHERE id=$1 AND asset_id=$2 AND space_id=$3 AND status='active'`,[input.case_id,asset.id,identity.spaceId])).rows[0];
+  const candidate=(await tx.query<ReadingVersionRow>(`SELECT * FROM evolvable_asset_versions WHERE id=$1 AND asset_id=$2 FOR UPDATE`,[version.id,asset.id])).rows[0];
+  if(candidate.content_hash!==input.candidate_content_hash)throw new EvolutionAssetRefusal(409,'Candidate changed; reload before starting a paid comparison');
+  const method=readingStrategy(candidate.content_json);if(!method || method.length>12000)throw new EvolutionAssetRefusal(422,'Candidate must contain a bounded text method');
+  const sample=(await tx.query<ReadingSampleRow>(`SELECT * FROM evaluation_cases WHERE id=$1 AND asset_id=$2 AND space_id=$3 AND status='active'`,[input.case_id,asset.id,identity.spaceId])).rows[0];
   if(!sample || sample.input_json?.kind!=='reading_method_sample.v1' || sample.created_by_user_id!==identity.userId || sample.input_json?.reading_item_id!==ctx.item.id || sample.input_json?.project_id!==ctx.projectId)throw new HttpError(404,'Reading sample not found');
-  if(sample.input_json.authority!==ctx.authority || sample.input_json.context_hash!==sha256Json(ctx.context))throw new HttpError(409,'Sample material or context changed; save a fresh sample');
+  if(sample.input_json.authority!==ctx.authority || sample.input_json.context_hash!==sha256Json(ctx.context))throw new EvolutionAssetRefusal(409,'Sample material or context changed; save a fresh sample');
   await assertSampleAuthority(tx,identity,ctx,sample.input_json);
   assertRevisionSample(input.target_key,sample.input_json.pages);
   await tx.query(`SELECT id FROM agents WHERE id=$1 AND space_id=$2 FOR SHARE`,[input.agent_id,identity.spaceId]);
   await tx.query(`SELECT id FROM agent_runtime_profiles WHERE id=$1 AND space_id=$2 AND agent_id=$3 FOR SHARE`,[input.runtime_profile_id,identity.spaceId,input.agent_id]);
-  const backend=(await new PgConversationBackendRepository(tx).listOptions(identity.spaceId,identity.userId,input.agent_id!)).find(p=>p.runtime_profile_id===input.runtime_profile_id&&p.usable!==false);if(!backend)throw new HttpError(409,'Choose a usable Agent runtime');
+  const backend=(await new PgConversationBackendRepository(tx).listOptions(identity.spaceId,identity.userId,input.agent_id!)).find(p=>p.runtime_profile_id===input.runtime_profile_id&&p.usable!==false);if(!backend)throw new EvolutionAssetRefusal(409,'Choose a usable Agent runtime');
   if(!(await tx.query(`SELECT id FROM agents WHERE id=$1 AND space_id=$2 AND owner_user_id=$3 AND status='active'`,[input.agent_id,identity.spaceId,identity.userId])).rows.length)throw new HttpError(403,'Use your own active Agent');
   const baseline=await freezeReadingMethod(tx,{...identity,projectId:ctx.projectId,agentId:input.agent_id},ctx.context,input.target_key);
   const session=await resolveSessionConfig([],async()=>[],backend.session_config_options??[]);
   const profileHash=await nativeProfileFingerprint(tx,input.runtime_profile_id!);
-  if(input.retry_of){const prior=await authorizedPair(tx,identity,input.retry_of);if(prior.ref.item_id!==ctx.item.id||prior.row.candidate_version_id!==candidate.id||!['failed','blocked','cancelled'].includes(prior.row.status))throw new HttpError(409,'Only a failed/cancelled comparison of this candidate may be retried');}
+  if(input.retry_of){const prior=await authorizedPair(tx,identity,input.retry_of);if(prior.ref.item_id!==ctx.item.id||prior.row.candidate_version_id!==candidate.id||!['failed','blocked','cancelled'].includes(prior.row.status))throw new EvolutionAssetRefusal(409,'Only a failed/cancelled comparison of this candidate may be retried');}
   const key=sha256Json([identity.userId,ctx.item.id,ctx.projectId,ctx.authority,baseline.frozen.version_id,candidate.id,candidate.content_hash,input.case_id,sample.input_json,input.agent_id,input.runtime_profile_id,profileHash,session.selections,input.retry_of??null]);
-  const prior=(await tx.query(`SELECT id FROM evolvable_asset_evaluation_runs WHERE asset_id=$1 AND space_id=$2 AND evaluator_version=$3 AND eval_suite_ref_json->>'request_key'=$4 ORDER BY created_at DESC LIMIT 1`,[asset.id,identity.spaceId,PAIR_EVALUATOR,key])).rows[0];if(prior)return readReadingTrial(tx,identity,prior.id);
-  const inflight=(await tx.query(`SELECT count(*)::int n FROM evolvable_asset_evaluation_runs WHERE space_id=$1 AND created_by_user_id=$2 AND evaluator_version=$3 AND status IN ('queued','running')`,[identity.spaceId,identity.userId,PAIR_EVALUATOR])).rows[0].n;
-  if(inflight>=1)throw new HttpError(409,'A reading comparison is already running');
-  if((await tx.query(`SELECT count(*)::int n FROM evolvable_asset_evaluation_runs WHERE space_id=$1 AND created_by_user_id=$2 AND evaluator_version=$3 AND created_at>now()-interval '1 day'`,[identity.spaceId,identity.userId,PAIR_EVALUATOR])).rows[0].n>=3)throw new HttpError(429,'At most three reading comparisons per day');
+  const prior=(await tx.query<{id:string}>(`SELECT id FROM evolvable_asset_evaluation_runs WHERE asset_id=$1 AND space_id=$2 AND evaluator_version=$3 AND eval_suite_ref_json->>'request_key'=$4 ORDER BY created_at DESC LIMIT 1`,[asset.id,identity.spaceId,PAIR_EVALUATOR,key])).rows[0];if(prior)return readReadingTrial(tx,identity,prior.id);
+  const inflight=(await tx.query<{n:number}>(`SELECT count(*)::int n FROM evolvable_asset_evaluation_runs WHERE space_id=$1 AND created_by_user_id=$2 AND evaluator_version=$3 AND status IN ('queued','running')`,[identity.spaceId,identity.userId,PAIR_EVALUATOR])).rows[0].n;
+  if(inflight>=1)throw new EvolutionAssetRefusal(409,'A reading comparison is already running');
+  if((await tx.query<{n:number}>(`SELECT count(*)::int n FROM evolvable_asset_evaluation_runs WHERE space_id=$1 AND created_by_user_id=$2 AND evaluator_version=$3 AND created_at>now()-interval '1 day'`,[identity.spaceId,identity.userId,PAIR_EVALUATOR])).rows[0].n>=3)throw new EvolutionAssetRefusal(429,'At most three reading comparisons per day');
   if(candidate.status==='draft')await new EvolvableAssetRepository(tx).transitionVersionStatus(identity,asset.id,candidate.id,{status:'candidate'});
   const evaluation=await new EvolvableAssetEvaluationRepository(tx).recordEvaluationRun(identity,asset.id,candidate.id,{baseline_version_id:baseline.frozen.version_id,eval_suite_ref:{kind:PAIR_EVALUATOR},evaluator_version:PAIR_EVALUATOR,status:'queued'},{trustedExecutor:true});
   const jobs=new PgJobQueueRepository(tx);const runs:RunRecord[]=[];
   for(const side of ['baseline','candidate'] as const){
    const strategy=side==='baseline'?baseline.text:method;
    const prompt=comparisonPrompt(input.target_key,strategy,ctx.context,sample.input_json.pages);
-   if(prompt.length>48000)throw new HttpError(422,'Trial input exceeds 48000 characters');
+   if(prompt.length>48000)throw new EvolutionAssetRefusal(422,'Trial input exceeds 48000 characters');
    const run=await new PgRunRepository(tx).createQueuedRunWithBudgetAdmission({execution_kind:'agent',space_id:identity.spaceId,user_id:identity.userId,agent_id:input.agent_id!,runtime_profile_id:input.runtime_profile_id,project_id:null,model_override_json:sessionConfigRunOverride(session),mode:'live',run_type:'agent',trigger_origin:'manual',visibility:'private',capabilities_json:[],scenario_tool_allowance:[],prompt,instruction:'Use only the supplied evidence. Do not browse, use tools, change files or write to Rainver. A structural result is not a quality judgment.',contract_snapshot:{source:{kind:'direct',id:ctx.item.id},workflow_input_json:{reading_method_executor_only:true,reading_method_trial:{target_key:input.target_key,evaluation_id:evaluation.id,side,prompt_hash:sha256Json(prompt)}},policy_context_json:createManagedExecutionPolicy('reading_method_trial',false),max_attempts:1,max_duration_seconds:180,risk_level:'low'}});
    runs.push(run);await closeReadingContext(tx,identity,run.id,input.agent_id!,input.runtime_profile_id!,ctx.projectId);
    if(ctx.source)await (await import('../../sources/sourcePromptEgress.js')).assertSourcePromptEgressAllowed(tx,ctx.source,input.agent_id!,input.runtime_profile_id!);
@@ -104,28 +106,28 @@ export async function authorizedPair(db:Queryable,identity:SpaceUserIdentity,id:
 export async function assertReadingTrialRun(db:Queryable,run:RunRecord){
  const trial=trialContext(run);if(!trial)return;
  const identity={spaceId:run.space_id,userId:run.instructed_by_user_id!};const {row,ref}=await authorizedPair(db,identity,trial.evaluation_id);
- if(!['queued','running'].includes(row.status) || (trial.side==='baseline'?ref.baseline_run_id:ref.candidate_run_id)!==run.id)throw new HttpError(409,'Comparison is no longer running');
+ if(!['queued','running'].includes(row.status) || (trial.side==='baseline'?ref.baseline_run_id:ref.candidate_run_id)!==run.id)throw new EvolutionAssetRefusal(409,'Comparison is no longer running');
  await assertReadingTrialReadable(db,run);
- const fresh=await readingItemContext(db,identity,ref.item_id,ref.project_id);const freshCase=(await db.query('SELECT input_json FROM evaluation_cases WHERE id=$1',[ref.case_id])).rows[0];await assertSampleAuthority(db,identity,fresh,freshCase?.input_json);if(fresh.authority!==ref.authority||sha256Json(fresh.context)!==ref.context_hash)throw new HttpError(409,'Trial input is stale');
+ const fresh=await readingItemContext(db,identity,ref.item_id,ref.project_id);const freshCase=(await db.query('SELECT input_json FROM evaluation_cases WHERE id=$1',[ref.case_id])).rows[0];await assertSampleAuthority(db,identity,fresh,freshCase?.input_json);if(fresh.authority!==ref.authority||sha256Json(fresh.context)!==ref.context_hash)throw new EvolutionAssetRefusal(409,'Trial input is stale');
  await normalizeVersionScopeForWrite(db,identity,ref.project_id?'project':'space',ref.project_id??run.space_id);
  if(ref.provider){if(run.execution_kind!=='provider_task'||(run.model_provider_id&&run.model_provider_id!==ref.provider.id))throw new HttpError(403,'Comparison destination mismatch');await assertRevisionProvider(db,identity,ref.provider,fresh.source?.id??null,true);return;}
  if(!(await db.query(`SELECT id FROM agents WHERE id=$1 AND space_id=$2 AND owner_user_id=$3 AND status='active'`,[run.agent_id,run.space_id,identity.userId])).rows.length)throw new HttpError(403,'Trial Agent authority changed');
- if(trial.prompt_hash!==sha256Json(run.prompt))throw new HttpError(409,'Trial request changed');
+ if(trial.prompt_hash!==sha256Json(run.prompt))throw new EvolutionAssetRefusal(409,'Trial request changed');
  await assertClosedReadingContext(db,run.space_id,run.id,ref.project_id);
- if(ref.profile_hash!==await nativeProfileFingerprint(db,run.requested_runtime_profile_id!))throw new HttpError(409,'Trial execution configuration changed');
- const option=(await new PgConversationBackendRepository(db).listOptions(run.space_id,identity.userId,run.agent_id!)).find(p=>p.runtime_profile_id===run.requested_runtime_profile_id&&p.usable!==false);if(!option)throw new HttpError(409,'Trial runtime unavailable');
+ if(ref.profile_hash!==await nativeProfileFingerprint(db,run.requested_runtime_profile_id!))throw new EvolutionAssetRefusal(409,'Trial execution configuration changed');
+ const option=(await new PgConversationBackendRepository(db).listOptions(run.space_id,identity.userId,run.agent_id!)).find(p=>p.runtime_profile_id===run.requested_runtime_profile_id&&p.usable!==false);if(!option)throw new EvolutionAssetRefusal(409,'Trial runtime unavailable');
  const selections=(await resolveSessionConfig(ref.session_config??[],async()=>[],option.session_config_options??[])).selections;
- if(!isDeepStrictEqual(selections,ref.session_config??[])||!isDeepStrictEqual((run.model_override_json as {acp_session_config?:unknown}|null)?.acp_session_config??[],ref.session_config??[]))throw new HttpError(409,'Trial model/mode configuration changed');
+ if(!isDeepStrictEqual(selections,ref.session_config??[])||!isDeepStrictEqual((run.model_override_json as {acp_session_config?:unknown}|null)?.acp_session_config??[],ref.session_config??[]))throw new EvolutionAssetRefusal(409,'Trial model/mode configuration changed');
 }
 export async function assertReadingTrialReadable(db:Queryable,run:RunRecord){
  const trial=trialContext(run);if(!trial)return;
  const identity={spaceId:run.space_id,userId:run.instructed_by_user_id!};const {row,ref}=await authorizedPair(db,identity,trial.evaluation_id);
  const versions=(await db.query<{id:string;content_hash:string}>(`SELECT id,content_hash,version FROM evolvable_asset_versions WHERE id=ANY($1::varchar[])`,[[row.baseline_version_id,row.candidate_version_id]])).rows;
- if(versions.find(v=>v.id===row.baseline_version_id)?.content_hash!==ref.baseline_hash||versions.find(v=>v.id===row.candidate_version_id)?.content_hash!==ref.candidate_hash)throw new HttpError(409,'Comparison versions changed');
+ if(versions.find(v=>v.id===row.baseline_version_id)?.content_hash!==ref.baseline_hash||versions.find(v=>v.id===row.candidate_version_id)?.content_hash!==ref.candidate_hash)throw new EvolutionAssetRefusal(409,'Comparison versions changed');
  const ctx=await readingItemContext(db,identity,ref.item_id,ref.project_id);
  for(const parent of (await (await import('./dispatch.js')).readingDependencyRuns(db,run)).slice(1)){const root=await (await import('./generationAuthority.js')).assertGenerationReadable(db,identity,parent);await assertReadingRunEgress(db,run,root.source?.id??null);}
 
- const sample=(await db.query(`SELECT input_json FROM evaluation_cases WHERE id=$1 AND space_id=$2 AND status='active'`,[ref.case_id,identity.spaceId])).rows[0];if(!sample||sha256Json(sample.input_json)!==ref.case_hash)throw new HttpError(409,'Sample changed');
+ const sample=(await db.query(`SELECT input_json FROM evaluation_cases WHERE id=$1 AND space_id=$2 AND status='active'`,[ref.case_id,identity.spaceId])).rows[0];if(!sample||sha256Json(sample.input_json)!==ref.case_hash)throw new EvolutionAssetRefusal(409,'Sample changed');
  await assertSampleAuthority(db,identity,ctx,sample.input_json,false);
  await assertReadingRunEgress(db,run,ctx.source?.id??null);
 }
@@ -133,34 +135,50 @@ export async function readReadingTrial(db:Queryable,identity:SpaceUserIdentity,i
  const {row,ref}=await authorizedPair(db,identity,id);
  const base={id:row.id,status:row.status,candidate_version_id:row.candidate_version_id,baseline_version_id:row.baseline_version_id,stale:false,visibility:'visible' as const,baseline:null,candidate:null,judgment:row.metrics_json?.judgment??null,reason:row.metrics_json?.reason??null,case_name:ref.case_name,execution_name:ref.execution_name};
  let effectiveBaseline:string|null=null;let inputStale=false;
- try {const ctx=await readingItemContext(db,identity,ref.item_id,ref.project_id);effectiveBaseline=(await resolvePrompt(db,{...identity,assetKey:ref.target_key??'reading.project_investigation',projectId:ctx.projectId})).version_id;for(const runId of [ref.baseline_run_id,ref.candidate_run_id]){const r=await new PgRunRepository(db).getRun(identity.spaceId,runId);if(!r)throw new HttpError(404,'Trial Run missing');await assertReadingTrialReadable(db,r);await assertReadingRunEgress(db,r,ctx.source?.id??null);}inputStale=ctx.authority!==ref.authority||sha256Json(ctx.context)!==ref.context_hash;const sample=(await db.query(`SELECT input_json FROM evaluation_cases WHERE id=$1 AND space_id=$2 AND status='active'`,[ref.case_id,identity.spaceId])).rows[0];if(!sample||sha256Json(sample.input_json)!==ref.case_hash)throw new HttpError(409,'Changed sample');await assertSampleAuthority(db,identity,ctx,sample.input_json,false);inputStale ||= await sampleContentChanged(db,identity.spaceId,sample.input_json);}
+ try {const ctx=await readingItemContext(db,identity,ref.item_id,ref.project_id);effectiveBaseline=(await resolvePrompt(db,{...identity,assetKey:ref.target_key??'reading.project_investigation',projectId:ctx.projectId})).version_id;for(const runId of [ref.baseline_run_id,ref.candidate_run_id]){const r=await new PgRunRepository(db).getRun(identity.spaceId,runId);if(!r)throw new HttpError(404,'Trial Run missing');await assertReadingTrialReadable(db,r);await assertReadingRunEgress(db,r,ctx.source?.id??null);}inputStale=ctx.authority!==ref.authority||sha256Json(ctx.context)!==ref.context_hash;const sample=(await db.query(`SELECT input_json FROM evaluation_cases WHERE id=$1 AND space_id=$2 AND status='active'`,[ref.case_id,identity.spaceId])).rows[0];if(!sample||sha256Json(sample.input_json)!==ref.case_hash)throw new EvolutionAssetRefusal(409,'Changed sample');await assertSampleAuthority(db,identity,ctx,sample.input_json,false);inputStale ||= await sampleContentChanged(db,identity.spaceId,sample.input_json);}
  catch(error){if(!(error instanceof HttpError)||![403,404,409].includes(error.statusCode))throw error;return {...base,visibility:'withheld',judgment:null,reason:null,case_name:'',execution_name:undefined};}
  const versions=(await db.query(`SELECT id,content_hash,version FROM evolvable_asset_versions WHERE id=ANY($1::varchar[])`,[[row.candidate_version_id,row.baseline_version_id]])).rows;
  const stale=inputStale||versions.find(v=>v.id===row.candidate_version_id)?.content_hash!==ref.candidate_hash||versions.find(v=>v.id===row.baseline_version_id)?.content_hash!==ref.baseline_hash||effectiveBaseline!==row.baseline_version_id;
  const output=async(runId:string):Promise<ReadingMethodTrialOutput>=>{const run=await new PgRunRepository(db).getVisibleRun(identity.spaceId,identity.userId,runId);if(!run)return {run_id:runId,status:'unavailable',text:null,seconds:null,cost_usd:null};const cost=(await db.query<{cost:number|null}>(`SELECT CASE WHEN count(*)=0 OR count(*) FILTER (WHERE estimated_cost_usd IS NULL)>0 THEN NULL ELSE sum(estimated_cost_usd)::float END AS cost FROM token_usage_events WHERE run_id=$1 AND space_id=$2`,[runId,identity.spaceId])).rows[0]?.cost??null;return {run_id:run.id,status:run.status,text:terminal.has(run.status)?trialOutputText(run,ref.provider?undefined:ref.target_key):null,seconds:run.started_at&&run.ended_at?(Date.parse(run.ended_at)-Date.parse(run.started_at))/1000:null,cost_usd:cost};};
  return {...base,stale,baseline_version:Number(versions.find(v=>v.id===row.baseline_version_id)?.version),candidate_version:Number(versions.find(v=>v.id===row.candidate_version_id)?.version),baseline:await output(ref.baseline_run_id),candidate:await output(ref.candidate_run_id)};
 }
-export async function judgeReadingTrial(db:Pool,identity:SpaceUserIdentity,id:string,raw:unknown){
- const parsed=ReadingMethodJudgeSchema.safeParse(raw);if(!parsed.success)throw new HttpError(422,parsed.error.message);
- return withDbTransaction(db,async tx=>{const pair=await authorizedPair(tx,identity,id);const asset=await readingAsset(tx,identity,true,pair.ref.target_key);await lockEvolutionAssets(tx,[asset.id]);await tx.query('SELECT id FROM evolvable_asset_evaluation_runs WHERE id=$1 FOR UPDATE',[id]);const view=await readReadingTrial(tx,identity,id);if(view.visibility!=='visible'||view.stale||view.status!=='passed'||view.baseline?.status!=='succeeded'||view.candidate?.status!=='succeeded')throw new HttpError(409,'Only a completed, current, authorized comparison can be judged');await tx.query(`UPDATE evolvable_asset_evaluation_runs SET metrics_json=metrics_json||$2::jsonb,updated_at=now() WHERE id=$1`,[id,JSON.stringify(parsed.data)]);return readReadingTrial(tx,identity,id);});
+export async function judgeReadingTrial(db:Queryable,identity:SpaceUserIdentity,id:string,raw:unknown){
+ const parsed=ReadingMethodJudgeSchema.safeParse(raw);if(!parsed.success)throw new EvolutionAssetRefusal(422,parsed.error.message);
+ return withQueryableTransaction(db,async tx=>{const pair=await authorizedPair(tx,identity,id);const asset=await readingAsset(tx,identity,true,pair.ref.target_key);await lockEvolutionAssets(tx,[asset.id]);await tx.query('SELECT id FROM evolvable_asset_evaluation_runs WHERE id=$1 FOR UPDATE',[id]);const view=await readReadingTrial(tx,identity,id);if(view.visibility!=='visible'||view.stale||view.status!=='passed'||view.baseline?.status!=='succeeded'||view.candidate?.status!=='succeeded')throw new EvolutionAssetRefusal(409,'Only a completed, current, authorized comparison can be judged');await tx.query(`UPDATE evolvable_asset_evaluation_runs SET metrics_json=metrics_json||$2::jsonb,updated_at=now() WHERE id=$1`,[id,JSON.stringify(parsed.data)]);return readReadingTrial(tx,identity,id);});
 }
-export async function cancelReadingTrial(db:Pool,config:ServerConfig,identity:SpaceUserIdentity,id:string){
- // Stopping one's own paid work does not require retaining access to its withdrawn input.
+/**
+ * The durable stop of one's own comparison, in the caller's transaction.
+ * Stopping one's own paid work does not require retaining access to its
+ * withdrawn input. Provider tasks end here and are settled after commit; an
+ * Agent Run is marked cancelling and its process stopped after commit.
+ */
+export async function requestReadingTrialCancel(db:Queryable,identity:SpaceUserIdentity,id:string):Promise<{settle:string[];stop:string[]}>{
  const row=(await db.query<PairRow>(`SELECT * FROM evolvable_asset_evaluation_runs WHERE id=$1 AND space_id=$2 AND created_by_user_id=$3 AND evaluator_version=$4`,[id,identity.spaceId,identity.userId,PAIR_EVALUATOR])).rows[0];
  if(!row)throw new HttpError(404,'Comparison not found');const ref=row.eval_suite_ref_json;
- const {buildRunOrchestration}=await import('../../runs/orchestrationFactory.js');
- for(const runId of [ref.baseline_run_id,ref.candidate_run_id]){
-  const run=await new PgRunRepository(db).getRun(identity.spaceId,runId);
-  if(run?.execution_kind==='provider_task'&&run.instructed_by_user_id===identity.userId){if(!terminal.has(run.status))await new PgRunRepository(db).markRunTerminal({run_id:run.id,space_id:run.space_id,status:'cancelled',completed_at:new Date().toISOString()});registerReadingTrialSettlement();const current=await new PgRunRepository(db).getRun(run.space_id,run.id);await runFinalizationReconcilerRegistry.entries().find(r=>r.key==='reading_method_pair')!.reconcile(db,current!);continue;}
-  if(run&&run.instructed_by_user_id===identity.userId&&trialContext(run)?.evaluation_id===id&&(!terminal.has(run.status)||run.status==='cancelled'))await buildRunOrchestration(config).orchestration.cancelRun({space_id:identity.spaceId,run_id:run.id,requested_by_user_id:identity.userId});
+ const settle:string[]=[],stop:string[]=[],runs=new PgRunRepository(db),now=new Date().toISOString();
+ for(const runId of [...new Set([ref.baseline_run_id,ref.candidate_run_id])].sort()){
+  const run=await runs.getRun(identity.spaceId,runId);
+  if(run?.execution_kind==='provider_task'&&run.instructed_by_user_id===identity.userId){if(!terminal.has(run.status))await runs.markRunTerminal({run_id:run.id,space_id:run.space_id,status:'cancelled',completed_at:now});settle.push(run.id);continue;}
+  if(run&&run.instructed_by_user_id===identity.userId&&trialContext(run)?.evaluation_id===id&&!terminal.has(run.status)){await runs.markRunCancelling({run_id:run.id,space_id:run.space_id,requested_at:now,reason:'Reading method comparison cancelled by its owner',requested_by_user_id:identity.userId});stop.push(run.id);}
  }
+ return {settle,stop};
+}
+/** After commit: project settled provider tasks onto the comparison, then stop Agent processes. Both are also swept. */
+export async function finishReadingTrialCancel(db:Queryable,config:ServerConfig,identity:SpaceUserIdentity,out:{settle:readonly string[];stop:readonly string[]}){
+ registerReadingTrialSettlement();
+ for(const runId of out.settle){const current=await new PgRunRepository(db).getRun(identity.spaceId,runId);if(current)await runFinalizationReconcilerRegistry.entries().find(r=>r.key==='reading_method_pair')!.reconcile(db,current);}
+ const {buildRunOrchestration}=await import('../../runs/orchestrationFactory.js');
+ for(const runId of out.stop)await buildRunOrchestration(config).orchestration.cancelRun({space_id:identity.spaceId,run_id:runId,requested_by_user_id:identity.userId});
+}
+export async function cancelReadingTrial(db:Queryable,config:ServerConfig,identity:SpaceUserIdentity,id:string){
+ const out=await withQueryableTransaction(db,tx=>requestReadingTrialCancel(tx,identity,id));
+ await finishReadingTrialCancel(db,config,identity,out);
+ const row=(await db.query<PairRow>(`SELECT * FROM evolvable_asset_evaluation_runs WHERE id=$1 AND space_id=$2`,[id,identity.spaceId])).rows[0]!;
  try{return await readReadingTrial(db,identity,id)}catch(error){
   if(!(error instanceof HttpError)||![403,404,409].includes(error.statusCode))throw error;
-  const state=(await db.query<{status:string}>(`SELECT status FROM evolvable_asset_evaluation_runs WHERE id=$1 AND space_id=$2`,[id,identity.spaceId])).rows[0];
-  return {id,status:state?.status??'unavailable',visibility:'withheld',baseline:null,candidate:null,judgment:null,reason:null,case_name:'',stale:true,candidate_version_id:row.candidate_version_id,baseline_version_id:row.baseline_version_id};
+  return {id,status:row.status??'unavailable',visibility:'withheld',baseline:null,candidate:null,judgment:null,reason:null,case_name:'',stale:true,candidate_version_id:row.candidate_version_id,baseline_version_id:row.baseline_version_id};
  }
 }
-
 export function registerReadingTrialSettlement(){runFinalizationReconcilerRegistry.register('reading_method_pair', {async reconcile(pool,run){return withQueryableTransaction(pool,async db=>{
  const trial=trialContext(run);if(!trial)return;
  const row=(await db.query<PairRow>(`SELECT * FROM evolvable_asset_evaluation_runs WHERE id=$1 AND space_id=$2 AND evaluator_version=$3 FOR UPDATE`,[trial.evaluation_id,run.space_id,PAIR_EVALUATOR])).rows[0];if(!row||!['queued','running'].includes(row.status))return;

@@ -44,7 +44,7 @@ a vendor CLI's own auto-memory.
   not of the roster. A note never crosses a Room —
   widening is promotion to Project Memory through the proposal path
   ([ADR 0003](../decisions/0003-memory-proposal-flow.md) §1, §4). An Agent-scope
-  persona has no origin Room and is delivered everywhere; that it stays free of
+  persona has no origin Room and is delivered within retained-Project isolation; that it stays free of
   Project facts is a rule the owner enforces on review, not a filter, and ADR
   0003 §4 records the residual risk as accepted.
 - An Agent with no owner (`agents.owner_user_id` null — the `space_shared`
@@ -159,7 +159,12 @@ origin. It is computed at dispatch, against the **current** answer, because ADR
 of one — a note comes back there when that person may still read its Room, and
 its own notes have no Room and always do. A Room nobody may read receives
 nothing across, because its transcript outlives the emptiness. A persona has no
-filter at all.
+Room audience subset filter. Retained-Project isolation adds a stricter bound:
+an isolated Run cannot write global persona (manual or unattended), nor create
+or accept a persona proposal. `personaIsolation.ts` reads canonical Run scope
+and locks the Agent at the canonical writer; approval cannot override this bound.
+Dispatch also excludes persona whose Run provenance names another Project,
+including copied revision provenance, and withholds all persona in isolated Rooms.
 
 An agent-scope entry is revisable only by the Agent it belongs to. The applier
 refuses another Agent's revision outright rather than as a reach question a
@@ -207,3 +212,75 @@ in the same transaction. Audience, provenance and review gates carry forward;
 no approval or operation receipt is copied. Unlinked drafts retain editing in
 place. The browser opens the returned draft, and acceptance still uses the
 canonical Memory applier; revision alone changes no active Memory.
+
+## A person's own Memory as core commands (P5 continuation)
+
+`memory/humanOperations.ts` registers six human-only commands behind the retained
+URLs: `memory.propose_create` (POST `/memory`), `memory.propose_update` (PATCH),
+`memory.archive` (DELETE), `memory.restore`, `memory.revert` and
+`memory.proposal.revise`. They keep ADR 0003 / B10 exactly:
+
+- Creating or changing what an entry says is always a proposal decided through
+  the canonical applier. Placement is access-owned: a Project entry is
+  `space_shared` in the Project's Space, otherwise a private `user` entry in the
+  person's Personal Space. The transport refuses client attribution —
+  `actor_user_id`, `provenance_entries`, owner, Agent, Room and visibility — and
+  provenance is derived by the writer from the authenticated person.
+- Archive, restore and undo of the person's **own** entry apply directly through
+  the applier as new versions, with the entry row and chain locked by
+  `authorizeOwnVersion` / `setOwnStatus`. Another person's or an ownerless entry
+  is a `memory_archive` proposal (`outcome: proposed`).
+- The domain's contextual `proposal.create` policy check (scope, visibility,
+  sensitivity) still runs and its decision record joins the operation
+  transaction, so a failed audit leaves no proposal or success receipt.
+- Receipts carry ids only; the web re-reads the entry or proposal.
+
+`memory.retrieval.feedback/reindex` share the retrieval factory with Knowledge;
+feedback also records the owner's read statistic. Search, retrieval search/brief and create-safety now use the asynchronous request
+commands below. Maintenance scan/jobs and consolidation remain retained REST
+entries (Plan 5).
+
+
+## Asynchronous retrieval requests (P5 continuation, partial block)
+
+`memory.search.request`, `memory.retrieval.search.request`,
+`memory.retrieval.brief.request`, and `memory.create_safety.request` retain their
+four POST URLs as keyed human-only core adapters. A short admission transaction
+stores only the existing Job queue intent and an identity/status receipt.
+`content_retrieval_request` has `max_attempts = 1`; the existing dispatch/effect
+claim fence runs providers outside transactions and refuses blind repetition
+of an unknown outcome. Generic Jobs never return this Job's result.
+
+The requester reads `/memory/retrieval/requests/:jobId`. The result reader pins
+Memory roots, Project audiences, person/Space authority, grants and canonical
+provenance into Source item/snapshot/Evidence/connection consent before canonical
+adapter revalidation and privacy audit. A summary/denied contributing object
+withholds the **whole** old result, including synthesis, provenance and diagnostic
+fields. A new search produces a result for the current audience. Ordinary Memory
+search rereads canonical active entries rather than releasing stored Memory rows;
+its existing human-owner agent-scope read and sensitivity gates remain in force.
+The web client submits once and polls only this reader in the receipt's Space.
+These requests neither write active Memory nor change ADR 0003/B10.
+
+
+## Report and consolidation request continuation
+
+The maintenance scan, maintenance Job create/page run and consolidation retained
+POST URLs now submit keyed, one-attempt content request Jobs. Their core receipt
+contains identity/status only; `/memory/retrieval/requests/:jobId` rechecks current
+Context Ops authority and every nested Memory/Activity/Artifact/Proposal reference
+before releasing a result. Generic Jobs suppress report bodies. A page run uses
+only its owner's Memory authority; shared Job readability is not impersonation.
+The canonical maintenance services still persist private reports and pending
+review packets. Consolidation retains short per-activity transactions and creates
+pending proposals through the original provenance path. Both success and failure
+writes retain active person, object read/owner and Job-claim fencing. No active
+Memory content writer or ADR0003/B10 exception is introduced. Typed web clients
+submit once and poll the receipt's Space. Reader12 remains outside this slice.
+
+Persona revision admission checks the target version's canonical Run provenance
+before loading its body for the Agent. The canonical direct and proposal appliers
+repeat that check: a quarantined persona cannot become a deliverable version by
+direct revision dropping old provenance. Direct versions retain their own write
+rationale rather than copying prior provenance; proposal versions copy provenance.
+Archive and a fresh permissible persona remain the existing recovery lifecycle.

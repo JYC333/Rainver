@@ -1,9 +1,11 @@
+import {registerOperationAdapters} from '../systemActions/operations/routeAdapter.js';
 import type { FastifyInstance } from "fastify";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
-import { dbPool, jsonBody, optionalString, params, query, requiredString, resolveIdentity, sendRouteError } from "../routeUtils/common.js";
+import { dbPool, optionalString, params, query, requiredString, resolveIdentity, sendRouteError } from "../routeUtils/common.js";
 import { LearningService } from "./service.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
+  registerOperationAdapters(app,context.config,[{"method": "POST", "url": "/api/v1/learning/objectives", "operation": "learning.objective.create"}, {"method": "POST", "url": "/api/v1/learning/items", "operation": "learning.item.create"}, {"method": "POST", "url": "/api/v1/learning/items/:itemId/review", "operation": "learning.item.review", "params": {"itemId": "item_id"}}]);
   const learning = () => new LearningService(dbPool(context.config));
 
   // Global surface: no project scoping, optionally
@@ -19,15 +21,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/learning/objectives", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.code(201).send(await learning().createObjective(identity, jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
+
 
   app.get("/api/v1/learning/items", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -40,26 +34,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/learning/items", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.code(201).send(await learning().createItem(identity, jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.post("/api/v1/learning/items/:itemId/review", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const itemId = requiredString(params(request).itemId, "item_id");
-      return reply.send(await learning().recordReview(identity, itemId, jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
+
+
 
   app.get("/api/v1/projects/:projectId/learning-objectives", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);

@@ -1,3 +1,4 @@
+import { EvolutionAssetRefusal } from "../evolution/assetRefusal.js";
 import { randomUUID } from "node:crypto";
 import * as protocol from "@rainver/protocol";
 import { PROMPT_TYPES, PromptAssetContentSchema } from "@rainver/protocol";
@@ -50,7 +51,7 @@ export class PromptRepository {
   ): Promise<Record<string, unknown>[]> {
     const promptTypeFilter = optionalString(filters.promptType);
     if (promptTypeFilter && !isPromptType(PROMPT_TYPES, promptTypeFilter)) {
-      throw new HttpError(422, "prompt_type is invalid");
+      throw new EvolutionAssetRefusal(422, "prompt_type is invalid");
     }
     const rows = (await this.assets.listAssets(identity, { assetType: PROMPT_ASSET_TYPE })) as PromptAssetLookupRow[];
     // Built-in prompt assets are canonical for their key. Space/project/user
@@ -145,7 +146,7 @@ export class PromptRepository {
   ): Promise<Record<string, unknown>> {
     const { row } = await this.requireWritablePromptAssetRow(identity, assetKey);
     const versionId = optionalString(body.version_id);
-    if (!versionId) throw new HttpError(422, "version_id is required");
+    if (!versionId) throw new EvolutionAssetRefusal(422, "version_id is required");
     return this.evaluations.recordEvaluationRun(identity, row.id, versionId, body);
   }
 
@@ -156,11 +157,11 @@ export class PromptRepository {
   ): Promise<Record<string, unknown>> {
     const { row } = await this.requireWritablePromptAssetRow(identity, assetKey);
     const versionId = optionalString(body.version_id);
-    if (!versionId) throw new HttpError(422, "version_id is required");
+    if (!versionId) throw new EvolutionAssetRefusal(422, "version_id is required");
     const label = normalizedLabel(optionalString(body.label) ?? "production");
-    if (label !== "production") throw new HttpError(422, "Only production promotion requires a proposal; use deployments/:label for staging");
+    if (label !== "production") throw new EvolutionAssetRefusal(422, "Only production promotion requires a proposal; use deployments/:label for staging");
     const scope = await this.normalizedDeploymentScope(identity, row, body);
-    if(['reading.project_investigation','prompt.revision.method'].includes(assetKey)&&!['project','space'].includes(scope.scopeType))throw new HttpError(422,'Reading methods deploy only to a Project or the current Space');
+    if(['reading.project_investigation','prompt.revision.method'].includes(assetKey)&&!['project','space'].includes(scope.scopeType))throw new EvolutionAssetRefusal(422,'Reading methods deploy only to a Project or the current Space');
     return this.evaluations.createPromotionProposal(identity, row.id, versionId, {
       target_scope_type: scope.scopeType,
       target_scope_id: scope.scopeId,
@@ -202,11 +203,11 @@ export class PromptRepository {
     const { row } = await this.requireWritablePromptAssetRow(identity, assetKey);
     const normalized = normalizedLabel(label);
     const scope = await this.normalizedDeploymentScope(identity, row, body);
-    if(['reading.project_investigation','prompt.revision.method'].includes(assetKey)&&!['project','space'].includes(scope.scopeType))throw new HttpError(422,'Reading methods deploy only to a Project or the current Space');
+    if(['reading.project_investigation','prompt.revision.method'].includes(assetKey)&&!['project','space'].includes(scope.scopeType))throw new EvolutionAssetRefusal(422,'Reading methods deploy only to a Project or the current Space');
     const versionId = optionalString(body.version_id);
-    if (!versionId) throw new HttpError(422, "version_id is required");
+    if (!versionId) throw new EvolutionAssetRefusal(422, "version_id is required");
     const version = await this.versionRow(row.id, versionId);
-    if (!version) throw new HttpError(422, "version_id does not reference a version of this prompt asset");
+    if (!version) throw new EvolutionAssetRefusal(422, "version_id does not reference a version of this prompt asset");
     if(!await canViewVersionScope(this.db,identity,version))throw new HttpError(404,"Prompt version not found");
     validateVersionForDeployment(identity, normalized, scope.scopeType, scope.scopeId, version);
     const proposalId = optionalString(body.promoted_from_proposal_id);
@@ -227,14 +228,14 @@ export class PromptRepository {
     const { row } = await this.requireWritablePromptAssetRow(identity, assetKey);
     const label = normalizedLabel(optionalString(body.label) ?? "production");
     const scope = await this.normalizedDeploymentScope(identity, row, body);
-    if(['reading.project_investigation','prompt.revision.method'].includes(assetKey)&&!['project','space'].includes(scope.scopeType))throw new HttpError(422,'Reading methods deploy only to a Project or the current Space');
+    if(['reading.project_investigation','prompt.revision.method'].includes(assetKey)&&!['project','space'].includes(scope.scopeType))throw new EvolutionAssetRefusal(422,'Reading methods deploy only to a Project or the current Space');
     const explicitVersionId = optionalString(body.version_id);
     const current = await this.activeDeploymentRef(identity, row.id, scope.scopeType, scope.scopeId, label);
     // A ref a rollback wrote has no "previous" to return to by default: the
     // last archived ref is the one it replaced, and going there would swap
     // the two versions back and forth. Name the version instead.
     if (!explicitVersionId && current?.rolled_back_from_ref_id) {
-      throw new HttpError(409, "This deployment is already a rollback; name the version_id to roll back to");
+      throw new EvolutionAssetRefusal(409, "This deployment is already a rollback; name the version_id to roll back to");
     }
     const previous = await this.previousDeploymentVersionId(identity,row.id,scope.scopeType,scope.scopeId,label);
     // A reading method's first scoped deployment may have inherited its baseline
@@ -245,7 +246,7 @@ export class PromptRepository {
     const targetVersionId = explicitVersionId ?? previous ?? inheritedBaseline;
     if (!targetVersionId) throw new HttpError(404, "No previous deployment ref is available for rollback");
     const version = await this.versionRow(row.id, targetVersionId);
-    if (!version) throw new HttpError(422, "rollback target version does not reference this prompt asset");
+    if (!version) throw new EvolutionAssetRefusal(422, "rollback target version does not reference this prompt asset");
     validateVersionForDeployment(identity, label, scope.scopeType, scope.scopeId, version);
     if (label === "production" && explicitVersionId) {
       await this.assertVersionHasPassedEvaluation(identity, row.id, targetVersionId);
@@ -277,11 +278,11 @@ export class PromptRepository {
 
   private async validatedPromptContent(promptType: PromptType, value: unknown): Promise<PromptAssetContent> {
     const content = optionalObject(value);
-    if (!content) throw new HttpError(422, "content_json is required");
+    if (!content) throw new EvolutionAssetRefusal(422, "content_json is required");
     const parsed = PromptAssetContentSchema.safeParse(content);
-    if (!parsed.success) throw new HttpError(422, "content_json does not match prompt_asset.v1");
+    if (!parsed.success) throw new EvolutionAssetRefusal(422, "content_json does not match prompt_asset.v1");
     if (parsed.data.prompt_type !== promptType) {
-      throw new HttpError(422, `content_json.prompt_type must match asset prompt_type '${promptType}'`);
+      throw new EvolutionAssetRefusal(422, `content_json.prompt_type must match asset prompt_type '${promptType}'`);
     }
     return parsed.data;
   }
@@ -365,7 +366,7 @@ export class PromptRepository {
         `SELECT id, asset_id, space_id, scope_type, scope_id, status FROM evolvable_asset_versions WHERE asset_id = $1 AND id = $2 LIMIT 1`,
         [assetId, versionId],
       );
-      if (!current.rows[0]) throw new HttpError(422, "version_id does not reference a version of this prompt asset");
+      if (!current.rows[0]) throw new EvolutionAssetRefusal(422, "version_id does not reference a version of this prompt asset");
       validateVersionForDeployment(identity, label, scopeType, scopeId, current.rows[0]);
       await db.query(
         `UPDATE prompt_deployment_refs
@@ -450,7 +451,7 @@ export class PromptRepository {
     label: string,
     proposalId: string | null,
   ): Promise<void> {
-    if (!proposalId) throw new HttpError(422, "production deployment requires promoted_from_proposal_id");
+    if (!proposalId) throw new EvolutionAssetRefusal(422, "production deployment requires promoted_from_proposal_id");
     const result = await this.db.query<{ payload_json: unknown; status: string }>(
       `SELECT payload_json, status
          FROM proposals
@@ -461,7 +462,7 @@ export class PromptRepository {
       [proposalId, identity.spaceId],
     );
     const proposal = result.rows[0];
-    if (!proposal || proposal.status !== "accepted") throw new HttpError(422, "promoted_from_proposal_id must reference an accepted promotion proposal");
+    if (!proposal || proposal.status !== "accepted") throw new EvolutionAssetRefusal(422, "promoted_from_proposal_id must reference an accepted promotion proposal");
     const payload = objectValue(proposal.payload_json);
     if (
       payload.asset_id !== assetId ||
@@ -470,7 +471,7 @@ export class PromptRepository {
       (payload.target_scope_id ?? null) !== scopeId ||
       (payload.deployment_label ?? "production") !== label
     ) {
-      throw new HttpError(422, "promoted_from_proposal_id does not match the requested deployment");
+      throw new EvolutionAssetRefusal(422, "promoted_from_proposal_id does not match the requested deployment");
     }
   }
 
@@ -481,7 +482,7 @@ export class PromptRepository {
         LIMIT 1`,
       [assetId, versionId, identity.spaceId],
     );
-    if (!result.rows[0]) throw new HttpError(422, "production rollback requires a passed evaluation for the target version");
+    if (!result.rows[0]) throw new EvolutionAssetRefusal(422, "production rollback requires a passed evaluation for the target version");
   }
 }
 
@@ -596,8 +597,8 @@ function promptVersionOut(row: Record<string, unknown>): Record<string, unknown>
 
 function normalizedLabel(label: string | null): string {
   const value = label?.trim();
-  if (!value) throw new HttpError(422, "deployment label is required");
-  if (!/^[a-z][a-z0-9_.-]{0,63}$/.test(value)) throw new HttpError(422, "deployment label is invalid");
+  if (!value) throw new EvolutionAssetRefusal(422, "deployment label is required");
+  if (!/^[a-z][a-z0-9_.-]{0,63}$/.test(value)) throw new EvolutionAssetRefusal(422, "deployment label is invalid");
   return value;
 }
 
@@ -630,7 +631,7 @@ function validateVersionForDeployment(
     ? new Set(["approved"])
     : new Set(["candidate", "testing", "approved"]);
   if (!allowedStatuses.has(version.status)) {
-    throw new HttpError(
+    throw new EvolutionAssetRefusal(
       422,
       label === "production"
         ? "production deployment requires an approved version"
@@ -638,6 +639,6 @@ function validateVersionForDeployment(
     );
   }
   if (!versionServesScope(identity, { scopeType: targetScopeType, scopeId: targetScopeId }, version)) {
-    throw new HttpError(422, "version_id is not deployable to the requested scope");
+    throw new EvolutionAssetRefusal(422, "version_id is not deployable to the requested scope");
   }
 }

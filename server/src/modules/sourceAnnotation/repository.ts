@@ -1,3 +1,7 @@
+import { HttpError } from '../routeUtils/common.js';
+import { lockInterestSources } from '../interestProfile/sourceAuthority.js';
+import {lockCurrentJobClaim} from '../jobs/effectAuthority.js';
+import {withQueryableTransaction} from '../routeUtils/common.js';
 import { monitoringChannelControlClause } from '../projects/monitoringControl.js';
 import { randomUUID } from "node:crypto";
 import type { Queryable } from "../routeUtils/common.js";
@@ -54,6 +58,10 @@ export interface SourceAnnotationRow {
 
 export class PgSourceAnnotationRepository {
   constructor(private readonly db: Queryable) {}
+  private async mutation(sql:string,values:unknown[]) {
+    return withQueryableTransaction(this.db,async tx=>{await lockCurrentJobClaim(tx);return tx.query(sql,values);});
+  }
+
 
   /**
    * Records that these items need annotating.
@@ -146,42 +154,41 @@ export class PgSourceAnnotationRepository {
   }
 
   /** Explicit, bounded accelerator for pre-annotation subscription history. */
-  async enqueueSubscriptionHistory(spaceId: string, userId: string, limit: number): Promise<number> {
-    const now = new Date().toISOString();
-    const result = await this.db.query(
-      `WITH per_item AS (
-         SELECT DISTINCT ON (i.id) i.id AS source_item_id, channel.id AS source_channel_id,
-                COALESCE(i.occurred_at,i.first_seen_at) AS recency
-           FROM source_channel_user_subscriptions subscription
-           JOIN source_channels channel
-             ON channel.id=subscription.source_channel_id AND channel.space_id=subscription.space_id
-           JOIN source_channel_item_links link
-             ON link.source_channel_id=channel.id AND link.space_id=channel.space_id AND link.status='active'
-           JOIN source_items i
-             ON i.id=link.source_item_id AND i.space_id=link.space_id AND i.deleted_at IS NULL
-          WHERE subscription.space_id=$1 AND subscription.user_id=$2
-            AND subscription.status='subscribed'
-            AND NOT EXISTS (
-              SELECT 1 FROM source_item_annotations annotation
-               WHERE annotation.space_id=i.space_id AND annotation.source_item_id=i.id
-            )
-          ORDER BY i.id, channel.id
-       ),
-       -- One channel per item first, then the most recent items: DISTINCT ON
-       -- forces the item id to lead its ORDER BY, so a LIMIT there picks by id.
-       candidates AS (
-         SELECT source_item_id, source_channel_id
-           FROM per_item
-          ORDER BY recency DESC NULLS LAST, source_item_id
-          LIMIT $3
-       )
-       INSERT INTO source_item_annotations
-         (id,space_id,source_item_id,source_channel_id,status,topic_candidates_json,attempt_count,created_at,updated_at)
-       SELECT gen_random_uuid()::text,$1,source_item_id,source_channel_id,'pending','[]'::jsonb,0,$4,$4 FROM candidates
-       ON CONFLICT (space_id,source_item_id) DO NOTHING`,
-      [spaceId, userId, limit, now],
-    );
-    return result.rowCount ?? 0;
+  async enqueueSubscriptionHistory(spaceId:string,userId:string,limit:number):Promise<number> {
+    return (await this.enqueueSubscriptionHistoryWithRefs(spaceId,userId,limit)).queued;
+  }
+
+  async prepareSubscriptionHistory(spaceId:string,userId:string,limit:number) {
+    if(!Number.isInteger(limit)||limit<1||limit>500)throw new HttpError(422,'limit must be between 1 and 500');
+    const tx=this.db;
+    const discover=async()=> (await tx.query<{item_id:string;channel_id:string;connection_id:string}>(`WITH per_item AS (
+      SELECT DISTINCT ON (i.id) i.id AS item_id,channel.id AS channel_id,channel.source_connection_id AS connection_id,COALESCE(i.occurred_at,i.first_seen_at) AS recency
+      FROM source_channel_user_subscriptions s
+      JOIN source_channels channel ON channel.space_id=s.space_id AND channel.id=s.source_channel_id AND channel.status='active'
+      JOIN source_connections c ON c.space_id=channel.space_id AND c.id=channel.source_connection_id AND c.status='active' AND c.deleted_at IS NULL
+      JOIN source_channel_item_links l ON l.space_id=channel.space_id AND l.source_channel_id=channel.id AND l.status='active'
+      JOIN source_items i ON i.space_id=l.space_id AND i.id=l.source_item_id AND i.deleted_at IS NULL
+      WHERE s.space_id=$1 AND s.user_id=$2 AND s.status='subscribed'
+      AND NOT EXISTS(SELECT 1 FROM source_item_annotations a WHERE a.space_id=i.space_id AND a.source_item_id=i.id)
+      ORDER BY i.id,channel.id
+    ) SELECT item_id,channel_id,connection_id FROM per_item ORDER BY recency DESC NULLS LAST,item_id LIMIT $3`,[spaceId,userId,limit])).rows;
+    const refs=await discover();
+    await lockInterestSources(tx,spaceId,userId,refs,true);
+    const recheck=async()=>{if(JSON.stringify(refs)!==JSON.stringify(await discover()))throw new HttpError(409,'Subscription history changed; reload');};
+    await recheck();
+    return {refs,recheck};
+  }
+
+  async enqueueSubscriptionHistoryWithRefs(spaceId:string,userId:string,limit:number,prepared?:Awaited<ReturnType<PgSourceAnnotationRepository['prepareSubscriptionHistory']>>) {
+    return withQueryableTransaction(this.db,async tx=>{
+      const state=prepared??await new PgSourceAnnotationRepository(tx).prepareSubscriptionHistory(spaceId,userId,limit);
+      await state.recheck();const refs=state.refs;
+      const inserted=await tx.query(`INSERT INTO source_item_annotations(id,space_id,source_item_id,source_channel_id,status,topic_candidates_json,attempt_count,created_at,updated_at)
+        SELECT gen_random_uuid()::text,$1,r.item_id,r.channel_id,'pending','[]'::jsonb,0,now(),now()
+        FROM jsonb_to_recordset($2::jsonb) AS r(item_id varchar,channel_id varchar)
+        ON CONFLICT(space_id,source_item_id) DO NOTHING`,[spaceId,JSON.stringify(refs)]);
+      return {queued:inserted.rowCount??0,source_refs:refs};
+    });
   }
 
   /**
@@ -198,7 +205,7 @@ export class PgSourceAnnotationRepository {
       excerpt: string | null;
       author: string | null;
       source_domain: string | null;
-      occurred_at: string | null;
+      occurred_at: string | Date | null;
     }>(
       `SELECT i.id,
               i.title,
@@ -223,7 +230,7 @@ export class PgSourceAnnotationRepository {
       excerpt: row.excerpt,
       author: row.author,
       source_domain: row.source_domain,
-      occurred_at: row.occurred_at,
+      occurred_at: row.occurred_at ? new Date(row.occurred_at).toISOString() : null,
     }));
   }
 
@@ -265,7 +272,7 @@ export class PgSourceAnnotationRepository {
     runId: string | null,
   ): Promise<void> {
     const now = new Date().toISOString();
-    await this.db.query(
+    await this.mutation(
       `UPDATE source_item_annotations
           SET status = 'succeeded',
               domain_key = $3,
@@ -322,7 +329,7 @@ export class PgSourceAnnotationRepository {
   ): Promise<void> {
     if (itemIds.length === 0) return;
     const delaysSeconds = ANNOTATION_RETRY_DELAYS_MS.map((ms) => Math.round(ms / 1000));
-    await this.db.query(
+    await this.mutation(
       `WITH episode AS (
          SELECT COALESCE(
                   (SELECT e.episode_id FROM source_item_annotations e
@@ -361,7 +368,7 @@ export class PgSourceAnnotationRepository {
     detail: Record<string, unknown> = {},
   ): Promise<void> {
     if (itemIds.length === 0) return;
-    await this.db.query(
+    await this.mutation(
       `WITH episode AS (
          SELECT COALESCE(
                   (SELECT e.episode_id FROM source_item_annotations e
@@ -385,7 +392,7 @@ export class PgSourceAnnotationRepository {
   async markSkipped(spaceId: string, itemIds: readonly string[], reason: string, runId: string | null): Promise<void> {
     if (itemIds.length === 0) return;
     const now = new Date().toISOString();
-    await this.db.query(
+    await this.mutation(
       `UPDATE source_item_annotations
           SET status = 'skipped',
               wait_reason = NULL,
@@ -423,7 +430,7 @@ export class PgSourceAnnotationRepository {
     },
   ): Promise<number> {
     if (filter.reasons.length === 0 || filter.limit < 1) return 0;
-    const result = await this.db.query(
+    const result = await this.mutation(
       `WITH chosen AS (
          SELECT a.id, a.wait_reason
            FROM source_item_annotations a

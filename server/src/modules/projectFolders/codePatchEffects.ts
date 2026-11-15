@@ -16,10 +16,14 @@ export async function applyPreparedCodePatchEffect(effect: PreparedCodePatchEffe
   const files = new CodePatchFileTransaction(effect.root, effect.protectedFolder);
   if (!effect.before.length) {
     effect.before = await files.prepare(effect.operations);
+    await assertLease();
     await save();
   }
   await assertLease();
   const applied = await files.applyPrepared(effect.operations, effect.before);
+  // A lost claim leaves the persisted preimages for the current owner to
+  // reconcile exact content; it is not permission to publish a stale receipt.
+  await assertLease();
   effect.receipt = {
     payloadHash,
     root: effect.root,
@@ -31,9 +35,11 @@ export async function applyPreparedCodePatchEffect(effect: PreparedCodePatchEffe
   };
   await save();
 }
-export async function compensateCodePatchEffect(effect: PreparedCodePatchEffect, save: () => Promise<void>) {
+export async function compensateCodePatchEffect(effect: PreparedCodePatchEffect, save: () => Promise<void>, assertLease?: () => Promise<void>) {
   if (effect.compensated || !effect.before.length) return;
+  await assertLease?.();
   await new CodePatchFileTransaction(effect.root, effect.protectedFolder).compensatePrepared(effect.operations, effect.before);
+  await assertLease?.();
   effect.compensated = true;
   await save();
 }

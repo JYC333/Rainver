@@ -116,7 +116,7 @@ export default function DailyReportSettingsPage() {
       // No date: the server reports the last complete day of the configured timezone.
       const result = await dailyReportApi.run({})
       setLastRun(result)
-      showToast(`Report ${result.status}: ${result.capture_count} captures.`)
+      showToast(result.status === 'completed' ? 'Report already completed. View the run for its result.' : result.status === 'running' ? 'Report running. View the run for its result.' : 'Report queued. View the run for its result.')
       const updated = await dailyReportApi.listReports(5)
       setReports(updated)
     } catch (e) {
@@ -239,30 +239,12 @@ export default function DailyReportSettingsPage() {
         {lastRun && (
           <div className="text-sm text-gray-600 space-y-1">
             <div>Status: <span className="font-medium">{lastRun.status}</span></div>
-            <div>Captures: {lastRun.capture_count}</div>
-            {lastRun.artifact_id && (
-              <div>
-                <Link to={`/artifacts/${lastRun.artifact_id}`} className="text-blue-600 underline text-xs">
-                  View artifact
-                </Link>
-              </div>
-            )}
             {lastRun.run_id && (
               <div>
                 <Link to={`/runs/${lastRun.run_id}`} className="text-blue-600 underline text-xs">
                   View run
                 </Link>
               </div>
-            )}
-            {lastRun.proposal_ids.length > 0 && (
-              <div>
-                <Link to="/proposals" className="text-blue-600 underline text-xs">
-                  Review {lastRun.proposal_ids.length} proposal{lastRun.proposal_ids.length !== 1 ? 's' : ''}
-                </Link>
-              </div>
-            )}
-            {lastRun.summary_preview && (
-              <div className="text-xs text-gray-500 italic mt-1">{lastRun.summary_preview}</div>
             )}
           </div>
         )}

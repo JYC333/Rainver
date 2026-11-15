@@ -1,7 +1,8 @@
 import {KnowledgeProfileValidationError} from './knowledgeObjectErrors.js';
 import {NoteObjectError} from './noteObjectErrors.js';
-import {assertProjectWriterForMutation} from '../projects/access.js';
+import {assertProjectWriterForMutation,canWriteProject} from '../projects/access.js';
 import {NoteMutationConflict} from './noteControlErrors.js';
+import {NoteLinkRefusal} from './noteLinkErrors.js';
 import { PgOntologyRepository } from "../ontology/repository.js";
 import { assertEvidenceableObjectType } from "../ontology/validation.js";
 import { hasDeclaration } from "../ontology/linkTypes.js";
@@ -1582,7 +1583,7 @@ export class PgKnowledgeRepository {
         // role to start a second inbox would be worse: the index allows one per
         // Project, so it would take the note away from its owner.
         if (!(await new PgKnowledgeRepository(scope.db).getNoteRow(identity, inboxId))) {
-          throw new HttpError(409, "This project's inbox note is not readable by you");
+          throw new NoteLinkRefusal(409, "This project's inbox note is not readable by you");
         }
         // Append, with no `expectVersion`: a capture adds a paragraph at the
         // end and cannot conflict with an edit elsewhere in the document.
@@ -1594,7 +1595,7 @@ export class PgKnowledgeRepository {
           userId: identity.userId,
         });
         if (result.outcome !== "written") {
-          throw new HttpError(409, "Note changed while appending; reload and retry", {
+          throw new NoteLinkRefusal(409, "Note changed while appending; reload and retry", {
             current_version: result.currentVersion,
           });
         }
@@ -1709,6 +1710,34 @@ export class PgKnowledgeRepository {
     if(current.primary_project_id!==before.primary_project_id)throw new NoteMutationConflict('Note Project changed during admission');
   }
 
+  /**
+   * Control locks for a Note link create. Its writable endpoints are the Note
+   * and, for an incoming link, the caller-supplied source object the link is
+   * written on; the target of an outgoing link stays a read check. Note
+   * controls' order over both: the writer authority of each endpoint's Project
+   * (id order), then both roots (id order, FOR UPDATE), then each write check
+   * again. An endpoint moved to another Project meanwhile is a conflict.
+   */
+  async authorizeNoteLinkControl(identity: SpaceUserIdentity, noteId: string, sourceId: string | null): Promise<void> {
+    const ids = [...new Set([noteId, ...(sourceId ? [sourceId] : [])])].sort();
+    const check = (id: string) => id === noteId
+      ? this.requireWritableNote(identity, id)
+      : assertWritableSpaceObject(this.db, identity, id, "Note link source not found");
+    const projectsOf = async () => new Map((await this.db.query<{ id: string; primary_project_id: string | null }>(
+      "SELECT id, primary_project_id FROM space_objects WHERE space_id=$1 AND id=ANY($2::varchar[])",
+      [identity.spaceId, ids],
+    )).rows.map((row) => [row.id, row.primary_project_id]));
+    for (const id of ids) await check(id);
+    const before = await projectsOf();
+    for (const projectId of [...new Set([...before.values()].filter((id): id is string => !!id))].sort()) {
+      await assertProjectWriterForMutation(this.db, identity.spaceId, projectId, identity.userId);
+    }
+    await this.db.query("SELECT id FROM space_objects WHERE space_id=$1 AND id=ANY($2::varchar[]) ORDER BY id FOR UPDATE", [identity.spaceId, ids]);
+    const after = await projectsOf();
+    if (ids.some((id) => after.get(id) !== before.get(id))) throw new NoteMutationConflict("Note link endpoint Project changed during admission");
+    for (const id of ids) await check(id);
+  }
+
   async rollbackNote(
     identity: SpaceUserIdentity,
     noteId: string,
@@ -1781,7 +1810,7 @@ export class PgKnowledgeRepository {
           userId: identity.userId,
         });
         if (result.outcome !== "written") {
-          throw new HttpError(409, "Note changed while appending; reload and retry", { current_version: result.currentVersion });
+          throw new NoteLinkRefusal(409, "Note changed while appending; reload and retry", { current_version: result.currentVersion });
         }
         jottedId = existingNoteId;
       } else {
@@ -1902,21 +1931,47 @@ export class PgKnowledgeRepository {
         if (!(error instanceof HttpError)) throw error;
       }
     }
-    if (purgeable.length === 0) return { deleted: 0, retention_days: NOTE_PURGE_RETENTION_DAYS };
-    const deleted = await withQueryableTransaction(this.db, async (tx) => {
-      // The retention predicate is re-checked under the row lock: a note
-      // pulled back out of the wastebasket since the candidate read must not
-      // be destroyed anyway.
-      const doomed = await tx.query<{ id: string }>(
-        `SELECT id FROM space_objects
+    if (purgeable.length === 0) return { deleted: 0, retention_days: NOTE_PURGE_RETENTION_DAYS, project_ids: [] };
+    const purged = await withQueryableTransaction(this.db, async (tx) => {
+      // The check above ran unlocked. The Note controls' order holds here: the
+      // writer authority of every Project the batch touches (id order, FOR
+      // SHARE — a membership or role change waits or goes first), then the Note
+      // roots (id order, FOR UPDATE — a visibility, owner or Project change, or
+      // a restore, waits or goes first). Each Note is then judged again by the
+      // one write rule and the retention predicate under those locks; a Note
+      // moved to a Project not locked here stays.
+      const scoped = new Map((await tx.query<{ id: string; primary_project_id: string | null }>(
+        `SELECT id, primary_project_id FROM space_objects WHERE space_id = $1 AND id = ANY($2::varchar[])`,
+        [identity.spaceId, purgeable],
+      )).rows.map((row) => [row.id, row.primary_project_id]));
+      const writable = new Set<string>();
+      for (const projectId of [...new Set([...scoped.values()].filter((id): id is string => !!id))].sort()) {
+        if (await canWriteProject(tx, identity.spaceId, projectId, identity.userId, { lockAuthority: true })) writable.add(projectId);
+      }
+      const doomed = await tx.query<{ id: string; primary_project_id: string | null }>(
+        `SELECT id, primary_project_id FROM space_objects
           WHERE space_id = $1 AND id = ANY($2::varchar[])
             AND deleted_at IS NOT NULL
             AND deleted_at < now() - ($3 || ' days')::interval
+          ORDER BY id
           FOR UPDATE`,
         [identity.spaceId, purgeable, String(NOTE_PURGE_RETENTION_DAYS)],
       );
-      const ids = doomed.rows.map((row) => row.id);
-      if (ids.length === 0) return 0;
+      const ids: string[] = [];
+      const projects = new Set<string>();
+      for (const row of doomed.rows) {
+        if (row.primary_project_id !== scoped.get(row.id)) continue;
+        if (row.primary_project_id && !writable.has(row.primary_project_id)) continue;
+        try {
+          await assertWritableSpaceObject(tx, identity, row.id, "Note not found");
+        } catch (error) {
+          if (!(error instanceof HttpError)) throw error;
+          continue;
+        }
+        ids.push(row.id);
+        if (row.primary_project_id) projects.add(row.primary_project_id);
+      }
+      if (ids.length === 0) return { deleted: 0, projectIds: [] as string[] };
       // Relations reference space_objects without ON DELETE, so one edge to a
       // purged note (a Thread's `references`, say) would fail the whole batch,
       // and every later purge with it. An edge to the note goes with the note;
@@ -1935,11 +1990,14 @@ export class PgKnowledgeRepository {
         `DELETE FROM space_objects WHERE space_id = $1 AND id = ANY($2::varchar[]) RETURNING id`,
         [identity.spaceId, ids],
       );
-      return result.rowCount ?? result.rows.length;
+      return { deleted: result.rowCount ?? result.rows.length, projectIds: [...projects].sort() };
     });
     return {
-      deleted,
+      deleted: purged.deleted,
       retention_days: NOTE_PURGE_RETENTION_DAYS,
+      // The batch's authorization scope, so its receipt is released only while
+      // the caller still writes every Project it deleted from.
+      project_ids: purged.projectIds,
     };
   }
 
@@ -2040,7 +2098,7 @@ export class PgKnowledgeRepository {
     }
     const linkType = optionalString(body.link_type) ?? "related_to";
     if (!hasDeclaration(linkType) || !NOTE_LINK_TYPES.has(linkType)) {
-      throw new HttpError(422, "invalid link_type");
+      throw new NoteLinkRefusal(422, "invalid link_type");
     }
     const now = new Date().toISOString();
     const result = await this.db.query<NoteLinkRow>(
@@ -2416,6 +2474,17 @@ export class PgKnowledgeRepository {
       [sourceId, identity.spaceId, identity.userId],
     );
     return result.rows[0] ?? null;
+  }
+
+  /** Operation admission: the same read gate a jot or link target uses. */
+  async requireVisibleObject(identity: SpaceUserIdentity, objectId: string): Promise<void> {
+    await this.requireVisibleSpaceObject(identity, objectId, "Object not found");
+  }
+
+  /** Current Note write reach for a result or replay, without taking locks. */
+  async requireNoteWriteReach(identity: SpaceUserIdentity, noteId: string): Promise<void> {
+    const note = await this.requireWritableNote(identity, noteId);
+    if (note.primary_project_id) await assertProjectWriterForMutation(this.db, identity.spaceId, note.primary_project_id, identity.userId);
   }
 
   private async requireVisibleSpaceObject(

@@ -7,6 +7,17 @@ the current call/API contract.
 
 ## Identity and admission
 
+Query-strategy activation's canonical service owns a transaction when entered
+with a Pool and joins an existing transaction when called by materialization or
+proposal apply. Channel, scheduler, Project binding, activation history and
+Workflow updates therefore roll back together if the final publication fails.
+The four retained query-strategy REST commands now use keyed OperationExecutor
+admission. Evaluate/retry return a content-free accepted Job (202); the existing
+one-attempt worker settles strategy, model Run when needed, audit and Job result
+atomically. Business intent is fenced across strategy ids; an unknown send cannot
+be retried through a fresh key. `GET /research/query-evaluations/:jobId` releases
+the typed result only after current strategy/context/Source authority checks.
+
 Research uses the existing Workflow, `project_operations`, Jobs and immutable
 Workflow Executions. There is no new Call lifecycle table or parallel executor.
 The initial Operation is the logical invocation identity; `research_call.v1`
@@ -332,14 +343,16 @@ Cancellation compatibility refinements: after binding/checking the stable target
 core input normalization fills its resolved project_id; callers may omit it on
 generic retry after REST without changing the fingerprint. Conflicting Project
 hints are rejected before normalization, and Agent authority always comes from
-the current stored Run Project. An unknown target may offer canonical visible
-running ids only to an authorized Agent in that Project. Same-Space cross-Project or
-private existing ids get no hints. Other-Space UUIDs behave like random missing ids. Policy denial now uses hidden 404 on the old
-REST URL too; its preliminary writer check retains the old 403 error shape.
-
+the current stored Run Project. Missing, private and foreign targets return the
+same Agent 404 without echoing the target or listing other objects. Discover ids
+only through explicit `research.list_operations` / `inquiry.list_threads` reads,
+which retain current Run, Project and content-access checks. Revoked Run action
+grants return 403; object visibility refusals remain hidden 404. Policy denial
+uses hidden 404 on the old REST URL too; its preliminary writer check retains
+the old 403 error shape.
 
 The stage-4 existence-equivalence regression is part of
-[Operation core acceptance](OPERATION_CORE_ACCEPTANCE.md): a missing-id hint
+[Operation core acceptance](OPERATION_CORE_ACCEPTANCE.md): target resolution
 consults no row outside the actor Space. The same guide records real executor/
 worker death, actual HTTP/file-bridge response loss, and old/new source cutover.
 
@@ -473,3 +486,70 @@ snapshots whose originating Workflow is hidden, preventing copied private
 questions from escaping through unbound Operation progress. The browser reads
 the exact queued Operation in the receipt Space after one keyed submission.
 This closes 16/32 baseline Research writes; other entries remain pending.
+
+### Query strategy human commands
+
+The retained strategy `materialize` and `activate` POSTs use keyed, strict
+`research.strategy.materialize` / `research.strategy.activate` registrations.
+Both remain human-only and non-grantable, with no approval mapping. Their
+canonical Materializer/Activation services join the core transaction: Source,
+Search Spec, binding, schedule, activation and Workflow changes commit with the
+mandatory Source-management/binding policy audit and transport receipt.
+
+Admission discovers context provenance (including inherited contexts and
+Threads), same-context strategy/selection history, affected Workflows, Source
+parents, channels and all consuming Project bindings. Source release supplies
+sorted Project/audience/person/Folder/root/grant fencing; the owner locks context
+and strategy identities before Source children and rechecks discovered scope.
+Only the destination Project requires writer access; other referenced Projects
+retain read checks. Source management uses current non-oversight authority.
+Replay repeats current admission and releases the original receipt without
+activating an old strategy over a later choice. Withdrawn Source parents withhold
+receipts. Provider evaluation/retry retain their existing routes and are not
+qualified by these two DB-only command registrations.
+
+Reuse / Dependency Check: existing OperationExecutor, formal route adapter,
+Source release locks, canonical Materializer/Activation/Source/Project writers,
+PolicyGateway and installed Zod provide the mechanisms. No new dependency,
+execution engine, schema or Memory writer is introduced. Focused real-PG coverage
+is in `researchStrategyOperationsDb.test.ts`; protocol and typed-client tests
+cover both strict keyed entry points.
+
+### Private query-evaluation Job owner (not routed)
+
+`research/evaluationJob.ts` now implements a shared evaluate/provider-retry Job
+handler and caller-transaction `requestRunJob` / `auditRunJob` admission helpers.
+It is deliberately not registered by `workerRuntime` or the operation registry:
+the two retained REST entries still execute synchronously and are not counted as
+migrated. Formal operation admission must first create/reuse a planning strategy
+under the complete context/Project/Source closure, bind intent deduplication
+across fresh evaluation requests, and connect receipt reauthorization, result
+reads and all typed/synchronous consumers. Askthink and Context Ops remain
+separate outstanding entries.
+
+The private owner reuses Jobs, `lockCurrentJobClaim`, `withJobEffectAuthority`,
+`withRunTerminalOwner`, bounded ProviderTasks and `admitStrategy`; it adds no
+queue, lifecycle table, dependency, approval mapping or memory writer. Its
+request-local `evaluationWrites` journal delegates computation to the existing
+adaptive orchestrator and applies ordered writes through `ResearchQueryRepository`
+only in the final transaction. Reserved attempt UUIDs preserve the exact selected
+attempt references; no attempt/selection is published before that commit.
+Current context/version, Project/Source authority and the trusted worker claim
+are checked at admission, each physical send and settlement. Strategy writes,
+execution audit, model Run terminal (when present) and exact Job result commit
+together. Only a current owned failure with no admitted send records a safe
+replacement marker; a started unknown send never authorizes a replacement.
+Pure heuristic planning/Source preview creates no fabricated model Run. Actual
+model planning binds the admitted Run to the bounded task's canonical attempt,
+Delivery and snapshot; the owner refuses a changed attempt.
+
+`ResearchQueryEvaluationAcceptedJobSchema` describes this private accepted Job
+receipt, including a nullable Run for work that uses no model. It does not change
+the synchronous REST contract. The orchestrator's explicit `singleAttempt`
+option passes through PreviewGateway and model invocation: it forbids implicit
+preview retry, key rotation, provider/task fallback and structured-output
+correction sends. Provider failures propagate instead of selecting an earlier
+fallback; already-started parallel previews drain before the Job credential
+closes. Other callers retain their existing retry/adaptation behavior. These
+semantics have real-PG owner and scripted HTTP coverage; production entry
+qualification remains outstanding.

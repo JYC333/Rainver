@@ -18,7 +18,7 @@ const ROOM = "room-1";
 function db(role: string | null, memory: Array<{ memory_type: string; content: string }>): Queryable {
   return {
     query: (async (sql: string) => {
-      if (String(sql).includes("FROM agents")) return { rows: [{ role_instruction: role }], rowCount: 1 };
+      if (String(sql).includes("AS role_instruction")) return { rows: [{ role_instruction: role }], rowCount: 1 };
       return {
         rows: memory.map((entry, index) => ({
           id: `memory-${index}`,

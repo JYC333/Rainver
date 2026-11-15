@@ -1,3 +1,4 @@
+import {lockSkillScopeAuthority} from './scopeAuthority.js';
 import {OperationError} from '../systemActions/operations/errors.js';
 import { SkillReviewProposalRequestSchema, type SkillBinding } from "@rainver/protocol";
 import type {
@@ -41,6 +42,12 @@ async function applySkillImportApproveProposal(
   // The canonical apply owner pre-admits every sibling request key and locks
   // the complete review set before this package/domain lock. Review insertion
   // shares the nonwaiting closure gate; no SKIP LOCKED partial set is allowed.
+  if(payload.binding!==undefined){
+    const review=SkillReviewProposalRequestSchema.parse({binding:payload.binding});
+    const proposer=context.proposal.created_by_user_id;
+    if(!proposer)throw new HttpError(403,"Skill review has no responsible proposer");
+    await lockSkillScopeAuthority(context.db,{spaceId:context.proposal.space_id,userId:proposer},review.binding!.scope_type,review.binding!.scope_id??null);
+  }
   await lockSkillPackage(context.db, context.proposal.space_id, skillPackageId);
   const current = (await context.db.query<{ status: string; reviewed_from_proposal_id: string | null }>(
     `SELECT status, manifest_json->'review'->>'reviewed_from_proposal_id' AS reviewed_from_proposal_id

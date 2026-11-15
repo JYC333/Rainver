@@ -13,6 +13,8 @@ export const agents = pgTable("agents", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
 	spaceId: varchar("space_id", { length: 36 }).notNull(),
 	projectId: varchar("project_id", { length: 36 }),
+	// Content ACL and Project-local Agent policy scope, independent of execution.
+	accessProjectId: varchar("access_project_id", { length: 36 }),
 	ownerUserId: varchar("owner_user_id", { length: 36 }),
 	name: varchar({ length: 256 }).notNull(),
 	description: text(),
@@ -33,6 +35,8 @@ export const agents = pgTable("agents", {
 	index("ix_agents_agent_kind").using("btree", table.agentKind.asc().nullsLast()),
 	index("ix_agents_current_version_id").using("btree", table.currentVersionId.asc().nullsLast()),
 	index("ix_agents_owner_user_id").using("btree", table.ownerUserId.asc().nullsLast()),
+	index("ix_agents_access_project_id").using("btree", table.accessProjectId.asc().nullsLast()),
+	foreignKey({ columns: [table.accessProjectId, table.spaceId], foreignColumns: [projects.id, projects.spaceId], name: "fk_agents_access_project" }),
 	index("ix_agents_project_id").using("btree", table.projectId.asc().nullsLast()),
 	index("ix_agents_space_id").using("btree", table.spaceId.asc().nullsLast()),
 	index("ix_agents_status").using("btree", table.status.asc().nullsLast()),

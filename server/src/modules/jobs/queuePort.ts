@@ -12,6 +12,8 @@ export interface JobQueuePort {
     resultJson: unknown,
     workerId: string | null,
   ): Promise<boolean>;
+  /** Verify an already committed, exact-claim atomic domain settlement. */
+  confirmCompletedJob?(jobId:string,resultJson:unknown,workerId:string,attempt:number):Promise<boolean>;
   failJob(
     jobId: string,
     error: string,

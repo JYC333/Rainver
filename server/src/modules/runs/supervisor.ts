@@ -9,11 +9,12 @@ import { contractRecord } from "./contractSnapshot.js";
 import { isManagedFailFastRun } from "../policy/managedExecutionPolicy.js";
 import { PgRunRepository, type RunRecord } from "./repository.js";
 import type { RunEvaluationRecord, RunAttemptRecord } from "./runRepositoryTypes.js";
-import { isRetryableRunErrorCode, SUBSCRIPTION_QUOTA_EXHAUSTED } from "./retryPolicy.js";
+import { EXECUTION_CONTROLLER_LOST, isRetryableRunErrorCode, SUBSCRIPTION_QUOTA_EXHAUSTED } from "./retryPolicy.js";
 import { prepareQuotaRecovery } from "../rooms/quotaRecovery.js";
 import { holdInterruptedRun } from "../rooms/quotaGate.js";
 
 const DEFAULT_MAX_RUN_ATTEMPTS = 2;
+const MAX_CONTROLLER_RECOVERIES = 3;
 
 export interface RunSupervisorPort {
   supervise(input: {
@@ -98,13 +99,16 @@ export class PgRunSupervisor implements RunSupervisorPort {
         ?? errorCodeFromRun(input.run)
         ?? "run_failed";
       const attemptNumber = attempt.attempt_number;
-      const maxAttempts = maxAttemptsForRun(input.run);
+      const { maxAttempts, controllerLosses } = await retryBudgetForRun(db, input.run);
+      const controllerLost = reasonCode === EXECUTION_CONTROLLER_LOST && currentStatus === "orphaned";
+      const controllerRecoveryExhausted = controllerLost && controllerLosses > MAX_CONTROLLER_RECOVERIES;
       const budgetExceeded = maxCost !== null && totalCost !== null && totalCost >= maxCost;
       const recovery = reasonCode === SUBSCRIPTION_QUOTA_EXHAUSTED && !budgetExceeded && attemptNumber < maxAttempts && !managedFailFast
         ? await prepareQuotaRecovery(db, await repository.getRun(input.run.space_id, input.run.id) ?? input.run, attemptNumber + 1)
         : null;
       const retryable = isRetryableRunErrorCode(reasonCode);
-      const canRetry = (retryable || Boolean(recovery)) && !budgetExceeded && attemptNumber < maxAttempts;
+      const canRetry = (retryable || Boolean(recovery)) && !budgetExceeded
+        && !controllerRecoveryExhausted && attemptNumber < maxAttempts;
       // Managed Source/Research executions still own their final failure and
       // user-facing retry action. Allow only the Supervisor's bounded,
       // automatic recovery for transient failures; once that is unavailable
@@ -117,7 +121,8 @@ export class PgRunSupervisor implements RunSupervisorPort {
       // Genuine policy/authorization pauses enter waiting_for_review before
       // terminal supervision and remain unaffected by this rule.
       if ((managedFailFast || interactiveChat) && !canRetry) return null;
-      const hasFallbackRoute = canRetry && !recovery
+      // A server replacement says nothing about the chosen runtime's health.
+      const hasFallbackRoute = canRetry && !recovery && !controllerLost
         ? await new PgRouteDecisionRepository(db).hasFallbackRoute(input.run)
         : false;
       const userId = input.run.owner_user_id ?? input.run.instructed_by_user_id ?? null;
@@ -143,7 +148,9 @@ export class PgRunSupervisor implements RunSupervisorPort {
                 ? reasonCode
                 : !userId
                   ? "retry_identity_unavailable"
-                  : "retry_attempt_cap_reached",
+                  : controllerRecoveryExhausted
+                    ? "controller_recovery_cap_reached"
+                    : "retry_attempt_cap_reached",
               attempt_number: attemptNumber,
               total_estimated_cost_usd: totalCost,
               max_cost_usd: maxCost,
@@ -170,6 +177,8 @@ export class PgRunSupervisor implements RunSupervisorPort {
           decision.max_cost_usd,
           JSON.stringify({
             max_attempts: maxAttempts,
+            controller_loss_attempts: controllerLosses,
+            max_controller_recoveries: MAX_CONTROLLER_RECOVERIES,
             reroute: decision.decision === "retry_fallback_route",
             retryable,
             quota_recovery: Boolean(recovery),
@@ -288,10 +297,22 @@ function attemptStatusForRun(status: string): string {
   return status === "orphaned" ? "orphaned" : status === "degraded" ? "degraded" : "failed";
 }
 
-function maxAttemptsForRun(run: RunRecord): number {
+async function retryBudgetForRun(db: Queryable, run: RunRecord): Promise<{ maxAttempts: number; controllerLosses: number }> {
+  const result = await db.query<{ count: string }>(
+    `SELECT count(*)::text AS count FROM run_attempts
+      WHERE space_id = $1 AND run_id = $2 AND status = 'orphaned'
+        AND error_json->>'error_code' = $3`,
+    [run.space_id, run.id, EXECUTION_CONTROLLER_LOST],
+  );
+  const controllerLosses = Number(result.rows[0]?.count ?? 0);
   const configured = contractRecord(run.contract_snapshot_json).max_attempts;
-  if (typeof configured !== "number" || !Number.isFinite(configured)) return DEFAULT_MAX_RUN_ATTEMPTS;
-  return Math.max(1, Math.min(10, Math.floor(configured)));
+  // Explicit contracts still cap all physical attempts. Only the implicit
+  // default separates infrastructure interruptions from Agent failures, with
+  // at most three extra recoveries (five physical attempts in total).
+  const maxAttempts = typeof configured === "number" && Number.isFinite(configured)
+    ? Math.max(1, Math.min(10, Math.floor(configured)))
+    : DEFAULT_MAX_RUN_ATTEMPTS + Math.min(controllerLosses, MAX_CONTROLLER_RECOVERIES);
+  return { maxAttempts, controllerLosses };
 }
 
 function maxCostForRun(run: RunRecord): number | null {

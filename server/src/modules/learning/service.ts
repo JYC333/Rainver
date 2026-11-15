@@ -1,3 +1,4 @@
+import {authorizeLearning} from './admission.js';
 import { randomUUID } from "node:crypto";
 import {
   HttpError,
@@ -66,6 +67,10 @@ export class LearningService {
   constructor(private readonly db: Queryable) {}
 
   async createObjective(identity: SpaceUserIdentity, body: Record<string, unknown>): Promise<Record<string, unknown>> {
+    return withQueryableTransaction(this.db,async db=>{await authorizeLearning(db,identity,'objective',body);return new LearningService(db).createObjectiveIn(identity,body);});
+  }
+
+  private async createObjectiveIn(identity: SpaceUserIdentity, body: Record<string, unknown>): Promise<Record<string, unknown>> {
     const projectId = optionalString(body.project_id);
     if (projectId) await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     const title = requiredString(body.title, "title");
@@ -98,6 +103,10 @@ export class LearningService {
   }
 
   async createItem(identity: SpaceUserIdentity, body: Record<string, unknown>): Promise<Record<string, unknown>> {
+    return withQueryableTransaction(this.db,async db=>{await authorizeLearning(db,identity,'item',body);return new LearningService(db).createItemIn(identity,body);});
+  }
+
+  private async createItemIn(identity: SpaceUserIdentity, body: Record<string, unknown>): Promise<Record<string, unknown>> {
     const projectId = optionalString(body.project_id);
     if (projectId) await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     const objectiveId = optionalString(body.objective_id);
@@ -188,6 +197,10 @@ export class LearningService {
   }
 
   async recordReview(identity: SpaceUserIdentity, itemId: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
+    return withQueryableTransaction(this.db,async db=>{await authorizeLearning(db,identity,'review',{...body,item_id:itemId});return new LearningService(db).recordReviewIn(identity,itemId,body);});
+  }
+
+  private async recordReviewIn(identity: SpaceUserIdentity, itemId: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
     const outcome = requiredString(body.outcome, "outcome");
     if (!REVIEW_OUTCOMES.has(outcome)) throw new HttpError(422, `outcome must be one of: ${[...REVIEW_OUTCOMES].join(", ")}`);
     const item = await this.db.query<{ id: string; project_id: string | null }>(

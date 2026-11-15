@@ -43,7 +43,7 @@ beforeAll(async () => {
     // the server's boolean debug configuration.
     SERVER_DEBUG: "false",
   });
-}, 180_000);
+});
 afterEach(() => { __setProviderHttpClientForTests(null); });
 beforeEach(async () => { if (!db.available) return; await resetTables(
   db.pool,

@@ -25,6 +25,18 @@ export async function retainGoalSample(db:Queryable,config:ServerConfig,connecti
  const bounded=Buffer.byteLength(JSON.stringify(fixture??null))<=1500000;
  return {...rest,sample_expires_at:expires,...(parsed.success?{output:keep?applyCustomSourceRetentionPolicy(parsed.data,envelopeRetention):{...applyCustomSourceRetentionPolicy(parsed.data,outputRetention),cursor:null,diagnostics:{warnings:[]}}} : {}),...(keep && bounded && fixture?{fixture}:{}),...(responses?{responses:responses.map(goalResponseDiagnostic)}:{}),...(previous&&typeof previous==='object'?{previous:await retainGoalSample(db,config,connectionId,previous as Record<string,unknown>,forceRemove)}:{}),...(failure&&typeof failure==='object'?{failure:await retainGoalSample(db,config,connectionId,failure as Record<string,unknown>,forceRemove)}:{})};
 }
+/** Read-only retention projection shared by GET release and durable maintenance. */
+export function retainedGoalCollection(row:{status:string;result_json:Record<string,unknown>;capture_policy:SourceConnectionRow['capture_policy'];policy_json:SourceConnectionRow['policy_json']},erase=false){
+  const policy=agentReadingPolicy(row);const next={...row.result_json};
+  if(!['queued','accepted','materializing'].includes(row.status)){delete next.search_submission;delete next.accepted_output;}
+  else {
+   const submission=SourceMaterialSubmissionSchema.safeParse(next.search_submission);
+   if(submission.success)next.search_submission={...submission.data,items:submission.data.items.map(item=>({...item,summary:!erase&&policy.summary?item.summary:null,content:!erase&&policy.content?item.content:null}))};
+   const output=CustomSourceHandlerOutputSchema.safeParse(next.accepted_output);
+   if(output.success){const retained=applyCustomSourceRetentionPolicy(output.data,erase?'metadata_only':policy.retention);next.accepted_output=retained;}
+  }
+ return next;
+}
 /** Called by existing Source artifact maintenance as well as before sample use.
  * A policy downgrade, expiry or goal deletion scrubs every stored duplicate. */
 export async function cleanGoalSamples(db:Queryable,config:ServerConfig,goalId?:string,forceRemove=false){
@@ -35,14 +47,7 @@ export async function cleanGoalSamples(db:Queryable,config:ServerConfig,goalId?:
  // Collection submissions are transport/recovery inputs, not an unlimited body archive.
  const collections=await db.query<{id:string;status:string;goal_status:string;result_json:Record<string,unknown>;capture_policy:SourceConnectionRow['capture_policy'];policy_json:SourceConnectionRow['policy_json']}>(`SELECT r.id,r.status,g.status AS goal_status,r.result_json,c.capture_policy,c.policy_json FROM source_goal_runs r JOIN source_goals g ON g.id=r.goal_id AND g.space_id=r.space_id JOIN source_connections c ON c.id=r.result_json->'spec'->>'source_connection_id' AND c.space_id=r.space_id WHERE ($1::varchar IS NULL OR g.id=$1) AND (r.result_json ? 'search_submission' OR r.result_json ? 'accepted_output')`,[goalId??null]);
  for(const row of collections.rows){
-  const policy=agentReadingPolicy(row);const next={...row.result_json};const erase=forceRemove||row.goal_status==='deleted';
-  if(!['queued','accepted','materializing'].includes(row.status)){delete next.search_submission;delete next.accepted_output;}
-  else {
-   const submission=SourceMaterialSubmissionSchema.safeParse(next.search_submission);
-   if(submission.success)next.search_submission={...submission.data,items:submission.data.items.map(item=>({...item,summary:!erase&&policy.summary?item.summary:null,content:!erase&&policy.content?item.content:null}))};
-   const output=CustomSourceHandlerOutputSchema.safeParse(next.accepted_output);
-   if(output.success){const retained=applyCustomSourceRetentionPolicy(output.data,erase?'metadata_only':policy.retention);next.accepted_output=retained;}
-  }
+  const next=retainedGoalCollection(row,forceRemove||row.goal_status==='deleted');
   if(JSON.stringify(next)!==JSON.stringify(row.result_json))await db.query('UPDATE source_goal_runs SET result_json=$2 WHERE id=$1 AND result_json=$3::jsonb',[row.id,next,row.result_json]);
  }
  const repairs=await db.query<{id:string;validation_json:{live_sample?:Record<string,unknown>};source_connection_id:string;status:string}>(`SELECT r.id,r.validation_json,b.source_connection_id,g.status FROM source_goal_repairs r JOIN source_goal_bindings b ON b.id=r.binding_id JOIN source_goals g ON g.id=b.goal_id WHERE ($1::varchar IS NULL OR g.id=$1)`,[goalId??null]);

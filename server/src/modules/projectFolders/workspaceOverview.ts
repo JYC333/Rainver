@@ -26,6 +26,7 @@ const ACTIVE_RUN="('queued','running','cancelling','waiting_for_review','waiting
 // Missing branches are historical records, even when their saved batch was never
 // closed. A newer open batch invalidates the old assessment, as in currentRetention.
 const MISSING=`(COALESCE(retention_json->>'state','')='missing'
+ AND COALESCE(retention_json->>'reason','')<>'missing_acknowledged'
  AND (open_work_at IS NULL OR retention_json->>'assessed_at' IS NULL
   OR open_work_at::timestamptz <= (retention_json->>'assessed_at')::timestamptz))`;
 export const CURRENT=`(active OR any_blocked OR any_integrating OR cleanup_state='blocked'

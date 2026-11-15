@@ -43,7 +43,7 @@ beforeEach(async()=>{
  await resetTables(db.pool,['spaces','users'],{cascade:true});
  await seedSpaceOwnerProject(db.pool,{space,owner,project,spaceType:'household'});
  await seedRun(db.pool,{id:run,space,owner,agent:randomUUID(),version:randomUUID()});
- await db.pool.query("UPDATE runs SET project_id=$2,instructed_by_user_id=$3,status='running',permission_snapshot_json=$4::jsonb WHERE id=$1",[run,project,owner,JSON.stringify({tool_grants:[{action_id:'board.configure'},{action_id:'task.move_to_column'}]})]);
+ await db.pool.query("UPDATE runs SET project_id=$2,instructed_by_user_id=$3,status='running',permission_snapshot_json=$4::jsonb WHERE id=$1",[run,project,owner,JSON.stringify({tool_grants:[{action_id:'board.configure'},{action_id:'task.move_to_column'},{action_id:'task.create'}]})]);
  record=(await db.pool.query('SELECT * FROM runs WHERE id=$1',[run])).rows[0];
  runtimeConfig=loadConfig({SERVER_DATABASE_URL:db.connectionUri});
  app=buildModuleServer(runtimeConfig,[projectWorkModule,tasksModule,systemActionsModule]);
@@ -138,7 +138,7 @@ it('preserves the Agent principal, instruction identity, grants and core replay 
  const conflict=await engine.execute('task.move_to_column',{...input,column_key:'done'},actor,'changed',key);
  expect((conflict.body as any).error.code).toBe('idempotency_key_reused');
  await db.pool.query("UPDATE runs SET permission_snapshot_json='{}' WHERE id=$1",[run]);
- expect((await engine.execute('task.move_to_column',input,actor,'revoked',key)).http_status).toBe(404);
+ expect((await engine.execute('task.move_to_column',input,actor,'revoked',key)).http_status).toBe(403);
 });
 it('refuses concurrent same-key configuration before a second mutation and then replays',async()=>{
  const body=config(await readBoard()),key=randomUUID(),lock=await db.pool.connect();
@@ -270,16 +270,17 @@ it('rejects every public Project placement field under the Task transaction lock
  expect((await db.pool.query('SELECT project_id FROM tasks WHERE id=$1',[standalone.id])).rows[0].project_id).toBeNull();
 });
 
-it('cannot race standalone placement past concurrent reparenting into a Project',async()=>{
+it('refuses raw PATCH placement by schema and conflicts when the Task is reparented during an edit',async()=>{
  const t=await new PgTaskRepository(db.pool).createTask(identity,{title:'Concurrent reparent'});
  const before=(await db.pool.query('SELECT status FROM tasks WHERE id=$1',[t.id])).rows[0].status;
+ const placement=await app.inject({method:'PATCH',url:`/api/v1/tasks/${t.id}`,headers:{'idempotency-key':randomUUID()},payload:{board_id:null,column_id:null,status:'done'}});
+ expect(placement.statusCode,placement.body).toBe(422);expect(placement.json().error.code).toBe('operation_invalid_input');
  const lock=await db.pool.connect();await lock.query('BEGIN');
  await lock.query('UPDATE tasks SET project_id=$2 WHERE id=$1',[t.id,project]);
- const attempt=Promise.resolve(app.inject({method:'PATCH',url:`/api/v1/tasks/${t.id}`,payload:{board_id:null,column_id:null,status:'done'}}));
+ const attempt=Promise.resolve(app.inject({method:'PATCH',url:`/api/v1/tasks/${t.id}`,headers:{'idempotency-key':randomUUID()},payload:{title:'Renamed while moving'}}));
  try{await waitForLockWaiter(db.pool);}
  finally{await lock.query('COMMIT');lock.release();}
  const response=await attempt;expect(response.statusCode,response.body).toBe(409);
- expect((await db.pool.query('SELECT project_id,status FROM tasks WHERE id=$1',[t.id])).rows[0]).toMatchObject({project_id:project,status:before});
- expect((await db.pool.query('SELECT id FROM operation_idempotency WHERE space_id=$1',[space])).rows).toHaveLength(0);
+ expect((await db.pool.query('SELECT project_id,status,title FROM tasks WHERE id=$1',[t.id])).rows[0]).toMatchObject({project_id:project,status:before,title:'Concurrent reparent'});
  expect((await db.pool.query("SELECT id FROM project_work_events WHERE subject_id=$1 AND event_kind='task.flow_changed'",[t.id])).rows).toHaveLength(0);
 });

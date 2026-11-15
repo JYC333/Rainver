@@ -1,3 +1,4 @@
+import { EvolutionAssetRefusal } from "./assetRefusal.js";
 import { randomUUID } from "node:crypto";
 import {
   HttpError,
@@ -29,7 +30,7 @@ function requiredDateIso(value: unknown): string {
 function enumValue(value: unknown, allowed: Set<string>, field: string): string | null {
   const text = optionalString(value);
   if (!text) return null;
-  if (!allowed.has(text)) throw new HttpError(422, `${field} must be one of ${[...allowed].join(", ")}`);
+  if (!allowed.has(text)) throw new EvolutionAssetRefusal(422, `${field} must be one of ${[...allowed].join(", ")}`);
   return text;
 }
 
@@ -160,17 +161,17 @@ export class EvolvableAssetEvaluationRepository {
     const asset = await this.requireWritableAsset(identity, assetId);
     if(['reading.project_investigation','prompt.revision.method'].includes(String(asset.asset_key)) && !options.trustedExecutor)throw new HttpError(403,'Reading comparisons must execute through the bounded trial endpoint');
     const version = await this.versionRow(assetId, versionId);
-    if (!version) throw new HttpError(422, "versionId does not reference a version of this asset");
+    if (!version) throw new EvolutionAssetRefusal(422, "versionId does not reference a version of this asset");
     await normalizeVersionScopeForWrite(this.db, identity, version.scope_type, version.scope_id);
     assertAssetAllowsTargetScope(asset, identity, version.scope_type, version.scope_id);
     if (version.status !== "candidate" && version.status !== "testing") {
-      throw new HttpError(422, "Only a candidate or testing version can record an evaluation run");
+      throw new EvolutionAssetRefusal(422, "Only a candidate or testing version can record an evaluation run");
     }
-    if (!version.content_hash) throw new HttpError(422, "The version has no content hash to evaluate");
+    if (!version.content_hash) throw new EvolutionAssetRefusal(422, "The version has no content hash to evaluate");
     const evalSuiteRef = optionalObject(body.eval_suite_ref);
-    if (!evalSuiteRef) throw new HttpError(422, "eval_suite_ref is required");
+    if (!evalSuiteRef) throw new EvolutionAssetRefusal(422, "eval_suite_ref is required");
     const evaluatorVersion = optionalString(body.evaluator_version);
-    if (!evaluatorVersion) throw new HttpError(422, "evaluator_version is required");
+    if (!evaluatorVersion) throw new EvolutionAssetRefusal(422, "evaluator_version is required");
     const status = enumValue(body.status, EVALUATION_STATUSES, "status") ?? "queued";
     if (
       !options.trustedExecutor
@@ -183,9 +184,9 @@ export class EvolvableAssetEvaluationRepository {
     const baselineVersionId = optionalString(body.baseline_version_id);
     if (baselineVersionId) {
       const baseline = await this.versionRow(assetId, baselineVersionId);
-      if (!baseline) throw new HttpError(422, "baseline_version_id does not reference a version of this asset");
+      if (!baseline) throw new EvolutionAssetRefusal(422, "baseline_version_id does not reference a version of this asset");
       if (!(await canViewVersionRef(this.db, identity, baseline))) {
-        throw new HttpError(422, "baseline_version_id does not reference a visible version of this asset");
+        throw new EvolutionAssetRefusal(422, "baseline_version_id does not reference a visible version of this asset");
       }
     }
     const id = randomUUID();
@@ -242,23 +243,23 @@ export class EvolvableAssetEvaluationRepository {
   ): Promise<Record<string, unknown>> {
     const asset = await this.requireWritableAsset(identity, assetId);
     const version = await this.versionRow(assetId, versionId);
-    if (!version) throw new HttpError(422, "versionId does not reference a version of this asset");
+    if (!version) throw new EvolutionAssetRefusal(422, "versionId does not reference a version of this asset");
     await normalizeVersionScopeForWrite(this.db, identity, version.scope_type, version.scope_id);
     assertAssetAllowsTargetScope(asset, identity, version.scope_type, version.scope_id);
     if (version.status !== "candidate" && version.status !== "testing") {
-      throw new HttpError(422, "Only a candidate or testing version can be proposed for promotion");
+      throw new EvolutionAssetRefusal(422, "Only a candidate or testing version can be proposed for promotion");
     }
-    if (!version.content_hash) throw new HttpError(422, "The version has no content hash to promote");
+    if (!version.content_hash) throw new EvolutionAssetRefusal(422, "The version has no content hash to promote");
     // The target is where a pin or deployment ref lands. The version keeps
     // its own scope; it can only serve targets that scope covers.
     const targetScopeType = optionalString(body.target_scope_type);
     if (!targetScopeType || !["project", "space", "user", "agent"].includes(targetScopeType)) {
-      throw new HttpError(422, "target_scope_type must be one of project, space, user, agent");
+      throw new EvolutionAssetRefusal(422, "target_scope_type must be one of project, space, user, agent");
     }
     const normalizedTargetScopeId = await normalizeVersionScopeForWrite(this.db, identity, targetScopeType, optionalString(body.target_scope_id));
     assertAssetAllowsTargetScope(asset, identity, targetScopeType, normalizedTargetScopeId);
     if (!versionServesScope(identity, { scopeType: targetScopeType, scopeId: normalizedTargetScopeId }, version)) {
-      throw new HttpError(422, "The version's scope does not cover the target; create a version in the target scope");
+      throw new EvolutionAssetRefusal(422, "The version's scope does not cover the target; create a version in the target scope");
     }
     const evaluationRunIds = Array.isArray(body.evaluation_run_ids)
       ? [...new Set(body.evaluation_run_ids.filter((value): value is string => typeof value === "string" && value.length > 0))].slice(0, 50)
@@ -279,7 +280,7 @@ export class EvolvableAssetEvaluationRepository {
         : [assetId, versionId, identity.spaceId, version.content_hash],
     );
     if (evaluationRunIds.length > 0 && evaluationRows.rows.length !== evaluationRunIds.length) {
-      throw new HttpError(422, "evaluation_run_ids must reference evaluation runs of this candidate version's current content");
+      throw new EvolutionAssetRefusal(422, "evaluation_run_ids must reference evaluation runs of this candidate version's current content");
     }
     if(['reading.project_investigation','prompt.revision.method'].includes(String(asset.asset_key)))await (await import('../prompts/reading/workspace.js')).assertReadingPromotion(this.db,identity,versionId,evaluationRunIds,{type:targetScopeType,id:normalizedTargetScopeId});
     const evaluationSummary = summarizeEvaluationRows(evaluationRows.rows);

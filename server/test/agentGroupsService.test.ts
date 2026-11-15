@@ -73,6 +73,16 @@ class AgentGroupServiceDb {
         rowCount: 1,
       };
     }
+    if (sql.includes("AS agent_current_version_id")) {
+      const agentId = String(params[2]);
+      if (!this.members.has(agentId)) {
+        return { rows: [], rowCount: 0 };
+      }
+      return {
+        rows: [memberRecord(agentId, { agent_status: "active" }) as Row],
+        rowCount: 1,
+      };
+    }
     if (sql.includes("FROM agent_run_groups")) {
       return {
         rows: [groupRecord({ root_run_id: this.rootRunId, goal: this.groupGoal }) as Row],
@@ -125,16 +135,6 @@ class AgentGroupServiceDb {
           created_at: String(params[7]),
           updated_at: String(params[7]),
         }) as Row],
-        rowCount: 1,
-      };
-    }
-    if (sql.includes("FROM agent_run_group_members m")) {
-      const agentId = String(params[2]);
-      if (!this.members.has(agentId)) {
-        return { rows: [], rowCount: 0 };
-      }
-      return {
-        rows: [memberRecord(agentId, { agent_status: "active" }) as Row],
         rowCount: 1,
       };
     }

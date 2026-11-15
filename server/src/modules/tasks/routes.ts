@@ -2,10 +2,8 @@ import {OperationError} from '../systemActions/operations/errors.js';
 import {resolveRequestId} from '../../gateway/requestContext.js';
 import { InquiryTaskAssociationService } from "../inquiry/taskAssociations.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import * as protocol from "@rainver/protocol";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
-  HttpError,
   boolQuery,
   dbPool,
   jsonBody,
@@ -20,15 +18,22 @@ import {
 import {introspectIdentity} from '../auth/identity.js';
 import {sessionActor} from '../systemActions/operations/actor.js';
 import {operationRuntime} from '../systemActions/operations/runtime.js';
-import { PgTaskRepository, ProjectTaskPlacementRequiresCore, TaskStatusRequiresCore } from "./repository.js";
+import { PgTaskRepository } from "./repository.js";
+import { registerOperationAdapters } from "../systemActions/operations/routeAdapter.js";
 import { PgPlanRepository } from "../plans/repository.js";
-import {
-  applyContentCreationContext,
-  resolveContentCreationContext,
-} from "../access/creationContext.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   const repository = () => new PgTaskRepository(dbPool(context.config));
+  // Formal adapters: identity, transport key and the typed envelope only.
+  registerOperationAdapters(app, context.config, [
+    { method: "POST", url: "/api/v1/tasks", operation: "task.create" },
+    { method: "PATCH", url: "/api/v1/tasks/:taskId", operation: "task.update", params: { taskId: "task_id" } },
+    { method: "POST", url: "/api/v1/tasks/:taskId/evaluations", operation: "task.evaluation.record", params: { taskId: "task_id" } },
+    { method: "POST", url: "/api/v1/tasks/:taskId/plan-requests", operation: "task.plan.request", params: { taskId: "task_id" } },
+    { method: "POST", url: "/api/v1/tasks/:taskId/runs", operation: "task.run.create", params: { taskId: "task_id" } },
+    { method: "POST", url: "/api/v1/boards", operation: "board.create" },
+    { method: "PATCH", url: "/api/v1/boards/:boardId", operation: "board.update", params: { boardId: "board_id" } },
+  ]);
 
   app.get("/api/v1/tasks/:taskId/inquiry-threads",async(request,reply)=>{
     const identity=await resolveIdentity(context.config,request,reply);if(!identity)return reply;
@@ -52,25 +57,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/boards", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const body = jsonBody(request);
-      const creation = await resolveContentCreationContext(dbPool(context.config), {
-        userId: identity.userId,
-        requestSpaceId: identity.spaceId,
-        projectId: optionalString(body.project_id),
-      });
-      return reply.code(201).send(await repository().createBoard(
-        { spaceId: creation.spaceId, userId: identity.userId },
-        applyContentCreationContext(body, creation),
-      ));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
   app.get("/api/v1/boards/:boardId", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
@@ -78,16 +64,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       const board = await repository().getBoard(identity, params(request).boardId ?? "");
       if (!board) return reply.code(404).send({ detail: "Board not found" });
       return reply.send(board);
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.patch("/api/v1/boards/:boardId", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(await repository().updateBoard(identity, params(request).boardId ?? "", jsonBody(request)));
     } catch (error) {
       return sendRouteError(reply, error);
     }
@@ -106,29 +82,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
 
   app.get("/api/v1/tasks", taskListHandler(context, repository));
   app.get("/api/v1/tasks/", taskListHandler(context, repository));
-
-  app.post("/api/v1/tasks", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      // Run provenance is server-owned (Agent executors pass the trusted Run).
-      // A request body naming a Run would attribute this Task, its link events
-      // and that Run's creation ceiling to work the caller did not do.
-      const { source_run_id: _untrustedRun, ...body } = jsonBody(request);
-      const creation = await resolveContentCreationContext(dbPool(context.config), {
-        userId: identity.userId,
-        requestSpaceId: identity.spaceId,
-        projectId: optionalString(body.project_id),
-      });
-      return reply.code(201).send(await repository().createTask(
-        { spaceId: creation.spaceId, userId: identity.userId },
-        applyContentCreationContext(body, creation),
-      ));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
 
   app.get("/api/v1/me/tasks", myTasksHandler(context, repository));
   app.get("/api/v1/me/tasks/", myTasksHandler(context, repository));
@@ -169,24 +122,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     return reply.code(result.http_status).send(result.body);
   }});
 
-  app.patch("/api/v1/tasks/:taskId", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      // The body is free-form for the many optional columns, but the two
-      // structured fields reach code that indexes into them: an unshaped
-      // `links[]` entry would arrive at the entity registry as `undefined`.
-      const body = jsonBody(request);
-      const structured = protocol.TaskPatchStructuredFieldsSchema.safeParse(body);
-      if (!structured.success) throw new HttpError(422, structured.error.message);
-      return reply.send(await repository().updateTaskFromPublicPatch(identity, params(request).taskId ?? "", body));
-    } catch (error) {
-      if(error instanceof ProjectTaskPlacementRequiresCore || error instanceof TaskStatusRequiresCore)
-        return reply.code(422).send(new OperationError('operation_invalid_input',422).body(resolveRequestId(request)));
-      return sendRouteError(reply, error);
-    }
-  });
-
   app.get("/api/v1/tasks/:taskId/runs", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
@@ -198,32 +133,12 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/tasks/:taskId/plan-requests", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.code(202).send(await repository().requestPlanningRun(identity, params(request).taskId ?? "", jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
   app.get("/api/v1/tasks/:taskId/plan", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
       const plan = await new PgPlanRepository(dbPool(context.config), context.config).getPlanForTask(identity, params(request).taskId ?? "");
       return reply.send(plan);
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.post("/api/v1/tasks/:taskId/runs", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.code(201).send(await repository().createTaskRun(identity, params(request).taskId ?? "", jsonBody(request)));
     } catch (error) {
       return sendRouteError(reply, error);
     }
@@ -262,15 +177,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/tasks/:taskId/evaluations", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.code(201).send(await repository().createTaskEvaluation(identity, params(request).taskId ?? "", jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 }
 
 function taskListHandler(context: ModuleContext, repository: () => PgTaskRepository) {

@@ -100,4 +100,4 @@ await page.getByRole('button',{name:zh?'版本历史':'Version history',exact:tr
  expect(errors).toEqual([]);
  expect(await page.evaluate('document.documentElement.scrollWidth<=window.innerWidth')).toBe(true);
  }catch(error){console.error('R5 browser diagnostic',errors,await page.locator('body').innerText());throw error}finally{await context.close();await browser.close();await new Promise<void>(r=>hosted.httpServer.close(()=>r()));await app.close();__setAuthIdentityForTests(null);await rm(root,{recursive:true,force:true})}
-},120000);
+});

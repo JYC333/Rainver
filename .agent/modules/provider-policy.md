@@ -382,3 +382,11 @@ The completed subscription-usage implementation plan was retired on 2026-11-08;
 its step-by-step implementation and historical test logs remain in Git history.
 This guide and the linked owning module guides retain the current behavior,
 permissions and supported limits; the retired plan is not an active work queue.
+
+Bounded durable owners can pass `single_attempt: true` to chat/messages
+invocation (or `singleAttempt` to `runBoundedProviderTask`). This permits one
+physical attempt only: no same-key retry, key rotation, provider/task fallback,
+or structured-output correction call. Failure/usage ledger handling remains
+canonical. Omitted options preserve the existing resilience behavior. The
+private Research query-evaluation owner uses this to keep unknown sends fenced;
+its retained REST migration is not yet connected.

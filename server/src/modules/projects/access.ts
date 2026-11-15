@@ -6,6 +6,30 @@ import { isSpaceOwnerOrAdmin } from "../access/roles.js";
 import { projectReadAccessSql } from "../access/contentAccessSql.js";
 import type { ProjectReader } from "@rainver/protocol";
 
+/**
+ * Projects a transaction share-locked first, before a lock that some Project
+ * writer takes after the Project (the Delivery gate's Run: Project archive takes
+ * the Project `FOR UPDATE`, then cancels its workflow Runs). While a set is held
+ * on `db`, every Project lock taken through `lockProjectAudience`,
+ * `assertProjectReadableLocked` or a caller's `assertProjectHeld` must be in it:
+ * a Project outside it is drift, refused with 409 before it is locked, never a
+ * Project lock taken after the Run. Bound to this exact `Queryable`.
+ */
+const heldProjects = new WeakMap<object, ReadonlySet<string>>();
+
+export function holdProjects(db: Queryable, projectIds: readonly string[]): () => void {
+  if (heldProjects.has(db)) throw new Error("A held Project set is already open on this transaction");
+  heldProjects.set(db, new Set(projectIds));
+  return () => { heldProjects.delete(db); };
+}
+
+export function assertProjectHeld(db: Queryable, projectId: string): void {
+  const held = heldProjects.get(db);
+  if (held && !held.has(projectId)) {
+    throw new HttpError(409, "Project authority changed; read again", { code: "held_project_changed" });
+  }
+}
+
 export async function assertProjectInSpace(
   db: Queryable,
   spaceId: string,
@@ -91,6 +115,7 @@ export async function assertProjectReadableLocked(
   projectId: string,
   userId: string,
 ): Promise<void> {
+  assertProjectHeld(db, projectId);
   const project = await db.query<{ owner_user_id: string | null }>(
     `SELECT owner_user_id FROM projects
       WHERE id=$1 AND space_id=$2 AND deleted_at IS NULL
@@ -403,6 +428,7 @@ export async function projectReaders(
  * current audience (a briefing reference's model Delivery).
  */
 export async function lockProjectAudience(db: Queryable, spaceId: string, projectId: string): Promise<void> {
+  assertProjectHeld(db, projectId);
   const project = (await db.query<{ owner_user_id: string | null }>(
     `SELECT owner_user_id FROM projects WHERE id=$1 AND space_id=$2 FOR SHARE`,
     [projectId, spaceId],

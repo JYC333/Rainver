@@ -1,6 +1,8 @@
 import type { Queryable, SpaceUserIdentity } from '../routeUtils/common.js'
 import type { ServerConfig } from '../../config.js'
 import { HttpError, objectValue, optionalString, requiredString } from '../routeUtils/common.js'
+import { OperationError } from '../systemActions/operations/errors.js'
+import { SourceObjectRefusal } from './sourceObjectErrors.js'
 import { sourceConnectorRegistry, type SourceConnectorHandler } from './catalog/sourceConnectorRegistry.js'
 import { SourceProviderCatalogService } from './catalog/sourceProviderCatalogService.js'
 import { consumeConnectionQuota } from './sourceQuotaBucket.js'
@@ -38,6 +40,12 @@ type PreviewCredentialResolver = (
   credentialId: string,
 ) => Promise<{ header_name: string; header_value: string } | null>
 
+/** The per-connection preview quota is spent: refused before any intent, nothing is kept. */
+export class SourcePreviewQuotaError extends OperationError {
+  constructor(private readonly resetAt: string | null) { super('operation_limit_exceeded', 429, true, 'sources') }
+  override body(requestId: string) { const body = super.body(requestId); body.error.message = `Source preview quota reached; retry after ${this.resetAt ?? 'the current quota window'}`; body.error.metadata = { code: 'source_preview_quota', reset_at: this.resetAt }; return body }
+}
+
 export class SourceQueryPreviewService {
   private readonly compiler = new ResearchProviderCompiler()
   private readonly config: ServerConfig | null
@@ -55,11 +63,12 @@ export class SourceQueryPreviewService {
     this.resolveCredential = resolveCredential
   }
 
-  async preview(identity: SpaceUserIdentity, body: Record<string, unknown>) {
+  /** Provider, compiled request and quota identity; deterministic for one input. */
+  private async plan(identity: SpaceUserIdentity, body: Record<string, unknown>) {
     const providerKey = requiredString(body.provider_key, 'provider_key')
     const provider = await new SourceProviderCatalogService(this.db).resolve(providerKey)
     if (!['arxiv_api', 'openalex_api', 'semantic_scholar_api', 'brave_web_search_api'].includes(provider.connector_key)) {
-      throw new HttpError(422, 'Query preview is available only for searchable providers')
+      throw new SourceObjectRefusal(422, 'Query preview is available only for searchable providers')
     }
     const query = { ...objectValue(body.query), max_results: 3, per_page: 3, limit: 3, count: 3 }
     const researchProviderKey = researchProviderForConnector(provider.connector_key)
@@ -69,12 +78,26 @@ export class SourceQueryPreviewService {
       endpoint_url: null,
       compiled_query: compiled.query,
     }, {})
-    const quotaKey = await this.quotaKey(identity, optionalString(body.source_channel_id), provider.mapping_id)
+    return { providerKey, provider, compiled, handler, request, credentialId: optionalString(body.credential_id), channelId: optionalString(body.source_channel_id) }
+  }
+
+  /**
+   * Pre-effect admission, in the caller's transaction: a searchable provider,
+   * the caller's own credential and one unit of the per-connection preview
+   * quota. The frozen intent names the credential, never its secret.
+   */
+  async admit(identity: SpaceUserIdentity, body: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const plan = await this.plan(identity, body)
+    const quotaKey = await this.quotaKey(identity, plan.channelId, plan.provider.mapping_id)
     const quota = await consumeConnectionQuota(this.db, identity.spaceId, quotaKey, { window: 'minute', limit_count: 10 })
-    if (!quota.allowed) {
-      throw new HttpError(429, `Source preview quota reached; retry after ${quota.resetAt ?? 'the current quota window'}`)
-    }
-    const credentialId = optionalString(body.credential_id)
+    if (!quota.allowed) throw new SourcePreviewQuotaError(quota.resetAt ?? null)
+    if (plan.credentialId && this.config) await new CustomSourceCredentialService(this.db, this.config).requireOwnCredential(identity, plan.credentialId)
+    return { provider_key: plan.providerKey, query: objectValue(body.query), ...(plan.channelId ? { source_channel_id: plan.channelId } : {}), ...(plan.credentialId ? { credential_id: plan.credentialId } : {}) }
+  }
+
+  /** The external request for an admitted intent (worker only); the provider and credential are resolved again. */
+  async preview(identity: SpaceUserIdentity, body: Record<string, unknown>) {
+    const { providerKey, provider, compiled, handler, request, credentialId } = await this.plan(identity, body)
     if (credentialId && !this.config && !this.resolveCredential) throw new HttpError(500, 'Source preview credential resolver is unavailable')
     if (credentialId && this.config) await new CustomSourceCredentialService(this.db, this.config).requireOwnCredential(identity, credentialId)
     const credential = credentialId

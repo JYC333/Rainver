@@ -1,3 +1,4 @@
+import {PgJobQueueRepository} from '../src/modules/jobs/repository.js';
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
@@ -194,10 +195,13 @@ describe("source annotation queue", () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
     await repo().enqueueItems(SPACE, [newer], CHANNEL);
 
+    await db.pool.query("UPDATE source_items SET occurred_at=$2 WHERE id=$1",[older,"2026-01-02T03:04:05.000Z"]);
     const batch = await repo().loadPendingBatch(SPACE, 10);
     expect(batch.map((row) => row.id)).toEqual([older, newer]);
     expect(batch[0].title).toBe("First");
     expect(batch[0].excerpt).toBe("An excerpt.");
+    expect(batch[0].occurred_at).toEqual(expect.any(String));
+    expect(new Date(batch[0].occurred_at!).toISOString()).toBe(batch[0].occurred_at);
   });
 
   it("does not offer deleted items to a model", async () => {
@@ -608,8 +612,10 @@ describe("annotation service", () => {
     const holder = await db.pool.connect();
     try {
       await holder.query("SELECT pg_advisory_lock(hashtextextended($1, 0))", [`source_annotation:${SPACE}`]);
+      const queued=await new PgJobQueueRepository(db.pool).enqueue({job_type:SOURCE_ANNOTATION_JOB_TYPE,space_id:SPACE,user_id:OWNER,payload:{trigger:'manual_retry'},max_attempts:1});
+      await db.pool.query("UPDATE jobs SET status='running',claimed_by='annotation-fixture',attempts=1 WHERE id=$1",[queued.id]);
       const result = await handlers.dispatch({
-        id: randomUUID(), space_id: SPACE, user_id: OWNER, job_type: SOURCE_ANNOTATION_JOB_TYPE,
+        job_id: queued.id,worker_id:'annotation-fixture' , space_id: SPACE, user_id: OWNER, job_type: SOURCE_ANNOTATION_JOB_TYPE,
         payload: { trigger: "manual_retry" }, attempts: 1, max_attempts: 1,
       } as never);
       expect(result).toMatchObject({ last_status: "already_running", passes: 0 });

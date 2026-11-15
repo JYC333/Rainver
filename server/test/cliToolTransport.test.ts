@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import {OperationToolResponse} from "../src/modules/systemActions/operations/agentResult.js";
 import { loadConfig } from "../src/config.js";
 import { CliAgentToolTransport } from "../src/modules/runs/cliToolTransport.js";
 import type { AgentRunRecord } from "../src/modules/runs/repository.js";
@@ -145,7 +146,15 @@ describe("CliAgentToolTransport", () => {
     });
 
     expect(spawnCalls).toHaveLength(0);
-    expect(result).toMatchObject({ ok: false, tool: "agent.delegate", error_code: "system_action_not_granted" });
+    expect(result).toBeInstanceOf(OperationToolResponse);
+    expect(result).toMatchObject({httpStatus:403,body:{ ok: false, tool: "agent.delegate", error_code: "system_action_not_granted" }});
+  });
+
+  it.each(['workspace.change.complete','system.actions.list','not.a.registered.action'])("refuses unavailable execution and unknown tools identically: %s",async name=>{
+    const transport=new CliAgentToolTransport(config,{...delegationDeps([]),actionEventSink:async()=>{}});
+    const cliRun=run({permission_snapshot_json:{tool_grants:[]}} as Partial<AgentRunRecord>);
+    expect(await transport.list(cliRun)).toEqual([]);
+    expect(await transport.call(cliRun,{id:'denied',name,arguments:{}})).toMatchObject({httpStatus:403,body:{ok:false,error_code:'system_action_not_granted'}});
   });
 
   it("lists only granted, permitted definitions", async () => {
@@ -179,5 +188,6 @@ describe("CliAgentToolTransport", () => {
     const definitions = await transport.list(cliRun);
 
     expect(definitions.map((tool) => tool.name)).toEqual(["agent.delegate"]);
+    expect(await transport.call(cliRun,{id:'disabled',name:'retrieval.brief',arguments:{}})).toMatchObject({httpStatus:403,body:{error_code:'system_action_not_granted'}});
   });
 });

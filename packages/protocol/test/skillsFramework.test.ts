@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  SKILL_LOCAL_OPERATION_SCHEMAS,SKILL_IO_OPERATION_SCHEMAS,
   NormalizedSkillSchema,
   SkillImportApprovalProposalResponseSchema,
   SkillImportPreviewRequestSchema,
@@ -11,6 +12,16 @@ import {
 } from "../src";
 
 describe("Skill protocol schemas", () => {
+  it('keeps operation inputs strict and retains binding/review scope refinements',()=>{
+    const pkg='00000000-0000-4000-8000-000000000001';
+    expect(SKILL_LOCAL_OPERATION_SCHEMAS['skill.binding.propose'].input.safeParse({skill_package_id:pkg,scope_type:'space',enabled:true}).success).toBe(true);
+    expect(SKILL_LOCAL_OPERATION_SCHEMAS['skill.binding.propose'].input.safeParse({skill_package_id:pkg,scope_type:'space',scope_id:pkg,enabled:true}).success).toBe(false);
+    expect(SKILL_LOCAL_OPERATION_SCHEMAS['skill.review.propose'].input.safeParse({skill_package_id:pkg,binding:{scope_type:'project',scope_id:pkg,enabled:true}}).success).toBe(false);
+    expect(SKILL_LOCAL_OPERATION_SCHEMAS['skill.review.propose'].input.safeParse({skill_package_id:pkg,binding:{scope_type:'user',scope_id:pkg,enabled:false}}).success).toBe(false);
+    expect(SKILL_IO_OPERATION_SCHEMAS['skill.source.scan'].input.safeParse({host_id:pkg,path:'/etc'}).success).toBe(false);
+    expect(SKILL_IO_OPERATION_SCHEMAS['skill.source.import'].input.safeParse({source_type:'builtin',package_hash:'a'}).success).toBe(false);
+    expect(SKILL_IO_OPERATION_SCHEMAS['skill.source.preview'].input.safeParse({source_type:'local_workspace',host_id:pkg,skill_id:'a'.repeat(64)}).success).toBe(true);
+  });
 
   it("parses skill import contracts", () => {
     const normalized = NormalizedSkillSchema.parse({

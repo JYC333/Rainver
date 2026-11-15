@@ -1,3 +1,4 @@
+import { SourceObjectRefusal } from "../sourceObjectErrors.js";
 import {lockMonitorCreation} from '../sourceMonitorParent.js';
 import type {
   CustomSourcePolicyEnvelope,
@@ -238,11 +239,11 @@ export class SourceRecipeCreateService {
     const versionRow = await getSourceRecipeVersion(this.pool, identity.spaceId, connectionId, versionId);
     if (!versionRow) throw new HttpError(404, "Recipe version not found");
     if (versionRow.status !== "draft") {
-      throw new HttpError(409, `Recipe version must be in draft status to activate (was ${versionRow.status})`);
+      throw new SourceObjectRefusal(409, `Recipe version must be in draft status to activate (was ${versionRow.status})`);
     }
     const testResult = versionRow.test_result_json as { status?: string } | null;
     if (testResult?.status !== "succeeded") {
-      throw new HttpError(409, "Recipe version must pass a dry-run before activation");
+      throw new SourceObjectRefusal(409, "Recipe version must pass a dry-run before activation");
     }
 
     const envelope: SourcePolicyEnvelope = protocol.SourcePolicyEnvelopeSchema.parse(
@@ -314,7 +315,7 @@ export class SourceRecipeCreateService {
           [versionId, identity.spaceId, proposal.id],
         );
         const row = updatedVersion.rows[0];
-        if (!row) throw new HttpError(409, "Recipe version is no longer eligible for activation approval");
+        if (!row) throw new SourceObjectRefusal(409, "Recipe version is no longer eligible for activation approval");
         return { proposal, version: row };
       });
       return {

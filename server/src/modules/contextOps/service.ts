@@ -12,6 +12,8 @@ import type {
 import type { ServerConfig } from "../../config.js";
 import { dbPool, type Queryable } from "../routeUtils/common.js";
 import type { RetrievalRegistry } from "../retrieval/registry.js";
+import { releaseGatedArtifactType, retrievalArtifactWithheld, withheldArtifactTitle } from "../retrieval/artifactRelease.js";
+import { proposalReportWithheld } from "../retrieval/proposalReportRelease.js";
 import type { RevalidatedObject } from "../retrieval/types.js";
 import {
   contentOwnerFilterSql,
@@ -160,14 +162,36 @@ export class ContextOpsService {
     return new ContextOpsService(dbPool(config));
   }
 
+  /** Same bounded readers as summary, without entering any release gate. */
+  async discoverReportInputs(input:ContextOpsSummaryInput):Promise<unknown[]> {
+    const start=new Date((input.now??new Date()).getTime()-input.windowDays*24*60*60*1000);
+    return [
+      ...await this.loadMaintenanceArtifacts(input.spaceId,input.userId,start,input.limit,Boolean(input.includeSpaceOpsReports)),
+      ...await this.loadDiagnosticsArtifacts(input.spaceId,input.userId,start,input.limit,Boolean(input.includeSpaceOpsReports)),
+      ...await this.loadRecentContextBriefs(input.spaceId,input.userId,start,input.limit),
+      ...await this.loadMaintenancePackets(input.spaceId,input.userId,start,input.limit,Boolean(input.includeSpaceOpsReports)),
+    ];
+  }
+
   async getSummary(input: ContextOpsSummaryInput): Promise<ContextOpsSummary> {
+    return (await this.getSummaryWithSources(input)).summary;
+  }
+
+  /**
+   * The summary and the persisted reports (maintenance and diagnostics)
+   * whose released findings/codes its aggregates were computed from. A
+   * report derived from this summary records these ids so its numbers are
+   * rechecked against each contributing report's current release.
+   */
+  async getSummaryWithSources(input: ContextOpsSummaryInput): Promise<{ summary: ContextOpsSummary; sourceArtifactIds: string[] }> {
     const now = input.now ?? new Date();
     const windowStart = new Date(now.getTime() - input.windowDays * 24 * 60 * 60 * 1000);
-    const [indexFreshness, embeddingBacklog, sourcePolicyWarnings] = await Promise.all([
-      this.loadIndexFreshness(input.spaceId),
-      this.loadEmbeddingBacklog(input.spaceId),
-      this.loadSourcePolicyWarnings(input.spaceId, input.userId),
-    ]);
+    // Core callers supply one transaction client; never queue concurrent reads on it.
+    const [indexFreshness, embeddingBacklog, sourcePolicyWarnings] = ([
+      await this.loadIndexFreshness(input.spaceId),
+      await this.loadEmbeddingBacklog(input.spaceId),
+      await this.loadSourcePolicyWarnings(input.spaceId, input.userId)
+    ] as const);
     const [
       maintenanceArtifacts,
       maintenancePackets,
@@ -176,17 +200,22 @@ export class ContextOpsService {
       recentContextBriefs,
       retrievalFeedback,
       memoryProvenance,
-    ] = await Promise.all([
-      this.loadMaintenanceArtifacts(input.spaceId, input.userId, windowStart, input.limit, Boolean(input.includeSpaceOpsReports)),
-      this.loadMaintenancePackets(input.spaceId, input.userId, windowStart, input.limit, Boolean(input.includeSpaceOpsReports)),
-      this.countPendingMaintenancePackets(input.spaceId, input.userId, windowStart, Boolean(input.includeSpaceOpsReports)),
-      this.loadDiagnosticsArtifacts(input.spaceId, input.userId, windowStart, input.limit, Boolean(input.includeSpaceOpsReports)),
-      this.loadRecentContextBriefs(input.spaceId, input.userId, windowStart, input.limit),
-      this.loadRetrievalFeedback(input.spaceId, input.userId, windowStart, input.windowDays),
-      this.loadMemoryProvenance(input.spaceId, input.userId, windowStart),
-    ]);
+    ] = ([
+      await this.loadMaintenanceArtifacts(input.spaceId, input.userId, windowStart, input.limit, Boolean(input.includeSpaceOpsReports)),
+      await this.loadMaintenancePackets(input.spaceId, input.userId, windowStart, input.limit, Boolean(input.includeSpaceOpsReports)),
+      await this.countPendingMaintenancePackets(input.spaceId, input.userId, windowStart, Boolean(input.includeSpaceOpsReports)),
+      await this.loadDiagnosticsArtifacts(input.spaceId, input.userId, windowStart, input.limit, Boolean(input.includeSpaceOpsReports)),
+      await this.loadRecentContextBriefs(input.spaceId, input.userId, windowStart, input.limit),
+      await this.loadRetrievalFeedback(input.spaceId, input.userId, windowStart, input.windowDays),
+      await this.loadMemoryProvenance(input.spaceId, input.userId, windowStart)
+    ] as const);
+    // Sequential, after the reads: each gate is its own closure transaction.
+    const maintenanceReleased = await this.releaseReports(input.spaceId, input.userId, maintenanceArtifacts);
+    const diagnosticsReleased = await this.releaseReports(input.spaceId, input.userId, diagnosticsArtifacts);
+    const packetsReleased = await this.releasePackets(input.spaceId, input.userId, maintenancePackets);
+    const sourceArtifactIds = [...maintenanceReleased, ...diagnosticsReleased].filter((row) => row.metadata_json !== null).map((row) => row.id);
 
-    return {
+    const summary: ContextOpsSummary = {
       generated_at: now.toISOString(),
       space_id: input.spaceId,
       owner_user_id: input.userId,
@@ -196,15 +225,16 @@ export class ContextOpsService {
       source_policy_warnings: sourcePolicyWarnings,
       maintenance: {
         recent_report_count: maintenanceArtifacts.length,
-        finding_counts: aggregateMaintenanceFindings(maintenanceArtifacts),
+        finding_counts: aggregateMaintenanceFindings(maintenanceReleased),
         pending_packet_count: pendingPacketCount,
-        recent_packets: maintenancePackets.map(proposalSummary),
+        recent_packets: packetsReleased.map(proposalSummary),
       },
-      diagnostics: aggregateDiagnostics(diagnosticsArtifacts),
+      diagnostics: aggregateDiagnostics(diagnosticsReleased),
       recent_context_briefs: recentContextBriefs.map(artifactSummary),
       retrieval_feedback: retrievalFeedback,
       memory_provenance: memoryProvenance,
     };
+    return { summary, sourceArtifactIds };
   }
 
   /**
@@ -276,14 +306,14 @@ export class ContextOpsService {
     // Over-fetch by one to detect truncation without leaking exact totals.
     const fetch = limit + 1;
     if (section === "maintenance_reports") {
-      const [artifactRows, packetRows] = await Promise.all([
-        this.loadMaintenanceArtifacts(spaceId, userId, windowStart, fetch, includeSpaceOpsReports),
-        this.loadMaintenancePackets(spaceId, userId, windowStart, fetch, includeSpaceOpsReports),
-      ]);
+      const [artifactRows, packetRows] = ([
+        await this.loadMaintenanceArtifacts(spaceId, userId, windowStart, fetch, includeSpaceOpsReports),
+        await this.loadMaintenancePackets(spaceId, userId, windowStart, fetch, includeSpaceOpsReports)
+      ] as const);
       const truncated = artifactRows.length > limit || packetRows.length > limit;
       return {
-        artifacts: artifactRows.slice(0, limit).map(artifactSummary),
-        packets: packetRows.slice(0, limit).map(proposalSummary),
+        artifacts: (await this.releaseReports(spaceId, userId, artifactRows.slice(0, limit))).map(artifactSummary),
+        packets: (await this.releasePackets(spaceId, userId, packetRows.slice(0, limit))).map(proposalSummary),
         truncated,
       };
     }
@@ -292,11 +322,52 @@ export class ContextOpsService {
       : section === "explain_reports"
         ? await this.loadExplainArtifacts(spaceId, userId, windowStart, fetch)
         : await this.loadRecentContextBriefs(spaceId, userId, windowStart, fetch);
+    const summaries: ContextOpsArtifactSummary[] = [];
+    const page = section === "diagnostics_reports" ? await this.releaseReports(spaceId, userId, rows.slice(0, limit)) : rows.slice(0, limit);
+    for (const row of page) {
+      // An Explain report's diagnostic codes describe its target's ranking;
+      // once that target is no longer releasable they are withheld with it.
+      const withheld = row.artifact_type === EXPLAIN_ARTIFACT_TYPE
+        && await retrievalArtifactWithheld(this.db, { spaceId, userId }, row, null);
+      summaries.push(withheld ? { ...artifactSummary(row), diagnostic_codes: [], finding_count: null } : artifactSummary(row));
+    }
     return {
-      artifacts: rows.slice(0, limit).map(artifactSummary),
+      artifacts: summaries,
       packets: [],
       truncated: rows.length > limit,
     };
+  }
+
+  /**
+   * A persisted report's findings, counts, codes and count-bearing title are
+   * derived from the objects it names. Each row passes the same current
+   * closure as its report operation's poll and every Artifact read
+   * (`retrievalArtifactWithheld`); a withheld row keeps only its id, type and
+   * time, so no count or title derived from it reaches a summary.
+   */
+  private async releaseReports(spaceId: string, userId: string, rows: ArtifactRow[]): Promise<ArtifactRow[]> {
+    const out: ArtifactRow[] = [];
+    for (const row of rows) {
+      out.push(releaseGatedArtifactType(row.artifact_type) && await retrievalArtifactWithheld(this.db, { spaceId, userId }, row, null)
+        ? { ...row, title: withheldArtifactTitle(row.artifact_type, row.title), metadata_json: null }
+        : row);
+    }
+    return out;
+  }
+
+  /**
+   * A maintenance packet's title repeats its report's finding count; it is
+   * listed by its report's current release. A packet whose report is missing
+   * or withheld shows its type label only.
+   */
+  private async releasePackets(spaceId: string, userId: string, rows: ProposalRow[]): Promise<ProposalRow[]> {
+    const out: ProposalRow[] = [];
+    for (const row of rows) {
+      // The same report-derived Proposal gate as the Proposal list/detail.
+      const withheld = await proposalReportWithheld(this.db, { spaceId, userId }, row);
+      out.push(withheld ? { ...row, title: withheldArtifactTitle(row.proposal_type.replace(/_packet$/, "_report"), row.title) } : row);
+    }
+    return out;
   }
 
   private async loadObjectDrilldown(
@@ -461,8 +532,8 @@ export class ContextOpsService {
   }
 
   private async loadEmbeddingBacklog(spaceId: string): Promise<ContextOpsSummary["embedding_backlog"]> {
-    const [summary, byType] = await Promise.all([
-      this.db.query<EmbeddingBacklogRow>(
+    const [summary, byType] = ([
+      await this.db.query<EmbeddingBacklogRow>(
         `SELECT count(*)::int AS total_chunks,
                 count(*) FILTER (WHERE embedding IS NOT NULL)::int AS embedded_chunks,
                 count(*) FILTER (WHERE embedding IS NULL)::int AS missing_embedding_chunks,
@@ -472,7 +543,7 @@ export class ContextOpsService {
           WHERE space_id = $1`,
         [spaceId],
       ),
-      this.db.query<MissingEmbeddingByTypeRow>(
+      await this.db.query<MissingEmbeddingByTypeRow>(
         `SELECT object_type, count(*)::int AS total
            FROM retrieval_chunks
           WHERE space_id = $1
@@ -480,8 +551,8 @@ export class ContextOpsService {
           GROUP BY object_type
           ORDER BY object_type`,
         [spaceId],
-      ),
-    ]);
+      )
+    ] as const);
     const row = summary.rows[0];
     return {
       total_chunks: intValue(row?.total_chunks),
@@ -724,8 +795,8 @@ export class ContextOpsService {
     windowStart: Date,
     windowDays: number,
   ): Promise<ContextOpsSummary["retrieval_feedback"]> {
-    const [signalRows, surfaceRows] = await Promise.all([
-      this.db.query<CountRow>(
+    const [signalRows, surfaceRows] = ([
+      await this.db.query<CountRow>(
         `SELECT signal_type AS key, count(*)::int AS total
            FROM retrieval_feedback_events
           WHERE space_id = $1
@@ -734,7 +805,7 @@ export class ContextOpsService {
           GROUP BY signal_type`,
         [spaceId, userId, windowStart.toISOString()],
       ),
-      this.db.query<CountRow>(
+      await this.db.query<CountRow>(
         `SELECT surface AS key, count(*)::int AS total
            FROM retrieval_feedback_events
           WHERE space_id = $1
@@ -742,8 +813,8 @@ export class ContextOpsService {
             AND created_at >= $3
           GROUP BY surface`,
         [spaceId, userId, windowStart.toISOString()],
-      ),
-    ]);
+      )
+    ] as const);
     const signalCounts = countMap(signalRows.rows);
     return {
       recent_event_count: sumCounts(signalCounts),
@@ -1010,10 +1081,10 @@ async function revalidateReadable(
     for (const id of sourceConnectionIdsFromJson(row.source_connection_ids_json)) allSourceIds.add(id);
   }
   const [snapshots, viewerSpaceRole] = allSourceIds.size
-    ? await Promise.all([
-        loadSourcePolicySnapshots(db, spaceId, [...allSourceIds]),
-        loadViewerSpaceRole(db, spaceId, userId),
-      ])
+    ? ([
+      await loadSourcePolicySnapshots(db, spaceId, [...allSourceIds]),
+      await loadViewerSpaceRole(db, spaceId, userId)
+    ] as const)
     : [new Map(), null as string | null];
 
   for (const row of rows) {

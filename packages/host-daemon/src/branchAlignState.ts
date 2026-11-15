@@ -244,8 +244,14 @@ async function gitText(args:string[],cwd:string):Promise<string|null>{
 
 /** True when an unfinished Git operation (merge, rebase, cherry-pick, a held index lock...) is visible in this checkout. */
 export async function gitOperationInProgress(holder:string):Promise<boolean>{
- for(const name of BRANCH_ALIGN_IN_PROGRESS){
-  const at=(await runLocationGit(['rev-parse','--git-path',name],holder)).stdout.trim();
+ // One `rev-parse` answers every name, a line each, in order. A Git directory
+ // whose path holds a newline would split into more lines than names; only
+ // then is each name asked on its own.
+ const listed=await runLocationGit(['rev-parse',...BRANCH_ALIGN_IN_PROGRESS.flatMap(name=>['--git-path',name])],holder);
+ const lines=listed.code===0?listed.stdout.replace(/\n$/,'').split('\n'):[];
+ const paths=lines.length===BRANCH_ALIGN_IN_PROGRESS.length?lines
+  :await Promise.all(BRANCH_ALIGN_IN_PROGRESS.map(async name=>(await runLocationGit(['rev-parse','--git-path',name],holder)).stdout.trim()));
+ for(const at of paths){
   if(at&&await stat(join(holder,at)).then(()=>true,()=>stat(at).then(()=>true,()=>false)))return true;
  }
  return false;

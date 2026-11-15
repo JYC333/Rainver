@@ -1,4 +1,5 @@
 import {CodePatchDecisionRefusal} from './codePatchDecisionErrors.js';
+import {JobEffectLeaseLost} from '../jobs/effectAuthority.js';
 import { randomUUID } from 'node:crypto';
 import { CodePatchDecisionReceiptSchema, type ProposalAcceptOut, type CodePatchDecisionReceipt } from '@rainver/protocol';
 import type { ServerConfig } from '../../config.js';
@@ -54,13 +55,13 @@ async function save(db: Queryable, r: Row) {
 }
 async function queue(config: ServerConfig, service: PgProposalApplyService, id: string, identity: SpaceUserIdentity, phase: 'apply' | 'rollback', options: {
   confirmIncompletePatch?: boolean;
-} = {}) {
+} = {}, transaction?: Queryable) {
   if(!config.databaseUrl)throw new Error("Code patch decisions require SERVER_DATABASE_URL");
-  const pool = getDbPool(config.databaseUrl);
+  const pool = transaction ?? getDbPool(config.databaseUrl);
   const candidate=await new PgProposalRepository(pool).getVisible(identity.spaceId,identity.userId,id);
   if(!candidate||candidate.proposal_type!=='code_patch')return null;
   let selected: Row | null = null;
-  await withPolicyAuditRecovery(config.databaseUrl, () => withQueryableTransaction(pool, db => withCheckpointDecisionOwner(db, identity.spaceId, [id], async () => {
+  const work = (db:Queryable) => withCheckpointDecisionOwner(db, identity.spaceId, [id], async () => {
     const previous = (await db.query<Row>('SELECT * FROM code_patch_decisions WHERE space_id=$1 AND proposal_id=$2 AND phase=$3 ORDER BY created_at DESC,id DESC LIMIT 1', [identity.spaceId, id, phase])).rows[0];
     const current = previous?.status === 'succeeded' ? await service.authorizeCodePatchReceipt(db, id, identity) : null;
     if (previous && previous.user_id === identity.userId && previous.status === 'succeeded' && current?.status === (phase === 'apply' ? 'accepted' : 'rolled_back')) {
@@ -129,8 +130,20 @@ async function queue(config: ServerConfig, service: PgProposalApplyService, id: 
     });
     await db.query('UPDATE code_patch_decisions SET job_id=$2 WHERE id=$1', [decisionId, j.id]);
     selected = await load(db, decisionId, identity.spaceId);
-  }, identity.userId)));
+  }, identity.userId);
+  if(transaction)await work(transaction);
+  else await withPolicyAuditRecovery(config.databaseUrl, () => withQueryableTransaction(pool,work));
   return selected as Row | null;
+}
+/** Durable intent only; the caller owns admission, audit and COMMIT. */
+export async function queueCodePatchInTransaction(config:ServerConfig,service:PgProposalApplyService,db:Queryable,id:string,identity:SpaceUserIdentity,phase:'apply'|'rollback',options:{confirmIncompletePatch?:boolean}={}) {
+ const r=await queue(config,service,id,identity,phase,options,db);
+ if(!r)return null;
+ if(phase==='rollback')return receipt(r);
+ if(r.status==='succeeded')return r.result_json as ProposalAcceptOut;
+ const proposal=await new PgProposalRepository(db).getVisible(identity.spaceId,identity.userId,id);
+ if(!proposal)return null;
+ return {proposal,result_type:'code_patch_pending',result:receipt(r)} as ProposalAcceptOut;
 }
 export async function queueCodePatchDecision(config: ServerConfig, service: PgProposalApplyService, id: string, identity: SpaceUserIdentity, phase: 'apply', options: {
   confirmIncompletePatch?: boolean;
@@ -150,14 +163,15 @@ export async function queueCodePatchRollback(config: ServerConfig, service: PgPr
   const r = await queue(config, service, id, identity, 'rollback');
   return r ? receipt(r) : null;
 }
-async function compensate(db: Queryable, r: Row) {
+async function compensate(db: Queryable, r: Row, assertLease?: () => Promise<void>) {
+  await assertLease?.();
   await db.query("UPDATE code_patch_decisions SET status='compensating',updated_at=now() WHERE id=$1", [r.id]);
   try {
-    const lock = await tryWithDedicatedSessionAdvisoryLock(db, `code-patch-folder:${r.effect_json.folderId}`, () => compensateCodePatchEffect(r.effect_json, () => save(db, r)));
+    const lock = await tryWithDedicatedSessionAdvisoryLock(db, `code-patch-folder:${r.effect_json.folderId}`, () => compensateCodePatchEffect(r.effect_json, () => save(db, r), assertLease));
     if (!lock.acquired) throw new JobDeferredError('Code patch compensation busy', 1000);
     await db.query("UPDATE code_patch_decisions SET status='failed',updated_at=now() WHERE id=$1", [r.id]);
   } catch (e) {
-    if(e instanceof JobDeferredError)throw e;
+    if(e instanceof JobDeferredError || e instanceof JobEffectLeaseLost)throw e;
     await db.query("UPDATE code_patch_decisions SET status='compensation_failed',updated_at=now() WHERE id=$1", [r.id]);
     throw e;
   }
@@ -166,6 +180,7 @@ export async function executeCodePatchDecision(config: ServerConfig, id: string,
   jobId: string;
   workerId: string;
   userId: string | null;
+  attempts: number;
 }, service = PgProposalApplyService.fromConfig(config)) {
   const pool = getDbPool(config.databaseUrl!);
   const gate = await tryWithDedicatedSessionAdvisoryLock(pool, `code-patch-decision:${id}`, async () => {
@@ -176,21 +191,24 @@ export async function executeCodePatchDecision(config: ServerConfig, id: string,
       };
     if (lease && (r.job_id !== lease.jobId || r.user_id !== lease.userId)) throw new HttpError(409, 'Stale code patch Job');
     const assertLease = async (db: Queryable = pool, lock = false) => {
-      if (lease && !(await db.query("SELECT id FROM jobs WHERE id=$1 AND claimed_by=$2 AND status='running'" + (lock ? ' FOR SHARE' : ''), [lease.jobId, lease.workerId])).rows.length) throw new HttpError(409, 'Code patch Job no longer owns execution');
+      if (lease && !(await db.query("SELECT id FROM jobs WHERE id=$1 AND claimed_by=$2 AND attempts=$3 AND status='running'" + (lock ? ' FOR SHARE' : ''), [lease.jobId, lease.workerId, lease.attempts])).rows.length) throw new JobEffectLeaseLost('Code patch Job no longer owns execution');
     };
     if (r.status === 'succeeded') return r.result_json;
+    if(r.status==='failed'&&r.result_json?.terminal_refusal===true)return {status:'failed',decision_id:id};
+    // Immutable terminal receipts can replay. A stale delivery owns neither
+    // execution nor compensation, including the failure handler below.
+    await assertLease();
     if (r.status === 'compensating' || r.status === 'compensation_failed') {
-      await compensate(pool, r);
+      await compensate(pool, r, assertLease);
       return {
         status: 'failed',
         decision_id: id
       };
     }
-    if(r.status==='failed'&&r.result_json?.terminal_refusal===true)return {status:'failed',decision_id:id};
     if (r.status === 'failed' && !lease) throw new HttpError(409, 'Code patch decision failed');
     try {
       await withCodePatchDecisionAudit(id,'worker_prepare',()=>withPolicyAuditRecovery(config.databaseUrl, () => withQueryableTransaction(pool, db => withCheckpointDecisionOwner(db, space, [r.proposal_id], async () => {
-        await assertLease(db);
+        await assertLease(db, true);
         const plan = await service.prepareCodePatchDecisionInTransaction(db, r.proposal_id, identity, r.phase, r.frozen_json.options);
         if (sha256Json(plan.payload) !== sha256Json(r.frozen_json.payload) || plan.snapshotId !== r.frozen_json.snapshotId || plan.root !== r.effect_json.root || plan.folder.protected !== r.effect_json.protectedFolder || sha256Json(plan.operations) !== sha256Json(r.effect_json.operations)) throw new CodePatchDecisionRefusal(409, 'Frozen code patch changed');
         if (r.status === 'failed') {
@@ -219,12 +237,13 @@ export async function executeCodePatchDecision(config: ServerConfig, id: string,
       }, identity.userId)))));
       return (await load(pool, id, space)).result_json;
     } catch (e) {
-      if (e instanceof JobDeferredError) throw e;
+      if (e instanceof JobDeferredError || e instanceof JobEffectLeaseLost) throw e;
       const current = await load(pool, id, space);
       if (current.status === 'succeeded') return current.result_json;
+      await assertLease();
       await pool.query('UPDATE code_patch_decisions SET error=$2 WHERE id=$1', [id, e instanceof Error ? e.message : String(e)]);
       if(e instanceof CodePatchDecisionRefusal)await pool.query("UPDATE code_patch_decisions SET status='compensating',result_json='{\"terminal_refusal\":true}'::jsonb WHERE id=$1",[id]);
-      await compensate(pool, r);
+      await compensate(pool, r, assertLease);
       if(e instanceof CodePatchDecisionRefusal)return {status:'failed',decision_id:id};
       throw e;
     }
@@ -238,7 +257,8 @@ export function registerCodePatchDecisionHandler(registry: JobHandlerRegistry, c
     await executeCodePatchDecision(config, j.payload.decision_id, j.space_id, {
       jobId: j.job_id,
       workerId: j.worker_id,
-      userId: j.user_id
+      userId: j.user_id,
+      attempts: j.attempts
     });
     return {
       decision_id: j.payload.decision_id,

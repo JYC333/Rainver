@@ -138,3 +138,23 @@ it('rejects conflicting path authority and unknown nested fields without writing
   }
   expect(await rows()).toEqual({plans:[],segments:[]});
 });
+
+it('propose-start submits one canonical start proposal per draft plan, replays it, and refuses a non-draft plan',async()=>{
+  const made=await create(payload());expect(made.statusCode,made.body).toBe(201);const plan=made.json().data.plan_id;
+  expect((await app.inject({method:'POST',url:`${base()}/${plan}/propose-start`})).statusCode).toBe(422);
+  const key=randomUUID(),first=await control(plan,'propose-start',key);
+  expect(first.statusCode,first.body).toBe(201);
+  const receipt=first.json().data;expect(receipt).toMatchObject({plan_id:plan,source_channel_id:channel,status:'proposed'});
+  const proposals=async()=>(await db.pool.query("SELECT id,status,created_by_user_id,payload_json->>'source_backfill_plan_id' AS plan FROM proposals WHERE proposal_type='source_backfill_start'")).rows;
+  expect(await proposals()).toEqual([{id:receipt.proposal_id,status:'pending',created_by_user_id:owner,plan}]);
+  expect((await control(plan,'propose-start',key)).json()).toEqual(first.json());
+  // A new key for the already proposed plan returns the same pending proposal (domain idempotency); nothing is applied.
+  expect((await control(plan,'propose-start')).json().data.proposal_id).toBe(receipt.proposal_id);
+  expect(await proposals()).toHaveLength(1);
+  expect((await db.pool.query('SELECT status FROM source_backfill_plans WHERE id=$1',[plan])).rows[0].status).toBe('proposed');
+  await db.pool.query("UPDATE source_backfill_plans SET status='approved' WHERE id=$1",[plan]);
+  const refused=await control(plan,'propose-start');expect(refused.statusCode).toBe(409);
+  // Another member without Source management sees nothing.
+  const member=randomUUID();await seedSpaceMember(db.pool,{space,user:member,role:'member'});__setAuthIdentityForTests({spaceId:space,userId:member});
+  expect((await control(plan,'propose-start')).statusCode).toBe(404);
+});

@@ -57,14 +57,15 @@ export async function enqueueRetrievalEmbeddingBackfillWithQueue(
   queue: RetrievalEmbeddingBackfillQueue,
   input: RetrievalEmbeddingBackfillEnqueueInput,
 ): Promise<RetrievalEmbeddingBackfillEnqueueResult> {
-  // Debounce: a still-queued (unclaimed) backfill for this space is reused
+  // Debounce: a pending (unclaimed) backfill for this space and payer is reused
   // rather than duplicated. A *running* job already claimed its batch, so
   // chunks written after it started still need a fresh job — only 'queued'
   // jobs coalesce. Race-tolerant: a rare double-insert just yields two jobs,
   // which the claim model handles safely.
   const existing = await queue.listJobs({
     space_id: input.spaceId,
-    status: "queued",
+    user_id: input.userId,
+    status: "pending",
     job_type: RETRIEVAL_EMBEDDING_JOB,
     limit: 1,
     offset: 0,

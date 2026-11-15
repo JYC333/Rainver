@@ -1,58 +1,37 @@
+import {registerSkillSourceResultRoute} from './sourceRequests.js';
+import {registerOperationAdapters} from '../systemActions/operations/routeAdapter.js';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import * as protocol from "@rainver/protocol";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
-  jsonBody,
   optionalString,
   parsePage,
   params,
   query,
   resolveIdentity as resolveRouteIdentity,
   sendRouteError,
-  HttpError,
   type SpaceUserIdentity,
 } from "../routeUtils/common.js";
 import { PgSkillsRepository } from "./repository.js";
-import { SkillsService, resolveSkillImportPreview } from "./service.js";
-import { scanHostSkillSource } from "./skillHostImport.js";
-import { type SkillFetcher, type SkillImportOptions } from "./skillImporter.js";
-
-type SkillsRepositoryFactory = (context: ModuleContext) => PgSkillsRepository;
-type CapabilitiesIdentityOverride =
-  | SpaceUserIdentity
-  | ((request: FastifyRequest) => Promise<SpaceUserIdentity | null> | SpaceUserIdentity | null);
-
-let repositoryFactoryOverride: SkillsRepositoryFactory | null = null;
-let identityOverride: CapabilitiesIdentityOverride | null = null;
-let importOptionsOverride: SkillFetcher | SkillImportOptions | null = null;
-
-export function __setSkillsRepositoryFactoryForTests(
-  factory: SkillsRepositoryFactory | null,
-): void {
-  repositoryFactoryOverride = factory;
-}
-
-export function __setSkillsIdentityForTests(
-  identity: CapabilitiesIdentityOverride | null,
-): void {
-  identityOverride = identity;
-}
-
-export function __setSkillsFetcherForTests(
-  importOptions: SkillFetcher | SkillImportOptions | null,
-): void {
-  importOptionsOverride = importOptions;
-}
+import { SkillsService } from "./service.js";
 
 function repository(context: ModuleContext): PgSkillsRepository {
-  return repositoryFactoryOverride?.(context) ?? PgSkillsRepository.fromConfig(context.config);
+  return PgSkillsRepository.fromConfig(context.config);
 }
-
 function service(context: ModuleContext): SkillsService {
-  return new SkillsService(repository(context), importOptionsOverride ?? undefined, context.config);
+  return new SkillsService(repository(context),undefined,context.config);
 }
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
+  registerSkillSourceResultRoute(app,context);
+  registerOperationAdapters(app,context.config,[
+    {method:'POST',url:'/api/v1/skill-sources/hosts/:hostId/scan',operation:'skill.source.scan',params:{hostId:'host_id'}},
+    {method:'POST',url:'/api/v1/skill-sources/import-preview',operation:'skill.source.preview',bodyLimit:5*1024*1024},
+    {method:'POST',url:'/api/v1/skill-sources/import',operation:'skill.source.import',bodyLimit:5*1024*1024},
+    {method:'PUT',url:'/api/v1/skills/:skillPackageId/local-overlay',operation:'skill.overlay.upsert',params:{skillPackageId:'skill_package_id'}},
+    {method:'POST',url:'/api/v1/skill-packages/:skillPackageId/binding-proposal',operation:'skill.binding.propose',params:{skillPackageId:'skill_package_id'}},
+    {method:'POST',url:'/api/v1/skill-packages/:skillPackageId/review-proposal',operation:'skill.review.propose',params:{skillPackageId:'skill_package_id'}},
+  ]);
   app.get("/api/v1/skills/available", async (request, reply) => {
     const identity = await resolveIdentity(context, request, reply);
     if (!identity) return reply;
@@ -89,55 +68,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       );
       if (!overlay) return reply.code(404).send({ detail: "Skill local overlay not found" });
       return reply.send(protocol.SkillLocalOverlaySchema.parse(overlay));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.put("/api/v1/skills/:skillPackageId/local-overlay", async (request, reply) => {
-    const identity = await resolveIdentity(context, request, reply);
-    if (!identity) return reply;
-    try {
-      const parsed = protocol.SkillLocalOverlayUpsertRequestSchema.safeParse(jsonBody(request));
-      if (!parsed.success) {
-        throw new HttpError(422, parsed.error.issues[0]?.message ?? "invalid skill overlay request");
-      }
-      const overlay = await service(context).upsertSkillLocalOverlay(
-        identity,
-        params(request).skillPackageId ?? "",
-        parsed.data,
-      );
-      return reply.send(protocol.SkillLocalOverlaySchema.parse(overlay));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.post("/api/v1/skill-sources/hosts/:hostId/scan", async (request, reply) => {
-    const identity = await resolveIdentity(context, request, reply);
-    if (!identity) return reply;
-    try { return reply.send(await scanHostSkillSource(context.config, identity, params(request).hostId ?? "")); }
-    catch (error) { return sendRouteError(reply, error); }
-  });
-
-  app.post("/api/v1/skill-sources/import-preview", { bodyLimit: 5 * 1024 * 1024 }, async (request, reply) => {
-    const identity = await resolveIdentity(context, request, reply);
-    if (!identity) return reply;
-    try {
-      const body = jsonBody(request);
-      const preview = await resolveSkillImportPreview(body, importOptionsOverride ?? undefined, identity, context.config);
-      const { raw_content: _rawContent, package_contents: _contents, ...responseBody } = preview;
-      return reply.send(responseBody);
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.post("/api/v1/skill-sources/import", { bodyLimit: 5 * 1024 * 1024 }, async (request, reply) => {
-    const identity = await resolveIdentity(context, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.code(201).send(await service(context).importSkill(identity, jsonBody(request)));
     } catch (error) {
       return sendRouteError(reply, error);
     }
@@ -187,30 +117,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     } catch (error) { return sendRouteError(reply, error); }
   });
 
-  app.post("/api/v1/skill-packages/:skillPackageId/binding-proposal", async (request, reply) => {
-    const identity = await resolveIdentity(context, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.code(201).send(await repository(context).createSkillBindingProposal(
-        identity, params(request).skillPackageId ?? "", jsonBody(request)));
-    } catch (error) { return sendRouteError(reply, error); }
-  });
-
-  app.post("/api/v1/skill-packages/:skillPackageId/review-proposal", async (request, reply) => {
-    const identity = await resolveIdentity(context, request, reply);
-    if (!identity) return reply;
-    try {
-      const result = await service(context).createSkillReviewProposal(
-        identity,
-        params(request).skillPackageId ?? "",
-        jsonBody(request),
-      );
-      // 200 when the caller's pending proposal for this snapshot is returned.
-      return reply.code(result.created ? 201 : 200).send(result.proposal);
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
 }
 
@@ -219,10 +125,5 @@ async function resolveIdentity(
   request: FastifyRequest,
   reply: FastifyReply,
 ): Promise<SpaceUserIdentity | null> {
-  if (identityOverride) {
-    return typeof identityOverride === "function"
-      ? identityOverride(request)
-      : identityOverride;
-  }
   return resolveRouteIdentity(context.config, request, reply);
 }

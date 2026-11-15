@@ -1,3 +1,4 @@
+import {waitForBlockedBy} from './support/lockWait.js';
 import { randomUUID } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { rm } from "node:fs/promises";
@@ -343,6 +344,8 @@ describe("plugin installation keeps its authority until the install commits", ()
       await work;
       expect(await revoking).toEqual({ status: "succeeded" });
     } finally {
+      await blocker.query("ROLLBACK");
+      await revoker.query("ROLLBACK");
       blocker.release();
       revoker.release();
     }
@@ -360,10 +363,12 @@ describe("plugin installation keeps its authority until the install commits", ()
       await revoker.query("BEGIN");
       await revoker.query(`UPDATE users SET email='former-admin@example.test' WHERE id=$1`, [OWNER]);
       const work = commands.process();
-      await waitForLockWait("%FOR SHARE OF m,u%");
+      const pid=Number((await revoker.query('SELECT pg_backend_pid() AS pid')).rows[0].pid);
+      await waitForBlockedBy(db.pool,pid);
       await revoker.query("COMMIT");
       await work;
     } finally {
+      await revoker.query("ROLLBACK");
       revoker.release();
     }
     expect((await db.pool.query(`SELECT status,error_code FROM system_command_intents WHERE id=$1`, [accepted.id])).rows)

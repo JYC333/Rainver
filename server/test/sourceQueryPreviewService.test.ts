@@ -48,12 +48,17 @@ describe('SourceQueryPreviewService', () => {
       return { status: 200, ok: true, notModified: false, headers: new Headers(), contentType: 'application/atom+xml', isText: true, isPdf: false, text: feed, bytes: null }
     })
 
-    const result = await service.preview(identity, { provider_key: 'arxiv', query: { mode: 'search', search_query: 'agent memory' } })
+    // Admission (the command transaction) spends the shared quota; the external request spends none.
+    const intent = await service.admit(identity, { provider_key: 'arxiv', query: { mode: 'search', search_query: 'agent memory' } })
+    expect(intent).toEqual({ provider_key: 'arxiv', query: { mode: 'search', search_query: 'agent memory' } })
+    expect(statements.some(sql => sql.startsWith('INSERT INTO source_quota_buckets'))).toBe(true)
+    expect(statements.some(sql => sql.startsWith('UPDATE source_quota_buckets SET used_count'))).toBe(true)
+    statements.length = 0
+    const result = await service.preview(identity, intent)
 
     expect(result).toMatchObject({ compiled_query: 'all:"agent memory"', approximate_hit_count: 42 })
     expect(result.samples[0]?.title).toBe('Agent memory systems')
-    expect(statements.some(sql => sql.startsWith('INSERT INTO source_quota_buckets'))).toBe(true)
-    expect(statements.some(sql => sql.startsWith('UPDATE source_quota_buckets SET used_count'))).toBe(true)
+    expect(statements.some(sql => /source_quota_buckets/.test(sql))).toBe(false)
     expect(statements.some(sql => /INSERT INTO source_channels|INSERT INTO source_items/.test(sql))).toBe(false)
   })
 

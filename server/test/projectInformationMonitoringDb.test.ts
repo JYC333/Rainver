@@ -259,7 +259,7 @@ describe('Project bounded manual information monitoring', () => {
     expect(state.latest_run?.progress.reason).not.toBe('processing_failed');
     expect(state.active?.config.language).toBe('中文');
     expect(state.candidates).toHaveLength(2);
-    expect(state.candidates.filter(c => c.recommended).map(c => c.title)).toEqual(['Reliable agents']);
+    expect(state.candidates.filter(c => c.recommended).map(c => c.title),JSON.stringify((await db.pool.query('SELECT status,wait_reason,error_json FROM source_item_annotations WHERE space_id=$1',[space])).rows)).toEqual(['Reliable agents']);
     expect(state.candidates.find(c => !c.recommended)?.reason).toContain('Excluded');
     expect(annotationCalls).toBe(1);
     expect(relevanceCalls).toBe(1);

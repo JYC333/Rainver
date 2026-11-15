@@ -527,6 +527,9 @@ export const RetrievalExplainResponseSchema = z
     trace: RetrievalTraceSummarySchema,
     diagnostic_codes: z.array(RetrievalEvalDiagnosticCodeSchema).max(50),
     artifact_id: IdSchema.optional(),
+    // Set instead of artifact_id when the report was not persisted because its
+    // target or the maintenance role was withdrawn before settlement.
+    artifact_error: z.literal("retrieval_explain_persist_withheld").optional(),
     ...SecretResponseGuards,
   })
   .passthrough();

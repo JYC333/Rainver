@@ -1,3 +1,5 @@
+import { PgProjectAgentRepository } from "../src/modules/projects/projectAgents.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 import {randomUUID} from 'node:crypto';
 import {afterEach,beforeEach,describe,expect,it} from 'vitest';
 import {useTestDatabase} from './support/testDatabase.js';
@@ -92,5 +94,44 @@ describe('direct Agent turns (real PostgreSQL)',()=>{
   expect((await retry(key)).json()).toEqual(retried.json());
   expect((await db.pool.query("SELECT model_override_json->'chat_turn' AS turn FROM runs WHERE id=$1",[data.run_id])).rows[0].turn).toMatchObject({retry_of_run_id:first.run_id,restore_managed_workspace:{include_workspace:true}});
   expect(await count('runs')).toBe(2);
+ });
+});
+
+
+describe('reusable Project Agent turns (real PostgreSQL)', () => {
+ it('dispatches and retries in the selected Project, then refuses both after original Agent access is revoked', async () => {
+  const projectOwner = randomUUID(), projectB = randomUUID();
+  await seedSpaceMember(db.pool, {space, user: projectOwner});
+  await db.pool.query("UPDATE spaces SET type='team' WHERE id=$1", [space]);
+  await db.pool.query("UPDATE projects SET owner_user_id=$2 WHERE id=$1", [project, projectOwner]);
+  await db.pool.query("INSERT INTO project_members(id,space_id,project_id,user_id,role,status,created_at,updated_at) VALUES($1,$2,$3,$4,'member','active',now(),now())", [randomUUID(), space, project, owner]);
+  await db.pool.query("INSERT INTO projects(id,space_id,owner_user_id,name,status,created_at,updated_at) VALUES($1,$2,$3,'Second','active',now(),now())", [projectB, space, owner]);
+  await seedMainlineRoomsForAllProjects(db.pool);
+  await db.pool.query("UPDATE agents SET access_project_id=$2 WHERE id=$1", [agent, project]);
+  for (const projectId of [project, projectB]) await new PgProjectAgentRepository(db.pool).upsertActive({spaceId: space, projectId, agentId: agent, userId: owner});
+  const a = await send({message:'First Project', project_id: project});
+  const b = await send({message:'Second Project', project_id: projectB});
+  expect(a.statusCode,a.body).toBe(202);
+  expect(b.statusCode,b.body).toBe(202);
+  const first = b.json().data as {session_id: string; run_id: string; user_message_id: string};
+  const runScope = async (id: string) => (await db.pool.query("SELECT project_id,host_task_thread_id FROM runs WHERE id=$1", [id])).rows[0];
+  const scopeA = await runScope(a.json().data.run_id), scopeB = await runScope(first.run_id);
+  expect(scopeA.project_id).toBe(project);
+  expect(scopeB.project_id).toBe(projectB);
+  expect(scopeA.host_task_thread_id).not.toBe(scopeB.host_task_thread_id);
+  await db.pool.query("UPDATE runs SET status='failed' WHERE id=$1", [first.run_id]);
+  await db.pool.query("UPDATE host_threads SET dispatch_lock_id=NULL WHERE id=$1", [scopeB.host_task_thread_id]);
+  const retry = () => app.inject({method:'POST',url:`/api/v1/agents/${agent}/chat/retry`,payload:{run_id:first.run_id},headers:{'idempotency-key':randomUUID()}});
+  const retried = await retry();
+  expect(retried.statusCode,retried.body).toBe(202);
+  expect(await runScope(retried.json().data.run_id)).toEqual(scopeB);
+  expect(retried.json().data.user_message_id).toBe(first.user_message_id);
+  await db.pool.query("UPDATE runs SET status='failed' WHERE id=$1", [retried.json().data.run_id]);
+  await db.pool.query("UPDATE host_threads SET dispatch_lock_id=NULL WHERE id=$1", [scopeB.host_task_thread_id]);
+  const before = [await count('runs'),await count('messages')];
+  await db.pool.query("UPDATE project_members SET status='revoked' WHERE project_id=$1 AND user_id=$2", [project, owner]);
+  expect((await retry()).statusCode).toBe(404);
+  expect((await send({message:'Cannot use old access',project_id:projectB})).statusCode).toBe(404);
+  expect([await count('runs'),await count('messages')]).toEqual(before);
  });
 });

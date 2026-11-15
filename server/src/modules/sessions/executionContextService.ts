@@ -1,3 +1,9 @@
+import { ConversationExecutionContextError } from "./executionContextError.js";
+export { ConversationExecutionContextError } from "./executionContextError.js";
+import { prepareConversationParticipants } from "./conversationParticipantSelection.js";
+import { PgRoomRepository } from "../rooms/repository.js";
+import { PgConversationBackendRepository } from "./conversationBackendRepository.js";
+import { reconcileSavedSessionConfig } from "./sessionConfig.js";
 import type {
   ConversationAttachmentMutation,
   ConversationAttachmentMutationResponse,
@@ -14,8 +20,8 @@ import type {
   ConversationRuntimeSelection,
   ConversationRuntimeChoice,
 } from "@rainver/protocol";
-import { HttpError, withQueryableTransaction, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
-import { assertProjectWriter } from "../projects/access.js";
+import { withQueryableTransaction, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
+import { assertProjectWriter, lockProjectAudience } from "../projects/access.js";
 import { PgHostRepository } from "../hosts/repository.js";
 import {locationIsOnline,runtimeAvailability,hostInstallationAvailability} from "./executionRuntimeAvailability.js";
 export {locationIsOnline} from "./executionRuntimeAvailability.js";
@@ -50,12 +56,6 @@ function draftContext(session: { space_id: string; id: string }): ExecutionConte
     git_execution_ready: null, git_observed_at: null, created_at: now, updated_at: now };
 }
 
-export class ConversationExecutionContextError extends HttpError {
-  constructor(statusCode: number, message: string) {
-    super(statusCode, message);
-    this.name = "ConversationExecutionContextError";
-  }
-}
 
 export class ConversationExecutionContextService {
   /** A Pool opens its own transactions; a client or core transaction port is joined. */
@@ -93,6 +93,10 @@ export class ConversationExecutionContextService {
     request: ConversationExecutionInitializeRequest,
   ): Promise<ConversationExecutionSummary> {
     return withQueryableTransaction(this.pool, async (client) => {
+      const admission = await new PgConversationExecutionContextRepository(client).getVisibleSession(identity,sessionId);
+      if (!admission) throw new ConversationExecutionContextError(404,"Conversation not found");
+      if (admission.project_id) await lockProjectAudience(client,identity.spaceId,admission.project_id);
+      if (admission.room_id && !await new PgRoomRepository(client).getVisibleRoom(identity.spaceId,identity.userId,admission.room_id,true)) throw new ConversationExecutionContextError(404,"Room not found");
       await new PgConversationRuntimeSessionRepository(client).lockConversation(
         identity.spaceId,
         sessionId,
@@ -100,9 +104,14 @@ export class ConversationExecutionContextService {
       const repository = new PgConversationExecutionContextRepository(client);
       const session = await repository.getVisibleSession(identity, sessionId, { forUpdate: true });
       if (!session) throw new ConversationExecutionContextError(404, "Conversation not found");
+      if (session.project_id) await assertProjectWriter(client, identity.spaceId, session.project_id, identity.userId);
       await new PgHostRepository(client).ensureServerHostId();
       const context = await repository.lockDraft(session);
       const requestedRuntimes = requestedRuntimeSelections(request);
+      const participantSelection = await prepareConversationParticipants(client, identity, session, context, request, requestedRuntimes);
+      request = participantSelection.request;
+      const defaults = participantSelection.defaults;
+
       if (context.state === "initialized") {
         for(const runtime of requestedRuntimes)await rebindConversationRuntime(client,{spaceId:identity.spaceId,userId:identity.userId,sessionId:session.id,agentId:runtime.agent_id,requestedProfileId:runtime.runtime_profile_id});
         await this.assertImmutableSelection(repository, session, context, request.selection, request.runtime);
@@ -114,7 +123,7 @@ export class ConversationExecutionContextService {
         }
         const participantAgentIds = await repository.listConversationParticipantAgentIds(session);
         for (const runtime of requestedRuntimes) {
-          if (!participantAgentIds.includes(runtime.agent_id)) {
+          if (!participantAgentIds.includes(runtime.agent_id) && !(request.participant_agent_ids?.includes(runtime.agent_id))) {
             throw new ConversationExecutionContextError(403, "The selected Agent is not a participant in this Conversation");
           }
         }
@@ -135,11 +144,11 @@ export class ConversationExecutionContextService {
           if (existingBinding) {
             const existingThread = await repository.getConversationThread(identity.spaceId, session.id, runtime.agent_id);
             if ((runtime.runtime_profile_id !== null && existingBinding.runtime_profile_id !== runtime.runtime_profile_id)
-              || existingThread?.runtime_key !== runtime.runtime_key
-              || existingThread?.runtime_installation !== runtime.runtime_installation) {
+              || existingThread && (existingThread.runtime_key !== runtime.runtime_key
+              || existingThread.runtime_installation !== runtime.runtime_installation)) {
               throw new ConversationExecutionContextError(409, "CLI runtime is fixed for this Conversation Agent; start a new Conversation to change it");
             }
-            continue;
+            if(existingThread)continue;
           }
           const selectedProfile = await this.resolveRuntime(repository, client, session, host, primary, runtime, identity.userId);
           await repository.bindRuntime({
@@ -204,7 +213,7 @@ export class ConversationExecutionContextService {
         throw new ConversationExecutionContextError(409, "The selected Git workspace is unavailable; refresh and try again");
       }
       const profile = await this.resolveRuntime(repository, client, session, host, primary, request.runtime, identity.userId);
-      const participantAgentIds = await repository.listConversationParticipantAgentIds(session);
+      const participantAgentIds = request.participant_agent_ids ?? await repository.listConversationParticipantAgentIds(session);
       for (const runtime of requestedRuntimes) {
         if (!participantAgentIds.includes(runtime.agent_id)) {
           throw new ConversationExecutionContextError(403, "The selected Agent is not a participant in this Conversation");
@@ -226,12 +235,15 @@ export class ConversationExecutionContextService {
         if (!await repository.canAgentParticipate(session, agentId, identity.userId)) {
           throw new ConversationExecutionContextError(403, "A participant Agent in this Conversation is not accessible to you");
         }
-        const candidates = (await repository.listRuntimeProfiles(identity.spaceId, agentId)).filter((candidate) =>
+        const defaultProfileId = defaults.find(item=>item.agent_id===agentId)?.runtime_profile_id;
+        const candidates = (await repository.listRuntimeProfiles(identity.spaceId, agentId, session.project_id)).filter((candidate) =>
           candidate.execution_host_id === host.id
           && candidate.workspace_mode === primary.kind
           && (primary.kind !== "location" || candidate.workspace_location_id === primary.locationId)
           && hostInstallationAvailability(host, candidate.runtime_key, candidate.runtime_installation).usable,
         );
+        const preferred = candidates.find(candidate=>candidate.id===defaultProfileId);
+        if (preferred) candidates.splice(0,candidates.length,preferred);
         if (candidates.length !== 1) {
           throw new ConversationExecutionContextError(
             409,
@@ -272,6 +284,12 @@ export class ConversationExecutionContextService {
           agentId: participant.agent_id,
           profileId: participant.id,
         });
+        const initialDefault = defaults.find(item=>item.agent_id===participant.agent_id && item.runtime_profile_id===participant.id);
+        if (initialDefault) {
+          const backends = new PgConversationBackendRepository(client);
+          const option=(await backends.listOptions(identity.spaceId,identity.userId,participant.agent_id,session.project_id)).find(option=>option.runtime_profile_id===participant.id);
+          await backends.saveSessionConfig(identity.spaceId,session.id,participant.agent_id,reconcileSavedSessionConfig(initialDefault.session_config,option?.session_config_options??[]).selections);
+        }
         const thread = await threads.getOrCreateForConversationAgent({
           executionHostId: host.id,
           workspaceMode: primary.kind,
@@ -455,7 +473,9 @@ export class ConversationExecutionContextService {
     const locations = (await repository.listProjectLocations(identity.spaceId, session.project_id))
       .filter((location) => !location.host_owner_user_id || location.host_owner_user_id === identity.userId);
     const activeLocations = locations.filter((location) => location.status === "active");
-    const participantAgents = await repository.listConversationParticipantAgents(session);
+    const participantAgents = await repository.listConversationParticipantAgents(session, true);
+    const roomDefaults = session.room_id ? (await new PgRoomRepository(this.pool).getVisibleRoom(identity.spaceId,identity.userId,session.room_id))?.conversation_defaults_json??[] : [];
+
     const participantAgentIds = participantAgents.map((agent) => agent.agent_id);
     // Room membership determines who participates, while the canonical Agent
     // access predicate determines whose runtime metadata this user may see.
@@ -468,8 +488,17 @@ export class ConversationExecutionContextService {
       }
     }
     const rawRuntimeProfiles = (await Promise.all(
-      visibleParticipantAgentIds.map((agentId) => repository.listRuntimeProfiles(identity.spaceId, agentId)),
+      visibleParticipantAgentIds.map((agentId) => repository.listRuntimeProfiles(identity.spaceId, agentId, session.project_id)),
     )).flat();
+    const retainedBindings = new Map<string,string>();
+    const retainedThreads = new Set<string>();
+    if (context.state==='initialized') for (const agentId of visibleParticipantAgentIds) {
+      const binding = await repository.getBinding(identity.spaceId,session.id,agentId);
+      if (binding) {
+        retainedBindings.set(agentId,binding.runtime_profile_id);
+        if (await repository.getConversationThread(identity.spaceId,session.id,agentId)) retainedThreads.add(agentId);
+      }
+    }
     const availableRuntimeProfiles: ConversationExecutionRuntimeProfile[] = rawRuntimeProfiles.map((profile) => {
       const host = profile.execution_host_id
         ? hosts.find((candidate) => candidate.id === profile.execution_host_id) ?? null
@@ -490,7 +519,8 @@ export class ConversationExecutionContextService {
         execution_host_id: profile.execution_host_id,
         workspace_mode: profile.workspace_mode,
         workspace_location_id: profile.workspace_location_id,
-        preferred: profile.is_default,
+        retained_binding: retainedBindings.get(profile.agent_id)===profile.id,
+        preferred: roomDefaults.find(item=>item.agent_id===profile.agent_id)?.runtime_profile_id ? roomDefaults.find(item=>item.agent_id===profile.agent_id)?.runtime_profile_id===profile.id : profile.is_default,
         usable: availability.usable,
         reason: availability.reason,
       } satisfies ConversationExecutionRuntimeProfile;
@@ -643,7 +673,7 @@ export class ConversationExecutionContextService {
       : defaultPrimary?.kind === "managed"
         ? managedGitSnapshot()
         : null;
-    const summary = this.summaryFromParts(context, session.id, host ? hostSummary(host, session.id) : null, pinnedRuntimeChoice(runtime), primary, git, await repository.listAttachments(identity.spaceId, session.id), runtimes);
+    const summary = {...await repository.participationSnapshot(session), ...this.summaryFromParts(context, session.id, host ? hostSummary(host, session.id) : null, pinnedRuntimeChoice(runtime), primary, git, await repository.listAttachments(identity.spaceId, session.id), runtimes)};
     const blockedReason = primary?.kind==='location'&&summary.host?.isolated_workspaces_available===false?'execution_workspace_host_upgrade_required':context.state === "initialized"
       ? initializedBlockReason(summary, initializedRuntimeAvailability)
       : draftBlockReason(host, defaultPrimary, primaryLocation, runtime, hosts, executableLocations, usableRuntimeCandidates);
@@ -659,6 +689,7 @@ export class ConversationExecutionContextService {
       },
       available_hosts: hosts.map((candidate) => hostSummary(candidate, session.id)),
       available_runtime_profiles: availableRuntimeProfiles,
+      available_participant_agents: visibleParticipantAgentIds.map(agent_id => ({agent_id, retained_thread:retainedThreads.has(agent_id)})),
       available_primary_locations: activeLocations.map((location) => ({
         workspace_location_id: location.id,
         project_folder_id: location.project_folder_id,
@@ -695,7 +726,7 @@ export class ConversationExecutionContextService {
       : primary?.kind === "managed"
         ? managedGitSnapshot()
         : null;
-    return this.summaryFromParts(context, session.id, host ? hostSummary(host, session.id) : null, pinnedRuntimeChoice(runtime), primary, git, await repository.listAttachments(identity.spaceId, session.id), runtimes);
+    return {...await repository.participationSnapshot(session), ...this.summaryFromParts(context, session.id, host ? hostSummary(host, session.id) : null, pinnedRuntimeChoice(runtime), primary, git, await repository.listAttachments(identity.spaceId, session.id), runtimes)};
   }
 
   private summaryFromParts(
@@ -732,8 +763,8 @@ export class ConversationExecutionContextService {
     context: ExecutionContextRow,
     requested?: ConversationRuntimeChoice | null,
   ): Promise<ConversationRuntimeSelection | null> {
-    const agentId = requested?.agent_id ?? await repository.resolveConversationAgent(identity.spaceId, session.id, session.project_id);
-    if (!agentId) return null;
+    const agentId = await repository.resolveConversationAgent(identity.spaceId, session.id, session.project_id);
+    if (!agentId || !(await repository.listConversationParticipantAgentIds(session)).includes(agentId)) return null;
     if (!await repository.canAgentParticipate(session, agentId, identity.userId)) return null;
     const binding = await repository.getBinding(identity.spaceId, session.id, agentId);
     const thread = await repository.getConversationThread(identity.spaceId, session.id, agentId);
@@ -763,7 +794,13 @@ export class ConversationExecutionContextService {
       const profile=await repository.getRuntimeProfile(identity.spaceId,binding.agent_id,binding.runtime_profile_id);
       const target=profile&&context&&matchesConversationWorkspace(profile,context)?profile:thread;
       const changed=target.runtime_key!==thread.runtime_key||target.runtime_installation!==thread.runtime_installation;
+      const backends = new PgConversationBackendRepository(repository.db);
+      const options = (await backends.listOptions(identity.spaceId,identity.userId,binding.agent_id,session.project_id))
+        .find(option=>option.runtime_profile_id===binding.runtime_profile_id)?.session_config_options??[];
+      const effectiveConfig = reconcileSavedSessionConfig(await backends.sessionConfig(identity.spaceId,session.id,binding.agent_id),options);
       runtimes.push({
+        session_config: effectiveConfig.selections,
+        session_config_dropped: effectiveConfig.dropped.length>0,
         agent_id: binding.agent_id,
         runtime_profile_id: binding.runtime_profile_id,
         runtime_key: target.runtime_key,
@@ -852,6 +889,7 @@ export class ConversationExecutionContextService {
       }
       const ensured = await new PgAgentRepository(this.pool).ensureHostRuntimeProfileInTransaction(db, {
         spaceId: session.space_id,
+        projectId: session.project_id,
         agentId: runtime.agent_id,
         actorUserId: userId,
         executionHostId: host.id,

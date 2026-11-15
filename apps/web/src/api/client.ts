@@ -1,14 +1,26 @@
+import type {ResearchQueryEvaluationResult,ResearchQueryEvaluationAcceptedJob} from '@rainver/protocol'
 import {ProjectUpdateFrameSchema} from '@rainver/protocol'
 import type { ApiPlanUsageProvider, ApiPlanUsageSnapshot } from '@rainver/protocol'
 import {INQUIRY_OPERATION_SCHEMAS} from '@rainver/protocol';
 import type { RunLiveInputAvailability, RunLiveInputRequest, RunLiveInputResult } from "@rainver/protocol"
 import type {OperationId,OperationInput,OperationOutput,OperationOutcome} from "@rainver/protocol"
 import type { ProjectMember, ProjectMemberInput } from "@rainver/protocol"
+import type { ProjectAgent, ProjectAgentCandidatesResponse, ProjectAgentListResponse, ProjectRoomsResponse } from "@rainver/protocol"
+
+/** `limit`/`offset`/`q` as a query string, omitting what was not given. */
+function pageQuery(params: Record<string, string | number | undefined>): URLSearchParams {
+  const query = new URLSearchParams()
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === '') continue
+    query.set(key, String(value))
+  }
+  return query
+}
 import type { InstanceInvitationResponse } from "@rainver/protocol"
 import type {ProblemProjectionSchema,ProblemWorkRequest,ProblemCloseRoundRequest,ResearchResultSchema} from "@rainver/protocol"
 import type {ProblemLinkedTasksPage,TaskInquiryThreadsPage,ProblemTaskResult,TaskWorkHistoryPage} from "@rainver/protocol"
 import type { ReaderDocumentNoteResponse, ReaderAnnotationRangeUpdate } from "@rainver/protocol"
-import type { Briefing, BriefingAdoptionPreview, BriefingAdoptionResult, BriefingFollowUpPreview, BriefingGenerateResponse, BriefingOverviewResponse, ReaderAppearance, ReaderPositionResult, ReaderPositionWrite, ReadingPage, ReadingQuery, ReadingStateRequest } from '@rainver/protocol'
+import type { Briefing, BriefingAdoptionPreview, BriefingFollowUpPreview, BriefingOverviewResponse, ReaderAppearance, ReaderPositionResult, ReaderPositionWrite, ReadingPage, ReadingQuery, ReadingStateRequest } from '@rainver/protocol'
 import type { RunFilePreview } from "@rainver/protocol"
 import type { ProjectMonitoringState,ProjectMonitoringConfig,MonitoringVersion } from "@rainver/protocol";
 import { mergeAbortSignals } from '../lib/mergeAbortSignals'
@@ -31,7 +43,6 @@ import type {
   ProjectWorkUpdatesResponse,
   TaskWorkView,
   ActivityInboxRecord,
-  ActivitySourceType,
   AgentConfigUpdateBody,
   AgentCreateBody,
   AgentOut,
@@ -55,7 +66,6 @@ import type {
   AutomationUpdateBody,
   Board,
   CaptureRequest,
-  CaptureResponse,
   ChatTurnAccepted,
   ChatTurnRequest,
   DeploymentJob,
@@ -99,14 +109,9 @@ import type {
   RoomAgentCandidatesResponse,
   RoomAgentMutationResponse,
   RoomAgentPresetRequest,
-  CrossSpaceEgressDisclosure,
-  CrossSpaceFusedStoreResponse,
-  CrossSpaceResolveResponse,
   CrossSpaceRetrievalRequest,
-  CrossSpaceRetrievalResponse,
   CurrentUser,
   CustomSourceActivationResult,
-  CustomSourceCreateDraftRequest,
   CustomSourceCredentialDTO,
   CustomSourceHandlerRun,
   CustomSourceHandlerSummary,
@@ -119,8 +124,6 @@ import type {
   DailyCaptureReportSettingOut,
   DailyCaptureReportSettingUpdate,
   DailyReportArtifactItem,
-  DailyReportRunRequest,
-  DailyReportRunResponse,
   EgressApprovalRequest,
   EntityLink,
   EvidenceLink,
@@ -171,7 +174,6 @@ import type {
   InformationDigestBackfillResult,
   InformationDigestLookup,
   SourceAnnotationEpisode,
-  SourceAnnotationRetryResult,
   InquiryCandidate,
   InquiryDeltaBriefContent,
   InquiryEvidenceSignal,
@@ -193,7 +195,6 @@ import type {
   KnowledgeSourceSummary,
   KnowledgeSummary,
   KnowledgeUpdateProposalBody,
-  MaterializedResearchStrategy,
   Memory,
   MemoryMaintenanceJob,
   MemoryMaintenanceJobRunResponse,
@@ -231,12 +232,9 @@ import type {
   PersonalMemoryGrantAuditResponse,
   PersonalMemoryGrantCreateRequest,
   PersonalMemoryGrantPreviewRequest,
-  PersonalMemoryGrantPreviewResponse,
   PersonalMemoryGrantResponse,
-  PlanBudgetSource,
   PlanDetail,
   PlanExecuteBody,
-  PlanExecutionResult,
   PlanSummary,
   Project,
   ProjectBriefVersion,
@@ -275,7 +273,7 @@ import type {
   PromptAssetSummary,
   PromptDeploymentRef,
   PromptEvaluationRequest,
-  PromptEvaluationResult,
+  PromptAssetScopeType,
   PromptPromotionRequestInput,
   PromptPromotionResult,
   PromptRenderPreviewRequest,
@@ -285,19 +283,13 @@ import type {
   PromptVersion,
   PromptVersionCreateRequest,
   Proposal,
-  ProposalAcceptOut,
-  CodePatchDecisionReceipt,
-  ProposalApprovalResponse,
   ReaderAnnotation,
   ReaderAnnotationCreate,
   ReaderAnnotationsResponse,
   ReaderAnnotationUpdate,
-  ReaderComment,
   ReaderCommentCreate,
   ReaderCommentThread,
   ReaderCommentUpdate,
-  ReaderCreatedEvidence,
-  ReaderCreatedProposal,
   ReaderCreateEvidenceRequest,
   ReaderCreateProposalRequest,
   ReaderDocumentPayload,
@@ -307,12 +299,11 @@ import type {
   RelationDiscoveryScanResponse,
   RelocationPreview,
   RelocationRequest,
-  RelocationResponse,
   ResearchArea,
   ResearchChecklistItem,
   ResearchEvidenceCard,
   ResearchProviderKey,
-  ResearchQueryStrategy,
+
   ResearchReadingList,
   ResolvedEvolvableAssetVersion,
   RetrievalBriefRequest,
@@ -382,7 +373,6 @@ import type {
   SourcePostProcessingBacklog,
   SourcePostProcessingBriefingDaySummary,
   SourcePostProcessingBriefingDetail,
-  SourcePostProcessingDecisionActionResult,
   SourcePostProcessingDecisionReviewStatus,
   SourcePostProcessingItemDecision,
   SourcePostProcessingItemRelevance,
@@ -397,8 +387,6 @@ import type {
   SourceRecipeCreateResponse,
   SourceRecipeDryRunResponse,
   SourceRecipePipelineBridgeRequest,
-  SourceRecipePipelineBridgeResponse,
-  SourceRecipePlanRequest,
   SourceRecipePlanResponse,
   SourceRecipeVersion,
   SourceRecommendation,
@@ -406,7 +394,6 @@ import type {
   SourceScheduleRule,
   SpaceAssistantSettingsOut,
   SpaceAssistantSettingsUpdate,
-  SpaceEgressNotificationSetting,
   SpaceInvitationOut,
   SpaceMember,
   SpaceMemberNotification,
@@ -419,8 +406,6 @@ import type {
   SpaceRetrievalSettingsUpdate,
   SpaceSnapshotDefaults,
   SpaceWithMembership,
-  SummaryRunOut,
-  SummaryRunRequest,
   Task,
   TaskArtifact,
   TaskProposal,
@@ -569,7 +554,6 @@ async function request<T = unknown>(method: string, path: string, body?: unknown
 const get   = <T>(path: string, options?: RequestOptions)                => request<T>('GET',    path, undefined, options)
 const post  = <T>(path: string, body?: unknown, options?: RequestOptions) => request<T>('POST',   path, body, options)
 const put   = <T>(path: string, body?: unknown, options?: RequestOptions) => request<T>('PUT',    path, body, options)
-const patch = <T>(path: string, body?: unknown, options?: RequestOptions) => request<T>('PATCH',  path, body, options)
 const del   = <T>(path: string, options?: RequestOptions)                => request<T>('DELETE', path, undefined, options)
 
 /** User-level aggregate: active Space never supplies authority or filters. */
@@ -602,12 +586,13 @@ export const agentAttentionApi = {
     const params = new URLSearchParams(Object.entries(identity).filter((entry): entry is [string, string] => entry[1] !== undefined))
     return get<AgentWorkItem>(`/me/agent-attention/item?${params}`, { ...options, includeSpaceContext: false })
   },
-  setReadState(body: AgentAttentionReadRequest, options: RequestOptions = {}) {
-    return patch<AgentAttentionReadState>('/me/agent-attention/read-state', AgentAttentionReadRequestSchema.parse(body), { ...options, includeSpaceContext: false })
+  async setReadState(body: AgentAttentionReadRequest, options: RequestOptions = {}):Promise<AgentAttentionReadState> {
+    const receipt=await operationAt<OperationOutput<'attention.read_state.change'>>('PATCH','/me/agent-attention/read-state',AgentAttentionReadRequestSchema.parse(body),options.idempotencyKey??crypto.randomUUID(),{...options,includeSpaceContext:false})
+    return receipt.state
   },
   /** A conversation surface displayed these messages; the server decides what that reads. */
   recordViews(body: AgentAttentionViewRequest, options: RequestOptions = {}) {
-    return post<AgentAttentionViewResult>('/me/agent-attention/views', AgentAttentionViewRequestSchema.parse(body), { ...options, includeSpaceContext: false })
+    return operationAt<OperationOutput<'attention.views.record'>>('POST','/me/agent-attention/views',AgentAttentionViewRequestSchema.parse(body),options.idempotencyKey??crypto.randomUUID(),{...options,includeSpaceContext:false}).then(({read_count,read_states}):AgentAttentionViewResult=>({read_count,read_states}))
   },
 }
 
@@ -905,14 +890,18 @@ async function postChatTurn(
 export const contentAccessApi = {
   get: (resourceType: string, resourceId: string) =>
     get<ContentAccessPolicy>(`/content-access/${encodeURIComponent(resourceType)}/${encodeURIComponent(resourceId)}`),
-  update: (resourceType: string, resourceId: string, body: ContentAccessUpdate) =>
-    put<ContentAccessPolicy>(`/content-access/${encodeURIComponent(resourceType)}/${encodeURIComponent(resourceId)}`, body),
+  /** Keyed command, then the policy reread under current access (Memory answers with its new version's id). */
+  update: async (resourceType: string, resourceId: string, body: ContentAccessUpdate, idempotencyKey: string = crypto.randomUUID()): Promise<ContentAccessPolicy> => {
+    const receipt = await commandReceipt('content.access.update', { ...body, resource_type: resourceType, resource_id: resourceId }, idempotencyKey)
+    return contentAccessApi.get(receipt.resource_type, receipt.resource_id)
+  },
   accessLogs: (resourceType: string, resourceId: string, limit = 50, offset = 0) =>
     get<ContentAccessLogList>(`/content-access/${encodeURIComponent(resourceType)}/${encodeURIComponent(resourceId)}/access-logs?limit=${limit}&offset=${offset}`),
-  discloseDemotion: (resourceType: string, resourceId: string, targetVisibility: Exclude<ContentVisibility, 'space_shared'>) =>
-    post<ContentDemotionDisclosure>(`/content-access/${encodeURIComponent(resourceType)}/${encodeURIComponent(resourceId)}/demotion-disclosures`, {
-      target_visibility: targetVisibility,
-    }),
+  /** Keyed disclosure command; the recorded exposure is read back by its owner-only reader. */
+  discloseDemotion: async (resourceType: string, resourceId: string, targetVisibility: Exclude<ContentVisibility, 'space_shared'>, idempotencyKey: string = crypto.randomUUID()): Promise<ContentDemotionDisclosure> => {
+    const receipt = await commandReceipt('content.demotion.disclose', { resource_type: resourceType, resource_id: resourceId, target_visibility: targetVisibility }, idempotencyKey)
+    return get<ContentDemotionDisclosure>(`/content-access/${encodeURIComponent(receipt.resource_type)}/${encodeURIComponent(receipt.resource_id)}/demotion-disclosures/${encodeURIComponent(receipt.confirmation_id)}`)
+  },
 }
 
 export const focusAreasApi = {
@@ -920,10 +909,10 @@ export const focusAreasApi = {
     get<FocusArea[]>(`/focus-areas${includeArchived ? '?include_archived=true' : ''}`),
   get: (id: string) =>
     get<FocusArea>(`/focus-areas/${encodeURIComponent(id)}`),
-  create: (body: { name: string; description?: string | null }) =>
-    post<FocusArea>('/focus-areas', body),
-  update: (id: string, body: { name?: string; description?: string | null }) =>
-    patch<FocusArea>(`/focus-areas/${encodeURIComponent(id)}`, body),
+  create: (body: { name: string; description?: string | null }, key:string=crypto.randomUUID()) =>
+    commandReceipt('focus_area.create', body, key),
+  update: (id: string, body: { name?: string; description?: string | null }, key:string=crypto.randomUUID()) =>
+    commandReceipt('focus_area.update', {...body,focus_area_id:id}, key),
   /** Each list continues from its own cursor; an omitted cursor reads that list's first page. */
   contents: (id: string, params: { projects_cursor?: string; objects_cursor?: string; limit?: number } = {}) => {
     const q: Record<string, string> = {}
@@ -933,8 +922,9 @@ export const focusAreasApi = {
     const search = new URLSearchParams(q).toString()
     return get<FocusAreaContents>(`/focus-areas/${encodeURIComponent(id)}/contents${search ? `?${search}` : ''}`)
   },
-  setForObject: (objectId: string, focusAreaId: string | null) =>
-    put<void>(`/space-objects/${encodeURIComponent(objectId)}/focus-area`, { focus_area_id: focusAreaId }),
+  setForObject: async (objectId: string, focusAreaId: string | null, key:string=crypto.randomUUID()):Promise<void> => {
+    await commandReceipt('focus_area.object.set', {object_id:objectId,focus_area_id:focusAreaId}, key)
+  },
   setForProject: async (projectId:string,focusAreaId:string|null,key:string=crypto.randomUUID()) => {await projectManagementCall('project.focus_area.set',{project_id:projectId,focus_area_id:focusAreaId},key);},
 }
 
@@ -943,12 +933,12 @@ export const publicationsApi = {
     get<ContentPublicationList>(`/publications?view=${view}`),
   get: (publicationId: string) =>
     get<ContentPublication>(`/publications/${encodeURIComponent(publicationId)}`),
-  create: (body: CreatePublicationRequest) =>
-    post<ContentPublication>('/publications', body),
-  import: (publicationId: string) =>
-    post<PublicationImport>(`/publications/${encodeURIComponent(publicationId)}/import`, {}),
-  revoke: (publicationId: string) =>
-    post<ContentPublication>(`/publications/${encodeURIComponent(publicationId)}/revoke`, {}),
+  create: (body: CreatePublicationRequest, key:string = crypto.randomUUID()) =>
+    operationAt<ContentPublication>('POST', '/publications', body, key),
+  import: (publicationId: string, key:string = crypto.randomUUID()) =>
+    operationAt<PublicationImport>('POST', `/publications/${encodeURIComponent(publicationId)}/import`, {}, key),
+  revoke: (publicationId: string, key:string = crypto.randomUUID()) =>
+    operationAt<ContentPublication>('POST', `/publications/${encodeURIComponent(publicationId)}/revoke`, {}, key),
 }
 
 // ── Memory ────────────────────────────────────────────────────────────────
@@ -984,44 +974,58 @@ export const memoryApi = {
     return get<Page<Memory>>('/memory?' + new URLSearchParams(q))
   },
   get: (id: string) => get<Memory>(`/memory/${id}`),
-  create: (data: Partial<Memory>) =>
-    post<Proposal>('/memory', data),
-  update: (id: string, data: Partial<Memory>) =>
-    patch<Proposal>(`/memory/${id}`, data),
+  create: async (data: OperationInput<'memory.propose_create'>, key: string = crypto.randomUUID()) => {
+    const receipt = await commandReceipt('memory.propose_create', data, key)
+    return proposalsApi.get(receipt.id, {spaceId: receipt.space_id})
+  },
+  update: async (id: string, data: Omit<OperationInput<'memory.propose_update'>, 'memory_id'>, key: string = crypto.randomUUID()) => {
+    const receipt = await commandReceipt('memory.propose_update', {...data, memory_id: id}, key)
+    return proposalsApi.get(receipt.id, {spaceId: receipt.space_id})
+  },
   // 200 with the archived entry when it is the caller's own; 202 with a
   // proposal when it is someone else's (ADR 0003 §3).
-  delete: (id: string) =>
-    del<Memory | Proposal>(`/memory/${id}`),
-  restore: (id: string) =>
-    post<Memory>(`/memory/${id}/restore`, {}),
+  delete: async (id: string, key: string = crypto.randomUUID()): Promise<Memory | Proposal> => {
+    const receipt = await commandReceipt('memory.archive', {memory_id: id}, key)
+    return receipt.outcome === 'archived' ? memoryApi.get(receipt.id) : proposalsApi.get(receipt.id, {spaceId: receipt.space_id})
+  },
+  restore: async (id: string, key: string = crypto.randomUUID()): Promise<Memory> => {
+    const receipt = await commandReceipt('memory.restore', {memory_id: id}, key)
+    return memoryApi.get(receipt.id)
+  },
   // Undo one revision in a single action — archive what is there, bring back
   // what it replaced. An Agent's persona has to be reversed this way: it must
   // always have one, so archiving the head alone would leave it with none.
-  revert: (id: string) =>
-    post<Memory>(`/memory/${id}/revert`, {}),
+  revert: async (id: string, key: string = crypto.randomUUID()): Promise<Memory> => {
+    const receipt = await commandReceipt('memory.revert', {memory_id: id}, key)
+    return memoryApi.get(receipt.id)
+  },
   versions: (id: string) =>
     get<{ items: MemoryVersion[] }>(`/memory/${id}/versions`),
   // The revision a maintenance finding asked for, written into its pending
   // update; accepting the proposal is still a separate decision.
-  reviseProposal: (proposalId: string, body: MemoryProposalRevisionRequest) =>
-    post<Proposal>(`/memory/proposals/${proposalId}/revision`, body),
+  reviseProposal: async (proposalId: string, body: MemoryProposalRevisionRequest, key: string = crypto.randomUUID()) => {
+    const receipt = await commandReceipt('memory.proposal.revise', {...body, proposal_id: proposalId}, key)
+    return proposalsApi.get(receipt.id, {spaceId: receipt.space_id})
+  },
   search: (data: { query: string; scope?: string; namespace?: string; type?: string; limit?: number }) =>
     // Memory search is identity-scoped server-side; do not send space_id/user_id.
-    post<Memory[]>('/memory/search', data),
+    contentRequest<Memory[]>('memory.search.request', data),
   retrievalSearch: (data: RetrievalSearchRequest) =>
-    post<RetrievalSearchResponse>('/memory/retrieval/search', data),
+    contentRequest<RetrievalSearchResponse>('memory.retrieval.search.request', data),
   retrievalBrief: (data: RetrievalBriefRequest) =>
-    post<RetrievalBriefResponse>('/memory/retrieval/brief', data),
-  feedback: (data: RetrievalFeedbackRequest) =>
-    post<RetrievalFeedbackResponse>('/memory/retrieval/feedback', data),
+    contentRequest<RetrievalBriefResponse>('memory.retrieval.brief.request', data),
+  feedback: async (data: RetrievalFeedbackRequest, key: string = crypto.randomUUID()): Promise<RetrievalFeedbackResponse> => {
+    await commandReceipt('memory.retrieval.feedback', data, key)
+    return { ok: true }
+  },
   maintenanceScan: (data: MemoryMaintenanceScanRequestInput = {}) =>
-    post<MemoryMaintenanceReport>('/memory/maintenance/scan', data),
+    contentRequest<MemoryMaintenanceReport>('memory.maintenance.scan', data),
   createMaintenanceJob: (data: MemoryMaintenanceScanRequestInput = {}) =>
-    post<MemoryMaintenanceJob>('/memory/maintenance/jobs', data),
+    contentRequest<MemoryMaintenanceJob>('memory.maintenance.job.create', data),
   getMaintenanceJob: (jobId: string) =>
     get<MemoryMaintenanceJob>(`/memory/maintenance/jobs/${jobId}`),
   runMaintenanceJob: (jobId: string) =>
-    post<MemoryMaintenanceJobRunResponse>(`/memory/maintenance/jobs/${jobId}/run`, {}),
+    contentRequest<MemoryMaintenanceJobRunResponse>('memory.maintenance.job.run', {job_id:jobId}),
 }
 
 // ── Knowledge ─────────────────────────────────────────────────────────────
@@ -1046,14 +1050,20 @@ export const knowledgeApi = {
   get: (id: string) => get<KnowledgeItem>(`/knowledge/items/${id}`),
   relations: (id: string) => get<KnowledgeRelation[]>(`/knowledge/items/${id}/relations`),
   backlinks: (id: string) => get<EntityLink[]>(`/knowledge/items/${id}/backlinks`),
-  proposeCreate: (body: KnowledgeCreateProposalBody) =>
-    post<Proposal>('/knowledge/items/proposals', body),
-  proposeUpdate: (id: string, body: KnowledgeUpdateProposalBody) =>
-    patch<Proposal>(`/knowledge/items/${id}/proposals`, body),
-  proposeArchive: (id: string) =>
-    del<Proposal>(`/knowledge/items/${id}`),
-  proposeRelation: (body: KnowledgeRelationProposalBody) =>
-    post<Proposal>('/knowledge/object-relations/proposals', {
+  proposeCreate: async (body: KnowledgeCreateProposalBody, key: string = crypto.randomUUID()) => {
+    const receipt = await commandReceipt('knowledge.item.propose_create', body, key)
+    return proposalsApi.get(receipt.id, {spaceId: receipt.space_id})
+  },
+  proposeUpdate: async (id: string, body: KnowledgeUpdateProposalBody, key: string = crypto.randomUUID()) => {
+    const receipt = await commandReceipt('knowledge.item.propose_update', {...body, item_id:id}, key)
+    return proposalsApi.get(receipt.id, {spaceId: receipt.space_id})
+  },
+  proposeArchive: async (id: string, key: string = crypto.randomUUID()) => {
+    const receipt = await commandReceipt('knowledge.item.propose_archive', {item_id:id}, key)
+    return proposalsApi.get(receipt.id, {spaceId: receipt.space_id})
+  },
+  proposeRelation: async (body: KnowledgeRelationProposalBody, key: string = crypto.randomUUID()) => {
+    const receipt = await commandReceipt('knowledge.relation.propose_create', {
       from_object_id: body.from_object_id,
       to_object_id: body.to_object_id,
       link_type: body.link_type,
@@ -1062,30 +1072,36 @@ export const knowledgeApi = {
       evidence_summary: body.evidence_summary,
       rationale: body.rationale,
       metadata: { endpoint_type: 'knowledge_item', requested_link_type: body.link_type },
-    }),
-  proposeRelationArchive: (id: string) =>
-    del<Proposal>(`/knowledge/object-relations/${id}`),
+    }, key)
+    return proposalsApi.get(receipt.id, {spaceId: receipt.space_id})
+  },
+  proposeRelationArchive: async (id: string, key: string = crypto.randomUUID()) => {
+    const receipt = await commandReceipt('knowledge.relation.propose_archive', {relation_id:id}, key)
+    return proposalsApi.get(receipt.id, {spaceId: receipt.space_id})
+  },
   summary: () => get<KnowledgeSummary>('/knowledge/summary'),
   search: (data: RetrievalSearchRequest) =>
-    post<RetrievalSearchResponse>('/knowledge/search', data),
+    contentRequest<RetrievalSearchResponse>('knowledge.retrieval.search.request', data),
   brief: (data: RetrievalBriefRequest) =>
-    post<RetrievalBriefResponse>('/knowledge/retrieval/brief', data),
+    contentRequest<RetrievalBriefResponse>('knowledge.retrieval.brief.request', data),
   diagnosticsReport: (data: RetrievalDiagnosticsReportRequest) =>
-    post<RetrievalDiagnosticsReportResponse>('/knowledge/retrieval/eval/diagnostics/report', data),
+    contentRequest<RetrievalDiagnosticsReportResponse>('knowledge.eval.diagnostics.report', data),
   calibrationDecision: (data: RetrievalCalibrationDecisionRequest) =>
-    post<RetrievalCalibrationDecisionResponse>('/knowledge/retrieval/eval/calibration-decisions', data),
+    contentRequest<RetrievalCalibrationDecisionResponse>('knowledge.eval.calibration.record', data),
   maintenanceScan: (data: RetrievalMaintenanceScanRequestInput = {}) =>
-    post<RetrievalMaintenanceScanResponse>('/knowledge/retrieval/maintenance/scan', data),
+    contentRequest<RetrievalMaintenanceScanResponse>('knowledge.maintenance.scan', data),
   claimCandidatePacket: (data: ClaimCandidatePacketCreateRequestInput) =>
-    post<ClaimCandidatePacketCreateResponse>('/knowledge/claims/candidate-packets', data),
+    contentRequest<ClaimCandidatePacketCreateResponse>('knowledge.claim.candidate_packet.create', data),
   contradictionScan: (data: ClaimContradictionScanRequestInput = {}) =>
-    post<ClaimContradictionScanResponse>('/knowledge/claims/contradiction-scan', data),
+    contentRequest<ClaimContradictionScanResponse>('knowledge.claim.contradictions.scan', data),
   relationDiscoveryScan: (data: RelationDiscoveryScanRequestInput = {}) =>
-    post<RelationDiscoveryScanResponse>('/knowledge/relations/discovery-scan', data),
+    contentRequest<RelationDiscoveryScanResponse>('knowledge.relation.discovery.scan', data),
   explain: (data: RetrievalExplainRequest) =>
-    post<RetrievalExplainResponse>('/knowledge/retrieval/explain', data),
-  feedback: (data: RetrievalFeedbackRequest) =>
-    post<RetrievalFeedbackResponse>('/knowledge/retrieval/feedback', data),
+    contentRequest<RetrievalExplainResponse>('knowledge.retrieval.explain.request', data),
+  feedback: async (data: RetrievalFeedbackRequest, key: string = crypto.randomUUID()): Promise<RetrievalFeedbackResponse> => {
+    await commandReceipt('knowledge.retrieval.feedback', data, key)
+    return { ok: true }
+  },
 }
 
 export interface GraphProjectionQuery {
@@ -1124,20 +1140,21 @@ export const graphApi = {
   },
   getViewState: (scopeKey: string) =>
     get<GraphViewStateRecord>(`/graph/view-state?scope_key=${encodeURIComponent(scopeKey)}`),
-  saveViewState: (scopeKey: string, stateJson: Record<string, unknown>) =>
-    put<GraphViewStateRecord>('/graph/view-state', {
-      scope_key: scopeKey,
-      state_json: stateJson,
-    }),
+  saveViewState: async (scopeKey: string, stateJson: Record<string, unknown>, key: string = crypto.randomUUID()): Promise<GraphViewStateRecord> => {
+    const {space_id: _space, user_id: _user, ...state} = await commandReceipt('graph.view_state.save', {scope_key:scopeKey,state_json:stateJson}, key)
+    return state
+  },
 }
 
 export const objectSchemaApi = {
   exportSchema: () =>
     get<ObjectSchemaExportManifest>('/knowledge/object-schema/export'),
-  importSchema: (body: ObjectSchemaImportRequestInput) =>
-    post<ObjectSchemaImportResponse>('/knowledge/object-schema/imports/proposals', body),
+  importSchema: async (body: ObjectSchemaImportRequestInput, key: string = crypto.randomUUID()): Promise<ObjectSchemaImportResponse> => {
+    const {space_id: _space, ...result} = await commandReceipt('knowledge.object_schema.propose_import', body, key)
+    return result
+  },
   suggestionScan: (body: ObjectSchemaSuggestionScanRequestInput = {}) =>
-    post<ObjectSchemaSuggestionScanResponse>('/knowledge/object-schema/suggestions/scan', body),
+    contentRequest<ObjectSchemaSuggestionScanResponse>('knowledge.object_schema.suggestions.scan', body),
   listKinds: (params: {
     base_object_type?: RetrievalObjectType
     status?: SpaceObjectProfileStatus
@@ -1151,14 +1168,22 @@ export const objectSchemaApi = {
     if (params.offset !== undefined) q.offset = String(params.offset)
     return get<SpaceObjectProfilePage>('/knowledge/object-schema/profiles?' + new URLSearchParams(q))
   },
-  proposeCreateKind: (body: SpaceObjectProfileCreateProposalRequestInput) =>
-    post<Proposal>('/knowledge/object-schema/profiles/proposals', body),
-  proposeUpdateKind: (id: string, body: SpaceObjectProfileUpdateProposalRequestInput) =>
-    patch<Proposal>(`/knowledge/object-schema/profiles/${encodeURIComponent(id)}/proposals`, body),
-  proposeDeprecateKind: (id: string, body: { rationale?: string } = {}) =>
-    post<Proposal>(`/knowledge/object-schema/profiles/${encodeURIComponent(id)}/deprecate-proposals`, body),
-  proposeArchiveKind: (id: string) =>
-    del<Proposal>(`/knowledge/object-schema/profiles/${encodeURIComponent(id)}`),
+  proposeCreateKind: async (body: SpaceObjectProfileCreateProposalRequestInput, key: string = crypto.randomUUID()) => {
+    const receipt = await commandReceipt('knowledge.object_kind.propose_create', body, key)
+    return proposalsApi.get(receipt.id, {spaceId: receipt.space_id})
+  },
+  proposeUpdateKind: async (id: string, body: SpaceObjectProfileUpdateProposalRequestInput, key: string = crypto.randomUUID()) => {
+    const receipt = await commandReceipt('knowledge.object_kind.propose_update', {...body, profile_id: id}, key)
+    return proposalsApi.get(receipt.id, {spaceId: receipt.space_id})
+  },
+  proposeDeprecateKind: async (id: string, body: { rationale?: string } = {}, key: string = crypto.randomUUID()) => {
+    const receipt = await commandReceipt('knowledge.object_kind.propose_deprecate', {...body, profile_id: id}, key)
+    return proposalsApi.get(receipt.id, {spaceId: receipt.space_id})
+  },
+  proposeArchiveKind: async (id: string, key: string = crypto.randomUUID()) => {
+    const receipt = await commandReceipt('knowledge.object_kind.propose_archive', {profile_id: id}, key)
+    return proposalsApi.get(receipt.id, {spaceId: receipt.space_id})
+  },
 }
 
 // ── Notes (working knowledge; direct CRUD) ─────────────────────────────────
@@ -1168,6 +1193,15 @@ async function noteObjectCall<Id extends import('@rainver/protocol').OperationId
  try{const result=await callOperation(id,input,key);if(!('status' in result)||result.status!=='succeeded')throw new Error('Note action did not complete');return result.data;}
  catch(e){if(e instanceof ApiRequestError){const metadata=(e.payload?.error as {metadata?:Record<string,unknown>}|undefined)?.metadata;if(metadata&&['note_owning_entry_required','note_cross_project_share_required'].includes(String(metadata.code)))throw new ApiRequestError(e.message,e.status,String(metadata.code),metadata);}throw e;}
 }
+/** One explicit-key Source command. A structured refusal code (for example
+ * `source_retention_policy` or `reading_version_changed`) becomes the error's
+ * `code`, so callers act on it rather than on prose. */
+async function sourceObjectCall<Id extends import('@rainver/protocol').OperationId>(id:Id,input:import('@rainver/protocol').OperationInput<Id>,key:string,options:RequestOptions={}){
+ try{const result=await callOperation(id,input,key,options);if(!('status' in result)||result.status!=='succeeded')throw new Error('Source action did not complete');return result.data;}
+ catch(e){if(e instanceof ApiRequestError){const metadata=(e.payload?.error as {metadata?:Record<string,unknown>}|undefined)?.metadata;if(metadata&&typeof metadata.code==='string')throw new ApiRequestError(e.message,e.status,metadata.code,metadata);}throw e;}
+}
+const receiptState=<T extends {id:string;space_id:string}>({id:_id,space_id:_space,...state}:T)=>state;
+async function currentSourceItem(receipt:{id:string;space_id:string}){return get<SourceItem>(`/sources/items/${encodeURIComponent(receipt.id)}`,{spaceId:receipt.space_id});}
 async function currentNote(receipt:{id:string;space_id:string}){return get<Note>(`/knowledge/notes/${encodeURIComponent(receipt.id)}`,{spaceId:receipt.space_id});}
 async function currentCollection(receipt:{id:string;space_id:string}){const rows=await get<NoteCollection[]>('/notes/collections',{spaceId:receipt.space_id});const row=rows.find(r=>r.id===receipt.id);if(!row)throw new Error('Collection no longer available');return row;}
 export const notesCollectionsApi = {
@@ -1229,7 +1263,11 @@ export const notesApi = {
     if(!('status' in result)||result.status!=='succeeded')throw new Error('Note trash action did not complete');
     return get<Note>(`/knowledge/notes/${encodeURIComponent(result.data.id)}`,{spaceId:result.data.space_id});
   },
-  purgeDeleted: () => post<{ deleted: number; retention_days: number }>('/knowledge/notes/deleted/purge'),
+  /** One explicit-key purge; a retry with the same key replays its count and never deletes another batch. */
+  purgeDeleted: async (key: string = crypto.randomUUID()) => {
+    const { deleted, retention_days } = await noteObjectCall('knowledge.note.trash.purge', {}, key)
+    return { deleted, retention_days }
+  },
   /**
    * Place a note in a further folder, keeping the ones it is already in —
    * distinct from moving it, which the tree reorder does.
@@ -1240,10 +1278,12 @@ export const notesApi = {
   removePlacement: async (id:string,collectionId:string,key:string=crypto.randomUUID()) => currentNote(await noteObjectCall('knowledge.note.placement.remove',{note_id:id,collection_id:collectionId},key)),
   links: (id: string) => get<EntityLink[]>(`/knowledge/notes/${id}/links`),
   backlinks: (id: string) => get<EntityLink[]>(`/knowledge/notes/${id}/backlinks`),
-  createLink: (id: string, body: NoteLinkCreateBody) =>
-    post<EntityLink>(`/knowledge/notes/${id}/links`, body),
-  deleteLink: (id: string, linkId: string) =>
-    del<void>(`/knowledge/notes/${id}/links/${linkId}`),
+  /** Link receipts carry identity only; current links are reread through links/backlinks. */
+  createLink: (id: string, body: NoteLinkCreateBody, key: string = crypto.randomUUID()) =>
+    noteObjectCall('knowledge.note.link.create', { ...body, note_id: id }, key),
+  deleteLink: async (id: string, linkId: string, key: string = crypto.randomUUID()) => {
+    await noteObjectCall('knowledge.note.link.delete', { note_id: id, link_id: linkId }, key)
+  },
   revisions: (id: string, limit?: number) =>
     get<NoteRevision[]>(`/knowledge/notes/${id}/revisions` + (limit ? `?limit=${limit}` : '')),
   /** With `expectVersion`, refused (409) unless the note is still at that version. */
@@ -1257,7 +1297,7 @@ export const notesApi = {
    * strand a note whenever the link failed. Do not make the connection by
    * hand across a round trip.
    */
-  jot: (body: NoteJotBody) => post<Note>('/knowledge/notes/jot', body),
+  jot: async (body: NoteJotBody, key: string = crypto.randomUUID()) => currentNote(await noteObjectCall('knowledge.note.jot', body, key)),
   /** Notes citing a non-note object — the reverse of a jot. */
   linkingTo: (objectId: string) => get<EntityLink[]>(`/knowledge/objects/${objectId}/note-links`),
   /**
@@ -1340,35 +1380,51 @@ export const promptsApi = {
     get<PromptAssetDetail>(`/prompts/assets/${encodeURIComponent(assetKey)}`),
   listVersions: (assetKey: string) =>
     get<PromptVersion[]>(`/prompts/assets/${encodeURIComponent(assetKey)}/versions`),
-  createVersion: (assetKey: string, body: PromptVersionCreateRequest) =>
-    post<PromptVersion>(`/prompts/assets/${encodeURIComponent(assetKey)}/versions`, body),
-  renderPreview: (assetKey: string, body: PromptRenderPreviewRequest) =>
-    post<PromptRenderPreviewResult>(`/prompts/assets/${encodeURIComponent(assetKey)}/render-preview`, body),
-  evaluate: (assetKey: string, body: PromptEvaluationRequest) =>
-    post<PromptEvaluationResult>(`/prompts/assets/${encodeURIComponent(assetKey)}/evaluate`, body),
-  promote: (assetKey: string, body: PromptPromotionRequestInput) =>
-    post<PromptPromotionResult>(`/prompts/assets/${encodeURIComponent(assetKey)}/promote`, body),
+  /** Keyed command; the version is read back through the versions reader. */
+  createVersion: async (assetKey: string, body: PromptVersionCreateRequest, key: string = crypto.randomUUID()): Promise<PromptVersion> => {
+    const receipt = await commandReceipt('prompt.version.create', { ...body, asset_key: assetKey } as OperationInput<'prompt.version.create'>, key)
+    return found(await promptsApi.listVersions(receipt.asset_key), receipt.version_id, 'Prompt version')
+  },
+  /** Read-only query on the retained URL: no key, nothing written. */
+  renderPreview: (assetKey: string, body: PromptRenderPreviewRequest): Promise<PromptRenderPreviewResult> =>
+    queryAt<PromptRenderPreviewResult>(`/prompts/assets/${encodeURIComponent(assetKey)}/render-preview`, body),
+  /** Keyed command; the receipt names the recorded evaluation run. */
+  evaluate: (assetKey: string, body: PromptEvaluationRequest, key: string = crypto.randomUUID()) =>
+    commandReceipt('prompt.evaluation.record', { ...body, asset_key: assetKey } as OperationInput<'prompt.evaluation.record'>, key),
+  /** Keyed command filing the production promotion Proposal; review stays in Proposals. */
+  promote: async (assetKey: string, body: PromptPromotionRequestInput, key: string = crypto.randomUUID()): Promise<PromptPromotionResult> => {
+    const { space_id: _space, ...receipt } = await commandReceipt('prompt.promotion.propose', { ...body, asset_key: assetKey } as OperationInput<'prompt.promotion.propose'>, key)
+    return receipt
+  },
   listDeployments: (assetKey: string, params: { include_history?: boolean } = {}) => {
     const q: Record<string, string> = {}
     if (params.include_history !== undefined) q.include_history = String(params.include_history)
     const query = new URLSearchParams(q).toString()
     return get<PromptDeploymentRef[]>(`/prompts/assets/${encodeURIComponent(assetKey)}/deployments${query ? `?${query}` : ''}`)
   },
-  setDeployment: (assetKey: string, label: string, body: PromptPromotionRequestInput) =>
-    put<PromptDeploymentRef>(`/prompts/assets/${encodeURIComponent(assetKey)}/deployments/${encodeURIComponent(label)}`, body),
-  rollback: (assetKey: string, body: PromptRollbackRequest) =>
-    post<PromptDeploymentRef>(`/prompts/assets/${encodeURIComponent(assetKey)}/rollback`, body),
+  /** Keyed command; the ref is read back through the deployments reader. */
+  setDeployment: async (assetKey: string, label: string, body: { version_id: string; scope_type?: PromptAssetScopeType; scope_id?: string | null; promoted_from_proposal_id?: string | null }, key: string = crypto.randomUUID()): Promise<PromptDeploymentRef> => {
+    const receipt = await commandReceipt('prompt.deployment.set', { ...body, asset_key: assetKey, label }, key)
+    return found(await promptsApi.listDeployments(receipt.asset_key), receipt.deployment_id, 'Prompt deployment')
+  },
+  rollback: async (assetKey: string, body: PromptRollbackRequest, key: string = crypto.randomUUID()): Promise<PromptDeploymentRef> => {
+    const receipt = await commandReceipt('prompt.deployment.rollback', { ...body, asset_key: assetKey } as OperationInput<'prompt.deployment.rollback'>, key)
+    return found(await promptsApi.listDeployments(receipt.asset_key), receipt.deployment_id, 'Prompt deployment')
+  },
 }
 
 // ── Boards (task surfaces) ────────────────────────────────────────────────
 export const boardsApi = {
   list:   (params: Record<string, string> = {}, options: { spaceId?: string } = {}) =>
     get<Page<Board>>('/boards?' + new URLSearchParams(params), { spaceId: options.spaceId }),
-  create: (body: Partial<Board> & { name: string }) =>
-    post<Board>('/boards', body),
+  // Explicit-key core commands; the Board is read back through its GET.
+  create: async (body: OperationInput<'board.create'>, key: string = crypto.randomUUID()) => {
+    const receipt = await operationAt<OperationOutput<'board.create'>>('POST', '/boards', body, key)
+    return get<Board>(`/boards/${encodeURIComponent(receipt.board_id)}`)
+  },
   get:    (id: string) => get<Board>(`/boards/${id}`),
-  update: (id: string, body: Record<string, unknown>) =>
-    patch<Board>(`/boards/${id}`, body),
+  update: (id: string, body: Omit<OperationInput<'board.update'>, 'board_id'>, key: string = crypto.randomUUID()) =>
+    operationAt<OperationOutput<'board.update'>>('PATCH', `/boards/${encodeURIComponent(id)}`, body, key),
   tasks:  (boardId: string, params: Record<string, string> = {}) =>
     get<Page<Task>>(`/boards/${boardId}/tasks?` + new URLSearchParams(params)),
 }
@@ -1385,8 +1441,9 @@ export const tasksApi = {
   work:  (id: string) => get<TaskWorkView>(`/tasks/${id}/work`),
   list:   (params: Record<string, string> = {}) =>
     get<Page<Task>>('/tasks?' + new URLSearchParams(params)),
-  create: (data: Record<string, unknown>, options: { spaceId?: string } = {}) =>
-    post<Task>('/tasks', data, { spaceId: options.spaceId }),
+  // One explicit key per person's create; never retried automatically.
+  create: (data: OperationInput<'task.create'>, options: { spaceId?: string } = {}, key: string = crypto.randomUUID()) =>
+    operationAt<OperationOutput<'task.create'>>('POST', '/tasks', data, key, { spaceId: options.spaceId }),
   get:    (id: string) => get<Task>(`/tasks/${id}`),
   update: async (id: string, data: Record<string, unknown>, key?:string) => {
     if(Object.prototype.hasOwnProperty.call(data,'board_id')||Object.prototype.hasOwnProperty.call(data,'column_id')){
@@ -1394,20 +1451,21 @@ export const tasksApi = {
       await callOperation('task.place_in_space_board',{task_id:id,changes:data as OperationInput<'task.place_in_space_board'>['changes']},key??crypto.randomUUID());
       return get<Task>(`/tasks/${id}`);
     }
-    return patch<Task>(`/tasks/${id}`, data);
+    await operationAt<OperationOutput<'task.update'>>('PATCH', `/tasks/${encodeURIComponent(id)}`, data, key??crypto.randomUUID())
+    return get<Task>(`/tasks/${id}`)
   },
-  createRun: (taskId: string, body: TaskRunCreateBody = {}) =>
+  createRun: (taskId: string, body: TaskRunCreateBody = {}, key: string = crypto.randomUUID()) =>
     // One Run, whichever branch admits it: the remote path creates its Run
-    // synchronously now, exactly as the server path does.
-    post<Run>(`/tasks/${taskId}/runs`, body),
+    // synchronously, exactly as the server path does.
+    operationAt<OperationOutput<'task.run.create'>>('POST', `/tasks/${encodeURIComponent(taskId)}/runs`, body, key),
   runs:   (taskId: string, params: Record<string, string> = {}) =>
     get<Page<TaskRunListItem>>(`/tasks/${taskId}/runs?` + new URLSearchParams(params)),
   artifacts: (taskId: string, params: Record<string, string> = {}) =>
     get<Page<TaskArtifact>>(`/tasks/${taskId}/artifacts?` + new URLSearchParams(params)),
   proposals: (taskId: string, params: Record<string, string> = {}) =>
     get<Page<TaskProposal>>(`/tasks/${taskId}/proposals?` + new URLSearchParams(params)),
-  requestPlan: (taskId: string, body: { agent_id?: string; runtime_profile_id?: string; prompt?: string; instruction?: string; reference_workflow_version_id?: string | null; budget_sources?: PlanBudgetSource[] } = {}) =>
-    post<Run>(`/tasks/${encodeURIComponent(taskId)}/plan-requests`, body),
+  requestPlan: (taskId: string, body: Omit<OperationInput<'task.plan.request'>, 'task_id'> = {}, key: string = crypto.randomUUID()) =>
+    operationAt<OperationOutput<'task.plan.request'>>('POST', `/tasks/${encodeURIComponent(taskId)}/plan-requests`, body, key),
   plan: (taskId: string) => get<PlanDetail | null>(`/tasks/${encodeURIComponent(taskId)}/plan`),
 }
 
@@ -1427,29 +1485,25 @@ export const meApi = {
     get<Page<MeTaskItem>>('/me/tasks?' + new URLSearchParams(params), { includeSpaceContext: false }),
   pending: (params: Record<string, string> = {}) =>
     get<MePendingProposalItem[]>('/me/pending?' + new URLSearchParams(params), { includeSpaceContext: false }),
-  retrievalSearch: (data: CrossSpaceRetrievalRequest) =>
-    post<CrossSpaceRetrievalResponse>('/me/retrieval/search', data, { includeSpaceContext: false }),
-  resolveRetrievalPointers: (pointerIds: string[]) =>
-    post<CrossSpaceResolveResponse>('/me/retrieval/pointers/resolve', { pointer_ids: pointerIds }, { includeSpaceContext: false }),
-  storeSourceSummary: (pointerIds: string[], summary: string) =>
-    post<{ artifact_id: string; source_space_id: string }>('/me/retrieval/summaries', { pointer_ids: pointerIds, summary }, { includeSpaceContext: false }),
-  discloseFusedStore: (pointerIds: string[]) =>
-    post<CrossSpaceEgressDisclosure>('/me/retrieval/egress/disclose', { pointer_ids: pointerIds }, { includeSpaceContext: false }),
-  storeFusedConclusion: (disclosureId: string, pointerIds: string[], conclusion: string) =>
-    post<CrossSpaceFusedStoreResponse>('/me/retrieval/fused-conclusions', {
-      disclosure_id: disclosureId,
-      pointer_ids: pointerIds,
-      conclusion,
-    }, { includeSpaceContext: false }),
+  retrievalSearch: (data: CrossSpaceRetrievalRequest, key: string = crypto.randomUUID()) =>
+    operationAt<OperationOutput<'personal.retrieval.search'>>('POST','/me/retrieval/search',data,key,{includeSpaceContext:false}),
+  resolveRetrievalPointers: (pointerIds: string[], key: string = crypto.randomUUID()) =>
+    operationAt<OperationOutput<'personal.retrieval.resolve'>>('POST','/me/retrieval/pointers/resolve',{pointer_ids:pointerIds},key,{includeSpaceContext:false}),
+  storeSourceSummary: (pointerIds: string[], summary: string, key: string = crypto.randomUUID()) =>
+    operationAt<OperationOutput<'personal.retrieval.summary.store'>>('POST','/me/retrieval/summaries',{pointer_ids:pointerIds,summary},key,{includeSpaceContext:false}),
+  discloseFusedStore: (pointerIds: string[], key: string = crypto.randomUUID()) =>
+    operationAt<OperationOutput<'personal.retrieval.egress.disclose'>>('POST','/me/retrieval/egress/disclose',{pointer_ids:pointerIds},key,{includeSpaceContext:false}),
+  storeFusedConclusion: (disclosureId: string, pointerIds: string[], conclusion: string, key: string = crypto.randomUUID()) =>
+    operationAt<OperationOutput<'personal.retrieval.fused.store'>>('POST','/me/retrieval/fused-conclusions',{disclosure_id:disclosureId,pointer_ids:pointerIds,conclusion},key,{includeSpaceContext:false}),
   notifications: () =>
     get<{ items: SpaceMemberNotification[] }>('/me/notifications', { includeSpaceContext: false }),
 }
 
 export const spaceEgressApi = {
-  updateNotifications: (spaceId: string, enabled: boolean) =>
-    patch<SpaceEgressNotificationSetting>(`/spaces/${encodeURIComponent(spaceId)}/egress-notifications`, {
+  updateNotifications: (spaceId: string, enabled: boolean, idempotencyKey: string = crypto.randomUUID()) =>
+    operationAt<OperationOutput<'space.egress_notifications.update'>>('PATCH',`/spaces/${encodeURIComponent(spaceId)}/egress-notifications`, {
       egress_notifications_enabled: enabled,
-    }),
+    }, idempotencyKey),
 }
 
 // ── Runs (canonical API) ──────────────────────────────────────────────────
@@ -1544,9 +1598,16 @@ export const runsApi = {
   ) => streamTurnParts(id, options),
 }
 
+async function decideAuthorizationRequest(id:string,decision:'approve'|'reject',options:RequestOptions):Promise<AuthorizationRequest>{
+  const receipt=await operationAt<{run_id:string;request_id:string}>('POST',`/authorization-requests/${encodeURIComponent(id)}/${decision}`,{},options.idempotencyKey??crypto.randomUUID(),options)
+  const rows=await get<AuthorizationRequest[]>(`/runs/${encodeURIComponent(receipt.run_id)}/authorization-requests`,options)
+  const request=rows.find(row=>row.id===receipt.request_id)
+  if(!request)throw new Error('Authorization request no longer available')
+  return request
+}
 export const authorizationRequestsApi = {
-  approve: (id: string, options: RequestOptions = {}) => post<AuthorizationRequest>(`/authorization-requests/${id}/approve`, {}, options),
-  reject: (id: string, options: RequestOptions = {}) => post<AuthorizationRequest>(`/authorization-requests/${id}/reject`, {}, options),
+  approve: (id: string, options: RequestOptions = {}) => decideAuthorizationRequest(id,'approve',options),
+  reject: (id: string, options: RequestOptions = {}) => decideAuthorizationRequest(id,'reject',options),
 }
 
 
@@ -1559,9 +1620,10 @@ export const plansApi = {
     return get<PlanSummary[]>(`/plans?${new URLSearchParams(q)}`)
   },
   get: (id: string) => get<PlanDetail>(`/plans/${encodeURIComponent(id)}`),
-  execute: (id: string, body: PlanExecuteBody) =>
-    post<PlanExecutionResult>(`/plans/${encodeURIComponent(id)}/execute`, body),
-  reconcile: (id: string) => post<PlanExecutionResult>(`/plans/${encodeURIComponent(id)}/reconcile`, {}),
+  execute: (id: string, body: PlanExecuteBody, key: string = crypto.randomUUID()) =>
+    operationAt<OperationOutput<'plan.execute'>>('POST', `/plans/${encodeURIComponent(id)}/execute`, body, key),
+  reconcile: (id: string, key: string = crypto.randomUUID()) =>
+    operationAt<OperationOutput<'plan.reconcile'>>('POST', `/plans/${encodeURIComponent(id)}/reconcile`, {}, key),
 }
 
 /** A live input's recorded outcome is read back briefly; past that it is reported as still pending. */
@@ -1625,12 +1687,8 @@ export const roomsApi = {
     const page = await roomsApi.messages(receipt.room_id, receipt.session_id, { limit: 50 }, { ...options, spaceId: receipt.space_id })
     return { items: page.items, task_group_ids: page.task_group_ids, conversation: page.conversation ?? null, limit: page.limit, offset: page.offset }
   },
-  agentCandidates: (roomId: string, params: { limit?: number; offset?: number } = {}) => {
-    const q = new URLSearchParams()
-    if (params.limit !== undefined) q.set('limit', String(params.limit))
-    if (params.offset !== undefined) q.set('offset', String(params.offset))
-    return get<RoomAgentCandidatesResponse>(`/rooms/${roomId}/agent-candidates?${q}`)
-  },
+  agentCandidates: (roomId: string, params: { q?: string; limit?: number; offset?: number } = {}) =>
+    get<RoomAgentCandidatesResponse>(`/rooms/${roomId}/agent-candidates?${pageQuery(params)}`),
   // Host restore/archive happen after the roster commits; the receipt says whether a restore was requested.
   addAgent: async (roomId: string, body: RoomAgentAddRequest, key: string = crypto.randomUUID()): Promise<RoomAgentMutationResponse> =>
     roomMutationAfter(await commandReceipt('room.agent.add', { ...body, room_id: roomId }, key)),
@@ -1670,6 +1728,14 @@ export const roomsApi = {
     if (params.limit !== undefined) q.set('limit', String(params.limit))
     if (params.offset !== undefined) q.set('offset', String(params.offset))
     return get<Page<RoomConversation>>(`/rooms/${roomId}/conversations?${q}`, options)
+  },
+  conversationDefaults: async (roomId: string, options: RequestOptions = {}) => {
+    const result = await queryOperation('room.settings.read', {room_id:roomId}, options)
+    if (!('status' in result) || result.status !== 'succeeded') throw new Error('Room settings unavailable')
+    return result.data
+  },
+  saveConversationDefaults: async (roomId: string, defaults: import('@rainver/protocol').RoomConversationDefault[], expectedRevision: number, options: RequestOptions = {}) => {
+    await commandReceipt('room.defaults.save', {room_id:roomId,defaults,expected_revision:expectedRevision}, options.idempotencyKey ?? crypto.randomUUID(),options)
   },
   createConversation: async (roomId: string, options: RequestOptions = {}): Promise<RoomConversation> => {
     const receipt = await commandReceipt('room.conversation.create', { room_id: roomId }, options.idempotencyKey ?? crypto.randomUUID(), options)
@@ -1763,18 +1829,18 @@ export const roomsApi = {
 
 // ── Personal Memory Grants ─────────────────────────────────────────────────
 export const personalMemoryGrantsApi = {
-  previewPersonalMemoryGrant: (input: PersonalMemoryGrantPreviewRequest) =>
-    post<PersonalMemoryGrantPreviewResponse>('/personal-memory-grants/preview', input),
-  createPersonalMemoryGrant: (input: PersonalMemoryGrantCreateRequest) =>
-    post<PersonalMemoryGrantResponse>('/personal-memory-grants', input),
+  previewPersonalMemoryGrant: (input: PersonalMemoryGrantPreviewRequest, key: string = crypto.randomUUID()) =>
+    operationAt<OperationOutput<'personal_memory_grant.preview'>>('POST','/personal-memory-grants/preview',input,key),
+  createPersonalMemoryGrant: (input: PersonalMemoryGrantCreateRequest, key: string = crypto.randomUUID()) =>
+    operationAt<OperationOutput<'personal_memory_grant.create'>>('POST','/personal-memory-grants',input,key),
   listPersonalMemoryGrants: (filters: { status?: string; target_space_id?: string } = {}) => {
     const q: Record<string, string> = {}
     if (filters.status !== undefined) q.status = filters.status
     if (filters.target_space_id !== undefined) q.target_space_id = filters.target_space_id
     return get<PersonalMemoryGrantResponse[]>('/personal-memory-grants?' + new URLSearchParams(q))
   },
-  revokePersonalMemoryGrant: (grantId: string) =>
-    post<PersonalMemoryGrantResponse>(`/personal-memory-grants/${grantId}/revoke`),
+  revokePersonalMemoryGrant: (grantId: string, key: string = crypto.randomUUID()) =>
+    operationAt<OperationOutput<'personal_memory_grant.revoke'>>('POST',`/personal-memory-grants/${grantId}/revoke`,{},key),
   getPersonalMemoryGrantAudit: (grantId: string) =>
     get<PersonalMemoryGrantAuditResponse>(`/personal-memory-grants/${grantId}/audit`),
 }
@@ -1885,16 +1951,23 @@ export const proposalsApi = {
   },
   get: (id: string, options: RequestOptions = {}) => get<Proposal>(`/proposals/${id}`, options),
   accept: (id: string, options: RequestOptions & { confirmIncompletePatch?: boolean } = {}) => {
-    const suffix = options.confirmIncompletePatch ? '?confirm_incomplete_patch=true' : ''
-    return post<ProposalAcceptOut>(`/proposals/${id}/accept${suffix}`, undefined, options)
+    return operationAt<OperationOutput<'proposal.accept'>>('POST', `/proposals/${encodeURIComponent(id)}/accept`, {confirm_incomplete_patch:options.confirmIncompletePatch??false}, options.idempotencyKey ?? crypto.randomUUID(), options)
   },
-  rollback: (id: string, options: RequestOptions = {}) => post<CodePatchDecisionReceipt>(`/proposals/${id}/rollback`, undefined, options),
-  reject: (id: string, options: RequestOptions = {}) => post<Proposal>(`/proposals/${id}/reject`, undefined, options),
-  approveEgressGrantingUserProposal: (id: string, input: EgressApprovalRequest = {}) =>
-    post<ProposalApprovalResponse>(`/proposals/${id}/approvals/egress-granting-user`, input),
+  rollback: (id: string, options: RequestOptions = {}) => operationAt<OperationOutput<'proposal.rollback'>>('POST', `/proposals/${encodeURIComponent(id)}/rollback`, {}, options.idempotencyKey ?? crypto.randomUUID(), options),
+  reject: (id: string, options: RequestOptions = {}) => operationAt<OperationOutput<'proposal.reject'>>('POST', `/proposals/${encodeURIComponent(id)}/reject`, {}, options.idempotencyKey ?? crypto.randomUUID(), options),
+  approveEgressGrantingUserProposal: (id: string, input: EgressApprovalRequest = {}, options: RequestOptions = {}) =>
+    operationAt<OperationOutput<'proposal.egress.approve'>>('POST', `/proposals/${encodeURIComponent(id)}/approvals/egress-granting-user`, input, options.idempotencyKey ?? crypto.randomUUID(), options),
 }
 
 // ── Evolution ─────────────────────────────────────────────────────────────
+/** A Run start the selector declined: its decision is recorded, no Run or Job exists. */
+export class EvolutionRunNotSelected extends Error {
+  constructor(message: string, readonly selectorDecisionId: string) {
+    super(message)
+    this.name = 'EvolutionRunNotSelected'
+  }
+}
+
 export const evolutionApi = {
   summary: () => get<EvolutionSummaryOut>('/evolution/summary'),
   targets: (params: { status?: string } = {}) => {
@@ -1903,11 +1976,16 @@ export const evolutionApi = {
     const query = new URLSearchParams(q).toString()
     return get<EvolutionTarget[]>(query ? `/evolution/targets?${query}` : '/evolution/targets')
   },
-  createTarget: (body: EvolutionTargetCreateBody) =>
-    post<EvolutionTarget>('/evolution/targets', body),
+  /** Keyed command; the target is read back through its authorized reader. */
+  createTarget: async (body: EvolutionTargetCreateBody, idempotencyKey: string = crypto.randomUUID()): Promise<EvolutionTarget> => {
+    const receipt = await commandReceipt('evolution.target.create', body as OperationInput<'evolution.target.create'>, idempotencyKey)
+    return get<EvolutionTarget>(`/evolution/targets/${encodeURIComponent(receipt.target_id)}`, { spaceId: receipt.space_id })
+  },
   target: (id: string) => get<EvolutionTarget>(`/evolution/targets/${id}`),
-  updateTarget: (id: string, body: EvolutionTargetUpdateBody) =>
-    patch<EvolutionTarget>(`/evolution/targets/${id}`, body),
+  updateTarget: async (id: string, body: EvolutionTargetUpdateBody, idempotencyKey: string = crypto.randomUUID()): Promise<EvolutionTarget> => {
+    const receipt = await commandReceipt('evolution.target.update', { ...body, target_id: id } as OperationInput<'evolution.target.update'>, idempotencyKey)
+    return get<EvolutionTarget>(`/evolution/targets/${encodeURIComponent(receipt.target_id)}`, { spaceId: receipt.space_id })
+  },
   signals: (params: { limit?: number; offset?: number } = {}) => {
     const q: Record<string, string> = {}
     if (params.limit !== undefined) q.limit = String(params.limit)
@@ -1920,26 +1998,30 @@ export const evolutionApi = {
     if (params.offset !== undefined) q.offset = String(params.offset)
     return get<EvolutionSignal[]>(`/evolution/targets/${targetId}/signals?` + new URLSearchParams(q))
   },
-  updateSignal: (signalId: string, body: { triage_status: 'new' | 'acknowledged' | 'dismissed' | 'actioned'; triage_note?: string | null }) =>
-    patch<EvolutionSignal>(`/evolution/signals/${encodeURIComponent(signalId)}`, body),
-  dismissSignal: (signalId: string, body: { triage_note?: string | null } = {}) =>
-    post<EvolutionSignal>(`/evolution/signals/${encodeURIComponent(signalId)}/dismiss`, body),
-  createSignal: (targetId: string, body: EvolutionSignalCreateBody) =>
-    post<EvolutionSignal>(`/evolution/targets/${targetId}/signals`, body),
+  signal: (signalId: string, options?: RequestOptions) => get<EvolutionSignal>(`/evolution/signals/${encodeURIComponent(signalId)}`, options),
+  /** Keyed triage; the signal is read back through its authorized reader. */
+  updateSignal: async (signalId: string, body: { triage_status: 'new' | 'acknowledged' | 'dismissed' | 'actioned'; triage_note?: string | null }, idempotencyKey: string = crypto.randomUUID()): Promise<EvolutionSignal> => {
+    const receipt = await commandReceipt('evolution.signal.triage', { ...body, signal_id: signalId }, idempotencyKey)
+    return evolutionApi.signal(receipt.signal_id, { spaceId: receipt.space_id })
+  },
+  dismissSignal: (signalId: string, body: { triage_note?: string | null } = {}, idempotencyKey: string = crypto.randomUUID()): Promise<EvolutionSignal> =>
+    evolutionApi.updateSignal(signalId, { ...body, triage_status: 'dismissed' }, idempotencyKey),
+  createSignal: async (targetId: string, body: EvolutionSignalCreateBody, idempotencyKey: string = crypto.randomUUID()): Promise<EvolutionSignal> => {
+    const receipt = await commandReceipt('evolution.signal.create', { ...body, target_id: targetId } as OperationInput<'evolution.signal.create'>, idempotencyKey)
+    return evolutionApi.signal(receipt.signal_id, { spaceId: receipt.space_id })
+  },
   runs: (params: { limit?: number; offset?: number } = {}) => {
     const q: Record<string, string> = {}
     if (params.limit !== undefined) q.limit = String(params.limit)
     if (params.offset !== undefined) q.offset = String(params.offset)
     return get<EvolutionRunListItem[]>('/evolution/runs?' + new URLSearchParams(q))
   },
-  runTarget: (targetId: string, body: {
-    agent_id: string
-    mode?: 'dry_run'
-    runtime_profile_id?: string | null
-    project_folder_id?: string | null
-    project_id?: string | null
-  }) =>
-    post<EvolutionRunResult>(`/evolution/targets/${targetId}/run`, body),
+  /** Keyed command queuing the dry-run Evolution Run with its Job; it executes in the background. */
+  runTarget: async (targetId: string, body: Omit<OperationInput<'evolution.target.run'>, 'target_id'>, key: string = crypto.randomUUID()): Promise<EvolutionRunResult> => {
+    const receipt = await commandReceipt('evolution.target.run', { ...body, target_id: targetId }, key)
+    if (receipt.status === 'not_selected') throw new EvolutionRunNotSelected(receipt.reason, receipt.selector_decision_id)
+    return { run_id: receipt.run_id, target_id: receipt.target_id, selector_decision_id: receipt.selector_decision_id, selected_strategy_key: receipt.selected_strategy_key, run_status: 'queued', proposal_ids: [] }
+  },
   strategies: (params: { status?: string; target_type?: string; limit?: number; offset?: number } = {}) => {
     const q: Record<string, string> = {}
     if (params.status !== undefined) q.status = params.status
@@ -1973,121 +2055,79 @@ export const evolutionApi = {
     const query = new URLSearchParams(q).toString()
     return get<EvolvableAsset[]>(query ? `/evolution/assets?${query}` : '/evolution/assets')
   },
-  createAsset: (body: {
-    asset_type: string
-    asset_key: string
-    display_name: string
-    description?: string | null
-    owner_scope_type?: string
-    owner_scope_id?: string | null
-    default_eval_suite_ref?: Record<string, unknown> | null
-    metadata_json?: Record<string, unknown>
-  }) => post<EvolvableAsset>('/evolution/assets', body),
+  /** Keyed command; the asset is read back through its reader. */
+  createAsset: async (body: OperationInput<'evolution.asset.create'>, key: string = crypto.randomUUID()): Promise<EvolvableAsset> => {
+    const receipt = await commandReceipt('evolution.asset.create', body, key)
+    return get<EvolvableAsset>(`/evolution/assets/${encodeURIComponent(receipt.asset_id)}`, { spaceId: receipt.space_id })
+  },
   asset: (assetId: string) =>
     get<EvolvableAsset>(`/evolution/assets/${encodeURIComponent(assetId)}`),
   assetVersions: (assetId: string) =>
     get<EvolvableAssetVersion[]>(`/evolution/assets/${encodeURIComponent(assetId)}/versions`),
-  createAssetVersion: (assetId: string, body: {
-    scope_type?: string
-    scope_id?: string | null
-    parent_version_id?: string | null
-    source?: string
-    content_ref?: string | null
-    content_hash?: string | null
-    content_json?: Record<string, unknown>
-  }) => post<EvolvableAssetVersion>(`/evolution/assets/${encodeURIComponent(assetId)}/versions`, body),
-  transitionAssetVersion: (assetId: string, versionId: string, body: { status: string }) =>
-    post<EvolvableAssetVersion>(
-      `/evolution/assets/${encodeURIComponent(assetId)}/versions/${encodeURIComponent(versionId)}/transition`,
-      body,
-    ),
+  createAssetVersion: async (assetId: string, body: Omit<OperationInput<'evolution.asset.version.create'>, 'asset_id'>, key: string = crypto.randomUUID()): Promise<EvolvableAssetVersion> =>
+    assetVersionOf(await commandReceipt('evolution.asset.version.create', { ...body, asset_id: assetId }, key)),
+  /** The server's strict schema validates the status. */
+  transitionAssetVersion: async (assetId: string, versionId: string, body: { status: string }, key: string = crypto.randomUUID()): Promise<EvolvableAssetVersion> =>
+    assetVersionOf(await commandReceipt('evolution.asset.version.transition', { status: body.status as OperationInput<'evolution.asset.version.transition'>['status'], asset_id: assetId, version_id: versionId }, key)),
   assetPins: (assetId: string) =>
     get<EvolvableAssetPin[]>(`/evolution/assets/${encodeURIComponent(assetId)}/pins`),
-  setAssetPin: (assetId: string, scopeType: string, scopeId: string, body: { version_id: string; reason?: string | null }) =>
-    put<EvolvableAssetPin>(
-      `/evolution/assets/${encodeURIComponent(assetId)}/pins/${encodeURIComponent(scopeType)}/${encodeURIComponent(scopeId)}`,
-      body,
-    ),
-  deleteAssetPin: (assetId: string, scopeType: string, scopeId: string) =>
-    del<null>(`/evolution/assets/${encodeURIComponent(assetId)}/pins/${encodeURIComponent(scopeType)}/${encodeURIComponent(scopeId)}`),
-  resolveAsset: (assetId: string, body: {
-    project_id?: string | null
-    agent_id?: string | null
-    explicit_version_id?: string | null
-    allow_user_pin?: boolean
-  } = {}) =>
-    post<ResolvedEvolvableAssetVersion>(`/evolution/assets/${encodeURIComponent(assetId)}/resolve`, body),
+  setAssetPin: async (assetId: string, scopeType: OperationInput<'evolution.asset.pin.set'>['scope_type'], scopeId: string, body: { version_id: string; reason?: string | null }, key: string = crypto.randomUUID()): Promise<EvolvableAssetPin> => {
+    const receipt = await commandReceipt('evolution.asset.pin.set', { ...body, asset_id: assetId, scope_type: scopeType, scope_id: scopeId }, key)
+    return found(await get<EvolvableAssetPin[]>(`/evolution/assets/${encodeURIComponent(receipt.asset_id)}/pins`, { spaceId: receipt.space_id }), receipt.pin_id!, 'Asset pin')
+  },
+  deleteAssetPin: async (assetId: string, scopeType: OperationInput<'evolution.asset.pin.archive'>['scope_type'], scopeId: string, key: string = crypto.randomUUID()): Promise<null> => {
+    await commandReceipt('evolution.asset.pin.archive', { asset_id: assetId, scope_type: scopeType, scope_id: scopeId }, key)
+    return null
+  },
+  /** Read-only query on the retained URL. */
+  resolveAsset: (assetId: string, body: Omit<OperationInput<'evolution.asset.resolve'>, 'asset_id'> = {}) =>
+    queryAt<ResolvedEvolvableAssetVersion>(`/evolution/assets/${encodeURIComponent(assetId)}/resolve`, body),
   assetEvaluationRuns: (assetId: string) =>
     get<EvolvableAssetEvaluationRun[]>(`/evolution/assets/${encodeURIComponent(assetId)}/evaluation-runs`),
   evaluationCases: (assetId: string) =>
     get<EvolvableAssetEvaluationCase[]>(`/evolution/assets/${encodeURIComponent(assetId)}/evaluation-cases`),
-  createEvaluationCase: (assetId: string, body: {
-    name: string
-    description?: string | null
-    input_json?: Record<string, unknown>
-    expectation_json?: Record<string, unknown>
-    verification_recipe_json: Record<string, unknown>
-    baseline_version_id: string
-    baseline_output_json: unknown
-  }) => post<EvolvableAssetEvaluationCase>(`/evolution/assets/${encodeURIComponent(assetId)}/evaluation-cases`, body),
-  createEvaluationCaseFromRun: (assetId: string, body: {
-    name: string
-    description?: string | null
-    input_json?: Record<string, unknown>
-    expectation_json?: Record<string, unknown>
-    verification_recipe_json: Record<string, unknown>
-    baseline_version_id: string
-    source_run_id: string
-  }) => post<EvolvableAssetEvaluationCase>(`/evolution/assets/${encodeURIComponent(assetId)}/evaluation-cases/from-run`, body),
-  executeEvaluation: (assetId: string, versionId: string, caseId: string, body: { candidate_run_id: string }) =>
-    post<{ evaluation_run: EvolvableAssetEvaluationRun; job_id: string; connector_mode: string }>(
-      `/evolution/assets/${encodeURIComponent(assetId)}/versions/${encodeURIComponent(versionId)}/evaluation-cases/${encodeURIComponent(caseId)}/execute`,
-      body,
-    ),
-  updateAssetVersion: (assetId: string, versionId: string, body: { content_json?: Record<string, unknown>; content_ref?: string | null; content_hash?: string | null }) =>
-    patch<EvolvableAssetVersion>(`/evolution/assets/${encodeURIComponent(assetId)}/versions/${encodeURIComponent(versionId)}`, body),
-  recordAssetEvaluation: (assetId: string, versionId: string, body: {
-    eval_suite_ref: Record<string, unknown>
-    evaluator_version: string
-    status?: string
-    baseline_version_id?: string | null
-    run_id?: string | null
-    model_provider_ref?: Record<string, unknown> | null
-    metrics?: Record<string, unknown>
-    blockers?: unknown[]
-    output_artifact_id?: string | null
-    report_artifact_id?: string | null
-  }) => post<EvolvableAssetEvaluationRun>(
-    `/evolution/assets/${encodeURIComponent(assetId)}/versions/${encodeURIComponent(versionId)}/evaluate`,
-    body,
-  ),
-  createAssetPromotionProposal: (assetId: string, versionId: string, body: {
-    target_scope_type: 'project' | 'space' | 'system'
-    target_scope_id?: string | null
-    pin_after_approval?: boolean
-    deprecate_previous?: boolean
-    evaluation_run_ids?: string[]
-    reason?: string | null
-  }) => post<{ proposal_id: string; status: string; proposal_type: string }>(
-    `/evolution/assets/${encodeURIComponent(assetId)}/versions/${encodeURIComponent(versionId)}/promote-proposal`,
-    body,
-  ),
+  /** Keyed commands; the case is read back through the cases reader. */
+  createEvaluationCase: async (assetId: string, body: Omit<OperationInput<'evolution.asset.evaluation_case.create'>, 'asset_id'>, key: string = crypto.randomUUID()): Promise<EvolvableAssetEvaluationCase> =>
+    evaluationCaseOf(await commandReceipt('evolution.asset.evaluation_case.create', { ...body, asset_id: assetId }, key)),
+  createEvaluationCaseFromRun: async (assetId: string, body: Omit<OperationInput<'evolution.asset.evaluation_case.create_from_run'>, 'asset_id'>, key: string = crypto.randomUUID()): Promise<EvolvableAssetEvaluationCase> =>
+    evaluationCaseOf(await commandReceipt('evolution.asset.evaluation_case.create_from_run', { ...body, asset_id: assetId }, key)),
+  /** Queues the evaluation Job; the queued evaluation run is read back through its reader. */
+  executeEvaluation: async (assetId: string, versionId: string, caseId: string, body: { candidate_run_id: string }, key: string = crypto.randomUUID()): Promise<{ evaluation_run: EvolvableAssetEvaluationRun; job_id: string; connector_mode: string }> => {
+    const receipt = await commandReceipt('evolution.asset.evaluation.execute', { ...body, asset_id: assetId, version_id: versionId, case_id: caseId }, key)
+    return { evaluation_run: await evaluationRunOf(receipt), job_id: receipt.job_id, connector_mode: receipt.connector_mode }
+  },
+  updateAssetVersion: async (assetId: string, versionId: string, body: { content_json?: Record<string, unknown>; content_ref?: string | null; content_hash?: string | null }, key: string = crypto.randomUUID()): Promise<EvolvableAssetVersion> =>
+    assetVersionOf(await commandReceipt('evolution.asset.version.update', { ...body, asset_id: assetId, version_id: versionId }, key)),
+  recordAssetEvaluation: async (assetId: string, versionId: string, body: Omit<OperationInput<'evolution.asset.evaluation.record'>, 'asset_id' | 'version_id'>, key: string = crypto.randomUUID()): Promise<EvolvableAssetEvaluationRun> =>
+    evaluationRunOf(await commandReceipt('evolution.asset.evaluation.record', { ...body, asset_id: assetId, version_id: versionId }, key)),
+  /** Keyed command filing the promotion Proposal; review and apply stay in Proposals. */
+  createAssetPromotionProposal: async (assetId: string, versionId: string, body: Omit<OperationInput<'evolution.asset.promotion.propose'>, 'asset_id' | 'version_id'>, key: string = crypto.randomUUID()): Promise<{ proposal_id: string; status: string; proposal_type: string }> => {
+    const { space_id: _space, ...receipt } = await commandReceipt('evolution.asset.promotion.propose', { ...body, asset_id: assetId, version_id: versionId }, key)
+    return receipt
+  },
   bundles: (params: { limit?: number; offset?: number } = {}) => {
     const q: Record<string, string> = {}
     if (params.limit !== undefined) q.limit = String(params.limit)
     if (params.offset !== undefined) q.offset = String(params.offset)
     return get<EvolutionBundle[]>(`/evolution/bundles?${new URLSearchParams(q)}`)
   },
-  createBundle: (body: { title: string; description?: string | null; proposal_ids: string[] }) =>
-    post<EvolutionBundle>('/evolution/bundles', body),
+  /** Keyed command; the bundle is read back through its reader. Deciding it stays on the Proposal decision path. */
+  createBundle: async (body: { title: string; description?: string | null; proposal_ids: string[] }, key: string = crypto.randomUUID()): Promise<EvolutionBundle> => {
+    const receipt = await commandReceipt('evolution.bundle.create', body, key)
+    return get<EvolutionBundle>(`/evolution/bundles/${encodeURIComponent(receipt.bundle_id)}`, { spaceId: receipt.space_id })
+  },
   bundle: (id: string) => get<EvolutionBundle>(`/evolution/bundles/${encodeURIComponent(id)}`),
   decideBundle: (id: string, decisions: Array<{ proposal_id: string; decision: 'approve' | 'reject'; note?: string | null }>) =>
-    post<EvolutionBundle>(`/evolution/bundles/${encodeURIComponent(id)}/decide`, { decisions }),
-  rollbackBundle: (id: string) => post<EvolutionBundle>(`/evolution/bundles/${encodeURIComponent(id)}/rollback`, {}),
-  previewWorkflowFromRun: (body: { run_id: string; asset_key?: string | null; display_name?: string | null; description?: string | null; input_schema_json?: Record<string, unknown> | null }) =>
-    post<Record<string, unknown>>('/evolution/workflows/from-run/preview', body),
-  saveWorkflowFromRun: (body: { run_id: string; asset_key?: string | null; display_name?: string | null; description?: string | null; input_schema_json?: Record<string, unknown> | null }) =>
-    post<SaveWorkflowFromRunResult>('/evolution/workflows/from-run/save', body),
+    operationAt<OperationOutput<'evolution.bundle.decide'>>('POST', `/evolution/bundles/${encodeURIComponent(id)}/decide`, { decisions }, crypto.randomUUID()).then(() => evolutionApi.bundle(id)),
+  rollbackBundle: (id: string) => operationAt<OperationOutput<'evolution.bundle.rollback'>>('POST', `/evolution/bundles/${encodeURIComponent(id)}/rollback`, {}, crypto.randomUUID()).then(() => evolutionApi.bundle(id)),
+  /** Read-only query on the retained URL. */
+  previewWorkflowFromRun: (body: OperationInput<'evolution.workflow.preview'>) =>
+    queryAt<Record<string, unknown>>('/evolution/workflows/from-run/preview', body),
+  /** Keyed command; the receipt says whether a draft was saved or a Proposal filed. */
+  saveWorkflowFromRun: async (body: OperationInput<'evolution.workflow.save'>, key: string = crypto.randomUUID()): Promise<SaveWorkflowFromRunResult> => {
+    const { space_id: _space, ...receipt } = await commandReceipt('evolution.workflow.save', body, key)
+    return receipt
+  },
 }
 
 /** What saving a Run as a Workflow created: a Proposal to review, or a draft asset version. */
@@ -2145,22 +2185,27 @@ export const agentsApi = {
   currentVersion: (agentId: string) => get<AgentVersionOut>(`/agents/${agentId}/current-version`),
   conversationBackends: (
     agentId: string,
-    options: RequestOptions & { sessionId?: string } = {},
+    options: RequestOptions & { sessionId?: string; projectId?: string } = {},
   ) =>
     get<ConversationBackendCatalog>(
       `/agents/${agentId}/conversation-backends${options.sessionId
         ? `?session_id=${encodeURIComponent(options.sessionId)}`
-        : ''}`,
+        : options.projectId ? `?project_id=${encodeURIComponent(options.projectId)}` : ''}`,
       { spaceId: options.spaceId, signal: options.signal },
     ),
   saveConversationSessionConfig: async (
     agentId: string,
     data: { session_id: string; runtime_profile_id: string; session_config: NonNullable<ConversationBackendCatalog['session_config']>; allow_quota_model_switch?: boolean },
     options: RequestOptions = {},
-  ) => {
+  ): Promise<{ session_config: NonNullable<ConversationBackendCatalog['session_config']>; allow_quota_model_switch?: boolean }> => {
     const receipt = await commandReceipt('conversation.session_config.save', { ...data, agent_id: agentId }, options.idempotencyKey ?? crypto.randomUUID(), options)
-    const catalog = await get<ConversationBackendCatalog>(`/agents/${encodeURIComponent(agentId)}/conversation-backends?session_id=${encodeURIComponent(receipt.session_id)}`, { spaceId: receipt.space_id, signal: options.signal })
-    return { session_config: catalog.session_config ?? [] }
+    try {
+      const catalog = await get<ConversationBackendCatalog>(`/agents/${encodeURIComponent(agentId)}/conversation-backends?session_id=${encodeURIComponent(receipt.session_id)}`, { spaceId: receipt.space_id, signal: options.signal })
+      return { session_config: catalog.session_config ?? [], allow_quota_model_switch: catalog.allow_quota_model_switch ?? false }
+    } catch (error) {
+      // The command is already committed. Consumers must retry only readback.
+      throw Object.assign(error instanceof Error ? error : new Error(String(error)), { settingsSaved: true })
+    }
   },
   // Assistant preferences (soft UI/context layer — never edits prompt or hard policy).
   getAssistantSettings: () => get<SpaceAssistantSettingsOut>('/agents/default-assistant/settings'),
@@ -2203,8 +2248,10 @@ export const agentsApi = {
     const { space_id: _space, ...retry } = await commandReceipt('agent.chat.retry', { agent_id: agentId, run_id: runId }, options.idempotencyKey ?? crypto.randomUUID(), options)
     return retry
   },
-  resetContext: async (agentId: string, options: RequestOptions = {}) => {
-    const receipt = await commandReceipt('agent.chat.reset_context', { agent_id: agentId }, options.idempotencyKey ?? crypto.randomUUID(), options)
+  /** `sessionId`: a direct conversation placed in a Project, which has its own Host container. */
+  resetContext: async (agentId: string, options: RequestOptions & { sessionId?: string } = {}) => {
+    const { sessionId, ...request } = options
+    const receipt = await commandReceipt('agent.chat.reset_context', { agent_id: agentId, ...(sessionId ? { session_id: sessionId } : {}) }, request.idempotencyKey ?? crypto.randomUUID(), request)
     return { agent_id: receipt.agent_id, session_reset: receipt.session_reset, thread_id: receipt.thread_id, workspace_mode: receipt.workspace_mode }
   },
   listRuns:       (limit = 50)        => get<Run[]>(`/agents/runs?limit=${limit}`),
@@ -2230,6 +2277,8 @@ export const agentTemplatesApi = {
 // ── Automations ───────────────────────────────────────────────────────────
 // Space-scoped paths (/spaces/{space_id}/automations); identity via session/bearer.
 export const automationsApi = {
+  configureAutonomy: (data: import('@rainver/protocol').AutomationAutonomyBody, key:string = crypto.randomUUID()) =>
+    operationAt<AutomationOut>('PUT', `/spaces/${_spaceId}/automations/autonomy`, data, key),
   list:   (params: { project_id?: string } = {}) => {
     const q: Record<string, string> = {}
     if (params.project_id !== undefined) q.project_id = params.project_id
@@ -2237,10 +2286,22 @@ export const automationsApi = {
     return get<AutomationOut[]>(`/spaces/${_spaceId}/automations${suffix ? `?${suffix}` : ''}`)
   },
   get:    (id: string)                        => get<AutomationOut>(`/spaces/${_spaceId}/automations/${id}`),
-  create: (data: AutomationCreateBody)        => post<AutomationOut>(`/spaces/${_spaceId}/automations`, data),
-  update: (id: string, data: AutomationUpdateBody) => patch<AutomationOut>(`/spaces/${_spaceId}/automations/${id}`, data),
-  fire:   (id: string, body: { prompt?: string; instruction?: string } = {}) =>
-    post<AutomationFireResult>(`/spaces/${_spaceId}/automations/${id}/fire`, body),
+  create: (data: AutomationCreateBody, key:string = crypto.randomUUID())        => operationAt<AutomationOut>('POST', `/spaces/${_spaceId}/automations`, data, key),
+  update: (id: string, data: AutomationUpdateBody, key:string = crypto.randomUUID()) => operationAt<AutomationOut>('PATCH', `/spaces/${_spaceId}/automations/${id}`, data, key),
+  requestFire: (id:string, body:import('@rainver/protocol').AutomationFireBody={}, key:string=crypto.randomUUID()) =>
+    operationAt<import('@rainver/protocol').AutomationFireReceipt>('POST', `/spaces/${_spaceId}/automations/${encodeURIComponent(id)}/fire`,body,key),
+  fireRequest: (receipt:import('@rainver/protocol').AutomationFireReceipt) =>
+    get<import('@rainver/protocol').AutomationFireRequest>(`/spaces/${receipt.space_id}/automations/${encodeURIComponent(receipt.automation_id)}/fire-requests/${encodeURIComponent(receipt.job_id)}`,{spaceId:receipt.space_id}),
+  // Preserve the UI's completed-target semantics across the asynchronous HTTP contract.
+  fire: async (id:string,body:import('@rainver/protocol').AutomationFireBody={},key:string=crypto.randomUUID()):Promise<AutomationFireResult> => {
+    const receipt=await automationsApi.requestFire(id,body,key)
+    for(;;){
+      const request=await automationsApi.fireRequest(receipt)
+      if(request.outcome==='completed'&&request.result)return request.result as unknown as AutomationFireResult
+      if(request.outcome==='failed'||request.outcome==='unknown')throw new Error(request.error??'Automation fire did not complete')
+      await new Promise(resolve=>setTimeout(resolve,500))
+    }
+  },
   workflowExecutions: (id: string) =>
     get<WorkflowExecutionSummary[]>(`/spaces/${_spaceId}/automations/${encodeURIComponent(id)}/workflow-executions`),
 }
@@ -2274,6 +2335,33 @@ async function waitForJobResult<T>(receipt:{job_id:string;space_id:string},label
     const job=await get<{status:string;result:T|null}>(`/jobs/${encodeURIComponent(receipt.job_id)}`,{spaceId:receipt.space_id})
     if(job.status==='completed'&&job.result)return job.result
     if(job.status==='failed'||job.status==='cancelled')throw new Error(`${label} did not complete`)
+    if(Date.now()-started>180000)throw new Error(`${label} is still running; refresh later`)
+    await new Promise(resolve=>setTimeout(resolve,1000))
+  }
+}
+/** One keyed command, followed only by current-authority result reads. */
+async function contentRequest<T>(operation:keyof typeof import('@rainver/protocol').CONTENT_RETRIEVAL_OPERATION_SCHEMAS,input:unknown,key:string=crypto.randomUUID()):Promise<T>{
+  const receipt=operation==='ask_space.think'?await operationAt<OperationOutput<'ask_space.think'>>('POST','/ask-space/think',input,key):await commandReceipt(operation,input as never,key),domain=operation.startsWith('memory.')?'memory':'knowledge'
+  const started=Date.now(),authGeneration=_authContextGeneration
+  for(;;){
+    if(authGeneration!==_authContextGeneration)throw new ApiRequestError('The session changed while retrieval was running',401,'authentication_required')
+    const path=operation==='ask_space.think'?`/ask-space/requests/${encodeURIComponent(receipt.job_id)}`:`/${domain}/retrieval/requests/${encodeURIComponent(receipt.job_id)}`
+    const view=await get<{status:string;result:T|null;withheld:number}>(path,{spaceId:receipt.space_id})
+    if(view.status==='completed'&&view.result!==null)return view.result
+    if(view.status==='completed'&&view.withheld)throw new ApiRequestError('The content access changed. Search again.',404,'operation_not_found')
+    if(['failed','cancelled','completed'].includes(view.status))throw new Error('Retrieval did not complete')
+    if(Date.now()-started>180000)throw new Error('Retrieval is still running; refresh later')
+    await new Promise(resolve=>setTimeout(resolve,1000))
+  }
+}
+/** Read-only polling of one queued Source retrieval/preview request through its current-access reader. */
+async function waitForSourceRequest(receipt:{job_id:string;space_id:string},label:string):Promise<Record<string,unknown>>{
+  const started=Date.now(),authGeneration=_authContextGeneration
+  for(;;){
+    if(authGeneration!==_authContextGeneration)throw new ApiRequestError(`The session changed while the ${label} was running`,401,'authentication_required')
+    const view=await get<import('@rainver/protocol').SourceRetrievalRequestView>(`/sources/retrieval/requests/${encodeURIComponent(receipt.job_id)}`,{spaceId:receipt.space_id})
+    if(view.status==='completed'&&view.result)return view.result
+    if(view.status==='failed'||view.status==='cancelled'||view.status==='completed')throw new Error(`${label} did not complete`)
     if(Date.now()-started>180000)throw new Error(`${label} is still running; refresh later`)
     await new Promise(resolve=>setTimeout(resolve,1000))
   }
@@ -2316,8 +2404,8 @@ const hostPath=(hostId:string)=>`/hosts/${encodeURIComponent(hostId)}`
  * command is never resubmitted. `needs_attention` means the Host may have
  * acted and is never reported as success.
  */
-async function hostCommand<T>(method:'POST'|'PUT'|'PATCH'|'DELETE',path:string,body:unknown,label:string,key:string=crypto.randomUUID()):Promise<T>{
-  const receipt=await operationAt<import('@rainver/protocol').HostCommandReceipt>(method,path,body,key)
+async function hostCommand<T>(method:'POST'|'PUT'|'PATCH'|'DELETE',path:string,body:unknown,label:string,key:string=crypto.randomUUID(),options:RequestOptions={}):Promise<T>{
+  const receipt=await operationAt<import('@rainver/protocol').HostCommandReceipt>(method,path,body,key,options)
   const started=Date.now(),authGeneration=_authContextGeneration
   for(let delay=500;;delay=Math.min(delay*2,3000)){
     if(authGeneration!==_authContextGeneration)throw new ApiRequestError(`The session changed while the ${label} was running`,401,'authentication_required')
@@ -2487,13 +2575,13 @@ export const projectFoldersApi = {
  */
 export const ambientSessionsApi = {
   offer: (locationId: string) =>
-    get<{ policy: AmbientImportPolicy; counts: AmbientSessionCount[] }>(
+    get<{ policy: AmbientImportPolicy; counts: AmbientSessionCount[]; attention: import('@rainver/protocol').AmbientImportAttention }>(
       `/workspace-locations/${encodeURIComponent(locationId)}/ambient-sessions/offer`,
     ),
   setPolicy: async (locationId: string, body: { runtime_key: string; installation?: string; sync: boolean; default_visibility?: 'private' | 'space_shared'; auto_extract?: boolean }, key: string = crypto.randomUUID()): Promise<AmbientImportPolicy> =>
     (await operationAt<{ policy: AmbientImportPolicy }>('PUT', `/workspace-locations/${encodeURIComponent(locationId)}/ambient-sessions/policy`, body, key)).policy,
-  dismiss: async (locationId: string, key: string = crypto.randomUUID()): Promise<AmbientImportPolicy> =>
-    (await operationAt<{ policy: AmbientImportPolicy }>('POST', `/workspace-locations/${encodeURIComponent(locationId)}/ambient-sessions/dismiss`, {}, key)).policy,
+  setReminder: async (locationId: string, mode: 'later' | 'never' | 'enable', key: string = crypto.randomUUID()): Promise<AmbientImportPolicy> =>
+    (await operationAt<{ policy: AmbientImportPolicy }>('POST', `/workspace-locations/${encodeURIComponent(locationId)}/ambient-sessions/reminder`, { mode }, key)).policy,
   list: (locationId: string) =>
     get<{ sessions: ImportedSession[] }>(`/workspace-locations/${encodeURIComponent(locationId)}/ambient-sessions`),
   /** Everything in the Project this viewer may read, gated by the content predicate rather than host ownership. */
@@ -2580,8 +2668,8 @@ export const hostsApi = {
   /** The cached subscription quota for each copy on a host; a read, never a probe. */
   usage: (hostId: string) => get<{ items: HostRuntimeUsage[] }>(`/hosts/${encodeURIComponent(hostId)}/usage`),
   /** Asks one copy now, on the host that holds its login. */
-  refreshUsage: (hostId: string, runtimeKey: string, installation: string, key?: string) =>
-    hostCommand<HostRuntimeUsage>('POST', `${hostPath(hostId)}/installations/${encodeURIComponent(runtimeKey)}/${encodeURIComponent(installation)}/usage`, {}, 'Quota check', key),
+  refreshUsage: (hostId: string, runtimeKey: string, installation: string, key?: string, options?: RequestOptions) =>
+    hostCommand<HostRuntimeUsage>('POST', `${hostPath(hostId)}/installations/${encodeURIComponent(runtimeKey)}/${encodeURIComponent(installation)}/usage`, {}, 'Quota check', key, options),
   /**
    * The login terminal for one copy of a runtime on a host: the daemon runs
    * the copy's login command on a PTY and this relays it, frame by frame,
@@ -2718,9 +2806,26 @@ export const ordinaryToolsApi = {
   },
 }
 
+/** A single source command followed only by authorized result reads. */
+async function skillSourceRequest<T>(path:string,input:unknown,options:RequestOptions={}):Promise<T>{
+  const receipt=await operationAt<{job_id:string;space_id:string}>('POST',path,input,options.idempotencyKey??crypto.randomUUID(),options)
+  const started=Date.now(),generation=_authContextGeneration
+  for(;;){
+    if(options.signal?.aborted)throw new DOMException('Aborted','AbortError')
+    if(generation!==_authContextGeneration)throw new ApiRequestError('The session changed while Skills were loading',401,'authentication_required')
+    const job=await get<{status:string;result:T|null;error?:{code:string;message:string}|null}>(`/skill-sources/requests/${encodeURIComponent(receipt.job_id)}`,{...options,spaceId:receipt.space_id})
+    if(job.status==='completed'&&job.result)return job.result
+    if(job.status==='failed'||job.status==='cancelled'){
+      if(job.error)throw new ApiRequestError(job.error.message,409,job.error.code)
+      throw new Error('Skill source request did not complete')
+    }
+    if(Date.now()-started>180000)throw new Error('Skill source request is still running; refresh later')
+    await new Promise(resolve=>setTimeout(resolve,500))
+  }
+}
 export const skillsApi = {
   scanHostSkills: (hostId: string, options?: RequestOptions) =>
-    post<import('@rainver/protocol').HostSkillScan>(`/skill-sources/hosts/${encodeURIComponent(hostId)}/scan`, {}, options),
+    skillSourceRequest<import('@rainver/protocol').HostSkillScan>(`/skill-sources/hosts/${encodeURIComponent(hostId)}/scan`, {}, options),
   /** Skills enabled for every addressed recipient; a Room menu names them in `recipient_agent_ids` (none means the manager). */
   availableSkills: (query: { session_id?: string | null; project_id?: string | null; agent_id?: string | null; recipient_agent_ids?: readonly string[] }, options?: RequestOptions) => {
     const params = new URLSearchParams()
@@ -2731,10 +2836,10 @@ export const skillsApi = {
     return get<import('@rainver/protocol').ConversationInputSkillPart[]>(`/skills/available?${params}`, options)
   },
   previewSkillImport: (data: import('@rainver/protocol').SkillImportPreviewRequest, options?: RequestOptions) =>
-    post<SkillImportPreviewResponse>('/skill-sources/import-preview', data, options),
+    skillSourceRequest<SkillImportPreviewResponse>('/skill-sources/import-preview', data, options),
   /** Imports the previewed package; `package_hash` is the preview's, and a changed package answers 409 `skill_package_changed`. */
   importSkill: (data: import('@rainver/protocol').SkillImportRequest, options?: RequestOptions) =>
-    post<SkillPackage>('/skill-sources/import', data, options),
+    skillSourceRequest<SkillPackage>('/skill-sources/import', data, options),
   listSkillPackages: (options?: RequestOptions, offset = 0) =>
     get<Page<SkillPackage>>(`/skill-packages?limit=100&offset=${offset}`, options),
   getSkillContent: (id: string, options?: RequestOptions) =>
@@ -2742,12 +2847,12 @@ export const skillsApi = {
   listSkillBindings: (id: string, options?: RequestOptions) =>
     get<import('@rainver/protocol').SkillBinding[]>(`/skill-packages/${encodeURIComponent(id)}/bindings`, options),
   createSkillBindingProposal: (id: string, data: import('@rainver/protocol').SkillBindingRequest, options?: RequestOptions) =>
-    post<Proposal>(`/skill-packages/${encodeURIComponent(id)}/binding-proposal`, data, options),
+    operationAt<{proposal_id:string}>('POST',`/skill-packages/${encodeURIComponent(id)}/binding-proposal`,data,options?.idempotencyKey??crypto.randomUUID(),options).then(receipt=>get<Proposal>(`/proposals/${encodeURIComponent(receipt.proposal_id)}`,options)),
   getSkillPackage: (id: string, options?: RequestOptions) =>
     get<SkillPackage>(`/skill-packages/${encodeURIComponent(id)}`, options),
   /** Files the review; an enabling `binding` makes the same approval enable the package for that scope. */
   createSkillReviewProposal: (skillPackageId: string, data: import('@rainver/protocol').SkillReviewProposalRequest = {}, options?: RequestOptions) =>
-    post<SkillImportApprovalProposalResponse>(`/skill-packages/${encodeURIComponent(skillPackageId)}/review-proposal`, data, options),
+    operationAt<{proposal_id:string}>('POST',`/skill-packages/${encodeURIComponent(skillPackageId)}/review-proposal`,data,options?.idempotencyKey??crypto.randomUUID(),options).then(receipt=>get<SkillImportApprovalProposalResponse>(`/proposals/${encodeURIComponent(receipt.proposal_id)}`,options)),
 
 }
 
@@ -2764,14 +2869,14 @@ export const contextOpsApi = {
     if (params.limit !== undefined) q.limit = String(params.limit)
     return get<ContextOpsDrilldown>(`/context-ops/drilldown?${new URLSearchParams(q).toString()}`)
   },
-  reviewCycleRun: (data: ContextReviewCycleRequestInput = {}) =>
-    post<ContextReviewCycleResponse>('/context-ops/review-cycle/run', data),
-  contextObservationScan: (data: ContextOpsContextObservationScanRequestInput = {}) =>
-    post<ContextOpsContextObservationScanResponse>('/context-ops/context-observations/scan', data),
+  reviewCycleRun: (data: ContextReviewCycleRequestInput = {},key:string=crypto.randomUUID()) =>
+    operationAt<ContextReviewCycleResponse>('POST','/context-ops/review-cycle/run',data,key),
+  contextObservationScan: (data: ContextOpsContextObservationScanRequestInput = {},key:string=crypto.randomUUID()) =>
+    operationAt<ContextOpsContextObservationScanResponse>('POST','/context-ops/context-observations/scan',data,key),
 }
 
 export const askSpaceApi = {
-  think: (data: AskSpaceRequest) => post<AskSpaceResponse>('/ask-space/think', data),
+  think: (data: AskSpaceRequest,key:string=crypto.randomUUID()) => contentRequest<AskSpaceResponse>('ask_space.think',data,key),
 }
 
 export interface UsageApiQuery {
@@ -2902,7 +3007,8 @@ export const jobsApi = {
     get<Page<Job>>('/jobs?' + new URLSearchParams(params)),
   get:    (id: string)    => get<Job>(`/jobs/${id}`),
   events: (id: string)    => get<JobEvent[]>(`/jobs/${id}/events`),
-  cancel: (id: string)    => post<Job>(`/jobs/${id}/cancel`),
+  cancel: (id: string, key: string = crypto.randomUUID()) =>
+    operationAt<OperationOutput<'job.cancel'>>('POST', `/jobs/${encodeURIComponent(id)}/cancel`, {}, key),
 }
 
 // ── Capture ───────────────────────────────────────────────────────────────
@@ -2912,12 +3018,12 @@ export const jobsApi = {
  * reads (a paste event) exists only in the browser.
  */
 export const captureApi = {
-  create: (body: CaptureRequest) => post<CaptureResponse>('/captures', body),
+  create: (body: CaptureRequest,key:string=crypto.randomUUID()) => commandReceipt('capture.create',body,key),
   /** What a relocation would carry — the anchored block plus the orphans after it. */
   relocationPreview: (activityId: string) =>
     get<RelocationPreview>(`/captures/${activityId}/relocation`),
-  relocate: (activityId: string, body: RelocationRequest) =>
-    post<RelocationResponse>(`/captures/${activityId}/relocation`, body),
+  relocate: (activityId: string, body: RelocationRequest,key:string=crypto.randomUUID()) =>
+    commandReceipt('capture.relocate',{...body,activity_id:activityId},key),
 }
 
 // ── Activity ──────────────────────────────────────────────────────────────
@@ -2940,14 +3046,14 @@ export const activityApi = {
     return get<ActivityInboxRecord[]>('/activity?' + new URLSearchParams(q))
   },
   create: (
-    data: { source_type: ActivitySourceType; content: string; title?: string; source_url?: string; project_folder_id?: string; metadata_json?: Record<string, unknown> },
-    options: { spaceId?: string } = {},
+    data: OperationInput<'activity.create'>,
+    options: { spaceId?: string; key?:string } = {},
   ) =>
-    post<ActivityInboxRecord>('/activity', data, { spaceId: options.spaceId }),
+    operationAt<OperationOutput<'activity.create'>>('POST','/activity',data,options.key??crypto.randomUUID(),{spaceId:options.spaceId}),
   // File / voice capture (store-only). Sends multipart; lands in the Activity Inbox.
   upload: (
     file: File,
-    options: { kind?: 'file' | 'voice'; title?: string; note?: string; project_folder_id?: string; spaceId?: string } = {},
+    options: { kind?: 'file' | 'voice'; title?: string; note?: string; project_folder_id?: string; project_id?: string; spaceId?: string; key?:string } = {},
   ) => {
     const fd = new FormData()
     fd.append('file', file)
@@ -2955,15 +3061,16 @@ export const activityApi = {
     if (options.title) fd.append('title', options.title)
     if (options.note) fd.append('note', options.note)
     if (options.project_folder_id) fd.append('project_folder_id', options.project_folder_id)
-    return post<ActivityInboxRecord>('/activity/upload', fd, { spaceId: options.spaceId })
+    if (options.project_id) fd.append('project_id', options.project_id)
+    return operationAt<OperationOutput<'activity.upload'>>('POST','/activity/upload',fd,options.key??crypto.randomUUID(),{spaceId:options.spaceId})
   },
   get:    (id: string) => get<ActivityInboxRecord>(`/activity/${id}`),
-  review: (id: string) => patch<ActivityInboxRecord>(`/activity/${id}/review`),
-  archive:(id: string) => patch<ActivityInboxRecord>(`/activity/${id}/archive`),
-  consolidate: (id: string) =>
-    post<Proposal[]>(`/activity/${id}/consolidate`),
-  summarize: (body: SummaryRunRequest) =>
-    post<SummaryRunOut>('/activity/summary-runs', body),
+  review: (id: string,key:string=crypto.randomUUID()) => commandReceipt('activity.review',{activity_id:id},key),
+  archive:(id: string,key:string=crypto.randomUUID()) => commandReceipt('activity.archive',{activity_id:id},key),
+  consolidate: (id: string,key:string=crypto.randomUUID()) =>
+    commandReceipt('activity.consolidate',{activity_id:id},key),
+  summarize: (body: OperationInput<'activity.summary.request'>,key:string=crypto.randomUUID()) =>
+    commandReceipt('activity.summary.request',body,key),
 }
 
 // ── Source / Evidence ────────────────────────────────────────────────────
@@ -2974,19 +3081,28 @@ export const personalBriefingsApi = {
     get<BriefingOverviewResponse>(`/spaces/${encodeURIComponent(spaceId)}/information-briefings/personal`, options),
   get: (spaceId: string, briefingId: string, options: RequestOptions = {}) =>
     get<Briefing>(`/spaces/${encodeURIComponent(spaceId)}/information-briefings/personal/${encodeURIComponent(briefingId)}`, options),
-  generate: (spaceId: string) =>
-    post<BriefingGenerateResponse>(`/spaces/${encodeURIComponent(spaceId)}/information-briefings/personal`, {}),
-  cancel: (spaceId: string, briefingId: string) =>
-    post<Briefing>(`/spaces/${encodeURIComponent(spaceId)}/information-briefings/personal/${encodeURIComponent(briefingId)}/cancel`),
-  setDaily: (spaceId: string, daily_enabled: boolean) =>
-    put<{ daily_enabled: boolean }>(`/spaces/${encodeURIComponent(spaceId)}/information-briefings/personal/settings`, { daily_enabled }),
+  generate: (spaceId: string, key: string = crypto.randomUUID()) =>
+    commandReceipt('briefing.personal.request', {space_id:spaceId}, key, {spaceId}),
+  cancel: (spaceId: string, briefingId: string, key: string = crypto.randomUUID()) =>
+    commandReceipt('briefing.personal.cancel', {space_id:spaceId,briefing_id:briefingId}, key, {spaceId}),
+  setDaily: async (spaceId: string, daily_enabled: boolean, key: string = crypto.randomUUID()) => {
+    const result = await commandReceipt('briefing.personal.settings.set', { space_id: spaceId, daily_enabled }, key, { spaceId })
+    return { daily_enabled: result.daily_enabled }
+  },
   followUp: (spaceId: string, briefingId: string, index: number) =>
-    post<BriefingFollowUpPreview>(`/spaces/${encodeURIComponent(spaceId)}/information-briefings/personal/${encodeURIComponent(briefingId)}/highlights/${index}/follow-up`, {}),
+    queryAt<BriefingFollowUpPreview>(`/spaces/${encodeURIComponent(spaceId)}/information-briefings/personal/${encodeURIComponent(briefingId)}/highlights/${index}/follow-up`, {},{spaceId}),
   previewAdoption: (spaceId: string, briefingId: string, index: number) =>
-    post<BriefingAdoptionPreview>(`/spaces/${encodeURIComponent(spaceId)}/information-briefings/personal/${encodeURIComponent(briefingId)}/highlights/${index}/adoption/preview`, {}),
-  adopt: (spaceId: string, briefingId: string, index: number, preview_hash: string) =>
-    post<BriefingAdoptionResult>(`/spaces/${encodeURIComponent(spaceId)}/information-briefings/personal/${encodeURIComponent(briefingId)}/highlights/${index}/adoption`, { preview_hash }),
+    queryAt<BriefingAdoptionPreview>(`/spaces/${encodeURIComponent(spaceId)}/information-briefings/personal/${encodeURIComponent(briefingId)}/highlights/${index}/adoption/preview`, {},{spaceId}),
+  adopt: (spaceId: string, briefingId: string, index: number, preview_hash: string, key:string=crypto.randomUUID()) =>
+    commandReceipt('briefing.personal.adoption.confirm',{space_id:spaceId,briefing_id:briefingId,index,preview_hash},key,{spaceId}),
 }
+
+/** Retained historical Project highlights; every read reauthorizes the whole audience. */
+export const projectBriefingHighlightsApi={
+ followUp:(spaceId:string,projectId:string,briefingId:string,index:number)=>queryAt<BriefingFollowUpPreview>(`/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/information-briefings/${encodeURIComponent(briefingId)}/highlights/${index}/follow-up`,{},{spaceId}),
+ previewAdoption:(spaceId:string,projectId:string,briefingId:string,index:number)=>queryAt<BriefingAdoptionPreview>(`/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/information-briefings/${encodeURIComponent(briefingId)}/highlights/${index}/adoption/preview`,{},{spaceId}),
+ adopt:(spaceId:string,projectId:string,briefingId:string,index:number,preview_hash:string,key:string=crypto.randomUUID())=>commandReceipt('briefing.project.adoption.confirm',{space_id:spaceId,project_id:projectId,briefing_id:briefingId,index,preview_hash},key,{spaceId}),
+};
 
 export const informationDigestsApi = {
   reading: (spaceId: string, input: Partial<ReadingQuery> = {}, projectId?: string, options: RequestOptions = {}) => {
@@ -2997,10 +3113,16 @@ export const informationDigestsApi = {
   },
   readingPreference: (spaceId: string, projectId: string) =>
     get<{ show_in_my_reading: boolean }>(`/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/reading-preference`),
-  setReadingPreference: (spaceId: string, projectId: string, show_in_my_reading: boolean) =>
-    put<{ show_in_my_reading: boolean }>(`/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/reading-preference`, { show_in_my_reading }),
-  readingState: (spaceId: string, itemId: string, body: ReadingStateRequest, projectId?: string) =>
-    patch<{ updated: number }>(`/spaces/${encodeURIComponent(spaceId)}${projectId ? `/projects/${encodeURIComponent(projectId)}` : ''}/reading/items/${encodeURIComponent(itemId)}/state`, body),
+  setReadingPreference: async (spaceId: string, projectId: string, show_in_my_reading: boolean, key: string = crypto.randomUUID()) => {
+    const result = await commandReceipt('reading.preference.set', { space_id: spaceId, project_id: projectId, show_in_my_reading }, key, { spaceId })
+    return { show_in_my_reading: result.show_in_my_reading }
+  },
+  readingState: async (spaceId: string, itemId: string, body: ReadingStateRequest, projectId?: string, key: string = crypto.randomUUID()) => {
+    const result = projectId
+      ? await commandReceipt('reading.project_state.set', { ...body, space_id: spaceId, project_id: projectId, item_id: itemId }, key, { spaceId })
+      : await commandReceipt('reading.personal_state.set', { ...body, space_id: spaceId, item_id: itemId }, key, { spaceId })
+    return { updated: result.updated }
+  },
   /** Read-only: the day's snapshot, or `missing`. Without a date, the latest complete day of the digest's timezone. */
   personal: (spaceId: string, date?: string) => {
     const q = date ? `?date=${encodeURIComponent(date)}` : ''
@@ -3011,44 +3133,61 @@ export const informationDigestsApi = {
     return get<InformationDigestLookup>(`/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/information-digests${q}`, options)
   },
   /** Builds a missing complete day once; never rewrites an existing snapshot. */
-  backfillPersonal: (spaceId: string, date: string) =>
-    post<InformationDigestBackfillResult>(`/spaces/${encodeURIComponent(spaceId)}/information-digests/personal/backfill`, { date }),
-  backfillProject: (spaceId: string, projectId: string, date: string) =>
-    post<InformationDigestBackfillResult>(`/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/information-digests/backfill`, { date }),
+  backfillPersonal: async (spaceId: string, date: string, key:string=crypto.randomUUID()):Promise<InformationDigestBackfillResult> => {
+    const receipt=await commandReceipt('digest.personal.backfill',{space_id:spaceId,date},key,{spaceId});
+    const result=await waitForJobResult<{digest_id:string;created:boolean}>(receipt,'Digest backfill');
+    const current=await informationDigestsApi.personal(spaceId,date);
+    if(current.status!=='available'||current.digest.id!==result.digest_id)throw new Error('Digest is unavailable');
+    return {digest:current.digest,created:result.created};
+  },
+  backfillProject: async (spaceId: string, projectId: string, date: string, key:string=crypto.randomUUID()):Promise<InformationDigestBackfillResult> => {
+    const receipt=await commandReceipt('digest.project.backfill',{space_id:spaceId,project_id:projectId,date},key,{spaceId});
+    const result=await waitForJobResult<{digest_id:string;created:boolean}>(receipt,'Digest backfill');
+    const current=await informationDigestsApi.project(spaceId,projectId,date);
+    if(current.status!=='available'||current.digest.id!==result.digest_id)throw new Error('Digest is unavailable');
+    return {digest:current.digest,created:result.created};
+  },
   /** The caller's own Source annotation failure episodes. */
   annotationEpisodes: (spaceId: string) =>
     get<{ episodes: SourceAnnotationEpisode[] }>(`/spaces/${encodeURIComponent(spaceId)}/source-annotation/episodes`),
-  retryAnnotation: (spaceId: string, body: { episode_id?: string; connection_id?: string } = {}) =>
-    post<SourceAnnotationRetryResult>(`/spaces/${encodeURIComponent(spaceId)}/source-annotation/retry`, body),
+  retryAnnotation: (spaceId: string, body: { episode_id?: string; connection_id?: string } = {}, key:string=crypto.randomUUID()):Promise<{reopened:number}> =>
+    commandReceipt('reading.annotation.retry',{...body,space_id:spaceId},key,{spaceId}),
   profile: (spaceId: string) =>
     get<InterestProfileSnapshot>(`/spaces/${encodeURIComponent(spaceId)}/interest-profile`),
-  acceptCandidate: (spaceId: string, phraseKey: string, body: { label?: string; domain_key?: string }) =>
-    post(`/spaces/${encodeURIComponent(spaceId)}/interest-profile/candidates/${encodeURIComponent(phraseKey)}/accept`, body),
-  dismissCandidate: (spaceId: string, phraseKey: string) =>
-    post(`/spaces/${encodeURIComponent(spaceId)}/interest-profile/candidates/${encodeURIComponent(phraseKey)}/dismiss`, {}),
-  updateProfileSettings: (spaceId: string, body: Partial<InterestProfileSnapshot['settings']>) =>
-    patch<{ settings: InterestProfileSnapshot['settings'] }>(`/spaces/${encodeURIComponent(spaceId)}/interest-profile/settings`, body),
-  createTopic: (spaceId: string, body: { label: string; domain_key: string; weight: number }) =>
-    post<InterestProfileSnapshot['topics'][number]>(`/spaces/${encodeURIComponent(spaceId)}/interest-profile/topics`, body),
-  updateTopic: (spaceId: string, topicKey: string, body: { label: string; domain_key: string; weight: number }) =>
-    patch<InterestProfileSnapshot['topics'][number]>(`/spaces/${encodeURIComponent(spaceId)}/interest-profile/topics/${encodeURIComponent(topicKey)}`, body),
-  archiveTopic: (spaceId: string, topicKey: string) =>
-    post<{ archived: boolean }>(`/spaces/${encodeURIComponent(spaceId)}/interest-profile/topics/${encodeURIComponent(topicKey)}/archive`, {}),
-  applyStarterPack: (spaceId: string, key: string) =>
-    post<{ topics: number; source_recommendations: number }>(`/spaces/${encodeURIComponent(spaceId)}/interest-profile/starter-pack`, { key }),
-  backfillProfileHistory: (spaceId: string, limit = 500) =>
-    post<{ queued: number; limit: number }>(`/spaces/${encodeURIComponent(spaceId)}/interest-profile/history-backfill`, { limit }),
-  serendipityFeedback: (spaceId: string, itemId: string, feedback: 'interesting' | 'neutral' | 'never') =>
-    post<SerendipityFeedbackResult>(`/spaces/${encodeURIComponent(spaceId)}/information-digests/items/${encodeURIComponent(itemId)}/serendipity-feedback`, { feedback }),
+  acceptCandidate: async (spaceId: string, phraseKey: string, body: { label?: string; domain_key?: string }, key: string = crypto.randomUUID()) =>
+    (await commandReceipt('interest.candidate.accept',{space_id:spaceId,phrase_key:phraseKey,...body},key)).topic,
+  dismissCandidate: async (spaceId: string, phraseKey: string, key: string = crypto.randomUUID()) => {
+    const r=await commandReceipt('interest.candidate.dismiss',{space_id:spaceId,phrase_key:phraseKey},key);return {dismissed:r.dismissed};
+  },
+  updateProfileSettings: async (spaceId: string, body: Partial<InterestProfileSnapshot['settings']>, key: string = crypto.randomUUID()) => {
+    const r=await commandReceipt('interest.settings.update',{space_id:spaceId,...body},key);return {settings:r.settings};
+  },
+  createTopic: async (spaceId: string, body: { label: string; domain_key: string; weight: number }, key: string = crypto.randomUUID()) =>
+    (await commandReceipt('interest.topic.create',{space_id:spaceId,...body},key)).topic,
+  updateTopic: async (spaceId: string, topicKey: string, body: { label: string; domain_key: string; weight: number }, key: string = crypto.randomUUID()) =>
+    (await commandReceipt('interest.topic.update',{space_id:spaceId,topic_key:topicKey,...body},key)).topic,
+  archiveTopic: async (spaceId: string, topicKey: string, key: string = crypto.randomUUID()) => {
+    const r=await commandReceipt('interest.topic.archive',{space_id:spaceId,topic_key:topicKey},key);return {archived:r.archived};
+  },
+  applyStarterPack: async (spaceId: string, pack: 'technology'|'science'|'world', key: string = crypto.randomUUID()) => {
+    const r=await commandReceipt('interest.starter_pack.apply',{space_id:spaceId,key:pack},key);return {topics:r.topics,source_recommendations:r.source_recommendations};
+  },
+  backfillProfileHistory: async (spaceId: string, limit=500, key: string = crypto.randomUUID()) => {
+    const r=await commandReceipt('interest.history.backfill',{space_id:spaceId,limit},key);return {queued:r.queued,limit:r.limit};
+  },
+  serendipityFeedback: async (spaceId: string, itemId: string, feedback: 'interesting' | 'neutral' | 'never', key: string = crypto.randomUUID()): Promise<SerendipityFeedbackResult> => {
+    const {space_id: _space,user_id: _user,...result}=await commandReceipt('digest.serendipity.feedback',{space_id:spaceId,item_id:itemId,feedback},key);return result;
+  },
 }
 
 export const sourcesApi = {
   materialProcessing: (itemId:string,options?:RequestOptions)=>get<import('@rainver/protocol').SourceMaterialProcessingState>(`/sources/items/${itemId}/processing`,options),
   /** Shows the named version of this material's literal Agent text as Markdown: a new version through the canonical writer (one material, on request; 409 if the shown version changed). */
-  showAgentTextAsMarkdown:(itemId:string,shown:{artifact_id:string;source_snapshot_id:string|null},options?:RequestOptions)=>post<{artifact_id:string}>(`/sources/items/${itemId}/reading-syntax`,{syntax:'markdown',...shown},options),
-  prepareMaterial:(itemId:string,selection:{investigation?:boolean;agent_id?:string;runtime_profile_id?:string;session_config?:import('@rainver/protocol').RuntimeSessionConfigSelection[]}={},options?:RequestOptions)=>post<import('@rainver/protocol').SourceMaterialProcessingState>(`/sources/items/${itemId}/processing/start`,selection,options),
-  cancelMaterialProcessing:(itemId:string,options?:RequestOptions)=>post<import('@rainver/protocol').SourceMaterialProcessingState>(`/sources/items/${itemId}/processing/cancel`,{},options),
-  requestMaterialStorage:(itemId:string,options?:RequestOptions)=>post<{proposal_id?:string;source_name?:string;allowed?:boolean}>(`/sources/items/${itemId}/processing/request_storage`,{},options),
+  /** Material commands: one explicit key per attempt; the processing state is reread through materialProcessing. */
+  showAgentTextAsMarkdown:async(itemId:string,shown:{artifact_id:string;source_snapshot_id:string|null},options:RequestOptions={},key:string=crypto.randomUUID())=>({artifact_id:(await sourceObjectCall('source.material.show_markdown',{source_item_id:itemId,syntax:'markdown',...shown},key,options)).artifact_id}),
+  prepareMaterial:async(itemId:string,selection:Omit<OperationInput<'source.material.start'>,'source_item_id'>={},options:RequestOptions={},key:string=crypto.randomUUID()):Promise<import('@rainver/protocol').SourceMaterialProcessingState>=>receiptState(await sourceObjectCall('source.material.start',{...selection,source_item_id:itemId},key,options)),
+  cancelMaterialProcessing:async(itemId:string,options:RequestOptions={},key:string=crypto.randomUUID()):Promise<import('@rainver/protocol').SourceMaterialProcessingState>=>receiptState(await sourceObjectCall('source.material.cancel',{source_item_id:itemId},key,options)),
+  requestMaterialStorage:async(itemId:string,options:RequestOptions={},key:string=crypto.randomUUID()):Promise<{proposal_id?:string;source_name?:string;allowed?:boolean}>=>receiptState(await sourceObjectCall('source.material.request_storage',{source_item_id:itemId},key,options)),
   providers: (options?: RequestOptions) => get<SourceProvider[]>('/sources/providers', options),
   sourceCatalog: () => get<SourceCatalog>('/instance/source-catalog'),
   updateCatalogProvider: (id: string, body: { status?: 'active' | 'disabled' }, key: string = crypto.randomUUID()) =>
@@ -3084,8 +3223,9 @@ export const sourcesApi = {
     if(!('status' in result)||result.status!=='succeeded')throw new Error('Source Monitor creation did not complete');
     return result.data;
   },
-  previewQuery: (body: { provider_key: string; query: Record<string, unknown>; source_channel_id?: string }) =>
-    post<SourceQueryPreview>('/sources/query-preview', body),
+  /** Queues one provider preview (quota spent at admission), then reads its result through the Source request reader; never resubmits. */
+  previewQuery: async (body: OperationInput<'source.query.preview'>, key: string = crypto.randomUUID()): Promise<SourceQueryPreview> =>
+    (await waitForSourceRequest(await sourceObjectCall('source.query.preview', body, key), 'Query preview')) as unknown as SourceQueryPreview,
   updateChannel: async (id:string,body:OperationInput<'source.channel.update'>['changes'],key:string=crypto.randomUUID()) => {
     const result=await callOperation('source.channel.update',{source_channel_id:id,changes:body},key);
     if(!('status' in result)||result.status!=='succeeded')throw new Error('Source Monitor update did not complete');
@@ -3107,8 +3247,11 @@ export const sourcesApi = {
     return get<SourceBackfillPlan>(`/sources/channels/${encodeURIComponent(channelId)}/backfill/plans/${encodeURIComponent(result.data.plan_id)}`);
   },
   channelBackfillPlans: (channelId: string) => get<SourceBackfillPlan[]>(`/sources/channels/${channelId}/backfill/plans`),
-  createCustomSourceDraft: (body: CustomSourceCreateDraftRequest) =>
-    post<SourceChannel>('/sources/custom-sources/drafts', body),
+  /** Draft creation through core (access-owner placement); the Monitor is reread through its authorized reader. */
+  createCustomSourceDraft: async (body: OperationInput<'source.custom.draft.create'>, key: string = crypto.randomUUID()): Promise<SourceChannel> => {
+    const receipt = await sourceObjectCall('source.custom.draft.create', body, key)
+    return { ...(await get<SourceChannel>(`/sources/channels/${encodeURIComponent(receipt.source_channel_id!)}`, { spaceId: receipt.space_id })), id: receipt.id, source_channel_id: receipt.source_channel_id } as SourceChannel
+  },
   customSourceSummary: (connectionId: string) =>
     get<CustomSourceHandlerSummary>(`/sources/connections/${connectionId}/custom-source`),
   customSourceVersions: (connectionId: string, params: { limit?: number; offset?: number } = {}) => {
@@ -3123,31 +3266,46 @@ export const sourcesApi = {
     if (params.offset !== undefined) q.offset = String(params.offset)
     return get<Page<CustomSourceHandlerRun>>(`/sources/connections/${connectionId}/handler-runs?` + new URLSearchParams(q))
   },
-  testCustomSourceHandler: (connectionId: string, body: { handler_version_id: string; fixture_html?: string }) =>
-    post<CustomSourceTestOutcome>(`/sources/custom-sources/${connectionId}/test-handler`, body),
-  activateCustomSourceHandler: (connectionId: string, body: { handler_version_id: string; next_check_at?: string | null; schedule_rule?: SourceScheduleRule | null }) =>
-    post<CustomSourceActivationResult>(`/sources/custom-sources/${connectionId}/activate`, body),
+  /** Queues the handler test (it executes externally) and waits; the run is reread through the handler-run reader. */
+  testCustomSourceHandler: async (connectionId: string, body: { handler_version_id: string; fixture_html?: string }, key: string = crypto.randomUUID()): Promise<CustomSourceTestOutcome> => {
+    const done = await waitForSourceRequest(await sourceObjectCall('source.custom.handler.test.request', { ...body, source_connection_id: connectionId }, key), 'Handler test')
+    return get<CustomSourceTestOutcome>(`/sources/connections/${encodeURIComponent(connectionId)}/handler-runs/${encodeURIComponent(String(done.run_id))}`)
+  },
+  activateCustomSourceHandler: async (connectionId: string, body: { handler_version_id: string; next_check_at?: string | null; schedule_rule?: SourceScheduleRule | null }, key: string = crypto.randomUUID()): Promise<CustomSourceActivationResult> => {
+    const receipt = await sourceObjectCall('source.custom.handler.activate', { ...body, schedule_rule: body.schedule_rule as Record<string, unknown> | null | undefined, source_connection_id: connectionId }, key)
+    const handler_version = await get<CustomSourceActivationResult['handler_version']>(`/sources/connections/${encodeURIComponent(connectionId)}/handler-versions/${encodeURIComponent(receipt.handler_version_id)}`)
+    return { status: receipt.status, deltas: receipt.deltas, proposal_id: receipt.proposal_id, handler_version } as CustomSourceActivationResult
+  },
   customSourceSpacePolicy: () =>
     get<CustomSourceSpacePolicy>('/sources/custom-source-settings/space'),
   customSourceInstanceRunnerSettings: () =>
     get<CustomSourceInstanceRunnerSettings>('/sources/custom-source-settings/instance'),
-  updateCustomSourceInstanceRunnerSettings: (body: CustomSourceInstanceRunnerSettingsUpdate) =>
-    put<CustomSourceInstanceRunnerSettings>('/sources/custom-source-settings/instance', body),
-  updateCustomSourceSpacePolicy: (body: CustomSourceSpacePolicyUpdate) =>
-    put<CustomSourceSpacePolicy>('/sources/custom-source-settings/space', body),
-  planSourceRecipe: (body: SourceRecipePlanRequest) =>
-    post<SourceRecipePlanResponse>('/sources/source-recipes/plan', body),
+  updateCustomSourceInstanceRunnerSettings: async (body: CustomSourceInstanceRunnerSettingsUpdate, key: string = crypto.randomUUID()): Promise<CustomSourceInstanceRunnerSettings> =>
+    (await sourceObjectCall('source.custom.settings.instance.update', body, key)) as CustomSourceInstanceRunnerSettings,
+  updateCustomSourceSpacePolicy: async (body: CustomSourceSpacePolicyUpdate, key: string = crypto.randomUUID()): Promise<CustomSourceSpacePolicy> =>
+    (await sourceObjectCall('source.custom.settings.space.update', body, key)) as CustomSourceSpacePolicy,
+  /** Recipe planning fetches the endpoint, so it is queued; the plan is read through the Source request reader. */
+  planSourceRecipe: async (body: OperationInput<'source.recipe.plan.request'>, key: string = crypto.randomUUID()): Promise<SourceRecipePlanResponse> =>
+    (await waitForSourceRequest(await sourceObjectCall('source.recipe.plan.request', body, key), 'Recipe planning')) as unknown as SourceRecipePlanResponse,
   createSourceRecipe: async (body: SourceRecipeCreateRequest,key:string=crypto.randomUUID()):Promise<SourceRecipeCreateResponse> => {
     const result=await callOperation('source.recipe.create',body,key);
     if(!('status' in result)||result.status!=='succeeded')throw new Error('Source recipe draft did not complete');
     return result.data;
   },
-  dryRunSourceRecipe: (connectionId: string, body: { recipe_version_id: string; fixture_content?: string }) =>
-    post<SourceRecipeDryRunResponse>(`/sources/source-recipes/${connectionId}/dry-run`, body),
-  activateSourceRecipe: (connectionId: string, body: { recipe_version_id: string; next_check_at?: string | null; schedule_rule?: SourceScheduleRule | null }) =>
-    post<SourceRecipeActivationResult>(`/sources/source-recipes/${connectionId}/activate`, body),
-  bridgePipelineSourceRecipe: (connectionId: string, body: SourceRecipePipelineBridgeRequest = {}) =>
-    post<SourceRecipePipelineBridgeResponse>(`/sources/custom-sources/${connectionId}/bridge-pipeline`, body),
+  /** Queues the dry-run, waits for it, then rereads the version (its recorded result) through the authorized reader. */
+  dryRunSourceRecipe: async (connectionId: string, body: { recipe_version_id: string; fixture_content?: string }, key: string = crypto.randomUUID()): Promise<SourceRecipeDryRunResponse> => {
+    await waitForSourceRequest(await sourceObjectCall('source.recipe.dry_run.request', { ...body, source_connection_id: connectionId }, key), 'Recipe dry-run')
+    const version = await get<SourceRecipeDryRunResponse['recipe_version']>(`/sources/connections/${encodeURIComponent(connectionId)}/recipe-versions/${encodeURIComponent(body.recipe_version_id)}`)
+    return { recipe_version: version, dry_run: version.test_result_json } as SourceRecipeDryRunResponse
+  },
+  activateSourceRecipe: async (connectionId: string, body: { recipe_version_id: string; next_check_at?: string | null; schedule_rule?: SourceScheduleRule | null }, key: string = crypto.randomUUID()): Promise<SourceRecipeActivationResult> => {
+    const receipt = await sourceObjectCall('source.recipe.activate', { ...body, schedule_rule: body.schedule_rule as Record<string, unknown> | null | undefined, source_connection_id: connectionId }, key)
+    const version = await get<SourceRecipeActivationResult['recipe_version']>(`/sources/connections/${encodeURIComponent(connectionId)}/recipe-versions/${encodeURIComponent(receipt.recipe_version_id)}`)
+    return { status: receipt.status, deltas: receipt.deltas, proposal_id: receipt.proposal_id, recipe_version: version } as SourceRecipeActivationResult
+  },
+  /** Bridge receipt; the new recipe Source and its version are reread through their authorized readers. */
+  bridgePipelineSourceRecipe: async (connectionId: string, body: SourceRecipePipelineBridgeRequest = {}, key: string = crypto.randomUUID()) =>
+    sourceObjectCall('source.custom.pipeline_bridge', { ...(body as Record<string, unknown>), source_connection_id: connectionId } as OperationInput<'source.custom.pipeline_bridge'>, key),
   sourceRecipeVersions: (connectionId: string, params: { limit?: number; offset?: number } = {}) => {
     const q: Record<string, string> = {}
     if (params.limit !== undefined) q.limit = String(params.limit)
@@ -3180,12 +3338,15 @@ export const sourcesApi = {
   },
   getItem: (id: string, options?: RequestOptions) =>
     get<SourceItem>(`/sources/items/${id}`, options),
-  updateItem: (id: string, body: { connection_id?: string | null }) =>
-    patch<SourceItem>(`/sources/items/${id}`, body),
-  createManualUrl: (body: { url: string; title?: string; project_id?: string; connection_id?: string | null; queue_content?: boolean }, options?: RequestOptions) =>
-    post<SourceItem>('/sources/items/manual-url', body, options),
-  itemAction: (id: string, action: string, options?: RequestOptions) =>
-    post<SourceItem>(`/sources/items/${id}/actions`, { action }, options),
+  /** Core commands return identity receipts; the item is reread through its authorized reader in the receipt Space. */
+  updateItem: async (id: string, body: { connection_id: string | null }, key: string = crypto.randomUUID()) =>
+    currentSourceItem(await sourceObjectCall('source.item.update', { source_item_id: id, connection_id: body.connection_id }, key)),
+  createManualUrl: async (body: OperationInput<'source.item.save_url'>, options: RequestOptions = {}, key: string = crypto.randomUUID()) =>
+    currentSourceItem(await sourceObjectCall('source.item.save_url', body, key, options)),
+  itemAction: async (id: string, action: OperationInput<'source.item.queue'>['action'] | OperationInput<'source.item.triage'>['action'], options: RequestOptions = {}, key: string = crypto.randomUUID()) =>
+    currentSourceItem(action === 'queue_content' || action === 'archive_snapshot'
+      ? await sourceObjectCall('source.item.queue', { source_item_id: id, action }, key, options)
+      : await sourceObjectCall('source.item.triage', { source_item_id: id, action }, key, options)),
   jobs: (params: {
     status?: string
     source_item_id?: string
@@ -3219,17 +3380,13 @@ export const sourcesApi = {
     if (params.offset !== undefined) q.offset = String(params.offset)
     return get<Page<ExtractedEvidence>>('/sources/evidence?' + new URLSearchParams(q))
   },
-  updateEvidence: (id: string, body: { status?: string; confidence?: number; metadata?: Record<string, unknown> }) =>
-    patch<ExtractedEvidence>(`/sources/evidence/${id}`, body),
-  createEvidenceLink: (body: {
-    evidence_id: string
-    target_type: string
-    target_id?: string | null
-    link_type?: string
-    status?: string
-    confidence?: number
-    reason?: string
-  }) => post<EvidenceLink>('/sources/evidence-links', body),
+  updateEvidence: async (id: string, body: Omit<OperationInput<'source.evidence.update'>, 'evidence_id'>, key: string = crypto.randomUUID()) => {
+    const receipt = await sourceObjectCall('source.evidence.update', { ...body, evidence_id: id }, key)
+    return get<ExtractedEvidence>(`/sources/evidence/${encodeURIComponent(receipt.id)}`, { spaceId: receipt.space_id })
+  },
+  /** Returns the link receipt; current links are listed through evidenceLinks. */
+  createEvidenceLink: (body: OperationInput<'source.evidence.link'>, key: string = crypto.randomUUID()) =>
+    sourceObjectCall('source.evidence.link', body, key),
   evidenceLinks: (params: { evidence_id?: string; target_type?: string; target_id?: string; status?: string } = {}) => {
     const q: Record<string, string> = {}
     if (params.evidence_id !== undefined) q.evidence_id = params.evidence_id
@@ -3298,8 +3455,9 @@ export const sourcesApi = {
     const suffix = new URLSearchParams(q).toString()
     return get<SourceHealth[]>(`/sources/source-health${suffix ? `?${suffix}` : ''}`)
   },
-  summarize: (body: SummaryRunRequest) =>
-    post<SummaryRunOut>('/sources/post-processing/run-once', body),
+  /** Queues a one-off processing run (a Job receipt); the run itself is read through the Source run reader. */
+  summarize: (body: OperationInput<'source.processing.run_once'>, key: string = crypto.randomUUID()) =>
+    sourceObjectCall('source.processing.run_once', body, key),
   postProcessingRules: (channelId: string) =>
     get<SourcePostProcessingRule[]>(`/sources/channels/${channelId}/post-processing/rules`),
   createPostProcessingRule: async(channelId:string,body:SourcePostProcessingRuleCreate,key:string=crypto.randomUUID()) => {
@@ -3360,8 +3518,11 @@ export const sourcesApi = {
     if (params.offset !== undefined) q.offset = String(params.offset)
     return get<Page<SourcePostProcessingItemDecision>>(`/sources/channels/${channelId}/post-processing/decisions?` + new URLSearchParams(q))
   },
-  postProcessingDecisionAction: (decisionId: string, action: string) =>
-    post<SourcePostProcessingDecisionActionResult>(`/sources/post-processing/decisions/${decisionId}/actions`, { action }),
+  /** Decision review through core: an identity receipt (review status, proposal / queued Job ids); decisions are reread through their list. */
+  postProcessingDecisionAction: (decisionId: string, action: OperationInput<'source.processing.decision.queue'>['action'] | OperationInput<'source.processing.decision.review'>['action'], key: string = crypto.randomUUID()) =>
+    action === 'queue_content' || action === 'extract_evidence'
+      ? sourceObjectCall('source.processing.decision.queue', { decision_id: decisionId, action }, key)
+      : sourceObjectCall('source.processing.decision.review', { decision_id: decisionId, action }, key),
   briefings: (params: {
     channel_id?: string
     project_id?: string
@@ -3380,6 +3541,37 @@ export const sourcesApi = {
 }
 
 // ── Reader ────────────────────────────────────────────────────────────────
+type ReaderWriteReceipt = import('@rainver/protocol').ReaderWriteReceipt
+/** One explicit-key Reader command, never retried; bodies come only from the authorized Reader readers. */
+function readerWrite(method: 'POST' | 'PUT' | 'PATCH' | 'DELETE', path: string, body?: unknown, options: RequestOptions = {}): Promise<ReaderWriteReceipt> {
+  return operationAt<ReaderWriteReceipt>(method, `/reader${path}`, body ?? {}, crypto.randomUUID(), options)
+}
+function readerWriteRefusal(outcome: import('@rainver/protocol').ReaderWriteJobResult['outcome']): ApiRequestError {
+  if (outcome === 'unavailable') return new ApiRequestError('This document or annotation is no longer available', 404, 'operation_not_found')
+  if (outcome === 'conflict') return new ApiRequestError('The document changed. Reload before trying again.', 409, 'operation_conflict')
+  return new ApiRequestError('The change could not be applied', 422, 'operation_invalid_input')
+}
+/** Read-only polling of one queued Reader write through its current-access reader. Never resubmits. */
+async function waitForReaderWrite(receipt: ReaderWriteReceipt): Promise<import('@rainver/protocol').ReaderWriteJobResult> {
+  const started = Date.now(), authGeneration = _authContextGeneration
+  for (let attempt = 0; ; attempt++) {
+    if (authGeneration !== _authContextGeneration) throw new ApiRequestError('The session changed while saving', 401, 'authentication_required')
+    const view = await get<import('@rainver/protocol').ReaderWriteRequestView>(`/reader/write-requests/${encodeURIComponent(receipt.job_id ?? receipt.id)}`, { spaceId: receipt.space_id })
+    if (view.status === 'completed' && view.result) return view.result
+    if (view.status === 'failed' || view.status === 'cancelled' || view.status === 'completed') throw new Error('The Reader change did not complete')
+    if (Date.now() - started > 60000) throw new Error('The Reader change is still being saved; refresh later')
+    await new Promise(resolve => setTimeout(resolve, Math.min(1000, 150 * 2 ** attempt)))
+  }
+}
+async function readerAnnotationAfter(receipt: ReaderWriteReceipt): Promise<ReaderAnnotation> {
+  const list = await get<ReaderAnnotationsResponse>(`/reader/documents/${receipt.document_type}/${receipt.document_id}/annotations`, { spaceId: receipt.space_id })
+  const found = list.items.find(item => item.id === receipt.annotation_id)
+  if (!found) throw readerWriteRefusal('unavailable')
+  return found
+}
+async function readerThreadsAfter(receipt: ReaderWriteReceipt): Promise<ReaderCommentThread[]> {
+  return (await get<{ items: ReaderCommentThread[] }>(`/reader/annotations/${receipt.annotation_id}/threads`, { spaceId: receipt.space_id })).items
+}
 export const readerApi = {
   sourceVersions: (itemId: string, offset = 0) =>
     get<import('@rainver/protocol').ReaderSourceVersions>(`/reader/source-items/${itemId}/versions?offset=${offset}`),
@@ -3391,52 +3583,82 @@ export const readerApi = {
 
   documentNote: (documentType: string, documentId: string) =>
     get<ReaderDocumentNoteResponse>(`/reader/documents/${documentType}/${documentId}/note`),
-  createDocumentNote: (documentType: string, documentId: string, title: string) =>
-    post<ReaderDocumentNoteResponse>(`/reader/documents/${documentType}/${documentId}/note`, { title }),
+  createDocumentNote: async (documentType: string, documentId: string, title: string) => {
+    const receipt = await readerWrite('POST', `/documents/${documentType}/${documentId}/note`, { title })
+    return get<ReaderDocumentNoteResponse>(`/reader/documents/${documentType}/${documentId}/note`, { spaceId: receipt.space_id })
+  },
 
   listAnnotations: (documentType: string, documentId: string) =>
     get<ReaderAnnotationsResponse>(`/reader/documents/${documentType}/${documentId}/annotations`),
 
-  createAnnotation: (body: ReaderAnnotationCreate) =>
-    post<ReaderAnnotation>('/reader/annotations', body),
+  createAnnotation: async (body: ReaderAnnotationCreate) =>
+    readerAnnotationAfter(await readerWrite('POST', '/annotations', body)),
 
-  updateAnnotation: (annotationId: string, body: ReaderAnnotationUpdate) =>
-    patch<ReaderAnnotation>(`/reader/annotations/${annotationId}`, body),
+  updateAnnotation: async (annotationId: string, body: ReaderAnnotationUpdate) =>
+    readerAnnotationAfter(await readerWrite('PATCH', `/annotations/${annotationId}`, body)),
 
-  updateAnnotationRange: (annotationId: string, body: ReaderAnnotationRangeUpdate) =>
-    patch<ReaderAnnotation>(`/reader/annotations/${annotationId}/range`, body),
+  /** Queued: the server reads the body outside its transaction, then the current annotation is reread. */
+  updateAnnotationRange: async (annotationId: string, body: ReaderAnnotationRangeUpdate) => {
+    const receipt = await readerWrite('PATCH', `/annotations/${annotationId}/range`, body)
+    const result = await waitForReaderWrite(receipt)
+    if (result.outcome !== 'applied') throw readerWriteRefusal(result.outcome)
+    return readerAnnotationAfter(receipt)
+  },
 
-  deleteAnnotation: (annotationId: string) =>
-    del(`/reader/annotations/${annotationId}`),
+  deleteAnnotation: async (annotationId: string) => { await readerWrite('DELETE', `/annotations/${annotationId}`) },
 
   listThreads: (annotationId: string) =>
     get<{ items: ReaderCommentThread[] }>(`/reader/annotations/${annotationId}/threads`),
 
-  createComment: (annotationId: string, body: ReaderCommentCreate) =>
-    post<{ thread: ReaderCommentThread }>(`/reader/annotations/${annotationId}/comments`, body),
+  createComment: async (annotationId: string, body: ReaderCommentCreate) => {
+    const receipt = await readerWrite('POST', `/annotations/${annotationId}/comments`, body)
+    const thread = (await readerThreadsAfter(receipt)).find(item => item.id === receipt.id)
+    if (!thread) throw readerWriteRefusal('unavailable')
+    return { thread }
+  },
 
-  updateComment: (commentId: string, body: ReaderCommentUpdate) =>
-    patch<ReaderComment>(`/reader/comments/${commentId}`, body),
+  updateComment: async (commentId: string, body: ReaderCommentUpdate) => {
+    const receipt = await readerWrite('PATCH', `/comments/${commentId}`, body)
+    const comment = (await readerThreadsAfter(receipt)).flatMap(thread => thread.comments).find(item => item.id === receipt.id)
+    if (!comment) throw readerWriteRefusal('unavailable')
+    return comment
+  },
 
-  updateThread: (threadId: string, body: ReaderThreadUpdate) =>
-    patch<ReaderCommentThread>(`/reader/comment-threads/${threadId}`, body),
+  updateThread: async (threadId: string, body: ReaderThreadUpdate) => {
+    const receipt = await readerWrite('PATCH', `/comment-threads/${threadId}`, body)
+    const thread = (await readerThreadsAfter(receipt)).find(item => item.id === receipt.id)
+    if (!thread) throw readerWriteRefusal('unavailable')
+    return thread
+  },
 
+  /** Identity-only receipt; the candidate Evidence is read through its own reader. */
   createEvidence: (annotationId: string, body: ReaderCreateEvidenceRequest) =>
-    post<ReaderCreatedEvidence>(`/reader/annotations/${annotationId}/evidence`, body),
+    readerWrite('POST', `/annotations/${annotationId}/evidence`, body),
 
+  /** Identity-only receipt of the pending proposal (memory_create or knowledge_create). */
   createProposal: (annotationId: string, body: ReaderCreateProposalRequest) =>
-    post<ReaderCreatedProposal>(`/reader/annotations/${annotationId}/proposals`, body),
+    readerWrite('POST', `/annotations/${annotationId}/proposals`, body),
 
   /** The person's own reading position in a document (private; not read status). */
   getPosition: (spaceId: string, documentType: string, documentId: string) =>
     get<ReaderPositionResult>(`/reader/documents/${documentType}/${documentId}/position`, { spaceId }),
 
-  putPosition: (spaceId: string, documentType: string, documentId: string, body: ReaderPositionWrite, options: { keepalive?: boolean } = {}) =>
-    put<ReaderPositionResult>(`/reader/documents/${documentType}/${documentId}/position`, body, { spaceId, ...options }),
+  /** Queued, then reread. A keepalive report at page exit is sent once and not awaited. */
+  putPosition: async (spaceId: string, documentType: string, documentId: string, body: ReaderPositionWrite, options: { keepalive?: boolean } = {}): Promise<ReaderPositionResult> => {
+    const receipt = await readerWrite('PUT', `/documents/${documentType}/${documentId}/position`, body, { spaceId, ...options })
+    if (options.keepalive) return { position: null, accepted: true }
+    const result = await waitForReaderWrite(receipt)
+    if (result.outcome !== 'applied' && result.outcome !== 'not_accepted') throw readerWriteRefusal(result.outcome)
+    const current = await get<ReaderPositionResult>(`/reader/documents/${documentType}/${documentId}/position`, { spaceId })
+    return { position: current.position, accepted: result.outcome === 'applied' }
+  },
 
   getAppearance: () => get<ReaderAppearance>('/reader/preferences/appearance'),
 
-  putAppearance: (body: ReaderAppearance) => put<ReaderAppearance>('/reader/preferences/appearance', body),
+  putAppearance: async (body: ReaderAppearance) => {
+    await readerWrite('PUT', '/preferences/appearance', body)
+    return get<ReaderAppearance>('/reader/preferences/appearance')
+  },
 
   listByProject: (projectId: string, limit?: number) =>
     get<{ items: ReaderAnnotation[] }>(
@@ -3527,6 +3749,24 @@ export const projectsApi = {
    * so offering them produces a control that only ever fails.
    */
   readers: (id: string) => get<ProjectReadersResponse>(`/projects/${id}/readers`),
+  /** The viewer's view of the Project's Rooms: only Rooms they are a member of; enrols them in the mainline. */
+  rooms: (id: string, params: { limit?: number; offset?: number } = {}, options: RequestOptions = {}) =>
+    get<ProjectRoomsResponse>(`/projects/${encodeURIComponent(id)}/rooms?${pageQuery(params)}`, options),
+  /** The Project's Agent list, filtered by the viewer's own Agent read access. */
+  agents: (id: string, params: { q?: string; limit?: number; offset?: number } = {}, options: RequestOptions = {}) =>
+    get<ProjectAgentListResponse>(`/projects/${encodeURIComponent(id)}/agents?${pageQuery(params)}`, options),
+  /** One Agent on the Project's list for the viewer; a 404 means it is not on it (or not readable by them). */
+  agent: (id: string, agentId: string, options: RequestOptions = {}) =>
+    get<ProjectAgent>(`/projects/${encodeURIComponent(id)}/agents/${encodeURIComponent(agentId)}`, options),
+  /** Agents from the viewer's library they may add to this Project. */
+  agentCandidates: (id: string, params: { q?: string; limit?: number; offset?: number } = {}, options: RequestOptions = {}) =>
+    get<ProjectAgentCandidatesResponse>(`/projects/${encodeURIComponent(id)}/agent-candidates?${pageQuery(params)}`, options),
+  // One keyed command; the caller re-reads the list. Joins no Room.
+  addAgent: (id: string, agentId: string, key: string = crypto.randomUUID()) =>
+    commandReceipt('project.agent.add', { project_id: id, agent_id: agentId }, key),
+  // Leaves every Room roster as it is.
+  removeAgent: (id: string, agentId: string, key: string = crypto.randomUUID()) =>
+    commandReceipt('project.agent.remove', { project_id: id, agent_id: agentId }, key),
   conversations: (id: string, params: { limit?: number; offset?: number } = {}) =>
     get<ProjectConversationsResponse>(`/projects/${id}/conversations?` + new URLSearchParams(
       Object.fromEntries(Object.entries(params).map(([key, value]) => [key, String(value)])),
@@ -3893,9 +4133,9 @@ interface LearningItem {
 export const learningApi = {
   objectives: (projectId: string) => get<LearningObjective[]>(`/projects/${encodeURIComponent(projectId)}/learning-objectives`),
   items: (projectId: string) => get<LearningItem[]>(`/projects/${encodeURIComponent(projectId)}/learning-items`),
-  createObjective: (body: { project_id: string; title: string; description?: string }) => post<LearningObjective>('/learning/objectives', body),
-  createItem: (body: { project_id: string; objective_id?: string; knowledge_item_id: string; item_kind: 'card' | 'exercise'; prompt: string; answer: string }) => post<LearningItem>('/learning/items', body),
-  review: (itemId: string, outcome: 'correct' | 'incorrect') => post<Record<string, unknown>>(`/learning/items/${encodeURIComponent(itemId)}/review`, { outcome }),
+  createObjective: async (body: { project_id: string; title: string; description?: string },key:string=crypto.randomUUID()) => (await commandReceipt('learning.objective.create',body,key)).objective,
+  createItem: async (body: { project_id: string; objective_id?: string; knowledge_item_id: string; item_kind: 'card' | 'exercise'; prompt: string; answer: string },key:string=crypto.randomUUID()) => (await commandReceipt('learning.item.create',body,key)).item,
+  review: async (itemId: string, outcome: 'correct' | 'incorrect',key:string=crypto.randomUUID()) => (await commandReceipt('learning.item.review',{item_id:itemId,outcome},key)).mastery,
 }
 
 export const projectResearchApi = {
@@ -4121,12 +4361,27 @@ export const projectResearchApi = {
 }
 
 export const researchDiscoveryApi = {
-  evaluate: (body: { project_id: string; research_context_version_id: string; providers: ResearchProviderKey[]; candidate_budget: number; execution?: { model_provider_id?: string; model_name?: string }; credentials?: Record<string, string> }) =>
-    post<{ strategy: ResearchQueryStrategy }>('/research/query-strategies/evaluate', body),
-  materialize: (strategyId: string, body: { provider_keys: ResearchProviderKey[]; credentials?: Record<string, string> }) =>
-    post<MaterializedResearchStrategy>(`/research/query-strategies/${encodeURIComponent(strategyId)}/materialize`, body),
-  retryProvider: (strategyId: string, providerKey: ResearchProviderKey, body: { project_id: string; execution?: { model_provider_id?: string; model_name?: string }; credentials?: Record<string, string> }) =>
-    post<{ strategy: ResearchQueryStrategy }>(`/research/query-strategies/${encodeURIComponent(strategyId)}/providers/${encodeURIComponent(providerKey)}/retry`, body),
+  evaluate: (body: { project_id: string; research_context_version_id: string; providers: ResearchProviderKey[]; candidate_budget: number; execution?: { model_provider_id?: string; model_name?: string }; credentials?: Record<string, string> },key:string=crypto.randomUUID()) =>
+    operationAt<OperationOutput<'research.strategy.evaluate'>>('POST','/research/query-strategies/evaluate',body,key),
+  materialize: (strategyId: string, body: { provider_keys: ResearchProviderKey[]; credentials?: Record<string, string> }, key:string=crypto.randomUUID()) =>
+    operationAt<OperationOutput<'research.strategy.materialize'>>('POST',`/research/query-strategies/${encodeURIComponent(strategyId)}/materialize`,body,key),
+  activate: (strategyId:string,body:{reason:'manual'|'rollback'},key:string=crypto.randomUUID()) =>
+    operationAt<OperationOutput<'research.strategy.activate'>>('POST',`/research/query-strategies/${encodeURIComponent(strategyId)}/activate`,body,key),
+  retryProvider: (strategyId: string, providerKey: ResearchProviderKey, body: { project_id: string; execution?: { model_provider_id?: string; model_name?: string }; credentials?: Record<string, string> },key:string=crypto.randomUUID()) =>
+    operationAt<OperationOutput<'research.strategy.retry'>>('POST',`/research/query-strategies/${encodeURIComponent(strategyId)}/providers/${encodeURIComponent(providerKey)}/retry`,body,key),
+  waitEvaluation:async(receipt:ResearchQueryEvaluationAcceptedJob):Promise<{strategy: import('@rainver/protocol').ResearchQueryStrategy}>=>{
+    const started=Date.now(),authGeneration=_authContextGeneration,spaceId=_spaceId
+    for(;;){
+      if(authGeneration!==_authContextGeneration||spaceId!==_spaceId)throw new ApiRequestError('The session changed while evaluation was running',401,'authentication_required')
+      const view=await researchDiscoveryApi.evaluationResult(receipt.job_id)
+      if(view.strategy_id!==receipt.strategy_id||view.run_id!==receipt.run_id)throw new Error('Evaluation receipt changed')
+      if(view.status==='succeeded'&&view.result)return view.result
+      if(view.status==='failed'||view.status==='cancelled')throw new Error('Research evaluation did not complete; sent work will not be repeated')
+      if(Date.now()-started>180000)throw new Error('Research evaluation is still running; refresh later')
+      await new Promise(resolve=>setTimeout(resolve,1000))
+    }
+  },
+  evaluationResult:(jobId:string)=>get<ResearchQueryEvaluationResult>(`/research/query-evaluations/${encodeURIComponent(jobId)}`),
   /** One page of a provider plan's attempts, newest first. */
   listAttempts: (strategyId: string, providerKey: ResearchProviderKey, query: { project_id: string; limit: number; offset: number }) =>
     get<ListResearchQueryAttemptsResponse>(`/research/query-strategies/${encodeURIComponent(strategyId)}/providers/${encodeURIComponent(providerKey)}/attempts?${new URLSearchParams({ project_id: query.project_id, limit: String(query.limit), offset: String(query.offset) })}`),
@@ -4150,8 +4405,13 @@ function retrievalSwitchPath(target: RetrievalSwitchTarget): string {
 export const runtimeContextApi = {
   retrievalSwitch: (target: RetrievalSwitchTarget, options: RequestOptions = {}) =>
     get<WorkRetrievalSwitch>(retrievalSwitchPath(target), options),
-  setRetrievalSwitch: (target: RetrievalSwitchTarget, body: WorkRetrievalSwitchRequest, options: RequestOptions = {}) =>
-    put<WorkRetrievalSwitch>(retrievalSwitchPath(target), body, options),
+  /** Keyed command; the switch is read back through its reader. */
+  setRetrievalSwitch: async (target: RetrievalSwitchTarget, body: WorkRetrievalSwitchRequest, options: RequestOptions = {}, idempotencyKey: string = crypto.randomUUID()): Promise<WorkRetrievalSwitch> => {
+    const receipt = 'scopeId' in target
+      ? await commandReceipt('runtime_context.work_context.retrieval.set', { ...body, work_context_scope_id: target.scopeId }, idempotencyKey, options)
+      : await commandReceipt('runtime_context.room_conversation.retrieval.set', { ...body, session_id: target.sessionId }, idempotencyKey, options)
+    return get<WorkRetrievalSwitch>(retrievalSwitchPath(target), { ...options, spaceId: receipt.space_id })
+  },
 }
 
 export const instanceOperationsApi = {
@@ -4204,26 +4464,50 @@ export const authApi = {
   completePasswordReset: (token: string, newPassword: string) => post<{ ok: boolean }>('/auth/recovery/complete', { token, new_password: newPassword }),
   adminInvite: (email: string) => post<InstanceInvitationResponse>('/auth/admin/invitations', { email }),
   adminUsers: () => get<AdminAuthUser[]>('/auth/admin/users'),
-  adminDisableUser: (userId: string) => post<{ ok: boolean }>(`/auth/admin/users/${encodeURIComponent(userId)}/disable`, {}),
-  adminEnableUser: (userId: string) => post<{ ok: boolean }>(`/auth/admin/users/${encodeURIComponent(userId)}/enable`, {}),
+  adminDisableUser: (userId: string, key: string = crypto.randomUUID()) => operationAt<OperationOutput<'auth.user.disable'>>('POST', `/auth/admin/users/${encodeURIComponent(userId)}/disable`, {}, key),
+  adminEnableUser: (userId: string, key: string = crypto.randomUUID()) => operationAt<OperationOutput<'auth.user.enable'>>('POST', `/auth/admin/users/${encodeURIComponent(userId)}/enable`, {}, key),
   adminResetLink: (userId: string) => post<{ reset_link: string }>(`/auth/admin/users/${encodeURIComponent(userId)}/reset-link`, {}),
   adminRegistrationIntents: () => get<RegistrationIntentAdmin[]>('/auth/admin/registration-intents'),
 }
 
 // ── Spaces ────────────────────────────────────────────────────────────────
 export const spacesApi = {
-  acceptInvitation: (token: string) => post<{ space_id: string | null }>('/invitations/accept', { token }),
-  create:               (data: { name: string; type: Exclude<SpaceWithMembership['type'], 'personal'>; oversight_mode?: SpaceOversightMode }) => post<SpaceWithMembership>('/spaces', data),
+  acceptInvitation: async (token: string, idempotencyKey: string = crypto.randomUUID()): Promise<{ space_id: string | null }> =>
+    commandReceipt('space.invitation.accept', { token }, idempotencyKey),
+  /** Keyed creation; the new Space is read back with the creator's membership. */
+  create: async (data: { name: string; type: Exclude<SpaceWithMembership['type'], 'personal'>; oversight_mode?: SpaceOversightMode }, idempotencyKey: string = crypto.randomUUID()): Promise<SpaceWithMembership> => {
+    const receipt = await commandReceipt('space.create', data, idempotencyKey)
+    return get<SpaceWithMembership>(`/spaces/${encodeURIComponent(receipt.space_id)}`, { spaceId: receipt.space_id })
+  },
   get:                  (spaceId: string)                              => get<SpaceWithMembership>(`/spaces/${spaceId}`),
   members:              (spaceId: string)                              => get<SpaceMember[]>(`/spaces/${spaceId}/members`),
-  invite:               (spaceId: string, data: { email: string; role: string }) =>
-    post<SpaceInvitationOut>(`/spaces/${spaceId}/invitations`, data),
+  /**
+   * The invitation secret is generated here and kept to build the claim link;
+   * the server stores only its hash, so a receipt (or a replay) never carries it.
+   */
+  invite: async (spaceId: string, data: { email: string; role: string }, idempotencyKey: string = crypto.randomUUID(), token: string = invitationSecret()): Promise<SpaceInvitationOut> => {
+    const receipt = await commandReceipt('space.invitation.create', { ...data, role: data.role as OperationInput<'space.invitation.create'>['role'], token, space_id: spaceId }, idempotencyKey, { spaceId })
+    return { id: receipt.invitation_id, space_id: receipt.space_id, invited_email: receipt.invited_email, role: receipt.role, token, status: receipt.status as SpaceInvitationOut['status'], expires_at: receipt.expires_at }
+  },
   getSnapshotDefaults:  (spaceId: string)                              => get<SpaceSnapshotDefaults>(`/spaces/${spaceId}/snapshot-defaults`),
-  updateSnapshotDefaults: (spaceId: string, data: SpaceSnapshotDefaults) => patch<SpaceSnapshotDefaults>(`/spaces/${spaceId}/snapshot-defaults`, data),
+  updateSnapshotDefaults: async (spaceId: string, data: SpaceSnapshotDefaults, idempotencyKey: string = crypto.randomUUID()): Promise<SpaceSnapshotDefaults> => {
+    await commandReceipt('space.snapshot_defaults.update', { ...data, space_id: spaceId }, idempotencyKey, { spaceId })
+    return spacesApi.getSnapshotDefaults(spaceId)
+  },
   getRetrievalSettings: (spaceId: string) =>
     get<SpaceRetrievalSettings>(`/spaces/${spaceId}/retrieval-settings`),
-  updateRetrievalSettings: (spaceId: string, data: SpaceRetrievalSettingsUpdate) =>
-    patch<SpaceRetrievalSettings>(`/spaces/${spaceId}/retrieval-settings`, data),
+  updateRetrievalSettings: async (spaceId: string, data: SpaceRetrievalSettingsUpdate, idempotencyKey: string = crypto.randomUUID()): Promise<SpaceRetrievalSettings> => {
+    await commandReceipt('space.retrieval_settings.update', { ...data, space_id: spaceId }, idempotencyKey, { spaceId })
+    return spacesApi.getRetrievalSettings(spaceId)
+  },
+}
+
+/** 256 random bits, base64url: the Space invitation secret the claim link carries. */
+function invitationSecret(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(32))
+  let binary = ''
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
 
 // ── Providers ─────────────────────────────────────────────────────────────
@@ -4519,11 +4803,12 @@ export const dailyReportApi = {
   getSettings: () =>
     get<DailyCaptureReportSettingOut>('/daily-capture-report/settings'),
 
-  updateSettings: (data: DailyCaptureReportSettingUpdate) =>
-    patch<DailyCaptureReportSettingOut>('/daily-capture-report/settings', data),
+  updateSettings: (data: DailyCaptureReportSettingUpdate,key:string=crypto.randomUUID()) =>
+    commandReceipt('daily_capture.settings.patch', data,key),
+  setSettings:(data:OperationInput<'daily_capture.settings.set'>,key:string=crypto.randomUUID())=>commandReceipt('daily_capture.settings.set',data,key),
 
-  run: (data: DailyReportRunRequest) =>
-    post<DailyReportRunResponse>('/daily-capture-report/run', data),
+  run: (data: OperationInput<'daily_capture.run'>,key:string=crypto.randomUUID()) =>
+    commandReceipt('daily_capture.run', data,key),
 
   listReports: (limit = 10) =>
     get<DailyReportArtifactItem[]>(`/daily-capture-report/reports?limit=${limit}`),
@@ -4823,48 +5108,58 @@ export const projectMonitoringApi = {
 };
 
 // Goal collection uses the same scoped transport and canonical Run stream.
+// Commands are core operations with a fresh transport key per attempt; the
+// domain keys in their bodies (message, follow, edit, save, feedback) still dedupe.
+const goalCall=<Id extends import('@rainver/protocol').SourceGoalOperationId>(id:Id,input:import('@rainver/protocol').OperationInput<Id>,options:RequestOptions={})=>sourceObjectCall(id,input,crypto.randomUUID(),options) as Promise<import('@rainver/protocol').OperationOutput<Id>>;
+export type SourceGoalAction='edit'|'explore'|'preview'|'save'|'follow'|'feedback'|'check'|'resume'|'pause'|'delete'|'rollback';
+const SOURCE_GOAL_ACTION_OPERATIONS={edit:'source.goal.edit',explore:'source.goal.explore',preview:'source.goal.preview.request',save:'source.goal.save',follow:'source.goal.follow',feedback:'source.goal.feedback',check:'source.goal.check',resume:'source.goal.resume',pause:'source.goal.pause',delete:'source.goal.delete',rollback:'source.goal.binding.rollback'} as const satisfies Record<SourceGoalAction,import('@rainver/protocol').SourceGoalOperationId>;
 export const sourceGoalsApi={
- edit:(id:string,body:import('@rainver/protocol').SourceGoalEdit,options:RequestOptions={})=>post<{id:string;revision:number}>(`/sources/goals/${encodeURIComponent(id)}/edit`,body,options),
- check:(id:string,body:{expected_version_id:string|null;retry_failed?:true},options:RequestOptions={})=>post<{status:'queued'|'in_progress';job_id?:string}>(`/sources/goals/${encodeURIComponent(id)}/check`,body,options),
+ edit:(id:string,body:import('@rainver/protocol').SourceGoalEdit,options:RequestOptions={})=>goalCall('source.goal.edit',{goal_id:id,...body},options),
+ check:(id:string,body:{expected_version_id:string|null;retry_failed?:true},options:RequestOptions={})=>goalCall('source.goal.check',{goal_id:id,...body},options),
  nativeAvailability:(profile:string,options:RequestOptions={})=>get<{supported:boolean;reason?:string;supported_modes?:string[]}>(`/sources/goal-setup/agent-search/${encodeURIComponent(profile)}`,options),
  findLegacy:(channel:string,options:RequestOptions={})=>get<{goal_id:string|null}>(`/sources/goal-setup/legacy/${encodeURIComponent(channel)}`,options),
- storeCredential:(data:{name:string;secret:string},options:RequestOptions={})=>post<CustomSourceCredentialDTO>('/sources/custom-source-credentials',data,options),
+ /** The secret is sent once with an explicit key; the receipt is the credential's metadata only. */
+ storeCredential:async(data:{name:string;secret:string},options:RequestOptions={},key:string=crypto.randomUUID()):Promise<CustomSourceCredentialDTO>=>(await sourceObjectCall('source.custom.credential.create',data,key,options)) as CustomSourceCredentialDTO,
  list:(options:RequestOptions={})=>get<{goals:import('@rainver/protocol').SourceGoalDetail['goal'][]}>('/sources/goals',options),
  read:(id:string,options:RequestOptions={})=>get<import('@rainver/protocol').SourceGoalDetail>(`/sources/goals/${encodeURIComponent(id)}`,options),
  /** Creates a topic; with `follow`, creation and its one follow confirmation commit together. */
- begin:(data:import('@rainver/protocol').SourceGoalBeginRequest,options:RequestOptions={})=>post<{id:string;space_id:string;follow?:import('@rainver/protocol').SourceGoalFollow|null}>('/sources/goal-setup/begin',data,options),
+ begin:(data:import('@rainver/protocol').SourceGoalBeginRequest,options:RequestOptions={})=>goalCall('source.goal.setup.begin',data,options),
  /** Owner-only lookup of a committed creation by its idempotency key. */
  findCreation:(key:string,projectId:string|null,options:RequestOptions={})=>get<{goal_id:string|null;space_id?:string}>(`/sources/goal-setup/begin/${encodeURIComponent(key)}${projectId?`?project_id=${encodeURIComponent(projectId)}`:''}`,options),
- message:(goal_id:string,content:string,idempotency_key:string,options:RequestOptions={},execution?:{search_path?:'agent'|'api';agent_id?:string;runtime_profile_id?:string;session_config?:import('@rainver/protocol').RuntimeSessionConfigSelection[]})=>post<{run_id:string;session_id:string}>('/sources/goal-setup/message',{goal_id,content,idempotency_key,...execution},options),
- legacy:(channel_id:string,options:RequestOptions={})=>post<{goal:{id:string}}>('/sources/goal-setup/legacy',{channel_id},options),
- action:(id:string,action:string,body:Record<string,unknown>={},options:RequestOptions={})=>post(`/sources/goals/${encodeURIComponent(id)}/${action}`,body,options),
+ message:(goal_id:string,content:string,idempotency_key:string,options:RequestOptions={},execution?:{search_path?:'agent'|'api';agent_id?:string;runtime_profile_id?:string;session_config?:import('@rainver/protocol').RuntimeSessionConfigSelection[]})=>goalCall('source.goal.setup.message',{goal_id,content,idempotency_key,...execution},options),
+ /** Maps a Monitor to a topic; the receipt names the goal (`goal_id`). */
+ legacy:(channel_id:string,options:RequestOptions={})=>goalCall('source.goal.setup.legacy',{channel_id},options),
+ /** One goal control. The preview is queued as a Job; its result appears on the goal (`previews`). */
+ action:(id:string,action:SourceGoalAction,body:Record<string,unknown>={},options:RequestOptions={})=>goalCall(SOURCE_GOAL_ACTION_OPERATIONS[action],{goal_id:id,...body} as never,options),
  /** A binding stopped because its Source changed: the Source as it is now and what changed (see the server's reconfirm.ts). */
  sourceConfirmation:(id:string,bindingId:string,options:RequestOptions={})=>get<import('@rainver/protocol').SourceGoalBindingReconfirmation>(`/sources/goals/${encodeURIComponent(id)}/bindings/${encodeURIComponent(bindingId)}/source-confirmation`,options),
  /** The owner confirms exactly the state shown (binding revision and its token). */
- confirmSource:(id:string,bindingId:string,body:import('@rainver/protocol').SourceGoalBindingConfirmRequest,options:RequestOptions={})=>post<{binding_id:string;binding_revision:number;status:string}>(`/sources/goals/${encodeURIComponent(id)}/bindings/${encodeURIComponent(bindingId)}/source-confirmation`,body,options),
+ confirmSource:(id:string,bindingId:string,body:import('@rainver/protocol').SourceGoalBindingConfirmRequest,options:RequestOptions={})=>goalCall('source.goal.binding.confirm_source',{goal_id:id,binding_id:bindingId,...body},options),
  /** One confirmation starts continuous following; no manual preview is required. */
  /** Tightening-only owner feedback on a followed topic. */
- feedback:(id:string,body:import('@rainver/protocol').SourceGoalFeedbackRequest,options:RequestOptions={})=>post<{applied:boolean;duplicate:boolean;kind:string;affected:number}>(`/sources/goals/${encodeURIComponent(id)}/feedback`,body,options),
- follow:(id:string,body:import('@rainver/protocol').SourceGoalFollowRequest,options:RequestOptions={})=>post<{goal_id:string;status:string;activated:boolean;prepare:boolean;follow:import('@rainver/protocol').SourceGoalFollow}>(`/sources/goals/${encodeURIComponent(id)}/follow`,body,options),
+ feedback:(id:string,body:import('@rainver/protocol').SourceGoalFeedbackRequest,options:RequestOptions={})=>goalCall('source.goal.feedback',{goal_id:id,...body},options),
+ follow:(id:string,body:import('@rainver/protocol').SourceGoalFollowRequest,options:RequestOptions={})=>goalCall('source.goal.follow',{goal_id:id,...body},options),
 }
 
 // Reading method workspace: all writes remain explicit; GET never starts a trial.
 export const readingMethodsApi={
- generate:(body:unknown)=>post<import('@rainver/protocol').ReadingMethodGenerationView>('/prompts/reading-method/generations',body),
+ generate:async(body:unknown,key:string=crypto.randomUUID())=>readingMethodsApi.generation((await commandReceipt('reading_method.generation.start',body as OperationInput<'reading_method.generation.start'>,key)).generation_id),
  generation:(id:string)=>get<import('@rainver/protocol').ReadingMethodGenerationView>(`/prompts/reading-method/generations/${encodeURIComponent(id)}`),
- cancelGeneration:(id:string)=>post<import('@rainver/protocol').ReadingMethodGenerationView>(`/prompts/reading-method/generations/${encodeURIComponent(id)}/cancel`,{}),
+ cancelGeneration:async(id:string,key:string=crypto.randomUUID())=>readingMethodsApi.generation((await commandReceipt('reading_method.generation.cancel',{generation_id:id},key)).generation_id),
  readSample:(id:string)=>get<{name:string;pages:Array<{url:string;text:string}>}>(`/prompts/reading-method/samples/${encodeURIComponent(id)}`),
  entry:(projectId?:string|null)=>get<{can_manage:boolean;project_id:string|null}>(`/prompts/reading-method/entry?${new URLSearchParams(projectId?{project_id:projectId}:{})}`),
  cliOptions:(projectId?:string|null)=>get<import('@rainver/protocol').ReadingMethodContext['runtimes']>(`/prompts/reading-method/cli-options${projectId?`?${new URLSearchParams({project_id:projectId})}`:''}`),
  context:(itemId:string|null,projectId?:string|null,artifactId?:string|null,targetKey?:string)=>get<import('@rainver/protocol').ReadingMethodContext>(`/prompts/reading-method?${new URLSearchParams({...(itemId?{item_id:itemId}:{}),...(projectId?{project_id:projectId}:{}),...(artifactId?{artifact_id:artifactId}:{}),...(targetKey?{target_key:targetKey}:{})})}`),
- initialize:()=>post('/prompts/reading-method/initialize',{}),
- draft:(body:unknown)=>post<{id:string}>('/prompts/reading-method/drafts',body),
- sample:(body:unknown)=>post<{id:string}>('/prompts/reading-method/samples',body),
- trial:(body:unknown)=>post<import('@rainver/protocol').ReadingMethodTrialView>('/prompts/reading-method/trials',body),
- judge:(id:string,body:unknown)=>post(`/prompts/reading-method/trials/${encodeURIComponent(id)}/judgment`,body),
- cancel:(id:string)=>post(`/prompts/reading-method/trials/${encodeURIComponent(id)}/cancel`,{}),
- promote:(body:unknown)=>post<{id:string;proposal_id?:string}>('/prompts/reading-method/promote',body),
- rollback:(body:unknown)=>post('/prompts/reading-method/rollback',body),
+ // Keyed commands; content is read back through the GET readers above.
+ initialize:(key:string=crypto.randomUUID())=>commandReceipt('reading_method.initialize',{},key),
+ draft:async(body:unknown,key:string=crypto.randomUUID()):Promise<{id:string}>=>({id:(await commandReceipt('reading_method.draft.save',body as OperationInput<'reading_method.draft.save'>,key)).version_id}),
+ sample:async(body:unknown,key:string=crypto.randomUUID()):Promise<{id:string}>=>({id:(await commandReceipt('reading_method.sample.save',body as OperationInput<'reading_method.sample.save'>,key)).case_id}),
+ trial:async(body:unknown,key:string=crypto.randomUUID())=>readingMethodsApi.readTrial((await commandReceipt('reading_method.trial.start',body as OperationInput<'reading_method.trial.start'>,key)).trial_id),
+ readTrial:(id:string)=>get<import('@rainver/protocol').ReadingMethodTrialView>(`/prompts/reading-method/trials/${encodeURIComponent(id)}`),
+ judge:(id:string,body:{judgment:string;reason:string},key:string=crypto.randomUUID())=>commandReceipt('reading_method.trial.judge',{...body,trial_id:id} as OperationInput<'reading_method.trial.judge'>,key),
+ cancel:(id:string,key:string=crypto.randomUUID())=>commandReceipt('reading_method.trial.cancel',{trial_id:id},key),
+ promote:async(body:unknown,key:string=crypto.randomUUID()):Promise<{id:string;proposal_id?:string}>=>{const receipt=await commandReceipt('reading_method.promotion.propose',body as OperationInput<'reading_method.promotion.propose'>,key);return {id:receipt.proposal_id,proposal_id:receipt.proposal_id};},
+ rollback:(body:unknown,key:string=crypto.randomUUID())=>commandReceipt('reading_method.rollback',body as OperationInput<'reading_method.rollback'>,key),
 }
 
 
@@ -4874,15 +5169,16 @@ export const projectReadingApi={
  composition:(space:string,project:string,version?:string,options:RequestOptions&{date?:string}={})=>{const {date,...request}=options;return get<import('@rainver/protocol').ProjectReadingResponse>(`/spaces/${space}/projects/${project}/reading-compositions${version?`/${encodeURIComponent(version)}/export`:''}${date?`?date=${encodeURIComponent(date)}`:''}`,{...request,spaceId:space})},
  archivedTheme:(space:string,project:string,id:string,options:RequestOptions={})=>get<import('@rainver/protocol').Briefing>(`/spaces/${space}/projects/${project}/reading-compositions/analyses/${encodeURIComponent(id)}`,{...options,spaceId:space}),
  history:(space:string,project:string,cursor?:string,options:RequestOptions={})=>get<import('@rainver/protocol').ProjectReadingHistory>(`/spaces/${space}/projects/${project}/reading-compositions/history${cursor?`?cursor=${encodeURIComponent(cursor)}`:''}`,{...options,spaceId:space}),
- retryComposition:(space:string,project:string)=>post(`/spaces/${space}/projects/${project}/reading-compositions/retry`,{},{spaceId:space}),
+ retryComposition:(space:string,project:string,key:string=crypto.randomUUID())=>commandReceipt('reading.composition.retry',{space_id:space,project_id:project},key,{spaceId:space}),
  themes:(goal:string,options:RequestOptions={})=>get<import('@rainver/protocol').ProjectThemeRoundsResponse>(`/sources/goals/${encodeURIComponent(goal)}/theme-rounds`,options),
- retryTheme:(goal:string,round:string,options:RequestOptions={})=>post<import('@rainver/protocol').ProjectThemeRoundsResponse>(`/sources/goals/${encodeURIComponent(goal)}/theme-rounds/retry`,{round_id:round},options),
- consent:(goal:string,body:unknown,options:RequestOptions={})=>post(`/sources/goals/${encodeURIComponent(goal)}/theme-analysis`,body,options),
+ /** Receipts only; the rounds are read again through `themes`. */
+ retryTheme:(goal:string,round:string,options:RequestOptions={})=>goalCall('source.goal.theme.retry',{goal_id:goal,round_id:round},options),
+ consent:(goal:string,body:Omit<import('@rainver/protocol').OperationInput<'source.goal.theme.configure'>,'goal_id'>,options:RequestOptions={})=>goalCall('source.goal.theme.configure',{goal_id:goal,...body} as import('@rainver/protocol').OperationInput<'source.goal.theme.configure'>,options),
  operations:(space:string,project:string,offset=0,options:RequestOptions={})=>get<import('@rainver/protocol').ProjectDeepReadList>(`/spaces/${space}/projects/${project}/reading/deep-reads?offset=${offset}`,{...options,spaceId:space}),
  purposes:(space:string,project:string,item:string,options:RequestOptions={})=>get<import('@rainver/protocol').ProjectDeepReadPurposes>(`/spaces/${space}/projects/${project}/reading/items/${item}/purposes`,{...options,spaceId:space}),
- start:(space:string,project:string,item:string,body:unknown)=>post<{status:string;run_id?:string;processing_id?:string}>(`/spaces/${space}/projects/${project}/reading/items/${item}/deep-reads`,body,{spaceId:space}),
- cancel:(space:string,project:string,id:string)=>post(`/spaces/${space}/projects/${project}/reading/deep-reads/${id}/cancel`,{},{spaceId:space}),
- favorite:(space:string,project:string,item:string,favorite:boolean)=>post(`/spaces/${space}/projects/${project}/reading/items/${item}/favorite`,{favorite},{spaceId:space}),
+ start:(space:string,project:string,item:string,body:Omit<import('@rainver/protocol').OperationInput<'reading.deep_read.start'>,'space_id'|'project_id'|'item_id'>,key:string=crypto.randomUUID()):Promise<{status:string;run_id?:string;processing_id?:string;source_id?:string;source_name?:string;can_request_consent?:boolean}>=>commandReceipt('reading.deep_read.start',{...body,space_id:space,project_id:project,item_id:item},key,{spaceId:space}),
+ cancel:(space:string,project:string,id:string,key:string=crypto.randomUUID())=>commandReceipt('reading.deep_read.cancel',{space_id:space,project_id:project,operation_id:id},key,{spaceId:space}),
+ favorite:async(space:string,project:string,item:string,favorite:boolean,key:string=crypto.randomUUID())=>{const result=await commandReceipt('reading.favorite.set',{space_id:space,project_id:project,item_id:item,favorite},key,{spaceId:space});return {item_id:result.item_id,favorite:result.favorite}},
  record:(space:string,project:string,item:string,snapshot:string,options:RequestOptions={})=>get<import('@rainver/protocol').ProjectReadingRecords>(`/reader/source-items/${item}/records?project_id=${project}&snapshot_id=${encodeURIComponent(snapshot)}`,{...options,spaceId:space}),
  records:(space:string,project:string,item:string,offset=0,options:RequestOptions={})=>get<import('@rainver/protocol').ProjectReadingRecords>(`/reader/source-items/${item}/records?project_id=${project}&offset=${offset}`,{...options,spaceId:space}),
 }
@@ -4902,6 +5198,21 @@ async function commandReceipt<Id extends OperationId>(id:Id,input:OperationInput
   if(!('status' in result)||result.status!=='succeeded')throw new Error('Command did not complete')
   return result.data
 }
+/** A read-only core query sent to its retained POST URL (no key; bodies can exceed a query string). */
+async function queryAt<T>(path:string,body:unknown,options:RequestOptions={}):Promise<T>{
+  const result=await post<OperationOutcome<T>>(path,body,options)
+  if(!('status' in result)||result.status!=='succeeded')throw new Error('Query did not complete')
+  return result.data
+}
+function found<T extends {id:string}>(rows:readonly T[],id:string,label:string):T{
+  const row=rows.find(r=>r.id===id);if(!row)throw new Error(`${label} is no longer available`);return row
+}
+const assetVersionOf=async(receipt:{space_id:string;asset_id:string;version_id:string})=>
+  found(await get<EvolvableAssetVersion[]>(`/evolution/assets/${encodeURIComponent(receipt.asset_id)}/versions`,{spaceId:receipt.space_id}),receipt.version_id,'Asset version')
+const evaluationCaseOf=async(receipt:{space_id:string;asset_id:string;case_id:string})=>
+  found(await get<EvolvableAssetEvaluationCase[]>(`/evolution/assets/${encodeURIComponent(receipt.asset_id)}/evaluation-cases`,{spaceId:receipt.space_id}),receipt.case_id,'Evaluation case')
+const evaluationRunOf=async(receipt:{space_id:string;asset_id:string;evaluation_run_id:string})=>
+  found(await get<EvolvableAssetEvaluationRun[]>(`/evolution/assets/${encodeURIComponent(receipt.asset_id)}/evaluation-runs`,{spaceId:receipt.space_id}),receipt.evaluation_run_id,'Evaluation run')
 const researchOperation=(receipt:{id:string;project_id:string;space_id:string})=>
   get<ProjectOperation>(`/projects/${encodeURIComponent(receipt.project_id)}/operations/${encodeURIComponent(receipt.id)}`,{spaceId:receipt.space_id})
 
@@ -4913,3 +5224,8 @@ export function callPluginOperation<T>(id:import('@rainver/protocol').PluginOper
  if(!key)throw new Error('An explicit idempotency key is required')
  return request('POST',`/actions/${encodeURIComponent(id)}`,input,{...options,idempotencyKey:key})
 }
+
+/** Personal receipt storage grants no destination authority. Keep the key for an explicit retry. */
+export const captureFilingApi = {
+  file: (body: import('@rainver/protocol').OperationInput<'capture.file'>, key: string) => operationAt<OperationOutput<'capture.file'>>('POST','/me/filings',body,key),
+};

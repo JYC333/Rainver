@@ -1,4 +1,10 @@
+import {enqueueAutomationFire} from './fireIntent.js';
+import {automationFireSnapshot} from './fireSnapshot.js';
+import {withAutomationEffectAuthority,admitAutomationEffect} from './effectAuthority.js';
+import {withJobEffectAuthority,lockCurrentJobClaim} from '../jobs/effectAuthority.js';
+import type {JobEnvelopeForHandler} from '../jobs/handlerRegistry.js';
 import type { ServerConfig } from "../../config.js";
+import { lockAutomationFire } from "./configurationAuthority.js";
 import type { AutomationTargetType } from "@rainver/protocol";
 import {
   OperationalAlertService,
@@ -8,7 +14,7 @@ import {
 import { getDbPool, type PoolClient } from "../../db/pool.js";
 import { withTransaction } from "../../db/tx.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
-import { HttpError } from "../routeUtils/common.js";
+import { HttpError, type Queryable } from "../routeUtils/common.js";
 import { isSpaceOwnerOrAdmin } from "../access/roles.js";
 import { lockActiveProjectForMutation } from "../projects/access.js";
 import { enforce } from "../policy/index.js";
@@ -129,9 +135,26 @@ export class AutomationService {
     private readonly config: ServerConfig,
     private readonly repo: AutomationRepositoryPort,
     alerts?: OperationalAlertPort | null,
+    private readonly configurationTransaction?: Queryable,
   ) {
     registerAutomationOwnedTargetHandlers();
     this.alerts = alerts === undefined ? OperationalAlertService.fromConfig(config) : alerts;
+  }
+
+  /** Configuration only: the caller owns the transaction and its lifetime.
+   * Repository writes, policy audits and preflight reads use that same port.
+   * Fire targets retain their separate durable execution owners.
+   */
+  static forConfigurationTransaction(
+    config: ServerConfig,
+    db: Queryable,
+  ): Pick<AutomationService, "create" | "update" | "enableAutonomy"> {
+    return new AutomationService(config, new PgAutomationRepository(db), null, db);
+  }
+
+  /** Admission only. The caller owns locks and commit; no target work runs here. */
+  static forFireAdmissionTransaction(config: ServerConfig, db: Queryable): Pick<AutomationService, "prepareFire"> {
+    return new AutomationService(config, new PgAutomationRepository(db), null, db);
   }
 
   async create(input: {
@@ -168,6 +191,7 @@ export class AutomationService {
       agentId,
       projectId,
       databaseUrl: this.config.databaseUrl,
+      db: this.configurationTransaction,
     });
     if (projectId) {
       if (targetType !== AUTOMATION_TARGET_AGENT_RUN && targetType !== AUTOMATION_TARGET_WORKFLOW) {
@@ -272,6 +296,7 @@ export class AutomationService {
           agentId: existing.agent_id,
           projectId: nextProjectId,
           databaseUrl: this.config.databaseUrl,
+          db: this.configurationTransaction,
         })
       : configJson;
     let hasProjectWriterAuthority = false;
@@ -435,7 +460,7 @@ export class AutomationService {
     );
   }
 
-  async fire(input: {
+  async prepareFire(input: {
     spaceId: string;
     automationId: string;
     actorUserId: string;
@@ -443,7 +468,13 @@ export class AutomationService {
     instruction?: string | null;
     triggerType?: string;
     triggerContext?: Record<string, unknown> | null;
-  }): Promise<Record<string, unknown>> {
+  }): Promise<AutomationTargetExecutionContext> {
+    if (this.configurationTransaction) {
+      await lockAutomationFire(this.configurationTransaction, input.spaceId, input.actorUserId, {
+        space_id: input.spaceId, automation_id: input.automationId,
+        prompt: input.prompt, instruction: input.instruction, trigger_type: input.triggerType ?? "manual",
+      });
+    }
     // Firing runs the Automation's content, so it takes reading it: a
     // personal Automation is fired by its owner, a Project one by a Project
     // reader who also writes there (below). A Space owner/admin's operations
@@ -451,7 +482,7 @@ export class AutomationService {
     const auto = await this.repo.get(input.spaceId, input.automationId, { readableBy: input.actorUserId });
     if (!auto) throw new HttpError(404, `Automation '${input.automationId}' not found`);
     if (auto.status !== "active") {
-      throw new HttpError(409, `Automation is not active (status=${auto.status})`);
+      throw new AutomationNotActiveError(auto.status);
     }
     const triggerType = input.triggerType ?? "manual";
     if (!VALID_TRIGGER_TYPES.has(triggerType)) {
@@ -490,7 +521,7 @@ export class AutomationService {
       triggerOrigin: responsibility.triggerOrigin,
     });
 
-    const result = await requireAutomationTargetHandler(targetType).execute({
+    return {
       config: this.config,
       repo: this.repo,
       host: this,
@@ -500,11 +531,43 @@ export class AutomationService {
       responsibility,
       preflightSnapshot,
       advanceSchedule: false,
-    });
-    if (triggerType === "manual") {
-      await this.repo.recordFire(input.spaceId, auto.id);
+    };
+  }
+
+  async fire(input: Parameters<AutomationService['prepareFire']>[0], options: {snapshot?:string;job?:JobEnvelopeForHandler;advanceSchedule?:boolean;scheduleSlot?:string|null} = {}): Promise<Record<string, unknown>> {
+    // Tests without a configured DB retain their repository port. Production
+    // admission always has its own short transaction; no transaction spans IO.
+    if (!this.config.databaseUrl) {
+      const context=await this.prepareFire(input);
+      const result=await requireAutomationTargetHandler(await automationTargetType(context.automation.config_json)).execute(context);
+      if(context.triggerType==='manual')await this.repo.recordFire(input.spaceId,context.automation.id);
+      return result;
     }
-    return result;
+    const pool=getDbPool(this.config.databaseUrl);
+    const prepare=async(db:Queryable)=>{
+      const context=await AutomationService.forFireAdmissionTransaction(this.config,db).prepareFire(input);
+      const snapshot=await automationFireSnapshot(db,context);
+      return {context,snapshot};
+    };
+    const first=await withTransaction(pool,prepare);
+    const expected=options.snapshot??first.snapshot;
+    if(first.snapshot!==expected)throw new HttpError(409,'Automation fire configuration changed');
+    const check=async(tx:Queryable)=>{
+      const live=await prepare(tx);
+      if(live.snapshot!==expected)throw new HttpError(409,'Automation fire configuration changed');
+      if(options.job)await lockCurrentJobClaim(tx,options.job);
+    };
+    const work=()=>withAutomationEffectAuthority(check,async()=>{
+      const context={...first.context,automation:options.scheduleSlot?{...first.context.automation,next_run_at:options.scheduleSlot}:first.context.automation,advanceSchedule:options.advanceSchedule??false};
+      const result=await requireAutomationTargetHandler(await automationTargetType(context.automation.config_json)).execute(context);
+      if(context.triggerType==='manual')await withTransaction(pool,async tx=>{
+        await check(tx);await new PgAutomationRepository(tx).recordFire(input.spaceId,context.automation.id);
+      });
+      return result;
+    });
+    return options.job?withJobEffectAuthority(pool,options.job,work,async tx=>{
+      if(tx)await check(tx);else await withTransaction(pool,check);
+    }):work();
   }
 
   async scanAndFire(): Promise<number> {
@@ -513,53 +576,15 @@ export class AutomationService {
     let fired = 0;
     for (const auto of due) {
       try {
-        const targetType = await automationTargetType(auto.config_json);
-        let hasProjectWriterAuthority = false;
-        if (auto.project_id) {
-          await this.repo.assertProjectWriter(auto.space_id, auto.project_id, auto.owner_user_id);
-          hasProjectWriterAuthority = true;
-        }
-        const fireInput = {
-          spaceId: auto.space_id,
-          automationId: auto.id,
-          actorUserId: auto.owner_user_id,
-          triggerType: "schedule",
-        };
-        const preAuthorized = await this.repo.hasActiveGrant(auto.space_id, auto.id);
-        const responsibility = fireResponsibility(auto, fireInput, "schedule");
-        await this.enforceAction("automation.fire", auto.space_id, auto.owner_user_id, {
-          agent_id: auto.agent_id,
-          trigger_type: "schedule",
-          trigger_origin: responsibility.triggerOrigin,
-          automation_pre_authorized: preAuthorized,
-          target_type: targetType,
-          project_id: auto.project_id ?? null,
-          project_writer: hasProjectWriterAuthority,
-          actor_is_owner: true,
-        }, auto.id);
-        const preflightSnapshot = await this.runTargetPreflight({
-          targetType,
-          spaceId: auto.space_id,
-          actorUserId: auto.owner_user_id,
-          agentId: auto.agent_id,
-          projectFolderId: auto.project_folder_id,
-          projectId: auto.project_id,
-          automationPreAuthorized: preAuthorized,
-          configJson: auto.config_json,
-          triggerOrigin: responsibility.triggerOrigin,
+        const queued=await withTransaction(getDbPool(this.config.databaseUrl),async tx=>{
+          const c=await AutomationService.forFireAdmissionTransaction(this.config,tx).prepareFire({spaceId:auto.space_id,automationId:auto.id,actorUserId:auto.owner_user_id,triggerType:'schedule'});
+          // Another sweep or a reschedule already consumed this exact slot.
+          if(c.automation.next_run_at!==auto.next_run_at)return false;
+          await enqueueAutomationFire(tx,c);
+          await new PgAutomationRepository(tx).advanceSchedule(c.automation);
+          return true;
         });
-        await requireAutomationTargetHandler(targetType).execute({
-          config: this.config,
-          repo: this.repo,
-          host: this,
-          automation: auto,
-          fireInput,
-          triggerType: "schedule",
-          responsibility,
-          preflightSnapshot,
-          advanceSchedule: true,
-        });
-        fired += 1;
+        if(queued)fired += 1;
       } catch (error) {
         // Paused or archived after the scan read it: nothing failed, and the
         // change that stopped it already wrote the schedule state.
@@ -709,7 +734,7 @@ export class AutomationService {
   ): Promise<Record<string, unknown>> {
     if (!this.config.databaseUrl) throw new HttpError(502, "SERVER_DATABASE_URL is required");
     const target = workflowTargetFromConfig(auto.config_json);
-    const resolved = await resolveWorkflowTarget(this.config.databaseUrl, {
+    const resolved = await resolveWorkflowTarget(getDbPool(this.config.databaseUrl), {
       spaceId: input.spaceId,
       userId: input.actorUserId,
       projectId: auto.project_id,
@@ -717,6 +742,7 @@ export class AutomationService {
       target,
     });
     const executionResult = await withTransaction(getDbPool(this.config.databaseUrl), async (client) => {
+      await admitAutomationEffect(client);
       // Project before Automation, the order a PATCH takes them in.
       if (auto.project_id) await lockActiveProjectForMutation(client, auto.space_id, auto.project_id);
       await lockActiveAutomation(client, auto);
@@ -780,7 +806,7 @@ export class AutomationService {
   ): Promise<void> {
     const membershipRole = await this.repo.getMembershipRole(spaceId, actorUserId);
     const registry = await loadActionRegistry();
-    const result = await enforce(this.config, registry, {
+    const result = await enforce({ ...this.config, auditTransaction: this.configurationTransaction }, registry, {
       action,
       actor_type: "user",
       actor_id: actorUserId,
@@ -815,7 +841,7 @@ export class AutomationService {
     triggerOrigin: "manual" | "automation",
   ): Promise<Record<string, unknown>> {
     if (!this.config.databaseUrl) return { executable: true, skipped: "database_not_configured" };
-    const db = getDbPool(this.config.databaseUrl);
+    const db = this.configurationTransaction ?? getDbPool(this.config.databaseUrl);
     const agent = await db.query<AgentPreflightRow>(
       `SELECT a.status,
               a.current_version_id,
@@ -1025,6 +1051,7 @@ export class AutomationService {
       repo: this.repo,
       host: this,
       input,
+      db: this.configurationTransaction,
     });
   }
 
@@ -1047,7 +1074,7 @@ export class AutomationService {
   ): Promise<Record<string, unknown>> {
     if (!this.config.databaseUrl) throw new HttpError(422, "workflow automations require a configured database");
     const target = workflowTargetFromConfig(input.configJson);
-    const resolved = await resolveWorkflowTarget(this.config.databaseUrl, {
+    const resolved = await resolveWorkflowTarget(this.configurationTransaction ?? getDbPool(this.config.databaseUrl), {
       spaceId: input.spaceId,
       userId: input.actorUserId,
       projectId: input.projectId,
@@ -1121,6 +1148,7 @@ async function normalizeWorkflowConfig(
     agentId: string;
     projectId: string | null | undefined;
     databaseUrl?: string | null;
+    db?: Queryable;
   },
 ): Promise<Record<string, unknown>> {
   if (input.targetType !== AUTOMATION_TARGET_WORKFLOW) return configJson;
@@ -1130,7 +1158,7 @@ async function normalizeWorkflowConfig(
   }
   if (target.resolution === "follow") return configJson;
   if (!input.databaseUrl) throw new HttpError(502, "SERVER_DATABASE_URL is required for workflow automations");
-  const resolved = await resolveWorkflowTarget(input.databaseUrl, {
+  const resolved = await resolveWorkflowTarget(input.db ?? getDbPool(input.databaseUrl), {
     spaceId: input.spaceId,
     userId: input.userId,
     projectId: input.projectId,
@@ -1169,7 +1197,7 @@ function workflowTargetFromConfig(configJson: Record<string, unknown> | null | u
 }
 
 async function resolveWorkflowTarget(
-  databaseUrl: string,
+  db: Queryable,
   input: {
     spaceId: string;
     userId: string;
@@ -1178,7 +1206,7 @@ async function resolveWorkflowTarget(
     target: WorkflowAutomationTarget;
   },
 ): Promise<ResolvedWorkflowTarget> {
-  const resolved = await resolveEvolvableAssetVersion(getDbPool(databaseUrl), {
+  const resolved = await resolveEvolvableAssetVersion(db, {
     spaceId: input.spaceId,
     userId: input.userId,
     projectId: input.projectId,

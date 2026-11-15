@@ -7,6 +7,9 @@ import {
 } from "../src/modules/knowledge/claimCandidatePackets.js";
 import { ProposalApplierRegistry } from "../src/modules/proposals/applierRegistry.js";
 import { seedSourceConnection, useReviewPacketDatabase } from "./support/reviewPacketDatabase.js";
+import { insertKnowledgeItem } from "./support/knowledgeFixtures.js";
+import { RetrievalProjectionService } from "../src/modules/retrieval/projectionService.js";
+import { knowledgeRetrievalRegistry } from "../src/modules/knowledge/retrievalAdapter.js";
 
 // Packet creation and acceptance run on the shared real PostgreSQL: the source
 // artifacts and Source connection are real rows, and every packet/child proposal
@@ -41,6 +44,23 @@ async function seedWorld(artifacts: ArtifactRow[], sources: SourceConnectionRow[
   for (const source of sources) {
     await seedSourceConnection(pool, { id: source.id, space: "space-1", owner: source.owner_user_id, consent: source.consent_json, policy: source.policy_json });
   }
+  // A Brief is released only while the objects it names are: seed them as
+  // real, owner-readable Knowledge items in the retrieval projection.
+  const named = new Set(artifacts.filter((artifact) => artifact.artifact_type === "retrieval_brief").flatMap((artifact) => {
+    const gaps = (artifact.metadata_json.gap_analysis ?? {}) as Record<string, unknown>;
+    return [...((gaps.stale ?? []) as Array<{ object_id: string }>), ...((gaps.thin ?? []) as Array<{ object_id: string }>)].map((ref) => ref.object_id);
+  }));
+  // A maintenance report is released only while every object its findings
+  // name is: seed those too (Knowledge items and owner Memory entries).
+  const findingObjects = artifacts.filter((artifact) => artifact.artifact_type.endsWith("maintenance_report"))
+    .flatMap((artifact) => ((artifact.metadata_json.findings ?? []) as Array<{ objects?: Array<{ object_type: string; object_id: string }> }>).flatMap((finding) => finding.objects ?? []));
+  for (const ref of findingObjects) if (ref.object_type === "knowledge_item") named.add(ref.object_id);
+  const { insertMemoryEntry } = await import("./support/memoryFixtures.js");
+  for (const id of new Set(findingObjects.filter((ref) => ref.object_type === "memory_entry").map((ref) => ref.object_id))) {
+    await insertMemoryEntry(pool, "space-1", { id, owner_user_id: "user-1", subject_user_id: "user-1", title: "Old preference", content: "Prefers tea", namespace: "test", created_by: "user:user-1" });
+  }
+  for (const id of named) await insertKnowledgeItem(pool, { id, spaceId: "space-1", title: `Seed ${id}`, content: "Seeded body", ownerUserId: "user-1", createdByUserId: "user-1" });
+  if (named.size) await new RetrievalProjectionService(pool, knowledgeRetrievalRegistry).reindexAll("space-1");
   return packetDatabase.observe();
 }
 
@@ -199,7 +219,7 @@ function memoryMaintenanceArtifact(): ArtifactRow {
         {
           kind: "stale",
           reason: "Memory has not been reviewed recently.",
-          memories: [{ memory_id: "memory-1", summary: "Old preference" }],
+          objects: [{ object_type: "memory_entry", object_id: "66666666-6666-4666-8666-666666666666", title: "Old preference" }],
         },
       ],
     },

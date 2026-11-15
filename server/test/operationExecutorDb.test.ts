@@ -1,3 +1,6 @@
+import {AUTHORIZATION_REQUEST_OPERATION_SCHEMAS} from '@rainver/protocol';
+import {SKILL_LOCAL_OPERATION_SCHEMAS,SKILL_IO_OPERATION_SCHEMAS} from '@rainver/protocol';
+import {EVOLUTION_ASSET_OPERATION_SCHEMAS,PROMPT_OPERATION_SCHEMAS,RUNTIME_CONTEXT_REQUEST_OPERATION_SCHEMAS,EVOLUTION_OPERATION_SCHEMAS,RUNTIME_CONTEXT_OPERATION_SCHEMAS,SPACE_OPERATION_SCHEMAS,ACADEMIC_OPERATION_SCHEMAS,READER_OPERATION_SCHEMAS,CONTENT_RETRIEVAL_OPERATION_SCHEMAS} from '@rainver/protocol';
 import {waitForLockWaiter} from './support/lockWait.js';
 import {resetTables} from './support/resetTables.js';
 import {ProjectDefinitionProposalService} from '../src/modules/projects/projectDefinitionProposalService.js';
@@ -33,7 +36,7 @@ import { z } from 'zod';
 import { SYSTEM_ACTION_REGISTRY, NOTE_OBJECT_SCHEMAS, KNOWLEDGE_OBJECT_SCHEMAS, KNOWLEDGE_REVIEW_SCHEMAS,
   RESEARCH_WORKSPACE_SCHEMAS, INQUIRY_OPERATION_SCHEMAS, PROJECT_EXECUTION_SCHEMAS,
   PROJECT_FOLDER_SCHEMAS, PROJECT_FOLDER_IO_SCHEMAS, PROJECT_INGRESS_SCHEMAS,RESEARCH_CONTROL_SCHEMAS,PROJECT_SUMMARY_DRAFT_SCHEMAS,IMPORTED_HISTORY_EXTRACTION_SCHEMAS, PROJECT_MANAGEMENT_SCHEMAS, PROJECT_CORPUS_SCHEMAS, PROJECT_SOURCE_PROPOSAL_SCHEMAS, RESEARCH_EXECUTION_SCHEMAS,
-  type SystemActionDefinition,AGENT_OPERATION_SCHEMAS,AGENT_CHAT_OPERATION_SCHEMAS,ROOM_OPERATION_SCHEMAS,AGENT_GROUP_OPERATION_SCHEMAS,RUN_OPERATION_SCHEMAS,SESSION_OPERATION_SCHEMAS,SESSION_QUERY_SCHEMAS,HOST_COMMAND_OPERATION_SCHEMAS,SETTINGS_COMMAND_OPERATION_SCHEMAS,SETTINGS_DIRECT_OPERATION_SCHEMAS,HOST_DIRECT_OPERATION_SCHEMAS} from '@rainver/protocol';
+  type SystemActionDefinition,AGENT_OPERATION_SCHEMAS,AGENT_CHAT_OPERATION_SCHEMAS,ROOM_OPERATION_SCHEMAS,PROJECT_AGENT_OPERATION_SCHEMAS,AGENT_GROUP_OPERATION_SCHEMAS,RUN_OPERATION_SCHEMAS,SESSION_OPERATION_SCHEMAS,SESSION_QUERY_SCHEMAS,HOST_COMMAND_OPERATION_SCHEMAS,SETTINGS_COMMAND_OPERATION_SCHEMAS,SETTINGS_DIRECT_OPERATION_SCHEMAS,HOST_DIRECT_OPERATION_SCHEMAS} from '@rainver/protocol';
 import { useTestDatabase } from './support/testDatabase.js';
 import { seedSpaceOwnerProject, seedSpaceMember, seedRun } from './support/domainSeeds.js';
 import { loadConfig } from '../src/config.js';
@@ -45,7 +48,7 @@ import type { OperationRegistration } from '../src/modules/systemActions/operati
 import { buildModuleServer } from './support/moduleServer.js';
 import { systemActionsModule } from '../src/modules/systemActions/index.js';
 import { __setAuthIdentityForTests } from '../src/modules/auth/identity.js';
-const ENABLED_USER_OPERATIONS = ["board.configure", "inquiry.thread.create", "knowledge.note.delete", "knowledge.note.rollback", "note.raise_as_question", "policy.action_grant.create", "policy.action_grant.revoke", "project.operation.cancel", "project.operation.create", "project.source.backfill", "project.source.bind", "project.source.unbind", "project.source.update", "research.cancel_acquisition", "room.collaboration.update_participants", "source.backfill.create_plan", "source.backfill.pause", "source.backfill.preview", "source.backfill.resume", "source.channel.create", "source.channel.scan", "source.channel.set_subscription", "source.channel.update", "source.extraction.dispatch", "source.processing.rule.create", "source.processing.rule.dispatch", "source.processing.rule.update", "source.recipe.create", "source.recommendation.decide", "system.actions.list", "task.delete", "task.move_to_column", "task.place_in_space_board", "task.set_status"];
+const ENABLED_USER_OPERATIONS = ["activity.upload","auth.user.disable", "auth.user.enable","context_ops.observations.scan", "context_ops.review_cycle.run", "research.strategy.activate", "research.strategy.evaluate", "research.strategy.materialize", "research.strategy.retry", "board.configure", "board.create", "board.update", "inquiry.thread.create", "job.cancel", "knowledge.note.delete", "knowledge.note.rollback", "note.raise_as_question", "plan.execute", "plan.reconcile", "policy.action_grant.create", "policy.action_grant.revoke", "project.operation.cancel", "project.operation.create", "project.source.backfill", "project.source.bind", "project.source.unbind", "project.source.update", "research.cancel_acquisition", "room.collaboration.update_participants", "source.backfill.create_plan", "source.backfill.pause", "source.backfill.preview", "source.backfill.resume", "source.channel.create", "source.channel.scan", "source.channel.set_subscription", "source.channel.update", "source.extraction.dispatch", "source.processing.rule.create", "source.processing.rule.dispatch", "source.processing.rule.update", "source.recipe.create", "source.recommendation.decide", "system.actions.list", "task.create", "task.delete", "task.evaluation.record", "task.move_to_column", "task.place_in_space_board", "task.plan.request", "task.run.create", "task.set_status", "task.update"];
 ENABLED_USER_OPERATIONS.push('knowledge.candidate.extract','research.ask_ai',...Object.keys(PROJECT_SOURCE_PROPOSAL_SCHEMAS),...Object.keys(RESEARCH_EXECUTION_SCHEMAS),...Object.keys(NOTE_OBJECT_SCHEMAS),
   ...Object.keys(KNOWLEDGE_OBJECT_SCHEMAS),...Object.keys(KNOWLEDGE_REVIEW_SCHEMAS),
   ...Object.keys(RESEARCH_WORKSPACE_SCHEMAS),...Object.keys(INQUIRY_OPERATION_SCHEMAS),
@@ -54,12 +57,64 @@ ENABLED_USER_OPERATIONS.push('knowledge.candidate.extract','research.ask_ai',...
   ...Object.keys(RESEARCH_CONTROL_SCHEMAS),...Object.keys(PROJECT_SUMMARY_DRAFT_SCHEMAS),...Object.keys(IMPORTED_HISTORY_EXTRACTION_SCHEMAS));
 ENABLED_USER_OPERATIONS.push('workspace.change.abandon','workspace.change.complete','workspace.change.get','workspace.change.list','workspace.branch.align','workspace.retention.update','workspace.integration.retry','workspace.integration.verification.get','workspace.integration.verification.configure');
 // Agent/Room block: human-only Agent, chat, Room, Agent group, Run and session commands plus the preflight query.
-ENABLED_USER_OPERATIONS.push(...Object.keys(AGENT_OPERATION_SCHEMAS),...Object.keys(AGENT_CHAT_OPERATION_SCHEMAS),...Object.keys(ROOM_OPERATION_SCHEMAS),
+ENABLED_USER_OPERATIONS.push(...Object.keys(AGENT_OPERATION_SCHEMAS),...Object.keys(AGENT_CHAT_OPERATION_SCHEMAS),...Object.keys(ROOM_OPERATION_SCHEMAS),...Object.keys(PROJECT_AGENT_OPERATION_SCHEMAS),
   ...Object.keys(AGENT_GROUP_OPERATION_SCHEMAS),...Object.keys(RUN_OPERATION_SCHEMAS),...Object.keys(SESSION_OPERATION_SCHEMAS),...Object.keys(SESSION_QUERY_SCHEMAS));
 // Host block: Host, Location history and imported-session commands (human-only, never grantable).
 ENABLED_USER_OPERATIONS.push(...Object.keys(HOST_COMMAND_OPERATION_SCHEMAS),...Object.keys(HOST_DIRECT_OPERATION_SCHEMAS));
 // Settings block: system settings / tool configuration commands (human-only, never grantable).
 ENABLED_USER_OPERATIONS.push(...Object.keys(SETTINGS_COMMAND_OPERATION_SCHEMAS),...Object.keys(SETTINGS_DIRECT_OPERATION_SCHEMAS));
+// Note/Source block: human-only Source item/evidence and Note link/jot commands (explicit, not registry-derived).
+ENABLED_USER_OPERATIONS.push('knowledge.note.jot','knowledge.note.link.create','knowledge.note.link.delete','source.evidence.create','source.evidence.link','source.evidence.update','source.item.queue','source.item.save_url','source.item.triage','source.item.update');
+// Note/Source block continuation: material processing, post-processing, retrieval/preview, backfill start, recipes,
+// Custom Sources and Note trash purge (human-only, never grantable; listed explicitly, not registry-derived).
+ENABLED_USER_OPERATIONS.push('knowledge.note.trash.purge','source.backfill.start.propose','source.custom.credential.create','source.custom.draft.create','source.custom.handler.activate','source.custom.handler.generate','source.custom.handler.test.request','source.custom.pipeline_bridge','source.custom.repair.request','source.custom.rollback','source.custom.settings.instance.update','source.custom.settings.space.update','source.material.cancel','source.material.request_storage','source.material.show_markdown','source.material.start','source.processing.decision.queue','source.processing.decision.review','source.processing.run_once','source.query.preview','source.recipe.activate','source.recipe.dry_run.request','source.recipe.plan.request','source.retrieval.brief.request','source.retrieval.reindex','source.retrieval.search.request');
+// Note/Source block, Goals family: goal setup, controls, preview request and theme analysis (human-only, never grantable; explicit).
+ENABLED_USER_OPERATIONS.push('source.goal.binding.confirm_source','source.goal.binding.rollback','source.goal.check','source.goal.create','source.goal.delete','source.goal.edit','source.goal.explore','source.goal.feedback','source.goal.follow','source.goal.pause','source.goal.preview.request','source.goal.repair.publish','source.goal.resume','source.goal.save','source.goal.setup.begin','source.goal.setup.compatibility_rollback','source.goal.setup.legacy','source.goal.setup.message','source.goal.theme.cancel','source.goal.theme.configure','source.goal.theme.retry');
+// Knowledge/Relations/Memory block: Relations, Knowledge item/Claim/relation and object-kind proposals, Knowledge
+// retrieval feedback/reindex and a person's own Memory commands (human-only, never grantable; explicit).
+ENABLED_USER_OPERATIONS.push(...Object.keys(ACADEMIC_OPERATION_SCHEMAS),...Object.keys(CONTENT_RETRIEVAL_OPERATION_SCHEMAS));
+ENABLED_USER_OPERATIONS.push('knowledge.claim.propose_archive','knowledge.claim.propose_create','knowledge.claim.propose_update','knowledge.item.propose_archive','knowledge.item.propose_create','knowledge.item.propose_update','knowledge.object_kind.propose_archive','knowledge.object_kind.propose_create','knowledge.object_kind.propose_deprecate','knowledge.object_kind.propose_update','knowledge.object_schema.propose_import','knowledge.relation.propose_archive','knowledge.relation.propose_create','knowledge.retrieval.feedback','knowledge.retrieval.reindex','memory.archive','memory.proposal.revise','memory.propose_create','memory.propose_update','memory.restore','memory.retrieval.feedback','memory.retrieval.reindex','memory.revert','relation.affiliation.end.propose','relation.affiliation.propose','relation.identity.create','relation.identity.delete','relation.note.create','relation.organization.create','relation.person.archive','relation.person.create','relation.person.update','relation.source_link.create');
+// Reader block: the twelve retained Reader write URLs as thirteen human-only commands (two proposal kinds).
+ENABLED_USER_OPERATIONS.push(...Object.keys(READER_OPERATION_SCHEMAS));
+// Space block: Space creation, membership, settings and content-access commands (human-only, never grantable).
+ENABLED_USER_OPERATIONS.push(...Object.keys(SPACE_OPERATION_SCHEMAS));
+// Evolution/Prompts/Runtime block: Evolution target/signal and Runtime Context commands (human-only, never grantable).
+ENABLED_USER_OPERATIONS.push(...Object.keys(EVOLUTION_OPERATION_SCHEMAS),...Object.keys(RUNTIME_CONTEXT_OPERATION_SCHEMAS));
+// The rest of that block: asset/prompt/Reading Method writers, evaluation, proposal-producing, Run/preview requests and read-only queries.
+ENABLED_USER_OPERATIONS.push(...Object.keys(EVOLUTION_ASSET_OPERATION_SCHEMAS),...Object.keys(PROMPT_OPERATION_SCHEMAS),...Object.keys(RUNTIME_CONTEXT_REQUEST_OPERATION_SCHEMAS));
+ENABLED_USER_OPERATIONS.push(...Object.keys(AUTHORIZATION_REQUEST_OPERATION_SCHEMAS));
+ENABLED_USER_OPERATIONS.push(...Object.keys(SKILL_LOCAL_OPERATION_SCHEMAS),...Object.keys(SKILL_IO_OPERATION_SCHEMAS));
+ENABLED_USER_OPERATIONS.push('publication.create','publication.import','publication.revoke');
+// P5 retained-route migrations: explicit catalog expectations, independent of the live registry.
+ENABLED_USER_OPERATIONS.push(
+  'activity.archive','activity.consolidate','activity.create',
+  'activity.review','activity.summary.request','automation.autonomy.configure',
+  'automation.create','automation.fire','automation.update',
+  'briefing.personal.adoption.confirm','briefing.personal.adoption.preview','briefing.personal.cancel',
+  'briefing.personal.follow_up','briefing.personal.request','briefing.personal.settings.set',
+  'briefing.project.adoption.confirm','briefing.project.adoption.preview','briefing.project.cancel',
+  'briefing.project.follow_up','briefing.project.request','briefing.project.settings.set',
+  'capture.create','capture.file','capture.relocate',
+  'daily_capture.run','daily_capture.settings.patch','daily_capture.settings.set',
+  'digest.personal.backfill','digest.project.backfill','digest.serendipity.feedback',
+  'evolution.bundle.approve','evolution.bundle.decide','evolution.bundle.reject',
+  'evolution.bundle.rollback','focus_area.create','focus_area.object.set',
+  'focus_area.update','graph.view_state.save','interest.candidate.accept',
+  'interest.candidate.dismiss','interest.history.backfill','interest.settings.update',
+  'interest.starter_pack.apply','interest.topic.archive','interest.topic.create',
+  'interest.topic.update','learning.item.create','learning.item.review',
+  'learning.objective.create','proposal.accept','proposal.egress.approve',
+  'proposal.reject','proposal.rollback','reading.annotation.retry',
+  'reading.composition.retry','reading.deep_read.cancel','reading.deep_read.start',
+  'reading.favorite.set','reading.personal_state.set','reading.preference.set',
+  'reading.project_state.set','space.egress_notifications.update',
+);
+ENABLED_USER_OPERATIONS.push(
+ 'personal.retrieval.search','personal.retrieval.resolve','personal.retrieval.summary.store',
+ 'personal.retrieval.egress.disclose','personal.retrieval.fused.store',
+ 'personal_memory_grant.preview','personal_memory_grant.create','personal_memory_grant.revoke',
+ 'attention.views.record','attention.read_state.change',
+);
 ENABLED_USER_OPERATIONS.sort();
 const db = useTestDatabase(import.meta.filename);
 let space: string, owner: string, project: string, operation: string;
@@ -941,6 +996,18 @@ describe('review regressions: independent audits and compatibility', () => {
     expect((await db.pool.query("SELECT object_id FROM retrieval_objects WHERE space_id=$1 AND object_type='note' AND object_id=$2",[space,note])).rows).toHaveLength(1);
   });
 
+  it('sanitizes input errors before domain execution, including custom validator messages',async()=>{
+    let calls=0;
+    const r=registration(async()=>{calls++;return {name:'never',version:1};});
+    r.definition={...r.definition,input_schema:z.object({name:z.string().refine(()=>false,'PRIVATE_VALIDATOR_VALUE')}).strict()};
+    const result=await core(r).execute(r.definition.id,{name:'PRIVATE_INPUT',PRIVATE_KEY:'SECRET'},actor(),'bad-input',randomUUID());
+    expect(result.http_status).toBe(422);
+    expect(result.body).toMatchObject({error:{code:'operation_invalid_input',metadata:{fields:expect.arrayContaining([{field:'name',code:'custom'}]),guidance:expect.stringContaining('rainver describe')}}});
+    expect(JSON.stringify(result)).not.toContain('PRIVATE');
+    expect(JSON.stringify(result)).not.toContain('SECRET');
+    expect(calls).toBe(0);
+  });
+
   it.each([409,422] as const)('keeps explicitly classified domain %s safe, atomic and replayable', async status=>{
     let calls=0;
     const r=registration(async(tx,input,a)=>{calls++;await update(tx,input,a);throw new HttpError(status,'PRIVATE exception',{code:'fixture_rejected',secret:'PRIVATE body'});});
@@ -976,13 +1043,13 @@ describe('review regressions: independent audits and compatibility', () => {
     const invalid={...call,id:randomUUID(),arguments:{name:42}};
     expect((await dispatchRunOperation(config,run,invalid,r.definition,invoke)).httpStatus).toBe(422);
     await db.pool.query("UPDATE runs SET permission_snapshot_json='{}'::jsonb WHERE id=$1",[runId]);
-    expect((await dispatchRunOperation(config,run,{...call,id:randomUUID()},r.definition,invoke)).httpStatus).toBe(404);
+    expect((await dispatchRunOperation(config,run,{...call,id:randomUUID()},r.definition,invoke)).httpStatus).toBe(403);
     // The actual transport's opt-in branch must also record a refusal for the user-only catalog.
     await new CliAgentToolTransport(config).call(run,{id:randomUUID(),name:'system.actions.list',arguments:{}});
     const events=(await db.pool.query('SELECT event_type,error_code,metadata_json FROM run_events WHERE run_id=$1 ORDER BY created_at,id',[runId])).rows;
     expect(events.filter(e=>e.event_type==='action_invoked')).toHaveLength(2);
     expect(events.filter(e=>e.event_type==='action_completed')).toHaveLength(5);
-    expect(events).toEqual(expect.arrayContaining([expect.objectContaining({error_code:'operation_invalid_input'}),expect.objectContaining({error_code:'operation_not_found'})]));
+    expect(events).toEqual(expect.arrayContaining([expect.objectContaining({error_code:'operation_invalid_input'}),expect.objectContaining({error_code:'operation_not_granted'})]));
     expect((await db.pool.query('SELECT version FROM project_operations WHERE id=$1',[operation])).rows[0].version).toBe(3);
   });
 });

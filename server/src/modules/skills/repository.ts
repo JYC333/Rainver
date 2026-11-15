@@ -1,8 +1,8 @@
 import {lockSkillReviewProposals} from '../systemActions/operations/proposalTransitions.js';
 import { randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
-import { getDbPool, type Pool } from "../../db/pool.js";
-import { withTransaction } from "../../db/tx.js";
+import { getDbPool } from "../../db/pool.js";
+import { withQueryableTransaction } from "../routeUtils/common.js";
 import {
   HttpError,
   countFromRow,
@@ -150,7 +150,7 @@ const SKILL_LOCAL_OVERLAY_COLUMNS = `
 `;
 
 export class PgSkillsRepository {
-  constructor(private readonly db: Pool) {}
+  constructor(private readonly db: Queryable) {}
 
   static fromConfig(config: ServerConfig): PgSkillsRepository {
     if (!config.databaseUrl) throw new HttpError(502, "SERVER_DATABASE_URL is required");
@@ -184,7 +184,7 @@ export class PgSkillsRepository {
     const parsed = SkillBindingRequestSchema.safeParse(body);
     if (!parsed.success) throw new HttpError(422, "Invalid Skill binding request");
     await this.assertOverlayScopeAuthority(identity, parsed.data.scope_type, parsed.data.scope_id ?? null, "write");
-    return withTransaction(this.db, db => createSkillBindingProposal(db, identity, packageId, parsed.data));
+    return withQueryableTransaction(this.db, db => createSkillBindingProposal(db, identity, packageId, parsed.data));
   }
 
   /**
@@ -442,7 +442,7 @@ export class PgSkillsRepository {
   ): Promise<Record<string, unknown>> {
     if (preview.source.source_type === "builtin") throw new HttpError(422, "Builtin Skills must be seeded by the server");
     // Source, package and files are one immutable unit of work.
-    return withTransaction(this.db, db => insertSkillPackageSnapshot({
+    return withQueryableTransaction(this.db, db => insertSkillPackageSnapshot({
       db, spaceId: identity.spaceId, userId: identity.userId,
       sourceId: randomUUID(), packageId: randomUUID(), status: "imported", preview,
     }));
@@ -453,6 +453,15 @@ export class PgSkillsRepository {
     skillPackageId: string;
     binding?: SkillBindingRequest;
   }): Promise<SkillPackageProposalResult> {
+    return withQueryableTransaction(this.db,db=>new PgSkillsRepository(db).createSkillImportApprovalProposalInTransaction(input));
+  }
+
+  private async createSkillImportApprovalProposalInTransaction(input: {
+    identity: SpaceUserIdentity;
+    skillPackageId: string;
+    binding?: SkillBindingRequest;
+  }): Promise<SkillPackageProposalResult> {
+    await lockSkillReviewProposals(this.db,input.identity.spaceId,[input.skillPackageId],true);
     const packageRecord = await this.getSkillPackage(input.identity, input.skillPackageId);
     if (!packageRecord) throw new HttpError(404, "Skill package not found");
     if (packageRecord.status !== "imported") {
@@ -520,6 +529,9 @@ export class PgSkillsRepository {
     input: Parameters<PgSkillsRepository["insertProposal"]>[1],
   ): Promise<SkillPackageProposalResult> {
     const operationKey = skillPackageOperationKey(identity.userId, key.skillPackageId, key.packageHash, key.operation);
+    // Same-person submissions serialize inside the owner transaction, so a
+    // concurrent unique violation cannot poison an enclosing core transaction.
+    await this.db.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[operationKey]);
     const pending = async () => {
       const existing = await this.db.query<ProposalRow>(
         `SELECT id, space_id, created_by_user_id, project_folder_id,
@@ -569,7 +581,7 @@ export class PgSkillsRepository {
     requiredApproverRole = "owner",
   ): Promise<ProposalOut> {
     const now = new Date();
-    return withTransaction(this.db,async db=>{
+    return withQueryableTransaction(this.db,async db=>{
     const packageId=optionalString(input.payload_json.skill_package_id);
     if(input.proposal_type==='skill_import_approve' && packageId){
       await lockSkillReviewProposals(db,identity.spaceId,[packageId],true);
@@ -619,7 +631,7 @@ export class PgSkillsRepository {
    * An overlay is configuration only: it grants no capability trust, no
    * egress, and no credential use; those are decided where they are spent.
    */
-  private async assertOverlayScopeAuthority(
+  async assertOverlayScopeAuthority(
     identity: SpaceUserIdentity,
     scopeType: SkillLocalOverlayScope,
     scopeId: string | null,

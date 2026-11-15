@@ -239,6 +239,10 @@ function contentScopeSql(
       `(${projectExpr} IS NULL OR ${projectReadAccessSql(`${alias}.space_id`, projectExpr, userExpr)}${sharedSql})`,
     );
   }
+  if (definition.accessProjectColumn) {
+    const projectExpr = `${alias}.${definition.accessProjectColumn}`;
+    conditions.push(`(${projectExpr} IS NULL OR ${projectReadAccessSql(`${alias}.space_id`, projectExpr, userExpr)})`);
+  }
   if (definition.projectFolderColumn) {
     const projectFolderExpr = `${alias}.${definition.projectFolderColumn}`;
     conditions.push(`(${projectFolderExpr} IS NULL OR ${projectFolderReadAccessSql({

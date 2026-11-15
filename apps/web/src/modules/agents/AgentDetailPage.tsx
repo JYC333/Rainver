@@ -49,7 +49,10 @@ export default function AgentDetailPage() {
   const [loading, setLoading] = useState(true)
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false)
   const [statusBusy, setStatusBusy] = useState(false)
-  const [activeTab, setActiveTab] = useState<string | null>(null)
+  // A link may open a specific tab (the Project Agents page opens Runs as the
+  // Agent's work history). Read once from the address on arrival.
+  const [activeTab, setActiveTab] = useState<string | null>(() =>
+    typeof window === 'undefined' ? null : new URLSearchParams(window.location.search).get('tab'))
 
   const reload = useCallback(async () => {
     if (!agentId) return

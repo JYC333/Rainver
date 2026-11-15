@@ -1,3 +1,12 @@
+import {registerResearchEvaluationJob} from '../research/evaluationJob.js';
+import {registerActivityUploadJob} from '../activity/uploadOperation.js';
+import {registerActivitySummaryJob} from '../activity/summaryOperation.js';
+import {registerDigestBackfillJobs} from '../informationDigest/backfillOperations.js';
+import {registerAutomationFireJob} from '../automations/fireRequests.js';
+import {registerSkillSourceJob} from '../skills/sourceRequests.js';
+import {registerRuntimeContextPreviewJob} from '../runtimeContext/previewRequests.js';
+import {registerContentRetrievalJob} from '../retrieval/contentRequests.js';
+import {registerReaderWriteJob} from '../reader/writeJob.js';
 import {registerExecutionWorkspaceJobs} from "../hosts/executionWorkspaceJobs.js";
 
 import {registerCodePatchDecisionHandler,recoverCodePatchDecisions} from '../projectFolders/codePatchDecision.js';
@@ -28,6 +37,7 @@ import { getDbPool } from "../../db/pool.js";
 import { registerPublicSummaryDraftRuns } from "../projects/publicSummaryDraftOperation.js";
 import { registerImportedHistoryExtractionJob } from "../importedSessions/extractionOperation.js";
 import { registerProjectSummaryBriefJob } from "../projects/summaryBriefOperation.js";
+import { registerSourceRetrievalJob } from "../sources/retrievalOperations.js";
 import { registerMemoryConsolidationHandler } from "../activity/consolidationJob.js";
 import { registerDailyCaptureReportHandler } from "../dailyReports/jobHandler.js";
 import { registerSourceExtractionHandler } from "../sources/extractionJob.js";
@@ -118,6 +128,9 @@ export function buildJobHandlerRegistry(
   const registry = new JobHandlerRegistry();
   registerSourceGoalJob(registry,config);
   registerProjectReadingJobs(registry,config);
+  registerDigestBackfillJobs(registry,config);
+  registerActivitySummaryJob(registry,config);
+  registerActivityUploadJob(registry,config);
   registerAgentRunHandler(registry, config);
   registerRunProposalPublication(registry,config);
   registerReadingProviderReconciliation(registry,config);
@@ -126,6 +139,12 @@ export function buildJobHandlerRegistry(
   registerPublicSummaryDraftRuns(config);
   registerImportedHistoryExtractionJob(registry, config);
   registerProjectSummaryBriefJob(registry, config);
+  registerSourceRetrievalJob(registry, config);
+  registerContentRetrievalJob(registry, config);
+  registerRuntimeContextPreviewJob(registry, config);
+  registerSkillSourceJob(registry,config);
+  registerAutomationFireJob(registry,config);
+  registerReaderWriteJob(registry, config);
   registerMemoryConsolidationHandler(registry, config);
   registerDailyCaptureReportHandler(registry, config);
   registerMonitoringJob(registry, config);
@@ -136,6 +155,7 @@ export function buildJobHandlerRegistry(
   registerEvaluationHarnessHandler(registry, config);
   registerBundleDecisionHandler(registry,config);
   registerCodePatchDecisionHandler(registry,config);
+  registerResearchEvaluationJob(registry, config);
   registerProjectResearchHandler(registry, config);
   registerKnowledgeExtractionHandler(registry, config);
   registerExperimentReconcileHandler(registry, config);

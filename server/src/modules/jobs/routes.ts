@@ -1,7 +1,7 @@
+import { AUTOMATION_FIRE_JOB, SKILL_IO_JOB, SOURCE_RETRIEVAL_JOB, CONTENT_RETRIEVAL_JOB, READER_WRITE_JOB } from "@rainver/protocol";
 import type { FastifyInstance } from "fastify";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
-  HttpError,
   optionalString,
   parsePage,
   params,
@@ -12,10 +12,7 @@ import {
 import { PgJobQueueRepository } from "./repository.js";
 import type { JobEventRecord, JobRecord } from "./repository.js";
 import { buildJobHandlerRegistry } from "./workerRuntime.js";
-import type { ServerConfig } from "../../config.js";
-import { getDbPool } from "../../db/pool.js";
-import { PgRunRepository } from "../runs/repository.js";
-import { RunMaterializationService } from "../runs/materializationService.js";
+import { registerOperationAdapters } from "../systemActions/operations/routeAdapter.js";
 
 interface JobOut {
   id: string;
@@ -109,45 +106,19 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         return reply.code(404).send({ detail: "Job not found" });
       }
       const events = await queue().getEvents(job.id);
-      return reply.send(events.map(jobEventToOut));
+      return reply.send(events.map(event=>{
+        const out=jobEventToOut(event);
+        return [AUTOMATION_FIRE_JOB,SKILL_IO_JOB,'information_digest_backfill','activity_upload','activity_summary','daily_capture_report','research_query_evaluation'].includes(job.job_type)?{...out,message:out.event_type,data:null}:out;
+      }));
     } catch (error) {
       return sendRouteError(reply, error);
     }
   });
 
-  app.post("/api/v1/jobs/:jobId/cancel", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const jobId = params(request).jobId ?? "";
-      const job = await queue().getJob(jobId);
-      if (!job || jobNotFoundForSpace(job, identity.spaceId, identity.userId)) {
-        return reply.code(404).send({ detail: "Job not found" });
-      }
-      if (!["pending", "claimed"].includes(job.status)) {
-        throw new HttpError(409, `Cannot cancel a job in status '${job.status}'`);
-      }
-      // Checked again in the cancelling statement itself: a worker may have
-      // started the job since the read above, and a running job is not the
-      // person's to cancel — nor is a job that has since completed one to
-      // record as cancelled.
-      const cancelled = await queue().cancelJob(jobId, null, new Date(), ["pending", "claimed"]);
-      if (!cancelled) {
-        const current = await queue().getJob(jobId);
-        throw new HttpError(409, `Cannot cancel a job in status '${current?.status ?? "unknown"}'`);
-      }
-      await queue().appendJobEvent({
-        job_id: jobId,
-        event_type: "status_change",
-        message: "Job cancelled by user",
-      });
-      await finalizeRunBehindCancelledJob(context.config, job);
-      const updated = await queue().getJob(jobId);
-      return reply.send(updated ? jobToOut(updated) : null);
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
+  // Formal adapter over the generic Job cancellation command.
+  registerOperationAdapters(app, context.config, [
+    { method: "POST", url: "/api/v1/jobs/:jobId/cancel", operation: "job.cancel", params: { jobId: "job_id" } },
+  ]);
 }
 
 export function jobNotFoundForSpace(
@@ -168,9 +139,10 @@ export function jobToOut(job: JobRecord): JobOut {
     job_type: job.job_type,
     status: job.status,
     priority: job.priority,
-    payload: job.payload_json ?? null,
-    result: job.result_json ?? null,
-    error: job.error,
+    payload: [AUTOMATION_FIRE_JOB,SKILL_IO_JOB,'information_digest_backfill','activity_upload','activity_summary','daily_capture_report','research_query_evaluation'].includes(job.job_type)?null:job.payload_json ?? null,
+    // Source retrieval results are Source content: only their own reader releases them, under current access.
+    result: [AUTOMATION_FIRE_JOB,SKILL_IO_JOB,SOURCE_RETRIEVAL_JOB,CONTENT_RETRIEVAL_JOB,READER_WRITE_JOB,'activity_upload','activity_summary','daily_capture_report','research_query_evaluation'].includes(job.job_type) ? null : job.result_json ?? null,
+    error: [AUTOMATION_FIRE_JOB,SKILL_IO_JOB,'information_digest_backfill','activity_upload','activity_summary','daily_capture_report','research_query_evaluation'].includes(job.job_type)?null:job.error,
     attempts: job.attempts,
     max_attempts: job.max_attempts,
     scheduled_at: job.scheduled_at,
@@ -193,17 +165,4 @@ export function jobEventToOut(event: JobEventRecord): JobEventOut {
     data: event.data ?? null,
     created_at: event.created_at,
   };
-}
-
-/**
- * Cancelling an `agent_run` or `provider_task_run` job ends the Run it was
- * going to perform (`PgJobQueueRepository.cancelJob`). Finalizing that Run
- * settles its Task in this call. Do not leave the settlement for the
- * worker's next sweep.
- */
-async function finalizeRunBehindCancelledJob(config: ServerConfig, job: JobRecord): Promise<void> {
-  const runId = job.payload_json?.run_id;
-  if (typeof runId !== "string" || !["agent_run", "provider_task_run"].includes(job.job_type)) return;
-  const run = await new PgRunRepository(getDbPool(config.databaseUrl!)).getRun(job.space_id, runId);
-  if (run?.status === "cancelled") await RunMaterializationService.fromConfig(config).finalizeRun(run);
 }

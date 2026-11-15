@@ -92,7 +92,7 @@ export async function previewAdoption(
  * or Knowledge is written.
  */
 export async function confirmAdoption(
-  pool: Pool,
+  pool: Queryable,
   adapter: BriefingScopeAdapter,
   identity: SpaceUserIdentity,
   briefingId: string,
@@ -118,7 +118,7 @@ export async function confirmAdoption(
     if (hashOf(target, draft) !== previewHash) {
       throw new HttpError(409, "This highlight changed since it was previewed; preview it again", { code: "briefing_adoption_changed" });
     }
-    const task = await new PgTaskRepository(pool).createTask({ spaceId: identity.spaceId, userId: identity.userId }, {
+    const task = await new PgTaskRepository(pool as Pool).createTask({ spaceId: identity.spaceId, userId: identity.userId }, {
       title: draft.title,
       description: draft.description,
       visibility: draft.visibility,

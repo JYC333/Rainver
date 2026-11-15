@@ -48,6 +48,20 @@ describe("claimProposalApplier", () => {
       }
       const retrievalResult = handleSourceRetrievalTestSql(sql, params);
       if (retrievalResult) return retrievalResult;
+      // Apply-time proposer authority (proposalAuthority.ts). These cases test
+      // domain validation; the authority replay itself is covered on real PG in
+      // knowledgeProposalOperationsDb. The proposer is an active owner here.
+      if (/^SELECT id FROM (users|space_memberships) WHERE/.test(norm)) return { rows: [{ id: "row" }], rowCount: 1 };
+      if (norm.includes("AS project,") && norm.includes("FROM space_objects WHERE space_id=$1 AND id=$2")) {
+        const row = this.objects.get(String(params[1]));
+        return { rows: row ? [{ project: null, folder: null }] : [], rowCount: row ? 1 : 0 };
+      }
+      if (/^SELECT id FROM space_objects WHERE space_id=\$1 AND id=\$2 FOR (SHARE|UPDATE)$/.test(norm)) return { rows: [{ id: params[1] }], rowCount: 1 };
+      if (norm.startsWith("SELECT owner_user_id,created_by_user_id FROM space_objects")) {
+        const row = this.objects.get(String(params[0]));
+        return { rows: row ? [row] : [], rowCount: row ? 1 : 0 };
+      }
+      if (norm.startsWith("SELECT id FROM content_access_grants")) return { rows: [], rowCount: 0 };
       if (norm.includes("AS effective_access_level")) {
         const row = this.objects.get(String(params[1]));
         return {

@@ -18,6 +18,7 @@ import { Textarea } from '../../components/ui/textarea'
 import { Card, CardTitle } from '../../components/ui/card'
 import { Badge } from '../../components/ui/badge'
 import { errMsg } from '../../lib/utils'
+import { agentCreationReturnPath, withCreatedAgent } from '../projects/agentCreationReturn'
 import { SafetyView } from './ConfigCards'
 import {
   ScheduleEditorFields,
@@ -151,7 +152,10 @@ export default function AgentFormPage() {
             project_id: selectedProjectId || null,
           })
       toast.success('Agent created')
-      navigate(`/agents/${created.id}`)
+      // Opened from a Project's Agents page or a Room's members: go back there
+      // with the new Agent named, where one explicit confirmation adds it.
+      const back = agentCreationReturnPath(searchParams.get('return_to'))
+      navigate(back ? withCreatedAgent(back, created.id) : `/agents/${created.id}`)
     } catch (err) {
       toast.error(errMsg(err))
     } finally {

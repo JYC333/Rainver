@@ -8,6 +8,17 @@ as an Activity record (`file_capture` / `voice_capture`). The floating composer
 does not accept a dropped file; that path stays text and URL. There is no
 browser-extension capture.
 
+`POST /api/v1/captures` is a strict keyed `capture.create` operation (201 receipt), also used by the typed client. Personal/Project placement, current writer/target authority, marginalia serialization and lock-then-rediscover checks precede the existing Activity/Note writers; state, audit and receipt commit together. Replay reauthorizes the current capture and Note. Relocation is a separate keyed `capture.relocate` operation on the retained URL. It discovers both Spaces and all Project/Folder/root dependencies before the canonical global locks; only the current host-keyed receipt supplies replay-output roots. Current source/Note/destination authority, move standing and Space copy-out settings gate first use and replay. The original relocation writer still copies current Note text, removes only selected blocks for a move and emits pointer-only egress notices in the same state/audit/receipt transaction.
+
+Personal filing is a keyed human-only `capture.file` core command on
+`POST /api/v1/me/filings` (200 succeeded envelope). The typed browser helper
+requires a caller-owned retry key. Real Personal Space receipt/audit storage is
+independent of request-Space authorization. All referenced Project audiences,
+people/memberships and source/replay roots are locked before ownership/full-read
+and destination writer rechecks; filing state, Note/provenance, mandatory policy
+audit and receipt commit together. Replay reauthorizes current access and never
+files twice. Direct `CaptureFilingService.file` uses the same admission/writer.
+
 ## Purpose
 Records thoughts and clips as they happen. Raw input becomes an
 ActivityRecord first — not active memory.

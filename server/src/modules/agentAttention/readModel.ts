@@ -330,6 +330,10 @@ export function projectWorks(input: {
       reasons,
       read_states: reads,
       unread,
+      unread_session_ids: [...new Set([
+        ...(identity.kind === 'session' && unread ? [identity.source_id] : []),
+        ...[...chat].filter(([state]) => state.unread).map(([, session]) => session.slice(first.space_id.length + 1)),
+      ])].sort(),
       last_activity_at: iso(times.reduce((a, b) => Date.parse(a) > Date.parse(b) ? a : b)),
       visible_run_count: runs.length,
       runs_next_cursor: null,

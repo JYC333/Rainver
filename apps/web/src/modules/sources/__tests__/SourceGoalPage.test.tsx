@@ -17,7 +17,7 @@ const item=(id:string,topic:Partial<ReadingItem['topics'][number]>={}):ReadingIt
 function Where(){return <p data-testid="where">{useLocation().pathname+useLocation().search}</p>}
 function show(path='/library/reading/goals/g'){return render(<MemoryRouter initialEntries={[path]}><Routes><Route path="/projects/:projectId/sources/goals/:goalId" element={<><SourceGoalPage/><Where/></>}/><Route path="/library/reading/goals/:goalId" element={<><SourceGoalPage/><Where/></>}/><Route path="*" element={<Where/>}/></Routes></MemoryRouter>)}
 const openAdvanced=()=>{fireEvent.click(screen.getByRole('button',{name:'Adjust following'}));fireEvent.mouseDown(screen.getByRole('tab',{name:'Discuss changes'}),{button:0,ctrlKey:false});fireEvent.click(screen.getByText('Planning tools and trial'))}
-beforeEach(()=>{vi.clearAllMocks();vi.mocked(sourceGoalsApi.edit).mockResolvedValue({id:'edited',revision:2});sessionStorage.clear();vi.mocked(proposalsApi.get).mockResolvedValue({status:'pending'} as never);vi.mocked(proposalsApi.accept).mockResolvedValue({} as never);vi.mocked(agentsApi.conversationBackends).mockResolvedValue({options:[],binding:null});vi.mocked(agentsApi.list).mockResolvedValue([{id:'a',name:'My search Agent',created_by_user_id:'u',agent_kind:'standard'}] as never);vi.mocked(agentsApi.listRuntimeProfiles).mockResolvedValue([{id:'rp',name:'MiniMax config',enabled:true,runtime_key:'opencode',backend_mode:'model_provider',provider_binding:{model:'MiniMax'}}] as never);vi.mocked(sourceGoalsApi.read).mockResolvedValue(detail());vi.mocked(sourceGoalsApi.action).mockResolvedValue({});vi.mocked(sourceGoalsApi.check).mockResolvedValue({status:'queued'});vi.mocked(sourceGoalsApi.message).mockResolvedValue({run_id:'run',session_id:'session'});vi.mocked(informationDigestsApi.reading).mockResolvedValue({items:[item('one')],total:1,next_cursor:null})})
+beforeEach(()=>{vi.clearAllMocks();vi.mocked(sourceGoalsApi.edit).mockResolvedValue({id:'g',space_id:'s',version_id:'edited',revision:2});sessionStorage.clear();vi.mocked(proposalsApi.get).mockResolvedValue({status:'pending'} as never);vi.mocked(proposalsApi.accept).mockResolvedValue({} as never);vi.mocked(agentsApi.conversationBackends).mockResolvedValue({options:[],binding:null});vi.mocked(agentsApi.list).mockResolvedValue([{id:'a',name:'My search Agent',created_by_user_id:'u',agent_kind:'standard'}] as never);vi.mocked(agentsApi.listRuntimeProfiles).mockResolvedValue([{id:'rp',name:'MiniMax config',enabled:true,runtime_key:'opencode',backend_mode:'model_provider',provider_binding:{model:'MiniMax'}}] as never);vi.mocked(sourceGoalsApi.read).mockResolvedValue(detail());vi.mocked(sourceGoalsApi.action).mockResolvedValue({} as never);vi.mocked(sourceGoalsApi.check).mockResolvedValue({id:'g',space_id:'s',status:'queued'});vi.mocked(sourceGoalsApi.message).mockResolvedValue({id:'g',space_id:'s',run_id:'run',session_id:'session'});vi.mocked(informationDigestsApi.reading).mockResolvedValue({items:[item('one')],total:1,next_cursor:null})})
 afterEach(()=>{vi.useRealTimers();return i18n.changeLanguage('en')})
 
 it('presents the active authored summary and analysis purpose rather than conversation input',async()=>{
@@ -190,10 +190,10 @@ it('keeps manual check failure retryable without claiming it was queued',async()
 });
 
 it('does not submit twice while a manual check acknowledgement is pending',async()=>{
- let finish!:(value:{status:'queued'})=>void;vi.mocked(sourceGoalsApi.check).mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve}));
+ let finish!:(value:{id:string;space_id:string;status:'queued'})=>void;vi.mocked(sourceGoalsApi.check).mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve}));
  const view=show();const button=await screen.findByRole('button',{name:'Check now'});fireEvent.click(button);fireEvent.click(button);
  expect(sourceGoalsApi.check).toHaveBeenCalledTimes(1);expect(button).toBeDisabled();
- finish({status:'queued'});expect(await screen.findByText('Check queued. Results will appear here when collection finishes.')).toBeInTheDocument();view.unmount();
+ finish({id:'g',space_id:'s',status:'queued'});expect(await screen.findByText('Check queued. Results will appear here when collection finishes.')).toBeInTheDocument();view.unmount();
 });
 
 

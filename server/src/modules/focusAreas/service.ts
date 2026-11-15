@@ -1,8 +1,11 @@
+import {lockActivePerson} from '../access/activePerson.js';
+import {lockSourceRetrievalRelease} from '../sources/retrievalReleaseLocks.js';
 import { randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
 import { contentReadSql } from "../access/contentAccessSql.js";
 import { assertProjectWriter } from "../projects/access.js";
 import {
+  withQueryableTransaction,
   dbPool,
   HttpError,
   optionalString,
@@ -144,6 +147,11 @@ export class FocusAreaService {
   }
 
   async create(identity: SpaceUserIdentity, body: Record<string, unknown>): Promise<FocusArea> {
+    return withQueryableTransaction(this.db,db=>new FocusAreaService(db).createIn(identity,body));
+  }
+
+  private async createIn(identity: SpaceUserIdentity, body: Record<string, unknown>): Promise<FocusArea> {
+    await lockActivePerson(this.db,identity.spaceId,identity.userId);
     const name = requiredString(body.name, "name");
     const now = new Date().toISOString();
     try {
@@ -161,6 +169,12 @@ export class FocusAreaService {
   }
 
   async update(identity: SpaceUserIdentity, id: string, body: Record<string, unknown>): Promise<FocusArea> {
+    return withQueryableTransaction(this.db,db=>new FocusAreaService(db).updateIn(identity,id,body));
+  }
+
+  private async updateIn(identity: SpaceUserIdentity, id: string, body: Record<string, unknown>): Promise<FocusArea> {
+    await lockActivePerson(this.db,identity.spaceId,identity.userId);
+    await this.db.query("SELECT id FROM focus_areas WHERE space_id=$1 AND id=$2 FOR UPDATE",[identity.spaceId,id]);
     const current = await this.get(identity, id);
     // Anyone in the Space may read an area; only whoever created it may rename
     // it. Do not let another member rename it. They could take the name they
@@ -261,27 +275,22 @@ export class FocusAreaService {
     objectId: string,
     focusAreaId: string | null,
   ): Promise<void> {
-    if (focusAreaId !== null) await this.requireActive(identity, focusAreaId);
-    // Owned content is classified by its owner. Content with no owner —
-    // agent-ingested sources and knowledge items — is classified by anyone
-    // who can already read it, which the shared gate decides. Readability is
-    // required either way, so this never reveals anything, and
-    // `ck_space_objects_private_owner` guarantees the ownerless case is always
-    // `space_shared`: it can never mean "hidden".
-    // Oversight is excluded deliberately — it is a read-only admin capability
-    // (ADR 0013) and must not authorize a write.
-    const writable = await this.db.query<{ id: string }>(
-      `SELECT o.id FROM space_objects o
-        WHERE o.id = $1 AND o.space_id = $2 AND o.deleted_at IS NULL
-          AND (o.owner_user_id = $3 OR o.owner_user_id IS NULL)
-          AND ${contentReadSql("space_object", "o", "$3", { includeOversight: false })}`,
-      [objectId, identity.spaceId, identity.userId],
-    );
-    if (!writable.rows[0]) throw new HttpError(404, "Object not found or not yours to classify");
-    await this.db.query(
-      `UPDATE space_objects SET focus_area_id = $3 WHERE id = $1 AND space_id = $2`,
-      [objectId, identity.spaceId, focusAreaId],
-    );
+    return withQueryableTransaction(this.db,async db=>{
+      const service=new FocusAreaService(db);
+      await service.authorizeObjectClassification(identity,objectId,focusAreaId);
+      await db.query(`UPDATE space_objects SET focus_area_id=$3 WHERE id=$1 AND space_id=$2`,[objectId,identity.spaceId,focusAreaId]);
+    });
+  }
+
+  async authorizeObjectClassification(identity:SpaceUserIdentity,objectId:string,focusAreaId:string|null):Promise<void> {
+    const refs=[{object_type:'space_object' as const,object_id:objectId}];
+    await lockSourceRetrievalRelease(this.db,identity.spaceId,identity.userId,refs,[],undefined,[],[],refs);
+    await this.authorizeProjectClassification(identity,focusAreaId);
+    const writable=await this.db.query(`SELECT o.id FROM space_objects o
+      WHERE o.id=$1 AND o.space_id=$2 AND o.deleted_at IS NULL
+      AND (o.owner_user_id=$3 OR o.owner_user_id IS NULL)
+      AND ${contentReadSql("space_object","o","$3",{includeOversight:false})}`,[objectId,identity.spaceId,identity.userId]);
+    if(!writable.rows[0])throw new HttpError(404,'Object not found or not yours to classify');
   }
 
   /** Stable classification admission shared by mutation and receipt replay. */

@@ -2,9 +2,12 @@ import { randomUUID } from "node:crypto";
 import { RETRIEVAL_OBJECT_TYPE_VALUES } from "@rainver/protocol";
 import { isContentVisibility, type ContentVisibility } from "../access/contentAccessTypes.js";
 import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
-import { artifactReadSql, proposalReadSql, runReadSql } from "../access/contentAccessSql.js";
-import { HttpError, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
+import { contentAccessLevelSql, runReadSql } from "../access/contentAccessSql.js";
+import { artifactTitleReleased } from "../artifacts/repository.js";
+import { proposalTitleReleased } from "../proposals/repository.js";
+import { HttpError, type Queryable, type SpaceUserIdentity, withQueryableTransaction } from "../routeUtils/common.js";
 import { contentResourceTypeForRetrievalObject } from "./audit.js";
+import { lockDemotionReleaseClosure } from "./demotionReleaseClosure.js";
 
 const DISCLOSURE_TTL_MS = 15 * 60 * 1000;
 
@@ -49,34 +52,81 @@ export class ContentDemotionService {
     resourceId: string,
     targetVisibility: ContentVisibility,
   ): Promise<DemotionDisclosure> {
-    const currentVisibility = await this.requireOwner(identity, resourceType, resourceId);
-    if (!narrowsVisibility(currentVisibility, targetVisibility)) {
-      throw new HttpError(422, "Demotion target must be narrower than current visibility");
-    }
-    const exposure = await this.loadExposure(
-      identity.spaceId,
-      identity.userId,
-      resourceType,
-      resourceId,
-    );
-    const confirmationId = randomUUID();
-    const expiresAt = new Date(Date.now() + DISCLOSURE_TTL_MS).toISOString();
-    await this.db.query(
-      `INSERT INTO content_demotion_disclosures (
-         id, space_id, resource_type, resource_id, owner_user_id,
-         target_visibility, exposure_snapshot_json, disclosed_at, expires_at
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,now(),$8)`,
-      [confirmationId, identity.spaceId, resourceType, resourceId,
-        identity.userId, targetVisibility, JSON.stringify(exposure), expiresAt],
-    );
-    return {
-      confirmation_id: confirmationId,
-      expires_at: expiresAt,
-      resource_type: resourceType,
-      resource_id: resourceId,
-      target_visibility: targetVisibility,
-      exposure,
-    };
+    return failClosedOnLockConflict(() => withQueryableTransaction(this.db, async (tx) => {
+      const currentVisibility = await this.requireOwner(tx, identity, resourceType, resourceId);
+      if (!narrowsVisibility(currentVisibility, targetVisibility)) {
+        throw new HttpError(422, "Demotion target must be narrower than current visibility");
+      }
+      const exposure = await this.lockedExposure(tx, identity, resourceType, resourceId);
+      await this.requireOwner(tx, identity, resourceType, resourceId);
+      const confirmationId = randomUUID();
+      const expiresAt = new Date(Date.now() + DISCLOSURE_TTL_MS).toISOString();
+      await tx.query(
+        `INSERT INTO content_demotion_disclosures (
+           id, space_id, resource_type, resource_id, owner_user_id,
+           target_visibility, exposure_snapshot_json, disclosed_at, expires_at
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,now(),$8)`,
+        [confirmationId, identity.spaceId, resourceType, resourceId,
+          identity.userId, targetVisibility, JSON.stringify(exposure), expiresAt],
+      );
+      return {
+        confirmation_id: confirmationId,
+        expires_at: expiresAt,
+        resource_type: resourceType,
+        resource_id: resourceId,
+        target_visibility: targetVisibility,
+        exposure,
+      };
+    }));
+  }
+
+  /**
+   * The disclosure a command recorded, released only to the person who still
+   * owns the resource. The stored snapshot stays byte-for-byte what the later
+   * demotion is compared against, but owning the source does not authorize the
+   * Runs and outputs it names: each title is released only while that object's
+   * own detail reader would release it to the owner now (a Run's title is its
+   * instruction, so it needs full access), otherwise the entry keeps its
+   * pointer and a placeholder. One transaction: the named objects' read
+   * closure is share-locked (`lockDemotionReleaseClosure`) before ownership
+   * and every title decision are re-read, and stays held until the response
+   * built from them commits, so a revocation either commits first and is seen
+   * or waits for this read. Expired and consumed disclosures read back the
+   * same way.
+   */
+  async read(identity: SpaceUserIdentity, resourceType: string, resourceId: string, confirmationId: string): Promise<DemotionDisclosure & { consumed: boolean }> {
+    return failClosedOnLockConflict(() => withQueryableTransaction(this.db, async (tx) => {
+      await this.requireOwner(tx, identity, resourceType, resourceId);
+      const disclosure = async (lock: boolean) => (await tx.query<{ target_visibility: string; exposure_snapshot_json: DemotionExposure; expires_at: Date | string; consumed_at: Date | string | null }>(
+        `SELECT target_visibility, exposure_snapshot_json, expires_at, consumed_at
+           FROM content_demotion_disclosures
+          WHERE id = $1 AND space_id = $2 AND resource_type = $3 AND resource_id = $4 AND owner_user_id = $5${lock ? " FOR SHARE" : ""}`,
+        [confirmationId, identity.spaceId, resourceType, resourceId, identity.userId],
+      )).rows[0];
+      const recorded = await disclosure(false);
+      if (!recorded) throw new HttpError(404, "Demotion disclosure not found");
+      const objects = exposureObjects(recorded.exposure_snapshot_json);
+      await lockDemotionReleaseClosure(tx, identity, { resource: { type: resourceType, id: resourceId }, ...objects });
+      // After the locks: the resource row, then its disclosure (the demotion writer's order).
+      await this.requireOwner(tx, identity, resourceType, resourceId);
+      const row = await disclosure(true);
+      if (!row || !isContentVisibility(row.target_visibility)) throw new HttpError(404, "Demotion disclosure not found");
+      const released = await releasedTitles(tx, identity, objects);
+      return {
+        confirmation_id: confirmationId,
+        expires_at: new Date(row.expires_at).toISOString(),
+        resource_type: resourceType,
+        resource_id: resourceId,
+        target_visibility: row.target_visibility,
+        exposure: releaseExposure(row.exposure_snapshot_json, released),
+        consumed: row.consumed_at !== null,
+      };
+    }));
+  }
+
+  /** Whether the person still owns the active resource (a replayed disclosure receipt is released only then). */
+  async ownsResource(identity: SpaceUserIdentity, resourceType: string, resourceId: string): Promise<boolean> {
+    try { await this.requireOwner(this.db, identity, resourceType, resourceId); return true; } catch { return false; }
   }
 
   async validate(
@@ -109,13 +159,7 @@ export class ContentDemotionService {
     if (new Date(row.expires_at).getTime() <= Date.now()) {
       throw new HttpError(409, "Demotion disclosure expired");
     }
-    const current = await this.loadExposure(
-      identity.spaceId,
-      identity.userId,
-      resourceType,
-      resourceId,
-      db,
-    );
+    const current = await this.lockedExposure(db, identity, resourceType, resourceId);
     if (stableJson(row.exposure_snapshot_json) !== stableJson(current)) {
       throw new HttpError(409, "Exposure changed; review demotion again", { code: "demotion_exposure_changed" });
     }
@@ -129,6 +173,7 @@ export class ContentDemotionService {
   }
 
   private async requireOwner(
+    db: Queryable,
     identity: SpaceUserIdentity,
     resourceType: string,
     resourceId: string,
@@ -137,7 +182,7 @@ export class ContentDemotionService {
     if (!definition) throw new HttpError(404, "Content type not found");
     const alias = "demoted_resource";
     const active = definition.activePredicate?.(alias) ?? "true";
-    const result = await this.db.query<{ visibility: string }>(
+    const result = await db.query<{ visibility: string }>(
       `SELECT ${alias}.visibility FROM ${definition.tableName} ${alias}
         WHERE ${alias}.space_id = $1 AND ${alias}.id = $2
           AND ${active} AND ${alias}.${definition.ownerColumn} = $3
@@ -149,13 +194,32 @@ export class ContentDemotionService {
     return visibility;
   }
 
+  /**
+   * The current exposure, computed under the named objects' read closure:
+   * discover which Runs and outputs it names, share-lock their closure
+   * (`lockDemotionReleaseClosure`), then compute it again with every title
+   * decision. Different names after the wait are a changed exposure.
+   * Creation and the confirming recompute both come here.
+   */
+  private async lockedExposure(db: Queryable, identity: SpaceUserIdentity, resourceType: string, resourceId: string): Promise<DemotionExposure> {
+    const first = exposureObjects(await this.loadExposure(db, identity, resourceType, resourceId, null));
+    await lockDemotionReleaseClosure(db, identity, { resource: { type: resourceType, id: resourceId }, ...first });
+    const objects = exposureObjects(await this.loadExposure(db, identity, resourceType, resourceId, null));
+    if (stableJson(objects) !== stableJson(first)) {
+      throw new HttpError(409, "Exposure changed; review demotion again", { code: "demotion_exposure_changed" });
+    }
+    return this.loadExposure(db, identity, resourceType, resourceId, await releasedTitles(db, identity, objects));
+  }
+
+  /** Readers, consuming Runs and still-shared outputs; each title only as `released` allows (none when null). */
   private async loadExposure(
-    spaceId: string,
-    ownerUserId: string,
+    db: Queryable,
+    identity: SpaceUserIdentity,
     resourceType: string,
     resourceId: string,
-    db: Queryable = this.db,
+    released: ReleasedTitles | null,
   ): Promise<DemotionExposure> {
+    const { spaceId, userId: ownerUserId } = identity;
     const readers = await db.query<{
       user_id: string;
       display_name: string;
@@ -173,18 +237,10 @@ export class ContentDemotionService {
       [spaceId, resourceType, resourceId, ownerUserId],
     );
     const contextTypes = await this.contextItemTypes(db, spaceId, resourceType, resourceId);
-    const runs = await db.query<{
-      run_id: string;
-      title: string;
-      status: string;
-    }>(
-      // Every consuming Run is disclosed, but its instruction is someone's
-      // text: a Run the owner cannot read is named by its pointer alone.
+    // Every consuming Run is disclosed; its title is its instruction (its body).
+    const runs = await db.query<{ run_id: string; title: string; status: string }>(
       `SELECT DISTINCT r.id AS run_id,
-              CASE WHEN ${runReadSql("$4", "r")}
-                   THEN COALESCE(NULLIF(r.instruction, ''), NULLIF(r.prompt, ''), 'Run ' || left(r.id, 8))
-                   ELSE 'Run ' || left(r.id, 8)
-              END AS title,
+              COALESCE(NULLIF(r.instruction, ''), NULLIF(r.prompt, ''), 'Run ' || left(r.id, 8)) AS title,
               r.status
          FROM invocation_snapshots snapshot
          JOIN runs r ON r.id = snapshot.invocation_id AND r.space_id = snapshot.space_id
@@ -194,28 +250,26 @@ export class ContentDemotionService {
               FROM jsonb_array_elements(snapshot.safe_snapshot_json->'source_refs') AS source_ref
              WHERE source_ref->>'id' = $2
                AND source_ref->>'type' = ANY($3::varchar[])
-          )
-        ORDER BY title, r.id`,
-      [spaceId, resourceId, contextTypes, ownerUserId],
+          )`,
+      [spaceId, resourceId, contextTypes],
     );
     const runIds = runs.rows.map((row) => row.run_id);
     const outputs = runIds.length === 0
       ? { rows: [] as Array<{ resource_type: "artifact" | "proposal"; id: string; title: string; visibility: string }> }
       : await db.query<{ resource_type: "artifact" | "proposal"; id: string; title: string; visibility: string }>(
-        `SELECT 'artifact'::text AS resource_type, a.id,
-                CASE WHEN ${artifactReadSql("$3", "a")} THEN a.title ELSE 'Artifact ' || left(a.id, 8) END AS title,
-                a.visibility
+        `SELECT 'artifact'::text AS resource_type, a.id, a.title, a.visibility
            FROM artifacts a
           WHERE a.space_id = $1 AND a.run_id = ANY($2::varchar[]) AND a.visibility <> 'private'
          UNION ALL
-         SELECT 'proposal'::text AS resource_type, p.id,
-                CASE WHEN ${proposalReadSql("$3", "p")} THEN p.title ELSE 'Proposal ' || left(p.id, 8) END AS title,
-                p.visibility
+         SELECT 'proposal'::text AS resource_type, p.id, p.title, p.visibility
            FROM proposals p
-          WHERE p.space_id = $1 AND p.created_by_run_id = ANY($2::varchar[]) AND p.visibility <> 'private'
-         ORDER BY resource_type, title, id`,
-        [spaceId, runIds, ownerUserId],
+          WHERE p.space_id = $1 AND p.created_by_run_id = ANY($2::varchar[]) AND p.visibility <> 'private'`,
+        [spaceId, runIds],
       );
+    const runTitle = (row: { run_id: string; title: string }) =>
+      released?.runs.has(row.run_id) ? row.title : placeholderTitle("run", row.run_id);
+    const outputTitle = (row: { resource_type: "artifact" | "proposal"; id: string; title: string }) =>
+      (row.resource_type === "artifact" ? released?.artifacts : released?.proposals)?.has(row.id) ? row.title : placeholderTitle(row.resource_type, row.id);
     return {
       readers: readers.rows.map((row) => ({
         user_id: row.user_id,
@@ -224,11 +278,18 @@ export class ContentDemotionService {
         last_accessed_at: new Date(row.last_accessed_at).toISOString(),
         link: "/space-settings",
       })),
-      consuming_runs: runs.rows.map((row) => ({ ...row, link: `/runs/${row.run_id}` })),
-      shared_derived_outputs: outputs.rows.map((row) => ({
-        ...row,
-        link: row.resource_type === "artifact" ? `/artifacts/${row.id}` : `/proposals/${row.id}`,
-      })),
+      consuming_runs: runs.rows
+        .map((row) => ({ run_id: row.run_id, title: runTitle(row), status: row.status, link: `/runs/${row.run_id}` }))
+        .sort((a, b) => compare(a.title, b.title) || compare(a.run_id, b.run_id)),
+      shared_derived_outputs: outputs.rows
+        .map((row) => ({
+          resource_type: row.resource_type,
+          id: row.id,
+          title: outputTitle(row),
+          visibility: row.visibility,
+          link: row.resource_type === "artifact" ? `/artifacts/${row.id}` : `/proposals/${row.id}`,
+        }))
+        .sort((a, b) => compare(a.resource_type, b.resource_type) || compare(a.title, b.title) || compare(a.id, b.id)),
     };
   }
 
@@ -250,6 +311,79 @@ export class ContentDemotionService {
     );
     return [...new Set([resourceType, result.rows[0]?.object_type].filter((value): value is string => Boolean(value)))];
   }
+}
+
+interface ReleasedTitles { runs: Set<string>; artifacts: Set<string>; proposals: Set<string> }
+
+function exposureObjects(exposure: DemotionExposure) {
+  return {
+    runIds: [...new Set(exposure.consuming_runs.map((run) => run.run_id))].sort(),
+    artifactIds: [...new Set(exposure.shared_derived_outputs.filter((o) => o.resource_type === "artifact").map((o) => o.id))].sort(),
+    proposalIds: [...new Set(exposure.shared_derived_outputs.filter((o) => o.resource_type === "proposal").map((o) => o.id))].sort(),
+  };
+}
+
+/**
+ * Which named titles the owner may see now, each by its own object's reader:
+ * a Run's at full level (`runTitleReadableSql`), an Artifact's through the
+ * Artifact detail gates (`artifactTitleReleased`: ACL, Run Room,
+ * Source-derived, research and retrieval/report release), a Proposal's
+ * through the Proposal detail gates (`proposalTitleReleased`: ACL, Run Room,
+ * report-derived release). Creation, readback and the confirming recompute
+ * share this one decision; the caller holds the read closure.
+ */
+async function releasedTitles(db: Queryable, identity: SpaceUserIdentity, objects: ReturnType<typeof exposureObjects>): Promise<ReleasedTitles> {
+  const runs = objects.runIds.length === 0 ? new Set<string>() : new Set((await db.query<{ id: string }>(
+    `SELECT r.id FROM runs r WHERE r.space_id = $1 AND r.id = ANY($2::varchar[]) AND ${runTitleReadableSql("$3", "r")}`,
+    [identity.spaceId, objects.runIds, identity.userId],
+  )).rows.map((row) => row.id));
+  const artifacts = new Set<string>(), proposals = new Set<string>();
+  for (const id of objects.artifactIds) if (await artifactTitleReleased(db, identity, id)) artifacts.add(id);
+  for (const id of objects.proposalIds) if (await proposalTitleReleased(db, identity, id)) proposals.add(id);
+  return { runs, artifacts, proposals };
+}
+
+/** A recorded exposure as the owner may see it now: readers and pointers as recorded, titles as `released` allows. */
+function releaseExposure(recorded: DemotionExposure, released: ReleasedTitles): DemotionExposure {
+  return {
+    readers: recorded.readers,
+    consuming_runs: recorded.consuming_runs.map((run) => released.runs.has(run.run_id)
+      ? run
+      : { ...run, title: placeholderTitle("run", run.run_id) }),
+    shared_derived_outputs: recorded.shared_derived_outputs.map((output) =>
+      (output.resource_type === "artifact" ? released.artifacts : released.proposals).has(output.id)
+        ? output
+        : { ...output, title: placeholderTitle(output.resource_type, output.id) }),
+  };
+}
+
+/** A lock wait Postgres resolves by aborting this transaction (deadlock,
+ * lock timeout, serialization) releases or records nothing: read again. */
+async function failClosedOnLockConflict<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (error) {
+    const code = (error as { code?: unknown } | null)?.code;
+    if (code === "40P01" || code === "55P03" || code === "40001") {
+      throw new HttpError(409, "Exposure changed; review demotion again", { code: "demotion_exposure_changed" });
+    }
+    throw error;
+  }
+}
+
+const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+
+/** A Run's title is its instruction, so it is released only to a full-level reader. */
+function runTitleReadableSql(userParam: string, alias: string): string {
+  const definition = contentResourceDefinition("run");
+  if (!definition) throw new Error("Run content definition missing");
+  return `(${runReadSql(userParam, alias)}
+    AND ${contentAccessLevelSql({ definition, alias, userExpr: userParam })} = 'full')`;
+}
+
+function placeholderTitle(resourceType: "run" | "artifact" | "proposal", id: string): string {
+  const label = resourceType === "run" ? "Run" : resourceType === "artifact" ? "Artifact" : "Proposal";
+  return `${label} ${id.slice(0, 8)}`;
 }
 
 function stableJson(value: unknown): string {

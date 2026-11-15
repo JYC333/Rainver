@@ -1,3 +1,4 @@
+import { lockReaderWriteTarget } from './writeAuthority.js';
 import { resolveContentCreationContext } from "../access/creationContext.js";
 import { ReaderDocumentNoteCreateSchema } from "@rainver/protocol";
 import { randomUUID } from "node:crypto";
@@ -21,7 +22,7 @@ export class ReaderDocumentNotes {
     const parsed = ReaderDocumentNoteCreateSchema.safeParse(body);
     if (!parsed.success) throw new HttpError(422, "Invalid document note title");
     return withQueryableTransaction(this.db, async tx => {
-      await assertDocumentReadable(tx, identity, documentType, documentId);
+      await lockReaderWriteTarget(tx,identity,{document_type:documentType,document_id:documentId});
       await tx.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [JSON.stringify(['reader-document-note', identity.spaceId, identity.userId, documentType, documentId])]);
       const existing = await new ReaderDocumentNotes(tx).get(identity, documentType, documentId);
       if (existing.note) return existing;

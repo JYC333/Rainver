@@ -1,3 +1,4 @@
+import { waitForLockWaiter } from './support/lockWait.js';
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -70,7 +71,7 @@ describe("knowledgeNotePurgeDb", () => {
 
       const result = await repository.purgeDeletedNotes(identity) as { deleted: number; retention_days: number };
 
-      expect(result).toEqual({ deleted: 1, retention_days: 30 });
+      expect(result).toEqual({ deleted: 1, retention_days: 30, project_ids: [] });
       const remaining = await db.pool.query<{ id: string }>(
         `SELECT id FROM space_objects WHERE space_id = $1 AND object_type = 'note'`,
         [SPACE],
@@ -180,6 +181,61 @@ describe("knowledgeUpdateApplyDb", () => {
     await db.pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Space','personal',$2,$2)`, [SPACE, now]);
     await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at, email, registration_source) VALUES ($1,'Owner','active',$2,$2, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`, [USER, now]);
     await db.pool.query(`INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'owner','active',$4,$4)`, [randomUUID(), SPACE, USER, now]);
+  });
+
+
+  it.each(['claim', 'object_profile'] as const)("refuses a %s update ordered behind its canonical archive", async (kind) => {
+    const registry = new ProposalApplierRegistry();
+    registerKnowledgeProposalAppliers(registry);
+    const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri });
+    const makeProposal = async (operation: string, payload: Record<string, unknown>): Promise<ApplyProposal> => {
+      const row = await insertProposalRow(db.pool, {
+        spaceId: SPACE, proposalType: operation, title: 'Canonical race', payload,
+        rationale: 'Protect terminal state from stale mutation', createdByUserId: USER,
+        ownerUserId: USER, visibility: 'private',
+      });
+      return { id: row.id, space_id: SPACE, proposal_type: operation, title: 'Canonical race',
+        payload_json: payload, project_folder_id: null, visibility: 'private',
+        created_by_user_id: USER, owner_user_id: USER, project_id: null };
+    };
+    const createdProposal = await makeProposal(kind + '_create', kind === 'claim'
+      ? { operation: 'claim_create', claim_kind: 'fact', subject_text: 'A subject', claim_text: 'Original', visibility: 'private' }
+      : { operation: 'object_profile_create', key: 'concept', label: 'Original', base_object_type: 'knowledge_item' });
+    const creator = await db.pool.connect();
+    let id: string;
+    try {
+      await creator.query('BEGIN');
+      const result = await registry.apply({ config, db: creator, proposal: createdProposal, userId: USER });
+      const object = (kind === 'claim' ? result.result.claim : result.result.object_profile) as { id: string };
+      id = object.id;
+      await creator.query('COMMIT');
+    } finally { await creator.query('ROLLBACK'); creator.release(); }
+    const target = kind === 'claim' ? { target_claim_id: id } : { target_profile_id: id };
+    const archive = await makeProposal(kind + '_archive', { operation: kind + '_archive', ...target });
+    const update = await makeProposal(kind + '_update', { operation: kind + '_update', ...target,
+      ...(kind === 'claim' ? { claim_text: 'Late overwrite' } : { label: 'Late overwrite' }) });
+    const first = await db.pool.connect(), second = await db.pool.connect();
+    let racing: Promise<unknown> | undefined;
+    try {
+      await first.query('BEGIN');
+      await second.query('BEGIN');
+      await registry.apply({ config, db: first, proposal: archive, userId: USER });
+      racing = registry.apply({ config, db: second, proposal: update, userId: USER });
+      const rejected = expect(racing).rejects.toThrow(/archived/);
+      await waitForLockWaiter(db.pool);
+      await first.query('COMMIT');
+      await rejected;
+    } finally {
+      await first.query('ROLLBACK'); await second.query('ROLLBACK');
+      await racing?.catch(() => undefined); first.release(); second.release();
+    }
+    if (kind === 'claim') {
+      expect((await db.pool.query('SELECT status,claim_text FROM claims WHERE object_id=$1', [id])).rows)
+        .toEqual([{ status: 'archived', claim_text: 'Original' }]);
+    } else {
+      expect((await db.pool.query('SELECT status,label FROM space_object_profiles WHERE id=$1', [id])).rows)
+        .toEqual([{ status: 'archived', label: 'Original' }]);
+    }
   });
 
   it("keeps one active version when two update proposals for one item are accepted at once", async () => {

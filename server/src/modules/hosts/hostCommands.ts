@@ -57,12 +57,21 @@ import {isInstanceAdminIn} from '../routeUtils/access.js';
  * is instance-admin work and only for commands that apply to it. Anything else
  * is the hidden 404 — an unowned Host is indistinguishable from none.
  */
+async function managedHostAllowed(db:Queryable,config:ServerConfig,row:Pick<ManagedHost,'kind'|'owner_user_id'>&{status:string},userId:string,allowBuiltin:boolean):Promise<boolean>{
+  if(row.status==='revoked')return false;
+  if(row.kind==='remote')return row.owner_user_id===userId;
+  return row.kind==='server'&&allowBuiltin&&await isInstanceAdminIn(db,config,userId);
+}
+/** Read-only counterpart of the canonical Host command authority, for action visibility. */
+export async function canManageHost(db:Queryable,config:ServerConfig,hostId:string,userId:string,options:{allowBuiltin?:boolean}={}):Promise<boolean>{
+  const row=(await db.query<Pick<ManagedHost,'kind'|'owner_user_id'>&{status:string}>('SELECT kind,owner_user_id,status FROM hosts WHERE id=$1',[hostId])).rows[0];
+  return Boolean(row&&await managedHostAllowed(db,config,row,userId,Boolean(options.allowBuiltin)));
+}
+
 export async function lockManagedHost(db:Queryable,config:ServerConfig,hostId:string,userId:string,options:{allowBuiltin?:boolean;lock?:'share'|'update'}={}):Promise<ManagedHost>{
   const row=(await db.query<ManagedHost&{status:string}>(
     `SELECT id,kind,owner_user_id,platform,capabilities_json,provider_proxy_base_url,status FROM hosts WHERE id=$1 ${options.lock==='update'?'FOR UPDATE':'FOR SHARE'}`,[hostId])).rows[0];
-  if(!row||row.status==='revoked')throw new HostNotVisible();
-  if(row.kind==='remote'&&row.owner_user_id!==userId)throw new HostNotVisible();
-  if(row.kind==='server'&&(!options.allowBuiltin||!await isInstanceAdminIn(db,config,userId)))throw new HostNotVisible();
+  if(!row||!await managedHostAllowed(db,config,row,userId,Boolean(options.allowBuiltin)))throw new HostNotVisible();
   return row;
 }
 

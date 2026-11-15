@@ -53,3 +53,19 @@ describe('AmbientSessionImportPanel import outcome', () => {
     expect(toast.success).toHaveBeenCalledWith('2 sessions, 2 new records')
   })
 })
+
+it('shows the Codex prerequisite beside Import now and explains the saved lock failure', async () => {
+  vi.mocked(ambientSessionsApi.offer).mockResolvedValueOnce({ policy: { entries: [] }, counts: [
+    { location_id: 'loc', runtime_key: 'codex_cli', installation: 'own', session_count: 1, oldest_updated_at: null, newest_updated_at: null, error: null },
+  ] } as never)
+  vi.mocked(ambientSessionsApi.list).mockResolvedValueOnce({ sessions: [
+    { id: 'busy', title: 'Parser review', runtime_key: 'codex_cli', load_state: 'partial', record_count: 12,
+      last_error: '{"data":{"reason":"thread_active_writer"}}', visibility: 'private', source_state: 'present' },
+  ] } as never)
+  render(<AmbientSessionImportPanel location={location} />)
+  expect(await screen.findByText(/Codex may require you to close/)).toBeVisible()
+  expect(screen.getByRole('alert')).toHaveTextContent('new history could not be read')
+  expect(screen.getByRole('alert')).toHaveTextContent('keep any history already imported')
+  expect(screen.getByRole('button', { name: 'Import now' })).toBeEnabled()
+  expect(screen.getByText('12 records', { exact: false })).toBeVisible()
+})

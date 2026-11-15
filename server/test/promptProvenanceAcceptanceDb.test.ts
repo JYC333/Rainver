@@ -1,3 +1,16 @@
+import {checkpointWorkspaceRun} from '../src/modules/hosts/workspaceCheckpoints.js';
+import { PgProjectRepository } from "../src/modules/projects/repository.js";
+import { WorkContextService } from "../src/modules/runtimeContext/workContextService.js";
+import { RetrievalProjectionService } from "../src/modules/retrieval/projectionService.js";
+import { memoryRetrievalRegistry } from "../src/modules/memory/retrievalAdapter.js";
+import { waitForBlockedBy } from "./support/lockWait.js";
+import { PgProjectAgentRepository } from "../src/modules/projects/projectAgents.js";
+import { RoomRosterService } from "../src/modules/rooms/rosterService.js";
+import { PgRoomRosterRepository } from "../src/modules/rooms/rosterRepository.js";
+import { PgConversationExecutionContextRepository } from "../src/modules/sessions/executionContextRepository.js";
+import { canReadProject } from "../src/modules/projects/access.js";
+import { contentDecisionFromDb } from "../src/modules/access/contentAccessQuery.js";
+import { seedSpaceMember } from "./support/domainSeeds.js";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -116,11 +129,14 @@ async function world(hostKind: "server" | "remote") {
   /** Works the queued `agent_run` jobs, oldest first, until this Run has executed. */
   const execute = async (runId: string) => {
     for (let job = 0; job < 5 && !host!.promptsFor(runId).length; job += 1) {
-      expect(await worker.processOne()).toMatchObject({ status: "completed" });
+      const worked = await worker.processOne();
+      const state = (await db.pool.query("SELECT status,error_json,error_message FROM runs WHERE id=$1", [runId])).rows[0];
+      expect(worked, JSON.stringify(state)).toMatchObject({ status: "completed" });
+      if (["succeeded","failed","cancelled"].includes(state.status)) break;
     }
-    return (await db.pool.query<{ status: string }>(`SELECT status FROM runs WHERE id = $1`, [runId])).rows[0]!;
+    return (await db.pool.query<{ status: string }>(`SELECT status,error_json,error_message FROM runs WHERE id = $1`, [runId])).rows[0]!;
   };
-  return { space, owner, project, agent, profile, hostId, identity: { spaceId: space, userId: owner }, profileFor, upload, execute };
+  return { space, owner, project, agent, profile, hostId, identity: { spaceId: space, userId: owner }, profileFor, upload, execute, work:()=>worker.processOne() };
 }
 
 async function directChatWorld() {
@@ -305,13 +321,22 @@ describe("joined prompt provenance: Room", () => {
     }]);
 
     const next = await w.send({ content: "Which step is riskiest?" });
-    expect(await w.execute(next.run_ids[0]!)).toMatchObject({ status: "succeeded" });
-    const resumed = await joinedInvocation(db.pool, host!, next.run_ids[0]!);
-    // The resumed session already holds the standing items and the earlier
-    // turn: it is sent this message alone, verbatim, without the earlier image.
+    // A pending read-only mount checkpoint parks the Job without failing the Run.
+    expect(await w.work()).toMatchObject({status:'deferred'});
+    expect(host!.promptsFor(next.run_ids[0]!)).toHaveLength(0);
+    expect((await db.pool.query('SELECT status FROM runs WHERE id=$1',[next.run_ids[0]])).rows[0].status).not.toBe('failed');
+    await checkpointWorkspaceRun(db.pool,runId,w.space,sharedHostConnectionRegistry,config.workspaceRoot);
+    // Advance the queued retry after the checkpoint owner has settled the obligation.
+    await db.pool.query("UPDATE jobs SET scheduled_at=now()-interval '1 second' WHERE job_type='agent_run' AND payload_json->>'run_id'=$1 AND status='pending'",[next.run_ids[0]]);
+    const nextResult=await w.execute(next.run_ids[0]!);
+    expect(nextResult,JSON.stringify(nextResult)).toMatchObject({ status: "succeeded" });
+    const resumed = await joinedInvocation(db.pool, host!, next.run_ids[0]!,1);
+    // The retry envelope is new; standing context and earlier image are not resent.
     expect(resumed.acp).toMatchObject({ sessionMethod: "session/resume", sessionId: turn.acp.sessionId });
-    expect(resumed.snapshot.sourceRefs).toEqual([{ type: "message", id: next.message.id }]);
-    expect(resumed.deliveredContents).toEqual(["Which step is riskiest?"]);
+    expect(resumed.snapshot.sourceRefs).toEqual([{type:'supervisor_retry',id:next.run_ids[0]!},{ type: "message", id: next.message.id }]);
+    expect(resumed.deliveredContents).toHaveLength(2);
+    expect(resumed.deliveredContents[0]).toContain('[Supervisor retry]');
+    expect(resumed.deliveredContents[1]).toBe("Which step is riskiest?");
     expect(occurrences(resumed.text, "Plan the release from this board.")).toBe(0);
     expect(resumed.attachments).toEqual([]);
   });
@@ -411,3 +436,147 @@ describe("joined prompt provenance: Room", () => {
 function recordOf(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
+
+
+it("executes an owner-authorized reused Agent for a B-only member without A context or vendor-session reuse", async () => {
+  const w = await roomWorld("server");
+  await db.pool.query("UPDATE spaces SET type='team' WHERE id=$1", [w.space]);
+  await db.pool.query("UPDATE agents SET access_project_id=$2,role_instruction='SECRET_A_ROLE',description='SECRET_A_DESCRIPTION' WHERE id=$1", [w.agent, w.project]);
+  await db.pool.query("UPDATE agent_versions SET system_prompt='SECRET_A_SYSTEM',context_policy_json=$2::jsonb WHERE agent_id=$1", [w.agent, JSON.stringify({text: "SECRET_A_POLICY"})]);
+  await db.pool.query(`INSERT INTO memory_entries (id,space_id,scope_type,memory_type,content,status,created_at,updated_at,
+    owner_user_id,agent_id,sensitivity_level,access_level,namespace,title,visibility,confidence,importance,version,access_count)
+    VALUES ($1,$2,'agent','persona','SECRET_A_PERSONA','active',now(),now(),$3,$4,'normal','full','agent.default','persona','private',1,0.5,1,0)`,
+    [randomUUID(), w.space, w.owner, w.agent]);
+  const original = await w.send({content: "SECRET_A_HISTORY", input_parts: [await w.upload()]});
+  expect(await w.execute(original.run_ids[0]!)).toMatchObject({status: "succeeded"});
+  const source = await joinedInvocation(db.pool, host!, original.run_ids[0]!);
+  expect(source.text).toContain("SECRET_A_PERSONA");
+  expect(source.text).toContain("SECRET_A_SYSTEM");
+
+  const userB = randomUUID(), projectB = randomUUID();
+  const identityB = {spaceId: w.space, userId: userB};
+  await seedSpaceMember(db.pool, {space: w.space, user: userB});
+  await db.pool.query("INSERT INTO projects(id,space_id,owner_user_id,name,status,created_at,updated_at) VALUES($1,$2,$3,'B','active',now(),now())", [projectB, w.space, userB]);
+  await db.pool.query("INSERT INTO project_members(id,space_id,project_id,user_id,role,status,created_at,updated_at) VALUES($1,$2,$3,$4,'member','active',now(),now())", [randomUUID(), w.space, projectB, w.owner]);
+  const roomB = (await w.rooms.createRoom(identityB, {project_id: projectB, title: "B only"})).room.id;
+  const roster = new RoomRosterService(db.pool);
+  await roster.inviteUser(identityB, roomB, {user_id: w.owner});
+  const manager = randomUUID();
+  await seedAgentWithVersion(db.pool, {space: w.space, owner: userB, agent: manager, version: randomUUID(), systemPrompt: "B manager", seedDefaultRuntimeProfile: false});
+  await w.profileFor(manager);
+  await seedRoomManager(db.pool, {space: w.space, room: roomB, agent: manager});
+  const conversationB = await new PgSessionRepository(db.pool).createRoomConversation({space_id: w.space,room_id:roomB,project_id:projectB,project_folder_id:null,title:"B conversation",metadata:{}});
+  const execution = new ConversationExecutionContextService(db.pool);
+  const selection = {execution_host_id:w.hostId,primary:{kind:"managed" as const}};
+  // Initialize before the specialist joins; a dynamic add must work too.
+  await execution.initialize(identityB, conversationB.id, {selection, runtime:{agent_id:manager,runtime_profile_id:null,runtime_key:"opencode",runtime_installation:"managed:1.0.0"}});
+  expect(await canReadProject(db.pool, w.space, w.project, userB)).toBe(false);
+  expect(await contentDecisionFromDb(db.pool, identityB, "agent", w.agent)).toBe("deny");
+  expect((await new PgRoomRosterRepository(db.pool).listAgentCandidates({space_id:w.space,user_id:w.owner,room_id:roomB,limit:100,offset:0})).items.find(a=>a.agent_id===w.agent)).toMatchObject({private:true});
+  await expect(roster.addExistingAgent(w.identity,roomB,{agent_id:w.agent})).rejects.toMatchObject({statusCode:409,responseBody:{code:"private_agent_share_confirmation_required"}});
+  // A membership change commits while add waits for the same Room lock.
+  // Consent to the old displayed audience cannot silently cover the newcomer.
+  const newcomer = randomUUID();
+  await seedSpaceMember(db.pool,{space:w.space,user:newcomer});
+  await db.pool.query("INSERT INTO project_members(id,space_id,project_id,user_id,role,status,created_at,updated_at) VALUES($1,$2,$3,$4,'member','active',now(),now())",[randomUUID(),w.space,projectB,newcomer]);
+  const holder = await db.pool.connect();
+  await holder.query("BEGIN");
+  const pid = (await holder.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
+  await holder.query("SELECT id FROM rooms WHERE id=$1 FOR UPDATE",[roomB]);
+  const pending = roster.addExistingAgent(w.identity,roomB,{agent_id:w.agent,confirm_room_share:true,share_private_with_member_ids:[userB]}).then(()=>null,error=>error);
+  try {
+    await waitForBlockedBy(db.pool,pid);
+    await holder.query("INSERT INTO room_user_members(id,space_id,room_id,user_id,role,status,created_at,updated_at) VALUES($1,$2,$3,$4,'member','active',now(),now())",[randomUUID(),w.space,roomB,newcomer]);
+    await holder.query("COMMIT");
+  } finally { await holder.query("ROLLBACK"); holder.release(); }
+  expect(await pending).toMatchObject({statusCode:409,responseBody:{code:"private_agent_share_confirmation_required"}});
+  await roster.addExistingAgent(w.identity,roomB,{agent_id:w.agent,confirm_room_share:true,share_private_with_member_ids:[userB,newcomer]});
+  const entry = await new PgProjectAgentRepository(db.pool).get({spaceId:w.space,userId:userB,projectId:projectB,agentId:w.agent});
+  expect(entry).toMatchObject({room_only:true,description:null});
+  expect(entry?.rooms.map(room=>room.room_id)).toEqual([roomB]);
+  await execution.initialize(identityB, conversationB.id, {participants_revision:(await execution.preview(identityB,conversationB.id)).summary.participants_revision,participant_changes:[{agent_id:w.agent,participating:true}],selection,runtime:{agent_id:w.agent,runtime_profile_id:w.profile,runtime_key:"opencode",runtime_installation:"managed:1.0.0"}});
+  const sendB = (content:string) => w.rooms.sendMessage(identityB,roomB,conversationB.id,{content,recipient_segments:[{recipient_agent_ids:[w.agent],content}]});
+  const posted = await sendB("Only work on B.");
+  const executed = await w.execute(posted.run_ids[0]!);
+  expect(executed, JSON.stringify(executed)).toMatchObject({status:"succeeded"});
+  const target = await joinedInvocation(db.pool,host!,posted.run_ids[0]!);
+  expect(target.acp.sessionMethod).toBe("session/new");
+  expect(target.acp.sessionId).not.toBe(source.acp.sessionId);
+  expect(target.text).not.toContain("SECRET_A_");
+  expect(target.attachments).toEqual([]);
+  expect(target.snapshot.sourceRefs.some(ref=>ref.type==="agent_version")).toBe(false);
+  // A second B turn resumes B, while the original A session resumes A.
+  const nextB = await sendB("Continue B.");
+  expect(await w.execute(nextB.run_ids[0]!)).toMatchObject({status:"succeeded"});
+  const continuedB = await joinedInvocation(db.pool,host!,nextB.run_ids[0]!);
+  expect(continuedB.acp).toMatchObject({sessionMethod:"session/resume",sessionId:target.acp.sessionId});
+  const nextA = await w.send({content:"Continue A."});
+  expect(await w.execute(nextA.run_ids[0]!)).toMatchObject({status:"succeeded"});
+  expect((await joinedInvocation(db.pool,host!,nextA.run_ids[0]!)).acp).toMatchObject({sessionMethod:"session/resume",sessionId:source.acp.sessionId});
+  // The owner reads A and B; automatic retrieval must still stay in B.
+  const projection = new RetrievalProjectionService(db.pool,memoryRetrievalRegistry);
+  for (const [projectId,marker] of [[w.project,"SECRET_A_RETRIEVAL"],[projectB,"VISIBLE_B_MEMORY"]]) {
+    const memoryId = randomUUID();
+    await db.pool.query(`INSERT INTO memory_entries (id,space_id,project_id,scope_type,memory_type,content,status,created_at,updated_at,
+      owner_user_id,sensitivity_level,access_level,namespace,title,visibility,confidence,importance,version,access_count)
+      VALUES($1,$2,$3,'project','semantic',$4,'active',now(),now(),$5,'normal','full','project.default','Retrieval boundary','space_shared',1,0.5,1,0)`,
+      [memoryId,w.space,projectId,`Retrieval boundary facts ${marker}`,w.owner]);
+    await projection.reindex(w.space,"memory_entry",memoryId);
+  }
+  await new WorkContextService(db.pool).setRoomConversationRetrievalSwitch(w.identity,conversationB.id,{enabled:true,preferred_domains:["memory"]});
+  const retrieved = await w.rooms.sendMessage(w.identity,roomB,conversationB.id,{content:"Retrieval boundary facts?",recipient_segments:[{recipient_agent_ids:[w.agent],content:"Retrieval boundary facts?"}]});
+  expect(await w.execute(retrieved.run_ids[0]!)).toMatchObject({status:"succeeded"});
+  const scoped = await joinedInvocation(db.pool,host!,retrieved.run_ids[0]!);
+  expect(scoped.text).toContain("VISIBLE_B_MEMORY");
+  expect(scoped.text).not.toContain("SECRET_A_");
+  // Mainline-style enrollment creates no Agent grant. The owner can confirm
+  // the new exact audience without removing the Agent or disturbing its thread.
+  const laterMember = randomUUID();
+  await seedSpaceMember(db.pool,{space:w.space,user:laterMember});
+  await db.pool.query("INSERT INTO project_members(id,space_id,project_id,user_id,role,status,created_at,updated_at) VALUES($1,$2,$3,$4,'member','active',now(),now())",[randomUUID(),w.space,projectB,laterMember]);
+  await db.pool.query("INSERT INTO room_user_members(id,space_id,room_id,user_id,role,status,created_at,updated_at) VALUES($1,$2,$3,$4,'member','active',now(),now())",[randomUUID(),w.space,roomB,laterMember]);
+  const contexts = new PgConversationExecutionContextRepository(db.pool);
+  const visibleB = (await contexts.getVisibleSession(identityB,conversationB.id))!;
+  expect(await contexts.canAgentParticipate(visibleB,w.agent,laterMember)).toBe(false);
+  const threadBefore = (await db.pool.query("SELECT id,vendor_session_id FROM host_threads WHERE session_id=$1 AND agent_id=$2 AND status='active'",[conversationB.id,w.agent])).rows;
+  await roster.addExistingAgent(w.identity,roomB,{agent_id:w.agent,confirm_room_share:true,share_private_with_member_ids:[userB,newcomer,laterMember]});
+  expect(await contexts.canAgentParticipate(visibleB,w.agent,laterMember)).toBe(true);
+  expect((await db.pool.query("SELECT id,vendor_session_id FROM host_threads WHERE session_id=$1 AND agent_id=$2 AND status='active'",[conversationB.id,w.agent])).rows).toEqual(threadBefore);
+  // Grants require the current owner to retain live management, even when
+  // that owner is different from the executing user and the Room owner.
+  await db.pool.query("UPDATE agents SET owner_user_id=$2 WHERE id=$1", [w.agent, newcomer]);
+  expect(await contexts.canAgentParticipate(visibleB,w.agent,userB)).toBe(false);
+  await db.pool.query("UPDATE agents SET owner_user_id=$2 WHERE id=$1", [w.agent, w.owner]);
+  await db.pool.query("UPDATE space_memberships SET status='removed' WHERE space_id=$1 AND user_id=$2", [w.space,w.owner]);
+  expect(await contexts.canAgentParticipate(visibleB,w.agent,userB)).toBe(false);
+  await db.pool.query("UPDATE space_memberships SET status='active',role='member' WHERE space_id=$1 AND user_id=$2", [w.space,w.owner]);
+  const projects = new PgProjectRepository(db.pool);
+  await projects.addMember(identityB, projectB, {user_id:w.owner,role:'viewer'});
+  expect(await contexts.canAgentParticipate(visibleB,w.agent,userB)).toBe(false);
+  await projects.addMember(identityB, projectB, {user_id:w.owner,role:'member'});
+  // Restoring writer status does not resurrect old consent.
+  expect(await contexts.canAgentParticipate(visibleB,w.agent,userB)).toBe(false);
+  await roster.addExistingAgent(w.identity,roomB,{agent_id:w.agent,confirm_room_share:true,share_private_with_member_ids:[userB,newcomer,laterMember]});
+  expect(await contexts.canAgentParticipate(visibleB,w.agent,userB)).toBe(true);
+  const departureRun = await sendB("Must not execute after the grant issuer leaves.");
+  await roster.removeUser(identityB, roomB, w.owner);
+  expect(await w.execute(departureRun.run_ids[0]!)).toMatchObject({status:"failed"});
+  expect(host!.promptsFor(departureRun.run_ids[0]!)).toEqual([]);
+  expect(await contexts.canAgentParticipate(visibleB,w.agent,userB)).toBe(false);
+  expect((await db.pool.query("SELECT id FROM room_agent_access_grants WHERE room_id=$1 AND agent_id=$2 AND revoked_at IS NULL",[roomB,w.agent])).rows).toEqual([]);
+  await db.pool.query("UPDATE room_user_members SET status='active' WHERE room_id=$1 AND user_id=$2", [roomB,w.owner]);
+  expect(await contexts.canAgentParticipate(visibleB,w.agent,userB)).toBe(false);
+  await roster.addExistingAgent(w.identity,roomB,{agent_id:w.agent,confirm_room_share:true,share_private_with_member_ids:[userB,newcomer,laterMember]});
+  const queued = await sendB("Must not execute after revocation.");
+  // The production removal holds the Room lock and revokes its grants.
+  await roster.removeAgent(w.identity,roomB,w.agent);
+  const handlers = new JobHandlerRegistry(); registerAgentRunHandler(handlers,config);
+  const worker = new JobWorker(new PgJobQueueRepository(db.pool),handlers,"revoked-room",["agent_run"],0);
+  await worker.processOne();
+  expect(host!.promptsFor(queued.run_ids[0]!)).toEqual([]);
+  expect((await new PgRunRepository(db.pool).getRun(w.space,queued.run_ids[0]!))?.status).toBe("failed");
+  const repository = new PgConversationExecutionContextRepository(db.pool);
+  const session = await repository.getVisibleSession(identityB,conversationB.id);
+  expect(await repository.canAgentParticipate(session!,w.agent,userB)).toBe(false);
+  expect(await contentDecisionFromDb(db.pool,identityB,"agent",w.agent)).toBe("deny");
+});

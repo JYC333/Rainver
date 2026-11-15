@@ -1,3 +1,5 @@
+import {runBoundedProviderTask} from '../../runs/boundedProviderTaskRun.js';
+import type {ProviderTaskAttemptRefs} from '../../providers/commands/types.js';
 import type {
   ResearchContext,
   ResearchSemanticConcept,
@@ -16,6 +18,8 @@ const RESEARCH_QUERY_INTENT_PROMPT_KEY = "research_query.intent_plan";
 export interface ResearchIntentExecution {
   modelProviderId?: string;
   modelName?: string;
+  singleAttempt?: true;
+  queuedTask?: {runId:string;projectId:string;authorizeAttempt:(db:Queryable,refs:ProviderTaskAttemptRefs)=>Promise<void>};
   /** Who the intent planning spends for. */
   spend: CredentialSpendBasis;
 }
@@ -40,8 +44,28 @@ export class ResearchIntentPlanner {
     if (resolved.validation_errors.length || !resolved.rendered_text) {
       throw new HttpError(500, "Research query intent prompt is not resolvable");
     }
+    if (execution.queuedTask) {
+      const completed = await runBoundedProviderTask(this.db, this.config, {
+        spaceId: identity.spaceId, userId: identity.userId, projectId: execution.queuedTask.projectId,
+        task: "research_query_intent_plan", runId: execution.queuedTask.runId,
+        runType: "planning", triggerOrigin: "manual", providerId: execution.modelProviderId,
+        model: execution.modelName ?? null, system: resolved.rendered_text,
+        messages: [{role:"user",content:"Extract the semantic search intent."}],
+        prompt: "Extract research semantic search intent", spend: execution.spend,
+        completion: "structured", outputFormat: RESEARCH_INTENT_OUTPUT_CONTRACT,
+        singleAttempt: true, allowProviderFallback: false, failRunOnError: false,
+        authorizeAttempt: execution.queuedTask.authorizeAttempt,
+        // The Job's final transaction owns all domain writes and terminal state.
+        finalize: async () => null,
+      });
+      if (!completed.ok) throw new HttpError(502, "Research query intent planning failed");
+      return protocol.ResearchSemanticQuerySchema.parse({...completed.output,
+        schema_version:"research_semantic_query.v1",time_window:validatedContext.time_window});
+    }
     const response = await completeProviderMessages(resolveProviderCommandStore(this.config), identity.spaceId, {
       provider_id: execution.modelProviderId,
+      single_attempt: execution.singleAttempt,
+      allow_provider_fallback: execution.singleAttempt ? false : undefined,
       model: execution.modelName,
       system: resolved.rendered_text,
       messages: [{ role: "user", content: "Extract the semantic search intent." }],

@@ -1,3 +1,4 @@
+import {AGENT_OPERATION_SCHEMAS} from '@rainver/protocol'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -17,6 +18,20 @@ import {
 import type { AgentOut, Project, Room, RoomConversation, RoomDetail, RoomDiscussion, Run, RunTurn, TurnPart } from '../../../types/api'
 
 /** A turn in progress, for the stream mock. */
+async function openEnvironmentSettings() {
+  fireEvent.click(await screen.findByRole('button', { name: /Conversation settings ·/ }))
+  fireEvent.mouseDown(screen.getByRole('tab', { name: 'Runtime environment' }), { button: 0, ctrlKey: false })
+}
+async function configureConversation() {
+  await openEnvironmentSettings()
+  const configure=screen.getByRole('button', { name: 'Configure conversation' })
+  await waitFor(()=>expect(configure).toBeEnabled())
+  fireEvent.click(configure)
+  await waitFor(() => expect(roomsApi.createConversation).toHaveBeenCalled())
+  // Setup stays open after creation so the person can continue configuring it.
+  fireEvent.click(await screen.findByRole('button', { name: 'Close' }))
+}
+
 function workingTurn(runId: string, parts: TurnPart[]): RunTurn {
   return {
     schema_version: 'run_turn.v1',
@@ -47,7 +62,7 @@ vi.mock('../../../api/client', async () => {
     setRetrievalSwitch: vi.fn(),
   },
   agentsApi: { saveConversationSessionConfig: vi.fn(async (_agent, data) => ({ session_config: data.session_config })), list: vi.fn(), conversationBackends: vi.fn(), listRuntimeProfiles: vi.fn() },
-  projectsApi: { list: vi.fn(), getOverview: vi.fn(), readers: vi.fn(), hostExecutionTargets: vi.fn() },
+  projectsApi: { list: vi.fn(), getOverview: vi.fn(), readers: vi.fn(), hostExecutionTargets: vi.fn(), rooms: vi.fn(), conversations: vi.fn() },
   hostsApi: { listRuntimeDefinitions: vi.fn() },
   projectFoldersApi: { list: vi.fn(), listExecutionReady: vi.fn() },
   roomsApi: {
@@ -209,6 +224,14 @@ const detail: RoomDetail = {
 }
 
 
+/** The Project's Rooms index as the server returns it for these Rooms. */
+function roomsIndex(rooms: Room[]) {
+  return {
+    items: rooms.map(item => ({ room: item, other_member_names: ['Member'], person_count: 2, agent_count: 1, conversation_count: 1, last_activity_at: null })),
+    total: rooms.length, limit: 50, offset: 0, viewer_can_write: true,
+  }
+}
+
 /** The page at `path`, inside the Project shell's route when the path names one. */
 function roomsAt(path: string) {
   return (
@@ -291,6 +314,8 @@ describe('Rooms page', () => {
     // care still need the call to return something.
     vi.mocked(runsApi.turn).mockResolvedValue(workingTurn('run-default', []))
     vi.mocked(roomsApi.list).mockResolvedValue({ items: [room], total: 1, limit: 50, offset: 0 })
+    vi.mocked(projectsApi.rooms).mockResolvedValue(roomsIndex([room]))
+    vi.mocked(projectsApi.conversations).mockResolvedValue({ items: [], empty_rooms: [], total: 0, limit: 3, offset: 0, viewer_can_write: true })
     vi.mocked(roomsApi.get).mockResolvedValue(detail)
     vi.mocked(roomsApi.conversations).mockResolvedValue({
       items: [{
@@ -393,7 +418,8 @@ describe('Rooms page', () => {
       room: { ...room, id: 'room-2', title: 'Dana' }, user_members: [], agent_members: [],
     } as never)
     vi.mocked(roomsApi.inviteUser).mockResolvedValue({} as never)
-    renderRooms('/spaces/space-1/projects/project-1/rooms?room=room-1')
+    // "New Room" lives on the Rooms index, beside the Rooms it adds to.
+    renderRooms('/spaces/space-1/projects/project-1/rooms')
     await openLimitedRoomWith('Dana')
 
     await waitFor(() => expect(roomsApi.create).toHaveBeenCalledWith(
@@ -404,6 +430,8 @@ describe('Rooms page', () => {
       user_id: 'user-2',
       confirm_owned_private_agent_shares: false,
     }))
+    // It lands in the new Room's conversation list, not inside a conversation.
+    await waitFor(() => expect(roomsApi.get).toHaveBeenCalledWith('room-2'))
   })
 
   it('offers Project readers as invite candidates, not every Space member', async () => {
@@ -414,7 +442,7 @@ describe('Rooms page', () => {
     vi.mocked(projectsApi.readers).mockResolvedValue({
       readers: [{ user_id: 'user-3', display_name: 'Reader', email: null, avatar_url: null }],
     })
-    renderRooms('/spaces/space-1/projects/project-1/rooms?room=room-1')
+    renderRooms('/spaces/space-1/projects/project-1/rooms?room=room-1&view=members')
     fireEvent.click(await screen.findByLabelText('Invite a person'))
     const offered = (await screen.findAllByRole('option')).map(option => option.textContent)
     expect(offered).toContain('Reader')
@@ -441,9 +469,11 @@ describe('Rooms page', () => {
     vi.mocked(projectsApi.readers).mockResolvedValue({
       readers: [{ user_id: 'user-3', display_name: 'Reader', email: null, avatar_url: null }],
     })
-    renderRooms('/spaces/space-1/projects/project-1/rooms?room=room-1')
-    expect(await screen.findByText('Room roster')).toBeInTheDocument()
+    renderRooms('/spaces/space-1/projects/project-1/rooms?room=room-1&view=members')
+    expect(await screen.findByText('Manager · locked')).toBeInTheDocument()
+    expect(screen.getByText('Owner')).toBeInTheDocument()
     expect(screen.queryByLabelText('Invite a person')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Add Agent' })).not.toBeInTheDocument()
     expect(screen.queryByText('Transfer Room ownership')).not.toBeInTheDocument()
     // But not everything on this panel answers to Project write. Claiming a
     // suspended Room needs the Project owner or a Space owner/admin, and
@@ -461,24 +491,45 @@ describe('Rooms page', () => {
         { ...detail.agent_members[0]!, id: 'agent-member-2', agent_id: 'agent-2', agent_name: 'Critical Reviewer', agent_kind: 'standard', role: 'member' },
       ],
     })
+    vi.mocked(roomsApi.agentCandidates).mockResolvedValue({agents:[{agent_id:'agent-2',name:'Critical Reviewer',agent_kind:'standard',owner_user_id:'user-1',visibility:'space_shared',in_room:true,in_project:true,private:false,shared_with_user_ids:[]}],presets:[],total:1,limit:100,offset:0})
     const browserConfirm = vi.spyOn(window, 'confirm')
-    renderRooms('/rooms?room=room-1&conversation=session-1')
+    renderRooms('/rooms?room=room-1&view=members')
 
-    expect(await screen.findByText('Room roster')).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Configure Critical Reviewer' })).toHaveAttribute('href', expect.stringContaining('/agents/agent-2'))
-    expect(screen.getByRole('link', { name: /Create a new Agent/ })).toHaveAttribute('href', expect.stringContaining('/agents/new'))
+    expect(await screen.findByRole('link', { name: 'Configure Critical Reviewer' })).toHaveAttribute('href', expect.stringContaining('/agents/agent-2'))
+    // Creating an Agent from here comes back to these members to finish the add.
+    fireEvent.click(screen.getByRole('button', { name: 'Add Agent' }))
+    const create = await screen.findByRole('link', { name: /Create a new Agent/ })
+    expect(create).toHaveAttribute('href', expect.stringContaining('/agents/new'))
+    expect(decodeURIComponent(create.getAttribute('href') ?? '')).toContain('return_to=/projects/project-1/rooms?room=room-1&view=members')
+    fireEvent.click(screen.getAllByRole('button', { name: 'Close' })[0]!)
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
 
-    fireEvent.click(screen.getByRole('button', { name: 'Remove Critical Reviewer' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Critical Reviewer from this Room' }))
     expect(await screen.findByRole('dialog')).toHaveTextContent('Remove Critical Reviewer from this Room?')
     expect(roomsApi.removeAgent).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(roomsApi.removeAgent).not.toHaveBeenCalled()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Remove Critical Reviewer' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Critical Reviewer from this Room' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Remove' }))
     await waitFor(() => expect(roomsApi.removeAgent).toHaveBeenCalledWith('room-1', 'agent-2'))
     expect(browserConfirm).not.toHaveBeenCalled()
+  })
+
+  it('lets an Agent owner who is an ordinary Room writer authorize newly enrolled members', async () => {
+    vi.mocked(roomsApi.get).mockResolvedValue({ ...detailWithReviewer, user_members: detailWithReviewer.user_members.map(member => ({ ...member, role: member.user_id === 'user-1' ? 'member' : 'owner' })) })
+    vi.mocked(roomsApi.agentCandidates).mockResolvedValue({agents:[{agent_id:'agent-2',name:'Critical Reviewer',agent_kind:'standard',owner_user_id:'user-1',visibility:'space_shared',in_room:true,in_project:true,private:true,shared_with_user_ids:['user-1']}],presets:[],total:1,limit:100,offset:0})
+    vi.mocked(roomsApi.addAgent).mockResolvedValue({...detailWithReviewer,revoked_grant_count:0})
+    renderRooms('/rooms?room=room-1&view=members')
+    fireEvent.click(await screen.findByRole('button',{name:'Authorize members'}))
+    expect(await screen.findByRole('dialog')).toHaveTextContent('does not grant access to its original Project')
+    expect(roomsApi.addAgent).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button',{name:'Cancel'}))
+    await waitFor(()=>expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button',{name:'Authorize members'}))
+    fireEvent.click(await screen.findByRole('button',{name:'Share and add'}))
+    await waitFor(()=>expect(roomsApi.addAgent).toHaveBeenCalledWith('room-1',{agent_id:'agent-2',share_private_with_member_ids:['user-2'],confirm_room_share:true,restore_workspace:false}))
   })
 
   it('keeps the Room switched to when a roster change in the previous Room finishes late', async () => {
@@ -493,15 +544,18 @@ describe('Rooms page', () => {
             { ...detail.agent_members[0]!, id: 'agent-member-2', agent_id: 'agent-2', agent_name: 'Critical Reviewer', agent_kind: 'standard', role: 'member' },
           ],
         }) as never)
+    vi.mocked(projectsApi.rooms).mockResolvedValue(roomsIndex([room, secondRoom]))
     let finishRemoval!: () => void
     vi.mocked(roomsApi.removeAgent).mockImplementation(() => new Promise(resolve => { finishRemoval = () => resolve({} as never) }))
-    renderRooms('/rooms?room=room-1&conversation=session-1')
+    renderRooms('/spaces/space-1/projects/project-1/rooms?room=room-1&view=members')
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Remove Critical Reviewer' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove Critical Reviewer from this Room' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Remove' }))
     await waitFor(() => expect(roomsApi.removeAgent).toHaveBeenCalledWith('room-1', 'agent-2'))
 
-    fireEvent.click(screen.getAllByText('Second Room')[0]!)
+    // Switching Rooms goes through the Rooms index.
+    fireEvent.click(screen.getByRole('link', { name: 'All Rooms' }))
+    fireEvent.click(within(await screen.findByTestId('room-card-room-2')).getByRole('link', { name: 'Open' }))
     await waitFor(() => expect(roomsApi.get).toHaveBeenCalledWith('room-2'))
     await waitFor(() => expect(screen.queryByRole('link', { name: 'Configure Critical Reviewer' })).not.toBeInTheDocument())
 
@@ -520,6 +574,7 @@ describe('Rooms page', () => {
       items: [roomId === 'room-2' ? secondConversation : { ...initialConversation, title: 'Evidence review' }],
       total: 1, limit: 50, offset: 0,
     }) as never)
+    vi.mocked(projectsApi.rooms).mockResolvedValue(roomsIndex([room, secondRoom]))
     let finishSend!: () => void
     vi.mocked(roomsApi.sendMessage).mockImplementation(() => new Promise(resolve => {
       finishSend = () => resolve({
@@ -527,13 +582,17 @@ describe('Rooms page', () => {
         conversation: initialConversation, task_group_ids: [], run_ids: [],
       } as never)
     }))
-    renderRooms('/rooms?room=room-1&conversation=session-1')
+    renderRooms('/spaces/space-1/projects/project-1/rooms?room=room-1&conversation=session-1')
 
     fireEvent.change(await screen.findByLabelText('Room message'), { target: { value: 'late' } })
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
     await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledWith('room-1', 'session-1', expect.anything(), expect.any(Object)))
 
-    fireEvent.click(screen.getAllByText('Second Room')[0]!)
+    // Back to this Room's list, to the Rooms index, into the other Room and its thread.
+    fireEvent.click(screen.getByRole('link', { name: 'Conversations in Research Room' }))
+    fireEvent.click(await screen.findByRole('link', { name: 'All Rooms' }))
+    fireEvent.click(within(await screen.findByTestId('room-card-room-2')).getByRole('link', { name: 'Open' }))
+    fireEvent.click(await screen.findByRole('button', { name: /Second thread/ }))
     await waitFor(() => expect(screen.getAllByText('Second thread').length).toBeGreaterThan(0))
 
     await act(async () => { finishSend() })
@@ -556,18 +615,21 @@ describe('Rooms page', () => {
       }
       return detail
     })
-    renderRooms('/rooms?room=room-1&conversation=session-1')
-    const preset = await screen.findByRole('button', { name: /Reviewer/ })
+    renderRooms('/rooms?room=room-1&view=members')
+    fireEvent.click(await screen.findByRole('button', { name: 'Add Agent' }))
+    const preset = await screen.findByRole('button', { name: 'Reviewer' })
 
     // The add lands, then the refresh after it fails: the person sees an error.
     failNextRoomRead = true
     fireEvent.click(preset)
     await waitFor(() => expect(roomsApi.addAgentPreset).toHaveBeenCalledTimes(1))
-    await waitFor(() => expect(screen.getByRole('button', { name: /Reviewer/ })).toBeEnabled())
-    fireEvent.click(screen.getByRole('button', { name: /Reviewer/ }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Reviewer' })).toBeEnabled())
+    fireEvent.click(screen.getByRole('button', { name: 'Reviewer' }))
     await waitFor(() => expect(roomsApi.addAgentPreset).toHaveBeenCalledTimes(2))
-    await waitFor(() => expect(screen.getByRole('button', { name: /Reviewer/ })).toBeEnabled())
-    fireEvent.click(screen.getByRole('button', { name: /Reviewer/ }))
+    // A confirmed add closes the dialog; the next add is a new request.
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'Add Agent' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Reviewer' }))
     await waitFor(() => expect(roomsApi.addAgentPreset).toHaveBeenCalledTimes(3))
 
     const keys = vi.mocked(roomsApi.addAgentPreset).mock.calls.map(call => call[2])
@@ -593,15 +655,18 @@ describe('Rooms page', () => {
     vi.mocked(roomsApi.agentCandidates).mockResolvedValue({
       agents: [{
         agent_id: 'agent-2', name: 'Critical Reviewer', agent_kind: 'standard', visibility: 'space_shared',
-        in_room: false, member_status: 'removed', private: false, shared_with_user_ids: [], host_state_archive_available: true,
+        in_room: false, in_project: true, member_status: 'removed', private: false, shared_with_user_ids: [], host_state_archive_available: true,
       }],
       presets: [], total: 1, limit: 100, offset: 0,
     })
     vi.mocked(roomsApi.addAgent).mockResolvedValue({ ...detailWithReviewer, revoked_grant_count: 0 })
-    renderRooms('/rooms?room=room-1&conversation=session-1')
+    renderRooms('/rooms?room=room-1&view=members')
 
-    fireEvent.click(await screen.findByRole('button', { name: /Critical Reviewer/ }))
-    expect(await screen.findByRole('dialog')).toHaveTextContent('Re-add Critical Reviewer to this Room?')
+    fireEvent.click(await screen.findByRole('button', { name: 'Add Agent' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(await within(dialog).findByText('In this Project')).toBeInTheDocument()
+    fireEvent.click(await within(dialog).findByRole('button', { name: 'Add' }))
+    await waitFor(() => expect(screen.getAllByRole('dialog').some(item => item.textContent?.includes('Re-add Critical Reviewer to this Room?'))).toBe(true))
     fireEvent.click(screen.getByRole('checkbox'))
     fireEvent.click(screen.getByRole('button', { name: 'Add to Room' }))
 
@@ -624,7 +689,7 @@ describe('Rooms page', () => {
       }],
     })
     vi.mocked(roomsApi.resetAgentContext).mockResolvedValue(detail as never)
-    renderRooms('/rooms?room=room-1&conversation=session-1')
+    renderRooms('/rooms?room=room-1&view=members')
 
     expect(await screen.findByText(/on Workstation · owner-only/)).toBeInTheDocument()
     expect(screen.getByText('offline')).toBeInTheDocument()
@@ -650,7 +715,7 @@ describe('Rooms page', () => {
     })
     vi.mocked(roomsApi.summarizeAgentContext).mockResolvedValue(detail as never)
     vi.mocked(roomsApi.restartFromSummary).mockResolvedValue(detail as never)
-    renderRooms('/rooms?room=room-1&conversation=session-1')
+    renderRooms('/rooms?room=room-1&view=members')
 
     fireEvent.click(await screen.findByRole('button', { name: 'Summarize context for Remote Reviewer' }))
     expect(await screen.findByRole('dialog')).toHaveTextContent('Ask Remote Reviewer for a summary?')
@@ -667,51 +732,59 @@ describe('Rooms page', () => {
     renderRooms('/rooms?room=room-1&conversation=session-1')
 
     expect((await screen.findAllByText('Research Room')).length).toBeGreaterThan(0)
-    expect(screen.getByText('2 people · 1 agents')).toBeInTheDocument()
+    expect(screen.getByText('2 people · 1 agent')).toBeInTheDocument()
     expect(screen.getAllByText('Evidence review').length).toBeGreaterThan(0)
     expect(screen.getByRole('main', { name: 'Conversation' })).toBeInTheDocument()
     expect(screen.getByRole('navigation', { name: 'Conversations' })).toBeInTheDocument()
     expect(screen.getByRole('complementary', { name: 'Room and conversation navigation' })).toBeInTheDocument()
-    expect(screen.getByText('Rooms', { selector: 'p' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'New Room' })).toBeInTheDocument()
-    expect(await screen.findByText('Room roster')).toBeInTheDocument()
-    expect(screen.getByText('Manager · locked')).toBeInTheDocument()
-    expect(roomsApi.agentCandidates).toHaveBeenCalledWith('room-1', { limit: 100 })
-    expect(roomsApi.invitations).toHaveBeenCalledWith('room-1', { limit: 100 })
+    // The conversation names its Room and the way back to that Room's list,
+    // and keeps who can see apart from who is asked.
+    expect(screen.getByRole('link', { name: 'Conversations in Research Room' })).toHaveAttribute('href', expect.stringContaining('rooms?room=room-1'))
+    expect(screen.getByRole('link', { name: 'Members' })).toHaveAttribute('href', expect.stringContaining('view=members'))
+    expect(screen.getByText(/In Research Room · With Member · 1 agent/)).toBeInTheDocument()
+    expect(screen.getByText(/Who answers is chosen per message below/)).toBeInTheDocument()
+    // The Room list and roster are their own pages now, not this rail.
+    expect(screen.queryByRole('button', { name: 'New Room' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Manager · locked')).not.toBeInTheDocument()
+    expect(roomsApi.agentCandidates).not.toHaveBeenCalled()
     expect(screen.queryByText('Codex subscription · My Codex login')).not.toBeInTheDocument()
-    expect(screen.getByText(/every human speaks under their own identity and subscription/i)).toBeInTheDocument()
   })
 
-  it('opens the newest Room and its newest conversation when the Rooms page has no selection', async () => {
-    let resolveRoom!: (value: RoomDetail) => void
-    let resolveProjects!: (value: Awaited<ReturnType<typeof projectsApi.list>>) => void
-    vi.mocked(roomsApi.get).mockImplementationOnce(() => new Promise(resolve => {
-      resolveRoom = resolve
-    }))
-    vi.mocked(projectsApi.list).mockImplementationOnce(() => new Promise(resolve => {
-      resolveProjects = resolve
-    }))
-    renderRooms('/rooms')
+  it('opens the Rooms index without entering any Room or conversation', async () => {
+    // A Room is a visibility boundary, so entering Rooms lists them with who
+    // can see each; nothing is opened on the person's behalf.
+    const limited = { ...room, id: 'room-2', title: 'Owners only' }
+    vi.mocked(projectsApi.rooms).mockResolvedValue({
+      items: [
+        { room: { ...room, is_mainline: true, title: 'Project conversation' }, other_member_names: ['Member'], person_count: 2, agent_count: 1, conversation_count: 4, last_activity_at: null },
+        { room: limited, other_member_names: [], person_count: 1, agent_count: 0, conversation_count: 0, last_activity_at: null },
+      ],
+      total: 2, limit: 50, offset: 0, viewer_can_write: true,
+    })
+    renderRooms('/spaces/space-1/projects/project-1/rooms')
 
-    await waitFor(() => expect(roomsApi.get).toHaveBeenCalledWith('room-1'))
-    // Secondary setup catalogs must not delay the Room's critical path.
-    expect(resolveProjects).toBeTypeOf('function')
-    expect(screen.getByText('Loading Room…')).toBeInTheDocument()
-    expect(screen.queryByText('Choose or create a Room.')).not.toBeInTheDocument()
-    await act(async () => resolveRoom(detail))
-    expect((await screen.findAllByText('Research Room')).length).toBeGreaterThan(0)
-    await waitFor(() => expect(roomsApi.messages).toHaveBeenCalledWith(
-      'room-1',
-      'session-1',
-      expect.any(Object), expect.any(Object),
-    ))
+    const mainline = await screen.findByTestId('room-card-room-1')
+    expect(within(mainline).getByText('Project One Room')).toBeInTheDocument()
+    expect(within(mainline).getByText('Default')).toBeInTheDocument()
+    expect(within(mainline).getByText(/Everyone in this Project/)).toBeInTheDocument()
+    expect(within(mainline).getByText(/2 people · 1 agent\b/)).toBeInTheDocument()
+    expect(within(mainline).getByRole('link', { name: 'Open' })).toHaveAttribute('href', '/spaces/space-1/projects/project-1/rooms?room=room-1')
+    expect(within(mainline).getByRole('link', { name: 'Members' })).toHaveAttribute('href', '/spaces/space-1/projects/project-1/rooms?room=room-1&view=members')
+    const limitedCard = screen.getByTestId('room-card-room-2')
+    expect(within(limitedCard).getByText('Limited')).toBeInTheDocument()
+    expect(within(limitedCard).getByText(/Just you/)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /All conversations/ })).toHaveAttribute('href', '/spaces/space-1/projects/project-1/conversations')
+    expect(roomsApi.get).not.toHaveBeenCalled()
+    expect(roomsApi.messages).not.toHaveBeenCalled()
+  })
+
+  it('opens a Room on its conversation list, not inside its newest conversation', async () => {
+    renderRooms('/spaces/space-1/projects/project-1/rooms?room=room-1')
+    expect(await screen.findByRole('tab', { name: 'Conversations', selected: true })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'All Rooms' })).toHaveAttribute('href', '/spaces/space-1/projects/project-1/rooms')
+    fireEvent.click(await screen.findByRole('button', { name: /Evidence review/ }))
+    await waitFor(() => expect(roomsApi.messages).toHaveBeenCalledWith('room-1', 'session-1', expect.any(Object), expect.any(Object)))
     expect(screen.getByRole('main', { name: 'Conversation' })).toBeInTheDocument()
-    await act(async () => resolveProjects({
-      items: [{ id: 'project-1', name: 'Project One' } as Project],
-      total: 1,
-      limit: 100,
-      offset: 0,
-    }))
   })
 
   it('composes into a Room with no conversation, creating nothing to get there', async () => {
@@ -720,6 +793,8 @@ describe('Rooms page', () => {
     // 0018 decision 5 removes.
     vi.mocked(roomsApi.conversations).mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0 } as never)
     renderRooms('/rooms?room=room-1')
+    expect(await screen.findByText('No conversations yet')).toBeInTheDocument()
+    fireEvent.click(screen.getAllByRole('button', { name: 'New conversation' })[0]!)
     expect(await screen.findByLabelText('Room message')).toBeInTheDocument()
     expect(screen.getByRole('heading', { level: 3, name: 'New conversation' })).toBeInTheDocument()
     // Nothing to read, so nothing was asked for.
@@ -835,8 +910,8 @@ describe('Rooms page', () => {
     expect(roomsApi.get).toHaveBeenCalledTimes(1)
     fireEvent.click(screen.getByRole('button', { name: 'Second conversation' }))
 
-    expect(screen.getByRole('heading', { name: 'Rooms' })).toBeInTheDocument()
-    expect(screen.queryByText('Loading Rooms…')).not.toBeInTheDocument()
+    expect(screen.getByRole('complementary', { name: 'Room and conversation navigation' })).toBeInTheDocument()
+    expect(screen.queryByText('Loading Room…')).not.toBeInTheDocument()
     expect(await screen.findByText('Loading conversation…')).toBeInTheDocument()
     expect(roomsApi.get).toHaveBeenCalledTimes(1)
 
@@ -958,11 +1033,7 @@ describe('Rooms page', () => {
     )
 
     expect((await screen.findAllByText('Research Room')).length).toBeGreaterThan(0)
-    expect(roomsApi.list).toHaveBeenCalledWith({
-      project_id: 'project-1',
-      limit: 100,
-      offset: 0,
-    })
+    await waitFor(() => expect(projectsApi.readers).toHaveBeenCalledWith('project-1'))
     expect(screen.queryByText('Choose Project')).not.toBeInTheDocument()
   })
 
@@ -1547,7 +1618,7 @@ describe('Rooms page', () => {
       expect(screen.getByText('Found three.')).toBeInTheDocument()
       expect(vi.mocked(runsApi.turn)).toHaveBeenCalledWith('run-old', expect.any(Object))
     })
-    expect(screen.getByRole('button', { name: /show work/ })).toHaveAttribute('aria-expanded', 'false')
+    expect(await screen.findByRole('button', { name: /show work/ })).toHaveAttribute('aria-expanded', 'false')
     expect(screen.queryByText('search')).not.toBeInTheDocument()
     expect(vi.mocked(runsApi.turn)).toHaveBeenCalledWith('run-old', expect.any(Object))
   })
@@ -1957,12 +2028,14 @@ describe('Rooms page', () => {
     // A missing Host or CLI blocks the composer and keeps the draft. The
     // recovery link is the command center.
     vi.mocked(roomsApi.conversations).mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0 } as never)
-    renderRooms('/spaces/space-1/projects/project-1/rooms?room=room-1')
+    renderRooms('/spaces/space-1/projects/project-1/rooms?room=room-1&new=1')
     fireEvent.change(await screen.findByLabelText('Room message'), { target: { value: 'Anyone there?' } })
+    await openEnvironmentSettings()
     expect(screen.getByRole('button', { name: 'Configure conversation' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
     expect(screen.getByRole('link', { name: /configure or reconnect host/i })).toHaveAttribute('href', '/spaces/space-1/command-center')
     expect(screen.queryByRole('link', { name: /configure cli/i })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', {name:'Close'}))
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
     expect(screen.getByLabelText('Room message')).toHaveValue('Anyone there?')
   })
 
@@ -1989,11 +2062,25 @@ describe('Rooms page', () => {
       conversation: initialConversation, task_group_ids: ['group-1'], run_ids: [],
     } as never)
 
+    vi.mocked(agentsApi.saveConversationSessionConfig).mockImplementation(async (_id, data) => {
+      const catalog = await agentsApi.conversationBackends('agent-1', {sessionId:'session-1'})
+      vi.mocked(agentsApi.conversationBackends).mockResolvedValue({...catalog, session_config:data.session_config, allow_quota_model_switch:data.allow_quota_model_switch ?? false})
+      return {session_config:data.session_config, allow_quota_model_switch:data.allow_quota_model_switch ?? false}
+    })
     renderRooms('/rooms?room=room-1&conversation=session-1')
-    fireEvent.click(await screen.findByRole('button', { name: 'Model' }))
-    fireEvent.click(screen.getByRole('option', { name: 'GPT-5.1' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation settings · 1' }))
+    await screen.findAllByText('GPT-5')
     fireEvent.click(screen.getByRole('switch', { name: 'Fast mode' }))
     fireEvent.click(screen.getByRole('checkbox', { name: /Automatically switch models when quota runs out/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Model' }))
+    fireEvent.click(screen.getByRole('option', { name: 'GPT-5.1' }))
+    await waitFor(() => expect(screen.getByRole('switch', { name: 'Fast mode' })).toBeEnabled())
+    expect(vi.mocked(agentsApi.saveConversationSessionConfig).mock.calls[0]![1]).toEqual({
+      session_id: 'session-1', runtime_profile_id: 'runtime-cli', session_config: [
+        { id: 'fast', type: 'boolean', value: false, category: 'model_config' },
+        { id: 'model', type: 'select', value: 'gpt-5.1', category: 'model' },
+      ],
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(agentsApi.saveConversationSessionConfig).toHaveBeenCalledWith('agent-1', {
       session_id: 'session-1', runtime_profile_id: 'runtime-cli', allow_quota_model_switch: true, session_config: [
@@ -2001,7 +2088,9 @@ describe('Rooms page', () => {
         { id: 'fast', type: 'boolean', value: true, category: 'model_config' },
       ],
     }, expect.any(Object)))
-    await screen.findByText('Saved · applies to future runs')
+    AGENT_OPERATION_SCHEMAS['conversation.session_config.save'].input.parse({agent_id:'agent-1',...vi.mocked(agentsApi.saveConversationSessionConfig).mock.calls[0]![1]})
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
     fireEvent.change(screen.getByLabelText('Room message'), { target: { value: 'Use this model' } })
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
 
@@ -2013,8 +2102,51 @@ describe('Rooms page', () => {
     }), expect.any(Object)))
   })
 
+  it('discards model and quota drafts and sends the original Room message without settings writes', async () => {
+    vi.mocked(agentsApi.conversationBackends).mockResolvedValue({
+      options: [{
+        runtime_profile_id: 'runtime-cli', name: 'Codex', runtime_key: 'codex_cli', model_name: null,
+        session_config_options: [{
+          id: 'model', name: 'Model', description: null, category: 'model', type: 'select',
+          current_value: 'gpt-5', options: [
+            { value: 'gpt-5', name: 'GPT-5', description: null, group: null },
+            { value: 'gpt-5.1', name: 'GPT-5.1', description: null, group: null },
+          ],
+        }, {
+          id: 'fast', name: 'Fast mode', description: null, category: 'model_config',
+          type: 'boolean', current_value: false,
+        }],
+      }],
+      binding: { runtime_profile_id: 'runtime-cli', runtime_key: 'codex_cli' },
+      session_config: [],
+    })
+    vi.mocked(roomsApi.sendMessage).mockResolvedValue({
+      message: { id: 'm-new', session_id: 'session-1', role: 'user', content: 'Use this model', metadata_json: {} },
+      conversation: initialConversation, task_group_ids: ['group-1'], run_ids: [],
+    } as never)
+
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation settings · 1' }))
+    await screen.findAllByText('GPT-5')
+    fireEvent.click(screen.getByRole('switch', { name: 'Fast mode' }))
+    fireEvent.click(screen.getByRole('checkbox', { name: /Automatically switch models when quota runs out/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+    fireEvent.change(screen.getByLabelText('Room message'), { target: { value: 'Use this model' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    expect(await screen.findByRole('dialog', { name: 'Conversation settings' })).toBeVisible()
+    expect(roomsApi.sendMessage).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Discard changes' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+    expect(screen.getByLabelText('Room message')).toHaveValue('Use this model')
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledWith('room-1', 'session-1', expect.objectContaining({ content: 'Use this model' }), expect.any(Object)))
+    expect(agentsApi.saveConversationSessionConfig).not.toHaveBeenCalled()
+  })
+
   it('keeps multi-Agent model controls behind one labelled settings entry', async () => {
     vi.mocked(roomsApi.get).mockResolvedValue(detailWithReviewer)
+    const preflight = await sessionsApi.executionContext('session-1')
+    vi.mocked(sessionsApi.executionContext).mockResolvedValue({...preflight,summary:{...preflight.summary,runtimes:detailWithReviewer.agent_members.map(member=>({...preflight.summary.runtime!,agent_id:member.agent_id,runtime_profile_id:`runtime-${member.agent_id}`}))}})
     vi.mocked(agentsApi.conversationBackends).mockImplementation(async agentId => ({
       options: [{
         runtime_profile_id: `runtime-${agentId}`, name: 'Codex', runtime_key: 'codex_cli', model_name: null,
@@ -2031,14 +2163,15 @@ describe('Rooms page', () => {
 
     renderRooms('/rooms?room=room-1&conversation=session-1')
 
-    const settings = await screen.findByRole('button', { name: 'Agent settings · 2' })
+    const settings = await screen.findByRole('button', { name: 'Conversation settings · 2' })
     expect(screen.queryByRole('button', { name: 'Model' })).not.toBeInTheDocument()
     fireEvent.click(settings)
 
-    const dialog = await screen.findByRole('dialog', { name: 'Agent settings' })
+    const dialog = await screen.findByRole('dialog', { name: 'Conversation settings' })
     expect(within(dialog).getByText('Space Assistant')).toBeInTheDocument()
     expect(within(dialog).getByText('Critical Reviewer')).toBeInTheDocument()
     expect(within(dialog).getAllByRole('button', { name: 'Model' })).toHaveLength(2)
+    expect(within(dialog).getByRole('button', { name: 'Other parameters · Space Assistant' })).toHaveAttribute('aria-expanded', 'false')
   })
 
   it('refreshes composer options from the CLI pinned during execution setup', async () => {
@@ -2097,35 +2230,33 @@ describe('Rooms page', () => {
     })
 
     renderRooms('/rooms?room=room-1&conversation=session-1')
-    expect(await screen.findByRole('button', { name: 'Model' })).toHaveTextContent('OpenCode GPT-5')
+    expect(screen.queryByRole('button', { name: 'OpenCode GPT-5 · Run settings' })).not.toBeInTheDocument()
+    expect(agentsApi.conversationBackends).not.toHaveBeenCalled()
+    await openEnvironmentSettings()
     await waitFor(() => expect(screen.getByRole('button', { name: 'Confirm execution context' })).not.toBeDisabled())
     fireEvent.click(screen.getByRole('button', { name: 'Confirm execution context' }))
 
     await waitFor(() => expect(sessionsApi.initializeExecution).toHaveBeenCalled())
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Model' })).toHaveTextContent('GPT-5.2 Codex'))
-    expect(screen.getByRole('button', { name: 'Model' })).not.toHaveTextContent('OpenCode GPT-5')
+    fireEvent.mouseDown(screen.getByRole('tab', {name:'Agents'}),{button:0})
+    await screen.findByText('Codex · GPT-5.2 Codex')
+    expect(screen.queryByRole('button', { name: 'OpenCode GPT-5 · Run settings' })).not.toBeInTheDocument()
   })
 
-  it('keeps a Room it just created when the catalog refresh fails', async () => {
-    // `openRoom` commits the Room locally before any follow-up read, so a
-    // failing catalog cannot restore an empty state and invite a duplicate.
-    let refreshShouldFail = false
-    vi.mocked(roomsApi.list).mockImplementation(() => refreshShouldFail
-      ? Promise.reject(new Error('Refresh failed'))
-      : Promise.resolve({ items: [room], total: 1, limit: 50, offset: 0 }))
-    vi.mocked(roomsApi.create).mockResolvedValue({
-      room: { ...room, id: 'room-2', title: 'Second Room' }, user_members: [], agent_members: [],
-    } as never)
+  it('opens a Room it just created directly, without waiting on a Rooms list refresh', async () => {
+    // The created Room is opened by its id; a failing or stale index refresh
+    // cannot hide it and invite a duplicate.
+    vi.mocked(projectsApi.rooms)
+      .mockResolvedValueOnce(roomsIndex([room]))
+      .mockRejectedValue(new Error('Refresh failed'))
+    const created = { ...room, id: 'room-2', title: 'Second Room' }
+    vi.mocked(roomsApi.create).mockResolvedValue({ room: created, user_members: [], agent_members: [] } as never)
+    vi.mocked(roomsApi.get).mockImplementation(async id => (id === 'room-2' ? { ...detail, room: created } : detail) as never)
 
-    renderRooms('/spaces/space-1/projects/project-1/rooms?room=room-1&conversation=session-1')
+    renderRooms('/spaces/space-1/projects/project-1/rooms')
+    await openLimitedRoomWith('Reader')
 
-    fireEvent.click(await screen.findByRole('button', { name: 'New Room' }))
-    fireEvent.click(await screen.findByLabelText('People who can see this'))
-    fireEvent.click(await screen.findByRole('option', { name: 'Reader' }))
-    refreshShouldFail = true
-    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
-
-    await waitFor(() => expect(screen.getAllByText('Second Room').length).toBeGreaterThan(0))
+    expect((await screen.findAllByText('Second Room')).length).toBeGreaterThan(0)
+    expect(roomsApi.get).toHaveBeenCalledWith('room-2')
     expect(roomsApi.create).toHaveBeenCalledTimes(1)
   })
 
@@ -2150,7 +2281,7 @@ describe('Rooms page', () => {
     expect(sessionStorage.getItem('rainver.reference.room.room-1')).toBeNull()
 
     fireEvent.change(composer, { target: { value: 'Picking this up' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Configure conversation' }))
+    await configureConversation()
     await waitFor(() => expect(roomsApi.createConversation).toHaveBeenCalledWith('room-1', expect.any(Object)))
     await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).not.toBeDisabled())
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
@@ -2180,7 +2311,7 @@ describe('Rooms page', () => {
 
     renderRooms('/rooms?room=room-1&new=1&reference=1')
     fireEvent.change(await screen.findByLabelText('Room message'), { target: { value: 'Share this' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Configure conversation' }))
+    await configureConversation()
     await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).not.toBeDisabled())
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
     expect(await screen.findByText('Member')).toBeInTheDocument()
@@ -2235,7 +2366,7 @@ describe('Rooms page', () => {
     expect(roomsApi.sendMessage).not.toHaveBeenCalled()
 
     fireEvent.change(await screen.findByLabelText('Room message'), { target: { value: 'Following up' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Configure conversation' }))
+    await configureConversation()
     await waitFor(() => expect(roomsApi.createConversation).toHaveBeenCalledWith('room-1', expect.any(Object)))
     await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).not.toBeDisabled())
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
@@ -2337,7 +2468,7 @@ describe('Rooms page', () => {
     await waitFor(() => expect(screen.queryByText(/will be attached to this conversation before the message/)).not.toBeInTheDocument())
     fireEvent.change(await screen.findByLabelText('Room message'), { target: { value: 'Next' } })
     vi.mocked(roomsApi.createConversation).mockResolvedValue({ ...initialConversation, id: 'session-new' } as never)
-    fireEvent.click(screen.getByRole('button', { name: 'Configure conversation' }))
+    await configureConversation()
     await waitFor(() => expect(roomsApi.createConversation).toHaveBeenCalledWith('room-1', expect.any(Object)))
     await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).not.toBeDisabled())
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
@@ -2766,8 +2897,23 @@ describe('Rooms page', () => {
     expect(screen.queryByRole('button', { name: 'Open a discussion' })).not.toBeInTheDocument()
   })
 
+  it('offers only live conversation participants in discussion choices even when the Room roster contains another Agent',async()=>{
+    vi.mocked(roomsApi.get).mockResolvedValue(detailWithReviewer)
+    const preflight=await sessionsApi.executionContext('session-1')
+    vi.mocked(sessionsApi.executionContext).mockResolvedValue({...preflight,summary:{...preflight.summary,participant_agent_ids:['agent-1']}})
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+    const open=await screen.findByRole('button',{name:'Open a discussion'})
+    await waitFor(()=>expect(open).toBeEnabled())
+    fireEvent.click(open)
+    const dialog=await screen.findByRole('dialog')
+    expect(within(dialog).getByLabelText('Space Assistant')).toBeInTheDocument()
+    expect(within(dialog).queryByLabelText('Critical Reviewer')).not.toBeInTheDocument()
+  })
+
   it('opens a discussion from the composer and shows its topic as the person\'s message', async () => {
     vi.mocked(roomsApi.get).mockResolvedValue(detailWithReviewer)
+    const preflight=await sessionsApi.executionContext('session-1')
+    vi.mocked(sessionsApi.executionContext).mockResolvedValue({...preflight,summary:{...preflight.summary,participant_agent_ids:['agent-1','agent-2'],runtimes:detailWithReviewer.agent_members.map(member=>({...preflight.summary.runtime!,agent_id:member.agent_id,runtime_profile_id:`runtime-${member.agent_id}`}))}})
     vi.mocked(roomsApi.openDiscussion).mockResolvedValue({
       message: {
         id: 'm-topic', space_id: 'space-1', session_id: 'session-1', user_id: 'user-1', sender_agent_id: null,
@@ -2872,7 +3018,7 @@ describe('Rooms page', () => {
       .mockResolvedValueOnce({ ...initialConversation, id: 'session-second' } as never)
     renderRooms('/rooms?room=room-1&new=1&reference=1')
     fireEvent.change(await screen.findByLabelText('Room message'), { target: { value: 'First' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Configure conversation' }))
+    await configureConversation()
     await waitFor(() => expect(roomsApi.createConversation).toHaveBeenCalledWith('room-1', expect.any(Object)))
     await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).not.toBeDisabled())
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
@@ -2883,7 +3029,7 @@ describe('Rooms page', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'New conversation' }))
     fireEvent.change(await screen.findByLabelText('Room message'), { target: { value: 'Second' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Configure conversation' }))
+    await configureConversation()
     await waitFor(() => expect(roomsApi.createConversation).toHaveBeenCalledTimes(2))
     await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).not.toBeDisabled())
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
@@ -2910,51 +3056,6 @@ describe('Rooms page', () => {
     ))
   })
 
-  it('keeps a locally committed Room when a slower catalog response still lacks it', async () => {
-    // The stale-response guard: a refresh issued before the create can resolve
-    // after it, and its older list would drop the Room that is already
-    // committed. Distinct from a *failing* refresh, which the test above
-    // covers.
-    type RoomPage = Awaited<ReturnType<typeof roomsApi.list>>
-    const onlyExisting: RoomPage = { items: [room], total: 1, limit: 50, offset: 0 }
-    let resolveRefresh!: (page: RoomPage) => void
-    vi.mocked(roomsApi.list)
-      .mockResolvedValueOnce(onlyExisting)
-      .mockImplementationOnce(() => new Promise(resolve => { resolveRefresh = resolve }))
-      .mockResolvedValue(onlyExisting)
-    vi.mocked(roomsApi.create).mockResolvedValue({
-      room: { ...room, id: 'room-2', title: 'Second Room' }, user_members: [], agent_members: [],
-    } as never)
-
-    renderRooms('/spaces/space-1/projects/project-1/rooms?room=room-1&conversation=session-1')
-    await openLimitedRoomWith('Reader')
-    await waitFor(() => expect(resolveRefresh).toBeTypeOf('function'))
-
-    await act(async () => { resolveRefresh(onlyExisting); await Promise.resolve() })
-    expect(await screen.findByText('Second Room')).toBeInTheDocument()
-    expect(roomsApi.create).toHaveBeenCalledTimes(1)
-  })
-
-  it('drops a locally committed Room when the active Space changes', async () => {
-    // The pending entry is Space-scoped: carrying it across a Space switch
-    // would show a Room from somewhere else.
-    // A terminal Run with no reply has its turn read once; tests that do not
-    // care still need the call to return something.
-    vi.mocked(runsApi.turn).mockResolvedValue(workingTurn('run-default', []))
-    vi.mocked(roomsApi.list).mockResolvedValue({ items: [room], total: 1, limit: 50, offset: 0 })
-    vi.mocked(roomsApi.create).mockResolvedValue({
-      room: { ...room, id: 'room-2', title: 'Second Room' }, user_members: [], agent_members: [],
-    } as never)
-
-    const view = renderRooms('/spaces/space-1/projects/project-1/rooms?room=room-1&conversation=session-1')
-    await openLimitedRoomWith('Reader')
-    await waitFor(() => expect(screen.getAllByText('Second Room').length).toBeGreaterThan(0))
-
-    mockedSpaceContext.activeSpaceId = 'space-2'
-    view.rerender(roomsAt('/spaces/space-2/projects/project-2/rooms?room=room-1&conversation=session-1'))
-    await waitFor(() => expect(screen.queryByText('Second Room')).not.toBeInTheDocument())
-  })
-
   it('renders the Project state panel beside the conversation, deep-linking into the owning Area', async () => {
     vi.mocked(projectsApi.getOverview).mockResolvedValue({
       project: { id: 'project-1', name: 'Project One', status: 'active' },
@@ -2965,11 +3066,11 @@ describe('Rooms page', () => {
 
     renderRooms('/rooms?room=room-1&conversation=session-1')
 
-    expect(await screen.findByText('Project initialized')).toBeInTheDocument()
+    expect((await screen.findAllByText('Project initialized')).length).toBeGreaterThan(0)
     // The panel shows the same attention list Pulse and the shell show.
     // Do not add a per-Mode "next actions" list: those Areas are in the sidebar.
     expect(screen.queryByText('Next')).toBeNull()
-    const attentionItem = await screen.findByRole('link', { name: 'Candidate awaiting review' })
-    expect(attentionItem).toHaveAttribute('href', expect.stringContaining('candidate=candidate-1'))
+    const attentionItems = await screen.findAllByRole('link', { name: 'Candidate awaiting review' })
+    for (const attentionItem of attentionItems) expect(attentionItem).toHaveAttribute('href', expect.stringContaining('candidate=candidate-1'))
   })
 })

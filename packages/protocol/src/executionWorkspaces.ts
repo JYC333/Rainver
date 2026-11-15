@@ -68,27 +68,57 @@ export const WorkspaceIntegrationRetryInputSchema = z.object({
 }).strict().refine(input=>!(input.resolution&&input.repair_instruction),'Choose a human resolution or an Agent repair instruction, not both').refine(v=>!v.reconcile_only||!v.resolution&&!v.repair_instruction&&!v.publication,'Reconciliation cannot carry a repair instruction or a publication change');
 export const WorkspaceChangeAbandonInputSchema = z.object({
   change_set_id: IdSchema, expected_revision: z.number().int().positive(), reason: z.string().trim().min(1).max(4000),
-  reclaim:z.boolean().optional().describe("Explicitly discard the reviewed saved source and reclaim its managed branch and worktree. Requires review and current human deletion instruction; not adoption or publication. May also reclaim a previously abandoned batch."),
+  reclaim:z.boolean().optional().describe("Explicitly discard the reviewed saved source and reclaim its managed branch and worktree. Requires exact-source review and an applicable human deletion instruction from this conversation; not adoption or publication. May also reclaim a previously abandoned batch."),
   review:z.object({
    source_commit:z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/),
    user_request_quote:z.string().trim().min(1).max(4000),
    findings:z.string().trim().min(1).max(4000),
-  }).strict().optional().describe('For an Agent closing a saved obsolete batch: review the exact source_commit from get, quote the current direct human instruction explicitly asking to close this work, and record concrete findings. A quote is checked against server-owned Run input, not accepted as a grant or adoption proof. Without reclaim=true this only abandons the record while retaining source data. Explicit reclaim=true requests guarded discard of this exact saved source; neither mode marks it merged.'),
+  }).strict().optional().describe('For an Agent closing a saved obsolete batch, including another conversation in the same Project: review the exact source_commit from get, quote the person\'s applicable explicit instruction from the current message or an earlier message on the requesting conversation branch, and record concrete findings. Cross-conversation closure always requires this review, including empty batches. Continue earlier authorization only while it still applies; obey later changes or revocation. The server resolves the original message automatically; do not ask the person to repeat authorization or supply IDs. A quote proves provenance, not semantic approval or adoption. Without reclaim=true this only abandons the record while retaining source data. Explicit reclaim=true requests guarded discard of this exact saved source; neither mode marks it merged.'),
 }).strict();
+/** Legacy publication terminal states do not mean temporary resources released. */
+const workspaceLifecycleSchema=z.object({
+ operation_id:IdSchema,slot_use_id:IdSchema.nullable().optional(),phase:z.enum(['awaiting_release','cleanup','blocked','complete']),
+ workspace_id:IdSchema,generation:z.number().int().positive(),base_commit:z.string().nullable(),source_commit:z.string().nullable(),
+ target_ref:z.string().nullable(),landed_commit:z.string().nullable(),publication_status:z.enum(['merged','no_changes']),cleanup_key:z.string(),
+ source_retained:z.boolean().optional(),cleanup_state:z.string().optional(),retention_state:z.string().nullable().optional(),
+}).strict();
+export type WorkspaceLifecycle=z.infer<typeof workspaceLifecycleSchema>;
+// Keep the exact input/output DTO behind a named boundary: embedding the full
+// Zod object in every registry entry exceeds declaration serialization limits.
+export const WorkspaceLifecycleSchema:z.ZodType<WorkspaceLifecycle>=workspaceLifecycleSchema;
 export const WorkspaceChangeReceiptSchema = z.object({
   change_set_id: IdSchema, revision: z.number().int().positive(), state: z.string(), integration_id: IdSchema.nullable(),
   progress:WorkspaceNativeProgressSchema.nullable().optional(),
+  lifecycle:WorkspaceLifecycleSchema.nullable().optional(),
+}).strict();
+/** Advisory admission, never a capability token. Execution rechecks all guards. */
+export const WorkspaceActionApplicabilitySchema=z.object({
+ operation:z.enum(['workspace.change.complete','workspace.integration.retry','workspace.change.abandon','workspace.retention.update']),
+ action:z.enum(['checkpoint','prepare','publish','reconcile','recover','retry']).optional(),
+ available:z.boolean(),blocker:z.string().nullable(),guidance:z.string(),requirements:z.array(z.string()),
+}).strict();
+export const WorkspaceRecoveryDiagnosticSchema=z.object({
+ kind:z.enum(['cleanup','checkpoint']),state:z.string(),reason:z.string().nullable(),next_retry_at:z.string().nullable(),
+ attempts:z.number().int().nonnegative(),recovery_mode:z.enum(['recover','retry']).nullable().optional(),recovery_action:z.literal('workspace.retention.update').nullable(),
+ guidance:z.string(),
 }).strict();
 export const WorkspaceChangeStatusSchema=WorkspaceChangeReceiptSchema.extend({
+ diagnostics:z.array(WorkspaceRecoveryDiagnosticSchema).optional(),
+ actions:z.array(WorkspaceActionApplicabilitySchema).optional(),
  can_retry:z.boolean(),integration_status:z.string().nullable(),conversation_id:IdSchema.nullable(),room_id:IdSchema.nullable(),agent_id:IdSchema.nullable(),folder_name:z.string(),source_commit:z.string().nullable(),
 });
 // Ignore undeclared report metadata without discarding validated workspace capabilities.
+// reclaim:6 additionally pins an exact adopting-parent checkpoint before child release.
+// reclaim:7 releases redundant recovery refs against a completed release's durable history.
+// Reclaim levels are additive: a higher level retains the lower-level epoch and
+// ref-operation contracts. An unknown optional extension never changes `version`.
 // shared_review:1 = the Host mounts an existing workspace read-only at a frozen
 // `review_commit` under a shared lease (no branch preparation or checkpoint).
-export const ExecutionWorkspaceCapabilitySchema = z.object({version:z.union([z.literal(1),z.literal(2)]),reclaim:z.union([z.literal(1),z.literal(2),z.literal(3),z.literal(4),z.literal(5)]).optional(),shared_review:z.literal(1).optional()});
+export const ExecutionWorkspaceCapabilitySchema = z.object({version:z.union([z.literal(1),z.literal(2)]),reclaim:z.number().int().min(1).max(2147483647).optional(),shared_review:z.literal(1).optional(),preserve_source:z.literal(1).optional(),lifecycle:z.literal(1).optional()});
 
 /** Visible retention of one workspace generation. Reasons are stable codes. */
 export const WorkspaceRetentionSchema=z.object({
+ preserved_commit:z.string().regex(/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/).nullable().optional(),recovery_ref:z.string().max(256).nullable().optional(),
  state:z.enum(['active','grace','reclaimable','reclaiming','reclaimed','retained','held','blocked','missing']),
  reason:z.string().max(64),
  reclaim_after:z.string().nullable(),hold_until:z.string().nullable(),reclaimed_at:z.string().nullable(),assessed_at:z.string().nullable(),
@@ -96,13 +126,14 @@ export const WorkspaceRetentionSchema=z.object({
 }).strict();
 export type WorkspaceRetention=z.infer<typeof WorkspaceRetentionSchema>;
 export const WorkspaceRetentionUpdateInputSchema=z.object({
- change_set_id:IdSchema,
- action:z.enum(['reclaim_now','hold','release_hold','retry','acknowledge_missing']).describe('reclaim_now skips only the short grace for a proven merged/unchanged source; hold postpones automatic reclamation; retry re-delivers blocked cleanup; acknowledge_missing closes unfinished records whose branch was removed outside Rainver without adoption proof (never marks them merged; audit kept).'),
+ change_set_id:IdSchema,expected_revision:z.number().int().positive().optional(),
+ action:z.enum(['reclaim_now','hold','release_hold','retry','recover','acknowledge_missing']).describe('reclaim_now skips only the short grace for a proven merged/unchanged source; hold postpones automatic reclamation; recover re-delivers existing cleanup and terminal unlaunched checkpoint obligations without new deletion or publication authority; retry re-delivers existing blocked cleanup with Host safety checks; Agents require the current expected_revision; acknowledge_missing closes unfinished records whose branch was removed outside Rainver without adoption proof (never marks them merged; audit kept).'),
  hold_days:z.number().int().min(1).max(90).optional(),
-}).strict().refine(v=>v.action==='hold'?v.hold_days!==undefined:v.hold_days===undefined,'hold_days is required for hold only');
-export const WorkspaceRetentionReceiptSchema=z.object({workspace_id:IdSchema,retention:WorkspaceRetentionSchema}).strict();
+}).strict().refine(v=>v.action==='hold'?v.hold_days!==undefined:v.hold_days===undefined,'hold_days is required for hold only').refine(v=>v.action!=='recover'||v.expected_revision!==undefined,'recover requires the current expected_revision');
+export const WorkspaceRetentionReceiptSchema=z.object({change_set_id:IdSchema.optional(),workspace_id:IdSchema,retention:WorkspaceRetentionSchema}).strict();
 
 export const WorkspaceChangeViewSchema=z.object({
+ lifecycle:WorkspaceLifecycleSchema.nullable().optional(),
  change_set_id:IdSchema,workspace_id:IdSchema,generation:z.number().int().positive(),revision:z.number().int().positive(),
  workspace_location_id:IdSchema,parent_workspace_id:IdSchema.nullable(),target_ref:z.string().nullable(),
  state:z.enum(['open','ready','integrating','blocked','integrated','no_changes','abandoned']),summary:z.string().nullable(),
@@ -261,9 +292,9 @@ export type WorkspaceVerificationView=z.infer<typeof WorkspaceVerificationViewSc
  * visibility as the Agent workspaces overview; cross-conversation rows carry
  * metadata only and can only be closed by the person. */
 export const WorkspaceChangeListInputSchema=z.object({
- scope:z.enum(['conversation','project']).default('conversation').describe('conversation: this conversation and its delegated workspaces; project: every visible workspace of the Project (metadata only for other conversations).'),
+ scope:z.enum(['conversation','project']).default('conversation').describe('conversation: this conversation and its delegated workspaces; project: visible Project workspaces. A manually instructed conversation writer may inspect the same person\'s other conversations for reviewed cleanup through get and abandon; this grants no cross-conversation publication or retry.'),
  project_id:IdSchema.optional().describe('Required for a person; an Agent uses its Run Project.'),
- view:z.enum(['unfinished','all']).default('unfinished'),
+ view:z.enum(['unfinished','all']).default('unfinished').describe('Use all when inspecting old retained or already published workspaces for reclamation; unfinished only lists currently unfinished work.'),
  cursor:z.string().max(512).optional(),
  limit:z.number().int().min(1).max(50).default(20),
 }).strict();
@@ -274,6 +305,7 @@ export const WorkspaceChangeListItemSchema=z.object({
  summary:z.string().nullable(),saved_difference:z.boolean(),integration_id:IdSchema.nullable(),integration_status:z.string().nullable(),
  retention_state:z.string().nullable(),retention_reason:z.string().nullable(),
  /** Whether this caller may close it now with workspace.change.abandon, and why not. */
+ actions:z.array(WorkspaceActionApplicabilitySchema).optional(),
  closable:z.boolean(),close_blocker:z.string().nullable(),
 }).strict();
 export const WorkspaceChangeListSchema=z.object({items:z.array(WorkspaceChangeListItemSchema),next_cursor:z.string().nullable()}).strict();

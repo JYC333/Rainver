@@ -1,3 +1,4 @@
+import {createAskSendAuthority} from "./sendAuthority.js";
 import type {
   AskSpaceClaimTrajectory,
   AskSpaceDomain,
@@ -28,6 +29,7 @@ import { inquiryRetrievalRegistry } from "../inquiry/retrievalAdapter.js";
 import { canInitiateContextOpsScan } from "../contextOps/reviewPolicy.js";
 import { buildClaimTrajectory } from "../knowledge/claimReviewLoop.js";
 import { persistAskSpaceSessionArtifact } from "./sessionArtifact.js";
+import { RetrievalArtifactWithheld, retrievalContributingRefs } from "../retrieval/artifactRelease.js";
 import { aggregateGaps, buildFollowUps, collectProvenance, dedupeDomains } from "./aggregate.js";
 
 interface AskSpaceInput {
@@ -92,7 +94,8 @@ interface DomainCtx {
   includeTrace: boolean;
   adaptiveReturn: boolean;
   useCache: boolean;
-  egressPolicy: { externalEgressEnabled: boolean };
+  egressPolicy: RetrievalEgressPolicy;
+  sendAuthority: ReturnType<typeof createAskSendAuthority>;
   store: ReturnType<typeof resolveProviderCommandStore>;
   rerankEnabled: boolean;
   embeddingDimensions: number;
@@ -114,6 +117,10 @@ interface DomainBriefArgs {
  */
 interface AskSpaceDeps {
   runDomainBrief?: (args: DomainBriefArgs) => Promise<RetrievalBriefResponse>;
+  /** Defaults to the canonical settling writer (current release authority before INSERT). */
+  persistBrief?: typeof persistRetrievalBriefArtifact;
+  /** Defaults to the canonical settling session writer (same release closure). */
+  persistSession?: typeof persistAskSpaceSessionArtifact;
   runCombinedSynthesis?: (args: {
     spaceId: string;
     userId: string;
@@ -146,7 +153,8 @@ export class AskSpaceService {
     const mode = input.mode ?? settings.defaultSearchMode;
     const includeTrace = input.includeTrace ?? settings.includeTrace;
     const adaptiveReturn = input.adaptiveReturn ?? settings.rankingConfig.mechanics.autocut.state === "shipped";
-    const egressPolicy = { externalEgressEnabled: settings.externalEgressEnabled };
+    const sendAuthority = createAskSendAuthority(this.db, {spaceId:input.spaceId,userId:input.userId});
+    const egressPolicy = { externalEgressEnabled: settings.externalEgressEnabled, authorizeSend:sendAuthority.query };
     const store = resolveProviderCommandStore(this.config);
 
     const sections = await Promise.all(
@@ -158,6 +166,7 @@ export class AskSpaceService {
           adaptiveReturn,
           useCache: settings.useQueryCache,
           egressPolicy,
+          sendAuthority,
           store,
           rerankEnabled: settings.rerankEnabled,
           embeddingDimensions: settings.embeddingDimensions,
@@ -177,6 +186,7 @@ export class AskSpaceService {
           adaptiveReturn,
           useCache: settings.useQueryCache,
           egressPolicy,
+          sendAuthority,
           store,
           rerankEnabled: settings.rerankEnabled,
           embeddingDimensions: settings.embeddingDimensions,
@@ -205,19 +215,22 @@ export class AskSpaceService {
     let sessionArtifactError: string | undefined;
     if (input.persist) {
       try {
-        sessionArtifactId = await persistAskSpaceSessionArtifact(this.db, {
+        sessionArtifactId = await (this.deps.persistSession ?? persistAskSpaceSessionArtifact)(this.db, {
           spaceId: input.spaceId,
           ownerUserId: input.userId,
           query: input.query,
           requestedDomains,
           briefArtifactRefs,
+          contributions: sessionContributions(sections),
           gapSummary,
           provenance,
           synthesized,
           combinedAnswer,
         });
-      } catch {
-        sessionArtifactError = "ask_space_session_persist_failed";
+      } catch (error) {
+        sessionArtifactError = error instanceof RetrievalArtifactWithheld
+          ? "ask_space_session_withheld"
+          : "ask_space_session_persist_failed";
       }
     }
 
@@ -289,7 +302,7 @@ export class AskSpaceService {
   ): Promise<string | null> {
     const candidates = combinedSynthesisCandidates(sections, Boolean(input.combineIncludeMemory));
     if (candidates.length < 2) return null;
-    const egressPolicy = await this.egressPolicyForCombinedPayload(input.spaceId, candidates, ctx.egressPolicy);
+    const egressPolicy = {...await this.egressPolicyForCombinedPayload(input.spaceId, candidates, ctx.egressPolicy), authorizeSend:ctx.sendAuthority.combined()};
     try {
       const synth = this.deps.runCombinedSynthesis
         ? await this.deps.runCombinedSynthesis({
@@ -301,6 +314,7 @@ export class AskSpaceService {
             ctx,
           })
         : await new ProviderSynthesizer(ctx.store, {
+            singleAttempt: true,
             spend: { kind: "person", user_id: input.userId },
             databaseUrl: this.config.databaseUrl,
             surface: "ask_space_combined",
@@ -331,6 +345,7 @@ export class AskSpaceService {
   private async defaultRunDomainBrief({ cfg, ctx, input }: DomainBriefArgs): Promise<RetrievalBriefResponse> {
     const search = new RetrievalSearchService(this.db, cfg.registry, {
       egressPolicy: ctx.egressPolicy,
+      sendAuthority: ctx.sendAuthority.forRegistry(cfg.registry),
       queryEmbedder: new ProviderQueryEmbedder(
         ctx.store,
         { kind: "person", user_id: input.userId },
@@ -338,9 +353,11 @@ export class AskSpaceService {
         undefined,
         ctx.embeddingDimensions,
         ctx.egressPolicy,
+        true,
       ),
       reranker: ctx.rerankEnabled
         ? new ProviderReranker(ctx.store, {
+            singleAttempt: true,
             spend: { kind: "person", user_id: input.userId },
             databaseUrl: this.config.databaseUrl,
             surface: cfg.surface,
@@ -348,6 +365,7 @@ export class AskSpaceService {
           })
         : undefined,
       synthesizer: new ProviderSynthesizer(ctx.store, {
+        singleAttempt: true,
         spend: { kind: "person", user_id: input.userId },
         databaseUrl: this.config.databaseUrl,
         surface: cfg.surface,
@@ -383,7 +401,7 @@ export class AskSpaceService {
       let artifactError: string | undefined;
       if (input.persist) {
         try {
-          artifactId = await persistRetrievalBriefArtifact(this.db, {
+          artifactId = await (this.deps.persistBrief ?? persistRetrievalBriefArtifact)(this.db, {
             spaceId: input.spaceId,
             ownerUserId: input.userId,
             runId: null,
@@ -432,6 +450,23 @@ export class AskSpaceService {
       };
     }
   }
+}
+
+/**
+ * Every answering domain's complete contributing refs, whether or not its own
+ * Brief saved: the combined answer, gap summary and provenance derive from all
+ * of them. A domain with an unparseable ref records `refs: null`, which the
+ * release closure refuses, so the session fails closed rather than narrowing.
+ */
+function sessionContributions(sections: readonly AskSpaceDomainSection[]) {
+  return sections.filter((section) => section.brief).map((section) => {
+    const { refs, malformed } = retrievalContributingRefs({
+      item_refs: section.items,
+      citations: section.brief?.citations,
+      gap_analysis: section.brief?.gap_analysis,
+    });
+    return { domain: section.domain, refs: malformed ? null : refs.map((ref) => ({ object_type: ref.object_type, object_id: ref.object_id })) };
+  });
 }
 
 function combinedSynthesisCandidates(

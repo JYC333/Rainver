@@ -1,3 +1,4 @@
+import { ProjectHistoryImport } from './ProjectHistoryImport'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { LimitedRoomDialog } from '../agent_groups/LimitedRoomDialog'
 import { useParams } from 'react-router-dom'
@@ -14,21 +15,19 @@ import { Skeleton } from '../../components/ui/skeleton'
 import { EmptyState } from '../../components/ui/empty-state'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../../components/ui/dropdown-menu'
 import { audienceLabel } from '../agent_groups/audience'
+import { useSpace } from '../../contexts/SpaceContext'
+import { useUnreadConversations } from '../conversation/useUnreadConversations'
+import { ConversationStatusIndicator } from '../conversation/ConversationUnreadDot'
 
 /**
- * Every conversation in the Project, as one list.
+ * Every conversation in the Project the viewer can see, as one list, with
+ * imported CLI history beside it.
  *
- * A Project is pushed forward through conversation, so the place to see all
- * of it is a first-level destination, beside Pulse, Board and Updates — not a
- * Room picker two clicks down.
- *
- * The Room layer is here but invisible until a visibility decision has to be
- * made ([ADR 0018](../../../../.agent/decisions/0018-room-as-visibility-boundary.md)
- * decision 2). The Project's own conversations lead with no heading and the
- * word "Room" never appears; a conversation that only some people can see
- * appears in a section titled by *who they are*, because that is what opening
- * a second Room means. A Project with only its mainline therefore looks like
- * a plain list of conversations, which is what most of them are.
+ * Reached from the Rooms index ("All conversations"), not from the Project
+ * navigation: Rooms are the explicit entry (ADR 0018, as amended). The
+ * default Room's conversations lead with no heading; a conversation of a
+ * limited Room appears in a section titled by *who can see it*, whose ⚙
+ * opens that Room's members. Rooms the viewer is not in are absent.
  */
 export default function ProjectConversationsPage() {
   const { projectId = '' } = useParams()
@@ -145,7 +144,8 @@ export default function ProjectConversationsPage() {
           <h1 className="text-xl font-semibold tracking-tight">Conversations</h1>
           <p className="text-sm text-muted-foreground">Everything said in this Project, newest first.</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
+          <ProjectHistoryImport projectId={projectId!} showReminder={false} />
           {pendingExtraction && pendingExtraction.records > 0 && (
             <Button size="sm" variant="outline" disabled={extracting} onClick={() => void extract()}>
               <Sparkles className="size-4" />
@@ -228,7 +228,7 @@ export default function ProjectConversationsPage() {
                 otherMemberNames: group.room.room_other_member_names,
                 agentCount: group.room.room_agent_count,
               })}
-              rosterHref={`/projects/${projectId}/rooms?room=${group.room.room_id}`}
+              rosterHref={`/projects/${projectId}/rooms?room=${group.room.room_id}&view=members`}
               items={group.items}
               projectId={projectId}
             />
@@ -246,7 +246,7 @@ export default function ProjectConversationsPage() {
                   })}
                 </h2>
                 <Button size="sm" variant="ghost" asChild>
-                  <Link to={`/projects/${projectId}/rooms?room=${room.room_id}`} aria-label="Manage who can see this group">
+                  <Link to={`/projects/${projectId}/rooms?room=${room.room_id}&view=members`} aria-label="Manage who can see this group">
                     <Settings2 className="size-4" />
                   </Link>
                 </Button>
@@ -277,6 +277,8 @@ function Section({ title, rosterHref, items, projectId }: {
   items: ProjectConversation[]
   projectId: string
 }) {
+  const { activeSpaceId } = useSpace()
+  const unreadConversations = useUnreadConversations(activeSpaceId ?? undefined, projectId)
   if (items.length === 0) return null
   return (
     <section className="space-y-2">
@@ -307,6 +309,7 @@ function Section({ title, rosterHref, items, projectId }: {
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="text-sm font-medium">{item.title ?? 'Untitled conversation'}</span>
+                  <ConversationStatusIndicator running={item.is_running} unread={unreadConversations.has(item.id)} />
                 </div>
                 {item.last_message_preview ? (
                   <p className="mt-0.5 truncate text-xs text-muted-foreground">

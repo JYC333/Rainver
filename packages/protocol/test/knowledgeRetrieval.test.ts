@@ -216,4 +216,15 @@ describe("knowledge retrieval protocol contracts", () => {
       }).success,
     ).toBe(false);
   });
+
+  it("types an Explain report that was withheld from persistence at settlement", () => {
+    const base = {
+      target: { object_type: "knowledge_item", object_id: "knowledge-item-1", title: "Alpha", visible: true, returned: true },
+      match: { matched_fields: ["title"] },
+      trace: { arms: { exact: 1 }, dropped: 0, dropped_reasons: {} },
+      diagnostic_codes: ["target_returned"],
+    };
+    expect(RetrievalExplainResponseSchema.parse({ ...base, artifact_error: "retrieval_explain_persist_withheld" }).artifact_error).toBe("retrieval_explain_persist_withheld");
+    expect(RetrievalExplainResponseSchema.safeParse({ ...base, artifact_error: "other" }).success).toBe(false);
+  });
 });

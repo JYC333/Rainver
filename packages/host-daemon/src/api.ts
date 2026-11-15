@@ -1,3 +1,5 @@
+import {randomUUID} from 'node:crypto';
+import {DAEMON_WORKSPACE_OPERATION_SCHEMAS,type OperationOutcome,type OperationOutput} from '@rainver/protocol';
 import {sourceExecutionOffer} from "./sourceCapability.js";
 import type { HostHelloInfo, HostRunDiffUpload, HostRunOutputsUpload, RuntimeProbe } from "@rainver/protocol";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -21,6 +23,8 @@ export class ApiError extends Error {
   constructor(
     readonly statusCode: number,
     message: string,
+    readonly code?: string,
+    readonly retryable = false,
   ) {
     super(message);
     this.name = "ApiError";
@@ -48,7 +52,8 @@ async function request<T>(url: string, init: RequestInit): Promise<T> {
   const body = text ? (JSON.parse(text) as unknown) : undefined;
   if (!response.ok) {
     const detail = body && typeof body === "object" && "detail" in body ? String((body as { detail: unknown }).detail) : response.statusText;
-    throw new ApiError(response.status, detail);
+    const failure=body&&typeof body==='object'&&'error' in body?(body as {error:{message?:string;code?:string;retryable?:boolean}}).error:undefined;
+    throw new ApiError(response.status, failure?.message??detail,failure?.code,failure?.retryable??false);
   }
   return body as T;
 }
@@ -201,12 +206,15 @@ export async function createWorkspace(
   serverUrl: string,
   token: string,
   input: { projectId: string; name: string; displayPath: string },
+  idempotencyKey: string = randomUUID(),
 ): Promise<WorkspaceOut> {
-  return request<WorkspaceOut>(`${serverUrl}/api/v1/hosts/me/workspaces`, {
+  const result = await request<OperationOutcome<OperationOutput<'host.workspace.create'>>>(`${serverUrl}/api/v1/hosts/me/workspaces`, {
     method: "POST",
-    headers: { authorization: `Bearer ${token}` },
+    headers: { authorization: `Bearer ${token}`, 'idempotency-key': idempotencyKey },
     body: JSON.stringify({ project_id: input.projectId, name: input.name, display_path: input.displayPath }),
   });
+  if(!('status' in result)||result.status!=='succeeded')throw new Error('Workspace registration did not complete');
+  return DAEMON_WORKSPACE_OPERATION_SCHEMAS['host.workspace.create'].output.parse(result.data);
 }
 
 export async function listWorkspaces(serverUrl: string, token: string): Promise<WorkspaceOut[]> {
@@ -217,11 +225,13 @@ export async function listWorkspaces(serverUrl: string, token: string): Promise<
   return result.items;
 }
 
-export async function removeWorkspace(serverUrl: string, token: string, folderId: string): Promise<void> {
-  await request<void>(`${serverUrl}/api/v1/hosts/me/workspaces/${encodeURIComponent(folderId)}`, {
+export async function removeWorkspace(serverUrl: string, token: string, folderId: string, idempotencyKey: string = randomUUID()): Promise<void> {
+  const result=await request<OperationOutcome<OperationOutput<'host.workspace.remove'>>>(`${serverUrl}/api/v1/hosts/me/workspaces/${encodeURIComponent(folderId)}`, {
     method: "DELETE",
-    headers: { authorization: `Bearer ${token}` },
+    headers: { authorization: `Bearer ${token}`, 'idempotency-key': idempotencyKey },
   });
+  if(!('status' in result)||result.status!=='succeeded')throw new Error('Workspace removal did not complete');
+  DAEMON_WORKSPACE_OPERATION_SCHEMAS['host.workspace.remove'].output.parse(result.data);
 }
 
 export async function uploadRunDiff(

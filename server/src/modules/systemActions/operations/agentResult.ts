@@ -8,7 +8,7 @@ export function formatOperationForAgent(result:OperationResponse,tool:string):Sy
   const failed='error' in result.body;
   // A missing approval mapping is a policy boundary, not a transient transport fault.
   let body='error' in result.body && result.body.error.code==='operation_approval_mapping_unavailable'
-    && (['board.configure','task.move_to_column','task.set_status','task.delete','task.complete','research.start_acquisition','research.adopt_result'].includes(tool))
+    && (['task.create','board.configure','task.move_to_column','task.set_status','task.delete','task.complete','research.start_acquisition','research.adopt_result'].includes(tool))
     ? {...result.body,error:{...result.body.error,retryable:false,
       message:'This Run source requires human initiation or approval for this change. The approval path has not been migrated. Do not retry automatically or change the Run origin; ask a person to initiate the change.'}}
     : result.body;
@@ -17,6 +17,15 @@ export function formatOperationForAgent(result:OperationResponse,tool:string):Sy
     && ['task.complete','task.set_status','task.move_to_column','board.configure'].includes(tool)){
     body={...body,error:{...body.error,
       message:'Task completion requirements are not met. required_outputs are Artifact type labels, not a report or a workspace edit. Leave the required file in the output directory and declare it with artifact.submit, or use task.request_review for a person to decide. The safe missing and unacknowledged lists identify the unmet requirements.'}};
+  }
+  if('error' in body && body.error.code==='operation_conflict' && body.error.domain==='workspaces' && Object.keys(body.error.metadata).length===0){
+    body={...body,error:{...body.error,message:'The visible workspace state does not allow this request. Read workspace.change.get for current revision, progress and action applicability. Wait for pending work; preserve files and do not automatically replay a write.',metadata:{recovery_action:'workspace.change.get'}}};
+  }
+  if('error' in body && body.error.code==='operation_not_granted'){
+    body={...body,error:{...body.error,message:'This action is not available to this Run. Read rainver list; do not guess another action or replay a write.'}};
+  }
+  if('error' in body && body.error.code==='operation_not_found'){
+    body={...body,error:{...body.error,message:'Object unavailable. Check only the current Run action list and objects returned by authorized reads. Do not guess names or ids, replay writes, or promise an unverified repair.'}};
   }
   return {
     modelResult:{ok:!failed,tool,...body,http_status:result.http_status,replayed:result.replayed,policy_decision_record_id:result.policy_decision_record_id},

@@ -80,7 +80,7 @@ export async function requireProjectTask(
   );
   let task=(await read(false)).rows[0];
   // Another Project's Task answers as not found, the same as an invented id:
-  // the executor then replies with the ids this Project actually has.
+  // object discovery remains an explicit authorized list read.
   if (!task || task.project_id !== projectId) throw new HttpError(404, "Task not found");
   if (!task.project_id) {
     throw new TaskControlError(422, "This Task is not in a Project, so it has no work stream to write to");
@@ -233,12 +233,13 @@ async function handoffTaskIn(
   }
 
   if (input.to?.kind === "user") {
-    // Still in the Space, in the Project, and able to read the Task itself —
+    // An active account, still in the Space, in the Project, and able to read the Task itself —
     // handing a private Task to a Project member who cannot see it names a
     // responsible person for whom the Task does not exist.
     const member = await db.query(
       `SELECT 1
          FROM tasks t
+         JOIN users u ON u.id = $3 AND u.status = 'active'
          JOIN space_memberships sm ON sm.space_id = t.space_id AND sm.user_id = $3 AND sm.status = 'active'
         WHERE t.space_id = $1 AND t.id = $4
           AND ${contentReadSql("task", "t", "$3")}

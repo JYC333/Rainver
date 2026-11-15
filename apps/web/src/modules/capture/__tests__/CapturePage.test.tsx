@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import {toast} from 'sonner'
 import { activityApi } from '../../../api/client'
 import CapturePage from '../CapturePage'
 
@@ -64,3 +65,12 @@ describe('CapturePage voice recording', () => {
     await waitFor(() => expect(track.stop).toHaveBeenCalled())
   })
 })
+
+it('describes an admitted upload as queued before opening the Activity Inbox',async()=>{
+ const file=new File(['capture'],'notes.bin',{type:'application/octet-stream'});
+ vi.mocked(activityApi.upload).mockResolvedValue({job_id:'job',activity_id:'activity',status:'queued'});
+ const view=renderPage();
+ fireEvent.change(view.container.querySelector('input[type=file]')!,{target:{files:[file]}});
+ await waitFor(()=>expect(toast.success).toHaveBeenCalledWith('Upload queued for Activity Inbox'));
+ expect(activityApi.upload).toHaveBeenCalledWith(file,{kind:'file',spaceId:'personal-1'});
+});

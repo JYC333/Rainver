@@ -1,6 +1,6 @@
 import {publicWorkspaceLaunchError,workspaceScopedCwd} from './workspaceScope.js';
 import {prepareWorkspaceAttachments,attachmentReports,attachmentGitBinds,type PreparedAttachment} from './workspaceAttachments.js';
-import { prepareExecutionWorkspace } from "./executionWorkspace.js";
+import { prepareExecutionWorkspace,prepareExecutionWorkspaceResolution } from "./executionWorkspace.js";
 import { workspaceRunKey,workspaceWorktreeKey } from "./worktreeIdentity.js";
 import { isWorkspaceReview, verifyWorkspaceReviewBasis, workspaceReviewCwd, workspaceReviewLeaseKey } from "./workspaceReview.js";
 import {readOnlyIpcFilter} from './readOnlyIpc.js';
@@ -1082,6 +1082,19 @@ export async function handleLaunch(
     send({ type: "complete", run_id: frame.run_id, launch_id: frame.launch_id, exit_code: 1, timed_out: false, error: "This host registration was revoked." });
     return;
   }
+  // Replayed frames are idempotent. A different physical execution of the
+  // same logical Run must not queue behind itself or replace its process map.
+  if (activeLaunches.get(frame.launch_id)?.runId === frame.run_id
+    || launchingRuns.get(frame.launch_id) === frame.run_id
+    || finishingRuns.get(frame.launch_id) === frame.run_id
+    || hasLeaseWaiters(frame.run_id, frame.launch_id)) return;
+  if ([...activeLaunches.values()].some(entry => entry.runId === frame.run_id)
+    || isLaunching(frame.run_id) || [...finishingRuns.values()].includes(frame.run_id)
+    || hasLeaseWaiters(frame.run_id)) {
+    send({ type: 'complete', run_id: frame.run_id, launch_id: frame.launch_id, exit_code: 1, timed_out: false,
+      error: 'run_previous_launch_active: the previous execution of this Run has not exited; no second execution was started.' });
+    return;
+  }
   // Refused rather than raced. Do not start against a directory that is about
   // to be renamed away (ADR 0016 §9).
   if (isRuntimeKeyBeingReplaced(frame.runtime_key)) {
@@ -1418,7 +1431,7 @@ async function launchRun(
     const mergeId = frame.workspace?.kind === "location" ? frame.workspace.worktree?.merge_id ?? executionRef?.integration_id : undefined;
     try {
       if (mergeId) {
-        hold.resolution = await mergeResolutionWorktree(taskRepository, locationId, taskId, mergeId);
+        hold.resolution = executionRef?await prepareExecutionWorkspaceResolution(taskRepository,locationId,executionRef):await mergeResolutionWorktree(taskRepository, locationId, taskId, mergeId);
         cwd = hold.resolution.root;
       } else {
         hold.worktree = executionRef ? await prepareExecutionWorkspace(taskRepository,locationId,executionRef,frame.run_id,{launchId:frame.launch_id,onQueued:()=>send({type:'waiting_for_workspace',run_id:frame.run_id,launch_id:frame.launch_id})}) : await prepareTaskWorktree(taskRepository, locationId, taskId, frame.run_id);
@@ -1928,7 +1941,7 @@ async function launchRun(
         gitAfter = inTaskWorktree ? null : await captureGitHead(cwd).catch(() => null);
         // Its sweep counts a day from the Run's end, not its start.
         if (taskWorktree) {
-          await touchTaskRecord(taskWorktree, executionRef?workspaceRunKey(frame.run_id,executionRef):frame.run_id).catch((error: unknown) => {
+          await touchTaskRecord(taskWorktree, executionRef?workspaceRunKey(frame.run_id,executionRef,taskWorktree.launchSequence):frame.run_id).catch((error: unknown) => {
             log(`run ${frame.run_id}: task worktree record update failed: ${error instanceof Error ? error.message : String(error)}`);
           });
         }

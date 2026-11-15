@@ -236,11 +236,11 @@ describe("Project briefing (shared kernel, real PostgreSQL)", () => {
       expect(empty.statusCode).toBe(200);
       expect(empty.json()).toMatchObject({ can_generate: false, latest: null, latest_briefing: null, history: [] });
       expect(await count("information_briefings")).toBe(0);
-      expect((await app.inject({ method: "POST", url, payload: {} })).statusCode).toBe(403);
+      expect((await app.inject({ method: "POST",headers:{'idempotency-key':randomUUID()}, url, payload: {} })).statusCode).toBe(404);
       __setAuthIdentityForTests({ spaceId: SPACE, userId: OWNER });
-      const retired = await app.inject({ method: "POST", url, payload: {} });
+      const retired = await app.inject({ method: "POST",headers:{'idempotency-key':randomUUID()}, url, payload: {} });
       expect(retired.statusCode).toBe(410);
-      expect(retired.json()).toMatchObject({code:'project_daily_briefing_replaced'});
+      expect(retired.json()).toMatchObject({error:{code:'operation_result_unavailable',metadata:{code:'project_daily_briefing_replaced'}}});
       expect((await app.inject({method:'GET',url})).json()).toMatchObject({can_generate:false,latest:null,daily_enabled:false});
       expect(await count('runs')).toBe(0);
     } finally {

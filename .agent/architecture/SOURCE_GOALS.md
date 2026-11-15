@@ -19,7 +19,12 @@ goal with an existing owned Agent/Profile and optional Project, GET lists goals,
 and GET `/:goalId` recovers versions, preview status, source progress, recent runs
 and repair candidates. POST suffixes `edit`, `explore`, `preview`, `save`,
 `follow`, `feedback`, `check`, `resume`, `pause`, `delete`, `rollback` operate
-the domain. Preview
+the domain. All 21 goal-setup / goal control POST URLs (including
+`goal-setup/begin|message|legacy|compatibility_rollback`, binding
+source-confirmation, repair publish and the three theme commands) are core
+commands with an explicit transport key; see the Goals family in
+[Sources](../modules/sources.md#source-block-goals-family) for locks, receipts and
+refusals. Preview
 names an exact `version_id`. `follow` is the one continuous-following
 confirmation (see [Continuous following](#continuous-following-confirmation-lifecycle-and-topic-membership));
 it never requires a preview. `save` (`SourceGoalSaveSampleSchema`) is the
@@ -46,7 +51,11 @@ The existing SystemActionDispatcher exposes bound `source.goal.read`, `sources`,
 `inspect`, `write_version`, `repair_candidate` actions to the existing Agent Run.
 A queued Run carries goal, purpose and (for repair) exact binding in its immutable
 contract, selected runtime Profile, limited attempts and duration. Goal row locks
-bound exploration attempts and deduplicate concurrent queue requests. Model
+bound exploration attempts and deduplicate concurrent queue requests. Every Goal
+writer takes the goal's Project row before the goal row (`goals/transaction.ts#lockGoal`),
+the order of the canonical Delivery closure (Project audience → context roots), and a
+collection batch commit holds Project audience → active user/membership → Goal
+→ binding → Source read authority to its commit and re-verifies under it (DATABASE_AND_TRANSACTIONS.md). Model
 routing, spend authorization and Agent execution remain in their existing owners.
 There is no direct model SDK invocation, model substitution or template presented
 as AI output. New-source activation still uses the existing activation proposal.
@@ -91,8 +100,10 @@ Changed source scope refuses old previews and bindings rather than expanding
 network or credential reach. Pausing/deleting cancels existing goal Agent Runs;
 subsequent physical requests and business result commits refuse authorization.
 
-A preview reserves one of three attempts on its immutable plan version, runs all
-sources through the same bounded executor, and records observation time,
+A preview reserves one of three attempts on its immutable plan version in the
+command transaction together with a single-attempt `goal_preview` Job; the Job
+repeats admission under current authority, runs all
+sources through the same bounded executor (120-second deadline), and records observation time,
 contributions and limitations. Empty/invalid/failed contributions are partial.
 Ready requires successful nonempty relevant data from each selected Source. A single Source or multiple Sources of one type are valid; the two-kind requirement belongs to the acceptance fixture only. A ready
 preview expires in 15 minutes. Activation locks the goal, creates bindings and upserts
@@ -232,7 +243,8 @@ keeping raw HTTP; expiry/disable/delete downgrade those excerpts as well. Sample
 without raw-retention permission discard untrusted diagnostics text and
 implementation cursor fields, keeping controlled schema diagnostics. Previous and failure samples and repair live samples
 obey the same rules. Existing artifact maintenance scrubs all these copies on
-expiry or policy downgrade; reads/repair/start also recheck before using samples.
+expiry or policy downgrade; reads project current retention without writes,
+while repair/start durably recheck before using samples.
 Goal deletion scrubs them immediately, without deleting successful SourceItems.
 When no raw calibration can be retained, repair uses the transient validation
 path below; it never silently enables archiving. A lone successful live response
@@ -1474,3 +1486,34 @@ cursors, Source settings, automatic cadence, spend consent and account limits
 are preserved. A successful collection clears failure history through existing
 settlement; an unsuccessful explicit retry returns to the normal bounded failure
 policy. User-paused topics still require their existing Resume action.
+
+
+The a83 follow-up checks a collection lease with `clock_timestamp()` only after
+obtaining the binding lock (token/revision in the same statement), and again at
+the final commit decision. Expiry while waiting for Project/Goal locks cannot
+publish items or advance its cursor. Active owner and membership share locks
+also fence the real auth account-disable endpoint. See
+[transaction rules](DATABASE_AND_TRANSACTIONS.md#source-result-release-and-final-source-commits-a83-follow-up)
+for the precise lease rule; physical COMMIT acknowledgement is not a clock gate.
+
+## Pure detail reads and lifecycle recovery
+
+Goal detail GET and the bound goal reader never reconcile native collections,
+cancel overdue Runs, materialize items or scrub stored samples. They project
+current Source visibility and retention in memory, including expired preview/
+binding samples and collection recovery inputs; no command runs under a GET.
+
+The existing Source-goal scheduler pass also reconciles a bounded25 pending
+native goals, including manual previews and stopped goals without a due
+collection task. Existing Run finalizers still settle their own completion;
+the pass recovers interrupted terminal callbacks, expired native deadlines and
+materialization, and scrubs consumed transport copies outside finalizer Run locks. Due cohorts retain independent failure handling; recovery
+failures use the existing aggregate reporter after other work proceeds.
+No new scheduler, spending intent or collection request is created by reading.
+The existing Custom Source artifact maintenance continues durable sample
+expiry/policy scrubbing even when artifact retention is disabled. Start,
+repair and delete retain their existing canonical sample maintenance.
+
+Reuse / Dependency Check: existing collection scheduler, native reconciliation,
+Run finalization, retention maintenance and policy projection own this closure.
+No schema, dependency, new command or alternate Source materializer is added.

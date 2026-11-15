@@ -1,4 +1,4 @@
-import {BoardConfigurationInputSchema} from '@rainver/protocol'
+import {BoardConfigurationInputSchema,type OperationInput} from '@rainver/protocol'
 import BoardColumnLane from './BoardColumnLane'
 import { BoardColumnDraft, BoardColumnRemoval } from './BoardColumnControls'
 import BoardTaskEditor from './BoardTaskEditor'
@@ -214,7 +214,7 @@ function ProjectBoardContent({projectId}:{projectId:string}) {
   const createTask = useCallback(async (body: Record<string, unknown>) => {
     // Created here, in the Project: the daily action of putting work on the
     // Board must not mean leaving the Board for the cross-Project list.
-    await tasksApi.create({ ...body, project_id: projectId, status: createColumn?.status_key??'ready', ...(createColumn?.board_id?{board_id:createColumn.board_id,column_id:createColumn.key}:{}) })
+    await tasksApi.create({ ...body, project_id: projectId, status: (createColumn?.status_key??'ready') as OperationInput<'task.create'>['status'], ...(createColumn?.board_id?{board_id:createColumn.board_id,column_id:createColumn.key}:{}) } as OperationInput<'task.create'>)
     toast.success('Task created')
     setCreating(false)
     // Quiet for the same reason a move is: the new card arrives in its lane

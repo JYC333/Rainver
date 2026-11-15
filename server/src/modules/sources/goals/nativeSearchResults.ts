@@ -1,3 +1,4 @@
+import {cleanGoalSamples} from './samples.js';
 import {sourceCollectionContextOf,assertSourceCollectionContext} from './collectionContext.js';
 import {readingRunContext} from '../readingMethods/followingContext.js';
 import {readingMethodOf,assertFrozenReadingMethod} from '../../prompts/index.js';
@@ -20,13 +21,13 @@ import {selectGoalResult} from './selection.js';
 import type {GoalExecutionResult} from './service.js';
 import type {GoalBindingRow} from './worker.js';
 import type {SourceGoalBindingSpec} from '@rainver/protocol';
-/** Settlement and read/restart recovery use the same idempotent acceptance.
+/** Settlement and scheduler/restart recovery use the same idempotent acceptance.
  * The model cannot choose its collection identity or write any collected item. */
 export async function reconcileNativeSearch(db:Pool,config:ServerConfig,goalId:string,settlingRunId?:string){
  const rows=await db.query(`SELECT id FROM source_goal_runs WHERE goal_id=$1 AND status='queued' AND result_json ? 'native_run_id' AND ($2::varchar IS NULL OR result_json->>'native_run_id'=$2) ORDER BY started_at LIMIT 20`,[goalId,settlingRunId??null]);
  for(const row of rows.rows){
  // A terminal callback projects only its own result; deadline commands belong
- // to the ordinary read/tick recovery path outside the finalization lock.
+ // to the ordinary scheduler/tick recovery path outside the finalization lock.
  const candidate=settlingRunId?null:(await db.query("SELECT r.id,r.space_id,r.instructed_by_user_id,r.started_at,r.contract_snapshot_json FROM source_goal_runs s JOIN runs r ON r.id=s.result_json->>'native_run_id' WHERE s.id=$1 AND r.status IN ('queued','running','waiting_for_review','waiting_for_dependency','cancelling')",[row.id])).rows[0];const overdue=candidate&&materialRunExpired(candidate)?candidate:null;if(overdue){await db.query("UPDATE source_goal_runs SET result_json=result_json||'{\"deadline_exceeded\":true}'::jsonb WHERE id=$1",[row.id]);const {buildRunOrchestration}=await import('../../runs/orchestrationFactory.js');await buildRunOrchestration(config).orchestration.cancelRun({run_id:overdue.id,space_id:overdue.space_id,requested_by_user_id:overdue.instructed_by_user_id,reason:'Source collection deadline exceeded'});}
  await withDbTransaction(db,async tx=>{
   const audit=(await tx.query(`SELECT * FROM source_goal_runs WHERE id=$1 AND status='queued' FOR UPDATE`,[row.id])).rows[0];if(!audit)return;const p=audit.result_json as {native_run_id:string;spec:SourceGoalBindingSpec;authority_sha256:string;preview_id:string|null;route:unknown;binding_revision:number|null;cursor_before:Record<string,unknown>};
@@ -106,5 +107,9 @@ export async function reconcileNativeSearch(db:Pool,config:ServerConfig,goalId:s
   }
  }
  await db.query("UPDATE source_goals g SET status='paused',compatibility_json=compatibility_json-'manual_pending' WHERE g.id=$1 AND g.compatibility_json->>'manual_pending'='true' AND g.compatibility_json->>'execution_mode'='manual' AND NOT EXISTS(SELECT 1 FROM source_goal_runs r WHERE r.goal_id=g.id AND r.status IN ('accepted','materializing'))",[goalId]);
+
+ // Recovery outside the finalizer's Run lock owns consumed transport cleanup.
+ // Expiry/policy-wide maintenance remains in existing artifact retention.
+ if(!settlingRunId)await cleanGoalSamples(db,config,goalId);
 
 }

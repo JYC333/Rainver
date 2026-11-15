@@ -1,3 +1,4 @@
+import {admitAutomationEffect} from '../automations/effectAuthority.js';
 import { monitoringDeliveryCandidates } from '../sources/monitoring/delivery.js';
 import { ProjectMonitoringConfigSchema } from '@rainver/protocol';
 import { HttpError } from '../routeUtils/common.js';
@@ -154,6 +155,7 @@ export class InformationDigestService {
   ): Promise<{ digest: PersistedDigest; created: boolean }> {
     assertDate(period.date);
     return withQueryableTransaction(this.db, async (tx) => {
+      await admitAutomationEffect(tx);
       const repo = new PgInformationDigestRepository(tx);
       await repo.lockScope(spaceId, "personal", userId, period.date);
       const existing = await repo.findByScope(spaceId, "personal", userId, period.date);
@@ -224,6 +226,7 @@ export class InformationDigestService {
   }> {
     assertDate(period.date);
     return withQueryableTransaction(this.db, async tx => {
+      await admitAutomationEffect(tx);
       const repo = new PgInformationDigestRepository(tx);
       // Every Project date and the initial seal use this lock before the scope/day lock.
       await tx.query(`SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, [`monitoring-delivery:${spaceId}:${projectId}`]);

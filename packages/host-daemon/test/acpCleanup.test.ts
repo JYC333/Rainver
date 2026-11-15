@@ -91,7 +91,7 @@ describe("ACP probe cleanup", () => {
       try { return readFileSync(stat, "utf8").split(") ")[1]?.startsWith("Z"); }
       catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return true; throw error; }
     }).toBe(true);
-  }, 20_000);
+  });
 });
 
 describe("packaged Claude ACP shutdown", () => {
@@ -167,5 +167,5 @@ describe("packaged Claude ACP shutdown", () => {
       await closed;
       lines.close();
     }
-  }, 15_000);
+  });
 });

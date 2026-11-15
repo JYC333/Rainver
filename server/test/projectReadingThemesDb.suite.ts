@@ -71,7 +71,7 @@ it('manual durable collection -> exact original manifest -> canonical settlement
 });
 it('scheduler freezes a durable slot and repeated ticks/terminal callbacks do not duplicate theme Runs',async()=>{
  await enable();await new PgSchedulerTaskStore(db.pool).upsert({taskType:'source_goal_tick',taskKey:goalId,scopeType:'space',scopeId:SPACE,spaceId:SPACE,userId:OWNER,nextRunAt:new Date(Date.now()-1000).toISOString(),metadataJson:{version_id:versionId}});
- await enqueueDueSourceGoals(db.pool);await enqueueDueSourceGoals(db.pool);expect(await w.count('project_reading_rounds')).toBe(1);const r=(await db.pool.query('SELECT * FROM project_reading_rounds')).rows[0];await runSourceGoalTick(db.pool,config(),goalId,SPACE,executor,versionId,r.id);await runSourceGoalTick(db.pool,config(),goalId,SPACE,executor,versionId,r.id);
+ await enqueueDueSourceGoals(db.pool,config());await enqueueDueSourceGoals(db.pool,config());expect(await w.count('project_reading_rounds')).toBe(1);const r=(await db.pool.query('SELECT * FROM project_reading_rounds')).rows[0];await runSourceGoalTick(db.pool,config(),goalId,SPACE,executor,versionId,r.id);await runSourceGoalTick(db.pool,config(),goalId,SPACE,executor,versionId,r.id);
  await Promise.all([settleThemeRound(db.pool,config(),r.id),settleThemeRound(db.pool,config(),r.id)]);expect(await w.count('runs')).toBe(1);
 });
 it('source/retention/whole-audience withdrawal hides theme output and rejects queued dispatch',async()=>{
@@ -120,7 +120,7 @@ it('real worker/orchestrator/Host wire Delivery settles a theme, without fixture
  expect(Number((await db.pool.query('SELECT count(*) FROM invocation_deliveries WHERE invocation_id=$1',[version.run_id])).rows[0].count)).toBe(1);
  expect((await readThemeRounds(db.pool,identity,goalId)).latest?.topic?.quick_line).toContain('mechanism');
  const total=await until(()=>readProjectComposition(db.pool,identity,PROJECT),v=>!!v.latest,'stage-two canonical Job publication',150);expect(total.latest!.sections[0].briefing_id).toBe(r.briefing_id);expect(total.latest!.sections[0].briefing?.topic?.quick_line).toContain('mechanism');
-},60000);
+});
 it('crashed collector retry uses a new bounded audit identity; an old late materialization cannot overwrite it',async()=>{
  await enable();const admitted=await requestGoalCheck(db.pool,config(),identity,goalId,{expected_version_id:versionId});const payload=(await db.pool.query('SELECT payload_json FROM jobs WHERE id=$1',[admitted.job_id])).rows[0].payload_json;
  let enter!:()=>void,release!:()=>void;const entered=new Promise<void>(r=>enter=r),held=new Promise<void>(r=>release=r);
@@ -140,9 +140,12 @@ it('freezes purpose/method/context at collection admission and refuses changed c
  await settleThemeRound(db.pool,config(),id);expect((await round(id)).status).toBe('blocked');expect(await w.count('runs')).toBe(0);
 });
 it('cancelled analysis is not publication; explicit retry is bounded and late old settlement is ignored',async()=>{
- const {cancelThemeRound}=await import('../src/modules/informationDigest/topics/service.js');
+ const {cancelThemeRoundIn,stopThemeRoundRun}=await import('../src/modules/informationDigest/topics/service.js');
  await enable();const id=await collect();await settleThemeRound(db.pool,config(),id);const r=await round(id),old=await w.runOf(r.briefing_id);
- await cancelThemeRound(db.pool,config(),identity,goalId,id);expect((await w.rowOf(r.briefing_id)).status).toBe('cancelled');
+ // The cancellation commits as an intent: the live Run is cancelling and its briefing already settled, before any process stop.
+ expect(await cancelThemeRoundIn(db.pool,config(),identity,goalId,id)).toEqual({round_id:id,cancel_requested:true});
+ expect((await db.pool.query('SELECT status FROM runs WHERE id=$1',[old.id])).rows[0].status).toBe('cancelling');expect((await w.rowOf(r.briefing_id)).status).toBe('cancelled');
+ await stopThemeRoundRun(db.pool,config(),identity,id);expect((await w.rowOf(r.briefing_id)).status).toBe('cancelled');
  await settleThemeRound(db.pool,config(),id,true);const next=await w.runOf(r.briefing_id);expect(next.id).not.toBe(old.id);expect((await w.rowOf(r.briefing_id)).attempt).toBe(2);
  await (await import('../src/modules/informationDigest/briefing/settlement.js')).settleBriefingRun(db.pool,old);expect((await w.rowOf(r.briefing_id)).run_id).toBe(next.id);
 });
@@ -186,7 +189,7 @@ it('worker SIGKILL recovery settles the failed attempt, explicit retry publishes
  expect((await until(()=>w.rowOf(r.briefing_id),x=>x.status==='ready','theme retry publication',150)).attempt).toBe(2);
  worker.send({cmd:'complete',runId:old.id,launchId:launch.launchId,exitCode:0});await settledCommands(worker);
  expect((await w.rowOf(r.briefing_id)).run_id).toBe(next.id);expect((await w.rowOf(r.briefing_id)).status).toBe('ready');
-},60000);
+});
 it('an activated new purpose needs new consent and reassesses unchanged originals without relabeling old history',async()=>{
  await enable();const oldRound=await collect(),oldVersion=await publish(oldRound);await composeProjectReading(db.pool,SPACE,PROJECT,oldRound);const oldTotal=(await readProjectComposition(db.pool,identity,PROJECT)).latest!;const next=randomUUID();
  await db.pool.query('INSERT INTO source_goal_versions(id,space_id,goal_id,revision,plan_json,created_by_user_id) VALUES($1,$2,$3,2,$4,$5)',[next,SPACE,goalId,{title:'Failure mechanisms',summary:'New learning purpose',analysis_brief:'Evaluate failure modes rather than adoption',sources:[spec],limitations:[]},OWNER]);
@@ -228,12 +231,13 @@ it('HTTP consent and retry are real thin domain entries; readers cannot admit wo
  const app=buildModuleServer(config(),[informationDigestModule]);
  try{
   __setAuthIdentityForTests({spaceId:SPACE,userId:MEMBER});
-  expect((await app.inject({method:'POST',url:`/api/v1/sources/goals/${goalId}/theme-analysis`,payload:{expected_version_id:versionId,enabled:true,agent_id:AGENT,runtime_profile_id:PROFILE}})).statusCode).toBe(403);
-  __setAuthIdentityForTests(identity);const enabled=await app.inject({method:'POST',url:`/api/v1/sources/goals/${goalId}/theme-analysis`,payload:{expected_version_id:versionId,enabled:true,agent_id:AGENT,runtime_profile_id:PROFILE}});expect(enabled.statusCode,enabled.body).toBe(200);expect(await w.count('runs')).toBe(0);
+  // A Project member without the Following's management is hidden, as every core command does.
+  expect((await app.inject({method:'POST',url:`/api/v1/sources/goals/${goalId}/theme-analysis`,payload:{expected_version_id:versionId,enabled:true,agent_id:AGENT,runtime_profile_id:PROFILE},headers:{'idempotency-key':randomUUID()}})).statusCode).toBe(404);
+  __setAuthIdentityForTests(identity);const enabled=await app.inject({method:'POST',url:`/api/v1/sources/goals/${goalId}/theme-analysis`,payload:{expected_version_id:versionId,enabled:true,agent_id:AGENT,runtime_profile_id:PROFILE},headers:{'idempotency-key':randomUUID()}});expect(enabled.statusCode,enabled.body).toBe(200);expect(await w.count('runs')).toBe(0);
   const id=await collect();await publish(id);const good=await app.inject({method:'GET',url:`/api/v1/sources/goals/${goalId}/theme-rounds/${id}/export`});expect(good.statusCode,good.body).toBe(200);expect(good.json().topic.quick_line).toBeTruthy();
   await db.pool.query("UPDATE source_connections SET capture_policy='reference_only' WHERE id=$1",[CONNECTION]);
   const hidden=await app.inject({method:'GET',url:`/api/v1/sources/goals/${goalId}/theme-rounds/${id}/export`});expect(hidden.statusCode,hidden.body).toBe(200);expect(hidden.json().topic).toBeNull();expect(hidden.json().briefing.overview).toBeNull();
-  __setAuthIdentityForTests({spaceId:SPACE,userId:MEMBER});expect((await app.inject({method:'POST',url:`/api/v1/sources/goals/${goalId}/theme-rounds/retry`,payload:{round_id:id}})).statusCode).toBe(403);
+  __setAuthIdentityForTests({spaceId:SPACE,userId:MEMBER});expect((await app.inject({method:'POST',url:`/api/v1/sources/goals/${goalId}/theme-rounds/retry`,payload:{round_id:id},headers:{'idempotency-key':randomUUID()}})).statusCode).toBe(404);
  }finally{await app.close();}
 });
 
@@ -281,7 +285,7 @@ for(const broken of ['missing','disabled','oversized'] as const)it(`F1 ${broken}
  await enable();if(broken==='missing')await db.pool.query("UPDATE evolvable_assets SET asset_key='fixture.missing_theme' WHERE asset_key='reading.following_synthesis'");else if(broken==='disabled')await db.pool.query("UPDATE evolvable_assets SET status='disabled' WHERE asset_key='reading.following_synthesis'");else await changedThemeMethod('Valid text strategy. '.repeat(260));
  const personal=randomUUID();await db.pool.query(`INSERT INTO source_goals(id,space_id,owner_user_id,intent_json,budget_json,status) VALUES($1,$2,$3,'{"intent":"Independent personal collection"}','{"interval_seconds":86400}','running')`,[personal,SPACE,OWNER]);
  for(const id of [goalId,personal])await new PgSchedulerTaskStore(db.pool).upsert({taskType:'source_goal_tick',taskKey:id,scopeType:'space',scopeId:SPACE,spaceId:SPACE,userId:OWNER,nextRunAt:new Date(Date.now()-2000).toISOString(),metadataJson:{}});
- await enqueueDueSourceGoals(db.pool);
+ await enqueueDueSourceGoals(db.pool,config());
  for(const id of [goalId,personal]){expect((await db.pool.query("SELECT id FROM jobs WHERE job_type='source_goal_tick' AND payload_json->>'goal_id'=$1",[id])).rows).toHaveLength(1);expect(Date.parse(String((await new PgSchedulerTaskStore(db.pool).get('source_goal_tick',id))?.next_run_at))).toBeGreaterThan(Date.now());}
  expect(await w.count('project_reading_rounds')).toBe(0);expect((await db.pool.query("SELECT id FROM jobs WHERE job_type='project_reading_theme'")).rows).toHaveLength(0);expect(await w.count('runs')).toBe(0);
  expect((await readThemeRounds(db.pool,identity,goalId)).analysis_admission).toMatchObject({status:'blocked'});
@@ -306,7 +310,7 @@ it('F1 an unexpected PostgreSQL cohort failure is reported after independent gro
  // Real DB write refusal, confined to this disposable fixture. No SQL mock.
  await db.pool.query(`CREATE FUNCTION fixture_refuse_goal_job() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.job_type='source_goal_tick' AND NEW.payload_json->>'goal_id'='${goalId}' THEN RAISE EXCEPTION 'synthetic cohort storage refusal' USING ERRCODE='23514'; END IF; RETURN NEW; END $$; CREATE TRIGGER fixture_refuse_goal_job BEFORE INSERT ON jobs FOR EACH ROW EXECUTE FUNCTION fixture_refuse_goal_job()`);
  try{
-  await expect(enqueueDueSourceGoals(db.pool)).rejects.toThrow('Source goal collection admission');
+  await expect(enqueueDueSourceGoals(db.pool,config())).rejects.toThrow('Source goal collection admission');
   expect((await db.pool.query("SELECT id FROM jobs WHERE payload_json->>'goal_id'=$1",[normal])).rows).toHaveLength(1);
   expect(Date.parse(String((await new PgSchedulerTaskStore(db.pool).get('source_goal_tick',normal))?.next_run_at))).toBeGreaterThan(Date.now());
   expect(Date.parse(String((await new PgSchedulerTaskStore(db.pool).get('source_goal_tick',goalId))?.next_run_at))).toBeLessThan(Date.now());
@@ -339,7 +343,7 @@ it('composition keeps independent immutable versions and manual patches preserve
 it('scheduled cohort waits for every frozen target, then combines themes once; concurrent manual patches do not lose either update',async()=>{
  await enable();const aGoal=goalId,aVersion=versionId;await anotherTheme();await enable();const bGoal=goalId;
  for(const [id,v] of [[aGoal,aVersion],[bGoal,versionId]])await new PgSchedulerTaskStore(db.pool).upsert({taskType:'source_goal_tick',taskKey:id,scopeType:'space',scopeId:SPACE,spaceId:SPACE,userId:OWNER,nextRunAt:new Date(Date.now()-1000).toISOString(),metadataJson:{version_id:v}});
- await enqueueDueSourceGoals(db.pool);const admitted=(await db.pool.query('SELECT * FROM project_reading_rounds ORDER BY goal_id')).rows;
+ await enqueueDueSourceGoals(db.pool,config());const admitted=(await db.pool.query('SELECT * FROM project_reading_rounds ORDER BY goal_id')).rows;
  expect(admitted).toHaveLength(2);expect(admitted[0].slot_key).toBe(admitted[1].slot_key);
  for(const r of admitted)await runSourceGoalTick(db.pool,config(),r.goal_id,SPACE,executor,r.version_id,r.id);
  await db.pool.query("UPDATE jobs SET status='completed' WHERE job_type='source_goal_tick'");
@@ -457,7 +461,9 @@ it.each(['capture','egress','project'] as const)('a no-new check cannot copy an 
   else if(gate==='egress')await db.pool.query('UPDATE source_connections SET consent_json=consent_json||$2::jsonb WHERE id=$1',[CONNECTION,JSON.stringify({allow_external_model_egress:allowed})]);
   else await db.pool.query('UPDATE projects SET deleted_at=$2 WHERE id=$1',[PROJECT,allowed?null:new Date().toISOString()]);
  };
- await authority(false);await composeProjectReading(db.pool,SPACE,PROJECT,check);
+ await authority(false);
+ if(gate==='project')await expect(composeProjectReading(db.pool,SPACE,PROJECT,check)).rejects.toMatchObject({statusCode:404});
+ else await composeProjectReading(db.pool,SPACE,PROJECT,check);
  expect(await compositionCount()).toBe(0);
  if(gate==='project')await expect(readProjectComposition(db.pool,identity,PROJECT)).rejects.toMatchObject({statusCode:404});
  await authority(true);await composeProjectReading(db.pool,SPACE,PROJECT,check);expect(await compositionCount()).toBe(0);await composeProjectReading(db.pool,SPACE,PROJECT,first);
@@ -505,6 +511,24 @@ it('publishes meaningful Following theme changes through the existing private ag
  expect((await db.pool.query("SELECT status FROM activity_records WHERE payload_json->>'pointer_type'='following_updates'")).rows.every(n=>n.status==='processed')).toBe(true);
 });
 
+it('composition core retry commits one cohort Job with audit and receipt; replay rechecks Source authority',async()=>{
+ await enable();const id=await collect();await publish(id);
+ await db.pool.query("UPDATE jobs SET status='failed' WHERE job_type='project_reading_compose' AND payload_json->>'project_id'=$1",[PROJECT]);
+ const app=buildModuleServer(config(),[informationDigestModule]);__setAuthIdentityForTests(identity);
+ const key=randomUUID(),write=()=>app.inject({method:'POST',url:`/api/v1/spaces/${SPACE}/projects/${PROJECT}/reading-compositions/retry`,headers:{'idempotency-key':key},payload:{}});
+ const jobs=await w.count('jobs'),runs=await w.count('runs');
+ await db.pool.query("CREATE FUNCTION refuse_composition_retry_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'audit unavailable'; END $$");
+ await db.pool.query('CREATE CONSTRAINT TRIGGER refuse_composition_retry_audit AFTER INSERT ON policy_decision_records DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION refuse_composition_retry_audit()');
+ try{
+  const failed=await write();expect(failed.statusCode,failed.body).toBe(503);expect(await w.count('jobs')).toBe(jobs);
+ }finally{await db.pool.query('DROP TRIGGER refuse_composition_retry_audit ON policy_decision_records');await db.pool.query('DROP FUNCTION refuse_composition_retry_audit()');}
+ try{
+  const first=await write();expect(first.statusCode,first.body).toBe(200);expect(first.json().data).toMatchObject({status:'queued',round_ids:[id]});
+  expect((await write()).json().data).toEqual(first.json().data);expect(await w.count('jobs')).toBe(jobs+1);expect(await w.count('runs')).toBe(runs);
+  await db.pool.query("UPDATE source_connections SET capture_policy='reference_only' WHERE id=$1",[CONNECTION]);
+  expect((await write()).statusCode).toBe(404);expect(await w.count('jobs')).toBe(jobs+1);
+ }finally{await app.close();}
+});
 it('invalid suggested_action is explained as analysis failure; HTTP retry reruns analysis only and then permits composition',async()=>{
  await enable();const id=await collect();await settleThemeRound(db.pool,config(),id);const r=await round(id),run=await w.runOf(r.briefing_id);
  expect(run.instruction).toContain('Never use "adopt"');
@@ -515,23 +539,23 @@ it('invalid suggested_action is explained as analysis failure; HTTP retry reruns
  try{
   const base=`/api/v1/spaces/${SPACE}/projects/${PROJECT}/reading-compositions`;
   expect((await app.inject({method:'GET',url:base})).json().composition_status).toBe('waiting_for_analysis');
-  const jobsBefore=await w.count('jobs');expect((await app.inject({method:'POST',url:base+'/retry',payload:{}})).statusCode).toBe(409);expect(await w.count('jobs')).toBe(jobsBefore);
+  const jobsBefore=await w.count('jobs');expect((await app.inject({method:'POST',url:base+'/retry',headers:{'idempotency-key':randomUUID()},payload:{}})).statusCode).toBe(409);expect(await w.count('jobs')).toBe(jobsBefore);
   const collections=await w.count('source_goal_runs');
-  const response=await app.inject({method:'POST',url:`/api/v1/sources/goals/${goalId}/theme-rounds/retry`,payload:{round_id:id}});expect(response.statusCode,response.body).toBe(200);expect(response.json().rounds[0].status).toBe('generating');
+  const response=await app.inject({method:'POST',url:`/api/v1/sources/goals/${goalId}/theme-rounds/retry`,payload:{round_id:id},headers:{'idempotency-key':randomUUID()}});expect(response.statusCode,response.body).toBe(200);expect(response.json().data).toEqual({id:goalId,space_id:SPACE,round_id:id});expect((await app.inject({method:'GET',url:`/api/v1/sources/goals/${goalId}/theme-rounds`})).json().rounds[0].status).toBe('generating');
   expect(await w.count('source_goal_runs')).toBe(collections);expect(await w.count('runs')).toBe(2);expect((await w.rowOf(r.briefing_id)).attempt).toBe(2);
-  await app.inject({method:'POST',url:`/api/v1/sources/goals/${goalId}/theme-rounds/retry`,payload:{round_id:id}});expect(await w.count('runs')).toBe(2);
+  await app.inject({method:'POST',url:`/api/v1/sources/goals/${goalId}/theme-rounds/retry`,payload:{round_id:id},headers:{'idempotency-key':randomUUID()}});expect(await w.count('runs')).toBe(2);
   await publish(id);
   // Simulate the composition worker's own failure, after analysis succeeded.
   await db.pool.query("UPDATE jobs SET status='failed' WHERE job_type='project_reading_compose' AND payload_json->>'project_id'=$1",[PROJECT]);
   expect((await app.inject({method:'GET',url:base})).json().composition_status).toBe('failed');
-  expect((await app.inject({method:'POST',url:base+'/retry',payload:{}})).statusCode).toBe(200);
+  expect((await app.inject({method:'POST',url:base+'/retry',headers:{'idempotency-key':randomUUID()},payload:{}})).statusCode).toBe(200);
   expect((await app.inject({method:'GET',url:base})).json().composition_status).toBe('queued');expect(await w.count('runs')).toBe(2);
   // An older active queue entry outranks a newer failed job; repeated retry is idempotent.
   const {PgJobQueueRepository}=await import('../src/modules/jobs/repository.js');
   const later=await new PgJobQueueRepository(db.pool).enqueue({job_type:'project_reading_compose',space_id:SPACE,user_id:OWNER,payload:{project_id:PROJECT,round_id:id},max_attempts:1});
   await db.pool.query("UPDATE jobs SET status='failed' WHERE id=$1",[later.id]);
   expect((await app.inject({method:'GET',url:base})).json().composition_status).toBe('queued');
-  const queuedJobs=await w.count('jobs');expect((await app.inject({method:'POST',url:base+'/retry',payload:{}})).statusCode).toBe(200);expect(await w.count('jobs')).toBe(queuedJobs);
+  const queuedJobs=await w.count('jobs');expect((await app.inject({method:'POST',url:base+'/retry',headers:{'idempotency-key':randomUUID()},payload:{}})).statusCode).toBe(200);expect(await w.count('jobs')).toBe(queuedJobs);
 
  }finally{await app.close()}
 });
@@ -564,7 +588,7 @@ it('freezes a delayed scheduler slot day in both round and collection audit, inc
  const {PgAutomationRepository}=await import('../src/modules/automations/repository.js');
  await new PgAutomationRepository(db.pool).create({spaceId:SPACE,ownerUserId:OWNER,agentId:AGENT,projectId:PROJECT,name:'Daily',triggerType:'schedule',configJson:{target_type:'information_digest',scope:'project',operation:'daily',cron:'0 7 * * *',timezone:'America/New_York'},preflightSnapshot:{}});
  await enable();await new PgSchedulerTaskStore(db.pool).upsert({taskType:'source_goal_tick',taskKey:goalId,scopeType:'space',scopeId:SPACE,spaceId:SPACE,userId:OWNER,nextRunAt:'2026-11-01T03:30:00Z',metadataJson:{}});
- await enqueueDueSourceGoals(db.pool);const admitted=(await db.pool.query("SELECT payload_json FROM jobs WHERE job_type='source_goal_tick'")).rows[0].payload_json;
+ await enqueueDueSourceGoals(db.pool,config());const admitted=(await db.pool.query("SELECT payload_json FROM jobs WHERE job_type='source_goal_tick'")).rows[0].payload_json;
  expect(admitted.edition).toEqual({date:'2026-10-31',timezone:'America/New_York'});
  expect((await round(admitted.round_id)).execution_json.edition).toEqual(admitted.edition);
  await runSourceGoalTick(db.pool,config(),goalId,SPACE,executor,versionId,admitted.round_id);

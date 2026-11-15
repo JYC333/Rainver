@@ -1,3 +1,5 @@
+import {JobEffectLeaseLost,authorizeJobEffect} from '../jobs/effectAuthority.js';
+import {lockSourceRetrievalRelease} from '../sources/retrievalReleaseLocks.js';
 import { randomUUID } from "node:crypto";
 import { withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
 import type { SpaceUserIdentity } from "../routeUtils/common.js";
@@ -83,6 +85,8 @@ export class PgActivityConsolidationRepository {
     for (const candidate of result.rows) {
       try {
         const outcome = await withQueryableTransaction(this.db, async (db) => {
+          await lockSourceRetrievalRelease(db,input.spaceId,input.actingUserId,[{object_type:'activity',object_id:candidate.id}]);
+          await authorizeJobEffect(db);
           // The direct capture endpoint takes the same row lock. Re-read both
           // eligibility and permissions after waiting for a competing writer.
           const locked = await db.query<ActivityRow>(
@@ -127,11 +131,19 @@ export class PgActivityConsolidationRepository {
         } else {
           activitiesSkipped.push(candidate.id);
         }
-      } catch {
+      } catch (error) {
+        if(error instanceof JobEffectLeaseLost)throw error;
         activitiesFailed.push(candidate.id);
         // Do not overwrite an archive or a competing successful consolidation.
-        await this.db.query(`UPDATE activity_records SET status='failed',updated_at=now()
-          WHERE id=$1 AND space_id=$2 AND status='raw'`, [candidate.id, input.spaceId]);
+        await withQueryableTransaction(this.db,async tx=>{
+          await lockSourceRetrievalRelease(tx,input.spaceId,input.actingUserId,[{object_type:'activity',object_id:candidate.id}]);
+          await authorizeJobEffect(tx);
+          await tx.query(`UPDATE activity_records SET status='failed',updated_at=now()
+            WHERE id=$1 AND space_id=$2 AND status='raw'
+              AND ${contentReadSql("activity", "activity_records", "$3")}
+              AND ${contentOwnerFilterSql("activity", "activity_records", "$3")}`,
+            [candidate.id,input.spaceId,input.actingUserId]);
+        });
       }
     }
 

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { knowledgePromotionApi, notesApi,inquiryApi, sourcesApi, queryOperation,projectsApi,tasksApi,ApiRequestError, agentsApi, authorizationRequestsApi, conversationInputApi, projectFoldersApi, proposalsApi, roomsApi, runsApi, sessionsApi, skillsApi, setSpaceContext } from '../api/client'
+import { knowledgePromotionApi, notesApi, sourceGoalsApi,inquiryApi, sourcesApi, queryOperation,projectsApi,tasksApi,ApiRequestError, agentsApi, authorizationRequestsApi, conversationInputApi, projectFoldersApi, proposalsApi, roomsApi, runsApi, sessionsApi, skillsApi, setSpaceContext } from '../api/client'
 
 beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } })))
@@ -20,6 +20,9 @@ describe('conversation source Space transport', () => {
     vi.mocked(fetch).mockImplementation(async input => {
       const url = String(input)
       if (url === '/api/v1/actions/room.message.send') return reply({ status: 'succeeded', data: { id: 'message', space_id: spaceId, room_id: 'room', session_id: 'session', status: 'sent', message_id: 'message', task_group_ids: ['group'], run_ids: ['run'] } })
+      if (url === '/api/v1/authorization-requests/authorization/approve') return reply({status:'succeeded',data:{run_id:'run',request_id:'authorization'}})
+      if (url === '/api/v1/runs/run/authorization-requests') return reply([{id:'authorization'}])
+      if (url === '/api/v1/proposals/proposal/accept') return reply({status:'succeeded',data:{proposal:{id:'proposal'},result_type:'follow_up_task',result:{task:{id:'task'}}}})
       if (url.startsWith('/api/v1/rooms/room/conversations/session/messages')) return reply({ items: [{ id: 'message' }], conversation: { id: 'session' }, task_group_ids: [], limit: 200, offset: 0 })
       if (url === '/api/v1/actions/room.message.retry') return reply({ status: 'succeeded', data: { space_id: spaceId, room_id: 'room', schema_version: 'conversation_retry.v1', session_id: 'session', run_id: 'run-2', run_ids: ['run-2'], retry_of_run_id: 'run', user_message_id: 'message', status: 'queued', event_stream_url: '/x' } })
       if (url === '/api/v1/actions/run.stop') return reply({ status: 'succeeded', data: { id: 'run', space_id: spaceId, run_id: 'run', status: 'cancelling' } })
@@ -116,9 +119,14 @@ it('saves standalone placement and contract metadata in one core command before 
  expect(JSON.parse(calls[0]![1]!.body as string)).toEqual({task_id:'task',changes});
  expect(new Headers(calls[0]![1]?.headers).get('Idempotency-Key')).toBe('placement-key');
  expect(String(calls[1]![0])).toBe('/api/v1/tasks/task');
- await tasksApi.update('task',{title:'Metadata only'});
+ vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({status:'succeeded',data:{task_id:'task',project_id:null,status:'ready'}}),{status:200,headers:{'Content-Type':'application/json'}}));
+ await tasksApi.update('task',{title:'Metadata only'},'edit-key');
+ // An ordinary edit is the core task.update command on its retained URL, with the caller's key, then a refresh.
  expect(String(vi.mocked(fetch).mock.calls[2]![0])).toBe('/api/v1/tasks/task');
  expect(vi.mocked(fetch).mock.calls[2]![1]?.method).toBe('PATCH');
+ expect(new Headers(vi.mocked(fetch).mock.calls[2]![1]?.headers).get('Idempotency-Key')).toBe('edit-key');
+ expect(String(vi.mocked(fetch).mock.calls[3]![0])).toBe('/api/v1/tasks/task');
+ expect(vi.mocked(fetch).mock.calls[3]![1]?.method??'GET').toBe('GET');
 });
 
 it('previews Source history via the core query and creates with separate request/domain keys',async()=>{
@@ -288,6 +296,51 @@ it('queues extraction with an explicit event key and keeps the receipt as queued
  const receipt={run_id:'run',space_id:'original',status:'queued'};vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({status:'succeeded',data:receipt}),{status:202,headers:{'Content-Type':'application/json'}}));expect(await knowledgePromotionApi.extract('project',{source_kind:'note',source_id:'note',agent_id:'agent'},'extraction-key')).toEqual(receipt);const [url,init]=vi.mocked(fetch).mock.calls[0]!;expect(url).toBe('/api/v1/actions/knowledge.candidate.extract');expect(new Headers(init?.headers).get('Idempotency-Key')).toBe('extraction-key');expect(JSON.parse(init?.body as string)).toEqual({project_id:'project',source_kind:'note',source_id:'note',agent_id:'agent'});expect(fetch).toHaveBeenCalledTimes(1);
 });
 
+it('saves URLs and acts on Source items through keyed core commands, rereading only in the receipt Space',async()=>{
+  const reply=(data:unknown)=>new Response(JSON.stringify(data),{status:200,headers:{'Content-Type':'application/json'}});
+  const receipt=reply.bind(null,{status:'succeeded',data:{id:'item',space_id:'personal'}}),item=()=>reply({id:'item',space_id:'personal',title:'Current'});
+  vi.mocked(fetch).mockImplementationOnce(async()=>receipt()).mockImplementationOnce(async()=>item()).mockImplementationOnce(async()=>receipt()).mockImplementationOnce(async()=>item()).mockImplementationOnce(async()=>receipt()).mockImplementationOnce(async()=>item()).mockImplementationOnce(async()=>receipt()).mockImplementationOnce(async()=>item());
+  expect(await sourcesApi.createManualUrl({url:'https://example.test',queue_content:false},{spaceId:'active-space'},'save-key')).toEqual({id:'item',space_id:'personal',title:'Current'});
+  await sourcesApi.itemAction('item','queue_content',{},'queue-key');await sourcesApi.itemAction('item','mark_selected',{},'triage-key');await sourcesApi.updateItem('item',{connection_id:null},'move-key');
+  const calls=vi.mocked(fetch).mock.calls;
+  expect(calls.map(c=>c[0])).toEqual(['/api/v1/actions/source.item.save_url','/api/v1/sources/items/item','/api/v1/actions/source.item.queue','/api/v1/sources/items/item','/api/v1/actions/source.item.triage','/api/v1/sources/items/item','/api/v1/actions/source.item.update','/api/v1/sources/items/item']);
+  expect(calls.filter((_,i)=>i%2===0).map(c=>new Headers(c[1]?.headers).get('Idempotency-Key'))).toEqual(['save-key','queue-key','triage-key','move-key']);
+  for(const i of [1,3,5,7])expect(new Headers(calls[i]![1]?.headers).get('X-Rainver-Space-Id')).toBe('personal');
+  expect(JSON.parse(calls[6]![1]?.body as string)).toEqual({source_item_id:'item',connection_id:null});expect(fetch).toHaveBeenCalledTimes(8);
+});
+it('reviews and links evidence, links Notes and jots once through core without a legacy write',async()=>{
+  const reply=(data:unknown)=>new Response(JSON.stringify(data),{status:200,headers:{'Content-Type':'application/json'}});
+  vi.mocked(fetch).mockImplementationOnce(async()=>reply({status:'succeeded',data:{id:'ev',space_id:'s'}})).mockImplementationOnce(async()=>reply({id:'ev',status:'rejected'})).mockImplementationOnce(async()=>reply({status:'succeeded',data:{id:'link',space_id:'s',evidence_id:'ev'}})).mockImplementationOnce(async()=>reply({status:'succeeded',data:{id:'nl',space_id:'s',note_id:'note'}})).mockImplementationOnce(async()=>reply({status:'succeeded',data:{id:'nl',space_id:'s',note_id:'note'}})).mockImplementationOnce(async()=>reply({status:'succeeded',data:{id:'note',space_id:'s'}})).mockImplementationOnce(async()=>reply({id:'note',title:'Note on Paper'}));
+  expect(await sourcesApi.updateEvidence('ev',{status:'rejected'},'review-key')).toEqual({id:'ev',status:'rejected'});
+  expect(await sourcesApi.createEvidenceLink({evidence_id:'ev',target_type:'project',target_id:'p'},'link-key')).toEqual({id:'link',space_id:'s',evidence_id:'ev'});
+  await notesApi.createLink('note',{target_type:'source',target_id:'src'},'note-link-key');await notesApi.deleteLink('note','nl','unlink-key');
+  expect(await notesApi.jot({target_id:'src',text:'Thought',project_id:'p'},'jot-key')).toEqual({id:'note',title:'Note on Paper'});
+  const calls=vi.mocked(fetch).mock.calls;
+  expect(calls.map(c=>c[0])).toEqual(['/api/v1/actions/source.evidence.update','/api/v1/sources/evidence/ev','/api/v1/actions/source.evidence.link','/api/v1/actions/knowledge.note.link.create','/api/v1/actions/knowledge.note.link.delete','/api/v1/actions/knowledge.note.jot','/api/v1/knowledge/notes/note']);
+  expect(JSON.parse(calls[0]![1]?.body as string)).toEqual({evidence_id:'ev',status:'rejected'});expect(JSON.parse(calls[4]![1]?.body as string)).toEqual({note_id:'note',link_id:'nl'});
+  expect([0,2,3,4,5].map(i=>new Headers(calls[i]![1]?.headers).get('Idempotency-Key'))).toEqual(['review-key','link-key','note-link-key','unlink-key','jot-key']);
+  expect(new Headers(calls[6]![1]?.headers).get('X-Rainver-Space-Id')).toBe('s');expect(fetch).toHaveBeenCalledTimes(7);
+});
+it('material, credential, preview and purge helpers send one keyed core command and surface structured refusal codes',async()=>{
+  const reply=(data:unknown,status=200)=>new Response(JSON.stringify(data),{status,headers:{'Content-Type':'application/json'}});
+  vi.mocked(fetch)
+    .mockImplementationOnce(async()=>reply({status:'succeeded',data:{id:'item',space_id:'s',status:'queued',run_id:'run'}}))
+    .mockImplementationOnce(async()=>reply({error:{code:'operation_conflict',domain:'sources',message:'The text was updated; look at it again before choosing',metadata:{code:'reading_version_changed'},retryable:false,request_id:'r'}},409))
+    .mockImplementationOnce(async()=>reply({status:'succeeded',data:{id:'cred',space_id:'s',name:'Access'}},201))
+    .mockImplementationOnce(async()=>reply({status:'succeeded',data:{id:'job',space_id:'s',job_id:'job',status:'pending'}},202))
+    .mockImplementationOnce(async()=>reply({job_id:'job',kind:'query_preview',status:'completed',result:{provider_key:'arxiv',samples:[]},withheld:0}))
+    .mockImplementationOnce(async()=>reply({status:'succeeded',data:{id:'s',space_id:'s',deleted:2,retention_days:30,project_ids:[]}}));
+  expect(await sourcesApi.prepareMaterial('item',{investigation:true},{spaceId:'s'},'start-key')).toEqual({status:'queued',run_id:'run'});
+  await expect(sourcesApi.showAgentTextAsMarkdown('item',{artifact_id:'a',source_snapshot_id:null},{spaceId:'s'},'md-key')).rejects.toMatchObject({status:409,code:'reading_version_changed'});
+  expect(await sourceGoalsApi.storeCredential({name:'Access',secret:'s3cret'},{spaceId:'s'},'cred-key')).toEqual({id:'cred',space_id:'s',name:'Access'});
+  expect(await sourcesApi.previewQuery({provider_key:'arxiv',query:{q:'x'}},'preview-key')).toEqual({provider_key:'arxiv',samples:[]});
+  expect(await notesApi.purgeDeleted('purge-key')).toEqual({deleted:2,retention_days:30});
+  const calls=vi.mocked(fetch).mock.calls;
+  expect(calls.map(c=>c[0])).toEqual(['/api/v1/actions/source.material.start','/api/v1/actions/source.material.show_markdown','/api/v1/actions/source.custom.credential.create','/api/v1/actions/source.query.preview','/api/v1/sources/retrieval/requests/job','/api/v1/actions/knowledge.note.trash.purge']);
+  expect([0,1,2,3,5].map(i=>new Headers(calls[i]![1]?.headers).get('Idempotency-Key'))).toEqual(['start-key','md-key','cred-key','preview-key','purge-key']);
+  expect(JSON.parse(calls[0]![1]?.body as string)).toEqual({investigation:true,source_item_id:'item'});
+  expect(calls[4]![1]?.method??'GET').toBe('GET');expect(fetch).toHaveBeenCalledTimes(6);
+});
 describe('exact receipt read-backs', () => {
   const reply = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } })
   it('reads the receipt\'s own invitation and message by id, however many newer ones exist', async () => {
@@ -328,4 +381,46 @@ describe('exact receipt read-backs', () => {
       await expect(later).resolves.toMatchObject({ state: 'unconfirmed' })
     } finally { vi.useRealTimers() }
   })
+})
+
+it('sends Goal commands through the typed core with a fresh transport key, keeping the domain key and promoting refusal codes',async()=>{
+  vi.mocked(fetch).mockImplementation(async()=>new Response(JSON.stringify({status:'succeeded',data:{id:'goal',space_id:'active-space',session_id:'session',run_id:'run'}}),{status:200,headers:{'Content-Type':'application/json'}}));
+  await sourceGoalsApi.message('goal','Follow robotics','message-key',{spaceId:'active-space'},{search_path:'api'});
+  await sourceGoalsApi.message('goal','Follow robotics','message-key',{spaceId:'active-space'},{search_path:'api'});
+  const [first,second]=vi.mocked(fetch).mock.calls;
+  expect(String(first![0])).toBe('/api/v1/actions/source.goal.setup.message');
+  expect(JSON.parse(first![1]!.body as string)).toEqual({goal_id:'goal',content:'Follow robotics',idempotency_key:'message-key',search_path:'api'});
+  const keys=[first,second].map(call=>new Headers(call![1]!.headers).get('Idempotency-Key'));
+  expect(keys[0]).toBeTruthy();expect(keys[0]).not.toBe(keys[1]);
+  await sourceGoalsApi.action('goal','preview',{version_id:'v1'},{spaceId:'active-space'});
+  expect(String(vi.mocked(fetch).mock.calls[2]![0])).toBe('/api/v1/actions/source.goal.preview.request');
+  expect(JSON.parse(vi.mocked(fetch).mock.calls[2]![1]!.body as string)).toEqual({goal_id:'goal',version_id:'v1'});
+  vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({error:{code:'operation_conflict',domain:'sources',message:'source_goal_preview_in_progress',metadata:{code:'source_goal_preview_in_progress'},retryable:false,request_id:'r'}}),{status:409,headers:{'Content-Type':'application/json'}}));
+  await expect(sourceGoalsApi.action('goal','preview',{version_id:'v1'},{spaceId:'active-space'})).rejects.toMatchObject({status:409,code:'source_goal_preview_in_progress'});
+});
+
+describe('Proposal decision core transport',()=>{
+ it('unwraps formal accept/rollback receipts and preserves the caller key and Space',async()=>{
+  vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({status:'succeeded',data:{result_type:'code_patch_pending',result:{id:'intent'}}}),{status:202,headers:{'Content-Type':'application/json'}}));
+  expect(await proposalsApi.accept('proposal',{spaceId:'source-a',idempotencyKey:'accept-key',confirmIncompletePatch:true})).toMatchObject({result_type:'code_patch_pending'});
+  vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({status:'succeeded',data:{id:'rollback-intent'}}),{status:202,headers:{'Content-Type':'application/json'}}));
+  expect(await proposalsApi.rollback('proposal',{spaceId:'source-a',idempotencyKey:'rollback-key'})).toEqual({id:'rollback-intent'});
+  const calls=vi.mocked(fetch).mock.calls;
+  expect(calls.map(c=>c[0])).toEqual(['/api/v1/proposals/proposal/accept','/api/v1/proposals/proposal/rollback']);
+  expect(new Headers(calls[0]![1]?.headers).get('Idempotency-Key')).toBe('accept-key');
+  expect(new Headers(calls[1]![1]?.headers).get('Idempotency-Key')).toBe('rollback-key');
+  expect(JSON.parse(String(calls[0]![1]?.body))).toEqual({confirm_incomplete_patch:true});
+  for(const [,init] of calls)expect(new Headers(init?.headers).get('X-Rainver-Space-Id')).toBe('source-a');
+ });
+});
+
+it('distinguishes a committed settings write from failed readback without replaying it', async () => {
+  const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
+  vi.mocked(fetch)
+    .mockResolvedValueOnce(response({ status: 'succeeded', data: { id: 'session', session_id: 'session', space_id: 'source-a' } }))
+    .mockResolvedValueOnce(response({ detail: 'Catalog unavailable' }, 503))
+  await expect(agentsApi.saveConversationSessionConfig('agent', { session_id: 'session', runtime_profile_id: 'runtime', session_config: [] }, { spaceId: 'source-a' }))
+    .rejects.toMatchObject({ settingsSaved: true, status: 503 })
+  expect(vi.mocked(fetch).mock.calls).toHaveLength(2)
+  expect(vi.mocked(fetch).mock.calls.map(([,init]) => init?.method ?? 'GET')).toEqual(['POST','GET'])
 })

@@ -1,3 +1,4 @@
+import { EvolutionAssetRefusal } from "./assetRefusal.js";
 import { HttpError, objectValue, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 import { assertProjectWriter, canWriteProject } from "../projects/access.js";
 import { isSpaceOwnerOrAdmin } from "../access/roles.js";
@@ -24,17 +25,17 @@ export async function normalizeAssetOwnerScopeForCreate(
   ownerScopeId: string | null,
 ): Promise<NormalizedOwnerScope> {
   if (ownerScopeType === "system") {
-    throw new HttpError(422, "system-owned assets are reserved for built-in catalog sync");
+    throw new EvolutionAssetRefusal(422, "system-owned assets are reserved for built-in catalog sync");
   }
   if (ownerScopeType === "space") {
     if (ownerScopeId && ownerScopeId !== identity.spaceId) {
-      throw new HttpError(422, "space-owned asset owner_scope_id must match the active space_id when provided");
+      throw new EvolutionAssetRefusal(422, "space-owned asset owner_scope_id must match the active space_id when provided");
     }
     await assertSpaceOwnerOrAdmin(db, identity, "Requires space owner/admin role to create a space-owned asset");
     return { ownerScopeType, ownerScopeId: null };
   }
   if (ownerScopeType === "project") {
-    if (!ownerScopeId) throw new HttpError(422, "owner_scope_id is required for project-owned assets");
+    if (!ownerScopeId) throw new EvolutionAssetRefusal(422, "owner_scope_id is required for project-owned assets");
     await assertProjectWriter(db, identity.spaceId, ownerScopeId, identity.userId);
     return { ownerScopeType, ownerScopeId };
   }
@@ -45,11 +46,11 @@ export async function normalizeAssetOwnerScopeForCreate(
     return { ownerScopeType, ownerScopeId: identity.userId };
   }
   if (ownerScopeType === "agent") {
-    if (!ownerScopeId) throw new HttpError(422, "owner_scope_id is required for agent-owned assets");
+    if (!ownerScopeId) throw new EvolutionAssetRefusal(422, "owner_scope_id is required for agent-owned assets");
     await assertCanManageAgentScope(db, identity, ownerScopeId, "Requires permission to configure this Agent to create an agent-owned asset");
     return { ownerScopeType, ownerScopeId };
   }
-  throw new HttpError(422, "owner_scope_type must be one of space, project, user, agent");
+  throw new EvolutionAssetRefusal(422, "owner_scope_type must be one of space, project, user, agent");
 }
 
 export async function canReadAssetOwnerScope(
@@ -119,12 +120,12 @@ export async function normalizeVersionScopeForWrite(
   }
   if (scopeType === "space") {
     if (scopeId && scopeId !== identity.spaceId) {
-      throw new HttpError(422, "space-scoped asset version scope_id must match the active space_id");
+      throw new EvolutionAssetRefusal(422, "space-scoped asset version scope_id must match the active space_id");
     }
     await assertSpaceOwnerOrAdmin(db, identity, "Requires space owner/admin role to create a space-scoped asset version");
     return identity.spaceId;
   }
-  if (!scopeId) throw new HttpError(422, `scope_id is required for ${scopeType}-scoped asset versions`);
+  if (!scopeId) throw new EvolutionAssetRefusal(422, `scope_id is required for ${scopeType}-scoped asset versions`);
   if (scopeType === "project") {
     await assertProjectWriter(db, identity.spaceId, scopeId, identity.userId);
     return scopeId;
@@ -139,7 +140,7 @@ export async function normalizeVersionScopeForWrite(
     await assertCanManageAgentScope(db, identity, scopeId, "Requires permission to configure this Agent to create an agent-scoped asset version");
     return scopeId;
   }
-  throw new HttpError(422, "scope_type must be one of system, space, project, user, agent");
+  throw new EvolutionAssetRefusal(422, "scope_type must be one of system, space, project, user, agent");
 }
 
 /**
@@ -169,7 +170,7 @@ export function versionServesScope(
 /** The identity of a version's content: its JSON body, or the reference it names. */
 export function assetVersionContentHash(contentJson: unknown, contentRef: string | null): string {
   if (contentJson !== null && contentJson !== undefined) return sha256Json(contentJson);
-  if (!contentRef) throw new HttpError(422, "content_json or content_ref is required");
+  if (!contentRef) throw new EvolutionAssetRefusal(422, "content_json or content_ref is required");
   return sha256(`content_ref:${contentRef}`);
 }
 
@@ -249,7 +250,7 @@ export async function assertCanPinScope(db: Queryable, identity: SpaceUserIdenti
   }
   if (scopeType === "space") {
     if (scopeId !== identity.spaceId) {
-      throw new HttpError(422, "space pin scope_id must match the active space_id");
+      throw new EvolutionAssetRefusal(422, "space pin scope_id must match the active space_id");
     }
     await assertSpaceOwnerOrAdmin(db, identity, "Requires space owner/admin role to pin a space-scoped asset version");
     return;

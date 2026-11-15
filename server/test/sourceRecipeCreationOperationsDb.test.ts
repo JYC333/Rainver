@@ -88,7 +88,7 @@ it.each(['source_recipe_versions','scheduler_tasks','operation_idempotency','pol
 });
 it('never enables human creation placement for Agent, approval-mapped or durable-effect commands',async()=>{
   const runtime=await operationRuntime(config),registration=runtime.registrations.get('source.recipe.create')!;
-  for(const definition of [{...registration.definition,allowed_actor_types:['user','agent']},{...registration.definition,grantable:true},{...registration.definition,side_effects:'durable'}])expect(()=>new OperationExecutor(db.pool,config,[{...registration,definition:definition as typeof registration.definition}])).toThrow('Human content creation');
+  for(const definition of [{...registration.definition,allowed_actor_types:['user','agent']},{...registration.definition,grantable:true},{...registration.definition,side_effects:'durable'}])expect(()=>new OperationExecutor(db.pool,config,[{...registration,definition:definition as typeof registration.definition}])).toThrow('Human content placement requires an explicitly admitted user-only creation command');
 });
 it('keeps key reuse strict and validates recipe network origins without persisting a partial source',async()=>{
   const key=randomUUID();expect((await create(body,key)).statusCode).toBe(201);expect((await create({...body,name:'Different'},key)).json().error.code).toBe('idempotency_key_reused');

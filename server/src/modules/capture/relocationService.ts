@@ -1,6 +1,6 @@
-import { HttpError, withDbTransaction, type Queryable } from "../routeUtils/common.js";
+import { HttpError, withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
 import { assertWritableSpaceObject } from "../knowledge/knowledgeWriteAccess.js";
-import { getDbPool, type Pool } from "../../db/pool.js";
+import { getDbPool } from "../../db/pool.js";
 import type { ServerConfig } from "../../config.js";
 import { PgKnowledgeRepository } from "../knowledge/repository.js";
 import { noteBlocks, removeBlocks } from "../knowledge/noteBlockIds.js";
@@ -52,7 +52,7 @@ interface RelocationResult {
  * made after capturing, which is data loss dressed up as a feature.
  */
 export class RelocationService {
-  constructor(private readonly pool: Pool) {}
+  constructor(private readonly pool: Queryable) {}
 
   static fromConfig(config: ServerConfig): RelocationService {
     if (!config.databaseUrl) throw new HttpError(502, "SERVER_DATABASE_URL is required");
@@ -60,7 +60,7 @@ export class RelocationService {
   }
 
   async preview(input: { userId: string; activityId: string }): Promise<RelocationPreview> {
-    return withDbTransaction(this.pool, async (client) => {
+    return withQueryableTransaction(this.pool, async (client) => {
       const capture = await loadCapture(client, input.userId, input.activityId);
       if (!capture.note_id || !capture.block_id) {
         throw new HttpError(409, "This capture was not projected into a note, so there is nothing to relocate");
@@ -89,7 +89,7 @@ export class RelocationService {
     assertRelocationMode(input.mode);
     if (input.blockIds.length === 0) throw new HttpError(422, "Select at least one block to relocate");
 
-    return withDbTransaction(this.pool, async (client) => {
+    return withQueryableTransaction(this.pool, async (client) => {
       const capture = await loadCapture(client, input.userId, input.activityId);
       if (!capture.note_id || !capture.block_id) {
         throw new HttpError(409, "This capture was not projected into a note, so there is nothing to relocate");
@@ -320,9 +320,16 @@ async function removeFromSourceNote(
  * Take the source note's row lock for the whole relocation.
  *
  * `getNote` applies the read gate but takes no lock, so this runs first and the
- * lock is held until the transaction ends.
+ * lock is held until the transaction ends. Root before extension, like every
+ * Note writer (`writeNote`): the removal below goes through `writeNote`, and
+ * holding `notes` while it waits for the root would invert that order against
+ * another save or a retrieval release closure.
  */
 async function lockNote(db: Queryable, capture: CaptureRow): Promise<void> {
+  await db.query(
+    `SELECT id FROM space_objects WHERE space_id = $1 AND id = $2 AND object_type = 'note' FOR UPDATE`,
+    [capture.space_id, capture.note_id],
+  );
   const locked = await db.query(
     `SELECT object_id FROM notes WHERE object_id = $1 AND space_id = $2 FOR UPDATE`,
     [capture.note_id, capture.space_id],

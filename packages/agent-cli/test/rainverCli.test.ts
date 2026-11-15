@@ -324,3 +324,13 @@ describe('explicit logical retry keys',()=>{
   expect(received).toHaveLength(1);
  });
 });
+
+it('stops after a hidden-object 404 and leaves diagnosis to the current list and visible reads',async()=>{
+ respond=()=>({status:404,body:JSON.stringify({error:{code:'operation_not_found'}})});
+ const result=await runCli(['call','workspace.change.complete','{}']);
+ expect(result.code).toBe(1);
+ expect(result.stderr).toContain('Stop guessing after a 404');
+ expect(result.stderr).toContain('do not try alternate names or ids');
+ expect(received).toHaveLength(1);
+ expect(received[0].method).toBe('POST');
+});

@@ -31,7 +31,7 @@ import {
 } from '../../components/ui/dialog'
 import EditProjectBriefGoalDialog from './EditProjectBriefGoalDialog'
 import ProjectPulse from './ProjectPulse'
-import { AmbientImportBanner } from './AmbientImportBanner'
+import { ProjectHistoryImport } from './ProjectHistoryImport'
 import EditProjectInstructionDialog from './EditProjectInstructionDialog'
 import ProjectConversationBackendCard from './ProjectConversationBackendCard'
 import ProjectPublicSummaryCard from './ProjectPublicSummaryCard'
@@ -410,10 +410,8 @@ export default function ProjectDetailPage({ onAccessChanged }: { onAccessChanged
 
       <ProjectPluginSlots placement="project.overview.card"/>
 
-      {/* Made once, on the first visit after a folder is bound: a person's own
-             terminal history becoming Project content is a decision, not a
-             consequence of binding a folder. */}
-      {projectId && <AmbientImportBanner projectId={projectId} />}
+      {/* Owner-only pending history and manual entry; opening settings is not completion. */}
+      {projectId && <ProjectHistoryImport projectId={projectId} />}
 
       {/* What other projects may learn about this one. Rendered only for
              Project writers; readers have no draft to edit. */}

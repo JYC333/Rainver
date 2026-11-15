@@ -4,9 +4,9 @@
  * Counting means starting an agent process per runtime and asking it to
  * enumerate — orders of magnitude more than a heartbeat should cost, and this
  * daemon heartbeats every 15 seconds. So counts are refreshed on their own
- * slow interval and every heartbeat reports the cached value. The number is a
- * banner subtitle ("12 sessions found for this folder"); it being minutes old
- * changes nothing about what an import then actually reads.
+ * slow interval and every heartbeat reports the cached value. The bounded inventory
+ * contains only session identities and timestamps. The server compares it with
+ * imports to offer new or unfinished history; a refresh never replays history.
  *
  * Nothing here is persisted: the cache lives for the life of the process,
  * exactly like the daemon's other in-memory state.
@@ -26,6 +26,8 @@ interface AmbientSessionCount {
   runtime_key: string;
   installation: string;
   session_count: number;
+  sessions?: Array<{ session_id: string; updated_at: string | null }>;
+  observed_at?: string;
   oldest_updated_at: string | null;
   newest_updated_at: string | null;
   /** Set when the runtime could not be asked; the count is then unknown, not zero. */
@@ -128,6 +130,8 @@ async function measure(
     return {
       ...base,
       session_count: result.sessions.length,
+      sessions: result.sessions.map(({ session_id, updated_at }) => ({ session_id, updated_at })),
+      observed_at: new Date().toISOString(),
       oldest_updated_at: dates[0]?.value ?? null,
       newest_updated_at: dates[dates.length - 1]?.value ?? null,
       error: null,

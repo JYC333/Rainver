@@ -64,7 +64,7 @@ export default function TaskDetailPage() {
   const [boards, setBoards] = useState<Board[]>([])
   const [loading, setLoading] = useState(true)
   const [workRefresh, setWorkRefresh] = useState(0)
-  const [mode, setMode] = useState<string>('live')
+  const [mode, setMode] = useState<'live' | 'dry_run'>('live')
   const [agentPick, setAgentPick] = useState<string>('')
   const [creatingRun, setCreatingRun] = useState(false)
   const [requestingPlan, setRequestingPlan] = useState(false)
@@ -205,7 +205,7 @@ export default function TaskDetailPage() {
           ? { runtime_profile_id: runtimeProfilePick }
           : {}),
       })
-      toast.success(`Planning Run queued: ${run.id.slice(0, 8)}…`)
+      toast.success(`Planning Run queued: ${run.run_id.slice(0, 8)}…`)
       await reloadAfterWrite()
     } catch (error) {
       toast.error(errMsg(error))
@@ -331,7 +331,7 @@ export default function TaskDetailPage() {
                 { value: 'live', label: 'live' },
                 { value: 'dry_run', label: 'dry_run' },
               ]}
-              onChange={setMode}
+              onChange={value => setMode(value === 'dry_run' ? 'dry_run' : 'live')}
             />
           </div>
           <Button

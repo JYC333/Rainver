@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { takeReferences } from './pendingReferences'
 import { useParams, useSearchParams } from 'react-router-dom'
-import { Loader2, MessageSquarePlus, Plus, RefreshCw, Users } from 'lucide-react'
+import { ArrowLeft, Loader2, MessageSquare, MessageSquarePlus, RefreshCw, Users } from 'lucide-react'
 import { toast } from 'sonner'
 import { agentsApi, projectFoldersApi, projectsApi, roomsApi, spacesApi } from '../../api/client'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { useSpace } from '../../contexts/SpaceContext'
+import { useAppTranslation } from '../../i18n'
+import { formatDateTime } from '../../i18n/format'
 import { errMsg } from '../../lib/utils'
 import type {
   ThreadReferencePick,
@@ -22,18 +24,43 @@ import type {
   RoomPendingApprovalListResponse,
   SpaceMember,
 } from '../../types/api'
+import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
 import { Card, CardTitle } from '../../components/ui/card'
-import { LimitedRoomDialog } from './LimitedRoomDialog'
+import { EmptyState } from '../../components/ui/empty-state'
+import { Tabs, TabsList, TabsTrigger } from '../../components/ui/tabs'
 import { RoomRosterPanel } from './RoomRosterPanel'
-import { audienceLabel } from './audience'
+import { RoomsIndex } from './RoomsIndex'
+import { audienceLabel, rosterCountsLabel, roomVisibilityLabel } from './audience'
+import { displayRoomTitle as roomTitle } from './roomTitle'
+import { CREATED_AGENT_PARAM } from '../projects/agentCreationReturn'
 import { ConversationSurface } from '../conversation/ConversationSurface'
+import { sortRoomConversations, useRoomConversationRefresh } from '../conversation/useRoomConversationRefresh'
+import { useUnreadConversations } from '../conversation/useUnreadConversations'
+import { ConversationStatusIndicator } from '../conversation/ConversationUnreadDot'
 import { ConversationExecutionPreflight } from '../conversation/ConversationExecutionPreflight'
 import { conversationInputSourcesFromExecutionSummary } from '../conversation/ConversationInputComposer'
 
 const LIST_PAGE_SIZE = 100
 
+/**
+ * A Project's Rooms, one Room, and one Room conversation.
+ *
+ * Three levels, each with its own URL so a link opens exactly what it names:
+ *
+ * - no `room` — the Rooms index: every Room the viewer is a member of, with
+ *   who can see it and who is in it.
+ * - `room` — that Room's conversation list, or its members with
+ *   `view=members`. Entering a Room never jumps into its newest conversation.
+ * - `room` + `conversation` (or `new=1`) — one conversation, naming its Room,
+ *   with the way back to that Room's list. An existing deep link to a
+ *   conversation keeps opening it directly.
+ *
+ * A Room is a visibility boundary (ADR 0018): its members are who can see; the
+ * recipients a message names are who is asked, chosen in the composer.
+ */
 export default function AgentGroupsPage() {
+  const { t } = useAppTranslation()
   const { activeSpaceId, userId } = useSpace()
   const { projectId: projectRouteId } = useParams()
   const [search, setSearch] = useSearchParams()
@@ -56,19 +83,19 @@ export default function AgentGroupsPage() {
   })
   const roomId = search.get('room')
   const conversationId = search.get('conversation')
+  const membersView = search.get('view') === 'members'
+  const createdAgentId = search.get(CREATED_AGENT_PARAM)
   /**
    * Deliberately composing a new conversation rather than simply having none
-   * selected. Do not treat that as "nothing selected". The auto-select below
-   * would immediately re-open the newest one, because "nothing selected" is
-   * also what a fresh arrival looks like.
+   * selected. "Nothing selected" is the Room's conversation list.
    */
   const startingNew = search.get('new') === '1'
+  const inConversation = Boolean(roomId && (conversationId || startingNew))
   // Read inside callbacks that must not depend on the current query string.
   const searchRef = useRef(search)
   useEffect(() => { searchRef.current = search }, [search])
   const projectFilter = projectRouteId || search.get('project') || undefined
-  const isProjectScoped = Boolean(projectRouteId)
-  const [rooms, setRooms] = useState<Room[]>([])
+  const unreadConversations = useUnreadConversations(activeSpaceId ?? undefined, projectFilter, Boolean(roomId))
   const [projects, setProjects] = useState<Project[]>([])
   const [agents, setAgents] = useState<AgentOut[]>([])
   const [spaceMembers, setSpaceMembers] = useState<SpaceMember[]>([])
@@ -78,33 +105,27 @@ export default function AgentGroupsPage() {
    * roster panel simply offers nobody rather than offering the wrong people.
    */
   const [projectReaders, setProjectReaders] = useState<ProjectReader[]>([])
-  const [openingLimitedRoom, setOpeningLimitedRoom] = useState(false)
   const [pendingApprovals, setPendingApprovals] = useState<RoomPendingApproval[]>([])
   const [detail, setDetail] = useState<RoomDetail | null>(null)
   const [overview, setOverview] = useState<ProjectOverview | null>(null)
   const [boundFolderName, setBoundFolderName] = useState<string | null>(null)
   const [conversations, setConversations] = useState<RoomConversationRecord[]>([])
+  useRoomConversationRefresh(roomId, setConversations)
   const [draftConversationId, setDraftConversationId] = useState<string | null>(null)
   const locallyCommittedConversations = useRef(new Map<string, RoomConversationRecord>())
   const [executionReady, setExecutionReady] = useState(false)
   const [executionSummary, setExecutionSummary] = useState<ConversationExecutionSummary | null>(null)
-  const locallyCommittedRooms = useRef(new Map<string, Room>())
   const catalogRequestSequence = useRef(0)
   const roomRequestSequence = useRef(0)
-  const [loading, setLoading] = useState(true)
   const [roomLoading, setRoomLoading] = useState(false)
   const [roomLoadError, setRoomLoadError] = useState<string | null>(null)
-  /** A retry of the catalog load is in flight; the empty state's button waits on it. */
-  const [retrying, setRetrying] = useState(false)
   const loadCatalog = useCallback(async () => {
     if (!activeSpaceId) return
     const requestSequence = ++catalogRequestSequence.current
     const pendingApprovalsRequest: Promise<RoomPendingApprovalListResponse> = typeof roomsApi.pendingApprovals === 'function'
       ? roomsApi.pendingApprovals({ limit: 100 })
       : Promise.resolve({ items: [], total: 0, limit: 100, offset: 0 })
-    const roomsRequest = loadAllPages((limit, offset) =>
-      roomsApi.list({ project_id: projectFilter, limit, offset }))
-    const supportingCatalogRequest = Promise.all([
+    const [projectPage, agentList, members, approvalPage, readerPage] = await Promise.all([
       projectsApi.list({ status: 'active', limit: 100 }),
       agentsApi.list({ status: 'active' }),
       spacesApi.members(activeSpaceId),
@@ -113,23 +134,6 @@ export default function AgentGroupsPage() {
       // candidate list hides the invite control, which is the safe direction.
       projectFilter ? projectsApi.readers(projectFilter).catch(() => ({ readers: [] })) : Promise.resolve({ readers: [] }),
     ])
-    const allRooms = await roomsRequest
-    // URL changes and the post-create refresh can overlap. Only the newest
-    // request may replace catalog state; otherwise an older empty response can
-    // arrive after a newer response observed the committed Room and removed
-    // its local pending entry.
-    if (requestSequence !== catalogRequestSequence.current) return
-    const observedRoomIds = new Set(allRooms.map(room => room.id))
-    for (const roomId of observedRoomIds) locallyCommittedRooms.current.delete(roomId)
-    const pendingRooms = [...locallyCommittedRooms.current.values()].filter(room =>
-      room.space_id === activeSpaceId && (!projectFilter || room.project_id === projectFilter))
-    const nextRooms = [...allRooms, ...pendingRooms.filter(room => !observedRoomIds.has(room.id))]
-    setRooms(nextRooms)
-    // Existing Rooms are the critical path. Let selection and detail loading
-    // begin without waiting for secondary catalogs used by roster/setup UI.
-    if (nextRooms.length > 0) setLoading(false)
-
-    const [projectPage, agentList, members, approvalPage, readerPage] = await supportingCatalogRequest
     if (requestSequence !== catalogRequestSequence.current) return
     const selectableAgents = agentList.filter(agent => agent.agent_kind !== 'system_assistant')
     setProjects(projectPage.items)
@@ -137,7 +141,7 @@ export default function AgentGroupsPage() {
     setSpaceMembers(members)
     setProjectReaders(readerPage.readers)
     setPendingApprovals(approvalPage.items)
-  }, [activeSpaceId, projectFilter, projectRouteId])
+  }, [activeSpaceId, projectFilter])
 
   async function decidePendingApproval(item: RoomPendingApproval, decision: 'approved' | 'rejected') {
     try {
@@ -146,7 +150,7 @@ export default function AgentGroupsPage() {
         decision,
       })
       await loadCatalog()
-      toast.success(decision === 'approved' ? 'Private Agent sharing approved' : 'Invitation rejected')
+      toast.success(decision === 'approved' ? t('collab_ui.room.approved') : t('collab_ui.room.rejected'))
     } catch (error) {
       toast.error(errMsg(error))
     }
@@ -204,33 +208,14 @@ export default function AgentGroupsPage() {
       nextDetail.room.project_folder_id
         ? folderPage.items.find(folder =>
             folder.id === nextDetail.room.project_folder_id)?.name
-          ?? 'Unavailable folder'
+          ?? t('collab_ui.conversation.folder_unavailable')
         : null,
     )
-  }, [roomId])
+  }, [roomId, t])
 
   useEffect(() => {
-    let cancelled = false
-    setLoading(true)
-    loadCatalog()
-      .catch(error => toast.error(errMsg(error)))
-      .finally(() => {
-        if (!cancelled) setLoading(false)
-      })
-    return () => { cancelled = true }
+    loadCatalog().catch(error => toast.error(errMsg(error)))
   }, [loadCatalog])
-
-  useEffect(() => {
-    if (roomId || rooms.length === 0) return
-    const newestRoom = [...rooms].sort(compareCreatedNewestFirst)[0]
-    if (!newestRoom) return
-    setSearch(current => {
-      const next = new URLSearchParams(current)
-      next.set('room', newestRoom.id)
-      next.delete('conversation')
-      return next
-    }, { replace: true })
-  }, [roomId, rooms, setSearch])
 
   /** Loads the Room, reporting a failure on the page and as a toast; a retry goes through here too. */
   const loadRoomReporting = useCallback(async (isCurrent: () => boolean = () => true) => {
@@ -260,41 +245,6 @@ export default function AgentGroupsPage() {
     return () => { cancelled = true }
   }, [loadRoomReporting])
 
-  useEffect(() => {
-    if (
-      !roomId
-      || conversationId
-      || startingNew
-      || detail?.room.id !== roomId
-      || conversations.length === 0
-    ) return
-    setSearch(current => {
-      const next = new URLSearchParams(current)
-      next.set('room', roomId)
-      next.set('conversation', conversations[0]!.id)
-      return next
-    }, { replace: true })
-  }, [conversationId, conversations, detail, roomId, setSearch, startingNew])
-
-  /**
-   * Take up a Room the dialog just created.
-   *
-   * The retention matters and is why this is not just a navigation: the Room
-   * is already committed, so it is held locally before any follow-up read. A
-   * lagging detail load or a failed catalog refresh would otherwise restore
-   * the empty state and invite somebody to create a second one.
-   */
-  async function takeUpRoom(room: Room): Promise<void> {
-    locallyCommittedRooms.current.set(room.id, room)
-    setRooms(current => current.some(item => item.id === room.id) ? current : [...current, room])
-    setSearch({ room: room.id })
-    try {
-      await loadCatalog()
-    } catch (error) {
-      toast.error(errMsg(error))
-    }
-  }
-
   /**
    * Start a thread, optionally carrying picked content into it.
    *
@@ -318,6 +268,13 @@ export default function AgentGroupsPage() {
     setExecutionReady(false)
   }
 
+  function openConversation(id: string) {
+    if (!roomId) return
+    setExecutionReady(false)
+    setDraftConversationId(null)
+    setSearch({ room: roomId, conversation: id })
+  }
+
   const currentConversation = conversations.find(item => item.id === conversationId) ?? null
   /**
    * The picks this render hands to the composer, if any.
@@ -338,7 +295,7 @@ export default function AgentGroupsPage() {
     // made in: loadRoom restores it there, and it must not bind to this one.
     if (conversation.room_id !== searchRef.current.get('room')) return
     setConversations(current => sortConversationsNewestFirst(current.some(item => item.id === conversation.id)
-      ? current.map(item => item.id === conversation.id ? conversation : item)
+      ? current.map(item => item.id === conversation.id ? { ...item, ...conversation } : item)
       : [...current, conversation]))
     // Bind the server-returned Conversation so subsequent sends continue the
     // selected thread rather than changing the URL on every refresh.
@@ -354,327 +311,325 @@ export default function AgentGroupsPage() {
       return next
     }, { replace: true })
   }, [setSearch])
-  // The server computes the audience once, with the definition the Project's
-  // conversation list uses; this only words it.
-  const roomAudience = detail
-    ? audienceLabel({ otherMemberNames: detail.other_member_names, agentCount: detail.agent_count })
+
+  const projectName = projects.find(project => project.id === (detail?.room.project_id ?? projectFilter))?.name
+  const titleOf = (target: Pick<Room, 'title'>) => roomTitle(target, projectName)
+  const rosterLine = detail
+    ? rosterCountsLabel({ people: detail.user_members.filter(member => member.status === 'active').length, agents: detail.agent_members.length }, t)
     : ''
+  const visibility = detail
+    ? roomVisibilityLabel({ isMainline: detail.room.is_mainline, otherMemberNames: detail.other_member_names }, t)
+    : ''
+  const projectBase = `/projects/${detail?.room.project_id ?? projectFilter ?? ''}/rooms`
+  const roomListHref = (view?: 'members') =>
+    `${projectBase}?${new URLSearchParams({ room: roomId ?? '', ...(view ? { view } : {}) }).toString()}`
 
-  if (loading) {
-    return <div className="p-6 flex items-center gap-2 text-muted-foreground"><Loader2 className="size-4 animate-spin" /> Loading Rooms…</div>
+  const approvalsCard = pendingApprovals.length > 0 && (
+    <Card className="border-warning/40 bg-warning/5 p-4">
+      <CardTitle className="text-sm">{t('collab_ui.room.approvals')}</CardTitle>
+      <div className="mt-2 space-y-2">
+        {pendingApprovals.map(item => (
+          <div key={`${item.invitation_id}:${item.agent_id}`} className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border p-2 text-sm">
+            <div>
+              <p>{t('collab_ui.room.approval_line', { agent: item.agent_name, room: item.room_title })}</p>
+              <p className="text-xs text-muted-foreground">{t('collab_ui.room.approval_detail', { project: item.project_name, person: item.invitee_display_name || item.invitee_email || item.invitee_user_id })}</p>
+            </div>
+            <div className="flex gap-2">
+              <Button size="sm" onClick={() => void decidePendingApproval(item, 'approved')}>{t('collab_ui.room.approve')}</Button>
+              <Button size="sm" variant="outline" onClick={() => void decidePendingApproval(item, 'rejected')}>{t('collab_ui.room.reject')}</Button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </Card>
+  )
+
+  // ── Rooms index ─────────────────────────────────────────────────────────
+  if (!roomId) {
+    return (
+      <div className="mx-auto max-w-[1600px] space-y-5 p-4 md:p-6">
+        {approvalsCard}
+        {projectFilter ? (
+          <RoomsIndex
+            projectId={projectFilter}
+            projectName={projectName}
+            onRoomOpened={room => setSearch({ room: room.id })}
+          />
+        ) : (
+          <p className="text-sm text-muted-foreground">{t('collab_ui.rooms.load_failed')}</p>
+        )}
+      </div>
+    )
   }
 
-  // A populated Rooms route resolves its default selection before rendering
-  // the workspace. The create/select landing state is reserved for a truly
-  // empty catalog, so users never see it flash before the selected Room.
-  if (!roomId && rooms.length > 0) {
-    return <div className="p-6 flex items-center gap-2 text-muted-foreground"><Loader2 className="size-4 animate-spin" /> Loading Room…</div>
-  }
-
-  if (roomId && !detail) {
+  if (!detail) {
     if (roomLoadError) {
-      const selectedRoom = rooms.find(room => room.id === roomId)
       return (
-        <div className="p-6 max-w-[1600px] mx-auto space-y-3">
-          {selectedRoom && <h1 className="text-xl font-semibold">{displayRoomTitle(selectedRoom, projects)}</h1>}
-          <p className="text-sm text-destructive">Room details could not be loaded: {roomLoadError}</p>
-          <Button variant="outline" size="sm" onClick={() => void loadRoomReporting()}>Try again</Button>
+        <div className="mx-auto max-w-[1600px] space-y-3 p-4 md:p-6">
+          <BackToRooms href={projectBase} label={t('collab_ui.room.back')} />
+          <p className="text-sm text-destructive">{t('collab_ui.room.load_failed', { error: roomLoadError })}</p>
+          <Button variant="outline" size="sm" onClick={() => void loadRoomReporting()}>{t('collab_ui.common.retry')}</Button>
         </div>
       )
     }
-    return <div className="p-6 flex items-center gap-2 text-muted-foreground"><Loader2 className="size-4 animate-spin" /> Loading Room…</div>
+    return <div className="flex items-center gap-2 p-6 text-muted-foreground"><Loader2 className="size-4 animate-spin" />{t('collab_ui.room.loading')}</div>
   }
 
-  return (
-    <div className="p-6 max-w-[1600px] mx-auto space-y-5">
-      <header className="flex items-start justify-between gap-4 border-b border-border pb-4">
-        <div>
-          <h1 className="text-xl font-semibold flex items-center gap-2"><Users className="size-5" />Rooms</h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            Project-bound conversations where every human speaks under their own identity and subscription.
+  const roomHeader = (
+    <header className="space-y-3 border-b border-border pb-4">
+      <BackToRooms href={projectBase} label={t('collab_ui.room.back')} />
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h1 className="flex flex-wrap items-center gap-2 text-xl font-semibold">
+            <Users className="size-5 shrink-0" />
+            <span className="min-w-0 break-words">{titleOf(detail.room)}</span>
+            {detail.room.is_mainline
+              ? <Badge variant="secondary">{t('collab_ui.rooms.default_badge')}</Badge>
+              : <Badge variant="outline">{t('collab_ui.rooms.limited_badge')}</Badge>}
+          </h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {t('collab_ui.rooms.visible_to', { who: visibility })}
+            {' · '}{rosterLine}
           </p>
         </div>
         <Button variant="outline" size="sm" onClick={() => void Promise.all([loadCatalog(), loadRoom()]).catch(error => toast.error(errMsg(error)))}>
-          <RefreshCw className="size-3.5 mr-1" />Refresh
+          <RefreshCw className="size-3.5" />{t('collab_ui.room.refresh')}
         </Button>
-      </header>
+      </div>
+    </header>
+  )
 
-      {pendingApprovals.length > 0 && (
-        <Card className="border-amber-500/40 bg-amber-500/5 p-4">
-          <CardTitle className="text-sm">Pending private-Agent approvals</CardTitle>
-          <div className="mt-2 space-y-2">
-            {pendingApprovals.map(item => (
-              <div key={`${item.invitation_id}:${item.agent_id}`} className="flex flex-wrap items-center justify-between gap-2 rounded border p-2 text-sm">
-                <div>
-                  <p>{item.agent_name} · {item.room_title}</p>
-                  <p className="text-xs text-muted-foreground">Project {item.project_name} · invited user {item.invitee_display_name || item.invitee_email || item.invitee_user_id}</p>
-                </div>
-                <div className="flex gap-2">
-                  <Button size="sm" onClick={() => void decidePendingApproval(item, 'approved')}>Approve</Button>
-                  <Button size="sm" variant="outline" onClick={() => void decidePendingApproval(item, 'rejected')}>Reject</Button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </Card>
-      )}
-
-      {!detail ? (
-        <div className="grid gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
-          <aside className="space-y-3">
-            <div className="space-y-2">
-            {rooms.map(room => (
+  // ── One Room: its conversations, or its members ─────────────────────────
+  if (!inConversation) {
+    return (
+      <div className="mx-auto max-w-[1600px] space-y-4 p-4 md:p-6">
+        {approvalsCard}
+        {roomHeader}
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <Tabs value={membersView ? 'members' : 'conversations'} onValueChange={value => setSearch({ room: detail.room.id, ...(value === 'members' ? { view: 'members' } : {}) })}>
+            <TabsList aria-label={t('collab_ui.room.tabs')}>
+              <TabsTrigger value="conversations">{t('collab_ui.room.tab_conversations')}</TabsTrigger>
+              <TabsTrigger value="members">{t('collab_ui.room.tab_members')}</TabsTrigger>
+            </TabsList>
+          </Tabs>
+          {!membersView && (
+            <Button size="sm" onClick={() => startConversation()}><MessageSquarePlus className="size-4" />{t('collab_ui.room.new_conversation')}</Button>
+          )}
+        </div>
+        {membersView ? (
+          userId && (
+            <RoomRosterPanel
+              detail={detail}
+              spaceMembers={spaceMembers}
+              projectReaders={projectReaders}
+              userId={userId}
+              createdAgentId={createdAgentId}
+              onCreatedAgentHandled={() => setSearch({ room: detail.room.id, view: 'members' }, { replace: true })}
+              onChanged={async () => { await Promise.all([loadCatalog(), loadRoom()]) }}
+            />
+          )
+        ) : roomLoading && conversations.length === 0 ? (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" />{t('collab_ui.common.loading')}</div>
+        ) : conversations.length === 0 ? (
+          <Card>
+            <EmptyState
+              title={t('collab_ui.room.empty_title')}
+              description={t('collab_ui.room.empty_text')}
+              action={<Button size="sm" onClick={() => startConversation()}><MessageSquarePlus className="size-4" />{t('collab_ui.room.new_conversation')}</Button>}
+            />
+          </Card>
+        ) : (
+          <nav aria-label={t('collab_ui.room.tab_conversations')} className="space-y-2">
+            {conversations.map(conversation => (
               <button
-                key={room.id}
-                className={`w-full text-left rounded-md border p-3 ${room.id === roomId ? 'border-primary bg-primary/5' : 'border-border hover:bg-accent/40'}`}
-                onClick={() => setSearch({ room: room.id })}
+                type="button"
+                key={conversation.id}
+                className="block w-full rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                onClick={() => openConversation(conversation.id)}
               >
-                <div className="font-medium text-sm">{displayRoomTitle(room, projects)}</div>
-                {!isProjectScoped && (
-                  <div className="text-xs text-muted-foreground mt-1">{projects.find(project => project.id === room.project_id)?.name ?? 'Project'}</div>
-                )}
+                <Card className="flex items-start gap-3 p-3 hover:bg-muted/40">
+                  <MessageSquare className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium">{conversation.title || t('collab_ui.room.untitled')}</p>
+                    <p className="text-xs text-muted-foreground">{t(conversation.last_message_at ? 'collab_ui.room.last_message' : 'collab_ui.room.started', { when: formatDateTime(conversation.last_message_at ?? conversation.created_at) })}</p>
+                  </div>
+                  <ConversationStatusIndicator running={conversation.is_running} unread={unreadConversations.has(conversation.id)} />
+                </Card>
               </button>
             ))}
+          </nav>
+        )}
+      </div>
+    )
+  }
+
+  // ── One conversation ─────────────────────────────────────────────────────
+  // The server computes the audience once, with the definition the Project's
+  // conversation list uses; this only words it.
+  const roomAudience = audienceLabel({ otherMemberNames: detail.other_member_names, agentCount: detail.agent_count }, t)
+  return (
+    <div className="flex min-w-0 flex-col gap-4 p-4 md:p-6 lg:h-full lg:min-h-0 lg:overflow-hidden">
+      {approvalsCard}
+      <section className="grid min-w-0 grid-cols-1 items-start gap-4 lg:min-h-0 lg:flex-1 lg:grid-rows-[minmax(0,1fr)] lg:items-stretch lg:grid-cols-[220px_minmax(0,1fr)] xl:grid-cols-[230px_minmax(0,1fr)_240px]">
+        <aside aria-label={t('collab_ui.conversation.navigation')} className="flex min-w-0 flex-col gap-3 lg:min-h-0 lg:overflow-hidden">
+          <Card className="mb-0 shrink-0 space-y-3 p-3">
+            <div className="space-y-1">
+              <Link to={roomListHref()} className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:underline">
+                <ArrowLeft className="size-3.5" />{t('collab_ui.conversation.back', { room: titleOf(detail.room) })}
+              </Link>
+              <CardTitle>{titleOf(detail.room)}</CardTitle>
+              <p className="text-xs text-muted-foreground">{visibility}</p>
+              <p className="text-xs text-muted-foreground">{rosterLine}</p>
+              <p className="truncate text-xs text-muted-foreground">{boundFolderName ?? t('collab_ui.conversation.no_folder')}</p>
+              <Button asChild size="sm" variant="ghost" className="-ml-2">
+                <Link to={roomListHref('members')}><Users className="size-3.5" />{t('collab_ui.conversation.members_link')}</Link>
+              </Button>
             </div>
-          </aside>
-
-          <Card className="p-8 text-center text-muted-foreground space-y-3">
-            {roomLoading ? (
-              <span className="inline-flex items-center gap-2"><Loader2 className="size-4 animate-spin" />Loading Room…</span>
-            ) : isProjectScoped && rooms.length === 0 ? (
-              // Since every Project is created with its mainline (ADR 0018
-              // decision 4), a Project showing none has failed to load them.
-              // Do not offer a button that creates a Room: that would be a
-              // second shared one beside the mainline.
-              <>
-                <p className="text-sm">Could not load this Project's conversations.</p>
-                <Button
-                  variant="outline"
-                  disabled={retrying}
-                  onClick={() => {
-                    setRetrying(true)
-                    void loadCatalog()
-                      .catch(error => toast.error(errMsg(error)))
-                      .finally(() => setRetrying(false))
-                  }}
-                >
-                  {retrying ? <Loader2 className="size-4 mr-1 animate-spin" /> : null}
-                  Try again
-                </Button>
-              </>
-            ) : (
-              'Choose a Room.'
-            )}
           </Card>
-          </div>
-      ) : (
-        <section className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[220px_minmax(0,1fr)] xl:grid-cols-[230px_minmax(0,1fr)_240px]">
-          <aside aria-label="Room and conversation navigation" className="space-y-3 lg:sticky lg:top-4">
-            <Card className="p-3 space-y-3">
-              <div>
-                <CardTitle>{displayRoomTitle(detail.room, projects)}</CardTitle>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {detail.user_members.length} people · {detail.agent_members.length} agents
-                </p>
-                <p className="mt-1 truncate text-xs text-muted-foreground">
-                  {boundFolderName ?? 'No project folder'}
-                </p>
-              </div>
-              <div className="space-y-1 border-t border-border pt-2">
-                <p className="px-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Rooms</p>
-                {rooms.map(room => (
-                  <button
-                    key={room.id}
-                    className={`w-full rounded px-2 py-1.5 text-left text-sm ${room.id === roomId ? 'bg-accent font-medium' : 'hover:bg-accent/50'}`}
-                    onClick={() => setSearch({ room: room.id })}
-                  >
-                    {displayRoomTitle(room, projects)}
-                  </button>
-                ))}
-              </div>
-              {detail.viewer_can_write && (
-                <Button
-                  className="w-full"
-                  size="sm"
-                  variant="outline"
-                  onClick={() => setOpeningLimitedRoom(true)}
+
+          <Card className="mb-0 flex min-h-0 flex-col p-2 lg:flex-1 lg:overflow-hidden">
+            <div className="flex shrink-0 items-center justify-between gap-2 px-2 py-1">
+              <CardTitle className="text-xs uppercase tracking-wide text-muted-foreground">{t('collab_ui.room.tab_conversations')}</CardTitle>
+              <Button variant="ghost" size="sm" className="px-2" onClick={() => startConversation()} aria-label={t('collab_ui.room.new_conversation')}>
+                <MessageSquarePlus className="size-3.5" />{t('collab_ui.conversation.new_short')}
+              </Button>
+            </div>
+            <nav aria-label="Conversations" className="mt-1 min-h-0 max-h-[40dvh] space-y-1 overflow-y-auto overscroll-y-contain lg:max-h-none lg:flex-1">
+              {conversations.map(conversation => (
+                <button
+                  type="button"
+                  key={conversation.id}
+                  className={`w-full rounded-md px-2.5 py-2 text-left text-sm leading-snug ${conversation.id === conversationId ? 'bg-primary/10 font-medium text-foreground' : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'}`}
+                  onClick={() => openConversation(conversation.id)}
                 >
-                  <Plus className="size-3.5 mr-1" />New Room
-                </Button>
-              )}
-              <LimitedRoomDialog
-                open={openingLimitedRoom}
-                projectId={detail.room.project_id}
-                onClose={() => setOpeningLimitedRoom(false)}
-                onOpened={room => {
-                  setOpeningLimitedRoom(false)
-                  void takeUpRoom(room)
-                }}
-              />
-            </Card>
-
-            <Card className="p-2">
-              <div className="flex items-center justify-between gap-2 px-2 py-1">
-                <CardTitle className="text-xs uppercase tracking-wide text-muted-foreground">Conversations</CardTitle>
-                <Button variant="ghost" size="sm" className="h-7 px-2" onClick={() => startConversation()} aria-label="New conversation">
-                  <MessageSquarePlus className="size-3.5 mr-1" />New
-                </Button>
-              </div>
-              <nav aria-label="Conversations" className="mt-1 space-y-1">
-                {conversations.map(conversation => (
-                  <button
-                    key={conversation.id}
-                    className={`w-full rounded-md px-2.5 py-2 text-left text-sm leading-snug ${conversation.id === conversationId ? 'bg-primary/10 font-medium text-foreground' : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'}`}
-                    onClick={() => {
-                      setExecutionReady(false)
-                      setDraftConversationId(null)
-                      setSearch({ room: detail.room.id, conversation: conversation.id })
-                    }}
-                  >
-                    {conversation.title || 'Conversation'}
-                  </button>
-                ))}
-              </nav>
-            </Card>
-
-            {userId && (
-              <details className="rounded-lg border border-border bg-card p-3">
-                <summary className="cursor-pointer text-sm font-medium">
-                  People &amp; agents
-                  <span className="ml-2 text-xs font-normal text-muted-foreground">
-                    {detail.user_members.length + detail.agent_members.length}
+                  <span className="flex items-center gap-2">
+                    <span className="min-w-0 flex-1 truncate">{conversation.title || t('collab_ui.room.untitled')}</span>
+                    <ConversationStatusIndicator running={conversation.is_running} unread={unreadConversations.has(conversation.id)} />
                   </span>
-                </summary>
-                <div className="mt-4">
-                  <RoomRosterPanel
-                    detail={detail}
-                    spaceMembers={spaceMembers}
-                    projectReaders={projectReaders}
-                    userId={userId}
-                    embedded
-                    onChanged={async () => { await Promise.all([loadCatalog(), loadRoom()]) }}
-                  />
-                </div>
-              </details>
-            )}
-          </aside>
-
-          <main aria-label="Conversation" className="min-w-0">
-            <Card className="flex h-[calc(100dvh-12rem)] min-h-[280px] max-h-[900px] flex-col overflow-hidden lg:h-[calc(100vh-10rem)] lg:min-h-[640px]">
-              {!currentConversation && conversations.length > 0 && !startingNew ? (
-                <div className="m-auto text-sm text-muted-foreground">Choose a conversation.</div>
-              ) : (
-                <>
-                  <div className="border-b border-border px-5 py-3">
-                    <div className="flex items-start justify-between gap-2">
-                      <CardTitle className="text-base">
-                        {currentConversation?.title || 'New conversation'}
-                      </CardTitle>
-                      {currentConversation && (
-                        // The whole thread, at the grain a whole thread has:
-                        // its summary. Thousands of words of transcript have
-                        // no other bounded form, and the per-message picker
-                        // beside it is for when a few messages are what
-                        // actually matters.
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="shrink-0 text-xs"
-                          onClick={() => {
-                            startConversation([{ kind: 'thread', id: currentConversation.id }])
-                          }}
-                        >
-                          <MessageSquarePlus className="size-3.5 mr-1" />Carry into a new thread
-                        </Button>
-                      )}
-                    </div>
-                    {/* A limited Room's header names its audience, because
-                        that is the fact a reader needs before saying anything
-                        in it. The mainline needs none: everyone in the Project
-                        is in it, which is what makes it the mainline. */}
-                    {!detail.room.is_mainline && (
-                      <p className="mt-0.5 text-xs text-muted-foreground">{roomAudience}</p>
-                    )}
-                  </div>
-                  {/* The conversation itself is the shared module the Project
-                      chat panel also renders; this page adds only what is the
-                      page's — run settings and per-agent backends. Where a
-                      message goes is shown and chosen in the composer. */}
-                  <ConversationSurface
-                    spaceId={detail?.room.space_id}
-                    roomId={detail.room.id}
-                    // Null while the user is choosing the execution context
-                    // for a new Conversation. The explicit setup action binds
-                    // the draft before the first message is allowed to run.
-                    conversationId={currentConversation?.id ?? null}
-                    executionReady={executionReady}
-                    inputFileSources={conversationInputSourcesFromExecutionSummary(executionSummary)}
-                    executionPreflight={(
-                      <ConversationExecutionPreflight
-                        projectId={detail.room.project_id}
-                        roomId={detail.room.id}
-                        sessionId={currentConversation?.id ?? null}
-                        detail={detail}
-                        onConversationCreated={conversation => {
-                          setDraftConversationId(conversation.id)
-                          upsertConversation(conversation)
-                          setExecutionReady(false)
-                        }}
-                        onNewConversation={() => startConversation()}
-                        onReadyChange={setExecutionReady}
-                        onSummaryChange={setExecutionSummary}
-                      />
-                    )}
-                    detail={detail}
-                    variant="full"
-                    agents={agents}
-                    humans={spaceMembers}
-                    isOwner={detail.user_members.some(member => member.user_id === userId && member.role === 'owner')}
-                    references={referencesForThisThread}
-                    onReferencesRejected={() => setPendingReferences(null)}
-                    onConversationUpdated={upsertConversation}
-                    siblingConversations={conversations}
-                    // The same handoff import continuation uses: the picks
-                    // remain in the Room-keyed draft until the user sends or
-                    // discards them. Abandoning an unstarted draft leaves no
-                    // message or execution run behind.
-                    onUseInNewThread={startConversation}
-                    onSent={() => {
-                      // Consumed. Do not leave the pick on the draft. Pressing "New" puts
-                      // `currentConversation` back to null and the same reference
-                      // silently attaches to a second thread nobody picked it for.
-                      if (referencesForThisThread) setPendingReferences(null)
-                      if (referencesForThisThread) setDraftConversationId(null)
-                    }}
-                    onBeforeContinue={async () => {
-                      const refreshed = await projectsApi.getOverview(detail.room.project_id).catch(() => null)
-                      if (refreshed) setOverview(refreshed)
-                    }}
-                    runSettings={(
-                      <details>
-                        <summary className="cursor-pointer text-xs font-medium text-muted-foreground hover:text-foreground">Run settings</summary>
-                        <div className="mt-3 space-y-3 rounded-md bg-muted/30 p-3">
-                          {/* Each Agent's runtime is chosen in the conversation's
-                              execution preflight, before its first message, and
-                              pinned there; there is no second chooser here. */}
-                          <p className="text-[11px] text-muted-foreground">
-                            Each Agent's runtime is confirmed in the execution context before the first message.
-                          </p>
-                        </div>
-                      </details>
-                    )}
-                  />
-                </>
-              )}
-            </Card>
-          </main>
-
-          <aside aria-label="Project state" className="lg:col-start-2 xl:col-start-auto xl:sticky xl:top-4">
+                </button>
+              ))}
+            </nav>
+          </Card>
+          <aside aria-label={t('collab_ui.conversation.project_state')} className="hidden max-h-[20dvh] shrink-0 overflow-y-auto overscroll-y-contain lg:block xl:hidden">
             <RoomProjectStatePanel overview={overview} />
           </aside>
-        </section>
-      )}
+        </aside>
+
+        <main aria-label="Conversation" className="min-w-0 lg:min-h-0 lg:overflow-hidden">
+          <Card className="mb-0 flex h-[calc(100dvh-12rem)] min-h-[280px] flex-col overflow-hidden lg:h-full lg:min-h-0">
+            {!currentConversation && conversations.length > 0 && !startingNew ? (
+              <div className="m-auto text-sm text-muted-foreground">{t('collab_ui.conversation.choose')}</div>
+            ) : (
+              <>
+                <div className="shrink-0 border-b border-border px-4 py-3 md:px-5">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <CardTitle className="text-base">
+                        {currentConversation?.title || t('collab_ui.conversation.new')}
+                      </CardTitle>
+                      {/* Which Room this is, and who can see it — the fact a
+                          reader needs before saying anything here. Who is
+                          asked is a separate, per-message choice below. */}
+                      <p className="mt-0.5 text-xs text-muted-foreground">
+                        {t('collab_ui.conversation.in_room', { room: titleOf(detail.room) })}
+                        {' · '}{detail.room.is_mainline ? visibility : roomAudience}
+                      </p>
+                      <p className="mt-0.5 text-[11px] text-muted-foreground">{t('collab_ui.conversation.recipients_hint')}</p>
+                    </div>
+                    {currentConversation && (
+                      // The whole thread, at the grain a whole thread has:
+                      // its summary. Thousands of words of transcript have
+                      // no other bounded form, and the per-message picker
+                      // beside it is for when a few messages are what
+                      // actually matters.
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="shrink-0 text-xs"
+                        onClick={() => {
+                          startConversation([{ kind: 'thread', id: currentConversation.id }])
+                        }}
+                      >
+                        <MessageSquarePlus className="size-3.5" />{t('collab_ui.conversation.carry')}
+                      </Button>
+                    )}
+                  </div>
+                </div>
+                {/* The conversation itself is the shared module the Project
+                    chat panel also renders; this page adds only what is the
+                    page's — run settings and per-agent backends. Where a
+                    message goes is shown and chosen in the composer. */}
+                <ConversationSurface
+                  spaceId={detail?.room.space_id}
+                  roomId={detail.room.id}
+                  // Null while the user is choosing the execution context
+                  // for a new Conversation. The explicit setup action binds
+                  // the draft before the first message is allowed to run.
+                  conversationId={currentConversation?.id ?? null}
+                  executionReady={executionReady}
+                  participantAgentIds={executionSummary?.state==='initialized'?(executionSummary.runtimes?.length?executionSummary.runtimes:(executionSummary.runtime?[executionSummary.runtime]:[])).map(pin=>pin.agent_id):executionSummary?.participant_agent_ids}
+                  inputFileSources={conversationInputSourcesFromExecutionSummary(executionSummary)}
+                  executionPreflight={(
+                    <ConversationExecutionPreflight
+                      projectId={detail.room.project_id}
+                      roomId={detail.room.id}
+                      sessionId={currentConversation?.id ?? null}
+                      detail={detail}
+                      onConversationCreated={conversation => {
+                        setDraftConversationId(conversation.id)
+                        upsertConversation(conversation)
+                        setExecutionReady(false)
+                      }}
+                      onNewConversation={() => startConversation()}
+                      onReadyChange={setExecutionReady}
+                      onSummaryChange={setExecutionSummary}
+                    />
+                  )}
+                  detail={detail}
+                  variant="full"
+                  agents={agents}
+                  humans={spaceMembers}
+                  isOwner={detail.user_members.some(member => member.user_id === userId && member.role === 'owner')}
+                  references={referencesForThisThread}
+                  onReferencesRejected={() => setPendingReferences(null)}
+                  onConversationUpdated={upsertConversation}
+                  siblingConversations={conversations}
+                  // The same handoff import continuation uses: the picks
+                  // remain in the Room-keyed draft until the user sends or
+                  // discards them. Abandoning an unstarted draft leaves no
+                  // message or execution run behind.
+                  onUseInNewThread={startConversation}
+                  onSent={() => {
+                    // Consumed. Do not leave the pick on the draft. Pressing "New" puts
+                    // `currentConversation` back to null and the same reference
+                    // silently attaches to a second thread nobody picked it for.
+                    if (referencesForThisThread) setPendingReferences(null)
+                    if (referencesForThisThread) setDraftConversationId(null)
+                  }}
+                  onBeforeContinue={async () => {
+                    const refreshed = await projectsApi.getOverview(detail.room.project_id).catch(() => null)
+                    if (refreshed) setOverview(refreshed)
+                  }}
+
+                />
+              </>
+            )}
+          </Card>
+        </main>
+
+        <aside aria-label={t('collab_ui.conversation.project_state')} className="lg:hidden xl:col-start-auto xl:block xl:min-h-0 xl:overflow-y-auto xl:overscroll-y-contain">
+          <RoomProjectStatePanel overview={overview} />
+        </aside>
+      </section>
     </div>
+  )
+}
+
+function BackToRooms({ href, label }: { href: string; label: string }) {
+  return (
+    <Link to={href} className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:underline">
+      <ArrowLeft className="size-3.5" />{label}
+    </Link>
   )
 }
 
@@ -686,24 +641,25 @@ export default function AgentGroupsPage() {
  * not a second command surface.
  */
 function RoomProjectStatePanel({ overview }: { overview: ProjectOverview | null }) {
+  const { t } = useAppTranslation()
   if (!overview) {
-    return <Card className="p-3 text-xs text-muted-foreground">Project state unavailable.</Card>
+    return <Card className="p-3 text-xs text-muted-foreground">{t('collab_ui.conversation.project_state_unavailable')}</Card>
   }
   const attention = overview.attention
   const initialized = overview.definition_status?.status === 'initialized'
     || (!overview.definition_status && Boolean(overview.brief?.goal))
 
   return (
-    <Card className="p-3 space-y-4 overflow-auto max-h-[620px]">
+    <Card className="max-h-[620px] space-y-4 overflow-auto p-3">
       <div>
-        <CardTitle className="text-xs uppercase tracking-wide text-muted-foreground">Project state</CardTitle>
+        <CardTitle className="text-xs uppercase tracking-wide text-muted-foreground">{t('collab_ui.conversation.project_state')}</CardTitle>
         <p className="mt-1 text-sm font-medium">
-          {initialized ? 'Project initialized' : 'Project needs a goal or core problem'}
+          {initialized ? t('collab_ui.conversation.initialized') : t('collab_ui.conversation.needs_goal')}
         </p>
       </div>
       {attention.length > 0 && (
         <div>
-          <CardTitle className="text-xs uppercase tracking-wide text-muted-foreground">Needs attention</CardTitle>
+          <CardTitle className="text-xs uppercase tracking-wide text-muted-foreground">{t('collab_ui.nav.needs_attention')}</CardTitle>
           <ul className="mt-1 space-y-1">
             {attention.map(item => (
               <li key={item.id}>
@@ -714,30 +670,14 @@ function RoomProjectStatePanel({ overview }: { overview: ProjectOverview | null 
         </div>
       )}
       {attention.length === 0 && (
-        <p className="text-xs text-muted-foreground">Nothing pending right now.</p>
+        <p className="text-xs text-muted-foreground">{t('collab_ui.conversation.nothing_pending')}</p>
       )}
     </Card>
   )
 }
 
-function compareCreatedNewestFirst(
-  left: Pick<Room | RoomConversationRecord, 'id' | 'created_at'>,
-  right: Pick<Room | RoomConversationRecord, 'id' | 'created_at'>,
-): number {
-  return right.created_at.localeCompare(left.created_at) || right.id.localeCompare(left.id)
-}
-
 function sortConversationsNewestFirst(conversations: RoomConversationRecord[]): RoomConversationRecord[] {
-  return [...conversations].sort(compareCreatedNewestFirst)
-}
-
-function defaultRoomTitle(project: Pick<Project, 'name'> | undefined): string {
-  return `${project?.name?.trim() || 'Project'} Room`
-}
-
-function displayRoomTitle(room: Room, projects: Project[]): string {
-  if (room.title.trim().toLocaleLowerCase() !== 'project conversation') return room.title
-  return defaultRoomTitle(projects.find(project => project.id === room.project_id))
+  return sortRoomConversations(conversations)
 }
 
 async function loadAllPages<T>(
@@ -753,4 +693,3 @@ async function loadAllPages<T>(
     if (page.items.length < LIST_PAGE_SIZE) return items
   }
 }
-

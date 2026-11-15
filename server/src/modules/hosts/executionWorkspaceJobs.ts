@@ -1,14 +1,15 @@
 import {configureWorkspaceRetention} from './workspaceRetention.js';
 import {registerWorkspaceBranchAlignJob} from '../projectFolders/workspaceBranchAlign.js';
 import {deferIfSourceReleasePending} from './workspaceSourceFence.js';
-import {processNativeWorkspaceRequest,closeEndedNativeWorkspaceRequests} from './workspaceNativeIntegration.js';
+import {processNativeWorkspaceRequest} from './workspaceNativeIntegration.js';
 import {freezeSubmittedWorkspaceCommit} from '../projectFolders/workspaceCommitSubmission.js';
-import {workspaceHostFailureIsTemporary,workspaceCheckpointFailureIsSafetyViolation,workspaceCheckpointRunSettledSql} from '../projectFolders/workspacePolicy.js';
+import {workspaceCheckpointRunSettledSql} from '../projectFolders/workspacePolicy.js';
 import {workspaceLocationFrame} from './workspaceLocation.js';
-import {appendContributorSql} from '../projectFolders/workspaceContributors.js';
 import {enqueueWorkspaceIntegration} from './workspaceIntegrations.js';
 import {enqueueWorkspaceCleanup,registerWorkspaceCleanupJobs} from './workspaceCleanup.js';
 import {PgRunRepository} from '../runs/repository.js';
+import {checkpointWorkspaceRun} from './workspaceCheckpoints.js';
+export {checkpointWorkspaceRun} from './workspaceCheckpoints.js';
 import {AgentGroupRunLifecycleProjector} from '../agentGroups/lifecycleProjector.js';
 import {randomUUID} from 'node:crypto';
 import type {ServerConfig} from '../../config.js';
@@ -17,55 +18,9 @@ import {withQueryableTransaction,type Queryable} from '../routeUtils/common.js';
 import {PgJobQueueRepository} from '../jobs/repository.js';
 import {JobDeferredError,type JobHandlerRegistry} from '../jobs/handlerRegistry.js';
 import {sharedHostConnectionRegistry,type HostConnectionRegistry} from './connectionRegistry.js';
-import {workspaceReference,completedWorkspaceRun,recordWorkspaceLaunch,type ExecutionWorkspaceRow} from '../projectFolders/executionWorkspaces.js';
-import {agentGitIdentity} from '../runs/agentGitIdentity.js';
+import {workspaceReference,completedWorkspaceRun,type ExecutionWorkspaceRow} from '../projectFolders/executionWorkspaces.js';
 import {assertProjectWriterForMutation} from '../projects/access.js';
 
-export async function checkpointWorkspaceRun(db:Queryable,runId:string,spaceId:string,hosts:HostConnectionRegistry=sharedHostConnectionRegistry,workspaceRoot?:string,attempt:{exhausted?:boolean;recoveryId?:string}={}){
- const rows=(await db.query<ExecutionWorkspaceRow & {start_commit:string|null;change_set_id:string;agent_id:string|null;user_id:string|null;checkpoint_state:string;checkpoint_commit:string|null;launch_sequence:number;access_mode:string;recovery_state:string|null;recovery_id:string|null}>(`SELECT c.verification_json->'checkpoint_recovery'->>'state' AS recovery_state,c.verification_json->'checkpoint_recovery'->>'request_id' AS recovery_id,w.*,b.start_commit,b.change_set_id,b.checkpoint_state,b.checkpoint_commit,b.launch_sequence,b.access_mode,r.agent_id,COALESCE(r.instructed_by_user_id,r.owner_user_id) AS user_id FROM execution_workspace_runs b JOIN execution_workspaces w ON w.id=b.workspace_id JOIN runs r ON r.id=b.run_id JOIN workspace_change_sets c ON c.id=b.change_set_id WHERE b.run_id=$1 AND b.space_id=$2`,[runId,spaceId])).rows;
- const failures:unknown[]=[];
- for(const w of rows){
-  try{
-  if(['saved','blocked'].includes(w.checkpoint_state)||!w.start_commit||w.recovery_state==='exhausted'||attempt.recoveryId!==undefined&&(w.recovery_id??'')!==attempt.recoveryId)continue;
-  if(!w.user_id)throw new Error('workspace_checkpoint_actor_missing');
-  await assertProjectWriterForMutation(db,spaceId,w.project_id,w.user_id);
-  const reply=await hosts.requestTaskBranch(w.execution_host_id,'execution_workspace_command',{workspace:await workspaceLocationFrame(db,w,workspaceReference(w),workspaceRoot,w.user_id),action:'checkpoint',operation_id:randomUUID(),run_id:runId,author:agentGitIdentity(w.agent_id,null),message:`Workspace change ${w.change_set_id}`,retain_branch:true});
-  if(!reply.ok||!reply.commit){
-   const reason=reply.error??'workspace_checkpoint_commit_missing';
-   if(workspaceHostFailureIsTemporary(reason))throw new JobDeferredError(reason,30000);
-   throw new Error(reason);
-  }
-  if(w.access_mode==='read'&&reply.commit!==w.start_commit){
-   await blockCheckpoint(db,runId,w.id,'read_only_workspace_modified',reply.commit);continue;
-  }
-  await withQueryableTransaction(db,async tx=>{
-   const owner=(await tx.query<{state:string;generation:number}>('SELECT state,generation FROM execution_workspaces WHERE id=$1 FOR UPDATE',[w.id])).rows[0];
-   if(!owner||['blocked','retired'].includes(owner.state)||owner.generation!==w.generation)return;
-   const saved=await tx.query(`UPDATE execution_workspace_runs SET checkpoint_state='saved',checkpoint_commit=$3 WHERE run_id=$1 AND workspace_id=$2 AND checkpoint_state='pending' AND launch_sequence=$4 AND start_commit=$5`,[runId,w.id,reply.commit??w.start_commit,w.launch_sequence,w.start_commit]);
-   if(!saved.rowCount)return;
-   await tx.query("UPDATE workspace_change_sets SET verification_json=verification_json-'checkpoint_recovery' WHERE id=$1 AND NOT EXISTS(SELECT 1 FROM execution_workspace_runs WHERE change_set_id=$1 AND checkpoint_state<>'saved')",[w.change_set_id]);
-   await tx.query(`UPDATE execution_workspaces SET head_commit=$2,head_sequence=$4,updated_at=now() WHERE id=$1 AND generation=$3 AND head_sequence<$4`,[w.id,reply.commit,w.generation,w.launch_sequence]);
-   // The checkpointing Run is this version's contributor (workspaceContributors).
-   await tx.query(`UPDATE workspace_change_sets SET source_commit=$2,source_sequence=$3,verification_json=${appendContributorSql('$4')},updated_at=now() WHERE id=$1 AND source_sequence<$3`,[w.change_set_id,reply.commit,w.launch_sequence,runId]);
-   const closed=await tx.query(`UPDATE workspace_change_sets c SET state='no_changes',revision=revision+1,updated_at=now()
-    WHERE c.id=$1 AND c.state='open' AND c.base_commit=c.source_commit AND NOT(c.verification_json ? 'submitted_commit')
-     AND EXISTS(SELECT 1 FROM runs completed WHERE completed.id=$2 AND completed.space_id=c.space_id AND completed.status='succeeded')
-     AND NOT EXISTS(SELECT 1 FROM execution_workspace_runs b JOIN runs r ON r.id=b.run_id AND r.space_id=b.space_id WHERE b.change_set_id=c.id AND (b.checkpoint_state<>'saved' OR r.status IN ('queued','running','cancelling','waiting_for_review','waiting_for_dependency')))
-     AND NOT EXISTS(SELECT 1 FROM runs child JOIN execution_workspace_runs b ON b.run_id=child.parent_run_id WHERE b.change_set_id=c.id)
-     AND NOT EXISTS(SELECT 1 FROM execution_workspaces child WHERE child.parent_workspace_id=c.workspace_id) RETURNING id`,[w.change_set_id,runId]);
-   const nativeFinished=(await tx.query("SELECT 1 FROM workspace_change_sets WHERE id=$1 AND state IN ('integrated','no_changes') AND verification_json ? 'native_progress'",[w.change_set_id])).rowCount;
-   if(closed.rowCount||nativeFinished)await enqueueWorkspaceCleanup(tx,w,{id:w.id,generation:w.generation},reply.commit!,true,w.user_id!);
-
-  });
-  }catch(error){
-   deferIfSourceReleasePending(error);
-   if(!(error instanceof JobDeferredError))await recordCheckpointFailure(db,runId,w.id,error,attempt.exhausted??false,w.recovery_id??'');
-   failures.push(error);
-  }
- }
- for(const w of rows)await closeEndedNativeWorkspaceRequests(db,w.id);
- throwCheckpointFailure(failures);
-}
 /** A settled CLI phase may complete publication while its owning Run is still
  * running. No other active Run or unsaved binding is exempted. */
 export async function completeExecutionWorkspace(db:Queryable,config:ServerConfig,hosts:HostConnectionRegistry,job:{space_id:string;user_id:string|null;payload:Record<string,unknown>},beforeReplyRunId?:string){
@@ -158,30 +113,8 @@ export function registerExecutionWorkspaceJobs(registry:JobHandlerRegistry,confi
   const run=(await db.query<{status:string;settled:boolean}>(`SELECT r.status,${workspaceCheckpointRunSettledSql('r')} AS settled FROM runs r WHERE r.id=$1 AND r.space_id=$2`,[runId,job.space_id])).rows[0];
   if(!run||['running','queued','cancelling'].includes(run.status)||run.status==='waiting_for_dependency'&&!run.settled)throw new JobDeferredError('Workspace process has not settled',10000);
   const attempt={exhausted:job.attempts>=job.max_attempts,recoveryId:typeof job.payload.checkpoint_recovery_id==='string'?job.payload.checkpoint_recovery_id:''};
-  const missing=(await db.query<ExecutionWorkspaceRow & {recovery_id:string|null;recovery_state:string|null}>(`SELECT c.verification_json->'checkpoint_recovery'->>'request_id' AS recovery_id,c.verification_json->'checkpoint_recovery'->>'state' AS recovery_state,w.* FROM execution_workspace_runs b JOIN execution_workspaces w ON w.id=b.workspace_id JOIN workspace_change_sets c ON c.id=b.change_set_id WHERE b.run_id=$1 AND b.space_id=$2 AND b.start_commit IS NULL AND b.checkpoint_state<>'blocked'`,[runId,job.space_id])).rows;
-  const failures:unknown[]=[];
-  for(const w of missing){
-   if(w.recovery_state==='exhausted'||(w.recovery_id??'')!==attempt.recoveryId)continue;
-   try{
-   if(!job.user_id)throw new Error('workspace_checkpoint_actor_missing');
-   await assertProjectWriterForMutation(db,job.space_id,w.project_id,job.user_id);
-   const inspected=await hosts.requestTaskBranch(w.execution_host_id,'execution_workspace_command',{workspace:await workspaceLocationFrame(db,w,workspaceReference(w),config.workspaceRoot,job.user_id),action:'inspect',run_id:runId,operation_id:randomUUID(),retain_branch:true});
-   if(!inspected.ok){
-    const reason=inspected.error??'workspace_host_unavailable';
-    if(workspaceHostFailureIsTemporary(reason))throw new JobDeferredError(reason,30000);
-    throw new Error(reason);
-   }
-   const origin=await new PgRunRepository(db).getRun(job.space_id,runId);
-   if(inspected.launch_info&&origin)await recordWorkspaceLaunch(db,origin,inspected.launch_info);
-   else throw new Error('workspace_launch_identity_missing');
-   }catch(error){
-    deferIfSourceReleasePending(error);
-    if(!(error instanceof JobDeferredError))await recordCheckpointFailure(db,runId,w.id,error,attempt.exhausted,w.recovery_id??'');
-    failures.push(error);
-   }
-  }
-  try{await checkpointWorkspaceRun(db,runId,job.space_id,hosts,config.workspaceRoot,attempt);}catch(error){failures.push(error);}
-  throwCheckpointFailure(failures);
+  const result=await checkpointWorkspaceRun(db,runId,job.space_id,hosts,config.workspaceRoot,{...attempt,workspaceId:typeof job.payload.workspace_id==='string'?job.payload.workspace_id:undefined,launchSequence:typeof job.payload.launch_sequence==='number'?job.payload.launch_sequence:undefined,confirmParkedExit:true});
+  if(result.superseded)return {checkpointed:false,superseded:true};
   const parent=await new PgRunRepository(db).getRun(job.space_id,runId);
   if(parent)await new AgentGroupRunLifecycleProjector(db,config).queueDelegatedChildren(parent);
   return {checkpointed:true};
@@ -199,43 +132,7 @@ export async function refreshWorkspaceHead(db:Queryable,w:ExecutionWorkspaceRow,
   workspace:await workspaceLocationFrame(db,w,workspaceReference(w),workspaceRoot,userId),action:'inspect',operation_id:randomUUID(),retain_branch:true});
  if(!reply.ok||!reply.commit)throw new JobDeferredError(reply.error??'workspace_head_unavailable',30000);
  await withQueryableTransaction(db,async tx=>{
-  const updated=await tx.query('UPDATE execution_workspaces SET head_commit=$2,revision=revision+1,updated_at=now() WHERE id=$1 AND revision=$3',[w.id,reply.commit,w.revision]);
+  const updated=await tx.query(`UPDATE execution_workspaces SET retention_json=CASE WHEN head_commit IS DISTINCT FROM $2 THEN retention_json||jsonb_build_object('content_changed_at',now()) ELSE retention_json END,head_commit=$2,revision=revision+1,updated_at=now() WHERE id=$1 AND revision=$3`,[w.id,reply.commit,w.revision]);
   if(updated.rowCount)await tx.query("UPDATE workspace_change_sets SET source_commit=$2,updated_at=now() WHERE workspace_id=$1 AND state IN ('open','ready')",[w.id,reply.commit]);
- });
-}
-
-/** Keep progressing independent repositories, then preserve the Job retry class. */
-function throwCheckpointFailure(failures:unknown[]){
- if(failures.length)throw failures.find(error=>!(error instanceof JobDeferredError))??failures[0];
-}
-
-
-/** Only positive safety evidence taints an owner; late success cannot clear it. */
-async function blockCheckpoint(db:Queryable,runId:string,workspaceId:string,reason:string,commit?:string){
- await withQueryableTransaction(db,async tx=>{
-  await tx.query('SELECT id FROM execution_workspaces WHERE id=$1 FOR UPDATE',[workspaceId]);
-  await tx.query("UPDATE execution_workspace_runs SET checkpoint_state='blocked',checkpoint_commit=COALESCE($3,checkpoint_commit) WHERE run_id=$1 AND workspace_id=$2",[runId,workspaceId,commit??null]);
-  await tx.query("UPDATE execution_workspaces SET state='blocked' WHERE id=$1 AND state<>'retired'",[workspaceId]);
-  await tx.query("UPDATE workspace_change_sets SET state='blocked',revision=revision+1,verification_json=verification_json||$3::jsonb WHERE id=(SELECT change_set_id FROM execution_workspace_runs WHERE run_id=$1 AND workspace_id=$2) AND state IN ('open','ready','integrating','blocked')",[runId,workspaceId,JSON.stringify({error:reason})]);
- });
-}
-
-/** Operational retries keep pending bindings and their previous saved results.
- * The JSON request identity fences exhausted old Jobs from a new explicit retry. */
-async function recordCheckpointFailure(db:Queryable,runId:string,workspaceId:string,error:unknown,exhausted:boolean,requestId:string){
- if(workspaceCheckpointFailureIsSafetyViolation(error)){
-  await blockCheckpoint(db,runId,workspaceId,error instanceof Error&&'statusCode' in error?'workspace_checkpoint_permission_changed':String(error instanceof Error?error.message:error));return;
- }
- await withQueryableTransaction(db,async tx=>{
-  await tx.query('SELECT id FROM execution_workspaces WHERE id=$1 FOR UPDATE',[workspaceId]);
-  const reason=error instanceof Error&&/^(workspace_|execution_workspace_)[a-z_]+$/.test(error.message)?error.message:'workspace_checkpoint_operation_failed';
-  await tx.query(`UPDATE workspace_change_sets c SET
-   state=CASE WHEN $3 THEN 'blocked' ELSE c.state END,revision=revision+CASE WHEN $3 AND c.state<>'blocked' THEN 1 ELSE 0 END,
-   verification_json=verification_json||jsonb_build_object('checkpoint_recovery',$4::jsonb),updated_at=now()
-   WHERE c.id=(SELECT change_set_id FROM execution_workspace_runs WHERE run_id=$1 AND workspace_id=$2 AND checkpoint_state='pending')
-    AND c.state IN ('open','ready','blocked')
-    AND COALESCE(c.verification_json->'checkpoint_recovery'->>'request_id','')=$5
-    AND NOT EXISTS(SELECT 1 FROM execution_workspaces WHERE id=$2 AND state IN ('blocked','retired'))`,
-   [runId,workspaceId,exhausted,JSON.stringify({state:exhausted?'exhausted':'retrying',error:reason,run_id:runId,request_id:requestId,recovery_action:'workspace.change.complete'}),requestId]);
  });
 }

@@ -1,4 +1,4 @@
-import {expect,it} from 'vitest';
+import {expect,expectTypeOf,it} from 'vitest';
 import {randomUUID} from 'node:crypto';
 import {ExecutionWorkspaceRefSchema,HostServerFrameSchema,HostDaemonFrameSchema,WorkspaceChangeCompleteInputSchema,WorkspaceIntegrationRetryInputSchema,WorkspaceIntegrationNoticeSchema} from '../src/index.js';
 it('rejects caller paths, unsafe generations and extra authority',()=>{
@@ -8,7 +8,12 @@ it('rejects caller paths, unsafe generations and extra authority',()=>{
  expect(WorkspaceChangeCompleteInputSchema.safeParse({change_set_id:'c',expected_revision:1,summary:'done',space_id:'foreign'}).success).toBe(false);
  const frame={type:'execution_workspace_command',request_id:'r',operation_id:randomUUID(),action:'inspect',workspace:{kind:'location',workspace_location_id:'l',execution_workspace:ref}};
  expect(HostServerFrameSchema.parse(frame)).toMatchObject({action:'inspect',retain_branch:true});
+ expect(HostServerFrameSchema.parse({...frame,action:'checkpoint',launch_sequence:3})).toMatchObject({launch_sequence:3});
+ expect(HostServerFrameSchema.safeParse({...frame,launch_sequence:0}).success).toBe(false);
  expect(HostDaemonFrameSchema.safeParse({type:'execution_workspace_result',request_id:'r',ok:true,branch:'b',commit:null,error:null,cleanup_state:'cleaned'}).success).toBe(true);
+ const proof={type:'execution_workspace_result',request_id:'r',ok:true,branch:'b',commit:'a'.repeat(40),unchanged_commit:'a'.repeat(40),error:null};
+ expect(HostDaemonFrameSchema.parse(proof)).toMatchObject({unchanged_commit:'a'.repeat(40)});
+ expect(HostDaemonFrameSchema.safeParse({...proof,unchanged_commit:'unknown'}).success).toBe(false);
 });
 it('keeps integration progress bounded and excludes raw instructions and Host paths from the notice contract',()=>{
  const notice={schema_version:'workspace_integration_notice.v1',run_id:'run',integration_id:'integration',attempt_id:'attempt',change_set_id:'change',target_ref:'refs/heads/dev',outcome:'verification_failed',reason:'verification_unconfigured',repair_status:'succeeded',verification_status:'unconfigured',checks_passed:0,checks_failed:0,candidate_ready:true,preserved:true};
@@ -64,4 +69,31 @@ it('binds reviewed withdrawal to an exact saved commit and keeps caller proof/au
  const review={source_commit:'a'.repeat(40),user_request_quote:'检查后关闭旧工作区',findings:'Reviewed superseded iteration; retain source.'};
  expect(s.parse({...plain,review})).toEqual({...plain,review});
  for(const extra of [{source_commit:'HEAD'},{user_request_quote:' '},{findings:''},{approved:true},{adoption_proven:true},{user_id:'forged'}])expect(s.safeParse({...plain,review:{...review,...extra}}).success).toBe(false);
+});
+
+it('preserves exact lifecycle types and strict validation through the operation registry',async()=>{
+ const {WorkspaceLifecycleSchema,WorkspaceChangeReceiptSchema}=await import('../src/index.js');
+ type Lifecycle=import('../src/index.js').WorkspaceLifecycle;
+ type Output=import('../src/index.js').OperationOutput<'workspace.change.complete'>;
+ expectTypeOf<Output['lifecycle']>().toEqualTypeOf<Lifecycle|null|undefined>();
+ expectTypeOf<Lifecycle['phase']>().toEqualTypeOf<'awaiting_release'|'cleanup'|'blocked'|'complete'>();
+ const lifecycle:Lifecycle={operation_id:'op',phase:'cleanup',workspace_id:'workspace',generation:1,base_commit:null,source_commit:null,target_ref:null,landed_commit:null,publication_status:'merged',cleanup_key:'source-g1'};
+ expect(WorkspaceChangeReceiptSchema.parse({change_set_id:'change',revision:1,state:'integrated',integration_id:null,lifecycle}).lifecycle).toEqual(lifecycle);
+ expect(WorkspaceLifecycleSchema.safeParse({...lifecycle,phase:'unknown'}).success).toBe(false);
+ expect(WorkspaceLifecycleSchema.safeParse({...lifecycle,unexpected:true}).success).toBe(false);
+});
+
+it('exposes bounded obligation recovery with revision fencing and path-free diagnostics',async()=>{
+ const {SYSTEM_ACTION_REGISTRY,WorkspaceRetentionUpdateInputSchema,WorkspaceChangeStatusSchema}=await import('../src/index.js');
+ const definition=SYSTEM_ACTION_REGISTRY.find(d=>d.id==='workspace.retention.update')!;
+ expect(definition.visibility.has('agent_tool')).toBe(true);
+ expect(definition.allowed_actor_types).toEqual(['user','agent']);
+ expect(WorkspaceRetentionUpdateInputSchema.safeParse({change_set_id:'change',action:'recover'}).success).toBe(false);
+ expect(WorkspaceRetentionUpdateInputSchema.parse({change_set_id:'change',expected_revision:3,action:'recover'})).toMatchObject({action:'recover',expected_revision:3});
+ expect(WorkspaceChangeStatusSchema.safeParse({
+  change_set_id:'change',revision:3,state:'abandoned',integration_id:null,can_retry:false,integration_status:null,
+  conversation_id:null,room_id:null,agent_id:null,folder_name:'Repo',source_commit:null,
+  actions:[{operation:'workspace.retention.update',action:'recover',available:true,blocker:null,guidance:'Recover existing obligations',requirements:[]}],
+  diagnostics:[{kind:'checkpoint',state:'pending',reason:'workspace_source_unconfirmed',next_retry_at:null,attempts:0,recovery_action:'workspace.retention.update',guidance:'Preserve unknown content'}],
+ }).success).toBe(true);
 });

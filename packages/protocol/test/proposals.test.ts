@@ -130,6 +130,18 @@ describe("proposal review contracts", () => {
     ).toBe("claim_candidate_packet");
   });
 
+  it.each([
+    ProposalAcceptDispatchRequestSchema,
+    ProposalRejectDispatchRequestSchema,
+    ProposalEgressApprovalDispatchRequestSchema,
+  ])("refuses undeclared decision authority fields", (schema) => {
+    const input = { proposal_id: "proposal-1", space_id: "space-1", user_id: "user-1" };
+    expect(schema.safeParse(input).success).toBe(true);
+    for (const field of ["requester_user_id", "approver_user_id", "current_authority", "skip_policy"]) {
+      expect(schema.safeParse({ ...input, [field]: "other-user" }).success).toBe(false);
+    }
+  });
+
   it("parses proposal dispatch requests", () => {
     expect(
       ProposalAcceptDispatchRequestSchema.parse({

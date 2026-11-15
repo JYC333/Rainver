@@ -1,4 +1,7 @@
+import { JobEffectLeaseLost, performJobEffect } from '../jobs/effectAuthority.js';
+import { lockReaderWriteTarget } from './writeAuthority.js';
 import {assertResearchArtifactReadable,assertResearchReportCallReadable} from '../projectResearch/reportAccess.js';
+import {retrievalArtifactWithheld} from '../retrieval/artifactRelease.js';
 import {SourceMaterialContentUnavailableReasonSchema,type SourceMaterialContentUnavailableReason,SourceMaterialReadingInfoSchema,type SourceMaterialReadingInfo} from '@rainver/protocol';
 import { readingVersionCurrentSql } from '../sources/readingIdentity.js';
 import { randomUUID } from "node:crypto";
@@ -6,6 +9,7 @@ import { createHash } from "node:crypto";
 import { stat, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { ServerConfig } from "../../config.js";
+import { isOperationTransaction } from "../../db/operationTransaction.js";
 import { HttpError, dateIso, objectValue, optionalString, withQueryableTransaction, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 import { normalizeSourceConnectionReadGovernance, enforceSourceDerivedImportTarget } from "../sources/sourceConsent.js";
 import type { SourceItemRow } from "../sources/sourceRepositoryRows.js";
@@ -118,10 +122,11 @@ async function loadVisibleArtifactForReader(
     [artifactId, spaceId, userId],
   );
   if(result.rows[0])await assertResearchArtifactReadable(db,{spaceId,userId},artifactId);
+  if(result.rows[0]&&await retrievalArtifactWithheld(db,{spaceId,userId},result.rows[0],"reader artifact read"))return null;
   return result.rows[0] ?? null;
 }
 
-async function assertArtifactReadable(
+export async function assertArtifactReadable(
   db: Queryable,
   identity: SpaceUserIdentity,
   artifactId: string,
@@ -154,6 +159,7 @@ async function readArtifactForReader(
   spaceId: string,
   userId: string,
   artifactId: string,
+  files?: ReaderFilePreparation,
 ): Promise<ArtifactReaderContent | null> {
   const row = await loadVisibleArtifactForReader(db, spaceId, userId, artifactId);
   if (!row) return null;
@@ -163,7 +169,7 @@ async function readArtifactForReader(
   const raw = row.content
     ? row.content
     : row.storage_path
-      ? await safeReadTextFile(config, row.storage_path)
+      ? await (files ? files.read(config, row.storage_path) : safeReadTextFile(config, row.storage_path))
       : null;
   if (raw === null) return null;
 
@@ -193,9 +199,42 @@ async function safeReadTextFile(
   const candidate = resolve(root, storagePath);
   if (!candidate.startsWith(root + "/") && candidate !== root) return null;
   if (candidate.startsWith(sandboxRoot + "/") || candidate === sandboxRoot) return null;
-  const info = await stat(candidate).catch(() => null);
+  const info = await performJobEffect(() => stat(candidate)).catch(error => { if(error instanceof JobEffectLeaseLost)throw error;return null; });
   if (!info?.isFile()) return null;
-  return readFile(candidate, "utf8").catch(() => null);
+  return performJobEffect(() => readFile(candidate, "utf8")).catch(error => { if(error instanceof JobEffectLeaseLost)throw error;return null; });
+}
+
+/** A sealed preparation was asked for a body pointer it never captured: the
+ * document's body changed after preparation. Still a 409 for writers whose
+ * contract is a conflict (range CAS); a position write maps it to
+ * `not_accepted` after its current access and claim checks. */
+export class ReaderPreparationStale extends HttpError {constructor(){super(409,'Reader body changed during preparation');this.name='ReaderPreparationStale';}}
+/** Request-local FS preparation. Capture outside a transaction, then seal.
+ * Settlement can resolve current DB pointers but cannot read another file. */
+export class ReaderFilePreparation {
+  private readonly values = new Map<string,string|null>();
+  private sealed = false;
+  seal():void { this.sealed=true; }
+  async read(config:Pick<ServerConfig,'artifactStorageRoot'|'sandboxRoot'>,path:string):Promise<string|null> {
+    if(this.values.has(path))return this.values.get(path)!;
+    if(this.sealed)throw new ReaderPreparationStale();
+    const value=await safeReadTextFile(config,path);this.values.set(path,value);return value;
+  }
+}
+/** A direct caller on the pool may prepare here (before any transaction).
+ * Inside a transaction a writer must receive its sealed preparation: no
+ * file is ever read while a transaction is open. */
+export async function readerFilesOutsideTransaction(db:Queryable,config:ServerConfig,identity:SpaceUserIdentity,type:string,id:string,files?:ReaderFilePreparation):Promise<ReaderFilePreparation>{
+  if(files)return files;
+  const pool=db as Queryable&{connect?:unknown;release?:unknown};
+  if(isOperationTransaction(db)||typeof pool.release==='function'||typeof pool.connect!=='function')throw new Error('Reader body preparation must run outside a transaction');
+  return prepareReaderFiles(db,config,identity,type,id);
+}
+export async function prepareReaderFiles(db:Queryable,config:ServerConfig,identity:SpaceUserIdentity,type:string,id:string):Promise<ReaderFilePreparation> {
+  const files=new ReaderFilePreparation();
+  const doc=await new PgReaderRepository(db,config,files).getDocument(identity,type,id,{recordOpen:false});
+  if(!doc)throw new HttpError(404,'Document not found');
+  files.seal();return files;
 }
 
 // ── Source snapshot row ───────────────────────────────────────────────────────
@@ -405,6 +444,7 @@ export class PgReaderRepository {
   constructor(
     private readonly db: Queryable,
     private readonly config: ServerConfig,
+    private readonly files?: ReaderFilePreparation,
   ) {}
 
   async getDocument(
@@ -440,7 +480,7 @@ export class PgReaderRepository {
    */
   private async visibleExtractedVersion(identity: SpaceUserIdentity, item: SourceItemRow): Promise<{ artifactId: string; snapshotId: string | null; content: ArtifactReaderContent } | null> {
     if (item.extracted_artifact_id) {
-      const content = await readArtifactForReader(this.db, this.config, identity.spaceId, identity.userId, item.extracted_artifact_id);
+      const content = await readArtifactForReader(this.db, this.config, identity.spaceId, identity.userId, item.extracted_artifact_id, this.files);
       if (content) return { artifactId: item.extracted_artifact_id, snapshotId: null, content };
     }
     const snapResult = await this.db.query<SourceSnapshotRow>(
@@ -453,7 +493,7 @@ export class PgReaderRepository {
     );
     const snap = snapResult.rows[0];
     if (snap?.artifact_id) {
-      const content = await readArtifactForReader(this.db, this.config, identity.spaceId, identity.userId, snap.artifact_id);
+      const content = await readArtifactForReader(this.db, this.config, identity.spaceId, identity.userId, snap.artifact_id, this.files);
       if (content) return { artifactId: snap.artifact_id, snapshotId: snap.id, content };
     }
     return null;
@@ -580,7 +620,7 @@ export class PgReaderRepository {
 
     if (!snap.artifact_id) return null;
 
-    const text = await readArtifactForReader(this.db, this.config, identity.spaceId, identity.userId, snap.artifact_id);
+    const text = await readArtifactForReader(this.db, this.config, identity.spaceId, identity.userId, snap.artifact_id, this.files);
     if (!text) return null;
 
     return this.buildDocOut({
@@ -1070,7 +1110,13 @@ export class PgAnnotationRepository {
     return result.rows.map(annotationOut);
   }
 
-  async createAnnotation(
+  async createAnnotation(identity: SpaceUserIdentity, body: Record<string, unknown>) {
+    return withQueryableTransaction(this.db, async tx => {
+      return new PgAnnotationRepository(tx).createAnnotationInTransaction(identity, body);
+    });
+  }
+
+  private async createAnnotationInTransaction(
     identity: SpaceUserIdentity,
     body: Record<string, unknown>,
   ): Promise<ReaderAnnotationOut> {
@@ -1114,6 +1160,7 @@ export class PgAnnotationRepository {
     if (body.project_id !== undefined) {
       throw new HttpError(422, "Annotation Project scope is inherited from its document");
     }
+    await lockReaderWriteTarget(this.db, identity, { document_type: documentType, document_id: documentId });
     const documentAccess = await assertDocumentReadable(this.db, identity, documentType, documentId);
 
     // Attempt lightweight text verification using inline artifact content only (no file I/O).
@@ -1177,7 +1224,14 @@ export class PgAnnotationRepository {
     });
   }
 
-  async updateAnnotation(
+  async updateAnnotation(identity: SpaceUserIdentity, annotationId: string, body: Record<string, unknown>) {
+    return withQueryableTransaction(this.db, async tx => {
+      await lockReaderWriteTarget(tx, identity, { annotation_id: annotationId });
+      return new PgAnnotationRepository(tx).updateAnnotationInTransaction(identity, annotationId, body);
+    });
+  }
+
+  private async updateAnnotationInTransaction(
     identity: SpaceUserIdentity,
     annotationId: string,
     body: Record<string, unknown>,
@@ -1224,7 +1278,14 @@ export class PgAnnotationRepository {
     return annotationOut({ ...result.rows[0]!, effective_access_level: "full" });
   }
 
-  async archiveAnnotation(
+  async archiveAnnotation(identity: SpaceUserIdentity, annotationId: string) {
+    return withQueryableTransaction(this.db, async tx => {
+      await lockReaderWriteTarget(tx, identity, { annotation_id: annotationId });
+      return new PgAnnotationRepository(tx).archiveAnnotationInTransaction(identity, annotationId);
+    });
+  }
+
+  private async archiveAnnotationInTransaction(
     identity: SpaceUserIdentity,
     annotationId: string,
   ): Promise<void> {
@@ -1373,7 +1434,14 @@ export class PgCommentRepository {
     return threads.map((t) => threadOut(t, byThread.get(t.id) ?? []));
   }
 
-  async createComment(
+  async createComment(identity: SpaceUserIdentity, annotationId: string, body: Record<string, unknown>) {
+    return withQueryableTransaction(this.db, async tx => {
+      await lockReaderWriteTarget(tx, identity, { annotation_id: annotationId });
+      return new PgCommentRepository(tx).createCommentInTransaction(identity, annotationId, body);
+    });
+  }
+
+  private async createCommentInTransaction(
     identity: SpaceUserIdentity,
     annotationId: string,
     body: Record<string, unknown>,
@@ -1436,7 +1504,14 @@ export class PgCommentRepository {
     return { thread: threadOut(threadRow, allComments.rows.map(commentOut)) };
   }
 
-  async updateComment(
+  async updateComment(identity: SpaceUserIdentity, commentId: string, body: Record<string, unknown>) {
+    return withQueryableTransaction(this.db, async tx => {
+      await lockReaderWriteTarget(tx, identity, { comment_id: commentId });
+      return new PgCommentRepository(tx).updateCommentInTransaction(identity, commentId, body);
+    });
+  }
+
+  private async updateCommentInTransaction(
     identity: SpaceUserIdentity,
     commentId: string,
     body: Record<string, unknown>,
@@ -1471,7 +1546,14 @@ export class PgCommentRepository {
     return commentOut(updated.rows[0]!);
   }
 
-  async updateThread(
+  async updateThread(identity: SpaceUserIdentity, threadId: string, body: Record<string, unknown>) {
+    return withQueryableTransaction(this.db, async tx => {
+      await lockReaderWriteTarget(tx, identity, { thread_id: threadId });
+      return new PgCommentRepository(tx).updateThreadInTransaction(identity, threadId, body);
+    });
+  }
+
+  private async updateThreadInTransaction(
     identity: SpaceUserIdentity,
     threadId: string,
     body: Record<string, unknown>,
@@ -1572,7 +1654,14 @@ async function loadAnnotationConnectionPolicy(
 export class PgReaderActionRepository {
   constructor(private readonly db: Queryable) {}
 
-  async createEvidence(
+  async createEvidence(identity: SpaceUserIdentity, annotationId: string, body: Record<string, unknown>) {
+    return withQueryableTransaction(this.db, async tx => {
+      await lockReaderWriteTarget(tx, identity, { annotation_id: annotationId });
+      return new PgReaderActionRepository(tx).createEvidenceInTransaction(identity, annotationId, body);
+    });
+  }
+
+  private async createEvidenceInTransaction(
     identity: SpaceUserIdentity,
     annotationId: string,
     body: Record<string, unknown>,
@@ -1656,7 +1745,14 @@ export class PgReaderActionRepository {
     return r.rows[0]!;
   }
 
-  async createProposal(
+  async createProposal(identity: SpaceUserIdentity, annotationId: string, body: Record<string, unknown>) {
+    return withQueryableTransaction(this.db, async tx => {
+      await lockReaderWriteTarget(tx, identity, { annotation_id: annotationId });
+      return new PgReaderActionRepository(tx).createProposalInTransaction(identity, annotationId, body);
+    });
+  }
+
+  private async createProposalInTransaction(
     identity: SpaceUserIdentity,
     annotationId: string,
     body: Record<string, unknown>,

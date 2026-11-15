@@ -89,6 +89,7 @@ vi.mock("../src/modules/policy/actionRegistry.js", async (importOriginal) => {
 // that runs after this one in the same worker.
 afterEach(() => {
   vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 describe("JobHandlerRegistry", () => {
@@ -384,7 +385,7 @@ describe("PgJobQueueRepository", () => {
       scheduledAt,
       new Date("2026-07-26T12:00:00.000Z"),
     )).resolves.toBe(true);
-    expect(calls[0]?.sql).toContain("scheduled_at = $3");
+    expect(calls[0]?.sql).toContain("ELSE $3::timestamptz END");
     expect(calls[0]?.sql).toContain("attempts = GREATEST(0, attempts - 1)");
     expect(calls[0]?.sql).not.toContain("attempts < max_attempts");
     expect(calls[0]?.params[2]).toBe(scheduledAt.toISOString());
@@ -943,9 +944,19 @@ describe("AutomationService policy preflight", () => {
       },
     });
     const repo = new FakeAutomationRepository(due, "owner", [due]);
+    // This test isolates target execution; real authority/transaction closure
+    // is covered by automationsProjectDb, not by an SQL-interpreting test fake.
+    const admission = new AutomationService(config, repo);
+    vi.spyOn(AutomationService, "forFireAdmissionTransaction").mockReturnValue({
+      prepareFire: admission.prepareFire.bind(admission),
+    });
     const service = new AutomationService(config, repo);
 
-    await expect(service.scanAndFire()).resolves.toBe(0);
+    await expect(service.fire({
+      spaceId: due.space_id, automationId: due.id,
+      actorUserId: due.owner_user_id, triggerType: "schedule",
+    }, { advanceSchedule: true })).rejects.toThrow("scan failed");
+    expect(maintenanceScanMock).toHaveBeenCalledOnce();
     expect(fakePool.advanceScheduleCalls).toBe(1);
     expect(fakePool.nativeTerminalStatuses).toEqual(["failed"]);
     expect(repo.advanceScheduleCalls).toBe(0);
@@ -959,7 +970,7 @@ describe("AutomationService policy preflight", () => {
     const repo = new FakeAutomationRepository(sampleAutomation());
     const service = new AutomationService(config, repo);
     await expect(
-      service.fire({
+      service.prepareFire({
         spaceId: "space-1",
         automationId: "auto-1",
         actorUserId: "member-user",
@@ -979,6 +990,12 @@ describe("AutomationService policy preflight", () => {
       { status: "active", current_version_id: "agent-version-1", version_id: "agent-version-1" },
       true,
     );
+    // This test isolates target execution; real authority/transaction closure
+    // is covered by automationsProjectDb, not by an SQL-interpreting test fake.
+    const admission = new AutomationService(config, repo);
+    vi.spyOn(AutomationService, "forFireAdmissionTransaction").mockReturnValue({
+      prepareFire: admission.prepareFire.bind(admission),
+    });
     const service = new AutomationService(config, repo);
 
     const result = await service.fire({
@@ -996,7 +1013,8 @@ describe("AutomationService policy preflight", () => {
     });
     expect(result.run_id).toEqual(expect.any(String));
     expect(result.automation_run_id).toEqual(expect.any(String));
-    expect(repo.recordFireCalls).toBe(1);
+    expect(fakePool.recordFireCalls).toBe(1);
+    expect(repo.recordFireCalls).toBe(0);
     expect(fakePool.runPrompts).toEqual(["Run now"]);
   });
 
@@ -1019,6 +1037,11 @@ describe("AutomationService policy preflight", () => {
       { status: "active", current_version_id: "agent-version-1", version_id: "agent-version-1" },
       false,
     );
+
+    vi.spyOn(AutomationService, "forFireAdmissionTransaction").mockImplementation(() => {
+      const service = new AutomationService(config, withoutGrant());
+      return { prepareFire: service.prepareFire.bind(service) };
+    });
 
     const asked = await new AutomationService(config, withoutGrant()).fire({
       spaceId: "space-1",
@@ -1059,6 +1082,12 @@ describe("AutomationService policy preflight", () => {
       { status: "active", current_version_id: "agent-version-1", version_id: "agent-version-1" },
       true,
     );
+    // This test isolates target execution; real authority/transaction closure
+    // is covered by automationsProjectDb, not by an SQL-interpreting test fake.
+    const admission = new AutomationService(config, repo);
+    vi.spyOn(AutomationService, "forFireAdmissionTransaction").mockReturnValue({
+      prepareFire: admission.prepareFire.bind(admission),
+    });
     const service = new AutomationService(config, repo);
 
     await service.fire({
@@ -1083,7 +1112,7 @@ describe("AutomationService policy preflight", () => {
       true,
     );
 
-    await expect(new AutomationService(config, repo).fire({
+    await expect(new AutomationService(config, repo).prepareFire({
       spaceId: "space-1",
       automationId: "auto-1",
       actorUserId: "owner-1",
@@ -1357,6 +1386,8 @@ class MaintenanceAutomationFakePool implements Queryable {
 }
 
 class AgentAutomationFireFakePool implements Queryable {
+  private readonly schedules = new MaintenanceAutomationFakePool();
+  get recordFireCalls() { return this.schedules.advanceScheduleCalls; }
   runPrompts: Array<unknown> = [];
   runInstructions: Array<unknown> = [];
   automationRunTriggerContexts: Array<unknown> = [];
@@ -1379,6 +1410,12 @@ class AgentAutomationFireFakePool implements Queryable {
     const trimmed = sql.trim();
     if (trimmed === "BEGIN" || trimmed === "COMMIT" || trimmed === "ROLLBACK") {
       return { rowCount: 0, rows: [] };
+    }
+    if (sql.includes("FROM automations") && !sql.includes("FOR UPDATE")) {
+      return { rowCount: 1, rows: [sampleAutomation()] as Row[] };
+    }
+    if (sql.includes("FROM scheduler_tasks") || sql.includes("INSERT INTO scheduler_tasks")) {
+      return this.schedules.query<Row>(sql, params);
     }
     if (sql.includes("FROM project_folders")) {
       return { rowCount: 1, rows: [{ id: "project-folder-1" }] as Row[] };
@@ -1506,6 +1543,9 @@ class DailySettingsFakeDb implements Queryable {
     params: readonly unknown[] = [],
   ): Promise<QueryResult<Row>> {
     const norm = sql.replace(/\s+/g, " ").trim();
+    if (["BEGIN", "COMMIT", "ROLLBACK"].includes(norm) || norm.startsWith("SELECT pg_advisory_xact_lock(")) {
+      return { rowCount: 0, rows: [] };
+    }
     if (norm.startsWith("INSERT INTO settings") && !norm.includes("RETURNING")) {
       return { rowCount: 0, rows: [] };
     }

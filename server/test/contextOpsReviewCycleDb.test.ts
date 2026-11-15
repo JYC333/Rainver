@@ -244,6 +244,8 @@ describe("Context Review Cycle (real Postgres)", () => {
 
   it("answers a repeated Claim Candidate Packet request with the pending packet and its own artifact", async () => {
     if (!db.available) return;
+    // The Brief settles only while the objects it names are releasable.
+    await seedKnowledge();
     const briefArtifactId = await seedRecentBrief();
     const create = () => createClaimCandidatePacketFromArtifacts(db.pool, {
       spaceId: SPACE,

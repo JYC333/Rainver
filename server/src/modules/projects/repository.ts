@@ -1,3 +1,4 @@
+import { PgRoomRosterRepository } from "../rooms/rosterRepository.js";
 import {ProjectManagementMutationError} from './managementErrors.js';
 import {withRunTerminalOwner} from '../systemActions/operations/proposalTransitions.js';
 import { randomUUID } from "node:crypto";
@@ -707,7 +708,7 @@ export class PgProjectRepository {
     const result = await withQueryableTransaction(this.db, async (tx) => {
       await lockProjectAudienceForChange(tx, identity.spaceId, projectId);
       await new PgProjectRepository(tx).authorizeMemberChange(identity, projectId, userId, role);
-      return tx.query<ProjectMemberRow>(
+      const changed = await tx.query<ProjectMemberRow>(
         `INSERT INTO project_members (id, space_id, project_id, user_id, role, status, created_at, updated_at)
          VALUES ($1, $2, $3, $4, $5, 'active', $6, $6)
          ON CONFLICT (project_id, user_id)
@@ -715,6 +716,10 @@ export class PgProjectRepository {
          RETURNING ${MEMBER_COLUMNS}`,
         [randomUUID(), identity.spaceId, projectId, userId, role, now],
       );
+      if (!await canWriteProject(tx, identity.spaceId, projectId, userId)) {
+        await new PgRoomRosterRepository(tx).revokeIssuedGrantsForProject(identity.spaceId, projectId, userId, identity.userId);
+      }
+      return changed;
     });
     return projectMemberToOut(result.rows[0]!);
   }
@@ -723,6 +728,7 @@ export class PgProjectRepository {
     await withQueryableTransaction(this.db, async (tx) => {
       await lockProjectAudienceForChange(tx, identity.spaceId, projectId);
       await new PgProjectRepository(tx).authorizeMemberChange(identity, projectId, userId);
+      await new PgRoomRosterRepository(tx).revokeIssuedGrantsForProject(identity.spaceId, projectId, userId, identity.userId);
       await tx.query(
         `DELETE FROM project_members WHERE space_id = $1 AND project_id = $2 AND user_id = $3`,
         [identity.spaceId, projectId, userId],

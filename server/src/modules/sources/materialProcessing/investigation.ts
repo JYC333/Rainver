@@ -12,7 +12,7 @@ import {sourceRetrievalRegistry} from '../retrievalAdapter.js';
 import {sourceItemFullContentReadClause} from '../sourceItemAccess.js';
 import {assertReadingRunEgress} from '../readingMethods/context.js';
 import {agentReadingPolicy} from './policy.js';
-import {assertItemProcessingDispatch,materialItemContext} from './items.js';
+import {assertItemProcessingDispatch,materialItemContext,lockMaterialReadingMutation} from './items.js';
 import {materialRunExpired} from './executionBudget.js';
 
 export interface ReadingHistoryRef {item_id:string;artifact_id:string;content_hash:string;snapshot_id?:string}
@@ -64,6 +64,7 @@ export async function investigateMaterial(config:ServerConfig,run:RunRecord,raw:
   if(!live||live.status!=='running'||!live.started_at||materialRunExpired(live)||!investigationOf(live))throw new HttpError(403,'Investigation is not active');
   const grants=(live.permission_snapshot_json as {tool_grants?:{action_id:string}[]})?.tool_grants??[];
   if(!grants.some(g=>g.action_id==='source.material.investigate'))throw new HttpError(403,'Investigation action not granted');
+  await lockMaterialReadingMutation(tx,live);
   const admitted=await assertItemProcessingDispatch(tx,config,live);if(!admitted)throw new HttpError(403,'Investigation scope unavailable');
   const context=materialItemContext(live)!;
   const operation=(await tx.query<{metadata_json:{investigation?:InvestigationState}}>(`SELECT metadata_json FROM extraction_jobs WHERE id=$1 AND space_id=$2 FOR UPDATE`,[context.id,run.space_id])).rows[0];

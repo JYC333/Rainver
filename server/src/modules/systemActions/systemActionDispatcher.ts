@@ -47,7 +47,7 @@ export interface SystemActionDispatcherDeps extends RetrievalToolDeps {
   actionEventSink?: (eventType: "action_invoked" | "action_completed", call: CanonicalToolCall, metadata?: Record<string, unknown>) => Promise<void>;
 }
 
-const NOT_GRANTED_MESSAGE = "This system action is not granted to the Run.";
+const NOT_GRANTED_MESSAGE = "This action is not available to this Run. Read rainver list; do not guess another action name or replay a write.";
 
 /**
  * Run-scoped single-call entry point over `SystemActionGateway`: grants,
@@ -66,7 +66,6 @@ export class SystemActionDispatcher {
       errorCode: string,
       errorMessage: string,
     ) => Promise<void>,
-    private readonly permittedActionIds: Set<string>,
     readonly retrieval: ResolvedRetrievalToolBinding | null,
     readonly delegation: Awaited<ReturnType<typeof resolveAgentDelegationToolBinding>>,
     readonly genericDefinitions: CanonicalToolDefinition[],
@@ -249,9 +248,6 @@ export class SystemActionDispatcher {
       actionEvents,
       gateway,
       recordRefusedAction,
-      // The permitted set, not the raw grants: `list`/`describe` show what
-      // `permitted` allows, and dispatch must refuse exactly what they hide.
-      permitted,
       retrieval,
       delegation,
       permittedGenericDefinitions,
@@ -276,7 +272,7 @@ export class SystemActionDispatcher {
 
   async dispatch(call: CanonicalToolCall): Promise<SystemActionDispatchResult> {
 
-    if (!this.permittedActionIds.has(call.name)) {
+    if (!this.listGrantedDefinitions().some(tool => tool.name === call.name)) {
       await this.recordRefusedAction(call, "system_action_not_granted", NOT_GRANTED_MESSAGE);
       return {
         modelResult: {
@@ -371,7 +367,7 @@ async function enforcePolicyForAction(
   if (definition.policy_adapter === "retrieval") {
     try {
       validateRetrievalToolInput(definition.id, input);
-    } catch (error) {
+    } catch {
       // Retrieval's `input_schema` in the registry stays the generic
       // `objectInput`. Its real schema is dynamic per binding, so this is the
       // one action family whose input validation happens here instead of
@@ -379,7 +375,9 @@ async function enforcePolicyForAction(
       // that check would, rather than falling through to a generic failure.
       throw new SystemActionGatewayError(
         "system_action_invalid_input",
-        error instanceof Error ? error.message : "Invalid retrieval tool input.",
+        "Invalid retrieval tool input. Describe the listed action before correcting its input.",
+        null,
+        {fields:[{field:'$',code:'custom'}],guidance:`Read rainver describe ${definition.id} and correct the input. Do not automatically replay a write.`},
       );
     }
     const domain = definition.id.startsWith("memory.")
@@ -520,6 +518,7 @@ function toolCallFailureResult(call: CanonicalToolCall, error: unknown): SystemA
       error_code: errorCode,
       ...(error instanceof OperationError ? {http_status:error.httpStatus,retryable:error.retryable}:{}),
       error: error instanceof Error ? error.message : "Action failed",
+      ...(error instanceof SystemActionGatewayError&&error.input_details?{metadata:error.input_details}:{}),
       ...(policyDecisionRecordId(error)
         ? { policy_decision_record_id: policyDecisionRecordId(error) }
         : {}),

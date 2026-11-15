@@ -1,4 +1,4 @@
-import { withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
+import { HttpError, withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
 import { domainDefinitions, isKnownDomain } from "../sourceAnnotation/index.js";
 import {
   PgInterestProfileRepository,
@@ -52,6 +52,31 @@ export class InterestProfileService {
 
   constructor(private readonly db: Queryable) {
     this.repo = new PgInterestProfileRepository(db);
+  }
+
+  async mutate<T>(spaceId: string, userId: string, fn: (service: InterestProfileService) => Promise<T>): Promise<T> {
+    return withQueryableTransaction(this.db, async tx => {
+      await tx.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`interest_profile_owner:${spaceId}:${userId}`]);
+      return fn(new InterestProfileService(tx));
+    });
+  }
+  acceptCandidate(space: string, user: string, phrase: string, overrides: {label?:string;domainKey?:string} = {}) {
+    return this.mutate(space,user,s=>s.acceptCandidateLocked(space,user,phrase,overrides));
+  }
+  dismissCandidate(space: string, user: string, phrase: string) {
+    return this.mutate(space,user,s=>s.dismissCandidateLocked(space,user,phrase));
+  }
+  updateSettings(space: string, user: string, patch: Partial<InterestProfileSettings>) {
+    return this.mutate(space,user,s=>s.updateSettingsLocked(space,user,patch));
+  }
+  createTopic(space: string, user: string, input: {label:string;domainKey:string;weight?:number}) {
+    return this.mutate(space,user,s=>s.createTopicLocked(space,user,input));
+  }
+  updateTopic(space: string, user: string, key: string, input: {label:string;domainKey:string;weight:number}) {
+    return this.mutate(space,user,s=>s.updateTopicLocked(space,user,key,input));
+  }
+  archiveTopic(space: string, user: string, key: string) {
+    return this.mutate(space,user,s=>s.archiveTopicLocked(space,user,key));
   }
 
   /** Canonical maturity evidence for delivery consumers; Project opens and
@@ -210,7 +235,7 @@ export class InterestProfileService {
     await this.repo.resetAutomaticFacts(profile.id);
   }
 
-  async acceptCandidate(
+  private async acceptCandidateLocked(
     spaceId: string,
     userId: string,
     phraseKey: string,
@@ -218,10 +243,10 @@ export class InterestProfileService {
   ): Promise<InterestTopicRow> {
     const profile = await this.repo.ensureProfile(spaceId, userId);
     const candidate = await this.repo.getCandidate(profile.id, phraseKey);
-    if (!candidate) throw new Error(`no topic candidate ${JSON.stringify(phraseKey)}`);
+    if (!candidate) throw new HttpError(404, "Topic candidate not found");
     const domainKey = overrides.domainKey ?? candidate.domain_key;
     if (!domainKey || !isKnownDomain(domainKey)) {
-      throw new Error("a topic needs a known domain to sit on the coverage axis");
+      throw new HttpError(422, "a topic needs a known domain to sit on the coverage axis");
     }
     const topic = await this.repo.upsertTopic({
       spaceId,
@@ -236,7 +261,7 @@ export class InterestProfileService {
     return topic;
   }
 
-  async dismissCandidate(spaceId: string, userId: string, phraseKey: string): Promise<boolean> {
+  private async dismissCandidateLocked(spaceId: string, userId: string, phraseKey: string): Promise<boolean> {
     const profile = await this.repo.ensureProfile(spaceId, userId);
     return this.repo.dismissCandidate(profile.id, phraseKey);
   }
@@ -246,18 +271,20 @@ export class InterestProfileService {
     return resolveInterestProfileSettings(profile?.settings_json);
   }
 
-  async updateSettings(
+  private async updateSettingsLocked(
     spaceId: string,
     userId: string,
     patch: Partial<InterestProfileSettings>,
   ): Promise<InterestProfileSettings> {
     const profile = await this.repo.ensureProfile(spaceId, userId);
-    const settings = mergeInterestProfileSettings(profile.settings_json, patch);
+    let settings: InterestProfileSettings;
+    try { settings = mergeInterestProfileSettings(profile.settings_json, patch); }
+    catch (error) { throw new HttpError(422, error instanceof Error ? error.message : "Invalid settings"); }
     await this.repo.updateSettings(profile.id, settings);
     return settings;
   }
 
-  async createTopic(
+  private async createTopicLocked(
     spaceId: string,
     userId: string,
     input: { label: string; domainKey: string; weight?: number },
@@ -269,7 +296,7 @@ export class InterestProfileService {
     });
   }
 
-  async updateTopic(
+  private async updateTopicLocked(
     spaceId: string,
     userId: string,
     topicKey: string,
@@ -279,7 +306,7 @@ export class InterestProfileService {
     return this.repo.updateTopic(profile.id, topicKey, input);
   }
 
-  async archiveTopic(spaceId: string, userId: string, topicKey: string): Promise<boolean> {
+  private async archiveTopicLocked(spaceId: string, userId: string, topicKey: string): Promise<boolean> {
     const profile = await this.repo.ensureProfile(spaceId, userId);
     return this.repo.archiveTopic(profile.id, topicKey);
   }

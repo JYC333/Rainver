@@ -42,15 +42,15 @@ interface ProposalRef {id:string;space_id:string}
 interface RunRef {id:string;space_id:string}
 const identities=(rows:ProposalRef[])=>rows.map(row=>[row.space_id,row.id]);
 /** Complete key admission, then closure gates, then Proposal/request rows. */
-async function admitTransitions(db:Queryable,discover:()=>Promise<ProposalRef[]>,gate?:()=>Promise<void>,requireUnlinked=false,nowaitRows=false){
+async function admitTransitions(db:Queryable,discover:()=>Promise<ProposalRef[]>,gate?:()=>Promise<void>,requireUnlinked=false,nowaitRows=false,requestKeys:readonly string[][]=[]){
   await assertProposalTransaction(db);
   const refs=await discover(),ids=refs.map(row=>row.id);
   const links=async()=> (await db.query<Linked>(`SELECT r.* FROM operation_idempotency r JOIN proposals p ON p.id=r.proposal_id AND p.space_id=r.space_id
     WHERE p.id=ANY($1::varchar[]) ORDER BY r.id`,[ids])).rows;
   const candidates=await links();
   if(requireUnlinked && candidates.length)throw new OperationError('operation_approval_mapping_unavailable',503);
-  const ordered=[...candidates].sort((a,b)=>canonical(scope(a))<canonical(scope(b))?-1:canonical(scope(a))>canonical(scope(b))?1:0);
-  for(const candidate of ordered)await lockRequestKey(db,scope(candidate));
+  const ordered=[...candidates.map(scope),...requestKeys].sort((a,b)=>canonical(a)<canonical(b)?-1:canonical(a)>canonical(b)?1:0);
+  for(const key of ordered)await lockRequestKey(db,key);
   // No domain/Proposal row lock may precede the complete sorted key set.
   await gate?.();
   const packages=(await db.query<{space_id:string;id:string}>("SELECT DISTINCT space_id,payload_json->>'skill_package_id' AS id FROM proposals WHERE id=ANY($1::varchar[]) AND proposal_type='skill_import_approve' AND payload_json->>'skill_package_id' IS NOT NULL ORDER BY space_id,id",[ids])).rows;
@@ -255,7 +255,12 @@ export async function withRunTerminalOwner<T>(
 export function withCheckpointDecisionOwner<T>(db:Queryable,spaceId:string,roots:readonly string[],work:()=>Promise<T>,userId:string){return withProposalSetOwner(db,spaceId,roots,work,userId,'checkpoint');}
 /** Evolution's complete decision set is admitted before its bundle gate/rows. */
 export function withBundleDecisionOwner<T>(db:Queryable,spaceId:string,roots:readonly string[],work:()=>Promise<T>,userId:string){return withProposalSetOwner(db,spaceId,roots,work,userId,'bundle');}
-async function withProposalSetOwner<T>(db:Queryable,spaceId:string,roots:readonly string[],work:()=>Promise<T>,userId:string,purpose:'checkpoint'|'bundle'):Promise<T>{
+/** The formal core owner admits its own key together with every dependent
+ * request before membership, Proposal or domain row locks. */
+export function withOperationProposalDecisionOwner<T>(db:Queryable,spaceId:string,roots:readonly string[],requestKey:string[],work:()=>Promise<T>,userId:string,bundle=false,prepare?:(roots:readonly string[])=>Promise<void>){
+ return withProposalSetOwner(db,spaceId,roots,work,userId,bundle?'bundle':'checkpoint',[requestKey],prepare);
+}
+async function withProposalSetOwner<T>(db:Queryable,spaceId:string,roots:readonly string[],work:()=>Promise<T>,userId:string,purpose:'checkpoint'|'bundle',requestKeys:readonly string[][]=[],prepare?:(roots:readonly string[])=>Promise<void>):Promise<T>{
  await assertProposalTransaction(db);
  const existing=proposalOwner(db);
  if(existing){existing.assertCovered(roots);return work();}
@@ -273,7 +278,7 @@ async function withProposalSetOwner<T>(db:Queryable,spaceId:string,roots:readonl
     WHERE EXISTS(SELECT 1 FROM runs candidate WHERE candidate.id=related.root_run_id AND candidate.space_id=related.space_id AND (candidate.status NOT IN ('succeeded','degraded','failed','cancelled','orphaned') OR EXISTS(SELECT 1 FROM proposals output WHERE output.created_by_run_id=candidate.id AND output.space_id=candidate.space_id AND output.status='staged'))) AND anchor.space_id=p.space_id AND anchor.id=p.payload_json->>'workflow_execution_id' AND p.proposal_type='workflow_execution_checkpoint' AND EXISTS(SELECT 1 FROM workflow_execution_nodes n WHERE n.id=p.payload_json->>'node_id' AND n.execution_id=anchor.id AND n.space_id=p.space_id AND n.approval_proposal_id=p.id))
  WHERE p.space_id=$1 AND p.id=ANY($2::varchar[]) ORDER BY r.id`,[spaceId,[...roots]])).rows;
  const runs=await runRefs();
- if(!runs.length && purpose==='checkpoint' && !(await db.query("SELECT id FROM proposals WHERE space_id=$1 AND id=ANY($2::varchar[]) AND proposal_type IN ('plan_checkpoint','workflow_execution_checkpoint','research_history_extend')",[spaceId,[...roots]])).rows.length)return work();
+ if(!requestKeys.length && !runs.length && purpose==='checkpoint' && !(await db.query("SELECT id FROM proposals WHERE space_id=$1 AND id=ANY($2::varchar[]) AND proposal_type IN ('plan_checkpoint','workflow_execution_checkpoint','research_history_extend')",[spaceId,[...roots]])).rows.length)return work();
  const discover=async()=> (await db.query<ProposalRef>(`WITH RECURSIVE affected AS (
    SELECT id FROM proposals WHERE space_id=$1 AND (id=ANY($2::varchar[]) OR (created_by_run_id=ANY($3::varchar[]) AND status IN ('pending','staged')))
    UNION SELECT p.id FROM affected a JOIN proposals parent ON parent.id=a.id AND parent.space_id=$1
@@ -287,13 +292,21 @@ async function withProposalSetOwner<T>(db:Queryable,spaceId:string,roots:readonl
    if(!gate.rows[0]?.locked)throw new OperationError('idempotency_in_progress',409,true);
   }
   if(canonical(await runRefs())!==canonical(runs))throw conflict();
- });
+  await prepare?.(roots);
+ },false,false,requestKeys);
  const admitted=new Set(runs.map(r=>canonical([r.space_id,r.id]))),fresh=new Set<string>();
  const previousRuns=runOwner(db),previousProposals=proposalOwner(db);
  runTerminalOwners.set(db,{fresh,createdRun(space,id){const key=canonical([space,id]);admitted.add(key);fresh.add(key);},assertRun(space,id){if(!admitted.has(canonical([space,id])))throw conflict();}});
  const freshProposals=new Set<string>();
  proposalDecisionOwners.set(db,{...transitions,bundle:purpose==='bundle',freshProposals,assertCovered(ids){transitions.assertCovered(ids.filter(id=>!freshProposals.has(id)));}});
- try{const result=await work();await transitions.finish();return result;}
+ try{
+  const result=await work();
+  // Typed writers may add freshly registered drafts/Runs, but a concurrent or
+  // mutated dependency may not extend the pre-admitted key/Run closure.
+  transitions.assertCovered((await discover()).map(row=>row.id).filter(id=>!freshProposals.has(id)));
+  for(const run of await runRefs())if(!admitted.has(canonical([run.space_id,run.id])))throw conflict();
+  await transitions.finish();return result;
+ }
  finally{if(previousRuns)runTerminalOwners.set(db,previousRuns);else runTerminalOwners.delete(db);
   if(previousProposals)proposalDecisionOwners.set(db,previousProposals);else proposalDecisionOwners.delete(db);}
 }

@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import type { PluginDb, OperationActor, Queryable } from '@rainver/protocol';
 import { PluginInvocationSerial } from './invocationSerial.js';
 import { assertPluginSql } from './operationSqlPolicy.js';
-import { operationTransaction, operationTransactionHost } from '../../db/operationTransaction.js';
+import { operationTransaction, operationTransactionHost, isOperationTransaction } from '../../db/operationTransaction.js';
 import { poisonTransaction } from '../../db/tx.js';
 const hostInvocations = new WeakMap<PluginDb, {
   host: Queryable;
@@ -45,8 +45,11 @@ export function pluginHostWrite<T>(db: PluginDb, fn: (host: Queryable) => Promis
 }
 /** Joins the P1 transaction. Core audit/request writes always resume as the host role. */
 export async function withPluginDb<T>(port: Queryable, id: string, actor: OperationActor, fn: (db: PluginDb) => Promise<T>): Promise<T> {
-  const host = operationTransactionHost(port),
-    {
+  let host = operationTransactionHost(port);
+  // Proposal decisions can add another bounded port around the P1 port.
+  // Only the trusted host changes roles; the plugin still receives a fresh bounded port.
+  while (isOperationTransaction(host)) host = operationTransactionHost(host);
+  const {
       schema,
       runtime
     } = pluginRoleNames(id);

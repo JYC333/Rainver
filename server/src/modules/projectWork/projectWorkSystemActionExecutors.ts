@@ -3,7 +3,7 @@ import { columnForTask, readProjectColumns } from "../tasks/boardColumns.js";
 import { contentReadSql } from "../access/contentAccessSql.js";
 import { z } from "zod";
 import { effectiveRunTrigger } from "../systemActions/effectiveRunTrigger.js";
-import { countTasksCreatedInTurn, lockTurnFanOutForTransaction, TASK_FAN_OUT_PER_TURN } from "../tasks/turnFanOut.js";
+import { lockTurnFanOutForTransaction } from "../tasks/turnFanOut.js";
 import { TASK_CREATE_BATCH_MAX_ITEMS, TaskCreateInputSchema, type SystemActionId } from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
@@ -96,48 +96,6 @@ export function registerProjectWorkSystemActionExecutors(
     return created;
   }
 
-  executors.set("task.create" as SystemActionId, async (input, dispatch) => {
-    const body = input as z.infer<typeof TaskCreateInputSchema>;
-    // The Project is the Run's own, not the model's. A `project_id` taken from
-    // the input lets an Agent write into a Project the person it acts for is
-    // not a member of, and every other Project-scoped agent action refuses to
-    // take one for exactly that reason.
-    if (!run.project_id) {
-      throw new HttpError(422, "This Run is not scoped to a Project, so it cannot create Tasks");
-    }
-    if (body.project_id && body.project_id !== run.project_id) {
-      throw new HttpError(422, "A Task can only be created in this Run's own Project");
-    }
-    const projectId = run.project_id;
-
-    const task = await withQueryableTransaction(pool, async (tx) => {
-      // Authority is re-checked while holding the Project aggregate lock, the
-      // same pairing the durable Task+Run write uses: an archived Project or a
-      // membership revoked mid-turn must lose, deterministically.
-      await lockActiveProjectForMutation(tx, run.space_id, projectId);
-      await assertProjectWriterForMutation(tx, run.space_id, projectId, identity.userId);
-      // Counted under the turn's fan-out lock, the one the follow-up
-      // reconciler holds too, so neither route sees room the other took.
-      await lockTurnFanOutForTransaction(tx, run.id);
-      if (await countTasksCreatedInTurn(tx, run.space_id, run.id) >= TASK_FAN_OUT_PER_TURN) {
-        throw new HttpError(
-          429,
-          `This turn already created ${TASK_FAN_OUT_PER_TURN} Tasks. Continue in the next turn, or tell the user what is left to create.`,
-        );
-      }
-      // The Task is created under the person who asked — they own it and it
-      // inherits their access — but `task.created` is attributed to the Agent,
-      // because the Agent is what made it. The timeline is the record of who
-      // did what, and a Task the Agent decomposed out of a request did not
-      // appear because the person typed it.
-      return createTaskInTransaction(tx, body, dispatch.idempotency_key ?? null);
-    });
-    return {
-      modelResult: { ok: true, task_id: task.id, title: task.title, status: task.status },
-      summary: { tool_name: "task.create", ok: true, task_id: task.id },
-    };
-  });
-
   executors.set("task.create_batch" as SystemActionId, async (input, dispatch) => {
     const body = input as { request_summary: string; tasks: z.infer<typeof TaskCreateInputSchema>[] };
     if (!run.project_id) throw new HttpError(422, "A batch requires this Run's Project");
@@ -214,22 +172,6 @@ export function registerProjectWorkSystemActionExecutors(
     }));
   };
 
-  /**
-   * A task_id nothing matches is almost always a composed one, so the failure
-   * answers with the ids that exist rather than a bare "Task not found".
-   */
-  const withTaskIdHelp = async <T>(taskId: string, work: () => Promise<T>): Promise<T> => {
-    try {
-      return await work();
-    } catch (error) {
-      if (!(error instanceof HttpError) || error.statusCode !== 404) throw error;
-      const tasks = await listProjectTasks();
-      throw new HttpError(404, tasks.length === 0
-        ? `No Task in this Project has id '${taskId}', and this Project has no Task yet — create one with task.create.`
-        : `No Task in this Project has id '${taskId}'. Use one of these ids exactly: ${tasks.map((task) => `${task.task_id} — ${task.title}`).join("; ")}`);
-    }
-  };
-
   executors.set("task.list" as SystemActionId, async (input) => {
     if (!run.project_id) throw new Error("task.list requires a project-scoped run");
     const tasks = await listProjectTasks((input as { status?: string }).status);
@@ -244,11 +186,11 @@ export function registerProjectWorkSystemActionExecutors(
       task_id: string; path: string; artifact_type: string;
       role?: RunArtifactRole; note?: string | null;
     };
-    const declaration = await withTaskIdHelp(body.task_id, () => withQueryableTransaction(pool, async (tx) => {
+    const declaration = await withQueryableTransaction(pool, async (tx) => {
       const context = await contextFor(tx, dispatch.idempotency_key ?? null);
       const task = await requireProjectTask(tx, run.space_id, body.task_id, identity.userId, context.projectId);
       return declareRunArtifact(tx, context, task, body);
-    }));
+    });
     return {
       // The agent is told what the declaration will and will not do, because
       // "declared" and "collected" are different facts and only the second

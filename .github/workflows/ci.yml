@@ -36,6 +36,9 @@ jobs:
       - name: Install workspace dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Test test infrastructure
+        run: node --test tools/vitest/budgetReporter.test.mjs tools/typescript/prepareIncremental.test.mjs
+
       - name: Resolve current stable ACP candidates
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: |
@@ -112,6 +115,18 @@ jobs:
       # without regenerating passes every other step here.
       - name: Server schema baseline is in sync
         run: pnpm --filter @rainver/server schema:check
+
+      # Two server cases drive real Chromium: the plugin platform against a
+      # Vite dev server, and Task Detail against this commit's web build through
+      # `vite preview` (it refuses a build whose recorded inputs no longer
+      # match the checkout, apps/web/buildInputs.ts). Playwright
+      # Core downloads no browser on install, so both are prepared here, the
+      # same two commands a local full server run needs (COMMANDS.md, Server).
+      - name: Install Chromium for the server's browser cases
+        run: pnpm --filter @rainver/web exec playwright-core install --with-deps chromium
+
+      - name: Build web for the server's browser cases
+        run: pnpm --filter @rainver/web build
 
       - name: Test server
         env:

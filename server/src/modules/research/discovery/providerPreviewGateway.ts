@@ -22,6 +22,8 @@ interface ProviderPreviewInput {
   compiledQuery: ResearchCompiledQuery;
   accessibleResultCap: number;
   credentialId?: string | null;
+  /** Job recovery owns retry; a timeout has an unknown remote outcome. */
+  singleAttempt?: true;
 }
 
 export class ProviderPreviewGateway {
@@ -57,7 +59,7 @@ export class ProviderPreviewGateway {
     // per-provider throttle, e.g. arXiv's 3s floor, already runs before this
     // retry too). A genuine 4xx (400/404/...) is not retried: retrying an
     // identically malformed request only burns budget for the same result.
-    if (response === "timeout" || response.status >= 500 || response.status === 429) {
+    if (!input.singleAttempt && (response === "timeout" || response.status >= 500 || response.status === 429)) {
       response = await this.attemptFetch(input.compiledQuery.provider_key, request.url, headers, credentialHeaders);
     }
     if (response === "timeout" || response.status >= 500 || response.status === 429) {

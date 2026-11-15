@@ -1,3 +1,4 @@
+import { assertPersonaRunNotIsolated, assertPersonaMemoryNotIsolated } from "./personaIsolation.js";
 import {revisePendingPayload} from '../proposals/payloadRevision.js';
 import {lockProposalTransitions} from '../systemActions/operations/proposalTransitions.js';
 import type { ServerConfig } from "../../config.js";
@@ -177,6 +178,7 @@ export class PgMemoryProposalRepository {
     const subjectUserId = command.subject_user_id ?? (scope === "user" ? userId : null);
     const ownerUserId = command.owner_user_id ?? null;
     if (scope === "agent" && command.type === "persona" && command.agent_id) {
+      if (agentOrigin) await assertPersonaRunNotIsolated(this.db, identitySpaceId, command.agent_id, [agentOrigin.runId]);
       const active = await this.db.query<{ present: boolean }>(
         `SELECT true AS present
            FROM memory_entries
@@ -349,6 +351,10 @@ export class PgMemoryProposalRepository {
       payload.memory_type = changeData.type;
     }
     if (target.scope_type === "agent") {
+      if (target.memory_type === "persona" && target.agent_id) {
+        if (agentOrigin) await assertPersonaRunNotIsolated(this.db, spaceId, target.agent_id, [agentOrigin.runId]);
+        await assertPersonaMemoryNotIsolated(this.db, spaceId, target.agent_id, target.id);
+      }
       // An Agent proposes changes to its own memory only. The applier already
       // refuses the direct write. Do not omit the same check on the proposal.
       // Its fallback would carry one Agent's revision of another's persona to

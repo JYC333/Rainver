@@ -158,14 +158,12 @@ describe("retrieval tool exposure by domain", () => {
 
     expect(result.modelResult).toMatchObject({
       ok: false,
-      error: "Retrieval tool 'memory.retrieval.search' is not enabled for domain 'memory' in this run.",
+      error_code: "system_action_not_granted",
     });
-    // The denial is an ordinary policy decision, and it is auditable: a
-    // model reaching for a domain the operator did not enable is exactly
-    // what a reviewer wants to find later.
-    expect(await policyRecords()).toEqual([
-      { action: "memory.retrieval.search", decision: "deny", audit_code: "retrieval_tool_domain_not_enabled" },
-    ]);
+    // Catalogue refusal happens before policy/domain execution, without
+    // exposing a disabled domain's details.
+    expect(await policyRecords()).toEqual([]);
+    expect(result.summary).toMatchObject({ok:false,error_code:"system_action_not_granted"});
   });
 
   it("rejects wrong-domain object_types before any policy decision is recorded", async (ctx) => {
@@ -181,7 +179,7 @@ describe("retrieval tool exposure by domain", () => {
     expect(result.modelResult).toMatchObject({
       ok: false,
       error_code: "system_action_invalid_input",
-      error: "object_types may only include memory_entry.",
+      metadata:{fields:[{field:"$",code:"custom"}],guidance:expect.stringContaining("rainver describe memory.retrieval.search")},
     });
     // Input validation precedes enforcement, so a malformed call leaves no
     // decision record: an audit trail full of rows for calls that were never

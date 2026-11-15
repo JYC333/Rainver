@@ -436,7 +436,7 @@ describe('ConversationQuotaLine', () => {
   const quota = {
     warn_pct: 70,
     reserve_pct: 85,
-    logins: [{ account_label: 'Claude Code · Server', window: { kind: 'session' as const, utilization: 90, resets_at: null }, checked_at: null }],
+    logins: [{ account_label: 'Claude Code · Server', login_key: 'login-a', window: { kind: 'session' as const, utilization: 90, resets_at: null }, checked_at: null }],
     holds: [{ account_label: 'Claude Code · Server', window: 'session' as const, resets_at: null, run_ids: ['run-1'], can_continue: true }],
   }
 

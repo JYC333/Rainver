@@ -22,6 +22,10 @@ command and user-only action-grant create/revoke commands do not add any Agent
 authority. Their formal REST adapters share core keys, policy decisions and
 transactions with generic POST; internal authorization-request approval retains
 its own admission and joins the same domain writer without recursive dispatch.
+Authorization-request approve/reject now also have strict keyed formal/core
+adapters over that canonical transaction-aware owner. They independently
+revalidate the original requester's Run/Agent release closure and the deciding
+Space owner; grant, decision and reconcile Job share the core transaction.
 No production approval mapping is enabled by the grant family. Automation,
 system-job and MCP adapters are not enabled here. Subsequent user-only
 Project operation create/cancel commands also share the core; their internal
@@ -786,6 +790,16 @@ browsed request Space separately. Replaying from another currently accessible
 page for the same person/target shares the original target receipt. The first
 registration is `source.recipe.create`; Agent/Run/system/approval paths do not
 use this option.
+
+P5 group 2: `task.create` is the one named command shared by a person's REST
+create and the Agent Run tool (`PERSON_PLACEMENT_SHARED_COMMANDS` in the
+executor; it must be exactly user+Agent, `public_api`/`agent_tool` only, no
+approval mapping). Placement applies only when the request principal is a
+user: the person's create is placed and receipted exactly like `board.create`
+(ADR 0013 decision 3: Project Space, or the Personal Space without a Project,
+also from a shared Space). An Agent principal never enters the placement port
+and keeps its stored Run's Space and Project. No other mixed-actor command may
+register the option.
 
 
 A successful command may return HTTP202 when its canonical effect is durable

@@ -55,6 +55,23 @@ former suffix, use ADR 0025's archived-pair discovery and explicit offline
 cutover procedure; ordinary `up` cannot replace its migration history.
 This source consolidation does not perform a database cutover or authorize one.
 
+## Dev suffix consolidation (2026-11-15)
+
+Relative to master, unpublished `0019_project_agent_links` through
+`0022_room_conversation_participation` are composed into
+`0019_agent_workspace_and_conversation.sql`. Published `0000`–`0018` SQL and
+snapshots are byte-for-byte unchanged. The generated SQL preserves all four
+original bodies, data backfills, RESET search_path boundaries and the strongest
+maintenance marker. The final `0022` Drizzle snapshot is retained as `0019`,
+linked to `0018`; subsequent development appends at `0020`.
+
+Managed preparation archived the exact source/target pair under content id
+`306d8d8e695304b0870a15b96123e51f98dd6cc577378b5ad195c999e214c1a2`.
+An existing database that applied any old suffix file requires ADR 0025's
+explicit offline history conversion with a verified backup, not ordinary `up`,
+checksum overrides or a database reset. This change only consolidates repository
+files; it does not convert databases, stop services or deploy.
+
 ## Current dev branch consolidation (2026-11-02)
 
 The six unpublished migrations `0007_information_briefings` through

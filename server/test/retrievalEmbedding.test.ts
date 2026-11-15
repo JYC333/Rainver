@@ -116,7 +116,8 @@ describe("retrieval embedding backfill", () => {
         async listJobs(input) {
           expect(input).toMatchObject({
             space_id: "space-1",
-            status: "queued",
+            user_id: "user-1",
+            status: "pending",
             job_type: RETRIEVAL_EMBEDDING_JOB,
           });
           return [{ id: "queued-job" }] as never;

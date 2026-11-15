@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { AlertTriangle, Download, History, RefreshCw, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
+import { useAppTranslation } from '../../i18n'
+import { ImportedSessionReadNotice, isImportedSessionBusy } from '../projects/ImportedSessionReadNotice'
 import { ambientSessionsApi } from '../../api/client'
 import { errMsg } from '../../lib/utils'
 import type {
@@ -23,6 +25,7 @@ import { Select } from '../../components/ui/select'
  * to the Project and are read there.
  */
 export function AmbientSessionImportPanel({ location }: { location: WorkspaceLocation }) {
+  const { t } = useAppTranslation()
   const [policy, setPolicy] = useState<AmbientImportPolicy | null>(null)
   const [counts, setCounts] = useState<AmbientSessionCount[]>([])
   const [sessions, setSessions] = useState<ImportedSession[]>([])
@@ -217,6 +220,16 @@ export function AmbientSessionImportPanel({ location }: { location: WorkspaceLoc
         </Button>
       </div>
 
+      {policy && <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border p-3">
+        <p className="min-w-0 flex-1 text-sm text-muted-foreground">{t(policy.reminder?.enabled === false ? 'conversation_ui.imported.reminders_off' : 'conversation_ui.imported.reminders_on')}</p>
+        <Button size="sm" variant="outline" disabled={busy !== null} onClick={async () => {
+          setBusy('reminder')
+          try { setPolicy(await ambientSessionsApi.setReminder(location.id, policy.reminder?.enabled === false ? 'enable' : 'never')) }
+          catch (error) { toast.error(errMsg(error)) }
+          finally { setBusy(null) }
+        }}>{t(policy.reminder?.enabled === false ? 'conversation_ui.imported.reminders_enable' : 'conversation_ui.imported.reminders_disable')}</Button>
+      </div>}
+
       {runtimes.length === 0 ? (
         <p className="text-sm text-muted-foreground">
           {loading ? 'Looking…' : 'This machine has reported no CLI history for this folder yet.'}
@@ -224,7 +237,7 @@ export function AmbientSessionImportPanel({ location }: { location: WorkspaceLoc
       ) : (
         <div className="space-y-2">
           {runtimes.map(runtime => (
-            <div key={`${runtime.runtime_key}:${runtime.installation}`} className="flex flex-wrap items-center justify-between gap-3 rounded-md border p-3">
+            <div key={`${runtime.runtime_key}:${runtime.installation}`} className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border p-3">
               <div className="min-w-0">
                 <div className="flex items-center gap-2 text-sm font-medium">
                   {runtime.runtime_key}
@@ -237,13 +250,13 @@ export function AmbientSessionImportPanel({ location }: { location: WorkspaceLoc
                   {runtime.newest_updated_at && ` · newest ${new Date(runtime.newest_updated_at).toLocaleDateString()}`}
                 </p>
               </div>
-              <div className="flex flex-wrap items-center gap-3">
-                <div className="flex items-center gap-1 text-xs text-muted-foreground">
+              <div className="flex min-w-0 max-w-full flex-wrap items-center gap-3">
+                <div className="flex w-full min-w-0 flex-col gap-1 text-xs text-muted-foreground">
                   <span>Who can read it</span>
                   <Select
                     ariaLabel={`Who can read it \u2014 ${runtime.runtime_key} ${runtime.installation}`}
                     size="sm"
-                    className="min-w-[16rem]"
+                    className="w-full min-w-0"
                     value={visibilityFor(runtime.runtime_key, runtime.installation)}
                     disabled={busy !== null}
                     onChange={value => void chooseVisibility(
@@ -288,6 +301,9 @@ export function AmbientSessionImportPanel({ location }: { location: WorkspaceLoc
                   <Download className="size-4" />Import now
                 </Button>
               </div>
+              {runtime.runtime_key === 'codex_cli' && (
+                <p className="w-full text-xs text-muted-foreground">{t('conversation_ui.imported.codex_import_hint')}</p>
+              )}
             </div>
           ))}
         </div>
@@ -305,7 +321,7 @@ export function AmbientSessionImportPanel({ location }: { location: WorkspaceLoc
           </div>
           <div className="space-y-1">
             {sessions.map(session => (
-              <div key={session.id} className="flex items-center gap-3 rounded-md border p-2 text-sm">
+              <div key={session.id} className="flex flex-wrap items-start gap-3 rounded-md border border-border p-2 text-sm">
                 <input
                   type="checkbox"
                   aria-label={`Select ${session.title ?? session.vendor_session_id}`}
@@ -326,8 +342,9 @@ export function AmbientSessionImportPanel({ location }: { location: WorkspaceLoc
                 </div>
                 {session.visibility === 'private' && <Badge variant="outline" className="text-[11px]">Only you</Badge>}
                 {session.load_state === 'partial' && (
-                  <Badge variant="outline" className="text-[11px]" title={session.last_error ?? undefined}>Partial</Badge>
+                  <Badge variant="outline" className="text-[11px]" title={isImportedSessionBusy(session) ? undefined : session.last_error ?? undefined}>{isImportedSessionBusy(session) ? t('conversation_ui.imported.session_busy') : 'Partial'}</Badge>
                 )}
+                {isImportedSessionBusy(session) && <div className="w-full"><ImportedSessionReadNotice session={session} /></div>}
                 {session.source_state === 'gone' && (
                   <Badge variant="outline" className="flex items-center gap-1 text-[11px]">
                     <AlertTriangle className="size-3" />No longer on host

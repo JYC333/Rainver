@@ -145,7 +145,7 @@ describe("the Run tool surface", () => {
     );
   });
 
-  it("answers 404 for an action this Run was not granted, without confirming it exists", async (ctx) => {
+  it("answers an explicit permission refusal for an action this Run was not granted, without confirming it exists", async (ctx) => {
     if (!db.available) return ctx.skip();
     const run = randomUUID();
     await makeRun(run);
@@ -155,8 +155,8 @@ describe("the Run tool surface", () => {
     const granted = await get(run, "tools/memory.remember", token);
     const invented = await get(run, "tools/not.an.action", token);
 
-    expect(granted.statusCode).toBe(404);
-    expect(invented.statusCode).toBe(404);
+    expect(granted.statusCode).toBe(403);
+    expect(invented.statusCode).toBe(403);
     // Identical but for the name the caller itself sent: a real action this Run
     // does not hold and a name nobody registered are indistinguishable, so the
     // surface never confirms what exists elsewhere.
@@ -254,7 +254,7 @@ describe("the Run tool surface", () => {
 
     // A refusal the agent can read, not a transport error: the dispatcher
     // answers `ok: false` for an ungranted action.
-    expect(response.statusCode).toBe(200);
+    expect(response.statusCode).toBe(403);
     expect(response.json()).toMatchObject({ ok: false, error_code: "system_action_not_granted" });
   });
 

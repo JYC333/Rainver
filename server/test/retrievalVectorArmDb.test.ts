@@ -242,6 +242,5 @@ describe("Retrieval ANN halfvec index (real Postgres + pgvector)", () => {
       }
       expect(planText).toMatch(/ix_retrieval_chunks_embedding_hnsw_2560/);
     },
-    15_000,
   );
 });

@@ -1,17 +1,18 @@
 import {createHash,randomUUID} from 'node:crypto';
+import {goalTransaction,lockGoal} from './transaction.js';
 import {SourceGoalEditSchema,SourceGoalPlanSchema} from '@rainver/protocol';
 import type {ServerConfig} from '../../../config.js';
-import {HttpError,withDbTransaction,type Pool,type SpaceUserIdentity} from '../../routeUtils/common.js';
+import {HttpError,type Queryable,type SpaceUserIdentity} from '../../routeUtils/common.js';
 import {requireGoal,requireGoalSource} from './access.js';
 import {bindNativeSource} from './nativeSearch.js';
 import {assertSafeGoalMessage} from './messageSafety.js';
 
 /** Human-authored immutable draft. No model, scheduler or active binding write. */
-export async function editSourceGoal(db:Pool,config:ServerConfig,identity:SpaceUserIdentity,id:string,raw:unknown){
+export async function editSourceGoal(db:Queryable,config:ServerConfig,identity:SpaceUserIdentity,id:string,raw:unknown){
  const input=SourceGoalEditSchema.parse(raw);assertSafeGoalMessage(JSON.stringify(input));
  const hash=createHash('sha256').update(JSON.stringify(input)).digest('hex');
- return withDbTransaction(db,async tx=>{
-  await tx.query('SELECT id FROM source_goals WHERE id=$1 FOR UPDATE',[id]);
+ return goalTransaction(db,async tx=>{
+  await lockGoal(tx,id);
   const g=await requireGoal(tx,identity,id,true);
   const prior=g.compatibility_json?.manual_edit as {key:string;hash:string;version_id:string}|undefined;
   if(prior?.key===input.idempotency_key){if(prior.hash!==hash)throw new HttpError(409,'Edit request key changed');return {id:prior.version_id,revision:g.revision};}

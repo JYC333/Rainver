@@ -333,14 +333,14 @@ describe("Graph routes", () => {
       const saveResponse = await app.inject({
         method: "PUT",
         url: "/api/v1/graph/view-state",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "idempotency-key": randomUUID() },
         payload: JSON.stringify({
           scope_key: "core:graph",
           state_json: { currentLayout: "force", pinnedNodes: { [ids.alpha]: { x: 10, y: 20 } } },
         }),
       });
       expect(saveResponse.statusCode).toBe(200);
-      expect(saveResponse.json()).toMatchObject({
+      expect(saveResponse.json().data).toMatchObject({
         scope_key: "core:graph",
         state_json: { currentLayout: "force" },
       });

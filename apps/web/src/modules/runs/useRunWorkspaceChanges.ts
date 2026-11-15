@@ -11,7 +11,7 @@ export function workspaceEnabled(run:Run){return run.contract_snapshot_json?.exe
 
 /** Work whose server facts can still change without a person acting. */
 export function workspaceChangePending(c:WorkspaceChangeView){
- return ['ready','integrating'].includes(c.state)||c.state==='open'&&!c.source_commit&&c.workspace_state!=='blocked'
+ return Boolean(c.lifecycle&&['awaiting_release','cleanup'].includes(c.lifecycle.phase))||['ready','integrating'].includes(c.state)||c.state==='open'&&!c.source_commit&&c.workspace_state!=='blocked'
   ||TERMINAL_CHANGE_STATES.includes(c.state)&&['pending','running','retry_wait'].includes(c.cleanup_state)||c.retention?.state==='reclaiming'
 }
 

@@ -6,15 +6,17 @@ import { toast } from 'sonner'
 import { CONVERSATION_MAX_FILE_SNAPSHOT_BYTES } from '@rainver/protocol'
 import { projectsApi, roomsApi } from '../../../api/client'
 import { errMsg } from '../../../lib/utils'
+import { useAppTranslation } from '../../../i18n'
 import { SpaceLink as Link } from '../../../core/spaceNav'
 import type { ConversationExecutionSummary, Room, RoomConversation as RoomConversationRecord } from '../../../types/api'
 import { Button } from '../../../components/ui/button'
 import { Select } from '../../../components/ui/select'
+import { sortRoomConversations, useRoomConversationRefresh } from '../../conversation/useRoomConversationRefresh'
+import { useUnreadConversations } from '../../conversation/useUnreadConversations'
 import { Skeleton } from '../../../components/ui/skeleton'
 import { ConversationSurface } from '../../conversation/ConversationSurface'
 import { ConversationExecutionPreflight } from '../../conversation/ConversationExecutionPreflight'
 import { conversationInputSourcesFromExecutionSummary } from '../../conversation/ConversationInputComposer'
-import ProjectConversationBackendCard from '../ProjectConversationBackendCard'
 import { useProjectFolderConversation, type CurrentFileAttachment } from '../ProjectFolderConversationContext'
 
 /**
@@ -71,6 +73,7 @@ export function focusRefsFor(pathname: string): Array<{ type: 'task'; id: string
 }
 
 export default function ProjectChatSidecar() {
+  const { t } = useAppTranslation()
   const { projectId = '', spaceId } = useParams()
   const requestScope = useMemo(() => ({ spaceId }), [spaceId])
   const { pathname } = useLocation()
@@ -125,9 +128,9 @@ export default function ProjectChatSidecar() {
   const [room, setRoom] = useState<Room | null>(null)
   const [failure, setFailure] = useState<string | null>(null)
   const [conversations, setConversations] = useState<RoomConversationRecord[]>([])
+  const unreadConversations = useUnreadConversations(spaceId, projectId, open && !onRoomsArea)
+  useRoomConversationRefresh(open && !onRoomsArea ? room?.id ?? null : null, setConversations, requestScope)
   const [sessionId, setSessionId] = useState<string>('')
-  const [runtimeRevision, setRuntimeRevision] = useState(0)
-  const [runtimeOpen, setRuntimeOpen] = useState(false)
   const [loading, setLoading] = useState(true)
   const [executionReady, setExecutionReady] = useState(false)
   const [executionSummary, setExecutionSummary] = useState<ConversationExecutionSummary | null>(null)
@@ -176,8 +179,7 @@ export default function ProjectChatSidecar() {
         setSessionId('')
         const page = await roomsApi.conversations(mainline.room.id, { limit: 50 }, requestScope)
         if (!active) return
-        setConversations(page.items)
-        if (page.items.length === 0) setRuntimeOpen(true)
+        setConversations(sortRoomConversations(page.items))
         // Remembered per Room, not per Project: the id names a conversation
         // *in* a Room. Do not fall back when a stale id matches nothing.
         const remembered = readStored(conversationKey(mainline.room.id))
@@ -238,10 +240,10 @@ export default function ProjectChatSidecar() {
         variant="outline"
         className="fixed bottom-[calc(4.5rem+var(--app-safe-bottom))] left-4 z-40 shadow md:bottom-4 md:left-auto md:right-4"
         onClick={() => setOpen(true)}
-        aria-label="Open Project chat"
+        aria-label={t('collab_ui.sidecar.open_label')}
       >
         <MessageSquare className="size-4" />
-        Chat
+        {t('collab_ui.sidecar.open')}
       </Button>
     )
   }
@@ -254,7 +256,8 @@ export default function ProjectChatSidecar() {
         // of the row would halve the page it is meant to sit beside. There it
         // overlays instead. At `lg` it sits beside the page, stuck to the top
         // of the scroll container at that container's height.
-        'project-chat-safe-overlay fixed right-0 z-40 flex min-h-0 w-[min(22rem,100vw)] flex-col overflow-hidden overscroll-none '
+        // Reserve the lower corner for the Shell's floating quick-capture control.
+        'project-chat-safe-overlay fixed right-0 z-40 flex min-h-0 pb-24 md:pb-16 w-[min(22rem,100vw)] flex-col overflow-hidden overscroll-none '
         + 'border-l border-border bg-card shadow-xl '
         + 'lg:relative lg:sticky lg:top-0 lg:z-auto lg:self-start lg:w-[var(--sidecar-w)] lg:h-[var(--sidecar-h,100dvh)] lg:shadow-none'
       }
@@ -281,32 +284,28 @@ export default function ProjectChatSidecar() {
         }}
       />
       <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border p-3">
-        <span className="text-sm font-medium">Project Agent</span>
+        {/* The Project's default Room, named: this panel is a Room
+            conversation, not a Project Agent's independent work. */}
+        <span className="min-w-0">
+          <span className="block text-sm font-medium">{t('collab_ui.sidecar.title')}</span>
+          {room && (
+            <span className="block truncate text-[11px] text-muted-foreground">
+              {t('collab_ui.sidecar.in_room', { room: room.is_mainline ? t('collab_ui.rooms.default_room') : room.title })}
+            </span>
+          )}
+        </span>
         <div className="flex items-center gap-1">
-          <Button size="sm" variant="ghost" disabled={!room} onClick={startThread} aria-label="Start a separate thread">
+          <Button size="sm" variant="ghost" disabled={!room} onClick={startThread} aria-label={t('collab_ui.sidecar.new_thread')}>
             <Plus className="size-4" />
           </Button>
-          <Button size="sm" variant="ghost" className="min-h-[44px] min-w-[44px] shrink-0 lg:min-h-0 lg:min-w-0" onClick={() => setOpen(false)} aria-label="Close Project chat">
+          <Button size="sm" variant="ghost" className="min-h-[44px] min-w-[44px] shrink-0 lg:min-h-0 lg:min-w-0" onClick={() => setOpen(false)} aria-label={t('collab_ui.sidecar.close_label')}>
             <PanelRightClose className="size-4" />
           </Button>
         </div>
       </div>
 
-      <details
-        className="border-b border-border px-3 py-2"
-        open={runtimeOpen}
-        onToggle={event => setRuntimeOpen(event.currentTarget.open)}
-      >
-        <summary className="cursor-pointer text-xs font-medium text-muted-foreground hover:text-foreground">
-          Runtime &amp; workspace
-        </summary>
-        <div className="mt-2">
-          <ProjectConversationBackendCard key={`${projectId}:${runtimeRevision}`} projectId={projectId} />
-        </div>
-      </details>
-
       {conversations.length > 1 && (
-        <div className="border-b border-border p-2">
+        <div className="shrink-0 border-b border-border p-2">
           <Select
             ariaLabel="Conversation"
             value={sessionId}
@@ -318,6 +317,8 @@ export default function ProjectChatSidecar() {
             options={conversations.map((item, index) => ({
               value: item.id,
               label: item.title ?? `Thread ${conversations.length - index}`,
+              busyLabel: item.is_running ? t('collab_ui.room.running') : undefined,
+              unreadLabel: !item.is_running && unreadConversations.has(item.id) ? t('collab_ui.room.unread') : undefined,
             }))}
           />
         </div>
@@ -341,6 +342,7 @@ export default function ProjectChatSidecar() {
             roomId={room.id}
             conversationId={sessionId || null}
             executionReady={executionReady}
+                  participantAgentIds={executionSummary?.state==='initialized'?(executionSummary.runtimes?.length?executionSummary.runtimes:(executionSummary.runtime?[executionSummary.runtime]:[])).map(pin=>pin.agent_id):executionSummary?.participant_agent_ids}
             inputFileSources={conversationInputSourcesFromExecutionSummary(executionSummary)}
             implicitInputResource={implicitInputResource}
             composerAttachments={onFilesArea && currentFileAttachment && (
@@ -369,15 +371,12 @@ export default function ProjectChatSidecar() {
             )}
             variant="panel"
             focusRefs={focusRefs}
-            onSent={() => {
-              setRuntimeRevision(current => current + 1)
-            }}
             onConversationUpdated={conversation => {
               // Keep the selected Conversation's server metadata current
               // after a send or an explicit setup action.
               setSessionId(current => (current === conversation.id ? current : conversation.id))
-              setConversations(current => (current.some(item => item.id === conversation.id)
-                ? current.map(item => (item.id === conversation.id ? conversation : item))
+              setConversations(current => sortRoomConversations(current.some(item => item.id === conversation.id)
+                ? current.map(item => (item.id === conversation.id ? { ...item, ...conversation } : item))
                 : [conversation, ...current]))
               writeStored(conversationKey(room.id), conversation.id)
             }}
@@ -385,11 +384,10 @@ export default function ProjectChatSidecar() {
           />
         </>
       )}
-      <div className="flex items-center justify-end border-t border-border px-3 py-1.5">
+      <div className="flex items-center justify-start border-t border-border px-3 py-1.5">
         <Link
-          // Always naming the Room: without it the Room page auto-selects the
-          // newest one, so leaving the mainline panel while composing a new
-          // thread could land the reader in a limited Room instead.
+          // Always naming the Room and the conversation: the Room page opens
+          // exactly what the link names, and the panel's Room is the mainline.
           to={room
             ? (sessionId
               ? `/projects/${projectId}/rooms?room=${room.id}&conversation=${sessionId}`
@@ -398,7 +396,7 @@ export default function ProjectChatSidecar() {
           className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:underline"
         >
           <X className="size-3 rotate-45" />
-          Full Room
+          {t('collab_ui.sidecar.open_room')}
         </Link>
       </div>
     </aside>

@@ -1,4 +1,3 @@
-import type { Pool } from "../../db/pool.js";
 import { HttpError, optionalString, objectValue, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 import { assertProjectWriterForMutation, lockActiveProjectForMutation } from "../projects/access.js";
 import { PgTaskRepository } from "./repository.js";
@@ -222,7 +221,7 @@ export async function createFollowUpTask(
      * the caller's transaction: the Task and its `task.created` event have to
      * commit together.
      */
-    pool: Pool;
+    pool: Queryable;
     fields: FollowUpTaskFields;
     projectId: string | null;
     projectFolderId: string | null;
@@ -270,6 +269,9 @@ export async function createFollowUpTask(
     },
     db,
     input.origin.agentActorId,
+    // A follow-up keeps the Folder its Run named while that Folder is still
+    // this Project's, archived included (restorable; dispatch re-checks it).
+    { folderAnyStatus: true },
   );
   return {
     id: created.id as string,

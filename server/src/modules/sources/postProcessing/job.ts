@@ -3,7 +3,7 @@ import type { ServerConfig } from "../../../config.js";
 import { getDbPool } from "../../../db/pool.js";
 import type { JobEnvelopeForHandler, JobHandlerRegistry } from "../../jobs/handlerRegistry.js";
 import type { JobHandlerResult } from "../../jobs/handlerRegistry.js";
-import { SourcePostProcessingService } from "./service.js";
+import { SourcePostProcessingService, type SourceOneOffIntent } from "./service.js";
 import { ProjectResearchPipelineService } from "../../projectResearch/index.js";
 import {
   isRetryableSourcePostProcessingFailure,
@@ -41,6 +41,23 @@ async function handleSourcePostProcessingJob(
     const identity={spaceId:job.space_id,userId:user};
     if(job.payload.mode==='drain'){const result=await service.drainRuleNow(identity,channel,rule,String(job.payload.expected_config_sha256));return {source_post_processing_run_ids:result.runs.map(r=>r.id),statuses:result.runs.map(r=>r.status),stopped_reason:result.stopped_reason,pending_item_count:result.pending_item_count,rule_id:rule};}
     const result=await service.runRuleNow(identity,channel,rule,String(job.payload.expected_config_sha256));return {source_post_processing_run_id:result.id,status:result.status,rule_id:rule};
+    });
+  }
+  // A person's explicit decision rerun / deep analysis or one-off run: one
+  // external attempt behind the start fence; authority is rechecked first.
+  if(job.payload.phase==='manual_decision'||job.payload.phase==='manual_run_once'){
+    const user=stringValue(job.payload.user_id);
+    if(!user||user!==job.user_id)throw new Error('Invalid processing dispatch identity');
+    const identity={spaceId:job.space_id,userId:user};
+    return executeSourceDispatch(db,job,async()=>{
+      if(job.payload.phase==='manual_decision'){
+        const decision=stringValue(job.payload.decision_id),mode=job.payload.mode;
+        if(!decision||(mode!=='rerun_item'&&mode!=='deep_analysis'))throw new Error('Invalid decision dispatch');
+        return service.executeDecisionDispatch(identity,decision,mode,String(job.payload.expected_config_sha256),job.job_id);
+      }
+      const run=await service.runOneOff(identity,job.payload.request as SourceOneOffIntent);
+      // Identity and status only: the run's summary stays behind the Source run reader.
+      return {source_post_processing_run_id:run.id,status:run.status,artifact_id:run.artifact_id,proposal_ids:run.proposal_ids};
     });
   }
   const phase = stringValue(job.payload.phase);

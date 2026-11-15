@@ -1,3 +1,4 @@
+import { roomAgentUseSql, conversationAgentParticipatesSql } from "../rooms/agentUsageSql.js";
 import {OperationError} from '../systemActions/operations/errors.js';
 import {recordPreparedRunCreation,assertPreparedFreshRunUnlinked,preparedRunTerminalOwner,lockRunProposalTransitions} from '../systemActions/operations/proposalTransitions.js';
 import { randomUUID } from "node:crypto";
@@ -11,7 +12,8 @@ import {
   sanitizeErrorJson,
   sanitizeEvidenceJson,
 } from "./evidenceRedaction.js";
-import { assertProjectInSpace } from "../projects/access.js";
+import {PgConversationRuntimeSessionRepository} from '../sessions/conversationRuntimeSessionRepository.js';
+import { lockProjectAudience, assertProjectInSpace } from "../projects/access.js";
 import { artifactReadSql, contentAccessLevelSql, contentReadSql, projectReadAccessSql, proposalReadSql, roomRunReadAccessSql } from "../access/contentAccessSql.js";
 import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 import { contentDecisionFromDb } from "../access/contentAccessQuery.js";
@@ -1823,8 +1825,19 @@ export class PgRunRepository {
     started_at: string;
     required_sandbox_level?: string | null;
   }): Promise<(AgentRunRecord & { attempt_number: number }) | null> {
+    return withQueryableTransaction(this.db,async db=>{
+      const candidate=(await db.query<AgentRunRecord & {room_id:string|null}>(`SELECT r.*,g.room_id FROM runs r LEFT JOIN agent_run_groups g ON g.space_id=r.space_id AND g.id=r.run_group_id WHERE r.space_id=$1 AND r.id=$2`,[input.space_id,input.run_id])).rows[0];
+      if(candidate?.room_id){
+        // Separate lock/read statements get a fresh READ COMMITTED snapshot after
+        // a concurrent revocation commits. A predicate in the UPDATE alone can
+        // still read the pre-revocation snapshot while waiting on a row lock.
+        if(candidate.project_id)await lockProjectAudience(db,input.space_id,candidate.project_id);
+        await db.query('SELECT id FROM rooms WHERE space_id=$1 AND id=$2 FOR SHARE',[input.space_id,candidate.room_id]);
+        if(candidate.session_id)await new PgConversationRuntimeSessionRepository(db).lockConversation(input.space_id,candidate.session_id);
+        if(!(await new PgRunRepository(db,this.config).checkRunExecutionAuthorization(candidate)).allowed)return null;
+      }
     const attemptId = randomUUID();
-    const result = await this.db.query<AgentRunRecord & { attempt_number: number }>(
+    const result = await db.query<AgentRunRecord & { attempt_number: number }>(
       `WITH updated AS (
          UPDATE runs
             SET status = 'running',
@@ -1833,6 +1846,7 @@ export class PgRunRepository {
                 required_sandbox_level = COALESCE($4, required_sandbox_level)
           WHERE space_id = $1 AND id = $2 AND status = 'queued' AND execution_kind = 'agent'
             AND NOT (COALESCE(output_json, '{}'::jsonb) ? 'waiting_for_quota')
+            AND ${conversationAgentParticipatesSql("runs.space_id", "runs.session_id", "runs.agent_id")}
           RETURNING id, space_id, agent_id, agent_version_id, execution_kind, runtime_profile_id,
                     runtime_profile_snapshot_json, run_type, status, mode,
                     prompt, instruction, project_folder_id, workspace_location_id, trust_mode, host_task_thread_id, session_id, project_id,
@@ -1899,6 +1913,7 @@ export class PgRunRepository {
       ],
     );
     return result.rows[0] ?? null;
+    });
   }
 
   async checkRunDispatchContract(
@@ -1932,7 +1947,13 @@ export class PgRunRepository {
            JOIN agents agent
              ON agent.id=$3 AND agent.space_id=run.space_id
             AND agent.status='active' AND agent.current_version_id IS NOT NULL
-            AND ${contentReadSql("agent", "agent", "COALESCE(run.instructed_by_user_id, run.owner_user_id)")}
+            AND ((EXISTS (SELECT 1 FROM sessions usage_session WHERE usage_session.id=run.session_id
+              AND usage_session.space_id=run.space_id AND usage_session.room_id IS NOT NULL
+              AND ${roomAgentUseSql("agent", "COALESCE(run.instructed_by_user_id, run.owner_user_id)", "usage_session.room_id")}
+              AND ${conversationAgentParticipatesSql("run.space_id", "run.session_id", "agent.id")}))
+              OR (NOT EXISTS (SELECT 1 FROM sessions usage_session WHERE usage_session.id=run.session_id
+                AND usage_session.space_id=run.space_id AND usage_session.room_id IS NOT NULL)
+                AND ${contentReadSql("agent", "agent", "COALESCE(run.instructed_by_user_id, run.owner_user_id)")}))
            JOIN agent_versions version
              ON version.id=agent.current_version_id
             AND version.agent_id=agent.id AND version.space_id=agent.space_id
@@ -1999,7 +2020,7 @@ export class PgRunRepository {
       | "project_id"
       | "project_folder_id"
       | "run_group_id"
-    >,
+    > & Partial<Pick<RunRecord, "agent_id" | "session_id">>,
   ): Promise<{ allowed: boolean; error_code?: string; error_message?: string }> {
     if (!run.instructed_by_user_id) return { allowed: true };
     const result = await this.db.query<{ allowed: boolean }>(
@@ -2047,6 +2068,30 @@ export class PgRunRepository {
                  AND execution_folder.status = 'active'
             )
           )
+          AND ($6::varchar IS NULL OR ${conversationAgentParticipatesSql("$1", "$7", "$6")})
+          AND ($6::varchar IS NULL OR EXISTS (
+            SELECT 1 FROM agents execution_agent
+             WHERE execution_agent.id = $6 AND execution_agent.space_id = $1
+               AND execution_agent.status = 'active'
+               AND ($4::varchar IS NULL OR EXISTS (SELECT 1 FROM agent_run_groups usage_group
+                 WHERE usage_group.space_id=$1 AND usage_group.id=$4
+                   AND (usage_group.room_id IS NULL OR ${roomAgentUseSql("execution_agent", "$2", "usage_group.room_id")})))
+               AND (${contentReadSql("agent", "execution_agent", "$2")}
+                 OR EXISTS (
+                   SELECT 1 FROM sessions execution_session
+                   JOIN agent_run_groups execution_group
+                     ON execution_group.id = $4 AND execution_group.space_id = execution_session.space_id
+                    AND execution_group.room_id = execution_session.room_id
+                   JOIN room_agent_members execution_member
+                     ON execution_member.space_id = execution_session.space_id AND execution_member.room_id = execution_session.room_id
+                    AND execution_member.agent_id = execution_agent.id AND execution_member.status = 'active'
+                   JOIN room_agent_access_grants agent_grant
+                     ON agent_grant.space_id = execution_session.space_id AND agent_grant.room_id = execution_session.room_id
+                    AND agent_grant.agent_id = execution_agent.id AND agent_grant.grantee_user_id = $2
+                    AND agent_grant.revoked_at IS NULL
+                   WHERE execution_session.space_id = $1 AND execution_session.id = $7
+                 ))
+          ))
         ) AS allowed`,
       [
         run.space_id,
@@ -2054,6 +2099,8 @@ export class PgRunRepository {
         run.project_id,
         run.run_group_id,
         run.project_folder_id,
+        run.agent_id ?? null,
+        run.session_id ?? null,
       ],
     );
     return result.rows[0]?.allowed
@@ -2222,19 +2269,21 @@ export class PgRunRepository {
    * sending work whose outputs could never be attributed.
    */
   /** False when the Run has no open attempt — it was stopped or settled — so nothing may launch for it. */
-  async bindAttemptLaunch(input: { space_id: string; run_id: string; launch_id: string }): Promise<boolean> {
+  async bindAttemptLaunch(input: { space_id: string; run_id: string; launch_id: string; expected_launch_id?: string | null; expected_attempt_id?: string }): Promise<boolean> {
     const result = await this.db.query<{ id: string }>(
       `UPDATE run_attempts a
           SET launch_id = $3, updated_at = now()
         WHERE a.space_id = $1 AND a.run_id = $2
           AND a.status IN ('queued', 'running')
+          AND (a.launch_id IS NULL OR a.launch_id = $3 OR a.launch_id = $4::varchar)
+          AND ($5::varchar IS NULL OR a.id = $5)
           AND a.attempt_number = (
             SELECT max(candidate.attempt_number)
               FROM run_attempts candidate
              WHERE candidate.space_id = $1 AND candidate.run_id = $2
           )
         RETURNING a.id`,
-      [input.space_id, input.run_id, input.launch_id],
+      [input.space_id, input.run_id, input.launch_id, input.expected_launch_id ?? null, input.expected_attempt_id ?? null],
     );
     return result.rowCount === 1;
   }

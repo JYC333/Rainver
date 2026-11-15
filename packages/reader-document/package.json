@@ -23,7 +23,8 @@
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "prebuild": "node ../../tools/typescript/prepareIncremental.mjs"
   },
   "dependencies": {
     "markdown-it": "^14.3.0"

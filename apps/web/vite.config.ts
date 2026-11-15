@@ -5,6 +5,7 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { VitePWA } from 'vite-plugin-pwa'
+import { BUILD_INPUTS_FILE, collectBuildInputs } from './buildInputs.ts'
 
 // Browser code calls same-origin /api/v1/*; in dev the Vite proxy forwards
 // those requests to the server service inside the compose network. API_URL is
@@ -86,6 +87,16 @@ export default defineConfig(({ mode }) => ({
           res.setHeader('Cache-Control', 'no-store')
           res.end(JSON.stringify(appBuild))
         })
+      },
+    },
+    {
+      // Lets a server browser case refuse a dist that no longer matches the
+      // checkout (server/test/support/webDist.ts); see buildInputs.ts.
+      name: 'rainver-build-inputs',
+      apply: 'build',
+      generateBundle() {
+        const inputs = collectBuildInputs(repoRoot, projectRoot, this.getModuleIds())
+        this.emitFile({ type: 'asset', fileName: BUILD_INPUTS_FILE, source: JSON.stringify(inputs) })
       },
     },
     react(),

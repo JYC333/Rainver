@@ -33,7 +33,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   const location = { locationId: 'location_id' };
   registerOperationAdapters(app, context.config, [
     { method: 'PUT', url: '/api/v1/workspace-locations/:locationId/ambient-sessions/policy', operation: 'host.location.ambient.policy.set', params: location },
-    { method: 'POST', url: '/api/v1/workspace-locations/:locationId/ambient-sessions/dismiss', operation: 'host.location.ambient.dismiss', params: location },
+    { method: 'POST', url: '/api/v1/workspace-locations/:locationId/ambient-sessions/reminder', operation: 'host.location.ambient.reminder.set', params: location },
     { method: 'POST', url: '/api/v1/workspace-locations/:locationId/ambient-sessions/sync', operation: 'host.location.ambient.sync', params: location },
     { method: 'PATCH', url: '/api/v1/imported-sessions/:sessionId', operation: 'imported_session.visibility.set', params: { sessionId: 'session_id' } },
     { method: 'POST', url: '/api/v1/imported-sessions/delete', operation: 'imported_session.delete' },
@@ -56,11 +56,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!identity) return reply;
     try {
       const id = locationId(request);
-      const [policy, counts] = await Promise.all([
-        service().policy(identity, id),
-        service().counts(identity, id),
-      ]);
-      return reply.send({ policy, counts });
+      return reply.send(await service().offer(identity, id));
     } catch (error) {
       return sendRouteError(reply, error);
     }

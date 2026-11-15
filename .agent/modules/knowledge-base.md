@@ -808,7 +808,13 @@ One read and one write check, and both are the module's own.
   next batch too and the caller's own never come up. In the same transaction it
   deletes `object_relations` with a purged note as an endpoint and clears
   `source_object_id` on edges that only cite one, since those foreign keys have
-  no `ON DELETE` and one surviving edge would fail every later purge.
+  no `ON DELETE` and one surviving edge would fail every later purge. The
+  candidate check runs unlocked; the delete transaction then locks the writer
+  authority of every Project the batch touches (id order, FOR SHARE, so a
+  membership or role change waits or goes first), then the Note roots (id order,
+  FOR UPDATE), and judges each Note again by the write rule and the retention
+  window under those locks. It returns the Projects it deleted from
+  (`project_ids`).
 
 
 Reader's document-note entry is a consumer of canonical Notes creation and the
@@ -872,8 +878,7 @@ the existing metadata/status lifecycle: it creates no synthetic content revision
 or revision-created outbox event. Neither command has a required external Job.
 
 This scope does not migrate create/edit/placement/promotion/collection/jot or
-change Note links. Human link/unlink/jot routes enforce the ordinary allow policy with mandatory
-audit and retain canonical endpoint access checks.
+change Note links; see the link/jot core commands below.
 Memory/Wiki promotion still requires its canonical proposal/provenance path.
 
 ### Ordinary Note objects, collections and placement (basis4cf62800)
@@ -1125,3 +1130,136 @@ Thread), locks it FOR SHARE NOWAIT and rechecks its Project. It does not infer a
 interpretation scope from a missing root row. Shared PG tests exercise a held
 interpretation row and actual JobWorker deferral/recovery, plus terminal agent_run
 redelivery with a previously missing publication nudge and no new model steps.
+
+### Human Note links and atomic jot through core
+
+`POST /knowledge/notes/:noteId/links`, `DELETE /knowledge/notes/:noteId/links/:linkId`
+and `POST /knowledge/notes/jot` are formal adapters for the human-only core
+commands `knowledge.note.link.create`, `knowledge.note.link.delete` and
+`knowledge.note.jot` (`knowledge/noteLinkOperations.ts`, policy
+`note.link.create`). They call the existing `createNoteLink`/`deleteNoteLink`/
+`jotNoteForObject` writers inside the operation transaction; there is no second
+writer. Admission pins the Note's Project writer before the Note root lock
+(the Note-control order) and rechecks. An incoming link is written on the
+caller-supplied source object, so both writable endpoints are controlled in one
+order (`authorizeNoteLinkControl`): each endpoint's Project writer authority (id
+order), then both roots (id order, FOR UPDATE), then both write checks again; an
+outgoing link's target stays a read check. A jot naming a Note and a different
+Project conflicts, and a jot target must be readable before anything is
+written. Receipts carry only `{id,space_id[,note_id]}`; the browser rereads the
+Note or its links through the authorized readers. Replay rechecks current Note
+write reach. Cached refusals are the marked `NoteLinkRefusal` (append conflict,
+unreadable inbox, invalid link type) and the active-link uniqueness constraint.
+The retired `noteLinkPolicy.ts` gate is gone.
+
+Trash purge: the retained `POST notes/deleted/purge` URL is the human-only core
+command `knowledge.note.trash.purge` (`knowledge/noteTrashPurgeOperation.ts`,
+policy `note.edit`, as for moving a Note to trash). `purgeDeletedNotes` is
+one batch past the retention window, each Note judged by the write rule again
+under the batch's Project writer locks and Note row locks (above). The explicit
+key makes a retry replay its `{deleted,retention_days,project_ids}` receipt
+instead of deleting the next batch; `project_ids` is the batch's authorization
+scope, and the receipt is released only while the caller still writes every one
+of those Projects. The UI confirmation remains the person's. No new permission
+or scope.
+
+
+### Canonical mutation serialization (P5 continuation)
+
+The canonical Knowledge update/archive appliers lock the `space_objects` root
+before the `knowledge_items` extension and reread the active head under that lock.
+Claim update/archive similarly lock their roots before reading mutable status;
+a superseding Claim and its target are locked together in sorted id order.
+Object-profile update/deprecate/archive lock the profile row before reading its
+status or preserved fields. An update ordered behind archive is refused rather
+than restoring an old active state. These are existing canonical applier changes,
+not a production operation approval mapping or a new Agent permission.
+`knowledgeGroup.test.ts` exercises the Claim and profile archive/update races
+against real PostgreSQL; it also retains the concurrent Knowledge-version test.
+Project/source authority and the remaining legacy commands are not qualified
+by these serialization tests alone.
+
+## Knowledge proposal, object-kind and retrieval maintenance core commands (P5 continuation)
+
+Eight human-only core commands replace the retained item/Claim/relation proposal
+entries: `knowledge.item.propose_create/update/archive`,
+`knowledge.claim.propose_create/update/archive`,
+`knowledge.relation.propose_create/archive` (`proposalOperations.ts`, authority in
+`proposalAuthority.ts`). Submission keeps access-owned Personal/Project placement
+for the two creates and pins every referenced object, folder, Source closure and
+Project under locks before the canonical writer inserts the proposal. When a
+person approves, the registered appliers replay the proposer's **current**
+authority over the same references before any canonical write; a proposal with no
+human principal keeps the base applier's existing rules. Writer input and
+transition refusals (`proposalRefusal.ts`) return 422 with their text; hidden
+targets stay 404.
+
+Space object-kind governance — `knowledge.object_kind.propose_create/update/
+deprecate/archive` and `knowledge.object_schema.propose_import`
+(`objectSchemaOperations.ts`) — is a Space owner/admin submission whose person
+and role rows stay share-locked through COMMIT. Each creates high-risk pending
+proposals only; applying them stays with the object-profile appliers.
+
+`knowledge.retrieval.feedback` and `knowledge.retrieval.reindex` share
+`retrieval/feedbackReindexOperations.ts` with their Memory equivalents: feedback
+is the person's private signal on a result they can currently read; reindex is
+owner/admin, and the projection rebuild and embedding backfill Job intent commit
+together.
+
+Still retained REST (not core yet): search, retrieval brief/explain,
+create-safety, maintenance scan, eval reports/diagnostics/calibration, Claim
+candidate packets and contradiction scan, relation discovery scan and object
+schema suggestion scan. See Plan 5 for the open contract decisions.
+
+
+### Asynchronous Knowledge retrieval requests (P5 continuation)
+
+The retained search, Context Brief, explain and create-safety POSTs are
+`knowledge.retrieval.search.request`, `knowledge.retrieval.brief.request`,
+`knowledge.retrieval.explain.request`, and `knowledge.create_safety.request`.
+They admit one `content_retrieval_request` Job in the core transaction and cache
+only `{id,space_id,job_id,status}`. Existing retrieval/provider/Artifact services
+run in its single-attempt worker, outside the admission transaction. Explain
+requires current Space owner/admin at admission, execution and result read.
+
+`GET /knowledge/retrieval/requests/:jobId` is requester-only. It pins the canonical
+object roots and subtype statuses/content, Project and folder scopes/shares,
+grants, provenance links, Claim source rows and their source metadata, and the
+Source consent/subscription closure. Rediscovery refuses changed lineage.
+Canonical adapters and source policy run again under those locks, and successful
+reads keep B11 auditing. Any summary/denied contributor withholds the complete old
+result; no old synthesis, provenance or diagnostic field is released separately.
+The web submits once and polls this reader. Generic Jobs suppress these results.
+Brief/explain Artifact creation and create-safety advisory semantics remain;
+a persisted Brief/Explain Artifact settles after provider I/O under the current
+Job claim and the same contributing-ref release closure (Explain: current
+maintenance role), and every Artifact exit withholds it whole once a contributor
+is withdrawn ([ARTIFACTS](../architecture/ARTIFACTS.md#retrieval-derived-briefs-and-explain-reports)).
+The closure (`retrieval/releaseClosure.ts`) pins Project audiences, then
+roots and Source lineage, then `knowledge_items`/`notes`/`claims`/`sources`
+(and Thread/publication) extension rows, then provenance — root before
+extension, the order every Note, Knowledge, Claim and Source writer takes.
+
+Context Ops report results (`retrieval/contextReports.ts`) are released on
+each poll under that same closure: report authority, `full` on every
+reference, then the adapter read and the Source policy gate
+(`sourcePolicyAllowsRead`: consent, archive, owner) over each Knowledge/Memory
+reference's canonical lineage, without requiring a projection row. Any refusal
+withholds the whole result, including findings, titles and counts.
+The eight Knowledge scan/report entries are migrated by the following report continuation.
+
+
+### Report request continuation
+
+The eight retained scan/report POST URLs are formal keyed operation adapters.
+`contextReportOperations.ts` declares their strict inputs and identity/status
+receipts; `knowledge/reportWork.ts` owns the unchanged report/packet semantics.
+The existing one-attempt content request Job runs DB work and canonical report/
+Proposal writes transactionally. It carries no provider execution for unsupported
+LLM flags (422 at admission). `/knowledge/retrieval/requests/:jobId` checks current
+Context Ops scan/review authority, the nested report/input references and their
+canonical provenance/Source closure before releasing any report field. Refusal
+withholds the full old result. Generic Jobs suppress it. Typed web clients submit
+once and poll in the receipt Space; no presentation change is part of this slice.
+Eval submission remains owner/admin-only; private/space_ops settings and packet
+review/apply gates remain canonical. Reader migration remains unfinished.

@@ -32,7 +32,11 @@ export type RetrievalEgressDestination =
   | "local_provider"
   | "internal_process";
 
+/** Server-only physical-send authority; never serialized as a grant. */
+export type RetrievalSendCandidate = { objectType: import('@rainver/protocol').RetrievalObjectType; objectId: string; title: string; text: string | null; sourceConnectionIds?: readonly string[] };
+export type RetrievalSendAuthority = (candidates: readonly RetrievalSendCandidate[]) => (destination: RetrievalEgressDestination) => Promise<void>;
 export interface RetrievalEgressPolicy {
+  authorizeSend?: (destination: RetrievalEgressDestination) => Promise<void>;
   /**
    * Whether this space permits sending indexed content to an external model
    * provider. Default `true`.

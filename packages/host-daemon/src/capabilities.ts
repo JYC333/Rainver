@@ -64,7 +64,7 @@ export interface RuntimeLookup {
  * installations.
  */
 export interface DaemonCapabilities {
-  execution_workspaces?: {version:1|2;reclaim?:1|2|3|4|5;shared_review?:1};
+  execution_workspaces?: {version:1|2;reclaim?:1|2|3|4|5|6|7;shared_review?:1;preserve_source?:1;lifecycle?:1};
   native_workspace_integration?:true;
   /** The native integration replays a batch's commits onto the target (publication strategy `rebase`). */
   native_workspace_rebase?:true;
@@ -89,7 +89,10 @@ export function executionWorkspaceCapability(platform:NodeJS.Platform=process.pl
   // reclaim:5 = explicitly reviewed exact-tip discard through the same release fences.
   // shared_review:1 = a read-only delegated review mounts an existing workspace
   // read-only at a frozen `review_commit` under a shared lease (workspaceReview.ts).
-  return platform==='win32'?undefined:{version:2,reclaim:5,shared_review:1};
+  // reclaim:6 = durable adopting-parent checkpoint before child release.
+  // reclaim:7 = later pages release owner recovery refs backed by the completed
+  // release's exact durable Run-history keepers, including rewritten versions.
+  return platform==='win32'?undefined:{version:2,reclaim:7,shared_review:1,preserve_source:1,lifecycle:1};
 }
 
 export function probeVersion(bin: string, timeoutMs = 4000, options: { args?: string[]; env?: NodeJS.ProcessEnv; cwd?: string } = {}): Promise<string | null> {

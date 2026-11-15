@@ -53,8 +53,11 @@ export async function renderAgentIdentityPrompt(
 ): Promise<string | null> {
   const [role, memory] = await Promise.all([
     db.query<{ role_instruction: string | null }>(
-      `SELECT role_instruction FROM agents WHERE id = $1 AND space_id = $2`,
-      [input.agentId, input.spaceId],
+      `SELECT CASE WHEN access_project_id IS NOT NULL AND EXISTS (
+         SELECT 1 FROM rooms WHERE id=$3 AND space_id=$2 AND project_id <> agents.access_project_id
+       ) THEN NULL ELSE role_instruction END AS role_instruction
+       FROM agents WHERE id = $1 AND space_id = $2`,
+      [input.agentId, input.spaceId, input.roomId],
     ),
     listAgentMemoryForDispatch(db, {
       spaceId: input.spaceId,

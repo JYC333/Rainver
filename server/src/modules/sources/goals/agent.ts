@@ -1,3 +1,4 @@
+import {lockGoal} from './transaction.js';
 import {MATERIAL_RUN_SECONDS} from '../materialProcessing/executionBudget.js';
 import {requireNativeCollector} from './nativeSafety.js';
 import {PgConversationBackendRepository} from '../../sessions/conversationBackendRepository.js';
@@ -17,7 +18,7 @@ const ACTIONS=['source.goal.read','source.goal.sources','source.goal.inspect','s
  * its intent and this preparation atomically); otherwise opens its own. */
 export async function queueSourceGoalAgent(db:Queryable,config:ServerConfig,identity:SpaceUserIdentity,goalId:string,purpose:'explore'|'repair',bindingId?:string,chat?:{sessionId:string;messageId:string}){
  const result=await withQueryableTransaction(db,async tx=>{
-  await tx.query('SELECT id FROM source_goals WHERE id=$1 FOR UPDATE',[goalId]);const base=await requireGoal(tx,identity,goalId,true);const g=purpose==='repair'?await activeGoalIntent(tx,base):base;
+  await lockGoal(tx,goalId);const base=await requireGoal(tx,identity,goalId,true);const g=purpose==='repair'?await activeGoalIntent(tx,base):base;
   if(purpose==='repair'){
    // Serialize policy downgrade with admission; re-read after existing cleanup.
    await tx.query('SELECT id FROM source_connections WHERE id IN (SELECT source_connection_id FROM source_goal_bindings WHERE goal_id=$1) ORDER BY id FOR SHARE',[g.id]);

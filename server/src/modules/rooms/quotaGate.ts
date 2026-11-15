@@ -1,3 +1,5 @@
+import type {ServerConfig} from '../../config.js';
+import {canManageHost} from '../hosts/hostCommands.js';
 import type { QuotaRecovery, RoomConversationQuota, SubscriptionQuotaHold, SubscriptionQuotaWindow } from "@rainver/protocol";
 import type { RunRecord } from "../runs/repository.js";
 import { nextQuotaRecoveryCheck, quotaRecoveryAccountFree, quotaRecoveryPauseReason, quotaRecoveryReady } from "./quotaRecovery.js";
@@ -12,7 +14,7 @@ import { PgRoomDiscussionRepository } from "./discussionRepository.js";
 import { lockRoomConversationQueue } from "./messageQueue.js";
 import {
   accountLabel,
-  cachedQuotaReading,
+  cachedLoginReading,
   conversationSubscriptionLogins,
   liveQuotaSource,
   loginKey,
@@ -492,12 +494,12 @@ export async function discussionQuotaHold(db: Queryable, spaceId: string, discus
  * every refresh), and what is held — each hold saying whether the viewer may
  * continue it.
  */
-export async function conversationQuota(db: Queryable, spaceId: string, sessionId: string, viewerUserId: string): Promise<RoomConversationQuota> {
+export async function conversationQuota(db: Queryable, spaceId: string, sessionId: string, viewerUserId: string, config?:ServerConfig): Promise<RoomConversationQuota> {
   const policy = await readSubscriptionQuotaPolicy(db, spaceId);
   const logins = [];
   for (const login of await conversationSubscriptionLogins(db, spaceId, sessionId)) {
-    const reading = await cachedQuotaReading(db, login);
-    logins.push({ account_label: accountLabel(login), window: reading.window, checked_at: reading.checked_at });
+    const reading = await cachedLoginReading(db, login,{spaceId,sessionId});
+    logins.push({ account_label: accountLabel(login), login_key:reading.login_key, pool_key:reading.pool_key, window:reading.window, windows:reading.windows, display_windows:reading.display_windows, checked_at:reading.checked_at, agent_ids:login.agent_ids??[], ...(config&&await canManageHost(db,config,login.host_id,viewerUserId,{allowBuiltin:true})?{refresh_target:{host_id:login.host_id,runtime_key:login.runtime_key,installation:login.installation}}:{}) });
   }
   const held = (await db.query<{ id: string; marker: WaitingForQuota }>(
     `SELECT id, output_json->'waiting_for_quota' AS marker

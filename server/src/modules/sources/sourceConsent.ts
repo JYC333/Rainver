@@ -8,6 +8,15 @@ import {
 } from "./capturePolicy.js";
 import type { SourceConnectionRow } from "./sourceRepositoryRows.js";
 
+/** A consent refusal written for the person: the connection's retention policy
+ * forbids the requested level. Still 403 for retained REST callers. */
+export class SourceRetentionRefusal extends HttpError {
+  constructor(readonly requested: string) {
+    super(403, `Source retention policy does not allow ${requested}`);
+    this.name = "SourceRetentionRefusal";
+  }
+}
+
 export class SourceGovernanceInputError extends HttpError {}
 
 const TRUST_LEVELS = ["trusted", "normal", "untrusted"] as const;
@@ -97,7 +106,7 @@ export function enforceSourceRetentionPolicy(policyJson: unknown, requested: Ret
     "metadata_only",
   );
   if (retentionRank(requested) > retentionRank(retentionPolicy)) {
-    throw new HttpError(403, `Source retention policy does not allow ${requested}`);
+    throw new SourceRetentionRefusal(requested);
   }
 }
 

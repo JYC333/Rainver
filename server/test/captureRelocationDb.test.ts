@@ -1,9 +1,11 @@
+import {__setAuthIdentityForTests} from '../src/modules/auth/identity.js';
 import { randomUUID } from "node:crypto";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CaptureService } from "../src/modules/capture/service.js";
 import { RelocationService } from "../src/modules/capture/relocationService.js";
 import { PgKnowledgeRepository } from "../src/modules/knowledge/repository.js";
 import { PgSpaceRepository } from "../src/modules/spaces/repository.js";
+import { updateContentEgress } from "../src/modules/spaces/writers.js";
 import { noteBlocks } from "../src/modules/knowledge/noteBlockIds.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
@@ -67,6 +69,8 @@ beforeEach(async () => {
     [randomUUID(), TEAM, PROJECT, MATE, now],
   );
 });
+
+afterEach(()=>__setAuthIdentityForTests(null));
 
 const capture = () => new CaptureService(db.pool);
 const relocation = () => new RelocationService(db.pool);
@@ -511,12 +515,12 @@ describe("the copy-out Space setting (real Postgres)", () => {
       .toMatchObject({ member_copy_out_enabled: false });
 
     // The Mate is an ordinary member of the Team Space.
-    expect(await repository.updateContentEgressSetting(MATE, TEAM, true))
-      .toMatchObject({ statusCode: 403 });
+    await expect(updateContentEgress(db.pool, MATE, TEAM, true))
+      .rejects.toMatchObject({ statusCode: 403 });
 
     await db.pool.query(`UPDATE space_memberships SET role = 'owner' WHERE space_id = $1 AND user_id = $2`, [TEAM, OWNER]);
-    expect(await repository.updateContentEgressSetting(OWNER, TEAM, true))
-      .toMatchObject({ member_copy_out_enabled: true });
+    expect(await updateContentEgress(db.pool, OWNER, TEAM, true))
+      .toEqual({ space_id: TEAM });
     expect(await repository.getContentEgressSetting(MATE, TEAM))
       .toMatchObject({ member_copy_out_enabled: true });
   });
@@ -531,4 +535,38 @@ describe("the copy-out Space setting (real Postgres)", () => {
     expect(await new PgSpaceRepository(db.pool).getContentEgressSetting(outsider, TEAM))
       .toMatchObject({ statusCode: 403 });
   });
+});
+
+describe('formal relocation receipts with current cross-Space authority',()=>{
+ async function formal(user:string,space:string){
+  const {buildModuleServer}=await import('./support/moduleServer.js');
+  const {captureModule}=await import('../src/modules/capture/index.js');
+  const {loadConfig}=await import('../src/config.js');
+  __setAuthIdentityForTests({spaceId:space,userId:user});
+  const app=buildModuleServer(loadConfig({...process.env,SERVER_DATABASE_URL:db.connectionUri}),[captureModule]);
+  return {app,close:async()=>{__setAuthIdentityForTests(null);await app.close();}};
+ }
+ it('copies owned content across Spaces without widening copy-out and rejects revoked source membership replay',async()=>{
+  const source=await marginalia(OWNER,'Owned cross-Space capture'),session=await formal(OWNER,OWNER_PERSONAL),key=randomUUID();
+  const request=()=>session.app.inject({method:'POST',url:`/api/v1/captures/${source.activity_id}/relocation`,headers:{'idempotency-key':key},payload:{destination:'personal_inbox',mode:'copy',block_ids:[source.block_id]}});
+  try{
+   const first=await request();expect(first.statusCode,first.body).toBe(200);expect((await request()).json()).toEqual(first.json());
+   expect((await db.pool.query('SELECT space_id FROM activity_records WHERE id=$1',[first.json().data.activity_id])).rows[0].space_id).toBe(OWNER_PERSONAL);
+   expect((await db.pool.query('SELECT member_copy_out_enabled FROM spaces WHERE id=$1',[TEAM])).rows[0].member_copy_out_enabled).toBe(false);
+   await db.pool.query("UPDATE space_memberships SET status='removed' WHERE space_id=$1 AND user_id=$2",[TEAM,OWNER]);
+   expect((await request()).statusCode).toBe(404);
+  }finally{await session.close();}
+ });
+ it('refuses both first use and receipt replay when current copy-out permission is absent',async()=>{
+  const source=await marginalia(MATE,'Shared colleague capture');
+  await db.pool.query("UPDATE space_objects SET visibility='space_shared' WHERE id=$1",[source.note_id]);await db.pool.query("UPDATE activity_records SET visibility='space_shared' WHERE id=$1",[source.activity_id]);
+  const session=await formal(OWNER,OWNER_PERSONAL),key=randomUUID();
+  const request=()=>session.app.inject({method:'POST',url:`/api/v1/captures/${source.activity_id}/relocation`,headers:{'idempotency-key':key},payload:{destination:'personal_inbox',mode:'copy',block_ids:[source.block_id]}});
+  try{
+   expect((await request()).statusCode).toBe(404);
+   await db.pool.query('UPDATE spaces SET member_copy_out_enabled=true WHERE id=$1',[TEAM]);
+   const first=await request();expect(first.statusCode,first.body).toBe(200);
+   await db.pool.query('UPDATE spaces SET member_copy_out_enabled=false WHERE id=$1',[TEAM]);expect((await request()).statusCode).toBe(404);
+  }finally{await session.close();}
+ });
 });

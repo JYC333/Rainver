@@ -1,3 +1,4 @@
+import {checkpointExhaustedSql} from './workspaceCheckpointState.js';
 import type {Queryable} from '../routeUtils/common.js';
 import type {RunRecord} from '../runs/runRepositoryTypes.js';
 import {readVisibleWorkspaceChanges,workspaceChangesForConversation,type VisibleWorkspaceChangePage} from './workspaceReadModel.js';
@@ -57,7 +58,7 @@ export async function workspaceClosureRecoveryHints(db:Queryable,run:Pick<RunRec
    const recovery=c.integration_detail?.checkpoint_recovery as {state?:string}|undefined;
    const active=(await db.query(`SELECT 1 FROM execution_workspace_runs b JOIN runs r ON r.id=b.run_id AND r.space_id=b.space_id
     WHERE b.change_set_id=$1 AND (r.status IN ('queued','running','cancelling','waiting_for_review','waiting_for_dependency')
-     OR (b.checkpoint_state NOT IN ('saved','blocked') AND $2::boolean=false)) LIMIT 1`,[c.change_set_id,recovery?.state==='exhausted'])).rowCount;
+     OR (b.checkpoint_state='pending' AND NOT COALESCE(${checkpointExhaustedSql('b')},false))) LIMIT 1`,[c.change_set_id])).rowCount;
    if(active)continue;
    hints.push({change_set_id:c.change_set_id,expected_revision:c.revision,has_saved_result:c.source_commit!==null,checkpoint_recovery_exhausted:recovery?.state==='exhausted'});
    if(hints.length===5)return hints;

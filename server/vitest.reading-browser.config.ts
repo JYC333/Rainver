@@ -6,9 +6,8 @@ export default defineConfig({
   ...base,
   test: {
     ...base.test,
-    projects: undefined,
+    projects: undefined, globalSetup: ["./test/setupIntegration.ts"], setupFiles: ["./test/support/sqlCapture.ts"],
     include: ['test/readingBrowserAcceptance.browser.ts','test/projectReading.browser.ts'],
     maxWorkers: 1,
-    testTimeout: 120000,
   },
 });

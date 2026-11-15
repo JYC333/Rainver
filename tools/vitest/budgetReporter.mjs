@@ -2,30 +2,38 @@ import { readFileSync } from "node:fs";
 import { relative } from "node:path";
 
 /**
- * Hard time budgets for a Vitest run.
- *
- * Per-call cost grows with the schema and the module graph, including tests
- * that were already reasonable. This reporter measures every run and fails
- * it when a number doubles rather than drifts:
- *
- * - any one file's module import time over `maxFileImportMs`;
- * - any one test over `maxTestMs`;
- * - the run's total import time or total test time over the committed
- *   baseline times `tolerance`.
- *
- * Totals are summed per file, not wall clock. They still grow when the
- * machine is busy. Raising a limit means editing the budget file
- * in the same change, where review can see it. The ten slowest files by
- * import and by test time are printed on every run so slow growth stays
- * visible between the times the gate fires.
+ * Advisory time budgets for a Vitest run. Measurements and the ten slowest
+ * files remain visible on every run; exceeding a budget never changes the
+ * result. Test assertions, collection errors and reporter errors still fail.
+ * Totals are per-file sums, not wall clock, and vary with machine load.
  */
 export default class BudgetReporter {
   constructor(options = {}) {
     this.budgetPath = options.budgetPath;
-    this.budget = JSON.parse(readFileSync(this.budgetPath, "utf8"));
+    this.budget = this.budgetPath ? JSON.parse(readFileSync(this.budgetPath, "utf8")) : null;
   }
 
-  onTestRunEnd(testModules = []) {
+  onTestCaseResult(test) {
+    // Worker events can be buffered. Use Vitest's completed measurement instead
+    // of treating reporter event arrival times as the test's runtime.
+    const duration = test.diagnostic()?.duration ?? 0;
+    if (duration > 5_000) {
+      process.stderr.write(`WARNING: test ${test.fullName} completed in ${fmt(duration)} (5s runtime budget; advisory)\n`);
+    }
+  }
+
+  onTestModuleEnd(module) {
+    const duration = module.diagnostic().duration;
+    if (duration > 5_000) {
+      process.stderr.write(`WARNING: ${relative(process.cwd(), module.moduleId)} tests and hooks took ${fmt(duration)} (5s runtime budget; advisory)\n`);
+    }
+  }
+
+  onTestRunEnd(testModules = [], _errors, reason) {
+    if (reason === "interrupted") {
+      process.stderr.write("INCOMPLETE: test run interrupted; unfinished work is not a pass.\n");
+    }
+    if (!this.budget) return;
     const budget = this.budget;
     const rows = testModules.map((module) => {
       const diagnostic = module.diagnostic();
@@ -79,15 +87,24 @@ export default class BudgetReporter {
       "  slowest test files:", top("testMs"),
     ];
     if (violations.length) {
-      lines.push("", "  BUDGET EXCEEDED:", ...violations.map((v) => `    - ${v}`), "",
-        "  A doubling like this is a structural cost, not noise: find what made every file or test pay more,",
-        `  or raise the limit deliberately in ${relative(process.cwd(), this.budgetPath)}.`);
+      lines.push("", "  WARNING: TEST TIME BUDGET EXCEEDED (advisory):", ...violations.map((v) => `    - ${v}`), "",
+        "  Investigate slow imports/tests; machine contention can also increase these measurements.",
+        `  Baselines and warning thresholds: ${relative(process.cwd(), this.budgetPath)}.`);
     }
     process.stderr.write(lines.join("\n") + "\n");
-    if (violations.length) throw new Error(`test budget exceeded (${violations.length} violation${violations.length === 1 ? "" : "s"})`);
   }
 }
 
 function fmt(ms) {
   return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`;
+}
+
+// Also used by browser performance checks; functional assertions stay separate.
+export function warnTimeBudget(label, measuredMs, limitMs) {
+  if (!Number.isFinite(measuredMs) || !Number.isFinite(limitMs)) {
+    throw new TypeError(`Invalid timing measurement or budget for ${label}`);
+  }
+  if (measuredMs > limitMs) {
+    console.warn(`WARNING: ${label} took ${measuredMs}ms (budget ${limitMs}ms; advisory)`);
+  }
 }

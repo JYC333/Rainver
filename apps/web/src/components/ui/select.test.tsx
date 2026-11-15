@@ -22,6 +22,42 @@ function Harness({ portal, onChange }: { portal?: boolean; onChange?: (value: st
 }
 
 describe('Select by keyboard', () => {
+  it('floats over a dialog while keeping selection and Escape keyboard focus', async () => {
+    const user = userEvent.setup({ delay: null })
+    const changed = vi.fn()
+    render(<Dialog open><DialogContent><DialogTitle>Settings</DialogTitle><DialogDescription>Choose a model</DialogDescription>
+      <Select overlay variant="ghost" ariaLabel="Model" options={OPTIONS} value="builtin" onChange={changed} />
+    </DialogContent></Dialog>)
+    const trigger = screen.getByRole('button', { name: 'Model' })
+    await user.click(trigger)
+    expect(await screen.findByRole('option', { name: 'Server Runtime' })).toHaveFocus()
+    expect(trigger.parentElement?.contains(screen.getByRole('listbox'))).toBe(false)
+    await user.keyboard('{ArrowDown}{Enter}')
+    expect(changed).toHaveBeenCalledWith('desk')
+    expect(trigger).toHaveFocus()
+    await user.keyboard('{Enter}{Escape}')
+    expect(screen.queryByRole('listbox')).toBeNull()
+    expect(screen.getByRole('dialog')).toBeVisible()
+    expect(trigger).toHaveFocus()
+  })
+
+  it('shows running first, then unread after execution ends, without changing selection', () => {
+    const changed = vi.fn()
+    const { rerender } = render(<Select ariaLabel="Conversations" value="one" onChange={changed} options={[
+      { value: 'one', label: 'Reply', busyLabel: 'Running', unreadLabel: 'Unread' },
+    ]} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Conversations' }))
+    expect(screen.queryByRole('status', { name: 'Unread' })).not.toBeInTheDocument()
+    expect(screen.getByRole('status', { name: 'Running' })).toBeVisible()
+    expect(changed).not.toHaveBeenCalled()
+    rerender(<Select ariaLabel="Conversations" value="one" onChange={changed} options={[
+      { value: 'one', label: 'Reply', unreadLabel: 'Unread' },
+    ]} />)
+    expect(screen.getByRole('status', { name: 'Unread' })).toBeVisible()
+    expect(screen.queryByRole('status', { name: 'Running' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('option', { name: /Reply/ }))
+    expect(changed).toHaveBeenCalledWith('one')
+  })
   it('opens on the selected option, skips disabled ones, and chooses with Enter', async () => {
     const user = userEvent.setup({ delay: null })
     const onChange = vi.fn()

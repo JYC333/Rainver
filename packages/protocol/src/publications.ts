@@ -50,7 +50,7 @@ export type PublicationImportSummary = z.infer<typeof PublicationImportSummarySc
 
 export const PublicationImportSchema = PublicationImportSummarySchema.extend({
   /** The importer's own response about their own copy: always named. */
-  imported_resource_id: IdSchema,
+  imported_resource_id: IdSchema.nullable(),
   publication_id: IdSchema,
   target_space_id: IdSchema,
   publication_version: z.number().int().positive(),

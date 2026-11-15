@@ -448,6 +448,26 @@ describe("researchMonitorMaterializerDb", () => {
       expect((await strategyOf(sameContext)).query_strategy_id).toBe(replacement.id);
       expect((await strategyOf(otherThread)).query_strategy_id).toBe("another-threads-strategy");
 
+      // Direct Pool callers must roll back the whole switch if its final
+      // Workflow update fails, just as materialization's composed caller does.
+      const activationState = async () => ({
+        channels: (await db.pool.query(`SELECT id,status,updated_at FROM source_channels WHERE space_id=$1 ORDER BY id`, [SPACE])).rows,
+        bindings: (await db.pool.query(`SELECT id,status,updated_at FROM project_source_bindings WHERE space_id=$1 ORDER BY id`, [SPACE])).rows,
+        tasks: (await db.pool.query(`SELECT id,status,next_run_at,updated_at FROM scheduler_tasks WHERE space_id=$1 ORDER BY id`, [SPACE])).rows,
+        activations: (await db.pool.query(`SELECT * FROM research_query_strategy_activations WHERE space_id=$1 ORDER BY id`, [SPACE])).rows,
+        workflows: (await db.pool.query(`SELECT object_id,state_json FROM project_research_workflows WHERE space_id=$1 ORDER BY object_id`, [SPACE])).rows,
+      });
+      const beforeFailedSwitch = await activationState();
+      await db.pool.query(`CREATE FUNCTION reject_strategy_workflow_switch() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected strategy publication failure'; END $$`);
+      await db.pool.query(`CREATE TRIGGER reject_strategy_workflow_switch BEFORE UPDATE ON project_research_workflows FOR EACH ROW EXECUTE FUNCTION reject_strategy_workflow_switch()`);
+      try {
+        await expect(new ResearchStrategyActivationService(db.pool).activate({ identity, strategyId: strategy.id, reason: "rollback" }))
+          .rejects.toThrow('injected strategy publication failure');
+        expect(await activationState()).toEqual(beforeFailedSwitch);
+      } finally {
+        await db.pool.query(`DROP TRIGGER reject_strategy_workflow_switch ON project_research_workflows`);
+        await db.pool.query(`DROP FUNCTION reject_strategy_workflow_switch()`);
+      }
       await new ResearchStrategyActivationService(db.pool).activate({ identity, strategyId: strategy.id, reason: "rollback" });
       const history = await db.pool.query<{ strategy_id: string; reason: string; deactivated_at: string | null }>(
         `SELECT strategy_id,reason,deactivated_at FROM research_query_strategy_activations

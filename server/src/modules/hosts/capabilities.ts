@@ -47,6 +47,19 @@ function strings(value: unknown): string[] {
 function stringMap(value: unknown): Record<string, string> {
   return Object.fromEntries(Object.entries(record(value)).filter((pair): pair is [string, string] => typeof pair[1] === "string"));
 }
+/** The execution protocol is required; optional capabilities negotiate independently.
+ * An unknown cleanup/review extension never disables supported isolated execution. */
+function workspaceCapabilities(value: unknown): HostCapabilities['execution_workspaces'] {
+  const source = record(value), schema = HostCapabilitiesSchema.shape.execution_workspaces.unwrap();
+  const version = schema.shape.version.safeParse(source.version);
+  if (!version.success) return undefined;
+  const extensions = Object.entries(schema.shape).flatMap(([key, field]) => {
+    if (key === 'version') return [];
+    const parsed = field.safeParse(source[key]);
+    return parsed.success && parsed.data !== undefined ? [[key, parsed.data]] : [];
+  });
+  return schema.parse({ version: version.data, ...Object.fromEntries(extensions) });
+}
 function choices(value: unknown): RuntimeOptionChoice[] {
   return Array.isArray(value)
     ? value.flatMap((item) => {
@@ -181,13 +194,14 @@ export function normalizeHostCapabilities(raw: unknown): HostCapabilities {
     if (parsed.length > 0) installations[runtimeKey] = parsed;
   }
   const toolBridges = Array.isArray(source.tool_bridge_protocols) ? strings(source.tool_bridge_protocols) : undefined;
+  const workspaces = workspaceCapabilities(source.execution_workspaces);
   return HostCapabilitiesSchema.parse({
     runtimes, versions, installations,
     ...(source.native_workspace_integration===true?{native_workspace_integration:true}:{}),
     ...(source.native_workspace_rebase===true?{native_workspace_rebase:true}:{}),
     ...(source.managed_cli_updates === true ? { managed_cli_updates: true } : {}),
     ...(HostCapabilitiesSchema.shape.workspace_read_only.safeParse(source.workspace_read_only).success?{workspace_read_only:source.workspace_read_only}:{}),
-    ...(HostCapabilitiesSchema.shape.execution_workspaces.safeParse(source.execution_workspaces).success?{execution_workspaces:source.execution_workspaces}:{}),
+    ...(workspaces ? { execution_workspaces: workspaces } : {}),
     ...(toolBridges ? { tool_bridge_protocols: toolBridges } : {}),
     // Kept whole or not at all: a report that does not parse reads as a daemon
     // without ordinary-tool support, never as tools that are missing.

@@ -1,3 +1,5 @@
+import { PgProjectAgentRepository } from "../projects/projectAgents.js";
+import { assertProjectWriter } from "../projects/access.js";
 import { randomUUID } from "node:crypto";
 import { AgentMutationError } from "./agentMutationError.js";
 import {
@@ -96,6 +98,7 @@ export interface AgentRuntimeProfileOut {
 }
 
 export interface HostRuntimeProfileTarget {
+  projectId?: string | null;
   spaceId: string;
   agentId: string;
   actorUserId: string;
@@ -107,6 +110,7 @@ export interface HostRuntimeProfileTarget {
 }
 
 interface RuntimeProfileAdmissionInput {
+  projectId?: string | null;
   agentId?: string;
   name: string;
   runtimeKey: string;
@@ -433,7 +437,9 @@ export async function normalizeRuntimeProfileInput(
     const context = input.agentContext ?? await loadAgentContext(db, spaceId, input.agentId ?? "");
     await validateHostExecutionBinding(db, {
       spaceId,
-      projectId: context.projectId,
+      projectId: input.projectId === undefined ? context.projectId : input.projectId,
+      allowLocationProjectInference: input.projectId === undefined,
+      agentId: input.agentId ?? null,
       actorUserId: input.actorUserId ?? context.actorUserId,
       executionHostId: input.executionHostId ?? null,
       workspaceLocationId: input.workspaceLocationId ?? null,
@@ -520,6 +526,8 @@ async function validateHostExecutionBinding(
   input: {
     spaceId: string;
     projectId: string | null;
+    allowLocationProjectInference: boolean;
+    agentId: string | null;
     actorUserId: string | null;
     executionHostId: string | null;
     workspaceLocationId: string | null;
@@ -537,9 +545,6 @@ async function validateHostExecutionBinding(
   }
   if (input.workspaceMode === "managed" && input.workspaceLocationId) {
     throw new AgentMutationError(422, "Managed-mode runtime profiles cannot select a Workspace Location");
-  }
-  if (input.workspaceMode === "location" && !input.projectId) {
-    throw new AgentMutationError(422, "A Location-mode host-bound Agent must belong to a Project");
   }
   if (!input.actorUserId) throw new HttpError(403, "Host-bound execution requires an owning user");
   const target = input.workspaceMode === "managed"
@@ -605,9 +610,14 @@ async function validateHostExecutionBinding(
     if (row.location_host_id !== input.executionHostId || row.location_status !== "active") {
       throw new AgentMutationError(422, "Workspace Location is not active on the selected host");
     }
-    if (row.folder_project_id !== input.projectId) {
-      throw new AgentMutationError(422, "Workspace Location must belong to the Agent's Project");
+    const projectId = input.projectId ?? (input.allowLocationProjectInference ? row.folder_project_id : null);
+    if (!projectId || row.folder_project_id !== projectId) {
+      throw new AgentMutationError(422, "Workspace Location must belong to the execution Project");
     }
+    await assertProjectWriter(db, input.spaceId, projectId, input.actorUserId);
+    if (!input.agentId || !await new PgProjectAgentRepository(db).projectUsesAgent({
+      spaceId: input.spaceId, projectId, agentId: input.agentId, lock: true,
+    })) throw new HttpError(409, "Add this Agent to the execution Project before selecting its Location");
   }
   const spec = getLocalCliRuntimeAdapterSpec(input.runtimeKey);
   if (!spec || spec.implementation_status !== "implemented" || spec.invocation.protocol !== "acp") {

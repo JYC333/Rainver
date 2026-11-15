@@ -37,7 +37,6 @@ interface BackendRow {
   location_project_folder_id: string | null;
   workspace_mode?: "location" | "managed" | null;
   runtime_installation: string | null;
-  agent_project_id: string | null;
   host_kind: "server" | "remote" | null;
   host_name: string | null;
   host_owner_user_id: string | null;
@@ -200,6 +199,7 @@ export class PgConversationBackendRepository {
     spaceId: string,
     userId: string,
     agentId: string,
+    projectId: string | null = null,
   ): Promise<ConversationBackendOption[]> {
     const profiles = await this.db.query<BackendRow>(
         `SELECT agent.agent_kind,
@@ -217,7 +217,6 @@ export class PgConversationBackendRepository {
                 profile.workspace_location_id,
                 profile.workspace_mode,
                 profile.runtime_installation,
-                agent.project_id AS agent_project_id,
                 host.kind AS host_kind,
                 host.name AS host_name,
                 host.owner_user_id AS host_owner_user_id,
@@ -263,6 +262,7 @@ export class PgConversationBackendRepository {
     );
 
     return profiles.rows.flatMap((profile) => {
+      if (profile.workspace_mode === "location" && (!projectId || profile.location_project_id !== projectId)) return [];
       const spec = getRuntimeAdapterSpec(profile.runtime_key);
       if (!spec || spec.implementation_status !== "implemented") return [];
       const hostBound = Boolean(
@@ -292,8 +292,8 @@ export class PgConversationBackendRepository {
       const hostOwnerIsMe = hostBound && (
         profile.host_kind === "server" || profile.host_owner_user_id === userId
       );
-      const locationMatchesAgentProject = hostBound && profile.workspace_mode === "location"
-        && profile.location_project_id === profile.agent_project_id;
+      const locationMatchesConversationProject = hostBound && profile.workspace_mode === "location"
+        && profile.location_project_id === projectId;
       const installationAvailable = hostBound
         && hostInstallationIds(profile.host_capabilities_json, profile.runtime_key).includes(
           profile.runtime_installation!,
@@ -309,7 +309,7 @@ export class PgConversationBackendRepository {
       } else if (hostBound && profile.workspace_mode === "location" && profile.location_status !== "active") {
         usable = false;
         reason = "The bound Workspace Location is unavailable.";
-      } else if (hostBound && profile.workspace_mode === "location" && !locationMatchesAgentProject) {
+      } else if (hostBound && profile.workspace_mode === "location" && !locationMatchesConversationProject) {
         usable = false;
         reason = "The bound Workspace Location belongs to a different Project.";
       } else if (hostBound && profile.workspace_mode === "location" && profile.location_execution_ready !== true) {
@@ -354,6 +354,19 @@ export class PgConversationBackendRepository {
     agent_id: string;
     requested?: { runtime_profile_id: string } | null;
   }): Promise<ResolvedConversationBackend> {
+    const session = await this.db.query<{ project_id: string | null }>(
+      `SELECT project_id FROM sessions WHERE space_id = $1 AND id = $2`,
+      [input.space_id, input.session_id],
+    );
+    if (!session.rows[0]) throw new ConversationBackendError("Session not found", 404);
+    const projectId = session.rows[0].project_id;
+    const participation = await this.db.query(`SELECT 1 FROM sessions s
+      JOIN conversation_execution_contexts ctx ON ctx.space_id=s.space_id AND ctx.session_id=s.id AND ctx.state='initialized'
+      WHERE s.space_id=$1 AND s.id=$2 AND s.room_id IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM session_conversation_backends b WHERE b.space_id=s.space_id AND b.session_id=s.id AND b.agent_id=$3 AND b.participating)`,
+      [input.space_id,input.session_id,input.agent_id]);
+    if (participation.rowCount) throw new ConversationBackendError("Agent is not participating in this Conversation; explicitly add it in Conversation settings first",409);
+
     const initialized = await this.isInitialized(input.space_id, input.session_id);
     if(initialized)await rebindConversationRuntime(this.db,{spaceId:input.space_id,userId:input.user_id,sessionId:input.session_id,agentId:input.agent_id,requestedProfileId:input.requested?.runtime_profile_id});
     // Once initialized, the Conversation-scoped binding is authoritative.
@@ -389,7 +402,7 @@ export class PgConversationBackendRepository {
       // replace mutable workspace fields with the pinned Host thread snapshot.
       // ACP option metadata is read afresh because the installed Agent may
       // legitimately change its catalog without changing this binding.
-      const option = (await this.listOptions(input.space_id, input.user_id, input.agent_id))
+      const option = (await this.listOptions(input.space_id, input.user_id, input.agent_id, projectId))
         .find((candidate) => candidate.runtime_profile_id === existing.runtime_profile_id);
       return { ...existing, session_config_options: option?.session_config_options ?? [], prompt_capabilities: option?.prompt_capabilities ?? null };
     }
@@ -397,6 +410,7 @@ export class PgConversationBackendRepository {
       input.space_id,
       input.user_id,
       input.agent_id,
+      projectId,
     );
     const stored = input.requested ? null : existing;
     const storedOption = stored
@@ -541,8 +555,10 @@ export class PgConversationBackendRepository {
          JOIN host_threads thread
            ON thread.agent_id = binding.agent_id
           -- A Room Conversation uses a conversation-scoped Host thread; a
-          -- direct Agent Conversation deliberately owns a direct thread and
-          -- is keyed by its user rather than session_id. The binding is
+          -- direct Agent Conversation outside a Project owns a direct thread
+          -- keyed by its user rather than session_id, and one placed in a
+          -- Project its own conversation-scoped thread (an older Project
+          -- session may still match the direct one it ran on). The binding is
           -- Conversation-scoped in both cases, so derive the Host-thread
           -- boundary from the Session instead of dropping direct bindings on
           -- the second turn.

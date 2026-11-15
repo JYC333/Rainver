@@ -227,17 +227,17 @@ export const ProposalAcceptDispatchRequestSchema = z.object({
   space_id: IdSchema,
   user_id: IdSchema,
   confirm_incomplete_patch: z.boolean().default(false),
-});
+}).strict();
 
 export const ProposalRejectDispatchRequestSchema = z.object({
   proposal_id: IdSchema,
   space_id: IdSchema,
   user_id: IdSchema,
-});
+}).strict();
 
 export const ProposalEgressApprovalDispatchRequestSchema = z.object({
   proposal_id: IdSchema,
   space_id: IdSchema,
   user_id: IdSchema,
   grant_id: IdSchema.nullish(),
-});
+}).strict();

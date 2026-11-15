@@ -336,3 +336,9 @@ export const ContextReviewCycleResponseSchema = z
   })
   .strict();
 export type ContextReviewCycleResponse = z.infer<typeof ContextReviewCycleResponseSchema>;
+
+/** Human-only retained Context Ops commands; canonical output is still proposal-first. */
+export const CONTEXT_OPS_OPERATION_SCHEMAS={
+ 'context_ops.review_cycle.run':{input:ContextReviewCycleRequestSchema,output:ContextReviewCycleResponseSchema},
+ 'context_ops.observations.scan':{input:ContextOpsContextObservationScanRequestSchema,output:ContextOpsContextObservationScanResponseSchema},
+} as const;

@@ -1,7 +1,24 @@
+import { effectiveRoomAgentGrantSql, roomAgentUseSql } from "./agentUsageSql.js";
 import { randomUUID } from "node:crypto";
 import type { Queryable } from "../routeUtils/common.js";
 import type { RoomConversation, SessionOut } from "@rainver/protocol";
+import { RUN_TERMINAL_STATUS_VALUES } from "@rainver/protocol";
 import { isStale } from "../hosts/liveness.js";
+import { visibleRoomTranscriptSql } from "../sessions/messagePath.js";
+
+/** Any unfinished Agent keeps the conversation in its executing presentation. */
+export function conversationHasUnfinishedAgentsSql(session: string): string {
+  return `EXISTS (SELECT 1 FROM runs r WHERE r.space_id = ${session}.space_id
+    AND (r.session_id = ${session}.id OR r.run_group_id IN (
+      SELECT g.id FROM agent_run_groups g WHERE g.space_id = ${session}.space_id AND g.session_id = ${session}.id))
+    AND r.execution_kind = 'agent'
+    AND r.status NOT IN (${RUN_TERMINAL_STATUS_VALUES.map(status => `'${status}'`).join(', ')}))`;
+}
+
+/** General Room metadata never exposes private runtime/profile choices. */
+export function publicRoom(room: RoomRecord): RoomRecord {
+  return {...room,conversation_defaults_json:room.conversation_defaults_json?.map(item=>({...item,runtime_profile_id:null,session_config:[]}))};
+}
 
 export interface RoomRecord {
   id: string;
@@ -14,6 +31,7 @@ export interface RoomRecord {
   created_at: string;
   updated_at: string;
   archived_at: string | null;
+  conversation_defaults_json?: import("@rainver/protocol").RoomConversationDefault[];
   roster_revision: number;
   is_mainline: boolean;
   personal_for_user_id: string | null;
@@ -52,13 +70,13 @@ export interface RoomAgentMemberRecord {
 const ROOM_COLUMNS = `
   id, space_id, project_id, project_folder_id, created_by_user_id, title, status,
   created_at, updated_at, archived_at
-  , roster_revision::int AS roster_revision, is_mainline, personal_for_user_id
+  , conversation_defaults_json, roster_revision::int AS roster_revision, is_mainline, personal_for_user_id
 `;
 const ROOM_SELECT = `
   room.id, room.space_id, room.project_id, room.project_folder_id,
   room.created_by_user_id, room.title,
   room.status, room.created_at, room.updated_at, room.archived_at,
-  room.roster_revision::int AS roster_revision, room.is_mainline,
+  room.conversation_defaults_json, room.roster_revision::int AS roster_revision, room.is_mainline,
   room.personal_for_user_id
 `;
 const ROOM_PROJECT_READABLE = `
@@ -371,6 +389,87 @@ export class PgRoomRepository {
     return { items: rows.rows, total: Number(total.rows[0]?.total ?? 0) };
   }
 
+  /**
+   * The Project's Rooms index for one viewer: exactly the Rooms they are an
+   * active member of — the same membership join every Room read uses, so the
+   * index names no Room a direct read would refuse, and gives no count of
+   * the others (ADR 0018 decision 3). The mainline leads; the rest follow by
+   * creation, which message activity cannot reshuffle.
+   */
+  async listProjectRoomSummaries(input: {
+    space_id: string;
+    user_id: string;
+    project_id: string;
+    limit: number;
+    offset: number;
+  }): Promise<{
+    items: Array<{
+      room: RoomRecord;
+      other_member_names: string[];
+      person_count: number;
+      agent_count: number;
+      conversation_count: number;
+      last_activity_at: string | null;
+    }>;
+    total: number;
+  }> {
+    const params: unknown[] = [input.space_id, input.user_id, input.project_id];
+    const visible = `
+         JOIN room_user_members member
+           ON member.room_id = room.id
+          AND member.space_id = room.space_id
+          AND member.user_id = $2
+          AND member.status = 'active'
+        WHERE room.space_id = $1
+          AND room.project_id = $3
+          AND room.status = 'active'
+          AND ${ROOM_PROJECT_READABLE}`;
+    const total = await this.db.query<{ total: string }>(
+      `SELECT count(*)::text AS total FROM rooms room ${visible}`,
+      params,
+    );
+    const limitIndex = params.push(input.limit);
+    const offsetIndex = params.push(input.offset);
+    const rows = await this.db.query<RoomRecord & {
+      other_member_names: string[] | null;
+      agent_count: string;
+      person_count: string;
+      conversation_count: string;
+      last_activity_at: string | Date | null;
+    }>(
+      `SELECT ${ROOM_SELECT},
+              roster.other_member_names, roster.agent_count::text AS agent_count,
+              (SELECT count(*) FROM room_user_members people
+                WHERE people.space_id = room.space_id AND people.room_id = room.id
+                  AND people.status = 'active')::text AS person_count,
+              (SELECT count(*) FROM sessions conversation
+                WHERE conversation.space_id = room.space_id AND conversation.room_id = room.id
+                  AND conversation.status = 'active')::text AS conversation_count,
+              (SELECT max(message.created_at) FROM messages message
+                 JOIN sessions conversation
+                   ON conversation.id = message.session_id AND conversation.space_id = message.space_id
+                WHERE conversation.space_id = room.space_id AND conversation.room_id = room.id
+                  AND conversation.status = 'active') AS last_activity_at
+         FROM rooms room
+         LEFT JOIN LATERAL (${ROOM_AUDIENCE_SQL}) roster ON true
+         ${visible}
+        ORDER BY room.is_mainline DESC, room.created_at DESC, room.id DESC
+        LIMIT $${limitIndex} OFFSET $${offsetIndex}`,
+      params,
+    );
+    return {
+      items: rows.rows.map(({ other_member_names, agent_count, person_count, conversation_count, last_activity_at, ...room }) => ({
+        room,
+        other_member_names: other_member_names ?? [],
+        agent_count: Number(agent_count),
+        person_count: Number(person_count),
+        conversation_count: Number(conversation_count),
+        last_activity_at: last_activity_at ? new Date(last_activity_at).toISOString() : null,
+      })),
+      total: Number(total.rows[0]?.total ?? 0),
+    };
+  }
+
   async listUserMembers(spaceId: string, roomId: string): Promise<RoomUserMemberRecord[]> {
     const result = await this.db.query<RoomUserMemberRecord>(
       `SELECT id, space_id, room_id, user_id, role, status, created_at, updated_at
@@ -393,10 +492,12 @@ export class PgRoomRepository {
               COALESCE((
                 SELECT jsonb_agg(grant_row.grantee_user_id ORDER BY grant_row.grantee_user_id)
                   FROM room_agent_access_grants grant_row
+                  JOIN rooms grant_room ON grant_room.space_id=grant_row.space_id AND grant_room.id=grant_row.room_id
                  WHERE grant_row.space_id = member.space_id
                    AND grant_row.room_id = member.room_id
                    AND grant_row.agent_id = member.agent_id
-                   AND grant_row.revoked_at IS NULL
+                   AND ${effectiveRoomAgentGrantSql("agent", "grant_row", "grant_room")}
+                   AND ${roomAgentUseSql("agent", "grant_row.grantee_user_id", "grant_row.room_id")}
               ), '[]'::jsonb) AS private_shared_user_ids,
               member.role, member.status, member.trigger_policy,
               host.name AS host_name, binding.workspace_mode,
@@ -470,7 +571,7 @@ export class PgRoomRepository {
     room_id: string;
     limit: number;
     offset: number;
-  }): Promise<{ items: SessionOut[]; total: number }> {
+  }): Promise<{ items: Array<SessionOut & { last_message_at: string | null; is_running: boolean }>; total: number }> {
     const total = await this.db.query<{ total: string }>(
       `SELECT count(*)::text AS total
          FROM sessions
@@ -486,17 +587,29 @@ export class PgRoomRepository {
       status: string;
       created_at: string;
       updated_at: string;
+      last_message_at: string | null;
+      is_running: boolean;
     }>(
-      `SELECT id, space_id, room_id, project_id, title, status, created_at, updated_at
-         FROM sessions
-        WHERE space_id = $1 AND room_id = $2 AND status = 'active'
-        ORDER BY created_at DESC, id DESC
+      `SELECT s.id, s.space_id, s.room_id, s.project_id, s.title, s.status, s.created_at, s.updated_at,
+              last.created_at AS last_message_at,
+              ${conversationHasUnfinishedAgentsSql('s')} AS is_running
+         FROM sessions s
+         LEFT JOIN LATERAL (
+           SELECT m.created_at FROM messages m
+            WHERE m.space_id = s.space_id AND m.session_id = s.id
+              AND m.role IN ('user', 'assistant')
+              AND ${visibleRoomTranscriptSql({ alias: "m", spaceParam: "s.space_id", sessionParam: "s.id" })}
+            ORDER BY m.created_at DESC, m.id DESC LIMIT 1
+         ) last ON true
+        WHERE s.space_id = $1 AND s.room_id = $2 AND s.status = 'active'
+        ORDER BY COALESCE(last.created_at, s.created_at) DESC, s.id DESC
         LIMIT $3 OFFSET $4`,
       [input.space_id, input.room_id, input.limit, input.offset],
     );
     return {
       items: rows.rows.map((row) => ({
         ...row,
+        last_message_at: row.last_message_at ? new Date(row.last_message_at).toISOString() : null,
         user_id: null,
         project_folder_id: null,
       })),

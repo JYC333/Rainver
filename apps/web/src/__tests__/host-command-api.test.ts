@@ -76,11 +76,11 @@ it('keys the transactional Host and Location commands and returns their exact ou
     .mockResolvedValueOnce(response({ status: 'succeeded', data: { location_id: 'loc', space_id: 'original-space', policy: { location_id: 'loc', sync: false } } }))
     .mockResolvedValueOnce(response({ status: 'succeeded', data: { space_id: 'original-space', deleted: 2 } }));
   expect(await hostsApi.setProviderProxyUrl('host/one', '', 'proxy-key')).toEqual({ host_id: 'host/one', provider_proxy_base_url: null });
-  expect(await ambientSessionsApi.dismiss('loc', 'dismiss-key')).toEqual({ location_id: 'loc', sync: false });
+  expect(await ambientSessionsApi.setReminder('loc', 'never', 'dismiss-key')).toEqual({ location_id: 'loc', sync: false });
   expect(await ambientSessionsApi.remove(['a', 'b'], 'delete-key')).toEqual({ deleted: 2 });
   expect(calls().map((call) => [call.method, call.url, call.key])).toEqual([
     ['PUT', '/api/v1/hosts/host%2Fone/provider-proxy-url', 'proxy-key'],
-    ['POST', '/api/v1/workspace-locations/loc/ambient-sessions/dismiss', 'dismiss-key'],
+    ['POST', '/api/v1/workspace-locations/loc/ambient-sessions/reminder', 'dismiss-key'],
     ['POST', '/api/v1/imported-sessions/delete', 'delete-key'],
   ]);
   expect(JSON.parse(vi.mocked(fetch).mock.calls[0]![1]!.body as string)).toEqual({ base_url: null });

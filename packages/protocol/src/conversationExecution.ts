@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { IdSchema, ISODateTimeSchema, SecretResponseGuards } from "./common.js";
+import { RuntimeSessionConfigSelectionSchema } from "./hosts.js";
 import { RuntimeKeySchema } from "./runtimeAuthority.js";
 
 /** The only filesystem modes a Conversation may use for its Primary. */
@@ -108,6 +109,8 @@ export type ConversationAttachmentSummary = z.infer<typeof ConversationAttachmen
  * the handoff document it was last renewed from.
  */
 export const ConversationPinnedRuntimeSchema = ConversationRuntimeSelectionSchema.extend({
+  session_config: z.array(RuntimeSessionConfigSelectionSchema).optional(),
+  session_config_dropped: z.boolean().optional(),
   context_tokens: z.number().int().nonnegative().nullable().optional(),
   context_window_tokens: z.number().int().positive().nullable().optional(),
   handoff_artifact_id: IdSchema.nullable().optional(),
@@ -121,6 +124,8 @@ export const ConversationPinnedRuntimeSchema = ConversationRuntimeSelectionSchem
 export type ConversationPinnedRuntime = z.infer<typeof ConversationPinnedRuntimeSchema>;
 
 export const ConversationExecutionSummarySchema = z.object({
+  participant_agent_ids: z.array(IdSchema).optional(),
+  participants_revision: z.string().optional(),
   session_id: IdSchema,
   state: ConversationExecutionStateSchema,
   host: ConversationExecutionHostSummarySchema.nullable(),
@@ -150,6 +155,7 @@ export const ConversationExecutionRuntimeProfileSchema = z.object({
   workspace_mode: ConversationWorkspaceModeSchema.nullable(),
   workspace_location_id: IdSchema.nullable(),
   /** Whether an existing reusable profile is the Agent's default suggestion. */
+  retained_binding: z.boolean().optional(),
   preferred: z.boolean().default(false),
   usable: z.boolean(),
   reason: z.string().trim().min(1).nullable(),
@@ -168,6 +174,11 @@ export const ConversationExecutionPreflightResponseSchema = z.object({
   summary: ConversationExecutionSummarySchema,
   available_hosts: z.array(ConversationExecutionHostSummarySchema),
   available_runtime_profiles: z.array(ConversationExecutionRuntimeProfileSchema),
+  /** Current use authority, independent of runnable profiles; never includes hidden Agents. */
+  available_participant_agents: z.array(z.object({
+    agent_id: IdSchema,
+    retained_thread: z.boolean(),
+  }).strict()).optional(),
   available_primary_locations: z.array(z.object({
     workspace_location_id: IdSchema,
     project_folder_id: IdSchema,
@@ -181,6 +192,9 @@ export const ConversationExecutionPreflightResponseSchema = z.object({
 export type ConversationExecutionPreflightResponse = z.infer<typeof ConversationExecutionPreflightResponseSchema>;
 
 export const ConversationExecutionInitializeRequestSchema = z.object({
+  participant_agent_ids: z.array(IdSchema).min(1).optional(),
+  participant_changes: z.array(z.object({agent_id:IdSchema,participating:z.boolean()}).strict()).optional(),
+  participants_revision: z.string().optional(),
   workspace_baseline:z.enum(["committed","snapshot"]).optional(),
   selection: ConversationExecutionSelectionSchema,
   runtime: ConversationRuntimeChoiceSchema,

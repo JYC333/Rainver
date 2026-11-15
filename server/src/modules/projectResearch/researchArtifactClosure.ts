@@ -133,3 +133,73 @@ export async function lockSourceReadClosure(
   }
   await db.query("SELECT id FROM source_items WHERE space_id=$1 AND id=ANY($2::varchar[]) ORDER BY id FOR SHARE", [spaceId, sorted(itemIds)]);
 }
+
+/**
+ * Artifacts a research-call output depends on through `input_refs`, roots
+ * included, as the full content gate (`assertResearchArtifactReadable`)
+ * walks them. UNION deduplicates cycles; the outer unsorted LIMIT stops the
+ * recursive demand at the one extra identity needed to diagnose the
+ * 200-artifact boundary (more than 200 ids means "requires reconciliation").
+ */
+export async function researchArtifactDependencyIds(db: Queryable, spaceId: string, roots: readonly string[]): Promise<string[]> {
+  const graph = await db.query<{ id: string }>(`WITH RECURSIVE dependencies(id) AS (
+   SELECT unnest($1::text[])
+   UNION
+   SELECT ref->>'id' FROM dependencies d
+   JOIN artifacts dependency_artifact ON dependency_artifact.id=d.id AND dependency_artifact.space_id=$2
+   JOIN project_operations dependency_operation ON ${researchArtifactOriginSql("dependency_artifact", "dependency_operation")} AND dependency_operation.research_call_json IS NOT NULL
+   CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(dependency_operation.research_call_json->'input_refs')='array' THEN dependency_operation.research_call_json->'input_refs' ELSE '[]'::jsonb END) ref
+   WHERE ref->>'type'='artifact' AND ref->>'id' IS NOT NULL
+ ) SELECT id FROM dependencies LIMIT 201`, [[...roots], spaceId]);
+  return graph.rows.map(r => r.id);
+}
+
+/** What the full content gate of a research-call output reads besides each
+ * Artifact's own row gate: the recursive Artifact dependency set and the
+ * other `input_refs` (Notes and Threads are Space objects; Tasks) of every
+ * producing call in it. An `artifact` input ref also passes through a Task
+ * that owns it (`referenceReadableSql`: a Project-less Artifact linked by
+ * `task_artifacts` to a live Task of the call's Project the reader has at
+ * `full`), so every link of a dependency Artifact and the Task it names are
+ * part of the gate: `taskIds` holds the explicit and the owning Tasks, and
+ * `taskArtifactLinks` the links themselves. `overflow` past the 200-Artifact
+ * bound fails closed. */
+export interface ResearchArtifactDependencies {
+  artifactIds: string[];
+  spaceObjectIds: string[];
+  taskIds: string[];
+  taskArtifactLinks: Array<{ id: string; task_id: string; artifact_id: string }>;
+  overflow: boolean;
+}
+
+/** Unlocked discovery; a caller locks the result and discovers it again. */
+export async function discoverResearchArtifactDependencies(db: Queryable, spaceId: string, roots: readonly string[], batch = false): Promise<ResearchArtifactDependencies> {
+  // Compose bounded per-root graphs before taking any locks (at most 2000 * 200 ids).
+  if (batch && roots.length > 2000) throw new Error("Artifact release batch exceeds 2000 roots");
+  let overflow = false;
+  const collected: string[] = [];
+  if (batch) for (const root of new Set(roots)) {
+    const graph = await researchArtifactDependencyIds(db, spaceId, [root]);
+    overflow ||= graph.length > 200;
+    collected.push(...graph);
+  }
+  const ids = batch ? sorted(collected) : await researchArtifactDependencyIds(db, spaceId, roots);
+  const refs = ids.length ? (await db.query<{ type: string | null; id: string | null }>(
+    `SELECT DISTINCT ref->>'type' AS type, ref->>'id' AS id
+       FROM artifacts a
+       JOIN project_operations o ON o.research_call_json IS NOT NULL AND ${researchArtifactOriginSql("a", "o")}
+       CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(o.research_call_json->'input_refs')='array' THEN o.research_call_json->'input_refs' ELSE '[]'::jsonb END) ref
+      WHERE a.space_id=$1 AND a.id=ANY($2::varchar[]) AND jsonb_typeof(ref)='object'`,
+    [spaceId, ids])).rows : [];
+  const of = (...types: string[]) => sorted(refs.flatMap(r => (r.id && r.type && types.includes(r.type) ? [r.id] : [])));
+  // Authority-free: every link, whatever the Artifact's or Task's current
+  // Project, so a change of either is seen as a different closure.
+  const links = ids.length ? (await db.query<{ id: string; task_id: string; artifact_id: string }>(
+    `SELECT id, task_id, artifact_id FROM task_artifacts WHERE space_id=$1 AND artifact_id=ANY($2::varchar[]) ORDER BY id`,
+    [spaceId, ids])).rows : [];
+  return {
+    artifactIds: sorted(ids), spaceObjectIds: of("note", "inquiry_thread"),
+    taskIds: sorted([...of("task"), ...links.map(l => l.task_id)]), taskArtifactLinks: links,
+    overflow: overflow || (!batch && ids.length > 200),
+  };
+}

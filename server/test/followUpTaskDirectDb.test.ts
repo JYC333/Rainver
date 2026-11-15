@@ -392,6 +392,28 @@ describe("follow-up Tasks from a Run's output (real Postgres)", () => {
     expect(await tasks()).toEqual([]);
   });
 
+  it("keeps a Folder of its own Project that has been archived, as before the shared Task write closure", async () => {
+    if (!db.available) return;
+    const folder = randomUUID();
+    const now = new Date().toISOString();
+    await db.pool.query(
+      `INSERT INTO project_folders (
+         id, space_id, project_id, created_by_user_id, name, status, kind,
+         is_primary, protected, system_managed, created_at, updated_at
+       ) VALUES ($1, $2, $3, $4, 'repo', 'archived', 'code', true, false, false, $5, $5)`,
+      [folder, SPACE, PROJECT, OWNER, now],
+    );
+    const created = await createFollowUpTask(db.pool, { spaceId: SPACE, userId: OWNER }, {
+      pool: db.pool,
+      fields: parseFollowUpTaskPayload({ task: { title: "In the archived Folder" } }),
+      projectId: PROJECT,
+      projectFolderId: folder,
+      origin: { runId: null },
+      source: "test",
+    });
+    expect((await db.pool.query(`SELECT project_folder_id FROM tasks WHERE id = $1`, [created.id])).rows[0]).toEqual({ project_folder_id: folder });
+  });
+
   it("refuses the accept once the Project has been archived", async () => {
     if (!db.available) return;
     const run = await runWithOrigin("autonomous");

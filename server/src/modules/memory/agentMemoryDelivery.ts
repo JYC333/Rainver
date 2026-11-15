@@ -81,6 +81,28 @@ export async function listAgentMemoryForDispatch(
         -- Private by CHECK; asserted here too, because this is a read that
         -- bypasses the person-facing content gate entirely.
         AND m.visibility = 'private'
+        -- Quarantine old persona versions learned in another Project too.
+        -- Proposal revisions copy provenance; direct revisions refuse isolated source versions, so accepting or revising cannot launder it.
+        AND (m.memory_type <> 'persona' OR NOT EXISTS (
+          SELECT 1 FROM provenance_links provenance
+          LEFT JOIN runs learned ON learned.space_id=provenance.space_id AND learned.id=provenance.source_id
+          JOIN agents owner_agent ON owner_agent.space_id=m.space_id AND owner_agent.id=m.agent_id
+          LEFT JOIN sessions learned_session ON learned_session.space_id=learned.space_id AND learned_session.id=learned.session_id
+          LEFT JOIN rooms learned_room ON learned_room.space_id=learned.space_id AND learned_room.id=learned_session.room_id
+          WHERE provenance.space_id=m.space_id AND provenance.target_type='memory' AND provenance.target_id=m.id
+            AND provenance.source_type='run' AND owner_agent.access_project_id IS NOT NULL
+            AND (learned.id IS NULL OR learned_room.project_id <> owner_agent.access_project_id
+              OR learned.project_id <> owner_agent.access_project_id
+              OR learned_session.project_id <> owner_agent.access_project_id)
+        ))
+        -- Retained-Project reuse is a strict content boundary, even when both
+        -- Projects currently have identical audiences. A global persona has
+        -- no reliable per-fact provenance and must not cross this boundary.
+        AND (NOT EXISTS (
+          SELECT 1 FROM agents agent JOIN rooms target ON target.space_id=agent.space_id AND target.id=$3
+           WHERE agent.space_id=$1 AND agent.id=$2 AND agent.access_project_id IS NOT NULL
+             AND agent.access_project_id <> target.project_id
+        ) OR (m.memory_type <> 'persona' AND m.origin_room_id=$3))
         AND (
           -- Delivered everywhere: no origin Room to be filtered by.
           m.memory_type = 'persona'
@@ -92,6 +114,11 @@ export async function listAgentMemoryForDispatch(
           -- it is vacuously a subset of every Room, but a transcript outlives
           -- the emptiness and whoever is added next would read what was said.
           OR (m.origin_room_id IS NOT NULL
+            AND ($3::varchar IS NULL OR EXISTS (
+              SELECT 1 FROM rooms origin JOIN rooms target ON target.space_id=origin.space_id AND target.id=$3
+               WHERE origin.id=m.origin_room_id AND origin.space_id=m.space_id
+                 AND origin.project_id=target.project_id
+            ))
             AND EXISTS (SELECT 1 FROM audience)
             AND NOT EXISTS (SELECT 1 FROM audience WHERE NOT ${originCanRead}))
           -- A direct-chat note has no Room and reaches only the owner's own

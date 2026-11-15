@@ -1,3 +1,4 @@
+import { useConversationSettings } from '../conversation/useConversationSettings'
 import { useAttentionViewing } from '../agent_work/AgentAttentionProvider'
 import { ConversationScope, useConversationScope } from '../conversation/ConversationScope'
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
@@ -15,7 +16,7 @@ import type {
 } from '../../types/api'
 import { ConversationView } from '../conversation/ConversationView'
 import {
-  SavedConversationSessionConfig,
+  ConversationAgentSessionConfigs,
   mergeSessionConfig,
   type SessionConfigSelection,
 } from '../conversation/ConversationSessionConfig'
@@ -91,7 +92,8 @@ export default function ChatPanel(props: Parameters<typeof ChatPanelContent>[0])
     setDestination(current => ({ ...current, accepted: sessionId }))
     props.onSessionChange?.(sessionId)
   }, [props.onSessionChange])
-  return <ConversationScope key={`${props.agent.space_id}:${props.agent.id}:${destination.epoch}`} spaceId={props.agent.space_id} actionUserId={userId} actionRole={spaces.find(space => space.id === props.agent.space_id)?.role ?? 'member'}>
+  const actionRole = spaces.find(space => space.id === props.agent.space_id)?.role ?? 'member'
+  return <ConversationScope key={`${props.agent.space_id}:${props.agent.id}:${destination.epoch}:${userId}:${actionRole}`} spaceId={props.agent.space_id} actionUserId={userId} actionRole={actionRole}>
     <ChatPanelContent {...props} onSessionChange={sessionChanged} />
   </ConversationScope>
 }
@@ -153,6 +155,7 @@ function ChatPanelContent({
   const [loadingBackends, setLoadingBackends] = useState(true)
   const [allowQuotaModelSwitch, setAllowQuotaModelSwitch] = useState(false)
   const [savedSessionConfig, setSavedSessionConfig] = useState<SessionConfigSelection[]>([])
+  const settingsDraft = useConversationSettings(scope)
   const [sessionConfig, setSessionConfig] = useState<SessionConfigSelection[]>([])
   const [hosts, setHosts] = useState<Awaited<ReturnType<typeof hostsApi.list>>['items']>([])
   const [restoreWorkspace, setRestoreWorkspace] = useState(false)
@@ -169,6 +172,7 @@ function ChatPanelContent({
     agentsApi.conversationBackends(agent.id, { ...scope,
       spaceId: agent.space_id,
       sessionId: initialSessionId ?? undefined,
+      projectId,
     })
       .then(catalog => {
         if (cancelled) return
@@ -187,7 +191,7 @@ function ChatPanelContent({
         if (!cancelled) setLoadingBackends(false)
       })
     return () => { cancelled = true }
-  }, [agent.id, agent.space_id, initialSessionId, scope])
+  }, [agent.id, agent.space_id, initialSessionId, projectId, scope])
 
   useEffect(() => {
     if (!backendOptions.some(option => option.host_bound)) {
@@ -325,6 +329,7 @@ function ChatPanelContent({
     // guard that only sees `inFlight` tells the person their message is held
     // and then sends it anyway.
     if ((!message && parts.length === 0) || inFlight.current || savingSettings || awaitingDecision || loadingHistory || loadingBackends || !backend || selectedBackendOption?.usable === false) return
+    if (sessionId && !settingsDraft.beforeSend()) return
     inFlight.current = true
     const generation = ++sendGeneration.current
     const submittedDraft = draftInputRef.current
@@ -333,6 +338,7 @@ function ChatPanelContent({
     setSending(true)
     const streamingMessageId = `${STREAM_PLACEHOLDER_PREFIX}${crypto.randomUUID()}`
     let streamedContent = ''
+    let acceptedSettings = false
     try {
       const res = await agentsApi.chat(
         agent.id,
@@ -363,6 +369,7 @@ function ChatPanelContent({
               text: draftInputRef.current.value,
               input_parts: draftInputRef.current.parts,
             })
+            if (!sessionId) { setSavedSessionConfig(sessionConfig); acceptedSettings = true }
             setSessionId(accepted.session_id)
             onSessionChange?.(accepted.session_id)
             setMessages(current => {
@@ -410,6 +417,7 @@ function ChatPanelContent({
         },
       )
       if (scope.signal?.aborted) return
+      if (!sessionId && !acceptedSettings) setSavedSessionConfig(sessionConfig)
       setSessionId(res.session_id)
       setRestoreWorkspace(false)
       onSessionChange?.(res.session_id)
@@ -556,15 +564,16 @@ function ChatPanelContent({
   const backendChoices = flattenBackendChoices(backendOptions)
   const selectedBackendKey = backend ? backendKey(backend) : ''
   const selectedHost = selectedBackendOption?.host_id ? hosts.find(host => host.id === selectedBackendOption.host_id) : null
-  const archivedManagedWorkspace = selectedBackendOption?.workspace_mode === 'managed'
+  // Only outside a Project: a Project conversation is its own Host container, with no earlier one to restore.
+  const archivedManagedWorkspace = !projectId && selectedBackendOption?.workspace_mode === 'managed'
     && selectedHost?.managed_workspaces_json?.some(workspace =>
       workspace.container_kind === 'direct' && workspace.agent_id === agent.id && workspace.container_id === userId && workspace.archived_available)
   const hostBlocked = Boolean(selectedBackendOption?.host_bound && selectedBackendOption.usable === false)
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false)
   async function resetContext() {
-    if (!selectedBackendOption?.host_bound || !selectedBackendOption.host_owner_is_me || !selectedBackendOption.host_online) return
+    if (!selectedBackendOption?.host_bound || !selectedBackendOption.host_owner_is_me || !selectedBackendOption.host_online || (projectId && !sessionId)) return
     try {
-      await agentsApi.resetContext(agent.id, scope)
+      await agentsApi.resetContext(agent.id, { ...scope, ...(projectId && sessionId ? { sessionId } : {}) })
       setRestoreWorkspace(false)
       toast.success(t('conversation_ui.chat.context_reset'))
     } catch (error) {
@@ -573,7 +582,7 @@ function ChatPanelContent({
   }
 
   return (
-    <div className="flex flex-col h-full min-h-0">
+    <div className="flex h-full min-h-0 flex-col pb-14 md:pb-0">
       <ConfirmDialog
         open={resetConfirmOpen}
         onOpenChange={setResetConfirmOpen}
@@ -628,7 +637,8 @@ function ChatPanelContent({
             {t(selectedBackendOption.workspace_mode === 'managed' ? 'conversation_ui.chat.managed_on' : 'conversation_ui.chat.location_on', { host: selectedBackendOption.host_name ?? t('conversation_ui.chat.host_fallback') })}
             {hostBlocked ? ` · ${selectedBackendOption.reason ?? t('conversation_ui.chat.unavailable')}` : t('conversation_ui.chat.owner_only_suffix')}
           </span>
-          {selectedBackendOption.host_owner_is_me && selectedBackendOption.host_online && (
+          {/* A Project conversation's Host session exists once its first turn ran there. */}
+          {selectedBackendOption.host_owner_is_me && selectedBackendOption.host_online && (!projectId || sessionId) && (
             <Button type="button" size="sm" variant="outline" disabled={sending} onClick={() => setResetConfirmOpen(true)}>{t('conversation_ui.chat.reset_confirm')}</Button>
           )}
         </div>
@@ -687,27 +697,42 @@ function ChatPanelContent({
         emptyTitle={t('conversation_ui.chat.empty_title')}
         emptyDescription={t('conversation_ui.chat.empty_description')}
         composerDisabled={savingSettings || loadingBackends || !backend || hostBlocked}
-        inputDisabled={savingSettings || loadingBackends || !backend || hostBlocked}
-        composerControls={selectedBackendOption?.session_config_options?.length ? (
-          <SavedConversationSessionConfig key={`${agent.space_id}:${agent.id}:${sessionId}:${selectedBackendOption.runtime_profile_id}`}
-            options={selectedBackendOption.session_config_options}
-            value={sessionConfig}
-            persistedValue={savedSessionConfig}
-            allowQuotaModelSwitch={allowQuotaModelSwitch}
-            quotaModelSwitchAvailable={allowQuotaModelSwitch || selectedBackendOption.session_config_options.some(option => option.category === 'model' && option.type === 'select' && option.options.length > 1)}
-            onChange={setSessionConfig}
-            onSave={sessionId && backend ? async (value, allowSwitch?: boolean) => {
-              setSavingSettings(true)
-              try {
-                await agentsApi.saveConversationSessionConfig(agent.id, {
-                  session_id: sessionId, runtime_profile_id: backend.runtime_profile_id, session_config: value, ...(allowSwitch !== undefined ? { allow_quota_model_switch: allowSwitch } : {}),
-                }, scope)
-                if (!scope.signal?.aborted) { setSavedSessionConfig(value); if (allowSwitch !== undefined) setAllowQuotaModelSwitch(allowSwitch) }
-              } finally { setSavingSettings(false) }
-            } : undefined}
-            disabled={sending || loadingBackends || hostBlocked}
+        inputDisabled={loadingBackends || !backend || hostBlocked}
+        composerControls={(
+          <ConversationAgentSessionConfigs key={`${agent.space_id}:${agent.id}:${sessionId}:${selectedBackendOption?.runtime_profile_id}`}
+            open={settingsDraft.open} onOpenChange={settingsDraft.onOpenChange}
+            agents={settingsDraft.configure([{
+              id: agent.id, name: agent.name,
+              unavailableReason: selectedBackendOption?.usable === false ? selectedBackendOption.reason ?? t('conversation_ui.chat.unavailable') : undefined,
+              options: selectedBackendOption?.session_config_options ?? [],
+              value: sessionConfig,
+              beforeFirstSend: !sessionId,
+              persistedValue: savedSessionConfig,
+              allowQuotaModelSwitch,
+              quotaModelSwitchAvailable: allowQuotaModelSwitch || (selectedBackendOption?.session_config_options ?? []).some(option => option.category === 'model' && option.type === 'select' && option.options.length > 1),
+              onReload: async () => {
+                const catalog = await agentsApi.conversationBackends(agent.id, { ...scope, sessionId })
+                if (scope.signal?.aborted) throw new DOMException('Conversation scope changed', 'AbortError')
+                setSavedSessionConfig(catalog.session_config ?? [])
+                setAllowQuotaModelSwitch(catalog.allow_quota_model_switch ?? false)
+                setSessionConfig(mergeSessionConfig(selectedBackendOption?.session_config_options ?? [], catalog.session_config ?? []))
+                return mergeSessionConfig(selectedBackendOption?.session_config_options ?? [], catalog.session_config ?? [])
+              },
+              onChange: setSessionConfig,
+              onSave: sessionId && backend && scope.actionRole !== 'worker' && scope.actionRole !== 'viewer' ? async (value, allowSwitch?: boolean) => {
+                setSavingSettings(true)
+                try {
+                  const saved = await agentsApi.saveConversationSessionConfig(agent.id, {
+                    session_id: sessionId, runtime_profile_id: backend.runtime_profile_id, session_config: value, ...(allowSwitch !== undefined ? { allow_quota_model_switch: allowSwitch } : {}),
+                  }, scope)
+                  if (!scope.signal?.aborted) { setSavedSessionConfig(saved?.session_config ?? value); setSessionConfig(saved?.session_config ?? value); setAllowQuotaModelSwitch(saved?.allow_quota_model_switch ?? allowSwitch ?? allowQuotaModelSwitch) }
+                  return saved.session_config
+                } finally { setSavingSettings(false) }
+              } : undefined,
+            }])}
+            disabled={sending || loadingBackends || hostBlocked || scope.actionRole === 'worker' || scope.actionRole === 'viewer'}
           />
-        ) : undefined}
+        )}
         composerNote={!sessionId ? t('conversation_ui.session_config.first_send') : awaitingDecision
           ? t('conversation_ui.chat.awaiting_decision')
           : undefined}

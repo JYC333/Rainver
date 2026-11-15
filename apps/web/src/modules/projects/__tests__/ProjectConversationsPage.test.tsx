@@ -126,7 +126,7 @@ describe('Project conversations', () => {
     renderPage()
     await user.click(await screen.findByRole('button', { name: /New conversation/ }))
     await user.click(await screen.findByRole('menuitem', { name: 'With a limited group…' }))
-    expect(await screen.findByText('Who can see this?')).toBeInTheDocument()
+    expect(await screen.findByText('Who can see this Room?')).toBeInTheDocument()
 
     fireEvent.click(screen.getByLabelText('People who can see this'))
     fireEvent.click(await screen.findByText('Alice'))

@@ -1,3 +1,12 @@
+import {annotationPromptItem,freezeAnnotationInputs,assertAnnotationRunDispatch,lockAnnotationRunAuthority} from './dispatch.js';
+import type {JobEnvelopeForHandler} from '../jobs/handlerRegistry.js';
+import {sourceItemFullContentReadClause} from '../sources/sourceItemAccess.js';
+import {lockCurrentJobClaim} from '../jobs/effectAuthority.js';
+import {assertReadingRunEgress} from '../sources/readingMethods/context.js';
+import {canonical} from '../systemActions/operations/repository.js';
+import {lockReadingMutations} from '../sources/readingMutationAccess.js';
+import {contentDecisionFromDb} from '../access/contentAccessQuery.js';
+import {PgJobQueueRepository} from '../jobs/repository.js';
 import { consumeMonitoringBudget } from "../projects/monitoringControl.js";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool, type Pool } from "../../db/pool.js";
@@ -9,14 +18,14 @@ import { runOutputResult } from "../runs/orchestrationResults.js";
 import { sharedCliProcessRegistry } from "../runs/processRegistry.js";
 import { PgRunRepository, type RunRecord } from "../runs/repository.js";
 import { PgVerificationEngine } from "../runs/verification/index.js";
-import { HttpError, type Queryable } from "../routeUtils/common.js";
+import { HttpError, withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
 import { CONNECTION_COLUMNS, type SourceConnectionRow } from "../sources/sourceRepositoryRows.js";
 import { assertSourcePromptEgressAllowed, SOURCE_EGRESS_NOT_CONSENTED } from "../sources/sourcePromptEgress.js";
 import { ensureSourceAnnotatorAgent, resolveSystemActorUserId } from "./agent.js";
 import { renderAnnotationInstruction, type AnnotationPromptItem } from "./instruction.js";
 import { SourceAnnotationRecoveryNotifier } from "./notifier.js";
-import { PgSourceAnnotationRepository, type PendingAnnotationRow } from "./repository.js";
-import { ANNOTATION_MANUAL_RETRY_LIMIT, type AnnotationWaitReason } from "./retryPolicy.js";
+import { PgSourceAnnotationRepository, SOURCE_ANNOTATION_JOB_TYPE } from "./repository.js";
+import { ANNOTATION_MANUAL_RETRY_LIMIT } from "./retryPolicy.js";
 import {
   SOURCE_ANNOTATION_SCHEMA_ID,
   SourceAnnotationParseError,
@@ -45,10 +54,15 @@ export interface AnnotationSweepResult {
 }
 
 export class SourceAnnotationService {
-  private readonly pool: Pool | null;
+  constructor(private readonly db: Queryable, private readonly config: ServerConfig) {}
 
-  constructor(private readonly db: Queryable, private readonly config: ServerConfig) {
-    this.pool = config.databaseUrl ? getDbPool(config.databaseUrl) : null;
+  /** Explicit bounded intent only; execution keeps the trusted annotation Job/Run gates. */
+  async backfillHistory(spaceId:string,userId:string,limit:number,prepared?:Awaited<ReturnType<PgSourceAnnotationRepository['prepareSubscriptionHistory']>>) {
+    return withQueryableTransaction(this.db,async tx=>{
+      const result=await new PgSourceAnnotationRepository(tx).enqueueSubscriptionHistoryWithRefs(spaceId,userId,limit,prepared);
+      if(result.queued>0)await new PgJobQueueRepository(tx).enqueue({job_type:SOURCE_ANNOTATION_JOB_TYPE,space_id:spaceId,user_id:userId,payload:{origin:'interest_profile_history_backfill',queued_item_count:result.queued}});
+      return {...result,limit};
+    });
   }
 
   /**
@@ -59,7 +73,7 @@ export class SourceAnnotationService {
    * has, and a space without a model provider is a normal state, not a fault
    * worth failing a job over and retrying forever.
    */
-  async annotatePendingBatch(spaceId: string, monitoring?: {itemIds:string[];agentId:string;operationId:string;projectId:string;userId:string}): Promise<AnnotationSweepResult> {
+  async annotatePendingBatch(spaceId: string, monitoring?: {itemIds:string[];agentId:string;operationId:string;projectId:string;userId:string}, job?:JobEnvelopeForHandler): Promise<AnnotationSweepResult> {
     const repo = new PgSourceAnnotationRepository(this.db);
     const batch = await repo.loadPendingBatch(spaceId, ANNOTATION_BATCH_SIZE, monitoring?.itemIds);
     if (batch.length === 0) {
@@ -69,7 +83,7 @@ export class SourceAnnotationService {
 
     let agentId: string;
     try {
-      agentId = monitoring?.agentId ?? (await ensureSourceAnnotatorAgent(this.requirePool(), spaceId)).id;
+      agentId = monitoring?.agentId ?? (await ensureSourceAnnotatorAgent(this.db, spaceId)).id;
     } catch {
       // Not the items' fault, so it must not spend their retry budget. A space
       // with no model provider yet is the ordinary cold-start state; these rows
@@ -118,13 +132,13 @@ export class SourceAnnotationService {
     const allowed = new Set(allowedItemIds);
     const promptItems: AnnotationPromptItem[] = batch
       .filter((row) => allowed.has(row.id))
-      .map(toPromptItem);
+      .map(annotationPromptItem);
 
     // A quota refusal is not a failed model attempt and must not spend annotation retries.
     if(monitoring) await consumeMonitoringBudget(this.db,spaceId,monitoring.operationId,'model_runs',1);
     let run: RunRecord;
     try {
-      run = await this.executeAnnotationRun(spaceId, agentId, promptItems, monitoring);
+      run = await this.executeAnnotationRun(spaceId, agentId, promptItems, monitoring,job);
     } catch (error) {
       await repo.markAttemptFailed(
         spaceId,
@@ -162,17 +176,22 @@ export class SourceAnnotationService {
       return { space_id: spaceId, requested: itemIds.length, annotated: 0, skipped: 0, failed: allowedItemIds.length, run_id: run.id, status: "blocked", reason: code };
     }
 
-    for (const annotation of parsed.annotations) {
-      await repo.markSucceeded(spaceId, annotation, run.id);
-    }
-    // An item the model returned nothing usable for is parked rather than
-    // retried: the same prompt would produce the same non-answer, and a
-    // permanently pending row hides the item from every diagnostic.
     const annotatedIds = new Set(parsed.annotations.map((entry) => entry.source_item_id));
     const unanswered = allowedItemIds.filter((id) => !annotatedIds.has(id));
-    await repo.markSkipped(spaceId, unanswered, "no_usable_annotation", run.id);
-    // Items that succeeded leave their episode; the notice shrinks or clears.
-    await this.notify(spaceId);
+    await withQueryableTransaction(this.db,async tx=>{
+      await lockCurrentJobClaim(tx,job);
+      await lockAnnotationRunAuthority(tx,run);
+      await tx.query('SELECT id FROM source_item_annotations WHERE space_id=$1 AND source_item_id=ANY($2::varchar[]) ORDER BY id FOR UPDATE',[spaceId,allowedItemIds]);
+      const currentRepo=new PgSourceAnnotationRepository(tx);
+      const current=await currentRepo.loadPendingBatch(spaceId,ANNOTATION_BATCH_SIZE,allowedItemIds);
+      if(canonical(current.filter(i=>allowed.has(i.id)).map(annotationPromptItem).sort((a,b)=>a.id.localeCompare(b.id)))!==canonical([...promptItems].sort((a,b)=>a.id.localeCompare(b.id))))throw new HttpError(409,'Annotation inputs changed before publication');
+      await assertAnnotationRunDispatch(tx,run);
+      const connections=await currentRepo.connectionIdsForItems(spaceId,allowedItemIds);
+      for(const connection of [...connections.keys()].sort())await assertReadingRunEgress(tx,run,connection);
+      for(const annotation of parsed.annotations)await currentRepo.markSucceeded(spaceId,annotation,run.id);
+      await currentRepo.markSkipped(spaceId,unanswered,'no_usable_annotation',run.id);
+      await new SourceAnnotationRecoveryNotifier(tx).sync(spaceId);
+    });
 
     return {
       space_id: spaceId,
@@ -234,16 +253,36 @@ export class SourceAnnotationService {
    * leaves its rows exactly where they were. Returns how many rows reopened.
    */
   async recoverWaiting(
+    spaceId:string,
+    filter:{connectionId?:string|null;responsibleUserId?:string|null;limit?:number;itemIds?:readonly string[];episodeId?:string|null}={},
+  ):Promise<number>{
+    return withQueryableTransaction(this.db,async tx=>{
+      const userId=filter.responsibleUserId??await resolveSystemActorUserId(tx,spaceId);
+      const read=async()=>(await tx.query<{id:string;owner:string}>(`SELECT i.id,COALESCE(c.owner_user_id,i.owner_user_id) AS owner FROM source_item_annotations a JOIN source_items i ON i.space_id=a.space_id AND i.id=a.source_item_id LEFT JOIN source_connections c ON c.space_id=i.space_id AND c.id=i.connection_id
+        WHERE a.space_id=$1 AND a.status IN ('pending','failed') AND a.wait_reason IN ('provider_unavailable','egress_denied','consent_missing') AND i.deleted_at IS NULL
+          AND (i.connection_id IS NULL OR (c.id IS NOT NULL AND c.deleted_at IS NULL AND c.status<>'archived'))
+          AND ($2::varchar IS NULL OR COALESCE(c.owner_user_id,i.owner_user_id)=$2)
+          AND ($3::varchar IS NULL OR i.connection_id=$3) AND ($4::varchar[] IS NULL OR i.id=ANY($4::varchar[])) AND ($5::varchar IS NULL OR a.episode_id=$5)
+        ORDER BY a.created_at,a.id LIMIT $6`,[spaceId,filter.responsibleUserId??null,filter.connectionId??null,filter.itemIds??null,filter.episodeId??null,filter.limit??ANNOTATION_MANUAL_RETRY_LIMIT])).rows;
+      const before=await read();
+      await lockReadingMutations(tx,{spaceId,userId},before.map(i=>i.id),[],[],before.map(i=>i.owner));
+      if(canonical(before)!==canonical(await read()))throw new HttpError(409,'Annotation recovery membership changed');
+      return new SourceAnnotationService(tx,this.config).recoverWaitingIn(spaceId,{...filter,itemIds:before.map(i=>i.id)});
+    });
+  }
+
+  private async recoverWaitingIn(
     spaceId: string,
-    filter: { connectionId?: string | null; responsibleUserId?: string | null; limit?: number } = {},
+    filter: { connectionId?: string | null; responsibleUserId?: string | null; limit?: number; itemIds?: readonly string[]; episodeId?: string | null } = {},
   ): Promise<number> {
     const repo = new PgSourceAnnotationRepository(this.db);
     const limit = filter.limit ?? ANNOTATION_MANUAL_RETRY_LIMIT;
     let reopened = 0;
     let agentId: string | null = null;
     try {
-      agentId = (await ensureSourceAnnotatorAgent(this.requirePool(), spaceId)).id;
-    } catch {
+      agentId = (await withQueryableTransaction(this.db, tx => ensureSourceAnnotatorAgent(tx, spaceId))).id;
+    } catch (error) {
+      if (!(error instanceof HttpError)) throw error;
       agentId = null;
     }
     if (agentId) {
@@ -251,6 +290,7 @@ export class SourceAnnotationService {
         reasons: ["provider_unavailable"],
         connectionId: filter.connectionId,
         responsibleUserId: filter.responsibleUserId,
+        itemIds: filter.itemIds, episodeId: filter.episodeId,
         limit: limit - reopened,
       });
       const waiting = await repo.waitingConnectionIds(spaceId, ["egress_denied", "consent_missing"]);
@@ -271,6 +311,7 @@ export class SourceAnnotationService {
             reasons: ["egress_denied", "consent_missing"],
             connectionId,
             responsibleUserId: filter.responsibleUserId,
+            itemIds: filter.itemIds, episodeId: filter.episodeId,
             limit: limit - reopened,
           });
         }
@@ -287,23 +328,43 @@ export class SourceAnnotationService {
    * rows. The work itself is left to the queued job, which runs one space at
    * a time, so a retry beside a background pass does not annotate twice.
    */
+  async prepareManualRetry(spaceId:string,responsibleUserId:string,filter:{episodeId?:string|null;connectionId?:string|null}={}){
+    const tx=this.db;
+    const identity = {spaceId, userId: responsibleUserId};
+    const candidates = async () => (await tx.query<{source_item_id:string}>(`SELECT a.source_item_id
+      FROM source_item_annotations a JOIN source_items i ON i.space_id=a.space_id AND i.id=a.source_item_id
+      LEFT JOIN source_connections c ON c.space_id=i.space_id AND c.id=i.connection_id
+      WHERE a.space_id=$1 AND COALESCE(c.owner_user_id,i.owner_user_id)=$2 AND i.deleted_at IS NULL
+        AND (i.connection_id IS NULL OR (c.id IS NOT NULL AND c.deleted_at IS NULL AND c.status<>'archived')) AND ${sourceItemFullContentReadClause('i','$2')}
+        AND a.status IN ('pending','failed') AND a.wait_reason IS NOT NULL
+        AND ($3::varchar IS NULL OR a.episode_id=$3) AND ($4::varchar IS NULL OR i.connection_id=$4)
+      ORDER BY a.created_at,a.id LIMIT $5`, [spaceId,responsibleUserId,filter.episodeId??null,filter.connectionId??null,ANNOTATION_MANUAL_RETRY_LIMIT])).rows.map(r=>r.source_item_id);
+    const ids = await candidates();
+    await lockReadingMutations(tx, identity, ids);
+    const recheck=async()=>{if(JSON.stringify(ids)!==JSON.stringify(await candidates()))throw new HttpError(409,'Annotation retry membership changed');};
+    await recheck();
+    const allowed: string[] = [];
+    for(const id of [...ids].sort())if(await contentDecisionFromDb(tx,identity,'source_item',id,{includeOversight:false})==='full')allowed.push(id);
+    return {allowed,recheck};
+  }
+
   async manualRetry(
     spaceId: string,
     responsibleUserId: string,
     filter: { episodeId?: string | null; connectionId?: string | null } = {},
-  ): Promise<{ reopened: number }> {
-    const repo = new PgSourceAnnotationRepository(this.db);
-    let reopened = await this.recoverWaiting(spaceId, { connectionId: filter.connectionId, responsibleUserId });
-    const reasons: AnnotationWaitReason[] = ["budget_exhausted", "retry_scheduled"];
-    reopened += await repo.requeueParked(spaceId, {
-      reasons,
-      episodeId: filter.episodeId,
-      connectionId: filter.connectionId,
-      responsibleUserId,
-      limit: Math.max(0, ANNOTATION_MANUAL_RETRY_LIMIT - reopened),
+    prepared?:Awaited<ReturnType<SourceAnnotationService['prepareManualRetry']>>,
+  ): Promise<{ reopened: number; item_ids: string[] }> {
+    return withQueryableTransaction(this.db, async tx => {
+      const state=prepared??await new SourceAnnotationService(tx,this.config).prepareManualRetry(spaceId,responsibleUserId,filter);
+      await state.recheck();const allowed=state.allowed;
+      const service = new SourceAnnotationService(tx, this.config);
+      const repo = new PgSourceAnnotationRepository(tx);
+      let reopened = await service.recoverWaiting(spaceId, { connectionId:filter.connectionId, responsibleUserId, episodeId:filter.episodeId, itemIds:allowed });
+      reopened += await repo.requeueParked(spaceId, { reasons:['budget_exhausted','retry_scheduled'], episodeId:filter.episodeId, connectionId:filter.connectionId, responsibleUserId, itemIds:allowed, limit:Math.max(0,ANNOTATION_MANUAL_RETRY_LIMIT-reopened) });
+      if(reopened>0)await new PgJobQueueRepository(tx).enqueue({job_type:SOURCE_ANNOTATION_JOB_TYPE,payload:{trigger:'manual_retry',reopened},space_id:spaceId,user_id:responsibleUserId});
+      await service.notify(spaceId);
+      return {reopened,item_ids:allowed};
     });
-    await this.notify(spaceId);
-    return { reopened };
   }
 
   private async notify(spaceId: string): Promise<void> {
@@ -325,14 +386,23 @@ export class SourceAnnotationService {
     agentId: string,
     items: readonly AnnotationPromptItem[],
     monitoring?: {operationId:string;projectId:string;userId:string},
+    job?:JobEnvelopeForHandler,
   ): Promise<RunRecord> {
     const pool = this.requirePool();
     const instruction = renderAnnotationInstruction(items);
     const runs = new PgRunRepository(pool);
-    const run = await runs.createQueuedRun({
+    const userId=monitoring?.userId??await resolveSystemActorUserId(pool,spaceId);
+    const run = await withQueryableTransaction(pool,async tx=>{
+      await lockCurrentJobClaim(tx,job);
+      const inputs=await freezeAnnotationInputs(tx,spaceId,items);
+      await lockReadingMutations(tx,{spaceId,userId},items.map(i=>i.id),[],[],inputs.map(i=>i.responsible_user_id));
+      if(canonical(inputs)!==canonical(await freezeAnnotationInputs(tx,spaceId,items)))throw new HttpError(409,'Annotation inputs changed');
+      const current=await new PgSourceAnnotationRepository(tx).loadPendingBatch(spaceId,items.length,items.map(i=>i.id));
+      if(canonical(current.map(annotationPromptItem).sort((a,b)=>a.id.localeCompare(b.id)))!==canonical([...items].sort((a,b)=>a.id.localeCompare(b.id))))throw new HttpError(409,'Annotation prompt changed');
+      return new PgRunRepository(tx).createQueuedRun({
       execution_kind: "agent",
       space_id: spaceId,
-      user_id: monitoring?.userId ?? await resolveSystemActorUserId(pool, spaceId),
+      user_id: userId,
       agent_id: agentId,
       project_id: monitoring?.projectId ?? null,
       project_folder_id: null,
@@ -349,9 +419,11 @@ export class SourceAnnotationService {
         source: { kind: "direct", id: monitoring?.operationId ?? `source_annotation:${spaceId}` },
         ...(monitoring?{budget_sources:[{source:{kind:'direct',id:monitoring.operationId},max_attempts:1,max_duration_seconds:1800}]}:{}),
         project_id: monitoring?.projectId ?? null,
+        workflow_input_json:{source_annotation:{items:inputs,...(job?{claim:job}:{})}},
         structured_output_json: sourceAnnotationOutputContract(),
         policy_context_json: createManagedExecutionPolicy("source_annotation", true),
       },
+      });
     });
     const orchestration = new RunOrchestrationService(this.config, runs, {
       materializer: RunMaterializationService.fromConfig(this.config),
@@ -376,20 +448,9 @@ export class SourceAnnotationService {
   }
 
   private requirePool(): Pool {
-    if (!this.pool) throw new HttpError(503, "Database is not configured");
-    return this.pool;
+    if (!this.config.databaseUrl) throw new HttpError(503, "Database is not configured");
+    return getDbPool(this.config.databaseUrl);
   }
-}
-
-function toPromptItem(row: PendingAnnotationRow): AnnotationPromptItem {
-  return {
-    id: row.id,
-    title: row.title,
-    excerpt: row.excerpt,
-    author: row.author,
-    source_domain: row.source_domain,
-    occurred_at: row.occurred_at,
-  };
 }
 
 /**

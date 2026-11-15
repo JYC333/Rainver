@@ -1,5 +1,14 @@
 # Rainver Host (Linux)
 
+Linux startup and local ignored-file recovery require util-linux `flock` on PATH.
+Service and foreground daemons hold the same kernel lock as owner mutations;
+stop either before `rainver-host ignored restore/discard/rebuildable/declare-root`.
+No systemd status or `--offline` flag substitutes for the lock. See
+[owner recovery commands](../../.agent/COMMANDS.md#ignored-workspace-recovery-host-owner-local-installation)
+for exact per-Location reconstructible-root declarations, blocked workspace lists
+and the existing 30-day retired sweep. Unknown content never expires implicitly.
+
+
 `rainver-host` connects a machine you own to a Rainver control plane and runs
 as a systemd user service. The target machine does not need this repository or
 pnpm. The installer uses an existing Node.js 24 installation when available
@@ -214,6 +223,12 @@ remain diagnosable without numbered release tags.
 
 ## Development guidance
 
+A logical Run has one physical launch at a time. Replayed launch frames do not
+start another process; a different launch of the same Run is refused while the
+original is preparing, queued, running or finishing its output capture. The
+server must confirm the old launch's exit before replacing its persisted nonce
+and resuming. Independent conversation worktrees keep their existing concurrency.
+
 Before changing this package, follow [repository instructions](../../AGENTS.md)
 and read the [Hosts guide](../../.agent/modules/hosts.md), especially its Host
 daemon and WebSocket sections. Use the `host-daemon` bundle in
@@ -397,3 +412,40 @@ Full login email and optional workspace name are whitelisted display metadata
 under the existing quota visibility gate; tokens and real paths never appear
 in the quota response. Display metadata is separate from pool identity. Older
 daemons or missing identity still report quota, but remain unmerged in Usage.
+
+For repository development, run `pnpm run verify` from this package to prepare
+workspace dependencies once and run types plus tests. Independent `typecheck`
+and `test` commands still prepare their dependencies; warm library builds use
+TypeScript incremental content checks. See [Commands](../../.agent/COMMANDS.md).
+
+### Ignored recovery pagination and receipt expiry
+
+Owner CLI `rainver-host ignored list --location <location> --limit 256` returns
+`{items, errors, next}`. Continue with `--after <next>` until null; maximum page
+size is 512 names, including malformed/unrelated entries. `--key <listed-key>`
+reads an exact snapshot. Mutations require stopping the Host and its kernel
+lease; listing alone grants no deletion authority.
+
+The connection/hourly sweeps share a 2,048-item / two-second budget, continue
+unfinished pages after one second, and never overlap. Each directory receives
+up to four 256-name pages; ignored snapshots have at most eight independent
+visitors. Directory-name enumeration remains streaming O(directory size).
+Completed scheduling cursors are removed. Durable phase/Location rotation yields
+past slow Git work. Global reply directories have one shared scan; released owners
+request immediate continuation without each rescanning those global directories.
+
+Capture quota is proved under the existing FIFO Location lease through manifest
+commit/rollback. Its census reads at most 512 active/legacy manifests per slice, with an
+exact active count saturated at 128. Fully retired snapshots use a separate
+`-retired-ignored` suffix; legacy snapshots migrate in bounded, durable slices.
+Malformed manifests consume one active slot and remain visible for governance,
+with source bytes preserved; quota waits spend no failure attempts and retry at
+most once per minute after capacity can change. Listing/expiry remain paginated.
+No directory stamp is quota authority. Terminal attributable cleanup receipts
+can expire strictly below the permanent owner epoch/digest. Candidate cleanup
+raises only its own fence to E+1 and keeps exact replay plus immutable admission,
+so late prepares cannot rebuild it and its journals expire independently of
+source release; unknown-owner legacy evidence
+is logged for review, never erased on age alone. An exact legacy replay can bind
+its owner for subsequent expiry. Incomplete journals/preimages and unknown assets
+remain recoverable. See the [Host lifecycle guide](../../.agent/modules/hosts.md#idle-reclamation-preservation-and-checkpoint-pin-lifecycle).

@@ -1,3 +1,4 @@
+import {lockGoal} from '../../sources/goals/transaction.js';
 import {projectRoundState} from './roundProjection.js';
 import {queueProjectComposition} from '../composition/service.js';
 import {assertGoalAnalysisManagement,nativeProfileFingerprint} from '../../sources/index.js';
@@ -19,7 +20,7 @@ const liveGoal=async(db:Queryable,identity:SpaceUserIdentity,id:string)=>{
 export async function configureThemeAnalysis(db:Queryable,config:ServerConfig,identity:SpaceUserIdentity,id:string,raw:unknown){
  const input=ProjectThemeAnalysisConsentSchema.parse(raw);
  return withQueryableTransaction(db,async tx=>{
-  await tx.query('SELECT id FROM source_goals WHERE id=$1 AND space_id=$2 FOR UPDATE',[id,identity.spaceId]);
+  await lockGoal(tx,id,'update',identity.spaceId);
   await assertGoalAnalysisManagement(tx,config,identity,id);
   const g=await liveGoal(tx,identity,id);
   if(g.owner_user_id!==identity.userId||!await canWriteProject(tx,identity.spaceId,g.project_id,identity.userId))throw new HttpError(403,'Following owner and Project writer required');
@@ -91,20 +92,50 @@ export async function readThemeRounds(db:Queryable,identity:SpaceUserIdentity,go
 }
 
 /** Cancel only this analysis, leaving the separately authorized collection and
- * immutable originals intact. Canonical Run cancellation owns stop/ACK. */
+ * immutable originals intact. In the caller's transaction: a finished Run is
+ * settled as before; a live one gets its cancellation intent and its briefing
+ * is settled `cancelled` now, so a result the Run still produces can never land
+ * (settlement accepts only a queued briefing). The process stop follows the
+ * commit (stopThemeRoundRun) and the Run sweep finishes an interrupted one. */
 export async function cancelThemeRound(db:Queryable,config:ServerConfig,identity:SpaceUserIdentity,goalId:string,id:string){
+ const cancelled=await cancelThemeRoundIn(db,config,identity,goalId,id);
+ if(cancelled.cancel_requested)await stopThemeRoundRun(db,config,identity,id);
+ return readThemeRounds(db,identity,goalId);
+}
+export async function cancelThemeRoundIn(outer:Queryable,config:ServerConfig,identity:SpaceUserIdentity,goalId:string,id:string){
+ return withQueryableTransaction(outer,async db=>{
+ await lockGoal(db,goalId,'update',identity.spaceId);
  await assertGoalAnalysisManagement(db,config,identity,goalId);
- const r=(await db.query<ThemeRound>('SELECT * FROM project_reading_rounds WHERE space_id=$1 AND goal_id=$2 AND id=$3',[identity.spaceId,goalId,id])).rows[0];if(!r)throw new HttpError(404,'Theme round not found');
+ const round=()=>db.query<ThemeRound>('SELECT * FROM project_reading_rounds WHERE space_id=$1 AND goal_id=$2 AND id=$3',[identity.spaceId,goalId,id]);
+ const seen=(await round()).rows[0];if(!seen)throw new HttpError(404,'Theme round not found');
+ // Settlement order: the briefing row before its round.
+ const repository=new PgBriefingRepository(db);
+ const locked=seen.briefing_id?await repository.get(identity.spaceId,seen.briefing_id,true):null;
+ await db.query('SELECT id FROM project_reading_rounds WHERE id=$1 FOR UPDATE',[id]);
+ const r=(await round()).rows[0];if(!r||r.briefing_id!==seen.briefing_id)throw new HttpError(409,'Theme round changed');
+ let cancelRequested=false;
  if(r.briefing_id){
-  const row=await new PgBriefingRepository(db).get(identity.spaceId,r.briefing_id);
+  const row=locked;
   if(row?.status==='queued'&&row.run_id){
-   const {buildRunOrchestration}=await import('../../runs/orchestrationFactory.js');
-   await buildRunOrchestration(config).orchestration.cancelRun({run_id:row.run_id,space_id:identity.spaceId,requested_by_user_id:identity.userId,reason:'Following analysis cancelled'});
    const run=(await db.query<import('../../runs/repository.js').RunRecord>('SELECT * FROM runs WHERE space_id=$1 AND id=$2',[identity.spaceId,row.run_id])).rows[0];
    if(run&&['succeeded','degraded','failed','cancelled','orphaned'].includes(run.status))await (await import('../briefing/settlement.js')).settleBriefingRun(db,run);
-   else await db.query("UPDATE project_reading_rounds SET error_code='theme_cancel_requested',updated_at=now() WHERE id=$1",[id]);
+   else{
+    const {PgRunRepository}=await import('../../runs/repository.js');
+    await new PgRunRepository(db).markRunCancelling({run_id:row.run_id,space_id:identity.spaceId,requested_at:new Date().toISOString(),reason:'Following analysis cancelled',requested_by_user_id:identity.userId});
+    await repository.settle(identity.spaceId,row.id,row.run_id,{status:'cancelled',errorCode:'briefing_cancelled'});
+    await db.query("UPDATE project_reading_rounds SET error_code='theme_cancel_requested',updated_at=now() WHERE id=$1",[id]);
+    cancelRequested=true;
+   }
   }
  }else await db.query("UPDATE project_reading_rounds SET status='blocked',error_code='theme_cancelled',updated_at=now() WHERE id=$1 AND status IN ('collecting','blocked')",[id]);
  const goal=await liveGoal(db,identity,goalId);await queueProjectComposition(db,identity.spaceId,goal.project_id,id);
- return readThemeRounds(db,identity,goalId);
+ return {round_id:id,cancel_requested:cancelRequested};
+ });
+}
+/** Post-commit, rebuildable: stop the round's analysis Run whose cancellation is committed. */
+export async function stopThemeRoundRun(db:Queryable,config:ServerConfig,identity:SpaceUserIdentity,roundId:string){
+ const run=(await db.query<{id:string}>(`SELECT r.id FROM project_reading_rounds pr JOIN information_briefings b ON b.id=pr.briefing_id AND b.space_id=pr.space_id JOIN runs r ON r.id=b.run_id AND r.space_id=b.space_id WHERE pr.id=$1 AND pr.space_id=$2 AND r.status='cancelling'`,[roundId,identity.spaceId])).rows[0];
+ if(!run)return;
+ const {buildRunOrchestration}=await import('../../runs/orchestrationFactory.js');
+ await buildRunOrchestration(config).orchestration.cancelRun({run_id:run.id,space_id:identity.spaceId,requested_by_user_id:identity.userId,reason:'Following analysis cancelled'});
 }

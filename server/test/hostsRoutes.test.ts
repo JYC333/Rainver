@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {__setAcpRegistryForTests} from "../src/modules/acpAgents/registry.js";
 import { OwnCliReleases, ownCliReleases } from "../src/modules/hosts/ownCliReleases.js";
 import { isOwnCliUpdateRuntimeKey } from "@rainver/protocol";
@@ -438,7 +439,7 @@ describe("hosts routes", () => {
     const lapsedMember = await app.inject({
       method: "POST",
       url: "/api/v1/hosts/me/workspaces",
-      headers: { authorization: `Bearer ${hostToken}` },
+      headers: { authorization: `Bearer ${hostToken}`, 'idempotency-key': randomUUID() },
       payload: { project_id: "workspace-project", name: "mapping" },
     });
     expect(lapsedMember.statusCode).toBe(404);
@@ -447,7 +448,7 @@ describe("hosts routes", () => {
     const notWriter = await app.inject({
       method: "POST",
       url: "/api/v1/hosts/me/workspaces",
-      headers: { authorization: `Bearer ${hostToken}` },
+      headers: { authorization: `Bearer ${hostToken}`, 'idempotency-key': randomUUID() },
       payload: { project_id: "no-such-project", name: "mapping" },
     });
     expect(notWriter.statusCode).toBe(404);
@@ -455,11 +456,11 @@ describe("hosts routes", () => {
     const created = await app.inject({
       method: "POST",
       url: "/api/v1/hosts/me/workspaces",
-      headers: { authorization: `Bearer ${hostToken}` },
+      headers: { authorization: `Bearer ${hostToken}`, 'idempotency-key': randomUUID() },
       payload: { project_id: "workspace-project", name: "mapping", display_path: "~/dev/mapping" },
     });
     expect(created.statusCode).toBe(201);
-    const folder = created.json();
+    const folder = created.json().data;
     expect(folder).toMatchObject({
       host_kind: "remote",
       root_path: null,
@@ -470,7 +471,7 @@ describe("hosts routes", () => {
     const duplicate = await app.inject({
       method: "POST",
       url: "/api/v1/hosts/me/workspaces",
-      headers: { authorization: `Bearer ${hostToken}` },
+      headers: { authorization: `Bearer ${hostToken}`, 'idempotency-key': randomUUID() },
       payload: { project_id: "workspace-project", name: "mapping" },
     });
     expect(duplicate.statusCode).toBe(409);
@@ -486,9 +487,9 @@ describe("hosts routes", () => {
     const remove = await app.inject({
       method: "DELETE",
       url: `/api/v1/hosts/me/workspaces/${folder.id}`,
-      headers: { authorization: `Bearer ${hostToken}` },
+      headers: { authorization: `Bearer ${hostToken}`, 'idempotency-key': randomUUID() },
     });
-    expect(remove.statusCode).toBe(204);
+    expect(remove.statusCode).toBe(200);
 
     const listAfter = await app.inject({
       method: "GET",
@@ -539,11 +540,11 @@ describe("hosts routes", () => {
     const createdOnA = await app.inject({
       method: "POST",
       url: "/api/v1/hosts/me/workspaces",
-      headers: { authorization: `Bearer ${tokenA}` },
+      headers: { authorization: `Bearer ${tokenA}`, 'idempotency-key': randomUUID() },
       payload: { project_id: "cross-host-project", name: "only-on-a" },
     });
     expect(createdOnA.statusCode).toBe(201);
-    const folderOnA = createdOnA.json();
+    const folderOnA = createdOnA.json().data;
 
     // Host B's token must see none of Host A's workspaces.
     const listFromB = await app.inject({
@@ -557,7 +558,7 @@ describe("hosts routes", () => {
     const removeFromB = await app.inject({
       method: "DELETE",
       url: `/api/v1/hosts/me/workspaces/${folderOnA.id}`,
-      headers: { authorization: `Bearer ${tokenB}` },
+      headers: { authorization: `Bearer ${tokenB}`, 'idempotency-key': randomUUID() },
     });
     expect(removeFromB.statusCode).toBe(404);
 
@@ -571,9 +572,9 @@ describe("hosts routes", () => {
     const removeFromA = await app.inject({
       method: "DELETE",
       url: `/api/v1/hosts/me/workspaces/${folderOnA.id}`,
-      headers: { authorization: `Bearer ${tokenA}` },
+      headers: { authorization: `Bearer ${tokenA}`, 'idempotency-key': randomUUID() },
     });
-    expect(removeFromA.statusCode).toBe(204);
+    expect(removeFromA.statusCode).toBe(200);
   });
 
   it("rejects a raw (unexchanged) pairing code presented as a bearer token", async (ctx) => {
@@ -645,15 +646,16 @@ describe("hosts routes", () => {
     const created = await app.inject({
       method: "POST",
       url: "/api/v1/hosts/me/workspaces",
-      headers: { authorization: `Bearer ${hostA.token}` },
+      headers: { authorization: `Bearer ${hostA.token}`, 'idempotency-key': randomUUID() },
       payload: { project_id: "upload-project", name: "mapping" },
     });
-    const locationId = created.json().id as string;
+    const locationId = created.json().data.id as string;
     await ensureDefaultRuntimeProfile(db.pool, {
       agent: "upload-agent",
       space: "upload-space",
       runtimeKey: "claude_code",
       executionHostId: hostA.hostId,
+      executionHostKind: "remote",
       workspaceLocationId: locationId,
       workspaceMode: "location",
       runtimeInstallation: "managed:1.0.0",

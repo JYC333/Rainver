@@ -1,13 +1,11 @@
 import type { FastifyInstance } from "fastify";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
-import { dbPool, jsonBody, parsePage, params, resolveIdentity, sendRouteError, optionalString } from "../routeUtils/common.js";
-import { requireSpaceOwnerOrAdmin } from "../routeUtils/access.js";
+import { dbPool, parsePage, params, resolveIdentity, sendRouteError } from "../routeUtils/common.js";
+import { registerOperationAdapters } from "../systemActions/operations/routeAdapter.js";
 import { PgPlanRepository } from "./repository.js";
-import { PlanExecutionService } from "./executionService.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   const repository = () => new PgPlanRepository(dbPool(context.config), context.config);
-  const execution = () => new PlanExecutionService(dbPool(context.config), context.config);
 
   app.get("/api/v1/plans", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -32,35 +30,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/plans/:planId/execute", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const body = jsonBody(request);
-      return reply.code(202).send(await execution().execute(identity, params(request).planId ?? "", {
-        agentId: optionalString(body.agent_id),
-        prompt: optionalString(body.prompt),
-        instruction: optionalString(body.instruction),
-        runtimeProfileId: optionalString(body.runtime_profile_id),
-        workflowInputJson: optionalObject(body.workflow_input_json),
-      }));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.post("/api/v1/plans/:planId/reconcile", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    if (!(await requireSpaceOwnerOrAdmin(context.config, identity, reply, "Plan reconciliation requires space owner or admin role"))) return;
-    try {
-      return reply.send(await execution().reconcile(identity, params(request).planId ?? ""));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-}
-
-function optionalObject(value: unknown): Record<string, unknown> | null {
-  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+  // Formal adapters over the Plan owner's commands; no domain logic here.
+  registerOperationAdapters(app, context.config, [
+    { method: "POST", url: "/api/v1/plans/:planId/execute", operation: "plan.execute", params: { planId: "plan_id" } },
+    { method: "POST", url: "/api/v1/plans/:planId/reconcile", operation: "plan.reconcile", params: { planId: "plan_id" } },
+  ]);
 }

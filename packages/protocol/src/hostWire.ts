@@ -573,6 +573,7 @@ export const HostOwnedRefSchema=z.object({ref:z.string().regex(/^refs\/rainver\/
 export const HostWorkspaceInventorySchema=z.object({worktree:z.boolean(),registration:z.boolean(),branch:z.boolean(),run_record:z.boolean(),pending_run_id:IdSchema.nullable(),merge_record:z.boolean(),quarantined_whole:z.number().int().nonnegative(),retained_quarantine:z.number().int().nonnegative(),active:z.boolean(),free_bytes:z.number().nonnegative().nullable(),
  owned_refs:z.array(HostOwnedRefSchema).max(200).optional(),owned_refs_truncated:z.boolean().optional(),
  /** Cursor of the next owned-ref page (pass as list_after to inspect); null on the last page. */
+ target_commit:z.string().regex(/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/).nullable().optional(),
  owned_refs_next:z.string().max(512).nullable().optional(),materialization_epoch:z.number().int().nonnegative().optional(),
  /** One sorted page of the generation's refs/rainver/run-history/ commits present in Git. */
  history_refs:z.array(GitObjectIdSchema).max(1000).optional(),
@@ -636,6 +637,10 @@ export const HostExecutionWorkspaceCommandSchema = z.object({
   type:z.literal("execution_workspace_command"), request_id:IdSchema,
   workspace:LocationLaunchWorkspaceSchema.extend({execution_workspace:ExecutionWorkspaceRefSchema}),
   action:z.enum(["checkpoint","cleanup","inspect","read","archive_profiles","mirror","release_refs","list_refs"]), operation_id:z.string().uuid(),
+  /** Physical workspace launch identity; an older checkpoint cannot settle a resumed Run. */
+  launch_sequence:z.number().int().positive().optional(),
+  /** The landed integration owning this release; distinct from its replay RPC. */
+  lifecycle_operation_id:z.string().uuid().optional(),
   run_id:IdSchema.optional(), author:z.object({name:z.string().max(512),email:z.string().max(512)}).optional(),
   profile_agents:z.array(z.string().uuid()).max(100).optional(),
   /** `archive_profiles` only: the thread's archive intent (`archive:<thread>:<generation>`). A Host reporting
@@ -646,12 +651,16 @@ export const HostExecutionWorkspaceCommandSchema = z.object({
   message:z.string().max(16000).optional(), expected_commit:GitObjectIdSchema.optional(), retain_branch:z.boolean().default(true),
   /** Server merge facts for a branch release: the tip's tree must equal one of
    * these commits' trees, and that commit must be reachable from target_ref. */
+  preserve_commit:GitObjectIdSchema.optional(),
   discard_commit:GitObjectIdSchema.optional(),
   reclaim_proof:z.array(GitObjectIdSchema).max(50).optional(),
   /** Recorded batch bases. The Host re-proves the tip's delta from each one that
    * is history of both tip and target (and from its own merge-base) against the
    * actual target tree; a base that fails these checks is ignored. */
   reclaim_bases:z.array(GitObjectIdSchema).max(50).optional(),
+  /** reclaim:6: retain the exact adopting parent checkpoint durably before
+   * releasing a child. The Host re-proves the child's base/source delta. */
+  reclaim_checkpoint:z.object({workspace_id:z.string().uuid(),generation:z.number().int().positive(),commit:GitObjectIdSchema,base_commit:GitObjectIdSchema}).optional(),
   /** Saved Run checkpoints of this generation; ones the target cannot reach are
    * kept as run-history refs for the bounded history retention. */
   history_commits:z.array(GitObjectIdSchema).max(1000).optional(),
@@ -1164,7 +1173,10 @@ export const HostDaemonFrameSchema = z.discriminatedUnion("type", [
     /** The frozen strategy and commit chain this integration publishes. */
     publication:z.object({strategy:z.enum(['squash','fast_forward','merge','rebase']),chain_tip:GitObjectIdSchema.nullable(),chain_length:z.number().int().nonnegative()}).optional()}),
   z.object({type:z.literal('workspace_scope_result'),request_id:IdSchema,ok:z.boolean(),error:z.string().nullable(),root_location_id:IdSchema.nullable(),cwd_subpath:z.string().nullable()}),
-  z.object({type:z.literal("execution_workspace_result"),request_id:IdSchema,ok:z.boolean(),branch:z.string().nullable(),commit:GitObjectIdSchema.nullable(),cleanup_state:z.enum(["cleaned","blocked","retry_wait"]).optional(),inventory:HostWorkspaceInventorySchema.optional(),refs:z.array(HostOwnedRefSchema).max(500).optional(),refs_next:z.string().max(512).nullable().optional(),launch_info:HostWorkspaceLaunchReportSchema.optional(),file:z.object({path:z.string(),content_base64:z.string()}).optional(),error:z.string().nullable(),error_code:z.lazy(()=>ManagedWorkspaceErrorCodeSchema).optional()}),
+  z.object({type:z.literal("execution_workspace_result"),request_id:IdSchema,ok:z.boolean(),branch:z.string().nullable(),commit:GitObjectIdSchema.nullable(),cleanup_state:z.enum(["cleaned","blocked","retry_wait"]).optional(),lifecycle_operation_id:z.string().uuid().optional(),inventory:HostWorkspaceInventorySchema.optional(),refs:z.array(HostOwnedRefSchema).max(500).optional(),refs_next:z.string().max(512).nullable().optional(),launch_info:HostWorkspaceLaunchReportSchema.optional(),
+    /** Under the workspace lease: no Run receipt, no pending writer, clean recognised worktree at expected_commit. */
+    unchanged_commit:GitObjectIdSchema.optional(),
+    file:z.object({path:z.string(),content_base64:z.string()}).optional(),error:z.string().nullable(),error_code:z.lazy(()=>ManagedWorkspaceErrorCodeSchema).optional()}),
   z.object({
     type: z.literal("folder_write_result"),
     request_id: IdSchema,

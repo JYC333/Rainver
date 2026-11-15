@@ -1,3 +1,5 @@
+import { usesIsolatedAgentContext } from "../agents/projectContextIsolation.js";
+import { retrievalItemProjects } from "./envelopeAuthority.js";
 import type {
   ContextItem,
   MessageOut,
@@ -89,7 +91,8 @@ type SetupRow = {
   excluded_refs_json: unknown;
 };
 
-const registry = new RetrievalRegistry();
+export const runtimeContextRetrievalRegistry = new RetrievalRegistry();
+const registry = runtimeContextRetrievalRegistry;
 for (const adapter of [
   knowledgeRetrievalAdapter,
   memoryRetrievalAdapter,
@@ -122,7 +125,7 @@ class PgAuthorityProvider implements RuntimeContextAuthorityPort {
       `SELECT 1 FROM agents agent
         WHERE agent.id=$1 AND agent.space_id=$2 AND agent.status='active'
           AND (
-            ${contentReadSql("agent", "agent", "$3")}
+            ($4::varchar <> 'room_recipient' AND ${contentReadSql("agent", "agent", "$3")})
             OR (
               $4::varchar = 'room_recipient'
               AND ${roomScopedAgentReadSql("agent", "$3", "$5")}
@@ -156,7 +159,7 @@ class PgAuthorityProvider implements RuntimeContextAuthorityPort {
         ? ACP_RUNTIME_MANAGED_WINDOW
         : null,
       agentId: setup.agent_id,
-      projectId: setup.project_id,
+      projectId: control.project_id,
       controlSnapshot: control,
       egressDestination,
     };
@@ -463,7 +466,11 @@ class PgDirectProvider implements RuntimeContextChannelProvider {
       [artifactId, request.identity.spaceId, authority.projectId, request.identity.userId],
     );
     const row = result.rows[0];
-    if (!row?.content?.trim()) throw new Error("Project Research Evidence Matrix is unavailable");
+    // The Artifact reader's own body release (research call and its
+    // recursive input_refs, Source policy), not only the row ACL above.
+    const { artifactBodyReleased } = await import("../artifacts/repository.js");
+    const body = row ? await artifactBodyReleased(this.db, request.identity, artifactId) : null;
+    if (!row || !body?.trim() || body !== row.content) throw new Error("Project Research Evidence Matrix is unavailable");
     return normalizeContextItem({
       sourceRef: { type: "project_research_evidence_matrix", id: artifactId },
       acquisition: "direct",
@@ -809,6 +816,8 @@ export class PgRetrievalIntentProvider implements RuntimeContextRetrievalIntentP
       userId: request.identity.userId,
       agentId: authority.agentId,
       executionControlSnapshotId: authority.executionControlSnapshotId,
+      ...(authority.controlSnapshot.project_id && await usesIsolatedAgentContext(this.db, request.identity.spaceId, authority.agentId, authority.controlSnapshot.project_id)
+        ? { isolatedProjectId: authority.controlSnapshot.project_id } : {}),
       query,
       objectTypes,
       maxResults: effectiveRetrievalMaximum(preferences.max_candidates, scope.retrieval_max_candidates),
@@ -924,8 +933,14 @@ class RuntimeContextRetrievalEngine {
     this.searchService = new RetrievalSearchService(db, registry);
   }
 
-  async search(input: Parameters<RetrievalSearchService["search"]>[0]) {
-    return this.searchService.search({ ...input, skipAudit: true });
+  async search(input: Parameters<RetrievalSearchService["search"]>[0] & { isolatedProjectId?: string }) {
+    const result = await this.searchService.search({ ...input, skipAudit: true });
+    if (!input.isolatedProjectId) return result;
+    const eligible = await Promise.all(result.items.map(async item => {
+      const projects = await retrievalItemProjects(this.db, input.spaceId, item.object_type, item.object_id);
+      return projects.length > 0 && projects.every(project => project === input.isolatedProjectId);
+    }));
+    return { ...result, items: result.items.filter((_item, index) => eligible[index]), trace: undefined };
   }
 
   async recordReads(input: {

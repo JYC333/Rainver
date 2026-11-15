@@ -337,7 +337,7 @@ exit 1
     const output = frames.filter((frame) => frame.type === "login_output").map((frame) => frame.data).join("");
     expect(output).toContain("done:abc");
     expect(frames.find((frame) => frame.type === "login_exit")).toMatchObject({ session_id: "s1", exit_code: 0, logged_in: true });
-  }, 20_000);
+  });
 });
 
 async function waitFor(condition: () => boolean, timeoutMs = 10_000): Promise<void> {

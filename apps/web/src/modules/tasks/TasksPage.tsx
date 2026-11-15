@@ -156,10 +156,10 @@ export default function TasksPage() {
   async function createTask(body: Record<string, unknown>) {
     if (!personalSpaceId) { toast.error('Personal Space is unavailable'); return }
     try {
-      const t = await tasksApi.create(body, { spaceId: personalSpaceId })
+      const t = await tasksApi.create(body as OperationInput<'task.create'>, { spaceId: personalSpaceId })
       toast.success('Task created')
       setCreateOpen(false)
-      navigate(spacePath(t.space_id, `/tasks/${t.id}`))
+      navigate(spacePath(t.space_id, `/tasks/${t.task_id}`))
       await loadTasks()
     } catch (e) {
       toast.error(errMsg(e))

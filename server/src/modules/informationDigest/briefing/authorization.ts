@@ -79,11 +79,9 @@ export async function authorizeVersion(
   const everything = [...deps.map((entry) => entry.deps), closure.deps];
   const itemIds = everything.flatMap((entry) => entry.items.map((dep) => dep.id));
   const signals = everything.flatMap((entry) => entry.signals);
-  const [audience, allowedItems, signalState] = await Promise.all([
-    adapter.audience(db),
-    adapter.allowedItems(db, itemIds),
-    adapter.signalState(db, signals),
-  ]);
+  const audience=await adapter.audience(db);
+  const allowedItems=await adapter.allowedItems(db,itemIds);
+  const signalState=await adapter.signalState(db,signals);
   if(adapter.retainedEgress&&!options.egress&&row.run_id){
     const run=(await db.query<RunRecord>('SELECT * FROM runs WHERE id=$1 AND space_id=$2',[row.run_id,row.space_id])).rows[0];
     try{if(!run)throw new Error('Frozen theme execution missing');options={...options,egress:{destination:await runDestination(db,row.space_id,run)}};}catch{return {allowed:new Set(),changed:new Set(),outdated:false,refs:[...material.map(i=>i.ref_key!),...row.context_json.map(c=>c.key)]};}

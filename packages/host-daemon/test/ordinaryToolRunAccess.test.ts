@@ -479,7 +479,7 @@ describe("review fixes", () => {
     expect(uploads.some((body) => body.includes("late.txt"))).toBe(true);
     await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
     expect(managed).toBeTruthy();
-  }, 30_000);
+  });
 });
 
 // Last in this file on purpose: what it checks is that nothing is released,
@@ -556,7 +556,7 @@ describe("a Run whose leftover processes cannot be confirmed stopped", () => {
     setEgressProxy(null);
     await proxy.close?.();
     await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
-  }, 60_000);
+  });
 
   it("refuses a runtime replacement that was already waiting when the attempt became kept", async () => {
     await installManagedLark();
@@ -582,5 +582,5 @@ describe("a Run whose leftover processes cannot be confirmed stopped", () => {
     expect(frames.find((frame) => frame.type === "complete")).toMatchObject({ exit_code: 1 });
     expect(await outcome).toMatch(/could not be confirmed stopped/);
     expect(replaced).toBe(false);
-  }, 30_000);
+  });
 });

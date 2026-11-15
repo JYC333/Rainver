@@ -3,6 +3,7 @@ import {ResearchCallSchema} from '@rainver/protocol';
 import {researchMetadataReadableSql} from './researchOperationMetadata.js';
 import {projectReadAccessSql} from '../access/contentAccessSql.js';
 import {researchArtifactOriginSql} from './researchArtifactAccess.js';
+import {researchArtifactDependencyIds} from './researchArtifactClosure.js';
 import {assertResearchCallReadable,assertResearchCallSourceDependencies,ResearchCallContentUnavailable} from './researchCallAccess.js';
 import {HttpError,type Queryable,type SpaceUserIdentity} from '../routeUtils/common.js';
 /** Shared report/Reader content gate; old unbound reports keep their existing domain gates. */
@@ -18,18 +19,7 @@ export interface ResearchArtifactOrigin {
 /** Full content check for all bound origins, including input artifact dependencies. */
 export async function assertResearchArtifactReadable(db:Queryable,identity:SpaceUserIdentity,artifactId:string|readonly string[]):Promise<readonly ResearchArtifactOrigin[]>{
  const roots=typeof artifactId==='string'?[artifactId]:[...artifactId];
- // UNION deduplicates cycles; the outer unsorted LIMIT stops recursive demand
- // at the one extra identity needed to diagnose the 200-artifact boundary.
- const graph=await db.query<{id:string}>(`WITH RECURSIVE dependencies(id) AS (
-   SELECT unnest($1::text[])
-   UNION
-   SELECT ref->>'id' FROM dependencies d
-   JOIN artifacts dependency_artifact ON dependency_artifact.id=d.id AND dependency_artifact.space_id=$2
-   JOIN project_operations dependency_operation ON ${researchArtifactOriginSql('dependency_artifact','dependency_operation')} AND dependency_operation.research_call_json IS NOT NULL
-   CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(dependency_operation.research_call_json->'input_refs')='array' THEN dependency_operation.research_call_json->'input_refs' ELSE '[]'::jsonb END) ref
-   WHERE ref->>'type'='artifact' AND ref->>'id' IS NOT NULL
- ) SELECT id FROM dependencies LIMIT 201`,[roots,identity.spaceId]);
- const ids=graph.rows.map(r=>r.id);
+ const ids=await researchArtifactDependencyIds(db,identity.spaceId,roots);
  const origins=await db.query<ResearchArtifactOrigin>(`SELECT op.id,op.project_id,op.research_call_json,op.progress_json,
  bool_or(origin_artifact.id=ANY($4::text[])) AS direct_origin,
  (${projectReadAccessSql('op.space_id','op.project_id','$3')} AND ${researchMetadataReadableSql('op','$3')}) AS metadata_readable

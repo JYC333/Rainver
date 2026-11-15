@@ -206,6 +206,15 @@ export const EvaluateResearchQueryStrategyRequestSchema = z.object({
 }).strict();
 export type EvaluateResearchQueryStrategyRequest = z.infer<typeof EvaluateResearchQueryStrategyRequestSchema>;
 
+/** Durable acceptance; results are released separately under current authority. */
+export const ResearchQueryEvaluationAcceptedJobSchema = z.object({
+  job_id: z.string().uuid(),
+  run_id: z.string().uuid().nullable(),
+  strategy_id: z.string().uuid(),
+  status: z.enum(["queued", "running", "succeeded"]),
+}).strict();
+export type ResearchQueryEvaluationAcceptedJob = z.infer<typeof ResearchQueryEvaluationAcceptedJobSchema>;
+
 export const EvaluateResearchQueryStrategyResponseSchema = z.object({
   strategy: ResearchQueryStrategySchema,
 }).strict();
@@ -256,3 +265,23 @@ export const ActivateResearchQueryStrategyResponseSchema = z.object({
   sequence: z.number().int().min(1),
   channel_ids: z.array(z.string().uuid()).min(1).max(4),
 }).strict();
+
+/** Retained human REST commands. No caller-supplied authority or approval flags. */
+export const ResearchQueryEvaluationResultSchema=z.object({
+ job_id:z.string().uuid(),strategy_id:z.string().uuid(),run_id:z.string().uuid().nullable(),
+ status:z.enum(['queued','running','succeeded','failed','cancelled']),
+ result:EvaluateResearchQueryStrategyResponseSchema.nullable(),
+}).strict();
+export type ResearchQueryEvaluationResult=z.infer<typeof ResearchQueryEvaluationResultSchema>;
+export const RESEARCH_STRATEGY_OPERATION_SCHEMAS = {
+  'research.strategy.evaluate': {input:EvaluateResearchQueryStrategyRequestSchema,output:ResearchQueryEvaluationAcceptedJobSchema},
+  'research.strategy.retry': {input:RetryResearchQueryProviderRequestSchema.extend({strategy_id:z.string().uuid(),provider_key:ResearchProviderKeySchema}).strict(),output:ResearchQueryEvaluationAcceptedJobSchema},
+  'research.strategy.materialize': {
+    input: MaterializeResearchQueryStrategyRequestSchema.extend({strategy_id:z.string().uuid()}).strict(),
+    output: MaterializeResearchQueryStrategyResponseSchema,
+  },
+  'research.strategy.activate': {
+    input: ActivateResearchQueryStrategyRequestSchema.extend({strategy_id:z.string().uuid()}).strict(),
+    output: ActivateResearchQueryStrategyResponseSchema,
+  },
+} as const;

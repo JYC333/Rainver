@@ -30,7 +30,7 @@ const db=useTestDatabase(filename,{max:10}),w=briefingWorld(db),identity={spaceI
 let item:string,home:string,worker:WorkerProcess|undefined;
 const key='reading.project_investigation';
 const result={schema:'reading_method_revision.v1',method:'Investigate specific capabilities using primary documentation and actual API examples. Explain mechanisms, evidence, project fit, adaptation costs and unknowns. Never invent a fetched page.',summary:'Ask for primary documentation rather than a homepage paraphrase.',changes:['Follow relevant primary documentation and concrete examples.','Distinguish evidence and unknowns.']};
-beforeAll(async()=>{home=await mkdtemp(join(tmpdir(),'reading-generation-'));await buildServerDist();},600000);
+beforeAll(async()=>{home=await mkdtemp(join(tmpdir(),'reading-generation-'));await buildServerDist();});
 afterEach(async()=>{await worker?.kill();worker=undefined;});
 afterAll(async()=>{await rm(home,{recursive:true,force:true});});
 beforeEach(async()=>{if(!db.available)return;await w.seed();await db.pool.query(`UPDATE space_memberships SET role='admin' WHERE space_id=$1 AND user_id=$2`,[SPACE,OWNER]);await db.pool.query(`DELETE FROM evolvable_assets WHERE asset_key=$1`,[key]);item=await w.material('PRIVATE_ARTICLE_MUST_NOT_ENTER_GENERATION');await initializeReading(db.pool,w.config(),identity);await new RuntimeContextPolicyRepository(db.pool).write(identity,'space',SPACE,{base_version_id:null,policy:{constraints:{},preferences:{}},reason:'Synthetic generation policy'});registerReadingGenerationSettlement();registerReadingTrialSettlement();});
@@ -75,7 +75,7 @@ it('real worker/ACP/Delivery/canonical settlement creates an unenabled draft wit
  await approveTestProposal(String(proposed.proposal_id));
  expect((await readingWorkspace(db.pool,identity,item,PROJECT)).effective_version_id).toBe(v.id);
  await rollbackReadingMethod(db.pool,identity,item,PROJECT,v.id);expect((await readingWorkspace(db.pool,identity,item,PROJECT)).effective_version_id).toBe(input.parent_version_id);
-},60000);
+});
 it('revocation before real dispatch produces zero accepted Delivery, no candidate, and an explicit idempotent retry after permission restoration',async()=>{
  const input=await request(),g=await startReadingGeneration(db.pool,identity,input);
  await db.pool.query(`UPDATE source_connections SET consent_json='{"allow_external_model_egress":false,"allow_local_provider_egress":false}' WHERE id=$1`,[CONNECTION]);
@@ -83,7 +83,7 @@ it('revocation before real dispatch produces zero accepted Delivery, no candidat
  await until(()=>w.runs().getRun(SPACE,g.id),v=>v?.status==='failed','revoked generation failed',250);expect((await db.pool.query(`SELECT count(*)::int n FROM invocation_deliveries WHERE invocation_id=$1`,[g.id])).rows[0].n).toBe(0);expect(await readReadingGeneration(db.pool,identity,g.id)).toMatchObject({visibility:'withheld',description:null,method:null,summary:null});expect(await w.runs().getVisibleRun(SPACE,OWNER,g.id)).toBeNull();await worker.kill();worker=undefined;
  await db.pool.query(`UPDATE source_connections SET consent_json='{"allow_external_model_egress":true,"allow_local_provider_egress":true}' WHERE id=$1`,[CONNECTION]);
  const retry=await startReadingGeneration(db.pool,identity,{...input,retry_of:g.id});expect(retry.id).not.toBe(g.id);expect((await startReadingGeneration(db.pool,identity,{...input,retry_of:g.id})).id).toBe(retry.id);
-},60000);
+});
 it('a canonical promotion of a different baseline blocks old generation dispatch and late settlement',async()=>{
  const input=await request(),g=await startReadingGeneration(db.pool,identity,input),run=(await w.runs().getRun(SPACE,g.id))!;
  const base=await readingWorkspace(db.pool,identity,item,PROJECT);
@@ -134,7 +134,7 @@ it('the real worker restart settles its orphaned generation and rejects a late H
  worker=await startWorkerProcess({databaseUrl:db.connectionUri,home,hostId:HOST});worker.send({cmd:'policy',prompt:{answer:JSON.stringify(result)},terminate:'ack'});expect((await worker.next(isFrame('terminate',g.id))).frame.launch_id).toBe(old.launchId);
  const ended=await until(()=>readReadingGeneration(db.pool,identity,g.id),v=>v.status==='orphaned','orphaned generation',250);expect(ended.candidate_version_id).toBeNull();worker.send({cmd:'complete',runId:g.id,launchId:old.launchId,exitCode:0});await settledCommands(worker);expect((await readReadingGeneration(db.pool,identity,g.id)).candidate_version_id).toBeNull();
  const retry=await startReadingGeneration(db.pool,identity,{...input,retry_of:g.id});expect(retry.id).not.toBe(g.id);expect((await until(()=>readReadingGeneration(db.pool,identity,retry.id),v=>v.status==='ready','explicit generation retry',250)).candidate_version_id).toBeTruthy();expect((await startReadingGeneration(db.pool,identity,input)).id).toBe(retry.id);
-},60000);
+});
 it('canonical Source locks fence current authority in both transaction orderings',async()=>{
  const g=await startReadingGeneration(db.pool,identity,await request()),run=(await w.runs().getRun(SPACE,g.id))!;
  const {lockReadingRunAuthority}=await import('../src/modules/runtimeContext/index.js'),{waitForLockWaiter}=await import('./support/lockWait.js');const a=await db.pool.connect(),b=await db.pool.connect();
@@ -173,7 +173,7 @@ it('refused adapter side effects produce real degraded status without a draft, t
  await runFinalizationReconcilerRegistry.entries().find(e=>e.key==='reading_method_generation')!.reconcile(db.pool,{...original,status:'succeeded'});
  expect((await readReadingGeneration(db.pool,identity,g.id)).candidate_version_id).toBeNull();expect((await readReadingGeneration(db.pool,identity,retry.id)).candidate_version_id).toBe(ready.candidate_version_id);
  expect((await db.pool.query(`SELECT count(*)::int n FROM runs WHERE contract_snapshot_json->'workflow_input_json' ? 'reading_method_generation'`)).rows[0].n).toBe(2);
-},60000);
+});
 it('degraded retry still requires a terminal generation of this item and consumes the three-per-day allowance',async()=>{
  const input=await request();let g=await startReadingGeneration(db.pool,identity,input);
  await expect(startReadingGeneration(db.pool,identity,{...input,retry_of:g.id})).rejects.toMatchObject({statusCode:409});

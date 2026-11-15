@@ -65,3 +65,13 @@ it('opens the associated question from the Task parent surface',async()=>{
  vi.mocked(tasksApi.work).mockResolvedValue(view({links:[{entity_type:'inquiry_thread',entity_id:'thread-1',role:'investigates'}]}) as never);
  renderTab();expect(await screen.findByRole('link',{name:'Open question'})).toHaveAttribute('href','/projects/project-1/inquiry?thread=thread-1');
 });
+
+it('describes text edits without exposing the internal event kind',async()=>{
+ vi.mocked(tasksApi.work).mockResolvedValue(view({events:[{
+   id:'edit',event_kind:'task.content_changed',occurred_at:'2026-11-12T10:00:00Z',
+   data_json:{fields:['title']},actor:{kind:'agent',id:'agent-1',display_name:'Editor'},
+ }]} as never) as never);
+ renderTab();
+ expect(await screen.findByText('Updated the task title or description')).toBeInTheDocument();
+ expect(screen.queryByText('task.content_changed')).toBeNull();
+});

@@ -1,3 +1,4 @@
+import { EvolutionAssetRefusal } from "../../evolution/assetRefusal.js";
 import {readingRunContext} from '../../sources/readingMethods/followingContext.js';
 import {generationOf} from './generationContract.js';
 import {assertGenerationDispatch,assertGenerationReadable} from './generationAuthority.js';
@@ -24,6 +25,7 @@ export async function readingRunDependencies(db:Queryable,run:RunRecord){
  return {itemId:workflow?.material_processing?.item_id??null,projectId:goal?.project_id??method!.project_id,connectionId:connection??null,artifactId:null,caseId:null};
 }
 export async function assertReadingRunDispatch(db:Queryable,run:RunRecord){
+ await (await import('../../sourceAnnotation/dispatch.js')).assertAnnotationRunDispatch(db,run);
  if(generationOf(run)){await assertGenerationDispatch(db,run);return;}
  if(trialContext(run)){await assertReadingTrialRun(db,run);return;}
  if(sourceCollectionContextOf(run)){await assertSourceCollectionContext(db,run);return;}
@@ -34,7 +36,7 @@ export async function assertReadingRunDispatch(db:Queryable,run:RunRecord){
  const identity={spaceId:run.space_id,userId:run.instructed_by_user_id!};
  const audience=deps.itemId?(await db.query('SELECT visibility,owner_user_id FROM source_items WHERE id=$1 AND space_id=$2',[deps.itemId,run.space_id])).rows[0]:(await db.query('SELECT visibility,owner_user_id FROM source_connections WHERE id=$1 AND space_id=$2',[deps.connectionId,run.space_id])).rows[0];
  await assertFrozenReadingMethod(db,frozen,await readingRunContext(db,identity,run,frozen.project_id,audience?.visibility==='private'&&audience.owner_user_id===identity.userId));
- if(frozen.project_id){const binding=deps.itemId?(await db.query('SELECT project_id FROM source_items WHERE id=$1 AND space_id=$2',[deps.itemId,run.space_id])).rows[0]:(await db.query('SELECT project_id FROM source_connections WHERE id=$1 AND space_id=$2',[deps.connectionId,run.space_id])).rows[0];if(binding?.project_id!==frozen.project_id)throw new HttpError(409,'Reading output Project scope changed');}
+ if(frozen.project_id){const binding=deps.itemId?(await db.query('SELECT project_id FROM source_items WHERE id=$1 AND space_id=$2',[deps.itemId,run.space_id])).rows[0]:(await db.query('SELECT project_id FROM source_connections WHERE id=$1 AND space_id=$2',[deps.connectionId,run.space_id])).rows[0];if(binding?.project_id!==frozen.project_id)throw new EvolutionAssetRefusal(409,'Reading output Project scope changed');}
  await assertReadingAudience(db,identity,null,deps.itemId,deps.connectionId);
  await assertReadingRunEgress(db,run,deps.connectionId);
 }

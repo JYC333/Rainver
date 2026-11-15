@@ -1,3 +1,4 @@
+import {lockGoal} from './transaction.js';
 import type {GoalBindingRow} from './worker.js';
 import {randomUUID} from 'node:crypto';
 import {type Queryable,type SpaceUserIdentity} from '../../routeUtils/common.js';
@@ -32,7 +33,7 @@ async function stageAcceptedPreview(
 /** Stage validated Agent-provided preview output for the existing native
  * materialization/recovery path. No new model invocation, scheduler or item writer. */
 export async function stageManualSearch(tx:Queryable,identity:SpaceUserIdentity,goalId:string,versionId:string,previewId:string){
- await tx.query('SELECT id FROM source_goals WHERE id=$1 FOR UPDATE',[goalId]);
+ await lockGoal(tx,goalId);
  const g=await requireGoal(tx,identity,goalId,true);
  if(g.active_version_id!==versionId||g.compatibility_json?.execution_mode!=='manual')throw sourceGoalError(409,'source_native_stale_result');
  const p=(await tx.query<PreviewRow>("SELECT result_json FROM source_goal_previews WHERE id=$1 AND goal_id=$2 AND version_id=$3 AND status='ready'",[previewId,goalId,versionId])).rows[0];

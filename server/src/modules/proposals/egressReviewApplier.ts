@@ -45,7 +45,7 @@ async function applyEgressReview(context: ProposalApplyContext): Promise<Proposa
   if (!requesterId) throw invalid("egress review is missing its requesting user");
   const requesterRole = await context.db.query<{ role: string }>(
     `SELECT role FROM space_memberships
-      WHERE space_id = $1 AND user_id = $2 AND status = 'active' LIMIT 1`,
+      WHERE space_id = $1 AND user_id = $2 AND status = 'active' LIMIT 1 FOR SHARE`,
     [context.proposal.space_id, requesterId],
   );
   if (target.owner_user_id !== requesterId && !["owner", "admin"].includes(requesterRole.rows[0]?.role ?? "")) {
@@ -58,13 +58,13 @@ async function applyEgressReview(context: ProposalApplyContext): Promise<Proposa
     throw invalid("required approvers no longer match the target resource taint");
   }
   const approvals = await context.db.query<{ approver_user_id: string }>(
-    `SELECT DISTINCT approver_user_id
+    `SELECT approver_user_id
        FROM proposal_approvals
       WHERE proposal_id = $1
         AND approval_type = 'egress_granting_user'
         AND grant_id IS NULL
         AND status = 'approved'
-        AND revoked_at IS NULL`,
+        AND revoked_at IS NULL ORDER BY approver_user_id,id FOR SHARE`,
     [context.proposal.id],
   );
   const approved = new Set(approvals.rows.map((row) => row.approver_user_id));
@@ -101,7 +101,7 @@ async function applyEgressReview(context: ProposalApplyContext): Promise<Proposa
   if (grants.length > 0) {
     const active = await context.db.query<{ user_id: string }>(
       `SELECT user_id FROM space_memberships
-        WHERE space_id = $1 AND user_id = ANY($2::varchar[]) AND status = 'active'`,
+        WHERE space_id = $1 AND user_id = ANY($2::varchar[]) AND status = 'active' ORDER BY user_id FOR SHARE`,
       [context.proposal.space_id, grants.map((grant) => grant.user_id)],
     );
     const activeIds = new Set(active.rows.map((row) => row.user_id));

@@ -23,3 +23,7 @@ export const CaptureFilingResponseSchema = z.object({
   visibility: z.literal("space_shared"),
   filed_at: ISODateTimeSchema,
 }).strict();
+
+export const CAPTURE_FILING_OPERATION_SCHEMAS = {
+  'capture.file': {input: CaptureFilingRequestSchema, output: CaptureFilingResponseSchema},
+} as const;

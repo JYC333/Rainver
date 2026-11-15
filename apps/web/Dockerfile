@@ -32,6 +32,9 @@ RUN pnpm install --frozen-lockfile \
     --filter @rainver/reader-document \
     --filter @rainver/web
 
+# Workspace library prebuild hooks resolve this shared helper from the repo root.
+COPY tools/typescript/prepareIncremental.mjs ./tools/typescript/
+
 WORKDIR /repo/packages/protocol
 COPY packages/protocol/tsconfig.json packages/protocol/tsconfig.build.json ./
 COPY packages/protocol/src ./src

@@ -498,7 +498,7 @@ describe("Task worktrees", () => {
     await runTask("run-fifo", "launch-fifo", "task-fifo", "rm .git && mkfifo .git");
     const result = await settle("run-fifo", "task-fifo");
     expect(result).toMatchObject({ ok: false, error: expect.stringMatching(/recognises/) });
-  }, 20_000);
+  });
 
   it("never prunes: planted entries and the person's own stale worktree entries are left alone", async () => {
     await initRepository(workspaceDir);
@@ -844,6 +844,78 @@ describe("Task worktrees", () => {
 
 
 describe('execution workspace ownership',()=>{
+ it('replays exact launch checkpoints across parent resumes and a no-op child takeover',async()=>{
+  const {randomUUID}=await import('node:crypto'),{prepareExecutionWorkspace,executeWorkspaceCommand}=await import('../src/executionWorkspace.js');
+  await initRepository(workspaceDir);const check=await checkLocationRepository(workspaceDir);if(check.kind!=='repository')throw new Error('fixture');
+  const ref={id:randomUUID(),generation:1},parent=randomUUID(),child=randomUUID();
+  const command=(run:string,sequence:number)=>({type:'execution_workspace_command' as const,request_id:randomUUID(),operation_id:randomUUID(),workspace:{kind:'location' as const,workspace_location_id:'folder-1',execution_workspace:ref},action:'checkpoint' as const,run_id:run,launch_sequence:sequence,author:{name:'Agent',email:'agent@example.invalid'},retain_branch:true});
+  const first=await prepareExecutionWorkspace(check.repo,'folder-1',ref,parent);
+  await writeFile(join(first.root,'README.md'),'first parent checkpoint');
+  const saved=await executeWorkspaceCommand(workspaceDir,command(parent,first.launchSequence));
+  expect(saved.ok).toBe(true);expect(saved.commit).toBeTruthy();
+  const delegated=await prepareExecutionWorkspace(check.repo,'folder-1',ref,child);
+  // The child made no changes; the parent takes the shared workspace back.
+  const resumed=await prepareExecutionWorkspace(check.repo,'folder-1',ref,parent);
+  expect(resumed.launchSequence).toBeGreaterThan(first.launchSequence);
+  expect(await executeWorkspaceCommand(workspaceDir,command(child,delegated.launchSequence))).toMatchObject({ok:true,commit:saved.commit});
+  await writeFile(join(resumed.root,'README.md'),'second parent checkpoint');
+  expect(await executeWorkspaceCommand(workspaceDir,command(parent,first.launchSequence))).toMatchObject({ok:true,commit:saved.commit});
+  expect(git(['status','--porcelain'],resumed.root)).toContain('README.md');
+  const second=await executeWorkspaceCommand(workspaceDir,command(parent,resumed.launchSequence));
+  expect(second.ok).toBe(true);expect(second.commit).not.toBe(saved.commit);
+  expect(await executeWorkspaceCommand(workspaceDir,command(parent,first.launchSequence))).toMatchObject({commit:saved.commit});
+  expect(await executeWorkspaceCommand(workspaceDir,command(parent,resumed.launchSequence))).toMatchObject({commit:second.commit});
+ });
+ it('recovers an unlaunched checkpoint after a settled cleanup removed only the worktree',async()=>{
+  const {randomUUID}=await import('node:crypto'),{prepareExecutionWorkspace,executeWorkspaceCommand}=await import('../src/executionWorkspace.js');
+  await initRepository(workspaceDir);const check=await checkLocationRepository(workspaceDir);if(check.kind!=='repository')throw new Error('fixture');
+  const ref={id:randomUUID(),generation:1},run=randomUUID(),missing=randomUUID();
+  const w=await prepareExecutionWorkspace(check.repo,'folder-1',ref,run);
+  const command={type:'execution_workspace_command' as const,request_id:randomUUID(),operation_id:randomUUID(),workspace:{kind:'location' as const,workspace_location_id:'folder-1',execution_workspace:ref},retain_branch:true};
+  expect(await executeWorkspaceCommand(workspaceDir,{...command,action:'checkpoint',run_id:run,author:{name:'Agent',email:'agent@example.invalid'}})).toMatchObject({ok:true});
+  git(['worktree','unlock',w.root],workspaceDir);
+  git(['worktree','remove',w.root],workspaceDir);
+  const inspect=(expected=w.startCommit)=>executeWorkspaceCommand(workspaceDir,{...command,action:'inspect',run_id:missing,expected_commit:expected});
+  expect(await inspect()).toMatchObject({unchanged_commit:w.startCommit,inventory:{branch:true,worktree:false,registration:false}});
+  expect(await inspect('a'.repeat(40))).not.toHaveProperty('unchanged_commit');
+  const moved=join(workspaceDir,'..','moved-workspace');
+  git(['worktree','add','--quiet',moved,w.branch],workspaceDir);
+  await writeFile(join(moved,'unsaved.txt'),'unsaved moved worktree');
+  expect(await inspect()).not.toHaveProperty('unchanged_commit');
+  git(['worktree','remove','--force',moved],workspaceDir);
+  await mkdir(w.root,{recursive:true});await writeFile(join(w.root,'unsaved.txt'),'unregistered directory');
+  expect(await inspect()).not.toHaveProperty('unchanged_commit');
+  await rm(w.root,{recursive:true,force:true});
+  git(['branch','-D',w.branch],workspaceDir);
+  expect(await inspect()).not.toHaveProperty('unchanged_commit');
+ });
+
+ it('proves a missing Run unchanged only on its clean recognised idle workspace at the expected tip',async()=>{
+  const {randomUUID}=await import('node:crypto'),{prepareExecutionWorkspace,executeWorkspaceCommand}=await import('../src/executionWorkspace.js');
+  const {withTaskHeld,taskLeaseKey}=await import('../src/taskWorktree.js'),{workspaceWorktreeKey}=await import('../src/worktreeIdentity.js');
+  await initRepository(workspaceDir);const check=await checkLocationRepository(workspaceDir);if(check.kind!=='repository')throw new Error('fixture');
+  const ref={id:randomUUID(),generation:1},run=randomUUID(),missing=randomUUID();
+  const w=await prepareExecutionWorkspace(check.repo,'folder-1',ref,run);
+  const command={type:'execution_workspace_command' as const,request_id:randomUUID(),operation_id:randomUUID(),workspace:{kind:'location' as const,workspace_location_id:'folder-1',execution_workspace:ref},retain_branch:true};
+  const inspect=(id=missing,expected=w.startCommit)=>executeWorkspaceCommand(workspaceDir,{...command,action:'inspect',run_id:id,expected_commit:expected});
+  expect(await inspect()).not.toHaveProperty('unchanged_commit'); // The prior Run is still unsettled.
+  expect(await executeWorkspaceCommand(workspaceDir,{...command,action:'checkpoint',run_id:run,author:{name:'Agent',email:'agent@example.invalid'}})).toMatchObject({ok:true});
+  expect(await inspect()).toMatchObject({unchanged_commit:w.startCommit});
+  expect(await inspect(run)).not.toHaveProperty('unchanged_commit'); // A real launch must use its own receipt.
+  expect(await inspect(missing,'a'.repeat(40))).not.toHaveProperty('unchanged_commit');
+  await writeFile(join(w.root,'README.md'),'unsaved tracked changes');
+  expect(await inspect()).not.toHaveProperty('unchanged_commit');
+  await writeFile(join(w.root,'README.md'),'hello\n');
+  await writeFile(join(w.root,'untracked.txt'),'preserve');
+  expect(await inspect()).not.toHaveProperty('unchanged_commit');
+  await rm(join(w.root,'untracked.txt'));
+  let release!:()=>void,entered!:()=>void;
+  const ready=new Promise<void>(resolve=>{entered=resolve;});
+  const held=withTaskHeld(taskLeaseKey('folder-1',workspaceWorktreeKey(ref)),async()=>{entered();await new Promise<void>(resolve=>{release=resolve;});});
+  await ready;
+  try{expect(await inspect()).not.toHaveProperty('unchanged_commit');}finally{release();await held;}
+  expect(await inspect()).toMatchObject({unchanged_commit:w.startCommit});
+ });
  it('runs independent conversations concurrently and checkpoints only their own changes',async()=>{
   await initRepository(workspaceDir);
   const {randomUUID}=await import('node:crypto');
@@ -973,6 +1045,28 @@ describe('workspace baseline and mount lifecycle',()=>{
   expect(saved).toMatchObject({ok:true,commit:base});
  });
 
+ it('prepares a workspace beside a reader of the source checkout and waits only for a writer there',async()=>{
+  const {randomUUID}=await import('node:crypto');const {prepareExecutionWorkspace}=await import('../src/executionWorkspace.js');
+  const {acquireLocationLeases,releaseLocationLeases}=await import('../src/locationLease.js');
+  await initRepository(workspaceDir);
+  const repo=await checkLocationRepository(workspaceDir);if(repo.kind!=='repository')throw new Error('fixture');
+  const source=['folder-1',`workspace-git:${repo.repo.gitCommonDir}`];
+  // A read-only Run of another conversation holds the source checkout shared.
+  expect(await acquireLocationLeases([],{runId:'reader',launchId:'reader-launch'},()=>{},source)).toBe('acquired');
+  let queued=0;
+  try{
+   await prepareExecutionWorkspace(repo.repo,'folder-1',{id:randomUUID(),generation:1},randomUUID(),{launchId:randomUUID(),onQueued:()=>{queued++;}});
+   expect(queued).toBe(0);
+  }finally{releaseLocationLeases(source,'reader-launch');}
+  // A writer there still keeps the capture out until it finishes.
+  expect(await acquireLocationLeases(source,{runId:'writer',launchId:'writer-launch'},()=>{})).toBe('acquired');
+  let done=false;
+  const waiting=prepareExecutionWorkspace(repo.repo,'folder-1',{id:randomUUID(),generation:1},randomUUID(),{launchId:randomUUID(),onQueued:()=>{queued++;}}).then(()=>{done=true;});
+  await new Promise(resolve=>setTimeout(resolve,200));
+  expect(queued).toBe(1);expect(done).toBe(false);
+  releaseLocationLeases(source,'writer-launch');
+  await waiting;expect(done).toBe(true);
+ });
  it('captures both sides of a staged rename without changing the source index',async()=>{
   const {randomUUID}=await import('node:crypto');const {prepareExecutionWorkspace}=await import('../src/executionWorkspace.js');
   const base=await initRepository(workspaceDir);

@@ -1,3 +1,4 @@
+import { EvolutionAssetRefusal } from "./assetRefusal.js";
 import { randomUUID } from "node:crypto";
 import type { Pool } from "../../db/pool.js";
 import { contentReadSql } from "../access/contentAccessSql.js";
@@ -8,7 +9,6 @@ import {
   HttpError,
   dateIso,
   objectValue,
-  optionalObject,
   optionalString,
   type Queryable,
   type SpaceUserIdentity,
@@ -32,11 +32,31 @@ import type {
   EvolutionValidationResultRow,
 } from "./types.js";
 import { TARGET_COLUMNS } from "./types.js";
+import { EvolutionTargetTypeSchema, type EvolutionOperationInput as OperationInput } from "@rainver/protocol";
+
+type EvolutionTargetCreateInput = OperationInput<"evolution.target.create">;
+type EvolutionTargetUpdateInput = Omit<OperationInput<"evolution.target.update">, "target_id">;
+type EvolutionSignalCreateInput = Omit<OperationInput<"evolution.signal.create">, "target_id">;
+type EvolutionSignalTriageInput = Omit<OperationInput<"evolution.signal.triage">, "signal_id">;
+
+const SUPPORTED_TARGET_TYPES = new Set<string>(EvolutionTargetTypeSchema.options);
+
+/** A deterministic, person-facing refusal the core operation may cache. */
+/**
+ * No active strategy matched the target. The selector decision that says why
+ * is still recorded: the core command returns it as a not-selected receipt
+ * instead of rolling it back; the legacy shape remains a 422.
+ */
+export class EvolutionNoStrategySelected extends EvolutionAssetRefusal {
+  constructor(message: string, readonly selectorDecisionId: string) { super(422, message); }
+}
+export class EvolutionCommandError extends Error {
+  override readonly name = "EvolutionCommandError";
+  constructor(readonly statusCode: 409 | 422, message: string) { super(message); }
+}
 import {
   assertTargetRunnable,
-  evolutionTargetType,
   boundedRunMode,
-  requiredBodyString,
 } from "./validation.js";
 
 interface PersistSelectedRunRequestInput {
@@ -140,6 +160,19 @@ export class EvolutionRepository {
     return row ? targetToOut(row) : null;
   }
 
+  /**
+   * Holds the target against its writer (`updateTarget`, FOR UPDATE) until
+   * the caller's transaction commits. A Run start takes it before its first
+   * runnable read, so a concurrent disable/archive either commits first and
+   * is seen, or waits until the Run, decision and Job are committed.
+   */
+  async lockTargetForRun(identity: SpaceUserIdentity, targetId: string): Promise<void> {
+    await this.db.query(
+      `SELECT id FROM evolution_targets WHERE id = $1 AND (space_id = $2 OR space_id IS NULL) FOR SHARE`,
+      [targetId, identity.spaceId],
+    );
+  }
+
   async getTargetRow(identity: SpaceUserIdentity, targetId: string): Promise<EvolutionTargetRow | null> {
     const rows = await this.db.query<EvolutionTargetRow>(
       `SELECT et.${TARGET_COLUMNS.replaceAll(", ", ", et.")},
@@ -158,102 +191,103 @@ export class EvolutionRepository {
     return rows.rows[0] ?? null;
   }
 
-  async createTarget(identity: SpaceUserIdentity, body: Record<string, unknown>): Promise<Record<string, unknown>> {
+  /** Core-operation writer: the operation transaction already fences the active person. */
+  async createTarget(identity: SpaceUserIdentity, body: EvolutionTargetCreateInput): Promise<{ space_id: string; target_id: string }> {
     const now = new Date().toISOString();
     const metadata = {
       ...objectValue(body.metadata_json),
       target_name: optionalString(body.target_name),
       purpose: optionalString(body.purpose),
     };
-    const result = await this.db.query<EvolutionTargetRow>(
+    const id = randomUUID();
+    await this.db.query(
       `INSERT INTO evolution_targets (
          id, space_id, target_type, target_ref_type, target_ref_id, capability_key,
          current_version_id, risk_level, status, enabled, engine_policy_json,
          metadata_json, created_at, updated_at
-       ) VALUES (
-         $1, $2, $3, $4, $5, $6,
-         $7, $8, $9, $10, $11::jsonb,
-         $12::jsonb, $13, $13
-       )
-       RETURNING ${TARGET_COLUMNS}, 0::text AS recent_signal_count, NULL::timestamptz AS last_run_at`,
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12::jsonb, $13, $13)`,
       [
-        randomUUID(),
+        id,
         identity.spaceId,
-        evolutionTargetType(body.target_type),
+        body.target_type,
         optionalString(body.target_ref_type),
         optionalString(body.target_ref_id),
         optionalString(body.capability_key),
         optionalString(body.current_version_id),
-        optionalString(body.risk_level) ?? "medium",
-        optionalString(body.status) ?? "active",
-        body.enabled !== false,
-        JSON.stringify(optionalObject(body.engine_policy_json) ?? {}),
+        body.risk_level,
+        body.status,
+        body.enabled,
+        JSON.stringify(body.engine_policy_json ?? {}),
         JSON.stringify(metadata),
         now,
       ],
     );
-    return targetToOut(result.rows[0]!);
+    return { space_id: identity.spaceId, target_id: id };
   }
 
-  async updateTarget(identity: SpaceUserIdentity, targetId: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const current = await this.getTargetRow(identity, targetId);
+  /** Locks the Space-owned target row; a system or another Space's target is not this Space's to edit. */
+  async updateTarget(identity: SpaceUserIdentity, targetId: string, body: EvolutionTargetUpdateInput): Promise<{ space_id: string; target_id: string }> {
+    const current = (await this.db.query<EvolutionTargetRow>(
+      `SELECT ${TARGET_COLUMNS} FROM evolution_targets WHERE id = $1 AND (space_id = $2 OR space_id IS NULL) FOR UPDATE`,
+      [targetId, identity.spaceId],
+    )).rows[0];
     if (!current) throw new HttpError(404, "Evolution target not found");
-    if (current.space_id === null) throw new HttpError(403, "System evolution targets are read-only");
-    const targetType = body.target_type == null ? null : evolutionTargetType(body.target_type);
-    const status = optionalString(body.status);
-    if ((status ?? current.status) !== "archived") evolutionTargetType(targetType ?? current.target_type);
-    const currentMeta = objectValue(current.metadata_json);
+    if (current.space_id === null) throw new EvolutionCommandError(409, "System evolution targets are read-only");
+    const status = body.status ?? current.status;
+    // Archived rows may keep a retired historical label; anything else needs a supported type.
+    if (status !== "archived" && !SUPPORTED_TARGET_TYPES.has(body.target_type ?? current.target_type)) {
+      throw new EvolutionCommandError(422, "A retired target type can only stay archived");
+    }
     const metadata = {
-      ...currentMeta,
+      ...objectValue(current.metadata_json),
       ...objectValue(body.metadata_json),
       ...(body.target_name !== undefined ? { target_name: optionalString(body.target_name) } : {}),
       ...(body.purpose !== undefined ? { purpose: optionalString(body.purpose) } : {}),
     };
-    const now = new Date().toISOString();
-    const result = await this.db.query<EvolutionTargetRow>(
+    const has = (key: keyof EvolutionTargetUpdateInput) => body[key] !== undefined;
+    await this.db.query(
       `UPDATE evolution_targets
-          SET target_type = COALESCE($3, target_type),
-              target_ref_type = CASE WHEN $4::boolean THEN $5 ELSE target_ref_type END,
-              target_ref_id = CASE WHEN $6::boolean THEN $7 ELSE target_ref_id END,
-              capability_key = CASE WHEN $8::boolean THEN $9 ELSE capability_key END,
-              current_version_id = CASE WHEN $10::boolean THEN $11 ELSE current_version_id END,
-              risk_level = COALESCE($12, risk_level),
-              status = COALESCE($13, status),
-              enabled = COALESCE($14, enabled),
-              engine_policy_json = CASE WHEN $15::boolean THEN $16::jsonb ELSE engine_policy_json END,
-              metadata_json = $17::jsonb,
-              updated_at = $18
-        WHERE id = $1 AND (space_id = $2 OR space_id IS NULL)
-        RETURNING ${TARGET_COLUMNS},
-                  (SELECT count(es.id)::text FROM evolution_signals es
-                    WHERE es.target_id = evolution_targets.id
-                      AND (es.space_id = $2 OR es.space_id IS NULL)) AS recent_signal_count,
-                  (SELECT max(r.created_at)
-                     FROM evolution_selector_decisions esd
-                     JOIN runs r ON r.id = esd.run_id AND r.space_id = esd.space_id
-                    WHERE esd.target_id = evolution_targets.id AND esd.space_id = $2) AS last_run_at`,
+          SET target_type = COALESCE($2, target_type),
+              target_ref_type = CASE WHEN $3::boolean THEN $4 ELSE target_ref_type END,
+              target_ref_id = CASE WHEN $5::boolean THEN $6 ELSE target_ref_id END,
+              capability_key = CASE WHEN $7::boolean THEN $8 ELSE capability_key END,
+              current_version_id = CASE WHEN $9::boolean THEN $10 ELSE current_version_id END,
+              risk_level = COALESCE($11, risk_level),
+              status = COALESCE($12, status),
+              enabled = COALESCE($13, enabled),
+              engine_policy_json = CASE WHEN $14::boolean THEN $15::jsonb ELSE engine_policy_json END,
+              metadata_json = $16::jsonb,
+              updated_at = $17
+        WHERE id = $1`,
       [
         targetId,
-        identity.spaceId,
-        targetType,
-        Object.hasOwn(body, "target_ref_type"),
-        optionalString(body.target_ref_type),
-        Object.hasOwn(body, "target_ref_id"),
-        optionalString(body.target_ref_id),
-        Object.hasOwn(body, "capability_key"),
-        optionalString(body.capability_key),
-        Object.hasOwn(body, "current_version_id"),
-        optionalString(body.current_version_id),
-        optionalString(body.risk_level),
-        status,
-        typeof body.enabled === "boolean" ? body.enabled : null,
-        Object.hasOwn(body, "engine_policy_json"),
-        JSON.stringify(optionalObject(body.engine_policy_json) ?? {}),
+        body.target_type ?? null,
+        has("target_ref_type"), optionalString(body.target_ref_type),
+        has("target_ref_id"), optionalString(body.target_ref_id),
+        has("capability_key"), optionalString(body.capability_key),
+        has("current_version_id"), optionalString(body.current_version_id),
+        body.risk_level ?? null,
+        body.status ?? null,
+        body.enabled ?? null,
+        has("engine_policy_json"), JSON.stringify(body.engine_policy_json ?? {}),
         JSON.stringify(metadata),
-        now,
+        new Date().toISOString(),
       ],
     );
-    return targetToOut(result.rows[0]!);
+    return { space_id: identity.spaceId, target_id: targetId };
+  }
+
+  /** Whether this Space can still read the target (its own or a system one). */
+  async targetReadable(identity: SpaceUserIdentity, targetId: string): Promise<boolean> {
+    return (await this.db.query(
+      `SELECT 1 FROM evolution_targets WHERE id = $1 AND (space_id = $2 OR space_id IS NULL)`,
+      [targetId, identity.spaceId],
+    )).rows.length > 0;
+  }
+
+  /** Whether this Space can still read the signal through its target. */
+  async signalReadable(identity: SpaceUserIdentity, signalId: string): Promise<boolean> {
+    return (await this.getSignalRow(identity, signalId)) !== null;
   }
 
   async listSignals(
@@ -298,81 +332,65 @@ export class EvolutionRepository {
     return rows.rows;
   }
 
-  async createSignal(identity: SpaceUserIdentity, targetId: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const target = await this.getTargetRow(identity, targetId);
-    if (!target) throw new HttpError(404, "Evolution target not found");
-    const now = new Date().toISOString();
-    const result = await this.db.query<EvolutionSignalRow>(
-      `WITH inserted AS (
-         INSERT INTO evolution_signals (
-           id, space_id, target_id, signal_type, source_type, source_id,
-           severity, summary, payload_json, created_at
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10)
-         RETURNING id, space_id, target_id, signal_type, source_type, source_id,
-                   severity, summary, payload_json, triage_status, triaged_at,
-                   triaged_by_user_id, triage_note, created_at
-       )
-       SELECT i.id, i.space_id, i.target_id,
-              et.target_type, et.capability_key, et.metadata_json->>'target_name' AS target_name,
-              i.signal_type, i.source_type, i.source_id, i.severity, i.summary,
-              i.payload_json, i.triage_status, i.triaged_at,
-              i.triaged_by_user_id, i.triage_note, i.created_at
-         FROM inserted i
-         JOIN evolution_targets et ON et.id = i.target_id`,
+  /** The target is share-locked so a concurrent archive/edit serializes; system targets are readable, so signals may name them. */
+  async createSignal(identity: SpaceUserIdentity, targetId: string, body: EvolutionSignalCreateInput): Promise<{ space_id: string; target_id: string; signal_id: string }> {
+    const target = await this.db.query(
+      `SELECT id FROM evolution_targets WHERE id = $1 AND (space_id = $2 OR space_id IS NULL) FOR SHARE`,
+      [targetId, identity.spaceId],
+    );
+    if (!target.rows.length) throw new HttpError(404, "Evolution target not found");
+    const id = randomUUID();
+    await this.db.query(
+      `INSERT INTO evolution_signals (
+         id, space_id, target_id, signal_type, source_type, source_id,
+         severity, summary, payload_json, created_at
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10)`,
       [
-        randomUUID(),
+        id,
         identity.spaceId,
         targetId,
-        requiredBodyString(body.signal_type, "signal_type"),
-        requiredBodyString(body.source_type, "source_type"),
+        body.signal_type,
+        body.source_type,
         optionalString(body.source_id),
-        optionalString(body.severity) ?? "info",
+        body.severity,
         optionalString(body.summary),
-        JSON.stringify(optionalObject(body.payload_json) ?? {}),
-        now,
+        JSON.stringify(body.payload_json),
+        new Date().toISOString(),
       ],
     );
-    return signalToOut(result.rows[0]!);
+    return { space_id: identity.spaceId, target_id: targetId, signal_id: id };
   }
 
+  /** Space-scoped triage under the signal row lock; system-wide signals are never mutated. */
   async updateSignalTriage(
     identity: SpaceUserIdentity,
     signalId: string,
-    body: Record<string, unknown>,
-  ): Promise<Record<string, unknown>> {
-    const status = signalTriageStatus(body.triage_status);
-    if (!status) throw new HttpError(422, "triage_status must be one of: new, acknowledged, dismissed, actioned");
-    const now = new Date().toISOString();
-    const hasNote = Object.hasOwn(body, "triage_note");
-    const note = hasNote ? optionalString(body.triage_note) : null;
-    const result = await this.db.query(
-      `UPDATE evolution_signals es
-          SET triage_status = $3,
-              triaged_at = CASE WHEN $3::varchar = 'new' THEN NULL ELSE $4::timestamptz END,
-              triaged_by_user_id = CASE WHEN $3::varchar = 'new' THEN NULL ELSE $5 END,
-              triage_note = CASE WHEN $6::boolean THEN $7 ELSE triage_note END
-        FROM evolution_targets et
-       WHERE es.id = $1
-         AND es.space_id = $2
-         AND es.target_id = et.id
-         AND (et.space_id = $2 OR et.space_id IS NULL)`,
-      [signalId, identity.spaceId, status, now, identity.userId, hasNote, note],
+    body: EvolutionSignalTriageInput,
+  ): Promise<{ space_id: string; target_id: string; signal_id: string }> {
+    const locked = (await this.db.query<{ target_id: string }>(
+      `SELECT es.target_id FROM evolution_signals es
+         JOIN evolution_targets et ON et.id = es.target_id
+        WHERE es.id = $1 AND es.space_id = $2 AND (et.space_id = $2 OR et.space_id IS NULL)
+        FOR UPDATE OF es`,
+      [signalId, identity.spaceId],
+    )).rows[0];
+    if (!locked) throw new HttpError(404, "Evolution signal not found");
+    const hasNote = body.triage_note !== undefined;
+    await this.db.query(
+      `UPDATE evolution_signals
+          SET triage_status = $2,
+              triaged_at = CASE WHEN $2::varchar = 'new' THEN NULL ELSE $3::timestamptz END,
+              triaged_by_user_id = CASE WHEN $2::varchar = 'new' THEN NULL ELSE $4 END,
+              triage_note = CASE WHEN $5::boolean THEN $6 ELSE triage_note END
+        WHERE id = $1`,
+      [signalId, body.triage_status, new Date().toISOString(), identity.userId, hasNote, hasNote ? optionalString(body.triage_note) : null],
     );
-    if ((result.rowCount ?? 0) === 0) throw new HttpError(404, "Evolution signal not found");
-    const row = await this.getSignalRow(identity, signalId);
-    if (!row) throw new HttpError(404, "Evolution signal not found");
-    return signalToOut(row);
+    return { space_id: identity.spaceId, target_id: locked.target_id, signal_id: signalId };
   }
 
-  async dismissSignal(
-    identity: SpaceUserIdentity,
-    signalId: string,
-    body: Record<string, unknown> = {},
-  ): Promise<Record<string, unknown>> {
-    return this.updateSignalTriage(identity, signalId, {
-      ...body,
-      triage_status: "dismissed",
-    });
+  async getSignal(identity: SpaceUserIdentity, signalId: string): Promise<Record<string, unknown> | null> {
+    const row = await this.getSignalRow(identity, signalId);
+    return row ? signalToOut(row) : null;
   }
 
   private async getSignalRow(identity: SpaceUserIdentity, signalId: string): Promise<EvolutionSignalRow | null> {
@@ -489,7 +507,7 @@ export class EvolutionRepository {
     const recentSignals = await this.listSignalRows(identity, targetId, 50, 0);
     const enginePolicy = objectValue(target.engine_policy_json);
     if (recentSignals.length === 0 && enginePolicy.allow_no_signal !== true) {
-      throw new HttpError(422, "Evolution target has no recent signals. Record at least one signal before running, or set allow_no_signal=true in engine_policy_json.");
+      throw new EvolutionAssetRefusal(422, "Evolution target has no recent signals. Record at least one signal before running, or set allow_no_signal=true in engine_policy_json.");
     }
     const strategyRows = await this.listStrategyRows(identity, {
       status: "active",
@@ -503,7 +521,7 @@ export class EvolutionRepository {
       strategies: strategyRows,
     });
     if (!selection.selectedStrategy) {
-      await this.insertSelectorDecision(identity, {
+      const rejected = await this.insertSelectorDecision(identity, {
         targetId,
         runId: null,
         selectedStrategyAssetId: null,
@@ -513,7 +531,7 @@ export class EvolutionRepository {
         scoreTrace: selection.scoreTrace,
         rejectedReasons: selection.rejectedReasons,
       });
-      throw new HttpError(422, selection.decisionReason);
+      throw new EvolutionNoStrategySelected(selection.decisionReason, rejected.id);
     }
 
     // The Run lands in the Project it names, so the caller needs write
@@ -598,7 +616,7 @@ export class EvolutionRepository {
         strategy_key: selectedStrategy.strategy_key,
       },
     });
-    const signalId = typeof signal.id === "string" ? signal.id : null;
+    const signalId = signal.signal_id;
     const decision = await this.insertSelectorDecision(identity, {
       targetId,
       runId: run.id,
@@ -1108,12 +1126,6 @@ function signalToOut(row: EvolutionSignalRow): Record<string, unknown> {
   };
 }
 
-function signalTriageStatus(value: unknown): "new" | "acknowledged" | "dismissed" | "actioned" | null {
-  const status = optionalString(value);
-  return status === "new" || status === "acknowledged" || status === "dismissed" || status === "actioned"
-    ? status
-    : null;
-}
 
 function selectorDecisionToOut(row: EvolutionSelectorDecisionRow): Record<string, unknown> {
   return {

@@ -63,14 +63,23 @@ export async function captureSourceBaseline(repo:LocationRepository){
   const untracked=(await bounded(['ls-files','--others','--exclude-standard','-z'])).split('\0').filter(Boolean);
   const paths=[...new Set([...tracked,...untracked])].sort();if(paths.length>MAX_PATHS)throw new Error('workspace_snapshot_too_many_files');
   const index=join(scratch,'index');await rm(index,{force:true});const env={GIT_INDEX_FILE:index};
-  async function git(args:string[]){const r=await runLocationGit(args,repo.root,30000,{env});if(r.code!==0)throw new Error('workspace_snapshot_git_failed');return r.stdout.trim();}
+  async function git(args:string[],input?:string){const r=await runLocationGit(args,repo.root,30000,{env,input});if(r.code!==0||r.incomplete)throw new Error('workspace_snapshot_git_failed');return r.stdout.trim();}
   await git(['read-tree',head]);let total=0;
+  // --index-info's NUL form keeps tabs/newlines and leading dashes literal.
+  // Bound each stdin batch by bytes as well as the existing path-count cap.
+  let entries:string[]=[],entryBytes=0;
+  async function flush(){if(entries.length){await git(['update-index','-z','--index-info'],entries.join(''));entries=[];entryBytes=0;}}
+  async function stage(mode:string,oid:string,path:string){
+   const entry=`${mode} ${oid}\t${path}\0`,size=Buffer.byteLength(entry);
+   if(entryBytes+size>64*1024)await flush();
+   entries.push(entry);entryBytes+=size;
+  }
   for(const path of paths){
    const projectConfig=path==='.npmrc'&&!untracked.includes(path);
    if(!projectConfig)try{assertCheckoutPathAllowed(repo.root,path);}catch(error){if(untracked.includes(path))continue;throw error;}
    let handle;
    try{handle=await openFileBeneathRoot(repo.root,path.split('/'));}
-   catch(error){if(error instanceof SafeOpenError){if(error.code==='not_found'){await git(['update-index','--force-remove','--',path]);continue;}if(error.code==='symlink')throw new Error('workspace_checkout_symlink_unsupported');}throw error;}
+   catch(error){if(error instanceof SafeOpenError){if(error.code==='not_found'){await stage('0','0'.repeat(head.length),path);continue;}if(error.code==='symlink')throw new Error('workspace_checkout_symlink_unsupported');}throw error;}
    try{
     const stat=await handle.stat();if(!stat.isFile())throw new Error('workspace_snapshot_special_file');
     if(projectConfig&&stat.size>MAX_PROJECT_CONFIG_BYTES)throw new Error('workspace_checkout_project_config_not_allowed');
@@ -82,9 +91,10 @@ export async function captureSourceBaseline(repo:LocationRepository){
     if(projectConfig)assertProjectConfigAllowed(bytes.subarray(0,length));
     const blobFile=join(scratch,'blob');await writeFile(blobFile,bytes.subarray(0,length));
     const blob=await git(['hash-object','-w','--no-filters',blobFile]);
-    await git(['update-index','--add','--cacheinfo',`${stat.mode&0o111?'100755':'100644'},${blob},${path}`]);
+    await stage(stat.mode&0o111?'100755':'100644',blob,path);
    }finally{await handle.close();}
   }
+  await flush();
   return git(['write-tree']);
  }
 }

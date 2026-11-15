@@ -7,7 +7,7 @@ import {prepareTaskMerge,continueTaskMerge,finishTaskMerge,abortTaskMerge,sealMe
 export async function executeWorkspaceIntegration(locationRoot:string|null,frame:HostServerFrameOf<'workspace_integration'>){
  if(frame.action.startsWith('native_'))return executeNativeWorkspaceIntegration(locationRoot,frame);
  const ref=frame.workspace.execution_workspace;
- const target={locationRoot,locationId:frame.workspace.workspace_location_id,taskId:workspaceWorktreeKey(ref),mergeId:ref.integration_id,
+ const target={materializationRef:ref,locationRoot,locationId:frame.workspace.workspace_location_id,taskId:workspaceWorktreeKey(ref),mergeId:ref.integration_id,
   sourceCommit:frame.source_commit,baseCommit:frame.base_commit,targetRef:frame.target_ref};
  const empty={main_branch:null,onto_commit:null,candidate_commit:null,conflicted_files:[] as string[]};
  if(frame.action==='repair'){

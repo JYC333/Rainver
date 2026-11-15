@@ -1,3 +1,4 @@
+import {discoverKnowledgeProposalAuthority,lockKnowledgeProposalAuthority} from './proposalAuthority.js';
 import { checkLinkTypeAllowed } from "../ontology/validation.js";
 import { hasDeclaration } from "../ontology/linkTypes.js";
 import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter.js";
@@ -439,18 +440,37 @@ const TARGET_KNOWLEDGE = "knowledge";
 export function registerKnowledgeProposalAppliers(
   registry: ProposalApplierRegistrar,
 ): void {
-  registry.register("knowledge_create", applyKnowledgeCreateProposal);
-  registry.register("knowledge_update", applyKnowledgeUpdateProposal);
-  registry.register("knowledge_archive", applyKnowledgeArchiveProposal);
-  registry.register("claim_create", applyClaimCreateProposal);
-  registry.register("claim_update", applyClaimUpdateProposal);
-  registry.register("claim_archive", applyClaimArchiveProposal);
-  registry.register("object_relation_create", applyObjectRelationCreateProposal);
-  registry.register("object_relation_delete", applyObjectRelationDeleteProposal);
+  registry.register("knowledge_create", withKnowledgeAuthority(applyKnowledgeCreateProposal));
+  registry.register("knowledge_update", withKnowledgeAuthority(applyKnowledgeUpdateProposal));
+  registry.register("knowledge_archive", withKnowledgeAuthority(applyKnowledgeArchiveProposal));
+  registry.register("claim_create", withKnowledgeAuthority(applyClaimCreateProposal));
+  registry.register("claim_update", withKnowledgeAuthority(applyClaimUpdateProposal));
+  registry.register("claim_archive", withKnowledgeAuthority(applyClaimArchiveProposal));
+  registry.register("object_relation_create", withKnowledgeAuthority(applyObjectRelationCreateProposal));
+  registry.register("object_relation_delete", withKnowledgeAuthority(applyObjectRelationDeleteProposal));
   registry.register("object_profile_create", applyObjectProfileCreateProposal);
   registry.register("object_profile_update", applyObjectProfileUpdateProposal);
   registry.register("object_profile_deprecate", applyObjectProfileDeprecateProposal);
   registry.register("object_profile_archive", applyObjectProfileArchiveProposal);
+}
+
+/** Approval still belongs to ProposalApplyService. Pin the proposer's current
+ * Project/source authority before any canonical root/extension writes.
+ * A proposal with no human principal (an uninstructed Agent run) has no person
+ * whose authority can be replayed; it keeps the base applier's existing rules,
+ * which already refuse ownerless private creates and every existing-object
+ * mutation, so this wrapper neither widens nor narrows that path. */
+function withKnowledgeAuthority(apply:(context:ProposalApplyContext)=>Promise<ProposalApplyResult>){
+ return async(context:ProposalApplyContext)=>{
+  const p=context.proposal.payload_json??{};
+  const user=proposalHumanOwnerId(context.proposal);
+  if(!user)return apply(context);
+  const authority={space_id:context.proposal.space_id,on_behalf_of_user_id:user};
+  const input={...p,item_id:p.target_item_id,claim_id:p.target_claim_id,relation_id:p.relation_id};
+  const bound=await discoverKnowledgeProposalAuthority(context.db,input,authority);
+  await lockKnowledgeProposalAuthority(context.db,input,authority,bound,true);
+  return apply(context);
+ };
 }
 
 async function applyKnowledgeCreateProposal(
@@ -932,6 +952,11 @@ async function applyClaimUpdateProposal(
   ensureOperation(payload, "claim_update");
 
   const targetId = expectString(payload.target_claim_id);
+  // Discover both mutation targets before taking either lock. Opposite
+  // supersession proposals must not lock their two Claims in opposite order.
+  await lockMutationRoots(context.db, context.proposal.space_id, [
+    targetId, optionalString(payload.superseded_by_claim_id),
+  ]);
   const current = await requireClaimForMutation(context.db, context.proposal.space_id, targetId, context.proposal);
 
   const claimKind = optionalString(payload.claim_kind) ?? current.claim_kind;
@@ -1095,6 +1120,7 @@ async function applyClaimArchiveProposal(
   ensureOperation(payload, "claim_archive");
 
   const targetId = expectString(payload.target_claim_id);
+  await lockMutationRoots(context.db, context.proposal.space_id, [targetId]);
   const current = await requireClaimForMutation(context.db, context.proposal.space_id, targetId, context.proposal);
   const transitionError = claimStatusTransitionError(current.status, "archived");
   if (transitionError) throw new KnowledgeApplyValidationError(transitionError);
@@ -1412,7 +1438,7 @@ async function updateObjectProfileStatus(
   targetId: string,
   status: "deprecated" | "archived",
 ): Promise<ProposalApplyResult> {
-  const current = await getObjectProfileById(context.db, context.proposal.space_id, targetId);
+  const current = await getObjectProfileById(context.db, context.proposal.space_id, targetId, { lock: true });
   if (current.status === "archived") {
     throw new KnowledgeApplyValidationError("archived object kinds cannot be changed");
   }
@@ -1436,6 +1462,16 @@ async function updateObjectProfileStatus(
   };
 }
 
+async function lockMutationRoots(db: Queryable, spaceId: string, ids: (string | null)[]): Promise<void> {
+  const roots = [...new Set(ids.filter((id): id is string => id !== null))].sort();
+  if (!roots.length) return;
+  await db.query(
+    `SELECT id FROM space_objects WHERE space_id = $1 AND id = ANY($2::varchar[])
+      ORDER BY id FOR UPDATE`,
+    [spaceId, roots],
+  );
+}
+
 async function requireKnowledgeItem(
   db: Queryable,
   spaceId: string,
@@ -1445,6 +1481,9 @@ async function requireKnowledgeItem(
   // Locked: two accepted updates of one item must not both read it active and
   // each write a version n+1 beside the other; the second waits, reads the
   // first's supersession, and is refused here.
+  // Note/Source and content-access writers take the root first. Taking only
+  // the extension first would invert that order when this applier updates it.
+  await lockMutationRoots(db, spaceId, [itemId]);
   const row = await getKnowledgeItemById(db, spaceId, itemId, { lock: true });
   if (row.status !== "active" && row.status !== "draft") {
     throw new KnowledgeApplyValidationError("target Knowledge item is not active");
@@ -1547,11 +1586,12 @@ async function getObjectProfileById(
   db: Queryable,
   spaceId: string,
   profileId: string,
+  options: { lock?: boolean } = {},
 ): Promise<SpaceObjectProfileRow> {
   const result = await db.query<SpaceObjectProfileRow>(
     `SELECT ${SPACE_OBJECT_PROFILE_COLUMNS}
        FROM space_object_profiles
-      WHERE id = $1 AND space_id = $2`,
+      WHERE id = $1 AND space_id = $2${options.lock ? " FOR UPDATE" : ""}`,
     [profileId, spaceId],
   );
   const row = result.rows[0];
@@ -1564,7 +1604,7 @@ async function requireObjectProfileMutable(
   spaceId: string,
   profileId: string,
 ): Promise<SpaceObjectProfileRow> {
-  const row = await getObjectProfileById(db, spaceId, profileId);
+  const row = await getObjectProfileById(db, spaceId, profileId, { lock: true });
   if (row.status === "archived") {
     throw new KnowledgeApplyValidationError("archived object kinds cannot be changed");
   }

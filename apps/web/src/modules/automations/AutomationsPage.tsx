@@ -1,7 +1,7 @@
 import { useState, useEffect, useId } from 'react'
 import { Archive, Clock, Loader2, Pause, Play, Plus, ShieldCheck } from 'lucide-react'
 import { toast } from 'sonner'
-import { AUTOMATION_TARGET_TYPES, automationTargetDefinition } from '@rainver/protocol'
+import { AUTOMATION_TARGET_TYPES, automationTargetDefinition, type JsonValue } from '@rainver/protocol'
 import { automationsApi, agentsApi, evolutionApi, projectsApi } from '../../api/client'
 import type { AutomationOut, AutomationTargetType, AutomationTriggerType, AgentOut, EvolvableAsset, EvolvableAssetVersion, Project, WorkflowExecutionSummary } from '../../types/api'
 import { useSpace } from '../../contexts/SpaceContext'
@@ -146,7 +146,7 @@ function AddAutomationForm({ agents, projects, workflowAssets, onAdded, canCreat
       } catch { toast.error('Workflow input must be a JSON object'); return }
     }
 
-    const config: Record<string, unknown> = { target_type: targetType }
+    const config: Record<string, JsonValue> = { target_type: targetType }
     if (triggerType === 'schedule') { config.cron = cron.trim(); config.timezone = timezone.trim() || 'UTC' }
     if (targetType === 'agent_run' && prompt.trim()) config.prompt = prompt.trim()
     if (targetType === 'knowledge_retrieval_maintenance') {

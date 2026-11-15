@@ -98,11 +98,34 @@ export class PgProposalRepository {
       [...built.params, filters.limit, filters.offset],
     );
     const now = filters.now ?? new Date();
+    const items: ProposalOut[] = [];
+    for (const row of rowsResult.rows) items.push(await this.releaseReportFields(spaceId, userId, row, proposalToOut(row, now)));
     return {
-      items: rowsResult.rows.map((row) => proposalToOut(row, now)),
+      items,
       total: numberValue(totalResult.rows[0]?.total) ?? 0,
       limit: filters.limit,
       offset: filters.offset,
+    };
+  }
+
+  /**
+   * A report-derived Proposal (a review packet, or a child generated from
+   * one) repeats its report's findings in its title, summary, rationale and
+   * provenance. Those fields follow the report's current release closure
+   * (`proposalReportWithheld`); a withheld one keeps its id, type, status and
+   * decision fields with the type label as title. Visibility is unchanged.
+   */
+  private async releaseReportFields(spaceId: string, userId: string, row: ProposalRow, out: ProposalOut): Promise<ProposalOut> {
+    const { proposalReportWithheld, withheldProposalTitle } = await import("../retrieval/proposalReportRelease.js");
+    if (!await proposalReportWithheld(this.db, { spaceId, userId }, row)) return out;
+    return {
+      ...out,
+      proposed_title: withheldProposalTitle(row.proposal_type),
+      title_parts: null,
+      proposed_content: "",
+      rationale: "",
+      provenance_entries: null,
+      source_activity_id: null,
     };
   }
 
@@ -126,7 +149,7 @@ export class PgProposalRepository {
     );
     const row = result.rows[0];
     if(!row)return null;
-    const out=proposalToOut(row,now);
+    const out=await this.releaseReportFields(spaceId,userId,row,proposalToOut(row,now));
     if(row.proposal_type==='code_patch'){
       // File-effect receipts remain personal to the deciding user, just like Jobs.
       // The Proposal's canonical content/Room gate has already allowed this read.
@@ -138,6 +161,25 @@ export class PgProposalRepository {
     }
     return out;
   }
+}
+
+/**
+ * Whether the Proposal detail reader would show this person the Proposal's
+ * own title now: its content ACL and creating Run's Room (as `getVisible`),
+ * then the report-derived release closure (`proposalReportWithheld`) that
+ * replaces a report-derived title with its type label. Records no read.
+ */
+export async function proposalTitleReleased(db: Queryable, identity: { spaceId: string; userId: string }, proposalId: string): Promise<boolean> {
+  const row = (await db.query<{ proposal_type: string; payload_json: unknown }>(
+    `SELECT p.proposal_type, p.payload_json FROM proposals p
+      WHERE p.space_id = $1 AND p.id = $2
+        AND ${contentReadSql("proposal", "p", "$3")}
+        AND ${roomRunReadAccessSql("p.created_by_run_id", "p.space_id", "$3")}`,
+    [identity.spaceId, proposalId, identity.userId],
+  )).rows[0];
+  if (!row) return false;
+  const { proposalReportWithheld } = await import("../retrieval/proposalReportRelease.js");
+  return !await proposalReportWithheld(db, identity, row);
 }
 
 function buildVisibleWhere(

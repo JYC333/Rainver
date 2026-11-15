@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { HostUsageQuotaSchema, SubscriptionAccountIdentitySchema } from "../src/hosts.js";
 import { RoomDiscussionDetailSchema, RoomDiscussionNoticeSchema } from "../src/roomDiscussions.js";
-import { QuotaRecoverySchema, QuotaRecoveryUpdateSchema, SUBSCRIPTION_QUOTA_POLICY_DEFAULTS, SubscriptionQuotaPolicyUpdateSchema } from "../src/subscriptionQuota.js";
+import { ConversationSubscriptionLoginSchema, QuotaRecoverySchema, QuotaRecoveryUpdateSchema, SUBSCRIPTION_QUOTA_POLICY_DEFAULTS, SubscriptionQuotaPolicyUpdateSchema } from "../src/subscriptionQuota.js";
 
 describe("subscription quota contracts", () => {
   it("keeps the continuation choice explicit and rejects caller-supplied scheduling authority", () => {
@@ -73,4 +73,10 @@ it("allows bounded login display metadata without accepting credentials", () => 
   expect(HostUsageQuotaSchema.parse({ ...quota, account_display }).account_display).toEqual(account_display);
   expect(HostUsageQuotaSchema.safeParse({ ...quota, account_display: { ...account_display, access_token: "secret" } }).success).toBe(false);
   expect(HostUsageQuotaSchema.safeParse({ ...quota, account_display: { email: "invalid" } }).success).toBe(false);
+});
+
+it("accepts independent display buckets but does not widen admission windows", () => {
+  const window={id:'3p-weekly',label:'Claude / GPT weekly',group:'third_party',utilization:null,resets:null,checked_at:null};
+  expect(ConversationSubscriptionLoginSchema.safeParse({account_label:'Antigravity',login_key:'login',window:null,checked_at:null,display_windows:[window]}).success).toBe(true);
+  expect(ConversationSubscriptionLoginSchema.safeParse({account_label:'Antigravity',login_key:'login',window:{kind:'third_party',utilization:99,resets_at:null},checked_at:null}).success).toBe(false);
 });

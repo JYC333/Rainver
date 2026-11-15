@@ -1,3 +1,4 @@
+import { EvolutionAssetRefusal } from "../../evolution/assetRefusal.js";
 import {READING_METHOD_FIXTURE,PROMPT_REVISION_FIXTURE} from '@rainver/protocol';
 import type {ServerConfig} from '../../../config.js';
 import {HttpError,type Queryable,type SpaceUserIdentity} from '../../routeUtils/common.js';
@@ -18,7 +19,7 @@ export async function prepareSampleAuthority(db:Queryable,config:ServerConfig,id
  let shown=await new (await import('../../reader/index.js')).PgReaderRepository(db,config).shownSourceItemVersion(identity,ctx.item.id);
  if(!shown)throw unavailable();
  await db.query(`SELECT id FROM artifacts WHERE id=$1 AND space_id=$2 FOR SHARE`,[shown.artifactId,identity.spaceId]);
- const verified=await new (await import('../../reader/index.js')).PgReaderRepository(db,config).shownSourceItemVersion(identity,ctx.item.id);if(!verified||verified.artifactId!==shown.artifactId)throw new HttpError(409,'Reader version changed while preparing the sample');shown=verified;
+ const verified=await new (await import('../../reader/index.js')).PgReaderRepository(db,config).shownSourceItemVersion(identity,ctx.item.id);if(!verified||verified.artifactId!==shown.artifactId)throw new EvolutionAssetRefusal(409,'Reader version changed while preparing the sample');shown=verified;
  const canonical=(value:string)=>{try{return new URL(value).href}catch{return null}};
  const urls=new Set([ctx.item.source_uri,...(Array.isArray(shown.content.metadata.reading_sources)?shown.content.metadata.reading_sources.filter((s):s is string=>typeof s==='string'):[])].filter((s):s is string=>typeof s==='string').map(canonical));
  if(pages.some(p=>!urls.has(canonical(p.url))||!shown.content.text.includes(p.text)))throw unavailable();

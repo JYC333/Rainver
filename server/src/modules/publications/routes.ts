@@ -1,20 +1,23 @@
+import {registerOperationAdapters} from "../systemActions/operations/routeAdapter.js";
 import type { FastifyInstance } from "fastify";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
   HttpError,
-  jsonBody,
   optionalString,
   params,
   query,
-  requiredString,
   resolveIdentity,
   sendRouteError,
-  stringArray,
 } from "../routeUtils/common.js";
-import { PublicationService, type CreatePublicationInput } from "./service.js";
+import { PublicationService } from "./service.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   const service = () => PublicationService.fromConfig(context.config);
+  registerOperationAdapters(app,context.config,[
+    {method:'POST',url:'/api/v1/publications',operation:'publication.create'},
+    {method:'POST',url:'/api/v1/publications/:publicationId/import',operation:'publication.import',params:{publicationId:'publication_id'}},
+    {method:'POST',url:'/api/v1/publications/:publicationId/revoke',operation:'publication.revoke',params:{publicationId:'publication_id'}},
+  ]);
 
   app.get("/api/v1/publications", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -24,17 +27,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       if (view === "received") return reply.send(await service().listReceived(identity));
       if (view === "published") return reply.send(await service().listPublished(identity));
       throw new HttpError(422, "view must be received or published");
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.post("/api/v1/publications", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const result = await service().create(identity, createInput(jsonBody(request)));
-      return reply.code(201).send(result);
     } catch (error) {
       return sendRouteError(reply, error);
     }
@@ -50,38 +42,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/publications/:publicationId/import", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const result = await service().import(identity, requiredParam(request, "publicationId"));
-      return reply.code(201).send(result);
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.post("/api/v1/publications/:publicationId/revoke", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(await service().revoke(identity, requiredParam(request, "publicationId")));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-}
-
-function createInput(body: Record<string, unknown>): CreatePublicationInput {
-  const targetSpaceIds = [...new Set(stringArray(body.target_space_ids).map((value) => value.trim()).filter(Boolean))];
-  if (!Array.isArray(body.target_space_ids) || targetSpaceIds.length !== body.target_space_ids.length) {
-    throw new HttpError(422, "target_space_ids must contain unique non-empty strings");
-  }
-  return {
-    resource_type: requiredString(body.resource_type, "resource_type"),
-    resource_id: requiredString(body.resource_id, "resource_id"),
-    target_space_ids: targetSpaceIds,
-  };
 }
 
 function requiredParam(request: Parameters<typeof params>[0], name: string): string {

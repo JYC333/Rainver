@@ -1,5 +1,9 @@
+import {lockUnchangedIdleWorkspace,recordClosedCheckpointHistory} from './workspaceReconcileFence.js';
+import {backfillWorkspaceLifecycle} from './workspaceLifecycle.js';
+import {reconcileCheckpointObligations} from '../projectFolders/workspaceCheckpointRecovery.js';
+import {probeWorkspaceProofs} from './workspaceProofWake.js';
 import {closeEndedNativeWorkspaceRequests} from './workspaceNativeIntegration.js';
-import {workspaceHostFailureIsTemporary,workspaceCheckpointRunSettledSql,WORKSPACE_TEMPORARY_HOST_ERRORS} from '../projectFolders/workspacePolicy.js';
+import {workspaceHostFailureIsTemporary,WORKSPACE_TEMPORARY_HOST_ERRORS} from '../projectFolders/workspacePolicy.js';
 import {randomUUID} from 'node:crypto';
 import type {Queryable} from '../routeUtils/common.js';
 import {withQueryableTransaction} from '../routeUtils/common.js';
@@ -10,21 +14,23 @@ import {workspaceLocationFrame} from './workspaceLocation.js';
 import {workspaceReference,type ExecutionWorkspaceRow} from '../projectFolders/executionWorkspaces.js';
 import {canWriteProject} from '../projects/access.js';
 import {assessWorkspaceRetention,classifyLocationRefs,hostReleasesRefs,recordRetention,RECLAIM_PROTOCOL} from './workspaceRetention.js';
-import {CONFIRMED_REF_FAILURES,requiredRefLevel} from './workspaceRefRelease.js';
+import {CONFIRMED_REF_FAILURES,requiredRefLevel,HISTORY_CHECKPOINT_PROTOCOL} from './workspaceRefRelease.js';
 import {reconcilePublishedWorkspaceChild,reconcileWorkspaceAdoption} from './workspaceAdoption.js';
 
 /** Bounded database reconciliation. It repairs intent delivery, never invents completion. */
 export async function reconcileExecutionWorkspaces(db:Queryable,workspaceRoot:string,options:{hostId?:string;after?:string;hosts?:HostConnectionRegistry}={}){
  const hosts=options.hosts??sharedHostConnectionRegistry;
- const rows=(await db.query<ExecutionWorkspaceRow & {cleanup_json:Record<string,WorkspaceCleanupResource>;inventory_json:Record<string,unknown>;retention_json:Record<string,unknown>;responsible_user:string|null;host_owner:string|null;host_kind:string;idle:boolean;closed_owner:boolean;host_reclaim:number|null}>(`SELECT w.*,h.kind AS host_kind,h.owner_user_id AS host_owner,(h.capabilities_json->'execution_workspaces'->>'reclaim')::int AS host_reclaim,
+ const rows=(await db.query<ExecutionWorkspaceRow & {cleanup_json:Record<string,WorkspaceCleanupResource>;inventory_json:Record<string,unknown>;retention_json:Record<string,unknown>;responsible_user:string|null;host_owner:string|null;host_kind:string;idle:boolean;closed_owner:boolean;host_reclaim:number|null;materialization_epoch:number}>(`SELECT w.*,h.kind AS host_kind,h.owner_user_id AS host_owner,(h.capabilities_json->'execution_workspaces'->>'reclaim')::int AS host_reclaim,
   (SELECT COALESCE(r.instructed_by_user_id,r.owner_user_id) FROM execution_workspace_runs b JOIN runs r ON r.id=b.run_id WHERE b.workspace_id=w.id ORDER BY b.created_at DESC LIMIT 1) AS responsible_user,
-  w.updated_at<now()-interval '24 hours' AS idle,
-  CASE WHEN w.owner_kind='delegation' THEN EXISTS(SELECT 1 FROM run_delegations d WHERE d.id=w.delegation_id AND d.completed_at IS NOT NULL)
+  COALESCE(GREATEST((SELECT MAX(COALESCE(r.ended_at,r.created_at)) FROM execution_workspace_runs b JOIN runs r ON r.id=b.run_id WHERE b.workspace_id=w.id),(w.retention_json->>'content_changed_at')::timestamptz),w.created_at)<now()-interval '24 hours' AS idle,
+  CASE WHEN w.owner_kind='delegation' THEN EXISTS(SELECT 1 FROM execution_workspace_runs b JOIN runs r ON r.id=b.run_id WHERE b.workspace_id=w.id) AND NOT EXISTS(SELECT 1 FROM execution_workspace_runs b JOIN runs r ON r.id=b.run_id WHERE b.workspace_id=w.id AND (b.checkpoint_state<>'saved' OR r.status NOT IN ('succeeded','failed','degraded','cancelled','orphaned')))
    ELSE EXISTS(SELECT 1 FROM sessions s WHERE s.id=w.session_id AND s.status IN ('closed','archived')) END AS closed_owner
   FROM execution_workspaces w JOIN hosts h ON h.id=w.execution_host_id
   WHERE ($1::varchar IS NULL OR w.execution_host_id=$1) AND ($2::varchar IS NULL OR w.id>$2)
-   AND (w.state<>'retired' OR (COALESCE(w.retention_json->>'state','')<>'reclaimed' AND COALESCE((w.retention_json->>'assessed_at')::timestamptz,'-infinity')<now()-interval '1 hour') OR EXISTS(SELECT 1 FROM jsonb_each(w.cleanup_json) resource
+   AND (w.state<>'retired' OR (w.head_commit IS NULL AND w.cleanup_state='blocked') OR w.retention_json->>'proof_refused_reason'='unmerged_source' OR (COALESCE(w.retention_json->>'state','')<>'reclaimed' AND COALESCE((w.retention_json->>'assessed_at')::timestamptz,'-infinity')<now()-interval '1 hour') OR EXISTS(SELECT 1 FROM jsonb_each(w.cleanup_json) resource
     WHERE resource.value->>'state' IN ('pending','running','retry_wait')
+     OR (resource.value->>'state'='blocked' AND resource.value->>'error' LIKE 'checkpoint_not_in_%')
+     OR (resource.value->>'state'='blocked' AND resource.value->>'error' LIKE 'workspace_ignored_quota%' AND (resource.value->>'next_retry_at')::timestamptz<=now())
      OR (resource.value->>'state'='blocked' AND regexp_replace(COALESCE(resource.value->>'error',''),'^Error: ','')=ANY($3::text[]))
      -- Ref work blocked against an older Host protocol, now that the Host reports a newer one
      -- (whether it is the level that work needs is decided per resource below).
@@ -32,6 +38,7 @@ export async function reconcileExecutionWorkspaces(db:Queryable,workspaceRoot:st
       AND COALESCE((resource.value->>'blocked_host_level')::int,0)<GREATEST($4,COALESCE((h.capabilities_json->'execution_workspaces'->>'reclaim')::int,0))
       AND COALESCE((h.capabilities_json->'execution_workspaces'->>'reclaim')::int,0)>=$4))) ORDER BY w.id LIMIT 50`,[options.hostId??null,options.after??null,WORKSPACE_TEMPORARY_HOST_ERRORS,RECLAIM_PROTOCOL])).rows;
  let recovered=0;
+ await probeWorkspaceProofs(db,hosts,workspaceRoot,options.hostId);
  const failures:Array<{workspace_id:string;error:string}>=[];
  for(const w of rows){
   try{
@@ -39,10 +46,12 @@ export async function reconcileExecutionWorkspaces(db:Queryable,workspaceRoot:st
   if(!user||w.host_kind==='remote'&&w.host_owner!==user||!await canWriteProject(db,w.space_id,w.project_id,user))continue;
   await withQueryableTransaction(db,async tx=>{
    await tx.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`workspace-reconcile:${w.id}`]);
+   await lockUnchangedIdleWorkspace(tx,w);
+   await backfillWorkspaceLifecycle(tx,w.id);
+   if(w.state!=='blocked')recovered+=(await reconcileCheckpointObligations(tx,w,user)).scheduled;
    if(w.state!=='retired'){
    await closeEndedNativeWorkspaceRequests(tx,w.id);
-   const candidates=(await tx.query<{type:string;key:string;payload:Record<string,unknown>}>(`SELECT 'execution_workspace_checkpoint' AS type,b.run_id AS key,(jsonb_build_object('workspace_id',b.workspace_id,'run_id',b.run_id)||CASE WHEN COALESCE(c.verification_json->'checkpoint_recovery'->>'request_id','')<>'' THEN jsonb_build_object('checkpoint_recovery_id',c.verification_json->'checkpoint_recovery'->>'request_id') ELSE '{}'::jsonb END) AS payload FROM execution_workspace_runs b JOIN runs r ON r.id=b.run_id JOIN workspace_change_sets c ON c.id=b.change_set_id WHERE b.workspace_id=$1 AND b.checkpoint_state='pending' AND COALESCE(c.verification_json->'checkpoint_recovery'->>'state','')<>'exhausted' AND ${workspaceCheckpointRunSettledSql('r')}
-    UNION ALL SELECT 'execution_workspace_complete',c.id,jsonb_build_object('change_set_id',c.id) FROM workspace_change_sets c WHERE c.workspace_id=$1 AND c.state='ready'
+   const candidates=(await tx.query<{type:string;key:string;payload:Record<string,unknown>}>(`SELECT 'execution_workspace_complete' AS type,c.id AS key,jsonb_build_object('change_set_id',c.id) AS payload FROM workspace_change_sets c WHERE c.workspace_id=$1 AND c.state='ready'
     UNION ALL SELECT 'task_merge',m.id,jsonb_build_object('merge_id',m.id,'workspace_id',m.workspace_id) FROM task_merges m WHERE m.workspace_id=$1 AND m.status IN ('queued','rebasing','resolving','verifying','waiting_local_changes') AND COALESCE(m.detail_json->>'native_integration','false')<>'true'
     UNION ALL SELECT 'execution_workspace_native_integrate',c.id,jsonb_build_object('change_set_id',c.id,'request_id',c.verification_json->'native_request'->>'id') FROM workspace_change_sets c WHERE c.workspace_id=$1 AND c.state IN ('open','integrating') AND c.verification_json->'native_progress'->>'status'='pending'`,[w.id])).rows;
    for(const candidate of candidates){
@@ -55,9 +64,13 @@ export async function reconcileExecutionWorkspaces(db:Queryable,workspaceRoot:st
     // Job of the same operation may have advanced it (confirmed, re-claimed,
     // moved to a re-pin) since. Re-read under the row lock, re-check the pause
     // conditions and the Host's current level, and restore from that value.
-    const resumable=oldProtocolRefWork(r)||r.state==='blocked'&&r.workspace.id===w.id&&r.workspace.generation===w.generation&&workspaceHostFailureIsTemporary(r.error?.replace(/^Error: /,''));
+    const quota=r.state==='blocked'&&r.error?.startsWith('workspace_ignored_quota')&&Boolean(r.next_retry_at)&&Date.parse(r.next_retry_at!)<=Date.now();
+    const preservationUpgrade=r.state==='blocked'&&r.error==='workspace_preservation_host_upgrade_required';
+    const lifecycleUpgrade=r.state==='blocked'&&r.error==='workspace_lifecycle_host_upgrade_required';
+    const historyProof=r.kind==='ref_pages'&&['retry_wait','blocked'].includes(r.state)&&r.error?.startsWith('checkpoint_not_in_')&&(r.history_proof_level??0)<HISTORY_CHECKPOINT_PROTOCOL;
+    const resumable=historyProof||lifecycleUpgrade||preservationUpgrade||quota||r.state==='blocked'&&r.kind==='ref_pages'&&r.error?.startsWith('checkpoint_not_in_')||oldProtocolRefWork(r)||r.state==='blocked'&&r.workspace.id===w.id&&r.workspace.generation===w.generation&&workspaceHostFailureIsTemporary(r.error?.replace(/^Error: /,''));
     if(resumable){
-     const current=(await tx.query<{resource:WorkspaceCleanupResource|null;level:number|null}>(`SELECT w.cleanup_json->$2 AS resource,(h.capabilities_json->'execution_workspaces'->>'reclaim')::int AS level
+     const current=(await tx.query<{resource:WorkspaceCleanupResource|null;level:number|null;preserve:number|null;lifecycle:number|null}>(`SELECT w.cleanup_json->$2 AS resource,(h.capabilities_json->'execution_workspaces'->>'reclaim')::int AS level,(h.capabilities_json->'execution_workspaces'->>'preserve_source')::int AS preserve,(h.capabilities_json->'execution_workspaces'->>'lifecycle')::int AS lifecycle
       FROM execution_workspaces w JOIN hosts h ON h.id=w.execution_host_id WHERE w.id=$1 FOR UPDATE OF w`,[w.id,key])).rows[0];
      const latest=current?.resource;
      if(!latest||latest.operation_id!==r.operation_id)continue;
@@ -66,11 +79,14 @@ export async function reconcileExecutionWorkspaces(db:Queryable,workspaceRoot:st
      // is then settled first (never re-sent); a fenced one is re-sent unchanged.
      const upgraded=oldProtocolRefWork(latest)&&(current!.level??0)>=requiredRefLevel(latest);
      // Manifests exhausted by the old transport-failure accounting. Keep
-     // capture/profile evidence and fence any old Job with a new operation id.
+     // capture/profile evidence; sent requests retain their journal identity.
      const transient=latest.state==='blocked'&&latest.workspace.id===w.id&&latest.workspace.generation===w.generation&&workspaceHostFailureIsTemporary(latest.error?.replace(/^Error: /,''));
-     if(upgraded||transient){
+     const pinProof=latest.state==='blocked'&&latest.kind==='ref_pages'&&latest.error?.startsWith('checkpoint_not_in_')&&(current!.level??0)>=RECLAIM_PROTOCOL;
+     const historyReady=latest.kind==='ref_pages'&&['retry_wait','blocked'].includes(latest.state)&&latest.error?.startsWith('checkpoint_not_in_')&&(latest.history_proof_level??0)<HISTORY_CHECKPOINT_PROTOCOL&&(current!.level??0)>=HISTORY_CHECKPOINT_PROTOCOL;
+     const quotaReady=quota&&latest.state==='blocked'&&latest.error?.startsWith('workspace_ignored_quota')&&Boolean(latest.next_retry_at)&&Date.parse(latest.next_retry_at!)<=Date.now();
+     if(historyReady||upgraded||transient||pinProof||quotaReady||preservationUpgrade&&current?.preserve===1||lifecycleUpgrade&&current?.lifecycle===1){
       const {blocked_host_level:_b,required_host_level:_r,...rest}=latest;
-      const restored={...rest,state:'pending' as const,attempts:0,error:null,next_retry_at:null,operation_id:randomUUID()};
+      const restored={...rest,...(historyReady&&!latest.inflight?{history_proof_level:HISTORY_CHECKPOINT_PROTOCOL}:{}),state:'pending' as const,attempts:0,error:null,next_retry_at:null,operation_id:latest.cleanup_sent||!latest.kind&&latest.release_epoch!==undefined?latest.operation_id:randomUUID()};
       await tx.query("UPDATE execution_workspaces SET cleanup_json=jsonb_set(cleanup_json,ARRAY[$2],$3::jsonb,true) WHERE id=$1",[w.id,key,JSON.stringify(restored)]);
       await refreshCleanupSummary(tx,w.id);
       await new PgJobQueueRepository(tx).enqueue({job_type:'execution_workspace_cleanup',space_id:w.space_id,user_id:user,payload:{workspace_id:w.id,resource_key:key,operation_id:restored.operation_id}});recovered++;
@@ -86,6 +102,7 @@ export async function reconcileExecutionWorkspaces(db:Queryable,workspaceRoot:st
    }
   });
   if(!hosts.isOnline(w.execution_host_id))continue;
+  const proofWaiting=w.retention_json?.proof_refused_reason==='unmerged_source'||Object.values(w.cleanup_json??{}).some(r=>r.state==='retry_wait'&&r.error?.startsWith('checkpoint_not_in_'));
   if(await reconcilePublishedWorkspaceChild(db,w,user,hosts,workspaceRoot))recovered++;
   // Settled work already in the target (external merge/squash/rewrite) or with
   // nothing saved closes on exact evidence only. A failed or deferred Git read
@@ -93,9 +110,13 @@ export async function reconcileExecutionWorkspaces(db:Queryable,workspaceRoot:st
   try{if(await reconcileWorkspaceAdoption(db,w,user,hosts,workspaceRoot))recovered++;}catch{/* retried next pass */}
   // A retired owner whose branch is kept still learns whether the branch was
   // removed outside Rainver (read-only inventory; no executable state is touched).
-  if(w.state==='retired'&&w.retention_json?.state==='retained'){
+  if(w.state==='retired'&&!proofWaiting){
    const seen=await hosts.requestTaskBranch(w.execution_host_id,'execution_workspace_command',{workspace:await workspaceLocationFrame(db,w,workspaceReference(w),workspaceRoot),action:'inspect',operation_id:randomUUID(),retain_branch:true}).catch(()=>null);
-   if(seen?.ok&&seen.inventory)await db.query('UPDATE execution_workspaces SET inventory_json=$2::jsonb WHERE id=$1',[w.id,JSON.stringify(seen.inventory)]);
+   const observed=seen?.ok?seen.inventory:undefined;
+   if(observed)await withQueryableTransaction(db,async tx=>{
+    if(await recordClosedCheckpointHistory(tx,w,observed))return;
+    if(await lockUnchangedIdleWorkspace(tx,w))await tx.query('UPDATE execution_workspaces SET inventory_json=$2::jsonb WHERE id=$1',[w.id,JSON.stringify(observed)]);
+   });
   }
   // Retention: a proven-closed source (retired or not) is offered for release
   // after its grace. The cleanup Job re-assesses, observes the tip and lets the
@@ -108,26 +129,31 @@ export async function reconcileExecutionWorkspaces(db:Queryable,workspaceRoot:st
   if(active)continue;
   const inspection=await hosts.requestTaskBranch(w.execution_host_id,'execution_workspace_command',{workspace:await workspaceLocationFrame(db,w,workspaceReference(w),workspaceRoot),action:'inspect',operation_id:randomUUID(),retain_branch:true});
   if(!inspection.ok||!inspection.inventory)continue;
-  await db.query('UPDATE execution_workspaces SET inventory_json=$2::jsonb WHERE id=$1',[w.id,JSON.stringify(inspection.inventory)]);
-  if(w.inventory_json?.reconciliation_error){
-   await refreshCleanupSummary(db,w.id);
-   if(inspection.inventory.worktree||inspection.inventory.registration||inspection.inventory.run_record||inspection.inventory.merge_record){
-    await db.query("UPDATE execution_workspaces SET cleanup_state='pending' WHERE id=$1 AND cleanup_state='cleaned'",[w.id]);
+  const inventory=inspection.inventory;
+  await withQueryableTransaction(db,async tx=>{
+   if(!await lockUnchangedIdleWorkspace(tx,w))return;
+   await tx.query('UPDATE execution_workspaces SET inventory_json=$2::jsonb WHERE id=$1',[w.id,JSON.stringify(inventory)]);
+   if(w.inventory_json?.reconciliation_error){
+    await refreshCleanupSummary(tx,w.id);
+    if(inventory.worktree||inventory.registration||inventory.run_record||inventory.merge_record){
+     await tx.query("UPDATE execution_workspaces SET cleanup_state='pending' WHERE id=$1 AND cleanup_state='cleaned'",[w.id]);
+    }
    }
-  }
-  if(inspection.inventory.quarantined_whole>0)await db.query("UPDATE execution_workspaces SET cleanup_state='blocked' WHERE id=$1",[w.id]);
+   if(inventory.quarantined_whole>0)await tx.query("UPDATE execution_workspaces SET cleanup_state='blocked' WHERE id=$1",[w.id]);
+
+   const owed=(await tx.query("SELECT 1 FROM workspace_change_sets WHERE workspace_id=$1 AND state IN ('open','ready','integrating','blocked') LIMIT 1",[w.id])).rowCount;
+   if((w.idle||w.closed_owner&&!owed)&&inspection.commit&&(inventory.worktree||inventory.registration)&&!inventory.run_record&&!inventory.active){
+    const current=(await tx.query<{cleanup_json:Record<string,WorkspaceCleanupResource>}>('SELECT cleanup_json FROM execution_workspaces WHERE id=$1',[w.id])).rows[0]?.cleanup_json?.[`source-g${w.generation}`];
+    // Never replace a running request or an issued release (its epoch fences the Host), only an idle or finished one.
+    if(replaceableSourceCleanup(current)&&(!current||current.state==='cleaned'||current.expected_commit!==inspection.commit))await enqueueWorkspaceCleanup(tx,w,{id:w.id,generation:w.generation},inspection.commit,true,user);
+   }
+   if(w.closed_owner&&!owed&&!inventory.active&&!inventory.worktree&&!inventory.registration&&!inventory.run_record&&inventory.quarantined_whole===0){
+    await tx.query(`UPDATE host_threads SET status='closed',vendor_session_id=NULL,pending_archive_at=COALESCE(pending_archive_at,now()),updated_at=now() WHERE execution_workspace_json->>'id'=$1 AND status<>'closed'`,[w.id]);
+    // The branch is intentionally retained. Retiring the logical owner closes caches.
+    await tx.query("UPDATE execution_workspaces SET state='retired',updated_at=now() WHERE id=$1",[w.id]);
+   }
+  });
   await scanLocationRefs(db,w,hosts,workspaceRoot);
-  const owed=(await db.query("SELECT 1 FROM workspace_change_sets WHERE workspace_id=$1 AND state IN ('open','ready','integrating','blocked') LIMIT 1",[w.id])).rowCount;
-  if((w.idle||w.closed_owner&&!owed)&&inspection.commit&&(inspection.inventory.worktree||inspection.inventory.registration)&&!inspection.inventory.run_record&&!inspection.inventory.active){
-   const current=(await db.query<{cleanup_json:Record<string,WorkspaceCleanupResource>}>('SELECT cleanup_json FROM execution_workspaces WHERE id=$1',[w.id])).rows[0]?.cleanup_json?.[`source-g${w.generation}`];
-   // Never replace a running request or an issued release (its epoch fences the Host), only an idle or finished one.
-   if(replaceableSourceCleanup(current)&&(!current||current.state==='cleaned'||current.expected_commit!==inspection.commit))await enqueueWorkspaceCleanup(db,w,{id:w.id,generation:w.generation},inspection.commit,true,user);
-  }
-  if(w.closed_owner&&!owed&&!inspection.inventory.active&&!inspection.inventory.worktree&&!inspection.inventory.registration&&!inspection.inventory.run_record&&inspection.inventory.quarantined_whole===0){
-   await db.query(`UPDATE host_threads SET status='closed',vendor_session_id=NULL,pending_archive_at=COALESCE(pending_archive_at,now()),updated_at=now() WHERE execution_workspace_json->>'id'=$1 AND status<>'closed'`,[w.id]);
-   // The branch is intentionally retained. Retiring the logical owner closes caches.
-   await db.query("UPDATE execution_workspaces SET state='retired',updated_at=now() WHERE id=$1",[w.id]);
-  }
   }catch(error){
    const message=error instanceof Error?error.message:String(error);
    const reason=/^execution_workspace_[a-z_]+$/.test(message)?message:'workspace_reconciliation_failed';
@@ -135,8 +161,17 @@ export async function reconcileExecutionWorkspaces(db:Queryable,workspaceRoot:st
    // A retired/archived Location or one broken Host must not strand the scan
    // cursor or independent owners. Keep a durable, path-free attention reason.
    try{
-    await db.query(`UPDATE execution_workspaces SET cleanup_state='blocked',
-     inventory_json=inventory_json||jsonb_build_object('reconciliation_error',$2::text,'reconciliation_failed_at',now()) WHERE id=$1`,[w.id,reason]);
+    await withQueryableTransaction(db,async tx=>{
+     if(!await lockUnchangedIdleWorkspace(tx,w))return;
+     await tx.query(`UPDATE execution_workspaces SET cleanup_state='blocked',
+      inventory_json=inventory_json||jsonb_build_object('reconciliation_error',$2::text,'reconciliation_failed_at',now()) WHERE id=$1`,[w.id,reason]);
+     if(reason==='execution_workspace_host_upgrade_required'){
+      // Missing execution capability parks this background observation; it is
+      // not a decision on every closed batch. Real cleanup/checkpoint blocks stay.
+      await refreshCleanupSummary(tx,w.id);
+      await tx.query("UPDATE execution_workspaces SET cleanup_state='retry_wait' WHERE id=$1 AND cleanup_state IN ('cleaned','pending')",[w.id]);
+     }
+    });
    }catch{
     failures[failures.length-1]!.error='workspace_reconciliation_persistence_failed';
    }

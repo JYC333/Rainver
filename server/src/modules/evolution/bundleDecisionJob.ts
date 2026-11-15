@@ -1,4 +1,5 @@
 import {applyPreparedCodePatchEffect,compensateCodePatchEffect} from '../projectFolders/codePatchEffects.js';
+import {JobEffectLeaseLost} from '../jobs/effectAuthority.js';
 import { EvolutionBundleDecisionReceiptSchema } from '@rainver/protocol';
 import { randomUUID } from 'node:crypto';
 import type { Pool } from '../../db/pool.js';
@@ -62,9 +63,9 @@ async function preflight(client: Queryable, identity: SpaceUserIdentity, frozen:
   }
   return proposals;
 }
-export async function queueBundleDecision(pool: Pool, identity: SpaceUserIdentity, bundle: string, decisions: EvolutionBundleDecision[], service: ProposalDecisionPort) {
-  if (!pool.options.connectionString) throw new HttpError(503, 'Bundle decisions require configured audit recovery');
-  const repository = new EvolutionBundleRepository(pool);
+export async function queueBundleDecision(pool: Queryable, identity: SpaceUserIdentity, bundle: string, decisions: EvolutionBundleDecision[], service: ProposalDecisionPort, databaseUrl=(pool as Pool).options?.connectionString) {
+  if (!databaseUrl) throw new HttpError(503, 'Bundle decisions require configured audit recovery');
+  const repository = new EvolutionBundleRepository(pool,databaseUrl);
   if (!(await repository.get(identity, bundle))) throw new HttpError(404, 'Evolution bundle not found');
   const previous = (await pool.query<BundleDecisionRow>('SELECT * FROM evolution_bundle_decisions WHERE space_id=$1 AND bundle_id=$2 AND user_id=$3 ORDER BY created_at DESC', [identity.spaceId, bundle, identity.userId])).rows;
   const request = decisions.map(d => [d.proposalId, d.decision, d.note ?? null]).sort();
@@ -73,7 +74,7 @@ export async function queueBundleDecision(pool: Pool, identity: SpaceUserIdentit
     // A failed, fully compensated attempt may be explicitly submitted again.
     // Keep its frozen approval/intent identity; only an exhausted/stopped backing
     // Job is replaced. Concurrent/lost-response replays see the same live Job.
-    if (replay.status === 'failed') await resumeFailedDecision(pool, identity, replay, service);
+    if (replay.status === 'failed') await resumeFailedDecision(pool, identity, replay, service,databaseUrl);
     return {
       ...(await repository.get(identity, bundle))!,
       decision: await decisionReceipt(pool, identity.spaceId, bundle, replay.id)
@@ -85,7 +86,7 @@ export async function queueBundleDecision(pool: Pool, identity: SpaceUserIdentit
       user: identity.userId,
       frozen
     });
-  await withPolicyAuditRecovery(pool.options.connectionString, () => withQueryableTransaction(pool, async db => {
+  await withPolicyAuditRecovery(databaseUrl, () => withQueryableTransaction(pool, async db => {
     await withBundleDecisionOwner(db, identity.spaceId, frozen.map(m => m.proposalId), async () => {
       await lockBundleDecision(db, bundle);
       // Replay consults retained intent before pending-state validation, not approvals.
@@ -130,8 +131,8 @@ export async function queueBundleDecision(pool: Pool, identity: SpaceUserIdentit
     decision: await decisionReceipt(pool, identity.spaceId, bundle, intentId ?? null)
   };
 }
-async function resumeFailedDecision(pool: Pool, identity: SpaceUserIdentity, retained: BundleDecisionRow, service: ProposalDecisionPort) {
-  await withPolicyAuditRecovery(pool.options.connectionString, () => withQueryableTransaction(pool, async db => {
+async function resumeFailedDecision(pool: Queryable, identity: SpaceUserIdentity, retained: BundleDecisionRow, service: ProposalDecisionPort,databaseUrl:string) {
+  await withPolicyAuditRecovery(databaseUrl, () => withQueryableTransaction(pool, async db => {
     await withBundleDecisionOwner(db, identity.spaceId, retained.frozen_json.map(m => m.proposalId), async () => {
       await lockBundleDecision(db, retained.bundle_id);
       const row = (await db.query<BundleDecisionRow>("SELECT * FROM evolution_bundle_decisions WHERE id=$1 AND space_id=$2 AND user_id=$3 FOR UPDATE", [retained.id, identity.spaceId, identity.userId])).rows[0];
@@ -173,6 +174,7 @@ export async function executeBundleDecision(config: ServerConfig, id: string, sp
   jobId: string;
   workerId: string;
   userId: string | null;
+  attempts: number;
 }) {
   if (!config.databaseUrl) throw new Error('Bundle decisions require database');
   const pool = getDbPool(config.databaseUrl);
@@ -181,10 +183,13 @@ export async function executeBundleDecision(config: ServerConfig, id: string, sp
     if (lease && (lease.jobId !== row.job_id || lease.userId !== row.user_id)) throw new HttpError(409, 'Stale decision Job');
     const assertLease = async (db: Queryable = pool, lock = false) => {
       if (!lease) return;
-      const job = (await db.query("SELECT id FROM jobs WHERE id=$1 AND claimed_by=$2 AND status='running'" + (lock ? ' FOR SHARE' : ''), [lease.jobId, lease.workerId])).rows[0];
-      if (!job) throw new HttpError(409, 'Decision Job no longer owns execution');
+      const job = (await db.query("SELECT id FROM jobs WHERE id=$1 AND claimed_by=$2 AND attempts=$3 AND status='running'" + (lock ? ' FOR SHARE' : ''), [lease.jobId, lease.workerId, lease.attempts])).rows[0];
+      if (!job) throw new JobEffectLeaseLost('Decision Job no longer owns execution');
     };
     if (row.status === 'succeeded') return row.result_json;
+    // Immutable success receipts can replay. Refuse stale delivery before
+    // compensation or the failure handler can mutate intent/files.
+    await assertLease();
     if (row.status === 'failed' && !lease) throw new Error(row.error ?? 'Bundle decision failed');
     const identity = {
         spaceId: row.space_id,
@@ -192,7 +197,7 @@ export async function executeBundleDecision(config: ServerConfig, id: string, sp
       },
       service = PgProposalApplyService.fromConfig(config);
     if (row.status === 'compensating' || row.status === 'compensation_failed') {
-      await compensate(pool, row);
+      await compensate(pool, row, assertLease);
       return {
         decision_id: id,
         status: 'failed'
@@ -211,6 +216,7 @@ export async function executeBundleDecision(config: ServerConfig, id: string, sp
         const plans = new Map<string, Awaited<ReturnType<typeof prepareCodePatchPlan>>>();
         await withBundleDecisionOwner(db, row.space_id, row.frozen_json.map(m => m.proposalId), async () => {
           await lockBundleDecision(db, row.bundle_id);
+          await assertLease(db, true);
           await preflight(db, identity, row.frozen_json, service);
           for (const m of row.frozen_json.filter(m => m.decision === 'approve' && m.proposalType === 'code_patch')) {
             plans.set(m.proposalId, await service.prepareBundlePatchInTransaction(db, m.proposalId, identity));
@@ -263,29 +269,31 @@ export async function executeBundleDecision(config: ServerConfig, id: string, sp
       }, row.frozen_json));
       return (await load(pool, id, space)).result_json;
     } catch (error) {
-      if (error instanceof JobDeferredError) throw error;
+      if (error instanceof JobDeferredError || error instanceof JobEffectLeaseLost) throw error;
       const committed = await load(pool, id, space);
       if (committed.status === 'succeeded') return committed.result_json;
+      await assertLease();
       row.error = error instanceof Error ? error.message : String(error);
       await pool.query("UPDATE evolution_bundle_decisions SET status='compensating',error=$2,updated_at=now() WHERE id=$1", [id, row.error]);
-      await compensate(pool, row);
+      await compensate(pool, row, assertLease);
       throw error;
     }
   });
   if (!gate.acquired) throw new JobDeferredError('Evolution decision worker is busy', 1000);
   return gate.value;
 }
-async function compensate(pool: Pool, row: BundleDecisionRow) {
+async function compensate(pool: Pool, row: BundleDecisionRow, assertLease?: () => Promise<void>) {
   try {
     for (const effect of Object.values(row.effects_json).reverse()) {
       if (effect.compensated || !effect.before.length) continue;
       const lock = await tryWithDedicatedSessionAdvisoryLock(pool, `code-patch-folder:${effect.folderId}`, async () => {
-        await compensateCodePatchEffect(effect,()=>saveEffects(pool,row));
+        await compensateCodePatchEffect(effect,()=>saveEffects(pool,row),assertLease);
       });
       if (!lock.acquired) throw new JobDeferredError('Code patch compensation is busy', 1000);
     }
     await pool.query("UPDATE evolution_bundle_decisions SET status='failed',updated_at=now() WHERE id=$1", [row.id]);
   } catch (error) {
+    if (error instanceof JobEffectLeaseLost) throw error;
     await pool.query("UPDATE evolution_bundle_decisions SET status='compensation_failed',error=$2,updated_at=now() WHERE id=$1", [row.id, error instanceof Error ? error.message : String(error)]);
     throw error;
   }
@@ -296,7 +304,8 @@ export function registerBundleDecisionHandler(registry: JobHandlerRegistry, conf
     return executeBundleDecision(config, job.payload.decision_id, job.space_id, {
       jobId: job.job_id,
       workerId: job.worker_id,
-      userId: job.user_id
+      userId: job.user_id,
+      attempts: job.attempts
     }).catch(error => {
       if (error instanceof JobDeferredError) throw error;
       throw new Error('bundle_decision_failed');

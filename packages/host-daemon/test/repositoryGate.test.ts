@@ -43,7 +43,7 @@ async function register(id:string,path:string){const current=(await loadConfig()
 beforeEach(async()=>{
  sandbox=await realpath(await mkdtemp(join(tmpdir(),'rainver-repo-gate-')));root=join(sandbox,'repo');other=join(sandbox,'other');config=join(sandbox,'host');await mkdir(config);
  process.env.RAINVER_HOST_CONFIG_DIR=config;
- server=createServer((request,response)=>{request.resume();request.on('end',()=>{response.writeHead(201,{'content-type':'application/json'});response.end(JSON.stringify({id:'folder-registered',name:'Registered',display_path:'/x',project_id:'p'}));});});
+ server=createServer((request,response)=>{request.resume();request.on('end',()=>{response.writeHead(201,{'content-type':'application/json'});response.end(JSON.stringify({status:'succeeded',data:{id:'folder-registered',space_id:'space',folder_id:'folder',name:'Registered',display_path:'/x',project_id:'p',host_kind:'remote',root_path:null,registered_from:'daemon_registered',created_at:'2026-11-15T00:00:00.000Z'}}));});});
  await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));
  const address=server.address();if(!address||typeof address==='string')throw new Error('no address');
  await saveConfig({server_url:`http://127.0.0.1:${address.port}`,host_id:'host',trust:'trusted',token:'test',workspaces:{[LOCATION]:root,[OTHER]:other}});

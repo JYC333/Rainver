@@ -6,7 +6,9 @@
     "outDir": "dist",
     "rootDir": "src",
     "module": "ESNext",
-    "moduleResolution": "bundler"
+    "moduleResolution": "bundler",
+    "incremental": true,
+    "tsBuildInfoFile": "dist/.tsbuildinfo"
   },
   "include": ["src"]
 }

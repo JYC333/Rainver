@@ -1,3 +1,4 @@
+import { isOperationTransaction } from '../../db/operationTransaction.js';
 import { randomUUID } from "node:crypto";
 import type { ContextReviewCycleRequest } from "@rainver/protocol";
 import type { Queryable } from "../routeUtils/common.js";
@@ -13,7 +14,7 @@ import {
 import { PgMemoryReadRepository } from "../memory/repository.js";
 import {
   RetrievalMaintenanceService,
-  buildRetrievalEvalDiagnosticsReport,
+  buildRetrievalEvalDiagnosticsReportWithSources,
   createRetrievalDiagnosticsProposalPacket,
   createRetrievalMaintenanceProposalPacket,
   persistRetrievalEvalReportArtifact,
@@ -205,7 +206,7 @@ export async function runContextReviewCycle(
     };
   }
 
-  const diagnosticsReport = await buildRetrievalEvalDiagnosticsReport(db, {
+  const diagnostics = await buildRetrievalEvalDiagnosticsReportWithSources(db, {
     spaceId: input.spaceId,
     ownerUserId: input.userId,
     windowDays: input.request.window_days,
@@ -214,12 +215,14 @@ export async function runContextReviewCycle(
     includeMaintenanceReports: true,
     comparePreviousWindow: true,
   });
+  const diagnosticsReport = diagnostics.report;
   const diagnosticsArtifactId = await persistRetrievalEvalReportArtifact(db, {
     spaceId: input.spaceId,
     ownerUserId: input.userId,
     report: diagnosticsReport,
     settingsSnapshot,
     reviewScope,
+    sourceArtifactIds: diagnostics.sourceArtifactIds,
   });
   let diagnosticsProposalId: string | null = null;
   let diagnosticsProposalError: OptionalPacketError | null = null;
@@ -322,7 +325,7 @@ export async function captureOptionalCheckpoint<T>(
   stage: string,
   run: () => Promise<T>,
 ): Promise<{ value: T | null; error: OptionalPacketError | null }> {
-  const inTransaction = typeof (db as { release?: unknown }).release === "function";
+  const inTransaction = isOperationTransaction(db) || typeof (db as { release?: unknown }).release === "function";
   const savepoint = "ctx_review_optional";
   if (inTransaction) await db.query(`SAVEPOINT ${savepoint}`);
   try {

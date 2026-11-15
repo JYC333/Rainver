@@ -1,8 +1,8 @@
 import { resolveContentCreationContext } from "../access/creationContext.js";
 import { PgActivityRepository } from "../activity/repository.js";
 import { PgKnowledgeRepository } from "../knowledge/repository.js";
-import { HttpError, withDbTransaction, type Queryable } from "../routeUtils/common.js";
-import { getDbPool, type Pool } from "../../db/pool.js";
+import { HttpError, withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
+import { getDbPool } from "../../db/pool.js";
 import type { ServerConfig } from "../../config.js";
 
 export type CaptureDestination =
@@ -55,7 +55,7 @@ const MARGINALIA_DESTINATIONS: ReadonlySet<CaptureDestination> = new Set([
  * projects into a note inside the same transaction.
  */
 export class CaptureService {
-  constructor(private readonly pool: Pool) {}
+  constructor(private readonly pool: Queryable) {}
 
   static fromConfig(config: ServerConfig): CaptureService {
     if (!config.databaseUrl) throw new HttpError(502, "SERVER_DATABASE_URL is required");
@@ -63,7 +63,7 @@ export class CaptureService {
   }
 
   async capture(input: CaptureInput): Promise<CaptureResult> {
-    return withDbTransaction(this.pool, (client) => this.captureWithin(client, input));
+    return withQueryableTransaction(this.pool, (client) => this.captureWithin(client, input));
   }
 
   /**

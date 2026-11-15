@@ -1,3 +1,4 @@
+import {registerOperationAdapters} from '../systemActions/operations/routeAdapter.js';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
@@ -12,7 +13,6 @@ import type {
   ProposalOut,
   ProposalPage,
 } from "@rainver/protocol";
-import { HttpError } from "../routeUtils/common.js";
 
 interface ProposalServices {
   repository: Pick<PgProposalRepository, "listVisible" | "getVisible">;
@@ -84,72 +84,13 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     return reply.send(proposal);
   });
 
-  app.post("/api/v1/proposals/:proposalId/accept", async (request, reply) => {
-    const identity = await resolveIdentity(context, request, reply);
-    if (!identity) return reply;
-    const proposalId = params(request).proposalId ?? "";
-    const services = proposalServices(context);
-    try {
-      const confirm = parseConfirmIncompletePatch(request);
-      if ("error" in confirm) return reply.code(422).send({ detail: confirm.error });
-      const result = await services.applyService.accept(proposalId, identity, {
-        confirmIncompletePatch: confirm.value,
-      });
-      if (!result) return reply.code(404).send({ detail: "Proposal not found or already decided" });
-      return reply.code(result.result_type==='code_patch_pending'?202:200).send(result);
-    } catch (error) {
-      return sendProposalRouteError(request, reply, error);
-    }
-  });
-
-  app.post("/api/v1/proposals/:proposalId/reject", async (request, reply) => {
-    const identity = await resolveIdentity(context, request, reply);
-    if (!identity) return reply;
-    const proposalId = params(request).proposalId ?? "";
-    const services = proposalServices(context);
-    try {
-      const result = await services.applyService.reject(proposalId, identity);
-      if (!result) return reply.code(404).send({ detail: "Proposal not found or already decided" });
-      return reply.send(result);
-    } catch (error) {
-      return sendProposalRouteError(request, reply, error);
-    }
-  });
-
-  app.post("/api/v1/proposals/:proposalId/rollback", async (request, reply) => {
-    const identity = await resolveIdentity(context, request, reply);
-    if (!identity) return reply;
-    const proposalId = params(request).proposalId ?? "";
-    const services = proposalServices(context);
-    try {
-      const result = await services.applyService.rollback(proposalId, identity);
-      if (!result) return reply.code(404).send({ detail: "Proposal not found or not eligible for rollback" });
-      return reply.code(['pending','applying','compensating'].includes(result.status)?202:200).send(result);
-    } catch (error) {
-      return sendProposalRouteError(request, reply, error);
-    }
-  });
-
-  app.post(
-    "/api/v1/proposals/:proposalId/approvals/egress-granting-user",
-    async (request, reply) => {
-      const identity = await resolveIdentity(context, request, reply);
-      if (!identity) return reply;
-      const proposalId = params(request).proposalId ?? "";
-      const services = proposalServices(context);
-      try {
-        const body = jsonBody(request);
-        const result = await services.applyService.approveEgressGrantingUser(
-          proposalId,
-          identity,
-          stringValue(body.grant_id) ?? null,
-        );
-        return reply.send(result);
-      } catch (error) {
-        return sendProposalRouteError(request, reply, error);
-      }
-    },
-  );
+  registerOperationAdapters(app,context.config,[
+    {method:"POST",url:"/api/v1/proposals/:proposalId/accept",operation:"proposal.accept",params:{proposalId:"proposal_id"},query:{confirm_incomplete_patch:"confirm_incomplete_patch"}},
+    {method:"POST",url:"/api/v1/proposals/:proposalId/rollback",operation:"proposal.rollback",params:{proposalId:"proposal_id"}},
+{method:'POST',url:'/api/v1/proposals/:proposalId/reject',operation:'proposal.reject',params:{proposalId:'proposal_id'}},{
+    method:'POST',url:'/api/v1/proposals/:proposalId/approvals/egress-granting-user',
+    operation:'proposal.egress.approve',params:{proposalId:'proposal_id'},
+  }]);
 }
 
 async function resolveIdentity(
@@ -258,60 +199,12 @@ function query(request: FastifyRequest): Record<string, string | undefined> {
   return request.query as Record<string, string | undefined>;
 }
 
-function bodyText(request: FastifyRequest): string {
-  return request.body instanceof Buffer ? request.body.toString("utf8") : "";
-}
-
-function jsonBody(request: FastifyRequest): Record<string, unknown> {
-  const text = bodyText(request);
-  if (!text) return {};
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    // The gateway hands every body over as a Buffer, so this is where a
-    // truncated body is first parsed; a client's bad input is not a 500.
-    throw new HttpError(422, "Request body must be valid JSON");
-  }
-  return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
-    ? (parsed as Record<string, unknown>)
-    : {};
-}
-
-function stringValue(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value : undefined;
-}
-
 function boolQuery(value: string | undefined): boolean | null {
   if (value === undefined) return null;
   const normalized = value.trim().toLowerCase();
   if (["1", "true", "yes", "on"].includes(normalized)) return true;
   if (["0", "false", "no", "off"].includes(normalized)) return false;
   return null;
-}
-
-function parseConfirmIncompletePatch(
-  request: FastifyRequest,
-): { value: boolean } | { error: string } {
-  const q = query(request);
-  let value = false;
-  if (q.confirm_incomplete_patch !== undefined) {
-    const parsed = boolQuery(q.confirm_incomplete_patch);
-    if (parsed === null) {
-      return {
-        error: `Invalid confirm_incomplete_patch ${JSON.stringify(q.confirm_incomplete_patch)}`,
-      };
-    }
-    value = parsed;
-  }
-  const body = jsonBody(request);
-  if (body.confirm_incomplete_patch !== undefined) {
-    if (typeof body.confirm_incomplete_patch !== "boolean") {
-      return { error: "confirm_incomplete_patch must be a boolean" };
-    }
-    value = body.confirm_incomplete_patch;
-  }
-  return { value };
 }
 
 function intQuery(value: string | undefined, fallback: number): number | null {

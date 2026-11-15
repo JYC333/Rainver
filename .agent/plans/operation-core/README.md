@@ -19,7 +19,9 @@ with a minimal redirect retained at the old path.
 A later real-PG security follow-up exposed missed PluginDb role-concurrency and
 Unicode/$ temp-table boundaries; its [correction passed independent dual review](../../architecture/OFFICIAL_OPTIONAL_MODULES.md#invocation-role-and-session-follow-up).
 The historical P2 approvals/test results do not cover that patch.
-Plans 00/03–06 remain unfinished. No deployment or whole-program completion is
+Plan 5 is complete within its documented migration scope; see the permanent
+[P5 closeout](../../architecture/OPERATION_CORE_ACCEPTANCE.md#p5-closeout).
+Plans 00/03/04/06 remain unfinished. No deployment or whole-program completion is
 implied. Plans remain forward-looking outside the explicit current
 implementation described in the architecture guides.
 
@@ -65,9 +67,10 @@ the pilot for the plugin contract.
 | 6 | [Later extensions](06-later-extensions.md) | 2 | — |
 
 Plan 1 implementation and overall dual-review approval are recorded in the
-permanent owner documents above. Plan 5 is incremental and open-ended: its
-standing rule ("new core capabilities are operations first") takes effect
-as soon as plan 1 lands, and existing modules migrate when touched.
+permanent owner documents above. Plan 5's standing rule ("new core
+capabilities are operations first") still applies. Its completed temporary
+ledger is [retired](05-core-module-operation-migration.md); current evidence and
+limits are in the permanent [P5 closeout](../../architecture/OPERATION_CORE_ACCEPTANCE.md#p5-closeout).
 
 Until plan 4 lands, sensitive plugin data (diary entries, private finance
 accounts) stays invisible to Agents — the fail-closed default, not a gap.
@@ -87,9 +90,10 @@ accounts) stays invisible to Agents — the fail-closed default, not a gap.
   the Plan 1 core decision; later plugin implementation needs its own updates.
 
 
-Plan 1's production scope is one research.cancel_acquisition pilot plus the
-metadata query. No approval-bearing business family is enabled: the eight legacy
-Proposal writer families remain for later migration and fail closed on generic
-approval paths. Test-only mechanism evidence is not production migration closure.
+The original Plan 1 production scope was one research.cancel_acquisition pilot
+plus the metadata query. That historical approval did not enable approval-bearing business
+families. Their later migration and remaining approval-mapping limits are
+recorded in the P5 closeout; the original pilot is not the current inventory.
+Test-only mechanism evidence is not production migration closure.
 The permanent acceptance matrix records real faults, cutover limits and review
-status. Preserve the independent/uncompleted plans 00/02–06.
+status. Preserve the independent unfinished plans 00/03/04/06.

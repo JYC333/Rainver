@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
@@ -169,24 +170,34 @@ describe("jobs routes (real Postgres)", () => {
     }
   });
 
-  it("does not cancel a job a worker started between the route's read and its write", async (ctx) => {
+  it("cancels only the person's own pending Job through the core and leaves a started Job to its worker", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
     const jobs = new PgJobQueueRepository(db.pool);
-    const job = await jobs.enqueue({ job_type: "extract_text", space_id: SPACE, user_id: OWNER, payload: {} });
-    // The route read the job as pending; by the time it cancels, a worker has it running.
-    const read = vi.spyOn(PgJobQueueRepository.prototype, "getJob").mockImplementationOnce(async () => job);
-    await db.pool.query(`UPDATE jobs SET status = 'running', claimed_by = 'worker-1', claimed_at = now() WHERE id = $1`, [job.id]);
+    const pending = await jobs.enqueue({ job_type: "extract_text", space_id: SPACE, user_id: OWNER, payload: {} });
+    const started = await jobs.enqueue({ job_type: "extract_text", space_id: SPACE, user_id: OWNER, payload: {} });
+    await db.pool.query(`UPDATE jobs SET status = 'running', claimed_by = 'worker-1', claimed_at = now() WHERE id = $1`, [started.id]);
     const server = app();
+    const cancel = (id: string, key?: string) => server.inject({ method: "POST", url: `/api/v1/jobs/${id}/cancel`, headers: key ? { "idempotency-key": key } : {} });
+    const events = async (id: string) => (await db.pool!.query<{ n: string }>(`SELECT count(*)::text AS n FROM job_events WHERE job_id = $1 AND message = 'Job cancelled by user'`, [id])).rows[0]!.n;
     try {
-      const response = await server.inject({ method: "POST", url: `/api/v1/jobs/${job.id}/cancel` });
-      expect(read).toHaveBeenCalled();
-      expect(response.statusCode).toBe(409);
-      await expect(db.pool.query<{ status: string }>(`SELECT status FROM jobs WHERE id = $1`, [job.id]))
+      expect((await cancel(pending.id)).json().error.code).toBe("idempotency_key_required");
+      const key = randomUUID(), first = await cancel(pending.id, key);
+      expect(first.statusCode, first.body).toBe(200);
+      expect(first.json()).toEqual({ status: "succeeded", data: { job_id: pending.id, status: "cancelled" } });
+      const replay = await cancel(pending.id, key);
+      expect(replay.json()).toEqual(first.json());
+      expect(await events(pending.id)).toBe("1");
+      // A new key on a terminal Job is a deterministic conflict, not a second cancellation.
+      expect((await cancel(pending.id, randomUUID())).statusCode).toBe(409);
+      const running = await cancel(started.id, randomUUID());
+      expect(running.statusCode, running.body).toBe(409);
+      expect(running.json().error.code).toBe("operation_conflict");
+      await expect(db.pool.query<{ status: string }>(`SELECT status FROM jobs WHERE id = $1`, [started.id]))
         .resolves.toMatchObject({ rows: [{ status: "running" }] });
-      await expect(db.pool.query<{ n: string }>(`SELECT count(*)::text AS n FROM job_events WHERE job_id = $1 AND message = 'Job cancelled by user'`, [job.id]))
-        .resolves.toMatchObject({ rows: [{ n: "0" }] });
+      expect(await events(started.id)).toBe("0");
     } finally {
       await server.close();
     }
   });
+
 });

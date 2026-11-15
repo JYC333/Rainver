@@ -275,7 +275,7 @@ read gate || true
     });
     await new Promise<void>(r => server.close(() => r()));
   }
-}, 30000);
+});
 
 // All data and paths below are synthetic, including both possible login HOMEs.
 it.runIf(process.env.PERSONAL_READONLY_OS === '1')('executes narrowed package/file/alias roots without exposing either login HOME', async () => {

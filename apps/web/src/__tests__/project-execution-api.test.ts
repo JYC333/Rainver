@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { ApiRequestError, experimentsApi, projectFoldersApi, setSpaceContext } from '../api/client';
+import { ApiRequestError, agentsApi, experimentsApi, projectFoldersApi, setSpaceContext } from '../api/client';
 const response=(body:unknown)=>new Response(JSON.stringify(body),{status:200,headers:{'Content-Type':'application/json'}});
 const receipt=(id='item')=>({status:'succeeded',data:{id,space_id:'original-space',project_id:'project/one',definition_id:'definition/one',folder_id:'folder/one'}});
 beforeEach(()=>{setSpaceContext('current-space');vi.stubGlobal('fetch',vi.fn());});
@@ -105,4 +105,12 @@ it('returns durable scan candidates and refuses unknown outcomes without another
   vi.mocked(fetch).mockClear().mockResolvedValueOnce(response(ioReceipt())).mockResolvedValueOnce(response(ioStatus(null,'needs_attention',{code:'folder_file_needs_attention',metadata:{}})));
   await expect(projectFoldersApi.saveDraft('project/one','folder/one','draft',1,false,'same-event')).rejects.toMatchObject({code:'operation_conflict',payload:{error:{metadata:{code:'folder_file_needs_attention'}}}});
   expect(fetch).toHaveBeenCalledTimes(2);
+});
+
+it('scopes draft Agent backend choices to their Project and keeps an existing Session authoritative', async () => {
+  vi.mocked(fetch).mockImplementation(async () => response({options: [], binding: null}));
+  await agentsApi.conversationBackends('agent-one', {spaceId: 'project-space', projectId: 'project/one'});
+  expect(String(vi.mocked(fetch).mock.calls[0]![0])).toBe('/api/v1/agents/agent-one/conversation-backends?project_id=project%2Fone');
+  await agentsApi.conversationBackends('agent-one', {spaceId: 'project-space', projectId: 'project/one', sessionId: 'session/one'});
+  expect(String(vi.mocked(fetch).mock.calls[1]![0])).toBe('/api/v1/agents/agent-one/conversation-backends?session_id=session%2Fone');
 });

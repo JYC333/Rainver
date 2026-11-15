@@ -49,7 +49,8 @@ outside the Project shell.
 ## Planning boundary
 
 Creating a source Task does not create a Plan. Task Detail may enqueue a
-`planning` Run through `POST /api/v1/tasks/{id}/plan-requests`; the Agent then
+`planning` Run through `POST /api/v1/tasks/{id}/plan-requests` (the core
+`task.plan.request` command); the Agent then
 uses `task.plan.propose` to create or revise the Task's PlanVersion. Human
 users review and execute an approved Plan, but do not submit raw Plan
 definitions through a public Plan-create API. A fixed Workflow Automation has
@@ -76,9 +77,9 @@ Boards and tasks are scoped by **space** and optionally a **Project** (and Proje
 
 ## Execution boundary
 
-`POST /api/v1/tasks/{id}/runs` creates a **queued** `Run` (plus its initial attempt) through the runs repository inside one transaction with the `max_runs` admission lock, inserts a `task_runs` row (canonical), and may move the task to `in_progress`. It does **not** call runtime adapters or enqueue infrastructure jobs. Running the same Task again always creates a new Run and a new `task_runs` row; a terminal Run is never reopened by user request.
+`POST /api/v1/tasks/{id}/runs` (the core `task.run.create` command, explicit Idempotency-Key) creates a **queued** `Run` (plus its initial attempt) through the runs repository inside one transaction with the `max_runs` admission lock, inserts a `task_runs` row (canonical, always role `primary` for a person's Run; role and parent Run are server-owned), and may move the task to `in_progress`. It does **not** call runtime adapters or enqueue infrastructure jobs. Running the same Task again always creates a new Run and a new `task_runs` row; a terminal Run is never reopened by user request.
 
-`PATCH /api/v1/tasks/{id}` leaves an omitted nullable column unchanged and
+`PATCH /api/v1/tasks/{id}` (the core `task.update` command) leaves an omitted nullable column unchanged and
 stores an explicit `null`. For `max_runs`, `max_cost` and
 `max_duration_seconds`, `null` means the Task sets no such limit: the next
 Run's contract snapshot carries none from the Task (a Space budget still
@@ -294,8 +295,9 @@ envelope; other unmigrated PATCH failures retain their existing route errors.
 A hidden Task blocking configuration returns canonical hidden 404, without
 identifying the Task or committing partial columns/placement.
 Use the named move command so metadata edits cannot bypass column revision.
-Task creation and ordinary metadata/edit commands remain explicit legacy scopes;
-standalone Space Board placement now uses the dedicated core command below.
+Task creation and ordinary metadata editing are core commands (see
+[Core Task and Board commands](#core-task-and-board-commands)); standalone
+Space Board placement uses the dedicated core command below.
 Internal legitimate updateTask writers
 retain their transaction port. The subsequent
 [Task lifecycle family](PROJECT_WORK.md#core-task-lifecycle-boundary) now migrates
@@ -320,8 +322,10 @@ and revision-bearing Project movement retain those responsibilities.
 
 The current full-readable Task must remain standalone under its lock. A supplied
 destination must be an active, undeleted Board in the same Space without a
-Project; it is pinned before the Task. Reparenting either object cannot turn
-this command into a Project write. Column placement reuses the canonical writer,
+Project; it is pinned before the Task, together with every reference the
+accompanying contract fields name, by the shared Task write closure (below).
+Reparenting either object cannot turn this command into a Project write, and
+its parent/assignee fields cannot bypass loop refusal or live references. Column placement reuses the canonical writer,
 including its stored completion gate and required Jobs. Changing Board without
 selecting a column clears the old column while preserving status. Replays check
 live authority and return the retained receipt without another edit.
@@ -331,3 +335,121 @@ including null clears and mixed edits. The browser sends placement-bearing
 contract saves through this core command and then refreshes the Task; metadata
 edits without placement retain their ordinary PATCH path. No Agent tool or
 permission, automatic retry, or production approval mapping is added.
+
+## Core Task and Board commands
+
+All seven are core-owned commands with strict schemas, an explicit
+Idempotency-Key, one policy decision and the outcome receipt in the same
+transaction as the domain writes. Their retained URLs are formal adapters;
+generic `POST /api/v1/actions/{id}` shares the same keys. Replays recheck
+current authority (a revoked writer gets the canonical hidden 404). Known
+refusals are the marked Task/Board/Run budget classes with their person-safe
+messages; anything else is an internal error, never reflected.
+
+| Command | URL | Who | Locks (after the key) | Notes |
+|---|---|---|---|---|
+| `task.create` | `POST /tasks` and the Agent tool | person; Agent Run | Project → turn fan-out (Agent), or the Task write closure (person: Projects incl. read-through → Folder → people → Agents → Board → parent) | A person's create is placed by the core's access owner (ADR 0013 decision 3): a Project create needs an active-Project writer in that Project's Space; without a Project the Task is private in the person's Personal Space, also when sent from a shared Space (receipt and replay are keyed and re-authorized in that placed Space; a Project of another Space is not reachable). An Agent keeps its Run's Space and Project. The canonical writer refuses a final placed status of Done/Cancelled on every path (explicit status, raw `column_id`, `board_column`, Agent batch, inquiry link, internal producers). `source_*`, visibility and Run provenance are server-owned. |
+| `task.update` | `PATCH /tasks/:id` and the Agent tool | person; Agent Run (title/description only, own Run Project) | the Task write closure: current, target and read-through Projects (sorted) → Folder → people → Agents → edited Task + parent ancestry (id order) | contract fields only; status, placement, deletion, completion timestamps and block reason use their named commands; a reparent may not make a Task its own ancestor (422); a Project move keeps no Folder of the old Project (409 until cleared or reselected) |
+| `task.evaluation.record` | `POST /tasks/:id/evaluations` | person | Project → Task | recommendation is `accept`/`review`/`retry`/`needs_evidence`; Run and Artifacts must be linked and readable |
+| `task.plan.request` | `POST /tasks/:id/plan-requests` (202) | person | Project → Task | source Tasks only |
+| `task.run.create` | `POST /tasks/:id/runs` (201) | person | Project → Task → Location/thread → Run | Run owner repository; Job intent in the same transaction |
+| `board.create` | `POST /boards` (201) | person | Project | access-owned Personal/Project placement |
+| `board.update` | `PATCH /boards/:id` | person | Projects (sorted) → Board → Folder | writer of the current and destination Project, including a move between two Projects (as `updateBoard` always allowed); a change that can select another active Project Board (status, order, Project, `deleted: true`) carries `columns_revision` of the Board's Project (or the destination when it is in the Space) and, for a Project→Project move, `target_columns_revision` (409 when stale); a named Folder must be active in the destination, a kept Folder outside it is a 409 until cleared; Tasks on the Board keep their own Project; only the exact `deleted: true` request can rediscover an already deleted Board, so a lost delete response replays under the retained Project's current writer authority, while a new key, a changed body or any other edit of a deleted Board is refused |
+
+**Reference closure.** Every Task create/update writer shares one closure,
+`lockTaskWriteClosure` (`server/src/modules/tasks/taskReferenceLocks.ts`), run by
+the canonical writer itself (`PgTaskRepository.createTask` and `updateTask`) and,
+re-entrantly in the same transaction, by the core entries that authorize first.
+It discovers, without locks, the rows the write names and the Projects their
+access is decided in, then locks in one order:
+
+1. Projects, in id order: the written ones (the Task's current and target
+   Project, or a new Task's Project) `FOR UPDATE` with the active check and,
+   for every edit and person entry, writer authority; the Projects a
+   referenced Agent, parent Task or the parent's Folder is read through
+   `FOR SHARE`;
+2. the writer's own `project_members` rows in those read-through Projects;
+3. Folders: the final Folder (named, or kept across a Project move) active in
+   the target Project, and the parent's Folder;
+4. each assignee/claimer (user, then Space membership — `lockActivePerson`);
+5. each assigned/claiming Agent (active, not the system assistant, readable by
+   the writer), then the writer's grants on it;
+6. the Board (active, in the target Project or the Space);
+7. Tasks: the edited Task and a new parent's whole ancestry in id order, then
+   the writer's grants on the parent.
+
+Under the locks it walks the ancestry again and refuses a loop (422) or a
+moved ancestry (409), and re-reads where each reference's access is decided:
+an Agent or parent that moved to a Project not locked in step 1, or an edited
+Task whose Project changed, is a 409, never a late lock. Each lock is a
+`FOR SHARE` re-read of the row its real writer changes first — a membership
+change takes the Project row (`lockProjectAudienceForChange`) before
+`project_members`; content sharing updates the entity before its grants;
+Folder archive, account disable, Space exit, Agent status/share, Board
+archive/delete and Task reparent/delete update the row itself — so that writer
+either committed first and the write is refused, or waits for it to commit.
+The core already holds the writer's user and Space membership; a Space's
+oversight mode is fixed at creation. Cross-Project references stay legal:
+only their access is held, not forbidden.
+
+Folder on a Project move: a named Folder must be active in the target Project
+(else hidden 404); a kept Folder of the old Project is a 409 until the request
+clears it (`project_folder_id: null`) or names one of the target. A Space-only
+Task cannot name a Folder (422). The one exception to "active" is the
+follow-up Task writer (`followUpTask.ts`, accept and finalization reconciler),
+which keeps its existing contract: the Folder its Run named must be in the
+Task's Project, whatever its status (an archived Folder is restorable and
+dispatch re-checks it); it is still share-held (`folderAnyStatus`). Board moves keep their own rule through the
+same Folder step (`lockBoardFolder`).
+
+Writer matrix (all through the closure): `task.create` person (authorize with
+writer authority, then `createTask`); Agent `task.create`/`task.create_batch`,
+inquiry `link_task`, follow-up, decision delivery and briefing adoption
+(`createTask`, after their own Project gates); `task.update` PATCH (authorize,
+then `updateTask`; never places); `task.place_in_space_board` (authorize with
+the destination Board, Task kept standalone — a Task that moved into a Project
+is hidden); `task.move_to_column`, `board.configure` remaps, human
+`task.set_status` and Agent `task.set_status` (`updateTask`). The Agent
+`task.handoff` writes the claim itself; its recipient is share-held after the
+Project and before the Task — a person through `lockActivePerson` (active
+account, then active Space membership; the account-disable writer keeps
+membership, so the status is what refuses it), an Agent by its row — and the
+handoff's own recipient rules (active account, Space and Project member, Task
+readable; active Agent of the Project) then decide on rows that cannot change
+until commit, refusing with the same 422. Raw
+writers that name no reference are outside the closure by construction:
+publication import inserts a private Task with every reference NULL, and the
+Board configuration/default-column and settlement writers change only
+placement or status on Tasks they already hold.
+Proven on real PG (`taskBoardClosureDb`): crossing and four-Task reparents,
+a loop closed across PATCH and Space placement (serial and concurrent), Agent
+deactivation, account disable and Folder archive during create, Agent
+deactivation during edit and Space placement, the real `project.member.remove`
+writer against a cross-Project Agent (both orders) and parent, a kept Folder
+on a Project move (409; explicit null succeeds; archive barrier), a
+handoff recipient Agent deactivated while the handoff runs, and a person
+recipient against the real account-disable statement both ways (disable
+committed first: 422, no claim, no responsibility event; handoff first: the
+disable waits and the handoff commits). `followUpTaskDirectDb` keeps a
+follow-up in an archived Folder of its Project.
+
+Gate status for this model (P5 group 2, tree `8d8a0e87`): the closure,
+follow-up and handoff tests above pass, each with a failing negative control
+when only its production change is reverted. The full gate is not green: the
+server full suite has no terminal result (partial, 151 of 637 files, 0 failed,
+exit unknown), the web and daemon suites fail only on the budget reporter and
+the known `branchAlignIsolation` timeout, and the real-Chromium Task Detail
+case timed out once in a targeted run. That timeout was a missing or stale
+`apps/web/dist`, which the case now refuses before a browser starts
+(`requireCurrentWebDist`, by the content hashes the web build records). On `2d129e17` it passes in 15.2 s alone and in
+28.8 s in the full suite. Details:
+[acceptance](OPERATION_CORE_ACCEPTANCE.md) (P5 group 2 and the
+`2d129e17` test-failure investigation).
+
+The Agent `task.create` keeps its bounded field set (the Run's Project, no
+assignment/limits/placement fields, at most five Tasks per turn under the
+turn fan-out lock) and its human-initiation gate for unattended origins; it now
+returns the core envelope (`data.task_id`, `status`, `column_id`). The
+explicit `task.create_batch` remains its own Agent action over the same Task
+writer. Browser helpers send one key per explicit action and read the Task or
+Board back afterwards; they never retry a write automatically.

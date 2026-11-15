@@ -204,7 +204,8 @@ describe('ResearchSetupDialog', () => {
 
   it('renders adaptive provider attempts and materializes selected queries', async () => {
     const user = userEvent.setup({ delay: null })
-    vi.spyOn(researchDiscoveryApi, 'evaluate').mockResolvedValue({ strategy: {
+    vi.spyOn(researchDiscoveryApi, 'evaluate').mockResolvedValue({job_id:'33333333-3333-4333-8333-333333333333',strategy_id:'22222222-2222-4222-8222-222222222222',run_id:null,status:'queued'})
+    vi.spyOn(researchDiscoveryApi, 'waitEvaluation').mockResolvedValue({ strategy: {
       id: '22222222-2222-4222-8222-222222222222', project_id: 'project-1', research_context_version_id: '11111111-1111-4111-8111-111111111111', question_snapshot: initialDraft.research_question, status: 'selected',
       version: 1, parent_strategy_id: null, adaptation_direction: null, semantic_intent: null,
       policy_version: 'research_query_policy.v1', policy: {}, execution_budget: {},
@@ -243,7 +244,7 @@ describe('ResearchSetupDialog', () => {
     expect(screen.getByText(/accessible preview is smaller/)).toBeInTheDocument()
     expect(screen.getByText(/View 2 evaluation attempts/)).toBeInTheDocument()
     // The strategy carries only recent attempts; the full history is read on request.
-    const [recent] = (await vi.mocked(researchDiscoveryApi.evaluate).mock.results[0]!.value).strategy.provider_plans[0]!.attempts
+    const [recent] = (await vi.mocked(researchDiscoveryApi.waitEvaluation).mock.results[0]!.value).strategy.provider_plans[0]!.attempts
     const listAttempts = vi.spyOn(researchDiscoveryApi, 'listAttempts').mockResolvedValue({
       items: [{ ...recent!, id: 'attempt-2', round: 1, decision_reason: 'An older retry round' }, recent!],
       total: 2, limit: 100, offset: 0,

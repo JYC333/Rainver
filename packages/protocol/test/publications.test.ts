@@ -1,3 +1,4 @@
+import {PUBLICATION_OPERATION_SCHEMAS} from '../src/publicationOperations.js';
 import { describe, expect, it } from "vitest";
 import {
   ContentPublicationSchema,
@@ -62,4 +63,12 @@ describe("publication contracts", () => {
       created_at: "2026-07-10T12:00:00.000Z",
     }).publication_version).toBe(1);
   });
+});
+
+it('keeps all three command inputs strict and preserves a concealed import receipt',()=>{
+ expect(Object.keys(PUBLICATION_OPERATION_SCHEMAS)).toEqual(['publication.create','publication.import','publication.revoke']);
+ for(const key of ['publication.import','publication.revoke'] as const){
+  expect(PUBLICATION_OPERATION_SCHEMAS[key].input.safeParse({publication_id:'publication',user_id:'other'}).success).toBe(false);
+ }
+ expect(PublicationImportSchema.safeParse({id:'import',publication_id:'publication',target_space_id:'space',publication_version:1,snapshot_hash:'a'.repeat(64),imported_resource_type:'task',imported_resource_id:null,imported_by_user_id:'other',created_at:'2026-07-10T12:00:00.000Z'}).success).toBe(true);
 });

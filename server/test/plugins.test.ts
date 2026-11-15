@@ -187,7 +187,7 @@ beforeAll(async () => {
   if (!testDb.available) return;
   db = testDb.pool;
   await testDb.pool.query(SCHEMA);
-}, 60_000);
+});
 
 beforeEach(async () => {
   await testDb.pool.query("DROP TABLE IF EXISTS finance_books CASCADE");

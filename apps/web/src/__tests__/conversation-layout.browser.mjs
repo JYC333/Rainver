@@ -1,5 +1,7 @@
+import {SESSION_OPERATION_SCHEMAS, ROOM_OPERATION_SCHEMAS, AGENT_OPERATION_SCHEMAS} from '@rainver/protocol'
 import assert from 'node:assert/strict'
 import { after, before, test } from 'node:test'
+import { mkdirSync } from 'node:fs'
 import { chromium } from 'playwright-core'
 import { preview } from 'vite'
 import { work, workRun, run, turn, page as workPage } from '../modules/agent_work/fixtures.test-support.ts'
@@ -30,7 +32,20 @@ const item = work({ identity: { kind: 'session', source_id: session.id }, title:
   operations: [{ kind: 'open_session', space_id: room.space_id, session_id: session.id, room_id: room.id, agent_id: 'agent-layout' }] })
 const pageOf = items => ({ items, total: items.length, limit: 100, offset: 0 })
 
-async function mockApi(page) {
+async function assertMenuUnclipped(page) {
+  const result = await page.getByRole('listbox').evaluate(menu => {
+    const bounds = menu.getBoundingClientRect()
+    for (let parent = menu.parentElement; parent; parent = parent.parentElement) {
+      if (!/(auto|scroll|hidden|clip)/.test(getComputedStyle(parent).overflowY)) continue
+      const clip = parent.getBoundingClientRect()
+      if (bounds.top < clip.top - 1 || bounds.bottom > clip.bottom + 1) return false
+    }
+    return bounds.height > 24
+  })
+  assert.ok(result, 'model menu must fit clipping ancestors and scroll its own options')
+}
+
+async function mockApi(page, conversations = [session]) {
   await page.route('**/api/v1/**', async route => {
     const path = new URL(route.request().url()).pathname.replace('/api/v1', '')
     let data
@@ -41,7 +56,7 @@ async function mockApi(page) {
     else if (path === '/rooms') data = pageOf([room])
     else if (path === `/rooms/${room.id}`) data = { room, viewer_can_write: false,
       other_member_names: [], agent_count: 0, agent_members: [], user_members: [] }
-    else if (path === `/rooms/${room.id}/conversations`) data = pageOf([session])
+    else if (path === `/rooms/${room.id}/conversations`) data = pageOf(conversations)
     else if (path.endsWith('/messages')) data = { ...pageOf([message]), queued: [] }
     else if (path === '/projects') data = pageOf([project])
     else if (path === `/projects/${project.id}`) data = project
@@ -559,19 +574,16 @@ test('Execution context has no empty notice gap and aggregates expired Agents', 
     } }))
     const path = `${baseUrl}/spaces/${room.space_id}/projects/${project.id}/rooms?room=${room.id}&conversation=${session.id}`
     await page.goto(path)
-    const panel = page.getByTestId('execution-preflight-collapsed')
-    await panel.waitFor()
-    const button = panel.getByRole('button', { name: 'Execution context configured' })
-    const box = await panel.boundingBox()
-    const buttonBox = await button.boundingBox()
-    assert.ok(box.height <= buttonBox.height + 2, 'no empty padding below the configured row')
+    const button=page.getByRole('button',{name:/Conversation settings ·/})
+    await button.waitFor()
+    assert.ok((await button.boundingBox()).height<44)
     expired = 4
     await page.reload()
-    await panel.waitFor()
+    await button.click()
+    await page.getByRole('tab',{name:'Runtime environment'}).click()
+    const panel=page.getByRole('dialog')
+    await panel.getByText('Agent session diagnostics and recovery',{exact:true}).click()
     await panel.getByText('Prompt cache estimated expired (4)', { exact: true }).waitFor()
-    assert.ok((await panel.boundingBox()).height < 100, 'multiple expired Agents stay compact')
-    assert.equal(await panel.getByRole('button', { name: /New session for/ }).count(), 0)
-    await panel.locator('summary').click()
     assert.equal(await panel.getByRole('button', { name: /New session for/ }).count(), 4)
   } finally { await page.close() }
 })
@@ -624,6 +636,9 @@ test('Reply files open Files & Code and images preview in a closable dialog on d
       await page.locator('.cm-editor').waitFor()
       assert.equal(new URL(page.url()).searchParams.get('folder'), folder.id)
       assert.equal(errors.length, 0, errors.join('\n'))
+      await page.setViewportSize({ width: 390, height: 900 })
+      await page.locator('main[aria-label="Conversation"]').scrollIntoViewIfNeeded()
+      await page.screenshot({ path: `${shots}/${locale}-${theme}-390.png` })
     } finally { await page.close() }
   }
 })
@@ -670,6 +685,9 @@ test('Agent Work presents results before folded history across themes, languages
       await page.getByText('Earlier result', { exact: true }).waitFor()
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true)
       if (width === 390) await page.screenshot({ path: `/tmp/rainver-work-history-${locale}-${theme}.png` })
+      await page.setViewportSize({ width: 390, height: 900 })
+      await page.locator('main[aria-label="Conversation"]').scrollIntoViewIfNeeded()
+      await page.screenshot({ path: `${shots}/${locale}-${theme}-390.png` })
     } finally { await page.close() }
   }
 })
@@ -725,4 +743,416 @@ test('Host Agent catalog keeps installed Agents first and upgrades the selected 
 
     }finally{await context.close()}
   }
+})
+
+
+test('Room fills the desktop area and scrolls long conversation lists internally', async () => {
+  const shots = process.env.ROOM_LAYOUT_SHOTS ?? '/tmp/rainver-room-height-shots'
+  mkdirSync(shots, { recursive: true })
+  for (const [locale, theme] of [['en', 'light'], ['zh-CN', 'dark']]) {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 1000 }, serviceWorkers: 'block' })
+    try {
+      await page.addInitScript(([locale, theme]) => {
+        localStorage.setItem('rainver:locale', locale)
+        localStorage.setItem('rainver:theme', theme)
+      }, [locale, theme])
+      await mockApi(page, [session, ...Array.from({ length: 80 }, (_, i) => ({ ...session, id: `extra-${i}`, title: `Conversation ${i}` }))])
+      await page.goto(`${baseUrl}/spaces/${room.space_id}/projects/${project.id}/rooms?room=${room.id}`)
+      await page.getByRole('navigation', { name: locale === 'en' ? 'Conversations' : '对话' }).getByRole('button').first().waitFor()
+      await page.screenshot({ path: `${shots}/${locale}-${theme}-entry.png` })
+      await page.getByRole('navigation', { name: locale === 'en' ? 'Conversations' : '对话' }).getByRole('button').first().click()
+      await page.locator('[data-role="agent"] li').first().waitFor()
+      for (const [width, height] of [[1024, 800], [1280, 1000], [1920, 1400]]) {
+        await page.setViewportSize({ width, height })
+        await page.evaluate(() => document.fonts.ready)
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+        const nav = page.getByRole('navigation', { name: 'Conversations', exact: true })
+        const metrics = await nav.evaluate(el => {
+          const area = document.querySelector('[data-project-area-content]')
+          const chat = document.querySelector('main[aria-label="Conversation"]')
+          const card = chat.firstElementChild
+          return { areaBottom: area.getBoundingClientRect().bottom, chatBottom: card.getBoundingClientRect().bottom,
+            navBottom: el.getBoundingClientRect().bottom, chatHeight: card.clientHeight,
+            client: el.clientHeight, scroll: el.scrollHeight, areaClient: area.clientHeight, areaScroll: area.scrollHeight,
+            documentHeight: document.documentElement.scrollHeight, viewport: innerHeight }
+        })
+        assert.ok(metrics.scroll > metrics.client + 100, JSON.stringify(metrics))
+        assert.ok(metrics.areaBottom - metrics.chatBottom >= 0 && metrics.areaBottom - metrics.chatBottom <= 24, JSON.stringify(metrics))
+        assert.ok(metrics.navBottom <= metrics.chatBottom + 1, JSON.stringify(metrics))
+        if (width >= 1280) assert.ok(metrics.chatBottom - metrics.navBottom <= 12, JSON.stringify(metrics))
+        assert.ok(metrics.areaScroll <= metrics.areaClient + 1, JSON.stringify(metrics))
+        assert.ok(metrics.documentHeight <= metrics.viewport + 1, JSON.stringify(metrics))
+        if (height === 1400) assert.ok(metrics.chatHeight > 1000, JSON.stringify(metrics))
+        await nav.evaluate(el => { el.scrollTop = el.scrollHeight })
+        assert.ok(await nav.evaluate(el => el.scrollTop > 0))
+        await nav.getByRole('button').last().scrollIntoViewIfNeeded()
+        await page.screenshot({ path: `${shots}/${locale}-${theme}-${width}.png` })
+      }
+      await page.setViewportSize({ width: 390, height: 900 })
+      await page.locator('main[aria-label="Conversation"]').scrollIntoViewIfNeeded()
+      await page.screenshot({ path: `${shots}/${locale}-${theme}-390.png` })
+    } finally { await page.close() }
+  }
+})
+
+for (const [width, locale, theme] of [[1280, 'en', 'dark'], [1280, 'zh-CN', 'light'], [390, 'en', 'light'], [390, 'zh-CN', 'dark']]) {
+  test(`short Project sidecar keeps setup and message entry reachable (${width} ${locale} ${theme})`, async () => {
+    const page = await browser.newPage({ viewport: { width, height: 520 }, serviceWorkers: 'block' })
+    try {
+      await page.addInitScript(({ locale, theme }) => {
+        localStorage.setItem('rainver:locale', locale)
+        localStorage.setItem('rainver:theme', theme)
+        localStorage.setItem('project.sidecar.project-layout.open', 'true')
+      }, { locale, theme })
+      await mockApi(page)
+      await page.route('**/api/v1/projects/*/mainline-room', route => route.fulfill({ json: { room, viewer_can_write: true } }))
+      await page.route('**/api/v1/sessions/*/execution-context', route => route.fulfill({ json: {
+        summary: { session_id: session.id, state: 'uninitialized', host: null, runtime: null, primary: null,
+          attachments: [], dispatch_locked: false, can_send: false, blocked_reason: null },
+        available_hosts: [], available_runtime_profiles: [], available_primary_locations: [],
+      } }))
+      await page.goto(`${baseUrl}/spaces/${room.space_id}/projects/${project.id}/files`)
+      const sidecar = page.getByTestId('project-chat-sidecar')
+      const entry=sidecar.getByRole('button',{name:locale==='en'?/Conversation settings ·/:/对话设置 ·/})
+      await entry.waitFor()
+      const editor=sidecar.locator('[contenteditable="true"]').first()
+      await editor.waitFor();await editor.fill('Keep this draft visible')
+      await entry.click()
+      const dialog=page.getByRole('dialog')
+      await dialog.getByRole('tab',{name:locale==='en'?'Runtime environment':'运行环境'}).click()
+      const confirm=dialog.getByRole('button',{name:locale==='en'?'Confirm execution context':'确认执行上下文',exact:true})
+      await confirm.scrollIntoViewIfNeeded()
+      const box=await confirm.boundingBox();assert.ok(box.y>=0&&box.y+box.height<=520)
+      await page.keyboard.press('Escape')
+      await editor.fill('Keep this draft visible')
+      await editor.press('Tab')
+      assert.equal(await editor.textContent(), 'Keep this draft visible')
+      await page.screenshot({ path: `/tmp/rainver-layout-shots/sidecar-short-${width}-${locale}-${theme}.png` })
+    } finally { await page.close() }
+  })
+}
+
+for (const [locale, theme] of [['en', 'dark'], ['zh-CN', 'light']]) {
+  test(`Quota warning vertically centers content and dismissal (${locale} ${theme})`, async () => {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 1000 }, serviceWorkers: 'block' })
+    try {
+      await page.addInitScript(([locale, theme]) => {
+        localStorage.setItem('rainver:locale', locale)
+        localStorage.setItem('rainver:theme', theme)
+      }, [locale, theme])
+      await mockApi(page)
+      await page.route('**/quota', route => route.fulfill({ json: { warn_pct: 70, reserve_pct: 100, holds: [], logins: [{
+        account_label: 'Codex CLI · server-desktop-test', login_key: 'layout-quota',
+        window: { kind: 'week', utilization: 70, resets_at: new Date(Date.now() + 3_600_000).toISOString() },
+        checked_at: new Date().toISOString(),
+      }] } }))
+      await page.goto(`${baseUrl}/spaces/${room.space_id}/projects/${project.id}/rooms?room=${room.id}&conversation=${session.id}`)
+      const warning = page.getByTestId('conversation-quota-line')
+      await warning.waitFor()
+      for (const width of [1920, 1280, 390]) {
+        await page.setViewportSize({ width, height: 1000 })
+        await page.evaluate(() => document.fonts.ready)
+        await warning.scrollIntoViewIfNeeded()
+        const geometry = await warning.evaluate(el => {
+          const content = el.firstElementChild.getBoundingClientRect()
+          const close = el.querySelector('button').getBoundingClientRect()
+          return { delta: Math.abs((content.top + content.bottom - close.top - close.bottom) / 2),
+            fits: el.scrollWidth <= el.clientWidth + 1 }
+        })
+        assert.ok(geometry.delta <= 1, JSON.stringify({ width, ...geometry }))
+        assert.ok(geometry.fits, 'wrapped warning fits its parent surface')
+        await page.screenshot({ path: `/tmp/quota-center-${locale}-${theme}-${width}.png` })
+      }
+      await warning.getByRole('button').click()
+      await warning.waitFor({ state: 'detached' })
+    } finally { await page.close() }
+  })
+}
+
+test('Conversation settings unify Room sidecar and Agent Work with strict HTTP and bounded scrolling', async () => {
+  const shots='/tmp/rainver-conversation-settings';mkdirSync(shots,{recursive:true})
+  for(const locale of ['en','zh-CN'])for(const theme of ['dark','light'])for(const width of [390,1280])for(const surface of ['Room','Sidecar','Agent Work']){
+    const page=await browser.newPage({viewport:{width,height:900},serviceWorkers:'block'})
+    try{
+      await page.addInitScript(({locale,theme})=>{localStorage.setItem('rainver:locale',locale);localStorage.setItem('rainver:theme',theme);localStorage.setItem('project.sidecar.project-layout.open','true')},{locale,theme})
+      await mockApi(page)
+      const manager={agent_id:'agent-layout',agent_name:'Assistant',agent_kind:'system_assistant',role:'manager',status:'active'}
+      const optional={agent_id:'specialist-layout',agent_name:'Codex',agent_kind:'standard',role:'member',status:'active'}
+      const members=[manager,...Array.from({length:24},(_,i)=>({agent_id:'joined-'+i,agent_name:'Participant '+String(i).padStart(2,'0'),agent_kind:'standard',role:'member',status:'active'})),optional]
+      const runtime={agent_id:manager.agent_id,runtime_profile_id:'runtime-layout',runtime_key:'claude_code',runtime_installation:'own',session_config:[{id:'model',type:'select',category:'model',value:'current-model'}]}
+      let joined=false,retained=false,saves=0,refuseNext=true,revision=1,model='current-model',failRefresh=false,firstPreflight=true,offline=false,showAttachment=false
+      let releasePreflight
+      const initialPreflight=new Promise(resolve=>{releasePreflight=resolve})
+      const detail={room,viewer_can_write:true,other_member_names:[],agent_count:members.length,agent_members:members,user_members:[]}
+      const profiles=members.map(member=>({agent_id:member.agent_id,agent_name:member.agent_name,runtime_profile_id:member===manager?'runtime-layout':'profile-'+member.agent_id,runtime_key:'claude_code',runtime_installation:'own',execution_host_id:'host-layout',workspace_mode:'managed',workspace_location_id:null,preferred:true,usable:true,reason:null}))
+      await page.route('**/api/v1/**',async route=>{
+        const path=new URL(route.request().url()).pathname.replace('/api/v1','')
+        if(path==='/skills/available')return route.fulfill({json:[{kind:'skill',skill_package_id:'skill-audit',package_hash:'a'.repeat(64),display_name:'Audit'}]})
+        if(path===`/rooms/${room.id}`)return route.fulfill({json:detail})
+        if(path.endsWith('/mainline-room'))return route.fulfill({json:{room,viewer_can_write:true}})
+        if(path.endsWith('/retrieval'))return route.fulfill({json:{enabled:false,preferred_domains:[]}})
+        if(path.endsWith('/messages'))return route.fulfill({json:{...pageOf([]),queued:[]}})
+        if(path.endsWith('/execution-context')){
+          if(firstPreflight){firstPreflight=false;await initialPreflight}
+          if(failRefresh){failRefresh=false;return route.fulfill({status:503,json:{detail:'Synthetic preflight outage'}})}
+          return route.fulfill({json:{summary:{participant_agent_ids:[...members.filter(m=>m!==optional).map(m=>m.agent_id),'hidden-layout',...(joined?[optional.agent_id]:[])],participants_revision:String(revision),session_id:session.id,state:'initialized',host:{host_id:'host-layout',host_name:'Laptop',host_kind:'remote',online:!offline,managed_workspace_available:true,daemon_last_heartbeat_at:now},runtime:joined?{...runtime,agent_id:optional.agent_id,runtime_profile_id:profiles.at(-1).runtime_profile_id}:runtime,runtimes:profiles.filter(p=>p.agent_id!==optional.agent_id||joined).map(p=>({...runtime,...p,session_config:p.agent_id===manager.agent_id?[{id:'model',type:'select',category:'model',value:model}]:[]})),primary:{kind:'managed',managed_workspace_id:session.id,display_path:null},attachments:showAttachment?[{id:'attachment-layout',workspace_location_id:'docs-layout',folder_name:'Shared docs',display_path:'/work/shared/research-documents',access_mode:'read',status:'active'}]:[],dispatch_locked:false,queue_paused_at:null,can_send:!offline,blocked_reason:offline?'Device offline':null},available_hosts:[],available_runtime_profiles:profiles.map(p=>({...p,retained_binding:p.agent_id===optional.agent_id?retained:true})),available_primary_locations:[]}})
+        }
+        if(path.endsWith('/conversation-backends')){
+          const id=path.split('/')[2],p=profiles.find(p=>p.agent_id===id)
+          const config=(id===manager.agent_id||id==='joined-0')?[{id:'model',name:'Model',description:null,type:'select',category:'model',current_value:'current-model',options:[{value:'current-model',name:'Gemini 4 Pro Preview'},...Array.from({length:6},(_,i)=>({value:'middle-'+i,name:'Middle model '+i})),{value:'next-model',name:'Next model'}]}]:[]
+          return route.fulfill({json:{options:[{...p,name:'CLI',session_config_options:config}],binding:{...runtime,...p},session_config:id===manager.agent_id?[{id:'model',type:'select',category:'model',value:model}]:[]}})
+        }
+        if(path==='/actions/conversation.execution.initialize'){
+          const body=route.request().postDataJSON();SESSION_OPERATION_SCHEMAS['conversation.execution.initialize'].input.parse(body)
+          assert.equal(body.participants_revision,String(revision));assert.equal(body.runtime.agent_id,manager.agent_id)
+          assert.deepEqual(Object.keys(body.runtime).sort(),['agent_id','runtime_installation','runtime_key','runtime_profile_id'])
+          assert.deepEqual(body.participant_changes,[{agent_id:optional.agent_id,participating:!joined}]);assert.equal(body.additional_runtimes.length,!joined&&!retained?1:0);assert.equal(body.participant_agent_ids,undefined)
+          if(refuseNext){refuseNext=false;revision++;return route.fulfill({status:409,json:{detail:'Participants changed; refresh and retry your selection'}})}
+          joined=!joined;retained=true;revision++;saves++
+          return route.fulfill({json:{status:'succeeded',data:{id:session.id,session_id:session.id,space_id:room.space_id}}})
+        }
+        if(path==='/actions/conversation.session_config.save'){
+          const body=route.request().postDataJSON();AGENT_OPERATION_SCHEMAS['conversation.session_config.save'].input.parse(body)
+          assert.equal(body.allow_quota_model_switch,undefined)
+          model=body.session_config.find(s=>s.category==='model').value
+          return route.fulfill({json:{status:'succeeded',data:{id:session.id,session_id:session.id,space_id:room.space_id}}})
+        }
+        return route.fallback()
+      })
+      const path=surface==='Room'?`/spaces/${room.space_id}/projects/${project.id}/rooms?room=${room.id}&conversation=${session.id}`:surface==='Sidecar'?`/spaces/${room.space_id}/projects/${project.id}/files`:'/agent-work'
+      await page.goto(baseUrl+path)
+      if(surface==='Agent Work')await page.locator('[data-work-row]').first().click()
+      const unknownEntry=page.getByRole('button',{name:locale==='en'?'Conversation settings':'对话设置',exact:true})
+      await unknownEntry.click()
+      const loadingDialog=page.getByRole('dialog')
+      await loadingDialog.getByRole('status').waitFor()
+      assert.equal(await loadingDialog.getByRole('button',{name:locale==='en'?'Add Agent from Room':'从Room添加Agent',exact:true}).count(),0)
+      await page.screenshot({animations:'disabled',path:`${shots}/${surface}-${locale}-${theme}-${width}-loading.png`})
+      releasePreflight()
+      await loadingDialog.getByRole('button',{name:locale==='en'?'Add Agent from Room':'从Room添加Agent',exact:true}).waitFor()
+      await page.keyboard.press('Escape')
+      const entry=page.getByRole('button',{name:locale==='en'?'Conversation settings · 26':'对话设置 · 26',exact:true})
+      await entry.waitFor()
+      const editor=page.locator('[contenteditable="true"]').first()
+      await editor.fill('@Ass')
+      await page.getByRole('option',{name:'@Assistant',exact:true}).click()
+      assert.match(await editor.innerText(),/Assistant/)
+      await editor.fill('/Au')
+      const skillOption=page.getByRole('option').filter({hasText:'/Audit'})
+      await skillOption.waitFor();await assertMenuUnclipped(page)
+      assert.ok(await editor.evaluate(el=>el===document.activeElement),'autocomplete keeps typing focus')
+      await page.screenshot({path:`${shots}/${surface}-${locale}-${theme}-${width}-skill-suggestions.png`,animations:'disabled'})
+      await skillOption.click();assert.match(await editor.innerText(),/Audit/)
+      await editor.fill('Keep this message draft')
+      await entry.scrollIntoViewIfNeeded()
+      await page.locator('[data-sonner-toast]').last().waitFor({state:'hidden'}).catch(()=>{})
+      for(const control of [entry,page.getByRole('button',{name:locale==='en'?'Send':'发送',exact:true}).last()]) {
+        const box=await control.boundingBox();assert.ok(box&&box.y>=0&&box.y+box.height<=900,JSON.stringify({surface,box}))
+        assert.ok(await control.evaluate(el=>{const b=el.getBoundingClientRect();return el.contains(document.elementFromPoint(b.x+b.width/2,b.y+b.height/2))}),surface+' control is unobstructed')
+      }
+      await page.screenshot({animations:'disabled',path:`${shots}/${surface}-${locale}-${theme}-${width}-entry.png`})
+      assert.equal(await page.getByTestId('execution-preflight-collapsed').count(),0)
+      await entry.click()
+      const dialog=page.getByRole('dialog'),add=dialog.getByRole('button',{name:locale==='en'?'Add Agent from Room':'从Room添加Agent',exact:true})
+      await add.waitFor();assert.equal(await dialog.getByText('Codex',{exact:true}).count(),0)
+      failRefresh=true
+      await page.evaluate(()=>window.dispatchEvent(new Event('focus')))
+      await dialog.getByRole('status').filter({hasText:'Synthetic preflight outage'}).waitFor()
+      assert.equal(await dialog.getByRole('button',{name:locale==='en'?'Add Agent from Room':'从Room添加Agent',exact:true}).count(),0)
+      await page.screenshot({animations:'disabled',path:`${shots}/${surface}-${locale}-${theme}-${width}-refresh-failure.png`})
+      await dialog.getByRole('button',{name:locale==='en'?'Retry':'重试',exact:true}).click()
+      await add.waitFor()
+
+      await add.click({trial:true})
+      for (const trigger of await dialog.getByRole('button', {name:'Model', exact:true}).all()) {
+        assert.ok(await trigger.locator('span').evaluate(el=>el.scrollWidth<=el.clientWidth+1), 'selected model name must be fully visible')
+      }
+      await page.screenshot({animations:'disabled',path:`${shots}/${surface}-${locale}-${theme}-${width}-compact.png`})
+      const firstAgent=dialog.locator('[data-agent-settings]').filter({has:page.getByText('Assistant',{exact:true})})
+      const disclosure=firstAgent.getByRole('button',{name:/Other parameters|其他参数/})
+      await firstAgent.getByText('Assistant',{exact:true}).click()
+      assert.equal(await disclosure.getAttribute('aria-expanded'),'true')
+      await firstAgent.getByText('Assistant',{exact:true}).click()
+      assert.equal(await disclosure.getAttribute('aria-expanded'),'false')
+      const rowBounds=await disclosure.boundingBox()
+      await disclosure.click({position:{x:rowBounds.width-12,y:rowBounds.height/2}})
+      assert.equal(await disclosure.getAttribute('aria-expanded'),'true')
+      await firstAgent.getByText('Assistant',{exact:true}).click()
+      assert.equal(await disclosure.getAttribute('aria-expanded'),'false')
+      const list=dialog.locator('div.overflow-y-auto').first()
+      assert.ok(await list.evaluate(el=>el.scrollHeight>el.clientHeight+100))
+      await list.evaluate(el=>el.scrollTop=el.scrollHeight)
+      assert.ok(await add.isVisible());await add.click()
+      const search=dialog.getByRole('textbox');await search.fill('code')
+      await dialog.getByRole('button',{name:'Codex',exact:true}).click()
+      const save=dialog.getByRole('button',{name:locale==='en'?'Add to conversation':'加入对话',exact:true})
+      await save.click();await dialog.getByRole('alert').filter({hasText:'Participants changed; refresh and retry your selection'}).waitFor();assert.equal(saves,0)
+      await page.screenshot({animations:'disabled',path:`${shots}/${surface}-${locale}-${theme}-${width}-failure.png`})
+      await dialog.getByRole('button',{name:locale==='en'?'Retry':'重试',exact:true}).click()
+      await dialog.getByRole('button',{name:'Codex',exact:true}).click()
+      await save.click();await save.waitFor({state:'hidden'});assert.equal(saves,1)
+      const codex=dialog.locator('[data-agent-settings]').filter({has:page.getByText('Codex',{exact:true})})
+      await codex.getByRole('button',{name:locale==='en'?'Remove':'移除',exact:true}).click();await codex.getByRole('button',{name:locale==='en'?'Confirm removal':'确认移出',exact:true}).click();await codex.waitFor({state:'hidden'});assert.equal(saves,2)
+      await add.click();await search.fill('code');await dialog.getByRole('button',{name:'Codex',exact:true}).click();await save.click();await save.waitFor({state:'hidden'});assert.equal(saves,3)
+      const other=dialog.locator('[data-agent-settings]').filter({has:page.getByText('Participant 00',{exact:true})})
+      await other.getByRole('button',{name:/Other parameters|其他参数/}).press('Enter')
+      await other.getByRole('checkbox').check()
+      const assistant=dialog.locator('[data-agent-settings]').filter({has:page.getByText('Assistant',{exact:true})});await assistant.getByRole('button',{name:/Other parameters|其他参数/}).press('Enter')
+      const scrollBefore = await list.evaluate(el=>({height:el.scrollHeight, top:el.scrollTop}))
+      await assistant.getByRole('button',{name:'Model',exact:true}).click();await assert.equal(await list.evaluate(el=>el.scrollHeight),scrollBefore.height, 'opening model menu must not grow the dialog scroll area');await page.getByRole('option',{name:'Gemini 4 Pro Preview',exact:true}).click({trial:true});await assertMenuUnclipped(page);await page.screenshot({path:`${shots}/${surface}-${locale}-${theme}-${width}-eight-models.png`,animations:'disabled'});await page.getByRole('option',{name:'Next model',exact:true}).click()
+      await assistant.getByRole('button',{name:'Model',exact:true}).filter({hasText:'Next model'}).waitFor();
+      await assistant.getByRole('status').waitFor({state:'hidden'});assert.equal(model,'next-model')
+      assert.equal(await other.getByRole('button',{name:'Model',exact:true}).textContent(),'Gemini 4 Pro Preview')
+      await other.getByRole('status').filter({hasText:locale==='en'?'Not saved':'尚未保存'}).waitFor()
+      await other.getByRole('button',{name:locale==='en'?'Discard changes':'放弃修改',exact:true}).click({trial:true})
+      await page.screenshot({animations:'disabled',path:`${shots}/${surface}-${locale}-${theme}-${width}-agents.png`})
+      await dialog.getByRole('tab',{name:locale==='en'?'Runtime environment':'运行环境',exact:true}).click()
+      await dialog.getByText(locale==='en'?'Device':'设备',{exact:true}).waitFor()
+      assert.equal(await dialog.getByText(locale==='en'?/Host and primary directory are fixed/:/初始化后Host和主目录固定/).count(),0)
+      await dialog.getByRole('button',{name:locale==='en'?'Add folder':'添加目录',exact:true}).click({trial:true})
+      await page.screenshot({animations:'disabled',path:`${shots}/${surface}-${locale}-${theme}-${width}-environment.png`})
+      showAttachment=true;await page.evaluate(()=>window.dispatchEvent(new Event('focus')))
+      await dialog.getByText(/Shared docs/).waitFor()
+      const accessBadge=dialog.locator('span').filter({hasText:locale==='en'?/^Read only$/:/^只读$/})
+      assert.ok(await accessBadge.isVisible())
+      assert.ok(await accessBadge.evaluate(el=>el.scrollWidth<=el.clientWidth+1))
+      await page.screenshot({animations:'disabled',path:`${shots}/${surface}-${locale}-${theme}-${width}-folders.png`})
+      offline=true;await page.evaluate(()=>window.dispatchEvent(new Event('focus')))
+      await dialog.getByText('Device offline',{exact:true}).waitFor()
+      await page.screenshot({animations:'disabled',path:`${shots}/${surface}-${locale}-${theme}-${width}-offline.png`})
+      offline=false;showAttachment=false;await page.evaluate(()=>window.dispatchEvent(new Event('focus')))
+      await dialog.getByText('Device offline',{exact:true}).waitFor({state:'hidden'})
+      assert.ok(await dialog.evaluate(el=>el.scrollWidth<=el.clientWidth+1))
+      await page.keyboard.press('Escape');assert.equal(await editor.innerText(),'Keep this message draft')
+      await page.getByRole('button',{name:locale==='en'?'Send':'发送',exact:true}).last().click()
+      await dialog.waitFor()
+      await dialog.getByRole('note').filter({hasText:locale==='en'?'Save or discard':'发送前请保存'}).waitFor()
+      await dialog.getByRole('tab',{name:locale==='en'?'Agents':'Agent',exact:true}).click()
+      await other.getByRole('button',{name:/Other parameters|其他参数/}).press('Enter')
+      await other.getByRole('button',{name:locale==='en'?'Discard changes':'放弃修改',exact:true}).click()
+      await other.getByRole('status').waitFor({state:'hidden'})
+      await page.keyboard.press('Escape')
+      assert.equal(await editor.innerText(),'Keep this message draft')
+      assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1))
+    }finally{await page.close()}
+  }
+})
+
+test('Direct Agent settings keep failed drafts visible and guard sends across appearance variants', async () => {
+  const shots = '/tmp/rainver-conversation-settings'; mkdirSync(shots, { recursive: true })
+  for (const locale of ['en', 'zh-CN']) for (const theme of ['dark', 'light']) for (const width of [390, 1280]) {
+    const page = await browser.newPage({ viewport: { width, height: 900 }, serviceWorkers: 'block' })
+    try {
+      await page.addInitScript(({locale,theme}) => { localStorage.setItem('rainver:locale',locale); localStorage.setItem('rainver:theme',theme) }, {locale,theme})
+      await mockApi(page)
+      let sends = 0, writes = 0, model = 'current', readFailures = 0
+      await page.route('**/api/v1/**', async route => {
+        const path = new URL(route.request().url()).pathname.replace('/api/v1','')
+        if(path==='/skills/available')return route.fulfill({json:[{kind:'skill',skill_package_id:'skill-audit',package_hash:'a'.repeat(64),display_name:'Audit'}]})
+        if (path === '/agents/agent-layout') return route.fulfill({json:{id:'agent-layout', space_id:room.space_id, name:'Assistant', status:'active', agent_kind:'system_assistant'}})
+        if (path.endsWith('/conversation-backends')) {
+          if(readFailures){readFailures--;return route.fulfill({status:503,json:{detail:'Synthetic read failure'}})}
+          return route.fulfill({json:{
+          options:[{runtime_profile_id:'runtime-layout', name:'CLI', runtime_key:'claude_code', usable:true,
+            session_config_options:[{id:'model',name:'Model',type:'select',category:'model',current_value:'current',options:[{value:'current',name:'Gemini 4 Pro Preview'},...Array.from({length:6},(_,i)=>({value:'middle-'+i,name:'Middle model '+i})),{value:'next',name:'Next model'}]}]}],
+          binding:{runtime_profile_id:'runtime-layout',runtime_key:'claude_code'},session_config:[{id:'model',type:'select',category:'model',value:model}],
+        }})}
+        if (path.endsWith('/retrieval')) return route.fulfill({json:{enabled:false,preferred_domains:[]}})
+        if (path.endsWith('/messages')) return route.fulfill({json:[]})
+        if (path === '/actions/conversation.session_config.save') {
+          writes++;if(writes===1)return route.fulfill({status:503,json:{detail:'Synthetic save failure'}})
+          assert.equal(route.request().postDataJSON().allow_quota_model_switch,undefined)
+          model='next';readFailures=1
+          return route.fulfill({json:{status:'succeeded',data:{id:session.id,session_id:session.id,space_id:room.space_id}}})
+        }
+        if (path.endsWith('/chat')) { sends++; return route.fulfill({status:500,json:{detail:'Must not send'}}) }
+        return route.fallback()
+      })
+      await page.goto(`${baseUrl}/spaces/${room.space_id}/agents/agent-layout/chat?session=${session.id}`)
+      const entry = page.getByRole('button',{name:locale==='en'?'Conversation settings · 1':'对话设置 · 1',exact:true})
+      await entry.waitFor()
+      const skillInput=page.locator('textarea').last()
+      await skillInput.fill('/Au')
+      const skillOption=page.getByRole('option').filter({hasText:'/Audit'})
+      await skillOption.waitFor();await assertMenuUnclipped(page)
+      assert.ok(await skillInput.evaluate(el=>el===document.activeElement),'plain composer keeps typing focus')
+      await page.screenshot({path:`${shots}/Direct-${locale}-${theme}-${width}-skill-suggestions.png`,animations:'disabled'})
+      await skillOption.click();assert.match(await skillInput.inputValue(),/Audit/)
+      await skillInput.fill('')
+      await entry.click()
+      const dialog = page.getByRole('dialog')
+      await page.screenshot({path:`${shots}/Direct-${locale}-${theme}-${width}-normal.png`,animations:'disabled'})
+      await dialog.getByRole('button',{name:'Model',exact:true}).click()
+      await page.getByRole('option',{name:'Gemini 4 Pro Preview',exact:true}).click({trial:true})
+      await assertMenuUnclipped(page)
+      await page.screenshot({path:`${shots}/Direct-${locale}-${theme}-${width}-eight-models.png`,animations:'disabled'})
+      await page.getByRole('option',{name:'Next model',exact:true}).click()
+      await dialog.getByRole('alert').filter({hasText:'Synthetic save failure'}).waitFor()
+      await page.screenshot({path:`${shots}/Direct-${locale}-${theme}-${width}-failed.png`,animations:'disabled'})
+      await page.keyboard.press('Escape')
+      const input = page.locator('textarea').last(); await input.fill('Keep direct message')
+      await page.screenshot({path:`${shots}/Direct-${locale}-${theme}-${width}-entry.png`,animations:'disabled'})
+      await page.getByRole('button',{name:locale==='en'?'Send':'发送',exact:true}).click()
+      await dialog.getByRole('note').filter({hasText:locale==='en'?'Save or discard':'发送前请保存'}).waitFor()
+      assert.equal(sends,0)
+      await dialog.getByRole('button',{name:locale==='en'?'Retry':'重试',exact:true}).click()
+      const refresh=dialog.getByRole('button',{name:locale==='en'?'Refresh saved settings':'重新读取已保存设置',exact:true})
+      await refresh.waitFor()
+      await page.screenshot({path:`${shots}/Direct-${locale}-${theme}-${width}-read-failed.png`,animations:'disabled'})
+      await refresh.click()
+      await dialog.getByRole('alert').waitFor({state:'hidden'})
+      assert.equal(writes,2)
+      assert.equal(await dialog.getByRole('button',{name:'Model',exact:true}).textContent(),'Next model')
+      await page.keyboard.press('Escape')
+      assert.equal(await input.inputValue(),'Keep direct message')
+      assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1))
+    } finally { await page.close() }
+  }
+})
+
+test('Direct first-message drafts become the accepted baseline and allow the second send', async () => {
+  const page = await browser.newPage({viewport:{width:390,height:900},serviceWorkers:'block'})
+  try {
+    await page.addInitScript(() => localStorage.setItem('rainver:locale','en'))
+    await mockApi(page)
+    let sends = 0, saved = [], reads = 0
+    const options = [
+      {id:'model',name:'Model',type:'select',category:'model',current_value:'current',options:[{value:'current',name:'Gemini 4 Pro Preview'},{value:'next',name:'Next model'}]},
+      {id:'fast',name:'Fast mode',type:'boolean',category:'model_config',current_value:false},
+    ]
+    await page.route('**/api/v1/**', async route => {
+      const path = new URL(route.request().url()).pathname.replace('/api/v1','')
+      if(path==='/agents/agent-layout')return route.fulfill({json:{id:'agent-layout',space_id:room.space_id,name:'Assistant',status:'active',agent_kind:'system_assistant'}})
+      if(path.endsWith('/conversation-backends')) { reads++; return route.fulfill({json:{options:[{runtime_profile_id:'runtime-layout',name:'CLI',runtime_key:'claude_code',usable:true,session_config_options:options}],binding:{runtime_profile_id:'runtime-layout',runtime_key:'claude_code'},session_config:saved}}) }
+      if(path.endsWith('/retrieval'))return route.fulfill({json:{enabled:false,preferred_domains:[]}})
+      if(path.endsWith('/messages'))return route.fulfill({json:[]})
+      if(path==='/actions/conversation.session_config.save')throw new Error('First drafts must use first send')
+      if(path==='/actions/agent.chat.send') {
+        sends++
+        const body=route.request().postDataJSON()
+        if(sends===1){assert.equal(body.session_id,undefined);saved=body.session_config;assert.equal(saved.find(s=>s.id==='model').value,'next');assert.equal(saved.find(s=>s.id==='fast').value,true)}
+        else {assert.equal(body.session_id,session.id);assert.equal(body.session_config,undefined)}
+        return route.fulfill({status:202,json:{status:'succeeded',data:{space_id:room.space_id,schema_version:'chat_turn_accepted.v1',session_id:session.id,run_id:'first-draft-run',user_message_id:'first-draft-message',status:'queued',event_stream_url:'/api/v1/runs/first-draft-run/turn/stream',backend:{runtime_profile_id:'runtime-layout',runtime_key:'claude_code'}}}})
+      }
+      if(path==='/runs/first-draft-run/turn/stream')return route.fulfill({contentType:'text/event-stream',body:'event: server.error\ndata: {"message":"Synthetic disconnect after acceptance"}\n\n'})
+      return route.fallback()
+    })
+    await page.goto(`${baseUrl}/spaces/${room.space_id}/agents/agent-layout/chat`)
+    await page.getByRole('button',{name:'Conversation settings · 1',exact:true}).click()
+    const dialog=page.getByRole('dialog')
+    await dialog.getByRole('button',{name:'Model',exact:true}).click()
+    await page.getByRole('option',{name:'Next model',exact:true}).click()
+    await page.getByRole('listbox').waitFor({state:'hidden'})
+    await dialog.getByRole('switch',{name:'Fast mode'}).click()
+    await page.keyboard.press('Escape')
+    const input=page.locator('textarea').last()
+    await input.fill('First message');await page.getByRole('button',{name:'Send',exact:true}).click()
+    await page.waitForURL('**?session='+session.id)
+    await input.fill('Second message')
+    const send=page.getByRole('button',{name:'Send',exact:true})
+    await send.click()
+    await page.waitForFunction(()=>document.querySelector('textarea')?.value==='')
+    assert.equal(sends,2);assert.ok(reads>=2)
+    assert.equal(await dialog.count(),0)
+  } finally {await page.close()}
 })

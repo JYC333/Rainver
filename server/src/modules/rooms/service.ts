@@ -1,3 +1,5 @@
+import {publicRoom} from './repository.js';
+import { PgConversationExecutionContextRepository } from "../sessions/executionContextRepository.js";
 import { PgRoomRosterRepository } from "./rosterRepository.js";
 import { RoomMutationError, roomRefusal } from "./roomMutationError.js";
 import { defaultRoomDelegationBudget } from "./delegationBudget.js";
@@ -18,7 +20,7 @@ import {
   ConversationTurnInProgressError,
   PgConversationRuntimeSessionRepository,
 } from "../sessions/conversationRuntimeSessionRepository.js";
-import { PgRoomRepository, ROOM_AUDIENCE_SQL, type RoomRecord } from "./repository.js";
+import { PgRoomRepository, ROOM_AUDIENCE_SQL, conversationHasUnfinishedAgentsSql, type RoomRecord } from "./repository.js";
 import { RoomReferenceService } from "./referenceService.js";
 import { ProjectOverviewService } from "../projects/overviewService.js";
 import { SpaceAssistantService, type ManagedAssistantPreparation } from "../agents/spaceAssistantService.js";
@@ -37,7 +39,7 @@ import {
   lockRoomConversationQueue,
   RoomMessageQueue,
 } from "./messageQueue.js";
-import { PLAIN_STATUS_RESPONSE_POLICY } from "../systemActions/conversationPolicy.js";
+import { PLAIN_STATUS_RESPONSE_POLICY, ROOM_SETTINGS_POLICY } from "../systemActions/conversationPolicy.js";
 import { PgConversationBackendRepository } from "../sessions/conversationBackendRepository.js";
 import { ConversationInputError, ConversationInputService, type PreparedConversationInputPart } from "../sessions/conversationInputService.js";
 import { ConversationInputCapabilityError, assertConversationInputCapabilities, assertConversationInputResourceTools } from "../sessions/conversationInputCapabilities.js";
@@ -140,7 +142,7 @@ export class RoomService {
         );
         if (existingPersonal) {
           return {
-            room: existingPersonal,
+            room: publicRoom(existingPersonal),
             user_members: await repository.listUserMembers(identity.spaceId, existingPersonal.id),
             agent_members: await repository.listAgentMembers(identity.spaceId, existingPersonal.id, identity.userId),
             viewer_can_write: true,
@@ -164,7 +166,7 @@ export class RoomService {
         role: "owner",
       });
       return {
-        room,
+        room:publicRoom(room),
         user_members: await repository.listUserMembers(identity.spaceId, room.id),
         agent_members: await repository.listAgentMembers(identity.spaceId, room.id, identity.userId),
         // Whoever just opened it can write the Project — `createRoom` asserts
@@ -191,7 +193,7 @@ export class RoomService {
     return { ...result, limit: input.limit, offset: input.offset };
   }
 
-  listAgentCandidates(identity: RoomIdentity, roomId: string, input: { limit: number; offset: number }) {
+  listAgentCandidates(identity: RoomIdentity, roomId: string, input: { limit: number; offset: number; q?: string | null }) {
     return this.rosterService().listAgentCandidates(identity, roomId, input);
   }
 
@@ -308,8 +310,31 @@ export class RoomService {
         user_id: identity.userId,
       });
       if (joined) await new PgRoomRosterRepository(client).incrementRosterRevision(identity.spaceId, room.id);
-      return { room, joined, viewer_can_write: viewerCanWrite };
+      return { room:publicRoom(room), joined, viewer_can_write: viewerCanWrite };
     });
+  }
+
+  /**
+   * The Project's Rooms, as the viewer may see them: the mainline and every
+   * limited Room they are an active member of, each with its audience and
+   * size. Opening it enrols the viewer in the mainline like every other
+   * Project conversation entry. A limited Room the viewer is not in is absent,
+   * not counted and not hinted at (ADR 0018 decision 3).
+   */
+  async listProjectRooms(
+    identity: RoomIdentity,
+    projectId: string,
+    input: { limit: number; offset: number },
+  ) {
+    const { viewer_can_write: viewerCanWrite } = await this.getProjectMainline(identity, projectId);
+    const page = await new PgRoomRepository(this.pool).listProjectRoomSummaries({
+      space_id: identity.spaceId,
+      user_id: identity.userId,
+      project_id: projectId,
+      limit: input.limit,
+      offset: input.offset,
+    });
+    return { ...page, limit: input.limit, offset: input.offset, viewer_can_write: viewerCanWrite };
   }
 
   /**
@@ -332,6 +357,7 @@ export class RoomService {
       room_other_member_names: string[]; room_agent_count: number;
       title: string | null; created_at: string; last_message_at: string | null;
       last_message_role: string | null; last_message_preview: string | null; message_count: number;
+      is_running: boolean;
     }>;
     empty_rooms: Array<{
       room_id: string; room_is_mainline: boolean;
@@ -359,6 +385,7 @@ export class RoomService {
       room_other_member_names: string[] | null; room_agent_count: string;
       title: string | null; created_at: string; last_message_at: string | null;
       last_message_role: string | null; last_message_preview: string | null; message_count: string;
+      is_running: boolean;
     }>(
       `SELECT s.id, s.room_id, room.title AS room_title, room.is_mainline AS room_is_mainline,
               roster.other_member_names AS room_other_member_names,
@@ -366,14 +393,16 @@ export class RoomService {
               s.title, s.created_at,
               last.created_at AS last_message_at, last.role AS last_message_role,
               left(last.content, 160) AS last_message_preview,
-              counted.total::text AS message_count
+              counted.total::text AS message_count,
+              ${conversationHasUnfinishedAgentsSql('s')} AS is_running
          ${fromRooms}
          LEFT JOIN LATERAL (
            SELECT m.created_at, m.role, m.content
              FROM messages m
             WHERE m.space_id = s.space_id AND m.session_id = s.id
+              AND m.role IN ('user', 'assistant')
               AND ${visibleRoomTranscriptSql({ alias: "m", spaceParam: "s.space_id", sessionParam: "s.id" })}
-            ORDER BY m.path_depth DESC, m.id DESC
+            ORDER BY m.created_at DESC, m.id DESC
             LIMIT 1
          ) last ON true
          LEFT JOIN LATERAL (
@@ -383,8 +412,7 @@ export class RoomService {
          ) counted ON true
          LEFT JOIN LATERAL (${ROOM_AUDIENCE_SQL}) roster ON true
          ${visible}
-        ORDER BY room.is_mainline DESC,
-                 COALESCE(last.created_at, s.updated_at) DESC, s.id DESC
+        ORDER BY COALESCE(last.created_at, s.created_at) DESC, s.id DESC
         LIMIT $4 OFFSET $5`,
       [...params, input.limit, input.offset],
     );
@@ -423,6 +451,7 @@ export class RoomService {
         created_at: dateIso(row.created_at)!,
         last_message_at: dateIso(row.last_message_at),
         message_count: Number(row.message_count),
+        is_running: row.is_running,
       })),
       empty_rooms: emptyRooms.rows.map((row) => ({
         room_id: row.room_id,
@@ -453,7 +482,7 @@ export class RoomService {
     const repository = new PgRoomRepository(this.pool);
     const room = await requireRoom(repository, identity, roomId);
     return {
-      room,
+      room:publicRoom(room),
       user_members: await repository.listUserMembers(identity.spaceId, room.id),
       agent_members: await repository.listAgentMembers(identity.spaceId, room.id, identity.userId),
       // What every roster mutation is gated on, so the page can show only the
@@ -735,17 +764,15 @@ export class RoomService {
         backends.set(agentId, { agent_id: agentId, runtime_profile_id: runtimeProfileId, ...(requestedConfig.length ? { session_config: requestedConfig, session_config_inherited: true } : {}) });
       }
       // A message the person handed to the manager is retried the same
-      // way, with the same targets — less any no longer in the Room.
+      // way, with the same targets. Refuse if any no longer participates.
+      const currentParticipants=new Set(await new PgConversationExecutionContextRepository(client).listConversationParticipantAgentIds({id:conversation.id,space_id:identity.spaceId,room_id:roomId,project_id:room.project_id,project_folder_id:room.project_folder_id}));
+      if([...backends.keys(),...stringArray(metadata.coordination_target_agent_ids)].some(id=>!currentParticipants.has(id)))throw new RoomMutationError(409,"A previous recipient no longer participates. Restore that participant in Conversation settings or send a new message to current participants.");
       const coordinated = metadata.routing_mode === "agent_coordination";
-      const activeAgentIds = coordinated
-        ? new Set((await rooms.listAgentMembers(identity.spaceId, roomId, identity.userId)).map((member) => member.agent_id))
-        : new Set<string>();
       const dispatched = await this.dispatchRoomMessage(client, rooms, room, identity, conversation.id, {
         content: originalMessage.content,
         input_parts: [],
         routing_mode: coordinated ? "agent_coordination" : "direct",
-        coordination_target_agent_ids: stringArray(metadata.coordination_target_agent_ids)
-          .filter((agentId) => activeAgentIds.has(agentId)),
+        coordination_target_agent_ids: stringArray(metadata.coordination_target_agent_ids),
         recipient_segments: coordinated ? null : Array.from(segments.entries()).sort(([left], [right]) => left - right).map(([, segment]) => segment),
         backends: Array.from(backends.values()),
         kind: "user",
@@ -1132,16 +1159,18 @@ export class RoomService {
       const agentMembers = await rooms.listAgentMembers(identity.spaceId, roomId, identity.userId);
       const manager = agentMembers.find((member) => member.role === "manager");
       if (!manager) throw new RoomMutationError(409, "Room has no active manager agent");
-      const activeAgentIds = new Set(agentMembers.map((member) => member.agent_id));
+      const participantIds = new Set(await new PgConversationExecutionContextRepository(client).listConversationParticipantAgentIds({id:sessionId,space_id:identity.spaceId,room_id:roomId,project_id:room.project_id,project_folder_id:room.project_folder_id}));
+      const participants = agentMembers.filter(member => participantIds.has(member.agent_id));
+      const activeAgentIds = new Set(participants.map((member) => member.agent_id));
       const segments = input.recipient_segments?.length
         ? input.recipient_segments
         : null;
       for (const recipient of segments?.flatMap((segment) => segment.recipient_agent_ids) ?? []) {
         if (!activeAgentIds.has(recipient)) {
-          throw new RoomMutationError(422, "Room message recipients must be active Room agents");
+          throw new RoomMutationError(422, "Room message recipients must be active Room agents and participate in this Conversation; add the Agent in Conversation settings first");
         }
       }
-      const coordinationTargets = roomCoordinationTargets(input, agentMembers, manager.agent_id);
+      const coordinationTargets = roomCoordinationTargets(input, participants, manager.agent_id);
       const content = input.content;
       if (!content && !(input.input_parts?.length) && !(input.capability_input_parts?.length)) {
         throw new RoomMutationError(422, "content or an input part is required");
@@ -1315,7 +1344,7 @@ export class RoomService {
         title: input.kind === "user" ? firstLine(content) || "Conversation input" : continuationGroupTitle(input),
         goal: "",
         manager_agent_id: manager.agent_id,
-        member_agent_ids: agentMembers.map((member) => member.agent_id),
+        member_agent_ids: participants.map((member) => member.agent_id),
         room_id: roomId,
         session_id: sessionId,
         trigger_message_id: roomMessage.id,
@@ -1329,7 +1358,7 @@ export class RoomService {
         // because the Conversation shares one directory (lifecycle projector),
         // so a number here would describe nothing the runtime does.
         budget_json: input.delegation_budget ? { ...input.delegation_budget } :
-          defaultRoomDelegationBudget(agentMembers.filter(member => member.agent_id !== manager.agent_id).length),
+          defaultRoomDelegationBudget(participants.filter(member => member.agent_id !== manager.agent_id).length),
       }, { allowSystemAssistant: true });
       if (input.discussion) {
         // Stamped before the recipients are dispatched, in the same
@@ -1682,7 +1711,7 @@ async function buildRoomProjectStateContext(
     } else if (definition.status === "needs_definition") {
       lines.push("The Project still needs a formal goal/core problem before it is initialized.");
     }
-    lines.push(`Reply in the user's language and conversational style. ${PLAIN_STATUS_RESPONSE_POLICY}`);
+    lines.push(`Reply in the user's language and conversational style. ${PLAIN_STATUS_RESPONSE_POLICY} ${ROOM_SETTINGS_POLICY}`);
     if (attention.length) {
       lines.push("Items needing attention for internal reasoning:");
       // A pending decision is never crowded out by a busy board: gates first,

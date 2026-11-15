@@ -18,6 +18,20 @@ describe("SystemActionGateway", () => {
     await expect(gateway.dispatch("source.recipe.activate", {}, context)).rejects.toMatchObject({ code: "system_action_actor_denied" });
   });
 
+  it('returns safe field errors without caller keys, values or validator internals',async()=>{
+    const execute=vi.fn();
+    const gateway=new SystemActionGateway(new Map([['workspace.change.complete',execute]]),async()=>({allowed:true}));
+    const error=await gateway.dispatch('workspace.change.complete',{
+      change_set_id:42,expected_revision:0,summary:'x',PRIVATE_UNKNOWN_KEY:'PRIVATE_VALUE',
+    },{...context,idempotency_key:'test'}).catch(error=>error);
+    expect(error).toMatchObject({code:'system_action_invalid_input',input_details:{fields:expect.arrayContaining([
+      {field:'change_set_id',code:'invalid_type'},{field:'expected_revision',code:'too_small'},
+    ]),guidance:expect.stringContaining('rainver describe workspace.change.complete')}});
+    expect(JSON.stringify(error)).not.toContain('PRIVATE');
+    expect(error.message).not.toContain('greater');
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it("enforces policy on every dispatch and validates output", async () => {
     const execute = vi.fn(async () => ({ items: [] }));
     const enforce = vi.fn(async () => ({ allowed: true, policy_decision_record_id: "decision-1" }));

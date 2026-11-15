@@ -12,6 +12,7 @@ import {
 } from "./verification/index.js";
 import type { VerificationResultRecord } from "./verification/index.js";
 import type { RunSupervisorPort } from "./supervisor.js";
+import { EXECUTION_CONTROLLER_LOST } from "./retryPolicy.js";
 
 const RUN_FINALIZER_VERSION = "post_run_finalization.v1";
 
@@ -47,6 +48,7 @@ const EXACT_ERROR_CODE_MAP: Record<string, { layer: string; reason: string }> = 
   semantic_rejection: { layer: "task_spec", reason: "semantic_rejection" },
   runtime_removed: { layer: "runtime", reason: "runtime_removed" },
   orphaned: { layer: "orchestration", reason: "orphaned" },
+  [EXECUTION_CONTROLLER_LOST]: { layer: "orchestration", reason: EXECUTION_CONTROLLER_LOST },
   duplicate_execution: { layer: "orchestration", reason: "duplicate_execution" },
   run_cancelled: { layer: "orchestration", reason: "run_cancelled" },
   validation_failed: { layer: "validation", reason: "validation_failed" },

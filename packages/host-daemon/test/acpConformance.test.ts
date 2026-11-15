@@ -115,7 +115,7 @@ describe.skipIf(process.platform === "win32")("current stable ACP package confor
         await acp.request("session/close", { sessionId: session.sessionId });
       }
     } finally { await acp.close(); await rm(root, { recursive: true, force: true }); }
-  }, 20_000);
+  });
   it.each(["codex_cli", "claude_code"] as const)("reads back model and mode changes from the actual %s adapter", async runtime => {
     const root = await mkdtemp(join(tmpdir(), "rainver-acp-contract-"));
     await mkdir(join(root, "codex")); await mkdir(join(root, "claude"));
@@ -143,5 +143,5 @@ describe.skipIf(process.platform === "win32")("current stable ACP package confor
       expect(requests).not.toContain('"method":"turn/start"');
       expect(requests).not.toContain('"type":"user"');
     } finally { await acp.close(); await rm(root, { recursive: true, force: true }); }
-  }, 20_000);
+  });
 });

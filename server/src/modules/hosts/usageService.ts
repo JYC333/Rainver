@@ -54,11 +54,22 @@ interface HostUsageRow {
 
 
 /**
- * Three hours, the cadence the CLI-profile refresh used. A five-hour session
- * window moves slowly enough that this is never the freshest number a card
- * could show; the refresh button is, and it is one click away.
+ * The automatic real-quota cadence: every fifteen minutes the scheduler asks
+ * each logged-in copy on each online host once (`refreshAllHostUsage`). This is
+ * the only automatic probe. Conversations, discussion headers and host cards
+ * read the cache (`host_runtime_usage`); a read never probes, so however many
+ * conversations run on one login, its provider is asked once per pass. The
+ * Usage page and per-pool refresh are explicit probes, and the Room admission
+ * gate keeps its own one-minute freshness rule (`rooms/subscriptionLogins.ts`)
+ * — a safety check, not this display cadence.
  */
-export const HOST_USAGE_REFRESH_INTERVAL_SECONDS = 3 * 60 * 60;
+export const HOST_USAGE_REFRESH_INTERVAL_SECONDS = 15 * 60;
+/**
+ * A copy read this recently (by the gate, the Usage page, or a finished Run's
+ * live reading) is not asked again by the sweep. Half the cadence, so a pass
+ * that just missed a reading still catches it on the next one.
+ */
+export const HOST_USAGE_SWEEP_FRESH_MS = (HOST_USAGE_REFRESH_INTERVAL_SECONDS * 1000) / 2;
 
 function quotaOf(value: unknown): HostUsageQuota {
   const row = (value ?? {}) as Partial<HostUsageQuota>;
@@ -244,14 +255,37 @@ async function probeAndCache(
 }
 
 /**
+ * When a cached reading was last fully measured, for the sweep's freshness
+ * rule: the oldest clock among its account-wide windows. A finished Run
+ * reports one window on the way past (`mergeRunQuota`) and moves the row's
+ * `checked_at`, but says nothing about the other window. Without this, Runs
+ * that keep refreshing the session window would keep the row looking fresh
+ * and the sweep would never ask for the week. Model-specific windows are
+ * left out: a probe may not report them, and they keep their own clocks.
+ */
+function sweepMeasuredAt(row: HostUsageRow): number {
+  const rowClock = new Date(row.checked_at).getTime();
+  const clocks = quotaWindows(row.quota)
+    .filter(window => !/^(five_hour|seven_day)_[a-z0-9_]+$/.test(window.id))
+    .map(window => Date.parse(row.quota.window_checked_at?.[window.id] ?? row.checked_at))
+    .filter(Number.isFinite);
+  return clocks.length ? Math.min(rowClock, ...clocks) : rowClock;
+}
+
+/**
  * Every copy this host reports as logged in, across every host that is online
  * right now. A copy nobody has logged into has no quota to read, and an
- * offline host would only fill the cache with "offline".
+ * offline host would only fill the cache with "offline". A copy with a
+ * reading younger than `freshForMs` is skipped: the sweep tops the cache up,
+ * it does not repeat a probe something else just made.
  */
 export async function refreshAllHostUsage(
   pool: Pool,
   registry: HostConnectionRegistry = sharedHostConnectionRegistry,
+  options: { now?: () => number; freshForMs?: number } = {},
 ): Promise<number> {
+  const now = options.now ?? Date.now;
+  const freshForMs = options.freshForMs ?? HOST_USAGE_SWEEP_FRESH_MS;
   const hosts = await pool.query<{ id: string; capabilities_json: unknown }>(
     `SELECT id, capabilities_json FROM hosts WHERE status = 'online'`,
   );
@@ -259,10 +293,16 @@ export async function refreshAllHostUsage(
   for (const host of hosts.rows) {
     if (!registry.isOnline(host.id)) continue;
     const capabilities = normalizeHostCapabilities(host.capabilities_json);
+    const checked = new Map((await readHostUsage(pool, host.id))
+      .map(row => [JSON.stringify([row.runtime_key, row.installation]), sweepMeasuredAt(row)]));
     for (const [runtimeKey, copies] of Object.entries(capabilities.installations)) {
       if (!hasSubscriptionQuota(runtimeKey)) continue;
       for (const copy of copies) {
         if (copy.logged_in === false) continue;
+        // A transient failure keeps its original clock, so it is retried here;
+        // so does a reading only partly refreshed by Runs (`sweepMeasuredAt`).
+        const checkedAt = checked.get(JSON.stringify([runtimeKey, copy.id]));
+        if (checkedAt !== undefined && now() - checkedAt < freshForMs) continue;
         await refreshHostUsage(pool, host.id, runtimeKey, copy.id, registry);
         probed += 1;
       }

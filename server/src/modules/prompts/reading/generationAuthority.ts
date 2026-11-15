@@ -1,3 +1,4 @@
+import { EvolutionAssetRefusal } from "../../evolution/assetRefusal.js";
 import { readingMethodContext } from './methodContext.js';
 import { assertRevisionProvider, assertRevisionProviderReadable } from './revisionProvider.js';
 import { assertRevisionMethod } from './revisionMethod.js';
@@ -39,23 +40,23 @@ export async function assertGenerationDispatch(db: Queryable, run: RunRecord) {
   };
   const ctx = await assertGenerationReadable(db, identity, run);
   const attempt = await new PgRunRepository(db).getLatestRunAttempt(run.space_id, run.id);
-  if (attempt && attempt.attempt_number > 1) throw new HttpError(409, 'Retry generation explicitly as a new bounded Run');
+  if (attempt && attempt.attempt_number > 1) throw new EvolutionAssetRefusal(409, 'Retry generation explicitly as a new bounded Run');
   const parent = await freezeReadingMethod(db, {
     ...identity,
     projectId: ref.project_id
   }, null, ref.target_key);
-  if (ctx.authority !== ref.authority || parent.frozen.version_id !== ref.parent_version_id || parent.frozen.content_hash !== ref.parent_hash || sha256Json(run.prompt) !== ref.prompt_hash) throw new HttpError(409, 'Generation input or effective method changed; start from the current method');
+  if (ctx.authority !== ref.authority || parent.frozen.version_id !== ref.parent_version_id || parent.frozen.content_hash !== ref.parent_hash || sha256Json(run.prompt) !== ref.prompt_hash) throw new EvolutionAssetRefusal(409, 'Generation input or effective method changed; start from the current method');
   if (ref.revision_method) await assertRevisionMethod(db, ref.revision_method);
   if(ref.provider){if(run.execution_kind!=='provider_task'||run.agent_id||run.requested_runtime_profile_id)throw new HttpError(403,'Invalid revision execution kind');await assertRevisionProvider(db,identity,ref.provider,ctx.source?.id??null,true);return;}
   await assertClosedReadingContext(db, run.space_id, run.id, null);
-  if (ref.profile_hash !== (await nativeProfileFingerprint(db, run.requested_runtime_profile_id!))) throw new HttpError(409, 'Generation execution configuration changed');
+  if (ref.profile_hash !== (await nativeProfileFingerprint(db, run.requested_runtime_profile_id!))) throw new EvolutionAssetRefusal(409, 'Generation execution configuration changed');
   if (!(await db.query(`SELECT id FROM agents WHERE id=$1 AND space_id=$2 AND owner_user_id=$3 AND status='active'`, [run.agent_id, run.space_id, identity.userId])).rows.length) throw new HttpError(403, 'Generation Agent unavailable');
   const option = (await new PgConversationBackendRepository(db).listOptions(run.space_id, identity.userId, run.agent_id!)).find(p => p.runtime_profile_id === run.requested_runtime_profile_id && p.usable !== false);
-  if (!option) throw new HttpError(409, 'Generation runtime unavailable');
+  if (!option) throw new EvolutionAssetRefusal(409, 'Generation runtime unavailable');
   const session = await resolveSessionConfig(ref.session_config, async () => [], option.session_config_options ?? []);
   if (!isDeepStrictEqual(session.selections, ref.session_config) || !isDeepStrictEqual((run.model_override_json as {
     acp_session_config?: unknown;
-  } | null)?.acp_session_config ?? [], ref.session_config)) throw new HttpError(409, 'Generation session configuration changed');
+  } | null)?.acp_session_config ?? [], ref.session_config)) throw new EvolutionAssetRefusal(409, 'Generation session configuration changed');
 }
 /** Used by generic version readers as well as the Reading workspace; never authorizes from a client marker. */
 export async function readingGeneratedVersionReadable(db: Queryable, identity: SpaceUserIdentity, content: unknown) {

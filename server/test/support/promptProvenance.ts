@@ -77,7 +77,7 @@ function splitSection(body: string, hashes: readonly string[]): string[] | null 
  * text sections reproduce every persisted Delivery block exactly once and in
  * order, with the current input last among them.
  */
-export async function joinedInvocation(pool: Pool, host: SyntheticAcpHost, runId: string): Promise<JoinedInvocation> {
+export async function joinedInvocation(pool: Pool, host: SyntheticAcpHost, runId: string, undispatchedAttempts=0): Promise<JoinedInvocation> {
   const run = (await pool.query<RunRecord>(`SELECT * FROM runs WHERE id = $1`, [runId])).rows[0];
   if (!run) throw new Error(`Run ${runId} not found`);
   const ref = currentRuntimeContextInputRef(run);
@@ -103,9 +103,10 @@ export async function joinedInvocation(pool: Pool, host: SyntheticAcpHost, runId
   const sourceRefs = snapshot.safe_snapshot_json.source_refs;
   expect(sourceRefs.filter((source) => source.type === ref.type && source.id === ref.id)).toHaveLength(1);
 
-  // A Delivery is never reused for a second physical call (one prompt per attempt).
+  // A Delivery is never reused for a second physical call. An explicitly
+  // observed pre-dispatch deferral may have materialized a Delivery without sending it.
   const prompts = host.promptsFor(run.id);
-  expect(prompts.length).toBe(delivery.attempt);
+  expect(prompts.length).toBe(delivery.attempt-undispatchedAttempts);
   const acp = prompts.at(-1)!;
   const textBlocks = acp.prompt.flatMap((block) => block.type === "text" ? [String(block.text)] : []);
   const attachments = acp.prompt.filter((block) => block.type !== "text");

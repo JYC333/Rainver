@@ -1,5 +1,7 @@
 import {SourceDispatchBusyError} from '../sourceDispatchExecution.js';
 import {SourceProcessingInputError} from './commandErrors.js';
+/** A frozen one-off post-processing request (see admitOneOff). */
+export interface SourceOneOffIntent {source_item_ids:string[];evidence_ids:string[];source_channel_id:string;agent_id:string;project_id:string|null;actions_json:Record<string,unknown>;input_config_json:Record<string,unknown>|null;trigger_config_json:Record<string,unknown>|null;summary_goal:string|null}
 import { assertMonitoringProcessingContract, monitoringChannel, consumeMonitoringBudget } from "../../projects/monitoringControl.js";
 import type { ServerConfig } from "../../../config.js";
 import type { CredentialSpendBasis } from "../../policy/credentialSpend.js";
@@ -665,63 +667,37 @@ export class SourcePostProcessingService {
         proposal_id: proposalId,
       };
     }
-    if (action === "rerun_item") {
+    if (action === "rerun_item" || action === "deep_analysis") {
       const rule = decision.rule_id ? await repo.getRule(identity.spaceId, decision.rule_id) : null;
-      if (!rule) throw new HttpError(422, "Decision rerun requires an existing rule");
-      const inputConfig = { ...normalizeInputConfig(rule.input_config_json), window: "explicit" as const };
-      const batch = await repo.collectInputBatch({
-        spaceId: identity.spaceId,
-        sourceChannelId: decision.source_channel_id,
-        inputConfig,
-        cursor: null,
-        viewerUserId: identity.userId,
-        explicitItemIds: [decision.source_item_id],
-      });
-      const run = await this.executeBatch({
-        rule,
-        sourceChannelId: decision.source_channel_id,
-        connection,
-        agentId: rule.agent_id,
-        projectId: rule.project_id,
-        triggerType: "manual",
-        actorUserId: identity.userId,
-        actions: normalizeActions(rule.actions_json),
-        inputConfig,
-        triggerConfig: normalizeTriggerConfig(rule.trigger_config_json, "manual"),
-        batch,
-        summaryGoal: inputConfig.summary_goal ?? null,
-      });
+      if (!rule) throw new SourceProcessingInputError(422, action === "rerun_item" ? "Decision rerun requires an existing rule" : "Deep analysis requires a rule-backed decision");
+      if (action === "deep_analysis" && (rule.status !== "active" || !normalizeInputConfig(rule.input_config_json).deep_analysis.enabled)) {
+        throw new SourceProcessingInputError(422, "Deep analysis is not enabled for this rule or item.");
+      }
+      // Agent work never runs in the request: one single-attempt Job intent for
+      // the existing post-processing worker, which rechecks current authority
+      // and the admitted rule configuration before any external effect. A
+      // pending intent for the same reviewer, decision and action is reused.
+      const pending = (await this.db.query<{ id: string }>(
+        `SELECT id FROM jobs WHERE space_id=$1 AND user_id=$2 AND job_type=$3 AND payload_json->>'phase'='manual_decision'
+            AND payload_json->>'decision_id'=$4 AND payload_json->>'mode'=$5 AND status IN ('pending','claimed','running') ORDER BY created_at LIMIT 1`,
+        [identity.spaceId, identity.userId, SOURCE_POST_PROCESSING_EVENT_JOB_TYPE, decision.id, action],
+      )).rows[0];
+      const jobId = pending?.id ?? (await new PgJobQueueRepository(this.db).enqueue({
+        space_id: identity.spaceId,
+        user_id: identity.userId,
+        job_type: SOURCE_POST_PROCESSING_EVENT_JOB_TYPE,
+        max_attempts: 1,
+        payload: { phase: "manual_decision", mode: action, user_id: identity.userId, decision_id: decision.id, rule_id: rule.id, expected_config_sha256: sourceProcessingRuleFingerprint(rule) },
+      })).id;
       return {
         decision: await repo.updateDecisionReview({
           spaceId: identity.spaceId,
           userId: identity.userId,
           decisionId,
           reviewStatus: "rerun",
-          action: { rerun_item: { at: new Date().toISOString(), by_user_id: identity.userId, run_id: run.id } },
+          action: { [action]: { at: new Date().toISOString(), by_user_id: identity.userId, job_id: jobId } },
         }),
-        run,
-      };
-    }
-    if (action === "deep_analysis") {
-      if (!decision.rule_id) throw new HttpError(422, "Deep analysis requires a rule-backed decision");
-      const run = await this.runDeepAnalysisForItems({
-        spaceId: identity.spaceId,
-        ruleId: decision.rule_id,
-        itemIds: [decision.source_item_id],
-        actorUserId: identity.userId,
-        sourceRunId: decision.run_id,
-        triggerType: "manual",
-      });
-      if (!run) throw new HttpError(422, "Deep analysis is not enabled for this rule or item.");
-      return {
-        decision: await repo.updateDecisionReview({
-          spaceId: identity.spaceId,
-          userId: identity.userId,
-          decisionId,
-          reviewStatus: "rerun",
-          action: { deep_analysis: { at: new Date().toISOString(), by_user_id: identity.userId, run_id: run.id } },
-        }),
-        run,
+        job_ids: [jobId],
       };
     }
     if (action === "dismiss") {
@@ -738,25 +714,108 @@ export class SourcePostProcessingService {
     throw new HttpError(422, "Unsupported post-processing decision action");
   }
 
-  async runOneOff(
-    identity: SpaceUserIdentity,
-    body: Record<string, unknown>,
-  ): Promise<SourcePostProcessingRunOut & { artifact_id: string | null; proposal_ids: string[]; summary_preview: string }> {
+  /**
+   * Executes one queued decision rerun / deep analysis (see decisionAction)
+   * under current authority: the reviewer still reaches the decision and its
+   * Source, and the rule configuration is the admitted one. Called only by
+   * the post-processing worker, outside any request transaction.
+   */
+  async executeDecisionDispatch(identity: SpaceUserIdentity, decisionId: string, mode: "rerun_item" | "deep_analysis", expectedConfig: string, jobId: string): Promise<{ source_post_processing_run_id: string | null; status: string; decision_id: string }> {
+    const repo = new PgSourcePostProcessingRepository(this.db);
+    const decision = await repo.getDecision(identity.spaceId, identity.userId, decisionId);
+    if (!decision) throw new Error("Post-processing decision unavailable");
+    const connection = await this.requireConnection(identity.spaceId, decision.source_channel_id);
+    const rule = decision.rule_id ? await repo.getRule(identity.spaceId, decision.rule_id) : null;
+    if (!rule || sourceProcessingRuleFingerprint(rule) !== expectedConfig) throw new Error("Source processing rule changed after dispatch");
+    let run: SourcePostProcessingRunOut | null;
+    if (mode === "rerun_item") {
+      const inputConfig = { ...normalizeInputConfig(rule.input_config_json), window: "explicit" as const };
+      const batch = await repo.collectInputBatch({
+        spaceId: identity.spaceId,
+        sourceChannelId: decision.source_channel_id,
+        inputConfig,
+        cursor: null,
+        viewerUserId: identity.userId,
+        explicitItemIds: [decision.source_item_id],
+      });
+      run = await this.executeBatch({
+        rule,
+        sourceChannelId: decision.source_channel_id,
+        connection,
+        agentId: rule.agent_id,
+        projectId: rule.project_id,
+        triggerType: "manual",
+        actorUserId: identity.userId,
+        actions: normalizeActions(rule.actions_json),
+        inputConfig,
+        triggerConfig: normalizeTriggerConfig(rule.trigger_config_json, "manual"),
+        batch,
+        summaryGoal: inputConfig.summary_goal ?? null,
+      });
+    } else {
+      run = await this.runDeepAnalysisForItems({
+        spaceId: identity.spaceId,
+        ruleId: rule.id,
+        itemIds: [decision.source_item_id],
+        actorUserId: identity.userId,
+        sourceRunId: decision.run_id,
+        triggerType: "manual",
+      });
+    }
+    if (run) {
+      await repo.updateDecisionReview({
+        spaceId: identity.spaceId,
+        userId: identity.userId,
+        decisionId,
+        reviewStatus: "rerun",
+        action: { [mode]: { at: new Date().toISOString(), by_user_id: identity.userId, job_id: jobId, run_id: run.id } },
+      });
+    }
+    return { source_post_processing_run_id: run?.id ?? null, status: run?.status ?? "skipped", decision_id: decisionId };
+  }
+
+  /**
+   * Pre-effect admission of a one-off run, in the caller's transaction:
+   * readable inputs from exactly one Source, actions and derived-import
+   * targets, a usable (or ensured default) Agent, Project writer and context
+   * binding. The result is the frozen intent the worker executes.
+   */
+  async admitOneOff(identity: SpaceUserIdentity, body: Record<string, unknown>): Promise<SourceOneOffIntent> {
     const itemIds = stringList(body.source_item_ids);
     const evidenceIds = stringList(body.evidence_ids);
     if (!itemIds.length && !evidenceIds.length) {
-      throw new HttpError(422, "At least one source_item_id or evidence_id is required");
+      throw new SourceProcessingInputError(422, "At least one source_item_id or evidence_id is required");
     }
-    const repo = new PgSourcePostProcessingRepository(this.db);
     const sourceChannelId = await this.resolveOneOffSourceConnection(identity.spaceId, itemIds, evidenceIds, identity.userId);
     const connection = await this.requireConnection(identity.spaceId, sourceChannelId);
-    const actions = normalizeActions(body.actions_json ?? { batch_digest: true });
+    const actionsJson = (body.actions_json ?? { batch_digest: true }) as Record<string, unknown>;
+    const actions = normalizeActions(actionsJson);
     this.assertActions(actions);
     await this.enforceSourceTargets(connection, actions);
     const agentId = await this.resolveAgentId(identity, optionalString(body.agent_id));
     const projectId = optionalString(body.project_id);
     if (projectId) await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     this.validateInputContextBinding(projectId, normalizeInputConfig(body.input_config_json), actions);
+    return {
+      source_item_ids: itemIds, evidence_ids: evidenceIds, source_channel_id: sourceChannelId, agent_id: agentId, project_id: projectId,
+      actions_json: actionsJson,
+      input_config_json: (body.input_config_json ?? null) as Record<string, unknown> | null,
+      trigger_config_json: (body.trigger_config_json ?? null) as Record<string, unknown> | null,
+      summary_goal: optionalString(body.summary_goal),
+    };
+  }
+
+  /** Executes an admitted one-off intent (worker only); admission is repeated under current authority. */
+  async runOneOff(
+    identity: SpaceUserIdentity,
+    body: SourceOneOffIntent,
+  ): Promise<SourcePostProcessingRunOut & { artifact_id: string | null; proposal_ids: string[]; summary_preview: string }> {
+    const admitted = await this.admitOneOff(identity, { ...body });
+    if (admitted.source_channel_id !== body.source_channel_id) throw new Error("One-off inputs changed Source after dispatch");
+    const { source_item_ids: itemIds, evidence_ids: evidenceIds, source_channel_id: sourceChannelId, agent_id: agentId, project_id: projectId } = admitted;
+    const repo = new PgSourcePostProcessingRepository(this.db);
+    const connection = await this.requireConnection(identity.spaceId, sourceChannelId);
+    const actions = normalizeActions(admitted.actions_json);
     const batch = await repo.collectInputBatch({
       spaceId: identity.spaceId,
       sourceChannelId,
@@ -2021,9 +2080,24 @@ export class SourcePostProcessingService {
       .filter((id): id is string => Boolean(id));
     const unique = [...new Set(ids)];
     if (unique.length !== 1) {
-      throw new HttpError(422, "One-off source post-processing requires inputs from exactly one source");
+      throw new SourceProcessingInputError(422, "One-off source post-processing requires inputs from exactly one source");
     }
-    return unique[0]!;
+    // Inputs name their Source connection; processing runs on one of its Monitors
+    // (channels): the one the inputs were delivered through, or its only active one.
+    const channels = (await this.db.query<{ id: string }>(
+      `SELECT DISTINCT ch.id FROM source_channels ch
+        WHERE ch.space_id = $1 AND ch.source_connection_id = $2 AND ch.status <> 'archived'
+          AND (EXISTS (SELECT 1 FROM source_channel_item_links l
+                        WHERE l.space_id = ch.space_id AND l.source_channel_id = ch.id AND l.status = 'active'
+                          AND (l.source_item_id::text = ANY($3::text[])
+                               OR l.source_item_id IN (SELECT ee.source_item_id FROM extracted_evidence ee WHERE ee.space_id = $1 AND ee.id::text = ANY($4::text[]))))
+               OR (SELECT count(*) FROM source_channels o WHERE o.space_id = $1 AND o.source_connection_id = $2 AND o.status <> 'archived') = 1)`,
+      [spaceId, unique[0], itemIds, evidenceIds],
+    )).rows;
+    if (channels.length !== 1) {
+      throw new SourceProcessingInputError(422, "One-off source post-processing requires inputs from exactly one source");
+    }
+    return channels[0]!.id;
   }
 
   private requirePool(): Pool {

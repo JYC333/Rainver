@@ -50,6 +50,8 @@ export interface ContentAccessibleDeclaration {
   tableName: string;
   ownerColumn: string;
   projectColumn?: string;
+  /** Independent Project ACL; intersects with ownership scope when both exist. */
+  accessProjectColumn?: string;
   projectFolderColumn?: string;
   /** JSON column whose `context_taint` member constrains publication. */
   contextTaintColumn?: string;
@@ -459,6 +461,7 @@ function registerCoreEntities(): void {
       owner: "agents",
       contentAccessible: {
         tableName: "agents",
+        accessProjectColumn: "access_project_id",
         ownerColumn: "owner_user_id",
         projectColumn: "project_id",
         activePredicate: (alias) => `${alias}.status <> 'archived'`,

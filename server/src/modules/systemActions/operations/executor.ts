@@ -1,5 +1,8 @@
+import {assertDaemonWorkspaceActor,DAEMON_WORKSPACE_OPERATIONS} from '../../hosts/workspaceActor.js';
+import {safeInputErrors} from '../inputErrors.js';
+import {assertCurrentPerson,personalReceiptSpace,PERSON_OPERATIONS} from './personAdmission.js';
 import { resolveUserCreationActor } from './userContentCreation.js';
-import {prepareOperationRunTerminalOwner} from './proposalTransitions.js';
+import {withOperationProposalDecisionOwner,prepareOperationRunTerminalOwner} from './proposalTransitions.js';
 import {withPolicyAuditRecovery} from '../../policy/auditWriter.js';
 import { getOperationAuditPool } from "../../../db/pool.js";
 import { ContentAccessAuditService } from "../../contentAccess/audit.js";
@@ -12,13 +15,20 @@ import { operationTransaction, runOperationWork } from '../../../db/operationTra
 import { enforce } from '../../policy/service.js';
 import { loadActionRegistry } from '../../policy/actionRegistry.js';
 import { assertCurrentActor, assertOperationGrant } from './actor.js';
-import { OperationError, OperationBusinessError, hidden } from './errors.js';
+import { OperationError, OperationInputError, OperationBusinessError, hidden } from './errors.js';
 import { reserve, record, reconcile, requestScope, fingerprint } from './repository.js';
 import type { OperationRegistration } from './types.js';
 
 /** Durable new-content commands whose Personal/Project placement the access owner chooses
  * exactly as their retained REST adapters always did. Never an arbitrary Space resolver. */
-const DURABLE_PLACEMENT_COMMANDS = new Set(['source.channel.create', 'agent.create', 'agent.template.instantiate', 'agent.run.create', 'agent.chat.send', 'session.create']);
+const DURABLE_PLACEMENT_COMMANDS = new Set(['activity.upload','activity.create','capture.create','source.channel.create', 'source.item.save_url', 'source.evidence.create', 'source.custom.draft.create', 'source.goal.setup.begin', 'source.goal.create', 'agent.create', 'agent.template.instantiate', 'agent.run.create', 'agent.chat.send', 'session.create', 'board.create', 'task.create']);
+/** One create shared by a person's REST call and an Agent Run tool: placement applies to the person
+ * principal only; an Agent keeps its Run's Space and Project. */
+const PERSON_PLACEMENT_SHARED_COMMANDS = new Set(['task.create']);
+// Proposal submission retains the access-owned placement of the old REST create
+// entry, without enabling an approval execution mapping. No other proposal may
+// resolve a caller into another Space.
+const PROPOSAL_PLACEMENT_COMMANDS = new Map<string,{proposalType:string;gateClass:string}>([['knowledge.item.propose_create',{proposalType:'knowledge_create',gateClass:'exposure'}],['knowledge.claim.propose_create',{proposalType:'claim_create',gateClass:'exposure'}],['memory.propose_create',{proposalType:'memory_create',gateClass:'belief_reach'}]]);
 /** Stateless per invocation; registry/executors are composed once and retain no caller. */
 export class OperationExecutor {
   readonly registrations: ReadonlyMap<string, OperationRegistration>;
@@ -28,8 +38,13 @@ export class OperationExecutor {
       const d = item.definition;
       if (map.has(d.id) || !d.execution || d.execution.tx !== 'core_owned' || d.execution.kind === 'query' && (d.side_effects !== 'none' || d.idempotency_required || d.gate_class !== null || d.proposal_type !== null || !item.readKind || item.readKind === 'content' && !item.readAudit || !!item.afterCommit) || item.approval?.gate.kind === 'hard_gate' && item.approval.gate.gate_class !== d.gate_class) throw new Error('Invalid migrated operation registration');
       if (item.approval && (d.execution.kind !== 'command' || item.approval.atomicStatusWritersVerified !== true || !item.approval.proposalType || item.approval.mode === 'blocked_command' && !item.approval.gate.policy_rule_id)) throw new Error('Approval mapping has not passed canonical transition enablement');
-      if (item.userContentCreation && (d.execution.kind !== 'command' || (d.side_effects !== 'draft' && !(DURABLE_PLACEMENT_COMMANDS.has(d.id) && d.side_effects === 'durable')) || d.allowed_actor_types.length !== 1 || d.allowed_actor_types[0] !== 'user' || d.grantable || d.gate_class !== null || d.proposal_type !== null || item.approval || [...d.visibility].some(surface => surface !== 'public_api'))) throw new Error('Human content creation requires an ungrantable user-only draft or canonical Monitor creation command');
+      const placement = PROPOSAL_PLACEMENT_COMMANDS.get(d.id), proposalPlacement = d.side_effects==='proposal' && !!placement && d.gate_class===placement.gateClass && d.proposal_type===placement.proposalType;
+      const directPlacement = d.gate_class===null && d.proposal_type===null && (d.side_effects==='draft' || DURABLE_PLACEMENT_COMMANDS.has(d.id) && d.side_effects==='durable');
+      const shared = PERSON_PLACEMENT_SHARED_COMMANDS.has(d.id) && d.allowed_actor_types.length===2 && d.allowed_actor_types.includes('user') && d.allowed_actor_types.includes('agent') && [...d.visibility].every(surface=>surface==='public_api'||surface==='agent_tool');
+      if (item.userContentCreation && (d.execution.kind!=='command' || !proposalPlacement && !directPlacement || !shared && (d.allowed_actor_types.length!==1 || d.allowed_actor_types[0]!=='user' || d.grantable || [...d.visibility].some(surface=>surface!=='public_api')) || item.approval)) throw new Error('Human content placement requires an explicitly admitted user-only creation command');
+      if(item.proposalDecisionOwner&&(d.execution.kind!=='command'||item.approval||item.userContentCreation||item.runTerminalOwner))throw new Error('Proposal decision preparation requires a direct command transaction owner');
       if(item.runTerminalOwner&&(d.execution.kind!=='command'||item.approval||item.userContentCreation))throw new Error('Run terminal preparation requires a direct command transaction owner');
+      if(item.admission && ((item.admission.kind==='person'?!PERSON_OPERATIONS.has(d.id):!DAEMON_WORKSPACE_OPERATIONS.has(d.id))||d.execution.kind!=='command'||d.allowed_actor_types.length!==1||d.allowed_actor_types[0]!==(item.admission.kind==='person'?'user':'system')||d.grantable||[...d.visibility].some(s=>s!=='public_api')||item.approval||item.userContentCreation||item.proposalDecisionOwner||item.runTerminalOwner||!item.domainAuthorizationFirst||!item.authorizeResult))throw new Error('Invalid person admission registration');
       map.set(d.id, item);
     }
     this.registrations = map;
@@ -56,10 +71,12 @@ export class OperationExecutor {
       if (!item) throw hidden();
       const d = item.definition;
       if (!d.allowed_actor_types.includes(actor.principal.kind) || !d.visibility.has(actor.surface === 'web' ? 'public_api' : actor.surface)) throw hidden();
-      await assertCurrentActor(this.pool, actor);
+      const personScoped=item.admission?.kind==='person';
+      const assertActor=(db:Parameters<typeof assertCurrentActor>[0],lock=false)=>personScoped?assertCurrentPerson(db,actor,lock):item.admission?.kind==='daemon_workspace'?assertDaemonWorkspaceActor(db,actor,lock):assertCurrentActor(db,actor,lock);
+      await assertActor(this.pool);
       await assertOperationGrant(this.pool, actor, id);
       const parsed = d.input_schema.safeParse(raw);
-      if (!parsed.success) throw new OperationError('operation_invalid_input', 422);
+      if (!parsed.success) throw new OperationInputError(safeInputErrors(d,parsed.error));
       let input = parsed.data;
       const command = d.execution!.kind === 'command';
       if (command && (!key || key.length > 256 || !/^[\x21-\x7e]+$/.test(key))) throw new OperationError('idempotency_key_required', 422);
@@ -69,34 +86,49 @@ export class OperationExecutor {
         const tx = operationTransaction(client);
         let terminalOwner:Awaited<ReturnType<typeof prepareOperationRunTerminalOwner>>|undefined;
         try {
-          if (item.userContentCreation) actor = await resolveUserCreationActor(tx.db, input, requestActor,id);
-          const scope = await runOperationWork(()=>item.resolve(tx.db, input, actor));
+          const placing = !!item.userContentCreation && requestActor.principal.kind === 'user';
+          if (placing) actor = await resolveUserCreationActor(tx.db, input, requestActor,id);
+          const storageSpace=personScoped?await personalReceiptSpace(tx.db,actor.principal.id):actor.space_id;
+          const receiptActor={...actor,space_id:storageSpace};
+          const scope = await runOperationWork(()=>item.resolve(tx.db, input, actor, {requestId,idempotencyKey:key??null}));
           if (item.normalizeInput) {
             const normalized = d.input_schema.safeParse(item.normalizeInput(input, scope));
             if (!normalized.success) throw new OperationError('operation_internal_error',500);
             input = normalized.data;
           }
-          const identity = command ? requestScope(actor, scope.authority, id, key!) : null;
+          const identity = command ? requestScope(receiptActor, scope.authority, id, key!) : null;
+          const work = async () => {
           let previous = identity ? await reserve(client, identity) : null;
-          if (item.userContentCreation) {
+          if (placing) {
             await assertCurrentActor(tx.db, requestActor, true);
             const current = await resolveUserCreationActor(tx.db, input, requestActor,id);
             if (current.space_id !== actor.space_id) throw new OperationError('operation_conflict', 409);
           }
-          await assertCurrentActor(tx.db, actor, command);
+          if(item.domainAuthorizationFirst){
+            if(item.approval||placing||item.runTerminalOwner)throw new OperationError('operation_internal_error',500);
+            await assertActor(tx.db);
+            await assertOperationGrant(tx.db,actor,id);
+            const body=previous?.result_json;
+            if(body&&'data' in body){
+              if(!d.output_schema.safeParse(body.data).success)throw new OperationError('operation_result_unavailable',410);
+              await runOperationWork(async()=>item.authorizeResult?.(tx.db,body.data,actor));
+            }else await runOperationWork(()=>item.authorize(tx.db,input,actor,scope));
+          }
+          await assertActor(tx.db, command);
+          if(personScoped && await personalReceiptSpace(tx.db,actor.principal.id)!==storageSpace)throw new OperationError('operation_conflict',409);
           await assertOperationGrant(tx.db, actor, id);
           if(item.runTerminalOwner&&!previous){
             terminalOwner=await runOperationWork(()=>prepareOperationRunTerminalOwner(client,tx.db,actor.space_id,
               db=>item.runTerminalOwner!.discover(db,input,actor)));
           }
-          await runOperationWork(()=>item.authorize(tx.db, input, actor, scope));
+          if(!item.domainAuthorizationFirst)await runOperationWork(()=>item.authorize(tx.db, input, actor, scope));
           const policyRequest: PolicyCheckRequest = {
             action: d.policy_action,
             force_record: true,
             actor_type: actor.principal.kind,
             actor_id: actor.principal.id,
-            space_id: actor.space_id,
-            resource_space_id: actor.space_id,
+            space_id: storageSpace,
+            resource_space_id: storageSpace,
             resource_type: scope.resourceType,
             resource_id: scope.resourceId,
             run_id: actor.run_id,
@@ -108,7 +140,7 @@ export class OperationExecutor {
             },
             metadata_json: {
               operation_request_id: requestId,
-              ...(item.userContentCreation ? {request_space_id:requestActor.space_id} : {})
+              ...(placing ? {request_space_id:requestActor.space_id} : {})
             }
           };
           if (command) failureAudit = policyRequest;
@@ -180,17 +212,18 @@ export class OperationExecutor {
                 runId: actor.run_id,
                 accessType: 'operation_query'
               })
-            }, input, validated.data, actor)).catch(() => {
+            }, input, validated.data, actor, output)).catch(() => {
               throw new OperationError('operation_audit_unavailable', 503, true);
             });
             const body: OperationOutcome = {
               status: 'succeeded',
               data: validated.data
             };
-            if (identity) await record(client, identity, d.version, hash, 'succeeded', body, item.successStatus ?? 200);
+            const successStatus=typeof item.successStatus==='function'?item.successStatus(validated.data):item.successStatus??200;
+            if (identity) await record(client, identity, d.version, hash, 'succeeded', body, successStatus);
             await terminalOwner?.finish();
             if (command && item.afterCommit) notification = () => item.afterCommit!(validated.data, actor);
-            return finish(response(body, item.successStatus ?? 200));
+            return finish(response(body, successStatus));
           } catch (caught) {
             // Domain adapters explicitly classify deterministic, safe failures. Unknown errors stay internal.
             const error = caught instanceof OperationError ? caught : item.classifyError?.(caught) ?? caught;
@@ -202,12 +235,21 @@ export class OperationExecutor {
             }
             throw error;
           }
+          };
+          try { return item.proposalDecisionOwner && identity
+            ? await withOperationProposalDecisionOwner(tx.db,actor.space_id,await item.proposalDecisionOwner.roots(tx.db,input,actor),identity,work,actor.on_behalf_of_user_id!,item.proposalDecisionOwner.bundle,roots=>item.proposalDecisionOwner!.prepare?.(tx.db,roots,actor,input)??Promise.resolve())
+            : await work();
+          } catch(error) {
+            // Preparation runs before Proposal row locks and the work savepoint;
+            // preserve explicitly classified refusals on first use and replay.
+            throw error instanceof OperationError ? error : item.classifyError?.(error) ?? error;
+          }
         } finally {
           terminalOwner?.close();
           tx.close();
         }
       });
-      const committed=await(item.runTerminalOwner?withPolicyAuditRecovery(this.config.databaseUrl,transaction):transaction());
+      const committed=await(item.runTerminalOwner||item.policyAuditRecovery?withPolicyAuditRecovery(this.config.databaseUrl,transaction):transaction());
       try {
         await notification?.();
       } catch {/* Notifications are rebuildable; never turn committed business work into failure. */}

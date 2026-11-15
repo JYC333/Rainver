@@ -27,8 +27,8 @@ function own(capabilities: Awaited<ReturnType<typeof detectCapabilities>>, runti
 describe("capability discovery", () => {
   it('does not offer colon-named worktree resources on native Windows',()=>{
     expect(executionWorkspaceCapability('win32')).toBeUndefined();
-    expect(executionWorkspaceCapability('linux')).toEqual({version:2,reclaim:5,shared_review:1});
-    expect(executionWorkspaceCapability('darwin')).toEqual({version:2,reclaim:5,shared_review:1});
+    expect(executionWorkspaceCapability('linux')).toEqual({version:2,reclaim:7,shared_review:1,preserve_source:1,lifecycle:1});
+    expect(executionWorkspaceCapability('darwin')).toEqual({version:2,reclaim:7,shared_review:1,preserve_source:1,lifecycle:1});
   });
 
   it("detects git, which every environment running this test suite has installed", async () => {
@@ -110,7 +110,7 @@ describe("what a runtime says it can be set to", () => {
     clearFailedRuntimeOptionsCache();
     await detectCapabilities(ask, installedLookup);
     expect(asks).toBeGreaterThan(failedAsks);
-  }, 15_000);
+  });
 
   it("asks each copy once, not on every heartbeat", async () => {
     // Every ask starts an agent process; the answer changes only when the CLI
@@ -132,7 +132,7 @@ describe("what a runtime says it can be set to", () => {
     await detectCapabilities(ask, lookup);
     expect(asks).toBe(asksAfterFirst);
     expect(asksAfterFirst).toBe(Object.values(first.installations).flat().length);
-  }, 15_000);
+  });
 
   it("reports generic ACP authentication state and refreshes it after login", async () => {
     __clearRuntimeOptionsCache();

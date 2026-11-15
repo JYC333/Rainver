@@ -42,9 +42,13 @@ export function operationProposalService(config: ServerConfig, registry: Proposa
       return !!(await linked(db, id));
     },
     async runApply(db,id,apply) {
-      if(!await linked(db,id))return apply(db);
+      const row=await linked(db,id);
+      if(!row)return apply(db);
+      // beforeApply has verified the frozen requester against the reserved key,
+      // live authority, payload and mapping. The reviewer remains userId.
+      const requester=(row.frozen_json as FrozenRequest).actor;
       const port=operationTransaction(db);
-      try{return await runOperationWork(()=>apply(port.db));}finally{port.close();}
+      try{return await runOperationWork(()=>apply(port.db,requester));}finally{port.close();}
     },
     async beforeDecision(db, id, identity, _decision) {
       const candidate = await linked(db, id);
@@ -125,7 +129,10 @@ export function operationProposalService(config: ServerConfig, registry: Proposa
       await db.query('SAVEPOINT operation_approved_work');
     },
     async applyFailed(db, id, error) {
-      const row = await linked(db, id);
+      // A SQL failure may have aborted the transaction. Preserve the effect's
+      // original failure rather than replacing it with this lookup's 25P02.
+      let row:LinkedRequest|undefined;
+      try { row = await linked(db, id); } catch { throw error; }
       if (!row) throw error;
       const classified = error instanceof OperationBusinessError ? error : error instanceof OperationError ? undefined : registrations.get(row.operation_id)?.classifyError?.(error);
       if (!(classified instanceof OperationBusinessError)) throw error;

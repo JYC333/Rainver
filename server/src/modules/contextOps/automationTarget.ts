@@ -1,3 +1,4 @@
+import {admitAutomationEffect} from '../automations/effectAuthority.js';
 import { getDbPool } from "../../db/pool.js";
 import { withTransaction } from "../../db/tx.js";
 import { PgAutomationRepository } from "../automations/repository.js";
@@ -30,7 +31,7 @@ async function preflight(
     errors.push("Context Review Cycle automation requires space owner or admin authority");
   }
   if (request.review_scope === "space_ops" && config.databaseUrl) {
-    const settings = await readSpaceRetrievalSettings(getDbPool(config.databaseUrl), input.spaceId);
+    const settings = await readSpaceRetrievalSettings(context.db ?? getDbPool(config.databaseUrl), input.spaceId);
     if (settings.contextOpsReviewMode === "private_only") {
       errors.push("Context Review Cycle space_ops review requires Context Ops review mode to allow admins");
     }
@@ -79,6 +80,7 @@ async function execute(
   if (!config.databaseUrl) throw new HttpError(502, "SERVER_DATABASE_URL is required");
   const pool = getDbPool(config.databaseUrl);
   const started = await withTransaction(pool, async (client) => {
+    await admitAutomationEffect(client);
     await lockAndCheckAutomationBudget(client, automation);
     const automationRunId = await new PgAutomationRepository(client).createAutomationRun({
       automationId: automation.id,
@@ -93,6 +95,7 @@ async function execute(
 
   try {
     const result = await withTransaction(pool, async (client) => {
+      await admitAutomationEffect(client);
       const reviewResult = await runContextReviewCycle(client, {
         spaceId: fireInput.spaceId,
         userId: fireInput.actorUserId,
@@ -163,6 +166,7 @@ async function execute(
     };
   } catch (error) {
     await withTransaction(pool, async (client) => {
+      await admitAutomationEffect(client);
       await new PgAutomationRepository(client).completeNativeAutomationRun({
         automationRunId: started.automationRunId,
         status: "failed",

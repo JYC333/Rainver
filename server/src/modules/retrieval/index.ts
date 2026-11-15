@@ -76,6 +76,7 @@ export {
 } from "./artifacts/calibration.js";
 export {
   buildRetrievalEvalDiagnosticsReport,
+  buildRetrievalEvalDiagnosticsReportWithSources,
   buildRetrievalEvalDiagnosticsReportFromArtifactMetadata,
   buildRetrievalEvalDiagnosticsReportFromMetadata,
 } from "./evalDiagnostics.js";

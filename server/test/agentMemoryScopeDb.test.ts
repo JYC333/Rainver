@@ -22,7 +22,7 @@ import {
   MemoryProposalCreateCommandSchema,
   MemoryProposalUpdateCommandSchema,
 } from "@rainver/protocol";
-import { ensureDefaultRuntimeProfile } from "./support/domainSeeds.js";
+import { ensureDefaultRuntimeProfile, seedRun } from "./support/domainSeeds.js";
 import { memoryProposalDecider } from "../src/modules/memory/memoryProposalDecider.js";
 
 /**
@@ -1233,5 +1233,90 @@ describe("who a note reaches", () => {
     await expect(deliver(MAINLINE)).resolves.toEqual(
       expect.arrayContaining(["who I am", "learned in the narrow Room"]),
     );
+  });
+});
+
+describe("retained Project persona isolation in both directions", () => {
+  async function retainOtherProject() {
+    const source = (await new PgProjectRepository(db.pool).create(ownerIdentity(), { name: "Source A" })).id as string;
+    const sourceRoom = (await db.pool.query("SELECT id FROM rooms WHERE project_id=$1 AND is_mainline=true", [source])).rows[0].id;
+    await db.pool.query("UPDATE agents SET access_project_id=$2 WHERE id=$1", [AGENT_ID, source]);
+    return sourceRoom as string;
+  }
+
+  it.each(["manual", "autonomous"])("rejects B persona create and revision for owner %s work before either apply or proposal", async origin => {
+    await db.pool.query("UPDATE runs SET trigger_origin='autonomous' WHERE id=$1", [RUN_ID]);
+    expect((await (await dispatcher()).dispatch(remember({ memory_type: "persona", content: "Original persona" }))).modelResult).toMatchObject({ ok: true });
+    const persona = (await agentRows())[0]!;
+    const roomA = await retainOtherProject();
+    await db.pool.query("UPDATE runs SET trigger_origin=$2,session_id=$3 WHERE id=$1", [RUN_ID, origin, origin === "autonomous" ? null : SESSION_ID]);
+    const writer = await dispatcher();
+    const refused = (await writer.dispatch(remember({ memory_type: "persona", content: "SECRET_B_CREATE" }, "isolated-create"))).modelResult;
+    expect(refused).toMatchObject({ ok: false });
+    expect(JSON.stringify(refused)).toMatch(/isolated Project work/i);
+    expect((await writer.dispatch({ id: "isolated-revise", name: "memory.revise", arguments_json: JSON.stringify({ memory_id: persona.id, content: "SECRET_B_REVISION", rationale: "Learned in B" }) })).modelResult).toMatchObject({ ok: false });
+    expect((await db.pool.query("SELECT id FROM proposals WHERE space_id=$1", [SPACE])).rows).toEqual([]);
+    expect(await agentRows()).toHaveLength(1);
+    // Historical B persona is quarantined from A by its canonical Run provenance.
+    expect(await listAgentMemoryForDispatch(db.pool, { spaceId: SPACE, agentId: AGENT_ID, roomId: roomA })).toEqual([]);
+  });
+
+  it("refuses direct and canonical revision of an old isolated persona even from a valid A Run", async () => {
+    await db.pool.query("UPDATE runs SET trigger_origin='autonomous' WHERE id=$1", [RUN_ID]);
+    expect((await (await dispatcher()).dispatch(remember({ memory_type: "persona", content: "SECRET_B_OLD" }))).modelResult).toMatchObject({ ok: true });
+    const persona = (await agentRows())[0]!;
+    const pending = await new PgMemoryProposalRepository(db.pool, loadConfig({ SERVER_DATABASE_URL: db.connectionUri }))
+      .updateMemoryProposal(SPACE, OWNER, persona.id,
+        MemoryProposalUpdateCommandSchema.parse({ operation: "update", target_memory_id: persona.id, content: "SECRET_B_OLD repackaged" }),
+        { agentId: AGENT_ID, runId: RUN_ID, rationale: "Restate", instructedByUserId: OWNER });
+    const roomA = await retainOtherProject();
+    const sourceRun = randomUUID();
+    await seedRun(db.pool, { id: sourceRun, space: SPACE, owner: OWNER, agent: AGENT_ID, version: AGENT_VERSION_ID, existingAgent: true });
+    await db.pool.query("UPDATE runs SET project_id=$2 WHERE id=$1", [sourceRun, PROJECT]);
+    await db.pool.query("UPDATE provenance_links SET source_id=$2 WHERE target_id=$1 AND source_type='run'", [persona.id, sourceRun]);
+    const projectA = (await db.pool.query("SELECT project_id FROM rooms WHERE id=$1", [roomA])).rows[0].project_id;
+    await db.pool.query("UPDATE runs SET project_id=$2,session_id=NULL WHERE id=$1", [RUN_ID, projectA]);
+    const result = await (await dispatcher({ project_id: projectA, session_id: null, trigger_origin: "autonomous" }))
+      .dispatch({ id: "revise-old-isolated", name: "memory.revise", arguments_json: JSON.stringify({ memory_id: persona.id, content: "SECRET_B_OLD repackaged", rationale: "Restate old persona" }) });
+    expect(result.modelResult).toMatchObject({ ok: false });
+    expect(JSON.stringify(result.modelResult)).not.toContain("SECRET_B_OLD");
+    const repository = new PgMemoryApplyRepository(db.pool);
+    await expect(repository.loadDirectWriteTarget(SPACE, OWNER, persona.id, AGENT_ID)).rejects.toThrow(/isolated Project work/i);
+    // Bypass admission to prove the canonical writer itself refuses laundering.
+    const old = (await db.pool.query("SELECT * FROM memory_entries WHERE id=$1", [persona.id])).rows[0];
+    await expect(repository.applyDirect({ spaceId: SPACE, actingUserId: OWNER, agentId: AGENT_ID, runId: RUN_ID,
+      sessionId: null, projectId: projectA, command: { content: "SECRET_B_OLD repackaged", rationale: "Restate" }, target: old,
+      agentScope: { ownerUserId: OWNER, roomId: null, triggerOrigin: "autonomous", instructedByUserId: OWNER } })).rejects.toThrow(/isolated Project work/i);
+    expect(await agentRows()).toEqual([expect.objectContaining({ id: persona.id, status: "active", content: "SECRET_B_OLD" })]);
+    expect(await listAgentMemoryForDispatch(db.pool, { spaceId: SPACE, agentId: AGENT_ID, roomId: roomA })).toEqual([]);
+    await expect(PgProposalApplyService.fromConfig(loadConfig({ SERVER_DATABASE_URL: db.connectionUri }))
+      .accept(pending.id, ownerIdentity())).rejects.toThrow(/isolated Project work/i);
+    expect((await db.pool.query("SELECT status FROM proposals WHERE id=$1", [pending.id])).rows[0].status).toBe("pending");
+  });
+
+  it("refuses owner acceptance of a pending B persona revision without superseding the original", async () => {
+    const command = MemoryProposalCreateCommandSchema.parse({ operation: "create", scope: "agent", type: "persona",
+      content: "Original persona", title: "Persona", owner_user_id: OWNER, agent_id: AGENT_ID, visibility: "private" });
+    const original = await new PgMemoryProposalRepository(db.pool, loadConfig({ SERVER_DATABASE_URL: db.connectionUri }))
+      .createMemoryProposal(SPACE, OWNER, command);
+    await PgProposalApplyService.fromConfig(loadConfig({ SERVER_DATABASE_URL: db.connectionUri })).accept(original.id, ownerIdentity());
+    const persona = (await agentRows())[0]!;
+    expect((await (await dispatcher()).dispatch({ id: "propose-revision", name: "memory.revise", arguments_json: JSON.stringify({ memory_id: persona.id, content: "SECRET_B_REVISION", rationale: "Learned in B" }) })).modelResult).toMatchObject({ outcome: "proposed" });
+    const pending = (await db.pool.query("SELECT id FROM proposals WHERE space_id=$1 AND status='pending'", [SPACE])).rows[0].id;
+    const roomA = await retainOtherProject();
+    await expect(PgProposalApplyService.fromConfig(loadConfig({ SERVER_DATABASE_URL: db.connectionUri })).accept(pending, ownerIdentity())).rejects.toThrow(/isolated Project work/i);
+    expect(await agentRows()).toEqual([expect.objectContaining({ id: persona.id, status: "active", content: "Original persona" })]);
+    expect((await listAgentMemoryForDispatch(db.pool, { spaceId: SPACE, agentId: AGENT_ID, roomId: roomA })).map(row => row.content)).toEqual(["Original persona"]);
+  });
+
+  it("refuses owner acceptance of a pending B persona proposal after retention changes", async () => {
+    expect((await (await dispatcher()).dispatch(remember({ memory_type: "persona", content: "SECRET_B_PENDING" }))).modelResult).toMatchObject({ outcome: "proposed" });
+    const proposal = (await db.pool.query("SELECT id FROM proposals WHERE space_id=$1", [SPACE])).rows[0].id;
+    const roomA = await retainOtherProject();
+    await expect(PgProposalApplyService.fromConfig(loadConfig({ SERVER_DATABASE_URL: db.connectionUri }))
+      .accept(proposal, ownerIdentity())).rejects.toThrow(/isolated Project work/i);
+    expect(await agentRows()).toEqual([]);
+    expect(await listAgentMemoryForDispatch(db.pool, { spaceId: SPACE, agentId: AGENT_ID, roomId: roomA })).toEqual([]);
+    expect((await db.pool.query("SELECT status FROM proposals WHERE id=$1", [proposal])).rows[0].status).toBe("pending");
   });
 });

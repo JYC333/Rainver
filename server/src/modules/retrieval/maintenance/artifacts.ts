@@ -138,7 +138,7 @@ function maintenanceReportPayload(
   };
 }
 
-function maintenanceLineageKey(spaceId: string, source: string): string {
+export function maintenanceLineageKey(spaceId: string, source: string): string {
   const date = new Date().toISOString().slice(0, 10);
   return `ret_maint:${spaceId}:${source}:${date}`;
 }

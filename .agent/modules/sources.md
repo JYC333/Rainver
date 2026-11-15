@@ -759,7 +759,19 @@ Automations `event` trigger and does not use Automations cursors. `DailyCaptureR
 remains separate: it summarizes a user's daily captured activity, not one
 source connection's post-source processing.
 
+Explicit Interest Profile history backfill uses
+`SourceAnnotationService.backfillHistory`: newest-first discovery (1–500,
+default 500), current subscription/item/Source closure locked through commit,
+new annotation rows only, and the mandatory existing annotation Job in the same
+transaction as the operation audit and receipt. Replays reauthorize the recorded
+Source references and subscription; failed existing annotations still use the
+recovery path below. No provider IO occurs in this intent transaction. See the
+[Interest Profile owner boundary](information-digest.md#interest-profile-operation-boundary).
+
 ### Annotation failure and recovery
+
+Pending annotation timestamps are normalized to ISO strings at the repository
+boundary, so prompt hashes and pre-send comparisons use the same JSON values.
 
 `sourceAnnotation` annotates pending items in batches, one job per Space at a
 time (a per-Space session advisory lock; a second job answers
@@ -797,7 +809,11 @@ count limit. A person's retry (`POST
 `connection_id`) runs the same recheck for their own items, reopens their
 scheduled and paused rows (a paused row starts a fresh episode, the only way
 the count restarts), at most `ANNOTATION_MANUAL_RETRY_LIMIT` rows, and queues
-one annotation job.
+one annotation job. The keyed `reading.annotation.retry` owner commits the
+reopened rows, notification, mandatory Job, policy audit and receipt together.
+Recovery, frozen annotation inputs/owners, canonical Delivery and result release
+share Reading/Source locks and current Job claim fences. External execution
+remains outside transactions; a lost or indeterminate claim cannot repeat IO.
 
 `SourceAnnotationRecoveryNotifier` keeps one updatable private operational
 alert (`source_annotation_recovery`) per episode, wait reason and responsible
@@ -911,7 +927,14 @@ Policy envelope behavior:
 - Repair: regenerates a handler version (never mutates the active one in
   place) from the active version's manifest plus overrides; auto-activates
   only when the envelope is unchanged and Space policy allows same-envelope
-  repair auto-apply, otherwise creates a proposal. Rollback activates a
+  repair auto-apply, otherwise creates a proposal. The generate/test step runs
+  outside any transaction; its activation or proposal then commits in one
+  transaction under the Source's Project writer authority, the caller's Space
+  role and the Source and channel rows (FOR UPDATE), re-verifying management,
+  non-deletion, unchanged Source and channel status, this repair's
+  `repair_pending` and the tested-against active version — a Source paused,
+  deleted or taken out of the caller's hands meanwhile is not revived (409).
+  Rollback activates a
   previously-active declarative version directly, no proposal; removed code
   versions are rejected before activation.
 - Source Recipe: dry-run-tested recipe versions activate directly when the
@@ -1282,16 +1305,18 @@ new history-start approval and proposal-first binding remain independent.
 See [Projects](../architecture/PROJECTS.md#core-source-consumption-commands).
 
 
-### Retired connection transport
+### Removed connection-level URLs
 
-Ten exact legacy connection URLs (eight mutating-method entries and two GETs)
-are declared in retiredConnectionRoutes.ts and return only their existing fixed
-410 response. They invoke no identity lookup, database, policy, domain writer
-or fallback. The inventory exempts only these exact method/path pairs. Live
-Channel subscription, recipe/handler reads and other connection-scoped routes
-keep their own authorization and lifecycle. operationRoutes verifies every
-refusal with database configuration absent and keeps nearby live paths outside
-the manifest.
+Connections are internal provenance created by Source Channels. The former
+connection-level list/create/read/update/delete, draft, proposal,
+recommendation, subscription and scan URLs (eight mutating methods and two
+GETs) are not registered; a request reaches the unknown-route 404 like any
+absent URL. There is no fixed-refusal handler or inventory exemption for them.
+Underlying `source_connections` rows, provenance, schema and data are
+unchanged. Live Channel subscription and the connection-scoped Custom Source
+handler and Recipe read models keep their own authorization and lifecycle;
+operationRoutes checks the removed URLs are absent and those neighbours remain
+registered.
 
 
 ### Personal subscription core commands
@@ -1445,8 +1470,13 @@ soft deletion/foreign Space/revoked Project authority remain hidden.
 
 External execution has no open core DB transaction. Manual Jobs have one attempt;
 the existing `jobs.result_json` records a start fence before external I/O and its
-result receipt before worker acknowledgement. Completed delivery replays that
-receipt. A crash/failure after starting without a durable result is indeterminate:
+result receipt before worker acknowledgement (`sourceDispatchExecution.ts`). Both
+writes, and the busy-claim release, carry the queue's own current-claim predicate
+(`status='running'`, `claimed_by`, `attempts`): a worker whose claim was reclaimed,
+exhausted, cancelled or taken by a later attempt never starts external work
+(`SourceDispatchLeaseLost`) and never writes a late receipt — the start fence stays,
+so a later claim reports the outcome unavailable instead of repeating it. Delivery
+under the same live claim replays the stored receipt. A crash/failure after starting without a durable result is indeterminate:
 it fails rather than repeating possibly irreversible effects or claiming success.
 An operator may inspect the existing Job/Run result and issue a new explicit
 command; there is no automatic mutation retry or cross-I/O atomicity claim.
@@ -1493,3 +1523,177 @@ Project, then Source connections, then their channels. Multi-channel rollback lo
 all known parent connections before any child, matching legacy channel updates and
 the connection locks required by binding foreign keys. Changed parent identity is
 refused instead of acquiring a newly discovered parent after a channel lock.
+
+### Source item and extracted-evidence object commands through core
+
+Retained URLs → human-only core commands (`sources/sourceObjectOperations.ts`,
+adapters in `sourceObjectOperationRoutes.ts`): `POST items/manual-url` →
+`source.item.save_url`; `PATCH items/:itemId` → `source.item.update`;
+`POST items/:itemId/actions` → `source.item.queue` (`queue_content`,
+`archive_snapshot`; policy `source.item_create`) or `source.item.triage`
+(`mark_selected`, `mark_ignored`, `read_later`, `mark_discussed`,
+`extract_evidence`; policy `source.item_update`); `POST evidence` →
+`source.evidence.create`; `PATCH evidence/:evidenceId` → `source.evidence.update`;
+`POST evidence-links` → `source.evidence.link`. They reuse the canonical
+`PgSourcesRepository` writers in one core transaction with audit and receipt.
+Context-free URL/evidence creation is placed by the access owner (Project
+shared, else Personal private); a named connection/source/artifact keeps the
+request Space. With a connection, `project_id` may restate the connection's own
+Project or, for a connection without one, name a Project the caller writes
+(checked under the Project writer lock); a different Project is a cached 422.
+Evidence from a source item/artifact may restate the source's Project, never
+differ from it.
+Queue actions only write the extraction Job intent consumed by the existing
+worker; no provider or network IO runs in the transaction. The retrieval
+projection refresh runs behind its own savepoint inside operation transactions.
+Receipts are identity only; the browser rereads items/evidence through the
+authorized GET in the receipt Space. A retention-policy refusal is a cached
+consent refusal (409, `metadata.code = source_retention_policy`). The remaining Source families moved in the block continuation are described
+below, the Goal family after them.
+
+### Source block continuation: material, post-processing, retrieval, recipes, Custom Sources
+
+Human-only, ungrantable core commands with explicit keys (definitions in
+`packages/protocol/src/noteSourceBlockOperations.ts`; Agent surfaces unchanged):
+
+- Material processing (`materialProcessing/operations.ts`): `source.material.start`
+  writes the queued Run, the material operation row and the `agent_run` Job intent
+  (`MaterialItemProcessingService.startIn`, also used by Project deep reading);
+  `source.material.cancel` marks the Run cancelling and settles the operation in the
+  transaction and stops the process after commit (stale cancelling Runs are swept);
+  `source.material.request_storage` submits one pending `source_material_retention`
+  proposal per Source policy under a Source row lock; `source.material.show_markdown`
+  keeps its version fence (409 `metadata.code=reading_version_changed`). The state GET
+  settles overdue/finished Runs, so it now requires `stateChangingReadAllowed`.
+- Post-processing (`postProcessing/operations.ts`): decision actions split by their
+  retained policy (`source.processing.decision.queue` for queue_content/extract_evidence,
+  `.review` otherwise). rerun_item/deep_analysis and one-off runs
+  (`source.processing.run_once`) write a single-attempt `source_post_processing_event`
+  Job (`manual_decision` / `manual_run_once`) executed behind the Source dispatch start
+  fence; the worker rechecks the reviewer's decision reach and the admitted rule
+  fingerprint, or repeats one-off admission. Run-once now resolves the Monitor the
+  inputs were delivered through (the legacy handler looked a connection id up as a
+  channel id and could never find it).
+- Retrieval (`retrievalOperations.ts`): search, Context Brief and provider query
+  preview are request commands (202 Job receipt, Job type `source_retrieval_request`);
+  embedding/rewrite/rerank/synthesis and provider fetches run in the Job outside any
+  transaction behind the start fence. Preview spends its per-connection quota at
+  admission (429 `source_preview_quota` rolls back) and freezes the credential id,
+  never its header. The general Jobs reader withholds this Job type's result;
+  `GET /sources/retrieval/requests/:jobId` releases it to the requester only, through
+  the canonical retrieval gate (`RetrievalSearchService.revalidateForRelease`: the
+  Source adapter's revalidation with subscription/history eligibility and Evidence
+  provenance, then the Source consent/archive policy, B11 read audit). An object is
+  released whole and fully readable or withheld; there is no stripped summary copy.
+  Once any source of a brief is withheld, its synthesized answer and model gap
+  findings (`uncited_claims`, `contradictions`, `missing_topics`) are dropped and the
+  deterministic `stale`/`thin` lists keep only releasable sources. `source.retrieval.reindex`
+  rebuilds the projection and queues its embedding backfill in one transaction (Space
+  owner/admin).
+- Backfill: `source.backfill.start.propose` (retained propose-start URL) reuses the
+  backfill authority (manage, Project refs, plan lock) and the canonical start
+  proposal writer; a proposed plan returns its pending proposal. Agent auto-grant stays
+  on the Agent action `source.backfill.propose_start`.
+- Recipes (`sourceRecipeOperations.ts`): planning and dry-run are request commands
+  (`recipe_plan` / `recipe_dry_run`), the dry-run outcome recorded by its status-fenced
+  writer; `source.recipe.activate` activates in-envelope or submits the canonical
+  `source_recipe_activation` proposal. Dry-run and activation now require current
+  Source management (the legacy handlers only required the Source to exist).
+- Custom Sources (`customSources/operations.ts`): drafts (access-owner placement),
+  pipeline generation (429 rate limit rolls back), activation, rollback and the
+  pipeline bridge are DB commands; handler test and repair are request commands
+  (`custom_test` / `custom_repair`) whose worker reuses the existing short per-step
+  transactions. Every connection command requires current management (the bridge did
+  not check it). Credentials accept the secret once: the request fingerprint keys it by
+  HMAC, and no receipt, audit or Job stores it. Space policy (Space admin) and instance
+  runner settings (instance admin) are commands.
+
+Dedicated refusals are `SourceObjectRefusal` at their throw sites (409/422, optional
+content-free `metadata.code`); the web client promotes `metadata.code` to the error code.
+
+### Source block Goals family
+
+The 21 retained goal-setup / goal control URLs are human-only, ungrantable core
+commands (`packages/protocol/src/sourceGoalOperations.ts`, registrations in
+`goals/operations.ts`, policy `source.goal.manage`, explicit transport key, strict
+input = the existing request schema plus URL targets). The Agent goal actions
+(`source.goal.read/sources/inspect/write_version/repair_candidate`,
+`source.material.submit`) and the collection worker are unchanged. Every goal
+command takes the Goal writer lock (`goals/transaction.ts#lockGoal`): the goal's
+Project row first (FOR UPDATE, as the legacy, compatibility and activation writers
+take it), then the goal row, then pins the Project writer's membership, and the owner
+rechecks under those locks. Every domain Goal writer, the topic-analysis writers and
+the scheduler cohort use the same Project → Goal order, as do a briefing/reading
+Delivery (Project audience share → Goal share; `lockReadingRunAuthority` includes the
+Following goals' own Projects), so no writer holds a Goal while waiting for its
+Project. Goal creation takes the Project row FOR UPDATE before the writer check's
+share lock. A collection batch commit (`materialization.ts`) holds the same closure
+(Project and Goal share, binding FOR UPDATE, then the Source connection's read
+authority: row, the owner's subscriptions, content ACL) and re-verifies the goal and
+Source under it: a pause/delete, Project writer removal or Source change either
+commits first and refuses the batch or waits for its commit. A valid lease alone is
+not execution authority. Receipts are identity plus the
+state the caller acts on; a replay is released only to the goal's current manager (a
+deleted goal's own delete receipt included); plans, previews, messages and theme
+results stay behind the GET readers.
+
+- Creation (`source.goal.setup.begin`, `source.goal.create`) uses access-owner
+  placement (Project when named, else Personal), Project writer pinned; begin commits
+  the topic, its Session choices and its optional follow (and its queued planning
+  Run) in one transaction.
+- `source.goal.setup.message` commits the authenticated message, its adjustment cycle
+  and the queued planning Run + `agent_run` Job intent together; a refused admission
+  leaves no message or dispatch claim (cached refusal with `metadata.code`). The
+  domain message key still deduplicates.
+- `source.goal.preview.request` is a request command: admission (exact current
+  version, one in flight, three per version) and a single-attempt
+  `source_retrieval_request` Job (`kind: goal_preview`) commit together (202). The
+  Job runs behind the Source dispatch start fence, repeats admission under the
+  person's current authority before any Source execution (a stopped goal or changed
+  version marks the preview `stale` and executes nothing) and stores through the
+  existing preview writer, which checks the goal again. The result is read through
+  `GET /sources/goals/:goalId` (`previews`); the browser polls while one is running.
+  The old synchronous 120-second request path is gone.
+- explore/check keep their existing queued Run / `source_goal_tick` Job intents;
+  edit, save, follow, feedback, resume, rollback, source confirmation, repair publish
+  and compatibility mapping/rollback are DB commands over the existing writers.
+- Cancellation is an intent in the command: pause/delete mark every live goal Run
+  cancelling, an activation (follow/save/resume/begin) marks superseded native
+  collections cancelling (`markSupersededCollectionsIn`), and theme cancel marks the
+  analysis Run cancelling and settles its briefing `cancelled` (settlement accepts
+  only a queued briefing, so a late Run result cannot land). The process stop is
+  after commit (`stopCancellingGoalRuns`, `stopThemeRoundRun`); the Run sweep finishes
+  an interrupted one.
+- Refusals: domain 400/409/422, exhausted budgets (429, reported 409 with
+  `metadata.status`), named `source_*`/`theme_*` refusals and the owned Agent/Profile
+  requirement are cached with `metadata.code`; access refusals without a code are
+  hidden (404).
+
+
+### a83 final authority and effect follow-up
+
+Stored retrieval release uses one complete, ordered Source/provenance/ACL closure
+and one transaction for canonical revalidation, live canonical Source lineage
+and B11 commit. Multiple hits do not lock their shared dependencies in hit order.
+Repair and collection final transactions lock/recheck active user plus active
+Space membership, including conflicts with auth account disable. Collection
+leases use actual database time after waiting for locks and at the final commit
+decision. See [DB owner rules](../architecture/DATABASE_AND_TRANSACTIONS.md#source-result-release-and-final-source-commits-a83-follow-up).
+
+The dispatch's start CAS is reservation, not permission to do later I/O. Its Job
+credential reaches actual Source HTTP, provider HTTP, Host launch (after capacity
+waiting) and durable Job enqueue boundaries. Cancel/reclaim revoke later starts;
+started unknown outcomes are not reissued. Existing domain permission, consent,
+provenance, spending, approval and credential/HMAC gates remain in force. See
+[Job ownership](../architecture/EXECUTION_MODEL.md#manual-source-job-execution-ownership).
+
+The Host Source broker's Job-authority wrapper forwards through a fresh function;
+its scope metadata may be read-only and is never reassigned on the original broker.
+
+
+Annotation manual retry and interest history/recommendation preparation discover
+the complete bounded Source/Project set before person locks. Their existing
+Reading mutation closure pins current users/memberships after Project audiences;
+execution consumes that locked selection and rechecks discovery before writes.
+Operation replay locks retained result references before core actor locks.
+No deadlock exception is converted to success or an application retry.

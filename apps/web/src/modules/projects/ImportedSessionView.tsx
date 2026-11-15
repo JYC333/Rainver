@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { holdReferences } from '../agent_groups/pendingReferences'
 import { useParams } from 'react-router-dom'
 import { deriveAmbientActivity } from '@rainver/protocol'
-import { AlertTriangle, ArrowLeft, MessageSquarePlus, Quote, Terminal, Wrench, X } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, MessageSquarePlus, ChevronDown, Quote, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { ambientSessionsApi, projectsApi, roomsApi } from '../../api/client'
 import { errMsg } from '../../lib/utils'
@@ -11,6 +11,10 @@ import type { ImportedSession, ImportedSessionRecord } from '../../types/api'
 import { Card } from '../../components/ui/card'
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
+import { useAppTranslation } from '../../i18n'
+import { ImportedSessionReadNotice, isImportedSessionBusy } from './ImportedSessionReadNotice'
+import { ImportedSessionTranscript } from './ImportedSessionTranscript'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../../components/ui/collapsible'
 import { Skeleton } from '../../components/ui/skeleton'
 
 /**
@@ -39,6 +43,7 @@ function isFullyShared(session: Pick<ImportedSession, 'visibility' | 'access_lev
  * available the moment an import lands and costs nothing.
  */
 export default function ImportedSessionView() {
+  const { t } = useAppTranslation()
   const { projectId = '', sessionId = '' } = useParams()
   const navigate = useSpaceNavigate()
   const [continuing, setContinuing] = useState(false)
@@ -181,7 +186,7 @@ export default function ImportedSessionView() {
           )}
           <Badge variant="outline">Read-only</Badge>
           {session.visibility === 'private' && <Badge variant="outline">Only you</Badge>}
-          {session.load_state === 'partial' && <Badge variant="outline">Partial replay</Badge>}
+          {session.load_state === 'partial' && <Badge variant="outline">{isImportedSessionBusy(session) ? t('conversation_ui.imported.session_busy') : 'Partial replay'}</Badge>}
           {session.source_state === 'gone' && (
             <Badge variant="outline" className="flex items-center gap-1">
               <AlertTriangle className="size-3" />No longer on the host
@@ -190,31 +195,42 @@ export default function ImportedSessionView() {
         </div>
       </div>
 
+      <ImportedSessionReadNotice session={session} />
+
       {(derived.files.length > 0 || derived.commands.length > 0) && (
-        <Card className="space-y-3 p-4">
-          <h2 className="text-sm font-semibold">What this session did</h2>
-          {derived.files.length > 0 && (
-            <div>
-              <h3 className="text-xs uppercase tracking-wide text-muted-foreground">Files touched</h3>
-              <ul className="mt-1 space-y-0.5 text-sm">
-                {derived.files.slice(0, 20).map(file => <li key={file} className="truncate font-mono text-xs">{file}</li>)}
-              </ul>
-            </div>
-          )}
-          {derived.commands.length > 0 && (
-            <div>
-              <h3 className="text-xs uppercase tracking-wide text-muted-foreground">Commands run</h3>
-              <ul className="mt-1 space-y-0.5 text-sm">
-                {derived.commands.slice(0, 20).map((command, index) => (
-                  <li key={`${command.tool}-${index}`} className="truncate font-mono text-xs">
-                    {command.tool}
-                    {command.status && <span className="text-muted-foreground"> · {command.status}</span>}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </Card>
+        <Collapsible asChild>
+          <Card className="mb-0 p-2">
+            <CollapsibleTrigger asChild>
+              <Button size="sm" variant="ghost" className="group h-auto w-full justify-between whitespace-normal text-left">
+                {t('conversation_ui.imported.session_activity')}
+                <ChevronDown className="size-3.5 shrink-0 transition-transform group-data-[state=open]:rotate-180" />
+              </Button>
+            </CollapsibleTrigger>
+            <CollapsibleContent className="space-y-3 p-2">
+            {derived.files.length > 0 && (
+              <div>
+                <h3 className="text-xs uppercase tracking-wide text-muted-foreground">Files touched</h3>
+                <ul className="mt-1 space-y-0.5 text-sm">
+                  {derived.files.slice(0, 20).map(file => <li key={file} className="truncate font-mono text-xs">{file}</li>)}
+                </ul>
+              </div>
+            )}
+            {derived.commands.length > 0 && (
+              <div>
+                <h3 className="text-xs uppercase tracking-wide text-muted-foreground">Commands run</h3>
+                <ul className="mt-1 space-y-0.5 text-sm">
+                  {derived.commands.slice(0, 20).map((command, index) => (
+                    <li key={`${command.tool}-${index}`} className="truncate font-mono text-xs">
+                      {command.tool}
+                      {command.status && <span className="text-muted-foreground"> · {command.status}</span>}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            </CollapsibleContent>
+          </Card>
+        </Collapsible>
       )}
 
       {/* The same guard as the header button, not a second judgement. A
@@ -238,20 +254,15 @@ export default function ImportedSessionView() {
       )}
 
       <div className="space-y-2">
-        {records.map(record => (
-          <RecordRow
-            key={record.id}
-            record={record}
-            // The same test the toolbar and the header use. Without it a
-            // reader ticks records and no toolbar ever appears — no action,
-            // no explanation, beside a header that already gave one.
-            pickable={fullyShared || canWrite}
-            picked={picked.includes(record.id)}
-            onPickedChange={next => setPicked(current => next
-              ? [...current, record.id]
-              : current.filter(id => id !== record.id))}
-          />
-        ))}
+        <ImportedSessionTranscript
+          key={sessionId}
+          records={records}
+          pickable={fullyShared || canWrite}
+          picked={picked}
+          onPickedChange={(id, next) => setPicked(current => next
+            ? [...current, id]
+            : current.filter(pickedId => pickedId !== id))}
+        />
         {truncated && (
           <p className="text-xs text-muted-foreground">
             This session is longer than what is shown; the rest was not loaded.
@@ -259,76 +270,5 @@ export default function ImportedSessionView() {
         )}
       </div>
     </div>
-  )
-}
-
-/**
- * One record, with the control that picks it.
- *
- * Picking happens here — at the source — because choosing which parts of a
- * transcript matter needs the transcript in front of you. The checkbox wraps
- * the row rather than living inside each of its three shapes, so a new record
- * kind is pickable without being told to be.
- */
-function RecordRow({
-  record,
-  pickable,
-  picked,
-  onPickedChange,
-}: {
-  record: ImportedSessionRecord
-  /** False where nothing can be done with a pick; the control is not offered. */
-  pickable: boolean
-  picked: boolean
-  onPickedChange: (picked: boolean) => void
-}) {
-  return (
-    <div className={`group flex items-start gap-2 rounded ${picked ? 'bg-accent/40' : ''}`}>
-      {pickable && (
-        <label className={`flex shrink-0 items-start pt-4 ${picked ? '' : 'opacity-0 focus-within:opacity-100 group-hover:opacity-100'}`}>
-          <input
-            type="checkbox"
-            checked={picked}
-            aria-label="Pick this record"
-            onChange={event => onPickedChange(event.target.checked)}
-          />
-        </label>
-      )}
-      <div className="min-w-0 flex-1"><RecordBody record={record} /></div>
-    </div>
-  )
-}
-
-function RecordBody({ record }: { record: ImportedSessionRecord }) {
-  if (record.kind === 'tool_call') {
-    return (
-      <Card className="flex items-start gap-2 p-3 text-xs">
-        <Wrench className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
-        <div className="min-w-0 flex-1">
-          <div className="font-medium">{record.tool_name ?? 'Tool call'}{record.tool_status && ` · ${record.tool_status}`}</div>
-          {record.tool_input && <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px] text-muted-foreground">{record.tool_input}</pre>}
-          {record.tool_output && (
-            <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px] text-muted-foreground">
-              {record.tool_output}{record.truncated && ' …'}
-            </pre>
-          )}
-        </div>
-      </Card>
-    )
-  }
-  if (record.kind === 'user_message' || record.kind === 'agent_message') {
-    return (
-      <Card className="p-3">
-        <div className="mb-1 text-[11px] uppercase tracking-wide text-muted-foreground">
-          {record.kind === 'user_message' ? 'You' : 'Agent'}
-        </div>
-        <p className="whitespace-pre-wrap break-words text-sm">{record.text}{record.truncated && ' …'}</p>
-      </Card>
-    )
-  }
-  return (
-    <Card className="flex items-center gap-2 p-3 text-xs text-muted-foreground">
-      <Terminal className="size-3.5" />{record.kind === 'plan' ? 'Plan' : 'Other activity'}
-    </Card>
   )
 }

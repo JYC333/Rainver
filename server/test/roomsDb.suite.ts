@@ -1,3 +1,5 @@
+import { seedSpaceMember } from "./support/domainSeeds.js";
+import { waitForBlockedBy } from "./support/lockWait.js";
 import type { FastifyInstance } from "fastify";
 import {lockRequestKey} from '../src/modules/systemActions/operations/repository.js';
 import {linkProposalOperation} from './support/linkedProposalOperation.js';
@@ -29,7 +31,7 @@ import type { SystemActionId } from "@rainver/protocol";
 import { POLICY_ACTION_REGISTRY } from "@rainver/protocol";
 import { engineCheck } from "../src/modules/policy/decisionCore.js";
 import type { SystemActionExecutor } from "../src/modules/systemActions/gateway.js";
-import { seedConversationMessages } from "./support/domainSeeds.js";
+import { seedConversationMessages, seedRun } from "./support/domainSeeds.js";
 import { registerBuiltInAttentionAdapters } from "../src/modules/projects/attentionService.js";
 import { SpaceAssistantService } from "../src/modules/agents/spaceAssistantService.js";
 import { PgRunRepository, type RunRecord } from "../src/modules/runs/repository.js";
@@ -41,6 +43,7 @@ import { PgProjectRepository } from "../src/modules/projects/repository.js";
 import { ProjectPublicSummaryGenerator } from "../src/modules/projects/publicSummaryGenerator.js";
 import { seedProjectMainlineRoom, seedRoomManager } from "./support/domainSeeds.js";
 import { PgRoomRepository, type RoomAgentMemberRecord } from "../src/modules/rooms/repository.js";
+import { RoomRosterService } from "../src/modules/rooms/rosterService.js";
 import { PgRoomRosterRepository } from "../src/modules/rooms/rosterRepository.js";
 import { projectAttentionRegistry } from "../src/modules/projects/attentionRegistry.js";
 import { PgRouteDecisionRepository } from "../src/modules/routing/repository.js";
@@ -134,7 +137,7 @@ beforeAll(async () => {
     SERVER_DATABASE_URL: db.connectionUri,
     RAINVER_HOME: testRoot,
   }), db.pool);
-}, 120_000);
+});
 
 afterAll(async () => {
   if (testRoot) await rm(testRoot, { recursive: true, force: true });
@@ -1016,7 +1019,7 @@ describe("Room workflow (real Postgres)", () => {
     expect(result).toMatchObject({ status: "renamed", title: "个人 Agent 记忆研究" });
   });
 
-  it("lists Room conversations by creation time descending, independent of activity", async (ctx) => {
+  it("orders Room conversations by visible messages before pagination and reports active execution", async (ctx) => {
     if (!db.available || !service) return ctx.skip();
     const owner = { spaceId: "space-1", userId: "user-1" };
     const created = await openSpokenRoom(owner, {
@@ -1039,12 +1042,33 @@ describe("Room workflow (real Postgres)", () => {
       [older.id, newer.id],
     );
 
+    await service.sendMessage(owner, created.room.id, older.id, {
+      content: 'A new message in an older thread',
+      backends: [{ agent_id: 'agent-1', runtime_profile_id: 'runtime-cli' }],
+    });
+    await db.pool.query("UPDATE messages SET created_at='2026-01-03T00:00:00Z' WHERE session_id=$1", [older.id]);
     await expect(service.listConversations(owner, created.room.id, {
-      limit: 20,
+      limit: 1,
       offset: 0,
     })).resolves.toMatchObject({
-      items: [{ id: newer.id }, { id: older.id }],
+      items: [{ id: older.id, last_message_at: '2026-01-03T00:00:00.000Z', is_running: true }],
     });
+    await expect(service.listConversations(owner, created.room.id, { limit: 1, offset: 1 }))
+      .resolves.toMatchObject({ items: [{ id: newer.id, last_message_at: null, is_running: false }] });
+    const secondRun = randomUUID();
+    await seedRun(db.pool, { id: secondRun, space: owner.spaceId, owner: owner.userId, agent: randomUUID(), version: randomUUID() });
+    await db.pool.query(`UPDATE runs SET status='waiting_for_dependency',run_group_id=(
+      SELECT run_group_id FROM runs WHERE session_id=$1 AND execution_kind='agent' LIMIT 1) WHERE id=$2`, [older.id, secondRun]);
+    await db.pool.query("UPDATE runs SET status='failed',ended_at=now() WHERE session_id=$1", [older.id]);
+    // A second Agent in the same collaboration group still waits: the conversation has not ended.
+    await expect(service.listConversations(owner, created.room.id, { limit: 1, offset: 0 }))
+      .resolves.toMatchObject({ items: [{ id: older.id, is_running: true }] });
+    expect((await service.listProjectConversations(owner, 'project-1', { limit: 20, offset: 0 }))
+      .items.find(item => item.id === older.id)?.is_running).toBe(true);
+    await db.pool.query("UPDATE runs SET status='failed',ended_at=now() WHERE id=$1", [secondRun]);
+    await db.pool.query("UPDATE sessions SET updated_at='2026-02-01T00:00:00Z' WHERE id=$1", [newer.id]);
+    await expect(service.listConversations(owner, created.room.id, { limit: 1, offset: 0 }))
+      .resolves.toMatchObject({ items: [{ id: older.id, is_running: false }] });
   });
 
   it("starts a further conversation through the explicit draft action", async (ctx) => {
@@ -3402,6 +3426,27 @@ describe("Room workflow (real Postgres)", () => {
       expect(detail.waves.map((wave) => [wave.wave, wave.closing])).toEqual([[0, false], [1, true]]);
     });
 
+    it("refuses Agent-addressed discussion targets and old retries after participation is removed",async ctx=>{
+      if(!db.available||!service)return ctx.skip();
+      const {owner,created,conversation}=await roomWithSpecialist('Removed discussion target');
+      const contexts=new ConversationExecutionContextService(db.pool);
+      const remove=async()=>{
+        const summary=(await contexts.preview(owner,conversation.id)).summary;
+        await contexts.initialize(owner,conversation.id,{selection:{execution_host_id:summary.host!.host_id,primary:{kind:'managed'}},runtime:summary.runtime!,participants_revision:summary.participants_revision,participant_changes:[{agent_id:'agent-2',participating:false}]});
+      };
+      // A terminal original recipient can be removed, but retry must not replay its content.
+      const original=await service.sendMessage(owner,created.room.id,conversation.id,{content:'Inspect.',recipient_segments:[{recipient_agent_ids:['agent-2'],content:'Inspect.'}]});
+      await failTurn(original.run_ids[0]!,'runtime_failed','Test runtime refused.');
+      await remove();
+      await expect(service.retryMessage(owner,created.room.id,conversation.id,{run_id:original.run_ids[0]!})).rejects.toMatchObject({statusCode:409,message:expect.stringContaining('Conversation settings')});
+      const sent=await service.sendMessage(owner,created.room.id,conversation.id,{content:'Plan.'});
+      await completeTurn(sent.run_ids[0]!,'@Research Specialist inspect the new private content.');
+      const received=await db.pool.query(`SELECT id FROM runs WHERE session_id=$1 AND agent_id='agent-2'`,[conversation.id]);
+      expect(received.rows).toHaveLength(1);
+      const notice=await db.pool.query(`SELECT content FROM messages WHERE session_id=$1 AND metadata_json->'discussion_notice'->>'kind'='not_admitted'`,[conversation.id]);
+      expect(notice.rows.some(row=>row.content.includes('no longer participates'))).toBe(true);
+    });
+
     it("keeps a debate's first round independent, then puts every answer in front of everyone", async (ctx) => {
       if (!db.available || !service) return ctx.skip();
       const { owner, created, conversation } = await roomWithSpecialist("Debate");
@@ -5411,10 +5456,13 @@ describe("Room workflow (real Postgres)", () => {
         WHERE id = $1`,
       [runtimeProfile.rows[0]!.id],
     );
+    const participantState=(await new ConversationExecutionContextService(db.pool).preview(owner,created.conversation.id)).summary;
     await new ConversationExecutionContextService(db.pool).initialize(
       owner,
       created.conversation.id,
       {
+        participants_revision:participantState.participants_revision,
+        participant_changes:[{agent_id:presetSpecialist!.agent_id,participating:true}],
         selection: { execution_host_id: "host-1", primary: { kind: "managed" } },
         runtime: {
           agent_id: presetSpecialist!.agent_id,
@@ -5846,6 +5894,85 @@ describe("Room workflow (real Postgres)", () => {
     await expect(db.pool.query<{ status: string }>(
       `SELECT status FROM room_user_invitations WHERE id = $1`, [invitation.id],
     )).resolves.toMatchObject({ rows: [{ status: "rejected" }] });
+  });
+
+  it.each(["room", "project", "demotion", "inactive-space-owner", "unmanaged-owner", "owner-changed", "agent-disabled", "concurrent-project", "concurrent-activation"])("never revives an approved cross-Project invitation after owner %s loss", async (loss) => {
+    if (!db.available || !service) return;
+    const admin = { spaceId: "space-1", userId: "user-1" };
+    const issuer = { spaceId: "space-1", userId: "user-2" };
+    const inviter = { spaceId: "space-1", userId: "user-3" };
+    const projects = new PgProjectRepository(db.pool);
+    for (const user of [issuer.userId, inviter.userId]) await projects.addMember(admin, "project-1", { user_id: user, role: "member" });
+    const target = randomUUID();
+    await seedSpaceMember(db.pool, { space: "space-1", user: target });
+    await projects.addMember(admin, "project-1", { user_id: target, role: "member" });
+    const source = await projects.create(admin, { name: "Retained source" });
+    await projects.addMember(admin, String(source.id), { user_id: issuer.userId, role: "member" });
+    const room = (await service.createRoom(admin, { project_id: "project-1", title: "Approval lifecycle" })).room.id;
+    await addRoomMember(room, issuer.userId); await addRoomMember(room, inviter.userId);
+    const cross = randomUUID(), local = randomUUID();
+    for (const [id, owner, retained] of [[cross, issuer.userId, source.id], [local, admin.userId, null]]) {
+      await db.pool.query(`INSERT INTO agents (id,space_id,owner_user_id,name,status,agent_kind,visibility,access_project_id,created_at,updated_at)
+        VALUES ($1,'space-1',$2,'Specialist','active','standard','private',$3,now(),now())`, [id, owner, retained]);
+    }
+    await service.addAgent(issuer, room, { agent_id: cross, confirm_room_share: true, share_private_with_member_ids: [admin.userId, inviter.userId] });
+    await service.addAgent(admin, room, { agent_id: local, confirm_room_share: true, share_private_with_member_ids: [issuer.userId, inviter.userId] });
+    const invitation = await service.inviteUser(inviter, room, { user_id: target });
+    expect((await service.decideInvitation(issuer, room, invitation.id, { agent_id: cross, decision: "approved" })).status).toBe("pending");
+    const activate = () => service!.decideInvitation(admin, room, invitation.id, { agent_id: local, decision: "approved" });
+    if (loss === "concurrent-activation") {
+      const tx = await db.pool.connect();
+      try {
+        await tx.query("BEGIN");
+        const pid = (await tx.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
+        expect((await new RoomRosterService(tx).decideInvitation(admin, room, invitation.id, { agent_id: local, decision: "approved" })).status).toBe("active");
+        const removal = projects.removeMember(admin, "project-1", issuer.userId);
+        await waitForBlockedBy(db.pool, pid);
+        await tx.query("COMMIT"); await removal;
+      } finally { await tx.query("ROLLBACK"); tx.release(); }
+    } else if (loss === "concurrent-project") {
+      const tx = await db.pool.connect();
+      let activation: Promise<unknown> | undefined;
+      try {
+        await tx.query("BEGIN");
+        const pid = (await tx.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
+        await new PgProjectRepository(tx).removeMember(admin, "project-1", issuer.userId);
+        activation = activate();
+        const observed = activation.then(value => ({ value }), error => ({ error }));
+        await waitForBlockedBy(db.pool, pid);
+        await tx.query("COMMIT"); await observed;
+      } finally { await tx.query("ROLLBACK"); tx.release(); }
+    } else {
+      if (loss === "inactive-space-owner") await db.pool.query("UPDATE space_memberships SET status='removed' WHERE space_id='space-1' AND user_id=$1", [issuer.userId]);
+      else if (loss === "unmanaged-owner") await db.pool.query("UPDATE project_members SET role='viewer' WHERE project_id='project-1' AND user_id=$1", [issuer.userId]);
+      else if (loss === "owner-changed") await db.pool.query("UPDATE agents SET owner_user_id=$2 WHERE id=$1", [cross, admin.userId]);
+      else if (loss === "agent-disabled") await db.pool.query("UPDATE agents SET status='disabled' WHERE id=$1", [cross]);
+      else if (loss === "room") await service.removeUser(admin, room, issuer.userId);
+      else if (loss === "demotion") await projects.addMember(admin, "project-1", { user_id: issuer.userId, role: "viewer" });
+      else await projects.removeMember(admin, "project-1", issuer.userId);
+      if (loss === "owner-changed" || loss === "inactive-space-owner" || loss === "unmanaged-owner") {
+        expect((await new PgRoomRepository(db.pool).listAgentMembers("space-1", room, admin.userId)).find(row => row.agent_id === cross)?.private_shared_user_ids).toEqual([]);
+        if (loss === "owner-changed") {
+          const candidates = await new PgRoomRosterRepository(db.pool).listAgentCandidates({ space_id: "space-1", user_id: admin.userId, room_id: room, limit: 50, offset: 0 });
+          expect(candidates.items.find(row => row.agent_id === cross)?.shared_with_user_ids).toEqual([]);
+        }
+      }
+      await activate().catch(error => expect(error).toMatchObject({ statusCode: 409 }));
+    }
+    expect((await db.pool.query("SELECT id FROM room_agent_access_grants WHERE room_id=$1 AND agent_id=$2 AND grantee_user_id=$3 AND revoked_at IS NULL", [room, cross, target])).rows).toEqual([]);
+    await db.pool.query("UPDATE space_memberships SET status='active' WHERE space_id='space-1' AND user_id=$1", [issuer.userId]);
+    await db.pool.query("UPDATE agents SET owner_user_id=$2,status='active' WHERE id=$1", [cross, issuer.userId]);
+    await projects.addMember(admin, "project-1", { user_id: issuer.userId, role: "member" });
+    // Restore the membership fixture without fresh Agent consent, to prove
+    // that even a later active owner cannot resurrect this old invitation.
+    if (loss === "room") await addRoomMember(room, issuer.userId);
+    expect((await db.pool.query("SELECT status FROM room_user_members WHERE room_id=$1 AND user_id=$2", [room, issuer.userId])).rows[0].status).toBe("active");
+    await activate();
+    expect((await db.pool.query("SELECT status FROM room_user_invitations WHERE id=$1", [invitation.id])).rows[0].status).toBe(loss === "concurrent-activation" ? "active" : "invalidated");
+    if (["room", "project", "demotion", "concurrent-project", "concurrent-activation"].includes(loss)) {
+      expect((await db.pool.query("SELECT id FROM room_agent_access_grants WHERE room_id=$1 AND agent_id=$2 AND revoked_at IS NULL", [room, cross])).rows).toEqual([]);
+    }
+    expect((await db.pool.query("SELECT id FROM room_agent_access_grants WHERE room_id=$1 AND agent_id=$2 AND grantee_user_id=$3 AND revoked_at IS NULL", [room, cross, target])).rows).toEqual([]);
   });
 
   it("requires each private-Agent owner to approve a Room invitation and supports suspended-owner recovery", async (ctx) => {
@@ -7043,11 +7170,19 @@ describe("Room workflow (real Postgres)", () => {
        VALUES ('project-2', 'space-1', 'user-1', 'Second Project', 'active', now(), now())`,
     );
     await seedProjectMainlineRoom(db.pool, { space: "space-1", project: "project-2", owner: "user-1" });
-    const source = await openSpokenRoom(owner, { project_id: "project-1", title: "Here" });
+    const openReferenceRoom = async (input: { project_id: string; title: string }) => {
+      const created = await service!.createRoom(owner, input);
+      const conversation = await new PgSessionRepository(db.pool).createRoomConversation({
+        space_id: owner.spaceId, room_id: created.room.id, project_id: input.project_id,
+        project_folder_id: null, title: input.title, metadata: {},
+      });
+      return {room: created.room, conversation};
+    };
+    const source = await openReferenceRoom( { project_id: "project-1", title: "Here" });
     const said = await new PgSessionRepository(db.pool).addRoomUserMessage(
       "space-1", "user-1", source.room.id, source.conversation.id, { content: "Stays here." },
     );
-    const elsewhere = await openSpokenRoom(owner, { project_id: "project-2", title: "There" });
+    const elsewhere = await openReferenceRoom({ project_id: "project-2", title: "There" });
 
     // A non-goal made a rule: a reference never crosses a Project, however
     // readable both sides are to the same person.
@@ -7644,7 +7779,7 @@ describe("Room workflow (real Postgres)", () => {
     expect(await promptOf()).toContain("New rule from a release.");
   });
 
-  it("lists every conversation in the Project as one list, mainline first, and enrols the reader", async (ctx) => {
+  it("lists every visible Project conversation by message activity and enrols the reader", async (ctx) => {
     if (!db.available || !service) return ctx.skip();
     const owner = { spaceId: "space-1", userId: "user-1" };
     const mainline = await service.getProjectMainline(owner, "project-1");
@@ -7666,20 +7801,19 @@ describe("Room workflow (real Postgres)", () => {
     expect(seen.items.map((item) => item.room_id)).toEqual([mainline.room.id]);
     expect(seen.items[0]).toMatchObject({ room_is_mainline: true, room_title: "Room Project", message_count: 1 });
 
-    // The owner sees all three: mainline first, then the topic Room's by last
-    // activity, with what was last said.
+    // The owner sees all three by message activity, without mainline pinning.
     const all = await service.listProjectConversations(owner, "project-1", { limit: 50, offset: 0 });
     expect(all.total).toBe(3);
     expect(all.items.map((item) => [item.room_title, item.title])).toEqual([
-      ["Room Project", "New conversation"],
       ["Tax season", "Receipts"],
       ["Tax season", "New conversation"],
+      ["Room Project", "New conversation"],
     ]);
     // A Room is named by its audience, not by its title, so the list carries
     // the roster with the viewer excluded. user-2 read the list above, which
     // enrolled them in the mainline; the limited Room nobody was invited to
     // names nobody.
-    expect(all.items[0]).toMatchObject({
+    expect(all.items.find(item => item.room_is_mainline)).toMatchObject({
       room_is_mainline: true,
       room_other_member_names: ["Room Member"],
     });
@@ -7703,7 +7837,7 @@ describe("Room workflow (real Postgres)", () => {
     );
     expect(outsider.empty_rooms.map((room) => room.room_id)).not.toContain(silent.room.id);
 
-    expect(all.items[1]).toMatchObject({
+    expect(all.items[0]).toMatchObject({
       room_is_mainline: false,
       last_message_role: "user",
       last_message_preview: "Where are the March receipts?",

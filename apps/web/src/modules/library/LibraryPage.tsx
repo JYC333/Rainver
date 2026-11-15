@@ -144,7 +144,7 @@ function SourceItemCard({
   item: SourceItem
   connectionName: string | null
   busy: string | null
-  onAction: (item: SourceItem, action: string) => void
+  onAction: (item: SourceItem, action: Parameters<typeof sourcesApi.itemAction>[1]) => void
 }) {
   const itemBusy = busy?.startsWith(`item:${item.id}`) ?? false
   return (
@@ -290,7 +290,7 @@ function LibraryItemsRoute({ libraryType }: { libraryType?: LibraryItemTypeFilte
     setItemOffset(0)
   }
 
-  async function itemAction(item: SourceItem, action: string) {
+  async function itemAction(item: SourceItem, action: Parameters<typeof sourcesApi.itemAction>[1]) {
     setBusy(`item:${item.id}:${action}`)
     try {await sourcesApi.itemAction(item.id,action);await load()}
     catch(e){toast.error(errMsg(e))}finally{setBusy(null)}

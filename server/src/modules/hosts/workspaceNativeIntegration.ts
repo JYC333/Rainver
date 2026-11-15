@@ -1,3 +1,5 @@
+import {recordWorkspaceLanding,refreshWorkspaceLifecycle} from './workspaceLifecycle.js';
+import {enqueueWorkspaceCleanup,replaceableSourceCleanup,type WorkspaceCleanupResource} from './workspaceCleanup.js';
 import {deferIfSourceReleasePending} from './workspaceSourceFence.js';
 import {PgJobQueueRepository} from '../jobs/repository.js';
 import {runActor,assertOperationGrant} from '../systemActions/operations/actor.js';
@@ -22,6 +24,7 @@ import {appendContributorSql,assertWorkspaceContributorsReadable} from '../proje
 import {workspaceHostFailureIsTemporary} from '../projectFolders/workspacePolicy.js';
 import {agentGitIdentity} from '../runs/agentGitIdentity.js';
 import {postWorkspaceIntegrationNotice} from '../projectFolders/workspaceIntegrationNotices.js';
+import {recordNativeChildAdoption} from './workspaceNativeAdoption.js';
 import {PgVerificationRepository} from '../runs/verification/repository.js';
 import {frozenPublicationPlan,requiresNativePublication,type PublicationPlan} from '../projectFolders/workspacePublicationPlan.js';
 
@@ -60,12 +63,24 @@ export async function processNativeWorkspaceRequest(pool:Pool,config:ServerConfi
       }
      }
      if(status==='merged'&&w?.parent_workspace_id&&commit){
-      const updated=await tx.query('UPDATE execution_workspaces SET head_commit=$2,revision=revision+1,updated_at=now() WHERE id=$1 AND (head_commit=$3 OR head_commit=$2) RETURNING id',[w.parent_workspace_id,commit,onto]);
+      const updated=await tx.query(`UPDATE execution_workspaces SET retention_json=CASE WHEN head_commit IS DISTINCT FROM $2 THEN retention_json||jsonb_build_object('content_changed_at',now()) ELSE retention_json END,head_commit=$2,revision=revision+1,updated_at=now() WHERE id=$1 AND (head_commit=$3 OR head_commit=$2) RETURNING id`,[w.parent_workspace_id,commit,onto]);
       if(updated.rowCount)await tx.query("UPDATE workspace_change_sets SET source_commit=$2,verification_json=CASE WHEN jsonb_typeof(verification_json->'adopted_child_change_ids')='array' THEN jsonb_set(verification_json,'{adopted_child_change_ids}',(verification_json->'adopted_child_change_ids')||to_jsonb($3::text)) ELSE verification_json END WHERE workspace_id=$1 AND state IN ('open','ready')",[w.parent_workspace_id,commit,changeId]);
+      await recordNativeChildAdoption(tx,w.id);
      }
+     if(status==='no_changes')await tx.query('UPDATE workspace_change_sets c SET source_commit=COALESCE(c.source_commit,m.source_commit) FROM task_merges m WHERE m.id=$1 AND c.id=m.change_set_id',[merge.id]);
+     if(w?.parent_workspace_id&&status==='no_changes')await recordNativeChildAdoption(tx,w.id);
      if(w?.parent_workspace_id&&['merged','no_changes','failed'].includes(status)){
       const parents=(await tx.query<{run_id:string}>("SELECT DISTINCT b.run_id FROM execution_workspace_runs b JOIN runs r ON r.id=b.run_id WHERE b.workspace_id=$1 AND r.status='waiting_for_dependency'",[w.parent_workspace_id])).rows;
       for(const parent of parents)await new PgJobQueueRepository(tx).enqueue({job_type:'execution_workspace_parent_reconcile',space_id:spaceId,user_id:request!.user_id,payload:{run_id:parent.run_id}});
+     }
+     if(w&&['merged','no_changes'].includes(status)){
+      await recordWorkspaceLanding(tx,merge.id);
+      const owner=(await tx.query<ExecutionWorkspaceRow&{cleanup_json:Record<string,WorkspaceCleanupResource>}>('SELECT * FROM execution_workspaces WHERE id=$1 FOR UPDATE',[w.id])).rows[0]!;
+      // Publication hands off responsibility before its receipt. A live cwd is
+      // waited for by cleanup, never by the publishing Agent's request.
+      const cleanup=owner.cleanup_json[`source-g${w.generation}`];
+      if(owner.head_commit&&replaceableSourceCleanup(cleanup))await enqueueWorkspaceCleanup(tx,owner,{id:w.id,generation:w.generation},owner.head_commit,true,request!.user_id,merge.id);
+      await refreshWorkspaceLifecycle(tx,w.id);
      }
      if(['merged','no_changes','failed'].includes(status))await postWorkspaceIntegrationNotice(tx,merge.id,merge.attempt_id,status==='merged'?'integrated':status as 'no_changes'|'failed');
      if(status==='merged'&&verification){
@@ -119,7 +134,7 @@ export async function processNativeWorkspaceRequest(pool:Pool,config:ServerConfi
     // Durable dependency first, Host step after; the source-release fence
     // trigger admits it only while no unconfirmed deletion of its commits exists.
     await withQueryableTransaction(pool,async tx=>{
-     await tx.query(`INSERT INTO task_merges(id,space_id,workspace_id,change_set_id,workspace_location_id,basis,generation,attempt_id,source_commit,base_commit,target_ref,status,requested_by_user_id,detail_json,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$4,$6,$7,$8,$9,$10,'verifying',$11,$12::jsonb,now(),now()) ON CONFLICT(change_set_id) DO NOTHING`,[id,spaceId,w.id,changeId,w.workspace_location_id,w.generation,attempt,source,base,request.publication?.target_ref??w.target_ref,request.user_id,JSON.stringify({native_integration:true,reply_owner_run_id:run.id,...(request.publication?{publication_plan:{...request.publication,requested_by_user_id:request.user_id,requested_by_run_id:run.id}}:{})})]);
+     await tx.query(`INSERT INTO task_merges(id,space_id,workspace_id,change_set_id,workspace_location_id,basis,generation,attempt_id,source_commit,base_commit,target_ref,status,requested_by_user_id,detail_json,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$4,$6,$7,$8,$9,$10,'verifying',$11,$12::jsonb,now(),now()) ON CONFLICT(change_set_id) DO NOTHING`,[id,spaceId,w.id,changeId,w.workspace_location_id,w.generation,attempt,source,base,request.publication?.target_ref??w.target_ref,request.user_id,JSON.stringify({slot_use_id:w.retention_json?.slot_use_id??null,native_integration:true,reply_owner_run_id:run.id,...(request.publication?{publication_plan:{...request.publication,requested_by_user_id:request.user_id,requested_by_run_id:run.id}}:{})})]);
     });
     merge=(await pool.query('SELECT * FROM task_merges WHERE change_set_id=$1',[changeId])).rows[0];
    }
@@ -138,6 +153,11 @@ export async function processNativeWorkspaceRequest(pool:Pool,config:ServerConfi
     const parent=(await pool.query<ExecutionWorkspaceRow>('SELECT * FROM execution_workspaces WHERE id=$1 AND space_id=$2',[w.parent_workspace_id,spaceId])).rows[0];
     if(!parent||parent.project_id!==w.project_id||parent.execution_host_id!==w.execution_host_id||parent.workspace_location_id!==w.workspace_location_id)throw new Error('native_parent_target_mismatch');
     Object.assign(frame,{target_workspace:{id:parent.id,generation:parent.generation}});
+    if(m){
+     const recorded=await pool.query(`UPDATE task_merges SET detail_json=detail_json||jsonb_build_object('native_parent',$2::jsonb) WHERE id=$1
+      AND (NOT detail_json ? 'native_parent' OR detail_json->'native_parent'=$2::jsonb)`,[m.id,JSON.stringify({id:parent.id,generation:parent.generation})]);
+     if(!recorded.rowCount)throw new Error('native_parent_target_mismatch');
+    }
    }
    // An explicit commit (an Agent-submitted one, or a historical batch's
    // recorded source) is used by the Host below. Its dependent (the native

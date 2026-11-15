@@ -131,7 +131,7 @@ async function reconcileAuthorizationRequest(
   return { run_id: runId, status: "queued", reconciled: true };
 }
 
-async function handleAgentRun(
+export async function handleAgentRun(
   job: JobEnvelopeForHandler,
   orchestration: RunOrchestrationService,
   materializer: RunMaterializationService,

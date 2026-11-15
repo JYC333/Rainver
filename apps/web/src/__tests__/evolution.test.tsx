@@ -55,6 +55,9 @@ const { evolutionApiMock, providersApiMock, proposalsApiMock } = vi.hoisted(() =
 }))
 
 vi.mock('../api/client', () => ({
+  EvolutionRunNotSelected: class EvolutionRunNotSelected extends Error {
+    constructor(message: string, readonly selectorDecisionId: string) { super(message) }
+  },
   evolutionApi: evolutionApiMock,
   providersApi: providersApiMock,
   proposalsApi: proposalsApiMock,
@@ -64,6 +67,7 @@ vi.mock('sonner', () => ({
   toast: {
     success: vi.fn(),
     error: vi.fn(),
+    info: vi.fn(),
   },
 }))
 
@@ -77,7 +81,8 @@ vi.mock('../contexts/SpaceContext', () => ({
   }),
 }))
 
-import { evolutionApi, proposalsApi } from '../api/client'
+import { EvolutionRunNotSelected, evolutionApi, proposalsApi } from '../api/client'
+import { toast } from 'sonner'
 import { moduleForPath } from '../modules/registry'
 import EvolutionPage from '../modules/evolution/EvolutionPage'
 
@@ -623,6 +628,17 @@ describe('Evolution module', () => {
     expect(evolutionApi.summary).toHaveBeenCalledTimes(2)
     expect(proposalsApi.accept).not.toHaveBeenCalled()
     expect(proposalsApi.reject).not.toHaveBeenCalled()
+  })
+
+  it('reports a not-selected start as a hint, not a failure, and reloads so the recorded decision shows', async () => {
+    mockEvolutionData({ targets: [targetRow({ target_name: 'Capture Memory Extraction' })] })
+    evolutionApiMock.runTarget.mockRejectedValueOnce(new EvolutionRunNotSelected('No compatible active strategy passed selector policy.', 'decision-2'))
+    renderPage()
+    expect(await screen.findAllByText('Capture Memory Extraction')).not.toHaveLength(0)
+    fireEvent.click(screen.getByRole('button', { name: /Create improvement plan/i }))
+    await waitFor(() => expect(toast.info).toHaveBeenCalledWith('No active strategy fits this target, so no Run was queued. The decision is recorded under Selection records.'))
+    expect(toast.error).not.toHaveBeenCalled()
+    await waitFor(() => expect(evolutionApi.selectorDecisions).toHaveBeenCalledTimes(2))
   })
 })
 

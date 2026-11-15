@@ -55,8 +55,10 @@ stored document or historical version is rewritten.
 Run settlement is a projection boundary: material processing uses
 `reconcileTerminal`, and native-search reconciliation is restricted to the
 named terminal Run. These callbacks never cancel active Runs while holding
-finalization ownership. Deadline checks and stop commands stay in the ordinary
-read/tick recovery path; both paths reuse the same idempotent result acceptance.
+finalization ownership. The saved-item processing GET only projects current
+state: it never invokes reconciliation, cancellation or content/index writes.
+Canonical admitted Run deadlines are enforced by execution; explicit recovery
+uses the same idempotent result acceptance, independently of a person polling.
 
 `SourceMaterialReadingContentSchema` is a typed inline field on the existing
 Source item output. Bodies are not hidden in `metadata_json`, converted through

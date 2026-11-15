@@ -64,6 +64,15 @@ export class SyntheticAcpHost {
       return;
     }
 
+    if(frame.type==='execution_workspace_command' && ['inspect','checkpoint'].includes(String(frame.action))){
+      // Protocol fixture only: this Host never edits its mounted repository.
+      const ref=(frame.workspace as {execution_workspace:{id:string;generation:number;target_ref?:string}}).execution_workspace;
+      queueMicrotask(()=>this.registry.receiveTaskBranchResult(this.hostId,'execution_workspace_result',String(frame.request_id),{
+        ok:true,error:null,commit:'a'.repeat(40),branch:`rainver/workspace-${ref.id}-g${ref.generation}`,
+        launch_info:{id:ref.id,generation:ref.generation,start_commit:'a'.repeat(40),target_ref:ref.target_ref??null,branch:`rainver/workspace-${ref.id}-g${ref.generation}`,launch_sequence:1},
+      }));
+      return;
+    }
     if (frame.type === "launch") {
       const launchId = String(frame.launch_id);
       this.launches.set(runId, launchId);

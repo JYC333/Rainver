@@ -1,3 +1,6 @@
+import {systemActionsModule} from '../src/modules/systemActions/index.js';
+import {randomUUID} from 'node:crypto';
+import {waitForBlockedBy} from './support/lockWait.js';
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
 import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
@@ -77,7 +80,7 @@ describe("filing a personal capture into a Project (real Postgres)", () => {
     try {
       const response = await app.inject({ method: "POST", url: "/api/v1/me/filings", payload: { activity_id: CAPTURE } });
       expect(response.statusCode).toBe(422);
-      expect(response.json()).toMatchObject({ detail: expect.stringContaining("target_project_id") });
+      expect(response.json()).toMatchObject({error:{code:'operation_invalid_input'}});
     } finally {
       await app.close();
     }
@@ -237,4 +240,75 @@ describe("annotations on a shared document stay personal (real Postgres)", () =>
     await expect(annotate({ document_id: documentId, visibility: "space_shared" }))
       .rejects.toMatchObject({ statusCode: 422 });
   });
+});
+
+
+describe('keyed person filing admission',()=>{
+ const payload={activity_id:CAPTURE,target_project_id:PROJECT};
+ async function withApp(work:(app:ReturnType<typeof buildModuleServer>)=>Promise<void>){
+  __setAuthIdentityForTests({spaceId:TEAM,userId:OWNER});
+  const app=buildModuleServer(loadConfig({SERVER_DATABASE_URL:db.connectionUri}),[captureFilingModule,systemActionsModule]);
+  try{await work(app);}finally{await app.close();}
+ }
+ const write=(app:ReturnType<typeof buildModuleServer>,key:string,body:object=payload,url='/api/v1/me/filings')=>app.inject({method:'POST',url,payload:body,headers:{'idempotency-key':key}});
+ it('files across Spaces with canonical personal receipts and replays across transports',async()=>{
+  await withApp(async app=>{
+   const key=randomUUID(),first=await write(app,key);expect(first.statusCode,first.body).toBe(200);
+   expect(first.json().data).toMatchObject({activity_id:CAPTURE,target_space_id:TEAM});
+   const receipts=await db.pool.query('SELECT space_id,result_json FROM operation_idempotency');
+   expect(receipts.rows).toHaveLength(1);expect(receipts.rows[0].space_id).toBe(PERSONAL);
+   __setAuthIdentityForTests({spaceId:'unrelated-request-space',userId:OWNER});
+   const replay=await write(app,key,payload,'/api/v1/actions/capture.file');expect(replay.statusCode,replay.body).toBe(200);expect(replay.json()).toEqual(first.json());
+   expect((await db.pool.query('SELECT object_id FROM notes')).rows).toHaveLength(1);
+   expect((await write(app,key,{...payload,title:'Changed'})).statusCode).toBe(422);
+  });
+ });
+ it.each(['membership','account','capture'])('withholds cached output after current %s authority is withdrawn',async kind=>{
+  await withApp(async app=>{
+   const key=randomUUID();expect((await write(app,key)).statusCode).toBe(200);
+   if(kind==='membership')await db.pool.query("UPDATE space_memberships SET status='inactive' WHERE space_id=$1 AND user_id=$2",[TEAM,OWNER]);
+   else if(kind==='account')await db.pool.query("UPDATE users SET status='disabled' WHERE id=$1",[OWNER]);
+   else await db.pool.query('UPDATE activity_records SET owner_user_id=$2 WHERE id=$1',[CAPTURE,STRANGER]);
+   expect((await write(app,key)).statusCode).toBe(404);
+  });
+ });
+ it('does not use personal membership to authorize another Space destination',async()=>{
+  await db.pool.query('DELETE FROM space_memberships WHERE space_id=$1 AND user_id=$2',[TEAM,OWNER]);
+  await withApp(async app=>{
+   const r=await write(app,randomUUID());expect(r.statusCode,r.body).toBe(404);
+   expect((await db.pool.query('SELECT object_id FROM notes')).rows).toHaveLength(0);
+   expect((await db.pool.query('SELECT status FROM activity_records WHERE id=$1',[CAPTURE])).rows[0].status).toBe('raw');
+  });
+ });
+ it('rejects missing keys and unknown authority fields',async()=>{
+  await withApp(async app=>{
+   expect((await app.inject({method:'POST',url:'/api/v1/me/filings',payload})).statusCode).toBe(422);
+   expect((await write(app,randomUUID(),{...payload,user_id:STRANGER})).statusCode).toBe(422);
+  });
+ });
+ it('late mandatory audit failure rolls back Note, capture state and receipt',async()=>{
+  await withApp(async app=>{
+   await db.pool.query("CREATE FUNCTION refuse_filing_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'audit unavailable'; END $$");
+   await db.pool.query('CREATE CONSTRAINT TRIGGER refuse_filing_audit AFTER INSERT ON policy_decision_records DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION refuse_filing_audit()');
+   const key=randomUUID();
+   try{
+    const r=await write(app,key);expect(r.statusCode,r.body).toBe(503);
+    expect((await db.pool.query('SELECT object_id FROM notes')).rows).toHaveLength(0);
+    expect((await db.pool.query('SELECT id FROM operation_idempotency')).rows).toHaveLength(0);
+    expect((await db.pool.query('SELECT status,payload_json FROM activity_records WHERE id=$1',[CAPTURE])).rows[0]).toMatchObject({status:'raw',payload_json:{}});
+   }finally{await db.pool.query('DROP TRIGGER refuse_filing_audit ON policy_decision_records');await db.pool.query('DROP FUNCTION refuse_filing_audit()');}
+   expect((await write(app,key)).statusCode).toBe(200);
+  });
+ });
+ it('a target membership revocation serializes with the real writer',async()=>{
+  await withApp(async app=>{
+   const hold=await db.pool.connect();let pending:ReturnType<typeof write>|undefined;
+   try{
+    await hold.query('BEGIN');const pid=(await hold.query<{pid:number}>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
+    await hold.query("UPDATE space_memberships SET status='inactive' WHERE space_id=$1 AND user_id=$2",[TEAM,OWNER]);
+    pending=write(app,randomUUID());await waitForBlockedBy(db.pool,pid);await hold.query('COMMIT');
+    const r=await pending;expect(r.statusCode,r.body).toBe(404);expect((await db.pool.query('SELECT object_id FROM notes')).rows).toHaveLength(0);
+   }finally{await hold.query('ROLLBACK');hold.release();await pending;}
+  });
+ });
 });

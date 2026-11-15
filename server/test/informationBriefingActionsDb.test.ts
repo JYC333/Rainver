@@ -290,29 +290,29 @@ describe("Adoption: a highlight becomes a Task only by an explicit, previewed co
     const app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: home }), [informationDigestModule]);
     const personalUrl = `/api/v1/spaces/${SPACE}/information-briefings/personal/${mine.next}/highlights/0/adoption`;
     const projectUrl = `/api/v1/spaces/${SPACE}/projects/${PROJECT}/information-briefings/${mine.next}/highlights/0/adoption`;
-    const post = (url: string, payload: object = {}) => app.inject({ method: "POST", url, payload });
+    const post = (url: string, payload: object = {}) => app.inject({ method: "POST", url, payload,headers:{"idempotency-key":randomUUID()} });
     try {
       __setAuthIdentityForTests(owner);
       const preview = await post(`${personalUrl}/preview`);
       expect(preview.statusCode).toBe(200);
-      const created = await post(personalUrl, { preview_hash: preview.json().preview_hash });
+      const created = await post(personalUrl, { preview_hash: preview.json().data.preview_hash });
       expect(created.statusCode).toBe(201);
-      const task = created.json().task as { id: string };
+      const task = created.json().data.task as { id: string };
 
       __setAuthIdentityForTests(member);
       for (const url of [personalUrl, projectUrl]) {
         expect((await post(`${url}/preview`)).statusCode).toBe(404);
-        const confirm = await post(url, { preview_hash: preview.json().preview_hash });
+        const confirm = await post(url, { preview_hash: preview.json().data.preview_hash });
         expect(confirm.statusCode).toBe(404);
         expect(confirm.body).not.toContain(task.id);
       }
       await expect(new PgTaskRepository(db.pool).getTask(member, task.id)).resolves.toBeNull();
 
       __setAuthIdentityForTests(owner);
-      const retry = await post(personalUrl, { preview_hash: preview.json().preview_hash });
+      const retry = await post(personalUrl, { preview_hash: preview.json().data.preview_hash });
       expect(retry.statusCode).toBe(200);
-      expect(retry.json()).toEqual({ created: false, task: created.json().task });
-      expect((await post(`${personalUrl}/preview`)).json().existing_task_id).toBe(task.id);
+      expect(retry.json().data).toEqual({ created: false, task: created.json().data.task });
+      expect((await post(`${personalUrl}/preview`)).json().data.existing_task_id).toBe(task.id);
       expect(await count("tasks")).toBe(1);
     } finally {
       __setAuthIdentityForTests(null);

@@ -63,6 +63,7 @@ export const executionWorkspaceRuns=pgTable('execution_workspace_runs',{
  launchSequence:integer('launch_sequence').notNull().default(0),
  launchReferenceJson:jsonb('launch_reference_json'),
  startCommit:varchar('start_commit',{length:64}),checkpointCommit:varchar('checkpoint_commit',{length:64}),checkpointState:varchar('checkpoint_state',{length:24}).notNull().default('pending'),
+ checkpointRecoveryJson:jsonb('checkpoint_recovery_json').notNull().default({}),
  createdAt:timestamp('created_at',{withTimezone:true,mode:'string'}).notNull().defaultNow(),
 },t=>[
  unique('uq_workspace_run_binding').on(t.runId,t.workspaceId),

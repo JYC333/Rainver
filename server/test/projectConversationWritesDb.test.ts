@@ -105,6 +105,16 @@ describe("stating the Project's goal in conversation", () => {
   });
 });
 
+/** The Agent's task.create through its real Run tool transport and the core. */
+async function agentCreate(run: RunRecord, input: object, key: string): Promise<any> {
+  await db.pool.query("UPDATE runs SET project_id=$2,instructed_by_user_id=$3,status='running',permission_snapshot_json=$4::jsonb WHERE id=$1",
+    [run.id, run.project_id, run.instructed_by_user_id, JSON.stringify({ tool_grants: [{ action_id: "task.create" }] })]);
+  const stored = (await db.pool.query("SELECT * FROM runs WHERE id=$1", [run.id])).rows[0];
+  const result: any = await new CliAgentToolTransport(await configFor()).call(stored, { id: key, name: "task.create", arguments: input });
+  if (result.httpStatus >= 400) throw Object.assign(new Error(result.body.error.message), { statusCode: result.httpStatus });
+  return result;
+}
+
 describe("asking for a plan in conversation", () => {
   it("records the timing the person gave, and reads it back for a recommendation", async () => {
     if (!db.available) return;
@@ -117,10 +127,7 @@ describe("asking for a plan in conversation", () => {
     const executors = new Map<SystemActionId, SystemActionExecutor>();
     registerProjectWorkSystemActionExecutors(executors, config, run);
 
-    const created = await executors.get("task.create" as SystemActionId)!(
-      { title: "Draft the schema", priority: "high", due_at: "2026-09-12", start_after: "2026-09-08" },
-      { idempotency_key: "call-1" } as never,
-    ) as ExecutorResult;
+    const created = await agentCreate(run, { title: "Draft the schema", priority: "high", due_at: "2026-09-12", start_after: "2026-09-08" }, "call-1");
     expect(created.summary).toMatchObject({ tool_name: "task.create", ok: true });
 
     const listed = await executors.get("task.list" as SystemActionId)!({}, { idempotency_key: "call-2" } as never) as ExecutorResult;
@@ -149,11 +156,8 @@ describe("asking for a plan in conversation", () => {
         id: await seedConversationRun(), space_id: SPACE, agent_id: AGENT, project_id: project.id, run_group_id: null,
         instructed_by_user_id: OWNER, trigger_origin: "manual", session_id: randomUUID(),
       } as unknown as RunRecord;
-      const executors = new Map<SystemActionId, SystemActionExecutor>();
-      registerProjectWorkSystemActionExecutors(executors, config, run);
-      return (index: number) => executors.get("task.create" as SystemActionId)!(
-        { title: `Step ${index}` }, { idempotency_key: `call-${index}` } as never,
-      );
+      void config;
+      return (index: number) => agentCreate(run, { title: `Step ${index}` }, `call-${run.id}-${index}`);
     };
 
     const create = await executorsFor();
@@ -181,9 +185,7 @@ describe("asking for a plan in conversation", () => {
     } as unknown as RunRecord;
     const executors = new Map<SystemActionId, SystemActionExecutor>();
     registerProjectWorkSystemActionExecutors(executors, config, run);
-    const created = await executors.get("task.create" as SystemActionId)!(
-      { title: "Mine to move" }, { idempotency_key: "call-1" } as never,
-    ) as ExecutorResult;
+    const created = await agentCreate(run, { title: "Mine to move" }, "call-1");
     const siblingTask = await new PgTaskRepository(db.pool).createTask(identity(), { project_id: sibling.id, title: "Not yours to move" });
 
     await db.pool.query("UPDATE runs SET project_id=$2,instructed_by_user_id=$3,status='running',permission_snapshot_json=$4::jsonb WHERE id=$1",
@@ -192,7 +194,7 @@ describe("asking for a plan in conversation", () => {
     const transport=new CliAgentToolTransport(config);
     const denied:any=await transport.call(stored,{id:'call-2',name:'task.report',arguments:{task_id:siblingTask.id,summary:'reaching across'}});
     expect(denied.httpStatus).toBe(404);expect(JSON.stringify(denied.body)).not.toContain('Not yours to move');
-    const allowed:any=await transport.call(stored,{id:'call-3',name:'task.report',arguments:{task_id:created.summary.task_id,summary:'own Task'}});
-    expect(allowed.httpStatus).toBe(200);expect(allowed.body.data.task_id).toBe(created.summary.task_id);
+    const allowed:any=await transport.call(stored,{id:'call-3',name:'task.report',arguments:{task_id:created.body.data.task_id,summary:'own Task'}});
+    expect(allowed.httpStatus).toBe(200);expect(allowed.body.data.task_id).toBe(created.body.data.task_id);
   });
 });

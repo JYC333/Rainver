@@ -24,8 +24,8 @@ Per-module current-state lives in `.agent/modules/knowledge-base.md` and
 | Vector + ANN (halfvec HNSW at default dim) + intent ranking | solid; access-neutral ranking calibrated with floor-ratio gating + deterministic post-RRF cosine blend + runtime-gated visible-edge backlink / candidate-owned salience / richer dedup / autocut mechanics + aggregate boost-attribution/score-bucket/drop telemetry. There is no true BM25 and no non-default-dimension ANN |
 | Reranker + query rewriter (gated, skippable, audited) | solid; rerank payload bounded by a token (char-proxy) budget |
 | Context Brief: synthesis + citations + two-tier gap analysis | solid; selected Knowledge, Memory, Project, and Sources briefs can persist as owner-private `retrieval_brief` artifacts through separate routes; gap findings are advisory artifact metadata, not a proposal channel |
-| Ask Space (unified entry point) | core product slice; `POST /api/v1/ask-space/think` (`modules/askSpace`) runs the per-domain Context Brief pipeline across Knowledge (default) + opt-in Memory/Project/Sources/Inquiry through `RetrievalSearchService`, reusing each domain's own read gate and Memory access logging; returns per-domain cited answers, optional opt-in cross-domain `combined_answer`, aggregate gap summary, domain-tagged provenance, and proposal-first follow-up descriptors (Claim Candidate Packet / maintenance scan, surfaced only with Context Ops scan authority); combined synthesis reuses `ProviderSynthesizer` and the same external-egress/source-policy gate over the union of included sources, and Memory is excluded from the combined prompt unless `combine_include_memory` is explicitly set; optionally persists per-domain `retrieval_brief` artifacts plus an owner-private `ask_space_session` artifact; creates no Memory proposals and performs no canonical writes; web `Ask Space` page + `ask_space_session` renderer |
-| Personal aggregated retrieval | `POST /api/v1/me/retrieval/search` fans the explicit retrieval object-type list across every active member Space, running and live-revalidating each Space independently. Results persist only as source-Space pointers; `/me/retrieval/pointers/resolve` re-authorizes. Single-source summaries land owner-private in their source Space. Multi-Space conclusions require disclosure followed by explicit Personal-Space storage, full pointer lineage, and pointer-only per-source egress records. |
+| Ask Space (unified entry point) | core product slice; keyed `POST /api/v1/ask-space/think` (`modules/askSpace`) queues the existing one-attempt content-retrieval Job and returns 202; `GET /api/v1/ask-space/requests/:jobId` releases the typed whole result under one current multi-domain/trajectory/Artifact closure. The worker runs the per-domain Context Brief pipeline across Knowledge (default) + opt-in Memory/Project/Sources/Inquiry through `RetrievalSearchService`, reusing each domain's own read gate and Memory access logging; returns per-domain cited answers, optional opt-in cross-domain `combined_answer`, aggregate gap summary, domain-tagged provenance, and proposal-first follow-up descriptors (Claim Candidate Packet / maintenance scan, surfaced only with Context Ops scan authority); combined synthesis reuses `ProviderSynthesizer` and the same external-egress/source-policy gate over the union of included sources, and Memory is excluded from the combined prompt unless `combine_include_memory` is explicitly set; optionally persists per-domain `retrieval_brief` artifacts plus an owner-private `ask_space_session` artifact; creates no Memory proposals and performs no canonical writes; web `Ask Space` page + `ask_space_session` renderer |
+| Personal aggregated retrieval | `POST /api/v1/me/retrieval/search` fans the explicit retrieval object-type list across every active member Space, running and live-revalidating each Space independently. Results persist only as source-Space pointers; `/me/retrieval/pointers/resolve` re-authorizes. Single-source summaries land owner-private in their source Space. Multi-Space conclusions require disclosure followed by explicit Personal-Space storage, full pointer lineage, and pointer-only per-source egress records. All five POSTs are strict keyed core commands. Search and fresh resolve retain current summary-only reads; old content receipts and stored Artifact/Reader bodies recheck their canonical source closure. |
 | Claim Candidate Packet | solid backend/product slice; `POST /api/v1/knowledge/claims/candidate-packets` plus the web API client and artifact renderer is the explicit bridge from selected retrieval brief / retrieval maintenance / diagnostics / Memory maintenance artifacts into `claim_candidate_packet` artifacts and proposals; brief uncited-claim candidates include deterministic holder/perspective, validity/observation, and governed source-ref hints when available; accepting the packet creates valid child pending claim/claim-relation/object-relation proposals only and records skipped invalid children; `space_ops` packets default to `space_shared` source artifacts and require explicit `promote_private_sources_to_space_ops` opt-in plus `private_source_promotion_confirmed = true` to include the caller's private source artifacts |
 | Maintenance scan (duplicate/orphan/thin/stale/relation, read-only) | solid; manual route plus Context Review Cycle route/Automation target produces report artifacts and optional packet proposals |
 | Egress governance (per-space external-egress switch) | solid; backend + Space Settings UI implemented; external/local/internal destination vocabulary implemented; DB-backed chat candidates use the conservative external-provider egress gate because the collector does not receive the final provider destination |
@@ -68,7 +68,7 @@ Per-module current-state lives in `.agent/modules/knowledge-base.md` and
 ## Context Observation Reports
 
 `POST /api/v1/context-ops/context-observations/scan` is the lightweight Context
-Configuration entry into Context Ops. It reuses the access-safe Context Ops summary,
+Configuration entry into Context Ops. It and `/context-ops/review-cycle/run` use strict keyed human-only core commands; report/packet writes, mandatory audit and replay receipt share the transaction, and replay rechecks current scan/review scope and dependencies. It reuses the access-safe Context Ops summary,
 then produces a `context_observation_report.v1` shape:
 
 - red/yellow/green observation items
@@ -98,7 +98,9 @@ Knowledge (`knowledge_item` / `note` / `source` / `claim`), Memory
 (`source_item` / `extracted_evidence`), and Inquiry (`inquiry_thread`, behind
 both the Project and Thread root read gates). Inquiry revalidation uses the
 root's effective access level: summary readers receive its stored summary,
-never Question/Hypothesis state, while the title remains discoverable.
+never Question/Hypothesis state, while the title remains discoverable. That
+summary is a search snippet only: a persisted derived body (Brief, Ask Space
+session) that cites a Thread needs the Thread root's current decision `full`.
 Sources projections index titles,
 excerpts, source metadata, preset metadata, and evidence excerpts; raw snapshots
 and full extracted reader text are not indexed by default. The boundary is
@@ -451,7 +453,12 @@ consent/policy warning counts. Private sections remain scoped to the current
 operator: maintenance report finding counts/private packets, diagnostics report
 counts/trend metric deltas, recent `retrieval_brief` artifact summaries,
 retrieval feedback signal/surface counts, and Memory access-log counters
-(`context_injection`, `maintenance_scan`, total recent access).
+(`context_injection`, `maintenance_scan`, total recent access). Report finding
+counts, diagnostics codes/metrics and packet titles come only from reports
+that pass their report operation's current release closure
+([ARTIFACTS](ARTIFACTS.md#persisted-knowledge-and-memory-reports)). A report
+built from these aggregates (diagnostics, observation) records the reports it
+counted (`source_artifact_ids`) and is rechecked against them on every read.
 
 Space-wide review is explicit. The `context_ops_review_mode` field in
 `retrieval.space.settings` defaults to `private_only`; `admins` permits owners/admins to review
@@ -735,3 +742,72 @@ Load-bearing boundaries:
 - Credential channel for all provider calls: ADR 0008.
 - Cross-module boundary for engine/adapter ownership: `BOUNDARIES.md` B33/B34.
 - Memory current-state: `MEMORY_MODEL.md`, `MEMORY_MAINTENANCE.md`.
+
+
+Stored Source retrieval request release (a83 follow-up) uses a Sources-owned
+transaction: `retrievalReleaseLocks.ts` pins the complete ordered multi-hit
+provenance/Source/ACL/subscription/history closure. `revalidateForRelease` reloads
+canonical policy lineage, runs the registered adapter and Source-policy gates,
+and records B11 on the same client through commit. Stale projection Source ids
+are not release authority. The engine imports no Sources lock implementation;
+Sources composes it around the existing retrieval service.
+
+
+### Human Knowledge/Memory request Jobs (P5 continuation)
+
+Eight retained retrieval POSTs now admit `content_retrieval_request` Jobs with
+one attempt, reusing the Source dispatch/effect fence. Provider work is outside
+the core transaction. Owner result readers pin canonical subtype/provenance and
+Source consent closures before release; any contributor demoted to summary or
+denied withholds the whole historical result, including all synthesis and
+provenance. Generic Jobs suppress these results. Ordinary Memory search rereads
+canonical active entries. See the Knowledge and Memory owner guides; scan/report
+and Reader migrations are not implied by these registrations.
+
+Persisted Brief/Explain Artifacts and Ask Space session aggregates use the
+same release closure at both ends: `settleRetrievalArtifact` relocks the
+current Job claim and the owner's contributing-ref authority (and Explain's
+maintenance role) in a short transaction after provider I/O before the INSERT,
+and every Artifact exit (generic list/detail/export, artifact access
+decisions, Reader, claim packets, eval diagnostics, the Context Ops Explain
+drill-down) withholds the whole derived object once any contributor is no
+longer releasable. The closure (`retrieval/releaseClosure.ts`) expands each
+domain's real lineage — Knowledge/Memory roots, extensions and provenance,
+Inquiry Thread roots and Projects, Project summary publications and their
+Sources, Source items/evidence — under one lock order and requires each
+ref's canonical root decision `full` (an Inquiry Thread at `summary` is
+search-visible but cannot release a derived body). `releaseContentRequest` and
+the Artifact gate share it. Details: [ARTIFACTS](ARTIFACTS.md#retrieval-derived-briefs-and-explain-reports).
+
+
+The retained Think formal entry now returns a keyed Job receipt and the web
+client polls its owner result reader. Final answer release, B11 and Job terminal
+receipt commit together; auxiliary calls opt into a single physical attempt.
+Each Think physical text, embedding or native-rerank fetch now invokes the
+server-only send authority after provider/SDK preparation. In a short transaction
+it locks the current Job claim, the canonical retrieval/Source closure and current
+egress settings, compares the payload's full canonical title/text and Source
+lineage, checks current audience/consent against the actual provider destination,
+and marks irreversible start. The transaction commits before fetch. Combined
+synthesis inherits the original domain contributions rather than treating its
+synthetic answer ids as provenance. Unknown sends retain the one-attempt fence.
+Callers omitting this authority retain their established provider behavior.
+
+Both Context Ops formal entries discover all selected reports, packet inputs,
+scan findings and recursive report dependencies before taking owner locks. The
+retrieval closure composes the existing Artifact owner plan (including producing
+Runs, Rooms, Project/Folder and Source dependencies) into one globally ordered
+Source/root/extension/lineage lock set and rereads drift under those locks.
+Report batches admit at most 2000 discovered references; the Artifact owner
+composes independent research graphs, each still capped at 200 Artifacts,
+before locking their union once. A legal per-section limit of 200 therefore
+does not become an accidental aggregate limit across sections or windows.
+Domain authorization runs before the core's later person lock. Nested checks
+still apply their owner gates but refuse a newly discovered input before taking
+another lower lock, including Brief diagnostics and the shared retrieval
+release entry points. Only successful canonical Artifact/Proposal INSERTs add new
+outputs to the transaction-local plan; an existing pending packet is discovered
+as input. The core transaction and branded savepoints retain optional packet
+failure recovery and atomic report/audit/receipt settlement. B10 writes still
+use the proposal applier. These are implementation guarantees with focused PG
+barriers; whole-batch parent review remains a separate acceptance step.

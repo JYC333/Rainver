@@ -1,4 +1,5 @@
 import {registerProjectLiveUpdates} from './liveUpdates.js';
+import {registerProjectAgentRoutes} from './projectAgentRoutes.js';
 import {registerProjectSourceProposalOperationRoutes} from './sourceProposalOperationRoutes.js';
 import {registerProjectCorpusOperationRoutes} from './corpusOperationRoutes.js';
 import {registerProjectManagementOperationRoutes} from './managementOperationRoutes.js';
@@ -40,6 +41,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   registerProjectSourceOperationRoutes(app,context);
   registerMonitoringRoutes(app, context);
   registerProjectLiveUpdates(app,context);
+  registerProjectAgentRoutes(app,context);
   const repository = () => PgProjectRepository.fromConfig(context.config);
   const corpusRepository = () => new ProjectCorpusRepository(dbPool(context.config));
   const sourceBindings = () => new ProjectSourceBindingService(dbPool(context.config));

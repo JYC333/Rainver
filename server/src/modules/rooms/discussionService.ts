@@ -1,3 +1,4 @@
+import { PgConversationExecutionContextRepository } from "../sessions/executionContextRepository.js";
 import {withRunTerminalOwner} from '../systemActions/operations/proposalTransitions.js';
 import { RoomMutationError } from "./roomMutationError.js";
 import {PgRunRepository} from '../runs/repository.js';
@@ -92,14 +93,15 @@ export class RoomDiscussionService {
         await cancelHeldClosing(client, identity.spaceId, current.id,identity.userId);
       }
       const roster = await new PgRoomRepository(client).listAgentMembers(identity.spaceId, room.id, identity.userId);
+      const conversationParticipants = await new PgConversationExecutionContextRepository(client).listConversationParticipantAgentIds({id:sessionId,space_id:identity.spaceId,room_id:room.id,project_id:room.project_id,project_folder_id:room.project_folder_id});
       const participants = request.participant_agent_ids === "all"
-        ? roster.map((member) => member.agent_id)
+        ? conversationParticipants
         : [...new Set(request.participant_agent_ids)];
       if (participants.length > ROOM_DISCUSSION_MAX_PARTICIPANTS) {
         throw new RoomMutationError(422, `A discussion seats at most ${ROOM_DISCUSSION_MAX_PARTICIPANTS} Agents; this Room has ${participants.length}. Choose who takes part.`);
       }
       const rosterIds = new Set(roster.map((member) => member.agent_id));
-      if (participants.length === 0 || participants.some((agentId) => !rosterIds.has(agentId))) {
+      if (participants.length === 0 || participants.some((agentId) => !rosterIds.has(agentId)||!conversationParticipants.includes(agentId))) {
         throw new RoomMutationError(422, "Discussion participants must be active Agents of this Room");
       }
       const roundCap = request.round_cap ?? ROOM_DISCUSSION_DEFAULT_ROUND_CAP[request.shape];
@@ -293,7 +295,7 @@ export class RoomDiscussionService {
         : extended.held_mentions.map((held) => ({ ...held }));
       const admitted = await this.admissible(client, extended, roster, candidates, lastWave);
       if (admitted.targets.length === 0) {
-        throw new RoomMutationError(409, "None of the Agents waiting to continue can be set working by you");
+        throw new RoomMutationError(409, "None of the waiting Agents can participate. Restore participants in Conversation settings or open a new discussion with current participants");
       }
       extended = await discussions.update(identity.spaceId, extended.id, { heldMentions: admitted.held });
       await this.dispatchWave(client, extended, roster, {
@@ -1375,6 +1377,8 @@ async function triggerRefusal(
   roster: RoomAgentMemberRecord[],
   agentId: string,
 ): Promise<string | null> {
+  const participants=await new PgConversationExecutionContextRepository(client).listConversationParticipantAgentIds({id:discussion.session_id,space_id:discussion.space_id,room_id:discussion.room_id,project_id:null,project_folder_id:null});
+  if(!participants.includes(agentId))return "it no longer participates; restore it in Conversation settings or open a discussion with current participants";
   const member = roster.find((entry) => entry.agent_id === agentId);
   if (!member) return "it is not an active Agent of this Room";
   // The visibility the dispatcher itself applies when it opens the wave's

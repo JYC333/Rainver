@@ -56,7 +56,7 @@ export function useWorkReading(item: AgentWorkItem, onConflict: () => void, onUn
     } catch (cause) {
       if (scope.signal?.aborted) return false
       if (cause instanceof ApiRequestError && cause.status === 409) {
-        const current = AgentAttentionReadStateSchema.safeParse(cause.payload?.current)
+        const current = AgentAttentionReadStateSchema.safeParse((cause.payload?.error as {metadata?:{current?:unknown}}|undefined)?.metadata?.current ?? cause.payload?.current)
         if (current.success) { states.current.set(stateKey(current.data), current.data); onState(current.data) }
         paused.current = true
         setError('conflict')

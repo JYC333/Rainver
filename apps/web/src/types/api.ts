@@ -1,4 +1,4 @@
-import type { ProjectAccess, CodePatchDecisionReceipt, SourceBackfillStrategy } from "@rainver/protocol"
+import type { ProjectAccess, CodePatchDecisionReceipt, SourceBackfillStrategy, OperationInput } from "@rainver/protocol"
 export type { CodePatchDecisionReceipt, SourceBackfillStrategy }
 // API response shapes shared with the server HTTP contracts.
 import type {
@@ -1587,8 +1587,11 @@ export interface NoteJotBody {
   project_id?: string
   collection_id?: string
   /** Defaults to `references`. */
-  link_type?: EntityLinkType
+  link_type?: NoteLinkType
 }
+
+/** Human Note link vocabulary accepted by the Note link and jot commands. */
+export type NoteLinkType = NonNullable<import('@rainver/protocol').OperationInput<'knowledge.note.link.create'>['link_type']>
 
 export type NotePromoteBody = Omit<import('@rainver/protocol').OperationInput<'note.promote_to_knowledge'>,'note_id'>
 
@@ -1659,7 +1662,7 @@ export interface EntityLink {
 export interface NoteLinkCreateBody {
   target_type: EntityType
   target_id: string
-  link_type?: EntityLinkType
+  link_type?: NoteLinkType
   confidence?: number | null
   direction?: 'outgoing' | 'incoming'
 }
@@ -1845,22 +1848,8 @@ export interface Board {
   deleted_at: string | null
 }
 
-export interface TaskRunCreateBody {
-  agent_id?: string | null
-  runtime_profile_id?: string
-  mode?: string
-  run_type?: string
-  session_id?: string | null
-  workspace_location_id?: string | null
-  project_id?: string | null
-  project_folder_id?: string | null
-  thread_id?: string | null
-  timeout_ms?: number | null
-  task_title?: string | null
-  prompt?: string | null
-  instruction?: string | null
-  set_task_in_progress?: boolean
-}
+/** The strict `task.run.create` input without its URL target; role and parent Run are server-owned. */
+export type TaskRunCreateBody = Omit<OperationInput<'task.run.create'>, 'task_id'>
 
 export interface TaskRunOut {
   id: string
@@ -2095,12 +2084,7 @@ export interface PlanBudgetSource {
   max_duration_seconds?: number
 }
 
-export interface PlanExecuteBody {
-  agent_id?: string | null
-  prompt?: string | null
-  instruction?: string | null
-  runtime_profile_id?: string | null
-}
+export type PlanExecuteBody = Omit<OperationInput<'plan.execute'>, 'plan_id'>
 
 export interface PlanExecutionResult {
   plan_id: string
@@ -3810,35 +3794,10 @@ export interface DailyCaptureReportSettingOut {
   updated_at: string
 }
 
-export interface DailyCaptureReportSettingUpdate {
-  enabled?: boolean | null
-  local_time?: string | null
-  timezone?: string | null
-  include_source_types?: string[] | null
-  create_experience_proposals?: boolean | null
-  create_memory_proposals?: boolean | null
-  experience_confidence_threshold?: number | null
-  memory_confidence_threshold?: number | null
-  max_experience_proposals_per_day?: number | null
-  max_memory_proposals_per_day?: number | null
-}
+export type DailyCaptureReportSettingUpdate = import('@rainver/protocol').OperationInput<'daily_capture.settings.patch'>
 
-export interface DailyReportRunRequest {
-  local_date?: string | null
-  create_experience_proposals?: boolean | null
-  create_memory_proposals?: boolean | null
-}
-
-export interface DailyReportRunResponse {
-  run_id: string
-  artifact_id: string | null
-  proposal_ids: string[]
-  experience_proposal_ids: string[]
-  memory_proposal_ids: string[]
-  capture_count: number
-  status: string
-  summary_preview: string
-}
+export type DailyReportRunRequest = import('@rainver/protocol').OperationInput<'daily_capture.run'>
+export type DailyReportRunResponse = import('@rainver/protocol').OperationOutput<'daily_capture.run'>
 
 export interface DailyReportArtifactItem {
   id: string
@@ -4186,7 +4145,7 @@ export interface InterestProfileSnapshot {
   ready_candidates: Array<{ id: string; phrase_key: string; display_phrase: string; domain_key: string | null; occurrence_count: number; read_count: number }>
   domains: Array<{ key: string; label: string; group: string }>
   settings: InterestProfileSettings
-  starter_packs: Array<{ key: string; label: string; topics: Array<{ label: string; domainKey: string }> }>
+  starter_packs: Array<{ key: OperationInput<'interest.starter_pack.apply'>['key']; label: string; topics: Array<{ label: string; domainKey: string }> }>
 }
 
 export interface InterestProfileSettings {
@@ -4362,27 +4321,10 @@ export interface ReaderCreateEvidenceRequest {
   title?: string
 }
 
-export interface ReaderCreatedEvidence {
-  id: string
-  title: string
-  status: string
-  evidence_type: string
-  source_item_id: string | null
-  source_object_type: string
-  source_object_id: string
-}
-
 export interface ReaderCreateProposalRequest {
   proposal_type: 'memory_create' | 'knowledge_create'
   title?: string
   rationale?: string
-}
-
-export interface ReaderCreatedProposal {
-  id: string
-  proposal_type: string
-  status: string
-  title: string
 }
 
 // ── Personal perspective (`GET /api/v1/me/*`) ─────────────────────────────
@@ -4525,44 +4467,7 @@ export interface ProjectUpdate {
 // ── Automations ─────────────────────────────────────────────────────────────
 export type AutomationTriggerType = 'manual' | 'schedule'
 
-export interface AutomationOut {
-  id: string
-  space_id: string
-  /** `ops`: a Space owner/admin who may only pause or archive it; content fields are withheld. */
-  access: 'full' | 'ops'
-  owner_user_id: string
-  agent_id: string
-  project_folder_id: string | null
-  project_id: string | null
-  name: string | null
-  description: string | null
-  trigger_type: string
-  status: string
-  preflight_snapshot_json: Record<string, unknown> | null
-  config_json: Record<string, unknown> | null
-  next_run_at: string | null
-  last_fired_at: string | null
-  created_at: string
-  updated_at: string
-}
-
-export interface AutomationCreateBody {
-  name: string
-  agent_id: string
-  project_folder_id?: string | null
-  project_id?: string | null
-  description?: string | null
-  trigger_type?: AutomationTriggerType
-  config_json?: Record<string, unknown> | null
-}
-
-export interface AutomationUpdateBody {
-  name?: string | null
-  description?: string | null
-  status?: string | null
-  config_json?: Record<string, unknown> | null
-  project_id?: string | null
-}
+export type {AutomationOut,AutomationCreateBody,AutomationUpdateBody,AutomationAutonomyBody} from '@rainver/protocol'
 
 export interface AutomationFireResult {
   run_id?: string
@@ -4623,6 +4528,13 @@ export type {
   ThreadReferencePick,
   ThreadReferenceProvenance,
   ProjectConversationsResponse,
+  ProjectAgent,
+  ProjectAgentRoomRef,
+  ProjectAgentListResponse,
+  ProjectAgentCandidate,
+  ProjectAgentCandidatesResponse,
+  ProjectRoomSummary,
+  ProjectRoomsResponse,
   InstanceOperationsSettings,
   InstanceOperationsSettingsUpdate,
   DeploymentJob,

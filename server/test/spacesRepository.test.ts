@@ -1,17 +1,12 @@
 import { hashOpaqueToken } from "../src/modules/auth/securityPolicy.js";
 import { randomUUID } from "node:crypto";
-import { beforeAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
-import { PgSpaceRepository, type SpaceFailure, type SpaceResult } from "../src/modules/spaces/repository.js";
+import { acceptInvitation, createInvitation, createSpace } from "../src/modules/spaces/writers.js";
 
-let repo: PgSpaceRepository | undefined;
-
+// Domain writers the Space core operations call (spaceOperationsDb.test.ts covers the operation contract).
 const db = useTestDatabase(import.meta.filename);
-
-beforeAll(async () => {
-  if (!db.available) return;
-  repo = new PgSpaceRepository(db.pool);
-});
+const secret = () => Buffer.from(randomUUID() + randomUUID()).toString("base64url");
 
 async function seedUser(email = `${randomUUID()}@test.invalid`): Promise<string> {
   const id = randomUUID();
@@ -22,36 +17,31 @@ async function seedUser(email = `${randomUUID()}@test.invalid`): Promise<string>
   );
   return id;
 }
+const emailOf = async (user: string) => (await db.pool.query<{ email: string }>("SELECT email FROM users WHERE id = $1", [user])).rows[0]!.email;
+const settle = (calls: Promise<unknown>[]) => Promise.allSettled(calls);
 
-describe("PgSpaceRepository.acceptInvitation", () => {
+describe("Space invitation writers", () => {
   it("atomically admits the invited existing account exactly once", async () => {
-    if (!db.available || !repo) return;
+    if (!db.available) return;
     const owner = await seedUser();
     const invitee = await seedUser(`invitee-${randomUUID()}@test.invalid`);
-    const space = await repo.createSpace(owner, { name: "Invitation Team", type: "team" }) as SpaceResult;
-    const invitation = await repo.createInvitation(owner, space.id, {
-      email: (await db.pool.query<{ email: string }>("SELECT email FROM users WHERE id = $1", [invitee])).rows[0]!.email,
-      role: "member",
-    });
-    expect("token" in invitation).toBe(true);
-    if (!("token" in invitation)) return;
-
-    const results = await Promise.all([
-      repo.acceptInvitation(invitee, invitation.token),
-      repo.acceptInvitation(invitee, invitation.token),
-    ]);
-    expect(results.filter(result => "space_id" in result)).toEqual([{ space_id: space.id }]);
+    const { space_id: space } = await createSpace(db.pool, owner, { name: "Invitation Team", type: "team", oversight_mode: "none" });
+    const token = secret();
+    const invitation = await createInvitation(db.pool, owner, space, { email: await emailOf(invitee), role: "member", token });
+    expect(invitation).not.toHaveProperty("token");
+    const results = await settle([acceptInvitation(db.pool, invitee, token), acceptInvitation(db.pool, invitee, token)]);
+    expect(results.filter(result => result.status === "fulfilled").map(result => (result as PromiseFulfilledResult<unknown>).value)).toEqual([{ space_id: space }]);
     const membership = await db.pool.query<{ role: string; status: string }>(
       "SELECT role, status FROM space_memberships WHERE space_id = $1 AND user_id = $2",
-      [space.id, invitee],
+      [space, invitee],
     );
     expect(membership.rows).toEqual([{ role: "member", status: "active" }]);
-    const state = await db.pool.query<{ status: string }>("SELECT status FROM user_invitations WHERE id = $1", [invitation.id]);
-    expect(state.rows[0]?.status).toBe("accepted");
+    const state = await db.pool.query<{ status: string; token_hash: string }>("SELECT status, token_hash FROM user_invitations WHERE id = $1", [invitation.invitation_id]);
+    expect(state.rows[0]).toEqual({ status: "accepted", token_hash: hashOpaqueToken(token) });
   });
 
   it("consumes an instance-only invitation once without changing any memberships", async () => {
-    if (!db.available || !repo) return;
+    if (!db.available) return;
     const owner = await seedUser();
     const email = `invitee-${randomUUID()}@test.invalid`;
     const invitee = await seedUser(email);
@@ -60,89 +50,56 @@ describe("PgSpaceRepository.acceptInvitation", () => {
     const token = randomUUID();
     await db.pool.query(`INSERT INTO user_invitations (id, invited_email, token_hash, status, invited_by_user_id, created_at, expires_at)
       VALUES ($1, $2, $3, 'available', $4, now(), now() + interval '7 days')`, [id, email, hashOpaqueToken(token), owner]);
-    expect(await repo.acceptInvitation(other, token)).toMatchObject({ statusCode: 400 });
+    await expect(acceptInvitation(db.pool, other, token)).rejects.toMatchObject({ statusCode: 422 });
     const before = await db.pool.query("SELECT * FROM space_memberships WHERE user_id = $1", [invitee]);
-    const results = await Promise.all([repo.acceptInvitation(invitee, token), repo.acceptInvitation(invitee, token)]);
-    expect(results.filter(result => "space_id" in result)).toEqual([{ space_id: null }]);
+    const results = await settle([acceptInvitation(db.pool, invitee, token), acceptInvitation(db.pool, invitee, token)]);
+    expect(results.filter(result => result.status === "fulfilled").map(result => (result as PromiseFulfilledResult<unknown>).value)).toEqual([{ space_id: null }]);
     expect((await db.pool.query("SELECT * FROM space_memberships WHERE user_id = $1", [invitee])).rows).toEqual(before.rows);
     expect((await db.pool.query("SELECT status FROM user_invitations WHERE id = $1", [id])).rows[0].status).toBe("accepted");
   });
 
   it("rejects another account and an expired invitation without granting membership", async () => {
-    if (!db.available || !repo) return;
+    if (!db.available) return;
     const owner = await seedUser();
     const invitee = await seedUser(`invitee-${randomUUID()}@test.invalid`);
     const other = await seedUser();
-    const space = await repo.createSpace(owner, { name: "Private Team", type: "team" }) as SpaceResult;
-    const email = (await db.pool.query<{ email: string }>("SELECT email FROM users WHERE id = $1", [invitee])).rows[0]!.email;
-    const invitation = await repo.createInvitation(owner, space.id, { email });
-    if (!("token" in invitation)) throw new Error("Invitation was not created");
+    const { space_id: space } = await createSpace(db.pool, owner, { name: "Private Team", type: "team", oversight_mode: "none" });
+    const token = secret();
+    const invitation = await createInvitation(db.pool, owner, space, { email: await emailOf(invitee), role: "member", token });
 
-    expect(await repo.acceptInvitation(other, invitation.token)).toMatchObject({ statusCode: 400 });
-    await db.pool.query("UPDATE user_invitations SET expires_at = now() - interval '1 second' WHERE id = $1", [invitation.id]);
-    expect(await repo.acceptInvitation(invitee, invitation.token)).toMatchObject({ statusCode: 400 });
+    await expect(acceptInvitation(db.pool, other, token)).rejects.toMatchObject({ statusCode: 422 });
+    await db.pool.query("UPDATE user_invitations SET expires_at = now() - interval '1 second' WHERE id = $1", [invitation.invitation_id]);
+    await expect(acceptInvitation(db.pool, invitee, token)).rejects.toMatchObject({ statusCode: 422 });
     const memberships = await db.pool.query(
       "SELECT id FROM space_memberships WHERE space_id = $1 AND user_id IN ($2, $3)",
-      [space.id, invitee, other],
+      [space, invitee, other],
     );
     expect(memberships.rowCount).toBe(0);
   });
+
+  it("refuses a reused invitation secret and a personal Space", async () => {
+    if (!db.available) return;
+    const owner = await seedUser();
+    const { space_id: space } = await createSpace(db.pool, owner, { name: "Reuse Team", type: "team", oversight_mode: "none" });
+    const token = secret();
+    await createInvitation(db.pool, owner, space, { email: "a@example.com", role: "member", token });
+    await expect(createInvitation(db.pool, owner, space, { email: "b@example.com", role: "member", token })).rejects.toMatchObject({ statusCode: 409 });
+    const personal = randomUUID();
+    await db.pool.query("INSERT INTO spaces(id,name,type,created_at,updated_at) VALUES($1,'Mine','personal',now(),now())", [personal]);
+    await db.pool.query("INSERT INTO space_memberships(id,space_id,user_id,role,status,created_at,updated_at) VALUES($1,$2,$3,'owner','active',now(),now())", [randomUUID(), personal, owner]);
+    await expect(createInvitation(db.pool, owner, personal, { email: "c@example.com", role: "member", token: secret() })).rejects.toMatchObject({ statusCode: 422 });
+  });
 });
 
-function isFailure(value: SpaceResult | SpaceFailure): value is SpaceFailure {
-  return "statusCode" in value;
-}
-
-describe("PgSpaceRepository.createSpace — immutable and defaulted Space policy", () => {
-  it("accepts a valid oversight_mode and stores it", async () => {
-    if (!db.available || !repo) return;
+describe("createSpace — immutable and defaulted Space policy", () => {
+  it("stores the chosen oversight_mode, team notifications and the creator as owner", async () => {
+    if (!db.available) return;
     const userId = await seedUser();
-
-    const result = await repo.createSpace(userId, { name: "Full Oversight Team", type: "team", oversight_mode: "full" });
-
-    expect(isFailure(result)).toBe(false);
-    expect(result).toMatchObject({
-      oversight_mode: "full",
-      egress_notifications_enabled: true,
-      role: "owner",
-    });
+    const { space_id: space } = await createSpace(db.pool, userId, { name: "Full Oversight Team", type: "team", oversight_mode: "full" });
     const row = await db.pool.query(
-      `SELECT oversight_mode, egress_notifications_enabled FROM spaces WHERE id = $1`,
-      [(result as SpaceResult).id],
+      `SELECT s.oversight_mode, s.egress_notifications_enabled, m.role FROM spaces s JOIN space_memberships m ON m.space_id = s.id WHERE s.id = $1`,
+      [space],
     );
-    expect(row.rows[0]).toEqual({
-      oversight_mode: "full",
-      egress_notifications_enabled: true,
-    });
-  });
-
-  it("defaults oversight_mode to 'none' when omitted", async () => {
-    if (!db.available || !repo) return;
-    const userId = await seedUser();
-
-    const result = await repo.createSpace(userId, { name: "Default Team", type: "team" });
-
-    expect(isFailure(result)).toBe(false);
-    expect(result).toMatchObject({ oversight_mode: "none" });
-  });
-
-  it("rejects an unknown oversight_mode with 422 and creates no row", async () => {
-    if (!db.available || !repo || !db.pool) return;
-    const userId = await seedUser();
-
-    const result = await repo.createSpace(userId, { name: "Bad Team", type: "team", oversight_mode: "godmode" });
-
-    expect(result).toMatchObject({ statusCode: 422 });
-    const rows = await db.pool.query("SELECT id FROM spaces WHERE name = 'Bad Team'");
-    expect(rows.rowCount).toBe(0);
-  });
-
-  it("still rejects explicit personal-type creation regardless of oversight_mode", async () => {
-    if (!db.available || !repo) return;
-    const userId = await seedUser();
-
-    const result = await repo.createSpace(userId, { name: "Sneaky Personal", type: "personal", oversight_mode: "full" });
-
-    expect(result).toMatchObject({ statusCode: 400 });
+    expect(row.rows[0]).toEqual({ oversight_mode: "full", egress_notifications_enabled: true, role: "owner" });
   });
 });

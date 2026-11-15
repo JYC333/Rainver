@@ -1,4 +1,3 @@
-import {missingTaskTarget} from './taskTargetDiscovery.js';
 import {randomUUID} from 'node:crypto';
 import type {OperationActor,OperationInput,RegisteredSystemActionDefinition} from '@rainver/protocol';
 import type {ServerConfig} from '../../config.js';
@@ -12,6 +11,7 @@ import {deleteTask} from '../tasks/deleteTask.js';
 import {TaskControlError} from '../tasks/controlErrors.js';
 import {OperationError,OperationBusinessError,hidden} from '../systemActions/operations/errors.js';
 import type {OperationRegistration} from '../systemActions/operations/types.js';
+import {holdHandoffRecipient} from '../tasks/taskReferenceLocks.js';
 import {completeTask,reportOnTask,handoffTask,requestTaskReview,setTaskStatus,type AgentActionContext} from './taskActions.js';
 import {CompletionRequirementsUnmet} from './taskWriteEvents.js';
 
@@ -23,20 +23,20 @@ class CompletionRefusal extends OperationBusinessError {
   constructor(private readonly missing:string[],private readonly unacknowledged:string[]){super('operation_invalid_input',422,'tasks');}
   override body(id:string){const b=super.body(id);b.error.metadata={code:'completion_requirements_unmet',missing:this.missing,unacknowledged:this.unacknowledged};return b;}
 }
-async function readTask(db:Queryable,id:string,actor:OperationActor,deleted:boolean,lock=false,discoveryOperation?:Id):Promise<Task>{
+async function readTask(db:Queryable,id:string,actor:OperationActor,deleted:boolean,lock=false):Promise<Task>{
   const row=(await db.query<Task>(`SELECT t.id,t.project_id,t.status FROM tasks t
     WHERE t.id=$1 AND t.space_id=$2 ${deleted?'':'AND t.deleted_at IS NULL'}
     AND ${contentReadSql('task','t','$3')}
     AND ${contentAccessLevelSql({definition:contentResourceDefinition('task')!,alias:'t',userExpr:'$3'})}='full'
     ${lock?'FOR UPDATE OF t':''}`,[id,actor.space_id,actor.on_behalf_of_user_id])).rows[0];
-  if(!row){if(discoveryOperation)return missingTaskTarget(db,id,actor,discoveryOperation);throw hidden();}
+  if(!row)throw hidden();
   if(actor.run_id){
     const run=(await db.query<{project_id:string|null}>('SELECT project_id FROM runs WHERE id=$1 AND space_id=$2',[actor.run_id,actor.space_id])).rows[0];
     if(!run?.project_id || run.project_id!==row.project_id)throw hidden();
   }
   return row;
 }
-async function authorizeTask(db:Queryable,id:string,actor:OperationActor,deleted:boolean){
+async function authorizeTask(db:Queryable,id:string,actor:OperationActor,deleted:boolean,beforeTask?:()=>Promise<void>){
   const observed=await readTask(db,id,actor,deleted);
   if(observed.project_id){
     await assertProjectWriter(db,actor.space_id,observed.project_id,actor.on_behalf_of_user_id!,{allowArchived:true});
@@ -44,6 +44,7 @@ async function authorizeTask(db:Queryable,id:string,actor:OperationActor,deleted
     catch(e){if(e instanceof HttpError&&e.statusCode===409)throw new OperationError('operation_conflict',409);throw e;}
     await assertProjectWriterForMutation(db,actor.space_id,observed.project_id,actor.on_behalf_of_user_id!);
   }
+  await beforeTask?.();
   const current=await readTask(db,id,actor,deleted,true);
   if(current.project_id!==observed.project_id)throw new OperationError('operation_conflict',409);
   return current;
@@ -53,7 +54,7 @@ export function taskLifecycleRegistrations(config:ServerConfig,definitions:Reado
   return TASK_LIFECYCLE_OPERATIONS.map(id=>({
     definition:definitions.get(id)!,
     async resolve(db,raw,actor){
-      const t=await readTask(db,(raw as Input).task_id,actor,id==='task.delete',false,id);
+      const t=await readTask(db,(raw as Input).task_id,actor,id==='task.delete');
       return {authority:`task:${t.id}${actor.run_id?`:run:${actor.run_id}`:''}`,targets:{task_id:t.id},resourceType:'task',resourceId:t.id};
     },
     async authorize(db,raw,actor){
@@ -62,7 +63,8 @@ export function taskLifecycleRegistrations(config:ServerConfig,definitions:Reado
         if((id==='task.set_status'||id==='task.delete')&& !('reason' in input&&input.reason))throw new OperationError('operation_invalid_input',422);
         if('override_completion' in input&&input.override_completion || 'blocked_reason' in input&&input.blocked_reason)throw new OperationError('operation_invalid_input',422);
       }
-      await authorizeTask(db,input.task_id,actor,id==='task.delete');
+      // A handoff's recipient is held in the Task write closure's order (people/Agents before the Task).
+      await authorizeTask(db,input.task_id,actor,id==='task.delete',id==='task.handoff'?()=>holdHandoffRecipient(db,actor.space_id,(input as OperationInput<'task.handoff'>).to):undefined);
     },
     async authorizeResult(db,raw,actor){await authorizeTask(db,(raw as {task_id:string}).task_id,actor,id==='task.delete');},
     async execute(db,raw,actor){

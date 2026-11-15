@@ -78,9 +78,10 @@ Invitation links are `/invitations/claim#token=...`. The web page removes the
 fragment with `history.replaceState` before any network request, so the token is
 not sent in a URL or Referer. There is no other claim path or accept endpoint.
 An active account with the invited email can instead accept the same link via
-authenticated `POST /api/v1/invitations/accept`; the Space repository locks and
-consumes the available invitation while activating the membership in one
-transaction. For an instance-only invitation it consumes the token without any
+authenticated `POST /api/v1/invitations/accept` (core `space.invitation.accept`,
+keyed; the request fingerprint keys the token, which is never stored); the Space
+writer locks and consumes the available invitation while activating the
+membership in one transaction. For an instance-only invitation it consumes the token without any
 membership change and returns `space_id: null`. A signed-out existing user signs
 in and reopens the original link;
 the raw token is not saved in browser storage for a login handoff.
@@ -156,10 +157,24 @@ auth:recovery` is the sole-admin local CLI path.
 
 ## Administration
 
+The retained admin user enable/disable POST URLs are strict, keyed core
+commands (`auth.user.enable`, `auth.user.disable`). They admit a current active
+instance administrator independently of the request Space; the actual owned
+Personal Space stores their receipt and policy audit. A Space owner alone has
+no instance authority. Self-disable and pending registration are refused with
+422; revoked instance authority withholds cached output. Disable discovers and
+locks all retained/destination Projects in id order before locking both user
+roots in id order, then rechecks the reference set. Status, consent revocation,
+session deletion, mandatory audit and receipt commit or roll back together.
+Enable changes status only and never restores consent or sessions.
+
 Instance admins can issue account-only registration invitations, list users,
 disable/enable admitted accounts (disable
-invalidates sessions; a `pending` identity belongs to `RegistrationService`
-and both routes answer 400 for it), issue a one-time reset link and inspect
+invalidates sessions and permanently revokes retained cross-Project Room grants
+issued by that Agent owner, with pending cross-Project invitations invalidated
+in the same transaction; ordinary private-Room grants retain their policy.
+Re-enabling the account does not revive revoked consent. A `pending` identity belongs to `RegistrationService`
+and both core routes answer 422 for it), issue a one-time reset link and inspect
 pending intents. No
 impersonation, arbitrary email editing, Space-admin recovery or open signup is
 implemented. The recovery and registration lifecycles expose one link

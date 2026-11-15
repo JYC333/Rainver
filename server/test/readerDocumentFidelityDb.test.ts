@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { useTestDatabase } from './support/testDatabase.js';
-import { seedSpaceOwnerProject } from './support/domainSeeds.js';
+import { seedSpaceOwnerProject, seedSpaceMember } from './support/domainSeeds.js';
 import { resetTables } from './support/resetTables.js';
+import { waitForLockWaiter } from './support/lockWait.js';
 import { loadConfig } from '../src/config.js';
-import { PgAnnotationRepository, PgReaderRepository } from '../src/modules/reader/repository.js';
+import { PgAnnotationRepository, PgReaderRepository, PgCommentRepository, PgReaderActionRepository } from '../src/modules/reader/repository.js';
 import { agentReadingDocument, agentReadingMetadata, saveSourceReadingDocument } from '../src/modules/sources/materialProcessing/documents.js';
 
 const db = useTestDatabase(import.meta.filename);
@@ -194,5 +195,67 @@ describe('showing literal Agent text as Markdown, on request, for the version sh
     await db.pool.query(`INSERT INTO space_memberships(id,space_id,user_id,role,status,created_at,updated_at) VALUES($1,$2,$3,'member','active',now(),now())`, [randomUUID(), space, reader2]);
     await expect(show({ spaceId: space, userId: reader2 }, id, shownOf(seen))).rejects.toMatchObject({ statusCode: 403 });
     expect((await reader().getDocument(identity, 'source_item', id))!.agent_text_syntax).toBe('undeclared');
+  });
+});
+
+
+describe('Reader writer transaction boundaries', () => {
+  async function annotation() {
+    const id = await item();
+    await save(id, content('plain', 'alpha beta gamma'));
+    const body = { document_type: 'source_item', document_id: id, annotation_type: 'highlight', quote_text: 'beta',
+      anchor_json: { schema_version: 1, quote_text: 'beta', text_range: { start: 6, end: 10, unit: 'utf16' }, before_context: 'alpha ', after_context: ' gamma' } };
+    return {id, body};
+  }
+
+  it('holds the source document authority until an internal annotation writer commits', async () => {
+    const {id,body} = await annotation();
+    let release!: () => void, reached!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    const ready = new Promise<void>(r => { reached = r; });
+    const paused = { connect: async () => {
+      const client = await db.pool.connect();
+      return { release: () => client.release(), query: async (sql: string, args?: unknown[]) => {
+        const result = await client.query(sql,args);
+        if (sql.includes('INSERT INTO reader_annotations')) { reached(); await gate; }
+        return result;
+      } };
+    } };
+    const writing = new PgAnnotationRepository(paused as never).createAnnotation(identity,body);
+    void writing.catch(() => {});
+    await ready;
+    let settled = false;
+    const revocation = db.pool.query("UPDATE source_items SET deleted_at=now() WHERE id=$1",[id]).finally(() => { settled = true; });
+    void revocation.catch(() => {});
+    try { await waitForLockWaiter(db.pool,{settled:()=>settled}); expect(settled).toBe(false); }
+    finally { release(); }
+    expect((await writing).quote_text).toBe('beta');
+    await revocation;
+    expect((await db.pool.query('SELECT id FROM reader_annotations')).rows).toHaveLength(1);
+  });
+
+  it('rolls an internal Evidence writer back when inherited grants cannot commit', async () => {
+    const {id,body} = await annotation();
+    await db.pool.query("UPDATE source_items SET visibility='selected_users' WHERE id=$1",[id]);
+    const grantee = randomUUID();
+    await seedSpaceMember(db.pool,{space,user:grantee});
+    await db.pool.query("INSERT INTO content_access_grants(id,space_id,resource_type,resource_id,grantee_user_id,granted_by_user_id,created_at,updated_at) VALUES($1,$2,'source_item',$3,$4,$5,now(),now())",[randomUUID(),space,id,grantee,owner]);
+    const ann = await new PgAnnotationRepository(db.pool).createAnnotation(identity,{...body,visibility:'selected_users'});
+    await db.pool.query("CREATE FUNCTION reader_refuse_evidence() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.resource_type='extracted_evidence' THEN RAISE EXCEPTION 'fixture evidence write failure'; END IF; RETURN NEW; END $$");
+    await db.pool.query('CREATE TRIGGER reader_refuse_evidence BEFORE INSERT ON content_access_grants FOR EACH ROW EXECUTE FUNCTION reader_refuse_evidence()');
+    try { await expect(new PgReaderActionRepository(db.pool).createEvidence(identity,ann.id,{})).rejects.toThrow('fixture evidence write failure'); }
+    finally { await db.pool.query('DROP TRIGGER reader_refuse_evidence ON content_access_grants'); await db.pool.query('DROP FUNCTION reader_refuse_evidence()'); }
+    expect((await db.pool.query('SELECT id FROM extracted_evidence')).rows).toEqual([]);
+    expect((await new PgAnnotationRepository(db.pool).listAnnotations(identity,'source_item',id)).map(a=>a.id)).toEqual([ann.id]);
+  });
+
+  it('refuses a comment edit after current document access is lost', async () => {
+    const {id,body} = await annotation();
+    const ann = await new PgAnnotationRepository(db.pool).createAnnotation(identity,body);
+    const comments = new PgCommentRepository(db.pool);
+    const thread = (await comments.createComment(identity,ann.id,{body:'Original comment'})).thread;
+    await db.pool.query('UPDATE source_items SET deleted_at=now() WHERE id=$1',[id]);
+    await expect(comments.updateComment(identity,thread.comments[0]!.id,{body:'Replacement'})).rejects.toMatchObject({statusCode:404});
+    expect((await db.pool.query('SELECT body FROM reader_comments WHERE id=$1',[thread.comments[0]!.id])).rows[0]?.body).toBe('Original comment');
   });
 });

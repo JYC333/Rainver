@@ -1,14 +1,12 @@
+import { registerOperationAdapters } from '../../systemActions/operations/routeAdapter.js';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { BriefingAdoptionConfirmRequestSchema, BriefingGenerateRequestSchema, BriefingSettingsRequestSchema } from "@rainver/protocol";
 import type { ModuleContext } from "../../../gateway/routeRegistry.js";
 import { assertProjectReadable } from "../../projects/access.js";
-import { dbPool, HttpError, jsonBody, params, parseBody, resolveIdentity, sendRouteError, type Pool, type Queryable, type SpaceUserIdentity } from "../../routeUtils/common.js";
-import { confirmAdoption, previewAdoption } from "./adoption.js";
-import { prepareFollowUp } from "./followUp.js";
+import { dbPool, params, resolveIdentity, sendRouteError, type Queryable, type SpaceUserIdentity } from "../../routeUtils/common.js";
 import type { BriefingScopeAdapter } from "./contract.js";
 import { personalBriefingScope } from "./personalScope.js";
 import { projectBriefingScope } from "./projectScope.js";
-import { readDailyBriefingSetting, setDailyBriefing } from "./schedule.js";
+import { readDailyBriefingSetting } from "./schedule.js";
 import { InformationBriefingService } from "./service.js";
 
 const PROJECT_BASE = "/api/v1/spaces/:spaceId/projects/:projectId/information-briefings";
@@ -42,9 +40,7 @@ function registerScopeRoutes(app: FastifyInstance, context: ModuleContext, base:
     const route = await resolve(db, request, identity);
     return { identity, db, route, service: new InformationBriefingService(db, context.config) };
   };
-  const requireGenerate = async (db: Queryable, adapter: BriefingScopeAdapter, userId: string) => {
-    if (!(await adapter.canGenerate(db, userId))) throw new HttpError(403, "Generating this briefing requires write access", { code: "briefing_writer_required" });
-  };
+
 
   app.get(base, async (request, reply) => {
     try {
@@ -68,105 +64,28 @@ function registerScopeRoutes(app: FastifyInstance, context: ModuleContext, base:
     }
   });
 
-  app.post(base, async (request, reply) => {
-    try {
-      const scope = await scoped(request, reply);
-      if (!scope) return reply;
-      const { adapter } = scope.route;
-      await requireGenerate(scope.db, adapter, scope.identity.userId);
-      if(adapter.scope.type==='project')throw new HttpError(410,'Project analysis is managed by Following',{code:'project_daily_briefing_replaced'});
-      const body = parseBody(BriefingGenerateRequestSchema, jsonBody(request) ?? {});
-      const label = PERSONAL_BRIEFING_LABEL;
-      const execution = { agent_id: body.agent_id, runtime_profile_id: body.runtime_profile_id };
-      let result;
-      if (body.date) {
-        // A sealed day briefed later: only a day whose digest exists, behind no later version.
-        const digest = await sealedDigest(scope.db, `space_id=$1 AND owner_user_id=$2 AND digest_date=$3 AND digest_type='personal'`, [scope.identity.spaceId,scope.identity.userId,body.date]);
-        if (!digest) throw new HttpError(422, "That day has no sealed digest", { code: "briefing_day_not_sealed" });
-        result = await scope.service.request(adapter, scope.identity.userId, {
-          kind: "backfill", day: { date: body.date, digestId: digest.id, cutoff: new Date(digest.period_end_utc).toISOString() },
-          execution, origin: "manual", label,
-        });
-      } else {
-        result = await scope.service.request(adapter, scope.identity.userId, { kind: "manual", execution, origin: "manual", label });
-      }
-      return reply.code(result.created ? 201 : 200).send(result);
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
+  registerOperationAdapters(app, context.config, [{method:'POST',url:base,spaceParam:'spaceId',operation:base===PROJECT_BASE?'briefing.project.request':'briefing.personal.request',...(base===PROJECT_BASE?{params:{projectId:'project_id'}}:{})}]);
 
-  app.post(`${base}/:briefingId/cancel`, async (request, reply) => {
-    try {
-      const scope = await scoped(request, reply);
-      if (!scope) return reply;
-      return reply.send(await scope.service.cancel(scope.route.adapter, scope.identity.userId, params(request).briefingId ?? ""));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
+  registerOperationAdapters(app, context.config, [{
+    method:'POST',url:`${base}/:briefingId/cancel`,spaceParam:'spaceId',
+    operation:base===PROJECT_BASE?'briefing.project.cancel':'briefing.personal.cancel',
+    params:{briefingId:'briefing_id',...(base===PROJECT_BASE?{projectId:'project_id'}:{})},
+  }]);
 
-  const highlightOf = (request: FastifyRequest) => {
-    const index = Number(params(request).index);
-    if (!Number.isInteger(index) || index < 0 || index > 32) throw new HttpError(422, "Invalid highlight");
-    return { briefingId: params(request).briefingId ?? "", index };
-  };
+  const prefix=base===PROJECT_BASE?'briefing.project':'briefing.personal';
+  const targets={briefingId:'briefing_id',index:'index',...(base===PROJECT_BASE?{projectId:'project_id'}:{})};
+  registerOperationAdapters(app,context.config,[
+    {method:'POST',url:`${base}/:briefingId/highlights/:index/follow-up`,spaceParam:'spaceId',operation:`${prefix}.follow_up`,params:targets},
+    {method:'POST',url:`${base}/:briefingId/highlights/:index/adoption/preview`,spaceParam:'spaceId',operation:`${prefix}.adoption.preview`,params:targets},
+    {method:'POST',url:`${base}/:briefingId/highlights/:index/adoption`,spaceParam:'spaceId',operation:`${prefix}.adoption.confirm`,params:targets},
+  ]);
 
-  // Prepares a follow-up on one highlight: the text a conversation in this scope would receive. Writes nothing.
-  app.post(`${base}/:briefingId/highlights/:index/follow-up`, async (request, reply) => {
-    try {
-      const scope = await scoped(request, reply);
-      if (!scope) return reply;
-      const { briefingId, index } = highlightOf(request);
-      return reply.send(await prepareFollowUp(scope.db, scope.route.adapter, scope.identity.userId, briefingId, index));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  // Previews the Task a highlight would become. Writes nothing.
-  app.post(`${base}/:briefingId/highlights/:index/adoption/preview`, async (request, reply) => {
-    try {
-      const scope = await scoped(request, reply);
-      if (!scope) return reply;
-      const { briefingId, index } = highlightOf(request);
-      return reply.send(await previewAdoption(scope.db, scope.route.adapter, scope.identity, briefingId, index));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  // Creates the previewed Task; the same highlight always returns the same Task.
-  app.post(`${base}/:briefingId/highlights/:index/adoption`, async (request, reply) => {
-    try {
-      const scope = await scoped(request, reply);
-      if (!scope) return reply;
-      const { briefingId, index } = highlightOf(request);
-      const body = parseBody(BriefingAdoptionConfirmRequestSchema, jsonBody(request));
-      const result = await confirmAdoption(scope.db as Pool, scope.route.adapter, scope.identity, briefingId, index, body.preview_hash);
-      return reply.code(result.created ? 201 : 200).send(result);
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.put(`${base}/settings`, async (request, reply) => {
-    try {
-      const scope = await scoped(request, reply);
-      if (!scope) return reply;
-      const body = parseBody(BriefingSettingsRequestSchema, jsonBody(request));
-      const setting = await setDailyBriefing(scope.db, scope.route.adapter, scope.identity.userId, body);
-      return reply.send({ daily_enabled: setting.enabled });
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
+  registerOperationAdapters(app, context.config, [{
+    method:'PUT', url:`${base}/settings`, spaceParam:'spaceId',
+    operation:base===PROJECT_BASE?'briefing.project.settings.set':'briefing.personal.settings.set',
+    ...(base===PROJECT_BASE?{params:{projectId:'project_id'}}:{}),
+  }]);
 }
-
-const sealedDigest = async (db: Queryable, where: string, values: unknown[]) =>
-  (await db.query<{ id: string; period_end_utc: string }>(
-    `SELECT id, period_end_utc::text FROM information_digests WHERE ${where}`, values,
-  )).rows[0] ?? null;
 
 /** Historical Project reads and the reader's own personal generation. */
 export function registerBriefingRoutes(app: FastifyInstance, context: ModuleContext): void {

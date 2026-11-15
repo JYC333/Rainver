@@ -4,7 +4,9 @@ Date: 2026-08-29
 
 ## Status
 
-Accepted.
+Accepted. Decision 2 and the matching non-goal are amended by
+"Amendment: Rooms are an explicit Project entry" below (2026-11-11); every
+other decision, including the no-existence-signal rule of decision 3, stands.
 
 Current state of the implemented Room layer lives in
 [`modules/rooms.md`](../modules/rooms.md); the Project side lives in
@@ -56,6 +58,10 @@ Rejected alternatives:
   thread.
 
 ### 2. The layer is invisible until a visibility decision has to be made
+
+*Amended 2026-11-11 — see the amendment below. The reasoning is kept as the
+record of what was decided and why it changed; the current behavior is the
+amendment's.*
 
 A Project with only its mainline shows conversations and never the word
 "Room". Conversations of a limited Room appear in the same list, in a section
@@ -132,12 +138,51 @@ event may replace its Host, CLI, or Primary Workspace. Continuing in another
 Folder therefore means opening a new Conversation, while an existing draft or
 initialized Conversation remains pinned to its own execution context.
 
+## Amendment: Rooms are an explicit Project entry (2026-11-11)
+
+Keeping the layer invisible did not survive two facts. First, the full Room
+page already showed Rooms, rosters and "New Room", so the product described
+one Room two ways. Second, Agents need a Project relation that is *not* a Room
+roster: an Agent can work for a Project on its own, and adding it to the
+Project must not make it a member of any Room or let it read a Room's
+history. With Agents and audiences as separate relations, both need their
+own visible entry.
+
+Decided:
+
+- The Project navigation has two parallel entries, **Agents** and **Rooms**.
+  Agents is the Project's Agent list (`project_agent_links`, owned by the
+  Projects module): a reference to an existing Agent, granting no Room
+  membership, no Room history and no widening of a private Agent. Rooms is
+  this decision's visibility boundary made visible.
+- The Rooms index lists the Rooms the viewer is an active member of — the
+  default (mainline) Room and their limited Rooms — each with its name, who
+  can see it, and how many people and Agents are in it. Entering a Room shows
+  its conversation list, with a Members view beside it; it never jumps into
+  the newest conversation. A direct link to a conversation still opens it.
+- A conversation names its Room and links back to that Room's list. Who can
+  see it (the roster) and who is asked (the per-message recipients chosen in
+  the composer) are shown as different things, as decision 1 requires.
+- Adding an Agent from a Room completes its Project link in the same
+  transaction; removing it from a Room keeps the link. Adding it to the
+  Project joins no Room. A private Agent is still shared only with the exact
+  current members of the Room its owner confirms, never with the Project.
+
+Unchanged and restated, because a visible layer makes it easier to break:
+decision 3 holds for every new read. The Rooms index, the Project Agent
+list's "in these Rooms" placements, and Room candidate lists all use the same
+active-membership join as a direct Room read, so a limited Room the viewer is
+not in is absent — no row, no count, no "in another Room" hint — including
+for Project owners and Space owners/admins. Creating a Room is still a choice
+of audience made once, through the same roster dialog.
+
 ## Consequences
 
 - The Room layer stays, and stays load-bearing, but its cost is paid only by
   the people who need it.
-- Roster management remains a real surface, reached from the conversation list
-  section it governs rather than from top-level navigation.
+- Roster management is a real surface: a Room's Members view, reached from the
+  Rooms index, from the Room itself and from a limited group's section in the
+  cross-Room conversation list (amendment above).
 - Conversation reads and conversation-attention paths retain Room membership
   gates; Run/Proposal/Artifact reads AND their shared content predicate with
   Room membership, so oversight admits no Room work product. Making the layer invisible in the interface must not
@@ -149,7 +194,8 @@ initialized Conversation remains pinned to its own execution context.
 
 ## Non-goals
 
-- Room as a topic container, or a Rooms page as a navigation destination.
+- Room as a topic container, or a cross-Project Rooms index. (A per-Project
+  Rooms entry is part of the amendment above.)
 - Any existence signal about a limited Room or its conversations to a
   non-member. Oversight never admits Room messages or Room work products.
 - Preventing conversation creation while another conversation is empty.

@@ -1,3 +1,5 @@
+import {recordNativeChildAdoption} from './workspaceNativeAdoption.js';
+import {recordWorkspaceLanding,refreshWorkspaceLifecycle} from './workspaceLifecycle.js';
 import {assertWorkspaceContributorsReadable} from '../projectFolders/workspaceContributors.js';
 import {deferIfSourceReleasePending} from './workspaceSourceFence.js';
 import {verifyBasicWorkspaceCandidate} from './workspaceBasicVerification.js';
@@ -35,7 +37,7 @@ export interface WorkspaceIntegrationRow {
  detail_json:Record<string,unknown>;
 }
 import {frozenPublicationDetail,frozenPublicationPlan,requiresNativePublication} from '../projectFolders/workspacePublicationPlan.js';
-export const integrationWorkspaceReference=(m:WorkspaceIntegrationRow):ExecutionWorkspaceRef=>({id:m.workspace_id,generation:m.generation,integration_id:m.attempt_id});
+export const integrationWorkspaceReference=(m:WorkspaceIntegrationRow):ExecutionWorkspaceRef=>({id:m.workspace_id,generation:m.generation,integration_id:m.attempt_id,...(m.detail_json.materialization_epoch!==undefined?{materialization_epoch:Number(m.detail_json.materialization_epoch)}:{})});
 export async function enqueueWorkspaceIntegration(db:Queryable,changeId:string,spaceId:string,userId:string,replyOwnerRunId?:string){
  return withQueryableTransaction(db,async tx=>{
   const owner=(await tx.query<{state:string}>(`SELECT w.state FROM workspace_change_sets c JOIN execution_workspaces w ON w.id=c.workspace_id WHERE c.id=$1 AND c.space_id=$2 FOR UPDATE OF w`,[changeId,spaceId])).rows[0];
@@ -51,6 +53,7 @@ export async function enqueueWorkspaceIntegration(db:Queryable,changeId:string,s
    VALUES($1,$2,$3,$4,$5,$4,$6,$7,$8,$9,$10,'queued',$11,now(),now()) ON CONFLICT(change_set_id) DO NOTHING RETURNING id`,
    [id,spaceId,c.workspace_id,changeId,c.workspace_location_id,c.generation,randomUUID(),c.source_commit,c.base_commit,c.target_ref,userId]);
   if(!inserted.rowCount)return null;
+  await tx.query("UPDATE task_merges SET detail_json=detail_json||jsonb_build_object('materialization_epoch',(SELECT materialization_epoch FROM execution_workspaces WHERE id=workspace_id),'slot_use_id',(SELECT retention_json->'slot_use_id' FROM execution_workspaces WHERE id=workspace_id)) WHERE id=$1",[id]);
   if(replyOwnerRunId)await tx.query("UPDATE task_merges SET detail_json=detail_json||$2::jsonb WHERE id=$1",[id,JSON.stringify({reply_owner_run_id:replyOwnerRunId})]);
   await tx.query("UPDATE workspace_change_sets SET state='integrating',revision=revision+1,updated_at=now() WHERE id=$1",[changeId]);
   await new PgJobQueueRepository(tx).enqueue({job_type:'task_merge',space_id:spaceId,user_id:userId,payload:{merge_id:id,workspace_id:c.workspace_id}});
@@ -88,6 +91,12 @@ export async function advanceWorkspaceIntegration(pool:Pool,config:ServerConfig,
   await assertWorkspaceContributorsReadable(client,spaceId,m.requested_by_user_id,m.change_set_id);
   const originRunId=origin.id;
   const completedRepairs=()=>Array.isArray(m.detail_json.completed_repair_runs)?(m.detail_json.completed_repair_runs as unknown[]).filter((id):id is string=>typeof id==='string').slice(0,20):[];
+  if(w.parent_workspace_id&&m.target_ref.startsWith('refs/heads/rainver/workspace-')){
+   const parent=(await client.query<ExecutionWorkspaceRow>('SELECT * FROM execution_workspaces WHERE id=$1',[w.parent_workspace_id])).rows[0];
+   if(!parent||parent.space_id!==w.space_id||parent.execution_host_id!==w.execution_host_id||parent.workspace_location_id!==w.workspace_location_id||m.target_ref!==`refs/heads/rainver/workspace-${parent.id}-g${parent.generation}`)throw new Error('integration_parent_target_mismatch');
+   const frozen=await client.query(`UPDATE task_merges SET detail_json=detail_json||jsonb_build_object('native_parent',$2::jsonb) WHERE id=$1 AND (NOT detail_json ? 'native_parent' OR detail_json->'native_parent'=$2::jsonb)`,[m.id,JSON.stringify({id:parent.id,generation:parent.generation})]);
+   if(!frozen.rowCount)throw new Error('integration_parent_target_mismatch');
+  }
   const ref=integrationWorkspaceReference(m),author=agentGitIdentity(origin.agent_id,null);
   const frame:Omit<HostRequestPayload<'workspace_integration'>,'action'>={workspace:{...await workspaceLocationFrame(client,w,ref,config.workspaceRoot),execution_workspace:{...ref,integration_id:m.attempt_id}},source_commit:m.source_commit,base_commit:m.base_commit,target_ref:m.target_ref,author,message:change.summary??'Integrated workspace change'};
   const request=(action:HostRequestPayload<'workspace_integration'>['action'],extra:Partial<HostRequestPayload<'workspace_integration'>>={})=>hosts.requestTaskBranch(w.execution_host_id,'workspace_integration',{...frame,...extra,action});
@@ -120,17 +129,20 @@ export async function advanceWorkspaceIntegration(pool:Pool,config:ServerConfig,
    await transaction(async()=>{
     await save(state==='integrated'?'merged':'no_changes');
     await client.query('UPDATE task_merges SET merged_commit=$2,completed_at=now() WHERE id=$1',[m.id,candidate]);
-    await client.query("UPDATE workspace_change_sets SET state=$2,revision=revision+1,verification_json=(verification_json-'error'-'checkpoint_recovery')||$3::jsonb,updated_at=now() WHERE id=$1",[m.change_set_id,state,JSON.stringify(m.detail_json.verification??{})]);
+    await client.query("UPDATE workspace_change_sets SET state=$2,revision=revision+1,verification_json=(verification_json-'error')||$3::jsonb,updated_at=now() WHERE id=$1",[m.change_set_id,state,JSON.stringify(m.detail_json.verification??{})]);
     if(w.parent_workspace_id&&candidate){
-     const parent=(await client.query('UPDATE execution_workspaces SET head_commit=$2,revision=revision+1,updated_at=now() WHERE id=$1 AND (head_commit IS NULL OR head_commit=$3 OR head_commit=$2) RETURNING id',[w.parent_workspace_id,candidate,m.onto_commit])).rowCount;
+     const parent=(await client.query(`UPDATE execution_workspaces SET retention_json=CASE WHEN head_commit IS DISTINCT FROM $2 THEN retention_json||jsonb_build_object('content_changed_at',now()) ELSE retention_json END,head_commit=$2,revision=revision+1,updated_at=now() WHERE id=$1 AND (head_commit IS NULL OR head_commit=$3 OR head_commit=$2) RETURNING id`,[w.parent_workspace_id,candidate,m.onto_commit])).rowCount;
      if(parent)await client.query("UPDATE workspace_change_sets SET source_commit=$2,verification_json=CASE WHEN jsonb_typeof(verification_json->'adopted_child_change_ids')='array' THEN jsonb_set(verification_json,'{adopted_child_change_ids}',(verification_json->'adopted_child_change_ids')||to_jsonb($3::text),true) ELSE verification_json END,updated_at=now() WHERE workspace_id=$1 AND state IN ('open','ready')",[w.parent_workspace_id,candidate,m.change_set_id]);
      // A moved parent has uncertain adoption order. Keep legacy/concurrent
      // provenance conservative instead of claiming an exhaustive child list.
      else await client.query("UPDATE workspace_change_sets SET verification_json=verification_json-'adopted_child_change_ids',updated_at=now() WHERE workspace_id=$1 AND state IN ('open','ready')",[w.parent_workspace_id]);
     }
+    if(w.parent_workspace_id)await recordNativeChildAdoption(client,w.id);
     const candidateTip=candidate??(inspected?.ok?inspected.commit:null);
     await enqueueCandidateCleanup(candidateTip,false);
-    if(w.head_commit)await enqueueWorkspaceCleanup(client,w,{id:w.id,generation:w.generation},w.head_commit,true,m.requested_by_user_id);
+    await recordWorkspaceLanding(client,m.id);
+    if(w.head_commit)await enqueueWorkspaceCleanup(client,w,{id:w.id,generation:w.generation},w.head_commit,true,m.requested_by_user_id,m.id);
+    await refreshWorkspaceLifecycle(client,w.id);
     await postWorkspaceIntegrationNotice(client,m.id,m.attempt_id,state);
    });
    await notifyParent();return {status:state};
@@ -343,7 +355,7 @@ export async function advanceWorkspaceIntegration(pool:Pool,config:ServerConfig,
    const evidence=await request('preserve');
    await transaction(async()=>{
     await enqueueCandidateCleanup(evidence.ok?evidence.candidate_commit:null,false);
-    await client.query(`UPDATE task_merges SET status='queued',revision=revision+1,attempt_id=$2,onto_commit=NULL,task_commit=NULL,resolution_run_id=NULL,detail_json=$3::jsonb,updated_at=now() WHERE id=$1`,[m.id,randomUUID(),JSON.stringify({...frozenPublicationDetail(m.detail_json),target_moves:moves,automatic_repairs:Number(m.detail_json.automatic_repairs??0),...(m.detail_json.human_resolution?{human_resolution:m.detail_json.human_resolution}:{}),...(m.detail_json.agent_repair?{agent_repair:m.detail_json.agent_repair}:{}),...(m.detail_json.verification_request?{verification_request:m.detail_json.verification_request}:{}),...(m.detail_json.reply_owner_run_id?{reply_owner_run_id:m.detail_json.reply_owner_run_id}:{}),completed_repair_runs:completedRepairs(),verification_repairs:Number(m.detail_json.verification_repairs??0)})]);
+    await client.query(`UPDATE task_merges SET status='queued',revision=revision+1,attempt_id=$2,onto_commit=NULL,task_commit=NULL,resolution_run_id=NULL,detail_json=$3::jsonb,updated_at=now() WHERE id=$1`,[m.id,randomUUID(),JSON.stringify({materialization_epoch:(await client.query<{materialization_epoch:number}>('SELECT materialization_epoch FROM execution_workspaces WHERE id=$1',[w.id])).rows[0]!.materialization_epoch,...frozenPublicationDetail(m.detail_json),previous_attempt:m.attempt_id,target_moves:moves,automatic_repairs:Number(m.detail_json.automatic_repairs??0),...(m.detail_json.human_resolution?{human_resolution:m.detail_json.human_resolution}:{}),...(m.detail_json.agent_repair?{agent_repair:m.detail_json.agent_repair}:{}),...(m.detail_json.verification_request?{verification_request:m.detail_json.verification_request}:{}),...(m.detail_json.reply_owner_run_id?{reply_owner_run_id:m.detail_json.reply_owner_run_id}:{}),completed_repair_runs:completedRepairs(),verification_repairs:Number(m.detail_json.verification_repairs??0)})]);
    });
    throw new JobDeferredError('integration_target_moved',1000);
   }

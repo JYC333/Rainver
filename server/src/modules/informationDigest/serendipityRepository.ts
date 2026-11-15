@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import type { Queryable } from "../routeUtils/common.js";
+import { HttpError, withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
+import { lockInterestSources, type InterestSourceRef } from '../interestProfile/sourceAuthority.js';
 import type { DigestCandidate } from "./repository.js";
 
 export interface StandbyCandidate extends DigestCandidate {
@@ -153,16 +154,16 @@ export class PgSerendipityRepository {
     );
   }
 
-  async recommendExistingSources(spaceId: string, userId: string, domainKeys: readonly string[], period: string, limit = 3): Promise<number> {
-    if (domainKeys.length === 0) return 0;
-    const result = await this.db.query<{
+  private async sourceRecommendations(spaceId:string,userId:string,domainKeys:readonly string[]) {
+    return await this.db.query<{
       source_channel_id: string;
+      connection_id: string;
       source_item_id: string;
       domain_key: string;
       channel_name: string;
     }>(
       `SELECT DISTINCT ON (a.domain_key)
-              c.id AS source_channel_id, i.id AS source_item_id, a.domain_key, c.name AS channel_name
+              c.id AS source_channel_id, c.source_connection_id AS connection_id, i.id AS source_item_id, a.domain_key, c.name AS channel_name
          FROM source_channels c
          JOIN source_connections conn
            ON conn.id=c.source_connection_id AND conn.space_id=c.space_id
@@ -178,8 +179,29 @@ export class PgSerendipityRepository {
         ORDER BY a.domain_key, COALESCE(i.occurred_at,i.first_seen_at) DESC, i.id`,
       [spaceId, userId, domainKeys],
     );
+  }
+
+  async recommendExistingSources(spaceId:string,userId:string,domainKeys:readonly string[],period:string,limit=3):Promise<number> {
+    return (await this.recommendExistingSourcesWithRefs(spaceId,userId,domainKeys,period,limit)).count;
+  }
+
+  async recommendExistingSourcesWithRefs(spaceId:string,userId:string,domainKeys:readonly string[],period:string,limit=3,prepared?:Awaited<ReturnType<PgSerendipityRepository['prepareSourceRecommendations']>>):Promise<{count:number;refs:InterestSourceRef[]}> {
+    return withQueryableTransaction(this.db,tx=>new PgSerendipityRepository(tx).recommendExistingSourcesLocked(spaceId,userId,domainKeys,period,limit,prepared));
+  }
+
+  async prepareSourceRecommendations(spaceId:string,userId:string,domainKeys:readonly string[],limit:number) {
+    const selected=(await this.sourceRecommendations(spaceId,userId,domainKeys)).rows.slice(0,limit);
+    const refs=selected.map(r=>({item_id:r.source_item_id,channel_id:r.source_channel_id,connection_id:r.connection_id}));
+    await lockInterestSources(this.db,spaceId,userId,refs,false);
+    const recheck=async()=>{if(JSON.stringify(selected)!==JSON.stringify((await this.sourceRecommendations(spaceId,userId,domainKeys)).rows.slice(0,limit)))throw new HttpError(409,'Source recommendations changed; reload');};
+    await recheck();return {selected,refs,recheck};
+  }
+
+  private async recommendExistingSourcesLocked(spaceId:string,userId:string,domainKeys:readonly string[],period:string,limit:number,prepared?:Awaited<ReturnType<PgSerendipityRepository['prepareSourceRecommendations']>>) {
+    const state=prepared??await this.prepareSourceRecommendations(spaceId,userId,domainKeys,limit);
+    await state.recheck();const {selected,refs}=state;
     let added = 0;
-    for (const row of result.rows.slice(0, limit)) {
+    for (const row of selected) {
       const now = new Date().toISOString();
       await this.db.query(
         `INSERT INTO source_channel_user_subscriptions
@@ -203,8 +225,9 @@ export class PgSerendipityRepository {
       })) added += 1;
       await this.upsertRecommendationActivity(spaceId, userId, row, now);
     }
-    return added;
+    return {count:added,refs};
   }
+
 
   async startProbe(spaceId: string, userId: string, period: string, domainKeys: readonly string[]): Promise<string | null> {
     const id = randomUUID();

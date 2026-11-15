@@ -9,7 +9,7 @@ import {assertSourceConnectionManageable,assertSourceConnectionReadable} from '.
 import {SourceBackfillPlanningService} from './sourceBackfillService.js';
 import {SourceBackfillMutationError} from './sourceBackfillErrors.js';
 
-export const SOURCE_BACKFILL_OPERATIONS=['source.backfill.preview','source.backfill.create_plan','source.backfill.pause','source.backfill.resume'] as const;
+export const SOURCE_BACKFILL_OPERATIONS=['source.backfill.preview','source.backfill.create_plan','source.backfill.pause','source.backfill.resume','source.backfill.start.propose'] as const;
 type Id=typeof SOURCE_BACKFILL_OPERATIONS[number];
 type Input=OperationInput<Id>;
 interface Refs {project_source_binding_id?:string|null;project_operation_id?:string|null}
@@ -58,7 +58,7 @@ async function authorize(db:Queryable,input:Input,actor:OperationActor,read=fals
 }
 export function sourceBackfillRegistrations(definitions:ReadonlyMap<string,RegisteredSystemActionDefinition>):OperationRegistration[]{
   return SOURCE_BACKFILL_OPERATIONS.map(id=>({
-    definition:definitions.get(id)!,successStatus:id==='source.backfill.create_plan'?201:200,
+    definition:definitions.get(id)!,successStatus:id==='source.backfill.create_plan'||id==='source.backfill.start.propose'?201:200,
     ...(id==='source.backfill.preview'?{readKind:'metadata' as const}:{}),
     async resolve(db,raw,actor){const input=raw as Input;await connection(db,actor.space_id,input.source_channel_id);return {authority:'source_backfill_plan_id' in input?`source_backfill_plan:${input.source_backfill_plan_id}`:`source_channel:${input.source_channel_id}`,targets:{source_channel_id:input.source_channel_id,...('source_backfill_plan_id' in input?{source_backfill_plan_id:input.source_backfill_plan_id}:{})},resourceType:'source_backfill_plan',resourceId:'source_backfill_plan_id' in input?input.source_backfill_plan_id:input.source_channel_id};},
     authorize:(db,raw,actor)=>authorize(db,raw as Input,actor,id==='source.backfill.preview'),
@@ -66,6 +66,14 @@ export function sourceBackfillRegistrations(definitions:ReadonlyMap<string,Regis
     async execute(db,raw,actor){
       const input=raw as Input,person=identity(actor),service=new SourceBackfillPlanningService(db);
       if(id==='source.backfill.preview')return service.preview(person,input.source_channel_id,input);
+      if(id==='source.backfill.start.propose'){
+        // The person's own submission: the canonical start proposal (an existing one for a proposed plan),
+        // decided by its applier. Agent auto-grant stays on the Agent action, never here.
+        const target=input as OperationInput<'source.backfill.start.propose'>;
+        const {proposal}=await service.proposeStart(person,target.source_channel_id,target.source_backfill_plan_id);
+        const current=await plan(db,person.spaceId,target.source_channel_id,target.source_backfill_plan_id);
+        return {plan_id:current.id,source_channel_id:current.source_channel_id,status:current.status,proposal_id:String((proposal as {id:string}).id)};
+      }
       const out=id==='source.backfill.create_plan'
         ?await service.create(person,input.source_channel_id,input)
         :await service.setPaused(person,input.source_channel_id,(input as OperationInput<'source.backfill.pause'>).source_backfill_plan_id,id==='source.backfill.pause');

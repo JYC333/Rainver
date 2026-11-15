@@ -47,7 +47,7 @@ export function buildSourceSchedulerTasks(
   const db = () => getDbPool(config.databaseUrl!);
 
   const tasks: ScheduledTask[] = [
-    {name:"source_goal_scheduler",intervalSeconds,runOnStart:true,run:async()=>{await enqueueDueSourceGoals(db());}},
+    {name:"source_goal_scheduler",intervalSeconds,runOnStart:true,run:async()=>{await enqueueDueSourceGoals(db(),config);}},
     {
       name: "project_information_monitoring_scheduler",
       intervalSeconds,

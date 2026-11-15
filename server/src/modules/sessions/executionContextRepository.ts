@@ -1,3 +1,4 @@
+import { roomAgentUseSql } from "../rooms/agentUsageSql.js";
 import { randomUUID } from "node:crypto";
 import type {
   ConversationAttachmentAccessMode,
@@ -133,7 +134,7 @@ const ATTACHMENT_COLUMNS = `grant_row.id, grant_row.space_id, grant_row.session_
   grant_row.revoked_by_user_id`;
 
 export class PgConversationExecutionContextRepository {
-  constructor(private readonly db: Queryable) {}
+  constructor(readonly db: Queryable) {}
 
   async getVisibleSession(
     identity: SpaceUserIdentity,
@@ -335,36 +336,8 @@ export class PgConversationExecutionContextRepository {
       `SELECT 1 AS one
          FROM agents agent
         WHERE agent.id = $1 AND agent.space_id = $2 AND agent.status = 'active'
-          AND (
-            ( $3::varchar IS NOT NULL
-              AND EXISTS (
-                SELECT 1 FROM room_agent_members member
-                 WHERE member.space_id = agent.space_id
-                   AND member.room_id = $3
-                   AND member.agent_id = agent.id
-                   AND member.status = 'active'
-              )
-              AND EXISTS (
-                SELECT 1 FROM room_user_members room_member
-                 WHERE room_member.space_id = agent.space_id
-                   AND room_member.room_id = $3
-                   AND room_member.user_id = $4
-                   AND room_member.status = 'active'
-              )
-              AND (
-                ${contentReadSql("agent", "agent", "$4")}
-                OR EXISTS (
-                  SELECT 1 FROM room_agent_access_grants room_grant
-                   WHERE room_grant.space_id = agent.space_id
-                     AND room_grant.room_id = $3
-                     AND room_grant.agent_id = agent.id
-                     AND room_grant.grantee_user_id = $4
-                     AND room_grant.revoked_at IS NULL
-                )
-              )
-            )
-            OR ($3::varchar IS NULL AND ${contentReadSql("agent", "agent", "$4")})
-          )
+          AND (($3::varchar IS NOT NULL AND ${roomAgentUseSql("agent", "$4", "$3")})
+            OR ($3::varchar IS NULL AND ${contentReadSql("agent", "agent", "$4")}))
         LIMIT 1`,
       [agentId, session.space_id, session.room_id, userId],
     );
@@ -375,7 +348,7 @@ export class PgConversationExecutionContextRepository {
     return (await this.listConversationParticipantAgents(session)).map((agent) => agent.agent_id);
   }
 
-  async listConversationParticipantAgents(session: ExecutionSessionRow): Promise<Array<{ agent_id: string; agent_name: string }>> {
+  async listConversationParticipantAgents(session: ExecutionSessionRow, includeAvailable = false): Promise<Array<{ agent_id: string; agent_name: string }>> {
     if (!session.room_id) {
       const agentId = await this.resolveConversationAgent(session.space_id, session.id, session.project_id);
       if (!agentId) return [];
@@ -392,13 +365,15 @@ export class PgConversationExecutionContextRepository {
          JOIN agents agent ON agent.id = member.agent_id AND agent.space_id = member.space_id
         WHERE member.space_id = $1 AND member.room_id = $2 AND member.status = 'active'
           AND agent.status = 'active'
+          AND ($4::boolean OR NOT EXISTS (SELECT 1 FROM conversation_execution_contexts ctx WHERE ctx.space_id=$1 AND ctx.session_id=$3 AND ctx.state='initialized')
+            OR EXISTS (SELECT 1 FROM session_conversation_backends binding WHERE binding.space_id=$1 AND binding.session_id=$3 AND binding.agent_id=member.agent_id AND binding.participating))
         ORDER BY member.created_at ASC, member.agent_id ASC`,
-      [session.space_id, session.room_id],
+      [session.space_id, session.room_id, session.id, includeAvailable],
     );
     return result.rows;
   }
 
-  async listRuntimeProfiles(spaceId: string, agentId: string): Promise<RuntimeProfileRow[]> {
+  async listRuntimeProfiles(spaceId: string, agentId: string, projectId: string | null = null): Promise<RuntimeProfileRow[]> {
     const result = await this.db.query<RuntimeProfileRow>(
       `SELECT profile.id, profile.agent_id, agent.name AS agent_name,
               profile.runtime_key, profile.runtime_installation,
@@ -406,22 +381,29 @@ export class PgConversationExecutionContextRepository {
               profile.workspace_location_id, profile.enabled, profile.is_default
          FROM agent_runtime_profiles profile
          JOIN agents agent ON agent.id = profile.agent_id AND agent.space_id = profile.space_id
+         LEFT JOIN workspace_locations location ON location.id = profile.workspace_location_id AND location.space_id = profile.space_id
+         LEFT JOIN project_folders folder ON folder.id = location.project_folder_id AND folder.space_id = profile.space_id
         WHERE profile.space_id = $1 AND profile.agent_id = $2 AND profile.enabled = true
+          AND (profile.workspace_mode IS DISTINCT FROM 'location' OR ($3::varchar IS NOT NULL AND folder.project_id = $3))
         ORDER BY profile.is_default DESC, profile.created_at ASC, profile.id ASC`,
-      [spaceId, agentId],
+      [spaceId, agentId, projectId],
     );
     return result.rows;
   }
 
   async resolveConversationAgent(spaceId: string, sessionId: string, projectId: string | null): Promise<string | null> {
-    const existing = await this.db.query<{ agent_id: string }>(
-      `SELECT agent_id FROM host_threads
-        WHERE space_id = $1 AND session_id = $2 AND container_kind = 'conversation'
-          AND agent_id IS NOT NULL AND status IN ('active', 'session_reset')
-        ORDER BY updated_at DESC, id DESC LIMIT 1`,
+    const direct = await this.db.query<{ agent_id: string }>(
+      `SELECT agent_id FROM sessions WHERE space_id = $1 AND id = $2
+        AND room_id IS NULL AND agent_id IS NOT NULL AND status = 'active'`,
       [spaceId, sessionId],
     );
-    if (existing.rows[0]) return existing.rows[0].agent_id;
+    if (direct.rows[0]) return direct.rows[0].agent_id;
+    const manager = await this.db.query<{agent_id:string}>(
+      `SELECT m.agent_id FROM sessions s JOIN room_agent_members m
+         ON m.space_id=s.space_id AND m.room_id=s.room_id
+        WHERE s.space_id=$1 AND s.id=$2 AND m.role='manager' AND m.status='active'`,
+      [spaceId,sessionId]);
+    if(manager.rows[0]) return manager.rows[0].agent_id;
     if (!projectId) return null;
     const assistant = await this.db.query<{ id: string }>(
       `SELECT id FROM agents
@@ -430,6 +412,11 @@ export class PgConversationExecutionContextRepository {
       [spaceId, projectId],
     );
     return assistant.rows[0]?.id ?? null;
+  }
+
+  async participationSnapshot(session: ExecutionSessionRow): Promise<{participant_agent_ids:string[];participants_revision:string}> {
+    const result=await this.db.query<{revision:string}>(`SELECT md5(COALESCE((SELECT string_agg(agent_id || ':' || participating::text || ':' || updated_at::text, ',' ORDER BY agent_id) FROM session_conversation_backends WHERE space_id=$1 AND session_id=$2),'') || ':' || COALESCE((SELECT roster_revision::text FROM rooms WHERE space_id=$1 AND id=$3),'')) AS revision`,[session.space_id,session.id,session.room_id]);
+    return {participant_agent_ids:await this.listConversationParticipantAgentIds(session),participants_revision:result.rows[0]!.revision};
   }
 
   async getBinding(spaceId: string, sessionId: string, agentId: string): Promise<{
@@ -452,7 +439,10 @@ export class PgConversationExecutionContextRepository {
     const result = await this.db.query<{ agent_id: string; runtime_profile_id: string }>(
       `SELECT agent_id, runtime_profile_id
          FROM session_conversation_backends
-        WHERE space_id = $1 AND session_id = $2
+        WHERE space_id = $1 AND session_id = $2 AND participating
+          AND EXISTS (SELECT 1 FROM sessions s WHERE s.space_id=$1 AND s.id=$2
+            AND (s.room_id IS NULL OR EXISTS (SELECT 1 FROM room_agent_members member
+              WHERE member.space_id=$1 AND member.room_id=s.room_id AND member.agent_id=session_conversation_backends.agent_id AND member.status='active')))
         ORDER BY created_at ASC, agent_id ASC`,
       [spaceId, sessionId],
     );

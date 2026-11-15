@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import { applyCardMove, mergeBoard } from '../mergeBoard'
 import type { ProjectBoard, ProjectBoardCard } from '../../../../types/api'

@@ -30,7 +30,7 @@ describe("workspace add", () => {
         const name = String(JSON.parse(body).name);
         pending.push(() => {
           response.writeHead(201, { "content-type": "application/json" });
-          response.end(JSON.stringify({ id: `ws-${name}`, project_id: "p", name, display_path: null, status: "active" }));
+          response.end(JSON.stringify({ status: "succeeded", data: { id: `ws-${name}`, space_id: "space", folder_id: `folder-${name}`, project_id: "p", name, display_path: null, host_kind: "remote", root_path: null, registered_from: "daemon_registered", created_at: "2026-11-15T00:00:00.000Z" } }));
         });
         if (pending.length === 2) for (const answer of pending.splice(0)) answer();
       });

@@ -17,6 +17,7 @@ type SynthesisSystemPromptResolver = (
 ) => Promise<string | null>;
 
 interface ProviderSynthesizerOptions {
+  singleAttempt?: true;
   /** Explicit fallback provider after the task chain. Omit to require the task policy. */
   providerId?: string | null;
   /** When set, a best-effort provider-egress audit row is written per synthesis call. */
@@ -51,12 +52,14 @@ export class ProviderSynthesizer implements Synthesizer {
   private readonly systemPromptResolver: SynthesisSystemPromptResolver | null;
   private readonly egressPolicy: RetrievalEgressPolicy;
   private readonly spend: CredentialSpendBasis;
+  private readonly singleAttempt?: true;
 
   constructor(
     private readonly store: ProviderCommandStore,
     options: ProviderSynthesizerOptions,
   ) {
     this.spend = options.spend;
+    this.singleAttempt = options.singleAttempt;
     this.providerId = options.providerId ?? null;
     this.databaseUrl = options.databaseUrl ?? null;
     this.surface = options.surface ?? null;
@@ -104,6 +107,7 @@ export class ProviderSynthesizer implements Synthesizer {
         egressPolicy: effectivePolicy,
         metering: { subject_user_id: viewerUserId },
         spend: this.spend,
+        single_attempt: this.singleAttempt,
       });
     } catch {
       return null;

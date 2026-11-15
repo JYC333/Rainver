@@ -1,15 +1,12 @@
 import {RESEARCH_AGENT_OPERATION_SCHEMAS,type OperationActor,type RegisteredSystemActionDefinition} from '@rainver/protocol';
 import type {Queryable} from '../routeUtils/common.js';
-import {HttpError} from '../routeUtils/common.js';
 import type {OperationRegistration} from '../systemActions/operations/types.js';
 import {OperationBusinessError,OperationError,hidden} from '../systemActions/operations/errors.js';
 import type {RunRecord} from '../runs/repository.js';
-import {assertProjectWriter,assertProjectWriterForMutation} from '../projects/access.js';
+import {assertProjectWriterForMutation} from '../projects/access.js';
 import {assertThreadReadable} from '../inquiry/threadAccess.js';
 import {problemCommandKey} from '../inquiry/problemFacts.js';
 import {InquiryMutationError} from '../inquiry/operationErrors.js';
-import {InquiryThreadService} from '../inquiry/threadService.js';
-import {listActiveThreadRefs} from '../inquiry/inquirySystemActionExecutors.js';
 import {PgAgentGroupRepository} from '../agentGroups/repository.js';
 import {researchMetadataReadableSql} from './researchOperationMetadata.js';
 import {ResearchAcquisitionService} from './pipeline/researchAcquisitionService.js';
@@ -32,22 +29,6 @@ async function boundRun(db:Queryable,a:OperationActor,lock=false):Promise<RunRec
 }
 const closureInput=(raw:unknown,projectId:string)=>({project_id:projectId,...((raw as Input).operation_id?{operation_id:(raw as Input).operation_id}:{}),...((raw as Input).thread_id?{thread_id:(raw as Input).thread_id}:{})});
 
-/** Safe hint built only after live Run, Project-writer and visible-Thread filtering. */
-class MissingQuestionThread extends OperationError {
- constructor(private readonly hint:string){super('operation_not_found',404,false,'research');}
- override body(requestId:string){const body=super.body(requestId);body.error.message=this.hint;return body;}
-}
-async function missingThread(db:Queryable,a:OperationActor,projectId:string,threadId:string):Promise<never>{
- // Same text for an unknown, closed or unreachable id: the hint lists only Threads this person can see.
- try{
-  await assertProjectWriter(db,a.space_id,projectId,a.on_behalf_of_user_id!);
-  const active=await listActiveThreadRefs(new InquiryThreadService(db),person(a),projectId,'question');
-  throw new MissingQuestionThread(active.length===0
-   ?`No active Question Thread has id '${threadId}', and this Project has no active Question Thread yet — open one with inquiry.create_thread, then start the acquisition on it.`
-   :`No active Question Thread has id '${threadId}'. Read inquiry.list_threads for the complete paginated list. First matching ids: ${active.map(thread=>`${thread.thread_id} — ${thread.statement}`).join('; ')}`);
- }catch(error){if(error instanceof MissingQuestionThread)throw error;throw hidden();}
-}
-
 /** Existing grant-bound Agent Research tools; the human Research commands' owners, closure locks and domain keys are reused. */
 export function researchAgentRegistrations(definitions:ReadonlyMap<string,RegisteredSystemActionDefinition>):OperationRegistration[]{
  return (Object.keys(RESEARCH_AGENT_OPERATION_SCHEMAS) as Id[]).map(id=>({
@@ -64,11 +45,7 @@ export function researchAgentRegistrations(definitions:ReadonlyMap<string,Regist
    const run=await boundRun(db,a,true),targets=scope.targets as {project_id:string};
    if(run.project_id!==targets.project_id)throw new OperationError('operation_conflict',409,false,'research');
    const input=closureInput(raw,run.project_id),closure=(scope as typeof scope&{closure:Closure}).closure;
-   try{await authorizeClosure(db,input,a,closure);}
-   catch(error){
-    if(id==='research.start_acquisition'&&[403,404].includes((error as {statusCode?:number}).statusCode??0))await missingThread(db,a,run.project_id,(raw as Input).thread_id!);
-    throw error;
-   }
+   await authorizeClosure(db,input,a,closure);
    if(id==='research.adopt_result'){
     // A person's read entitlement is not Source egress into this Run; keep the Run destination gate.
     await new ResearchProblemResultService(db).read(person(a),run.project_id,closure.operation!);
@@ -95,16 +72,10 @@ export function researchAgentRegistrations(definitions:ReadonlyMap<string,Regist
    }
    // Room origin comes from the Run's own agent-group membership, never from the tool call.
    const origin=run.run_group_id?await new PgAgentGroupRepository(db).getGroup(run.space_id,run.run_group_id):null;
-   let out;
-   try{
-    out=await new ResearchAcquisitionService(db).startAcquisition(p,run.project_id,{
+   const out=await new ResearchAcquisitionService(db).startAcquisition(p,run.project_id,{
      requestKey:problemCommandKey(p,invocation.idempotencyKey,{runId:run.id}),originRunId:run.id,threadId:i.thread_id!,intentNote:i.intent_note??null,
      originRoomId:origin?.room_id??null,originSessionId:origin?.session_id??null,originGroupId:origin?.room_id?origin.id:null,
      maxItems:i.max_items??null,since:i.since??null});
-   }catch(error){
-    if(error instanceof HttpError&&error.statusCode===404)await missingThread(db,a,run.project_id,i.thread_id!);
-    throw error;
-   }
    return {...base,id:out.operation_id??out.thread_id,thread_id:out.thread_id,operation_id:out.operation_id??null,status:out.status};
   },
   classifyError(error){

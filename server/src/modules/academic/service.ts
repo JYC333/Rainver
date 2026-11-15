@@ -1,5 +1,6 @@
+import {AcademicInputError as HttpError} from './operationErrors.js';
 import type { ServerConfig } from "../../config.js";
-import { dateIso, dbPool, HttpError, page, requiredString, optionalString, numberValue, withDbTransaction, type SpaceUserIdentity } from "../routeUtils/common.js";
+import { dateIso, dbPool, page, requiredString, optionalString, numberValue, withQueryableTransaction, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 import { AcademicRepository, type AcademicAuthorRow, type AcademicCitationRow, type AcademicPaperRow } from "./repository.js";
 import { contentOwnerFromDb } from "../access/contentAccessQuery.js";
 import { PgKnowledgeRepository } from "../knowledge/repository.js";
@@ -74,7 +75,7 @@ export class AcademicService {
   }
 
   constructor(
-    private readonly pool: import("../../db/pool.js").Pool,
+    private readonly pool: Queryable,
     private readonly repository: AcademicRepository,
   ) {}
 
@@ -93,7 +94,7 @@ export class AcademicService {
       if (existing) throw new HttpError(409, "A paper with this doi/arxiv_id already exists in this space");
     }
     try {
-      return await withDbTransaction(this.pool, async (client) => {
+      return await withQueryableTransaction(this.pool, async (client) => {
         const row = await this.repository.createPaper(client, {
           spaceId: identity.spaceId,
           projectId: optionalString(body.project_id),
@@ -146,7 +147,7 @@ export class AcademicService {
     if (body.reference_count !== undefined) patch.referenceCount = numberValue(body.reference_count);
     // Title and summary live on space_objects, the rest on academic_papers:
     // one transaction, so a refused second write does not leave the first.
-    const updated = await withDbTransaction(this.pool, (client) =>
+    const updated = await withQueryableTransaction(this.pool, (client) =>
       this.repository.updatePaper(client, identity.spaceId, objectId, identity.userId, patch),
     );
     if (!updated) throw new HttpError(404, "Paper not found");
@@ -183,10 +184,8 @@ export class AcademicService {
     const citedPaperObjectId = requiredString(body.cited_paper_object_id, "cited_paper_object_id");
     if (citedPaperObjectId === citingPaperObjectId) throw new HttpError(422, "A paper cannot cite itself");
     await this.assertPaperOwner(identity, citingPaperObjectId);
-    const [citingPaper, citedPaper] = await Promise.all([
-      this.repository.getPaper(this.pool, identity.spaceId, citingPaperObjectId, identity.userId),
-      this.repository.getPaper(this.pool, identity.spaceId, citedPaperObjectId, identity.userId),
-    ]);
+    const citingPaper = await this.repository.getPaper(this.pool, identity.spaceId, citingPaperObjectId, identity.userId);
+    const citedPaper = await this.repository.getPaper(this.pool, identity.spaceId, citedPaperObjectId, identity.userId);
     if (!citingPaper) throw new HttpError(404, "Citing paper not found");
     if (!citedPaper) throw new HttpError(422, "cited_paper_object_id does not reference an existing paper in this space");
     return new PgKnowledgeRepository(this.pool).proposeObjectRelation(identity, {

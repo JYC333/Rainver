@@ -8,6 +8,7 @@ import {
   type ProviderEligibilityRow,
 } from "../providers/eligibility.js";
 import { contractRecord } from "../runs/contractSnapshot.js";
+import { EXECUTION_CONTROLLER_LOST } from "../runs/retryPolicy.js";
 import type { AgentRunRecord, RunRecord } from "../runs/runRepositoryTypes.js";
 import type { Queryable } from "../routeUtils/common.js";
 import { loadSystemActionRegistry } from "../systemActions/registry.js";
@@ -315,7 +316,7 @@ export class PgRouteDecisionRepository {
               effective_trust_level: candidate?.effective_trust_level ?? null,
             };
           })),
-          JSON.stringify(decision.fallback_chain),
+          JSON.stringify(retryRoute?.retainedFallbackChain ?? decision.fallback_chain),
           JSON.stringify(decision.candidates.map((item) => ({ runtime_profile_id: item.candidate.runtime_profile_id, score_trace: item.score_trace }))),
           now,
         ],
@@ -560,7 +561,7 @@ export class PgRouteDecisionRepository {
   private async retryRouteContext(
     run: Pick<RunRecord, "space_id" | "id">,
     attemptNumber: number,
-  ): Promise<{ excludedProfileIds: string[]; fallbackProfileIds: string[] }> {
+  ): Promise<{ excludedProfileIds: string[]; fallbackProfileIds: string[]; retainedFallbackChain?: string[] }> {
     const result = await this.db.query<{
       selected_runtime_profile_id: string | null;
       fallback_chain_json: unknown;
@@ -574,6 +575,22 @@ export class PgRouteDecisionRepository {
     );
     const previous = result.rows[0];
     if (!previous) return { excludedProfileIds: [], fallbackProfileIds: [] };
+
+    // Infrastructure recovery is a continuation on the same deployment,
+    // not evidence that C2 should advance its runtime fallback chain.
+    const recovery = await this.db.query<{ reason_code: string }>(
+      `SELECT reason_code FROM run_supervisor_decisions
+        WHERE space_id = $1 AND run_id = $2 AND next_attempt_number = $3
+          AND decision = 'retry_same_route' LIMIT 1`,
+      [run.space_id, run.id, attemptNumber],
+    );
+    if (recovery.rows[0]?.reason_code === EXECUTION_CONTROLLER_LOST && previous.selected_runtime_profile_id) {
+      return {
+        excludedProfileIds: [],
+        fallbackProfileIds: [previous.selected_runtime_profile_id],
+        retainedFallbackChain: stringArray(previous.fallback_chain_json),
+      };
+    }
 
     const attempted = await this.db.query<{ selected_runtime_profile_id: string | null }>(
       `SELECT selected_runtime_profile_id

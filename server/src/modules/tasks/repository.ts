@@ -36,6 +36,7 @@ import {
 import { recordDetailRead } from "../contentAccess/audit.js";
 import { isContentVisibility } from "../access/contentAccessTypes.js";
 import { assertProjectWriterForMutation, lockActiveProjectForMutation } from "../projects/access.js";
+import { lockTaskWriteClosure } from "./taskReferenceLocks.js";
 import { getLocalCliRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
 import { hostInstallationIds } from "../hosts/capabilities.js";
 import { PgWorkspaceLocationRepository } from "../projectFolders/workspaceLocations.js";
@@ -52,6 +53,7 @@ import { resolveUserActorId } from "../../db/actorResolver.js";
 import {
   assertCompletionForClose,
   recordTaskCreated,
+  recordTaskContentChange,
   recordTaskBlockReasonChange,
   markTaskRunStarted,
   recordTaskFlowChange,
@@ -82,6 +84,8 @@ const TASK_STATUSES = new Set<string>(PROTOCOL_TASK_STATUSES);
  * it again" is one of the decisions.
  */
 const TASK_DISPATCH_REFUSED_STATUSES = new Set(["blocked", "done", "cancelled"]);
+/** A Task is never created in a terminal status: Done and Cancelled have their own gates. */
+const TASK_CREATE_TERMINAL_STATUSES = new Set(["done", "cancelled"]);
 
 /**
  * A merge's resolution Run is the server's own, started by a merge nobody is
@@ -154,7 +158,7 @@ async function requireTaskRuntimeProfile(
   );
   const profile = result.rows[0];
   if (!profile) throw new HttpError(404, "Runtime Profile not found for this Agent in this Space");
-  if (!profile.enabled) throw new HttpError(409, "Runtime Profile is disabled");
+  if (!profile.enabled) throw new TaskControlError(409, "Runtime Profile is disabled");
   return profile;
 }
 
@@ -179,7 +183,7 @@ async function assertNotRoomConversationSession(
     [spaceId, sessionId],
   );
   if (row.rows[0]?.room_id) {
-    throw new HttpError(422, "session_id must not name a Room conversation");
+    throw new TaskControlError(422, "session_id must not name a Room conversation");
   }
 }
 
@@ -216,8 +220,8 @@ export class PgTaskRepository {
     return page(rows.rows.map(boardOut), countFromRow(total.rows[0]), filters.limit, filters.offset);
   }
 
-  async createBoard(identity: SpaceUserIdentity, body: Record<string, unknown>) {
-    return withQueryableTransaction(this.pool, async (client) => {
+  async createBoard(identity: SpaceUserIdentity, body: Record<string, unknown>, db: Queryable = this.pool) {
+    return withQueryableTransaction(db, async (client) => {
       const now = new Date().toISOString();
       const boardId = randomUUID();
       await client.query(
@@ -271,8 +275,8 @@ export class PgTaskRepository {
     return this.getBoardFrom(this.pool, identity, boardId);
   }
 
-  async updateBoard(identity: SpaceUserIdentity, boardId: string, body: Record<string, unknown>) {
-    await withQueryableTransaction(this.pool, async (client) => {
+  async updateBoard(identity: SpaceUserIdentity, boardId: string, body: Record<string, unknown>, db: Queryable = this.pool) {
+    await withQueryableTransaction(db, async (client) => {
       const board = await this.getBoardFrom(client, identity, boardId);
       if (!board) throw new HttpError(404, "Board not found");
       // The same gate as a Task: changing, deleting or moving a Project's Board
@@ -287,7 +291,7 @@ export class PgTaskRepository {
       }
       await this.writeBoardUpdate(client, identity, boardId, body);
     });
-    return (await this.getBoard(identity, boardId))!;
+    return (await this.getBoardFrom(db, identity, boardId))!;
   }
 
   private async writeBoardUpdate(client: Queryable, identity: SpaceUserIdentity, boardId: string, body: Record<string, unknown>) {
@@ -407,36 +411,40 @@ export class PgTaskRepository {
     body: Record<string, unknown>,
     db?: Queryable,
     attributedActorId?: string,
+    /** `followUpTask.ts` only: its Folder may be any status (see `TaskWriteRequest.folderAnyStatus`). */
+    options: { folderAnyStatus?: boolean } = {},
   ): Promise<ReturnType<typeof taskOut>> {
     if (!db) {
-      return withQueryableTransaction(this.pool, (client) => this.createTask(identity, body, client, attributedActorId));
+      return withQueryableTransaction(this.pool, (client) => this.createTask(identity, body, client, attributedActorId, options));
     }
 
     const now = new Date().toISOString();
     const visibility = optionalString(body.visibility) ?? "private";
-    if (!isContentVisibility(visibility)) throw new HttpError(422, "Invalid visibility");
+    if (!isContentVisibility(visibility)) throw new TaskControlError(422, "Invalid visibility");
     const taskRole = optionalString(body.task_role) ?? "source";
-    if (taskRole !== "source" && taskRole !== "subtask") throw new HttpError(422, "task_role must be 'source' or 'subtask'");
+    if (taskRole !== "source" && taskRole !== "subtask") throw new TaskControlError(422, "task_role must be 'source' or 'subtask'");
     const parentTaskId = optionalString(body.parent_task_id);
-    if (taskRole === "source" && parentTaskId) throw new HttpError(422, "Source tasks cannot have a parent task");
+    if (taskRole === "source" && parentTaskId) throw new TaskControlError(422, "Source tasks cannot have a parent task");
     // Every entry (API, agent tool, batch) lands here: an archived Project
     // takes no new work, and the row lock serializes this with archiving.
     const projectId = optionalString(body.project_id);
-    if (projectId) await lockActiveProjectForMutation(db, identity.spaceId, projectId);
+    // The Project (archive fence), Folder, assignees, Agents, Board and parent
+    // under the shared Task write closure; entries check writer authority.
+    await lockTaskWriteClosure(db, identity, { projectId, body, writerAuthority: false, folderAnyStatus: options.folderAnyStatus });
     if(body.board_column){
       const column=await selectBoardColumn(db,identity.spaceId,projectId,body.board_column);
-      if(column.status_key==='done')throw new HttpError(422,"Create the Task before completing it");
       body={...body,status:column.status_key,board_id:column.board_id,column_id:column.board_id?column.key:null};
     }
     body = await taskColumnPlacement(db, identity.spaceId, projectId, body);
-    if (taskRole === "subtask") {
-      if (!parentTaskId) throw new HttpError(422, "Subtasks require a parent task");
-      const parent = await db.query<{ id: string }>(
-        `SELECT id FROM tasks WHERE id = $1 AND space_id = $2 AND deleted_at IS NULL`,
-        [parentTaskId, identity.spaceId],
-      );
-      if (!parent.rows[0]) throw new HttpError(404, "Parent task not found");
+    // Checked on the final, placed status, for every entry (person, Agent tool, batch,
+    // inquiry link, internal producers): a column — raw `column_id` or `board_column` —
+    // never makes a Task born Done or Cancelled past the completion and cancel gates.
+    const placedStatus = taskStatus(body.status) ?? "inbox";
+    if (TASK_CREATE_TERMINAL_STATUSES.has(placedStatus)) {
+      throw new TaskControlError(422, "Create the Task before completing or cancelling it");
     }
+    // The parent is readable and share-held by the closure above.
+    if (taskRole === "subtask" && !parentTaskId) throw new TaskControlError(422, "Subtasks require a parent task");
     const result = await db.query<TaskRow>(
       `INSERT INTO tasks (
          id, space_id, project_folder_id, project_id, board_id, column_id, parent_task_id,
@@ -467,7 +475,7 @@ export class PgTaskRepository {
         requiredString(body.title, "title"),
         optionalString(body.description),
         optionalString(body.task_type) ?? "general",
-        taskStatus(body.status) ?? "inbox",
+        placedStatus,
         optionalString(body.priority) ?? "normal",
         optionalString(body.risk_level) ?? "low",
         visibility,
@@ -563,11 +571,12 @@ export class PgTaskRepository {
       const targetProjectId = Object.hasOwn(body, "project_id")
         ? optionalString(body.project_id)
         : observedTask.project_id;
-      for (const projectId of [...new Set([observedTask.project_id, targetProjectId])].sort()) {
-        if (!projectId) continue;
-        await lockActiveProjectForMutation(client, identity.spaceId, projectId);
-        await assertProjectWriterForMutation(client, identity.spaceId, projectId, identity.userId);
-      }
+      // Every entry's references — Projects (written and read-through),
+      // Folder (named, or kept across a Project move), assignees, Agents,
+      // Board, parent ancestry — are discovered and locked in the shared
+      // order before the Task itself; a public PATCH never places.
+      const closureBody = options.publicPatch ? { ...body, board_id: undefined, column_id: undefined } : body;
+      await lockTaskWriteClosure(client, identity, { taskId, body: closureBody, writerAuthority: true });
       const currentTask=await getVisibleTaskRow(client,identity,taskId,{lock:true,full:true});
       if(!currentTask)throw new HttpError(404,"Task not found");
       if(currentTask.project_id!==observedTask.project_id)throw new TaskControlError(409,"Task Project changed; reload before editing");
@@ -579,17 +588,9 @@ export class PgTaskRepository {
         const invalid=await client.query(`SELECT l.id FROM task_entity_links l JOIN inquiry_threads q ON q.object_id=l.entity_id AND q.space_id=l.space_id WHERE l.space_id=$1 AND l.task_id=$2 AND l.entity_type='inquiry_thread' AND q.project_id IS DISTINCT FROM $3::varchar LIMIT 1`,[identity.spaceId,taskId,targetProjectId]);
         if(invalid.rowCount)throw new TaskControlError(409,"A Task linked to problems in this Project cannot move to another Project");
       }
-      if (Object.hasOwn(body, "parent_task_id")) {
-        const parentTaskId = optionalString(body.parent_task_id);
-        if (parentTaskId && parentTaskId === taskId) throw new TaskControlError(422, "A task cannot be its own parent");
-        if (parentTaskId) {
-          const parent = await client.query<{ id: string }>(
-            `SELECT id FROM tasks WHERE id = $1 AND space_id = $2 AND deleted_at IS NULL`,
-            [parentTaskId, identity.spaceId],
-          );
-          if (!parent.rows[0]) throw new HttpError(404, "Parent task not found");
-        }
-        if (currentTask.task_role === "source" && parentTaskId) throw new TaskControlError(422, "Source tasks cannot have a parent task");
+      // Self-parent, loops, and a live readable parent are the closure's.
+      if (Object.hasOwn(body, "parent_task_id") && currentTask.task_role === "source" && optionalString(body.parent_task_id)) {
+        throw new TaskControlError(422, "Source tasks cannot have a parent task");
       }
       body = await taskColumnPlacement(client, identity.spaceId, targetProjectId, body);
       const requestedStatus = taskStatus(body.status);
@@ -730,6 +731,8 @@ export class PgTaskRepository {
         flowChanged && requestedStatus === "done",
         ],
       );
+      await recordTaskContentChange(client,eventContext,
+        ['title','description'].filter(field=>Object.hasOwn(body,field) && (field!=='title' || optionalString(body[field])!==null) && optionalString(body[field])!==currentTask[field as 'title'|'description']));
       if (flowChanged) {
         await recordTaskFlowChange(client, eventContext, {
           fromStatus: currentTask.status,
@@ -790,8 +793,8 @@ export class PgTaskRepository {
     return (await this.getTask(identity, taskId))!;
   }
 
-  async createTaskRun(identity: SpaceUserIdentity, taskId: string, body: Record<string, unknown>) {
-    const admission = await this.createTaskRunAdmission(identity, taskId, body);
+  async createTaskRun(identity: SpaceUserIdentity, taskId: string, body: Record<string, unknown>, db?: Queryable) {
+    const admission = await this.createTaskRunAdmission(identity, taskId, body, db);
     return this.finishTaskRunAdmission(admission);
   }
 
@@ -806,7 +809,7 @@ export class PgTaskRepository {
     assertPersonStartedRunRequest(body);
     for (const key of ["runtime_key", "installation", "model_provider_id", "model", "reasoning_effort"]) {
       if (Object.hasOwn(body, key)) {
-        throw new HttpError(422, `${key} is owned by the selected Runtime Profile`);
+        throw new TaskControlError(422, `${key} is owned by the selected Runtime Profile`);
       }
     }
     const execute = async (client: Queryable) => {
@@ -828,11 +831,11 @@ export class PgTaskRepository {
       );
       const currentTask = lockedTask.rows[0];
       if (!currentTask) throw new HttpError(404, "Task not found");
-      if(currentTask.project_id!==task.project_id)throw new HttpError(409,"Task Project changed; reload before starting a Run");
+      if(currentTask.project_id!==task.project_id)throw new TaskControlError(409,"Task Project changed; reload before starting a Run");
       // A merge's resolution Run works on a done Task: that is the only Task
       // with a merge.
       if (TASK_DISPATCH_REFUSED_STATUSES.has(currentTask.status) && !(merge && currentTask.status === "done")) {
-        throw new HttpError(409, `Task is ${currentTask.status} and cannot be dispatched`);
+        throw new TaskControlError(409, `Task is ${currentTask.status} and cannot be dispatched`);
       }
       await assertNotRoomConversationSession(client, identity.spaceId, optionalString(body.session_id));
       const maxRuns = currentTask.max_runs;
@@ -865,13 +868,13 @@ export class PgTaskRepository {
           : null;
       if (namedLocationId && !target) throw new HttpError(404, "Workspace Location not found");
       if (task.project_folder_id && !target) {
-        throw new HttpError(409, "Task Project Folder has no active Workspace Location");
+        throw new TaskControlError(409, "Task Project Folder has no active Workspace Location");
       }
       if (target && (target.space_id !== identity.spaceId || target.project_folder_id !== task.project_folder_id || target.project_id !== task.project_id)) {
-        throw new HttpError(409, "Workspace Location does not belong to this Task's Project Folder");
+        throw new TaskControlError(409, "Workspace Location does not belong to this Task's Project Folder");
       }
       const agentId = optionalString(body.agent_id) ?? task.assigned_agent_id;
-      if (!agentId) throw new HttpError(422, "agent_id is required when task has no assigned_agent_id");
+      if (!agentId) throw new TaskControlError(422, "agent_id is required when task has no assigned_agent_id");
       await assertRunnableAgent(client, identity.spaceId, agentId);
       if (target?.execution_host_kind === "remote") {
         return await this.prepareRemoteTaskRun(client, identity, task, target, agentId, body, {
@@ -880,7 +883,7 @@ export class PgTaskRepository {
         }, merge);
       }
       if (target && !target.execution_ready) {
-        throw new HttpError(409, "Workspace Location is not execution-ready");
+        throw new TaskControlError(409, "Workspace Location is not execution-ready");
       }
       const runtimeProfile = await requireTaskRuntimeProfile(
         client,
@@ -889,11 +892,11 @@ export class PgTaskRepository {
         optionalString(body.runtime_profile_id),
       );
       if (target && runtimeProfile.execution_host_id !== target.host_id) {
-        throw new HttpError(409, "Task Workspace Location does not match the selected Runtime Profile Host");
+        throw new TaskControlError(409, "Task Workspace Location does not match the selected Runtime Profile Host");
       }
       if (target && runtimeProfile.workspace_mode === "location"
         && runtimeProfile.workspace_location_id !== target.location_id) {
-        throw new HttpError(409, "Task Workspace Location does not match the selected Runtime Profile");
+        throw new TaskControlError(409, "Task Workspace Location does not match the selected Runtime Profile");
       }
       // A built-in Host Location: the same dispatch allowance a paired Host's
       // Task Run carries (`prepareRemoteTaskRun`). Without it the Run has no
@@ -1065,7 +1068,7 @@ export class PgTaskRepository {
     // Project and verified the caller's writer access before either adapter
     // branch was selected. Keep this method focused on remote topology and
     // runtime validation.
-    if (!task.project_id) throw new HttpError(409, "Remote dispatch requires a Task Project");
+    if (!task.project_id) throw new TaskControlError(409, "Remote dispatch requires a Task Project");
     // Two safety models, not one rule with an exception (ADR 0016 §3). A paired
     // host serves its own registered owner and nobody else, because its safety
     // is the trust that owner already extends to their machine. The built-in
@@ -1076,11 +1079,11 @@ export class PgTaskRepository {
     if (target.host_owner_user_id !== null && target.host_owner_user_id !== identity.userId) {
       throw new HttpError(403, "This workspace's host does not belong to you");
     }
-    if (!target.host_online) throw new HttpError(409, "Host is offline");
-    if (!target.execution_ready) throw new HttpError(409, "Workspace Location is not execution-ready");
+    if (!target.host_online) throw new TaskControlError(409, "Host is offline");
+    if (!target.execution_ready) throw new TaskControlError(409, "Workspace Location is not execution-ready");
 
     const prompt = optionalString(body.prompt);
-    if (!prompt) throw new HttpError(422, "prompt is required");
+    if (!prompt) throw new TaskControlError(422, "prompt is required");
 
     const threads = new PgHostThreadRepository(client);
     const threadId = optionalString(body.thread_id);
@@ -1094,23 +1097,23 @@ export class PgTaskRepository {
       || runtimeProfile.workspace_mode !== "location"
       || runtimeProfile.workspace_location_id !== target.location_id
       || !runtimeProfile.runtime_installation) {
-      throw new HttpError(409, "Task Workspace Location does not match the selected Runtime Profile");
+      throw new TaskControlError(409, "Task Workspace Location does not match the selected Runtime Profile");
     }
     const runtimeKey = runtimeProfile.runtime_key;
     const installation = runtimeProfile.runtime_installation;
     const spec = getLocalCliRuntimeAdapterSpec(runtimeKey);
     if (!spec || spec.implementation_status !== "implemented" || spec.invocation.protocol !== "acp") {
-      throw new HttpError(422, `Runtime Profile '${runtimeProfile.id}' does not select a supported ACP runtime`);
+      throw new TaskControlError(422, `Runtime Profile '${runtimeProfile.id}' does not select a supported ACP runtime`);
     }
     if (thread && thread.runtime_key !== runtimeKey) {
-      throw new HttpError(409, "Task thread is pinned to a different runtime; start a new thread to change it");
+      throw new TaskControlError(409, "Task thread is pinned to a different runtime; start a new thread to change it");
     }
     if (thread && thread.runtime_installation !== installation) {
-      throw new HttpError(409, "Task thread is pinned to a different installation; start a new thread to change it");
+      throw new TaskControlError(409, "Task thread is pinned to a different installation; start a new thread to change it");
     }
     const available = hostInstallationIds(target.capabilities_json, runtimeKey);
     if (!available.includes(installation)) {
-      throw new HttpError(422, `Host does not report installation '${installation}' of '${runtimeKey}'`);
+      throw new TaskControlError(422, `Host does not report installation '${installation}' of '${runtimeKey}'`);
     }
     if (!thread) {
       thread = await threads.create({
@@ -1126,7 +1129,7 @@ export class PgTaskRepository {
     // refuse to resume that session while its prior Run is still active.
     const latestStatus = previousRun?.status;
     if (latestStatus && !isTerminalRunStatus(latestStatus)) {
-      throw new HttpError(409, "This thread already has a Run in flight; wait for it to finish");
+      throw new TaskControlError(409, "This thread already has a Run in flight; wait for it to finish");
     }
 
     // Not `thread.agent_id`: a Task thread's is always null — `getForLocation`
@@ -1226,8 +1229,8 @@ export class PgTaskRepository {
     };
   }
 
-  async requestPlanningRun(identity: SpaceUserIdentity, taskId: string, body: Record<string, unknown>) {
-    return withQueryableTransaction(this.pool, async (client) => {
+  async requestPlanningRun(identity: SpaceUserIdentity, taskId: string, body: Record<string, unknown>, db: Queryable = this.pool) {
+    return withQueryableTransaction(db, async (client) => {
       const observed=await getVisibleTaskRow(client,identity,taskId);
       if(!observed)throw new HttpError(404,"Task not found");
       if(observed.project_id){
@@ -1236,10 +1239,10 @@ export class PgTaskRepository {
       }
       const task=await getVisibleTaskRow(client,identity,taskId,{lock:true});
       if(!task)throw new HttpError(404,"Task not found");
-      if(task.project_id!==observed.project_id)throw new HttpError(409,"Task Project changed; reload before planning");
-      if (task.task_role !== "source") throw new HttpError(409, "Only source tasks can request Agent planning");
+      if(task.project_id!==observed.project_id)throw new TaskControlError(409,"Task Project changed; reload before planning");
+      if (task.task_role !== "source") throw new TaskControlError(409, "Only source tasks can request Agent planning");
       const agentId = optionalString(body.agent_id) ?? task.assigned_agent_id;
-      if (!agentId) throw new HttpError(422, "agent_id is required when the Task has no assigned agent");
+      if (!agentId) throw new TaskControlError(422, "agent_id is required when the Task has no assigned agent");
       await assertRunnableAgent(client, identity.spaceId, agentId, "Planning Agent not found or inactive in this Space");
       const runtimeProfile = await requireTaskRuntimeProfile(
         client,
@@ -1319,7 +1322,7 @@ export class PgTaskRepository {
         payload: { run_id: run.id, task_id: task.id, planning: true },
       });
       return runToOut(runViewFor(run, identity.userId), null, {
-        executes_remotely: (await resolveRunRemoteness(this.pool, [run])).has(run.id),
+        executes_remotely: (await resolveRunRemoteness(client, [run])).has(run.id),
       });
     });
   }
@@ -1454,8 +1457,8 @@ export class PgTaskRepository {
     return page(rows.rows.map(taskEvaluationOut), countFromRow(total.rows[0]), limit, offset);
   }
 
-  async createTaskEvaluation(identity: SpaceUserIdentity, taskId: string, body: Record<string, unknown>) {
-    return withQueryableTransaction(this.pool, (client) => this.createTaskEvaluationIn(client, identity, taskId, body));
+  async createTaskEvaluation(identity: SpaceUserIdentity, taskId: string, body: Record<string, unknown>, db: Queryable = this.pool) {
+    return withQueryableTransaction(db, (client) => this.createTaskEvaluationIn(client, identity, taskId, body));
   }
 
   private async createTaskEvaluationIn(
@@ -1489,7 +1492,7 @@ export class PgTaskRepository {
             AND ${runReadSql("$4")}`,
         [identity.spaceId, taskId, runId, identity.userId],
       );
-      if (!link.rows[0]) throw new HttpError(422, "run_id must be linked to the task through TaskRun");
+      if (!link.rows[0]) throw new TaskControlError(422, "run_id must be linked to the task through TaskRun");
     }
     const evidenceArtifactIds = Array.isArray(body.evidence_artifact_ids)
       ? body.evidence_artifact_ids.filter((value): value is string => typeof value === "string")
@@ -1506,7 +1509,7 @@ export class PgTaskRepository {
         [identity.spaceId, taskId, distinct, runId, identity.userId],
       );
       if (countFromRow(linked.rows[0]) !== distinct.length) {
-        throw new HttpError(422, "evidence_artifact_ids must be linked to the task through TaskArtifact");
+        throw new TaskControlError(422, "evidence_artifact_ids must be linked to the task through TaskArtifact");
       }
     }
     const now = new Date().toISOString();
@@ -1617,7 +1620,7 @@ function positiveIntegerOrNull(value: unknown): number | null {
 function taskStatus(value: unknown): string | null {
   const status = optionalString(value);
   if (status !== null && !TASK_STATUSES.has(status)) {
-    throw new HttpError(422, "task status must be inbox, ready, in_progress, waiting_for_review, blocked, done, or cancelled");
+    throw new TaskControlError(422, "task status must be inbox, ready, in_progress, waiting_for_review, blocked, done, or cancelled");
   }
   return status;
 }

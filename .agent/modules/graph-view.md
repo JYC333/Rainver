@@ -231,3 +231,14 @@ Use the smallest layer that proves the change:
 - `apps/web/src/components/graph/`
 - `apps/web/src/modules/graph/GraphPage.tsx`
 - `apps/web/src/api/client.ts` (`graphApi`)
+
+## Core navigation command
+
+`graph.view_state.save` retains PUT `/graph/view-state` as a keyed human-only
+adapter. Its strict DTO accepts only `scope_key` and `state_json`; Space and
+person come from the session. `GraphViewStateRepository.upsert` joins the core
+transaction with mandatory policy audit and receipt. Replay checks the current
+active account and membership and returns the original receipt without
+rewriting later navigation state. Scope strings are private navigation metadata
+and confer no Project or content read authority. The typed client unwraps the
+state; GET remains an owner-private lookup.

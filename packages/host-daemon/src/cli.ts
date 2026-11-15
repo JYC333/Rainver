@@ -53,6 +53,26 @@ async function main(argv: string[]): Promise<void> {
     return;
   }
 
+  if (command === "ignored") {
+    const {governIgnored} = await import("./workspaceIgnored.js");
+    const {configDir} = await import("./config.js");
+    const location=requireFlag(argv,"location"),key=flag(argv,"key");
+    const {acquireDaemonLease}=await import('./daemonLease.js');
+    const release=sub==='list'?async()=>{}:await acquireDaemonLease(configDir());
+    try{
+      if(sub==='declare-root'){
+        const {declareIgnoredRoot}=await import('./workspaceIgnored.js');
+        const {loadConfig}=await import('./config.js');
+        const listed=key?await governIgnored(configDir(),location,'list',key):null;
+        const rows=listed&&'items' in listed?listed.items??[]:[];
+        const root=key?rows.find((row:any)=>row.key===key)?.original_root:(await loadConfig())?.workspaces[location];
+        if(typeof root!=='string'||!root)throw new Error('registered Location or listed workspace key required');
+        console.log(JSON.stringify(await declareIgnoredRoot(configDir(),location,root,requireFlag(argv,'prefix'),argv.includes('--confirm-rebuildable')),null,2));
+      }else console.log(JSON.stringify(await governIgnored(configDir(),location,sub??"list",key,argv.includes(sub==='rebuildable'?'--confirm-rebuildable':'--confirm-discard'),flag(argv,'destination'),{after:flag(argv,'after'),limit:flag(argv,'limit')===undefined?undefined:Number(flag(argv,'limit'))}),null,2));
+    }finally{await release();}
+    return;
+  }
+
   if (command === "workspace") {
     if (sub === "add") {
       const path = rest[0];

@@ -358,6 +358,7 @@ export function cancelAllLeaseWaits(): void {
 }
 
 /** Whether any launch is waiting for a Location; a restart must not drop it. */
-export function hasLeaseWaiters(): boolean {
-  return acquiring.size > 0;
+export function hasLeaseWaiters(runId?: string, launchId?: string): boolean {
+  return runId === undefined ? acquiring.size > 0
+    : [...acquiring.values()].some(attempt => attempt.runId === runId && (launchId === undefined || attempt.launchId === launchId));
 }

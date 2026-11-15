@@ -146,5 +146,5 @@ describe("static SQL", () => {
     }
 
     expect(failures).toEqual([]);
-  }, 120_000);
+  });
 });

@@ -1,10 +1,12 @@
+import type {ReadingCountRow} from './rows.js';
+import { EvolutionAssetRefusal } from "../../evolution/assetRefusal.js";
 import {withRunTerminalOwner} from '../../systemActions/operations/proposalTransitions.js';
 import { readingMethodContext } from './methodContext.js';
 import { registerReadingTrialSettlement } from './trials.js';
 import { registerRevisionProviderTrials } from './providerTrial.js';
 import { ReadingMethodGenerationSchema } from '@rainver/protocol';
 import type { z } from 'zod';
-import { HttpError, withDbTransaction, type Pool, type SpaceUserIdentity } from '../../routeUtils/common.js';
+import { HttpError, withQueryableTransaction, type Queryable, type SpaceUserIdentity } from '../../routeUtils/common.js';
 import { PgRunRepository } from '../../runs/repository.js';
 import { enqueueProviderTaskRunJob, providerTaskRunPreparers } from '../../runs/providerTaskRunHandler.js';
 import { readingAsset } from './access.js';
@@ -20,8 +22,8 @@ import { assertGenerationDispatch } from './generationAuthority.js';
 import { canonicalRunOutput } from '../../runs/orchestrationResults.js';
 import { runFinalizationReconcilerRegistry } from '../../runs/finalizationReconcilerRegistry.js';
 import { ReadingMethodGeneratedOutputSchema } from '@rainver/protocol';
-export async function startProviderGeneration(db: Pool, identity: SpaceUserIdentity, input: z.infer<typeof ReadingMethodGenerationSchema>) {
-  return withDbTransaction(db, async tx => {
+export async function startProviderGeneration(db: Queryable, identity: SpaceUserIdentity, input: z.infer<typeof ReadingMethodGenerationSchema>) {
+  return withQueryableTransaction(db, async tx => {
     await tx.query(`SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, [`prompt-generation:${identity.spaceId}:${identity.userId}`]);
     const asset = await readingAsset(tx, identity, true, input.target_key);
     await lockEvolutionAssets(tx, [asset.id]);
@@ -31,12 +33,12 @@ export async function startProviderGeneration(db: Pool, identity: SpaceUserIdent
       ...identity,
       projectId: ctx.projectId
     }, null, input.target_key);
-    if (target.frozen.version_id !== input.parent_version_id || target.frozen.content_hash !== input.parent_content_hash) throw new HttpError(409, 'Effective target changed; refresh');
+    if (target.frozen.version_id !== input.parent_version_id || target.frozen.content_hash !== input.parent_content_hash) throw new EvolutionAssetRefusal(409, 'Effective target changed; refresh');
     const method = await resolveRevisionMethod(tx, identity, ctx.projectId);
     const provider = await revisionProvider(tx, identity, input.provider_id, input.model, true);
     if (input.retry_of) {
       const prior = await new PgRunRepository(tx).getRun(identity.spaceId, input.retry_of);
-      if (!prior || prior.instructed_by_user_id !== identity.userId || generationOf(prior)?.item_id !== (ctx.item?.id ?? null) || generationOf(prior)?.project_id !== ctx.projectId || (generationOf(prior)?.target_key ?? 'reading.project_investigation') !== (input.target_key ?? 'reading.project_investigation') || !generationTerminal.has(prior.status) || !['failed', 'degraded', 'cancelled', 'blocked', 'orphaned'].includes((await readReadingGeneration(tx, identity, prior.id)).status)) throw new HttpError(409, 'Retry must name an unsuccessful terminal generation of this item');
+      if (!prior || prior.instructed_by_user_id !== identity.userId || generationOf(prior)?.item_id !== (ctx.item?.id ?? null) || generationOf(prior)?.project_id !== ctx.projectId || (generationOf(prior)?.target_key ?? 'reading.project_investigation') !== (input.target_key ?? 'reading.project_investigation') || !generationTerminal.has(prior.status) || !['failed', 'degraded', 'cancelled', 'blocked', 'orphaned'].includes((await readReadingGeneration(tx, identity, prior.id)).status)) throw new EvolutionAssetRefusal(409, 'Retry must name an unsuccessful terminal generation of this item');
     }
     const inputKey = sha256Json([identity.userId, {
       ...input,
@@ -44,11 +46,11 @@ export async function startProviderGeneration(db: Pool, identity: SpaceUserIdent
     }, ctx.projectId, ctx.authority, provider, method.version_id, method.content_hash]);
     const key = sha256Json([inputKey, input.retry_of ?? null]);
     const field = input.retry_of ? 'request_key' : 'input_key';
-    const prior = (await tx.query(`SELECT id FROM runs WHERE space_id=$1 AND instructed_by_user_id=$2 AND contract_snapshot_json->'workflow_input_json'->'reading_method_generation'->>$3=$4 ORDER BY created_at DESC,id DESC LIMIT 1`, [identity.spaceId, identity.userId, field, input.retry_of ? key : inputKey])).rows[0];
+    const prior = (await tx.query<{id:string}>(`SELECT id FROM runs WHERE space_id=$1 AND instructed_by_user_id=$2 AND contract_snapshot_json->'workflow_input_json'->'reading_method_generation'->>$3=$4 ORDER BY created_at DESC,id DESC LIMIT 1`, [identity.spaceId, identity.userId, field, input.retry_of ? key : inputKey])).rows[0];
     if (prior) return readReadingGeneration(tx, identity, prior.id);
-    const count = (await tx.query(`SELECT count(*) FILTER(WHERE status IN ('queued','running','waiting_review','waiting_user'))::int active,count(*) FILTER(WHERE created_at>now()-interval '1 day')::int daily FROM runs WHERE space_id=$1 AND instructed_by_user_id=$2 AND contract_snapshot_json->'workflow_input_json'->'reading_method_generation' IS NOT NULL`, [identity.spaceId, identity.userId])).rows[0];
-    if (count.active) throw new HttpError(409, 'A revision is already running');
-    if (count.daily >= 3) throw new HttpError(429, 'At most three revisions per day');
+    const count = (await tx.query<ReadingCountRow>(`SELECT count(*) FILTER(WHERE status IN ('queued','running','waiting_review','waiting_user'))::int active,count(*) FILTER(WHERE created_at>now()-interval '1 day')::int daily FROM runs WHERE space_id=$1 AND instructed_by_user_id=$2 AND contract_snapshot_json->'workflow_input_json'->'reading_method_generation' IS NOT NULL`, [identity.spaceId, identity.userId])).rows[0];
+    if (count.active) throw new EvolutionAssetRefusal(409, 'A revision is already running');
+    if (count.daily >= 3) throw new EvolutionAssetRefusal(429, 'At most three revisions per day');
     const prompt = `${method.text}\nReturn ONLY JSON with schema "${GENERATION_SCHEMA}", method (40..12000 characters), summary (1..1600 characters), changes (1..8 strings, each 1..400 characters).\n<revision_input>${JSON.stringify({
       baseline_method: target.text,
       description: input.description
@@ -123,9 +125,9 @@ export function registerRevisionProviderRuns() {
     run
   }) => {
     const ref = generationOf(run);
-    if (!ref?.provider) throw new HttpError(409, 'Revision provider contract missing');
+    if (!ref?.provider) throw new EvolutionAssetRefusal(409, 'Revision provider contract missing');
     await assertGenerationDispatch(db, run);
-    if(!ref.revision_method)throw new HttpError(409,'Approved revision method snapshot required');
+    if(!ref.revision_method)throw new EvolutionAssetRefusal(409,'Approved revision method snapshot required');
     const parent=(await db.query(`SELECT content_json FROM evolvable_asset_versions WHERE id=$1`,[ref.parent_version_id])).rows[0];
     const requestInput=JSON.stringify({baseline_method:readingStrategy(parent?.content_json),description:ref.description});
     return {
@@ -159,7 +161,7 @@ export function registerRevisionProviderRuns() {
         try {
           raw = JSON.parse(completion.text);
         } catch {
-          throw new HttpError(422, 'Revision did not return JSON');
+          throw new EvolutionAssetRefusal(422, 'Revision did not return JSON');
         }
         const output = ReadingMethodGeneratedOutputSchema.parse(raw);
         await withRunTerminalOwner(db,async()=>[{id:run.id,space_id:run.space_id}],async tx => {
@@ -167,7 +169,7 @@ export function registerRevisionProviderRuns() {
           await assertGenerationDispatch(tx, run);
           await tx.query(`SELECT id FROM runs WHERE id=$1 FOR UPDATE`, [run.id]);
           const current = await new PgRunRepository(tx).getRun(run.space_id, run.id);
-          if (current?.status !== 'running') throw new HttpError(409, 'Revision no longer running');
+          if (current?.status !== 'running') throw new EvolutionAssetRefusal(409, 'Revision no longer running');
           await new PgRunRepository(tx).markRunTerminal({
             run_id: run.id,
             space_id: run.space_id,

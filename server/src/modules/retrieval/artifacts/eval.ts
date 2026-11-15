@@ -1,6 +1,7 @@
 import type { RetrievalEvalReportRequest } from "@rainver/protocol";
 import type { Queryable } from "../../routeUtils/common.js";
 import { insertArtifactRow } from "../../artifacts/reviewArtifactWriter.js";
+import { reportDependencyClosureMarker } from "../reportClosureContract.js";
 
 export const RETRIEVAL_EVAL_REPORT_ARTIFACT_TYPE = "retrieval_eval_report";
 
@@ -10,6 +11,10 @@ export interface RetrievalEvalReportArtifactContext {
   report: RetrievalEvalReportRequest;
   settingsSnapshot?: Record<string, unknown>;
   reviewScope?: "private" | "space_ops";
+  /** A generated (aggregate) report: every Artifact it was computed from.
+   * Recorded with the dependency-closure marker; a submitted eval report
+   * has none. */
+  sourceArtifactIds?: readonly string[];
 }
 
 export interface RetrievalEvalReportArtifactSpec {
@@ -44,6 +49,9 @@ export function buildRetrievalEvalReportArtifactSpec(
     rank_attribution: input.report.rank_attribution,
     diagnostic_codes: input.report.diagnostic_codes,
     settings_snapshot: input.settingsSnapshot ?? {},
+    ...(input.sourceArtifactIds
+      ? { source_artifact_ids: [...input.sourceArtifactIds], dependency_closure: reportDependencyClosureMarker() }
+      : {}),
     access_safety: {
       aggregate_only: true,
       candidate_ids_included: false,

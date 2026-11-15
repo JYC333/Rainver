@@ -1,3 +1,6 @@
+import {assertDirectSettingsActor} from '../systemActions/operations/actor.js';
+import { PgConversationBackendRepository } from "../sessions/conversationBackendRepository.js";
+import { PgConversationExecutionContextRepository } from "../sessions/executionContextRepository.js";
 import {ROOM_OPERATION_SCHEMAS,type OperationActor,type RegisteredSystemActionDefinition} from '@rainver/protocol';
 import type {ServerConfig} from '../../config.js';
 import {getDbPool} from '../../db/pool.js';
@@ -57,10 +60,15 @@ async function visibleConversation(db:Queryable,a:OperationActor,roomId:string,s
 export function roomOperationRegistrations(definitions:ReadonlyMap<string,RegisteredSystemActionDefinition>,config:ServerConfig):OperationRegistration[]{
  return (Object.keys(ROOM_OPERATION_SCHEMAS) as Id[]).map(id=>({
   definition:definitions.get(id)!,
+  ...(id==='room.settings.read'?{readKind:'metadata' as const}:{}),
   successStatus:CREATED.has(id)?201:ACCEPTED.has(id)?202:200,
   ...(RUN_OWNERS.has(id)?{runTerminalOwner:{discover:(db:Queryable,raw:unknown,a:OperationActor)=>heldClosingRunRefs(db,a.space_id,String((raw as Input).session_id))}}:{}),
-  async resolve(db,raw,a){const i=raw as Input;
+  async resolve(db,raw,a){const i={...raw as Input};
    if(id==='room.create')return {authority:`project:${i.project_id}`,targets:{project_id:i.project_id},resourceType:'project',resourceId:i.project_id!};
+   if(id==='room.settings.read'&&!i.room_id&&a.principal.kind==='agent'){
+    const current=(await db.query<{room_id:string}>(`SELECT g.room_id FROM runs r JOIN agent_run_groups g ON g.id=r.run_group_id AND g.space_id=r.space_id WHERE r.id=$1 AND r.space_id=$2`,[a.run_id,a.space_id])).rows[0];
+    if(!current?.room_id)throw hidden();i.room_id=current.room_id;
+   }
    const room=(await db.query<{project_id:string}>('SELECT project_id FROM rooms WHERE id=$1 AND space_id=$2',[i.room_id,a.space_id])).rows[0];
    if(!room)throw hidden();
    // The Room audience scopes the key; a conversation command is scoped to its conversation within it.
@@ -68,13 +76,20 @@ export function roomOperationRegistrations(definitions:ReadonlyMap<string,Regist
     targets:{room_id:i.room_id,session_id:i.session_id??null,agent_id:i.agent_id??null,user_id:i.user_id??null,invitation_id:i.invitation_id??null,queued_id:i.queued_id??null,discussion_id:i.discussion_id??null,project_id:room.project_id},
     resourceType:'room',resourceId:i.room_id!};
   },
+  normalizeInput(raw,scope){return id==='room.settings.read'?{...raw as object,room_id:(scope.targets as {room_id:string}).room_id}:raw;},
   async authorize(db,raw,a){const i=raw as Input;
+   if(id==='room.defaults.save')await assertDirectSettingsActor(db,a);
+   if(a.principal.kind==='agent'){
+    const run=(await db.query<{room_id:string|null;session_id:string|null}>(`SELECT g.room_id,r.session_id FROM runs r JOIN agent_run_groups g ON g.id=r.run_group_id AND g.space_id=r.space_id WHERE r.id=$1 AND r.space_id=$2`,[a.run_id,a.space_id])).rows[0];
+    if(!run || run.room_id!==i.room_id || i.session_id&&run.session_id!==i.session_id || a.effective_origin!=='manual')throw hidden();
+   }
    if(id==='room.create'){await assertProjectWriter(db,a.space_id,i.project_id!,a.on_behalf_of_user_id!);return;}
    const special=specialStanding(id,i.invitation_id);
    if(special){await visibleOrStanding(db,a,i.room_id!,special);return;}
    if(i.session_id)await visibleConversation(db,a,i.room_id!,i.session_id);else await visibleRoom(db,a,i.room_id!);
   },
   async authorizeResult(db,raw,a){
+   if(id==='room.settings.read'){await visibleRoom(db,a,(raw as {room_id:string}).room_id);return;}
    const out=raw as {space_id:string;room_id:string;session_id?:string;invitation_id?:string};
    if(out.space_id!==a.space_id)throw hidden();
    // A replay is re-authorized by the same relation that admitted the command, read now.
@@ -86,6 +101,15 @@ export function roomOperationRegistrations(definitions:ReadonlyMap<string,Regist
    const i=raw as Input,p=person(a),service=new RoomService(config,db as never),roster=new RoomRosterService(db as never);
    const base={space_id:a.space_id,room_id:i.room_id!};
    switch(id){
+    case 'room.settings.read':{
+     const room=await visibleRoom(db,a,i.room_id!),agents: {agent_id:string;agent_name:string;role:'manager'|'member';options:import('@rainver/protocol').ConversationBackendOption[]}[]=[];
+     const roster=await new PgRoomRepository(db).listAgentMembers(a.space_id,room.id,p.userId);
+     const access=new PgConversationExecutionContextRepository(db);
+     for(const member of roster) if(await access.canAgentParticipate({id:'',space_id:a.space_id,room_id:room.id,project_id:room.project_id,project_folder_id:room.project_folder_id},member.agent_id,p.userId)) agents.push({agent_id:member.agent_id,agent_name:member.agent_name,role:member.role,options:await new PgConversationBackendRepository(db).listOptions(a.space_id,p.userId,member.agent_id,room.project_id)});
+     const sessionId=a.run_id?(await db.query<{session_id:string|null}>('SELECT session_id FROM runs WHERE id=$1 AND space_id=$2',[a.run_id,a.space_id])).rows[0]?.session_id??null:null;
+     return {room_id:i.room_id!,session_id:sessionId,revision:room.roster_revision,defaults:(room.conversation_defaults_json??[]).filter(item=>agents.some(agent=>agent.agent_id===item.agent_id)),agents};
+    }
+    case 'room.defaults.save':await roster.saveConversationDefaults(p,i.room_id!,(raw as {defaults:import('@rainver/protocol').RoomConversationDefault[]}).defaults,Number(i.expected_revision));return {...base,id:i.room_id!};
     case 'room.create':{const out=await service.createRoom(p,raw as never);return {id:out.room.id,space_id:a.space_id,room_id:out.room.id,project_id:out.room.project_id};}
     case 'room.agent.add':{
      const out=await roster.addExistingAgent(p,i.room_id!,strip(raw,'room_id') as never);

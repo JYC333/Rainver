@@ -109,3 +109,12 @@ it("carries only an exact managed vendor CLI version", () => {
   expect(HostManagedCliFrameSchema.parse(frame)).toMatchObject({ operation: { version: "0.166.0" } });
   expect(HostManagedCliFrameSchema.safeParse({ ...frame, operation: { action: "update", version: "latest" } }).success).toBe(false);
 });
+
+it('carries an exact adopting checkpoint for reclaim-6 cleanup and refuses incomplete versions',()=>{
+ const checkpoint={workspace_id:'11111111-1111-4111-8111-111111111111',generation:2,commit:'a'.repeat(40),base_commit:'b'.repeat(40)};
+ const frame={type:'execution_workspace_command',request_id:'cleanup',operation_id:'22222222-2222-4222-8222-222222222222',action:'cleanup',retain_branch:false,
+  workspace:{kind:'location',workspace_location_id:'location',execution_workspace:{id:'33333333-3333-4333-8333-333333333333',generation:1,materialization_epoch:2}},reclaim_checkpoint:checkpoint};
+ expect(HostServerFrameSchema.parse(frame)).toMatchObject({reclaim_checkpoint:checkpoint});
+ expect(HostServerFrameSchema.safeParse({...frame,reclaim_checkpoint:{...checkpoint,generation:0}}).success).toBe(false);
+ expect(HostServerFrameSchema.safeParse({...frame,reclaim_checkpoint:{...checkpoint,base_commit:undefined}}).success).toBe(false);
+});

@@ -523,15 +523,15 @@ describe('unified reading', () => {
     try {
       const response=await app.inject({method:'GET',url:`/api/v1/spaces/${space}/reading`});
       expect(response.statusCode).toBe(200);ReadingPageSchema.parse(response.json());
-      const state=await app.inject({method:'PATCH',url:`/api/v1/spaces/${space}/reading/items/${a}/state`,payload:{read_status:'read'}});
-      expect(state.statusCode).toBe(200);expect(ReadingStateResultSchema.parse(state.json())).toEqual({updated:1});
+      const state=await app.inject({method:'PATCH',headers:{'idempotency-key':randomUUID()},url:`/api/v1/spaces/${space}/reading/items/${a}/state`,payload:{read_status:'read'}});
+      expect(state.statusCode).toBe(200);expect(ReadingStateResultSchema.parse(state.json().data)).toEqual({updated:1});
       expect((await app.inject({method:'GET',url:`/api/v1/spaces/${space}/reading?cursor=invalid`})).statusCode).toBe(422);
-      expect((await app.inject({method:'PATCH',url:`/api/v1/spaces/${space}/reading/items/${a}/state`,payload:{read_status:'bad'}})).statusCode).toBe(422);
-      expect((await app.inject({method:'PUT',url:`/api/v1/spaces/${space}/projects/${project}/reading-preference`,payload:{show_in_my_reading:true}})).statusCode).toBe(200);
+      expect((await app.inject({method:'PATCH',headers:{'idempotency-key':randomUUID()},url:`/api/v1/spaces/${space}/reading/items/${a}/state`,payload:{read_status:'bad'}})).statusCode).toBe(422);
+      expect((await app.inject({method:'PUT',url:`/api/v1/spaces/${space}/projects/${project}/reading-preference`,headers:{'idempotency-key':randomUUID()},payload:{show_in_my_reading:true}})).statusCode).toBe(200);
       expect((await app.inject({method:'GET',url:`/api/v1/spaces/${randomUUID()}/reading`})).statusCode).toBe(404);
-      expect((await app.inject({method:'PATCH',url:`/api/v1/spaces/${space}/projects/${project}/reading/items/${a}/state`,payload:{read_status:'read'}})).statusCode).toBe(404);
+      expect((await app.inject({method:'PATCH',headers:{'idempotency-key':randomUUID()},url:`/api/v1/spaces/${space}/projects/${project}/reading/items/${a}/state`,payload:{read_status:'read'}})).statusCode).toBe(404);
       await new ProjectCorpusRepository(db.pool).upsert(identity,project,{source_item_id:a});
-      expect((await app.inject({method:'PATCH',url:`/api/v1/spaces/${space}/projects/${project}/reading/items/${a}/state`,payload:{read_status:'read'}})).statusCode).toBe(200);
+      expect((await app.inject({method:'PATCH',headers:{'idempotency-key':randomUUID()},url:`/api/v1/spaces/${space}/projects/${project}/reading/items/${a}/state`,payload:{read_status:'read'}})).statusCode).toBe(200);
     } finally {await app.close();}
   });
 });

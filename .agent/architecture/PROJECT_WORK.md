@@ -81,7 +81,7 @@ Do not hand-roll the insert beside it.
 
 ### Kinds
 
-`task.created · task.deleted · task.entity_linked · task.flow_changed ·
+`task.created · task.content_changed · task.deleted · task.entity_linked · task.flow_changed ·
 task.accepted · task.responsibility_changed · task.run_settled · task.merged ·
 task.merge_blocked · task.reported ·
 project.reported · thread.created · thread.archived · thread.reopened ·
@@ -490,7 +490,8 @@ Seed changes reach existing Assistants at boot and on the daily
 [`../modules/agents.md`](../modules/agents.md).
 
 **Who may write.** Reading a Task is not licence to change it. `PATCH
-/tasks/:taskId`, `POST /tasks/:taskId/evaluations`
+/tasks/:taskId` (core `task.update`), `POST /tasks/:taskId/evaluations`
+(core `task.evaluation.record`)
 (the newest evaluation decides the close gate) and the six Task-addressed
 Agent actions (`task.report`, `task.handoff`, `task.set_status`,
 `task.complete`, `task.request_review`, `task.delete`) all require Project **writer** authority
@@ -667,15 +668,16 @@ Task creation, settlement's own public commands and the rest of P5 remain separa
 
 ### Task lifecycle discovery and contract editing
 
-A missing Task id may return a bounded correction hint only to an Agent after
-live Run/Agent/grant, responsible-person membership and current Run Project
-writer checks. taskTargetDiscovery.ts is the single six-command error path,
-using task.list's canonical content ACL, ordering and existing 50-row bound.
-Existing same-Space private/foreign/deleted targets stay hidden. Other Spaces
-are never consulted: an id there behaves identically to a random missing id,
-and any hint contains only currently visible Tasks in the Run's own Project.
-Human requests remain hidden. Mutation discovery does not restore old handlers,
-transport dedupe or unrestricted title enumeration.
+Task domain resolution retains its Run/Agent/grant, membership and Project
+writer checks. Missing targets no longer trigger an inline discovery query
+or acquire a Project lock to build a list that the formatter would discard.
+The Agent formatter now normalizes every missing/hidden object failure to the
+same 404 message with no inline Task catalogue or existence-dependent hint.
+An Agent must explicitly read the current authorized list and visible objects;
+it must not guess another id, replay a write or promise an unverified repair.
+Human requests remain hidden. Revoked tool grants are explicit 403 refusals,
+including when a caller still holds an earlier Run snapshot. None of this grants
+new Task reach or restores legacy mutation handlers.
 
 Agent completion refusals retain canonical safe missing/unacknowledged
 metadata. The Agent formatter adds fixed Artifact-type/artifact.submit/review
@@ -734,3 +736,24 @@ Reuse / Dependency Check:
 - Chosen approach: extend these mechanisms with content-free Project notifications.
 - Why: catches Agent, UI and background writes after commit across server processes
   without repeated full-data reads or a new authority/storage subsystem.
+
+## Task text edits
+
+`task.update` edits an existing Task or subtask by its exact `task.list` id.
+It is one core command (`server/src/modules/tasks/operations.ts`) for
+`PATCH /tasks/:id` and the Agent tool, with one schema and one policy action
+(origin-gated `task.content.update`). An Agent's tool schema is projected to
+`title` and/or `description`, any other field is refused, and the Task must be
+in its Run's Project. Missing and hidden ids share the uniform Agent 404,
+without inline ids or titles; use an explicit authorized `task.list` read. A person may
+also edit the rest of the contract (parent, assignees, Project/Folder, limits,
+dates, links) under the Task write closure. Omitted fields remain unchanged,
+`description: null` clears the description, an empty edit or empty title is
+refused, and status, placement and deletion keep their named commands. It uses
+operation-core grants, current Project writer/content access checks,
+archived-Project locking and idempotent replay through
+`PgTaskRepository.updateTask`; actual text changes emit `task.content_changed`
+atomically through the canonical work-event writer, attributed to the Agent
+when it made the edit.
+No new dependency or database migration is needed: this reuses the existing
+Task fields, operation executor, policy registry and repository transaction.

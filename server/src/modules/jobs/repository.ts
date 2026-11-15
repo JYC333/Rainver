@@ -1,3 +1,5 @@
+import {hasJobEffectAuthority,authorizeJobEffect} from './effectAuthority.js';
+import {withQueryableTransaction} from '../routeUtils/common.js';
 import {HttpError} from '../routeUtils/common.js';
 import {withRunTerminalOwner} from '../systemActions/operations/proposalTransitions.js';
 import { randomUUID } from "node:crypto";
@@ -81,7 +83,7 @@ const JOB_SELECT_COLUMNS = `
 `;
 
 /** Job types that perform a Run: their job ending without it ends the Run. */
-const RUN_BACKED_JOB_TYPES = new Set(["agent_run", "provider_task_run"]);
+const RUN_BACKED_JOB_TYPES = new Set(["agent_run", "provider_task_run", "daily_capture_report"]);
 /** A Run in one of these is not this job's to end: finished, or parked for a person. */
 const RUN_NOT_ENDED_BY_JOB = new Set([
   "succeeded",
@@ -137,6 +139,14 @@ export class PgJobQueueRepository {
   }
 
   async enqueue(input: EnqueueJobInput, now: Date = new Date()): Promise<JobRecord> {
+    if(hasJobEffectAuthority())return withQueryableTransaction(this.db,async tx=>{
+      await authorizeJobEffect(tx);
+      return new PgJobQueueRepository(tx).enqueueAdmitted(input,now);
+    });
+    return this.enqueueAdmitted(input,now);
+  }
+
+  private async enqueueAdmitted(input:EnqueueJobInput,now:Date):Promise<JobRecord>{
     const id = randomUUID();
     const result = await this.db.query<JobRecord>(
       `INSERT INTO jobs (
@@ -171,6 +181,14 @@ export class PgJobQueueRepository {
     input: EnqueueJobInput & { job_type: "agent_run" },
     now: Date = new Date(),
   ): Promise<JobRecord> {
+    if(hasJobEffectAuthority())return withQueryableTransaction(this.db,async tx=>{
+      await authorizeJobEffect(tx);
+      return new PgJobQueueRepository(tx).ensureAgentRunJobAdmitted(input,now);
+    });
+    return this.ensureAgentRunJobAdmitted(input,now);
+  }
+
+  private async ensureAgentRunJobAdmitted(input:EnqueueJobInput & {job_type:'agent_run'},now:Date):Promise<JobRecord>{
     const id = randomUUID();
     const payload = sanitizeEvidenceJson(input.payload);
     const result = await this.db.query<JobRecord>(
@@ -391,6 +409,7 @@ export class PgJobQueueRepository {
     const result = await this.db.query(
       `UPDATE jobs
           SET status = 'completed',
+              payload_json = CASE WHEN job_type='activity_upload' THEN payload_json-'input' ELSE payload_json END,
               result_json = $2::jsonb,
               completed_at = $3::timestamptz,
               heartbeat_at = NULL,
@@ -408,6 +427,16 @@ export class PgJobQueueRepository {
     return (result.rowCount ?? 0) > 0;
   }
 
+  /** A handler may settle its deterministic effect and Job in one transaction.
+   * The worker independently verifies that exact receipt; an arbitrary terminal
+   * status, stale attempt or another worker never counts as its completion. */
+  async confirmCompletedJob(jobId:string,resultJson:unknown,workerId:string,attempt:number):Promise<boolean>{
+    const row=await this.db.query(`SELECT id FROM jobs WHERE id=$1 AND status='completed'
+      AND claimed_by=$2 AND attempts=$3 AND result_json=$4::jsonb`,
+      [jobId,workerId,attempt,JSON.stringify(sanitizeEvidenceJson(resultJson??{}))]);
+    return row.rows.length===1;
+  }
+
   async failJob(
     jobId: string,
     error: string,
@@ -417,6 +446,7 @@ export class PgJobQueueRepository {
     const result = await this.db.query<{ status: JobStatus }>(
       `UPDATE jobs
           SET status = CASE WHEN attempts < max_attempts THEN 'pending' ELSE 'failed' END,
+              payload_json = CASE WHEN job_type='activity_upload' AND attempts>=max_attempts THEN payload_json-'input' ELSE payload_json END,
               error = $2,
               heartbeat_at = NULL,
               claimed_by = CASE WHEN attempts < max_attempts THEN NULL ELSE claimed_by END,
@@ -444,7 +474,10 @@ export class PgJobQueueRepository {
       `UPDATE jobs
           SET status = 'pending',
               error = $2,
-              scheduled_at = $3,
+              -- A slot wake can race a claimed handler returning its old hold
+              -- deadline. Its durable marker avoids comparing app and DB clocks.
+              scheduled_at = CASE WHEN payload_json->>'_workspace_slot_woken'='true' THEN LEAST(scheduled_at,$3::timestamptz) ELSE $3::timestamptz END,
+              payload_json = payload_json-'_workspace_slot_woken',
               attempts = GREATEST(0, attempts - 1),
               heartbeat_at = NULL,
               claimed_by = NULL,
@@ -484,6 +517,8 @@ export class PgJobQueueRepository {
       const result = await db.query<{ id: string; job_type: string; space_id: string; run_id: string | null }>(
         `UPDATE jobs
             SET status = 'cancelled',
+                payload_json = CASE WHEN job_type='activity_upload' THEN payload_json-'input' ELSE payload_json END,
+                error = CASE WHEN result_json->>'effect_started'='true' THEN 'Source dispatch cancelled after irreversible start; outcome unknown' ELSE error END,
                 heartbeat_at = NULL,
                 completed_at = $2::timestamptz,
                 updated_at = $2::timestamptz
@@ -617,21 +652,23 @@ export class PgJobQueueRepository {
                 updated_at = $1::timestamptz
           WHERE id=$4 AND status IN ('claimed', 'running')
             AND COALESCE(heartbeat_at, updated_at) < $2::timestamptz
+            AND result_json->>'source_dispatch' IS DISTINCT FROM 'started'
             AND (attempts < max_attempts OR id IN (SELECT id FROM interrupted_agent_jobs))
           RETURNING id, space_id, user_id, job_type, attempts, max_attempts
        ),
        failed AS (
          UPDATE jobs
             SET status = 'failed',
+                payload_json = CASE WHEN job_type='activity_upload' THEN payload_json-'input' ELSE payload_json END,
                 claimed_by = NULL,
                 claimed_at = NULL,
                 heartbeat_at = NULL,
                 completed_at = $1::timestamptz,
-                error = 'job stuck and retry attempts exhausted',
+                error = CASE WHEN result_json->>'source_dispatch'='started' THEN 'Source dispatch outcome unknown; external work will not be repeated' ELSE 'job stuck and retry attempts exhausted' END,
                 updated_at = $1::timestamptz
           WHERE id=$4 AND status IN ('claimed', 'running')
             AND COALESCE(heartbeat_at, updated_at) < $2::timestamptz
-            AND attempts >= max_attempts
+            AND (attempts >= max_attempts OR result_json->>'source_dispatch'='started')
             AND id NOT IN (SELECT id FROM interrupted_agent_jobs)
           RETURNING id, space_id, user_id, job_type, attempts, max_attempts, payload_json
        )

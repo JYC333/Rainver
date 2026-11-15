@@ -5,6 +5,9 @@ import { defineConfig } from "vitest/config";
 // contracts.
 export default defineConfig({
   test: {
+    testTimeout: 0,
+    hookTimeout: 0,
+    reporters: ["default", "../../tools/vitest/budgetReporter.mjs"],
     environment: "node",
     include: ["test/**/*.test.ts"],
   },

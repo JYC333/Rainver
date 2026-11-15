@@ -1,3 +1,4 @@
+import { PgProjectAgentRepository } from "../src/modules/projects/projectAgents.js";
 import {canonicalRunOutput} from '../src/modules/runs/orchestrationResults.js';
 import type {LaunchWorkspace,HostLaunchWorkspaceAccess} from '@rainver/protocol';
 import { randomUUID } from "node:crypto";
@@ -713,7 +714,8 @@ describe("host_threads owner constraints", () => {
   it("persists the owner-only member policy and permits a host-bound profile without a provider", async (ctx) => {
     if (!db.available) return ctx.skip();
 
-    await db.pool.query(`UPDATE agents SET project_id = $2 WHERE space_id = $1 AND id = $3`, [SPACE, PROJECT, AGENT]);
+    await db.pool.query(`UPDATE agents SET access_project_id = $2 WHERE space_id = $1 AND id = $3`, [SPACE, PROJECT, AGENT]);
+    await new PgProjectAgentRepository(db.pool).upsertActive({spaceId: SPACE, projectId: PROJECT, agentId: AGENT, userId: OWNER});
     const member = await new PgRoomRepository(db.pool).addAgentMember({
       space_id: SPACE,
       room_id: roomId,
@@ -928,7 +930,8 @@ describe("host_threads owner constraints", () => {
   it("rejects a host binding when the caller or installation is not authorized", async (ctx) => {
     if (!db.available) return ctx.skip();
 
-    await db.pool.query(`UPDATE agents SET project_id = $2 WHERE space_id = $1 AND id = $3`, [SPACE, PROJECT, AGENT]);
+    await db.pool.query(`UPDATE agents SET access_project_id = $2 WHERE space_id = $1 AND id = $3`, [SPACE, PROJECT, AGENT]);
+    await new PgProjectAgentRepository(db.pool).upsertActive({spaceId: SPACE, projectId: PROJECT, agentId: AGENT, userId: OWNER});
     const repository = new PgAgentRepository(db.pool);
     await expect(repository.createRuntimeProfile(SPACE, AGENT, {
       name: "Wrong owner",
@@ -1425,33 +1428,18 @@ describe('isolated conversation workspaces', () => {
     const next=await ensureExecutionWorkspace(db.pool,await isolatedRun(),HOST,LOCATION);
     expect(next.workspace.id).not.toBe(first.workspace.id);expect(next.ref.generation).toBe(2);
   });
-  it.for(['receipt','modified'] as const)('continues a new turn after a blocked %s workspace without changing its evidence',async(kind,ctx)=>{
+  it.for(['receipt','modified'] as const)('blocks a new turn behind a blocked %s workspace and preserves its evidence',async(kind,ctx)=>{
     if(!db.available)return ctx.skip();await capable();
     const {ensureExecutionWorkspace,recordWorkspaceLaunch}=await import('../src/modules/projectFolders/executionWorkspaces.js');
     const firstRun=await isolatedRun(),first=await ensureExecutionWorkspace(db.pool,firstRun,HOST,LOCATION);
     await db.pool.query("UPDATE runs SET status='failed' WHERE id=$1",[firstRun.id]);
     await db.pool.query("UPDATE execution_workspaces SET state='blocked',head_commit=$2 WHERE id=$1",[first.workspace.id,kind==='modified'?'b'.repeat(40):null]);
-    await db.pool.query("UPDATE execution_workspace_runs SET checkpoint_state='blocked',checkpoint_commit=$2 WHERE workspace_id=$1",[first.workspace.id,kind==='modified'?'b'.repeat(40):null]);
-    await db.pool.query("UPDATE workspace_change_sets SET state='blocked',verification_json=$2::jsonb WHERE id=$1",[first.changeSetId,JSON.stringify({error:kind==='modified'?'read_only_workspace_modified':'workspace_launch_identity_missing'})]);
+    await db.pool.query("UPDATE execution_workspace_runs SET checkpoint_state='blocked' WHERE workspace_id=$1",[first.workspace.id]);
     const evidence=(await db.pool.query('SELECT to_jsonb(w) AS value FROM execution_workspaces w WHERE id=$1',[first.workspace.id])).rows[0].value;
-    const nextRun=await isolatedRun(),parallelRun=await isolatedRun();
-    const [next,parallel]=await Promise.all([ensureExecutionWorkspace(db.pool,nextRun,HOST,LOCATION),ensureExecutionWorkspace(db.pool,parallelRun,HOST,LOCATION)]);
-    expect(next.workspace.id).not.toBe(first.workspace.id);expect(next.ref.generation).toBe(2);
-    expect(parallel.workspace.id).toBe(next.workspace.id);expect(next.retainedWorkspaceId).toBe(first.workspace.id);
-    expect(next.ref.base_commit).toBeUndefined();
-    expect((await ensureExecutionWorkspace(db.pool,nextRun,HOST,LOCATION)).ref).toEqual(next.ref);
-    await expect(ensureExecutionWorkspace(db.pool,firstRun,HOST,LOCATION)).rejects.toThrow('workspace_permission_violation_needs_review');
+    for(let i=0;i<3;i++)await expect(ensureExecutionWorkspace(db.pool,await isolatedRun(),HOST,LOCATION)).rejects.toThrow('workspace_checkpoint_recovery_required');
     await expect(recordWorkspaceLaunch(db.pool,firstRun,{...first.ref,start_commit:'a'.repeat(40),target_ref:'refs/heads/dev'})).rejects.toThrow('workspace_permission_violation_needs_review');
-    await recordWorkspaceLaunch(db.pool,nextRun,{...next.ref,start_commit:'c'.repeat(40),target_ref:'refs/heads/dev'});
     expect((await db.pool.query('SELECT to_jsonb(w) AS value FROM execution_workspaces w WHERE id=$1',[first.workspace.id])).rows[0].value).toEqual(evidence);
-    const {workspaceChangesForRun,workspaceChangesForConversation}=await import('../src/modules/projectFolders/workspaceReadModel.js');
-    // The new turn reads only its own batch; the retained generation stays
-    // reachable once, through the conversation's pending work.
-    expect(await workspaceChangesForRun(db.pool,nextRun,OWNER)).toEqual([expect.objectContaining({workspace_id:next.workspace.id,workspace_state:'ready'})]);
-    expect((await workspaceChangesForConversation(db.pool,{spaceId:SPACE,sessionId:CONVERSATION,projectId:PROJECT},OWNER)).entries.map(entry=>entry.change)).toEqual(expect.arrayContaining([
-      expect.objectContaining({workspace_id:first.workspace.id,workspace_state:'blocked',can_manage:true}),
-      expect.objectContaining({workspace_id:next.workspace.id,workspace_state:'ready'}),
-    ]));
+    expect((await db.pool.query('SELECT count(*)::int AS n FROM execution_workspaces')).rows[0].n).toBe(1);
   });
   it.for(['failed','cancelled','degraded','orphaned'] as const)('preserves saved conversation changes after a later %s turn never launches',async(status,ctx)=>{
     if(!db.available)return ctx.skip();await capable();
@@ -1461,10 +1449,17 @@ describe('isolated conversation workspaces', () => {
     await db.pool.query("UPDATE runs SET status='succeeded' WHERE id=$1",[firstRun.id]);
     await db.pool.query("UPDATE execution_workspace_runs SET checkpoint_state='saved',checkpoint_commit=$2 WHERE run_id=$1",[firstRun.id,'b'.repeat(40)]);
     await db.pool.query('UPDATE execution_workspaces SET head_commit=$2 WHERE id=$1',[first.workspace.id,'b'.repeat(40)]);
+    await db.pool.query('UPDATE workspace_change_sets SET source_commit=$2 WHERE id=$1',[first.changeSetId,'b'.repeat(40)]);
     const failedRun=await isolatedRun(),failed=await ensureExecutionWorkspace(db.pool,failedRun,HOST,LOCATION);
     expect(failed.workspace.id).toBe(first.workspace.id);
     await db.pool.query('UPDATE runs SET status=$2 WHERE id=$1',[failedRun.id,status]);
-    const next=await ensureExecutionWorkspace(db.pool,await isolatedRun(),HOST,LOCATION);
+    const nextRun=await isolatedRun();
+    await expect(ensureExecutionWorkspace(db.pool,nextRun,HOST,LOCATION)).rejects.toMatchObject({name:'JobDeferredError',message:'workspace_checkpoint_recovering'});
+    const {recoverUnlaunchedWorkspaceCheckpoint}=await import('../src/modules/projectFolders/workspaceUnlaunchedCheckpoint.js');
+    const {HostConnectionRegistry}=await import('../src/modules/hosts/connectionRegistry.js');
+    const hosts=new HostConnectionRegistry();hosts.requestTaskBranch=async():Promise<any>=>({ok:true,unchanged_commit:'b'.repeat(40)});
+    expect(await recoverUnlaunchedWorkspaceCheckpoint(db.pool,failedRun.id,first.workspace.id,SPACE,hosts)).toBe(true);
+    const next=await ensureExecutionWorkspace(db.pool,nextRun,HOST,LOCATION);
     expect(next.workspace.id).toBe(first.workspace.id);
     expect(next.changeSetId).toBe(first.changeSetId);
     expect(next.changeRevision).toBe(first.changeRevision);
@@ -1479,9 +1474,10 @@ describe('isolated conversation workspaces', () => {
     const failedRun=await isolatedRun(),first=await ensureExecutionWorkspace(db.pool,failedRun,HOST,LOCATION);
     const activeRun=await isolatedRun(),active=await ensureExecutionWorkspace(db.pool,activeRun,HOST,LOCATION);
     await db.pool.query("UPDATE runs SET status='cancelled' WHERE id=$1",[failedRun.id]);
-    const next=await ensureExecutionWorkspace(db.pool,await isolatedRun(),HOST,LOCATION);
-    expect(next.workspace.id).toBe(first.workspace.id);
-    expect(next.changeSetId).toBe(first.changeSetId);
+    const nextRun=await isolatedRun();
+    await expect(ensureExecutionWorkspace(db.pool,nextRun,HOST,LOCATION)).rejects.toMatchObject({name:'JobDeferredError'});
+    expect((await db.pool.query('SELECT workspace_id FROM execution_workspace_runs WHERE run_id=$1',[activeRun.id])).rows[0].workspace_id).toBe(first.workspace.id);
+    expect((await db.pool.query('SELECT 1 FROM execution_workspace_runs WHERE run_id=$1',[nextRun.id])).rowCount).toBe(0);
     await recordWorkspaceLaunch(db.pool,activeRun,{...active.ref,start_commit:'a'.repeat(40),target_ref:'refs/heads/dev'});
     expect((await db.pool.query('SELECT state,base_commit FROM execution_workspaces WHERE id=$1',[first.workspace.id])).rows[0]).toEqual({state:'ready',base_commit:'a'.repeat(40)});
   });
@@ -1501,7 +1497,7 @@ describe('isolated conversation workspaces', () => {
     expect(await conversationWorkspaceChangesForViewer(db.pool,SPACE,session,OWNER)).toEqual({entries:[],next_cursor:null});
     expect(await workspaceChangesForRun(db.pool,await isolatedRun(session),OWNER)).toEqual([]);
   });
-  it.for(['pending','exhausted'] as const)('retries missing launch receipts without marking a permission breach and continues after %s recovery',async(phase,ctx)=>{
+  it.for(['pending','exhausted'] as const)('waits for missing launch receipts without exhausting the checkpoint budget (%s attempt)',async(phase,ctx)=>{
     if(!db.available)return ctx.skip();await capable();
     const {ensureExecutionWorkspace}=await import('../src/modules/projectFolders/executionWorkspaces.js');
     const {registerExecutionWorkspaceJobs}=await import('../src/modules/hosts/executionWorkspaceJobs.js');
@@ -1516,26 +1512,24 @@ describe('isolated conversation workspaces', () => {
       expect((await db.pool.query('SELECT state FROM execution_workspaces WHERE id=$1',[first.workspace.id])).rows[0].state).toBe('requested');
       expect((await db.pool.query('SELECT checkpoint_state FROM execution_workspace_runs WHERE run_id=$1',[firstRun.id])).rows[0].checkpoint_state).toBe('pending');
     }
-    expect((await db.pool.query('SELECT verification_json FROM workspace_change_sets WHERE id=$1',[first.changeSetId])).rows[0].verification_json).toMatchObject({checkpoint_recovery:{state:phase==='pending'?'retrying':'exhausted',error:'workspace_launch_identity_missing'}});
-    const next=await ensureExecutionWorkspace(db.pool,await isolatedRun(),HOST,LOCATION);
-    expect(next.workspace.id).not.toBe(first.workspace.id);expect(next.ref.generation).toBe(2);
+    expect((await db.pool.query('SELECT checkpoint_recovery_json FROM execution_workspace_runs WHERE run_id=$1',[firstRun.id])).rows[0].checkpoint_recovery_json).toMatchObject({state:'waiting',error:'workspace_launch_identity_missing'});
+    await expect(ensureExecutionWorkspace(db.pool,await isolatedRun(),HOST,LOCATION)).rejects.toMatchObject({name:'JobDeferredError',message:'workspace_checkpoint_recovering'});
   });
-  it('retains an exhausted launched workspace while a fresh turn still checks current Host authority',async ctx=>{
+  it.for(['pending','exhausted'] as const)('retains a %s launched checkpoint while a fresh turn still checks current Host authority',async(phase,ctx)=>{
     if(!db.available)return ctx.skip();await capable();
     const {ensureExecutionWorkspace,recordWorkspaceLaunch}=await import('../src/modules/projectFolders/executionWorkspaces.js');
     const firstRun=await isolatedRun(),first=await ensureExecutionWorkspace(db.pool,firstRun,HOST,LOCATION);
     await recordWorkspaceLaunch(db.pool,firstRun,{...first.ref,start_commit:'a'.repeat(40),target_ref:'refs/heads/dev'});
     await db.pool.query("UPDATE runs SET status='failed' WHERE id=$1",[firstRun.id]);
     await db.pool.query("UPDATE execution_workspaces SET head_commit=$2 WHERE id=$1",[first.workspace.id,'b'.repeat(40)]);
-    await db.pool.query(`UPDATE workspace_change_sets SET state='blocked',verification_json='{"checkpoint_recovery":{"state":"exhausted"}}' WHERE id=$1`,[first.changeSetId]);
+    await db.pool.query('UPDATE execution_workspace_runs SET checkpoint_recovery_json=$2::jsonb WHERE run_id=$1',[firstRun.id,JSON.stringify({state:phase==='pending'?'retrying':'exhausted'})]);
     const nextRun=await isolatedRun();
     await seedSpaceMember(db.pool,{space:SPACE,user:OTHER_TASK});
     await db.pool.query('UPDATE hosts SET owner_user_id=$2 WHERE id=$1',[HOST,OTHER_TASK]);
     await expect(ensureExecutionWorkspace(db.pool,nextRun,HOST,LOCATION)).rejects.toMatchObject({statusCode:404});
     expect((await db.pool.query('SELECT count(*)::int AS n FROM execution_workspaces')).rows[0].n).toBe(1);
     await db.pool.query('UPDATE hosts SET owner_user_id=$2 WHERE id=$1',[HOST,OWNER]);
-    const next=await ensureExecutionWorkspace(db.pool,nextRun,HOST,LOCATION);
-    expect(next.ref.generation).toBe(2);expect(next.ref.base_commit).toBeUndefined();
+    await expect(ensureExecutionWorkspace(db.pool,nextRun,HOST,LOCATION)).rejects.toMatchObject({name:'JobDeferredError',message:'workspace_checkpoint_recovering'});
     expect((await db.pool.query('SELECT state,head_commit FROM execution_workspaces WHERE id=$1',[first.workspace.id])).rows[0]).toEqual({state:'ready',head_commit:'b'.repeat(40)});
   });
   it('records actual launch identity and checkpoints through the same Host command without moving the source', async ctx => {
@@ -1585,7 +1579,7 @@ describe('isolated conversation workspaces', () => {
     expect((await engine.execute('workspace.change.complete', input, actor, randomUUID(), key)).replayed).toBe(true);
     expect((await db.pool.query("SELECT status FROM jobs WHERE job_type='execution_workspace_complete'")).rows).toHaveLength(1);
     await db.pool.query("UPDATE runs SET permission_snapshot_json='{}' WHERE id=$1", [run.id]);
-    expect((await engine.execute('workspace.change.complete', input, actor, randomUUID(), key)).http_status).toBe(404);
+    expect((await engine.execute('workspace.change.complete', input, actor, randomUUID(), key)).http_status).toBe(403);
   });
   it('reads only the immutable checkpoint through the visible Run and never falls back to the source',async ctx=>{
     if(!db.available)return ctx.skip();await capable();
@@ -1640,6 +1634,23 @@ describe('isolated conversation workspaces', () => {
     expect((await reconcileExecutionWorkspaces(db.pool,'/tmp',{hostId:HOST,hosts})).recovered).toBe(0);
     expect((await db.pool.query('SELECT state FROM workspace_change_sets WHERE id=$1',[w.changeSetId])).rows[0].state).toBe('open');
   });
+  it.for(['saved','failure','safety'] as const)('fences a late %s checkpoint reply from a newer launch of the same Run',async(mode,ctx)=>{
+    if(!db.available)return ctx.skip();await capable();
+    const {ensureExecutionWorkspace,recordWorkspaceLaunch}=await import('../src/modules/projectFolders/executionWorkspaces.js');
+    const {checkpointWorkspaceRun}=await import('../src/modules/hosts/workspaceCheckpoints.js');
+    const {HostConnectionRegistry}=await import('../src/modules/hosts/connectionRegistry.js');
+    const run=await isolatedRun(),w=await ensureExecutionWorkspace(db.pool,run,HOST,LOCATION,mode==='safety'?'read':'write');
+    await recordWorkspaceLaunch(db.pool,run,{...w.ref,start_commit:'a'.repeat(40),target_ref:'refs/heads/dev',launch_sequence:1});
+    let entered!:()=>void,release!:(reply:any)=>void;
+    const started=new Promise<void>(resolve=>{entered=resolve;});
+    const hosts=new HostConnectionRegistry();hosts.requestTaskBranch=async():Promise<any>=>{entered();return new Promise(resolve=>{release=resolve;});};
+    const old=checkpointWorkspaceRun(db.pool,run.id,SPACE,hosts,undefined,{exhausted:true});await started;
+    await recordWorkspaceLaunch(db.pool,run,{...w.ref,start_commit:'b'.repeat(40),target_ref:'refs/heads/dev',launch_sequence:2});
+    release(mode==='failure'?{ok:false,error:'workspace_host_operation_failed',commit:null}:{ok:true,commit:'c'.repeat(40),error:null});
+    expect(await old).toEqual({superseded:true});
+    expect((await db.pool.query('SELECT launch_sequence,checkpoint_state,checkpoint_commit,checkpoint_recovery_json FROM execution_workspace_runs WHERE run_id=$1',[run.id])).rows[0]).toEqual({launch_sequence:2,checkpoint_state:'pending',checkpoint_commit:null,checkpoint_recovery_json:{}});
+    expect((await db.pool.query('SELECT state FROM execution_workspaces WHERE id=$1',[w.workspace.id])).rows[0].state).toBe('ready');
+  });
   it('blocks a modified read-only checkpoint and never adopts it as a writable workspace head',async ctx=>{
     if(!db.available)return ctx.skip();await capable();
     const {ensureExecutionWorkspace,recordWorkspaceLaunch}=await import('../src/modules/projectFolders/executionWorkspaces.js');
@@ -1647,7 +1658,7 @@ describe('isolated conversation workspaces', () => {
     const run=await isolatedRun(),w=await ensureExecutionWorkspace(db.pool,run,HOST,LOCATION,'read');
     await recordWorkspaceLaunch(db.pool,run,{...w.ref,start_commit:'a'.repeat(40),target_ref:'refs/heads/dev',launch_sequence:1});
     const hosts=new HostConnectionRegistry();hosts.requestTaskBranch=async():Promise<any>=>({ok:true,branch:'owned',commit:'b'.repeat(40),error:null});
-    await checkpointWorkspaceRun(db.pool,run.id,SPACE,hosts);
+    await expect(checkpointWorkspaceRun(db.pool,run.id,SPACE,hosts)).rejects.toThrow('workspace_checkpoint_blocked');
     expect((await db.pool.query('SELECT state,head_commit FROM execution_workspaces WHERE id=$1',[w.workspace.id])).rows[0]).toEqual({state:'blocked',head_commit:null});
     expect((await db.pool.query('SELECT checkpoint_state FROM execution_workspace_runs WHERE run_id=$1',[run.id])).rows[0].checkpoint_state).toBe('blocked');
     await expect(ensureExecutionWorkspace(db.pool,run,HOST,LOCATION)).rejects.toThrow('workspace_permission_violation_needs_review');
@@ -1676,6 +1687,76 @@ describe('isolated manager delegation', () => {
     }
     return {parent:(await new PgRunRepository(db.pool).getRun(SPACE,parent))!,children};
   }
+  it.for(['noop','exhausted','safety'] as const)('migrates legacy batch recovery to its actual binding without inheriting it on the parent: %s',async(mode,ctx)=>{
+    if(!db.available)return ctx.skip();
+    const {readFile}=await import('node:fs/promises');
+    const {ensureExecutionWorkspace,recordWorkspaceLaunch}=await import('../src/modules/projectFolders/executionWorkspaces.js');
+    const {parent,children}=await family(),w=await ensureExecutionWorkspace(db.pool,parent,HOST,LOCATION),old=children[0]!;
+    await recordWorkspaceLaunch(db.pool,parent,{...w.ref,start_commit:'a'.repeat(40),target_ref:'refs/heads/dev',launch_sequence:2});
+    await db.pool.query(`INSERT INTO execution_workspace_runs(run_id,workspace_id,space_id,change_set_id,start_commit,launch_sequence) VALUES($1,$2,$3,$4,$5,1)`,[old.id,w.workspace.id,SPACE,w.changeSetId,'a'.repeat(40)]);
+    await db.pool.query(`UPDATE workspace_change_sets SET state='blocked',verification_json=$2::jsonb WHERE id=$1`,[w.changeSetId,JSON.stringify({checkpoint_recovery:{state:'exhausted',run_id:old.id,error:mode==='noop'?'workspace_checkpoint_commit_missing':'workspace_host_operation_failed'}})]);
+    if(mode==='safety')await db.pool.query("UPDATE execution_workspaces SET state='blocked' WHERE id=$1",[w.workspace.id]);
+    const tx=await db.pool.connect();
+    try{
+      await tx.query('BEGIN');
+      await tx.query('ALTER TABLE execution_workspace_runs DROP COLUMN checkpoint_recovery_json');
+      const stages=(await readFile(new URL('../migrations/0019_agent_workspace_and_conversation.sql',import.meta.url),'utf8')).split(/\nRESET search_path;\s*(?:\n|$)/).filter(part=>part.trim());
+      expect(stages).toHaveLength(4);
+      await tx.query(stages[2]!);
+      const bindings=(await tx.query('SELECT run_id,checkpoint_recovery_json FROM execution_workspace_runs WHERE workspace_id=$1',[w.workspace.id])).rows;
+      expect(bindings.find(b=>b.run_id===parent.id).checkpoint_recovery_json).toEqual({});
+      expect(bindings.find(b=>b.run_id===old.id).checkpoint_recovery_json).toMatchObject({state:mode==='noop'?'requested':'exhausted',launch_sequence:1});
+      const c=(await tx.query('SELECT state,verification_json FROM workspace_change_sets WHERE id=$1',[w.changeSetId])).rows[0];
+      expect(c.state).toBe(mode==='safety'?'blocked':'open');
+      expect(c.verification_json).not.toHaveProperty('checkpoint_recovery');
+      expect(c.verification_json.checkpoint_recovery_history.run_id).toBe(old.id);
+    }finally{await tx.query('ROLLBACK');tx.release();}
+  });
+  it('recovers the current parent checkpoint after restart without inheriting a shared child failure or completing an unsaved launch',async ctx=>{
+    if(!db.available)return ctx.skip();
+    const {ensureExecutionWorkspace,recordWorkspaceLaunch}=await import('../src/modules/projectFolders/executionWorkspaces.js');
+    const {checkpointWorkspaceRun}=await import('../src/modules/hosts/workspaceCheckpoints.js');
+    const {registerExecutionWorkspaceJobs}=await import('../src/modules/hosts/executionWorkspaceJobs.js');
+    const {reconcileExecutionWorkspaces}=await import('../src/modules/hosts/workspaceReconcile.js');
+    const {HostConnectionRegistry}=await import('../src/modules/hosts/connectionRegistry.js');
+    const {JobHandlerRegistry}=await import('../src/modules/jobs/handlerRegistry.js');
+    const {parent,children}=await family(),runs=new PgRunRepository(db.pool),w=await ensureExecutionWorkspace(db.pool,parent,HOST,LOCATION);
+    await db.pool.query("UPDATE runs SET status='queued' WHERE id=$1",[parent.id]);
+    await runs.markRunRunning({run_id:parent.id,space_id:SPACE,started_at:new Date().toISOString()});
+    await runs.parkRunForDependencyResults({run_id:parent.id,space_id:SPACE,run_group_id:parent.run_group_id!,scope:'own_delegations',reason:'Wait for implementation',resume_instruction:'Continue',depends_on_run_ids:children.map(c=>c.id),paused_at:new Date().toISOString()});
+    await recordWorkspaceLaunch(db.pool,parent,{...w.ref,start_commit:'a'.repeat(40),target_ref:'refs/heads/dev',launch_sequence:1});
+    const older=children[0]!;
+    await db.pool.query("UPDATE runs SET status='succeeded' WHERE id=$1",[older.id]);
+    await db.pool.query(`INSERT INTO execution_workspace_runs(run_id,workspace_id,space_id,change_set_id,start_commit,launch_sequence,checkpoint_recovery_json)
+      VALUES($1,$2,$3,$4,$5,1,'{"state":"exhausted","error":"workspace_checkpoint_commit_missing"}')`,[older.id,w.workspace.id,SPACE,w.changeSetId,'a'.repeat(40)]);
+    await recordWorkspaceLaunch(db.pool,parent,{...w.ref,start_commit:'b'.repeat(40),target_ref:'refs/heads/dev',launch_sequence:2});
+    const hosts=new HostConnectionRegistry(),calls:number[]=[];
+    hosts.isOnline=()=>false;
+    hosts.requestTaskBranch=async(_host,_kind,frame):Promise<any>=>{
+      if((frame as any).action==='checkpoint'){expect((frame as any).run_id).toBe(parent.id);calls.push((frame as any).launch_sequence);return {ok:true,commit:'c'.repeat(40),error:null};}
+      return {ok:false,error:'host_offline',commit:null};
+    };
+    const config=loadConfig({SERVER_DATABASE_URL:db.connectionUri}),registry=new JobHandlerRegistry();registerExecutionWorkspaceJobs(registry,config,hosts);
+    // Simulate a lost current-launch Job: only durable binding state survives.
+    await db.pool.query("DELETE FROM jobs WHERE job_type='execution_workspace_checkpoint' AND payload_json->>'run_id'=$1",[parent.id]);
+    await reconcileExecutionWorkspaces(db.pool,'/unused',{hosts});
+    const job=(await db.pool.query("SELECT payload_json FROM jobs WHERE job_type='execution_workspace_checkpoint' AND status='pending' AND payload_json->>'run_id'=$1",[parent.id])).rows[0];
+    expect(job.payload_json).toMatchObject({launch_sequence:2,checkpoint_recovery_id:''});
+    const dispatch=(payload:Record<string,unknown>)=>registry.dispatch({job_id:randomUUID(),job_type:'execution_workspace_checkpoint',space_id:SPACE,user_id:OWNER,attempts:1,max_attempts:8,worker_id:'recovered',payload});
+    expect(await dispatch({...job.payload_json,launch_sequence:1})).toEqual({checkpointed:false,superseded:true});
+    expect(calls).toEqual([]);
+    expect((await db.pool.query("SELECT id FROM jobs WHERE job_type='agent_run'")).rows).toHaveLength(0);
+    expect(await dispatch(job.payload_json)).toEqual({checkpointed:true});
+    expect(calls).toEqual([2]);
+    expect((await db.pool.query("SELECT payload_json->>'run_id' AS id FROM jobs WHERE job_type='agent_run'")).rows).toEqual([{id:children[1]!.id}]);
+    // A delayed old report cannot clear the checkpoint or the new launch's state.
+    await recordWorkspaceLaunch(db.pool,parent,{...w.ref,start_commit:'a'.repeat(40),target_ref:'refs/heads/dev',launch_sequence:1});
+    expect((await db.pool.query('SELECT checkpoint_state,checkpoint_commit FROM execution_workspace_runs WHERE run_id=$1',[parent.id])).rows[0]).toEqual({checkpoint_state:'saved',checkpoint_commit:'c'.repeat(40)});
+    await recordWorkspaceLaunch(db.pool,parent,{...w.ref,start_commit:'c'.repeat(40),target_ref:'refs/heads/dev',launch_sequence:3});
+    expect(await checkpointWorkspaceRun(db.pool,parent.id,SPACE,hosts,undefined,{workspaceId:w.workspace.id,launchSequence:2})).toEqual({superseded:true});
+    expect((await db.pool.query('SELECT checkpoint_state,checkpoint_commit FROM execution_workspace_runs WHERE run_id=$1',[parent.id])).rows[0]).toEqual({checkpoint_state:'pending',checkpoint_commit:null});
+    expect((await db.pool.query('SELECT checkpoint_recovery_json FROM execution_workspace_runs WHERE run_id=$1',[older.id])).rows[0].checkpoint_recovery_json.state).toBe('exhausted');
+  });
   it('admits isolated sibling writers together only after the parent checkpoint',async ctx=>{
     if(!db.available)return ctx.skip();
     const {ensureExecutionWorkspace,recordWorkspaceLaunch}=await import('../src/modules/projectFolders/executionWorkspaces.js');
@@ -1719,13 +1800,15 @@ describe('isolated manager delegation', () => {
     if(kind==='location')await db.pool.query("UPDATE workspace_locations SET status='archived' WHERE id=$1",[LOCATION]);
     hosts.requestTaskBranch=async():Promise<any>=>({ok:false,error:'workspace_host_operation_failed',commit:null});
     const queue=new PgJobQueueRepository(db.pool),worker=new JobWorker(queue,registry,'checkpoint',['execution_workspace_checkpoint']);
+    await db.pool.query("DELETE FROM jobs WHERE job_type='execution_workspace_checkpoint' AND payload_json->>'run_id'=$1 AND payload_json->>'launch_sequence'='0'",[parent.id]);
     const job=(await db.pool.query("SELECT id,max_attempts FROM jobs WHERE job_type='execution_workspace_checkpoint' AND payload_json->>'run_id'=$1",[parent.id])).rows[0];
     for(let n=0;n<job.max_attempts;n++){
       await db.pool.query("UPDATE jobs SET scheduled_at=now()-interval '1 second' WHERE id=$1",[job.id]);
       expect(await worker.processOne()).toMatchObject({status:'failed'});
     }
     let c=(await db.pool.query('SELECT * FROM workspace_change_sets WHERE id=$1',[w.changeSetId])).rows[0];
-    expect(c).toMatchObject({state:'blocked',verification_json:{checkpoint_recovery:{state:'exhausted'}}});
+    expect(c.state).toBe('open');
+    expect((await db.pool.query('SELECT checkpoint_recovery_json FROM execution_workspace_runs WHERE run_id=$1',[parent.id])).rows[0].checkpoint_recovery_json).toMatchObject({state:'exhausted'});
     expect((await db.pool.query("SELECT id FROM jobs WHERE job_type='agent_run'")).rows).toHaveLength(0);
     const engine=await operationRuntime(config),actor=sessionActor({spaceId:SPACE,userId:OWNER});
     const recover=()=>engine.execute('workspace.change.complete',{change_set_id:w.changeSetId,expected_revision:c.revision,summary:'Retry the frozen manager checkpoint'},actor,randomUUID(),randomUUID());
@@ -1811,6 +1894,32 @@ describe('durable workspace integration',()=>{
   const mergeId=(await enqueueWorkspaceIntegration(db.pool,w.changeSetId,SPACE,OWNER))!;
   return {run,w,mergeId};
  }
+ it.for(['confirmed','unconfirmed','live_controller'] as const)('recovers the physical launch of a stranded parked parent before checkpointing: %s',async(mode,ctx)=>{
+  if(!db.available)return ctx.skip();
+  const {run,w}=await integration(),group=randomUUID(),launch=randomUUID(),message=randomUUID(),calls:string[]=[];
+  await db.pool.query("UPDATE runs SET status='queued' WHERE id=$1",[run.id]);
+  expect(await new PgRunRepository(db.pool).markRunRunning({space_id:SPACE,run_id:run.id,started_at:new Date().toISOString()})).not.toBeNull();
+  await db.pool.query(`INSERT INTO messages(id,space_id,session_id,user_id,role,content,path_depth,branch_path,created_at) VALUES($1,$2,$3,$4,'user','Finish delegated work',0,'/',now())`,[message,SPACE,CONVERSATION,OWNER]);
+  await db.pool.query(`INSERT INTO agent_run_groups(id,space_id,manager_user_id,room_id,project_id,session_id,trigger_message_id,title,goal,status,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,'Parked parent','Finish delegated work','active',now(),now())`,[group,SPACE,OWNER,roomId,PROJECT,CONVERSATION,message]);
+  await db.pool.query(`UPDATE runs SET status='waiting_for_dependency',run_group_id=$2,output_json=output_json||'{"waiting_for_results":{"status":"waiting"}}' WHERE id=$1`,[run.id,group]);
+  await db.pool.query("UPDATE run_attempts SET status='waiting_for_dependency',launch_id=$2 WHERE run_id=$1",[run.id,launch]);
+  await db.pool.query("UPDATE execution_workspace_runs SET checkpoint_state='pending',launch_sequence=1 WHERE run_id=$1",[run.id]);
+  if(mode==='live_controller')await new PgRunRepository(db.pool).tryAcquireExecutionLock({run_id:run.id,worker_id:'live-worker'});
+  const hosts=await host();
+  hosts.stopAttempt=async(_host,id,nonce)=>{expect(id).toBe(run.id);expect(nonce).toBe(launch);calls.push('stop');return mode==='confirmed';};
+  hosts.requestTaskBranch=async():Promise<any>=>{calls.push('checkpoint');return {ok:true,commit:'c'.repeat(40),error:null};};
+  const {registerExecutionWorkspaceJobs}=await import('../src/modules/hosts/executionWorkspaceJobs.js'),{JobHandlerRegistry}=await import('../src/modules/jobs/handlerRegistry.js');
+  const registry=new JobHandlerRegistry();registerExecutionWorkspaceJobs(registry,loadConfig({SERVER_DATABASE_URL:db.connectionUri}),hosts);
+  const checkpoint=registry.get('execution_workspace_checkpoint')!({job_type:'execution_workspace_checkpoint',job_id:randomUUID(),space_id:SPACE,user_id:OWNER,attempts:1,max_attempts:8,worker_id:'recovery',payload:{run_id:run.id,workspace_id:w.workspace.id}});
+  if(mode==='confirmed'){
+   await checkpoint;expect(calls).toEqual(['stop','checkpoint']);
+   expect((await db.pool.query('SELECT checkpoint_state FROM execution_workspace_runs WHERE run_id=$1',[run.id])).rows[0].checkpoint_state).toBe('saved');
+  }else{
+   await expect(checkpoint).rejects.toMatchObject({name:'JobDeferredError'});
+   expect(calls).toEqual(mode==='live_controller'?[]:['stop','stop']);
+   expect((await db.pool.query('SELECT checkpoint_state FROM execution_workspace_runs WHERE run_id=$1',[run.id])).rows[0].checkpoint_state).toBe('pending');
+  }
+ });
  async function row(id:string){return (await db.pool.query('SELECT * FROM task_merges WHERE id=$1',[id])).rows[0];}
  async function host(){const {HostConnectionRegistry}=await import('../src/modules/hosts/connectionRegistry.js');return new HostConnectionRegistry();}
 
@@ -1988,11 +2097,12 @@ describe('durable workspace integration',()=>{
   for(let i=1;i<=3;i++){
    expect(await worker.processOne()).toMatchObject({status:'failed'});
    expect((await db.pool.query('SELECT attempts,status FROM jobs WHERE id=$1',[failedJob.id])).rows[0]).toEqual({attempts:i,status:i===3?'failed':'pending'});
-   expect((await db.pool.query('SELECT revision FROM workspace_change_sets WHERE id=$1',[w.changeSetId])).rows[0].revision).toBe(initialRevision+(i===3?1:0));
+   expect((await db.pool.query('SELECT revision FROM workspace_change_sets WHERE id=$1',[w.changeSetId])).rows[0].revision).toBe(initialRevision);
    await db.pool.query("UPDATE jobs SET scheduled_at=now()-interval '1 second' WHERE id=$1",[failedJob.id]);
   }
   const c=(await db.pool.query('SELECT * FROM workspace_change_sets WHERE id=$1',[w.changeSetId])).rows[0];
-  expect(c).toMatchObject({state:'blocked',source_commit:'b'.repeat(40),verification_json:{checkpoint_recovery:{state:'exhausted'}}});
+  expect(c).toMatchObject({state:'open',source_commit:'b'.repeat(40)});
+  expect((await db.pool.query('SELECT checkpoint_recovery_json FROM execution_workspace_runs WHERE run_id=$1',[run.id])).rows[0].checkpoint_recovery_json).toMatchObject({state:'exhausted'});
   expect((await db.pool.query('SELECT checkpoint_state FROM execution_workspace_runs WHERE run_id=$1',[run.id])).rows[0].checkpoint_state).toBe('pending');
   const {reconcileExecutionWorkspaces}=await import('../src/modules/hosts/workspaceReconcile.js');
   hosts.isOnline=()=>false;await reconcileExecutionWorkspaces(db.pool,'/unused',{hosts});
@@ -2013,7 +2123,7 @@ describe('durable workspace integration',()=>{
   expect((await db.pool.query('SELECT state,head_commit FROM execution_workspaces WHERE id=$1',[w.workspace.id])).rows[0]).toMatchObject({state:'ready',head_commit:'c'.repeat(40)});
   expect(await registry.dispatch({...envelope,job_type:'execution_workspace_complete',payload:{change_set_id:w.changeSetId}})).toMatchObject({state:'integrating'});
  });
- it('does not let a late successful checkpoint or complete clear a concurrent safety violation',async()=>{
+ it.for(['safety_first','save_first'] as const)('keeps a same-launch safety violation authoritative across %s callback order',async(order)=>{
   const {run,w,mergeId}=await integration(),hosts=await host();
   await db.pool.query('DELETE FROM task_merges WHERE id=$1',[mergeId]);
   await db.pool.query("UPDATE workspace_change_sets SET state='open' WHERE id=$1",[w.changeSetId]);
@@ -2024,13 +2134,14 @@ describe('durable workspace integration',()=>{
   let calls=0;
   hosts.requestTaskBranch=async():Promise<any>=>{
    if(++calls===1){entered();return new Promise(resolve=>{release=resolve;});}
-   return {ok:true,commit:'c'.repeat(40),branch:'owned',error:null};
+   return {ok:true,commit:(order==='safety_first'?'c':'a').repeat(40),branch:'owned',error:null};
   };
   const late=checkpointWorkspaceRun(db.pool,run.id,SPACE,hosts);await started;
-  await checkpointWorkspaceRun(db.pool,run.id,SPACE,hosts);
-  release({ok:true,commit:'a'.repeat(40),branch:'owned',error:null});await late;
+  if(order==='safety_first')await expect(checkpointWorkspaceRun(db.pool,run.id,SPACE,hosts)).rejects.toThrow('workspace_checkpoint_blocked');
+  else await checkpointWorkspaceRun(db.pool,run.id,SPACE,hosts);
+  release({ok:true,commit:(order==='safety_first'?'a':'c').repeat(40),branch:'owned',error:null});await expect(late).rejects.toThrow('workspace_checkpoint_blocked');
   expect((await db.pool.query('SELECT checkpoint_state,checkpoint_commit FROM execution_workspace_runs WHERE run_id=$1',[run.id])).rows[0]).toMatchObject({checkpoint_state:'blocked',checkpoint_commit:'c'.repeat(40)});
-  expect((await db.pool.query('SELECT head_commit FROM execution_workspaces WHERE id=$1',[w.workspace.id])).rows[0].head_commit).toBe('b'.repeat(40));
+  expect((await db.pool.query('SELECT head_commit FROM execution_workspaces WHERE id=$1',[w.workspace.id])).rows[0].head_commit).toBe((order==='safety_first'?'b':'a').repeat(40));
   // Workspace safety state is an independent fence, even for an old saved binding.
   await db.pool.query("UPDATE execution_workspace_runs SET checkpoint_state='saved' WHERE run_id=$1",[run.id]);
   const {operationRuntime}=await import('../src/modules/systemActions/operations/runtime.js');
@@ -2049,7 +2160,7 @@ describe('durable workspace integration',()=>{
  it.for(['observe','cleanup'] as const)('preserves cleanup budget through repeated offline %s and reconnects at the same tip',async(stage)=>{
   const {run,w,mergeId}=await integration(),hosts=await host();
   await db.pool.query("UPDATE task_merges SET status='failed' WHERE id=$1",[mergeId]);
-  await db.pool.query("UPDATE runs SET updated_at=now()-interval '25 hours' WHERE id=$1",[run.id]);
+  await db.pool.query("UPDATE runs SET ended_at=now()-interval '25 hours',updated_at=now() WHERE id=$1",[run.id]);
   const {enqueueWorkspaceCleanup,advanceWorkspaceCleanup}=await import('../src/modules/hosts/workspaceCleanup.js');
   const workspace=(await db.pool.query('SELECT * FROM execution_workspaces WHERE id=$1',[w.workspace.id])).rows[0];
   await enqueueWorkspaceCleanup(db.pool,workspace,w.ref,'b'.repeat(40),true,OWNER);
@@ -2070,7 +2181,7 @@ describe('durable workspace integration',()=>{
  it.for([false,true])('reconciles an old offline-blocked source at an unchanged tip including retired=%s',async(retired)=>{
   const {run,w,mergeId}=await integration(),hosts=await host();
   await db.pool.query("UPDATE task_merges SET status='failed' WHERE id=$1",[mergeId]);
-  await db.pool.query("UPDATE runs SET updated_at=now()-interval '25 hours' WHERE id=$1",[run.id]);
+  await db.pool.query("UPDATE runs SET ended_at=now()-interval '25 hours',updated_at=now() WHERE id=$1",[run.id]);
   const {enqueueWorkspaceCleanup,advanceWorkspaceCleanup}=await import('../src/modules/hosts/workspaceCleanup.js');
   const {reconcileExecutionWorkspaces}=await import('../src/modules/hosts/workspaceReconcile.js');
   const workspace=(await db.pool.query('SELECT * FROM execution_workspaces WHERE id=$1',[w.workspace.id])).rows[0];
@@ -2096,7 +2207,7 @@ describe('durable workspace integration',()=>{
  it('bounds permanent source inspection failures instead of deferring forever',async()=>{
   const {run,w,mergeId}=await integration(),hosts=await host();
   await db.pool.query("UPDATE task_merges SET status='failed' WHERE id=$1",[mergeId]);
-  await db.pool.query("UPDATE runs SET updated_at=now()-interval '25 hours' WHERE id=$1",[run.id]);
+  await db.pool.query("UPDATE runs SET ended_at=now()-interval '25 hours',updated_at=now() WHERE id=$1",[run.id]);
   const {enqueueWorkspaceCleanup,advanceWorkspaceCleanup}=await import('../src/modules/hosts/workspaceCleanup.js');
   const workspace=(await db.pool.query('SELECT * FROM execution_workspaces WHERE id=$1',[w.workspace.id])).rows[0];
   await enqueueWorkspaceCleanup(db.pool,workspace,w.ref,'b'.repeat(40),true,OWNER);
@@ -2181,7 +2292,7 @@ describe('durable workspace integration',()=>{
   hosts.requestTaskBranch=async(_host,_type,frame):Promise<any>=>{calls++;expect((frame as any).action).toBe('inspect');return {ok:true,commit:'c'.repeat(40),inventory:{active:false}};};
   await expect(advanceWorkspaceCleanup(db.pool,workspace.id,'source-g1',first.operation_id,OWNER,hosts)).rejects.toMatchObject({message:'workspace_cleanup_idle_period'});
   expect(calls).toBe(0);
-  await db.pool.query("UPDATE runs SET updated_at=now()-interval '25 hours' WHERE id=$1",[run.id]);
+  await db.pool.query("UPDATE runs SET ended_at=now()-interval '25 hours',updated_at=now() WHERE id=$1",[run.id]);
   expect(await advanceWorkspaceCleanup(db.pool,workspace.id,'source-g1',first.operation_id,OWNER,hosts)).toEqual({superseded:true});
   expect(await resource()).toMatchObject({expected_commit:'c'.repeat(40),workspace:w.ref,state:'pending'});
   expect((await resource()).operation_id).not.toBe(first.operation_id);
@@ -2458,23 +2569,17 @@ describe('durable workspace integration',()=>{
    expect((await db.pool.query('SELECT state,source_commit FROM workspace_change_sets WHERE id=$1',[w.changeSetId])).rows[0]).toEqual({state:'abandoned',source_commit:'b'.repeat(40)});
    expect((await db.pool.query('SELECT state FROM workspace_change_sets WHERE id=$1',[current.changeSetId])).rows[0].state).toBe('open');
   });
-  it('allows a fresh generation to retain and close an exhausted old checkpoint without deleting unknown files',async ctx=>{
+  it('reoffers an exhausted old checkpoint without allocating a replacement or deleting unknown files',async ctx=>{
    if(!db.available)return ctx.skip();const {run,w}=await emptyBatch();
-   await db.pool.query("UPDATE runs SET status='failed' WHERE id=$1",[run.id]);await db.pool.query("UPDATE execution_workspace_runs SET start_commit=NULL,checkpoint_commit=NULL,checkpoint_state='pending' WHERE run_id=$1",[run.id]);
-   await db.pool.query(`UPDATE workspace_change_sets SET state='blocked',source_commit=NULL,base_commit=NULL,verification_json='{"checkpoint_recovery":{"state":"exhausted"}}' WHERE id=$1`,[w.changeSetId]);
-   await db.pool.query("UPDATE execution_workspaces SET state='requested',head_commit=NULL WHERE id=$1",[w.workspace.id]);
-   const nextId=randomUUID();await seedRun(db.pool,{id:nextId,space:SPACE,owner:OWNER,agent:AGENT,version:VERSION,existingAgent:true});await db.pool.query(`UPDATE runs SET status='running',project_id=$2,session_id=$3,instructed_by_user_id=$4,permission_snapshot_json='{"tool_grants":[{"action_id":"workspace.change.abandon"}]}' WHERE id=$1`,[nextId,PROJECT,CONVERSATION,OWNER]);
-   const next=(await new PgRunRepository(db.pool).getRun(SPACE,nextId))!,{ensureExecutionWorkspace}=await import('../src/modules/projectFolders/executionWorkspaces.js'),fresh=await ensureExecutionWorkspace(db.pool,next,HOST,LOCATION);
-   expect(fresh.workspace.id).not.toBe(w.workspace.id);
-   const {workspaceClosureRecoveryHints}=await import('../src/modules/projectFolders/workspaceRecovery.js');
-   expect(await workspaceClosureRecoveryHints(db.pool,next,OWNER,fresh.workspace.id)).toContainEqual({change_set_id:w.changeSetId,expected_revision:(await db.pool.query('SELECT revision FROM workspace_change_sets WHERE id=$1',[w.changeSetId])).rows[0].revision,has_saved_result:false,checkpoint_recovery_exhausted:true});
-   const {operationRuntime}=await import('../src/modules/systemActions/operations/runtime.js'),{runActor}=await import('../src/modules/systemActions/operations/actor.js');
-   const engine=await operationRuntime(loadConfig({SERVER_DATABASE_URL:db.connectionUri})),actor=await runActor(db.pool,next),old=(await db.pool.query('SELECT revision FROM workspace_change_sets WHERE id=$1',[w.changeSetId])).rows[0];
-   const result=await engine.execute('workspace.change.abandon',{change_set_id:w.changeSetId,expected_revision:old.revision,reason:'Preserve unknown files; withdraw this failed old attempt.'},actor,randomUUID(),randomUUID());expect(result.http_status,JSON.stringify(result.body)).toBe(200);
-   expect((await db.pool.query('SELECT state,verification_json FROM workspace_change_sets WHERE id=$1',[w.changeSetId])).rows[0]).toMatchObject({state:'abandoned',verification_json:{pending_checkpoint_retained:true}});
-   expect((await db.pool.query('SELECT checkpoint_state FROM execution_workspace_runs WHERE run_id=$1',[run.id])).rows[0].checkpoint_state).toBe('pending');
-   expect((await db.pool.query('SELECT state FROM execution_workspaces WHERE id=$1',[w.workspace.id])).rows[0].state).toBe('retired');
-   expect((await db.pool.query("SELECT id FROM jobs WHERE job_type='execution_workspace_cleanup' AND payload_json->>'workspace_id'=$1",[w.workspace.id])).rows).toHaveLength(0);
+   await db.pool.query("UPDATE runs SET status='failed' WHERE id=$1",[run.id]);
+   await db.pool.query(`UPDATE execution_workspace_runs SET checkpoint_state='pending',checkpoint_recovery_json='{"state":"exhausted"}' WHERE run_id=$1`,[run.id]);
+   const nextId=randomUUID();await seedRun(db.pool,{id:nextId,space:SPACE,owner:OWNER,agent:AGENT,version:VERSION,existingAgent:true});
+   await db.pool.query('UPDATE runs SET project_id=$2,session_id=$3,instructed_by_user_id=$4 WHERE id=$1',[nextId,PROJECT,CONVERSATION,OWNER]);
+   const {ensureExecutionWorkspace}=await import('../src/modules/projectFolders/executionWorkspaces.js');
+   await expect(ensureExecutionWorkspace(db.pool,(await new PgRunRepository(db.pool).getRun(SPACE,nextId))!,HOST,LOCATION)).rejects.toMatchObject({name:'JobDeferredError',message:'workspace_checkpoint_recovering'});
+   expect((await db.pool.query('SELECT count(*)::int AS n FROM execution_workspaces')).rows[0].n).toBe(1);
+   expect((await db.pool.query('SELECT checkpoint_recovery_json FROM execution_workspace_runs WHERE run_id=$1',[run.id])).rows[0].checkpoint_recovery_json).toMatchObject({state:'requested',request_id:expect.any(String)});
+   expect((await db.pool.query('SELECT state FROM workspace_change_sets WHERE id=$1',[w.changeSetId])).rows[0].state).toBe('open');
   });
   it('closes an empty successful standalone batch and lets the next turn allocate a new one',async ctx=>{
    if(!db.available)return ctx.skip();const {w,run}=await emptyBatch(),hosts=await host();
@@ -2636,7 +2741,7 @@ describe('durable workspace integration',()=>{
     expect((await db.pool.query('SELECT state FROM workspace_change_sets WHERE id=$1',[w.changeSetId])).rows[0].state).toBe('blocked');return;
    }
    await complete('publish');if(mode==='target_moved'){expect(current.progress.status).toBe('target_moved');await complete('prepare');await complete('checkpoint');await complete('publish');}
-   expect(current).toMatchObject({state:'integrated',progress:{status:'merged'}});expect((await db.pool.query('SELECT count(*)::int AS n FROM runs')).rows[0].n).toBe(1);
+   expect(current).toMatchObject({state:'integrated',progress:{status:'merged'},lifecycle:{operation_id:expect.any(String),phase:'complete',source_retained:true}});expect((await db.pool.query('SELECT count(*)::int AS n FROM runs')).rows[0].n).toBe(1);
    if(historical){
     // The same recorded delta published by the bound batch adopts the historical one; a different one stays a reported failure.
     const adopted=mode==='historical_superseded';
@@ -2865,7 +2970,7 @@ describe('durable workspace integration',()=>{
   expect(repair.contract_snapshot_json).toMatchObject({workspace_integration_id:mergeId,workspace_integration_attempt_id:m.attempt_id,max_attempts:1,max_cost:2,max_duration_seconds:300});
   expect(repair.host_task_thread_id).not.toBe(run.host_task_thread_id);
   const binding=await integrationWorkspaceForRun(db.pool,repair,HOST,w.workspace.workspace_location_id);
-  expect(binding.ref).toEqual({id:w.workspace.id,generation:1,integration_id:m.attempt_id});
+  expect(binding.ref).toEqual({id:w.workspace.id,generation:1,integration_id:m.attempt_id,materialization_epoch:0});
   const {PgRouteDecisionRepository}=await import('../src/modules/routing/repository.js');
   const routed=await new PgRouteDecisionRepository(db.pool).routeRun({...repair,execution_kind:'agent',agent_id:AGENT,agent_version_id:VERSION});
   expect(routed.runtime_profile_snapshot_json).toMatchObject({execution_host_id:HOST,workspace_location_id:w.workspace.workspace_location_id});
@@ -3139,6 +3244,7 @@ describe('durable workspace integration',()=>{
   const other=await ensureExecutionWorkspace(db.pool,run,HOST,location,'write');
   await db.pool.query("UPDATE execution_workspace_runs SET checkpoint_state='saved',start_commit=$2,checkpoint_commit=$2 WHERE workspace_id=$1",[other.workspace.id,'b'.repeat(40)]);
   await db.pool.query("UPDATE execution_workspaces SET head_commit=$3,state='ready',updated_at=now()-interval '25 hours' WHERE id=ANY($1::varchar[]) AND space_id=$2",[[w.workspace.id,other.workspace.id],SPACE,'b'.repeat(40)]);
+  await db.pool.query("UPDATE runs SET ended_at=now()-interval '25 hours',updated_at=now() WHERE id=$1",[run.id]);
   const [bad,good]=[w.workspace,other.workspace].sort((a,b)=>a.id.localeCompare(b.id));
   await db.pool.query("UPDATE workspace_locations SET status='archived' WHERE id=$1",[bad!.workspace_location_id]);
   hosts.isOnline=()=>true;hosts.requestTaskBranch=async():Promise<any>=>({ok:true,branch:'owned',commit:'b'.repeat(40),inventory:{worktree:true,registration:true,branch:true,run_record:false,pending_run_id:null,merge_record:false,quarantined_whole:0,retained_quarantine:0,active:false,free_bytes:10000000},error:null});
@@ -3259,7 +3365,7 @@ describe('durable workspace integration',()=>{
   if(!db.available)return ctx.skip();
   const {enqueueWorkspaceCleanup,advanceWorkspaceCleanup}=await import('../src/modules/hosts/workspaceCleanup.js');
   const {w,run}=await integration(),hosts=await host(),workspace=(await db.pool.query('SELECT * FROM execution_workspaces WHERE id=$1',[w.workspace.id])).rows[0];
-  await db.pool.query("UPDATE runs SET updated_at=now()-interval '25 hours' WHERE id=$1",[run.id]);
+  await db.pool.query("UPDATE runs SET ended_at=now()-interval '25 hours',updated_at=now() WHERE id=$1",[run.id]);
   await db.pool.query("UPDATE task_merges SET status='failed' WHERE workspace_id=$1",[w.workspace.id]);
   await enqueueWorkspaceCleanup(db.pool,workspace,{id:workspace.id,generation:1},'b'.repeat(40),true,OWNER);
   const manifest=(await db.pool.query('SELECT cleanup_json FROM execution_workspaces WHERE id=$1',[workspace.id])).rows[0].cleanup_json['source-g1'];

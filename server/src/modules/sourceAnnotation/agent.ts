@@ -1,4 +1,4 @@
-import type { Pool } from "../../db/pool.js";
+import type { Queryable } from "../routeUtils/common.js";
 import { PgAgentRepository } from "../agents/repository.js";
 import { HttpError } from "../routeUtils/common.js";
 import { SOURCE_ANNOTATION_SCHEMA_ID } from "./resultParser.js";
@@ -14,7 +14,7 @@ const SOURCE_ANNOTATOR_AGENT_KIND = "system_source_annotator";
  * how the annotator starts returning relevance opinions that then leak into
  * every reader's ranking.
  */
-export async function ensureSourceAnnotatorAgent(pool: Pool, spaceId: string): Promise<{ id: string }> {
+export async function ensureSourceAnnotatorAgent(pool: Queryable, spaceId: string): Promise<{ id: string }> {
   const existing = await pool.query<{ id: string }>(
     `SELECT id
        FROM agents
@@ -50,7 +50,7 @@ export async function ensureSourceAnnotatorAgent(pool: Pool, spaceId: string): P
 }
 
 async function refreshSourceAnnotatorAgentPrompt(
-  pool: Pool,
+  pool: Queryable,
   spaceId: string,
   agentId: string,
 ): Promise<void> {
@@ -91,7 +91,7 @@ function sourceAnnotatorSystemPrompt(): string {
  * already use for ownership. It is attribution for audit and cost, not a
  * statement that this person requested anything.
  */
-export async function resolveSystemActorUserId(pool: Pool, spaceId: string): Promise<string> {
+export async function resolveSystemActorUserId(pool: Queryable, spaceId: string): Promise<string> {
   const membership = await pool.query<{ user_id: string }>(
     `SELECT user_id
        FROM space_memberships

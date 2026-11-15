@@ -458,7 +458,7 @@ describe("ten thousand persisted Runs", () => {
     }
     // Budget evidence is recorded, not a machine-speed-dependent pass criterion.
     expect(totals).toHaveLength(3);
-  }, 60000);
+  });
 });
 describe("delegation into a visible conversation", () => {
   it("keeps a Session-less child under its visible parent's Session and promotes its decision", async () => {
@@ -568,7 +568,7 @@ describe("dense Session target cost", () => {
         const explain = await db.pool.query(`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) SELECT id FROM runs WHERE space_id=$1 AND ${query}`, [space, keys]);
         console.info("Agent attention dense explain", JSON.stringify({ total, members, label, plan: explain.rows }));
       }
-    }, 60000);
+    });
   it("keeps readable dependencies outside the target lineage and hides private dependencies", async () => {
     const id = await run("running"), dependency = await run(), hidden = await run();
     await privateRun(hidden);

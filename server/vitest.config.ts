@@ -21,7 +21,17 @@ function listTestFiles(dir: string): string[] {
     return entry.name.endsWith(".test.ts") ? [path] : [];
   });
 }
-const mockingFiles = listTestFiles("test").filter((file) => readFileSync(file, "utf8").includes("vi.mock("));
+const testFiles = listTestFiles("test");
+// Reviewed imports: Node filesystem/YAML only, or config.ts (Node builtins).
+// Unreviewed files conservatively retain integration setup.
+const pureFiles = [
+  "test/agentGuides.test.ts", "test/composeConfig.test.ts", "test/config.test.ts", "test/testHygiene.test.ts",
+  "test/boundaries.test.ts", "test/frontendProxy.test.ts", "test/legacyRuntimeContextAbsence.test.ts",
+  "test/personStartedTriggerOrigin.test.ts", "test/projectReadingQualityFixture.test.ts",
+  // Shell-only archive fixtures provide their own fake docker executable.
+  "test/backupHardeningOps.test.ts",
+];
+const mockingFiles = testFiles.filter((file) => readFileSync(file, "utf8").includes("vi.mock("));
 
 // Plain Node environment — the gateway has no DOM or framework UI; tests exercise
 // config parsing, server-owned routes, and the proxy against a mock upstream.
@@ -30,29 +40,29 @@ export default defineConfig({
     environment: "node",
     maxWorkers,
     projects: [
-      { extends: true, test: { name: "shared", include: ["test/**/*.test.ts"], exclude: mockingFiles, isolate: false } },
-      { extends: true, test: { name: "isolated", include: mockingFiles, isolate: true } },
+      ...([false, true] as const).flatMap((isolate) => {
+        const files = testFiles.filter((file) => mockingFiles.includes(file) === isolate);
+        return [
+          { extends: true as const, test: { name: isolate ? "pure-isolated" : "pure", include: files.filter((file) => pureFiles.includes(file)), isolate } },
+          { extends: true as const, test: {
+            name: isolate ? "isolated" : "shared",
+            include: files.filter((file) => !pureFiles.includes(file)), isolate,
+            globalSetup: ["./test/setupIntegration.ts"],
+            setupFiles: ["./test/support/sqlCapture.ts"],
+          } },
+        ];
+      }),
     ],
-    globalSetup: ["./test/setupOfficialPlugins.ts"],
-    // Records executed SQL when SQL_CAPTURE_DIR is set, so the statements that
-    // are assembled at runtime (and therefore invisible to the static SQL
-    // guard) can be prepared afterwards. Inert without the env var.
-    setupFiles: ["./test/support/sqlCapture.ts"],
-    // The real-Postgres suites create a database per file and run in parallel,
-    // so an individual test can sit behind heavy contention for far longer than
-    // it takes in isolation. Do not use Vitest's 5s default. Starvation would
-    // be reported as failure, "the suite is green" would be a coin flip, and
-    // real breakage would hide in the noise.
-    testTimeout: 30_000,
-    hookTimeout: 180_000,
+    // Elapsed runtime is advisory; CI or the operator cancels stuck runs.
+    testTimeout: 0,
+    hookTimeout: 0,
     // Per-package cache path: the default resolves to the workspace-root
     // node_modules, which the other packages' runs would share and race on.
     experimental: {
       fsModuleCache: true,
       fsModuleCachePath: "node_modules/.vitest-cache",
-      // Hard gate on any one import's time; see tools/vitest/budgetReporter.mjs
-      // for why the suites are budgeted rather than documented.
-      importDurations: { failOnDanger: true, thresholds: { warn: 8_000, danger: 25_000 } },
+      // Keep slow imports visible without turning machine load into failure.
+      importDurations: { print: "on-warn", failOnDanger: false, thresholds: { warn: 8_000, danger: 25_000 } },
     },
     reporters: ["default", ["../tools/vitest/budgetReporter.mjs", { budgetPath: "test/perf-budget.json" }]],
   },

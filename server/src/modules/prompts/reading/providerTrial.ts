@@ -1,8 +1,10 @@
+import type {ReadingCountRow,ReadingSampleRow,ReadingVersionRow} from './rows.js';
+import { EvolutionAssetRefusal } from "../../evolution/assetRefusal.js";
 import {withRunTerminalOwner} from '../../systemActions/operations/proposalTransitions.js';
 import {comparisonPrompt,assertRevisionSample} from './comparisonPrompt.js';
 import { ReadingMethodTrialSchema, PROMPT_REVISION_FIXTURE, ReadingMethodGeneratedOutputSchema } from '@rainver/protocol';
 import type { z } from 'zod';
-import { HttpError, withDbTransaction, type Pool, type SpaceUserIdentity } from '../../routeUtils/common.js';
+import { HttpError, withQueryableTransaction, type Queryable, type SpaceUserIdentity } from '../../routeUtils/common.js';
 import type { ServerConfig } from '../../../config.js';
 import { readingItemContext } from '../../sources/index.js';
 import { readingAsset, readingCandidate } from './access.js';
@@ -19,8 +21,8 @@ import { PAIR_EVALUATOR, readReadingTrial, assertReadingTrialRun, registerReadin
 import { runFinalizationReconcilerRegistry } from '../../runs/finalizationReconcilerRegistry.js';
 import { canonicalRunOutput } from '../../runs/orchestrationResults.js';
 const CAPABILITY = 'prompt_method_comparison';
-export async function startProviderTrial(db: Pool, _config: ServerConfig, identity: SpaceUserIdentity, input: z.infer<typeof ReadingMethodTrialSchema>) {
-  return withDbTransaction(db, async tx => {
+export async function startProviderTrial(db: Queryable, _config: ServerConfig, identity: SpaceUserIdentity, input: z.infer<typeof ReadingMethodTrialSchema>) {
+  return withQueryableTransaction(db, async tx => {
     await tx.query(`SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, [`prompt-comparison:${identity.spaceId}:${identity.userId}`]);
     const asset = await readingAsset(tx, identity, true, input.target_key);
     await lockEvolutionAssets(tx, [asset.id]);
@@ -28,11 +30,11 @@ export async function startProviderTrial(db: Pool, _config: ServerConfig, identi
     const {
       version
     } = await readingCandidate(tx, identity, input.candidate_version_id, ctx.projectId, input.target_key);
-    const candidate = (await tx.query(`SELECT * FROM evolvable_asset_versions WHERE id=$1 FOR UPDATE`, [version.id])).rows[0]!;
-    if (candidate.content_hash !== input.candidate_content_hash) throw new HttpError(409, 'Candidate changed');
-    const sample = (await tx.query(`SELECT * FROM evaluation_cases WHERE id=$1 AND space_id=$2 AND asset_id=$3 AND created_by_user_id=$4 AND status='active'`, [input.case_id, identity.spaceId, asset.id, identity.userId])).rows[0];
+    const candidate = (await tx.query<ReadingVersionRow>(`SELECT * FROM evolvable_asset_versions WHERE id=$1 FOR UPDATE`, [version.id])).rows[0]!;
+    if (candidate.content_hash !== input.candidate_content_hash) throw new EvolutionAssetRefusal(409, 'Candidate changed');
+    const sample = (await tx.query<ReadingSampleRow>(`SELECT * FROM evaluation_cases WHERE id=$1 AND space_id=$2 AND asset_id=$3 AND created_by_user_id=$4 AND status='active'`, [input.case_id, identity.spaceId, asset.id, identity.userId])).rows[0];
     if (!sample || sample.input_json?.reading_item_id !== ctx.item.id || sample.input_json?.project_id !== ctx.projectId) throw new HttpError(404, 'Comparison sample unavailable');
-    if (sample.input_json.authority !== ctx.authority || sample.input_json.context_hash !== sha256Json(ctx.context)) throw new HttpError(409, 'Comparison sample stale');
+    if (sample.input_json.authority !== ctx.authority || sample.input_json.context_hash !== sha256Json(ctx.context)) throw new EvolutionAssetRefusal(409, 'Comparison sample stale');
     await assertSampleAuthority(tx, identity, ctx, sample.input_json);
     assertRevisionSample(input.target_key,sample.input_json.pages);
     const baseline = await freezeReadingMethod(tx, {
@@ -43,14 +45,14 @@ export async function startProviderTrial(db: Pool, _config: ServerConfig, identi
     await assertRevisionProvider(tx, identity, provider, ctx.source?.id ?? null, true);
     if (input.retry_of) {
       const prior = await authorizedPair(tx, identity, input.retry_of);
-      if (prior.ref.item_id !== ctx.item.id || prior.row.candidate_version_id !== candidate.id || !['failed', 'blocked', 'cancelled'].includes(prior.row.status)) throw new HttpError(409, 'Only this unsuccessful terminal comparison may be retried');
+      if (prior.ref.item_id !== ctx.item.id || prior.row.candidate_version_id !== candidate.id || !['failed', 'blocked', 'cancelled'].includes(prior.row.status)) throw new EvolutionAssetRefusal(409, 'Only this unsuccessful terminal comparison may be retried');
     }
     const key = sha256Json([identity.userId, input, ctx.authority, baseline.frozen, provider, sample.input_json]);
     const prior = (await tx.query(`SELECT id FROM evolvable_asset_evaluation_runs WHERE space_id=$1 AND asset_id=$2 AND evaluator_version=$3 AND eval_suite_ref_json->>'request_key'=$4`, [identity.spaceId, asset.id, PAIR_EVALUATOR, key])).rows[0];
     if (prior) return readReadingTrial(tx, identity, String(prior.id));
-    const counts = (await tx.query(`SELECT count(*) FILTER(WHERE status IN ('queued','running'))::int active,count(*) FILTER(WHERE created_at>now()-interval '1 day')::int daily FROM evolvable_asset_evaluation_runs WHERE space_id=$1 AND created_by_user_id=$2 AND evaluator_version=$3`, [identity.spaceId, identity.userId, PAIR_EVALUATOR])).rows[0];
-    if (counts.active) throw new HttpError(409, 'A comparison is running');
-    if (counts.daily >= 3) throw new HttpError(429, 'At most three comparisons per day');
+    const counts = (await tx.query<ReadingCountRow>(`SELECT count(*) FILTER(WHERE status IN ('queued','running'))::int active,count(*) FILTER(WHERE created_at>now()-interval '1 day')::int daily FROM evolvable_asset_evaluation_runs WHERE space_id=$1 AND created_by_user_id=$2 AND evaluator_version=$3`, [identity.spaceId, identity.userId, PAIR_EVALUATOR])).rows[0];
+    if (counts.active) throw new EvolutionAssetRefusal(409, 'A comparison is running');
+    if (counts.daily >= 3) throw new EvolutionAssetRefusal(429, 'At most three comparisons per day');
     if (candidate.status === 'draft') await new EvolvableAssetRepository(tx).transitionVersionStatus(identity, asset.id, String(candidate.id), {
       status: 'candidate'
     });
@@ -68,7 +70,7 @@ export async function startProviderTrial(db: Pool, _config: ServerConfig, identi
     for (const side of ['baseline', 'candidate'] as const) {
       const strategy = side === 'baseline' ? baseline.text : readingStrategy(candidate.content_json);
       const prompt = comparisonPrompt(input.target_key,strategy,ctx.context,sample.input_json.pages);
-      if (prompt.length > 48000) throw new HttpError(422, 'Comparison exceeds 48000 characters');
+      if (prompt.length > 48000) throw new EvolutionAssetRefusal(422, 'Comparison exceeds 48000 characters');
       const run = await new PgRunRepository(tx).createQueuedProviderTaskRun({
         visibility: "private",
         space_id: identity.spaceId,
@@ -139,13 +141,13 @@ export function registerRevisionProviderTrials() {
     run
   }) => {
     const trial = trialContext(run);
-    if (!trial) throw new HttpError(409, 'Comparison contract missing');
+    if (!trial) throw new EvolutionAssetRefusal(409, 'Comparison contract missing');
     const pair = await authorizedPair(db, {
       spaceId: run.space_id,
       userId: run.instructed_by_user_id!
     }, trial.evaluation_id);
     const provider = pair.ref.provider as RevisionProvider;
-    if (!provider) throw new HttpError(409, 'Comparison provider missing');
+    if (!provider) throw new EvolutionAssetRefusal(409, 'Comparison provider missing');
     await assertReadingTrialRun(db, run);
     const revision=pair.ref.target_key==='prompt.revision.method';
     const strategyVersion=revision?(await db.query(`SELECT content_json FROM evolvable_asset_versions WHERE id=$1`,[trial.side==='baseline'?pair.row.baseline_version_id:pair.row.candidate_version_id])).rows[0]:null;
@@ -181,13 +183,13 @@ export function registerRevisionProviderTrials() {
           const result = ReadingMethodGeneratedOutputSchema.parse(JSON.parse(text));
           text = `# Revised prompt\n${result.method}\n\n## Changes\n${result.summary}\n${result.changes.map(c => '- ' + c).join('\n')}`;
         }
-        if (!text.trim()) throw new HttpError(422, 'Empty comparison output');
+        if (!text.trim()) throw new EvolutionAssetRefusal(422, 'Empty comparison output');
         await withRunTerminalOwner(db,async()=>[{id:run.id,space_id:run.space_id}],async tx => {
           await (await import('../../runtimeContext/index.js')).lockReadingRunAuthority(tx, run);
           await assertReadingTrialRun(tx, run);
           await tx.query(`SELECT id FROM runs WHERE id=$1 FOR UPDATE`, [run.id]);
           const current = await new PgRunRepository(tx).getRun(run.space_id, run.id);
-          if (current?.status !== 'running') throw new HttpError(409, 'Comparison no longer running');
+          if (current?.status !== 'running') throw new EvolutionAssetRefusal(409, 'Comparison no longer running');
           await new PgRunRepository(tx).markRunTerminal({
             run_id: run.id,
             space_id: run.space_id,

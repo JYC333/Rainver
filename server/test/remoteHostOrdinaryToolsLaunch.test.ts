@@ -43,6 +43,7 @@ function hostDb(ordinary: () => unknown[]): Queryable {
     async query<Row = Record<string, unknown>>(sql: string) {
       const rows: unknown[] = sql.startsWith(ORDINARY_HOST_READ) ? ordinary()
         : sql.startsWith("SELECT kind FROM hosts") ? [{ kind: "remote" }]
+          : sql.includes("FROM run_attempts") && sql.trimStart().startsWith("SELECT") ? [{ id: "attempt-1", status: "running", launch_id: null }]
           : sql.startsWith("UPDATE run_attempts") ? [{ id: "attempt-1" }] : [];
       return { rows: rows as Row[], rowCount: rows.length };
     },

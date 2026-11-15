@@ -59,3 +59,6 @@ apps/web/src-tauri/target/
 .cache/
 .DS_Store
 Thumbs.db
+
+# Temporary investigation reports stay local; durable decisions belong in .agent guides.
+/.agent/reports/

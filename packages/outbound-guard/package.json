@@ -24,7 +24,8 @@
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "prebuild": "node ../../tools/typescript/prepareIncremental.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

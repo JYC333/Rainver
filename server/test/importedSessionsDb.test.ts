@@ -170,6 +170,38 @@ describe("imported session reconciliation", () => {
     await seedTopology();
   });
 
+  it("persists explicit reminder choices independently of runtime consent and rejects other users", async () => {
+    const service = new ImportedSessionService(db.pool, CONFIG);
+    const identity = { spaceId: SPACE, userId: OWNER };
+    const before = Date.now();
+    const snoozed = await service.setReminder(identity, LOCATION, 'later');
+    expect(Date.parse(snoozed.reminder!.snoozed_until!)).toBeGreaterThanOrEqual(before + 24 * 60 * 60_000);
+    await service.setReminder(identity, LOCATION, 'never');
+    await service.setPolicy(identity, LOCATION, { runtime_key: 'codex_cli', sync: false });
+    expect((await service.policy(identity, LOCATION)).reminder).toEqual({ enabled: false, snoozed_until: null });
+    const enabled = await service.setReminder(identity, LOCATION, 'enable');
+    expect(enabled.reminder).toEqual({ enabled: true, snoozed_until: null });
+    expect(enabled.entries[0]?.sync).toBe(false);
+    await expect(service.setReminder({ ...identity, userId: 'other' }, LOCATION, 'never')).rejects.toMatchObject({ statusCode: 403 });
+    await expect(service.offer({ ...identity, userId: 'other' }, LOCATION)).rejects.toMatchObject({ statusCode: 403 });
+  });
+
+  it("reports pending sessions after an earlier offer and clears attention only after a complete current import", async () => {
+    const service = new ImportedSessionService(db.pool, CONFIG);
+    const identity = { spaceId: SPACE, userId: OWNER };
+    const observed = { location_id: LOCATION, runtime_key: 'claude_code', installation: 'own', session_count: 1, oldest_updated_at: null, newest_updated_at: null, error: null,
+      sessions: [{ session_id: 'sess-1', updated_at: '2026-08-20T10:00:00.000Z' }], observed_at: new Date().toISOString() };
+    await db.pool.query('UPDATE workspace_locations SET ambient_session_counts_json = $2::jsonb WHERE id = $1', [LOCATION, JSON.stringify([observed])]);
+    await db.pool.query('UPDATE hosts SET last_heartbeat_at = now() WHERE id = $1', [HOST]);
+    await service.setPolicy(identity, LOCATION, { runtime_key: 'claude_code', sync: false });
+    expect((await service.offer(identity, LOCATION)).attention.new_sessions).toBe(1);
+    const repository = new PgImportedSessionRepository(db.pool);
+    await repository.reconcile(reconcileInput({ loadState: 'partial' }));
+    expect((await service.offer(identity, LOCATION)).attention.incomplete_sessions).toBe(1);
+    await repository.reconcile(reconcileInput());
+    expect((await service.offer(identity, LOCATION)).attention).toMatchObject({ new_sessions: 0, incomplete_sessions: 0, updated_sessions: 0 });
+  });
+
   it("creates the session and its records on a first import", async () => {
     const repository = new PgImportedSessionRepository(db.pool);
     const outcome = await repository.reconcile(reconcileInput());

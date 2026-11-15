@@ -5,7 +5,7 @@ import type {
 } from "@rainver/protocol";
 import * as protocol from "@rainver/protocol";
 import type { ServerConfig } from "../../../config.js";
-import { assertProjectWriter } from "../../projects/access.js";
+import { assertProjectWriter, lockActiveProjectForMutation } from "../../projects/access.js";
 import { ProjectSourceBindingService } from "../../projects/projectSourceBindingService.js";
 import {
   HttpError,
@@ -46,8 +46,13 @@ export class ResearchMonitorMaterializer {
     const requested = [...new Set(input.providerKeys)];
     if (requested.length === 0) throw new HttpError(422, "At least one provider must be materialized");
     return withQueryableTransaction(this.db, async (tx) => {
-      const strategy = await tx.query<{ project_id: string; status: string }>(
-        `SELECT project_id,status
+      const candidate=(await tx.query<{project_id:string;research_context_version_id:string}>(
+        'SELECT project_id,research_context_version_id FROM research_query_strategies WHERE id=$1 AND space_id=$2',[strategyId,identity.spaceId])).rows[0];
+      if(!candidate)throw new HttpError(404,"Research query strategy not found");
+      await lockActiveProjectForMutation(tx,identity.spaceId,candidate.project_id);
+      await tx.query('SELECT id FROM project_research_context_versions WHERE id=$1 AND project_id=$2 AND space_id=$3 FOR UPDATE',[candidate.research_context_version_id,candidate.project_id,identity.spaceId]);
+      const strategy = await tx.query<{ project_id: string; status: string;research_context_version_id:string }>(
+        `SELECT project_id,status,research_context_version_id
            FROM research_query_strategies
           WHERE id=$1 AND space_id=$2
           FOR UPDATE`,
@@ -55,6 +60,7 @@ export class ResearchMonitorMaterializer {
       );
       const strategyRow = strategy.rows[0];
       if (!strategyRow) throw new HttpError(404, "Research query strategy not found");
+      if(strategyRow.project_id!==candidate.project_id||strategyRow.research_context_version_id!==candidate.research_context_version_id)throw new HttpError(409,"Research strategy context changed");
       await assertProjectWriter(tx, identity.spaceId, strategyRow.project_id, identity.userId);
       if (!['selected', 'materialized'].includes(strategyRow.status)) {
         throw new HttpError(409, "Research query strategy has no selected query to materialize");

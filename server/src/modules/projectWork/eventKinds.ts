@@ -46,6 +46,7 @@ export function registeredWorkEventKinds(): readonly WorkEventKindDefinition[] {
 function registerCoreWorkEventKinds(): void {
   const taskKinds: readonly ProjectWorkEventKind[] = [
     "task.created",
+    "task.content_changed",
   "task.deleted",
     "task.entity_linked",
     "task.flow_changed",

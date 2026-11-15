@@ -39,7 +39,7 @@ export function WorkConversation({ item, onMessagesDisplayed, onChanged, onReadE
     <p className="text-xs text-muted-foreground">{t('agent_work.reply_target', { name: room?.agent_members.find(member => member.role === 'manager')?.agent_name ?? agent?.name ?? target.agent_id })}</p>
     {error && !room && !agent ? null
       : room ? <>{!room.viewer_can_write && <p className="text-xs text-muted-foreground">{t('agent_work.no_conversation_authority')}</p>}<div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border border-border"><ConversationSurface readOnly={!room.viewer_can_write} spaceId={item.space_id} roomId={target.room_id!} conversationId={target.session_id}
-        detail={room} variant="panel" pendingControls={pendingControls} executionReady={ready} inputFileSources={conversationInputSourcesFromExecutionSummary(summary)}
+        participantAgentIds={summary?.state==='initialized'?(summary.runtimes?.length?summary.runtimes:(summary.runtime?[summary.runtime]:[])).map(pin=>pin.agent_id):summary?.participant_agent_ids} detail={room} variant="panel" pendingControls={pendingControls} executionReady={ready} inputFileSources={conversationInputSourcesFromExecutionSummary(summary)}
         onMessagesDisplayed={onMessagesDisplayed} onReadError={onReadError} onSent={onChanged}
         executionPreflight={room.viewer_can_write && <ConversationExecutionPreflight spaceId={item.space_id} projectId={room.room.project_id} roomId={room.room.id}
           sessionId={target.session_id} detail={room} onReadyChange={setReady} onSummaryChange={setSummary} />} /></div></>

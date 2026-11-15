@@ -8,7 +8,7 @@ import {afterEach,beforeEach,expect,it} from 'vitest';
 import {saveConfig} from '../src/config.js';
 import {branchAlignBarriers,executeGitBranchAlign,recoverBranchAlignments} from '../src/gitBranchAlign.js';
 import {writeJsonDurable} from '../src/durableFile.js';
-import {resetQuarantineCacheForTest} from '../src/branchAlignState.js';
+import {BRANCH_ALIGN_IN_PROGRESS,gitOperationInProgress,resetQuarantineCacheForTest} from '../src/branchAlignState.js';
 import {acquireLocationLeases,enterLocations,releaseLocationLeases,tryAcquireLease} from '../src/locationLease.js';
 import {taskLeaseKey} from '../src/taskWorktree.js';
 import type {HostServerFrameOf} from '@rainver/protocol';
@@ -60,6 +60,25 @@ it('refuses non-fast-forward, moved tips, managed or invalid refs',async()=>{
  expect(git('rev-parse','dev')).toBe(old);
  git('branch','behind',first);
  expect(await executeGitBranchAlign(root,frame({source_ref:'refs/heads/behind',mode:'fast_forward',expected_source_commit:first,expected_target_commit:tip}))).toMatchObject({ok:true,outcome:'aligned'});
+});
+
+it('sees every unfinished Git operation in a checkout and in a linked worktree, whose Git directory may hold a newline',async()=>{
+ await init();
+ const linked=join(sandbox,'linked');git('worktree','add','-q',linked,'dev');
+ // A linked worktree's Git directory is absolute under the main repository's path.
+ const newline=join(sandbox,'new\nline'),newlineLinked=join(sandbox,'new-line-linked');
+ execFileSync('git',['clone','-q',root,newline]);execFileSync('git',['worktree','add','-q',newlineLinked,'-b','other'],{cwd:newline});
+ for(const holder of [root,linked,newlineLinked]){
+  expect(await gitOperationInProgress(holder)).toBe(false);
+  for(const name of BRANCH_ALIGN_IN_PROGRESS){
+   const at=execFileSync('git',['rev-parse','--git-path',name],{cwd:holder,encoding:'utf8'}).replace(/\n$/,'');
+   const path=at.startsWith('/')?at:join(holder,at);
+   await writeFile(path,'x\n');
+   expect([name,await gitOperationInProgress(holder)]).toEqual([name,true]);
+   await rm(path);
+  }
+  expect(await gitOperationInProgress(holder)).toBe(false);
+ }
 });
 
 it('updates a clean checked-out source and refuses dirty, untracked or in-progress checkouts',async()=>{

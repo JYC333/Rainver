@@ -165,4 +165,13 @@ export const AskSpaceResponseSchema = z
   .strict();
 export type AskSpaceResponse = z.infer<typeof AskSpaceResponseSchema>;
 
+export const AskSpaceAcceptedJobSchema = z.object({
+  id: z.string().uuid(), space_id: z.string().uuid(), job_id: z.string().uuid(), status: z.literal('pending'),
+}).strict();
+export const AskSpaceRequestResultSchema = z.object({
+  job_id: z.string().uuid(), status: z.enum(['pending','running','completed','failed','cancelled']),
+  result: AskSpaceResponseSchema.nullable(), withheld: z.number().int().nonnegative(),
+}).strict();
+export type AskSpaceRequestResult = z.infer<typeof AskSpaceRequestResultSchema>;
+
 export const ASK_SPACE_SESSION_ARTIFACT_TYPE = "ask_space_session";

@@ -94,5 +94,5 @@ describe("captured SQL", () => {
 
     console.info(`[captured-sql-prepare] checked ${statements.length} distinct statements`);
     expect(failures).toEqual([]);
-  }, 300_000);
+  });
 });

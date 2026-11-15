@@ -35,6 +35,82 @@ interest-profile fact model remain separate support packages.
   existing Project corpus-add route (`metadata_json.origin =
   'information_digest'`), so the Project writer gate applies.
 
+## Interest Profile operation boundary
+
+The eight retained Interest Profile mutation URLs are formal keyed core adapters:
+candidate accept/dismiss, settings update, topic create/update/archive,
+starter-pack apply and history-backfill. They require an explicit idempotency
+key and strict protocol inputs (`interestOperations.ts`); the typed client
+supplies one and unwraps the operation receipt. Topic creation retains HTTP 201.
+Only the authenticated person can invoke them: owner identity is host-resolved,
+never an input, and existing topic `origin` remains unchanged by an edit/revival.
+No Agent topic activation or Memory approval mapping is added.
+
+`InterestProfileService` joins a caller transaction and serializes explicit
+profile mutations by Space/person, including an absent profile. Candidate
+activation and removal, settings read/merge/write, starter topics, pending Source
+recommendations/activities, and bounded annotation intents commit with the core
+policy audit and receipt. Direct Pool callers use a short canonical transaction.
+The existing Source annotation Job is mandatory when history inserts work;
+Job failure and deferred audit failure roll back the entire command.
+
+Starter-pack and history discovery pins the selected items, channels,
+connections, Project audiences, people, roots, grants, subscriptions and windows
+through the existing Reading/release lock order, followed by links and annotation
+rows. Changed selection/lineage refuses admission; it never extends the lock set
+out of order. Cached successes recheck the recorded Source references against
+current access (and current subscription for history). A starter pack only
+creates pending suggestions; it never subscribes. History accepts 1–500 items
+(default 500), newest first; it never reopens an existing annotation row. This
+transaction queues intent only: the existing trusted annotation Job/Run performs
+provider/LLM work outside the command, with current claim, input, consent and
+release checks. Unknown effects are not automatically replayed.
+
+Reuse / Dependency Check: existing operation executor/adapters, Zod protocol,
+profile repository/service, Reading/release locks, recommendation writer,
+annotation service/queue, and shared real-PG fixtures are extended. No dependency,
+execution engine, generic lock manager, or approval table is introduced.
+
+## Briefing cancellation operation boundary
+
+Both retained personal/Project cancellation URLs are strict keyed core commands.
+Their receipts contain only the exact attempt/Run stop intent, never briefing
+text or a claimed Host acknowledgement. Scope authority is locked and rechecked
+on replay; withdrawn input consent does not prevent an authorized writer's stop.
+Run/attempt intent, audit and receipt commit together. The post-commit notification
+targets only that attempt; canonical Run settlement alone makes it terminal.
+The historical Project request URL is also keyed/core and preserves its 410
+after read/writer authorization. Personal generation is also a strict keyed
+command: frozen version, canonical Run/Job intent, audit and receipt share the
+core transaction. Existing Run dispatch performs model I/O outside it. Current
+scope, Source dependencies, revisions, egress and execution selection gate replay.
+
+Both digest backfill URLs queue a single-attempt native Job (HTTP 202), deduplicated
+by scope/day and input revision. The existing digest service performs deterministic
+ranking and fact updates under a current claim; snapshot, execution audit and Job
+settlement share one transaction. Changed inputs or authority refuse execution.
+The typed client polls only, then hydrates through the original current-access
+history read. Generic Job views expose no input closure or failure detail. No
+provider work or alternate ranking engine is added.
+
+Personal request and adoption admission lock every selected Reading Project as
+an optional discovery scope, then reselect the current readable opt-ins through
+`ReadingPreferences.readableEnabled`, also used by the personal scope owner.
+An unrelated revoked/deleted opt-in does not block legitimate work. Selection
+or audience drift while waiting refuses admission with a conflict; retry and
+replay both use current authority. Optional scopes grant no content access:
+actual inputs, comparison/carry history, context and provenance retain their
+Source/Project closure locks and canonical read/consent checks.
+
+All six personal/historical Project highlight URLs use strict core contracts.
+Follow-up and adoption previews remain read-only, unkeyed queries with a separate
+mandatory B11 audit before content release. Private audit references never enter
+the DTO. Confirmations require a key; the canonical Task writer, work event,
+operation audit and receipt join one transaction. The exact frozen Source/context
+closure and destination Project are locked in global order before confirmation;
+competing confirmations serialize without upgrading a shared Project lock.
+Replay rechecks the highlight and the resulting Task's current readability.
+
 ## Personal pipeline
 
 The daily transaction takes a scope/day advisory lock, returns the day's
@@ -863,3 +939,125 @@ advertised profile choices, and admission freezes them into round execution and
 canonical Run overrides. Unselected existing briefing consumers keep their contract.
 The Reading query optionally accepts `favorite=only`; filtering precedes totals
 and pagination, is private to the viewer, and is included in cursor scope.
+
+When called by an Automation fire, digest generation, weekly probe materialization,
+briefing request and target-result settlement join the Automation invocation's
+current-admission/Job-claim checks in their own short transactions. External
+probe I/O remains outside them. The same services serve direct callers without
+an Automation invocation; no alternate digest or Run engine is introduced.
+
+### Operation-core Reading preference
+
+`PUT .../projects/:projectId/reading-preference` is a formal adapter for
+`reading.preference.set`. The strict input carries the path Space/Project and
+`show_in_my_reading`; the user is always the authenticated person. The typed
+client sends one keyed command and never retries automatically. Readers,
+including Project viewers, retain control of their own opt-in.
+
+The canonical `ReadingPreferences.set` locks the Project and its audience before
+the active person and Space membership, then rechecks Project read authority and
+takes the existing per-reader
+preferences advisory lock and scoped settings writer. Core calls join the
+branded transaction: preference, fail-closed policy audit and replay receipt
+commit together. Direct Pool callers keep the same canonical short transaction.
+Same-key replay rechecks current account, Space and Project access and returns
+the original preference receipt without overwriting a later choice. The receipt
+contains only the requester's identity, Project and boolean; no material text.
+
+### Operation-core private Reading items
+
+The existing `POST .../projects/:projectId/reading/items/:itemId/favorite`
+and `PATCH .../[projects/:projectId/]reading/items/:itemId/state` are formal
+adapters for `reading.favorite.set`, `reading.project_state.set` and
+`reading.personal_state.set`. They require an idempotency key and return the
+operation receipt. The typed client unwraps `{item_id,favorite}` or `{updated}`;
+its optional final key argument permits retrying the exact user intent.
+All three commands are human-only and set only the authenticated reader's state.
+
+`readingMutationAccess` discovers equivalent SourceItems, their connections and
+collecting Sources, Project memberships, Following memberships and immutable
+changes, saved links, Corpus bridges and digest/initial deliveries before locks.
+It reuses `lockSourceRetrievalRelease` for sorted Project audiences, active
+people, Source roots/grants, channels, subscriptions and historical windows;
+then pins the discovered membership owners and the reader's opt-ins until commit.
+Changed dependencies/audience or an expanded family cause a conflict, rather
+than extending the lock set after admission. Canonical Reading context and Source
+permissions are checked again under those locks, including on receipt replay.
+The Source release helper pins subscription history for additional audience
+members as well as the caller; its ordinary one-person behavior is unchanged.
+
+`favoriteMaterial` and `ReadingService.state` join core transactions, and open a
+short transaction for direct Pool callers. Favorites remain exact-item flags;
+normal state updates still propagate through the Source owner's authorized
+reading identity group without fabricating opens or overwriting other origins.
+`topic_change_id` acknowledges only that immutable Following delivery through
+`changeReadingState`, leaving material-global state untouched. The private state,
+fail-closed policy audit and idempotency receipt commit or roll back together.
+Replay rechecks the current account, Space, Project, Source and Reading admission,
+returns the old receipt, and never overwrites a newer choice.
+
+Reading Job controls use strict keyed core commands at their retained URLs:
+composition retry queues only the failed day's complete cohort; deep-read start
+joins the canonical private Run and agent_run intent; cancellation commits only
+Run intent and awaits Host acknowledgement; annotation retry atomically reopens
+only the responsible eligible episode and queues its existing worker. Source,
+retained-original and context closures stay locked through commit, replay checks
+current authority, and workers fence dispatch/result writes by current claims.
+
+### Serendipity feedback operation
+
+The retained feedback POST is a formal adapter for
+`digest.serendipity.feedback`, with a required idempotency key and strict shared
+input/output schemas. The typed client unwraps the existing feedback result.
+The canonical feedback owner joins the core transaction: feedback, domain state,
+pending recommendation changes, policy audit and operation receipt commit or
+roll back together. Replay rechecks active person/Space membership and personal
+digest ownership. Discovery gathers the domain pool's Source references and
+recommendation Activities before the shared Project/person/Space/root lock
+order; effects take exclusive root locks, and discovery is rechecked before the
+item/domain feedback locks. No Source text is read or released here. This
+operation changes no interest facts, active Memory, provider work or Job engine.
+
+### Operation-core daily briefing settings
+
+Both retained personal and Project settings PUTs are strict keyed core adapters
+(`briefing.personal.settings.set`, `briefing.project.settings.set`). The canonical
+`setDailyBriefing` owner joins the command transaction: its existing Automation
+configuration, mandatory policy audit and receipt commit together. Enabling pins
+the selected legal owned Agent/Profile; it creates no Run or Job and releases no
+Source material. The existing trusted generation path still checks execution,
+consent and current audience when it runs. Explicit Agent/Profile fields remain
+valid. The typed personal client unwraps the existing boolean response.
+
+Replay rechecks the active person and current scope authority and returns the
+original setting result without overwriting a newer choice. Project settings
+retain the conditional 410 `project_daily_briefing_replaced` after read/write
+authorization (the formal envelope carries that reason in error metadata).
+This is not a migration of generation, cancellation, adoption or backfill.
+
+
+### Reviewed retry and authority-lock recovery
+
+Native backfill and Activity summary perform only database work and atomically
+commit the business result, mandatory audit and completed Job. Distinct keys
+reuse pending/claimed/running Jobs and completed results; failed/cancelled Jobs
+permit a fresh intent. This rule does not apply to external-effect Jobs.
+
+Reading preference, annotation retry and the two Source-backed interest commands
+opt into the core's `domainAuthorizationFirst` path. After nonlocking current
+actor/grant checks and request-key reservation, the domain discovers and locks
+its complete Project/audience/person/Source closure before core pins and rechecks
+the actor. These registrations have no approval mapping, placement or terminal
+Run owner. Replay locks the original result's closure before actor locking,
+without rediscovering a new candidate set. Other core operations retain their
+existing ordering. Annotation/history/recommendation owners pass their locked
+selection plus a recheck into execution; drift refuses rather than acquiring a
+new closure out of order. Direct service callers use the same preparation.
+
+Real-PG barriers cover both legacy and operation preference/annotation entries
+and both interest paths. An actual invitation acceptance writer supplies the
+second edge: its user lock precedes its membership upsert, whereas the old core
+JOIN held membership while waiting on the user. The bounded negative control
+proves that cycle on the parent; the repaired reader allows the writer to reach
+its business refusal and then completes normally. This is not a whole-system
+deadlock-freedom claim.

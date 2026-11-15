@@ -1,6 +1,7 @@
 import {goalPresentation} from './presentation.js';
+import {goalTransaction,lockGoal} from './transaction.js';
 import {goalCollectionReadableSql,goalItemReadableSql} from './itemVisibility.js';
-import {activateGoalVersion,cancelSupersededCollections} from './activation.js';
+import {activateGoalVersion,markSupersededCollectionsIn,stopCancellingGoalRuns} from './activation.js';
 import {goalFollowState} from './followState.js';
 import {ownerExclusion} from './topicJudgment.js';
 import {bindNativeSource,NativeSearchPending} from './nativeSearch.js';
@@ -12,13 +13,14 @@ import {canWriteProject} from '../../projects/access.js';
 import {sourceGoalError} from './dispatchError.js';
 import {assertSafeGoalMessage} from './messageSafety.js';
 import {setLegacyGoalPaused,legacyGoalView} from './compatibility.js';
-import {retainGoalSample,cleanGoalSamples} from './samples.js';
+import {retainGoalSample,cleanGoalSamples,retainedGoalCollection} from './samples.js';
 import {selectGoalResult} from './selection.js';
 import {publicGoalContribution,publicGoalValidation,publicGoalRunResult} from './privacy.js';
 import {randomUUID} from 'node:crypto';
 import {SourceGoalFeedbackRequestSchema,SourceGoalBindingSpecSchema,SourceGoalBudgetSchema,SourceGoalCreateSchema,SourceGoalFollowRequestSchema,SourceGoalVersionWriteSchema,SourceGoalPlanSchema,SourceGoalSaveSampleSchema,type SourceGoalBindingSpec,type SourceGoalFollow} from '@rainver/protocol';
 import type {ServerConfig} from '../../../config.js';
-import {HttpError,withDbTransaction,type Pool,type SpaceUserIdentity} from '../../routeUtils/common.js';
+import {HttpError,type Pool,type Queryable,type SpaceUserIdentity} from '../../routeUtils/common.js';
+import {PgRunRepository} from '../../runs/repository.js';
 import {resolveContentCreationContext} from '../../access/creationContext.js';
 import {PgSchedulerTaskStore} from '../../scheduler/taskStore.js';
 import {activeGoalIntent,requireGoal,requireLegacyGoalSource,requireGoalSource,requireAuthorRun,goalSourceFingerprint,type GoalRow} from './access.js';
@@ -46,13 +48,14 @@ export class SourceGoalService {
   return {goals:result};
  }
  async resume(identity:SpaceUserIdentity,id:string,versionId:string){
-  const result=await this.resumeLocked(identity,id,versionId);
+  const result=await this.resumeIn(this.db,identity,id,versionId);
   if('activated' in result&&result.activated)await reconcileNativeSearch(this.db,this.config,id);
   return result;
  }
- private async resumeLocked(identity:SpaceUserIdentity,id:string,versionId:string):Promise<{status:string;prepare?:boolean;activated?:boolean}>{
-  return withDbTransaction(this.db,async db=>{
-   await db.query('SELECT id FROM source_goals WHERE id=$1 FOR UPDATE',[id]);const g=await requireGoal(db,identity,id,true);
+ /** Resume inside the caller's transaction; native-search reconciliation follows the commit. */
+ async resumeIn(outer:Queryable,identity:SpaceUserIdentity,id:string,versionId:string):Promise<{status:string;prepare?:boolean;activated?:boolean}>{
+  return goalTransaction(outer,async db=>{
+   await lockGoal(db,id);const g=await requireGoal(db,identity,id,true);
    if(g.compatibility_json?.execution_mode==='manual')throw sourceGoalError(409,'source_manual_requires_preview');
    if(await setLegacyGoalPaused(db,identity,id,false,this.config)){await db.query(`UPDATE source_goals SET status='running' WHERE id=$1`,[id]);return {status:'running'};}
    // A confirmed follow paused while still preparing (nothing active yet)
@@ -79,15 +82,25 @@ export class SourceGoalService {
   });
  }
  async read(identity:SpaceUserIdentity,id:string){
-  const goal=await requireGoal(this.db,identity,id);await reconcileNativeSearch(this.db,this.config,id);await requireLegacyGoalSource(this.db,this.config,identity,goal);await cleanGoalSamples(this.db,this.config,id);
+  const goal=await requireGoal(this.db,identity,id);await requireLegacyGoalSource(this.db,this.config,identity,goal);
   const bindings=await this.db.query('SELECT * FROM source_goal_bindings WHERE space_id=$1 AND goal_id=$2',[identity.spaceId,id]);
+  // Project retention at release without changing stored calibration. The
+  // existing maintenance/start/repair paths own durable scrubbing.
+  for(const b of bindings.rows)if(b.fixture_json)b.fixture_json=await retainGoalSample(this.db,this.config,b.source_connection_id,b.fixture_json,goal.status==='deleted');
   const versions=await this.db.query('SELECT * FROM source_goal_versions WHERE space_id=$1 AND goal_id=$2 ORDER BY revision DESC',[identity.spaceId,id]);
   // The goal stays manageable; content of a Source the viewer can no longer
   // read (deleted, archived, consent narrowed) is redacted below.
   const unavailable=await this.unavailableSources(identity,goal,[...bindings.rows.map(b=>b.spec_json as SourceGoalBindingSpec),...versions.rows.flatMap(v=>SourceGoalPlanSchema.parse(v.plan_json).sources)]);
   const hidden=(connection:unknown)=>typeof connection==='string'&&unavailable.has(connection);
   const previews=await this.db.query('SELECT id,version_id,status,result_json,expires_at,created_at FROM source_goal_previews WHERE space_id=$1 AND goal_id=$2 ORDER BY created_at DESC LIMIT 10',[identity.spaceId,id]);
+  for(const p of previews.rows)p.result_json={...p.result_json,contributions:await Promise.all((p.result_json.contributions??[]).map((c:Record<string,unknown>)=>retainGoalSample(this.db,this.config,String(c.source_connection_id),c,goal.status==='deleted')))};
   const runs=await this.db.query('SELECT * FROM source_goal_runs WHERE space_id=$1 AND goal_id=$2 ORDER BY started_at DESC LIMIT 50',[identity.spaceId,id]);
+  for(const r of runs.rows){
+   if(!r.result_json)continue;
+   const connection=r.result_json.spec?.source_connection_id;
+   const source=(await this.db.query('SELECT capture_policy,policy_json FROM source_connections WHERE space_id=$1 AND id=$2',[identity.spaceId,connection??''])).rows[0];
+   r.result_json=retainedGoalCollection({...r,capture_policy:source?.capture_policy??'reference_only',policy_json:source?.policy_json??{}});
+  }
   const repairs=await this.db.query('SELECT r.* FROM source_goal_repairs r JOIN source_goal_bindings b ON b.id=r.binding_id AND b.space_id=r.space_id WHERE b.space_id=$1 AND b.goal_id=$2 ORDER BY r.created_at DESC LIMIT 20',[identity.spaceId,id]);
   const nativeRuns=await this.db.query(`SELECT r.id,r.status,CASE WHEN s.status='failed' AND s.result_json->>'error'='source_native_cancelled' THEN 'cancelled' WHEN s.status IN ('failed','succeeded') THEN s.status WHEN s.status IN ('accepted','materializing') THEN 'validating' ELSE r.status END AS phase,r.created_at,s.version_id,s.binding_id,s.result_json->>'error' AS error FROM source_goal_runs s JOIN runs r ON r.id=s.result_json->>'native_run_id' AND r.space_id=s.space_id WHERE s.goal_id=$1 AND s.space_id=$2 AND NOT(s.result_json ? 'manual_preview_id') AND NOT(s.result_json ? 'bootstrap_preview_id') ORDER BY r.created_at DESC LIMIT 20`,[id,identity.spaceId]);
   const agentRuns=await this.db.query(`SELECT id,status,created_at,(NOT COALESCE(model_override_json ? 'chat_turn',false) OR EXISTS(SELECT 1 FROM run_events e WHERE e.space_id=runs.space_id AND e.run_id=runs.id AND e.event_type='chat_completed')) AS chat_completed FROM runs WHERE space_id=$1 AND owner_user_id=$3 AND agent_id=$4 AND contract_snapshot_json->'workflow_input_json'->'source_goal'->>'goal_id'=$2 AND COALESCE(contract_snapshot_json->'workflow_input_json'->'source_goal'->>'purpose','')<>'collect' ORDER BY created_at DESC LIMIT 10`,[identity.spaceId,id,goal.owner_user_id,goal.agent_id]);
@@ -114,8 +127,8 @@ export class SourceGoalService {
  }
  async writeVersion(identity:SpaceUserIdentity,raw:unknown,runId:string){
   const input=SourceGoalVersionWriteSchema.parse(raw);
-  return withDbTransaction(this.db,async db=>{
-   await db.query('SELECT id FROM source_goals WHERE id=$1 FOR UPDATE',[input.goal_id]);
+  return goalTransaction(this.db,async db=>{
+   await lockGoal(db,input.goal_id);
    const g=await requireGoal(db,identity,input.goal_id,true);await requireAuthorRun(db,g,runId,'explore');
    if(g.revision!==input.expected_revision)throw new HttpError(409,'Goal revision changed or running');
    const sources:SourceGoalBindingSpec[]=[];for(const source of input.plan.sources){if(source.implementation.kind==='agent_search'){sources.push(await bindNativeSource(db,this.config,identity,g,{reason:source.reason,implementation:{kind:'agent_search',query:source.implementation.query},supports_history:false}));}else sources.push(SourceGoalBindingSpecSchema.parse(source));}
@@ -147,17 +160,34 @@ export class SourceGoalService {
    await db.query(`UPDATE source_goals SET follow_json=follow_json||jsonb_build_object('last_error',$2::text) WHERE id=$1`,[g.id,code]);
   }
  }
- async preview(identity:SpaceUserIdentity,id:string,versionId:string,signal:AbortSignal){
-  const reservation=await withDbTransaction(this.db,async db=>{
-   await db.query('SELECT id FROM source_goals WHERE id=$1 FOR UPDATE',[id]);const g=await requireGoal(db,identity,id,true);
+ /** Preview admission in the caller's transaction: exact current version, one
+  * in-flight preview per version and at most three per version. The provider
+  * work is the single-attempt `goal_preview` Job (runPreview), never this transaction. */
+ async admitPreview(outer:Queryable,identity:SpaceUserIdentity,id:string,versionId:string):Promise<string>{
+  return goalTransaction(outer,async db=>{
+   await lockGoal(db,id);const g=await requireGoal(db,identity,id,true);
    if(g.current_version_id!==versionId || g.status==='paused'&&g.compatibility_json?.execution_mode!=='manual')throw new HttpError(409,'Preview version/state changed');
    const versions=await db.query('SELECT plan_json FROM source_goal_versions WHERE id=$1 AND goal_id=$2 AND space_id=$3',[versionId,id,g.space_id]);if(!versions.rows[0])throw new HttpError(404,'Version not found');
    const pending=await db.query("SELECT 1 FROM source_goal_previews p WHERE version_id=$1 AND status='running' AND (expires_at>now() OR EXISTS(SELECT 1 FROM source_goal_runs s JOIN runs r ON r.id=s.result_json->>'native_run_id' AND r.space_id=s.space_id WHERE s.result_json->>'preview_id'=p.id AND s.status='queued' AND r.status IN ('queued','running','waiting_for_review','waiting_for_dependency','cancelling')))",[versionId]);if(pending.rows[0])throw sourceGoalError(409,'source_goal_preview_in_progress');
    const count=await db.query('SELECT count(*)::int AS n FROM source_goal_previews WHERE version_id=$1',[versionId]);if(count.rows[0].n>=3)throw new HttpError(429,'Preview budget exhausted');
    const previewId=randomUUID();await db.query(`INSERT INTO source_goal_previews(id,space_id,goal_id,version_id,status,result_json,expires_at) VALUES($1,$2,$3,$4,'running',$5,now()+interval '15 minutes')`,[previewId,g.space_id,id,versionId,{contributions:SourceGoalPlanSchema.parse(versions.rows[0].plan_json).sources.map(x=>({source_connection_id:x.source_connection_id,status:'queued'}))}]);
-   return {g,previewId,plan:SourceGoalPlanSchema.parse(versions.rows[0].plan_json)};
+   return previewId;
   });
-  const {previewId,plan}=reservation;const g={...reservation.g,intent_json:plan.intent_snapshot??reservation.g.intent_json,execution_filters:plan.filters,execution_search_path:plan.search_path_snapshot??'api',execution_scope:previewId};const contributions:Record<string,unknown>[]=[];
+ }
+ /** The preview Job body. Admission is repeated under the person's current
+  * authority before any Source execution; after it the storage transaction
+  * checks the goal again, so a stopped goal or a revoked caller stores nothing. */
+ async runPreview(identity:SpaceUserIdentity,id:string,previewId:string,signal:AbortSignal){
+  const admitted=await goalTransaction(this.db,async db=>{
+   await lockGoal(db,id);const goal=await requireGoal(db,identity,id,true);
+   const row=(await db.query<{version_id:string}>(`SELECT version_id FROM source_goal_previews WHERE id=$1 AND goal_id=$2 AND space_id=$3 AND status='running' FOR UPDATE`,[previewId,id,goal.space_id])).rows[0];
+   if(!row)return null;
+   if(goal.current_version_id!==row.version_id||goal.status==='paused'&&goal.compatibility_json?.execution_mode!=='manual'){await db.query(`UPDATE source_goal_previews SET status='stale' WHERE id=$1`,[previewId]);return null;}
+   const version=(await db.query('SELECT plan_json FROM source_goal_versions WHERE id=$1 AND goal_id=$2 AND space_id=$3',[row.version_id,id,goal.space_id])).rows[0];
+   return version?{goal,versionId:row.version_id,plan:SourceGoalPlanSchema.parse(version.plan_json)}:null;
+  });
+  if(!admitted)return {preview_id:previewId,status:'stale'};
+  const {plan,versionId}=admitted;const g={...admitted.goal,intent_json:plan.intent_snapshot??admitted.goal.intent_json,execution_filters:plan.filters,execution_search_path:plan.search_path_snapshot??'api',execution_scope:previewId};const contributions:Record<string,unknown>[]=[];
   for(const spec of plan.sources){
    try{
     const authority=goalSourceFingerprint(await preflightGoalSource(this.db,this.config,identity,g,spec));
@@ -168,30 +198,41 @@ export class SourceGoalService {
     }finally{await run.cleanup();}
    }catch(error){if(error instanceof NativeSearchPending){contributions.push({source_connection_id:spec.source_connection_id,status:'queued',run_id:error.runId,usage:{physical_requests:null,provider_quota:null,cost:null}});continue;}contributions.push({source_connection_id:spec.source_connection_id,status:'failed',error:error instanceof Error && /^source_[a-z_]+$/.test(error.message)?error.message:'source_execution_refused'});}
   }
-  return withDbTransaction(this.db,async db=>{
+  return goalTransaction(this.db,async db=>{
    await requireGoal(db,identity,id,true);const latest=(await db.query('SELECT result_json FROM source_goal_previews WHERE id=$1 FOR UPDATE',[previewId])).rows[0];
    const merged=contributions.map(c=>{const done=latest.result_json.contributions?.find((x:{source_connection_id:string;run_id?:string;status:string})=>x.source_connection_id===c.source_connection_id&&x.run_id&&x.status!=='queued');return done??c;});
    const ready=merged.length===plan.sources.length&&merged.every(c=>c.status==='succeeded');const pending=merged.some(c=>c.status==='queued');
    const result={version_id:versionId,contributions:merged,limitations:plan.limitations,complete:ready,observed_at:new Date().toISOString()};
    const stored=await db.query(`UPDATE source_goal_previews SET status=$2,result_json=$3 WHERE id=$1 AND EXISTS(SELECT 1 FROM source_goals WHERE id=source_goal_previews.goal_id AND (status NOT IN ('paused','deleted') OR status='paused' AND compatibility_json->>'execution_mode'='manual')) RETURNING id`,[previewId,pending?'running':ready?'ready':'partial',result]);if(!stored.rows[0])throw new HttpError(409,'Goal stopped before preview storage');
    if(!pending)await db.query(`UPDATE source_goals SET status=$3,updated_at=now() WHERE id=$1 AND current_version_id=$2 AND status NOT IN ('paused','deleted','running')`,[id,versionId,ready?'preview_ready':'needs_information']);
-   return {id:previewId,...result,contributions:merged.map(publicGoalContribution)};
+   return {preview_id:previewId,status:pending?'running':ready?'ready':'partial'};
   });
  }
  /** Optional manual save of one fresh exact-version Agent-search preview as
   * reading material. It never starts continuous following (that is follow()). */
  async saveSample(identity:SpaceUserIdentity,id:string,raw:unknown){
+  const result=await this.saveSampleIn(this.db,identity,id,raw);
+  await this.afterActivation(identity,id,result._promoted);
+  const {_promoted,...publicResult}=result;return publicResult;
+ }
+ /** The save in the caller's transaction. A promotion also writes the
+  * cancellation intent of collections the new version supersedes. */
+ async saveSampleIn(outer:Queryable,identity:SpaceUserIdentity,id:string,raw:unknown){
   const input=SourceGoalSaveSampleSchema.parse(raw);
-  const result=await withDbTransaction(this.db,async db=>{
-   await db.query('SELECT id FROM source_goals WHERE id=$1 FOR UPDATE',[id]);const g=await requireGoal(db,identity,id,true);
+  return goalTransaction(outer,async db=>{
+   await lockGoal(db,id);const g=await requireGoal(db,identity,id,true);
    if(g.start_key===input.idempotency_key && g.active_version_id===input.version_id){if(g.compatibility_json?.execution_mode!=='manual')throw sourceGoalError(409,'source_native_stale_result');return {goal_id:id,version_id:g.active_version_id,status:g.status,_promoted:false};}
    if((g.status!=='preview_ready' && g.status!=='running' && !(g.status==='paused'&&g.compatibility_json?.execution_mode==='manual')) || g.current_version_id!==input.version_id)throw new HttpError(409,'Plan changed or already started');
    await activateGoalVersion(db,this.config,identity,g,{versionId:input.version_id,mode:'manual',key:input.idempotency_key,previewId:input.preview_id,requirePreview:true,reusePreview:false});
+   await markSupersededCollectionsIn(db,identity,id,input.version_id);
    return {goal_id:id,version_id:input.version_id,status:'running',_promoted:true};
   });
+ }
+ /** Post-commit, rebuildable: settle native results and deliver the
+  * cancellation intents already committed (the Run sweep also finishes them). */
+ async afterActivation(identity:SpaceUserIdentity,id:string,activated:boolean){
   await reconcileNativeSearch(this.db,this.config,id);
-  if(result._promoted)await cancelSupersededCollections(this.db,this.config,identity,id,input.version_id);
-  const {_promoted,...publicResult}=result;return publicResult;
+  if(activated)await stopCancellingGoalRuns(this.db,this.config,identity,id,'A newly confirmed Source plan superseded this collection');
  }
  /** One owner confirmation of topic, frequency and budget starts continuous
   * following. No manual preview is required; an exact current plan activates
@@ -200,20 +241,24 @@ export class SourceGoalService {
   * activates. Source preflight, scheduling ownership, CAS and spend admission
   * stay in the shared activation path; new permissions keep their own gates. */
  async follow(identity:SpaceUserIdentity,id:string,raw:unknown){
-  const input=SourceGoalFollowRequestSchema.parse(raw);
-  const result=await withDbTransaction(this.db,async db=>{const result=await this.followLocked(db,identity,id,input);if(input.theme_analysis){if(!input.version_id)throw new HttpError(422,'Analysis consent requires an exact prepared purpose version');await (await import('../../informationDigest/index.js')).configureThemeAnalysis(db,this.config,identity,id,{...input.theme_analysis,expected_version_id:input.version_id});}return result;});
+  const result=await this.followIn(this.db,identity,id,raw);
   await this.afterFollow(identity,id,result);
   return result;
  }
+ /** The follow confirmation (and optional analysis consent) in the caller's transaction. */
+ async followIn(outer:Queryable,identity:SpaceUserIdentity,id:string,raw:unknown){
+  const input=SourceGoalFollowRequestSchema.parse(raw);
+  return goalTransaction(outer,async db=>{const result=await this.followLocked(db,identity,id,input);if(input.theme_analysis){if(!input.version_id)throw new HttpError(422,'Analysis consent requires an exact prepared purpose version');await (await import('../../informationDigest/index.js')).configureThemeAnalysis(db,this.config,identity,id,{...input.theme_analysis,expected_version_id:input.version_id});}return result;});
+ }
  /** Post-commit work of a follow that activated a version. */
  async afterFollow(identity:SpaceUserIdentity,id:string,result:{activated:boolean;follow:SourceGoalFollow|null}){
-  if(result.activated&&result.follow?.activated_version_id){await reconcileNativeSearch(this.db,this.config,id);await cancelSupersededCollections(this.db,this.config,identity,id,result.follow.activated_version_id);}
+  if(result.activated&&result.follow?.activated_version_id)await this.afterActivation(identity,id,true);
  }
  /** The follow confirmation inside the caller's transaction (also used by
   * topic creation, so creating and confirming commit together). */
  async followLocked(db:import('../../routeUtils/common.js').Queryable,identity:SpaceUserIdentity,id:string,input:import('@rainver/protocol').SourceGoalFollowRequest){
   {
-   await db.query('SELECT id FROM source_goals WHERE id=$1 FOR UPDATE',[id]);const g=await requireGoal(db,identity,id,true) as GoalRow&{follow_json?:SourceGoalFollow|null};
+   await lockGoal(db,id);const g=await requireGoal(db,identity,id,true) as GoalRow&{follow_json?:SourceGoalFollow|null};
    // A manual-save goal rests paused; an ordinary paused follow resumes instead.
    if(g.status==='paused'&&g.compatibility_json?.execution_mode!=='manual')throw sourceGoalError(409,'source_goal_paused_resume_required');
    const prior=g.follow_json??null;
@@ -243,6 +288,7 @@ export class SourceGoalService {
    const activation=await activateGoalVersion(db,this.config,identity,goal,{versionId:target,mode:'continuous',key:input.idempotency_key,requirePreview:false,reusePreview:true});
    follow.activated_version_id=target;follow.reused_preview_id=activation.reusedPreviewId;
    await db.query('UPDATE source_goals SET follow_json=$2 WHERE id=$1',[id,follow]);
+   await markSupersededCollectionsIn(db,identity,id,target);
    return {goal_id:id,status:'running',follow,activated:true,prepare:false};
   }
  }
@@ -262,7 +308,7 @@ export class SourceGoalService {
  private async tryActivateInSavepoint(db:import('../../routeUtils/common.js').Queryable,identity:SpaceUserIdentity,g:GoalRow,versionId:string,follow:SourceGoalFollow):Promise<SourceGoalFollow|null>{
   await db.query('SAVEPOINT source_goal_follow_replay');
   try{const activation=await activateGoalVersion(db,this.config,identity,g,{versionId,mode:'continuous',key:follow.idempotency_key,requirePreview:false,reusePreview:true});await db.query('RELEASE SAVEPOINT source_goal_follow_replay');
-   const next={...follow,activated_version_id:versionId,reused_preview_id:activation.reusedPreviewId,last_error:null};await db.query('UPDATE source_goals SET follow_json=$2 WHERE id=$1',[g.id,next]);return next;}
+   const next={...follow,activated_version_id:versionId,reused_preview_id:activation.reusedPreviewId,last_error:null};await db.query('UPDATE source_goals SET follow_json=$2 WHERE id=$1',[g.id,next]);await markSupersededCollectionsIn(db,identity,g.id,versionId);return next;}
   catch(error){await db.query('ROLLBACK TO SAVEPOINT source_goal_follow_replay');if(!(error instanceof HttpError)&&!(error instanceof Error&&/^source_[a-z_]+$/.test(error.message)))throw error;
    const body=error instanceof HttpError?(error.responseBody as {error?:unknown}|undefined)?.error:undefined;const code=typeof body==='string'&&/^source_[a-z_]+$/.test(body)?body:error instanceof Error&&/^source_[a-z_]+$/.test(error.message)?error.message:'source_goal_activation_refused';
    await db.query(`UPDATE source_goals SET follow_json=follow_json||jsonb_build_object('last_error',$2::text) WHERE id=$1`,[g.id,code]);return null;}
@@ -273,10 +319,11 @@ export class SourceGoalService {
   * judgments; slow_down lengthens the interval without an earlier check.
   * Faster collection, more budget or new Sources go through follow and the
   * existing Source/credential gates. Each key applies once. */
- async feedback(identity:SpaceUserIdentity,id:string,raw:unknown){
+ async feedback(identity:SpaceUserIdentity,id:string,raw:unknown){return this.feedbackIn(this.db,identity,id,raw);}
+ async feedbackIn(outer:Queryable,identity:SpaceUserIdentity,id:string,raw:unknown){
   const input=SourceGoalFeedbackRequestSchema.parse(raw);
-  return withDbTransaction(this.db,async db=>{
-   await db.query('SELECT id FROM source_goals WHERE id=$1 FOR UPDATE',[id]);const g=await requireGoal(db,identity,id,true) as GoalRow&{follow_json?:SourceGoalFollow|null};
+  return goalTransaction(outer,async db=>{
+   await lockGoal(db,id);const g=await requireGoal(db,identity,id,true) as GoalRow&{follow_json?:SourceGoalFollow|null};
    const follow=g.follow_json;if(!follow)throw sourceGoalError(409,'source_goal_feedback_requires_follow');
    // The key carries a hash of its payload: a replay is a no-op, a reuse with
    // a different payload is refused like follow's changed-key replay.
@@ -304,16 +351,24 @@ export class SourceGoalService {
   });
  }
  async stop(identity:SpaceUserIdentity,id:string,deleted=false){
-  const result=await withDbTransaction(this.db,async db=>{await db.query('SELECT id FROM source_goals WHERE id=$1 AND space_id=$2 FOR UPDATE',[id,identity.spaceId]);await requireGoal(db,identity,id,true);await setLegacyGoalPaused(db,identity,id,true,this.config);
+  const result=await this.stopIn(this.db,identity,id,deleted);
+  await stopCancellingGoalRuns(this.db,this.config,identity,id,'Source goal stopped');
+  return result;
+ }
+ /** Pause or delete in the caller's transaction. Every live goal Run gets its
+  * cancellation intent here; the process stop follows the commit
+  * (stopCancellingGoalRuns), and the Run sweep finishes an interrupted one. */
+ async stopIn(outer:Queryable,identity:SpaceUserIdentity,id:string,deleted=false){
+  return goalTransaction(outer,async db=>{await lockGoal(db,id,'update',identity.spaceId);await requireGoal(db,identity,id,true);await setLegacyGoalPaused(db,identity,id,true,this.config);
    await db.query('UPDATE source_goals SET status=$2,updated_at=now() WHERE id=$1',[id,deleted?'deleted':'paused']);
    await db.query("UPDATE source_goal_runs SET result_json=result_json||'{\"goal_stopped\":true}'::jsonb WHERE goal_id=$1 AND status='queued' AND result_json ? 'native_run_id'",[id]);
    if(deleted)await cleanGoalSamples(db,this.config,id,true);
    await db.query(`UPDATE scheduler_tasks SET status=$2,next_run_at=NULL WHERE task_type='source_goal_tick' AND task_key=$1`,[id,deleted?'archived':'paused']);
+   const runs=await db.query<{id:string}>(`SELECT id FROM runs WHERE space_id=$1 AND contract_snapshot_json->'workflow_input_json'->'source_goal'->>'goal_id'=$2 AND status IN ('queued','running','waiting_for_review','waiting_for_dependency','cancelling') ORDER BY id`,[identity.spaceId,id]);
+   const repository=new PgRunRepository(db);
+   for(const run of runs.rows)await repository.markRunCancelling({run_id:run.id,space_id:identity.spaceId,requested_at:new Date().toISOString(),reason:'Source goal stopped',requested_by_user_id:identity.userId});
    return {status:deleted?'deleted':'paused'};
   });
-  const runs=await this.db.query<{id:string}>(`SELECT id FROM runs WHERE space_id=$1 AND contract_snapshot_json->'workflow_input_json'->'source_goal'->>'goal_id'=$2 AND status IN ('queued','running','waiting_for_review','waiting_for_dependency','cancelling')`,[identity.spaceId,id]);
-  if(runs.rows.length){const {buildRunOrchestration}=await import('../../runs/orchestrationFactory.js');const {orchestration}=buildRunOrchestration(this.config);for(const run of runs.rows)await orchestration.cancelRun({run_id:run.id,space_id:identity.spaceId,requested_by_user_id:identity.userId,reason:'Source goal stopped'});}
-  return result;
  }
 }
 

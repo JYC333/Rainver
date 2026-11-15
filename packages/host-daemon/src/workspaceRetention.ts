@@ -1,4 +1,6 @@
-import {readdir,rm} from 'node:fs/promises';
+import {requestWorkspaceSweepContinuation} from './workspaceFilePages.js';
+import {rm,lstat} from 'node:fs/promises';
+import {workspaceIdentity} from './worktreeIdentity.js';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import type {ExecutionWorkspaceRef} from '@rainver/protocol';
@@ -45,6 +47,17 @@ async function materializationRecord(locationId:string,key:string):Promise<{epoc
 export async function recordedMaterializationEpoch(locationId:string,key:string):Promise<number>{
  return (await materializationRecord(locationId,key)).epoch;
 }
+/** The completed source release already chose bounded history retention for
+ * these versions. Later pages may drop redundant recovery names, not history. */
+export async function releasedHistoryCheckpoints(locationId:string,key:string,ref:ExecutionWorkspaceRef,epoch:number|undefined):Promise<string[]>{
+ if(ref.integration_id||epoch===undefined)return [];
+ const record=await materializationRecord(locationId,key),release=record.release,inventory=release?.inventory;
+ if(!release||release.id!==ref.id||release.generation!==ref.generation||release.epoch!==epoch
+  ||record.epoch!==epoch+1||(record.admitted??-1)>epoch
+  ||inventory?.branch!==false||inventory.worktree!==false||inventory.registration!==false
+  ||inventory.run_record!==false||inventory.merge_record!==false||inventory.quarantined_whole!==0)return [];
+ return Array.isArray(release.history_refs)?release.history_refs.filter(c=>typeof c==='string'&&COMMIT.test(c)):[];
+}
 /**
  * After a release of epoch N, only launches admitted after the server's bump
  * (N+1) may rebuild. The fence and the release's result are one atomic file
@@ -53,7 +66,8 @@ export async function recordedMaterializationEpoch(locationId:string,key:string)
  */
 export async function recordReleasedMaterialization(locationId:string,key:string,released:number,result:Omit<ReleaseRecord,'epoch'>){
  const next=Math.max(await recordedMaterializationEpoch(locationId,key),released+1);
- await writeJsonDurable(materializationPath(locationId,key),{epoch:next,released_at:new Date().toISOString(),release:{...result,epoch:released,inventory:{...result.inventory,materialization_epoch:next}}});
+ await writeJsonDurable(materializationPath(locationId,key),{...await materializationRecord(locationId,key),epoch:next,released_at:new Date().toISOString(),release:{...result,epoch:released,inventory:{...result.inventory,materialization_epoch:next}}});
+ requestWorkspaceSweepContinuation();
 }
 /**
  * The completed release of this identity and epoch. The server sends one
@@ -84,13 +98,14 @@ export async function completedRelease(locationId:string,key:string,ref:Executio
  * target, proof inputs, history and the exact ref list. Order and duplicates
  * do not change it; any changed content does.
  */
-export interface ReleaseRequest {discard?:string;id:string;generation:number;locationId:string;integrationId?:string|null;expected?:string|null;retain:boolean;epoch?:number;target?:string|null;history?:readonly string[];proof?:readonly string[];bases?:readonly string[];refs?:readonly RefRelease[]}
+export interface AdoptionCheckpoint {workspace_id:string;generation:number;commit:string;base_commit:string}
+export interface ReleaseRequest {preserve?:string;lifecycleOperationId?:string;checkpoint?:AdoptionCheckpoint;discard?:string;id:string;generation:number;locationId:string;integrationId?:string|null;expected?:string|null;retain:boolean;epoch?:number;target?:string|null;history?:readonly string[];proof?:readonly string[];bases?:readonly string[];refs?:readonly RefRelease[]}
 export function releaseRequestDigest(input:ReleaseRequest){
  const set=(v:readonly string[]|undefined)=>[...new Set(v??[])].sort();
  // v2 adds every remaining field that changes execution: each ref's kept_epoch and the integration identity.
  const refs=[...new Set((input.refs??[]).map(r=>JSON.stringify([r.ref,r.expected_commit??null,Boolean(r.prefix),r.kept_epoch??null])))].sort();
- return createHash('sha256').update(JSON.stringify({v:2,id:input.id,generation:input.generation,location:input.locationId,integration:input.integrationId??null,expected:input.expected??null,retain:input.retain,epoch:input.epoch??null,
-  target:input.target??null,history:set(input.history),proof:set(input.proof),bases:set(input.bases),refs,...(input.discard?{discard:input.discard}:{})})).digest('hex');
+ return createHash('sha256').update(JSON.stringify({v:2,...(input.preserve?{preserve:input.preserve}:{}),...(input.lifecycleOperationId?{lifecycle_operation_id:input.lifecycleOperationId}:{}),id:input.id,generation:input.generation,location:input.locationId,integration:input.integrationId??null,expected:input.expected??null,retain:input.retain,epoch:input.epoch??null,
+  target:input.target??null,history:set(input.history),proof:set(input.proof),bases:set(input.bases),refs,...(input.discard?{discard:input.discard}:{}),...(input.checkpoint?{checkpoint:[input.checkpoint.workspace_id,input.checkpoint.generation,input.checkpoint.commit,input.checkpoint.base_commit]}:{})})).digest('hex');
 }
 /** The v1 digest records written before v2 carry (no `digest_version`); used only to recognise them. */
 export function legacyReleaseRequestDigest(input:ReleaseRequest){
@@ -120,13 +135,21 @@ export async function rebuiltSinceRelease(locationId:string,key:string,epoch:num
 }
 /** Record the newest admitted launch epoch; a launch from an older one is stale. Caller holds the Task lease. */
 export async function admitMaterialization(locationId:string,key:string,ref:ExecutionWorkspaceRef){
- if(ref.materialization_epoch===undefined)return;
  const record=await materializationRecord(locationId,key);
- if(ref.materialization_epoch<record.epoch)throw new Error('workspace_materialization_stale');
+ // Missing legacy detail may reuse this candidate's durable admission, never
+ // the current source epoch. Unbound legacy attempts remain frozen at zero.
+ const epoch=ref.materialization_epoch??(ref.integration_id?record.admitted??0:undefined);
+ if(ref.integration_id&&record.admitted!==undefined&&epoch!==record.admitted)throw new Error('workspace_materialization_stale');
+ const source=ref.integration_id?await materializationRecord(locationId,`workspace:${ref.id}:${ref.generation}`):record;
+ // Deleting bulky launch answers must not let an old, epoch-less launch
+ // recreate a released identity or its integration candidate.
+ if(source.release&&(epoch??-1)<=source.release.epoch)throw new Error('workspace_materialization_stale');
+ if(epoch===undefined)return;
+ if(epoch<Math.max(record.epoch,source.epoch))throw new Error('workspace_materialization_stale');
  // The admission is recorded even at the current epoch: a later page of the
  // previous release must know the owned names may now be this rebuild's.
- if(ref.materialization_epoch>record.epoch||record.admitted!==ref.materialization_epoch)
-  await writeJsonDurable(materializationPath(locationId,key),{...record,epoch:Math.max(record.epoch,ref.materialization_epoch),admitted:ref.materialization_epoch});
+ if(epoch>record.epoch||record.admitted!==epoch)
+  await writeJsonDurable(materializationPath(locationId,key),{...record,epoch:Math.max(record.epoch,epoch),admitted:epoch});
  // The same admission is already visible, but an earlier write of it may have
  // failed after its rename: an equal value is made durable, never trusted.
  else await syncExistingDurable(materializationPath(locationId,key));
@@ -137,7 +160,7 @@ export async function admitMaterialization(locationId:string,key:string,ref:Exec
  * the target: the tip itself is target history, its tree equals a recorded
  * merge commit that is target history, or its whole delta from a common base
  * (the Host's own merge-base, or a recorded batch base that is history of both)
- * reverse-applies to the actual target tree. The last case covers the same
+ * reverse-applies to the target or an exact publication in its history. This covers the same
  * change applied by another commit while the target also moved on. Every check
  * runs against local Git; server inputs only nominate candidates.
  */
@@ -148,6 +171,7 @@ export async function verifyBranchReclaim(repoRoot:string,tip:string,targetRef:s
  if(await isAncestor(repoRoot,tip,target))return null;
  const tipTree=await treeOf(repoRoot,tip);
  if(!tipTree)return 'workspace_reclaim_unproven';
+ if(await treeOf(repoRoot,target)===tipTree)return null;
  for(const proof of proofs){
   if(!COMMIT.test(proof))continue;
   if(await treeOf(repoRoot,proof)===tipTree&&await isAncestor(repoRoot,proof,target))return null;
@@ -158,8 +182,32 @@ export async function verifyBranchReclaim(repoRoot:string,tip:string,targetRef:s
   // A base outside either history would hide part of the tip's content from the delta.
   if(!COMMIT.test(base)||base===tip||!await isAncestor(repoRoot,base,tip)||!await isAncestor(repoRoot,base,target))continue;
   if(await workspaceDeltaAlreadyApplied(repoRoot,base,tip,target))return null;
+  // A publication is evidence at its exact version, not at today's target
+  // tree. Later edits of the same file must not revoke a proven adoption.
+  // Database facts only nominate: a rewritten-away commit cannot authorize it.
+  for(const proof of proofs){
+   if(!COMMIT.test(proof)||!await isAncestor(repoRoot,proof,target)||!await isAncestor(repoRoot,base,proof))continue;
+   if(await workspaceDeltaAlreadyApplied(repoRoot,base,tip,proof))return null;
+  }
  }
  return 'workspace_reclaim_unproven';
+}
+
+/** Under the child's lease, before branch deletion. The exact parent's
+ * checkpoint is a reconstructible owner ref, never an expiring Run preview.
+ * Reuse the existing content-addressed recovery namespace and durable CAS. */
+export async function keepAdoptionCheckpoint(root:string,tip:string,c:AdoptionCheckpoint):Promise<void>{
+ if(!UUID.test(c.workspace_id)||!Number.isSafeInteger(c.generation)||c.generation<1||![c.commit,c.base_commit].every(x=>COMMIT.test(x))
+  ||!await isAncestor(root,c.base_commit,tip)||!await isAncestor(root,c.base_commit,c.commit)
+  ||!await workspaceDeltaAlreadyApplied(root,c.base_commit,tip,c.commit))throw new Error('workspace_adoption_unproven');
+ const name=`refs/rainver/recovery/${c.workspace_id}/${c.commit}`;
+ const before=await readRef(root,name);
+ if(before&&before!==c.commit)throw new Error('workspace_adoption_ref_moved');
+ if(!before){
+  const result=await runLocationGit(['update-ref','-m','rainver: retain adopted checkpoint',name,c.commit,'0'.repeat(c.commit.length)],root);
+  if(result.code!==0&&await readRef(root,name)!==c.commit)throw new Error('workspace_adoption_ref_failed');
+ }
+ await syncRefDurable(root,name,c.commit);
 }
 async function treeOf(repoRoot:string,commit:string):Promise<string|null>{
  const out=await runLocationGit(['rev-parse','--verify','--quiet',`${commit}^{tree}`],repoRoot);
@@ -188,8 +236,9 @@ function prefixMembers(prefix:string){return [prefix,`${prefix}-index`];}
  * (re)kept it (`keepers`, read under the same Task lease that keeps them), so
  * an older expiry never removes a renewed ref.
  */
-export async function releaseRefs(repoRoot:string,ref:ExecutionWorkspaceRef,list:readonly RefRelease[],options:{rebuilt?:boolean;keepers?:Readonly<Record<string,number>>;sourceFence?:boolean}={}):Promise<Array<{ref:string;reason:string}>>{
+export async function releaseRefs(repoRoot:string,ref:ExecutionWorkspaceRef,list:readonly RefRelease[],options:{rebuilt?:boolean;keepers?:Readonly<Record<string,number>>;sourceFence?:boolean;proofs?:readonly string[];bases?:readonly string[];discardTip?:string;preservedCheckpoints?:readonly string[]}={}):Promise<Array<{ref:string;reason:string}>>{
  const retained:Array<{ref:string;reason:string}>=[];
+ const preserved=new Set(options.preservedCheckpoints??[]);
  const ownedByName=[`refs/rainver/recovery/${ref.id}/`,`refs/rainver/native-preimages/${ref.id}/`];
  const historyPrefix=`refs/rainver/run-history/${ref.id}/g${ref.generation}/`;
  for(const item of list){
@@ -223,6 +272,24 @@ export async function releaseRefs(repoRoot:string,ref:ExecutionWorkspaceRef,list
    // A content-addressed source ref must still name its own commit.
    const expected=item.expected_commit??(name.startsWith('refs/rainver/sources/')?name.slice('refs/rainver/sources/'.length):undefined);
    if(expected&&oid!==expected){retained.push({ref:name,reason:'ref_moved'});continue;}
+   // Parent-checkpoint recovery may be the only copy of unpublished work.
+   // Even an owner release must re-prove it against live target history.
+   if(name.startsWith(`refs/rainver/recovery/${ref.id}/`)){
+    const discarded=options.discardTip&&await isAncestor(repoRoot,oid,options.discardTip);
+    // Earlier private versions may not be ancestors of the last discarded tip.
+    // Re-prove and sync this exact owner's history keeper before removing only
+    // the redundant recovery name. A persisted backup claim alone is no proof.
+    const keeper=`${historyPrefix}${oid}`;
+    const backed=preserved.has(oid)&&expected===oid&&(options.keepers?.[oid]??-1)>=(ref.materialization_epoch??0)
+     &&await readRef(repoRoot,keeper)===oid;
+    if(backed)await syncRefDurable(repoRoot,keeper,oid);
+    if(!discarded&&!backed&&(!ref.target_ref?.startsWith('refs/heads/')||ref.target_ref.startsWith('refs/heads/rainver/'))){retained.push({ref:name,reason:'checkpoint_not_in_shared_target'});continue;}
+    const history=ref.target_ref?await runLocationGit(['rev-list','--max-count=50',ref.target_ref],repoRoot):null;
+    const proofs=history?.code===0&&!history.incomplete?history.stdout.trim().split(/\s+/).filter(c=>COMMIT.test(c)):[];
+    if(!discarded&&!backed&&await verifyBranchReclaim(repoRoot,oid,ref.target_ref,[...proofs,...options.proofs??[]],options.bases??[])){
+     retained.push({ref:name,reason:'checkpoint_not_in_target'});continue;
+    }
+   }
    const deleted=await runLocationGit(['update-ref','-m','rainver: release workspace recovery ref','-d',name,oid],repoRoot);
    if(deleted.code!==0&&await readRef(repoRoot,name).catch(()=>'unreadable')!==null)retained.push({ref:name,reason:'ref_release_failed'});
   }
@@ -485,12 +552,12 @@ export interface RefOperationScope {id:string;generation:number;locationId:strin
  * integration) and materialization epoch, which decide owned names, keepers
  * and the rebuild fence. `legacy` recognises journals written before v2.
  */
-export function refOperationDigest(refs:readonly RefRelease[]|undefined,pins:readonly string[]|undefined,settle?:readonly string[],more:{keep?:readonly string[];release_keepers?:readonly string[];source_fence?:boolean}={},scope?:RefOperationScope):RequestDigest{
+export function refOperationDigest(refs:readonly RefRelease[]|undefined,pins:readonly string[]|undefined,settle?:readonly string[],more:{keep?:readonly string[];release_keepers?:readonly string[];source_fence?:boolean;checkpoint?:{target:string|null;proofs:readonly string[];bases:readonly string[]}}={},scope?:RefOperationScope):RequestDigest{
  const list=[...new Set((refs??[]).map(r=>JSON.stringify([r.ref,r.expected_commit??null,Boolean(r.prefix),r.kept_epoch??null])))].sort();
  const set=(v:readonly string[]|undefined)=>[...new Set(v)].sort();
  // Later fields are part of the v1 content only when present, so earlier digests stay the same.
  const content={refs:list,pins:set(pins),...(settle?.length?{settle:set(settle)}:{}),
-  ...(more.keep?.length?{keep:set(more.keep)}:{}),...(more.release_keepers?.length?{release_keepers:set(more.release_keepers)}:{}),...(more.source_fence?{source_fence:true}:{})};
+  ...(more.keep?.length?{keep:set(more.keep)}:{}),...(more.release_keepers?.length?{release_keepers:set(more.release_keepers)}:{}),...(more.source_fence?{source_fence:true}:{}),...(more.checkpoint?{checkpoint:{target:more.checkpoint.target,proofs:set(more.checkpoint.proofs),bases:set(more.checkpoint.bases)}}:{})};
  const hash=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
  return {legacy:hash({v:1,...content}),current:hash({v:2,...content,workspace:scope?{id:scope.id,generation:scope.generation,location:scope.locationId,integration:scope.integrationId??null,epoch:scope.epoch??null}:null})};
 }
@@ -568,17 +635,40 @@ export async function keepRunHistory(repoRoot:string,ref:ExecutionWorkspaceRef,t
  * it sends back on the next materialization. Unfinished native journals stay.
  */
 export async function reclaimWorkspaceReceipts(locationId:string,key:string,ref:ExecutionWorkspaceRef){
+ const pendingPath=join(configDir(),'workspace-receipt-reclaims',createHash('sha256').update(locationId+'\0'+key).digest('hex')+'.json');
+ // Intent before the first page; the completed release epoch is independently
+ // rechecked under the owner's lease before background continuation.
+ const prior=await readJson(pendingPath);
+ const done:Record<string,boolean>=prior?.ref&&JSON.stringify(prior.ref)===JSON.stringify(ref)&&prior.done&&typeof prior.done==='object'?prior.done as Record<string,boolean>:{};
+ const save=()=>writeJsonDurable(pendingPath,{location:locationId,key,ref,done});
+ await save();
+ let pending=false;
  await rm(join(configDir(),'workspace-sequences',locationId,`${key}.json`),{force:true});
  await rm(join(configDir(),'workspace-baselines',locationId,`${key}.json`),{force:true});
- const suffix=`:${ref.id}:g${ref.generation}.json`;
- for(const directory of ['workspace-launches','task-runs']){
-  for(const name of await readdir(join(configDir(),directory)).catch(()=>[] as string[])){
-   if(!name.endsWith(suffix))continue;
-   const path=join(configDir(),directory,name),receipt=await readJson(path);
-   if(directory==='task-runs'&&receipt?.task_id!==key)continue;
-   if(directory==='workspace-launches'&&(receipt?.id!==ref.id||receipt?.generation!==ref.generation))continue;
-   await rm(path,{force:true});
-  }
+ // Global reply directories are visited once by the shared receipt sweep,
+ // which re-proves each reply owner. Never rescan M names for every K owner.
+ requestWorkspaceSweepContinuation();
+ if(!done.native){
+  if(await cleanupNativeWorkspaceReceipts(locationId,key,{released:true}))pending=true;
+  else {done.native=true;await save();}
  }
- await cleanupNativeWorkspaceReceipts(locationId,key);
+ if(pending)requestWorkspaceSweepContinuation();else await rm(pendingPath,{force:true});
+}
+
+/** A completed release makes old small replies redundant, never its replay
+ * fence. Caller holds the same Task lease as launch and release. An admitted
+ * rebuild, live record/tree, or uncertain tombstone preserves the receipts. */
+export async function releasedReceiptMayExpire(locationId:string,key:string):Promise<boolean>{
+ const ref=workspaceIdentity(key);if(!ref)return false;
+ // Candidates have their own terminal fence; source release is independent.
+ const sourceKey=`workspace:${ref.id}:${ref.generation}`;
+ const own=await materializationRecord(locationId,key);
+ const candidate=Boolean(ref.integration_id&&own.release);
+ const m=candidate?own:await materializationRecord(locationId,sourceKey),r=m.release;
+ if(!r||r.id!==ref.id||r.generation!==ref.generation||r.digest_version!==DIGEST_VERSION||!r.request||!/^[0-9a-f]{64}$/.test(r.request)
+  ||m.epoch!==r.epoch+1||(m.admitted??-1)>r.epoch||(!candidate&&r.inventory.branch!==false)||r.inventory.worktree!==false||r.inventory.registration!==false||r.inventory.run_record!==false||r.inventory.merge_record!==false||r.inventory.quarantined_whole!==0)return false;
+ for(const ownerKey of new Set(candidate?[key]:[key,sourceKey]))for(const path of [join(configDir(),'task-records',locationId,`${ownerKey}.json`),join(configDir(),'task-records',locationId,`${ownerKey}.merge.json`),join(configDir(),'task-worktrees',locationId,ownerKey)]){
+  try{await lstat(path);return false;}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')return false;}
+ }
+ return true;
 }

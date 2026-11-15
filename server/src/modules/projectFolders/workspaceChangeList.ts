@@ -1,3 +1,7 @@
+import {assessWorkspaceDiscards} from './workspaceDiscard.js';
+import {closedWorkspaceState,cleanupPublicationStatuses} from './workspacePublicationState.js';
+import {allPendingCheckpointsExhaustedSql} from './workspaceCheckpointState.js';
+import {workspaceActionApplicability,closeAdmissionBlocker} from './workspaceActionRules.js';
 import {WorkspaceChangeListInputSchema,type RegisteredSystemActionDefinition} from '@rainver/protocol';
 import type {OperationActor} from '@rainver/protocol';
 import type {Queryable} from '../routeUtils/common.js';
@@ -11,7 +15,7 @@ import {authorizedWorkspaceChange} from './workspaceOperations.js';
 
 const ACTIVE_RUN="('queued','running','cancelling','waiting_for_review','waiting_for_dependency')";
 /** Unfinished: an open/owed batch, blocked cleanup, or a branch removed outside Rainver without proof. */
-const UNFINISHED=`(c.state IN ('open','ready','integrating','blocked') OR w.cleanup_state='blocked' OR (COALESCE(w.retention_json->>'state','')='missing' AND COALESCE(w.retention_json->>'reason','')='branch_missing'))`;
+const UNFINISHED=`(c.state IN ('open','ready','integrating','blocked') OR w.cleanup_state='blocked' OR EXISTS(SELECT 1 FROM task_merges m WHERE m.change_set_id=c.id AND m.status IN ('merged','no_changes') AND m.detail_json->'lifecycle'->>'phase' IN ('awaiting_release','cleanup','blocked')) OR (c.generation=w.generation AND c.source_commit=w.head_commit AND w.retention_json->'discard_intent'->>'change_set_id'=c.id AND COALESCE(w.retention_json->>'state','')<>'reclaimed') OR (COALESCE(w.retention_json->>'state','')='missing' AND COALESCE(w.retention_json->>'reason','')='branch_missing'))`;
 /** A conversation's own generations and every delegated workspace forked below them, at any depth. */
 const CONVERSATION_TREE=`w.id IN (WITH RECURSIVE tree AS (SELECT t.id FROM execution_workspaces t WHERE t.space_id=$1 AND t.owner_kind='conversation' AND t.session_id=$3
   UNION SELECT e.id FROM execution_workspaces e JOIN tree ON e.parent_workspace_id=tree.id WHERE e.space_id=$1) SELECT id FROM tree)`;
@@ -40,9 +44,9 @@ async function listScope(db:Queryable,actor:OperationActor,input:ReturnType<type
  * Agent workspaces overview — Project read, current remote-Host ownership and
  * the origin Run's unwithheld body, applied before paging — so hidden rows never
  * use up a page and the cursor only names a row this caller was shown.
- * An Agent sees its own conversation tree in full; other conversations of the
- * Project only as metadata (no summary) and only for Runs the same person
- * instructed. Closing stays `workspace.change.abandon`; an Agent's `closable`
+ * An Agent sees its conversation tree and may inspect the same person's other
+ * conversations for Project cleanup through the shared authorizer. Other rows
+ * stay metadata-only. Closing stays `workspace.change.abandon`; `closable`
  * comes from the same authorizer, so a listed closable row is one it may close.
  */
 export async function listWorkspaceChanges(db:Queryable,actor:OperationActor,raw:unknown){
@@ -59,28 +63,32 @@ export async function listWorkspaceChanges(db:Queryable,actor:OperationActor,raw
      UNION SELECT q.id,q.parent_workspace_id,q.session_id,q.owner_kind FROM execution_workspaces q JOIN up ON q.id=up.parent_workspace_id) SELECT session_id FROM up WHERE owner_kind='conversation' LIMIT 1) END AS session_id,
    EXISTS(SELECT 1 FROM execution_workspace_runs b JOIN runs r ON r.id=b.run_id AND r.space_id=b.space_id WHERE b.change_set_id=c.id AND r.status IN ${ACTIVE_RUN}) AS active_run,
    EXISTS(SELECT 1 FROM execution_workspace_runs b WHERE b.change_set_id=c.id AND b.checkpoint_state NOT IN ('saved','blocked')) AS pending_checkpoint,
-   COALESCE(c.verification_json->'checkpoint_recovery'->>'state','')='exhausted' AS exhausted
+   ${allPendingCheckpointsExhaustedSql('c')} AS exhausted
   FROM workspace_change_sets c JOIN execution_workspaces w ON w.id=c.workspace_id AND w.space_id=c.space_id WHERE c.space_id=$1 AND c.id=ANY($2::varchar[])`,[actor.space_id,ids])).rows.map(r=>[r.id,r]));
  // An Agent's `closable` is decided by the very authorizer `workspace.change.abandon` uses.
- const closeAuthorized=new Map<string,boolean>();
- if(scope.agent)for(const id of ids)closeAuthorized.set(id,await authorizedWorkspaceChange(db,id,actor,false,true,true,true).then(()=>true,()=>false));
- const items=page.entries.map(({change,run})=>{
+ const closeAccess=new Map<string,string|null>();
+ if(scope.agent)for(const id of ids)closeAccess.set(id,await authorizedWorkspaceChange(db,id,actor,false,true,true,true).then(c=>c.access,()=>null));
+ const publications=await cleanupPublicationStatuses(db,ids);
+ const discards=await assessWorkspaceDiscards(db,ids,publications);
+ const recoveryBlockers=new Map<string,Promise<string|null>>();
+ const items=await Promise.all(page.entries.map(async({change,run})=>{
   const f=facts.get(change.change_set_id);
   const same=Boolean(scope.sessionId&&f?.session_id===scope.sessionId);
   const saved=Boolean(change.source_commit&&change.source_commit!==change.base_commit);
-  const blocker=!['open','ready','blocked'].includes(change.state)?'not_open'
-   :change.integration_status&&!['conflict','verification_failed','failed','superseded'].includes(change.integration_status)?'integration_active'
-   :f?.active_run?'run_active'
-   :f?.pending_checkpoint&&!f.exhausted?'checkpoint_pending'
-   :scope.agent&&!closeAuthorized.get(change.change_set_id)?'requires_person'
-   :scope.agent&&change.state==='open'&&saved?'review_required'
-   :null;
-  return {change_set_id:change.change_set_id,revision:change.revision,state:change.state,workspace_id:change.workspace_id,generation:change.generation,
+  const reclaimOnly=closedWorkspaceState(change.state);
+  const publication=publications.get(change.change_set_id)!;
+  const blocker=closeAdmissionBlocker(change.state,publication.status,Boolean(f?.active_run),Boolean(f?.pending_checkpoint),Boolean(f?.exhausted),reclaimOnly)
+   ??(reclaimOnly?discards.get(change.change_set_id)!.blocker:null)
+   ??(scope.agent&&!closeAccess.get(change.change_set_id)?'requires_person'
+   :scope.agent&&(closeAccess.get(change.change_set_id)==='project_cleanup'||reclaimOnly||change.state==='open'&&saved)?'review_required'
+   :null);
+  const readable=!scope.agent||same||Boolean(closeAccess.get(change.change_set_id));
+  return {actions:await workspaceActionApplicability(db,change.change_set_id,actor,{publication,discard:discards.get(change.change_set_id)!},recoveryBlockers),change_set_id:change.change_set_id,revision:change.revision,state:change.state,workspace_id:change.workspace_id,generation:change.generation,
    owner_kind:change.parent_workspace_id?'delegation':'conversation',parent_workspace_id:change.parent_workspace_id,
-   conversation_id:scope.agent&&!same?null:f?.session_id??null,same_conversation:same,run_id:run.id,run_status:run.status,
-   summary:scope.agent&&!same?null:change.summary,saved_difference:saved,integration_id:change.integration_id,integration_status:change.integration_status,
+   conversation_id:readable?f?.session_id??null:null,same_conversation:same,run_id:run.id,run_status:run.status,
+   summary:readable?change.summary:null,saved_difference:saved,integration_id:change.integration_id,integration_status:change.integration_status,
    retention_state:change.retention?.state??null,retention_reason:change.retention?.reason??null,closable:blocker===null&&change.can_manage,close_blocker:blocker??(change.can_manage?null:'project_write_required')};
- });
+ }));
  return {items,next_cursor:page.next_cursor};
 }
 

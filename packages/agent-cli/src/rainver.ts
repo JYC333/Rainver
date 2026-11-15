@@ -200,6 +200,8 @@ async function request(
     process.stderr.write(`${message(error)}\n`);
     return 1;
   }
+  if(response.status===404)process.stderr.write("Stop guessing after a 404. Check this Run's current list and visible objects; do not try alternate names or ids, replay writes, or promise an unverified repair.\n");
+  if(response.status===422)process.stderr.write("Read rainver describe for the listed action and correct only the safe field errors. Writes are not automatically retried.\n");
   const text = response.text;
   const ok = response.status >= 200 && response.status < 300;
   if (!ok) process.stderr.write(`Rainver returned HTTP ${response.status}${response.status === 401 || response.status === 403 ? "; the Run identity may have expired, been revoked, or lack permission" : ""}.\n`);

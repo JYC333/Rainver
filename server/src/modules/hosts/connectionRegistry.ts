@@ -1,3 +1,4 @@
+import {performJobEffect,bindJobEffectAuthority,hasJobEffectAuthority} from '../jobs/effectAuthority.js';
 import type { ManagedWorkspaceErrorCode, OrdinaryAccountResult, OrdinaryAccountSessionEvent, OrdinaryToolAction, OrdinaryToolId, OrdinaryToolResult, SourceExecution, SourceExecutionResult, SourceRequest, SourceResponse } from "@rainver/protocol";
 import { randomUUID } from "node:crypto";
 import type { FileContent, FileNode, GitDiff, GitStatus } from "@rainver/folder-read";
@@ -582,14 +583,17 @@ export class HostConnectionRegistry {
     /** The attempt's recorded launch nonce; the registry mints one only for callers that recorded none. */
     launchId: string = randomUUID(),
   ): Promise<HostRunCompletion> {
+    // A slot can become available on a different socket callback, long after
+    // this worker lost its Job. Carry the credential into the actual send.
+    const start=bindJobEffectAuthority(()=>this.sendLaunch(hostId,runId,frame,launchId,onOutput,onStderr,onLaunched));
     if (!maxConcurrentRuns || this.inFlightFor(hostId) < maxConcurrentRuns) {
-      return this.sendLaunch(hostId, runId, frame, launchId, onOutput, onStderr, onLaunched);
+      return start();
     }
     return new Promise((resolve) => {
       const waiters = this.launchWaiters.get(hostId) ?? [];
       waiters.push({
         runId,
-        start: () => { resolve(this.sendLaunch(hostId, runId, frame, launchId, onOutput, onStderr, onLaunched)); },
+        start: () => { resolve(start()); },
         cancel: () => resolve({ exit_code: -1, timed_out: false, error: "run_abandoned_before_launch" }),
       });
       this.launchWaiters.set(hostId, waiters);
@@ -625,11 +629,15 @@ export class HostConnectionRegistry {
       this.pending.set(runId, { hostId, launchId, onOutput, onStderr, onLaunched, resolveComplete: resolve, graceTimer: null, pendingStdin: [], waitingForWorkspace: false });
     });
     const launch: HostLaunchFrame = { ...frame, type: "launch", run_id: runId, launch_id: launchId };
-    try {
-      sink.send(launch);
-    } catch {
-      this.receiveComplete(hostId, runId, { exit_code: -1, timed_out: false, error: "host_offline" }, launchId);
-    }
+    const send=()=>{
+      // A Run may have stopped while the Job admission write waited. The
+      // reserved pending entry also preserves Host capacity during that wait.
+      if(this.pending.get(runId)?.launchId!==launchId)return;
+      if(this.connections.get(hostId)?.sink!==sink){this.receiveComplete(hostId,runId,{exit_code:-1,timed_out:false,error:'host_offline'},launchId);return;}
+      try {sink.send(launch);}catch{this.receiveComplete(hostId,runId,{exit_code:-1,timed_out:false,error:'host_offline'},launchId);}
+    };
+    if(hasJobEffectAuthority())void performJobEffect(send).catch(()=>this.receiveComplete(hostId,runId,{exit_code:-1,timed_out:false,error:'job_execution_authority_lost'},launchId));
+    else send();
     // Every path that resolves this promise is a Run that has stopped
     // executing — a `complete` frame, a host that was offline, a disconnect
     // that outlasted its grace window — so releasing here covers them all
@@ -1131,12 +1139,12 @@ export class HostConnectionRegistry {
 
   /** Global CLI Skill candidates the owned host's daemon discovers in its own Skill roots. */
   scanHostSkills(hostId: string): Promise<HostActionResult<"skill_scan">> {
-    return this.requestHostAction(hostId, "skill_scan", {});
+    return performJobEffect(()=>this.requestHostAction(hostId, "skill_scan", {}));
   }
 
   /** Original files of one discovered Skill, which the daemon rediscovers by its opaque id. */
   readHostSkill(hostId: string, skillId: string): Promise<HostActionResult<"skill_read">> {
-    return this.requestHostAction(hostId, "skill_read", { skill_id: skillId });
+    return performJobEffect(()=>this.requestHostAction(hostId, "skill_read", { skill_id: skillId }));
   }
 
   /** One level of an owned host's directory tree, answered by its daemon. */
@@ -1276,7 +1284,11 @@ export class HostConnectionRegistry {
       try{await broker.authorizeExecution!(signal)}catch{return {status:"refused",output_json:null,error:"source_authority_revoked"};}
       if(signal.aborted || this.connections.get(hostId)?.sink!==sink)return {status:"refused",output_json:null,error:"source_host_unavailable"};
     }
-    return new Promise(resolve => {
+    const requestBroker=broker;
+    broker=Object.assign(bindJobEffectAuthority((...args:Parameters<typeof requestBroker>)=>requestBroker(...args)),{scopeSha256:broker.scopeSha256,authorizeExecution:broker.authorizeExecution});
+    return performJobEffect(()=>{
+      if(signal.aborted||this.connections.get(hostId)?.sink!==sink)return Promise.resolve<SourceExecutionResult>({status:'refused',output_json:null,error:'source_host_unavailable'});
+      return new Promise<SourceExecutionResult>(resolve => {
       const abort = new AbortController();
       const cancel = () => settle({ status: "cancelled", output_json: null, error: "source_cancelled" });
       const timer = setTimeout(() => settle({ status: "timed_out", output_json: null, error: "source_timeout" }), execution.limits.wall_ms + 5000);
@@ -1290,7 +1302,7 @@ export class HostConnectionRegistry {
       this.sourceExecutions.set(execution.execution_id, { hostId, execution, abort, broker, authorize:broker.authorizeExecution, settle, sequence: 0, busy: false });
       signal.addEventListener("abort", cancel, { once: true });
       try { sink.send({ type: "source_execute", execution }); } catch { settle({ status: "failed", output_json: null, error: "source_host_unavailable" }); }
-    });
+    });});
   }
 
   receiveSourceRequest(hostId: string, executionId: string, request: SourceRequest): void {

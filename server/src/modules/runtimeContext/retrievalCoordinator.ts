@@ -11,6 +11,7 @@ export interface RuntimeContextRetrievalRequest {
   userId: string;
   agentId: string;
   executionControlSnapshotId: string;
+  isolatedProjectId?: string;
   query: string;
   objectTypes?: RetrievalObjectType[];
   maxResults: number;
@@ -25,6 +26,7 @@ export interface RetrievalEnginePort {
     spaceId: string;
     viewerUserId: string;
     agentId: string;
+    isolatedProjectId?: string;
     query: string;
     objectTypes?: RetrievalObjectType[];
     maxResults: number;
@@ -72,10 +74,11 @@ export class RetrievalCoordinator {
       spaceId: input.spaceId,
       viewerUserId: input.userId,
       agentId: input.agentId,
+      isolatedProjectId: input.isolatedProjectId,
       query: input.query,
       objectTypes: input.objectTypes,
       maxResults: input.maxResults,
-      mode: input.mode === "broad" ? "hybrid_rerank" : input.mode,
+      mode: input.mode === "broad" ? (input.isolatedProjectId ? "hybrid" : "hybrid_rerank") : input.mode,
       includeTrace: true,
       auditAccessType: "context_injection",
       auditReason: "runtime context retrieval",

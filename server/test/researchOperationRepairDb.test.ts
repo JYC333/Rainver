@@ -174,7 +174,7 @@ describe('Research metadata and invocation repair (real PostgreSQL)',()=>{
   // A revoked grant is refused before any domain work.
   await grant(['research.start_acquisition']);
   const revoked=await call('research.adopt_result',{operation_id:operation,...assessment},'agent-assess-1');
-  expect(revoked.httpStatus).toBe(404);
+  expect(revoked.httpStatus).toBe(403);
   await grant(['research.adopt_result']);
   const adopted=await call('research.adopt_result',{operation_id:operation,...assessment},'agent-assess-1');
   expect(adopted.httpStatus).toBe(200);expect(adopted.body).toMatchObject({ok:true,data:{thread_id:thread,operation_id:operation}});

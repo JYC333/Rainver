@@ -70,6 +70,18 @@ records the reason and a bounded text strategy as a new scoped version; saving i
 has no production effect. Candidate methods cannot grant tools, change Source
 consent/storage, or widen the caller's execution contract.
 
+Every Reading Method write is a keyed, human-only core command on its retained
+URL (`prompts/reading/operations.ts`): initialize, draft, sample, generation
+start/cancel, comparison start/cancel/judgment, promotion and rollback. The
+owners join the operation transaction and keep their order: per-person advisory
+lock, method asset lock, Project audience, frozen effective method. A start
+commits its queued Run(s), closed context and Job intent (`202`). A cancel
+records the stop there (a provider task ends; an Agent Run is marked
+cancelling, both Runs admitted as the command's Run terminal set) and the
+Agent process stop and the comparison settlement run after commit from the
+committed state; both are also recovered by their sweeps. Receipts carry ids
+only; the generation, comparison and sample GET readers release content.
+
 Samples use existing `evaluation_cases`: a bounded homepage plus one/two primary
 docs/examples (no fetching by the sample editor). The shared protocol fixture is
 server-owned fictional input and labelled as such. Custom samples must be exact

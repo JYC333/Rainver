@@ -80,6 +80,8 @@ import {
 import { ProjectSourceBindingRepository } from "../projects/projectSourceBindingRepository.js";
 import { sourceJobReadableClause } from "./sourceJobAccess.js";
 import { assertSourceConnectionManageable } from "./sourceConnectionAccess.js";
+import { SourceObjectRefusal } from "./sourceObjectErrors.js";
+import { isOperationTransaction } from "../../db/operationTransaction.js";
 import type { WithAccessLevel } from "../access/contentAccessTypes.js";
 
 const EVIDENCE_LINK_TYPES = new Set([
@@ -271,6 +273,33 @@ export class PgSourcesRepository {
     return page(rows.rows.map(itemOut), countFromRow(total.rows[0]), filters.limit, filters.offset);
   }
 
+  /**
+   * Operation admission for an existing item: the row is locked first, then
+   * the caller's current reach is decided by the same gate the write uses.
+   * A caller without that reach learns nothing (404).
+   */
+  async requireItemControl(identity: SpaceUserIdentity, itemId: string, options: { lock: boolean; full: boolean }): Promise<{ id: string; project_id: string | null }> {
+    if (options.lock) await this.db.query("SELECT id FROM source_items WHERE space_id = $1 AND id = $2 FOR UPDATE", [identity.spaceId, itemId]);
+    const row = await this.getItemRow(identity, itemId, options.full);
+    if (!row) throw new HttpError(404, "Source item not found");
+    return { id: row.id, project_id: row.project_id };
+  }
+
+  /** As requireItemControl, for extracted evidence (full reach to change it, read reach to link it). */
+  async requireEvidenceControl(identity: SpaceUserIdentity, evidenceId: string, requireFull: boolean, lock: boolean): Promise<{ id: string }> {
+    if (lock) await this.db.query(`SELECT id FROM extracted_evidence WHERE space_id = $1 AND id = $2 FOR ${requireFull ? "UPDATE" : "SHARE"}`, [identity.spaceId, evidenceId]);
+    const row = await this.getEvidenceRow(identity, evidenceId, requireFull);
+    if (!row) throw new HttpError(404, "Evidence not found");
+    return { id: row.id };
+  }
+
+  /** A created evidence link's current reach: its evidence is still readable and the link exists. */
+  async requireEvidenceLinkReach(identity: SpaceUserIdentity, linkId: string, evidenceId: string): Promise<void> {
+    await this.requireEvidenceControl(identity, evidenceId, false, false);
+    const link = await this.db.query("SELECT id FROM evidence_links WHERE space_id = $1 AND id = $2 AND evidence_id = $3", [identity.spaceId, linkId, evidenceId]);
+    if (!link.rows[0]) throw new HttpError(404, "Evidence link not found");
+  }
+
   async getItem(identity: SpaceUserIdentity, itemId: string) {
     const row = await this.getItemRow(identity, itemId);
     return row ? itemOut(row) : null;
@@ -349,7 +378,7 @@ export class PgSourcesRepository {
         // row we cannot read is a conflict, not a server error, and says
         // nothing about who saved it.
         const raced = await readableExisting();
-        if (!raced) throw new HttpError(409, "This URL is already saved in this Project as an item you cannot open");
+        if (!raced) throw new SourceObjectRefusal(409, "This URL is already saved in this Project as an item you cannot open");
         row = raced;
       } else {
         row = created;
@@ -441,7 +470,7 @@ export class PgSourcesRepository {
     if (!item) throw new HttpError(404, "Source item not found");
     if (!Object.hasOwn(body, "connection_id")) throw new HttpError(422, "connection_id is required");
     if (!isManualUrlItem(item)) {
-      throw new HttpError(422, "Only manually saved URL items can change source");
+      throw new SourceObjectRefusal(422, "Only manually saved URL items can change source");
     }
 
     const connectionId = optionalString(body.connection_id);
@@ -657,7 +686,7 @@ export class PgSourcesRepository {
       artifact = artifactResult.rows[0] ?? null;
       if (!artifact) throw new HttpError(404, "Artifact not found");
       if (item && artifact.project_id !== item.project_id) {
-        throw new HttpError(422, "Evidence sources must use the same Project context");
+        throw new SourceObjectRefusal(422, "Evidence sources must use the same Project context");
       }
     }
     const content = optionalString(body.content_excerpt);
@@ -829,7 +858,7 @@ export class PgSourcesRepository {
       );
     } catch (error) {
       if ((error as { code?: string }).code === "23505") {
-        throw new HttpError(409, "An active link with this evidence, target, and link_type already exists");
+        throw new SourceObjectRefusal(409, "An active link with this evidence, target, and link_type already exists");
       }
       throw error;
     }
@@ -1419,19 +1448,33 @@ export class PgSourcesRepository {
   }
 
   private async reindexItemForRetrieval(spaceId: string, itemId: string, trigger: string): Promise<void> {
-    await reindexSourceItemAndEvidenceForRetrieval(this.db, { spaceId, itemId, trigger }).catch((error) => {
-      process.stderr.write(
-        `[source.retrieval] item reindex failed (${itemId}): ${String((error as Error)?.message ?? error)}\n`,
-      );
-    });
+    await this.containedReindex(`item ${itemId}`, () => reindexSourceItemAndEvidenceForRetrieval(this.db, { spaceId, itemId, trigger }));
   }
 
   private async reindexEvidenceForRetrieval(spaceId: string, evidenceId: string, trigger: string): Promise<void> {
-    await reindexExtractedEvidenceAndParentForRetrieval(this.db, { spaceId, evidenceId, trigger }).catch((error) => {
-      process.stderr.write(
-        `[source.retrieval] evidence reindex failed (${evidenceId}): ${String((error as Error)?.message ?? error)}\n`,
-      );
-    });
+    await this.containedReindex(`evidence ${evidenceId}`, () => reindexExtractedEvidenceAndParentForRetrieval(this.db, { spaceId, evidenceId, trigger }));
+  }
+
+  /**
+   * The retrieval projection is derived and rebuildable, so its failure never
+   * fails the canonical write. On a pool each statement autocommits and a
+   * caught error is enough. Inside an operation transaction a caught database
+   * error would still abort the whole transaction, so the refresh runs behind
+   * its own savepoint there.
+   */
+  private async containedReindex(label: string, run: () => Promise<void>): Promise<void> {
+    const contained = isOperationTransaction(this.db);
+    if (contained) await this.db.query("SAVEPOINT source_reindex");
+    try {
+      await run();
+      if (contained) await this.db.query("RELEASE SAVEPOINT source_reindex");
+    } catch (error) {
+      if (contained) {
+        await this.db.query("ROLLBACK TO SAVEPOINT source_reindex");
+        await this.db.query("RELEASE SAVEPOINT source_reindex");
+      }
+      process.stderr.write(`[source.retrieval] ${label} reindex failed: ${String((error as Error)?.message ?? error)}\n`);
+    }
   }
 
   private async insertSummaryProposal(identity: SpaceUserIdentity, proposalType: string, title: string, summary: string, artifactId: string, evidenceIds: string[], sourceItemIds: string[]) {

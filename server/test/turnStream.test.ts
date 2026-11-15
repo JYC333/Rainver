@@ -317,7 +317,7 @@ describe("run turn", () => {
       (frame.type === "turn.part_updated" || frame.type === "turn.part_appended")
       && frame.part.type === "text" && frame.part.text === "Found it.")).toBe(true);
     expect(frames.some((frame) => frame.type === "turn.state_changed" && frame.state === "done")).toBe(true);
-  }, 30000);
+  });
 
   it("stays working until the reply is written, then reports done", async (ctx) => {
     if (!db.available || !app) return ctx.skip();
@@ -487,5 +487,5 @@ describe("run turn", () => {
     expect(frames.some((frame) =>
       frame.type === "turn.part_updated" && frame.part.type === "text"
       && frame.part.streamed === true && frame.part.text === "")).toBe(true);
-  }, 30000);
+  });
 });

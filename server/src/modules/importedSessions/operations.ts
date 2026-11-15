@@ -8,7 +8,7 @@ import {ambientTarget} from '../hosts/operations.js';
 import {ImportedSessionService} from './service.js';
 import {importedSessionToWire} from './wire.js';
 
-type Id='host.location.ambient.policy.set'|'host.location.ambient.dismiss'|'imported_session.visibility.set'|'imported_session.delete';
+type Id='host.location.ambient.policy.set'|'host.location.ambient.reminder.set'|'imported_session.visibility.set'|'imported_session.delete';
 const identity=(a:OperationActor)=>({spaceId:a.space_id,userId:a.on_behalf_of_user_id!});
 
 /**
@@ -18,7 +18,7 @@ const identity=(a:OperationActor)=>({spaceId:a.space_id,userId:a.on_behalf_of_us
  * deleting a session needs the authority its service already checks.
  */
 export function importedSessionRegistrations(definitions:ReadonlyMap<string,RegisteredSystemActionDefinition>,config:ServerConfig):OperationRegistration[]{
-  return (['host.location.ambient.policy.set','host.location.ambient.dismiss','imported_session.visibility.set','imported_session.delete'] as Id[]).map(id=>({
+  return (['host.location.ambient.policy.set','host.location.ambient.reminder.set','imported_session.visibility.set','imported_session.delete'] as Id[]).map(id=>({
     definition:definitions.get(id)!,
     async resolve(_db,raw){
       const i=raw as Record<string,unknown>;
@@ -28,7 +28,7 @@ export function importedSessionRegistrations(definitions:ReadonlyMap<string,Regi
     },
     async authorize(db,raw,a){
       const i=raw as Record<string,unknown>;
-      if(id==='host.location.ambient.policy.set'||id==='host.location.ambient.dismiss'){await ambientTarget(db,config,a,String(i.location_id));return;}
+      if(id==='host.location.ambient.policy.set'||id==='host.location.ambient.reminder.set'){await ambientTarget(db,config,a,String(i.location_id));return;}
       // The service's own authority, not only that the row exists: its importer, or the Location's Host owner with Project write.
       if(id==='imported_session.visibility.set')await new ImportedSessionService(db,config).authorizeSession(identity(a),String(i.session_id));
     },
@@ -54,8 +54,8 @@ export function importedSessionRegistrations(definitions:ReadonlyMap<string,Regi
           });
           return {location_id:String(i.location_id),space_id:a.space_id,policy};
         }
-        case 'host.location.ambient.dismiss':
-          return {location_id:String(i.location_id),space_id:a.space_id,policy:await service.dismissOffer(identity(a),String(i.location_id))};
+        case 'host.location.ambient.reminder.set':
+          return {location_id:String(i.location_id),space_id:a.space_id,policy:await service.setReminder(identity(a),String(i.location_id),i.mode as 'later'|'never'|'enable')};
         case 'imported_session.visibility.set':
           return {space_id:a.space_id,session:importedSessionToWire(await service.setVisibility(identity(a),String(i.session_id),i.visibility as 'private'|'space_shared'))};
         case 'imported_session.delete':

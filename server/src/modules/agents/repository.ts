@@ -30,6 +30,7 @@ import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 import { contentDecisionFromDb } from "../access/contentAccessQuery.js";
 import { assertAgentOwner, canChangeAgent, canConfigureAssistant } from "./agentAccess.js";
 import { canReadProject } from "../projects/access.js";
+import { PgProjectAgentRepository } from "../projects/projectAgents.js";
 import {
   DEFAULT_MEMORY_POLICY,
   DEFAULT_AGENT_MAX_RUN_TIME_SECONDS,
@@ -749,6 +750,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     const normalized = await normalizeRuntimeProfileInput(db, input.spaceId, {
       agentId: input.agentId,
       name: hostRuntimeProfileName(input),
+      projectId: input.projectId,
       runtimeKey: input.runtimeKey,
       executionHostId: input.executionHostId,
       workspaceLocationId: input.workspaceLocationId,
@@ -1854,9 +1856,10 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     const now = new Date().toISOString();
     await client.query(
       `INSERT INTO agents (
-         id, space_id, project_id, owner_user_id, name, description, role_instruction,
+         id, space_id, project_id, access_project_id, owner_user_id, name, description, role_instruction,
          status, agent_kind, visibility, source_template_id, source_template_version_id, created_at, updated_at
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $12, $13, $11, $11)`,
+       ) VALUES ($1, $2, CASE WHEN $9 = 'standard' THEN NULL ELSE $3 END,
+         CASE WHEN $9 = 'standard' THEN $3 ELSE NULL END, $4, $5, $6, $7, $8, $9, $10, $12, $13, $11, $11)`,
       [
         agentId,
         input.spaceId,
@@ -1873,6 +1876,11 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
         input.sourceTemplate?.versionId ?? null,
       ],
     );
+    if (input.agentKind === "standard" && input.projectId) {
+      await new PgProjectAgentRepository(client).upsertActive({
+        spaceId: input.spaceId, projectId: input.projectId, agentId, userId: input.actorUserId,
+      });
+    }
     const version = await this.insertVersion(client, {
       agentId,
       spaceId: input.spaceId,

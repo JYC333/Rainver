@@ -5,18 +5,17 @@ import {OperationError} from '../systemActions/operations/errors.js';
 import {operationRuntime} from '../systemActions/operations/runtime.js';
 import {sessionActor} from '../systemActions/operations/actor.js';
 import {registerSourceMonitorOperationRoutes} from './sourceMonitorOperationRoutes.js';
+import {registerSourceObjectOperationRoutes} from './sourceObjectOperationRoutes.js';
+import {registerSourceRetrievalRoutes} from './retrievalOperations.js';
 import {registerSourceSubscriptionOperationRoutes} from './sourceSubscriptionOperationRoutes.js';
-import {registerRetiredSourceConnectionRoutes} from './retiredConnectionRoutes.js';
 import {registerBackfillOperationRoutes} from './sourceBackfillOperationRoutes.js';
 import {registerDeepReadingRoutes} from './deepReading/routes.js';
 import {registerMaterialProcessingRoutes} from './materialProcessing/routes.js';
 import {registerSourceGoalRoutes} from './goals/routes.js';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import * as protocol from "@rainver/protocol";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
   dbPool,
-  HttpError,
   jsonBody,
   optionalString,
   parsePage,
@@ -27,43 +26,27 @@ import {
   sendRouteError,
   toDbDate,
 } from "../routeUtils/common.js";
-import { requireSpaceOwnerOrAdmin, requireInstanceAdmin } from "../routeUtils/access.js";
+import { requireInstanceAdmin } from "../routeUtils/access.js";
 import { enforceSources } from "./enforceSources.js";
 import { PgSourcesRepository } from "./repository.js";
 import { SourcePostProcessingService } from "./postProcessing/service.js";
 import { registerCustomSourceRoutes } from "./customSources/customSourceRoutes.js";
 import { registerSourceRecipeRoutes } from "./sourceRecipeRoutes.js";
 import { listSourceRuns } from "./sourceRunReadModel.js";
-import {
-  RetrievalProjectionService,
-  RetrievalSearchService,
-  persistRetrievalBriefArtifact,
-  type RetrievalObjectType,
-} from "../retrieval/index.js";
-import { readSpaceRetrievalSettings, resolveRetrievalSearchControls } from "../retrieval/settings.js";
-import { ProviderQueryEmbedder } from "../retrieval/embedding/queryEmbedder.js";
-import { ProviderQueryRewriter } from "../retrieval/queryRewriteProvider/providerQueryRewriter.js";
-import { ProviderReranker } from "../retrieval/rerankProvider/providerReranker.js";
-import { ProviderSynthesizer } from "../retrieval/synthesisProvider/providerSynthesizer.js";
-import { resolveProviderCommandStore } from "../providers/commands/store.js";
-import { enqueueRetrievalEmbeddingBackfill } from "../retrieval/embedding/job.js";
-import { sourceRetrievalRegistry } from "./retrievalAdapter.js";
 import { SourceBackfillPlanningService } from "./sourceBackfillService.js";
 import { SourceChannelService } from "./channels/sourceChannelService.js";
 import { SourceProviderCatalogService } from "./catalog/sourceProviderCatalogService.js";
-import { SourceQueryPreviewService } from "./sourceQueryPreviewService.js";
-import { applyContentCreationContext, resolveContentCreationContext } from "../access/creationContext.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   registerSourceMonitorOperationRoutes(app,context);
+  registerSourceObjectOperationRoutes(app,context);
+  registerSourceRetrievalRoutes(app,context);
   registerBackfillOperationRoutes(app,context);
   registerSourceSubscriptionOperationRoutes(app,context);
-  registerRetiredSourceConnectionRoutes(app);
   const repository = () => new PgSourcesRepository(dbPool(context.config), context.config);
   const backfills = () => new SourceBackfillPlanningService(dbPool(context.config), context.config);
   const channels = () => new SourceChannelService(dbPool(context.config), context.config);
   const catalog = () => new SourceProviderCatalogService(dbPool(context.config));
-  const queryPreviews = () => new SourceQueryPreviewService(dbPool(context.config), context.config);
 
   app.get("/api/v1/sources/providers", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -83,18 +66,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const key=request.headers['idempotency-key'];
     const result=await(await operationRuntime(context.config)).execute('source.channel.create',body,sessionActor({spaceId:auth.spaceId,userId:auth.userId}),requestId,typeof key==='string'?key:undefined);
     return reply.code(result.http_status).send(result.body);
-  });
-
-  app.post("/api/v1/sources/query-preview", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const gate = await enforceSources(context, identity, "source.connection.manage", "source_channel");
-      if (gate.blocked) return reply.code(403).send(gate.reply403);
-      return reply.send(await queryPreviews().preview(identity, jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
   });
 
   app.get("/api/v1/sources/channels", async (request, reply) => {
@@ -183,19 +154,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/sources/channels/:channelId/backfill/plans/:planId/propose-start", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const p = params(request);
-      const gate = await enforceSources(context, identity, "source.backfill.plan", "source_backfill_plan", p.planId);
-      if (gate.blocked) return reply.code(403).send(gate.reply403);
-      return reply.code(201).send(await backfills().proposeStart(identity, requiredString(p.channelId, "source_channel_id"), requiredString(p.planId, "plan_id")));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
   const postProcessing = () => new SourcePostProcessingService(dbPool(context.config), context.config);
   registerCustomSourceRoutes(app, context);
   registerSourceRecipeRoutes(app, context);
@@ -203,180 +161,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
 
   app.get("/api/v1/sources", sourcesHealth(context));
   app.get("/api/v1/sources/", sourcesHealth(context));
-
-  app.post("/api/v1/sources/retrieval/search", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const parsed = protocol.RetrievalSearchRequestSchema.safeParse(jsonBody(request));
-      if (!parsed.success) throw new HttpError(422, validationMessage(parsed.error.issues));
-      const body = parsed.data;
-      const objectTypes = sourceObjectTypes(body.object_types);
-      const pool = dbPool(context.config);
-      const retrievalSettings = await readSpaceRetrievalSettings(pool, identity.spaceId);
-      const controls = resolveRetrievalSearchControls(body, retrievalSettings);
-      const store = resolveProviderCommandStore(context.config);
-      const egressPolicy = { externalEgressEnabled: retrievalSettings.externalEgressEnabled };
-      const search = new RetrievalSearchService(pool, sourceRetrievalRegistry, {
-        egressPolicy,
-        queryEmbedder: new ProviderQueryEmbedder(
-          store,
-          { kind: "person", user_id: identity.userId },
-          null,
-          undefined,
-          retrievalSettings.embeddingDimensions,
-          egressPolicy,
-        ),
-        reranker: retrievalSettings.rerankEnabled
-          ? new ProviderReranker(store, {
-              spend: { kind: "person", user_id: identity.userId },
-              databaseUrl: context.config.databaseUrl,
-              surface: "source_search",
-              egressPolicy,
-            })
-          : undefined,
-        queryRewriter: retrievalSettings.queryRewriteEnabled
-          ? new ProviderQueryRewriter(store, {
-              spend: { kind: "person", user_id: identity.userId },
-              databaseUrl: context.config.databaseUrl,
-              surface: "source_search",
-              egressPolicy,
-            })
-          : undefined,
-      });
-      return reply.send(await search.search({
-        spaceId: identity.spaceId,
-        viewerUserId: identity.userId,
-        query: body.query,
-        objectTypes,
-        objectProfiles: body.object_profiles,
-        maxResults: controls.maxResults,
-        includeTrace: controls.includeTrace,
-        feedbackSurface: "source_search",
-        mode: controls.mode,
-        rewrite: controls.rewrite,
-        useCache: controls.useCache,
-        adaptiveReturn: controls.adaptiveReturn,
-        rankingConfig: controls.rankingConfig,
-      }));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.post("/api/v1/sources/retrieval/brief", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const parsed = protocol.RetrievalBriefRequestSchema.safeParse(jsonBody(request));
-      if (!parsed.success) throw new HttpError(422, validationMessage(parsed.error.issues));
-      const body = parsed.data;
-      const objectTypes = sourceObjectTypes(body.object_types);
-      const pool = dbPool(context.config);
-      const retrievalSettings = await readSpaceRetrievalSettings(pool, identity.spaceId);
-      const store = resolveProviderCommandStore(context.config);
-      const egressPolicy = { externalEgressEnabled: retrievalSettings.externalEgressEnabled };
-      const search = new RetrievalSearchService(pool, sourceRetrievalRegistry, {
-        egressPolicy,
-        queryEmbedder: new ProviderQueryEmbedder(
-          store,
-          { kind: "person", user_id: identity.userId },
-          null,
-          undefined,
-          retrievalSettings.embeddingDimensions,
-          egressPolicy,
-        ),
-        reranker: retrievalSettings.rerankEnabled
-          ? new ProviderReranker(store, { spend: { kind: "person", user_id: identity.userId }, databaseUrl: context.config.databaseUrl, surface: "source_brief", egressPolicy })
-          : undefined,
-        synthesizer: new ProviderSynthesizer(store, {
-          spend: { kind: "person", user_id: identity.userId },
-          databaseUrl: context.config.databaseUrl,
-          surface: "source_brief",
-          egressPolicy,
-        }),
-      });
-      const maxResults = body.max_results ?? retrievalSettings.maxResultsDefault;
-      const includeTrace = body.include_trace ?? retrievalSettings.includeTrace;
-      const mode = body.mode ?? retrievalSettings.defaultSearchMode;
-      const adaptiveReturn = body.adaptive_return ?? resolveRetrievalSearchControls(body, retrievalSettings).adaptiveReturn;
-      const response = await search.buildBrief({
-        spaceId: identity.spaceId,
-        viewerUserId: identity.userId,
-        query: body.query,
-        objectTypes,
-        objectProfiles: body.object_profiles,
-        maxResults,
-        includeTrace,
-        mode,
-        useCache: retrievalSettings.useQueryCache,
-        adaptiveReturn,
-        rankingConfig: retrievalSettings.rankingConfig,
-      });
-      if (!body.persist_artifact) return reply.send(response);
-      try {
-        const artifactId = await persistRetrievalBriefArtifact(pool, {
-          spaceId: identity.spaceId,
-          ownerUserId: identity.userId,
-          runId: null,
-          projectId: null,
-          query: body.query,
-          objectTypes,
-          objectProfiles: body.object_profiles,
-          maxResults,
-          includeTrace,
-          mode,
-          surface: "source_brief",
-          response,
-          egressPolicySnapshot: {
-            external_egress_enabled: retrievalSettings.externalEgressEnabled,
-          },
-          settingsSnapshot: {
-            default_search_mode: retrievalSettings.defaultSearchMode,
-            rerank_enabled: retrievalSettings.rerankEnabled,
-            query_rewrite_enabled: retrievalSettings.queryRewriteEnabled,
-            use_query_cache: retrievalSettings.useQueryCache,
-            embedding_dimensions: retrievalSettings.embeddingDimensions,
-            max_results_default: retrievalSettings.maxResultsDefault,
-            ranking_config: retrievalSettings.rankingConfig,
-          },
-        });
-        return reply.send({ ...response, artifact_id: artifactId });
-      } catch {
-        return reply.send({ ...response, artifact_error: "retrieval_brief_persist_failed" });
-      }
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.post("/api/v1/sources/retrieval/reindex", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    if (!(await requireSpaceMaintenanceRole(context, identity, reply))) return reply;
-    try {
-      const projection = new RetrievalProjectionService(dbPool(context.config), sourceRetrievalRegistry);
-      const summary = await projection.reindexAll(identity.spaceId);
-      const embeddingBackfill = await enqueueRetrievalEmbeddingBackfill(context.config, {
-        spaceId: identity.spaceId,
-        userId: identity.userId,
-        trigger: "source_retrieval_reindex",
-      }).catch((error) => {
-        process.stderr.write(
-          `[source.retrieval] embedding backfill enqueue failed: ${String((error as Error)?.message ?? error)}\n`,
-        );
-        return null;
-      });
-      return reply.send({
-        ok: true,
-        reindexed: summary,
-        embedding_backfill_job_id: embeddingBackfill?.jobId ?? null,
-      });
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
 
   app.get("/api/v1/sources/channels/:channelId/source-runs", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -525,23 +309,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/sources/post-processing/decisions/:decisionId/actions", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const body = jsonBody(request);
-      const action = optionalString(body.action);
-      const policyAction = action === "queue_content" || action === "extract_evidence"
-        ? "source.item_create"
-        : "source.item_update";
-      const gate = await enforceSources(context, identity, policyAction, "source_item");
-      if (gate.blocked) return reply.code(403).send(gate.reply403);
-      return reply.send(await postProcessing().decisionAction(identity, params(request).decisionId ?? "", body));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
   app.get("/api/v1/sources/items", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
@@ -567,30 +334,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/sources/items/manual-url", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const body = jsonBody(request);
-      const connectionId = optionalString(body.connection_id);
-      const creation = connectionId ? null : await resolveContentCreationContext(dbPool(context.config), {
-            userId: identity.userId,
-            requestSpaceId: identity.spaceId,
-            projectId: optionalString(body.project_id),
-          });
-      const creationIdentity = creation
-        ? { spaceId: creation.spaceId, userId: identity.userId }
-        : identity;
-      const gate = await enforceSources(context, creationIdentity, "source.item_create", "source_item");
-      if (gate.blocked) return reply.code(403).send(gate.reply403);
-      return reply.code(201).send(await repository().createManualUrl(
-        creationIdentity,
-        creation ? applyContentCreationContext(body, creation) : body,
-      ));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
   app.get("/api/v1/sources/items/:itemId", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -604,37 +347,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.patch("/api/v1/sources/items/:itemId", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const itemId = params(request).itemId ?? "";
-      const gate = await enforceSources(context, identity, "source.item_update", "source_item", itemId);
-      if (gate.blocked) return reply.code(403).send(gate.reply403);
-      return reply.send(await repository().updateItem(identity, itemId, jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.post("/api/v1/sources/items/:itemId/actions", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const itemId = params(request).itemId ?? "";
-      const body = jsonBody(request);
-      const action = typeof body.action === "string" ? body.action : "";
-      const policyAction =
-        action === "queue_content" || action === "archive_snapshot"
-          ? "source.item_create"
-          : "source.item_update";
-      const gate = await enforceSources(context, identity, policyAction, "source_item", itemId);
-      if (gate.blocked) return reply.code(403).send(gate.reply403);
-      return reply.send(await repository().itemAction(identity, itemId, body));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
   app.get("/api/v1/sources/jobs", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -683,30 +396,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/sources/evidence", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const body = jsonBody(request);
-      const hasSource = Boolean(optionalString(body.source_item_id) || optionalString(body.artifact_id));
-      const creation = hasSource ? null : await resolveContentCreationContext(dbPool(context.config), {
-            userId: identity.userId,
-            requestSpaceId: identity.spaceId,
-            projectId: optionalString(body.project_id),
-          });
-      const creationIdentity = creation
-        ? { spaceId: creation.spaceId, userId: identity.userId }
-        : identity;
-      const gate = await enforceSources(context, creationIdentity, "evidence.create", "evidence");
-      if (gate.blocked) return reply.code(403).send(gate.reply403);
-      return reply.code(201).send(await repository().createEvidence(
-        creationIdentity,
-        creation ? applyContentCreationContext(body, creation) : body,
-      ));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
   app.get("/api/v1/sources/evidence/:evidenceId", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -720,18 +409,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.patch("/api/v1/sources/evidence/:evidenceId", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const evidenceId = params(request).evidenceId ?? "";
-      const gate = await enforceSources(context, identity, "evidence.update", "evidence", evidenceId);
-      if (gate.blocked) return reply.code(403).send(gate.reply403);
-      return reply.send(await repository().updateEvidence(identity, evidenceId, jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
   app.get("/api/v1/sources/evidence-links", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -752,17 +429,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/sources/evidence-links", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const gate = await enforceSources(context, identity, "evidence.link", "evidence");
-      if (gate.blocked) return reply.code(403).send(gate.reply403);
-      return reply.code(201).send(await repository().createEvidenceLink(identity, jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
   app.get("/api/v1/sources/project-items", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -809,16 +475,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/sources/post-processing/run-once", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.code(201).send(await postProcessing().runOneOff(identity, jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
 }
 
 function sourcesHealth(context: ModuleContext) {
@@ -827,30 +483,4 @@ function sourcesHealth(context: ModuleContext) {
     if (!identity) return reply;
     return reply.send({ ok: true });
   };
-}
-
-const SOURCE_RETRIEVAL_OBJECT_TYPES = ["source_item", "extracted_evidence"] as const;
-
-function sourceObjectTypes(values: RetrievalObjectType[] | undefined): RetrievalObjectType[] {
-  if (!values || values.length === 0) return [...SOURCE_RETRIEVAL_OBJECT_TYPES];
-  const invalid = values.filter((value) => !(SOURCE_RETRIEVAL_OBJECT_TYPES as readonly string[]).includes(value));
-  if (invalid.length > 0) {
-    throw new HttpError(422, "source retrieval only supports source_item and extracted_evidence");
-  }
-  return [...new Set(values)];
-}
-
-async function requireSpaceMaintenanceRole(
-  context: ModuleContext,
-  identity: { spaceId: string; userId: string },
-  reply: FastifyReply,
-): Promise<boolean> {
-  return requireSpaceOwnerOrAdmin(context.config, identity, reply);
-}
-
-function validationMessage(issues: Array<{ path: Array<string | number>; message: string }>): string {
-  const issue = issues[0];
-  if (!issue) return "Invalid request body";
-  const path = issue.path.length ? `${issue.path.join(".")}: ` : "";
-  return `${path}${issue.message}`;
 }

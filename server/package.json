@@ -25,7 +25,8 @@
     "migrate:status": "pnpm run build && node dist/db/migrateCli.js status",
     "auth:recovery": "pnpm run build && node dist/modules/auth/recoveryCli.js",
     "schema:generate": "node scripts/db/schema-migrations.mjs generate",
-    "schema:check": "node scripts/db/schema-migrations.mjs check && drizzle-kit check --config=drizzle.config.ts"
+    "schema:check": "node scripts/db/schema-migrations.mjs check && drizzle-kit check --config=drizzle.config.ts",
+    "verify": "pnpm run build:workspace-deps && pnpm exec tsc -p tsconfig.typecheck.json && pnpm exec vitest run"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "latest",

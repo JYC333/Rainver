@@ -5,6 +5,9 @@ import type {
 } from "@rainver/protocol";
 import type { ServerConfig } from "../src/config.js";
 import { AskSpaceService } from "../src/modules/askSpace/service.js";
+import { buildRetrievalBriefArtifactSpec, persistRetrievalBriefArtifact } from "../src/modules/retrieval/artifacts/brief.js";
+import { insertArtifactRow } from "../src/modules/artifacts/reviewArtifactWriter.js";
+import { persistAskSpaceSessionArtifact } from "../src/modules/askSpace/sessionArtifact.js";
 import { __setProviderCommandStoreForTests } from "../src/modules/providers/commands/store.js";
 import type { BriefCandidate } from "../src/modules/retrieval/index.js";
 
@@ -20,6 +23,20 @@ afterAll(() => {
 });
 
 /** Captures writes; returns defaults for settings (no row ⇒ DEFAULT settings). */
+/** Orchestration only: the canonical settling writer needs real rows; its
+ * authority and races are covered on PostgreSQL by retrievalArtifactReleaseDb. */
+const orchestrationBrief: typeof persistRetrievalBriefArtifact = (queryable, input) => insertArtifactRow(queryable, {
+  spaceId: input.spaceId, ownerUserId: input.ownerUserId, artifactType: "retrieval_brief", title: "Context Brief", content: "{}",
+  metadata: buildRetrievalBriefArtifactSpec(input).metadata_json, canonicalFormat: "retrieval_brief.v1", visibility: "private",
+});
+
+/** Orchestration only, like `orchestrationBrief`: the settling session writer is
+ * covered on PostgreSQL by retrievalArtifactDomainClosureDb. */
+const orchestrationSession: typeof persistAskSpaceSessionArtifact = (queryable, input) => insertArtifactRow(queryable, {
+  spaceId: input.spaceId, ownerUserId: input.ownerUserId, artifactType: "ask_space_session", title: "Ask Space", content: "{}",
+  metadata: { contributions: input.contributions }, canonicalFormat: "ask_space_session.v1", visibility: "private",
+});
+
 class FakeDb {
   queries: Array<{ sql: string; params: readonly unknown[] }> = [];
   async query<Row = Record<string, unknown>>(
@@ -121,6 +138,8 @@ describe("AskSpaceService.think (orchestration)", () => {
   it("fans across domains, aggregates gaps/provenance, and gates follow-ups", async () => {
     const db = new FakeDb();
     const service = new AskSpaceService(db, CONFIG, {
+      persistBrief: orchestrationBrief,
+      persistSession: orchestrationSession,
       runDomainBrief: async ({ domain }) => cannedBrief(domain, { stale: domain === "knowledge" }),
       canRunActions: async () => true,
     });
@@ -249,6 +268,8 @@ describe("AskSpaceService.think (orchestration)", () => {
   it("isolates a single failing domain without sinking the others", async () => {
     const db = new FakeDb();
     const service = new AskSpaceService(db, CONFIG, {
+      persistBrief: orchestrationBrief,
+      persistSession: orchestrationSession,
       runDomainBrief: async ({ domain }) => {
         if (domain === "project") throw new Error("adapter boom");
         return cannedBrief(domain);
@@ -272,6 +293,8 @@ describe("AskSpaceService.think (orchestration)", () => {
   it("suppresses follow-ups when the viewer lacks Context Ops scan authority", async () => {
     const db = new FakeDb();
     const service = new AskSpaceService(db, CONFIG, {
+      persistBrief: orchestrationBrief,
+      persistSession: orchestrationSession,
       runDomainBrief: async ({ domain }) => cannedBrief(domain, { stale: true }),
       canRunActions: async () => false,
     });
@@ -292,6 +315,8 @@ describe("AskSpaceService.think (orchestration)", () => {
   it("defaults to the knowledge domain", async () => {
     const db = new FakeDb();
     const service = new AskSpaceService(db, CONFIG, {
+      persistBrief: orchestrationBrief,
+      persistSession: orchestrationSession,
       runDomainBrief: async ({ domain }) => cannedBrief(domain),
       canRunActions: async () => true,
     });

@@ -1,3 +1,4 @@
+import { EvolutionAssetRefusal } from "../../evolution/assetRefusal.js";
 import { providerCredentialEligibilitySql, isProviderEligibleForUser, type ProviderEligibilityRow } from '../../providers/eligibility.js';
 import type { SourceConnectionRow } from '../../sources/sourceRepositoryRows.js';
 import type { ProviderEgressSubject } from '../../retrieval/egress/egressPolicy.js';
@@ -40,9 +41,9 @@ export async function revisionProvider(db: Queryable, identity: SpaceUserIdentit
     is_default: boolean;
   } & ProviderEligibilityRow>(`SELECT p.id,p.name,p.space_id,p.provider_type,p.base_url,p.config_json,p.default_model,p.capabilities_json,p.credential_id,g.network_profile_id,g.is_default,p.enabled provider_enabled,g.enabled provider_grant_enabled,p.owner_user_id provider_owner_user_id,c.credential_type provider_credential_type,${providerCredentialEligibilitySql('p.id', 'p.credential_id', 'c')} provider_has_eligible_credential FROM model_providers p JOIN model_provider_space_grants g ON g.provider_id=p.id LEFT JOIN credentials c ON c.id=p.credential_id WHERE g.space_id=$1 AND g.enabled=true AND p.enabled=true AND ($2::text IS NULL OR p.id=$2) ORDER BY g.is_default DESC,p.id ${lock ? 'FOR SHARE OF p,g' : ''}`, [identity.spaceId, requested ?? null])).rows;
   const row = requested ? rows[0] : rows.find(r => r.is_default);
-  if (!row || !isProviderEligibleForUser(row, identity.userId) || !providerSupportsTask('retrieval_query_rewrite', row.provider_type) || !providerSupportsStructuredOutput(row.provider_type)) throw new HttpError(409, 'Configure an authorized default chat API provider in Providers');
+  if (!row || !isProviderEligibleForUser(row, identity.userId) || !providerSupportsTask('retrieval_query_rewrite', row.provider_type) || !providerSupportsStructuredOutput(row.provider_type)) throw new EvolutionAssetRefusal(409, 'Configure an authorized default chat API provider in Providers');
   const selected = model ?? row.default_model;
-  if (typeof selected !== 'string' || !selected.trim() || /(?:embed|rerank|zerank|zembed)/i.test(selected)) throw new HttpError(409, 'Configure a default text-generation model in Providers');
+  if (typeof selected !== 'string' || !selected.trim() || /(?:embed|rerank|zerank|zembed)/i.test(selected)) throw new EvolutionAssetRefusal(409, 'Configure a default text-generation model in Providers');
   return {
     id: row.id,
     model: selected,
@@ -75,6 +76,6 @@ export async function assertRevisionProviderReadable(db: Queryable, identity: Sp
 /** Executing frozen input additionally requires its exact admitted configuration. */
 export async function assertRevisionProvider(db: Queryable, identity: SpaceUserIdentity, frozen: RevisionProvider, sourceId: string | null, lock = false) {
   const current = await revisionProvider(db, identity, frozen.id, frozen.model, lock);
-  if (current.fingerprint !== frozen.fingerprint) throw new HttpError(409, 'Frozen API provider configuration changed');
+  if (current.fingerprint !== frozen.fingerprint) throw new EvolutionAssetRefusal(409, 'Frozen API provider configuration changed');
   await assertRevisionProviderReadable(db, identity, frozen, sourceId);
 }

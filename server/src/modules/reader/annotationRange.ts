@@ -1,23 +1,30 @@
 import { ReaderAnnotationRangeUpdateSchema } from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import { HttpError, withQueryableTransaction, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
-import { PgAnnotationRepository, PgReaderRepository } from "./repository.js";
-import { lockDocumentVersion } from "./documentVersionLock.js";
+import { PgAnnotationRepository, PgReaderRepository, readerFilesOutsideTransaction, type ReaderFilePreparation } from "./repository.js";
+import { lockReaderWriteTarget } from "./writeAuthority.js";
 
 /** Document → annotation lock order, like reading-position writes. No label,
- * visibility, thread or evidence mutation is part of a range replacement. */
-export async function replaceAnnotationRange(db: Queryable, config: ServerConfig, identity: SpaceUserIdentity, id: string, body: unknown) {
+ * visibility, thread or evidence mutation is part of a range replacement.
+ * `files` is the sealed body preparation made outside any transaction (the
+ * Reader write Job); the version check never reads a file itself. */
+export async function replaceAnnotationRange(db: Queryable, config: ServerConfig, identity: SpaceUserIdentity, id: string, body: unknown, prepared?: ReaderFilePreparation) {
   const parsed = ReaderAnnotationRangeUpdateSchema.safeParse(body);
   if (!parsed.success) throw new HttpError(422, parsed.error.issues[0]?.message ?? "Invalid annotation range");
   const input = parsed.data;
+  const files = prepared ?? await (async () => {
+    const known = (await db.query<{ document_type: string; document_id: string }>("SELECT document_type,document_id FROM reader_annotations WHERE space_id=$1 AND id=$2", [identity.spaceId, id])).rows[0];
+    if (!known) throw new HttpError(404, "Annotation not found");
+    return readerFilesOutsideTransaction(db, config, identity, known.document_type, known.document_id);
+  })();
   return withQueryableTransaction(db, async tx => {
     const target = (await tx.query<{ document_type: string; document_id: string }>(
       "SELECT document_type,document_id FROM reader_annotations WHERE space_id=$1 AND id=$2 AND created_by_user_id=$3",
       [identity.spaceId, id, identity.userId],
     )).rows[0];
     if (!target) throw new HttpError(404, "Annotation not found");
-    await lockDocumentVersion(tx, identity.spaceId, target.document_type, target.document_id);
-    const document = await new PgReaderRepository(tx, config).getDocument(identity, target.document_type, target.document_id, { recordOpen: false });
+    await lockReaderWriteTarget(tx,identity,{annotation_id:id});
+    const document = await new PgReaderRepository(tx, config,files).getDocument(identity, target.document_type, target.document_id, { recordOpen: false });
     if (!document) throw new HttpError(404, "Document not found");
     if (document.content_hash !== input.content_hash || document.structure_hash !== input.structure_hash) throw new HttpError(409, "The document changed. Reload before adjusting this quote.");
     const ref = input.anchor_json.document_ref;

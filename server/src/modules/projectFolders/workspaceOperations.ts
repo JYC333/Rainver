@@ -1,5 +1,12 @@
+import {publishedWorkspaceState,cleanupPublicationStatus,settleLegacyCleanupPublication} from './workspacePublicationState.js';
+import {recordWorkspaceLanding,refreshWorkspaceLifecycle} from '../hosts/workspaceLifecycle.js';
+import {wakeJobWorkers} from '../jobs/wakeSignal.js';
+import {wakeSlotHoldWaiters} from './delegatedWorkspaceSlots.js';
+import {allPendingCheckpointsExhaustedSql,checkpointRecoveryPayload,unlaunchedCheckpointSql} from './workspaceCheckpointState.js';
+import {retryAdmissionBlocker,closeAdmissionBlocker,workspaceStateRefusal} from './workspaceActionRules.js';
 import {admitWorkspaceDiscard} from './workspaceDiscard.js';
 import {workspaceClosureRequest} from './workspaceClosureRequest.js';
+import {projectWorkspaceCleanupAccess} from './workspaceProjectCleanup.js';
 import {workspaceRetentionRegistration} from './workspaceRetentionOperations.js';
 import {workspaceBranchAlignRegistration} from './workspaceBranchAlign.js';
 import {workspaceChangeListRegistration} from './workspaceChangeList.js';
@@ -22,7 +29,7 @@ import {assertProjectWriter,assertProjectWriterForMutation} from '../projects/ac
 import {PgRunRepository} from '../runs/repository.js';
 import {PgJobQueueRepository} from '../jobs/repository.js';
 import type {OperationRegistration} from '../systemActions/operations/types.js';
-import {OperationBusinessError,hidden} from '../systemActions/operations/errors.js';
+import {OperationBusinessError,OperationRefusal,hidden} from '../systemActions/operations/errors.js';
 
 export async function authorizedWorkspaceChange(db:Queryable,id:string,actor:OperationActor,lock=false,conversationRecovery=false,readOnly=false,retainedClosure=false,candidateRecovery?:'verification'){
  if(!actor.on_behalf_of_user_id)throw hidden();
@@ -32,8 +39,8 @@ export async function authorizedWorkspaceChange(db:Queryable,id:string,actor:Ope
  if(!origin||bodyWithheld(origin.effective_access_level))throw hidden();
  // Every Run whose work is in this batch, not only its origin (workspaceContributors).
  await assertWorkspaceContributorsReadable(db,actor.space_id,actor.on_behalf_of_user_id,id,hidden);
- /** How an Agent reached this batch; a person reaches it directly. Only `delegated` is read/close-only. */
- let access:'person'|'own'|'recovery'|'candidate'|'delegated'='person';
+ /** `delegated` and `project_cleanup` are inspection/closure-only. */
+ let access:'person'|'own'|'recovery'|'candidate'|'delegated'|'project_cleanup'='person';
  if(actor.run_id){
   const own=(await db.query("SELECT 1 FROM execution_workspace_runs WHERE run_id=$1 AND workspace_id=$2 AND change_set_id=$3 AND space_id=$4 AND access_mode='write'",[actor.run_id,row.workspace_id,id,actor.space_id])).rowCount;
   const recovery=!own&&conversationRecovery&&(await db.query(`SELECT 1 FROM execution_workspace_runs b JOIN runs r ON r.id=b.run_id AND r.space_id=b.space_id
@@ -54,8 +61,10 @@ export async function authorizedWorkspaceChange(db:Queryable,id:string,actor:Ope
    SELECT 1 FROM up JOIN runs r ON r.id=$1 AND r.space_id=$3 AND r.session_id=up.session_id AND r.project_id=up.project_id AND r.project_id=$4 AND r.instructed_by_user_id=$5
    WHERE up.owner_kind='conversation' AND EXISTS(SELECT 1 FROM execution_workspace_runs b JOIN execution_workspaces cw ON cw.id=b.workspace_id AND cw.space_id=b.space_id
      WHERE b.run_id=r.id AND b.space_id=$3 AND b.access_mode='write' AND cw.owner_kind='conversation' AND cw.session_id=r.session_id AND cw.project_id=r.project_id) LIMIT 1`,[actor.run_id,row.workspace_id,actor.space_id,row.project_id,actor.on_behalf_of_user_id])).rowCount;
-  if(!own&&!recovery&&!candidate&&!delegated)throw hidden();
-  access=own?'own':recovery?'recovery':candidate?'candidate':'delegated';
+  const projectCleanup=!own&&!recovery&&!candidate&&!delegated&&retainedClosure
+   &&await projectWorkspaceCleanupAccess(db,actor,row,origin.instructed_by_user_id??null);
+  if(!own&&!recovery&&!candidate&&!delegated&&!projectCleanup)throw hidden();
+  access=own?'own':recovery?'recovery':candidate?'candidate':delegated?'delegated':'project_cleanup';
   // A delegated child in its coordinator's workspace acts only on the batch it
   // is bound to (and only to save it); conversation recovery stays the coordinator's.
   if((access==='recovery'||access==='delegated')&&await sharedDelegatedRun(db,actor.run_id,actor.space_id))throw hidden();
@@ -64,7 +73,7 @@ export async function authorizedWorkspaceChange(db:Queryable,id:string,actor:Ope
  else await assertProjectWriterForMutation(db,actor.space_id,row.project_id,actor.on_behalf_of_user_id);
  if(lock){
   await db.query('SELECT id FROM execution_workspaces WHERE id=$1 AND space_id=$2 FOR UPDATE',[row.workspace_id,actor.space_id]);
-  const current=(await db.query<{revision:number;state:string;source_commit:string|null;base_commit:string|null}>('SELECT revision,state,source_commit,base_commit FROM workspace_change_sets WHERE id=$1 AND space_id=$2 FOR UPDATE',[id,actor.space_id])).rows[0];
+  const current=(await db.query<{revision:number;generation:number;state:string;source_commit:string|null;base_commit:string|null}>('SELECT revision,generation,state,source_commit,base_commit FROM workspace_change_sets WHERE id=$1 AND space_id=$2 FOR UPDATE',[id,actor.space_id])).rows[0];
   if(!current)throw hidden();
   return {...row,...current,access};
  }
@@ -72,9 +81,9 @@ export async function authorizedWorkspaceChange(db:Queryable,id:string,actor:Ope
 }
 /** A delegated child working in its coordinator's workspace saves (checkpoint)
  * but never prepares, publishes or reconciles the coordinator's batch. */
-async function refuseSharedDelegatedPublication(db:Queryable,actor:OperationActor,c:{access:string;workspace_id:string},action:string|undefined){
+export async function refuseSharedDelegatedPublication(db:Queryable,actor:OperationActor,c:{access:string;workspace_id:string},action:string|undefined){
  if(!actor.run_id||c.access!=='own'||action==='checkpoint')return;
- if(await sharedDelegatedBinding(db,actor.run_id,actor.space_id,c.workspace_id))throw new OperationBusinessError('operation_conflict',409,'workspaces');
+ if(await sharedDelegatedBinding(db,actor.run_id,actor.space_id,c.workspace_id))throw workspaceStateRefusal('coordinator_required');
 }
 export function workspaceOperationRegistrations(definitions:ReadonlyMap<string,RegisteredSystemActionDefinition>,config?:ServerConfig):OperationRegistration[]{
  const native=config?nativeWorkspaceRegistration(definitions,config):null;
@@ -92,7 +101,7 @@ export function workspaceOperationRegistrations(definitions:ReadonlyMap<string,R
     if(input.action||capability)return native.execute(db,raw,actor,invocation);
    }
    if((await db.query("SELECT 1 FROM execution_workspace_runs WHERE change_set_id=$1 AND checkpoint_state='blocked' LIMIT 1",[c.id])).rowCount)throw new OperationBusinessError('operation_conflict',409,'workspaces');
-   const owner=(await db.query<{state:string;recovery_state:string|null}>("SELECT w.state,c.verification_json->'checkpoint_recovery'->>'state' AS recovery_state FROM execution_workspaces w JOIN workspace_change_sets c ON c.workspace_id=w.id WHERE c.id=$1",[c.id])).rows[0];
+   const owner=(await db.query<{state:string;exhausted:boolean}>(`SELECT w.state,${allPendingCheckpointsExhaustedSql('c')} AS exhausted FROM execution_workspaces w JOIN workspace_change_sets c ON c.workspace_id=w.id WHERE c.id=$1`,[c.id])).rows[0];
    if(!owner||['blocked','retired'].includes(owner.state))throw new OperationBusinessError('operation_conflict',409,'workspaces');
    const blockedWithoutIntegration=c.state==='blocked'&&!(await db.query('SELECT 1 FROM task_merges WHERE change_set_id=$1',[c.id])).rowCount;
    if(c.revision!==input.expected_revision||c.state!=='open'&&!blockedWithoutIntegration&&!(input.commit&&c.state==='no_changes'))throw new OperationBusinessError('operation_conflict',409,'workspaces');
@@ -102,17 +111,17 @@ export function workspaceOperationRegistrations(definitions:ReadonlyMap<string,R
     await db.query("UPDATE workspace_change_sets SET verification_json=jsonb_set(verification_json,'{submitted_commit}',$2::jsonb) WHERE id=$1",[c.id,JSON.stringify({source_commit:input.commit,user_id:actor.on_behalf_of_user_id,run_id:actor.run_id})]);
    }
    let recoveryOnly=false;
-   if(owner.recovery_state==='exhausted'){
-    const pending=(await db.query<{run_id:string;status:string;settled:boolean}>(`SELECT b.run_id,r.status,${workspaceCheckpointRunSettledSql('r')} AS settled FROM execution_workspace_runs b JOIN runs r ON r.id=b.run_id WHERE b.change_set_id=$1 AND b.checkpoint_state='pending' FOR SHARE OF r`,[c.id])).rows;
+   if(owner.exhausted){
+    const pending=(await db.query<{run_id:string;status:string;settled:boolean;launch_sequence:number}>(`SELECT b.run_id,b.launch_sequence,r.status,${workspaceCheckpointRunSettledSql('r')} AS settled FROM execution_workspace_runs b JOIN runs r ON r.id=b.run_id WHERE b.change_set_id=$1 AND b.checkpoint_state='pending' FOR SHARE OF r`,[c.id])).rows;
     const recoveryId=randomUUID();
     for(const binding of pending){
      if(!binding.settled)throw new OperationBusinessError('operation_conflict',409,'workspaces');
      if(binding.status==='waiting_for_dependency')recoveryOnly=true;
      const visible=await new PgRunRepository(db).getVisibleRun(actor.space_id,actor.on_behalf_of_user_id!,binding.run_id);
      if(!visible||bodyWithheld(visible.effective_access_level))throw hidden();
-     await new PgJobQueueRepository(db).enqueue({job_type:'execution_workspace_checkpoint',space_id:actor.space_id,user_id:actor.on_behalf_of_user_id,payload:{run_id:binding.run_id,workspace_id:c.workspace_id,checkpoint_recovery_id:recoveryId}});
+     await db.query("UPDATE execution_workspace_runs SET checkpoint_recovery_json=$3::jsonb WHERE run_id=$1 AND workspace_id=$2",[binding.run_id,c.workspace_id,JSON.stringify({state:'requested',request_id:recoveryId,launch_sequence:binding.launch_sequence})]);
+     await new PgJobQueueRepository(db).enqueue({job_type:'execution_workspace_checkpoint',space_id:actor.space_id,user_id:actor.on_behalf_of_user_id,payload:checkpointRecoveryPayload(binding.run_id,c.workspace_id,binding.launch_sequence,{request_id:recoveryId})});
     }
-    await db.query("UPDATE workspace_change_sets SET verification_json=jsonb_set(verification_json,'{checkpoint_recovery}',(verification_json->'checkpoint_recovery')||$2::jsonb) WHERE id=$1",[c.id,JSON.stringify({state:'requested',request_id:recoveryId,checkpoint_only:recoveryOnly})]);
    }
    if(recoveryOnly){
     // A yielded manager still owns an unfinished turn. Recover its frozen
@@ -120,7 +129,7 @@ export function workspaceOperationRegistrations(definitions:ReadonlyMap<string,R
     await db.query("UPDATE workspace_change_sets SET state='open',completion_basis=NULL,revision=revision+1,updated_at=now() WHERE id=$1",[c.id]);
     return {change_set_id:c.id,revision:c.revision+1,state:'open',integration_id:null};
    }
-   await db.query(`UPDATE workspace_change_sets SET state='ready',revision=revision+1,summary=$2,completion_basis=$3,verification_json=(verification_json-'error')||$4::jsonb,updated_at=now() WHERE id=$1`,[c.id,input.summary,actor.run_id??`user:${actor.principal.id}`,JSON.stringify(actor.run_id?{reply_owner_run_id:actor.run_id}:{})]);
+   await db.query(`UPDATE workspace_change_sets SET state='ready',revision=revision+1,summary=$2,completion_basis=$3,verification_json=(verification_json-'error'-'slot_recovery')||$4::jsonb,updated_at=now() WHERE id=$1`,[c.id,input.summary,actor.run_id??`user:${actor.principal.id}`,JSON.stringify(actor.run_id?{reply_owner_run_id:actor.run_id}:{})]);
    await new PgJobQueueRepository(db).enqueue({job_type:'execution_workspace_complete',space_id:actor.space_id,user_id:actor.on_behalf_of_user_id,payload:{change_set_id:c.id}});
    return {change_set_id:c.id,revision:c.revision+1,state:'ready',integration_id:null};
   },
@@ -133,12 +142,12 @@ export function workspaceOperationRegistrations(definitions:ReadonlyMap<string,R
    const changeId=retry?integration?.change_set_id:(input as {change_set_id:string}).change_set_id;
    if(!changeId)throw hidden();
    const c=await authorizedWorkspaceChange(db,changeId,actor,lock,true,false,!retry);
-   if(actor.run_id&&c.access==='own'&&await sharedDelegatedBinding(db,actor.run_id,actor.space_id,c.workspace_id))throw new OperationBusinessError('operation_conflict',409,'workspaces');
+   await refuseSharedDelegatedPublication(db,actor,c,undefined);
    return {c,input};
   }
   return {
    definition:definitions.get(id)!,
-   ...(retry&&native?{afterCommit:native.afterCommit}:{}),
+   ...(retry&&native?{afterCommit:native.afterCommit}:!retry?{async afterCommit(){wakeJobWorkers();}}:{}),
    async resolve(db,raw,actor){const {c}=await subject(db,raw,actor);return {authority:`workspace:${c.workspace_id}`,targets:{workspace_id:c.workspace_id,change_set_id:c.id},resourceType:'project',resourceId:c.project_id};},
    async authorize(db,raw,actor){await subject(db,raw,actor,true);},
    async authorizeResult(db,raw,actor){await authorizedWorkspaceChange(db,(raw as {change_set_id:string}).change_set_id,actor,false,true,false,!retry);},
@@ -146,9 +155,11 @@ export function workspaceOperationRegistrations(definitions:ReadonlyMap<string,R
     const {c,input}=await subject(db,raw,actor,true);
     const m=(await db.query<{id:string;revision:number;status:string;attempt_id:string;requested_by_user_id:string;detail_json:Record<string,unknown>}>('SELECT id,revision,status,attempt_id,requested_by_user_id,detail_json FROM task_merges WHERE change_set_id=$1 AND space_id=$2 FOR UPDATE',[c.id,actor.space_id])).rows[0];
     if(retry){
-     if((await db.query("SELECT 1 FROM execution_workspaces WHERE id=$1 AND state IN ('blocked','retired')",[c.workspace_id])).rowCount)throw new OperationBusinessError('operation_conflict',409,'workspaces');
-     if((await db.query("SELECT 1 FROM execution_workspace_runs WHERE change_set_id=$1 AND checkpoint_state='blocked' LIMIT 1",[c.id])).rowCount)throw new OperationBusinessError('operation_conflict',409,'workspaces');
-     if(!m||m.revision!==input.expected_revision||!['conflict','verification_failed','failed'].includes(m.status)||c.state!=='blocked')throw new OperationBusinessError('operation_conflict',409,'workspaces');
+     const workspaceState=(await db.query<{state:string}>('SELECT state FROM execution_workspaces WHERE id=$1',[c.workspace_id])).rows[0]?.state??'blocked';
+     const checkpointBlocked=Boolean((await db.query("SELECT 1 FROM execution_workspace_runs WHERE change_set_id=$1 AND checkpoint_state='blocked' LIMIT 1",[c.id])).rowCount);
+     const blocker=retryAdmissionBlocker(c.state,m?.status??null,workspaceState,checkpointBlocked);
+     if(blocker)throw workspaceStateRefusal(blocker);
+     if(!m||m.revision!==input.expected_revision)throw workspaceStateRefusal('revision_moved');
      const {resolution,repair_instruction,reconcile_only,publication}=WorkspaceIntegrationRetryInputSchema.parse(input);
      if(resolution&&(actor.principal.kind!=='user'||actor.run_id||actor.on_behalf_of_user_id!==m.requested_by_user_id))throw hidden();
      if(repair_instruction&&(actor.principal.kind!=='agent'||!actor.run_id||actor.on_behalf_of_user_id!==m.requested_by_user_id))throw hidden();
@@ -173,32 +184,40 @@ export function workspaceOperationRegistrations(definitions:ReadonlyMap<string,R
      if((resolution||repair_instruction)&&(m.status!=='conflict'||!Array.isArray(paths)||paths.length===0||paths.length>500||!paths.every(p=>typeof p==='string')))throw new OperationBusinessError('operation_conflict',409,'workspaces');
      const detail=reconcile_only?{reconcile_only:true}:resolution?{human_resolution:{instruction:resolution,user_id:actor.on_behalf_of_user_id,paths}}
       :repair_instruction?{agent_repair:{instruction:repair_instruction,user_id:actor.on_behalf_of_user_id,run_id:actor.run_id,paths}}:{};
-     await db.query(`UPDATE task_merges SET status='queued',revision=revision+1,attempt_id=$2,onto_commit=NULL,task_commit=NULL,resolution_run_id=NULL,detail_json=jsonb_build_object('previous_attempt',attempt_id,'previous_detail',detail_json)||$3::jsonb,updated_at=now() WHERE id=$1`,[m.id,randomUUID(),JSON.stringify({...(switched?switchedPlanDetail(m.detail_json,admitted!,{user_id:actor.on_behalf_of_user_id!,run_id:actor.run_id??null}):frozenPublicationDetail(m.detail_json)),...detail,...(actor.run_id?{reply_owner_run_id:actor.run_id,verification_request:{run_id:actor.run_id,user_id:actor.on_behalf_of_user_id}}:{})})]);
+     await db.query(`UPDATE task_merges SET status='queued',revision=revision+1,attempt_id=$2,onto_commit=NULL,task_commit=NULL,resolution_run_id=NULL,detail_json=jsonb_build_object('previous_attempt',attempt_id,'previous_detail',detail_json)||$3::jsonb,updated_at=now() WHERE id=$1`,[m.id,randomUUID(),JSON.stringify({...(switched?switchedPlanDetail(m.detail_json,admitted!,{user_id:actor.on_behalf_of_user_id!,run_id:actor.run_id??null}):frozenPublicationDetail(m.detail_json)),materialization_epoch:(await db.query<{materialization_epoch:number}>('SELECT materialization_epoch FROM execution_workspaces WHERE id=$1',[c.workspace_id])).rows[0]!.materialization_epoch,...detail,...(actor.run_id?{reply_owner_run_id:actor.run_id,verification_request:{run_id:actor.run_id,user_id:actor.on_behalf_of_user_id}}:{})})]);
      await db.query("UPDATE workspace_change_sets SET state='integrating',revision=revision+1,updated_at=now() WHERE id=$1",[c.id]);
      await new PgJobQueueRepository(db).enqueue({job_type:'task_merge',space_id:actor.space_id,user_id:actor.on_behalf_of_user_id,payload:{merge_id:m.id,workspace_id:c.workspace_id}});
      return {change_set_id:c.id,revision:c.revision+1,state:'integrating',integration_id:m.id};
     }
     const abandon=WorkspaceChangeAbandonInputSchema.parse(input);
     const reclaim=abandon.reclaim===true;
-    if(c.revision!==input.expected_revision||!['open','ready','blocked',...(reclaim?['abandoned']:[])].includes(c.state)||m&&!['conflict','verification_failed','failed','superseded'].includes(m.status))throw new OperationBusinessError('operation_conflict',409,'workspaces');
+    if(c.revision!==input.expected_revision)throw new OperationRefusal(409,'workspaces','The change revision moved. Read workspace.change.get and retry with its current revision.',{code:'workspace_revision_moved',current_revision:c.revision});
+    const publication=await cleanupPublicationStatus(db,c.id);
+    if(closeAdmissionBlocker(c.state,publication.status,false,false,false,reclaim))throw new OperationRefusal(409,'workspaces','This change is closed or its integration is still active. Read workspace.change.get before retrying.',{code:'workspace_change_not_closable',state:c.state,integration_status:m?.status??null});
     const saved=(c as {source_commit?:string|null;base_commit?:string|null});
     const closure=abandon.review;
-    if(reclaim&&!closure)throw new OperationBusinessError('operation_conflict',409,'workspaces');
-    const savedDifference=Boolean(saved.source_commit&&saved.source_commit!==saved.base_commit);
-    if(closure&&closure.source_commit!==saved.source_commit)throw new OperationBusinessError('operation_conflict',409,'workspaces');
-    const requestSource=actor.run_id&&closure?await workspaceClosureRequest(db,actor,closure.user_request_quote):null;
-    if(actor.run_id&&(closure||c.state==='open'&&savedDifference)&&(!closure||!requestSource))
-     throw new OperationBusinessError('operation_conflict',409,'workspaces');
-    if((await db.query(`SELECT 1 FROM execution_workspace_runs b JOIN runs r ON r.id=b.run_id WHERE b.change_set_id=$1 AND r.status IN ('queued','running','cancelling','waiting_for_review','waiting_for_dependency') LIMIT 1`,[c.id])).rowCount)throw new OperationBusinessError('operation_conflict',409,'workspaces');
-    const pendingCheckpoint=Boolean((await db.query("SELECT 1 FROM execution_workspace_runs WHERE change_set_id=$1 AND checkpoint_state NOT IN ('saved','blocked') LIMIT 1",[c.id])).rowCount);
-    if(closure&&pendingCheckpoint)throw new OperationBusinessError('operation_conflict',409,'workspaces');
-    if(pendingCheckpoint&&!(await db.query("SELECT 1 FROM workspace_change_sets WHERE id=$1 AND verification_json->'checkpoint_recovery'->>'state'='exhausted'",[c.id])).rowCount)throw new OperationBusinessError('operation_conflict',409,'workspaces');
+    if(c.access==='project_cleanup'&&!closure)throw workspaceStateRefusal('review_required');
+    if(reclaim&&!closure)throw new OperationRefusal(409,'workspaces','Reclamation requires a review of the exact saved source and the person\'s explicit discard instruction.',{code:'workspace_discard_review_required'});
     const discard=reclaim?await admitWorkspaceDiscard(db,c,closure!.source_commit,actor):null;
-    await db.query(`UPDATE workspace_change_sets SET state='abandoned',revision=revision+1,verification_json=verification_json||$2::jsonb,updated_at=now() WHERE id=$1`,[c.id,JSON.stringify({abandon_reason:(input as {reason:string}).reason,blocked_bindings_retained:true,pending_checkpoint_retained:pendingCheckpoint,...(closure?{closure_review:{...closure,request_source:requestSource,reviewed_by_run_id:actor.run_id,user_id:actor.on_behalf_of_user_id,disposition:reclaim?'discard_requested':'withdrawn_retaining_source'}}:{})})]);
-    if(m)await db.query("UPDATE task_merges SET status='superseded',completed_at=now(),updated_at=now() WHERE id=$1",[m.id]);
+    const savedDifference=Boolean(saved.source_commit&&saved.source_commit!==saved.base_commit);
+    if(closure&&closure.source_commit!==saved.source_commit)throw new OperationRefusal(409,'workspaces','The saved source changed. Read workspace.change.get and review its exact source_commit before retrying.',{code:'workspace_review_source_moved'});
+    const requestSource=actor.run_id&&closure?await workspaceClosureRequest(db,actor,closure.user_request_quote,true):null;
+    if(actor.run_id&&(closure||c.state==='open'&&savedDifference)&&(!closure||!requestSource))
+     throw new OperationRefusal(409,'workspaces','Quote the actual discard or closure instruction from this person\'s current message or an earlier message on this conversation branch. Assistant text, attachments and other branches cannot authorize closure.',{code:'workspace_closure_request_not_found'});
+    if((await db.query(`SELECT 1 FROM execution_workspace_runs b JOIN runs r ON r.id=b.run_id WHERE b.change_set_id=$1 AND r.status IN ('queued','running','cancelling','waiting_for_review','waiting_for_dependency') LIMIT 1`,[c.id])).rowCount)throw new OperationRefusal(409,'workspaces','A Run still uses this change. Wait for it to finish or confirm cancellation before retrying.',{code:'workspace_run_active'});
+    const pendingCheckpoint=Boolean((await db.query("SELECT 1 FROM execution_workspace_runs WHERE change_set_id=$1 AND checkpoint_state NOT IN ('saved','blocked') LIMIT 1",[c.id])).rowCount);
+    const deferredProof=Boolean(closure&&pendingCheckpoint&&!(await db.query(`SELECT 1 FROM execution_workspace_runs b JOIN runs r ON r.id=b.run_id AND r.space_id=b.space_id
+     WHERE b.change_set_id=$1 AND b.checkpoint_state='pending' AND NOT ${unlaunchedCheckpointSql('b','r')} LIMIT 1`,[c.id])).rowCount);
+    if(closure&&pendingCheckpoint&&!deferredProof)throw new OperationRefusal(409,'workspaces','A workspace checkpoint is still pending. A missing launch receipt is recovered only after the Host confirms exit and a clean unchanged saved tree. If that proof is unavailable, preserve the files and repair the checkpoint before reclamation.',{code:'workspace_checkpoint_pending',recovery_action:'workspace.change.complete'});
+    if(pendingCheckpoint&&!deferredProof&&!(await db.query(`SELECT 1 FROM workspace_change_sets c WHERE c.id=$1 AND ${allPendingCheckpointsExhaustedSql('c')}`,[c.id])).rowCount)throw new OperationRefusal(409,'workspaces','Checkpoint recovery is still in progress. Retry after it settles.',{code:'workspace_checkpoint_pending'});
+    if(publication.settleLegacy)await settleLegacyCleanupPublication(db,c.id);
+    const resultState=reclaim&&publishedWorkspaceState(c.state)?c.state:'abandoned';
+    await db.query(`UPDATE workspace_change_sets SET state=$3,revision=revision+1,verification_json=verification_json||$2::jsonb,updated_at=now() WHERE id=$1`,[c.id,JSON.stringify({abandon_reason:(input as {reason:string}).reason,blocked_bindings_retained:true,pending_checkpoint_retained:pendingCheckpoint,...(closure?{closure_review:{...closure,request_source:requestSource,reviewed_by_run_id:actor.run_id,user_id:actor.on_behalf_of_user_id,disposition:reclaim?'discard_requested':'withdrawn_retaining_source'}}:{})}),resultState]);
+    if(m&&!['merged','no_changes'].includes(publication.status??''))await db.query("UPDATE task_merges SET status='superseded',completed_at=COALESCE(completed_at,now()),updated_at=now() WHERE id=$1 AND status<>'superseded'",[m.id]);
     const w=(await db.query<ExecutionWorkspaceRow & {retention_json:Record<string,unknown>}>('SELECT * FROM execution_workspaces WHERE id=$1',[c.workspace_id])).rows[0]!;
     if(discard){
      await recordRetention(db,w.id,{discard_intent:{...discard,review:closure,request_source:requestSource},reclaim_requested_at:discard.requested_at,hold_until:null});
+     await wakeSlotHoldWaiters(db,w.id);
      // New turns must allocate a fresh generation, never revive this deletion grant.
      await db.query("UPDATE execution_workspaces SET state='retired',updated_at=now() WHERE id=$1",[w.id]);
     }
@@ -214,8 +233,10 @@ export function workspaceOperationRegistrations(definitions:ReadonlyMap<string,R
      await recordRetention(db,w.id,{missing_acknowledged_at:new Date().toISOString(),missing_acknowledged_by:actor.on_behalf_of_user_id});
      await recordRetention(db,w.id,{...await assessWorkspaceRetention(db,w.id)});
     }
-    if(w.head_commit&&!pendingCheckpoint)await enqueueWorkspaceCleanup(db,w,{id:w.id,generation:w.generation},w.head_commit,true,actor.on_behalf_of_user_id!,undefined,undefined,discard?'now':undefined);
-    return {change_set_id:c.id,revision:c.revision+1,state:'abandoned',integration_id:m?.id??null};
+    if(m&&publishedWorkspaceState(resultState))await recordWorkspaceLanding(db,m.id);
+    if(w.head_commit&&(!pendingCheckpoint||deferredProof))await enqueueWorkspaceCleanup(db,w,{id:w.id,generation:w.generation},w.head_commit,true,actor.on_behalf_of_user_id!,undefined,undefined,discard?'now':undefined);
+    await refreshWorkspaceLifecycle(db,w.id);
+    return {change_set_id:c.id,revision:c.revision+1,state:resultState,integration_id:m?.id??null};
    },
   } satisfies OperationRegistration;
  })];}

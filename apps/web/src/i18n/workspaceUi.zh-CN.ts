@@ -2,6 +2,7 @@
 export const workspaceUiZhCN = {
   workspace_ui: {
     execution: {
+      lifecycle: {"awaiting_release": "已合入 · 等待工作区使用者退出", "cleanup": "已合入 · 正在回收临时资源", "blocked": "已合入 · 资源回收需要恢复", "complete": "合入及资源生命周期已完成"},
       reconcile_checking: '正在比较保存的修改与目标分支；这项检查不会调用模型。',
       reconcile_done: '目标分支已包含保存的修改，此批次已关闭。',
       reconcile_unmatched: '未能匹配整批修改。后续改动或文件删除可能导致无法匹配；确认成果已被采纳或替代后，可用“保留但不合并”关闭旧批次，保存的成果仍会保留。',
@@ -158,6 +159,7 @@ export const workspaceUiZhCN = {
       "unpublished_changes": "存在尚未整合的已保存修改",
       "kept_without_merging": "其中保留了未合并的修改",
       "discarded": "已明确要求丢弃审核过的保存版本",
+      "primary_conversation": "这是供后续对话复用的主工作区",
       "private_baseline": "其中包含私有快照基线",
       "unmerged_source": "Git 无法证明其内容已在目标分支中",
       "safety_review": "需要安全复核",

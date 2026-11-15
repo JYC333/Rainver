@@ -64,7 +64,7 @@ export default function CapturePage() {
     setUploading(true)
     try {
       await activityApi.upload(file, { kind, spaceId: personalSpaceId })
-      toast.success('Saved to Activity Inbox')
+      toast.success('Upload queued for Activity Inbox')
       navigate(spacePath(personalSpaceId, '/activity'))
     } catch (err) {
       toast.error(errMsg(err))

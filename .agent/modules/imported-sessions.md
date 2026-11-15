@@ -32,6 +32,13 @@ three of them to maintain forever.
 
 A runtime that does not advertise both `list` and `load` is not offered.
 
+Codex's ACP history replay can be refused while its session is open in another
+Codex client. Folder import settings explain this prerequisite; a recorded
+`thread_active_writer` refusal is shown as Session in use with close-and-retry
+guidance in settings and the imported transcript. Existing imported history
+remains readable. Deleting it does not release the vendor's session lock.
+Import continues through ACP; there is no native-history fallback.
+
 The daemon runs the ACP conversation and returns trimmed, redacted records; the
 server never sees the raw replay. Both trimming
 and redaction must happen before anything crosses the network:
@@ -88,8 +95,23 @@ Binding a folder only counts what the machine holds. Importing is a separate
 act, because a person's own terminal history becoming Project content is a
 decision.
 
-- The offer is made once, as a banner on the Project page, and answering it
-  either way stops it being asked again.
+- The owner-only Project reminder compares the Host's bounded ACP discovery
+  inventory (opaque session id and update timestamp only, no titles/content)
+  with imported sessions. New, newer and incomplete sessions remain actionable;
+  opening settings or changing import consent never means import completed.
+  Managed Rainver sessions are excluded. Metadata is refreshed by the Host every
+  ten minutes; disconnected, failed, older-than-thirty-minute or old-Host
+  inventory is unknown, never proof of an empty or fully imported folder.
+- Reminder preferences are independent of sync/visibility consent. “Remind
+  tomorrow” snoozes the Location for 24 hours; “Don’t remind for this folder”
+  suppresses future updates too, until re-enabled in Folder settings. Legacy
+  `offered_at` is interaction history only. It cannot establish a permanent
+  opt-out because earlier settings writes also set it.
+- A compact manual Import history entry remains on the Project even after
+  completion or opt-out. It opens an owner-gated folder list and links to the
+  existing import settings. Counts cover up to 50 sessions in the last 30 days,
+  not all historical sessions. Browser focus and minute refreshes read cached
+  metadata only; they never trigger imports or increase the discovery window.
 - **The visibility picker is the only gate**, and it states the consequence at
   the point of choice: *Project shared* is readable by members and is what
   extraction reads; *only me* is a read-only archive that extraction never
@@ -101,7 +123,7 @@ decision.
   and revoking stops future syncs without deleting anything.
 - Only the host's registered owner may import, change policy, or delete
   ([ADR 0016](../decisions/0016-control-plane-execution-hosts.md)'s hard rule).
-  These are core operations: `host.location.ambient.policy.set` / `.dismiss`,
+  These are core operations: `host.location.ambient.policy.set` / `.reminder.set`,
   `imported_session.visibility.set` / `.delete` commit in their transaction
   (`importedSessions/operations.ts`); a person's import is the
   `host.location.ambient.sync` Host command, which reads the Host only in its
@@ -251,6 +273,13 @@ being present, and attended consent does not stand in for unattended spending
   explicitly opened Conversation draft, not seed text. The reference is
   attached through the Conversation endpoint before the addressed message.
   Abandoning the draft leaves no message or Run behind.
+
+  The transcript keeps user and Agent text in source order. Consecutive tool,
+  plan and other activity records form a default-collapsed group; individual
+  tool details reuse the normal conversation Tool disclosure. Files/commands
+  are also folded by default. Expanding a group exposes the original per-record
+  pick controls, and collapsing it retains picks and shows their count. Display
+  grouping does not change stored records or reference identities.
 
   An imported session's records can also be **referenced** into a conversation:
   picked at the source and copied in as a `reference` message, once, with

@@ -164,6 +164,18 @@ async function loadDelegationTargets(
   pool?: Pool,
 ): Promise<AgentDelegationTarget[]> {
   const db = pool ?? getDbPool(requiredDatabaseUrl(config));
+  const group=await new PgAgentGroupRepository(db).getGroup(run.space_id,run.run_group_id!);
+  if(group?.room_id){
+    const ids=await db.query<{agent_id:string}>(`SELECT agent_id FROM room_agent_members WHERE space_id=$1 AND room_id=$2 AND status='active' AND agent_id<>$3`,[run.space_id,group.room_id,run.agent_id]);
+    const targets:AgentDelegationTarget[]=[];
+    for(const row of ids.rows){
+      const member=await new PgAgentGroupRepository(db).getMemberWithAgentStatus({space_id:run.space_id,group_id:group.id,agent_id:row.agent_id,user_id:group.manager_user_id});
+      if(!member||member.agent_status!=='active')continue;
+      const agent=(await db.query<{name:string}>('SELECT name FROM agents WHERE space_id=$1 AND id=$2',[run.space_id,row.agent_id])).rows[0];
+      targets.push({agent_id:row.agent_id,name:agent?.name||row.agent_id,role:member.role,capabilities_json:member.capabilities_json});
+    }
+    return targets;
+  }
   const result = await db.query<AgentDelegationTarget>(
     `SELECT m.agent_id,
             COALESCE(NULLIF(a.name, ''), m.agent_id) AS name,

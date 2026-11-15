@@ -1,8 +1,11 @@
+import {MemoryRouter} from 'react-router-dom'
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import DailyReportSettingsPage from '../DailyReportSettingsPage'
 import { dailyReportApi } from '../../../api/client'
 import type { DailyCaptureReportSettingOut } from '../../../types/api'
+
+vi.mock('../../../contexts/SpaceContext',()=>({useSpace:()=>({activeSpaceId:'space-1',preferredSpaceId:'space-1'})}))
 
 vi.mock('../../../api/client', () => ({
   dailyReportApi: { getSettings: vi.fn(), listReports: vi.fn(), updateSettings: vi.fn(), run: vi.fn() },
@@ -44,3 +47,22 @@ describe('DailyReportSettingsPage schedule', () => {
     expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument()
   })
 })
+
+it('shows the accepted report intent with its Run link while the provider works asynchronously',async()=>{
+ vi.mocked(dailyReportApi.getSettings).mockResolvedValue(setting);
+ vi.mocked(dailyReportApi.listReports).mockResolvedValue([]);
+ vi.mocked(dailyReportApi.run).mockResolvedValue({job_id:'job',run_id:'run',user_id:'person',status:'queued'});
+ await act(async()=>{render(<MemoryRouter><DailyReportSettingsPage /></MemoryRouter>)});
+ fireEvent.click(await screen.findByRole('button',{name:'Generate now'}));
+ expect(await screen.findByText('Report queued. View the run for its result.')).toBeInTheDocument();
+ expect(screen.getByRole('link',{name:'View run'})).toHaveAttribute('href','/spaces/space-1/runs/run');
+ expect(screen.queryByText('View artifact')).not.toBeInTheDocument();
+});
+
+it.each(['running','completed'] as const)('shows an existing %s report truthfully and keeps the Run link',async status=>{
+ vi.mocked(dailyReportApi.run).mockResolvedValue({job_id:'job',run_id:'run',user_id:'person',status});
+ await act(async()=>{render(<MemoryRouter><DailyReportSettingsPage /></MemoryRouter>)});
+ fireEvent.click(await screen.findByRole('button',{name:'Generate now'}));
+ expect(await screen.findByText(status==='completed'?'Report already completed. View the run for its result.':'Report running. View the run for its result.')).toBeInTheDocument();
+ expect(screen.getByRole('link',{name:'View run'})).toHaveAttribute('href','/spaces/space-1/runs/run');
+});

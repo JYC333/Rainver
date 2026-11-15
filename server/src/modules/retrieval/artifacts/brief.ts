@@ -5,6 +5,8 @@ import type {
 } from "@rainver/protocol";
 import type { Queryable } from "../../routeUtils/common.js";
 import { insertArtifactRow } from "../../artifacts/reviewArtifactWriter.js";
+import type { JobEnvelopeForHandler } from "../../jobs/handlerRegistry.js";
+import { settleRetrievalArtifact } from "../artifactRelease.js";
 
 export const RETRIEVAL_BRIEF_ARTIFACT_TYPE = "retrieval_brief";
 
@@ -93,13 +95,21 @@ export function buildRetrievalBriefArtifactSpec(
   };
 }
 
+/**
+ * Settles after provider I/O in one short transaction: the current Job claim
+ * (when a Job is running it) and the owner's current release authority over
+ * every contributing ref are rechecked before the INSERT. A lost claim throws
+ * `JobEffectLeaseLost`; withdrawn authority throws `RetrievalArtifactWithheld`.
+ * Either way no Artifact row is written.
+ */
 export async function persistRetrievalBriefArtifact(
   db: Queryable,
   input: RetrievalBriefArtifactContext,
+  job?: JobEnvelopeForHandler,
 ): Promise<string> {
   const ownerUserId = input.ownerUserId.trim();
   const spec = buildRetrievalBriefArtifactSpec(input);
-  return insertArtifactRow(db, {
+  return settleRetrievalArtifact(db, { spaceId: input.spaceId, userId: ownerUserId }, spec, (tx) => insertArtifactRow(tx, {
     spaceId: input.spaceId,
     ownerUserId,
     artifactType: spec.artifact_type,
@@ -111,7 +121,7 @@ export async function persistRetrievalBriefArtifact(
     mimeType: spec.mime_type,
     runId: input.runId ?? null,
     projectId: input.projectId ?? null,
-  });
+  }), job);
 }
 
 function sourceConnectionIdsFromItems(items: RetrievalBriefResponse["items"]): string[] {

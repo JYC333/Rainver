@@ -18,4 +18,4 @@ export function ownedBranchName(key:string):string {
 }
 
 /** One Run may touch several repositories; receipts must remain disjoint. */
-export const workspaceRunKey=(runId:string,ref:ExecutionWorkspaceRef)=>`${runId}:${ref.id}:g${ref.generation}`;
+export const workspaceRunKey=(runId:string,ref:ExecutionWorkspaceRef,sequence?:number)=>`${runId}:${ref.id}:g${ref.generation}${sequence===undefined?'':`:s${sequence}`}`;

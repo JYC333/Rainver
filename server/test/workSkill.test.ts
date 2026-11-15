@@ -1,3 +1,4 @@
+import {roomExecutionRules} from '../src/modules/agentGroups/roomStandingContext.js';
 import { describe, expect, it } from "vitest";
 import { roomBudgetLimits } from '../src/modules/rooms/delegationBudget.js';
 import { renderWorkSkill, workSkillPromptPointer } from "../src/modules/skills/workSkill.js";
@@ -101,4 +102,12 @@ describe('room delegation defaults and explicit bounds', () => {
     expect(roomBudgetLimits({max_fanout:5,soft_max_fanout:5,hard_max_fanout:10})).toEqual({soft:5,hard:10,softTurns:10,hardTurns:20});
     expect(roomBudgetLimits({max_fanout:0,hard_max_fanout:20}).hard).toBe(0);
   });
+});
+
+it('instructs all ordinary work and shared Room sessions to stop guessing after a 404',()=>{
+ for(const text of [renderWorkSkill({deliverOutputs:false,conversation:true}),renderWorkSkill({deliverOutputs:true}),roomExecutionRules()]){
+  expect(text).toContain('After a 404, stop guessing');
+  expect(text).toContain('automatically replay a write');
+  expect(text).toContain('promise a fix that has not been verified');
+ }
 });

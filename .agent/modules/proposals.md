@@ -63,6 +63,24 @@ CodePatchSnapshot:
 4. `proposal.status = "accepted"`, `reviewed_at`/`reviewed_by` set, commit — durable write completes. No separate approval-event row is created for normal accept/reject. `ProposalApproval` rows are distinct egress approval metadata (written via `/proposals/{id}/approvals/egress-granting-user`). The registered `egress_review` applier requires every owner named by the target's current context taint to have an active approval before it publishes the target.
 5. For `code_patch` proposals, a `CodePatchSnapshot` (pre-apply file content) is persisted inside the apply transaction. The user can later call `POST /api/v1/proposals/{id}/rollback` to restore files to their pre-apply state while the snapshot is within its retention window and status is `available`. Rollback has the reach every proposal decision has (`authorizeProposalDecision`: same Space, the state the decision acts on, readable, and inside a readable Room for a Run's proposal) plus the same `proposal.apply` role gate and `project_folder.write_patch` check as accept; a caller who can only read the accepted proposal cannot write the snapshot back. It refuses (409) when an applied file no longer hashes to what the patch wrote (`applied_files`), sets the proposal's status to `rolled_back`, and its activity — like the apply activity — takes the proposal's own visibility.
 
+Formal accept/rollback and Bundle decisions now join the core owner's sorted dependency keys, audit, receipt, canonical typed writes and required Job intent; file IO stays with the existing Job owner.
+The eight writer owners reuse their transaction ports; follow-up Task no longer acquires a pool, and egress consent rows stay locked through commit. Frozen requester and current approver remain distinct.
+Decision preparation and work use the same explicit domain error classifier;
+safe structured refusal details survive the operation envelope (400/422 invalid
+input, 409 conflict, 429 limit). Unknown/internal errors remain internal.
+Bundle rollback checks Bundle visibility and its own canonical rollback Proposal
+authority, including replay, rather than every original member's approval role.
+Ordinary, unlinked production Proposals remain supported by the default typed
+applier registry, including Memory, Task and the other registered types below.
+Public core accept/rollback reuse those canonical owners; migrating 23 REST
+entries does not require new core operations that produce pending approvals.
+`fromConfig` supplies plugin operation mappings only. No core production family
+registers a linked requester mapping; artificial linked core Memory requests
+without test registration fail closed with 503 and no effect, grant, Job or
+accepted activity. Fixture mappings exercise the reconciliation engine only:
+they are not production capability or proof that eight-family production
+mappings are closed. Preserve the `hasAnyLinked` / no-hooks refusal boundary.
+
 ## Server Apply Boundary
 
 The public proposal review/apply surface is owned by the server:
@@ -153,6 +171,7 @@ path; `memoryApplyRepository.ts` fixes it to `explicit_user_accept`.
   updates.
 - `code_patch` rollback requires a non-expired `available` snapshot and every applied file unchanged since apply; once used, status becomes `rolled_back` and cannot be reused. It also requires the same apply / `write_patch` authority as accept.
 - Snapshot retention (days + max count) is configurable per-Project-Folder and per-space; builtin defaults are 7 days / 20 snapshots
+- A report-derived Proposal (a Knowledge/Memory review packet, or a child generated from one — including Claim Candidate and relation discovery children, which name their report inside `payload.metadata`) shows its title, summary, rationale and provenance only while every report it names passes its current release closure, and is accepted only then (409 otherwise, closure pinned before the Proposal row lock); its visibility, status and reject path are unchanged. See [ARTIFACTS](../architecture/ARTIFACTS.md#persisted-knowledge-and-memory-reports).
 
 ## Related Files
 - `server/migrations/`
@@ -296,3 +315,44 @@ prepared owner lifetime. SQL status/payload mutation sites remain the canonical
 apply/cascade, payloadRevision, definition/monitoring replacement, Skill set,
 Plan review, Run terminal/publication and P1 hook owners. No independent direct
 Memory writer or new public decision authority is introduced.
+
+### Transactional egress consent
+
+`approveEgressGrantingUserInTransaction` is the canonical consent writer for
+both the standalone entry and composed transaction callers. It requires a live
+raw or branded transaction, pins the consenting person's current membership and
+active account before Proposal rows, and holds a personal-memory grant read lock
+through commit. Existing approval reuse still checks current authority and grant
+state. Consent remains attributed to the required content owner or grant owner;
+it does not accept a requester or decider as a substitute. The port does not
+commit, dispatch an executor or apply the Proposal. Its caller owns atomic audit,
+receipt and Job composition; this port alone does not migrate a route to core.
+
+Proposal dispatch schemas reject undeclared fields. HTTP decision bodies share
+those schemas with authenticated identity fields omitted: accept permits only
+`confirm_incomplete_patch`, egress consent permits only `grant_id`, and reject
+and code-patch rollback accept an empty object or an absent body. JSON scalars
+and arrays are rejected with 422. The existing query confirmation remains valid.
+
+### Formal egress consent operation
+
+`proposal.egress.approve` is a user-only core-owned keyed command. Its retained
+REST approval URL returns the operation envelope; the typed web client unwraps
+it for existing consumers and accepts an explicit retry key. The strict business
+input carries only Proposal and optional grant ids. The canonical consent port
+pins current user/membership, Proposal reach/state, taint ownership or live
+personal-memory grant on both initial execution and replay; a revoked approval
+cannot release a cached receipt. Consent, core policy audit and keyed receipt
+commit in one transaction. No acceptance, applier effects, external IO or required
+Job is produced by consent alone. Accept/reject/rollback and Bundle migration
+remain separately qualified; this entry does not enable an acceptance mapping.
+
+`proposal.reject` likewise uses a user-only strict keyed operation and the
+canonical rejection owner. It admits the complete sorted linked-request closure
+before Proposal/domain locks, rechecks it, and preserves recursive Source draft
+supersession, current creator/reviewer/Project authority and active Bundle gates.
+The core transaction opts into the existing policy-audit recovery wrapper;
+decision, dependent request outcomes and receipt commit together. Replay checks
+current rejected-state reach and reviewer authority. Advisory Evolution signals
+run after commit; rejection performs no applier effects or external IO. The
+public operation does not use the Bundle-only rejection override.

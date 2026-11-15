@@ -1,4 +1,4 @@
-import { HttpError, type Queryable } from "../routeUtils/common.js";
+import { HttpError, withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
 import {
   ScopedSettingsStore,
   SETTINGS_KEYS,
@@ -74,7 +74,7 @@ export class PgDailyReportSettingsRepository {
   private readonly settingsStore: ScopedSettingsStore;
   private readonly schedulerTaskStore: PgSchedulerTaskStore;
 
-  constructor(db: Queryable) {
+  constructor(private readonly db: Queryable) {
     this.settingsStore = new ScopedSettingsStore(db);
     this.schedulerTaskStore = new PgSchedulerTaskStore(db);
   }
@@ -117,6 +117,11 @@ export class PgDailyReportSettingsRepository {
     userId: string,
     body: Record<string, unknown>,
   ): Promise<DailyReportSettingRow> {
+    return withQueryableTransaction(this.db,tx=>new PgDailyReportSettingsRepository(tx).updateLocked(spaceId,userId,body));
+  }
+
+  private async updateLocked(spaceId:string,userId:string,body:Record<string,unknown>):Promise<DailyReportSettingRow>{
+    await this.db.query('SELECT pg_advisory_xact_lock(hashtext($1))',[`daily_capture_report_settings:${spaceId}:${userId}`]);
     const row = await this.getOrCreate(spaceId, userId);
     const now = new Date().toISOString();
     const enabled =
@@ -221,12 +226,13 @@ export class PgDailyReportSettingsRepository {
     return due;
   }
 
-  async advanceNextRun(setting: DailyReportSettingRow, slotUtcIso: string): Promise<void> {
+  async advanceNextRun(setting: DailyReportSettingRow, slotUtcIso: string, outcome?: {status:string;http_status?:number}): Promise<void> {
     await this.setNextRunAt(
       setting.space_id,
       setting.user_id,
       computeNextRunAfterSlot(setting, slotUtcIso),
     );
+    if(outcome)await this.db.query(`UPDATE scheduler_tasks SET state_json=state_json||jsonb_build_object('last_slot',$3::text,'last_slot_outcome',$4::jsonb) WHERE task_type=$1 AND task_key=$2`,[DAILY_REPORT_SCHEDULER_TASK_TYPE,dailyReportSchedulerTaskKey(setting.space_id,setting.user_id),slotUtcIso,JSON.stringify(outcome)]);
   }
 
   /**

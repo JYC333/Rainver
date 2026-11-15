@@ -120,7 +120,9 @@ describe("ContextOpsService.getDrilldown artifact sections", () => {
     expect(result.sources).toEqual([]);
   });
 
-  it("lists diagnostics reports with diagnostic codes", async () => {
+  // Released codes need the current report closure on real PostgreSQL
+  // (contextReportOperationsDb); this fake database proves none.
+  it("lists diagnostics reports without codes when their closure cannot be proven", async () => {
     const db = new ArtifactDrilldownFakeDb();
     const result = await new ContextOpsService(db).getDrilldown({
       spaceId: "space-1",
@@ -134,7 +136,7 @@ describe("ContextOpsService.getDrilldown artifact sections", () => {
 
     expect(result.section).toBe("diagnostics_reports");
     expect(result.artifacts).toHaveLength(1);
-    expect(result.artifacts[0]).toMatchObject({ artifact_id: "art-d1", diagnostic_codes: ["low_coverage"] });
+    expect(result.artifacts[0]).toMatchObject({ artifact_id: "art-d1", diagnostic_codes: [], finding_count: null });
     expect(result.packets).toEqual([]);
     expect(result.truncated).toBe(false);
   });
@@ -157,7 +159,7 @@ describe("ContextOpsService.getDrilldown artifact sections", () => {
     expect(result.truncated).toBe(false);
   });
 
-  it("lists retrieval explain reports", async () => {
+  it("lists retrieval explain reports, withholding diagnostic codes it cannot confirm releasable", async () => {
     const db = new ArtifactDrilldownFakeDb();
     const result = await new ContextOpsService(db).getDrilldown({
       spaceId: "space-1",
@@ -171,7 +173,9 @@ describe("ContextOpsService.getDrilldown artifact sections", () => {
 
     expect(result.section).toBe("explain_reports");
     expect(result.artifacts.map((a) => a.artifact_id)).toEqual(["art-e1"]);
-    expect(result.artifacts[0].diagnostic_codes).toEqual(["target_returned"]);
+    // The fake confirms no maintenance role, so the release gate fails closed;
+    // the released path is covered on PostgreSQL by retrievalArtifactReleaseDb.
+    expect(result.artifacts[0].diagnostic_codes).toEqual([]);
     expect(result.packets).toEqual([]);
   });
 

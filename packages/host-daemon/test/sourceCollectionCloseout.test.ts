@@ -104,7 +104,7 @@ describe.skipIf(process.env.SOURCE_EXECUTION_OS_SMOKE!=='1')('round2 actual isol
    const result=await runSourceCollection(host,execution,async()=>{hits++;return {sequence:1,status:200,content_type:body.length===900007?'text/html; charset=utf-8':'text/plain',body_base64:body.toString('base64')};},signal());
    expect(result.status).toBe('succeeded');expect(hits).toBe(1);expect(JSON.parse(result.output_json!).items).toEqual([{bytes:body.length,context:{user:'bounded'}}]);
   }
- },20000);
+ });
  it('retains one retry for 503, but malformed handler output consumes only one fetch',async()=>{
   for(const invalid of [false,true]){
    const {host,execution}=await fixture(invalid?'export default()=>({items:"bad",next_urls:[]})':undefined);let hits=0;

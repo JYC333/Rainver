@@ -651,7 +651,7 @@ describe("core version integrity", () => {
       [AGENT],
     );
     expect(versions.rows.map((row) => row.version_label)).toEqual(["v1", "v2", "v3"]);
-  }, 15_000);
+  });
 
   it("does not refresh prompts for user-defined source post-processing Agents", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();

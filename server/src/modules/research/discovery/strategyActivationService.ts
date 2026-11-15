@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { HttpError, type Queryable, type SpaceUserIdentity } from "../../routeUtils/common.js";
-import { assertProjectWriter } from "../../projects/access.js";
+import { HttpError, withQueryableTransaction, type Queryable, type SpaceUserIdentity } from "../../routeUtils/common.js";
+import { assertProjectWriter, lockActiveProjectForMutation } from "../../projects/access.js";
 
 export type ResearchStrategyActivationReason = "initial" | "monitoring_feedback" | "rollback" | "manual";
 
@@ -17,37 +17,51 @@ interface ActiveRow {
   sequence: number;
 }
 
+interface ActivationInput {
+  identity: SpaceUserIdentity;
+  strategyId: string;
+  reason: ResearchStrategyActivationReason;
+  proposalId?: string | null;
+}
+
+interface ActivationResult {
+  strategy_id: string;
+  previous_strategy_id: string | null;
+  sequence: number;
+  channel_ids: string[];
+}
+
 export class ResearchStrategyActivationService {
   constructor(private readonly db: Queryable) {}
 
-  async activate(input: {
-    identity: SpaceUserIdentity;
-    strategyId: string;
-    reason: ResearchStrategyActivationReason;
-    proposalId?: string | null;
-  }): Promise<{ strategy_id: string; previous_strategy_id: string | null; sequence: number; channel_ids: string[] }> {
+  async activate(input: ActivationInput): Promise<ActivationResult> {
+    // Pool entry points own the entire switch. Materialization, proposal apply
+    // and the operation core instead join their existing transaction; none of
+    // the channel, scheduler, binding or Workflow effects may commit alone.
+    return withQueryableTransaction(this.db, (tx) =>
+      new ResearchStrategyActivationService(tx).activateLocked(input));
+  }
+
+  private async activateLocked(input: ActivationInput): Promise<ActivationResult> {
     const { identity } = input;
-    const strategyResult = await this.db.query<StrategyRow>(
-      `SELECT id,project_id,research_context_version_id,status
-         FROM research_query_strategies
-        WHERE id=$1 AND space_id=$2
-        FOR UPDATE`,
-      [input.strategyId, identity.spaceId],
-    );
-    const strategy = strategyResult.rows[0];
-    if (!strategy) throw new HttpError(404, "Research query strategy not found");
-    await assertProjectWriter(this.db, identity.spaceId, strategy.project_id, identity.userId);
-    if (strategy.status !== "materialized") throw new HttpError(409, "Research query strategy must be materialized before activation");
-    // When a context has never had an active strategy, SELECT ... FOR UPDATE
-    // on the activation table locks no row. Lock the shared context identity so
-    // two first activations serialize before either inserts the unique active
-    // activation record.
-    await this.db.query(
-      `SELECT id FROM project_research_context_versions
-        WHERE id=$1 AND project_id=$2 AND space_id=$3
-        FOR UPDATE`,
-      [strategy.research_context_version_id, strategy.project_id, identity.spaceId],
-    );
+    // All canonical entry points take Project -> context -> strategy. A core
+    // adapter already holds these; direct Pool callers use the same order.
+    const candidate=(await this.db.query<StrategyRow>(
+      `SELECT id,project_id,research_context_version_id,status FROM research_query_strategies WHERE id=$1 AND space_id=$2`,
+      [input.strategyId,identity.spaceId],
+    )).rows[0];
+    if(!candidate)throw new HttpError(404,"Research query strategy not found");
+    await lockActiveProjectForMutation(this.db,identity.spaceId,candidate.project_id);
+    await assertProjectWriter(this.db,identity.spaceId,candidate.project_id,identity.userId);
+    await this.db.query(`SELECT id FROM project_research_context_versions WHERE id=$1 AND project_id=$2 AND space_id=$3 FOR UPDATE`,
+      [candidate.research_context_version_id,candidate.project_id,identity.spaceId]);
+    const strategy=(await this.db.query<StrategyRow>(
+      `SELECT id,project_id,research_context_version_id,status FROM research_query_strategies WHERE id=$1 AND space_id=$2 FOR UPDATE`,
+      [input.strategyId,identity.spaceId],
+    )).rows[0];
+    if(!strategy)throw new HttpError(404,"Research query strategy not found");
+    if(strategy.project_id!==candidate.project_id||strategy.research_context_version_id!==candidate.research_context_version_id)throw new HttpError(409,"Research strategy context changed");
+    if(strategy.status!=="materialized")throw new HttpError(409,"Research query strategy must be materialized before activation");
     const channels = await strategyChannelIds(this.db, identity.spaceId, strategy.id);
     if (channels.length === 0) throw new HttpError(409, "Research query strategy has no materialized source channels");
 

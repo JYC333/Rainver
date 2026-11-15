@@ -54,7 +54,7 @@ beforeAll(async () => {
   await new Promise<void>((resolveListen) => httpServer!.listen(0, "127.0.0.1", resolveListen));
   const address = httpServer.address();
   serverPort = typeof address === "object" && address ? address.port : 0;
-}, 120_000);
+});
 
 afterAll(async () => {
   await new Promise<void>((resolveClose) => (httpServer ? httpServer.close(() => resolveClose()) : resolveClose()));
@@ -653,7 +653,7 @@ describe("runPendingCustomSourceHandlerRuns", () => {
       [connId],
     );
     expect(job.rows[0]).toMatchObject({ status: "failed", error_code: "timeout" });
-  }, 10_000);
+  });
 });
 
 describe("automatic Custom Source repair status transitions", () => {

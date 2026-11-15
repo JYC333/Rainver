@@ -643,6 +643,39 @@ or missing confirmation defers the job without consuming its retry budget;
 even an exhausted job retains a reconciliation claim to stop its old process.
 Recovery failure events carry the interrupted attempt number, so a delayed
 recovery cannot add its error evidence to a successor attempt.
+Confirmed controller loss uses `execution_controller_lost`, rather than the
+generic `orphaned` reason. The existing Supervisor grants up to three such
+recoveries when no explicit `max_attempts` is configured; these interruptions
+do not spend the default allowance of two Agent execution attempts. This is
+bounded to five physical attempts altogether, and a fourth controller loss
+ends automatic recovery. An explicit `max_attempts` still caps every physical
+attempt, and aggregate cost caps and cancellation always apply. Recovery stays
+on the previous eligible Runtime Profile, retaining its C2 fallback chain for
+an actual runtime failure. Its task context requires inspecting saved progress
+and completed actions before continuing, without replaying completed effects.
+This is the same Run and canonical Supervisor/Job path, not another runner.
+Resuming a queued/parked Run also confirms its previous persisted Host launch
+has exited before recording another launch nonce. The binding compares both the
+old nonce and attempt identity, so cancellation or a competing resume cannot
+silently replace newer execution evidence. Missing physical confirmation keeps
+the previous binding intact and starts no second process. The Host rejects a
+different launch of the same Run while its original launch is preparing,
+queued, active or finishing; it never lets the Run wait behind itself.
+A parked parent's workspace-checkpoint Job uses the same exact-launch stop
+confirmation if its execution lock is gone after a Server restart. It captures
+the parent's files only after the Host confirms exit; an unconfirmed stop is
+deferred, and a parent with a live execution lock is left to its controller.
+An Attempt can park and resume through several Host launches. Workspace capture
+is therefore fenced separately by `(Run, workspace, launch_sequence)`, not by
+the logical Run id alone. `workspaceCheckpoints.ts` is the single checkpoint
+lifecycle used after runtime exit and by recovery Jobs. Binding-local
+`checkpoint_recovery_json` controls bounded retries for that launch; new launch
+evidence clears only that binding's recovery and old checkpoint result. Replayed
+or older launch evidence is a no-op. A failed sibling cannot exhaust the parent.
+Jobs carry the binding sequence and recovery request id. A stale Job reports
+`checkpointed:false, superseded:true`; a current Job reports completion and
+admits children only after every requested binding is durably saved. Unknown,
+pending and safety-blocked checkpoints never count as a successful save.
 Recovery never rebinds a running Run as queued work. A daemon attempt has no default run
 deadline and no no-output watchdog: prolonged silence records one
 informational `run_quiet` status event and the attempt keeps running until it

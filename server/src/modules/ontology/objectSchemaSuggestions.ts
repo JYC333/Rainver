@@ -8,11 +8,13 @@ import type { Queryable } from "../routeUtils/common.js";
 import { contentReadSql } from "../access/contentAccessSql.js";
 import { reviewScopeValue, visibilityForReviewScope } from "../proposals/reviewPackets.js";
 import { RETRIEVAL_OBJECT_TYPE_VALUES } from "../retrieval/objectTypes.js";
+import { reportDependencyClosureMarker } from "../retrieval/reportClosureContract.js";
 import {
   loadSourceConnectionIdsForTargets,
   loadSourcePolicySnapshots,
   loadViewerSpaceRole,
   sourceConnectionIdsFromMetadata,
+  sourceConnectionIdsFromSourceRefs,
   sourcePolicyAllowsRead,
 } from "../retrieval/sourcePolicy.js";
 
@@ -31,6 +33,8 @@ interface UsageRow {
   base_object_type: string;
   object_profile: string;
   visible_usage_count: number | string;
+  /** Every counted row, so the persisted finding can be rechecked later. */
+  evidence_refs: Array<{ object_type: string; object_id: string }>;
 }
 
 interface UsageObjectRow {
@@ -53,10 +57,8 @@ export async function scanObjectSchemaSuggestions(
   },
 ): Promise<ObjectSchemaSuggestionReport> {
   const baseTypes = normalizedBaseTypes(input.request.base_object_types);
-  const [registryRows, usageRows] = await Promise.all([
-    loadRegistryKinds(db, input.spaceId, baseTypes),
-    loadVisibleUsage(db, input.spaceId, input.userId, baseTypes),
-  ]);
+  const registryRows = await loadRegistryKinds(db, input.spaceId, baseTypes);
+  const usageRows = await loadVisibleUsage(db, input.spaceId, input.userId, baseTypes);
   const registry = new Map<string, RegistryKind>();
   for (const row of registryRows) registry.set(registryKey(row.base_object_type, row.key), row);
 
@@ -82,7 +84,7 @@ export async function scanObjectSchemaSuggestions(
           status: "draft",
           field_schema: {},
         },
-        evidence_refs: [],
+        evidence_refs: usage.evidence_refs,
         markers: { deterministic: true, source: "visible_kind_usage" },
       });
     } else if (registered.status === "deprecated") {
@@ -96,7 +98,7 @@ export async function scanObjectSchemaSuggestions(
         confidence_tier: "medium",
         visible_usage_count: countValue(usage.visible_usage_count),
         proposed_action: null,
-        evidence_refs: [],
+        evidence_refs: usage.evidence_refs,
         markers: { deterministic: true, object_profile_id: registered.id, object_profile_version: countValue(registered.version) },
       });
     }
@@ -167,6 +169,8 @@ export async function persistObjectSchemaSuggestionReportArtifact(
     truncated: input.report.truncated,
     scan_options: input.request,
     access_safety: input.report.access_safety,
+    // Every counted row is named in its finding's evidence_refs.
+    dependency_closure: reportDependencyClosureMarker(),
     retention_policy: {
       class: "object_schema_suggestion_report",
       raw_private_content_included: false,
@@ -367,8 +371,11 @@ async function loadMemoryEntryKindUsageObjects(db: Queryable, spaceId: string, u
 }
 
 async function loadProjectPublicSummaryKindUsageObjects(db: Queryable, spaceId: string): Promise<UsageObjectRow[]> {
-  const result = await db.query<{ object_id: string }>(
-    `SELECT pub.project_id AS object_id
+  // The published snapshot's own Source references are the summary's Source
+  // lineage (the same `source_refs_json` the Project retrieval adapter and the
+  // release closure read), so a withdrawn consent drops the row here as well.
+  const result = await db.query<{ object_id: string; source_refs_json: unknown }>(
+    `SELECT pub.project_id AS object_id, pub.source_refs_json
        FROM project_public_summary_publications pub
        JOIN projects p
          ON p.id = pub.project_id
@@ -383,7 +390,7 @@ async function loadProjectPublicSummaryKindUsageObjects(db: Queryable, spaceId: 
     object_id: row.object_id,
     base_object_type: "project_public_summary",
     object_profile: "project_public_summary",
-    source_connection_ids: [],
+    source_connection_ids: sourceConnectionIdsFromSourceRefs(row.source_refs_json),
   }));
 }
 
@@ -423,10 +430,8 @@ async function filterUsageRowsBySourcePolicy(
 ): Promise<UsageObjectRow[]> {
   const sourceIds = [...new Set(rows.flatMap((row) => row.source_connection_ids))];
   if (sourceIds.length === 0) return [...rows];
-  const [snapshots, viewerSpaceRole] = await Promise.all([
-    loadSourcePolicySnapshots(db, spaceId, sourceIds),
-    loadViewerSpaceRole(db, spaceId, userId),
-  ]);
+  const snapshots = await loadSourcePolicySnapshots(db, spaceId, sourceIds);
+  const viewerSpaceRole = await loadViewerSpaceRole(db, spaceId, userId);
   return rows.filter((row) =>
     row.source_connection_ids.every((sourceId) => {
       const snapshot = snapshots.get(sourceId);
@@ -442,13 +447,19 @@ function aggregateUsage(rows: readonly UsageObjectRow[]): UsageRow[] {
   for (const row of rows) {
     const key = registryKey(row.base_object_type, row.object_profile);
     const current = counts.get(key);
+    // Every counted row is named, a published Project public summary
+    // included (its ref is the Project id): its current publication, active
+    // Project and Source references are rechecked on every read.
+    const refs = [{ object_type: row.base_object_type, object_id: row.object_id }];
     if (current) {
       current.visible_usage_count = countValue(current.visible_usage_count) + 1;
+      current.evidence_refs.push(...refs);
     } else {
       counts.set(key, {
         base_object_type: row.base_object_type,
         object_profile: row.object_profile,
         visible_usage_count: 1,
+        evidence_refs: refs,
       });
     }
   }

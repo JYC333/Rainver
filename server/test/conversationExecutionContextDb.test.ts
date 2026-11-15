@@ -1,7 +1,11 @@
+// Test-only cross-package contract probe: runtimeChoice is a browser-safe pure
+// four-field DTO projection (no React, browser globals, API or server imports).
+// Production server dependencies and runtime ownership remain unchanged.
+import { runtimeChoice } from '../../apps/web/src/modules/conversation/runtimeChoice.js';
 import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { seedServerHost, seedSpaceOwnerProject } from "./support/domainSeeds.js";
+import { seedServerHost, seedSpaceOwnerProject, seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 import { resetTables } from "./support/resetTables.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { ConversationExecutionContextService } from "../src/modules/sessions/executionContextService.js";
@@ -12,10 +16,14 @@ import { PgRunRepository } from "../src/modules/runs/repository.js";
 import { PgRouteDecisionRepository } from "../src/modules/routing/repository.js";
 import { seedAgentWithVersion, seedRoomManager, seedRun } from "./support/domainSeeds.js";
 import { buildModuleServer } from "./support/moduleServer.js";
+import { agentsModule } from "../src/modules/agents/index.js";
 import { sessionsModule } from "../src/modules/sessions/index.js";
 import { __setSessionIdentityForTests } from "../src/modules/sessions/routes.js";
 import { PgHostThreadRepository } from "../src/modules/hosts/threadRepository.js";
 import { PgHostRepository } from "../src/modules/hosts/repository.js";
+import { PgAgentRepository } from "../src/modules/agents/repository.js";
+import { PgProjectAgentRepository } from "../src/modules/projects/projectAgents.js";
+import { prepareHostConversationDispatch } from "../src/modules/agentGroups/service.js";
 import { PgConversationBackendRepository } from "../src/modules/sessions/conversationBackendRepository.js";
 
 const SPACE = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -294,11 +302,13 @@ describe("Conversation execution schema", () => {
     const now = new Date().toISOString();
     const first = "33333333-3333-4333-8333-333333333334";
     const second = "33333333-3333-4333-8333-333333333335";
-    for (const id of [first, second]) {
+    // A Project direct session has its own Conversation container: it neither keeps this one alive nor closes it.
+    const placed = "33333333-3333-4333-8333-333333333336";
+    for (const [id, projectId] of [[first, null], [second, null], [placed, PROJECT]] as const) {
       await db.pool.query(
         `INSERT INTO sessions (id, space_id, user_id, project_id, status, created_at, updated_at)
          VALUES ($1, $2, $3, $4, 'active', $5, $5)`,
-        [id, SPACE, OWNER, PROJECT, now],
+        [id, SPACE, OWNER, projectId, now],
       );
       await db.pool.query(
         `INSERT INTO session_conversation_backends (
@@ -325,6 +335,9 @@ describe("Conversation execution schema", () => {
       const deleted = await app.inject({ method: "DELETE", url: `/api/v1/sessions/${first}`, headers: { "idempotency-key": randomUUID() } });
       expect(deleted.statusCode, deleted.body).toBe(200);
       expect(deleted.json().data).toMatchObject({ session_id: first });
+      expect(await threadStatus()).toBe("active");
+      const project = await app.inject({ method: "DELETE", url: `/api/v1/sessions/${placed}`, headers: { "idempotency-key": randomUUID() } });
+      expect(project.statusCode, project.body).toBe(200);
       expect(await threadStatus()).toBe("active");
 
       const last = await app.inject({ method: "DELETE", url: `/api/v1/sessions/${second}`, headers: { "idempotency-key": randomUUID() } });
@@ -1060,4 +1073,455 @@ describe("Conversation execution schema", () => {
     );
     expect(events.rows[0]!.count).toBe("1");
   });
+});
+
+
+describe("Reusable Agent Project execution (real PostgreSQL)", () => {
+  it("keeps two Projects' Locations, CLI choices, bindings and threads independent for one Agent", async () => {
+    if (!db.available) return;
+    const projectB = randomUUID(), folderB = randomUUID(), locationB = randomUUID(), sessionB = randomUUID();
+    await db.pool.query("INSERT INTO projects(id,space_id,owner_user_id,name,status,created_at,updated_at) VALUES($1,$2,$3,'Second','active',now(),now())", [projectB, SPACE, OWNER]);
+    await seedMainlineRoomsForAllProjects(db.pool);
+    // The one identity retains its original content boundary; its execution no longer belongs to A.
+    await db.pool.query("UPDATE agents SET agent_kind='standard',project_id=NULL,access_project_id=$2 WHERE id=$1", [AGENT, PROJECT]);
+    const links = new PgProjectAgentRepository(db.pool);
+    for (const projectId of [PROJECT, projectB]) await links.upsertActive({spaceId: SPACE, projectId, agentId: AGENT, userId: OWNER});
+    await db.pool.query("INSERT INTO project_folders(id,space_id,project_id,created_by_user_id,name,status,kind,protected,system_managed,created_at,updated_at) VALUES($1,$2,$3,$4,'Second repo','active','code',false,false,now(),now())", [folderB, SPACE, projectB, OWNER]);
+    await db.pool.query("INSERT INTO workspace_locations(id,space_id,project_folder_id,execution_host_id,execution_host_kind,root_path,execution_ready,status,created_at,updated_at) VALUES($1,$2,$3,$4,'server','/workspace/second',true,'active',now(),now())", [locationB, SPACE, folderB, HOST]);
+    await db.pool.query("INSERT INTO sessions(id,space_id,project_id,user_id,agent_id,status,created_at,updated_at) VALUES($1,$2,$3,$4,$5,'active',now(),now())", [sessionB, SPACE, projectB, OWNER, AGENT]);
+    await db.pool.query("UPDATE hosts SET capabilities_json=jsonb_set(capabilities_json,'{installations,codex_cli}',$2::jsonb,true) WHERE id=$1", [HOST, JSON.stringify([{id:'managed:1.0.0',version:'1.0.0',logged_in:true,health_check_protocol:'acp'}])]);
+    const service = new ConversationExecutionContextService(db.pool);
+    const initialize = (sessionId: string, locationId: string, runtimeKey: string) => service.initialize({spaceId: SPACE, userId: OWNER}, sessionId, {
+      selection: {execution_host_id: HOST, primary: {kind: 'location', workspace_location_id: locationId}},
+      runtime: {agent_id: AGENT, runtime_profile_id: null, runtime_key: runtimeKey, runtime_installation: 'managed:1.0.0'},
+    });
+    await initialize(SESSION, LOCATION, 'claude_code');
+    const first = (await db.pool.query("SELECT * FROM session_conversation_backends WHERE session_id=$1", [SESSION])).rows[0];
+    await initialize(sessionB, locationB, 'codex_cli');
+    expect((await db.pool.query("SELECT * FROM session_conversation_backends WHERE session_id=$1", [SESSION])).rows[0]).toEqual(first);
+    const backends = new PgConversationBackendRepository(db.pool);
+    const optionsA = await backends.listOptions(SPACE, OWNER, AGENT, PROJECT);
+    const optionsB = await backends.listOptions(SPACE, OWNER, AGENT, projectB);
+    expect(optionsA.filter(p => p.workspace_mode === 'location').map(p => p.workspace_location_id)).toEqual([LOCATION]);
+    expect(optionsB.filter(p => p.workspace_mode === 'location').map(p => p.workspace_location_id)).toEqual([locationB]);
+    expect((await backends.listOptions(SPACE, OWNER, AGENT)).every(p => p.workspace_mode !== 'location')).toBe(true);
+    const app = buildModuleServer(loadConfig({SERVER_DATABASE_URL: db.connectionUri}), [agentsModule]);
+    __setAuthIdentityForTests({spaceId: SPACE, userId: OWNER});
+    try {
+      const draft = await app.inject({method: 'GET', url: `/api/v1/agents/${AGENT}/conversation-backends?project_id=${projectB}`});
+      expect(draft.statusCode, draft.body).toBe(200);
+      expect(draft.json().options.filter((p: {workspace_mode: string}) => p.workspace_mode === 'location').map((p: {workspace_location_id: string}) => p.workspace_location_id)).toEqual([locationB]);
+      expect((await app.inject({method: 'GET', url: `/api/v1/agents/${AGENT}/conversation-backends?session_id=${sessionB}&project_id=${PROJECT}`})).statusCode).toBe(404);
+      __setAuthIdentityForTests({spaceId: SPACE, userId: VIEWER});
+      expect((await app.inject({method: 'GET', url: `/api/v1/agents/${AGENT}/conversation-backends?project_id=${projectB}`})).statusCode).toBe(404);
+    } finally {
+      __setAuthIdentityForTests(null);
+      await app.close();
+    }
+    const bindingB = await backends.resolveBinding({space_id: SPACE, user_id: OWNER, session_id: sessionB, agent_id: AGENT});
+    expect(bindingB).toMatchObject({workspace_location_id: locationB, runtime_key: 'codex_cli'});
+    await expect(prepareHostConversationDispatch({db: db.pool, backend: bindingB, container: {kind: 'conversation', conversation_id: SESSION}, sessionId: SESSION, spaceId: SPACE, projectId: PROJECT, agentId: AGENT, userId: OWNER})).rejects.toThrow('Project context');
+    const threads = (await db.pool.query("SELECT id,session_id,workspace_location_id,runtime_key FROM host_threads WHERE agent_id=$1 ORDER BY session_id", [AGENT])).rows;
+    expect(threads).toHaveLength(2);
+    expect(new Set(threads.map(t => t.id)).size).toBe(2);
+    expect(threads).toEqual(expect.arrayContaining([expect.objectContaining({session_id: SESSION, workspace_location_id: LOCATION}), expect.objectContaining({session_id: sessionB, workspace_location_id: locationB})]));
+    await expect(new PgAgentRepository(db.pool).ensureHostRuntimeProfile({spaceId: SPACE, projectId: PROJECT, actorUserId: VIEWER, agentId: AGENT, executionHostId: OTHER_HOST, workspaceLocationId: null, workspaceMode: 'managed', runtimeKey: 'claude_code', runtimeInstallation: 'managed:1.0.0'})).rejects.toMatchObject({statusCode: 403});
+    // Another Project setup does not replace the Agent's default deployment.
+    expect((await db.pool.query("SELECT id FROM agent_runtime_profiles WHERE agent_id=$1 AND is_default", [AGENT])).rows).toEqual([{id: RUNTIME}]);
+    const agents = new PgAgentRepository(db.pool);
+    await expect(agents.ensureHostRuntimeProfile({spaceId: SPACE, projectId: PROJECT, actorUserId: OWNER, agentId: AGENT, executionHostId: HOST, workspaceLocationId: locationB, workspaceMode: 'location', runtimeKey: 'codex_cli', runtimeInstallation: 'managed:1.0.0'})).rejects.toThrow('execution Project');
+    await expect(agents.ensureHostRuntimeProfile({spaceId: SPACE, projectId: null, actorUserId: OWNER, agentId: AGENT, executionHostId: HOST, workspaceLocationId: LOCATION, workspaceMode: 'location', runtimeKey: 'claude_code', runtimeInstallation: 'managed:1.0.0'})).rejects.toThrow('execution Project');
+    await db.pool.query("UPDATE project_agent_links SET status='removed',removed_at=now() WHERE project_id=$1 AND agent_id=$2", [projectB, AGENT]);
+    await expect(agents.ensureHostRuntimeProfile({spaceId: SPACE, projectId: projectB, actorUserId: OWNER, agentId: AGENT, executionHostId: HOST, workspaceLocationId: locationB, workspaceMode: 'location', runtimeKey: 'codex_cli', runtimeInstallation: 'managed:1.0.0'})).rejects.toThrow('Add this Agent');
+    // Existing initialized history stays pinned after list removal.
+    expect(await backends.resolveBinding({space_id: SPACE, user_id: OWNER, session_id: sessionB, agent_id: AGENT})).toMatchObject({binding_id: bindingB.binding_id, workspace_location_id: locationB});
+  });
+});
+
+describe('Room conversation participant snapshots (real PostgreSQL)',()=>{
+  async function specialist(){
+    const agent=randomUUID(),version=randomUUID(),profile=randomUUID();
+    await seedAgentWithVersion(db.pool,{agent,version,space:SPACE,owner:OWNER,seedDefaultRuntimeProfile:false,name:'Optional specialist'});
+    await db.pool.query(`UPDATE agent_versions SET risk_level='low' WHERE id=$1`,[version]);
+    await db.pool.query(`INSERT INTO room_agent_members(id,space_id,room_id,agent_id,role,status,created_at,updated_at)
+      SELECT $1,space_id,room_id,$2,'member','active',now(),now() FROM sessions WHERE id=$3`,[randomUUID(),agent,SESSION]);
+    await db.pool.query(`INSERT INTO agent_runtime_profiles(id,space_id,agent_id,name,runtime_key,backend_mode,execution_host_id,workspace_mode,runtime_installation,runtime_config_json,runtime_policy_json,enabled,is_default,created_at,updated_at)
+      VALUES($1,$2,$3,'Optional CLI','claude_code','runtime_native',$4,'managed','managed:1.0.0','{}','{}',true,true,now(),now())`,[profile,SPACE,agent,HOST]);
+    return {agent_id:agent,runtime_profile_id:profile,runtime_key:'claude_code',runtime_installation:'managed:1.0.0'};
+  }
+  const identity={spaceId:SPACE,userId:OWNER};
+  const request={selection:{execution_host_id:HOST,primary:{kind:'managed' as const}},runtime:{agent_id:AGENT,runtime_profile_id:RUNTIME,runtime_key:'claude_code',runtime_installation:'managed:1.0.0'}};
+  it('does not bind excluded Agents or silently add a later Room member; joins and removes without resetting retained threads',async ctx=>{
+    if(!db.available)return ctx.skip();
+    const service=new ConversationExecutionContextService(db.pool),optional=await specialist();
+    await service.initialize(identity,SESSION,{...request,participants_revision:(await service.preview(identity,SESSION)).summary.participants_revision,participant_agent_ids:[AGENT]});
+    const before=(await db.pool.query(`SELECT * FROM host_threads WHERE session_id=$1 AND agent_id=$2`,[SESSION,AGENT])).rows[0];
+    expect((await service.preview(identity,SESSION)).summary.runtimes.map(pin=>pin.agent_id)).toEqual([AGENT]);
+    expect((await db.pool.query(`SELECT agent_id FROM session_conversation_backends WHERE session_id=$1`,[SESSION])).rows).toEqual([{agent_id:AGENT}]);
+    await expect(new PgConversationBackendRepository(db.pool).resolveBinding({space_id:SPACE,user_id:OWNER,session_id:SESSION,agent_id:optional.agent_id})).rejects.toThrow('not participating');
+    const later=await specialist();
+    expect((await service.preview(identity,SESSION)).summary.can_send).toBe(true);
+    await service.initialize(identity,SESSION,{...request,participants_revision:(await service.preview(identity,SESSION)).summary.participants_revision,additional_runtimes:[optional],participant_agent_ids:[AGENT,optional.agent_id]});
+    const optionalThread=(await db.pool.query(`SELECT * FROM host_threads WHERE session_id=$1 AND agent_id=$2`,[SESSION,optional.agent_id])).rows[0];
+    await new PgConversationBackendRepository(db.pool).saveSessionConfig(SPACE,SESSION,optional.agent_id,[]);
+    await service.initialize(identity,SESSION,{...request,participants_revision:(await service.preview(identity,SESSION)).summary.participants_revision,participant_agent_ids:[AGENT]});
+    expect((await service.preview(identity,SESSION)).summary.runtimes.map(pin=>pin.agent_id)).toEqual([AGENT]);
+    await expect(new PgConversationBackendRepository(db.pool).resolveBinding({space_id:SPACE,user_id:OWNER,session_id:SESSION,agent_id:optional.agent_id})).rejects.toThrow('not participating');
+    await service.initialize(identity,SESSION,{...request,participants_revision:(await service.preview(identity,SESSION)).summary.participants_revision,participant_agent_ids:[AGENT,optional.agent_id]});
+    expect((await db.pool.query(`SELECT id FROM host_threads WHERE session_id=$1 AND agent_id=$2`,[SESSION,optional.agent_id])).rows).toEqual([{id:optionalThread.id}]);
+    expect((await db.pool.query(`SELECT * FROM host_threads WHERE id=$1`,[before.id])).rows[0]).toEqual(before);
+    expect((await service.preview(identity,SESSION)).summary.runtimes.map(pin=>pin.agent_id)).not.toContain(later.agent_id);
+  });
+  it('snapshots Room model defaults once and leaves subsequent saves independent',async ctx=>{
+    if(!db.available)return ctx.skip();
+    const {RoomRosterService}=await import('../src/modules/rooms/rosterService.js');
+    const room=(await db.pool.query(`SELECT room_id FROM sessions WHERE id=$1`,[SESSION])).rows[0].room_id;
+    await db.pool.query(`UPDATE hosts SET capabilities_json=jsonb_set(capabilities_json,'{installations,claude_code}',$2::jsonb,true) WHERE id=$1`,[HOST,JSON.stringify([{id:'managed:1.0.0',version:'1.0.0',logged_in:true,health_check_protocol:'acp',options:{session_available:true,config_options:[{id:'model',name:'Model',category:'model',type:'select',current_value:'a',options:[{value:'a'},{value:'b'}]}]}}])]);
+    const config=(value:string)=>[{id:'model',category:'model',type:'select' as const,value}];
+    const roster=new RoomRosterService(db.pool),service=new ConversationExecutionContextService(db.pool);
+    await roster.saveConversationDefaults(identity,room,[{agent_id:AGENT,participating:true,runtime_profile_id:RUNTIME,session_config:config('a')}],(await db.pool.query('SELECT roster_revision FROM rooms WHERE id=$1',[room])).rows[0].roster_revision);
+    await service.initialize(identity,SESSION,request);
+    const backends=new PgConversationBackendRepository(db.pool);
+    expect(await backends.sessionConfig(SPACE,SESSION,AGENT)).toEqual(config('a'));
+    await roster.saveConversationDefaults(identity,room,[{agent_id:AGENT,participating:true,runtime_profile_id:RUNTIME,session_config:config('b')}],(await db.pool.query('SELECT roster_revision FROM rooms WHERE id=$1',[room])).rows[0].roster_revision);
+    await service.initialize(identity,SESSION,request);
+    expect(await backends.sessionConfig(SPACE,SESSION,AGENT)).toEqual(config('a'));
+    await backends.saveSessionConfig(SPACE,SESSION,AGENT,config('b'));
+    expect((await service.preview(identity,SESSION)).summary.runtimes[0]?.session_config).toEqual(config('b'));
+    await db.pool.query(`UPDATE hosts SET capabilities_json=jsonb_set(capabilities_json,'{installations,claude_code,0,options,config_options,0,options}',$2::jsonb,true) WHERE id=$1`,[HOST,JSON.stringify([{value:'a'}])]);
+    expect((await service.preview(identity,SESSION)).summary.runtimes[0]).toMatchObject({session_config:[],session_config_dropped:true});
+    expect(await backends.sessionConfig(SPACE,SESSION,AGENT)).toEqual(config('b'));
+  });
+  it('freezes each running turn, excludes nonparticipants from delegation, and confines Assistant settings to its current conversation',async ctx=>{
+    if(!db.available)return ctx.skip();
+    const {RoomService}=await import('../src/modules/rooms/service.js');
+    const {operationRuntime}=await import('../src/modules/systemActions/operations/runtime.js');
+    const {runActor}=await import('../src/modules/systemActions/operations/actor.js');
+    const config=loadConfig({SERVER_DATABASE_URL:db.connectionUri});
+    const service=new ConversationExecutionContextService(db.pool),optional=await specialist();
+    await db.pool.query(`UPDATE hosts SET capabilities_json=jsonb_set(capabilities_json,'{installations,claude_code}',$2::jsonb,true) WHERE id=$1`,[HOST,JSON.stringify([{id:'managed:1.0.0',version:'1.0.0',logged_in:true,health_check_protocol:'acp',options:{session_available:true,config_options:[{id:'model',name:'Model',category:'model',type:'select',current_value:'a',options:[{value:'a'},{value:'b'}]}]}}])]);
+    const modelConfig=(value:string)=>[{id:'model',type:'select' as const,category:'model',value}];
+    await service.initialize(identity,SESSION,{...request,participants_revision:(await service.preview(identity,SESSION)).summary.participants_revision,participant_agent_ids:[AGENT]});
+    await new PgConversationBackendRepository(db.pool).saveSessionConfig(SPACE,SESSION,AGENT,modelConfig('a'));
+    const room=(await db.pool.query(`SELECT room_id FROM sessions WHERE id=$1`,[SESSION])).rows[0].room_id;
+    const rooms=new RoomService(config,db.pool),sent=await rooms.sendMessage(identity,room,SESSION,{content:'Inspect this conversation.'});
+    expect((await db.pool.query(`SELECT agent_id FROM agent_run_group_members WHERE group_id=$1 ORDER BY agent_id`,[sent.task_group_ids[0]])).rows).toEqual([{agent_id:AGENT}]);
+    const runs=new PgRunRepository(db.pool,config),before=await runs.getRun(SPACE,sent.run_ids[0]!);
+    await new PgRouteDecisionRepository(db.pool).routeRun(before as never);
+    await db.pool.query(`UPDATE runs SET status='running' WHERE id=$1`,[before!.id]);
+    const run=(await runs.getRun(SPACE,before!.id))!,actor=await runActor(db.pool,run),runtime=await operationRuntime(config);
+    const read=await runtime.execute('room.settings.read',{},actor,randomUUID());
+    expect(read.http_status,JSON.stringify(read.body)).toBe(200);
+    expect(read.body).toMatchObject({status:'succeeded',data:{room_id:room,session_id:SESSION}});
+    const otherSession=randomUUID();
+    await db.pool.query(`INSERT INTO sessions(id,space_id,room_id,project_id,status,created_at,updated_at) SELECT $1,space_id,room_id,project_id,'active',now(),now() FROM sessions WHERE id=$2`,[otherSession,SESSION]);
+    const forbidden=await runtime.execute('conversation.execution.initialize',{...request,session_id:otherSession},actor,randomUUID(),randomUUID());
+    expect(forbidden.http_status).toBe(404);
+    const saved=await runtime.execute('conversation.session_config.save',{session_id:SESSION,agent_id:AGENT,runtime_profile_id:RUNTIME,session_config:modelConfig('b')},actor,randomUUID(),randomUUID());
+    expect(saved.http_status,JSON.stringify(saved.body)).toBe(200);
+    await service.initialize(identity,SESSION,{...request,participants_revision:(await service.preview(identity,SESSION)).summary.participants_revision,participant_agent_ids:[AGENT,optional.agent_id],additional_runtimes:[optional]});
+    const after=(await runs.getRun(SPACE,run.id))!;
+    expect(after.model_override_json).toEqual(run.model_override_json);
+    expect(after.model_override_json).toMatchObject({acp_session_config:[{value:'a'}]});
+    expect(await new PgConversationBackendRepository(db.pool).sessionConfig(SPACE,SESSION,AGENT)).toEqual(modelConfig('b'));
+    expect(after.permission_snapshot_json).toEqual(run.permission_snapshot_json);
+    expect((await db.pool.query(`SELECT agent_id FROM agent_run_group_members WHERE group_id=$1`,[sent.task_group_ids[0]])).rows).toEqual([{agent_id:AGENT}]);
+    const foreignProject=randomUUID();
+    await db.pool.query(`INSERT INTO projects(id,space_id,owner_user_id,name,status,created_at,updated_at) VALUES($1,$2,$3,'Retained Project','active',now(),now())`,[foreignProject,SPACE,OWNER]);
+    await seedMainlineRoomsForAllProjects(db.pool);
+    await db.pool.query(`UPDATE agents SET access_project_id=$2 WHERE id=$1`,[optional.agent_id,foreignProject]);
+    const noRoomUseGrant=await runtime.execute('conversation.session_config.save',{session_id:SESSION,agent_id:optional.agent_id,runtime_profile_id:optional.runtime_profile_id,session_config:[]},actor,randomUUID(),randomUUID());
+    expect(noRoomUseGrant.http_status).toBe(404);
+    // Withdrawal is checked again, even with a previously granted Run action.
+    await db.pool.query(`UPDATE room_user_members SET status='removed' WHERE space_id=$1 AND room_id=$2 AND user_id=$3`,[SPACE,room,OWNER]);
+    const refused=await runtime.execute('conversation.session_config.save',{session_id:SESSION,agent_id:AGENT,runtime_profile_id:RUNTIME,session_config:modelConfig('b')},actor,randomUUID(),randomUUID());
+    expect(refused.http_status).toBe(404);
+  });
+
+  it('serializes repeated joins and rechecks Room revocation after waiting for the audience lock',async ctx=>{
+    if(!db.available)return ctx.skip();
+    const {waitForBlockedBy}=await import('./support/lockWait.js');
+    const service=new ConversationExecutionContextService(db.pool),optional=await specialist();
+    await service.initialize(identity,SESSION,{...request,participants_revision:(await service.preview(identity,SESSION)).summary.participants_revision,participant_agent_ids:[AGENT]});
+    const join={...request,participants_revision:(await service.preview(identity,SESSION)).summary.participants_revision,participant_agent_ids:[AGENT,optional.agent_id],additional_runtimes:[optional]};
+    const outcomes=await Promise.allSettled([service.initialize(identity,SESSION,join),service.initialize(identity,SESSION,join)]);
+    expect(outcomes.filter(result=>result.status==='fulfilled')).toHaveLength(1);
+    expect(outcomes.filter(result=>result.status==='rejected')).toHaveLength(1);
+    expect((await db.pool.query(`SELECT count(*)::int count FROM host_threads WHERE space_id=$1 AND session_id=$2 AND agent_id=$3`,[SPACE,SESSION,optional.agent_id])).rows[0].count).toBe(1);
+    const other=await specialist(),holder=await db.pool.connect();
+    let pending:Promise<unknown>|undefined;
+    try{
+      await holder.query('BEGIN');
+      const pid=(await holder.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
+      const room=(await holder.query(`SELECT room_id FROM sessions WHERE id=$1`,[SESSION])).rows[0].room_id;
+      await holder.query(`SELECT id FROM rooms WHERE id=$1 FOR UPDATE`,[room]);
+      let settled=false;
+      pending=service.initialize(identity,SESSION,{...request,participants_revision:(await service.preview(identity,SESSION)).summary.participants_revision,participant_agent_ids:[AGENT,other.agent_id],additional_runtimes:[other]}).then(()=>{settled=true;return null},error=>{settled=true;return error});
+      await waitForBlockedBy(db.pool,pid,{settled:()=>settled});
+      expect(settled).toBe(false);
+      await holder.query(`UPDATE room_user_members SET status='removed' WHERE room_id=$1 AND user_id=$2`,[room,OWNER]);
+      await holder.query('COMMIT');
+      expect(await pending).toMatchObject({statusCode:404});
+      expect((await db.pool.query(`SELECT 1 FROM session_conversation_backends WHERE session_id=$1 AND agent_id=$2`,[SESSION,other.agent_id])).rowCount).toBe(0);
+    }finally{await holder.query('ROLLBACK');holder.release();await pending;}
+  });
+
+  it('refuses a queued recipient at the Run admission boundary after participation is removed',async ctx=>{
+    if(!db.available)return ctx.skip();
+    const {RoomService}=await import('../src/modules/rooms/service.js');
+    const config=loadConfig({SERVER_DATABASE_URL:db.connectionUri}),optional=await specialist();
+    const service=new ConversationExecutionContextService(db.pool);
+    await service.initialize(identity,SESSION,{...request,participants_revision:(await service.preview(identity,SESSION)).summary.participants_revision,participant_agent_ids:[AGENT,optional.agent_id],additional_runtimes:[optional]});
+    const room=(await db.pool.query(`SELECT room_id FROM sessions WHERE id=$1`,[SESSION])).rows[0].room_id;
+    const sent=await new RoomService(config,db.pool).sendMessage(identity,room,SESSION,{content:'Only the specialist should inspect this.',recipient_segments:[{recipient_agent_ids:[optional.agent_id],content:'Inspect this.'}]});
+    const runs=new PgRunRepository(db.pool,config),queued=(await runs.getRun(SPACE,sent.run_ids[0]!))!;
+    await new PgRouteDecisionRepository(db.pool).routeRun(queued as never);
+    expect(await runs.checkRunExecutionAuthorization(queued)).toMatchObject({allowed:true});
+    await service.initialize(identity,SESSION,{...request,participants_revision:(await service.preview(identity,SESSION)).summary.participants_revision,participant_agent_ids:[AGENT]});
+    expect(await runs.checkRunExecutionAuthorization(queued)).toMatchObject({allowed:false,error_code:'run_execution_authorization_revoked'});
+    expect(await runs.markRunRunning({space_id:SPACE,run_id:queued.id,started_at:new Date().toISOString()})).toBeNull();
+    expect((await runs.getRun(SPACE,queued.id))?.status).toBe('queued');
+  });
+
+  it('keeps a hidden participant, rejects unauthorized deltas and full omissions, and uses the manager after a specialist replied (actual editor payload)',async()=>{
+    const service=new ConversationExecutionContextService(db.pool),optional=await specialist(),hidden=await specialist();
+    await service.initialize(identity,SESSION,{...request,participant_agent_ids:[AGENT,optional.agent_id,hidden.agent_id],additional_runtimes:[optional,hidden]});
+    // Make the hidden Agent inaccessible even to this Space owner through a foreign Project boundary.
+    const foreign=randomUUID();
+    await db.pool.query(`INSERT INTO projects(id,space_id,owner_user_id,name,status,created_at,updated_at) VALUES($1,$2,$3,'Foreign','active',now(),now())`,[foreign,SPACE,OWNER]);
+    await db.pool.query(`UPDATE agents SET access_project_id=$2 WHERE id=$1`,[hidden.agent_id,foreign]);
+    await db.pool.query(`UPDATE host_threads SET updated_at=now()+interval '1 hour' WHERE session_id=$1 AND agent_id=$2`,[SESSION,optional.agent_id]);
+    const preview=await service.preview(identity,SESSION),summary=preview.summary;
+    expect(summary.runtime?.agent_id).toBe(AGENT);
+    expect(summary.participant_agent_ids).toContain(hidden.agent_id);
+    expect(summary.runtimes.some(pin=>pin.agent_id===hidden.agent_id)).toBe(false);
+    expect(preview.available_runtime_profiles.some(pin=>pin.agent_id===hidden.agent_id)).toBe(false);
+    expect(preview.available_participant_agents?.some(agent=>agent.agent_id===hidden.agent_id)).toBe(false);
+    await expect(service.initialize(identity,SESSION,{...request,participants_revision:summary.participants_revision,participant_agent_ids:[AGENT,optional.agent_id]})).rejects.toMatchObject({statusCode:403});
+    await expect(service.initialize(identity,SESSION,{...request,participants_revision:summary.participants_revision,participant_changes:[{agent_id:hidden.agent_id,participating:false}]})).rejects.toMatchObject({statusCode:403});
+    // Consume the UI mapper with the actual rich PG read projection, through strict HTTP below.
+    expect(summary.runtimes.find(pin=>pin.agent_id===AGENT)).toHaveProperty('session_config');
+    const payload={selection:request.selection,runtime:runtimeChoice(summary.runtimes.find(pin=>pin.agent_id===AGENT)!),additional_runtimes:[],participants_revision:summary.participants_revision,participant_changes:[{agent_id:optional.agent_id,participating:false}]};
+    const {systemActionsModule}=await import('../src/modules/systemActions/index.js');
+    const app=buildModuleServer(loadConfig({SERVER_DATABASE_URL:db.connectionUri}),[systemActionsModule,sessionsModule]);
+    __setAuthIdentityForTests(identity);
+    try{
+      // The web client sends this exact operation URL/body and reads preflight after its receipt.
+      const response=await app.inject({method:'POST',url:'/api/v1/actions/conversation.execution.initialize',headers:{'idempotency-key':randomUUID()},payload:{session_id:SESSION,...payload}});
+      expect(response.statusCode,response.body).toBe(200);
+    }finally{__setAuthIdentityForTests(null);await app.close();}
+    const saved=(await service.preview(identity,SESSION)).summary;
+    expect(saved.participant_agent_ids?.sort()).toEqual([AGENT,hidden.agent_id].sort());
+    await expect(service.initialize(identity,SESSION,payload)).rejects.toMatchObject({statusCode:409});
+    await service.initialize(identity,SESSION,request);
+    expect((await service.preview(identity,SESSION)).summary.participant_agent_ids?.sort()).toEqual([AGENT,hidden.agent_id].sort());
+    await expect(service.initialize(identity,SESSION,{...request,runtime:optional})).rejects.toMatchObject({statusCode:403});
+  });
+
+  it('preserves inaccessible Room defaults, rejects stale saves, and never exposes their profiles in Room detail',async()=>{
+    const {RoomRosterService}=await import('../src/modules/rooms/rosterService.js');
+    const {RoomService}=await import('../src/modules/rooms/service.js');
+    const {operationRuntime}=await import('../src/modules/systemActions/operations/runtime.js');
+    const {sessionActor}=await import('../src/modules/systemActions/operations/actor.js');
+    const hidden=await specialist(),room=(await db.pool.query('SELECT room_id FROM sessions WHERE id=$1',[SESSION])).rows[0].room_id;
+    const config=loadConfig({SERVER_DATABASE_URL:db.connectionUri}),runtime=await operationRuntime(config),actor=sessionActor(identity);
+    const foreign=randomUUID();
+    await db.pool.query(`INSERT INTO projects(id,space_id,owner_user_id,name,status,created_at,updated_at) VALUES($1,$2,$3,'Foreign','active',now(),now())`,[foreign,SPACE,OWNER]);
+    const old={agent_id:hidden.agent_id,participating:true,runtime_profile_id:hidden.runtime_profile_id,session_config:[]};
+    await db.pool.query('UPDATE rooms SET conversation_defaults_json=$2 WHERE id=$1',[room,JSON.stringify([old])]);
+    await db.pool.query('UPDATE agents SET access_project_id=$2 WHERE id=$1',[hidden.agent_id,foreign]);
+    const read=await runtime.execute('room.settings.read',{room_id:room},actor,randomUUID());
+    expect(read.http_status).toBe(200);
+    const data=(read.body as {data:{revision:number;defaults:unknown[]}}).data;
+    expect(data.defaults).toEqual([]);
+    const patch=[{agent_id:AGENT,participating:true,runtime_profile_id:RUNTIME,session_config:[]}];
+    const roster=new RoomRosterService(db.pool);
+    await roster.saveConversationDefaults(identity,room,patch,data.revision);
+    await expect(roster.saveConversationDefaults(identity,room,patch,data.revision)).rejects.toMatchObject({statusCode:409});
+    const stale=await runtime.execute('room.defaults.save',{room_id:room,defaults:patch,expected_revision:data.revision},actor,randomUUID(),randomUUID());
+    expect(stale.http_status,JSON.stringify(stale.body)).toBe(409);
+    const stored=(await db.pool.query('SELECT conversation_defaults_json FROM rooms WHERE id=$1',[room])).rows[0].conversation_defaults_json;
+    expect(stored).toContainEqual(old);
+    const detail=await new RoomService(config,db.pool).getRoom(identity,room);
+    expect(JSON.stringify(detail)).not.toContain(hidden.runtime_profile_id);
+  });
+
+  it('joins and restores retained participants through strict HTTP using the UI runtime mapper',async()=>{
+    const {systemActionsModule}=await import('../src/modules/systemActions/index.js');
+    const service=new ConversationExecutionContextService(db.pool),worker=await specialist();
+    await service.initialize(identity,SESSION,{...request,participant_agent_ids:[AGENT]});
+    const app=buildModuleServer(loadConfig({SERVER_DATABASE_URL:db.connectionUri}),[systemActionsModule,sessionsModule]);
+    __setAuthIdentityForTests(identity);
+    try{
+      let thread:string|undefined;
+      for(const [participating,additional] of [[true,true],[false,false],[true,false]]){
+        // Removal and a retained Host thread do not require a usable new profile.
+        if (!additional) await db.pool.query('UPDATE agent_runtime_profiles SET enabled=false,is_default=false WHERE id=$1',[worker.runtime_profile_id]);
+        const preview = await service.preview(identity,SESSION);
+        if (!additional) expect(preview.available_participant_agents).toContainEqual({agent_id:worker.agent_id,retained_thread:true});
+        const summary=preview.summary;
+        const payload={session_id:SESSION,selection:request.selection,runtime:runtimeChoice(summary.runtimes.find(pin=>pin.agent_id===AGENT)!),participants_revision:summary.participants_revision,participant_changes:[{agent_id:worker.agent_id,participating}],additional_runtimes:additional?[runtimeChoice(worker)]:[]};
+        const response=await app.inject({method:'POST',url:'/api/v1/actions/conversation.execution.initialize',headers:{'idempotency-key':randomUUID()},payload});
+        expect(response.statusCode,response.body).toBe(200);
+        const id=(await db.pool.query('SELECT id FROM host_threads WHERE session_id=$1 AND agent_id=$2',[SESSION,worker.agent_id])).rows[0].id;
+        if(thread)expect(id).toBe(thread);else thread=id;
+        expect((await service.preview(identity,SESSION)).summary.participant_agent_ids?.includes(worker.agent_id)).toBe(participating);
+      }
+      await db.pool.query('UPDATE agent_runtime_profiles SET enabled=true WHERE id=$1',[worker.runtime_profile_id]);
+      await db.pool.query(`UPDATE hosts SET capabilities_json=jsonb_set(capabilities_json,'{installations,claude_code}',$2::jsonb,true) WHERE id=$1`,[HOST,JSON.stringify([{id:'managed:1.0.0',version:'1.0.0',logged_in:true,health_check_protocol:'acp',options:{session_available:true,config_options:[{id:'model',name:'Model',category:'model',type:'select',current_value:'a',options:[{value:'a'},{value:'b'}]}]}}])]);
+      const before=(await service.preview(identity,SESSION)).summary.participant_agent_ids;
+      const session_config=[{id:'model',type:'select',category:'model',value:'b'}];
+      const response=await app.inject({method:'POST',url:'/api/v1/actions/conversation.session_config.save',headers:{'idempotency-key':randomUUID()},payload:{session_id:SESSION,agent_id:worker.agent_id,runtime_profile_id:worker.runtime_profile_id,session_config}});
+      expect(response.statusCode,response.body).toBe(200);
+      const after=(await service.preview(identity,SESSION)).summary;
+      expect(after.participant_agent_ids).toEqual(before);
+      expect(after.runtimes.find(pin=>pin.agent_id===worker.agent_id)?.session_config).toEqual(session_config);
+    }finally{__setAuthIdentityForTests(null);await app.close();}
+  });
+
+  it.each(['foreign Host','offline Host','withdrawn model','disabled profile'])('lets B patch Y through public HTTP without revalidating A’s X default: %s',async reason=>{
+    const {RoomRosterService}=await import('../src/modules/rooms/rosterService.js');
+    const {systemActionsModule}=await import('../src/modules/systemActions/index.js');
+    const {roomsModule}=await import('../src/modules/rooms/index.js');
+    const x=await specialist(),y=await specialist();
+    const room=(await db.pool.query('SELECT room_id FROM sessions WHERE id=$1',[SESSION])).rows[0].room_id;
+    await db.pool.query(`INSERT INTO users(id,email,display_name,status,registration_source,created_at,updated_at) VALUES($1,'b@example.test','B','active','system',now(),now())`,[VIEWER]);
+    await db.pool.query(`INSERT INTO space_memberships(id,space_id,user_id,role,status,created_at,updated_at) VALUES($1,$2,$3,'member','active',now(),now())`,[randomUUID(),SPACE,VIEWER]);
+    await db.pool.query(`INSERT INTO project_members(id,space_id,project_id,user_id,role,status,created_at,updated_at) VALUES($1,$2,$3,$4,'member','active',now(),now())`,[randomUUID(),SPACE,PROJECT,VIEWER]);
+    await db.pool.query(`INSERT INTO room_user_members(id,space_id,room_id,user_id,role,status,created_at,updated_at) VALUES($1,$2,$3,$4,'member','active',now(),now())`,[randomUUID(),SPACE,room,VIEWER]);
+    const installations=[{id:'managed:1.0.0',version:'1.0.0',logged_in:true,health_check_protocol:'acp',options:{session_available:true,config_options:[{id:'model',name:'Model',category:'model',type:'select',current_value:'a',options:[{value:'a'},{value:'b'}]}]}}];
+    await db.pool.query(`UPDATE hosts SET capabilities_json=jsonb_set(capabilities_json,'{installations,claude_code}',$2::jsonb,true),last_heartbeat_at=now() WHERE id=$1`,[HOST,JSON.stringify(installations)]);
+    await db.pool.query(`UPDATE hosts SET capabilities_json=(SELECT capabilities_json FROM hosts WHERE id=$2),last_heartbeat_at=now() WHERE id=$1`,[OTHER_HOST,HOST]);
+    await db.pool.query('UPDATE agent_runtime_profiles SET execution_host_id=$2 WHERE id=$1',[x.runtime_profile_id,OTHER_HOST]);
+    const model=(value:string)=>[{id:'model',type:'select' as const,category:'model',value}];
+    const old={agent_id:x.agent_id,participating:true,runtime_profile_id:x.runtime_profile_id,session_config:model('a')};
+    await new RoomRosterService(db.pool).saveConversationDefaults(identity,room,[old],(await db.pool.query('SELECT roster_revision FROM rooms WHERE id=$1',[room])).rows[0].roster_revision);
+    if(reason==='offline Host')await db.pool.query("UPDATE hosts SET status='offline' WHERE id=$1",[OTHER_HOST]);
+    if(reason==='withdrawn model')await db.pool.query(`UPDATE hosts SET capabilities_json=jsonb_set(capabilities_json,'{installations,claude_code,0,options,config_options,0,options}','[{"value":"b"}]'::jsonb) WHERE id=$1`,[OTHER_HOST]);
+    if(reason==='disabled profile')await db.pool.query('UPDATE agent_runtime_profiles SET enabled=false,is_default=false WHERE id=$1',[x.runtime_profile_id]);
+    const app=buildModuleServer(loadConfig({SERVER_DATABASE_URL:db.connectionUri}),[systemActionsModule,roomsModule]);
+    __setAuthIdentityForTests({spaceId:SPACE,userId:VIEWER});
+    try{
+      const read=await app.inject({method:'GET',url:'/api/v1/queries/room.settings.read?input='+encodeURIComponent(JSON.stringify({room_id:room}))});
+      expect(read.statusCode,read.body).toBe(200);
+      const data=read.json().data;
+      expect(data.defaults).toContainEqual(old);
+      const payload={room_id:room,expected_revision:data.revision,defaults:[{agent_id:y.agent_id,participating:true,runtime_profile_id:y.runtime_profile_id,session_config:model('b')}]};
+      const response=await app.inject({method:'POST',url:'/api/v1/actions/room.defaults.save',headers:{'idempotency-key':randomUUID()},payload});
+      expect(response.statusCode,response.body).toBe(200);
+      const stored=(await db.pool.query('SELECT conversation_defaults_json FROM rooms WHERE id=$1',[room])).rows[0].conversation_defaults_json;
+      expect(stored).toEqual(expect.arrayContaining([old,payload.defaults[0]]));
+      const stale=await app.inject({method:'POST',url:'/api/v1/actions/room.defaults.save',headers:{'idempotency-key':randomUUID()},payload});
+      expect(stale.statusCode,stale.body).toBe(409);
+    }finally{__setAuthIdentityForTests(null);await app.close();}
+  });
+
+  it('refuses all three settings writes by a real delegated worker with a manual root, but accepts direct human instructions',async()=>{
+    const {RoomService}=await import('../src/modules/rooms/service.js');
+    const {operationRuntime}=await import('../src/modules/systemActions/operations/runtime.js');
+    const {runActor}=await import('../src/modules/systemActions/operations/actor.js');
+    const {AgentGroupRunService}=await import('../src/modules/agentGroups/service.js');
+    const optional=await specialist(),service=new ConversationExecutionContextService(db.pool);
+    await service.initialize(identity,SESSION,{...request,additional_runtimes:[optional]});
+    const room=(await db.pool.query('SELECT room_id FROM sessions WHERE id=$1',[SESSION])).rows[0].room_id;
+    const config=loadConfig({SERVER_DATABASE_URL:db.connectionUri}),runs=new PgRunRepository(db.pool,config);
+    const sent=await new RoomService(config,db.pool).sendMessage(identity,room,SESSION,{content:'Inspect this.'});
+    const parent=(await runs.getRun(SPACE,sent.run_ids[0]!))!;
+    await new PgRouteDecisionRepository(db.pool).routeRun(parent as never);
+    await db.pool.query("UPDATE runs SET status='running' WHERE id=$1",[parent.id]);
+    const parentNow=(await runs.getRun(SPACE,parent.id))!,direct=await runActor(db.pool,parentNow),runtime=await operationRuntime(config);
+    const rootId=parentNow.root_run_id??parentNow.id;
+    const spawned=await new AgentGroupRunService(config,db.pool).spawnChildRun(identity,{space_id:SPACE,group_id:sent.task_group_ids[0]!,manager_user_id:OWNER,requesting_agent_id:AGENT,target_agent_id:optional.agent_id,parent_run_id:parent.id,root_run_id:rootId,instruction:'Inspect only',workspace_access:'read'});
+    expect(spawned.child_run_id).toBeTruthy();
+    const childId=spawned.child_run_id!;
+    await new PgRouteDecisionRepository(db.pool).routeRun((await runs.getRun(SPACE,childId))! as never);
+    await db.pool.query("UPDATE runs SET status='running' WHERE id=$1",[childId]);
+    const child=(await runs.getRun(SPACE,childId))!,delegated=await runActor(db.pool,child);
+    expect(delegated.effective_origin).toBe('manual');expect(delegated.origin).toBe('delegated');
+    expect(child.capabilities_json).not.toContain('room.defaults.save');
+    const revision=(await db.pool.query('SELECT roster_revision::int revision FROM rooms WHERE id=$1',[room])).rows[0].revision;
+    const writes=[['room.defaults.save',{room_id:room,expected_revision:revision,defaults:[]}],['conversation.execution.initialize',{session_id:SESSION,...request}],['conversation.session_config.save',{session_id:SESSION,agent_id:AGENT,runtime_profile_id:RUNTIME,session_config:[]}]] as const;
+    // Simulate an older granted snapshot too: the authoritative gate must still refuse.
+    await db.pool.query('UPDATE runs SET permission_snapshot_json=$2 WHERE id=$1',[childId,JSON.stringify(parentNow.permission_snapshot_json)]);
+    for(const [action,input] of writes){
+      const refused=await runtime.execute(action,input,delegated,randomUUID(),randomUUID());
+      expect(refused.http_status,JSON.stringify(refused.body)).toBe(404);
+      const allowed=await runtime.execute(action,input,direct,randomUUID(),randomUUID());
+      expect(allowed.http_status,JSON.stringify(allowed.body)).toBe(200);
+    }
+  });
+
+  it('does not resurrect participation after Room removal/re-add, and explicitly rejoining recreates only closed runtime continuity',async()=>{
+    const {RoomRosterService}=await import('../src/modules/rooms/rosterService.js');
+    const optional=await specialist(),service=new ConversationExecutionContextService(db.pool);
+    await service.initialize(identity,SESSION,{...request,additional_runtimes:[optional]});
+    const room=(await db.pool.query('SELECT room_id FROM sessions WHERE id=$1',[SESSION])).rows[0].room_id,roster=new RoomRosterService(db.pool);
+    await roster.removeAgent(identity,room,optional.agent_id);
+    await service.initialize(identity,SESSION,request);
+    await roster.addExistingAgent(identity,room,{agent_id:optional.agent_id});
+    let state=(await service.preview(identity,SESSION)).summary;
+    expect(state.participant_agent_ids).not.toContain(optional.agent_id);
+    await service.initialize(identity,SESSION,request);
+    state=(await service.preview(identity,SESSION)).summary;
+    expect(state.participant_agent_ids).not.toContain(optional.agent_id);
+    const joined=await service.initialize(identity,SESSION,{...request,participants_revision:state.participants_revision,participant_changes:[{agent_id:optional.agent_id,participating:true}]});
+    expect(joined.participant_agent_ids).toContain(optional.agent_id);
+    expect(joined.runtimes.some(pin=>pin.agent_id===optional.agent_id)).toBe(true);
+  });
+
+  it('refreshes delegation candidates for current participants without rewriting an existing group snapshot',async()=>{
+    const {RoomService}=await import('../src/modules/rooms/service.js');
+    const {resolveAgentDelegationToolBinding}=await import('../src/modules/runs/managedAgentDelegationTools.js');
+    const optional=await specialist(),service=new ConversationExecutionContextService(db.pool);
+    await service.initialize(identity,SESSION,{...request,participant_agent_ids:[AGENT]});
+    const room=(await db.pool.query('SELECT room_id FROM sessions WHERE id=$1',[SESSION])).rows[0].room_id,config=loadConfig({SERVER_DATABASE_URL:db.connectionUri});
+    const sent=await new RoomService(config,db.pool).sendMessage(identity,room,SESSION,{content:'Inspect this.'}),run=(await new PgRunRepository(db.pool,config).getRun(SPACE,sent.run_ids[0]!))!;
+    const candidates=async()=>(await resolveAgentDelegationToolBinding(config,run as never,{pool:db.pool}))!.targets.map(target=>target.agent_id);
+    expect(await candidates()).not.toContain(optional.agent_id);
+    const revision=async()=>(await service.preview(identity,SESSION)).summary.participants_revision;
+    await service.initialize(identity,SESSION,{...request,participants_revision:await revision(),participant_changes:[{agent_id:optional.agent_id,participating:true}],additional_runtimes:[optional]});
+    expect(await candidates()).toContain(optional.agent_id);
+    await service.initialize(identity,SESSION,{...request,participants_revision:await revision(),participant_changes:[{agent_id:optional.agent_id,participating:false}]});
+    expect(await candidates()).not.toContain(optional.agent_id);
+    await service.initialize(identity,SESSION,{...request,participants_revision:await revision(),participant_changes:[{agent_id:optional.agent_id,participating:true}]});
+    expect(await candidates()).toContain(optional.agent_id);
+    expect((await db.pool.query('SELECT agent_id FROM agent_run_group_members WHERE group_id=$1',[sent.task_group_ids[0]])).rows).toEqual([{agent_id:AGENT}]);
+  });
+
+  it('fences atomic running admission behind a concurrent participant revocation and rereads after the lock',async()=>{
+    const {RoomService}=await import('../src/modules/rooms/service.js');
+    const {waitForBlockedBy}=await import('./support/lockWait.js');
+    const optional=await specialist(),service=new ConversationExecutionContextService(db.pool),config=loadConfig({SERVER_DATABASE_URL:db.connectionUri});
+    await service.initialize(identity,SESSION,{...request,additional_runtimes:[optional]});
+    const room=(await db.pool.query('SELECT room_id FROM sessions WHERE id=$1',[SESSION])).rows[0].room_id;
+    const sent=await new RoomService(config,db.pool).sendMessage(identity,room,SESSION,{content:'Inspect.',recipient_segments:[{recipient_agent_ids:[optional.agent_id],content:'Inspect.'}]});
+    const runs=new PgRunRepository(db.pool,config),run=(await runs.getRun(SPACE,sent.run_ids[0]!))!;
+    await new PgRouteDecisionRepository(db.pool).routeRun(run as never);
+    const holder=await db.pool.connect();let pending:Promise<unknown>|undefined,settled=false;
+    try{
+      await holder.query('BEGIN');const pid=(await holder.query('SELECT pg_backend_pid() pid')).rows[0].pid;
+      await holder.query('SELECT id FROM rooms WHERE id=$1 FOR UPDATE',[room]);
+      pending=runs.markRunRunning({space_id:SPACE,run_id:run.id,started_at:new Date().toISOString()}).then(value=>{settled=true;return value});
+      await waitForBlockedBy(db.pool,pid,{settled:()=>settled});
+      await holder.query('UPDATE session_conversation_backends SET participating=false,updated_at=clock_timestamp() WHERE session_id=$1 AND agent_id=$2',[SESSION,optional.agent_id]);
+      await holder.query('COMMIT');expect(await pending).toBeNull();
+      expect((await runs.getRun(SPACE,run.id))!.status).toBe('queued');
+    }finally{await holder.query('ROLLBACK');holder.release();await pending;}
+  });
+
+  it('keeps stale defaults on the selected Host and reconciles withdrawn models without copying foreign profile settings',async()=>{
+    const optional=await specialist(),compatible=randomUUID();
+    await db.pool.query(`INSERT INTO agent_runtime_profiles SELECT (jsonb_populate_record(NULL::agent_runtime_profiles,to_jsonb(p)||$2::jsonb)).* FROM agent_runtime_profiles p WHERE id=$1`,[optional.runtime_profile_id,JSON.stringify({id:compatible,name:'Compatible CLI',is_default:false})]);
+    await db.pool.query('UPDATE agent_runtime_profiles SET execution_host_id=$2 WHERE id=$1',[optional.runtime_profile_id,OTHER_HOST]);
+    await db.pool.query(`UPDATE hosts SET capabilities_json=jsonb_set(capabilities_json,'{installations,claude_code}',$2::jsonb,true) WHERE id=$1`,[HOST,JSON.stringify([{id:'managed:1.0.0',version:'1.0.0',logged_in:true,health_check_protocol:'acp',options:{session_available:true,config_options:[{id:'model',name:'Model',category:'model',type:'select',current_value:'current',options:[{value:'current'}]}]}}])]);
+    const stale=[{id:'model',type:'select',category:'model',value:'withdrawn'}];
+    await db.pool.query(`UPDATE rooms SET conversation_defaults_json=$2 WHERE id=(SELECT room_id FROM sessions WHERE id=$1)`,[SESSION,JSON.stringify([{agent_id:AGENT,participating:true,runtime_profile_id:RUNTIME,session_config:stale},{agent_id:optional.agent_id,participating:true,runtime_profile_id:optional.runtime_profile_id,session_config:stale}])]);
+    const service=new ConversationExecutionContextService(db.pool),summary=await service.initialize(identity,SESSION,request);
+    expect(summary.host!.host_id).toBe(HOST);
+    expect(summary.runtimes.find(pin=>pin.agent_id===optional.agent_id)!.runtime_profile_id).toBe(compatible);
+    expect(await new PgConversationBackendRepository(db.pool).sessionConfig(SPACE,SESSION,AGENT)).toEqual([]);
+    expect(await new PgConversationBackendRepository(db.pool).sessionConfig(SPACE,SESSION,optional.agent_id)).toEqual([]);
+    expect((await service.preview(identity,SESSION)).summary.can_send).toBe(true);
+  });
+
 });

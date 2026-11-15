@@ -37,7 +37,7 @@ import {
 import type { Queryable } from "./repository.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
 import { enqueueRetrievalEmbeddingBackfillWithQueue } from "../retrieval/embedding/job.js";
-import type { ProposalAcceptResultType } from "@rainver/protocol";
+import type { OperationActor, ProposalAcceptResultType } from "@rainver/protocol";
 import { validateProposalPayload } from "./payloadSchemas.js";
 import type { WithAccessLevel } from "../access/contentAccessTypes.js";
 export { ProposalPayloadValidationError } from "./payloadSchemas.js";
@@ -48,7 +48,10 @@ export interface ProposalApplyContext {
   proposalTransitions?:Awaited<ReturnType<typeof import('../systemActions/operations/proposalTransitions.js').lockProposalTransitions>>;
   db: Queryable;
   proposal: ApplyProposal;
+  /** The current approver, retained for policy, approved_by and review attribution. */
   userId: string;
+  /** Host-verified original requester for a linked operation; never the reviewer. */
+  requester?: OperationActor;
 }
 
 export interface ProposalApplyResult {
@@ -169,26 +172,12 @@ async function applyMemoryProposal(context: ProposalApplyContext): Promise<Propo
 async function enqueueMemoryRetrievalEmbeddingBackfill(
   context: ProposalApplyContext,
 ): Promise<void> {
-  let savepointStarted = false;
-  try {
-    await context.db.query("SAVEPOINT retrieval_embedding_enqueue");
-    savepointStarted = true;
-    await enqueueRetrievalEmbeddingBackfillWithQueue(new PgJobQueueRepository(context.db), {
-      spaceId: context.proposal.space_id,
-      userId: context.userId,
-      trigger: "memory_proposal_apply",
-      proposalId: context.proposal.id,
-    });
-    await context.db.query("RELEASE SAVEPOINT retrieval_embedding_enqueue");
-    savepointStarted = false;
-  } catch (error) {
-    if (savepointStarted) {
-      await context.db.query("ROLLBACK TO SAVEPOINT retrieval_embedding_enqueue").catch(() => undefined);
-      await context.db.query("RELEASE SAVEPOINT retrieval_embedding_enqueue").catch(() => undefined);
-    }
-    process.stderr.write(
-      `[memory.retrieval] embedding backfill enqueue failed during proposal apply: ${String((error as Error)?.message ?? error)}\n`,
-    );
-  }
+  // This Job is a required durable effect. Failure must roll back the Memory,
+  // provenance and decision with the canonical owner's transaction.
+  await enqueueRetrievalEmbeddingBackfillWithQueue(new PgJobQueueRepository(context.db), {
+    spaceId: context.proposal.space_id,
+    userId: context.requester?.on_behalf_of_user_id ?? context.userId,
+    trigger: "memory_proposal_apply",
+    proposalId: context.proposal.id,
+  });
 }
-

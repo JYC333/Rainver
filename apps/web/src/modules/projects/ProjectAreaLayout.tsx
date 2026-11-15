@@ -19,27 +19,27 @@ import { inProjectHref } from './taskHref'
 import { ProjectFolderConversationProvider } from './ProjectFolderConversationContext'
 
 /**
- * The three things a person switches between while running a Project.
+ * What a person switches between while running a Project.
  *
- * Everything else stays reachable under Areas. Routes stay put, so existing
- * links keep working. The question on arriving is what is going on.
- * Do not open with a flat list of every module.
+ * Agents and Rooms are two separate, parallel entries because they are two
+ * relations: the Agents this Project works with (each usable on its own), and
+ * the Rooms that decide who can see which conversations. A Project Agent is
+ * not a Room member until it is added to a Room. Everything else stays
+ * reachable under Areas. Routes stay put, so existing links keep working.
  */
 const primary = [
-  { label: 'Pulse', path: '' },
-  { label: 'Board', path: 'board' },
-  { label: 'Updates', path: 'updates' },
-  // A Project is pushed forward through conversation, so all of it is a
-  // first-level destination — not a Room picker two clicks down.
-  { label: 'Conversations', path: 'conversations' },
+  { label: 'collab_ui.nav.pulse', path: '' },
+  { label: 'collab_ui.nav.board', path: 'board' },
+  { label: 'collab_ui.nav.agents', path: 'agents' },
+  { label: 'collab_ui.nav.rooms', path: 'rooms' },
+  { label: 'collab_ui.nav.updates', path: 'updates' },
 ] as const
 
 /**
  * Five, flat. Research is reached inside Inquiry. Reading/material and secondary collection views share Sources; Knowledge review
- * and Experiments are views of Inquiry; every Room's conversations are one
- * list under Conversations, and the Rooms page (roster, invitations) is
- * reached from there. Do not put them back into labeled groups, and do not
- * give each fold its own sidebar entry.
+ * and Experiments are views of Inquiry; the cross-Room conversation list and
+ * imported CLI history are reached from Rooms. Do not put them back into
+ * labeled groups, and do not give each fold its own sidebar entry.
  */
 const areas = [
   { label: 'Notes', path: 'notes' },
@@ -155,7 +155,7 @@ export default function ProjectAreaLayout() {
                 )}
               >
                 <span className="flex items-center justify-between gap-2">
-                  {item.label}
+                  {t(item.label)}
                   {item.path === '' && (visibleOverview?.attention.length ?? 0) > 0 && <Badge variant="destructive">{visibleOverview?.attention.length}</Badge>}
                 </span>
               </NavLink>
@@ -169,7 +169,7 @@ export default function ProjectAreaLayout() {
               onClick={() => setAreasOpen(open => !open)}
               aria-expanded={areasOpen}
             >
-              Areas
+              {t('collab_ui.nav.areas')}
               <span aria-hidden>{areasOpen ? '▾' : '▸'}</span>
             </button>
             {areasOpen && (
@@ -198,7 +198,7 @@ export default function ProjectAreaLayout() {
             point the user back to the exact pending action. */}
         {(visibleOverview?.attention.length ?? 0) > 0 && (
           <div className="mt-5 border-t border-border pt-4">
-            <p className="mb-2 px-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Needs attention</p>
+            <p className="mb-2 px-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{t('collab_ui.nav.needs_attention')}</p>
             <div className="space-y-1">
               {visibleOverview?.attention.map(item => {
                 const href = inProjectHref(projectId, item.href)

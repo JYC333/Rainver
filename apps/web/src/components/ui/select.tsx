@@ -1,7 +1,8 @@
 import { useRef, useState, useEffect, useId, useLayoutEffect, type CSSProperties, type KeyboardEvent } from 'react'
 import { createPortal } from 'react-dom'
-import { ChevronDown, Check } from 'lucide-react'
+import { ChevronDown, Check, Loader2 } from 'lucide-react'
 import { cn } from '../../lib/utils'
+import { Popover, PopoverAnchor, PopoverContent } from './popover'
 
 const TABBABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]'
 
@@ -10,6 +11,9 @@ export interface SelectOption {
   label: string
   /** Shown but not choosable — for example an offline host. */
   disabled?: boolean
+  /** Activity adornment; never disables selection or changes the label. */
+  busyLabel?: string
+  unreadLabel?: string
 }
 
 interface SelectProps {
@@ -18,6 +22,10 @@ interface SelectProps {
   onChange: (value: string) => void
   className?: string
   size?: 'sm' | 'md'
+  variant?: 'default' | 'ghost'
+  /** Use the shared Radix floating layer, including inside modal dialogs. */
+  overlay?: boolean
+  showChevron?: boolean
   dropUp?: boolean
   disabled?: boolean
   ariaLabel?: string
@@ -25,7 +33,7 @@ interface SelectProps {
   portal?: boolean
 }
 
-export function Select({ options, value, onChange, className, size = 'md', dropUp = false, disabled = false, ariaLabel, portal = true }: SelectProps) {
+export function Select({ options, value, onChange, className, size = 'md', dropUp = false, disabled = false, ariaLabel, portal = true, variant = 'default', overlay = false, showChevron = true }: SelectProps) {
   const [open, setOpen] = useState(false)
   const [insideDialog, setInsideDialog] = useState(false)
   const triggerRef = useRef<HTMLDivElement>(null)
@@ -48,6 +56,7 @@ export function Select({ options, value, onChange, className, size = 'md', dropU
   }, [])
 
   useLayoutEffect(() => {
+    if (overlay) return undefined
     if (!open) {
       setInsideDialog(false)
       setMenuStyle(null)
@@ -59,6 +68,26 @@ export function Select({ options, value, onChange, className, size = 'md', dropU
       if (!trigger) return
       const rect = trigger.getBoundingClientRect()
       const gap = 4
+      if (!portal || trigger.closest('[role="dialog"]')) {
+        // In-place menus must fit every clipping ancestor, not just the viewport.
+        let top = 8, bottom = window.innerHeight - 8
+        for (let parent = trigger.parentElement; parent; parent = parent.parentElement) {
+          if (!/(auto|scroll|hidden|clip)/.test(getComputedStyle(parent).overflowY)) continue
+          const bounds = parent.getBoundingClientRect()
+          top = Math.max(top, bounds.top + parent.clientTop)
+          bottom = Math.min(bottom, bounds.top + parent.clientTop + parent.clientHeight)
+        }
+        const above = Math.max(0, rect.top - top - gap)
+        const below = Math.max(0, bottom - rect.bottom - gap)
+        const upward = dropUp ? above >= below : below < Math.min(288, menuRef.current?.scrollHeight ?? 288) && above > below
+        setMenuStyle({
+          position: 'absolute', left: 0, right: 0,
+          top: upward ? undefined : '100%', bottom: upward ? '100%' : undefined,
+          marginTop: upward ? undefined : gap, marginBottom: upward ? gap : undefined,
+          maxHeight: Math.min(288, upward ? above : below),
+        })
+        return
+      }
       const viewportPadding = 8
       // Measure the menu's own natural content width (it's mounted off-screen with
       // `width: max-content` via measureStyle below until the first position is computed)
@@ -98,7 +127,7 @@ export function Select({ options, value, onChange, className, size = 'md', dropU
       window.removeEventListener('resize', updatePosition)
       window.removeEventListener('scroll', updatePosition, true)
     }
-  }, [dropUp, open])
+  }, [dropUp, open, portal, overlay])
 
   const h = size === 'sm' ? 'h-7' : 'h-9'
   const renderInPlace = !portal || insideDialog
@@ -108,7 +137,7 @@ export function Select({ options, value, onChange, className, size = 'md', dropU
   // A portaled menu is focused once it has its position (hidden before).
   useEffect(() => {
     if (!open) { focusPlaced.current = false; return }
-    if (focusPlaced.current || (!renderInPlace && !menuStyle)) return
+    if (focusPlaced.current || (!overlay && !renderInPlace && !menuStyle)) return
     const items = enabledOptions()
     const target = items.find(item => item.getAttribute('aria-selected') === 'true') ?? items[0]
     if (target) { target.focus({ preventScroll: true }); focusPlaced.current = true }
@@ -183,12 +212,10 @@ export function Select({ options, value, onChange, className, size = 'md', dropU
       role="listbox"
       aria-label={ariaLabel}
       onKeyDown={onMenuKeyDown}
-      style={renderInPlace ? { maxHeight: 'min(18rem, 40vh)' } : menuStyle ?? measureStyle}
+      style={overlay ? undefined : menuStyle ?? measureStyle}
       className={cn(
         'z-[1000] overflow-auto rounded-lg border border-border bg-card shadow-md',
-        renderInPlace
-          ? ['absolute left-0 right-0', dropUp ? 'bottom-full mb-1' : 'top-full mt-1']
-          : 'fixed',
+        !overlay && (renderInPlace ? 'absolute left-0 right-0' : 'fixed'),
       )}
     >
       {options.map(opt => (
@@ -216,13 +243,14 @@ export function Select({ options, value, onChange, className, size = 'md', dropU
         >
           <span className="flex-1 truncate">{opt.label}</span>
           {opt.value === value && <Check size={12} className="shrink-0 text-accent-foreground" />}
+          {!opt.busyLabel && opt.unreadLabel && <span role="status" aria-label={opt.unreadLabel} title={opt.unreadLabel} className="size-2 shrink-0 rounded-full bg-primary" />}
+          {opt.busyLabel && <Loader2 role="status" aria-label={opt.busyLabel} size={12} className="shrink-0 animate-spin" />}
         </button>
       ))}
     </div>
   )
 
-  return (
-    <div className={cn('relative', className)} ref={triggerRef}>
+  const trigger = (
       <button
         ref={buttonRef}
         type="button"
@@ -234,17 +262,32 @@ export function Select({ options, value, onChange, className, size = 'md', dropU
         aria-expanded={open}
         aria-controls={open ? listboxId : undefined}
         className={cn(
-          'flex w-full items-center justify-between gap-1.5 rounded-md border border-border',
-          'bg-input px-3 text-sm text-foreground transition-colors',
+          'flex w-full items-center justify-between gap-1.5 rounded-md text-sm text-foreground transition-colors',
+          variant === 'ghost' ? 'border-0 bg-transparent px-2' : 'border border-border bg-input px-3',
           'hover:bg-accent focus:outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-60',
           h,
         )}
       >
         <span className="truncate">{selected?.label ?? value}</span>
-        <ChevronDown size={13} className="shrink-0 text-muted-foreground" />
+        {showChevron && <ChevronDown size={13} className="shrink-0 text-muted-foreground" />}
       </button>
-
-      {open && !disabled && (renderInPlace ? menu : portal ? createPortal(menu, document.body) : null)}
-    </div>
   )
+  return overlay ? <Popover open={open && !disabled} onOpenChange={setOpen}>
+    <PopoverAnchor asChild><div className={cn('relative', className)} ref={triggerRef}>{trigger}</div></PopoverAnchor>
+    <PopoverContent asChild align="end" sideOffset={4} collisionPadding={8}
+      container={triggerRef.current?.closest<HTMLElement>('[role="dialog"]') ?? undefined}
+      collisionBoundary={triggerRef.current?.closest<HTMLElement>('[role="dialog"]') ?? undefined}
+      onOpenAutoFocus={event => {
+        event.preventDefault()
+        const items = enabledOptions()
+        const target = items.find(item => item.getAttribute('aria-selected') === 'true') ?? items[0]
+        target?.focus({ preventScroll: true })
+      }} onCloseAutoFocus={event => event.preventDefault()}
+      className="z-[1000] w-max min-w-[var(--radix-popover-trigger-width)] p-0">
+      {menu}
+    </PopoverContent>
+  </Popover> : <div className={cn('relative', className)} ref={triggerRef}>
+    {trigger}
+    {open && !disabled && (renderInPlace ? menu : portal ? createPortal(menu, document.body) : null)}
+  </div>
 }

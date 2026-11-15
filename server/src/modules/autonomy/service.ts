@@ -1,3 +1,4 @@
+import {admitAutomationEffect} from '../automations/effectAuthority.js';
 import {withRunTerminalOwner} from '../systemActions/operations/proposalTransitions.js';
 import { randomUUID } from "node:crypto";
 import { withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
@@ -86,6 +87,7 @@ export class AutonomyService {
     const now = input.now ?? new Date();
     const config = input.config ?? {};
     return withQueryableTransaction(this.db, async (client) => {
+      await admitAutomationEffect(client);
       const tickId = randomUUID();
       const nowIso = now.toISOString();
       await client.query(
@@ -337,6 +339,7 @@ export class AutonomyService {
         quota: input.quota,
         now,
         recheckEligibility: async (db) => {
+          await admitAutomationEffect(db);
           const row = await db.query<{
             id: string;
             candidate_kind: string;
@@ -489,6 +492,7 @@ export class AutonomyService {
         }
         const reason = error.code;
         await withQueryableTransaction(this.db, async (db) => {
+          await admitAutomationEffect(db);
           await persistCandidateDecision(db, {
             spaceId: input.automation.space_id,
             tickId: initialized.observed.tick_id,

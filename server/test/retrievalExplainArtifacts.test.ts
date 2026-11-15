@@ -1,39 +1,40 @@
-import { describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
+import { beforeEach, describe, expect, it } from "vitest";
 import {
   persistRetrievalExplainReportArtifact,
   RETRIEVAL_EXPLAIN_REPORT_ARTIFACT_TYPE,
 } from "../src/modules/retrieval/artifacts/explain.js";
-import type { Queryable } from "../src/modules/routeUtils/common.js";
+import { RetrievalProjectionService } from "../src/modules/retrieval/projectionService.js";
+import { knowledgeRetrievalRegistry } from "../src/modules/knowledge/retrievalAdapter.js";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { seedSpaceOwnerProject } from "./support/domainSeeds.js";
+import { insertKnowledgeItem } from "./support/knowledgeFixtures.js";
 
-interface CapturedQuery {
-  sql: string;
-  params: readonly unknown[];
-}
-
-function fakeDb(): Queryable & { calls: CapturedQuery[] } {
-  const calls: CapturedQuery[] = [];
-  return {
-    calls,
-    async query(sql: string, params: readonly unknown[] = []) {
-      calls.push({ sql, params });
-      return { rows: [], rowCount: 1 };
-    },
-  };
-}
+// The report settles on real PostgreSQL: its target must be releasable to the
+// owner (and the owner a Space maintainer) when the row is written.
+const db = useTestDatabase(import.meta.filename);
+const space = randomUUID(), owner = randomUUID(), item = randomUUID();
+beforeEach(async () => {
+  if (!db.available) return;
+  await resetTables(db.pool, ["spaces", "users"], { cascade: true });
+  await seedSpaceOwnerProject(db.pool, { space, owner, project: randomUUID() });
+  await insertKnowledgeItem(db.pool, { id: item, spaceId: space, title: "Visible Item", content: "Visible body", ownerUserId: owner, createdByUserId: owner });
+  await new RetrievalProjectionService(db.pool, knowledgeRetrievalRegistry).reindexAll(space);
+});
 
 describe("retrieval explain artifacts", () => {
   it("persists targeted explain reports without query text or snippets", async () => {
-    const db = fakeDb();
-    const artifactId = await persistRetrievalExplainReportArtifact(db, {
-      spaceId: "space-1",
-      ownerUserId: "user-1",
+    const artifactId = await persistRetrievalExplainReportArtifact(db.pool, {
+      spaceId: space,
+      ownerUserId: owner,
       query: "private roadmap query",
       mode: "lexical",
       maxResults: 10,
       response: {
         target: {
           object_type: "knowledge_item",
-          object_id: "item-1",
+          object_id: item,
           title: "Visible Item",
           visible: true,
           returned: true,
@@ -61,10 +62,10 @@ describe("retrieval explain artifacts", () => {
     });
 
     expect(artifactId).toMatch(/[0-9a-f-]{36}/);
-    const params = db.calls[0]!.params;
-    expect(params[4]).toBe(RETRIEVAL_EXPLAIN_REPORT_ARTIFACT_TYPE);
-    expect(params[15]).toBe("user-1");
-    const metadata = JSON.parse(String(params[13]));
+    const row = (await db.pool.query("SELECT artifact_type, owner_user_id, metadata_json, content FROM artifacts WHERE id=$1", [artifactId])).rows[0]!;
+    expect(row.artifact_type).toBe(RETRIEVAL_EXPLAIN_REPORT_ARTIFACT_TYPE);
+    expect(row.owner_user_id).toBe(owner);
+    const metadata = row.metadata_json;
     expect(metadata).toMatchObject({
       kind: RETRIEVAL_EXPLAIN_REPORT_ARTIFACT_TYPE,
       query_chars: 21,
@@ -77,5 +78,6 @@ describe("retrieval explain artifacts", () => {
       },
     });
     expect(JSON.stringify(metadata)).not.toContain("private roadmap query");
+    expect(String(row.content)).not.toContain("private roadmap query");
   });
 });

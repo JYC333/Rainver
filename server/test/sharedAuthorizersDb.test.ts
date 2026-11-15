@@ -15,7 +15,7 @@ import { PgRunRepository } from "../src/modules/runs/repository.js";
 import { __setRunsIdentityForTests } from "../src/modules/runs/routes.js";
 import { authorizeRunCommand, authorizeRunResume } from "../src/modules/runs/runCommandAuthority.js";
 import { assertPersonStartedRunRequest } from "../src/modules/runs/runRepositoryHelpers.js";
-import { PgSpaceRepository } from "../src/modules/spaces/repository.js";
+import { createInvitation } from "../src/modules/spaces/writers.js";
 import { PgTaskRepository } from "../src/modules/tasks/repository.js";
 import { seedAgentWithVersion, seedMainlineRoomsForAllProjects, seedRun, seedSpaceMember } from "./support/domainSeeds.js";
 import { buildModuleServer } from "./support/moduleServer.js";
@@ -281,14 +281,14 @@ describe("Run command authority (real Postgres)", () => {
 
 describe("Role granting (real Postgres)", () => {
   it("keeps a Space invitation at or below the inviter's role", async () => {
-    const spaces = new PgSpaceRepository(db.pool);
-    expect(await spaces.createInvitation(ADMIN, SPACE, { email: "a@example.com", role: "owner" }))
-      .toMatchObject({ statusCode: 403 });
-    expect(await spaces.createInvitation(ADMIN, SPACE, { email: "b@example.com", role: "superuser" }))
-      .toMatchObject({ statusCode: 422 });
-    expect(await spaces.createInvitation(ADMIN, SPACE, { email: "c@example.com", role: "member" }))
+    const token = () => Buffer.from(randomUUID() + randomUUID()).toString("base64url");
+    await expect(createInvitation(db.pool, ADMIN, SPACE, { email: "a@example.com", role: "owner", token: token() }))
+      .rejects.toMatchObject({ statusCode: 422, message: "A admin cannot grant the owner role" });
+    await expect(createInvitation(db.pool, ADMIN, SPACE, { email: "b@example.com", role: "superuser", token: token() }))
+      .rejects.toMatchObject({ statusCode: 422 });
+    expect(await createInvitation(db.pool, ADMIN, SPACE, { email: "c@example.com", role: "member", token: token() }))
       .toMatchObject({ role: "member" });
-    expect(await spaces.createInvitation(OWNER, SPACE, { email: "d@example.com", role: "owner" }))
+    expect(await createInvitation(db.pool, OWNER, SPACE, { email: "d@example.com", role: "owner", token: token() }))
       .toMatchObject({ role: "owner" });
   });
 

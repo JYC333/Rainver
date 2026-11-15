@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { PoolClient } from "../../db/pool.js";
+import type { Queryable } from "../routeUtils/common.js";
 import { seedBuiltinSkillPackages } from "../skills/builtinPackages.js";
 
 const DEFAULT_NOTE_COLLECTIONS: readonly [string, string, number, boolean][] = [
@@ -14,13 +14,13 @@ const DEFAULT_NOTE_COLLECTIONS: readonly [string, string, number, boolean][] = [
   ["Archive", "archive", 400, true],
 ];
 
-export async function seedSpaceDefaults(client: PoolClient, spaceId: string, userId: string): Promise<void> {
+export async function seedSpaceDefaults(client: Queryable, spaceId: string, userId: string): Promise<void> {
   await seedBuiltinSkillPackages(client, spaceId);
   await seedNoteCollections(client, spaceId);
   await seedRuntimeContextPolicy(client, spaceId, userId);
 }
 
-async function seedRuntimeContextPolicy(client: PoolClient, spaceId: string, userId: string): Promise<void> {
+async function seedRuntimeContextPolicy(client: Queryable, spaceId: string, userId: string): Promise<void> {
   const versionId = randomUUID();
   const auditId = randomUUID();
   const policy = JSON.stringify({ constraints: {}, preferences: {} });
@@ -48,7 +48,7 @@ async function seedRuntimeContextPolicy(client: PoolClient, spaceId: string, use
   );
 }
 
-async function seedNoteCollections(client: PoolClient, spaceId: string): Promise<void> {
+async function seedNoteCollections(client: Queryable, spaceId: string): Promise<void> {
   const existing = await client.query<{ count: string }>(
     "SELECT count(*)::text AS count FROM note_collections WHERE space_id = $1::varchar(36)",
     [spaceId],

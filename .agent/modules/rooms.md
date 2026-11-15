@@ -9,13 +9,15 @@ human and agent roster plus multiple durable conversations. It is the
 frontend-facing surface for dispatching work to agents from inside a
 conversation.
 
-The Project's **Conversations** page is where they are read, and
-`/projects/:projectId/rooms` is one Room's own surface — its roster, run
-settings and full transcript — reached from that list. There is no
-cross-Project Rooms index and no Rooms entry in the top navigation: a Room is
-a visibility boundary rather than a place, so a picker in front of it would
-charge every reader for a layer most Projects never use. There is no Project
-Chat surface and no hardcoded default-Assistant chat entry.
+Rooms are an explicit Project entry beside **Agents**
+([ADR 0018](../decisions/0018-room-as-visibility-boundary.md), amendment of
+2026-11-11). `/projects/:projectId/rooms` is the Rooms index; `?room=` is one
+Room's conversation list or, with `view=members`, its members; and
+`?room=&conversation=` (or `new=1`) is one conversation. There is no
+cross-Project Rooms index. The Project's Agent list is a separate relation
+(`project_agent_links`, see [PROJECTS](../architecture/PROJECTS.md#project-agents)):
+a Project Agent is not a Room member until it is added to a Room. There is no
+Project Chat surface and no hardcoded default-Assistant chat entry.
 
 A Room does not create a new orchestration mechanism. Every message opens one
 `agent_run_group` as one collaboration task (see `modules/agents.md` and
@@ -83,32 +85,65 @@ task/audit authority, not a second conversation UI.
   watches the detail's wave Run ids, including later rounds dispatched by
   hidden messages; see the Rendering section of `architecture/CONVERSATION.md`.
 
+Cross-Project specialist use grants remain valid only while the issuing current
+Agent owner is an active Space/Room member and can read and write this Project.
+Room departure revokes their issued grants in the same Room transaction; Project
+removal or writer demotion revokes them under the Project audience fence before
+Room/grant locks. Rejoining does not revive revoked consent. The Room Members
+**Authorize members** entry follows Project write authority plus active Room
+membership and Agent ownership, including an ordinary writing Room member.
+A `room_only` Project Agent without a visible Room opens the Rooms index.
+
 ## Navigation And Ordering
 
-- Opening a Rooms route without an explicit selection enters the newest
-  visible Room and then its newest conversation. The client resolves that
-  selection behind a loading state and never renders an intermediate
-  choose/create page.
-- The selected Room never replaces Room navigation: the sidebar always keeps
-  the Room list, and a `New Room` control beside it for a viewer who can write
-  the Project. Opening one is a dialog, not a form on the page: it asks who
+- Opening the Rooms route without a selection shows the Rooms index
+  (`GET /api/v1/projects/:projectId/rooms`, `RoomsIndex.tsx`): the default
+  (mainline) Room first, then the viewer's limited Rooms, each with its name,
+  who can see it, people and Agent counts, conversation count and last
+  activity, and **Open** / **Members** actions; below it, recent
+  conversations and a link to the cross-Room conversation list with imported
+  CLI history (`/projects/:projectId/conversations`). Reading the index enrols
+  the viewer in the mainline. It lists only Rooms the viewer is an active
+  member of and returns no count of others (ADR 0018 decision 3).
+- Opening a Room (`?room=`) shows its conversation list, newest first, with a
+  **Conversations | Members** switch and **New conversation**. It never
+  selects a conversation on the person's behalf; `?room=&conversation=` deep
+  links still open that conversation directly, and `new=1` opens an
+  unstarted draft.
+- `New Room` sits on the index for a viewer who can write the Project.
+  Opening one is a dialog, not a form on the page: it asks who
   can see the Room, because the audience is what a Room is
   ([ADR 0018](../decisions/0018-room-as-visibility-boundary.md)). One dialog
   serves both this page and the Project conversation list, and its candidates
   are the Project's **readers** — `inviteUser` refuses anyone who cannot read
-  the Project, so a Space-wide list offers people the server rejects.
-- Conversation lists are ordered by immutable `created_at DESC, id DESC`.
-  Message activity and asynchronous title refinement must not reshuffle them.
+  the Project, so a Space-wide list offers people the server rejects. The new
+  Room opens on its (empty) conversation list.
+- A conversation names its Room, its audience and its roster size, links
+  back to that Room's conversation list and Members, and states that who
+  answers is chosen per message in the composer and never changes who can
+  see. The Room list and roster are not in the conversation rail.
+- Conversation lists are ordered by their latest visible transcript message time
+  descending, falling back to creation time for empty conversations, then id.
+  Title refinement does not affect this order. The Project sidecar picker and
+  Room list refresh metadata every five seconds while visible, showing a spinner
+  while any Agent Run in the conversation (including its collaboration groups)
+  is not terminal, including queue, cancellation and review/dependency waits.
+  Provider-only title jobs do not count as Agent execution.
+- Unread dots in the picker, Room conversation lists, recent conversations and
+  Project conversation history reuse the personal Agent Attention projection.
+  Execution spinners take priority and suppress unread dots until every Agent
+  has ended; ended-and-read conversations show neither. These indicators never mark a reply read. The
+  existing displayed-message acknowledgement remains the only automatic read
+  path; Task-owned replies are mapped to their actual unread Sessions.
 - The shared Conversation execution-context control is fully visible while a
   draft still needs confirmation. After a healthy initialization it collapses
   by default in both the full Room and Project sidecar, retaining one disclosure
   row for Host/CLI/cwd inspection and attachment management. A blocked pinned
   Host or runtime opens the control automatically so recovery is never hidden.
-- A Project showing no Rooms has failed to load them, since every Project is
-  created with its mainline (ADR 0018 decision 4). The empty state offers a
-  retry, never creation: a Room made there would be a second shared one beside
-  the mainline it could not see. A Room whose stored title is `Project conversation`
-  is shown as `<Project name> Room`.
+- A Rooms index that fails to load says so and offers a retry, never
+  creation: every Project is created with its mainline (ADR 0018 decision 4).
+  A Room whose stored title is `Project conversation` is shown as
+  `<Project name> Room` (`agent_groups/roomTitle.ts`).
 - Roster controls follow the authority each one needs, not one flag. Invite,
   remove, transfer and the specialist controls go through the server's
   `withRoomWriter` and are shown only to a Project writer. Deciding a
@@ -472,6 +507,16 @@ Room's files and one Room cannot see another's files without an explicit pull.
 
 ### Mutable roster and Room-only privacy
 
+The Members view (`RoomRosterPanel.tsx`) lists people and Agents. **Add
+Agent** opens a searchable, paged dialog (`AddRoomAgentDialog.tsx`, server
+`q`/`limit`/`offset` on `agent-candidates`) that lists this Project's Agents
+first (`in_project`) and then other Agents from the person's library; adding
+one of the latter also adds it to the Project's Agents, in the same
+transaction as the roster change (`PgProjectAgentRepository.upsertActive`).
+Presets and **Create a new Agent** stay in that dialog; creating returns to
+this Members view with the new Agent named for a one-click add. Removing an
+Agent from the Room leaves its Project link.
+
 The managed `system_assistant` participant is the hidden, system-controlled
 Manager and is immutable through the roster API. Project-writer Room members
 may add visible existing Agents or instantiate one of the server-defined
@@ -491,7 +536,18 @@ scoped to one Room, can be revoked independently, and are never imported by
 generic Agent visibility checks. A member removal revokes their future grant
 while preserving historical output.
 
-Human invitations snapshot the active private-specialist roster at the Room's
+A standard Agent retaining another Project's `access_project_id` uses that same
+explicit Room-only authorization, even when `space_shared`. Only its owner can
+add it; confirmation is required even in a one-person Room, and concurrent
+member changes invalidate a stale displayed grantee list. The owner also gets
+a Room use grant; being able to read both Projects does not bypass it. For a mainline member enrolled later through Project access, use remains
+withheld until the Agent owner chooses **Authorize members** in the roster and
+confirms the current audience; this reuses the add command, without removing the
+Agent or restoring another workspace. Source Project ACLs remain unchanged. Cross-Project role/persona/system instructions,
+Agent Skills and foreign memory are withheld; see
+[Agents](agents.md#reusable-agent-identity-and-project-boundaries).
+
+Human invitations snapshot the active restricted-specialist roster at the Room's
 `roster_revision`. The invite becomes active immediately only when every
 owner approves; otherwise it stays pending and each affected owner sees only
 their own approval action. A specialist add/remove, Agent status change, or
@@ -557,6 +613,112 @@ unless that is clearly unnecessary (`agentGroups/service.ts`,
 the message the same way; a retry keeps the targets still in the Room. A
 selected Skill is checked against the effective recipients — the manager under
 coordination.
+
+## Conversation participants and Room defaults
+
+The Room roster is the available Agent set. A conversation's persistent participants
+are the `participating` bindings in `session_conversation_backends`, intersected
+with the active Room roster. Initialization copies Room defaults once; adding an
+Agent to a Room or editing `rooms.conversation_defaults_json` never enrolls it in
+an already initialized conversation. Before initialization the person can exclude
+specialists without configuring their runtime. The managed manager stays selected.
+
+Room Members → **New conversation defaults** saves per-Agent participation, runtime
+profile and native session options through `room.defaults.save`. The defaults are
+validated against current Room use authority and the selected runtime's advertised
+options. They do not change Agent ownership, Project grants or reusable profiles.
+An empty stored default list retains the existing initial-roster behavior. Saves
+are authorized per-Agent patches: the editor submits only explicitly touched entries
+(including clearing a runtime/model selection), retaining and not revalidating
+omitted entries even when their Host/profile/model is unavailable to this viewer. Saves require
+`expected_revision` from `room.settings.read`. The existing Room `roster_revision`
+is incremented on save and provides CAS under the Room lock; stale saves return
+409. The settings read filters entries by Agent usage permission: authorized Room members
+can read that Agent’s saved shared model defaults and profile ID even if the profile
+or model is unavailable to them. This does not grant use of another person’s Host.
+General Room projections redact profile/model choices. Defaults on another
+Host never move execution there: initialization uses a unique verified compatible
+candidate on the selected Host or requests a selection. Withdrawn model options
+are reconciled against that runtime catalog before applying defaults.
+
+The shared full/panel composer exposes **Conversation settings · N** on old and
+new conversations. N counts participants, not configurable runtime catalogs. The
+Agents tab initially shows only joined Agents; Add Agent opens a searchable Room
+candidate list in the same bounded panel, with explicit selection and confirmation.
+Single-Agent disclosures show saved model summaries and expand parameters on demand.
+The Runtime environment tab owns preflight, Host/Primary, attached-directory access,
+isolation/baseline and recovery. Room, Project sidecar and Agent Work reuse this
+entry; the old participant editor entry and sidecar runtime card are removed.
+An added Agent inherits the fixed conversation Host/Primary. Retained bindings need
+no new runtime choice when a Host thread exists. Compatible choices use the same
+server suggestion order: one preferred Room/Agent default, otherwise one persisted
+profile, otherwise one unique candidate; remaining ambiguity requires selection. Drafts copy Room
+participation defaults; readiness and permission failures retain message drafts.
+Existing sessions without a successful preflight show loading/error and retry,
+with no invented participant count or local draft editor. A failed refresh blocks
+editing and sending until a new authoritative read succeeds. A successful write
+followed by a failed read says it was saved; its consumed revision is never replayed.
+A CAS 409 requires a fresh read and a new explicit selection. Creating a draft
+keeps settings open. Active dispatch locks mutations while refresh and new-conversation
+navigation remain available.
+
+Preflight's `available_participant_agents` reports current use-authorized Agents
+and whether each has a retained Host thread, independently of runnable profiles.
+Hidden/unauthorized Agents never appear in this projection. Removal needs use
+authority, and rejoining a retained thread needs no usable new profile; new runtime
+selection still requires a compatible usable candidate. Server writes recheck all
+authority. Saved model readback preserves other Agents' unsaved choices, and scope
+changes clear errors/drafts and reject late responses.
+Reuse / Dependency Check: reuse shared Radix Dialog/Tabs/Input/Select, the canonical
+session-config operation, preflight API and participant delta/CAS; no dependency or
+parallel settings service added. The existing `conversation.execution.initialize` operation accepts
+`participant_changes` (explicit Agent/participating deltas) with the preflight
+`participants_revision`, plus runtime choices for new participants. A complete
+`participant_agent_ids` snapshot also requires that revision after initialization.
+Every changed Agent requires current use authority; unchanged inaccessible Agents
+are retained without exposing their profiles. A stale revision returns 409 and
+requires a fresh read and an explicit retry. Add,
+remove and rejoin are atomic under the Project audience fence, Room lock and
+conversation admission lock. Removal retains bindings, configuration and Host
+threads; rejoin reuses them. Runtime-only initialization never edits participation.
+Removing an Agent from the Room also clears its participation in all existing
+conversations; restoring Room membership alone does not enroll it again. Host/Primary selection and the existing
+CLI reconciliation rules remain unchanged; incompatible selections refuse the write.
+
+Message recipients and mentions do not edit participation. A send snapshots only
+participants into its collaboration group; a nonparticipant cannot be dispatched or
+delegated to until explicitly added. Explicit discussions' “all” means conversation
+participants. Delegation candidates and admission resolve current Room participants and use
+authority, including explicit rejoin after the group opened, without changing
+frozen group or running Run snapshots. Discussion advances reject removed
+participants with a notice and recovery guidance; old retries refuse with guidance
+to restore the participant or send a new message. Composer mentions, discussion
+choices and Agent Work settings use current authorized participating runtimes;
+the participant editor separately retains the full shared list without private
+profile data. The primary runtime is the active Room manager, never the
+most recently touched thread. Queued Runs recheck
+participation at execution authorization and the atomic transition to running; a
+previously prepared recipient cannot start after removal.
+Existing Run configuration/permission snapshots are never rewritten by settings edits.
+Per-Agent session-option saves affect later Runs, using the existing native ACP
+configuration path. The execution summary includes saved session options for the
+visible model summary; each Run turn retains its own actual model evidence.
+
+The Assistant uses the same operations as the UI. `room.settings.read` with no
+Room id resolves only the Run's own Room and returns its current conversation id,
+defaults and authorized runtime options. Settings writes require a human-origin
+direct manual Run, with no delegated/continuation lineage or delegated identity,
+the instructing person's current Project write and Room use authority, and
+exact current Room/conversation scope. It cannot configure another conversation,
+change grants or enroll itself by claiming authority. A successful receipt is the
+only proof that settings were written; failures must remain visible.
+
+Migration `0019_agent_workspace_and_conversation` gives existing bindings
+`participating=true` and initializes Room defaults to an empty list. Thus old pins
+are preserved without synthesizing bindings for newer roster members. It does not
+reset Host threads or copy another Project's context, memory or persona. Apply it
+only through the normal authorized migrator; implementation verification uses
+isolated test databases.
 
 ## Conversation backend
 
@@ -951,18 +1113,20 @@ message is written and Project/Room creation remains independent of backend
 configuration.
 
 The Room page has independent catalog, Room-detail, and conversation-message
-loading boundaries. Selecting a Room or conversation preserves the page shell,
-catalog, roster, and unaffected panels while only the selected panel loads.
+loading boundaries. Switching conversations preserves the page shell,
+catalog, Room detail and unaffected panels while only the selected panel loads.
 Mutation responses are applied directly: sending appends the returned user
 message, and conversation creation appends the returned conversation. These
-interactions must not re-enter the page-level `Loading Rooms` state or refetch
-unrelated catalogs.
+interactions must not re-enter the Room loading state or refetch unrelated
+catalogs. A late response for a Room or conversation the person has left is
+dropped rather than bound to the one now open.
 
-When a Room is open, conversation is the dominant surface: a compact left rail
-contains Room metadata, the conversation switcher, collapsed Room creation,
-and collapsed roster controls; the center column owns the available width and
-scrolls messages inside a viewport-height card; Project state remains a narrow
-supporting rail. Where a message goes is shown and chosen in the composer
+When a conversation is open, it is the dominant surface: a compact left rail
+names the Room (audience, roster size, bound folder) with links back to the
+Room's conversation list and Members, and keeps the conversation switcher;
+the center column owns the available width and scrolls messages inside a
+viewport-height card; Project state remains a narrow supporting rail. Roster
+controls live in the Members view, not in this rail. Where a message goes is shown and chosen in the composer
 (see "Addressing and routing a message"); Run settings holds no routing
 control. Each Agent's runtime is chosen
 and pinned only in the conversation's execution preflight, before its first
@@ -1412,7 +1576,13 @@ its Agents' host
 thread), which would otherwise run first once the window resets. A delegation
 result that meets a taken turn, a busy Agent or a transient database error is
 retried by its job, never dropped. A person's own message is never held; past
-`warn_pct` the composer shows the account's line (`GET …/quota`). Nothing
+`warn_pct` the composer shows the account's line (`GET …/quota`). That read is
+a cache read (`conversationQuota`, never a probe) and each login carries its
+`checked_at` and an opaque `login_key` (`cachedLoginReading`: a hash of the
+copy and its current Usage pool identity — host-scoped, naming no account,
+new when the copy signs in to another account). The 15-minute host sweep is
+what refreshes it (`modules/hosts.md`, "Subscription quota"). The client's
+presentation rules are in `architecture/CONVERSATION.md`. Nothing
 known about a login (no reading, an unreadable probe, a runtime without a
 subscription, a Run bound to a ModelProvider) admits. A ModelProvider-bound Run
 never spends a subscription: the binding excludes subscription providers
@@ -1473,16 +1643,24 @@ is slow to answer is decided on the cached reading.
   viewer in the mainline
 - `GET /api/v1/projects/:projectId/mainline-room` — the Project's mainline
   Room, enrolling the viewer on first open
+- `GET /api/v1/projects/:projectId/rooms` — the Rooms index: the Rooms the
+  viewer is an active member of (mainline first, then by creation) with
+  audience, `person_count`, `agent_count`, `conversation_count` and
+  `last_activity_at`, plus `viewer_can_write`; enrols the viewer in the
+  mainline. Rooms the viewer is not in are neither returned nor counted
 - `GET /api/v1/projects/:projectId/readers` — who may be invited into a Room
   here. The gate is the answer: a caller absent from the result gets the 404 a
   missing Project gives
 - `GET /api/v1/rooms` — list Rooms, optional `project_id` filter
 - `GET /api/v1/rooms/:roomId` — Room detail with rosters
 - `GET /api/v1/rooms/:roomId/agent-candidates` — visible existing Agents and
-  separately typed preset factories
+  separately typed preset factories; `q` filters by name over the whole
+  eligible set, and `in_project` marks (and orders first) Agents already on
+  the Project's Agent list
 - `POST /api/v1/rooms/:roomId/agents` — add/reactivate a specialist with
   explicit private Room-share confirmation and optional `restore_workspace`;
-  the Agent is added either way. The restore commits with the roster as a
+  the Agent is added either way, and joins the Project's Agent list in the
+  same transaction. The restore commits with the roster as a
   `room_agent_workspace_restore` Job of the exact closed thread
   (`workspaceRestoreJob.ts`); the Host call is the Job's, after re-checking
   membership, Project write, Host ownership and that no newer thread exists. The
@@ -1607,10 +1785,15 @@ is slow to answer is decided on the cached reading.
   claim is permitted only while the previous owner can no longer write the
   bound Project.
 - Room navigation stays inside the Project Shell. A Room is reached from the
-  Project's Conversations list — a conversation row, a limited group's ⚙, or
-  the chat panel's "Full Room" link — never from top-level navigation. There is
-  no global `/rooms` route. A Room is a Project conversation, not a top-level
-  picker, and every Room belongs to exactly one Project.
+  Project's **Rooms** entry, a conversation row, a limited group's ⚙ in the
+  cross-Room conversation list, the Project Agents page's "Add to Room", or
+  the chat panel's "Open in Room" link. There is no global `/rooms` route and
+  no cross-Project Rooms index; every Room belongs to exactly one Project.
+- Project Agent membership and Room membership are separate: neither implies
+  the other except that a Room add completes the Project link — including an
+  add of an Agent that is already an active member, which repairs a missing
+  link without bumping `roster_revision` (a private Agent is linked only by
+  its owner). No list names a Room the viewer is not an active member of.
 - A Room does not turn `agent_run_groups` into a conversation container; each
   message is its own collaboration task.
 - The vendor CLI runtime session, when resumed, is permitted runtime state and
@@ -1688,3 +1871,20 @@ its interrupted Run rather than treated as account-wide evidence. Native quota
 recovery can explicitly authorize one alternative model from the same installed
 CLI, using the same scheduler, conversation/authority checks and attempt cap;
 see [runtime adapters](runtime-adapters.md).
+
+### Retained-Project grant lifecycle
+
+Invitation activation rechecks the locked Agent/owner snapshot and the same live
+issuer predicate used by execution before writing any grants. Approval owners'
+user rows are share-locked before Room/invitation locks; owner account disable
+updates that user first, then revokes retained cross-Project grants and invalidates
+pending cross-Project invitations in the same transaction. Project removal or
+loss of writer authority invalidates pending invitations involving that issuer
+under the existing Project → Room fence, as well as revoking issued grants.
+Room removal changes the roster revision, so the old approval cannot activate.
+Restoring authority never reactivates these grants/invitations; fresh consent is
+required. Ordinary private-Agent sharing retains its existing viewer-owner policy.
+Roster `private_shared_user_ids` and candidate `shared_with_user_ids` filter the
+current owner, unrevoked grant and live execution eligibility consistently.
+There is currently no production Space-member revocation writer; direct database
+membership changes receive the live denial only, not a claimed durable lifecycle.

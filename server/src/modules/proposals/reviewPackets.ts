@@ -1,3 +1,4 @@
+import {noteReportOutput} from "../retrieval/reportReleasePlan.js";
 import {PgJobQueueRepository} from '../jobs/repository.js';
 import {OperationError} from '../systemActions/operations/errors.js';
 import {recordPreparedProposalCreation,assertProposalTransaction,lockProposalDependencies,lockSkillReviewProposals} from '../systemActions/operations/proposalTransitions.js';
@@ -139,6 +140,7 @@ export async function insertProposalRow(db: Queryable, input: InsertProposalRowI
   );
   if(input.status==='staged' && input.createdByRunId)await new PgJobQueueRepository(db).enqueue({job_type:'run_proposal_publication',space_id:input.spaceId,user_id:input.createdByUserId,payload:{run_id:input.createdByRunId,proposal_id:id}});
   recordPreparedProposalCreation(db,result.rows[0]!.id);
+  noteReportOutput(db,"proposal",result.rows[0]!.id);
   return result.rows[0]!;
   });
 }
@@ -166,6 +168,13 @@ export async function lookupExistingPendingPacket(
   await db.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
     `review-packet:${spaceId}:${proposalType}:${lineageKey}:${audience.createdByUserId}:${audience.visibility}`,
   ]);
+  return readExistingPendingPacket(db,spaceId,proposalType,lineageKey,audience);
+}
+/** Same selection without locks, for a caller discovering a global closure. */
+export async function readExistingPendingPacket(
+  db:Queryable,spaceId:string,proposalType:string,lineageKey:string,
+  audience:{createdByUserId:string;visibility:string},
+):Promise<{id:string;payload_json:Record<string,unknown>}|null>{
   const result = await db.query<{ id: string; payload_json: Record<string, unknown> | null }>(
     `SELECT id, payload_json FROM proposals
       WHERE space_id = $1

@@ -143,3 +143,46 @@ service is sufficient.
 - `server/src/modules/graph/`
 - `.agent/architecture/PROJECTS.md`
 - `.agent/modules/graph-view.md`
+
+## Operation core commands (P5 continuation)
+
+All ten Relations mutation URLs above are formal adapters to the strict,
+keyed, human-only `relation.*` commands in `relations/operations.ts`.
+They return the core envelope with `{id, space_id, object_id, kind}`;
+content remains behind the existing GET readers. Deletes return a 200 receipt.
+Affiliation create/end return 202 proposal receipts and still use the canonical
+Knowledge proposal writers; no active graph edge is written before acceptance.
+No approval mapping or Agent capability was opened.
+
+Person/organization creation reuses the access-owned Personal/Project placement
+resolver. The service takes a `Queryable`; its multi-row writes join the core
+transaction through `withQueryableTransaction`. Ownership and Project writer
+checks run under ordered Project/root locks, and cached receipts recheck current
+ownership/Project authority. Identity deletion binds the key to the identity id,
+so its replay can authorize the surviving parent after the identity row is gone.
+Source citations reuse the Source release-lock closure, including the relation
+card's Projects in the same sorted audience set, then recheck the existing
+SourceItem/Evidence read predicates. Activity citations pin their row and grants.
+The Source helper's existing callers retain their unchanged default scope.
+
+There are no production Agent or typed web callers of Relations mutations in
+this tree; the retained REST and generic operation entry points use one service.
+Academic's four mutation URLs remain pending work in the broader P5 block.
+Focused core coverage: `server/test/relationOperationsDb.test.ts`; domain
+consumers remain `relationsDb.test.ts` and `relationsService.test.ts`.
+
+
+## Academic core commands (P5 continuation)
+
+Four human-only keyed commands retain Academic's four mutation URLs:
+`academic.paper.create`, `academic.paper.update`,
+`academic.paper.author.propose` and `academic.paper.citation.propose`.
+Creation uses the access-owned Personal/Project placement rule. Mutations pin
+sorted Project authority and object roots before canonical full-content/owner
+checks, rediscover scope after waits, and join the core's transaction. The
+Academic service now accepts a Queryable and joins an existing transaction;
+there is no nested Pool transaction or concurrent query batch on that port.
+
+Receipts contain identity and kind, never the paper body. Author/citation links
+still create `object_relation_create` proposals through the canonical Knowledge
+writer; only acceptance creates graph edges. No approval mapping is enabled.

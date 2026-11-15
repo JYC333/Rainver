@@ -1,9 +1,11 @@
+import React from "react"
+import {SESSION_OPERATION_SCHEMAS} from '@rainver/protocol'
 import { ConversationScope } from './ConversationScope'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { agentsApi, roomsApi, sessionsApi } from '../../api/client'
-import { ConversationExecutionPreflight } from './ConversationExecutionPreflight'
+import { beforeEach, expect, it, vi } from 'vitest'
+import { roomsApi, sessionsApi } from '../../api/client'
+import { ConversationExecutionPreflight, ConversationExecutionPreflightContent } from './ConversationExecutionPreflight'
 import type { ConversationExecutionPreflightResponse, RoomDetail } from '../../types/api'
 
 vi.mock('../../api/client', () => ({
@@ -90,387 +92,299 @@ function initializedResponse(online = true) {
   }
 }
 
-function renderPanel(
-  sessionId: string | null = 'session-1',
-  onReadyChange = vi.fn(),
-  detailOverride = detail,
-  preferredProjectFolderId: string | null = null,
-) {
-  return render(<MemoryRouter><ConversationExecutionPreflight
-    projectId="project-1" roomId="room-1" sessionId={sessionId} detail={detailOverride}
-    preferredProjectFolderId={preferredProjectFolderId} onReadyChange={onReadyChange}
-  /></MemoryRouter>)
+function panel(props: Partial<React.ComponentProps<typeof ConversationExecutionPreflight>> = {}) {
+  return render(<MemoryRouter><ConversationScope spaceId="space-b"><ConversationExecutionPreflight
+    projectId="project-1" roomId="room-1" sessionId="session-1" detail={detail} {...props} /></ConversationScope></MemoryRouter>)
 }
+async function openSettings() {
+  fireEvent.click(await screen.findByRole('button', { name: /Conversation settings ·/ }))
+}
+async function environment() {
+  await openSettings()
+  fireEvent.mouseDown(screen.getByRole('tab', { name: 'Runtime environment' }), { button: 0, ctrlKey: false })
+}
+beforeEach(() => {
+  vi.resetAllMocks()
+  vi.mocked(roomsApi.get).mockResolvedValue(detail)
+  vi.mocked(sessionsApi.executionContext).mockResolvedValue(draftResponse())
+  vi.mocked(sessionsApi.initializeExecution).mockResolvedValue({} as never)
+})
+it('loads readiness while closed and exposes only one compact settings entry', async () => {
+  vi.mocked(sessionsApi.executionContext).mockResolvedValue(initializedResponse() as never)
+  const ready = vi.fn()
+  panel({ onReadyChange: ready })
+  await waitFor(() => expect(ready).toHaveBeenLastCalledWith(true))
+  expect(screen.queryByText('Working folder')).not.toBeInTheDocument()
+  await openSettings()
+  expect(screen.getByText('Project Agent')).toBeVisible()
+  expect(screen.queryByText('Execution Context')).not.toBeInTheDocument()
+  fireEvent.mouseDown(screen.getByRole('tab', { name: 'Runtime environment' }), { button: 0 })
+  expect(await screen.findByText('Working folder')).toBeVisible()
+  expect(screen.queryByText(/Host and primary directory are fixed/)).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Edit participants' })).not.toBeInTheDocument()
+})
+it('initializes a unique compatible CLI with strict four-field runtime in the source Space', async () => {
+  panel()
+  await environment()
+  const confirm = await screen.findByRole('button', { name: 'Confirm execution context' })
+  await waitFor(() => expect(confirm).toBeEnabled())
+  expect(screen.queryByRole('button', { name: 'CLI installation' })).not.toBeInTheDocument()
+  fireEvent.click(confirm)
+  await waitFor(() => expect(sessionsApi.initializeExecution).toHaveBeenCalledOnce())
+  const [id, body, scope] = vi.mocked(sessionsApi.initializeExecution).mock.calls[0]!
+  expect(scope).toEqual(expect.objectContaining({spaceId:'space-b'}))
+  expect(body.runtime).toEqual({agent_id:'agent-1',runtime_profile_id:'runtime-1',runtime_key:'claude_cli',runtime_installation:'claude'})
+  SESSION_OPERATION_SCHEMAS['conversation.execution.initialize'].input.parse({session_id:id,...body})
+})
+it('preselects an explicit preferred CLI among compatible candidates', async () => {
+  const response=draftResponse()
+  response.available_runtime_profiles.push({...response.available_runtime_profiles[0]!,runtime_profile_id:null,runtime_key:'codex_cli',runtime_installation:'codex',preferred:false})
+  vi.mocked(sessionsApi.executionContext).mockResolvedValue(response)
+  panel();await environment()
+  const chooser=await screen.findByRole('button',{name:'CLI installation'})
+  await waitFor(()=>expect(screen.getByRole('button',{name:'Confirm execution context'})).toBeEnabled())
+  expect(chooser).toHaveTextContent('claude_cli')
+  fireEvent.click(chooser);fireEvent.click(screen.getByRole('option',{name:/codex_cli/}))
+  fireEvent.click(screen.getByRole('button',{name:'Confirm execution context'}))
+  await waitFor(()=>expect(sessionsApi.initializeExecution).toHaveBeenCalledOnce())
+  expect(vi.mocked(sessionsApi.initializeExecution).mock.calls[0]![1].runtime.runtime_profile_id).toBeNull()
+})
+it('uses the selected Files Folder without guessing another directory', async () => {
+  const response=draftResponse([{workspace_location_id:'loc',project_folder_id:'folder',folder_name:'Source',execution_host_id:'host-1',display_path:'/code',execution_ready:true}])
+  response.available_runtime_profiles[0]!.workspace_mode='location'
+  response.available_runtime_profiles[0]!.workspace_location_id='loc'
+  vi.mocked(sessionsApi.executionContext).mockResolvedValue(response)
+  panel({preferredProjectFolderId:'folder'});await environment()
+  await waitFor(()=>expect(screen.getByRole('button',{name:'Working folder'})).toHaveTextContent('Source'))
+  fireEvent.click(screen.getByRole('button',{name:'Confirm execution context'}))
+  await waitFor(()=>expect(sessionsApi.initializeExecution).toHaveBeenCalledOnce())
+  expect(vi.mocked(sessionsApi.initializeExecution).mock.calls[0]![1].selection.primary).toEqual({kind:'location',workspace_location_id:'loc'})
+})
+it('takes Room defaults into a draft, searches candidates only after Add, and reports an explicit roster', async () => {
+  const roster={...detail,room:{...detail.room,conversation_defaults_json:[{agent_id:'optional',participating:false,runtime_profile_id:null,session_config:[]}]},agent_members:[...detail.agent_members,{agent_id:'optional',agent_name:'Codex',role:'member'}]} as RoomDetail
+  const changed=vi.fn();panel({detail:roster,onSummaryChange:changed})
+  await waitFor(()=>expect(changed).toHaveBeenLastCalledWith(expect.objectContaining({participant_agent_ids:['agent-1']})))
+  await openSettings()
+  expect(screen.queryByText('Codex')).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button',{name:'Add Agent from Room'}))
+  fireEvent.change(screen.getByRole('textbox'),{target:{value:'code'}})
+  fireEvent.click(screen.getByRole('button',{name:'Codex'}));fireEvent.click(screen.getByRole('button',{name:'Add to conversation'}))
+  await waitFor(()=>expect(changed).toHaveBeenLastCalledWith(expect.objectContaining({participant_agent_ids:['agent-1','optional']})))
+  expect(sessionsApi.initializeExecution).not.toHaveBeenCalled()
+})
+it.each(['session','room','permission'] as const)('discards draft edits on %s boundary changes and ignores old responses',async change=>{
+  const roster={...detail,room:{...detail.room,conversation_defaults_json:[{agent_id:'optional',participating:false,runtime_profile_id:null,session_config:[]}]},agent_members:[...detail.agent_members,{agent_id:'optional',agent_name:'Codex',role:'member'}]} as RoomDetail
+  const changed=vi.fn()
+  const renderPanel=(next:boolean)=><MemoryRouter><ConversationScope actionRole={next&&change==='permission'?'viewer':'member'}><ConversationExecutionPreflightContent projectId="project-1" roomId={next&&change==='room'?'room-2':'room-1'} sessionId={next&&change==='session'?'session-2':'session-1'} detail={roster} onSummaryChange={changed}/></ConversationScope></MemoryRouter>
+  const view=render(renderPanel(false));await waitFor(()=>expect(changed).toHaveBeenLastCalledWith(expect.objectContaining({participant_agent_ids:['agent-1']})))
+  await openSettings();fireEvent.click(screen.getByRole('button',{name:'Add Agent from Room'}));fireEvent.click(screen.getByRole('button',{name:'Codex'}));fireEvent.click(screen.getByRole('button',{name:'Add to conversation'}))
+  await waitFor(()=>expect(changed).toHaveBeenLastCalledWith(expect.objectContaining({participant_agent_ids:['agent-1','optional']})))
+  let resolveOld!:(value:ConversationExecutionPreflightResponse)=>void
+  vi.mocked(sessionsApi.executionContext).mockImplementationOnce(()=>new Promise(resolve=>{resolveOld=resolve}))
+  fireEvent(window,new Event('focus'));await waitFor(()=>expect(resolveOld).toBeDefined())
+  view.rerender(renderPanel(true))
+  await waitFor(()=>expect(changed).toHaveBeenLastCalledWith(expect.objectContaining({state:'draft',participant_agent_ids:['agent-1']})))
+  await act(async()=>resolveOld(initializedResponse() as never))
+  expect(changed).toHaveBeenLastCalledWith(expect.objectContaining({state:'draft',participant_agent_ids:['agent-1']}))
+})
+it('shows offline recovery and clears protected state after a refused refresh',async()=>{
+  vi.mocked(sessionsApi.executionContext).mockResolvedValue(initializedResponse(false) as never)
+  const ready=vi.fn();panel({onReadyChange:ready});await environment()
+  expect(await screen.findByRole('link',{name:'Reconnect device'})).toHaveAttribute('href',expect.stringContaining('host-1'))
+  vi.mocked(sessionsApi.executionContext).mockRejectedValueOnce(new Error('Permission revoked'))
+  fireEvent(window,new Event('focus'))
+  expect(await screen.findByText('Permission revoked')).toBeVisible()
+  expect(screen.queryByText('Working folder')).not.toBeInTheDocument()
+  expect(ready).toHaveBeenLastCalledWith(false)
+  fireEvent(window,new Event('focus'))
+  expect(await screen.findByText('Working folder')).toBeVisible()
+})
+it.each([true,false])('blocks writes for active run %s or worker identity',async active=>{
+  const response=initializedResponse();response.summary.dispatch_locked=active
+  vi.mocked(sessionsApi.executionContext).mockResolvedValue(response as never)
+  render(<MemoryRouter><ConversationScope actionRole={active?'member':'worker'}><ConversationExecutionPreflight projectId="project-1" roomId="room-1" sessionId="session-1" detail={detail}/></ConversationScope></MemoryRouter>)
+  await openSettings();await waitFor(()=>expect(screen.getByRole('button',{name:'Add Agent from Room'})).toBeDisabled())
+  expect(sessionsApi.initializeExecution).not.toHaveBeenCalled()
+})
+it.each(['snapshot','committed'] as const)('submits a strict %s baseline without changing runtime identity',async mode=>{
+  const response=initializedResponse() as ConversationExecutionPreflightResponse
+  response.summary.primary={kind:'location',project_folder_id:'folder',workspace_location_id:'loc',display_path:'/code'}
+  response.summary.git={source:'workspace_location',workspace_location_id:'loc',branch:'dev',commit_sha:'a'.repeat(40),dirty:true,execution_ready:true,observed_at:'2026-11-06T00:00:00Z'}
+  const richRuntime={...response.summary.runtime!,runtime_key:'claude_code',session_config:[],context_tokens:123}
+  response.summary.runtime=richRuntime
+  response.summary.runtimes=[richRuntime]
+  vi.mocked(sessionsApi.executionContext).mockResolvedValue(response)
+  panel();await environment()
+  fireEvent.click(await screen.findByRole('button',{name:mode==='snapshot'?'Include current changes':'Use committed version'}))
+  await waitFor(()=>expect(sessionsApi.initializeExecution).toHaveBeenCalledOnce())
+  SESSION_OPERATION_SCHEMAS['conversation.execution.initialize'].input.parse({session_id:'session-1',...vi.mocked(sessionsApi.initializeExecution).mock.calls[0]![1]})
+})
+it('refreshes the saved model from preflight after a scoped setting save',async()=>{
+  const response=initializedResponse() as ConversationExecutionPreflightResponse;response.summary.runtimes=[]
+  vi.mocked(sessionsApi.executionContext).mockResolvedValue(response as never)
+  panel();await openSettings();await screen.findByText('Project Agent')
+  const changed=initializedResponse() as ConversationExecutionPreflightResponse
+  changed.summary.runtimes[0]!.session_config=[{id:'model',type:'select',category:'model',value:'new-model'}]
+  vi.mocked(sessionsApi.executionContext).mockResolvedValue(changed)
+  act(()=>window.dispatchEvent(new CustomEvent('conversation-settings-saved',{detail:{sessionId:'session-1',spaceId:'space-b'}})))
+  fireEvent.mouseDown(screen.getByRole('tab', { name: 'Runtime environment' }), { button: 0 })
+  fireEvent.click(screen.getByText('Agent session diagnostics and recovery'))
+  expect(await screen.findByText(/new-model/)).toBeVisible()
+})
 
-describe('ConversationExecutionPreflight', () => {
-  beforeEach(() => {
-    vi.resetAllMocks()
-    vi.mocked(roomsApi.get).mockResolvedValue(detail)
-    vi.mocked(agentsApi.listRuntimeProfiles).mockResolvedValue([profile] as never)
-    vi.mocked(sessionsApi.executionContext).mockResolvedValue(draftResponse() as never)
-    vi.mocked(sessionsApi.initializeExecution).mockResolvedValue({} as never)
-    vi.mocked(sessionsApi.mutateExecutionAttachments).mockResolvedValue({} as never)
+it('never exposes draft participants or invented counts while an existing session loads or fails', async () => {
+  let resolve!: (value: ConversationExecutionPreflightResponse) => void
+  vi.mocked(sessionsApi.executionContext).mockImplementationOnce(() => new Promise(done => { resolve = done }))
+  const roster = {...detail,agent_members:[...detail.agent_members,{agent_id:'worker',agent_name:'Worker',role:'member'}]} as RoomDetail
+  panel({detail:roster})
+  fireEvent.click(screen.getByRole('button', { name: 'Conversation settings' }))
+  expect(screen.getByRole('status')).toHaveTextContent('Loading')
+  expect(screen.queryByRole('button', {name:'Choose an execution Host.'})).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Add Agent from Room' })).not.toBeInTheDocument()
+  expect(screen.queryByText('Project Agent')).not.toBeInTheDocument()
+  const response = initializedResponse() as ConversationExecutionPreflightResponse
+  response.summary.participant_agent_ids = ['agent-1', 'worker']
+  response.available_participant_agents = [{agent_id:'agent-1',retained_thread:true},{agent_id:'worker',retained_thread:true}]
+  await act(async () => resolve(response))
+  expect(screen.getByText('Conversation settings · 2')).toBeInTheDocument()
+  vi.mocked(sessionsApi.executionContext).mockResolvedValue(response).mockRejectedValueOnce(new Error('Refresh failed'))
+  fireEvent(window, new Event('focus'))
+  await screen.findAllByText('Refresh failed')
+  expect(screen.queryByRole('button', { name: 'Add Agent from Room' })).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+  expect(await screen.findByRole('button', { name: 'Add Agent from Room' })).toBeEnabled()
+  expect(sessionsApi.initializeExecution).not.toHaveBeenCalled()
+  vi.mocked(sessionsApi.initializeExecution).mockImplementationOnce(async () => {
+    vi.mocked(sessionsApi.executionContext).mockResolvedValue({...response,summary:{...response.summary,participant_agent_ids:['agent-1'],participants_revision:'new-version'}})
+    return {} as never
   })
+  fireEvent.click(screen.getByText('Worker'))
+  fireEvent.click(screen.getAllByRole('button',{name:'Remove'})[0])
+  fireEvent.click(screen.getByRole('button',{name:'Confirm removal'}))
+  await waitFor(()=>expect(sessionsApi.initializeExecution).toHaveBeenCalledOnce())
+  const payload=vi.mocked(sessionsApi.initializeExecution).mock.calls[0]![1]
+  expect(payload.participant_changes).toEqual([{agent_id:'worker',participating:false}])
+  SESSION_OPERATION_SCHEMAS['conversation.execution.initialize'].input.parse({session_id:'session-1',...payload})
+  await screen.findByText('Conversation settings · 1')
+})
 
-  it('initializes in source Space B while the URL belongs to A', async () => {
-    vi.mocked(sessionsApi.executionContext).mockResolvedValue(draftResponse() as never)
-    render(<MemoryRouter initialEntries={['/spaces/space-a/projects/project-1']}>
-      <ConversationScope spaceId="space-b"><ConversationExecutionPreflight
-        projectId="project-1" roomId="room-1" sessionId="session-1" detail={detail}
-      /></ConversationScope>
-    </MemoryRouter>)
-    await screen.findByText('Review before the first Run.')
-    await waitFor(() => expect(screen.getByRole('button', { name: 'CLI installation' })).toHaveTextContent('Claude on Laptop'))
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm execution context' }))
-    await waitFor(() => expect(sessionsApi.initializeExecution).toHaveBeenCalledWith(
-      'session-1', expect.any(Object), expect.objectContaining({ spaceId: 'space-b', signal: expect.any(AbortSignal) }),
-    ))
-    expect(sessionsApi.executionContext).toHaveBeenCalledWith('session-1', expect.objectContaining({ spaceId: 'space-b' }))
-  })
+it('restores send readiness after a failed refresh and retry', async () => {
+  const ready = vi.fn()
+  vi.mocked(sessionsApi.executionContext).mockResolvedValue(initializedResponse() as never)
+  panel({ onReadyChange: ready }); await openSettings()
+  await waitFor(() => expect(ready).toHaveBeenLastCalledWith(true))
+  vi.mocked(sessionsApi.executionContext).mockRejectedValueOnce(new Error('Network unavailable'))
+  fireEvent(window, new Event('focus'))
+  await waitFor(() => expect(ready).toHaveBeenLastCalledWith(false))
+  fireEvent.click(await screen.findByRole('button', { name: 'Retry' }))
+  await waitFor(() => expect(ready).toHaveBeenLastCalledWith(true))
+})
 
-  it('initializes a draft with the visible Host, managed Primary and CLI', async () => {
-    const response = draftResponse()
-    response.available_runtime_profiles.push({
-      ...response.available_runtime_profiles[0]!,
-      runtime_profile_id: null,
-      runtime_key: 'codex_cli',
-      runtime_installation: 'codex',
-      preferred: false,
-    })
-    vi.mocked(sessionsApi.executionContext).mockResolvedValue(response as never)
-    renderPanel()
-    expect(await screen.findByText('Review before the first Run.')).toBeInTheDocument()
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Execution Host' })).toHaveTextContent('Laptop'))
-    expect(screen.getByRole('button', { name: 'Primary workspace (cwd)' })).toHaveTextContent('Managed workspace')
-    // The fallback is said out loud: with no Folder connected the Agent works
-    // in a managed workspace, not in this Project's code, and the only place
-    // to change that is Files & Code.
-    expect(screen.getByTestId('preflight-no-folder')).toHaveTextContent('no Folder connected')
-    expect(screen.getByRole('link', { name: 'Connect a Folder' })).toHaveAttribute('href', expect.stringContaining('/projects/project-1/files?setup=folder'))
-    expect(screen.getByRole('button', { name: 'CLI installation' })).toHaveTextContent('Claude on Laptop')
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm execution context' }))
-    await waitFor(() => expect(sessionsApi.initializeExecution).toHaveBeenCalledWith('session-1', {
-      selection: { execution_host_id: 'host-1', primary: { kind: 'managed' } },
-      runtime: {
-        agent_id: 'agent-1', runtime_profile_id: 'runtime-1',
-        runtime_key: 'claude_cli', runtime_installation: 'claude',
-      },
-    }, expect.any(Object)))
-  })
-
-  it('uses a CLI detected on the selected Host without requiring a pre-created runtime profile', async () => {
-    const location = {
-      workspace_location_id: 'location-1', project_folder_id: 'folder-1', folder_name: 'Source',
-      execution_host_id: 'host-1', display_path: '/work/source', execution_ready: true,
-    }
-    vi.mocked(sessionsApi.executionContext).mockResolvedValue({
-      ...draftResponse([location]),
-      available_runtime_profiles: [{
-        ...draftResponse().available_runtime_profiles[0],
-        runtime_profile_id: null,
-        workspace_mode: 'location',
-        workspace_location_id: 'location-1',
-      }],
-    } as never)
-    renderPanel()
-
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Execution Host' })).toHaveTextContent('Laptop'))
-    expect(screen.getByRole('button', { name: 'Primary workspace (cwd)' })).toHaveTextContent('Source')
-    expect(screen.getByRole('button', { name: 'CLI installation' })).toHaveTextContent(/detected on Host/)
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm execution context' }))
-    await waitFor(() => expect(sessionsApi.initializeExecution).toHaveBeenCalledWith('session-1', {
-      selection: { execution_host_id: 'host-1', primary: { kind: 'location', workspace_location_id: 'location-1' } },
-      runtime: {
-        agent_id: 'agent-1', runtime_profile_id: null,
-        runtime_key: 'claude_cli', runtime_installation: 'claude',
-      },
-    }, expect.any(Object)))
-  })
-
-  it('uses the current Files Folder as the draft Primary when several Folders are available', async () => {
-    const locations = [
-      { workspace_location_id: 'location-a', project_folder_id: 'folder-a', folder_name: 'Source', execution_host_id: 'host-1', display_path: '/work/source', execution_ready: true },
-      { workspace_location_id: 'location-b', project_folder_id: 'folder-b', folder_name: 'Docs', execution_host_id: 'host-1', display_path: '/work/docs', execution_ready: true },
-    ]
-    const response = draftResponse(locations)
-    response.available_runtime_profiles = [{
-      ...response.available_runtime_profiles[0]!,
-      runtime_profile_id: null,
-      workspace_mode: 'location',
-      workspace_location_id: 'location-b',
-      agent_name: 'Project Agent',
-    }]
-    vi.mocked(sessionsApi.executionContext).mockResolvedValue(response as never)
-    renderPanel('session-1', vi.fn(), detail, 'folder-b')
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Execution Host' })).toHaveTextContent('Laptop'))
-    expect(screen.getByRole('button', { name: 'Primary workspace (cwd)' })).toHaveTextContent('Docs')
-    expect(screen.getByRole('button', { name: 'Confirm execution context' })).not.toBeDisabled()
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm execution context' }))
-    await waitFor(() => expect(sessionsApi.initializeExecution).toHaveBeenCalledWith('session-1', expect.objectContaining({
-      selection: { execution_host_id: 'host-1', primary: { kind: 'location', workspace_location_id: 'location-b' } },
-    }), expect.any(Object)))
-  })
-
-  it('updates an untouched draft when Files publishes its selection after preflight loads', async () => {
-    const locations = [
-      { workspace_location_id: 'location-a', project_folder_id: 'folder-a', folder_name: 'Source', execution_host_id: 'host-1', display_path: '/work/source', execution_ready: true },
-      { workspace_location_id: 'location-b', project_folder_id: 'folder-b', folder_name: 'Docs', execution_host_id: 'host-1', display_path: '/work/docs', execution_ready: true },
-    ]
-    const response = draftResponse(locations)
-    response.summary.primary = { kind: 'managed', managed_workspace_id: 'session-1', display_path: null }
-    response.available_runtime_profiles = [{
-      ...response.available_runtime_profiles[0]!,
-      runtime_profile_id: null,
-      workspace_mode: 'location',
-      workspace_location_id: 'location-b',
-    }]
-    vi.mocked(sessionsApi.executionContext).mockResolvedValue(response as never)
-    const onReadyChange = vi.fn()
-    const view = renderPanel('session-1', onReadyChange, detail, null)
-
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Primary workspace (cwd)' })).toHaveTextContent('Managed workspace'))
-    view.rerender(<MemoryRouter><ConversationExecutionPreflight
-      projectId="project-1" roomId="room-1" sessionId="session-1" detail={detail}
-      preferredProjectFolderId="folder-b" onReadyChange={onReadyChange}
-    /></MemoryRouter>)
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Primary workspace (cwd)' })).toHaveTextContent('Docs'))
-  })
-
-  it('requires and submits an explicit CLI for every participating Agent', async () => {
-    const multiDetail = {
-      ...detail,
-      agent_members: [
-        { role: 'manager', agent_id: 'agent-1', agent_name: 'Project Agent' },
-        { role: 'specialist', agent_id: 'agent-2', agent_name: 'Research Agent' },
-      ],
-    } as unknown as RoomDetail
-    const specialistProfile = {
-      ...profile,
-      id: 'runtime-research',
-      agent_id: 'agent-2',
-      name: 'Research CLI on Laptop',
-    }
-    const specialistBackup = {
-      ...specialistProfile,
-      id: 'runtime-research-backup',
-      name: 'Research Codex on Laptop',
-      runtime_key: 'codex_cli',
-      runtime_installation: 'codex',
-    }
-    vi.mocked(sessionsApi.executionContext).mockResolvedValue({
-      ...draftResponse(),
-      available_runtime_profiles: [
-        { ...draftResponse().available_runtime_profiles[0], agent_id: 'agent-1' },
-        { ...draftResponse().available_runtime_profiles[0], ...specialistProfile, agent_name: 'Research Agent', runtime_profile_id: specialistProfile.id },
-        { ...draftResponse().available_runtime_profiles[0], ...specialistBackup, agent_name: 'Research Agent', runtime_profile_id: specialistBackup.id },
-      ],
-    } as never)
-    renderPanel('session-1', vi.fn(), multiDetail)
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Execution Host' })).toHaveTextContent('Laptop')
-      expect(screen.getByRole('button', { name: 'Primary workspace (cwd)' })).toHaveTextContent('Managed workspace')
-      expect(screen.getByRole('button', { name: 'CLI installation for Research Agent' })).toHaveTextContent('Choose a CLI installation')
-    })
-    fireEvent.click(screen.getByRole('button', { name: 'CLI installation for Research Agent' }))
-    fireEvent.click(screen.getByRole('option', { name: /codex_cli/ }))
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm execution context' }))
-    await waitFor(() => expect(sessionsApi.initializeExecution).toHaveBeenCalledWith('session-1', expect.objectContaining({
-      additional_runtimes: [{
-        agent_id: 'agent-2', runtime_profile_id: 'runtime-research-backup',
-        runtime_key: 'codex_cli', runtime_installation: 'codex',
-      }],
-    }), expect.any(Object)))
-  })
-
-  it('tells the person a summary exists and that the prompt cache has gone cold before they send', async () => {
-    const initialized = initializedResponse(true)
-    vi.mocked(sessionsApi.executionContext).mockResolvedValue({
-      ...initialized,
-      summary: {
-        ...initialized.summary,
-        runtimes: [{
-          agent_id: 'agent-1', runtime_profile_id: 'runtime-1', runtime_key: 'claude_cli', runtime_installation: 'claude',
-          context_tokens: 300000, context_window_tokens: 1000000,
-          summary_artifact_id: 'artifact-summary',
-          last_run_ended_at: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
-          prompt_cache_ttl_seconds: 3600,
-        }],
-      },
-    } as never)
-    renderPanel()
-    expect(await screen.findByText('Prompt cache estimated expired (1)')).toBeInTheDocument()
-    fireEvent.click(await screen.findByRole('button', { name: 'Execution context configured' }))
-    expect(await screen.findByText(/Summary written in this session \(300k tokens of context\)/)).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Open summary' })).toHaveAttribute('href', '/artifacts/artifact-summary')
-    expect(screen.getByText('Prompt cache estimated expired (1)')).toBeInTheDocument()
-    vi.mocked(roomsApi.resetAgentContext).mockResolvedValue(detail as never)
-    fireEvent.click(screen.getByText('Prompt cache estimated expired (1)'))
-    fireEvent.click(screen.getByRole('button', { name: 'New session for Project Agent' }))
-    expect(roomsApi.resetAgentContext).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByRole('button', { name: 'Start fresh session' }))
-    await waitFor(() => expect(roomsApi.resetAgentContext).toHaveBeenCalledWith('room-1', 'agent-1', 'session-1', expect.any(Object)))
-  })
-
-  it('reports an Agent with several CLIs as ready once one is chosen', async () => {
-    const multiDetail = {
-      ...detail,
-      agent_members: [
-        { role: 'manager', agent_id: 'agent-1', agent_name: 'Project Agent' },
-        { role: 'specialist', agent_id: 'agent-2', agent_name: 'Research Agent' },
-      ],
-    } as unknown as RoomDetail
-    const base = draftResponse().available_runtime_profiles[0]
-    vi.mocked(sessionsApi.executionContext).mockResolvedValue({
-      ...draftResponse(),
-      available_runtime_profiles: [
-        base,
-        { ...base, agent_id: 'agent-2', agent_name: 'Research Agent', runtime_profile_id: 'runtime-research', preferred: false },
-        { ...base, agent_id: 'agent-2', agent_name: 'Research Agent', runtime_profile_id: 'runtime-research-backup', runtime_key: 'codex_cli', runtime_installation: 'codex', preferred: false },
-      ],
-    } as never)
-    renderPanel('session-1', vi.fn(), multiDetail)
-    await screen.findByText('choose one runtime')
-    fireEvent.click(screen.getByRole('button', { name: 'CLI installation for Research Agent' }))
-    fireEvent.click(screen.getByRole('option', { name: /codex_cli/ }))
-    await waitFor(() => expect(screen.getAllByText('runtime ready')).toHaveLength(2))
-    expect(screen.queryByText('choose one runtime')).not.toBeInTheDocument()
-  })
-
-  it('blocks a draft with no reported CLI and keeps the Host recovery action visible', async () => {
-    vi.mocked(sessionsApi.executionContext).mockResolvedValue({
-      ...draftResponse(), available_runtime_profiles: [],
-    } as never)
-    renderPanel()
-    expect(await screen.findByText(/reports no usable CLI installation/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Confirm execution context' })).toBeDisabled()
-    // To the Host chosen in the draft, at its Runtimes.
-    expect(screen.getByRole('link', { name: 'Configure or reconnect Host' })).toHaveAttribute('href', '/command-center?host=host-1&section=runtime')
-  })
-
-  it('explains an offline Host as a daemon issue, not a browser issue', async () => {
-    vi.mocked(sessionsApi.executionContext).mockResolvedValue(initializedResponse(false) as never)
-    renderPanel()
-    expect(await screen.findByText(/browser is still online/i)).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Reconnect Host' })).toHaveAttribute('href', '/command-center?host=host-1&section=connection')
-    expect(screen.getByText(/Execution Host is offline/)).toBeInTheDocument()
-  })
-
-
-  it.each([
-    ['waiting_for_baseline','Choose a code version before starting.'],
-    ['execution_workspace_host_upgrade_required','Update and reconnect this Host to enable isolated workspaces.'],
-  ])('localizes initialized workspace admission reason %s in the entry and details',async(reason,message)=>{
-    const response=initializedResponse() as ConversationExecutionPreflightResponse;
-    response.summary.blocked_reason=reason;response.summary.can_send=false;
-    vi.mocked(sessionsApi.executionContext).mockResolvedValue(response);
-    renderPanel();
-    expect((await screen.findAllByText(message)).length).toBeGreaterThan(0);
-    expect(screen.queryByText(reason)).not.toBeInTheDocument();
-  });
-  it('collapses a healthy initialized execution context until the user asks for details', async () => {
-    vi.mocked(sessionsApi.executionContext).mockResolvedValue(initializedResponse() as never)
-    renderPanel()
-
-    const disclosure = await screen.findByRole('button', { name: 'Execution context configured' })
-    expect(disclosure).toHaveAttribute('aria-expanded', 'false')
-    expect(screen.queryByText('Primary cwd')).not.toBeInTheDocument()
-
-    fireEvent.click(disclosure)
-    expect(screen.getByText('Primary cwd')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Collapse execution context' }))
-    expect(screen.queryByText('Primary cwd')).not.toBeInTheDocument()
-  })
-
-  it('lets sending resume once a refresh succeeds after one that failed', async () => {
-    vi.mocked(sessionsApi.executionContext).mockResolvedValue(initializedResponse() as never)
-    const onReadyChange = vi.fn()
-    renderPanel('session-1', onReadyChange)
-    await waitFor(() => expect(onReadyChange).toHaveBeenLastCalledWith(true))
-
-    vi.mocked(sessionsApi.executionContext).mockRejectedValueOnce(new Error('offline'))
-    fireEvent(window, new Event('focus'))
-    await waitFor(() => expect(onReadyChange).toHaveBeenLastCalledWith(false))
-
-    fireEvent(window, new Event('focus'))
-    await waitFor(() => expect(onReadyChange).toHaveBeenLastCalledWith(true))
-  })
-
-  it('uses the participant name when the pinned profile is temporarily absent from the selectable catalog', async () => {
-    const response = initializedResponse() as ConversationExecutionPreflightResponse
-    response.available_runtime_profiles = []
-    vi.mocked(sessionsApi.executionContext).mockResolvedValue(response as never)
-    renderPanel()
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Execution context configured' }))
-    expect(screen.getByText('Project Agent')).toBeInTheDocument()
-    expect(screen.queryByText('agent-1')).not.toBeInTheDocument()
-  })
-
-  it('changes attachment access explicitly and keeps cwd unchanged', async () => {
-    vi.mocked(sessionsApi.executionContext).mockResolvedValue(initializedResponse() as never)
-    renderPanel()
-    fireEvent.click(await screen.findByRole('button', { name: 'Execution context configured' }))
-    const attach = await screen.findByText('Attached Folders')
-    expect(attach).toBeInTheDocument()
-    const folder = screen.getByRole('button', { name: 'Folder' })
-    fireEvent.click(folder)
-    fireEvent.click(screen.getByRole('option', { name: /Docs/ }))
-    fireEvent.click(screen.getByRole('button', { name: 'Attach' }))
-    await waitFor(() => expect(sessionsApi.mutateExecutionAttachments).toHaveBeenCalledWith('session-1', expect.objectContaining({
-      action: 'attach', project_folder_id: 'folder-2', workspace_location_id: 'location-2', access_mode: 'write',
-    }), expect.any(Object)))
-    expect(screen.getByText('Primary cwd')).toBeInTheDocument()
-  })
-
-  it('allows writable attachments on the built-in server Host', async () => {
-    const response = initializedResponse() as ConversationExecutionPreflightResponse
-    response.summary.host = { ...host, host_kind: 'server' }
-    response.summary.attachments = [{
-      id: 'attachment-1', project_folder_id: 'folder-3', workspace_location_id: 'location-3',
-      folder_name: 'Source', display_path: '/work/source', access_mode: 'read', status: 'active',
-      granted_by_user_id: 'user-1', granted_at: '2026-08-31T00:00:00.000Z',
-      updated_at: '2026-08-31T00:00:00.000Z', revoked_at: null,
-    }]
-    vi.mocked(sessionsApi.executionContext).mockResolvedValue(response as never)
-    renderPanel()
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Execution context configured' }))
-    expect(await screen.findByText(/Attached Folders are writable by default/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Grant write' })).not.toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Access' })).toHaveTextContent('Write')
-  })
-  it.each(['snapshot', 'committed'] as const)('defaults a dirty draft to current changes and submits %s when confirmed', async mode => {
-    const response = draftResponse([{
-      workspace_location_id: 'location-1', project_folder_id: 'folder-1', folder_name: 'Source',
-      execution_host_id: 'host-1', display_path: '/work/source', execution_ready: true,
-      git: { source: 'workspace_location', workspace_location_id: 'location-1', branch: 'dev',
-        commit_sha: 'a'.repeat(40), dirty: true, execution_ready: true, observed_at: '2026-11-06T00:00:00Z' },
-    }])
-    response.available_runtime_profiles[0]!.workspace_mode = 'location'
-    response.available_runtime_profiles[0]!.workspace_location_id = 'location-1'
-    vi.mocked(sessionsApi.executionContext).mockResolvedValue(response)
-    renderPanel()
-    expect(await screen.findByText('New execution includes an allowed private snapshot of current changes.')).toBeInTheDocument()
-    expect(sessionsApi.initializeExecution).not.toHaveBeenCalled()
-    if (mode === 'committed') fireEvent.click(screen.getByRole('button', { name: 'Use committed version' }))
-    const confirm = screen.getByRole('button', { name: 'Confirm execution context' })
+it.each(['ambiguous', 'unavailable default', 'persisted'] as const)('uses server candidate priority: %s', async mode => {
+  const response = draftResponse()
+  response.available_runtime_profiles[0]!.preferred = mode === 'unavailable default'
+  response.available_runtime_profiles[0]!.usable = mode !== 'unavailable default'
+  response.available_runtime_profiles.push({ ...response.available_runtime_profiles[0]!, runtime_profile_id: mode === 'ambiguous' ? 'other' : null, preferred: false, usable: true, runtime_key: 'codex_cli', runtime_installation: 'codex' })
+  if (mode === 'unavailable default') response.available_runtime_profiles.push({ ...response.available_runtime_profiles[1]!, runtime_key: 'opencode_cli', runtime_installation: 'opencode' })
+  vi.mocked(sessionsApi.executionContext).mockResolvedValue(response)
+  panel(); await environment()
+  const confirm = screen.getByRole('button', { name: 'Confirm execution context' })
+  if (mode === 'persisted') {
     await waitFor(() => expect(confirm).toBeEnabled())
     fireEvent.click(confirm)
-    await waitFor(() => expect(sessionsApi.initializeExecution).toHaveBeenCalledWith(
-      'session-1', expect.objectContaining({ workspace_baseline: mode }), expect.any(Object),
-    ))
-  })
+    await waitFor(() => expect(sessionsApi.initializeExecution).toHaveBeenCalledOnce())
+    expect(vi.mocked(sessionsApi.initializeExecution).mock.calls[0]![1].runtime.runtime_profile_id).toBe('runtime-1')
+  } else {
+    expect(confirm).toBeDisabled()
+    expect(sessionsApi.initializeExecution).not.toHaveBeenCalled()
+  }
+})
 
-  it('requires an explicit dirty baseline choice through the existing initialize operation',async()=>{
-    const response=initializedResponse() as ConversationExecutionPreflightResponse;
-    response.summary.primary={kind:'location',project_folder_id:'folder-1',workspace_location_id:'location-1',display_path:'/work/source'};
-    response.summary.git={source:'workspace_location',workspace_location_id:'location-1',branch:'dev',commit_sha:'a'.repeat(40),dirty:true,execution_ready:true,observed_at:'2026-11-06T00:00:00Z'};
-    response.summary.can_send=false;response.summary.blocked_reason='waiting_for_baseline';
-    vi.mocked(sessionsApi.executionContext).mockResolvedValue(response);
-    renderPanel();
-    const snapshot=await screen.findByRole('button',{name:'Include current changes'});expect(sessionsApi.initializeExecution).not.toHaveBeenCalled();
-    fireEvent.click(snapshot);
-    await waitFor(()=>expect(sessionsApi.initializeExecution).toHaveBeenCalledWith('session-1',expect.objectContaining({workspace_baseline:'snapshot',selection:{execution_host_id:'host-1',primary:{kind:'location',workspace_location_id:'location-1'}}}),expect.any(Object)));
-  })
+it('ignores draft creation completion from an old permission scope', async () => {
+  let resolveOld!: (value: never) => void
+  vi.mocked(roomsApi.createConversation).mockImplementationOnce(() => new Promise(resolve => { resolveOld = resolve }))
+  const created = vi.fn()
+  const content = (role: string) => <MemoryRouter><ConversationScope actionRole={role}><ConversationExecutionPreflight projectId="project-1" roomId="room-1" sessionId={null} detail={detail} onConversationCreated={created}/></ConversationScope></MemoryRouter>
+  const view = render(content('member')); await environment()
+  fireEvent.click(screen.getByRole('button', { name: 'Configure conversation' }))
+  await waitFor(() => expect(resolveOld).toBeDefined())
+  view.rerender(content('viewer'))
+  await act(async () => resolveOld({id: 'old-draft'} as never))
+  expect(created).not.toHaveBeenCalled()
+  expect(roomsApi.get).not.toHaveBeenCalled()
+  expect(screen.getByRole('button', { name: 'Configure conversation' })).toBeDisabled()
+})
 
+it('keeps settings open after explicitly creating a draft', async () => {
+  vi.mocked(roomsApi.createConversation).mockResolvedValue({ id: 'session-1' } as never)
+  function Harness() {
+    const [id, setId] = React.useState<string | null>(null)
+    return <ConversationExecutionPreflight projectId="project-1" roomId="room-1" sessionId={id} detail={detail} onConversationCreated={next => setId(next.id)} />
+  }
+  render(<MemoryRouter><Harness /></MemoryRouter>)
+  await environment()
+  fireEvent.click(screen.getByRole('button', { name: 'Configure conversation' }))
+  await waitFor(() => expect(sessionsApi.executionContext).toHaveBeenCalled())
+  expect(screen.getByRole('dialog')).toBeVisible()
+  expect(await screen.findByRole('button', { name: 'Add Agent from Room' })).toBeEnabled()
+})
+
+it('keeps refresh and new conversation navigation available during the current run', async () => {
+  const response = initializedResponse(); response.summary.dispatch_locked = true
+  vi.mocked(sessionsApi.executionContext).mockResolvedValue(response as never)
+  const create = vi.fn(); panel({ disabled: true, onNewConversation: create }); await environment()
+  expect(screen.getByRole('button', { name: 'Refresh execution context' })).toBeEnabled()
+  fireEvent.click(screen.getByRole('button', { name: 'New conversation with another environment' }))
+  expect(create).toHaveBeenCalledOnce()
+})
+
+it.each(['remote', 'server'] as const)('changes attachment access explicitly without changing cwd on %s Host', async kind => {
+  const response = initializedResponse() as ConversationExecutionPreflightResponse
+  response.summary.host = { ...host, host_kind: kind }
+  response.summary.attachments = [{ id: 'attachment-1', project_folder_id: 'folder-3', workspace_location_id: 'location-3', folder_name: 'Source', display_path: '/work/source', access_mode: 'read', status: 'active', granted_by_user_id: 'user-1', granted_at: '2026-08-31T00:00:00.000Z', updated_at: '2026-08-31T00:00:00.000Z', revoked_at: null }]
+  vi.mocked(sessionsApi.executionContext).mockResolvedValue(response)
+  panel(); await environment()
+  fireEvent.click(await screen.findByRole('button', { name: 'Grant write' }))
+  await waitFor(() => expect(sessionsApi.mutateExecutionAttachments).toHaveBeenCalledWith('session-1', expect.objectContaining({ action: 'set_access', attachment_id: 'attachment-1', access_mode: 'write' }), expect.any(Object)))
+  expect(sessionsApi.initializeExecution).not.toHaveBeenCalled()
+  expect(screen.getByText('Working folder')).toBeVisible()
+})
+it.each(['snapshot','committed'] as const)('confirms a dirty draft through initialize with the explicit %s baseline',async mode=>{
+ const response=draftResponse([{workspace_location_id:'loc',project_folder_id:'folder',folder_name:'Source',execution_host_id:'host-1',display_path:'/code',execution_ready:true,git:{source:'workspace_location',workspace_location_id:'loc',branch:'dev',commit_sha:'a'.repeat(40),dirty:true,execution_ready:true,observed_at:'2026-11-06T00:00:00Z'}}])
+ response.available_runtime_profiles[0]!.workspace_mode='location';response.available_runtime_profiles[0]!.workspace_location_id='loc'
+ vi.mocked(sessionsApi.executionContext).mockResolvedValue(response)
+ panel();await environment()
+ expect(sessionsApi.initializeExecution).not.toHaveBeenCalled()
+ expect(screen.getByRole('button',{name:'Confirm execution context'})).toBeDisabled()
+ fireEvent.click(screen.getByRole('button',{name:mode==='committed'?'Use committed version':'Include current changes'}))
+ expect(sessionsApi.initializeExecution).not.toHaveBeenCalled()
+ const confirm=screen.getByRole('button',{name:'Confirm execution context'})
+ await waitFor(()=>expect(confirm).toBeEnabled());fireEvent.click(confirm)
+ await waitFor(()=>expect(sessionsApi.initializeExecution).toHaveBeenCalledOnce())
+ const payload=vi.mocked(sessionsApi.initializeExecution).mock.calls[0]![1]
+ expect(payload.workspace_baseline).toBe(mode)
+ expect(payload.selection.primary).toEqual({kind:'location',workspace_location_id:'loc'})
+ SESSION_OPERATION_SCHEMAS['conversation.execution.initialize'].input.parse({session_id:'session-1',...payload})
+})
+it('keeps saved-but-refresh-failed feedback after the participant editor is unmounted and retries only the read',async()=>{
+ const response=initializedResponse() as ConversationExecutionPreflightResponse
+ response.summary.participant_agent_ids=['agent-1','worker'];response.summary.participants_revision='old'
+ response.available_participant_agents=[{agent_id:'agent-1',retained_thread:true},{agent_id:'worker',retained_thread:true}]
+ const roster={...detail,agent_members:[...detail.agent_members,{agent_id:'worker',agent_name:'Worker',role:'member'}]} as RoomDetail
+ vi.mocked(sessionsApi.executionContext).mockResolvedValue(response)
+ vi.mocked(sessionsApi.initializeExecution).mockImplementationOnce(async()=>{
+  vi.mocked(sessionsApi.executionContext).mockResolvedValue({...response,summary:{...response.summary,participant_agent_ids:['agent-1'],participants_revision:'new'}}).mockRejectedValueOnce(new Error('Refresh failed'))
+  return {} as never
+ })
+ panel({detail:roster});await openSettings()
+ fireEvent.click(await screen.findByText('Worker'))
+ fireEvent.click(screen.getAllByRole('button',{name:'Remove'})[0])
+ fireEvent.click(screen.getByRole('button',{name:'Confirm removal'}))
+ await screen.findAllByText('Saved. Refresh failed; refresh before choosing another change.')
+ expect(screen.queryByRole('button',{name:'Confirm removal'})).not.toBeInTheDocument()
+ expect(screen.queryByRole('button',{name:'Add Agent from Room'})).not.toBeInTheDocument()
+ fireEvent.click(screen.getByRole('button',{name:'Retry'}))
+ await screen.findByText('Conversation settings · 1')
+ expect(sessionsApi.initializeExecution).toHaveBeenCalledOnce()
+ expect(vi.mocked(sessionsApi.initializeExecution).mock.calls[0]![1].participants_revision).toBe('old')
 })

@@ -1,12 +1,13 @@
+import {registerOperationAdapters} from '../systemActions/operations/routeAdapter.js';
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { AgentAttentionQuerySchema, AgentAttentionReadRequestSchema, AgentAttentionViewRequestSchema, IdSchema } from "@rainver/protocol";
+import { AgentAttentionQuerySchema, IdSchema } from "@rainver/protocol";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
-import { dbPool, jsonBody, parseBody, resolveIdentity, sendRouteError, withQueryableTransaction } from "../routeUtils/common.js";
+import { dbPool, parseBody, resolveIdentity, sendRouteError, withQueryableTransaction } from "../routeUtils/common.js";
 import { readAttentionSnapshot } from "./snapshot.js";
 import { AgentAttentionRepository } from "./repository.js";
 import { boundWork } from "./readModel.js";
-import { changeReadState, findWork, loadWorks, recordViews } from "./readStateService.js";
+import { findWork, loadWorks } from "./readStateService.js";
 const itemQuery = z.object({
   space_id: IdSchema,
   kind: z.enum(['task', 'session', 'agent_group', 'run']),
@@ -62,22 +63,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       return sendRouteError(reply, error);
     }
   });
-  app.post('/api/v1/me/agent-attention/views', async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(await recordViews(dbPool(context.config), identity.userId, parseBody(AgentAttentionViewRequestSchema, jsonBody(request))));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-  app.patch('/api/v1/me/agent-attention/read-state', async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(await changeReadState(dbPool(context.config), identity.userId, parseBody(AgentAttentionReadRequestSchema, jsonBody(request))));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
+  registerOperationAdapters(app,context.config,[
+   {method:'POST',url:'/api/v1/me/agent-attention/views',operation:'attention.views.record',admission:'person'},
+   {method:'PATCH',url:'/api/v1/me/agent-attention/read-state',operation:'attention.read_state.change',admission:'person'},
+  ]);
 }

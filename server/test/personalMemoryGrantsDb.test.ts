@@ -80,16 +80,16 @@ describe("personal memory grants (real Postgres)", () => {
     const all = await app.inject({ method: "GET", url: "/api/v1/personal-memory-grants" });
     expect(all.json()).toEqual([expect.objectContaining({ id: lapsed, status: "expired" })]);
 
-    const again = await app.inject({ method: "POST", url: "/api/v1/personal-memory-grants", payload: createBody });
+    const again = await app.inject({ method: "POST", headers:{"idempotency-key":randomUUID()}, url: "/api/v1/personal-memory-grants", payload: createBody });
     expect(again.statusCode).toBe(201);
-    expect(again.json()).toMatchObject({ status: "active", target_run_id: RUN });
+    expect(again.json().data).toMatchObject({ status: "active", target_run_id: RUN });
   });
 
   it("answers a second grant for a Run that already has an active one as a conflict", async () => {
     if (!db.available) return;
-    const first = await app.inject({ method: "POST", url: "/api/v1/personal-memory-grants", payload: createBody });
+    const first = await app.inject({ method: "POST", headers:{"idempotency-key":randomUUID()}, url: "/api/v1/personal-memory-grants", payload: createBody });
     expect(first.statusCode).toBe(201);
-    const second = await app.inject({ method: "POST", url: "/api/v1/personal-memory-grants", payload: createBody });
+    const second = await app.inject({ method: "POST", headers:{"idempotency-key":randomUUID()}, url: "/api/v1/personal-memory-grants", payload: createBody });
     expect(second.statusCode).toBe(409);
   });
 
@@ -103,14 +103,14 @@ describe("personal memory grants (real Postgres)", () => {
       await delivery.query("BEGIN");
       await delivery.query(`UPDATE personal_memory_grants SET status='used', used_at=now() WHERE id=$1`, [grant]);
       let settled = false;
-      const revoke = app.inject({ method: "POST", url: `/api/v1/personal-memory-grants/${grant}/revoke` })
+      const revoke = app.inject({ method: "POST", headers:{"idempotency-key":randomUUID()}, url: `/api/v1/personal-memory-grants/${grant}/revoke` })
         .then((response) => response)
         .finally(() => { settled = true; });
       await waitForLockWaiter(db.pool, { settled: () => settled });
       await delivery.query("COMMIT");
       const response = await revoke;
       expect(response.statusCode).toBe(200);
-      expect(response.json()).toMatchObject({ status: "used" });
+      expect(response.json().data).toMatchObject({ status: "used" });
     } finally {
       await delivery.query("ROLLBACK").catch(() => undefined);
       delivery.release();

@@ -1,3 +1,4 @@
+import { EvolutionAssetRefusal } from "./assetRefusal.js";
 import { randomUUID } from "node:crypto";
 import * as protocol from "@rainver/protocol";
 import type { WorkflowDefinition } from "@rainver/protocol";
@@ -107,11 +108,11 @@ export class RunWorkflowService {
     const run = await new PgRunRepository(this.db).getVisibleRun(identity.spaceId, identity.userId, id);
     if (!run) throw new HttpError(404, "Run not found");
     if (run.status !== "succeeded" && run.status !== "degraded") {
-      throw new HttpError(422, "Only a successful or degraded terminal run can be saved as a workflow");
+      throw new EvolutionAssetRefusal(422, "Only a successful or degraded terminal run can be saved as a workflow");
     }
     const evaluation = await new PgRunRepository(this.db).getLatestRunEvaluation(identity.spaceId, run.id);
     if (!evaluation || evaluation.outcome_status !== "passed") {
-      throw new HttpError(422, "Run must have a passed post-run evaluation before workflow extraction");
+      throw new EvolutionAssetRefusal(422, "Run must have a passed post-run evaluation before workflow extraction");
     }
     return run;
   }
@@ -142,7 +143,7 @@ export class RunWorkflowService {
           }))
         : [sourceFromRun(run)];
     if (sources.length > MAX_WORKFLOW_NODES) {
-      throw new HttpError(
+      throw new EvolutionAssetRefusal(
         422,
         `This Run cannot be saved as a workflow: it would need ${sources.length} nodes and a workflow holds at most ${MAX_WORKFLOW_NODES}`,
       );
@@ -157,7 +158,7 @@ export class RunWorkflowService {
     // executor's graph limits here rather than fail at every launch.
     await materializePlanGraph(parsed).catch((error: unknown) => {
       if (error instanceof PlanGraphError) {
-        throw new HttpError(422, `This Run cannot be saved as a workflow: ${error.message}`);
+        throw new EvolutionAssetRefusal(422, `This Run cannot be saved as a workflow: ${error.message}`);
       }
       throw error;
     });
@@ -272,7 +273,7 @@ export class RunWorkflowService {
         `SELECT id FROM evolvable_assets WHERE space_id = $1 AND asset_key = $2 LIMIT 1`,
         [identity.spaceId, input.assetKey],
       );
-      if (existing.rows[0]) throw new HttpError(409, "asset_key is already in use in this space");
+      if (existing.rows[0]) throw new EvolutionAssetRefusal(409, "asset_key is already in use in this space");
       const assetId = randomUUID();
       const versionId = randomUUID();
       const now = new Date().toISOString();
@@ -360,7 +361,7 @@ function isSensitiveKey(key: string): boolean {
 
 function assetKeyFor(value: string | null | undefined, runId: string): string {
   const key = value?.trim() || `workflow.saved.${sha256Json({ source_run: runId }).slice(0, 12)}`;
-  if (!/^[a-z][a-z0-9_.-]{0,159}$/.test(key)) throw new HttpError(422, "asset_key must be a lowercase workflow asset key");
+  if (!/^[a-z][a-z0-9_.-]{0,159}$/.test(key)) throw new EvolutionAssetRefusal(422, "asset_key must be a lowercase workflow asset key");
   return key;
 }
 

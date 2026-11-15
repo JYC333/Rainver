@@ -59,6 +59,14 @@ delete endpoint. The Server Runtime is instance-wide; a paired Host's native
 account belongs to its owner. The UI must disclose the shared-account semantics
 when the Server copy is signed in to a paid account.
 
+A standard Agent's identity is reusable across Projects. A Location Profile
+belongs to its Location's Project; Conversation candidate selection compares it
+to the Session Project. Setup passes that Project into canonical Profile
+admission, which requires Project writer and Agent-link authority in addition
+to the existing Host-owner gate. Choosing a new Project's Profile never
+replaces the default Profile or another Conversation's binding. Dispatch and
+retry continue validating Location ownership against the current Run.
+
 ### Profile option bags
 
 A Profile carries two narrowly scoped option bags, and a key has exactly one

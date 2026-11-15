@@ -1,6 +1,7 @@
 import { z } from 'zod';
+import { lockSpaceRole } from '../spaces/writers.js';
 import { ScopedSettingsStore, defineScopedSetting, spaceUserSettingsScopeId } from '../settings/scopedSettings.js';
-import { assertProjectReadable, assertProjectReadableLocked } from '../projects/access.js';
+import { accessibleProjectIds, assertProjectReadable, assertProjectReadableLocked, lockProjectAudience } from '../projects/access.js';
 import { withQueryableTransaction, type Queryable, type SpaceUserIdentity } from '../routeUtils/common.js';
 
 const PreferencesSchema = z.object({ projects: z.record(z.boolean()).default({}) });
@@ -26,12 +27,18 @@ export class ReadingPreferences {
     const { value } = await new ScopedSettingsStore(this.db).get(descriptor, spaceUserSettingsScopeId(identity.spaceId, identity.userId));
     return Object.entries(value.projects).filter(([, enabled]) => enabled).map(([id]) => id);
   }
+  /** Current readable opt-ins only; stale selections confer no authority. */
+  async readableEnabled(identity: SpaceUserIdentity): Promise<string[]> {
+    return [...await accessibleProjectIds(this.db, identity.spaceId, identity.userId, await this.enabled(identity))].sort();
+  }
   async get(identity: SpaceUserIdentity, projectId: string) {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
     return { show_in_my_reading: (await this.enabled(identity)).includes(projectId) };
   }
   async set(identity: SpaceUserIdentity, projectId: string, enabled: boolean) {
     return withQueryableTransaction(this.db, async tx => {
+      await lockProjectAudience(tx, identity.spaceId, projectId);
+      await lockSpaceRole(tx, identity.spaceId, identity.userId);
       await assertProjectReadableLocked(tx, identity.spaceId, projectId, identity.userId);
       const scope = spaceUserSettingsScopeId(identity.spaceId, identity.userId);
       await tx.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [readingPreferencesLockKey(identity)]);

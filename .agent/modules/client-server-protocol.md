@@ -11,6 +11,11 @@ distinguishes queued repair, candidate/verification state and actual integration
 outcome. It carries no Host paths, raw repair instructions or private logs;
 localized conversation presentation links through the source Space.
 
+Lifecycle DTO schemas expose a named `ZodType<WorkspaceLifecycle>` boundary.
+This keeps operation-registry declarations bounded while retaining exact parsed
+input/output fields and strict runtime validation. Verify changes with the standard
+protocol declaration build, not only a source `noEmit` check.
+
 ## Purpose
 How the web client talks to `/api/v1`. Unknown paths return the local
 404 catch-all.
@@ -42,6 +47,12 @@ across accounts. In-app `href` values from the server must be same-origin
 paths (`/` and not `//`); the browser drops anything else.
 
 **Request body:** JSON with snake_case fields.
+
+Conversation execution preflight includes `available_participant_agents` (Agent id
+and `retained_thread`) for current use-authorized Room Agents, independently of
+runtime usability. This read projection discloses no hidden Agent's metadata and
+grants no write authority; initialize rechecks permissions and participant CAS.
+Clients without that optional field use only disclosed bindings/candidates.
 
 Conversation message requests accept a trimmed `content`/`message` string plus
 an ordered `input_parts` array. Text-only requests remain compatible; an
@@ -107,9 +118,13 @@ with a route-specific maximum.
 
 ## Conversation session options and model identity
 
-`PUT /api/v1/agents/{agentId}/conversation-session-config` accepts
-`{ session_id, runtime_profile_id, session_config }` and returns the saved
-`session_config`. A backend catalog GET reads the saved member selection, so
+`POST /api/v1/actions/conversation.session_config.save` accepts
+`{ agent_id, session_id, runtime_profile_id, session_config, allow_quota_model_switch? }`
+and returns a command receipt. The web client then reads the conversation backend
+catalog in the receipt's source Space. If that read fails after the command succeeds,
+the settings editor retains a committed-but-unverified state and retries only the
+catalog read; it blocks sends and further edits until readback succeeds. A backend
+catalog GET reads the saved member selection, so
 refresh does not depend on sending another message. Editors keep unsaved
 choices separate from execution; Save affects future runs only. Save and a
 selection sent with a message are validated strictly; a saved or inherited
@@ -385,3 +400,10 @@ failure can therefore leave a saved message. Clients keep the draft, explain
 uncertain delivery and never automatically resend. This process-local command
 requires the same worker affinity as Run cancellation. It has no public CLI
 operation or separate generic agent authority.
+
+Automation fire uses the strict keyed core POST adapter and returns HTTP 202
+with an operation receipt containing `job_id`, rather than an immediate Run or
+native report. The Automation-owned `fire-requests/:jobId` reader supplies the
+current-authorized result and distinguishes pending/completed/failed/unknown.
+The web client's `fire` method waits through that reader; `requestFire` and
+`fireRequest` expose the asynchronous contract. See [automations](automations.md).

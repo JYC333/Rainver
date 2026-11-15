@@ -29,6 +29,19 @@ describe("ProviderPreviewGateway", () => {
     expect(statements.some((sql) => sql.startsWith("INSERT INTO source_quota_buckets"))).toBe(true);
   });
 
+  it.each(["timeout", "network", 429, 503] as const)("single-attempt preview never resends %s", async failure => {
+    let sends = 0;
+    const compiled = new ResearchProviderCompiler().compile("arxiv", semanticQuery(), { pageSize: 15 });
+    const gateway = new ProviderPreviewGateway(fakeDb([]), {} as ServerConfig, async () => {
+      sends++;
+      if (failure === "timeout") throw Object.assign(new Error("unknown"), { name: "TimeoutError" });
+      if (failure === "network") throw new TypeError("fetch failed");
+      return response(failure);
+    });
+    await expect(gateway.preview(identity, { compiledQuery: compiled, accessibleResultCap: 100, singleAttempt: true })).rejects.toMatchObject({ statusCode: 503 });
+    expect(sends).toBe(1);
+  });
+
   it("retries a transient provider failure once without rewriting the query", async () => {
     const compiled = new ResearchProviderCompiler().compile("arxiv", semanticQuery(), { pageSize: 15 });
     const urls: string[] = [];

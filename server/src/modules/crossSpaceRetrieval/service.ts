@@ -1,3 +1,9 @@
+import {contentDecisionFromDb} from '../access/contentAccessQuery.js';
+import {excerptAroundQuery} from '../retrieval/normalize.js';
+import {lockRetrievalReleaseBatch,withheldPinnedReleaseRefs,releaseRootResource,type ReleaseRef} from '../retrieval/releaseClosure.js';
+import {personalReceiptSpace} from '../access/personalSpace.js';
+import {canonical} from '../systemActions/operations/repository.js';
+import {lockSpaceRole} from '../spaces/writers.js';
 import { randomUUID } from "node:crypto";
 import type {
   CrossSpaceResolvedItem,
@@ -5,8 +11,8 @@ import type {
   RetrievalObjectType,
 } from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
-import { getDbPool, type Pool } from "../../db/pool.js";
-import { withTransaction } from "../../db/tx.js";
+import { getDbPool } from "../../db/pool.js";
+
 import { insertArtifactRow } from "../artifacts/reviewArtifactWriter.js";
 import { knowledgeRetrievalAdapter } from "../knowledge/retrievalAdapter.js";
 import { memoryRetrievalAdapter } from "../memory/retrievalAdapter.js";
@@ -15,7 +21,7 @@ import { inquiryRetrievalAdapter } from "../inquiry/retrievalAdapter.js";
 import { RetrievalRegistry } from "../retrieval/registry.js";
 import { RetrievalSearchService } from "../retrieval/searchService.js";
 import { sourceRetrievalAdapter } from "../sources/retrievalAdapter.js";
-import { HttpError, type Queryable } from "../routeUtils/common.js";
+import { HttpError, withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
 import {
   ContentAccessAuditService,
   contentResourceTypeForRetrievalObject,
@@ -70,26 +76,24 @@ interface PointerRow {
 }
 
 export class CrossSpaceRetrievalService {
-  constructor(private readonly pool: Pool) {}
+  constructor(private readonly pool: Queryable,private readonly auditReads=true) {}
+
 
   static fromConfig(config: ServerConfig): CrossSpaceRetrievalService {
     if (!config.databaseUrl) throw new HttpError(502, "SERVER_DATABASE_URL is required");
     return new CrossSpaceRetrievalService(getDbPool(config.databaseUrl));
   }
 
-  async search(input: {
-    userId: string;
-    query: string;
-    resourceTypes?: RetrievalObjectType[];
-    maxResults?: number;
-  }): Promise<CrossSpaceRetrievalResponse> {
+  async prepareSearch(input: {userId:string;query:string;resourceTypes?:RetrievalObjectType[];maxResults?:number}) {
     const spaces = await this.activeSpaces(input.userId);
     const personalSpace = requirePersonalSpace(spaces, input.userId);
     const resourceTypes = input.resourceTypes ?? [...PERSONAL_AGGREGATED_RESOURCE_TYPES];
     assertExceptionTypes(resourceTypes);
     const maxResults = Math.min(Math.max(input.maxResults ?? 20, 1), 50);
 
-    const perSpace = await Promise.all(spaces.map(async (space) => {
+    const recall=async()=>{
+    const perSpace = [];
+    for(const space of spaces){
       const result = await new RetrievalSearchService(
         this.pool,
         personalAggregatedRetrievalRegistry,
@@ -100,18 +104,107 @@ export class CrossSpaceRetrievalService {
         query: input.query,
         maxResults,
         mode: "lexical",
+        skipAudit: true,
       });
-      return result.items.map((item) => ({ space, item }));
-    }));
+      perSpace.push(result.items.map((item) => ({ space, item })));
+    }
 
-    const selected = perSpace.flat()
+    return perSpace.flat()
       .sort((a, b) => b.item.score - a.item.score || a.space.id.localeCompare(b.space.id)
         || a.item.object_id.localeCompare(b.item.object_id))
       .slice(0, maxResults);
 
+    };
+    let selected=await recall();
+    await this.pinRefs(input.userId, selected.map(({space,item})=>({space_id:space.id,object_type:item.object_type,object_id:item.object_id})),spaces.map(s=>s.id));
+    const after=await this.activeSpaces(input.userId);
+    if(canonical(spaces)!==canonical(after))throw new HttpError(409,'Retrieval Space scope changed');
+    for(const {space,item} of selected)if(await this.withheld(input.userId,space.id,[{object_type:item.object_type,object_id:item.object_id}]))throw new HttpError(409,'Retrieval authority changed');
+    const current=await recall();
+    const identities=(rows:typeof selected)=>rows.map(r=>[r.space.id,r.item.object_type,r.item.object_id]);
+    if(canonical(identities(selected))!==canonical(identities(current)))throw new HttpError(409,'Retrieval results changed; search again');
+    selected=current;
+    const prepared={spaces,personalSpace,selected};
+    return prepared;
+  }
+
+  private async pinRefs(userId:string,refs:readonly {space_id:string;object_type:ReleaseRef['object_type'];object_id:string}[],extraSpaces:readonly string[]=[],artifacts:readonly {space_id:string;id:string}[]=[]):Promise<void>{
+    const personal=await personalReceiptSpace(this.pool,userId);
+    const spaceIds=[...new Set([personal,...extraSpaces,...artifacts.map(r=>r.space_id),...refs.map(r=>r.space_id)])].sort();
+    await lockRetrievalReleaseBatch(this.pool,spaceIds.map(space=>({space,user:userId,...(space!==personal?{allowInactiveViewer:true as const}:{}),groups:[{registry:personalAggregatedRetrievalRegistry,refs:refs.filter(r=>r.space_id===space)}],additional:artifacts.filter(a=>a.space_id===space).map(a=>({object_type:'artifact' as const,object_id:a.id}))})));
+    if(await personalReceiptSpace(this.pool,userId)!==personal)throw new HttpError(409,'Personal Space changed');
+  }
+
+  private async withheld(userId:string,spaceId:string,refs:readonly ReleaseRef[]):Promise<number>{
+    const allowed=await new RetrievalSearchService(this.pool,personalAggregatedRetrievalRegistry).revalidateCanonicalForRelease({spaceId,viewerUserId:userId},refs);
+    return refs.filter(r=>!allowed.has(r.object_type+':'+r.object_id)).length;
+  }
+
+  /** Receipt admission is independent of source authority. Discovery is repeated
+   * after the complete global lock set; missing pointers remain unresolved. */
+  async preparePointers(userId:string,pointerIds:string[],artifacts:readonly {space_id:string;id:string}[]=[]):Promise<void>{
+    const before=await this.loadPointerRows(userId,pointerIds);
+    await this.pinRefs(userId,before.map(r=>({space_id:r.space_id,object_type:r.resource_type,object_id:r.resource_id})),[],artifacts);
+    if(canonical(before)!==canonical(await this.loadPointerRows(userId,pointerIds)))throw new HttpError(409,'Retrieval pointers changed');
+  }
+
+  async authorizeStoredResult(userId:string,output:unknown):Promise<void>{
+    const out=output as {items?:CrossSpaceResolvedItem[];artifact_id?:string;disclosure_id?:string;source_space_ids?:string[];session_id?:string};
+    let query:string|undefined;
+    if(out.session_id){
+      const session=(await this.pool.query<{query:string}>('SELECT query FROM cross_space_retrieval_sessions WHERE id=$1 AND user_id=$2',[out.session_id,userId])).rows[0];
+      if(!session)throw new HttpError(404,'Retrieval session not found');query=session.query;
+    }
+    let pointerIds=out.items?.map(i=>i.pointer.pointer_id)??[];
+    let artifact: {space_id:string;metadata_json:{source_pointers?:Array<{pointer_id:string}>;source_access_levels?:Array<{pointer_id:string;access_level:string}>}}|undefined;
+    if(out.artifact_id){
+      const row=(await this.pool.query<{space_id:string;metadata_json:{source_pointers?:Array<{pointer_id:string}>;source_access_levels?:Array<{pointer_id:string;access_level:string}>}}>("SELECT space_id,metadata_json FROM artifacts WHERE id=$1 AND owner_user_id=$2 AND visibility='private'",[out.artifact_id,userId])).rows[0];
+      if(!row)throw new HttpError(404,'Artifact not found');
+      artifact=row;
+      if(!Array.isArray(row.metadata_json?.source_pointers)||!row.metadata_json.source_pointers.length||row.metadata_json.source_pointers.some(p=>typeof p?.pointer_id!=='string'))throw new HttpError(404,'Artifact lineage not found');
+      pointerIds=row.metadata_json.source_pointers.map(p=>p.pointer_id);
+    }
+    if(out.disclosure_id){
+      const row=(await this.pool.query<{pointer_ids_json:string[]}>('SELECT pointer_ids_json FROM cross_space_egress_disclosures WHERE id=$1 AND user_id=$2',[out.disclosure_id,userId])).rows[0];
+      if(!row)throw new HttpError(404,'Disclosure not found');
+      pointerIds=row.pointer_ids_json;
+    }
+    await this.preparePointers(userId,pointerIds,artifact?[{space_id:artifact.space_id,id:out.artifact_id!}]:[]);
+    if(artifact){
+      const current=(await this.pool.query("SELECT space_id,metadata_json FROM artifacts WHERE id=$1 AND owner_user_id=$2 AND visibility='private'",[out.artifact_id,userId])).rows[0];
+      if(canonical(artifact)!==canonical(current))throw new HttpError(409,'Stored retrieval lineage changed');
+    }
+    const rows=await this.loadPointerRows(userId,pointerIds);
+    if(rows.length!==pointerIds.length)throw new HttpError(404,'Retrieval pointer not found');
+    const resolved=[];
+    for(const row of rows){
+      const requirements=artifact?.metadata_json.source_access_levels;
+      if(requirements&&(!Array.isArray(requirements)||requirements.length!==pointerIds.length||requirements.some(r=>!pointerIds.includes(r.pointer_id)||!['summary','full'].includes(r.access_level))||new Set(requirements.map(r=>r.pointer_id)).size!==pointerIds.length))throw new HttpError(404,'Artifact lineage not found');
+      // Older artifacts have no access snapshot, so their derived body needs full.
+      const requireFull=Boolean(artifact&&(!requirements||requirements.find(r=>r.pointer_id===row.pointer_id)?.access_level==='full'));
+      const item=await this.revalidatePointer(userId,row,this.pool,requireFull);
+      if(!item)throw new HttpError(404,'Retrieval pointer not found');
+      const released=out.items?.find(i=>i.pointer.pointer_id===row.pointer_id);
+      const snippet=query===undefined?item.snippet:item.snippet?excerptAroundQuery(item.snippet,query):null;
+      if(released&&(released.title!==item.title||released.space_name!==item.space_name||released.snippet!==snippet))throw new HttpError(404,'Retrieval content changed');
+      resolved.push(item);
+    }
+    if(out.disclosure_id&&!sameSettingsSnapshot((output as {source_spaces:unknown}).source_spaces,groupResolved(resolved,await this.activeSpaces(userId))))throw new HttpError(409,'Source Space egress settings changed; disclose again');
+    await this.recordPointerReads(userId,rows.map(r=>({spaceId:r.space_id,resourceType:r.resource_type,resourceId:r.resource_id})));
+  }
+
+  async search(input: {
+    userId: string;
+    query: string;
+    resourceTypes?: RetrievalObjectType[];
+    maxResults?: number;
+  }, prepared?:Awaited<ReturnType<CrossSpaceRetrievalService["prepareSearch"]>>): Promise<CrossSpaceRetrievalResponse> {
+    return withQueryableTransaction(this.pool,async client=>{
+    const owner=new CrossSpaceRetrievalService(client,this.auditReads);
+    const {personalSpace,selected}=prepared??await owner.prepareSearch(input);
+    await owner.recordPointerReads(input.userId,selected.map(({space,item})=>({spaceId:space.id,resourceType:item.object_type,resourceId:item.object_id})));
     const sessionId = randomUUID();
     const pointerIds = selected.map(() => randomUUID());
-    await withTransaction(this.pool, async (client) => {
       await client.query(
         `INSERT INTO cross_space_retrieval_sessions
            (id, user_id, personal_space_id, query, created_at)
@@ -128,7 +221,6 @@ export class CrossSpaceRetrievalService {
             selectedItem.item.object_type, selectedItem.item.object_id],
         );
       }
-    });
 
     return {
       session_id: sessionId,
@@ -148,13 +240,15 @@ export class CrossSpaceRetrievalService {
       fused_conclusion: null,
       canonical_write_performed: false,
     };
+    });
   }
 
   async resolve(userId: string, pointerIds: string[]): Promise<{
     items: CrossSpaceResolvedItem[];
     unresolved_pointer_ids: string[];
   }> {
-    return withTransaction(this.pool, async (client) => {
+    return withQueryableTransaction(this.pool, async (client) => {
+      await new CrossSpaceRetrievalService(client,this.auditReads).preparePointers(userId,pointerIds);
       const rows = await this.loadPointerRows(userId, pointerIds, client);
       const byId = new Map(rows.map((row) => [row.pointer_id, row]));
       const items: CrossSpaceResolvedItem[] = [];
@@ -181,7 +275,8 @@ export class CrossSpaceRetrievalService {
     artifact_id: string;
     source_space_id: string;
   }> {
-    return withTransaction(this.pool, async (client) => {
+    return withQueryableTransaction(this.pool, async (client) => {
+      await new CrossSpaceRetrievalService(client,this.auditReads).preparePointers(userId,pointerIds);
       const resolved = await this.resolveAll(userId, pointerIds, client);
       const sourceSpaces = new Set(resolved.map((item) => item.pointer.space_id));
       if (sourceSpaces.size !== 1) {
@@ -197,6 +292,7 @@ export class CrossSpaceRetrievalService {
         metadata: {
           kind: "cross_space_source_summary",
           source_pointers: resolved.map((item) => item.pointer),
+          source_access_levels: await this.readLevels(userId,resolved,client),
         },
         canonicalFormat: "cross_space_source_summary.v1",
         visibility: "private",
@@ -215,7 +311,8 @@ export class CrossSpaceRetrievalService {
       pointers: Array<{ resource_type: RetrievalObjectType; id: string }>;
     }>;
   }> {
-    return withTransaction(this.pool, async (client) => {
+    return withQueryableTransaction(this.pool, async (client) => {
+      await new CrossSpaceRetrievalService(client,this.auditReads).preparePointers(userId,pointerIds);
       const resolved = await this.resolveAll(userId, pointerIds, client);
       const spaces = await this.activeSpaces(userId, client);
       const personalSpace = requirePersonalSpace(spaces, userId);
@@ -241,7 +338,8 @@ export class CrossSpaceRetrievalService {
     pointerIds: string[];
     conclusion: string;
   }): Promise<{ artifact_id: string; egress_record_ids: string[] }> {
-    return withTransaction(this.pool, async (client) => {
+    return withQueryableTransaction(this.pool, async (client) => {
+      await new CrossSpaceRetrievalService(client,this.auditReads).preparePointers(input.userId,input.pointerIds);
       const disclosure = await client.query<{
         personal_space_id: string;
         pointer_ids_json: unknown;
@@ -274,6 +372,7 @@ export class CrossSpaceRetrievalService {
         true,
         contributingSpaceIds,
       );
+      if(requirePersonalSpace(await this.activeSpaces(input.userId,client),input.userId).id!==row.personal_space_id)throw new HttpError(409,'Personal Space changed');
       const bySpace = groupResolved(resolved, activeSpaces);
       if (bySpace.length < 2) throw new HttpError(422, "fused conclusion requires at least two source Spaces");
       if (!sameSettingsSnapshot(row.settings_snapshot_json, bySpace)) {
@@ -289,6 +388,7 @@ export class CrossSpaceRetrievalService {
         metadata: {
           kind: "cross_space_fused_conclusion",
           source_pointers: resolved.map((item) => item.pointer),
+          source_access_levels: await this.readLevels(input.userId,resolved,client),
           disclosure_id: input.disclosureId,
         },
         canonicalFormat: "cross_space_fused_conclusion.v1",
@@ -334,51 +434,7 @@ export class CrossSpaceRetrievalService {
     egress_notifications_enabled: boolean;
     updated_at: string;
   }> {
-    return withTransaction(this.pool, async (client) => {
-      const role = await client.query<{ role: string }>(
-        `SELECT role FROM space_memberships
-          WHERE space_id = $1 AND user_id = $2 AND status = 'active'
-          FOR UPDATE`,
-        [spaceId, userId],
-      );
-      if (!role.rows[0]) throw new HttpError(404, "Space not found");
-      if (!new Set(["owner", "admin"]).has(role.rows[0].role)) {
-        throw new HttpError(403, "Requires Space owner or admin role");
-      }
-      const current = await client.query<{
-        egress_notifications_enabled: boolean;
-        updated_at: Date | string;
-      }>(
-        `SELECT egress_notifications_enabled, updated_at
-           FROM spaces
-          WHERE id = $1
-          FOR UPDATE`,
-        [spaceId],
-      );
-      const currentRow = current.rows[0];
-      if (!currentRow) throw new HttpError(404, "Space not found");
-      if (currentRow.egress_notifications_enabled === enabled) {
-        return {
-          space_id: spaceId,
-          egress_notifications_enabled: enabled,
-          updated_at: new Date(currentRow.updated_at).toISOString(),
-        };
-      }
-      const result = await client.query<{ updated_at: Date | string }>(
-        `UPDATE spaces
-            SET egress_notifications_enabled = $1, updated_at = now()
-          WHERE id = $2
-          RETURNING updated_at`,
-        [enabled, spaceId],
-      );
-      const updatedAt = new Date(result.rows[0]!.updated_at).toISOString();
-      await broadcast(client, spaceId, "egress_notification_setting_changed", {
-        changed_by_user_id: userId,
-        egress_notifications_enabled: enabled,
-        effective_from: updatedAt,
-      });
-      return { space_id: spaceId, egress_notifications_enabled: enabled, updated_at: updatedAt };
-    });
+    return withQueryableTransaction(this.pool, client => updateEgressNotificationSetting(client, userId, spaceId, enabled));
   }
 
   async listNotifications(userId: string): Promise<{ items: Array<Record<string, unknown>> }> {
@@ -430,7 +486,7 @@ export class CrossSpaceRetrievalService {
         WHERE m.user_id = $1 AND m.status = 'active'
         ${spaceFilter}
         ORDER BY s.id
-        ${lockForEgress ? "FOR UPDATE OF s" : ""}`,
+        ${lockForEgress ? "FOR SHARE OF s" : ""}`,
       params,
     );
     return result.rows;
@@ -450,9 +506,12 @@ export class CrossSpaceRetrievalService {
     return result.rows;
   }
 
-  private async revalidatePointer(userId: string, row: PointerRow, db: Queryable = this.pool): Promise<CrossSpaceResolvedItem | null> {
+  private async revalidatePointer(userId: string, row: PointerRow, db: Queryable = this.pool, requireFull=false): Promise<CrossSpaceResolvedItem | null> {
     const adapter = personalAggregatedRetrievalRegistry.adapterFor(row.resource_type);
     if (!adapter || !PERSONAL_AGGREGATED_RESOURCE_TYPES.includes(row.resource_type as never)) return null;
+    if(requireFull&&await withheldPinnedReleaseRefs(db,{spaceId:row.space_id,userId},[{registry:personalAggregatedRetrievalRegistry,refs:[{object_type:row.resource_type,object_id:row.resource_id}]}],null,{canonical:true}))return null;
+    const allowed=await new RetrievalSearchService(db,personalAggregatedRetrievalRegistry).revalidateCanonicalForRelease({spaceId:row.space_id,viewerUserId:userId},[{object_type:row.resource_type,object_id:row.resource_id}]);
+    if(!allowed.has(row.resource_type+':'+row.resource_id))return null;
     const object = await adapter.revalidate(db, row.space_id, row.resource_type, row.resource_id, userId);
     if (!object) return null;
     return {
@@ -478,11 +537,25 @@ export class CrossSpaceRetrievalService {
     return resolved;
   }
 
+  /** An explicit user summary may be based on a legitimate summary-only read.
+   * Persist its required access separately from the strict pointer wire DTO. */
+  private async readLevels(userId:string,items:readonly CrossSpaceResolvedItem[],db:Queryable){
+    const levels=[];
+    for(const item of items){
+      const root=releaseRootResource(item.pointer.resource_type);
+      const level=root?await contentDecisionFromDb(db,{spaceId:item.pointer.space_id,userId},root,item.pointer.id):'full';
+      if(level!=='full'&&level!=='summary')throw new HttpError(404,'Retrieval pointer not found');
+      levels.push({pointer_id:item.pointer.pointer_id,access_level:level});
+    }
+    return levels;
+  }
+
   private async recordPointerReads(userId: string, refs: Array<{
     spaceId: string;
     resourceType: RetrievalObjectType;
     resourceId: string;
   }>, db: Queryable = this.pool): Promise<void> {
+    if(!this.auditReads)return;
     const grouped = new Map<string, { spaceId: string; resourceType: string; ids: string[] }>();
     for (const ref of refs) {
       const resourceType = contentResourceTypeForRetrievalObject(ref.resourceType);
@@ -624,4 +697,51 @@ async function broadcast(
       WHERE m.space_id = $1::varchar AND m.status = 'active'`,
     [spaceId, eventType, JSON.stringify(pointerMetadata)],
   );
+}
+
+/** The canonical setting writer; both REST operations and direct callers use its transaction. */
+export async function lockEgressNotificationManager(db: Queryable, userId: string, spaceId: string): Promise<void> {
+  const role = await lockSpaceRole(db, spaceId, userId);
+  if (role !== 'owner' && role !== 'admin') throw new HttpError(403, 'Requires Space owner or admin role');
+}
+
+export async function updateEgressNotificationSetting(db: Queryable, userId: string, spaceId: string, enabled: boolean): Promise<{
+  space_id: string; egress_notifications_enabled: boolean; updated_at: string;
+}> {
+  return withQueryableTransaction(db, async db => {
+    await lockEgressNotificationManager(db, userId, spaceId);
+    const current = await db.query<{
+      egress_notifications_enabled: boolean;
+      updated_at: Date | string;
+    }>(
+      `SELECT egress_notifications_enabled, updated_at
+         FROM spaces
+        WHERE id = $1
+        FOR UPDATE`,
+      [spaceId],
+    );
+    const currentRow = current.rows[0];
+    if (!currentRow) throw new HttpError(404, "Space not found");
+    if (currentRow.egress_notifications_enabled === enabled) {
+      return {
+        space_id: spaceId,
+        egress_notifications_enabled: enabled,
+        updated_at: new Date(currentRow.updated_at).toISOString(),
+      };
+    }
+    const result = await db.query<{ updated_at: Date | string }>(
+      `UPDATE spaces
+          SET egress_notifications_enabled = $1, updated_at = now()
+        WHERE id = $2
+        RETURNING updated_at`,
+      [enabled, spaceId],
+    );
+    const updatedAt = new Date(result.rows[0]!.updated_at).toISOString();
+    await broadcast(db, spaceId, "egress_notification_setting_changed", {
+      changed_by_user_id: userId,
+      egress_notifications_enabled: enabled,
+      effective_from: updatedAt,
+    });
+    return { space_id: spaceId, egress_notifications_enabled: enabled, updated_at: updatedAt };
+  });
 }

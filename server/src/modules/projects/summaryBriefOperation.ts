@@ -2,8 +2,9 @@ import type {OperationActor,RegisteredSystemActionDefinition,RetrievalBriefReque
 import type {ServerConfig} from '../../config.js';
 import {getDbPool} from '../../db/pool.js';
 import type {SpaceUserIdentity} from '../routeUtils/common.js';
-import type {JobHandlerRegistry} from '../jobs/handlerRegistry.js';
+import type {JobHandlerRegistry,JobEnvelopeForHandler} from '../jobs/handlerRegistry.js';
 import {PgJobQueueRepository} from '../jobs/repository.js';
+import {JobEffectLeaseLost} from '../jobs/effectAuthority.js';
 import type {OperationRegistration} from '../systemActions/operations/types.js';
 import {hidden} from '../systemActions/operations/errors.js';
 import {RetrievalSearchService,persistRetrievalBriefArtifact} from '../retrieval/index.js';
@@ -37,12 +38,12 @@ export function registerProjectSummaryBriefJob(registry:JobHandlerRegistry,confi
  if(!config.databaseUrl)return;
  registry.register(PROJECT_SUMMARY_BRIEF_JOB,async job=>{
   if(!job.user_id)throw new Error('project_summary_brief requires its requesting person');
-  return buildProjectSummaryBrief(config,{spaceId:job.space_id,userId:job.user_id},job.payload.request as RetrievalBriefRequest) as unknown as Record<string,unknown>;
+  return buildProjectSummaryBrief(config,{spaceId:job.space_id,userId:job.user_id},job.payload.request as RetrievalBriefRequest,job) as unknown as Record<string,unknown>;
  });
 }
 
 /** The public-summary Context Brief, restricted to `project_public_summary`, with optional private artifact. */
-async function buildProjectSummaryBrief(config:ServerConfig,identity:SpaceUserIdentity,body:RetrievalBriefRequest):Promise<RetrievalBriefResponse>{
+async function buildProjectSummaryBrief(config:ServerConfig,identity:SpaceUserIdentity,body:RetrievalBriefRequest,job:JobEnvelopeForHandler):Promise<RetrievalBriefResponse>{
  const pool=getDbPool(config.databaseUrl!);
  const retrievalSettings=await readSpaceRetrievalSettings(pool,identity.spaceId);
  const store=resolveProviderCommandStore(config);
@@ -62,9 +63,10 @@ async function buildProjectSummaryBrief(config:ServerConfig,identity:SpaceUserId
  try{
   const artifactId=await persistRetrievalBriefArtifact(pool,{spaceId:identity.spaceId,ownerUserId:identity.userId,runId:null,projectId:null,query:body.query,objectTypes:['project_public_summary'],objectProfiles:body.object_profiles,maxResults,includeTrace,mode,surface:'project_public_summary_brief',response,persistTrace:false,
    egressPolicySnapshot:{external_egress_enabled:retrievalSettings.externalEgressEnabled},
-   settingsSnapshot:{default_search_mode:retrievalSettings.defaultSearchMode,rerank_enabled:retrievalSettings.rerankEnabled,query_rewrite_enabled:retrievalSettings.queryRewriteEnabled,use_query_cache:retrievalSettings.useQueryCache,embedding_dimensions:retrievalSettings.embeddingDimensions,max_results_default:retrievalSettings.maxResultsDefault}});
+   settingsSnapshot:{default_search_mode:retrievalSettings.defaultSearchMode,rerank_enabled:retrievalSettings.rerankEnabled,query_rewrite_enabled:retrievalSettings.queryRewriteEnabled,use_query_cache:retrievalSettings.useQueryCache,embedding_dimensions:retrievalSettings.embeddingDimensions,max_results_default:retrievalSettings.maxResultsDefault}},job);
   return {...response,artifact_id:artifactId};
  }catch(error){
+  if(error instanceof JobEffectLeaseLost)throw error;
   process.stderr.write(`[projects.summaryBrief] artifact persistence failed: ${String((error as Error)?.message??error)}\n`);
   return {...response,artifact_error:'retrieval_brief_persist_failed'};
  }

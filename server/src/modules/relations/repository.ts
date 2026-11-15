@@ -1,7 +1,6 @@
 import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter.js";
 import { objectStatusScalarSql } from "../../db/objectStatusSql.js";
 import { randomUUID } from "node:crypto";
-import type { PoolClient } from "../../db/pool.js";
 import { countFromRow, HttpError, type Queryable } from "../routeUtils/common.js";
 import { contentOwnerFilterSql, contentReadSql } from "../access/contentAccessSql.js";
 import { contentOwnerFromDb } from "../access/contentAccessQuery.js";
@@ -116,7 +115,7 @@ export class RelationsRepository {
   constructor(private readonly db: Queryable) {}
 
   async createPerson(
-    client: PoolClient,
+    client: Queryable,
     input: {
       spaceId: string;
       projectId: string | null;
@@ -260,7 +259,7 @@ export class RelationsRepository {
   }
 
   async createOrganization(
-    client: PoolClient,
+    client: Queryable,
     input: {
       spaceId: string;
       projectId: string | null;

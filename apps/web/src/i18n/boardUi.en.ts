@@ -1,4 +1,5 @@
 export const boardUiEn = { board_ui: {
+    task_text_updated: 'Updated the task title or description',
   rename_column:'Rename column {{name}}', column_actions:'Column actions for {{name}}', add_after:'Add column to the right', remove_named:'Delete column “{{name}}”?', drag_column:'Move column {{name}}', drag_column_help:'Drag to reorder, or press Space, use arrow keys, then Space to drop.', meaning_help:'Choose a name; the status meaning keeps Task and Agent behaviour consistent.',
   meaning_for:'Status meaning for {{name}}', remap_title:'Change the status meaning of “{{name}}”?', remap_help:'Current Tasks in this column will move to the new status. Permissions and completion requirements still apply; a refusal rolls back the whole change.',
   name:'Column name', meaning:'Status meaning', add:'Add column', remove:'Delete column',

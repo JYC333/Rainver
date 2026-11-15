@@ -388,6 +388,7 @@ describe("executeRemoteHostCliAdapter", () => {
         const rows: unknown[] = sql.startsWith("SELECT part.id AS part_id")
           ? [resourcePart]
           : sql.startsWith("SELECT kind FROM hosts") ? [{ kind: "remote" }]
+            : sql.includes('FROM run_attempts') && sql.trimStart().startsWith('SELECT') ? [{ id: 'attempt-1', status: 'running', launch_id: null }]
             : sql.startsWith("UPDATE run_attempts") ? [{ id: "attempt-1" }] : [];
         return { rows: rows as Row[], rowCount: rows.length };
       },
@@ -1747,7 +1748,7 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
       registry.receiveComplete("host-1", "run-1", { exit_code: 0, timed_out: false, error: null }, launchId);
       expect((await execution).success).toBe(true);
 
-    }, 30_000);
+    });
 
     it("lets a slow but talking run keep going past the stall budget", async () => {
       vi.useFakeTimers();
@@ -1789,7 +1790,7 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
       const result = await execution;
       expect(result.error_code).not.toBe("runtime_stall_timeout");
       expect(result.success).toBe(true);
-    }, 30_000);
+    });
   });
   it("carries the host's egress refusals on the envelope, for the Run event", async () => {
     // The refusal is the thing nobody can otherwise explain: the CLI saw a 403

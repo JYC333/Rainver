@@ -99,6 +99,57 @@ continue to require their own explicit pre-authorization.
 
 ## Trigger model
 
+REST create, update and self-service autonomy configuration are formal keyed
+core adapters (`automation.create`, `automation.update`,
+`automation.autonomy.configure`). Strict protocol DTOs retain target-owned
+recursive JSON config and the Service's size, depth, secret, target and preflight
+checks. The typed web client unwraps receipts and accepts retry keys.
+`AutomationService.forConfigurationTransaction` binds configuration, schedule,
+credential grants, policy audit and preflight to the core's transaction; mandatory
+audit/receipt failure rolls these writes back together. Current authorization
+runs before replay. Configuration authority discovers Project/Folder/Agent and
+Workflow asset scopes before locking, uses the canonical content closure, pins
+the referenced version/profile/Host rows, and refuses changed discovery.
+
+`AutomationService.prepareFire` is the common manual/scheduler admission and
+preflight path. `forFireAdmissionTransaction` prepares it on a caller-owned
+transaction without executing a target. That entry shares the configuration
+closure's Project/Folder/Agent/Workflow locks, pins the responsible person and
+any actually used credential grant's granting person, and checks discovery
+again under locks. Observe-only ticks do not require an unused grant's person.
+The shared content closure pins all person roots before their membership rows.
+
+`automation.fire` is a strict keyed core command and formal POST adapter.
+It atomically commits a single-attempt `automation_fire` Job, mandatory policy
+audit and core receipt. HTTP now returns **202** with the operation envelope's
+`data: {space_id, automation_id, job_id, status: "pending"}`; no Run exists yet.
+`GET .../automations/:automationId/fire-requests/:jobId` releases the result only
+to the requesting person under current Automation/Project/Agent authority.
+Generic Job payloads, results and event details withhold this private content.
+The typed client exposes `requestFire`/`fireRequest`; its existing `fire` method
+waits for the private result, preserving the Automation page's completed-target
+feedback and configured-prompt versus supplied-prompt semantics. Reuse a key
+when retrying the POST; an unknown outcome never issues a second POST.
+
+The worker rechecks the saved runnable configuration, responsible/granting
+people, Agent version/profile, resolved Workflow version, autonomy and policy.
+It invokes the existing target registry and Run owners, with current admission
+and the trusted Job claim held in each target's write/enqueue transaction and
+rechecked immediately before external effects. No DB transaction spans external
+IO. Native report/digest/probe/briefing and autonomy write owners participate in
+the same invocation capability. Claim loss or a started-but-unreceipted outcome
+never permits repeating work; the existing Job start fence and max_attempts=1
+remain durable, and the private reader reports `unknown` separately from failure.
+A persisted effect receipt remains readable even if worker acknowledgement was
+lost. New reads still require current access.
+
+Scheduler sweeps commit this same intent and advance the exact due slot in one
+transaction, deduplicating concurrent sweeps. The saved slot reaches the worker
+so a delayed digest retains its original day. Scheduler and manual Jobs use the
+same worker/target engine. Internal target execution uses that same domain
+admission and effect owner. These adapters enable no approval mapping or B10
+exception.
+
 `trigger_type` is the enum of peer trigger kinds:
 
 - `manual` — fired by a user via `POST .../fire`.
@@ -107,7 +158,8 @@ continue to require their own explicit pre-authorization.
   `automation_scheduler` heartbeat sweeps `listDue` and fires. There is no
   per-automation registration into the scheduler — it is a poll/sweep model.
   A fire re-reads the Automation's status under its row lock in the
-  transaction that creates its work, so a pause or archive committed after
+  transaction that queues its intent and again in the worker that creates its
+  work, so a pause or archive committed after
   the sweep (or a manual fire) read the row stops it; schedule advancement
   re-reads the row too and leaves a no-longer-active schedule as the pause or
   archive wrote it.

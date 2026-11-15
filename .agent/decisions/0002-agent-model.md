@@ -23,9 +23,13 @@ permissions apply, and how one user has several agents.
 - An **Agent** is an AI runtime entity with its own row in `agents`. One user
   may create and own many agents.
 
-An Agent is owned by a user (`owner_user_id`), shared by a Space, or bound to
-a Project (`project_id`); `agent_kind` distinguishes standard agents from
-system-provided ones. No concrete built-in agents are seeded: built-in
+An Agent is owned by a user (`owner_user_id`) or shared by a Space;
+`agent_kind` distinguishes standard agents from system-provided ones. Standard
+Agents are reusable through `project_agent_links`; their optional
+`access_project_id` retains a Project content/policy boundary independently of
+execution placement. Managed Assistants retain Project ownership (`project_id`).
+The 2026-11-13 one-time cutover preserves old IDs and history without widening
+content access; see [Agents](../modules/agents.md#reusable-agent-identity-and-project-boundaries). No concrete built-in agents are seeded: built-in
 behaviour ships as system Agent Templates (factories), and concrete agents are
 created on demand by copy-on-create.
 

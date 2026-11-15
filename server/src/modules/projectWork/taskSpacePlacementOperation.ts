@@ -4,6 +4,7 @@ import {dbPool,type Queryable} from '../routeUtils/common.js';
 import {contentReadSql,contentAccessLevelSql} from '../access/contentAccessSql.js';
 import {contentResourceDefinition} from '../access/contentAccessRegistry.js';
 import {PgTaskRepository} from '../tasks/repository.js';
+import {authorizeTaskClosure,lockTaskWriteClosure} from '../tasks/taskReferenceLocks.js';
 import {BoardMutationError} from '../tasks/boardColumns.js';
 import {TaskControlError} from '../tasks/controlErrors.js';
 import {CompletionRequirementsUnmet} from './taskWriteEvents.js';
@@ -23,16 +24,20 @@ async function task(db:Queryable,id:string,actor:OperationActor,lock=false){
 async function authorize(db:Queryable,input:Input,actor:OperationActor){
   await task(db,input.task_id,actor);
   const {board_id:board,column_id:column}=input.changes;
-  // Pin the destination before the Task, so a concurrent Board reparent cannot
-  // turn this Space-only operation into a Project write.
-  if(board||column){
-    const destination=(await db.query(`SELECT b.id FROM boards b
+  // The destination is a Space Board (named, or the one owning the named column).
+  // The shared Task write closure pins it — with the Folder, people, Agents and
+  // the parent ancestry the accompanying contract fields name — before the Task,
+  // so neither a Board reparent nor a reference writer can slip past this write.
+  const destination=async(lock:boolean)=>(await db.query<{id:string}>(`SELECT b.id FROM boards b
       WHERE b.space_id=$1 AND b.project_id IS NULL AND b.deleted_at IS NULL AND b.status='active'
       AND ($2::varchar IS NULL OR b.id=$2)
       AND ($3::varchar IS NULL OR EXISTS(SELECT 1 FROM board_columns c WHERE c.space_id=b.space_id AND c.board_id=b.id AND c.id=$3 AND c.deleted_at IS NULL))
-      FOR SHARE OF b`,[actor.space_id,board||null,column||null])).rows;
-    if(destination.length!==1)throw hidden();
-  }
+      ${lock?'FOR SHARE OF b':''}`,[actor.space_id,board||null,column||null])).rows;
+  let boardId:string|null=null;
+  if(board||column){const found=await destination(false);if(found.length!==1)throw hidden();boardId=found[0]!.id;}
+  await authorizeTaskClosure(()=>lockTaskWriteClosure(db,{spaceId:actor.space_id,userId:actor.on_behalf_of_user_id!},{taskId:input.task_id,body:input.changes,writerAuthority:true,boardId,standaloneOnly:true}));
+  if(boardId){const held=await destination(true);if(held.length!==1||held[0]!.id!==boardId)throw hidden();}
+  // Still standalone under the Task lock the closure holds.
   await task(db,input.task_id,actor,true);
 }
 class CompletionRefusal extends OperationBusinessError{

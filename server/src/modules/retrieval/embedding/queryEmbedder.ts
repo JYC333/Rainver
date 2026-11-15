@@ -25,6 +25,7 @@ export class ProviderQueryEmbedder implements QueryEmbedder {
     private readonly cache: QueryEmbeddingCache = sharedQueryEmbeddingCache,
     private readonly expectedDimensions: number = DEFAULT_EMBED_DIMENSIONS,
     private readonly egressPolicy: RetrievalEgressPolicy | null = null,
+    private readonly singleAttempt?: true,
   ) {}
 
   async embedQuery(
@@ -49,6 +50,7 @@ export class ProviderQueryEmbedder implements QueryEmbedder {
         egressPolicy: this.egressPolicy,
         metering: { subject_user_id: opts.subjectUserId },
         spend: this.spend,
+        single_attempt: this.singleAttempt,
       });
       const vector = result.vectors[0];
       if (!Array.isArray(vector) || vector.length !== this.expectedDimensions) return null;

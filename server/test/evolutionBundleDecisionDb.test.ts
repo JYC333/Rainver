@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import {JobEffectLeaseLost} from '../src/modules/jobs/effectAuthority.js';
 import { SYSTEM_ACTION_REGISTRY } from '@rainver/protocol';
 import { operationProposalService } from '../src/modules/systemActions/operations/approvals.js';
 import { createDefaultProposalApplierRegistry } from '../src/modules/proposals/applierRegistry.js';
@@ -231,7 +232,7 @@ describe('durable mixed bundle intent and canonical commit', () => {
     }]);
     try {
       const queued = await app.inject({
-        method: 'POST',
+        method: 'POST',headers:{'idempotency-key':randomUUID()},
         url: `/api/v1/evolution/bundles/${f.bundle}/decide`,
         payload: {
           decisions: f.decisions.map(d => ({
@@ -241,7 +242,7 @@ describe('durable mixed bundle intent and canonical commit', () => {
         }
       });
       expect(queued.statusCode).toBe(202);
-      expect(queued.json().decision).toMatchObject({
+      expect(queued.json().data.decision).toMatchObject({
         status: 'pending',
         member_ids: f.ids
       });
@@ -516,6 +517,69 @@ describe('durable mixed bundle intent and canonical commit', () => {
     expect(await readFile(join(root, 'one.txt'), 'utf8')).toBe('before');
     await bundles().decide(identity, f.bundle, f.decisions, service());
     expect((await db.pool.query('SELECT id FROM evolution_bundle_decisions')).rows).toHaveLength(1);
+  });
+  it.each(['pending','compensating'].flatMap(status=>[false,true].map(sameWorker=>({status,sameWorker}))))('rejects a lost claim without changing a $status bundle intent or its files (same worker: $sameWorker)',async({status,sameWorker})=>{
+    if(!db.available)return;
+    const f=await fixture();
+    await bundles().decide(identity,f.bundle,f.decisions,service());
+    const row=await intent(f.bundle),effect=row.effects_json[f.patch]!;
+    if(status==='compensating'){
+      const files=new CodePatchFileTransaction(root,false);
+      effect.before=await files.prepare(effect.operations);
+      await files.applyPrepared(effect.operations,effect.before);
+    }
+    await db.pool.query('UPDATE evolution_bundle_decisions SET status=$2,effects_json=$3::jsonb WHERE id=$1',[row.id,status,JSON.stringify(row.effects_json)]);
+    await db.pool.query("UPDATE jobs SET status='running',claimed_by=$2,attempts=2 WHERE id=$1",[row.job_id,sameWorker?'expired-worker':'replacement-worker']);
+    const before=await intent(f.bundle);
+    await expect(executeBundleDecision(config(),row.id,space,{jobId:row.job_id!,workerId:'expired-worker',userId:owner,attempts:1})).rejects.toBeInstanceOf(JobEffectLeaseLost);
+    expect(await intent(f.bundle)).toEqual(before);
+    expect(await readFile(join(root,'one.txt'),'utf8')).toBe(status==='compensating'?'after':'before');
+    await pending(f.ids);
+  });
+  it('leaves known bundle preimages for the current claim when ownership changes during IO',async()=>{
+    if(!db.available)return;
+    const f=await fixture();
+    await bundles().decide(identity,f.bundle,f.decisions,service());
+    const row=await intent(f.bundle),original=CodePatchFileTransaction.prototype.applyPrepared;
+    await db.pool.query("UPDATE jobs SET status='running',claimed_by='bundle-worker',attempts=1 WHERE id=$1",[row.job_id]);
+    const spy=vi.spyOn(CodePatchFileTransaction.prototype,'applyPrepared').mockImplementation(async function(this:CodePatchFileTransaction,...args){
+      const result=await original.apply(this,args);
+      await db.pool.query('UPDATE jobs SET attempts=2 WHERE id=$1',[row.job_id]);
+      return result;
+    });
+    try{
+      await expect(executeBundleDecision(config(),row.id,space,{jobId:row.job_id!,workerId:'bundle-worker',userId:owner,attempts:1})).rejects.toBeInstanceOf(JobEffectLeaseLost);
+    }finally{spy.mockRestore();}
+    const retained=await intent(f.bundle);
+    expect(retained).toMatchObject({status:'applying',error:null});
+    expect(retained.effects_json[f.patch]!.before).toHaveLength(1);
+    expect(retained.effects_json[f.patch]!.receipt).toBeUndefined();
+    expect(await readFile(join(root,'one.txt'),'utf8')).toBe('after');
+    await pending(f.ids);
+    await executeBundleDecision(config(),row.id,space,{jobId:row.job_id!,workerId:'bundle-worker',userId:owner,attempts:2});
+    expect((await intent(f.bundle)).status).toBe('succeeded');
+  });
+  it('does not settle bundle compensation under an expired claim and lets the current owner finish it',async()=>{
+    if(!db.available)return;
+    const f=await fixture();await bundles().decide(identity,f.bundle,f.decisions,service());
+    const row=await intent(f.bundle),effect=row.effects_json[f.patch]!,files=new CodePatchFileTransaction(root,false);
+    effect.before=await files.prepare(effect.operations);await files.applyPrepared(effect.operations,effect.before);
+    await db.pool.query("UPDATE evolution_bundle_decisions SET status='compensating',effects_json=$2::jsonb WHERE id=$1",[row.id,JSON.stringify(row.effects_json)]);
+    await db.pool.query("UPDATE jobs SET status='running',claimed_by='cleanup-worker',attempts=1 WHERE id=$1",[row.job_id]);
+    const original=CodePatchFileTransaction.prototype.compensatePrepared;
+    const spy=vi.spyOn(CodePatchFileTransaction.prototype,'compensatePrepared').mockImplementation(async function(this:CodePatchFileTransaction,...args){
+      await original.apply(this,args);await db.pool.query('UPDATE jobs SET attempts=2 WHERE id=$1',[row.job_id]);
+    });
+    try{
+      await expect(executeBundleDecision(config(),row.id,space,{jobId:row.job_id!,workerId:'cleanup-worker',userId:owner,attempts:1})).rejects.toBeInstanceOf(JobEffectLeaseLost);
+    }finally{spy.mockRestore();}
+    expect((await intent(f.bundle)).status).toBe('compensating');
+    expect((await intent(f.bundle)).effects_json[f.patch]!.compensated).not.toBe(true);
+    expect(await readFile(join(root,'one.txt'),'utf8')).toBe('before');
+    await executeBundleDecision(config(),row.id,space,{jobId:row.job_id!,workerId:'cleanup-worker',userId:owner,attempts:2});
+    expect((await intent(f.bundle)).status).toBe('failed');
+    expect((await intent(f.bundle)).effects_json[f.patch]!.compensated).toBe(true);
+    await pending(f.ids);
   });
   it('recovers a cancelled partial-effect Job through one durable cleanup handoff', async () => {
     if (!db.available) return;

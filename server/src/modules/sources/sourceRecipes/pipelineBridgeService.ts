@@ -1,3 +1,4 @@
+import { SourceObjectRefusal } from "../sourceObjectErrors.js";
 import type {
   CustomSourcePolicyEnvelope,
   SourcePolicyEnvelope,
@@ -8,8 +9,8 @@ import {
   HttpError,
   objectValue,
   optionalString,
-  withDbTransaction,
-  type Pool,
+  withQueryableTransaction,
+  type Queryable,
   type SpaceUserIdentity,
 } from "../../routeUtils/common.js";
 import { SourceChannelService } from "../channels/sourceChannelService.js";
@@ -30,7 +31,7 @@ import {
  */
 export class SourceRecipePipelineBridgeService {
   constructor(
-    private readonly pool: Pool,
+    private readonly pool: Queryable,
     private readonly config: ServerConfig,
   ) {}
 
@@ -38,40 +39,40 @@ export class SourceRecipePipelineBridgeService {
     const sourceConnection = await this.requireGeneratedCustomConnection(identity, sourceConnectionId);
     const handlerVersionId = optionalString(body.handler_version_id) ?? sourceConnection.active_handler_version_id;
     if (!handlerVersionId) {
-      throw new HttpError(422, "handler_version_id is required when the source has no active pipeline handler version");
+      throw new SourceObjectRefusal(422, "handler_version_id is required when the source has no active pipeline handler version");
     }
 
     const handlerRepo = new PgCustomSourceHandlerRepository(this.pool, this.config);
     const handlerVersion = await handlerRepo.getHandlerVersion(identity, sourceConnectionId, handlerVersionId);
     if (!handlerVersion) throw new HttpError(404, "Handler version not found");
     if (handlerVersion.language !== "declarative_pipeline_v1") {
-      throw new HttpError(422, "Only declarative_pipeline_v1 handler versions can be bridged into a recipe source");
+      throw new SourceObjectRefusal(422, "Only declarative_pipeline_v1 handler versions can be bridged into a recipe source");
     }
 
     const manifest = objectValue(handlerVersion.manifest_json);
     const parsedPipeline = protocol.CustomSourcePipelineDefinitionSchema.safeParse(manifest.pipeline);
     if (!parsedPipeline.success) {
-      throw new HttpError(422, "Handler version has no valid declarative pipeline manifest");
+      throw new SourceObjectRefusal(422, "Handler version has no valid declarative pipeline manifest");
     }
     const recipe = recipeFromPipelineDefinition(parsedPipeline.data);
     const parsedRecipe = protocol.SourceRecipeDefinitionSchema.safeParse(recipe);
     if (!parsedRecipe.success) {
-      throw new HttpError(422, "Pipeline manifest cannot be represented as a Source recipe");
+      throw new SourceObjectRefusal(422, "Pipeline manifest cannot be represented as a Source recipe");
     }
     const parsedEnvelope = protocol.CustomSourcePolicyEnvelopeSchema.safeParse(handlerVersion.policy_envelope_json);
     if (!parsedEnvelope.success) {
-      throw new HttpError(422, "Handler version has no valid Custom Source policy envelope");
+      throw new SourceObjectRefusal(422, "Handler version has no valid Custom Source policy envelope");
     }
     const customEnvelope = parsedEnvelope.data as CustomSourcePolicyEnvelope;
     if (customEnvelope.language !== "declarative_pipeline_v1") {
-      throw new HttpError(422, "Handler version policy envelope is not a declarative pipeline envelope");
+      throw new SourceObjectRefusal(422, "Handler version policy envelope is not a declarative pipeline envelope");
     }
     const policyEnvelope = sourcePolicyEnvelopeFromCustom(customEnvelope);
     const analysis = analyzeSourceRecipe(parsedRecipe.data);
     for (const liveUrl of analysis.live_fetch_urls) {
       const origin = originOf(liveUrl);
       if (!origin || !policyEnvelope.allowed_network_origins.includes(origin)) {
-        throw new HttpError(422, `pipeline fetches an origin outside the approved handler envelope: ${liveUrl}`);
+        throw new SourceObjectRefusal(422, `pipeline fetches an origin outside the approved handler envelope: ${liveUrl}`);
       }
     }
 
@@ -87,7 +88,7 @@ export class SourceRecipePipelineBridgeService {
       source_type: "pipeline_bridge",
     };
 
-    return withDbTransaction(this.pool, async (client) => {
+    return withQueryableTransaction(this.pool, async (client) => {
       const channels = new SourceChannelService(client, this.config);
       const channel = await channels.create(
         identity,
@@ -162,7 +163,7 @@ export class SourceRecipePipelineBridgeService {
     const row = result.rows[0];
     if (!row) throw new HttpError(404, "Source connection not found");
     if (row.handler_kind !== "generated_custom") {
-      throw new HttpError(422, "Only generated Custom Source connections can be bridged");
+      throw new SourceObjectRefusal(422, "Only generated Custom Source connections can be bridged");
     }
     return row;
   }

@@ -1,3 +1,8 @@
+import {lockCurrentJobClaim} from '../../jobs/effectAuthority.js';
+import {assertCompositionRetryReadable,lockCompositionMutation} from './mutationAccess.js';
+import {assertProjectWriterForMutation} from '../../projects/access.js';
+import {projectReadingDay} from './day.js';
+import {readProjectComposition} from './projection.js';
 import {readingDayRounds} from './rounds.js';
 import type {Section,Composition} from './types.js';
 export {readProjectComposition} from './projection.js';
@@ -24,6 +29,11 @@ export async function queueProjectComposition(db:Queryable,spaceId:string,projec
 export async function composeProjectReading(db:Queryable,spaceId:string,projectId:string,roundId:string){
  if(!roundId)throw new HttpError(422,'An analysis round is required for publication');
  return withQueryableTransaction(db,async tx=>{
+  await lockCurrentJobClaim(tx);
+  const seedRef=(await tx.query<{slot_key:string;requested_by_user_id:string}>(`SELECT r.slot_key,b.requested_by_user_id FROM project_reading_rounds r JOIN information_briefings b ON b.space_id=r.space_id AND b.id=r.briefing_id WHERE r.space_id=$1 AND r.project_id=$2 AND r.id=$3`,[spaceId,projectId,roundId])).rows[0];
+  if(!seedRef)return null;
+  const cohort=(await tx.query<{id:string}>('SELECT id FROM project_reading_rounds WHERE space_id=$1 AND project_id=$2 AND slot_key=$3 ORDER BY id',[spaceId,projectId,seedRef.slot_key])).rows.map(r=>r.id);
+  await lockCompositionMutation(tx,{spaceId,userId:seedRef.requested_by_user_id},projectId,cohort);
   await tx.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`project-reading:${spaceId}:${projectId}`]);
   if(!(await tx.query('SELECT id FROM projects WHERE space_id=$1 AND id=$2 AND deleted_at IS NULL',[spaceId,projectId])).rows.length)return null;
   const seed=(await tx.query<ThemeRound & {slot_key:string}>('SELECT * FROM project_reading_rounds WHERE space_id=$1 AND project_id=$2 AND id=$3',[spaceId,projectId,roundId])).rows[0];
@@ -58,5 +68,28 @@ export async function composeProjectReading(db:Queryable,spaceId:string,projectI
   const id=randomUUID();
   await tx.query(`INSERT INTO project_reading_compositions(id,space_id,project_id,revision,previous_id,sections_json,reason,edition_date,timezone,day_revision,rounds_json) VALUES($1,$2,$3,$4,$5,$6,'theme_terminal',$7::date,$8,$9,$10::jsonb)`,[id,spaceId,projectId,(last?.revision??0)+1,old?.id??last?.id??null,JSON.stringify(sections),day.date,day.timezone,(old?.day_revision??0)+1,JSON.stringify(snapshots)]);
   return id;
+ });
+}
+
+/** The retained manual retry is one owner transaction over the complete day's
+ * eligible cohort. Every queued intent is mandatory; no half-queued retry. */
+export async function retryProjectComposition(db:Queryable,identity:import('../../routeUtils/common.js').SpaceUserIdentity,projectId:string){
+ return withQueryableTransaction(db,async tx=>{
+  await assertProjectWriterForMutation(tx,identity.spaceId,projectId,identity.userId);
+  const eligible=async()=>{
+   const day=await projectReadingDay(tx,identity.spaceId,projectId);
+   return {day,rounds:(await tx.query<{id:string}>("SELECT r.id FROM project_reading_rounds r JOIN information_briefings b ON b.id=r.briefing_id AND b.space_id=r.space_id WHERE r.space_id=$1 AND r.project_id=$2 AND r.execution_json->'edition'->>'date'=$3 AND r.status='complete' AND b.status='ready' AND b.result_json ? 'topic' ORDER BY r.sequence,r.id LIMIT 100",[identity.spaceId,projectId,day.date])).rows};
+  };
+  const before=await eligible();
+  await assertCompositionRetryReadable(tx,identity,projectId,before.rounds.map(r=>r.id));
+  await tx.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`project-reading:${identity.spaceId}:${projectId}`]);
+  const after=await eligible();
+  if(JSON.stringify(before)!==JSON.stringify(after))throw new HttpError(409,'Reading composition cohort changed');
+  const state=await readProjectComposition(tx,identity,projectId);
+  if(state.composition_status==='queued'||state.composition_status==='running')return {status:'queued' as const,round_ids:after.rounds.map(r=>r.id)};
+  if(state.composition_status!=='failed')throw new HttpError(409,'Composition retry is only available for a failed composition. Resolve analysis in its Topic first.',{code:'composition_not_failed'});
+  if(!after.rounds.length)throw new HttpError(409,'No analysis round is available for publication');
+  for(const round of after.rounds)await queueProjectComposition(tx,identity.spaceId,projectId,round.id);
+  return {status:'queued' as const,round_ids:after.rounds.map(r=>r.id)};
  });
 }

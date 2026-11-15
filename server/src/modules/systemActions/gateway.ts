@@ -1,3 +1,4 @@
+import {safeInputErrors} from './inputErrors.js';
 import type { SystemActionActorType, RegisteredSystemActionDefinition as SystemActionDefinition, SystemActionId } from "@rainver/protocol";
 import { loadSystemActionRegistry } from "./registry.js";
 
@@ -31,7 +32,7 @@ type SystemActionPolicyEnforcer = (
 ) => Promise<SystemActionPolicyDecision>;
 
 export class SystemActionGatewayError extends Error {
-  constructor(readonly code: string, message: string,readonly policy_decision_record_id:string|null=null) {
+  constructor(readonly code: string, message: string,readonly policy_decision_record_id:string|null=null,readonly input_details?:ReturnType<typeof safeInputErrors>) {
     super(message);
   }
 }
@@ -76,7 +77,7 @@ export class SystemActionGateway {
         if(!this.executors.has(definition.id as SystemActionId))throw new SystemActionGatewayError("system_action_not_implemented",`No executor registered for '${actionId}'`,policy.policy_decision_record_id??null);
         await invalid(input,{...context,policy_decision:policy});
       }
-      throw new SystemActionGatewayError("system_action_invalid_input", parsedInput.error.message);
+      throw new SystemActionGatewayError("system_action_invalid_input", "Invalid action input. Describe the listed action and correct the indicated fields.",null,safeInputErrors(definition,parsedInput.error));
     }
     await this.hooks.onValidated?.(definition, parsedInput.data, context);
     const policy = await this.enforcePolicy(definition, parsedInput.data, context);
@@ -92,7 +93,7 @@ export class SystemActionGateway {
     if (!executor) throw new SystemActionGatewayError("system_action_not_implemented", `No executor registered for '${actionId}'`);
     const output = await executor(parsedInput.data, { ...context, policy_decision: policy });
     const parsedOutput = definition.output_schema.safeParse(output);
-    if (!parsedOutput.success) throw new SystemActionGatewayError("system_action_invalid_output", parsedOutput.error.message);
+    if (!parsedOutput.success) throw new SystemActionGatewayError("system_action_invalid_output", "Action output could not be validated.");
     const executorDecisionId = policyDecisionRecordIdFromOutput(parsedOutput.data);
     const result = {
       definition,

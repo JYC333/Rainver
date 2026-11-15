@@ -135,3 +135,19 @@ function uniquePointerIds(
     });
   }
 }
+
+export const CROSS_SPACE_SETTING_OPERATION_SCHEMAS = {
+  'space.egress_notifications.update': {
+    input: SpaceEgressNotificationSettingUpdateSchema.extend({ space_id: IdSchema }).strict(),
+    output: SpaceEgressNotificationSettingSchema,
+  },
+} as const;
+
+/** All five retained POSTs persist state or mandatory read audit. */
+export const CROSS_SPACE_RETRIEVAL_OPERATION_SCHEMAS = {
+ 'personal.retrieval.search': {input:CrossSpaceRetrievalRequestSchema,output:CrossSpaceRetrievalResponseSchema},
+ 'personal.retrieval.resolve': {input:CrossSpaceResolveRequestSchema,output:CrossSpaceResolveResponseSchema},
+ 'personal.retrieval.summary.store': {input:CrossSpaceSummaryStoreRequestSchema,output:CrossSpaceSummaryStoreResponseSchema},
+ 'personal.retrieval.egress.disclose': {input:CrossSpaceEgressDisclosureRequestSchema,output:CrossSpaceEgressDisclosureResponseSchema},
+ 'personal.retrieval.fused.store': {input:CrossSpaceFusedConclusionStoreRequestSchema,output:CrossSpaceFusedConclusionStoreResponseSchema},
+} as const;

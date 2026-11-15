@@ -1,44 +1,6 @@
-import { randomUUID } from "node:crypto";
-import * as protocol from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool, type Pool } from "../../db/pool.js";
-import { withTransaction } from "../../db/tx.js";
-import { hashOpaqueToken, normalizeAuthEmail } from "../auth/securityPolicy.js";
-import {
-  getOrCreateSpaceRetrievalSettings,
-  updateSpaceRetrievalSettings,
-  type SpaceRetrievalSettingsOut,
-} from "../retrieval/settings.js";
-import type {
-  SpaceRetrievalSettingsUpdate,
-} from "@rainver/protocol";
-import { isSpaceOwnerOrAdmin, roleGrantRefusal, SPACE_ROLE_LADDER } from "../access/roles.js";
-import { seedSpaceDefaults } from "./spaceSeeds.js";
-
-export interface SpaceCreateInput {
-  name: string;
-  type?: "personal" | "household" | "team";
-  /** Immutable after creation; validated against SPACE_OVERSIGHT_MODE_VALUES. Defaults to 'none'. */
-  oversight_mode?: string;
-}
-
-export interface InvitationCreateInput {
-  email: string;
-  /** Checked against the inviter's own role by `roleGrantRefusal`. */
-  role?: string;
-}
-
-export interface SpaceResult {
-  id: string;
-  name: string;
-  type: string;
-  created_by_user_id: string | null;
-  oversight_mode: string;
-  egress_notifications_enabled: boolean;
-  created_at: string;
-  updated_at: string;
-  role?: string | null;
-}
+import { getOrCreateSpaceRetrievalSettings, type SpaceRetrievalSettingsOut } from "../retrieval/settings.js";
 
 export interface SpaceMember {
   user_id: string;
@@ -47,16 +9,6 @@ export interface SpaceMember {
   avatar_url: string | null;
   role: string;
   joined_at: string;
-}
-
-export interface InvitationResult {
-  id: string;
-  space_id: string;
-  invited_email: string;
-  role: string;
-  token: string;
-  status: string;
-  expires_at: string;
 }
 
 export interface SpaceFailure {
@@ -70,59 +22,17 @@ export interface SnapshotDefaults {
 }
 
 export interface SpaceRepository {
-  createSpace(userId: string, input: SpaceCreateInput): Promise<SpaceResult | SpaceFailure>;
   listMembers(userId: string, spaceId: string): Promise<SpaceMember[] | SpaceFailure>;
-  createInvitation(
-    userId: string,
-    spaceId: string,
-    input: InvitationCreateInput,
-  ): Promise<InvitationResult | SpaceFailure>;
-  acceptInvitation(userId: string, token: string): Promise<{ space_id: string | null } | SpaceFailure>;
   getSnapshotDefaults(userId: string, spaceId: string): Promise<SnapshotDefaults | SpaceFailure>;
-  updateSnapshotDefaults(
-    userId: string,
-    spaceId: string,
-    data: SnapshotDefaults,
-  ): Promise<SnapshotDefaults | SpaceFailure>;
   getContentEgressSetting(
     userId: string,
     spaceId: string,
-  ): Promise<{ space_id: string; member_copy_out_enabled: boolean } | SpaceFailure>;
-  updateContentEgressSetting(
-    userId: string,
-    spaceId: string,
-    enabled: boolean,
   ): Promise<{ space_id: string; member_copy_out_enabled: boolean } | SpaceFailure>;
   getRetrievalSettings(
     userId: string,
     spaceId: string,
   ): Promise<SpaceRetrievalSettingsOut | SpaceFailure>;
-  updateRetrievalSettings(
-    userId: string,
-    spaceId: string,
-    data: SpaceRetrievalSettingsUpdate,
-  ): Promise<SpaceRetrievalSettingsOut | SpaceFailure>;
 }
-
-type SpaceRow = {
-  id: string;
-  name: string;
-  type: string;
-  created_by_user_id: string | null;
-  oversight_mode: string;
-  egress_notifications_enabled: boolean;
-  created_at: Date | string;
-  updated_at: Date | string;
-  role?: string | null;
-};
-
-const ROLE_RANK = new Map([
-  ["guest", 0],
-  ["member", 1],
-  ["reviewer", 2],
-  ["admin", 3],
-  ["owner", 4],
-]);
 
 let repositoryOverride: SpaceRepository | null = null;
 
@@ -141,70 +51,8 @@ function asIso(value: Date | string): string {
   return new Date(value).toISOString();
 }
 
-function hashToken(raw: string): string { return hashOpaqueToken(raw); }
-
-function normalizeRole(raw: string | null | undefined): string {
-  const lower = (raw ?? "").trim().toLowerCase();
-  return ROLE_RANK.has(lower) ? lower : "guest";
-}
-
-function hasRoleAtLeast(role: string | null | undefined, required: string): boolean {
-  return (ROLE_RANK.get(normalizeRole(role)) ?? 0) >= (ROLE_RANK.get(required) ?? 0);
-}
-
-function spaceOut(row: SpaceRow): SpaceResult {
-  return {
-    id: row.id,
-    name: row.name,
-    type: row.type,
-    created_by_user_id: row.created_by_user_id,
-    oversight_mode: row.oversight_mode,
-    egress_notifications_enabled: row.egress_notifications_enabled,
-    created_at: asIso(row.created_at),
-    updated_at: asIso(row.updated_at),
-    ...(row.role !== undefined ? { role: row.role } : {}),
-  };
-}
-
-function rawInvitationToken(): string {
-  return Buffer.from(randomUUID() + randomUUID()).toString("base64url");
-}
-
 export class PgSpaceRepository implements SpaceRepository {
   constructor(private readonly pool: Pool) {}
-
-  async createSpace(userId: string, input: SpaceCreateInput): Promise<SpaceResult | SpaceFailure> {
-    const type = input.type ?? "team";
-    if (type === "personal") {
-      return { statusCode: 400, detail: "Cannot explicitly create a personal space" };
-    }
-    let oversightMode = "none";
-    if (input.oversight_mode !== undefined) {
-      if (!protocol.isSpaceOversightMode(input.oversight_mode)) {
-        return { statusCode: 422, detail: "Invalid oversight_mode" };
-      }
-      oversightMode = input.oversight_mode;
-    }
-    return withTransaction(this.pool, async (client) => {
-      const spaceId = randomUUID();
-      await client.query(
-        `INSERT INTO spaces
-           (id, name, type, created_by_user_id, oversight_mode,
-            egress_notifications_enabled, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, now(), now())`,
-        [spaceId, input.name, type, userId, oversightMode, type === "team"],
-      );
-      await client.query(
-        `INSERT INTO space_memberships
-           (id, space_id, user_id, role, status, created_at, updated_at)
-         VALUES ($1, $2, $3, 'owner', 'active', now(), now())`,
-        [randomUUID(), spaceId, userId],
-      );
-      await seedSpaceDefaults(client, spaceId, userId);
-      const row = await this.getSpaceRow(spaceId, userId, client);
-      return spaceOut({ ...row!, role: "owner" });
-    });
-  }
 
   async listMembers(userId: string, spaceId: string): Promise<SpaceMember[] | SpaceFailure> {
     const role = await this.activeRole(userId, spaceId);
@@ -235,88 +83,6 @@ export class PgSpaceRepository implements SpaceRepository {
     }));
   }
 
-  async createInvitation(
-    userId: string,
-    spaceId: string,
-    input: InvitationCreateInput,
-  ): Promise<InvitationResult | SpaceFailure> {
-    const role = await this.activeRole(userId, spaceId);
-    if (!hasRoleAtLeast(role, "admin")) {
-      return { statusCode: 403, detail: "Requires admin role to invite" };
-    }
-    const space = await this.pool.query<{ type: string }>(
-      "SELECT type FROM spaces WHERE id = $1 LIMIT 1",
-      [spaceId],
-    );
-    if (!space.rowCount) return { statusCode: 404, detail: "Space not found" };
-    if (space.rows[0]?.type === "personal") {
-      return { statusCode: 403, detail: "Personal spaces cannot have additional members" };
-    }
-
-    const roleToGrant = input.role ?? "member";
-    const invitedEmail = normalizeAuthEmail(input.email);
-    const refusal = roleGrantRefusal(SPACE_ROLE_LADDER, role, roleToGrant);
-    if (refusal) return refusal;
-    const token = rawInvitationToken();
-    const id = randomUUID();
-    const res = await this.pool.query<{
-      status: string;
-      expires_at: Date | string;
-    }>(
-      `INSERT INTO user_invitations
-         (id, space_id, invited_email, role, token_hash, status,
-          invited_by_user_id, created_at, expires_at)
-       VALUES ($1, $2, $3, $4, $5, 'available', $6, now(), now() + interval '7 days')
-       RETURNING status, expires_at`,
-      [id, spaceId, invitedEmail, roleToGrant, hashToken(token), userId],
-    );
-    return {
-      id,
-      space_id: spaceId,
-      invited_email: invitedEmail,
-      role: roleToGrant,
-      token,
-      status: res.rows[0].status,
-      expires_at: asIso(res.rows[0].expires_at),
-    };
-  }
-
-  async acceptInvitation(userId: string, token: string): Promise<{ space_id: string | null } | SpaceFailure> {
-    if (!token || token.length > 512) return { statusCode: 400, detail: "Invalid invitation" };
-    return withTransaction(this.pool, async (client) => {
-      const user = await client.query<{ email: string }>(
-        "SELECT email FROM users WHERE id = $1 AND status = 'active' FOR UPDATE",
-        [userId],
-      );
-      if (!user.rows[0]) return { statusCode: 403, detail: "Account unavailable" };
-      const invitation = await client.query<{ id: string; space_id: string | null; invited_email: string; role: string | null }>(
-        `SELECT id, space_id, invited_email, role FROM user_invitations
-          WHERE token_hash = $1 AND status = 'available' AND expires_at > now()
-          FOR UPDATE`,
-        [hashToken(token)],
-      );
-      const row = invitation.rows[0];
-      if (!row || normalizeAuthEmail(row.invited_email) !== normalizeAuthEmail(user.rows[0].email)) {
-        return { statusCode: 400, detail: "Invalid invitation" };
-      }
-      const membership = row.space_id ? await client.query<{ id: string }>(
-        `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, 'active', now(), now())
-         ON CONFLICT (space_id, user_id) DO UPDATE
-           SET role = EXCLUDED.role, status = 'active', updated_at = now()
-           WHERE space_memberships.status <> 'active'
-         RETURNING id`,
-        [randomUUID(), row.space_id, userId, row.role],
-      ) : null;
-      if (membership && !membership.rowCount) return { statusCode: 409, detail: "Already a member of this Space" };
-      await client.query(
-        "UPDATE user_invitations SET status = 'accepted', accepted_at = now() WHERE id = $1",
-        [row.id],
-      );
-      return { space_id: row.space_id };
-    });
-  }
-
   async getSnapshotDefaults(userId: string, spaceId: string): Promise<SnapshotDefaults | SpaceFailure> {
     const role = await this.activeRole(userId, spaceId);
     if (!role) return { statusCode: 403, detail: "Not a member of this space" };
@@ -326,26 +92,6 @@ export class PgSpaceRepository implements SpaceRepository {
       [spaceId],
     );
     return res.rows[0] ?? { snapshot_retention_days_default: null, snapshot_max_count_default: null };
-  }
-
-  async updateSnapshotDefaults(
-    userId: string,
-    spaceId: string,
-    data: SnapshotDefaults,
-  ): Promise<SnapshotDefaults | SpaceFailure> {
-    const role = await this.activeRole(userId, spaceId);
-    if (!isSpaceOwnerOrAdmin(role)) {
-      return { statusCode: 403, detail: "Requires space owner or admin role" };
-    }
-    await this.pool.query(
-      `UPDATE spaces
-          SET snapshot_retention_days_default = $1,
-              snapshot_max_count_default = $2,
-              updated_at = now()
-        WHERE id = $3`,
-      [data.snapshot_retention_days_default, data.snapshot_max_count_default, spaceId],
-    );
-    return data;
   }
 
   /**
@@ -369,23 +115,6 @@ export class PgSpaceRepository implements SpaceRepository {
     return { space_id: spaceId, member_copy_out_enabled: row.member_copy_out_enabled };
   }
 
-  async updateContentEgressSetting(
-    userId: string,
-    spaceId: string,
-    enabled: boolean,
-  ): Promise<{ space_id: string; member_copy_out_enabled: boolean } | SpaceFailure> {
-    const role = await this.activeRole(userId, spaceId);
-    if (!isSpaceOwnerOrAdmin(role)) {
-      return { statusCode: 403, detail: "Requires space owner or admin role" };
-    }
-    const res = await this.pool.query(
-      `UPDATE spaces SET member_copy_out_enabled = $1, updated_at = now() WHERE id = $2`,
-      [enabled, spaceId],
-    );
-    if ((res.rowCount ?? 0) === 0) return { statusCode: 404, detail: "Space not found" };
-    return { space_id: spaceId, member_copy_out_enabled: enabled };
-  }
-
   async getRetrievalSettings(
     userId: string,
     spaceId: string,
@@ -393,18 +122,6 @@ export class PgSpaceRepository implements SpaceRepository {
     const role = await this.activeRole(userId, spaceId);
     if (!role) return { statusCode: 403, detail: "Not a member of this space" };
     return getOrCreateSpaceRetrievalSettings(this.pool, spaceId);
-  }
-
-  async updateRetrievalSettings(
-    userId: string,
-    spaceId: string,
-    data: SpaceRetrievalSettingsUpdate,
-  ): Promise<SpaceRetrievalSettingsOut | SpaceFailure> {
-    const role = await this.activeRole(userId, spaceId);
-    if (!isSpaceOwnerOrAdmin(role)) {
-      return { statusCode: 403, detail: "Requires space owner or admin role" };
-    }
-    return updateSpaceRetrievalSettings(this.pool, spaceId, data, { actorUserId: userId });
   }
 
   private async activeRole(userId: string, spaceId: string): Promise<string | null> {
@@ -417,22 +134,4 @@ export class PgSpaceRepository implements SpaceRepository {
     return res.rows[0]?.role ?? null;
   }
 
-  private async getSpaceRow(
-    spaceId: string,
-    userId: string,
-    client: { query: Pool["query"] },
-  ): Promise<SpaceRow | null> {
-    const res = await client.query<SpaceRow>(
-      `SELECT s.id, s.name, s.type, s.created_by_user_id, s.oversight_mode,
-              s.egress_notifications_enabled,
-              s.created_at, s.updated_at, m.role
-         FROM spaces s
-         LEFT JOIN space_memberships m
-           ON m.space_id = s.id AND m.user_id = $2
-        WHERE s.id = $1
-        LIMIT 1`,
-      [spaceId, userId],
-    );
-    return res.rows[0] ?? null;
-  }
 }

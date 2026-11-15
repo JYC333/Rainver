@@ -72,7 +72,7 @@ export function TopicCreate({spaceId,userId,projectId,legacyChannel,navigate}:{s
   const agent=chosen?{agent_id:chosen.agent_id,runtime_profile_id:chosen.runtime_profile_id,...(chosen.session_config?{session_config:chosen.session_config}:{})}:{}
   try{
    if(legacyChannel){
-    const goalId=pending.legacy_goal_id??(await sourceGoalsApi.legacy(legacyChannel,{spaceId})).goal.id
+    const goalId=pending.legacy_goal_id??(await sourceGoalsApi.legacy(legacyChannel,{spaceId})).goal_id!
     stored.current={...pending,legacy_goal_id:goalId};sessionStorage.setItem(storage,JSON.stringify(stored.current))
     // The described topic becomes the mapped goal's intent through its first message.
     await sourceGoalsApi.message(goalId,intent,pending.key,{spaceId},{search_path:searchPath,...agent})

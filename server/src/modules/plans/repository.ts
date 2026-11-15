@@ -1,4 +1,5 @@
 import {withRunTerminalOwner} from '../systemActions/operations/proposalTransitions.js';
+import {PlanControlError} from './controlErrors.js';
 import {insertProposalRow} from '../proposals/reviewPackets.js';
 import {lockProposalTransitions} from '../systemActions/operations/proposalTransitions.js';
 import { randomUUID } from "node:crypto";
@@ -482,8 +483,21 @@ export class PgPlanRepository {
     });
   }
 
-  async executePlan(identity: SpaceUserIdentity, planId: string, input: PlanExecuteInput) {
-    return withQueryableTransaction(this.db, async (client) => {
+  async executePlan(identity: SpaceUserIdentity, planId: string, input: PlanExecuteInput, db: Queryable = this.db) {
+    return withQueryableTransaction(db, async (client) => {
+      // Project → source Task → Plan, the order revision and Task writers use:
+      // discover the Plan's Project without a row lock, hold the Project and
+      // the source Task, then lock the Plan and recheck it did not move.
+      const observed = (await client.query<{ project_id: string | null; source_task_id: string }>(
+        `SELECT p.project_id, p.source_task_id FROM plans p WHERE p.space_id = $1 AND p.id = $2 AND ${planSourceTaskReadSql("p", "$3")}`,
+        [identity.spaceId, planId, identity.userId],
+      )).rows[0];
+      if (!observed) throw new HttpError(404, "Plan not found");
+      if (observed.project_id) {
+        await lockActiveProjectForMutation(client, identity.spaceId, observed.project_id);
+        await assertProjectWriterForMutation(client, identity.spaceId, observed.project_id, identity.userId);
+      }
+      await client.query(`SELECT id FROM tasks WHERE space_id = $1 AND id = $2 FOR SHARE`, [identity.spaceId, observed.source_task_id]);
       const result = await client.query<PlanRow & { version_id: string; version_status: string; version_budget_json: unknown; root_agent_id: string | null }>(
         `SELECT p.id, p.space_id, p.project_folder_id, p.project_id, p.source_task_id, p.root_run_id,
                 p.current_plan_version_id, p.name, p.description, p.status,
@@ -498,16 +512,15 @@ export class PgPlanRepository {
       );
       const plan = result.rows[0];
       if (!plan) throw new HttpError(404, "Plan not found");
-      if (plan.project_id) {
-        await lockActiveProjectForMutation(client, identity.spaceId, plan.project_id);
-        await assertProjectWriterForMutation(client, identity.spaceId, plan.project_id, identity.userId);
+      if (plan.project_id !== observed.project_id || plan.source_task_id !== observed.source_task_id) {
+        throw new PlanControlError(409, "Plan moved while it was being started; reload it");
       }
-      if (plan.version_status !== "approved") throw new HttpError(409, "Plan version must be approved before execution");
+      if (plan.version_status !== "approved") throw new PlanControlError(409, "Plan version must be approved before execution");
       const agentId = input.agentId ?? plan.root_agent_id;
-      if (!agentId) throw new HttpError(422, "agent_id is required to execute a Plan");
+      if (!agentId) throw new PlanControlError(422, "agent_id is required to execute a Plan");
       if (plan.root_run_id) {
         const root = await client.query<{ id: string; status: string }>(`SELECT id, status FROM runs WHERE space_id = $1 AND id = $2`, [identity.spaceId, plan.root_run_id]);
-        if (!root.rows[0]) throw new HttpError(409, "Plan coordinator run is missing");
+        if (!root.rows[0]) throw new PlanControlError(409, "Plan coordinator run is missing");
         return { plan_id: planId, root_run_id: plan.root_run_id, scheduled_node_ids: [], idempotent: true, root_status: root.rows[0].status };
       }
       await assertBudgetSourcesAvailable(client, identity.spaceId, budgetSourcesFromPlan(plan.version_budget_json));
@@ -577,8 +590,8 @@ export class PgPlanRepository {
       );
       const plan = result.rows[0];
       if (!plan) throw new HttpError(404, "Plan not found");
-      if (!plan.root_run_id) throw new HttpError(409, "Plan has not been executed");
-      if (plan.version_status !== "approved") throw new HttpError(409, "Plan version must be approved before reconciliation");
+      if (!plan.root_run_id) throw new PlanControlError(409, "Plan has not been executed");
+      if (plan.version_status !== "approved") throw new PlanControlError(409, "Plan version must be approved before reconciliation");
       // A coordinator that has ended — cancelled by a person, or already
       // finished — schedules nothing more; a child finishing late must not
       // start the next layer under it.

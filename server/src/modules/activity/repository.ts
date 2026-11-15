@@ -160,7 +160,7 @@ const CONSOLIDATABLE_STATUSES = new Set(["raw", "processed"]);
 export class PgActivityRepository {
   constructor(private readonly db: Queryable) {}
 
-  async create(identity: SpaceUserIdentity, body: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async create(identity: SpaceUserIdentity, body: Record<string, unknown>, id: string = randomUUID()): Promise<Record<string, unknown>> {
     const requestedUserId = optionalString(body.user_id);
     if (requestedUserId && requestedUserId !== identity.userId) {
       throw new HttpError(403, "user_id in body must match the authenticated user");
@@ -189,7 +189,7 @@ export class PgActivityRepository {
        )
        RETURNING ${ACTIVITY_COLUMNS}`,
       [
-        randomUUID(),
+        id,
         identity.spaceId,
         optionalString(body.source_run_id),
         optionalString(body.source_session_id),
@@ -350,7 +350,7 @@ export class PgActivityRepository {
     return [proposal];
   }
 
-  async createSummaryRun(identity: SpaceUserIdentity, input: SummaryRunInput): Promise<Record<string, unknown>> {
+  async prepareSummary(identity: SpaceUserIdentity, input: SummaryRunInput) {
     if (!input.activityIds.length && !input.evidenceIds.length && !input.sourceItemIds.length) {
       throw new HttpError(
         422,
@@ -427,6 +427,11 @@ export class PgActivityRepository {
       })),
     ];
     const summaryPreview = buildSummaryPreview(activityRows.rows, evidenceRows.rows, sourceRows.rows, input.summaryGoal);
+    return {sourceRefs,summaryPreview};
+  }
+
+  async createSummaryRun(identity: SpaceUserIdentity, input: SummaryRunInput): Promise<Record<string, unknown>> {
+    const {sourceRefs,summaryPreview}=await this.prepareSummary(identity,input);
     const artifactId = randomUUID();
     const now = new Date().toISOString();
     await this.db.query(

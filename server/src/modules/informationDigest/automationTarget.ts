@@ -1,3 +1,4 @@
+import {admitAutomationEffect} from '../automations/effectAuthority.js';
 import type { ServerConfig } from "../../config.js";
 import { InformationBriefingService } from "./briefing/service.js";
 import { dailyBriefingSetting } from "./briefing/schedule.js";
@@ -78,6 +79,7 @@ async function execute(context: AutomationTargetExecutionContext): Promise<Recor
   const period = digestPeriod(scheduledDigestDate(slot, timezone), timezone);
   const date = period.date;
   const started = await withTransaction(pool, async (client) => {
+    await admitAutomationEffect(client);
     await lockAndCheckAutomationBudget(client, automation);
     const automationRunId = await new PgAutomationRepository(client).createAutomationRun({
       automationId: automation.id,
@@ -106,6 +108,7 @@ async function execute(context: AutomationTargetExecutionContext): Promise<Recor
     // Only the personal scope still has an independently authorized daily model.
     const briefing = digest ? await dailyBriefing(pool, config, automation, request.scope === "project" ? request.project_id! : null, digest) : null;
     await withTransaction(pool, async (client) => {
+      await admitAutomationEffect(client);
       await new PgAutomationRepository(client).completeNativeAutomationRun({
         automationRunId: started.automationRunId,
         // A probe that failed outright is not a succeeded Automation run:
@@ -147,6 +150,7 @@ async function execute(context: AutomationTargetExecutionContext): Promise<Recor
   } catch (error) {
     const historySkipped = error instanceof HttpError && (error.responseBody as {code?:string}|undefined)?.code === 'monitoring_history_before_latest' && triggerType === 'schedule';
     await withTransaction(pool, async (client) => {
+      await admitAutomationEffect(client);
       await new PgAutomationRepository(client).completeNativeAutomationRun({
         automationRunId: started.automationRunId,
         status: historySkipped ? "skipped" : "failed",

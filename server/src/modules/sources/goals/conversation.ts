@@ -1,16 +1,16 @@
 import {requireNativeCollector} from './nativeSafety.js';
+import {goalTransaction,lockGoal} from './transaction.js';
 import {isDeepStrictEqual} from 'node:util';
 import type {RuntimeSessionConfigSelection,SourceGoalBeginRequest} from '@rainver/protocol';
 import {createHash} from 'node:crypto';
 import {PgConversationBackendRepository} from '../../sessions/conversationBackendRepository.js';
 import {validateSessionConfig} from '../../sessions/sessionConfig.js';
 import {sourceGoalError} from './dispatchError.js';
-import {goalDispatchErrorCode} from './dispatchError.js';
 import {assertSafeGoalMessage} from './messageSafety.js';
 import {resolveContentCreationContext} from '../../access/creationContext.js';
 import {SourceGoalBudgetSchema} from '@rainver/protocol';
 import type {ServerConfig} from '../../../config.js';
-import {HttpError,withDbTransaction,type Pool,type SpaceUserIdentity} from '../../routeUtils/common.js';
+import {HttpError,type Pool,type Queryable,type SpaceUserIdentity} from '../../routeUtils/common.js';
 import {PgSessionRepository} from '../../sessions/repository.js';
 import {SourceGoalService} from './service.js';
 import {SourceGoalExecutor} from './execution.js';
@@ -25,20 +25,31 @@ export class SourceGoalConversation {
   * with the same key and payload returns that topic and never charges another
   * planning attempt (the queued planning Run is reused). */
  async begin(identity:SpaceUserIdentity,input:SourceGoalBeginRequest){
+  const out=await this.beginIn(this.db,identity,input);
+  await this.afterBegin(identity,out);
+  return out.result;
+ }
+ /** Post-commit, rebuildable work of a creation whose follow activated a version. */
+ async afterBegin(identity:SpaceUserIdentity,out:{spaceId:string;goalId:string;followed:{activated:boolean;follow:import('@rainver/protocol').SourceGoalFollow|null}|null}){
+  if(out.followed)await new SourceGoalService(this.db,this.config,new SourceGoalExecutor(this.db,this.config)).afterFollow({...identity,spaceId:out.spaceId},out.goalId,out.followed);
+ }
+ /** Creation (and its optional follow) in the caller's transaction. */
+ async beginIn(outer:Queryable,identity:SpaceUserIdentity,input:SourceGoalBeginRequest){
   assertSafeGoalMessage(input.intent);
-  const scope=await resolveContentCreationContext(this.db,{userId:identity.userId,requestSpaceId:identity.spaceId,projectId:input.project_id});
+  return goalTransaction(outer,async tx=>{
+  const scope=await resolveContentCreationContext(tx,{userId:identity.userId,requestSpaceId:identity.spaceId,projectId:input.project_id});
   // A replayed creation keeps the Agent/Profile it was confirmed with, even if
   // the owner's default changed since; an explicit choice is always honored.
-  const existing=input.idempotency_key?(await this.db.query<{agent_id:string;runtime_profile_id:string}>('SELECT agent_id,runtime_profile_id FROM source_goals WHERE space_id=$1 AND owner_user_id=$2 AND creation_key=$3',[scope.spaceId,identity.userId,input.idempotency_key])).rows[0]:undefined;
-  const selected=input.agent_id&&input.runtime_profile_id?{rows:[{id:input.agent_id,profile_id:input.runtime_profile_id}]}:existing?{rows:[{id:existing.agent_id,profile_id:existing.runtime_profile_id}]}:await this.db.query(`SELECT a.id,p.id AS profile_id FROM agents a JOIN agent_runtime_profiles p ON p.agent_id=a.id AND p.space_id=a.space_id WHERE a.space_id=$1 AND a.owner_user_id=$2 AND a.status='active' AND p.enabled=true ORDER BY (a.agent_kind='system_assistant') DESC,p.is_default DESC,a.created_at,p.id LIMIT 1`,[scope.spaceId,identity.userId]);
+  const existing=input.idempotency_key?(await tx.query<{agent_id:string;runtime_profile_id:string}>('SELECT agent_id,runtime_profile_id FROM source_goals WHERE space_id=$1 AND owner_user_id=$2 AND creation_key=$3',[scope.spaceId,identity.userId,input.idempotency_key])).rows[0]:undefined;
+  const selected=input.agent_id&&input.runtime_profile_id?{rows:[{id:input.agent_id,profile_id:input.runtime_profile_id}]}:existing?{rows:[{id:existing.agent_id,profile_id:existing.runtime_profile_id}]}:await tx.query(`SELECT a.id,p.id AS profile_id FROM agents a JOIN agent_runtime_profiles p ON p.agent_id=a.id AND p.space_id=a.space_id WHERE a.space_id=$1 AND a.owner_user_id=$2 AND a.status='active' AND p.enabled=true ORDER BY (a.agent_kind='system_assistant') DESC,p.is_default DESC,a.created_at,p.id LIMIT 1`,[scope.spaceId,identity.userId]);
   const agent=selected.rows[0];if(!agent)throw sourceGoalError(409,'source_goal_execution_setup_required');
-  if((input.search_path??'agent')==='agent')await requireNativeCollector(this.db,agent.profile_id);
+  if((input.search_path??'agent')==='agent')await requireNativeCollector(tx,agent.profile_id);
   const fingerprint=createHash('sha256').update(JSON.stringify({search_path:input.search_path??'agent',session_config:input.session_config??null,follow:input.follow??null})).digest('hex');
   let created!:Awaited<ReturnType<SourceGoalService['create']>>;let followed:Awaited<ReturnType<SourceGoalService['followLocked']>>|null=null;
-  await withDbTransaction(this.db,async tx=>{
+  {
    const service=new SourceGoalService(tx as unknown as Pool,this.config,new SourceGoalExecutor(this.db,this.config));
    created=await service.create({...identity,spaceId:scope.spaceId},{intent:input.intent,project_id:scope.projectId,creation_key:input.idempotency_key,agent_id:agent.id,runtime_profile_id:agent.profile_id,budget:SourceGoalBudgetSchema.parse({})});
-   await tx.query('SELECT id FROM source_goals WHERE id=$1 FOR UPDATE',[created.id]);
+   await lockGoal(tx,created.id);
    const g=(await tx.query<{compatibility_json:Record<string,unknown>|null;session_id:string|null;project_id:string|null;agent_id:string;intent_json:{intent:string}}>('SELECT compatibility_json,session_id,project_id,agent_id,intent_json FROM source_goals WHERE id=$1',[created.id])).rows[0];
    const prior=g.compatibility_json?.creation_fingerprint;
    if(typeof prior==='string'){if(prior!==fingerprint)throw sourceGoalError(409,'source_goal_creation_key_changed');}
@@ -54,9 +65,9 @@ export class SourceGoalConversation {
     }
    }
    if(input.follow)followed=await service.followLocked(tx,{...identity,spaceId:scope.spaceId},created.id,{idempotency_key:`begin:${input.idempotency_key}`,...input.follow});
+  }
+  return {spaceId:scope.spaceId,goalId:created.id as string,followed:followed as {activated:boolean;follow:import('@rainver/protocol').SourceGoalFollow|null}|null,result:{...created,...(followed?{follow:(followed as {follow:unknown}).follow}:{})}};
   });
-  if(followed)await new SourceGoalService(this.db,this.config,new SourceGoalExecutor(this.db,this.config)).afterFollow({...identity,spaceId:scope.spaceId},created.id,followed);
-  return {...created,...(followed?{follow:(followed as {follow:unknown}).follow}:{})};
  }
  /** Owner-only lookup of a creation by its idempotency key, so a client whose
   * confirmation response was lost can open the committed topic without
@@ -72,11 +83,16 @@ export class SourceGoalConversation {
    throw error;
   }
  }
- async send(identity:SpaceUserIdentity,id:string,input:{search_path?:'agent'|'api';content:string;idempotency_key:string;session_config?:RuntimeSessionConfigSelection[];agent_id?:string;runtime_profile_id?:string}){
+ /** One transaction: the authenticated message, its adjustment cycle and the
+  * queued planning Run with its Job intent commit together, or nothing does.
+  * A replayed key returns the bound Run; a changed payload is refused. */
+ async send(identity:SpaceUserIdentity,id:string,input:{search_path?:'agent'|'api';content:string;idempotency_key:string;session_config?:RuntimeSessionConfigSelection[];agent_id?:string;runtime_profile_id?:string}){return this.sendIn(this.db,identity,id,input);}
+ async sendIn(outer:Queryable,identity:SpaceUserIdentity,id:string,input:{search_path?:'agent'|'api';content:string;idempotency_key:string;session_config?:RuntimeSessionConfigSelection[];agent_id?:string;runtime_profile_id?:string}):Promise<{session_id:string;run_id:string;job_id?:string;status?:string}>{
   if(!input.content?.trim() || input.content.length>8000 || !input.idempotency_key || input.idempotency_key.length>128)throw new HttpError(422,'Invalid goal message');
   assertSafeGoalMessage(input.content);
-  const message=await withDbTransaction(this.db,async db=>{
-   await db.query('SELECT id FROM source_goals WHERE id=$1 FOR UPDATE',[id]);const g=await requireGoal(db,identity,id,true);
+  return goalTransaction(outer,async db=>{
+  const message=await (async()=>{
+   await lockGoal(db,id);const g=await requireGoal(db,identity,id,true);
    if(input.agent_id&&input.runtime_profile_id){
     if(g.agent_id&&g.runtime_profile_id&&(g.agent_id!==input.agent_id||g.runtime_profile_id!==input.runtime_profile_id))throw new HttpError(409,'Goal execution selection is already bound');
     const selected=await db.query(`SELECT 1 FROM agents a JOIN agent_runtime_profiles p ON p.agent_id=a.id AND p.space_id=a.space_id WHERE a.id=$1 AND a.space_id=$2 AND a.owner_user_id=$3 AND a.status='active' AND p.id=$4 AND p.enabled=true`,[input.agent_id,g.space_id,identity.userId,input.runtime_profile_id]);
@@ -102,17 +118,12 @@ export class SourceGoalConversation {
     // semantics on the goal, never mutate an immutable published version.
     if(g.active_version_id){const active=(await db.query<{plan_json:{intent_snapshot?:unknown}}>('SELECT plan_json FROM source_goal_versions WHERE id=$1 AND goal_id=$2',[g.active_version_id,g.id])).rows[0];const saved=g.compatibility_json?.active_intent_snapshot as {version_id?:string}|undefined;if(active&&!active.plan_json.intent_snapshot&&saved?.version_id!==g.active_version_id)await db.query(`UPDATE source_goals SET compatibility_json=COALESCE(compatibility_json,'{}'::jsonb)||$2::jsonb WHERE id=$1`,[id,{active_intent_snapshot:{version_id:g.active_version_id,intent_json:g.intent_json}}]);}
     const intent=(baseIntent+'\n\n'+input.content.trim());if(intent.length>8000)throw new HttpError(422,'Goal refinement too long');await db.query(`UPDATE source_goals SET intent_json=$2,revision=revision+1,current_version_id=NULL WHERE id=$1`,[id,{...g.intent_json,intent}]);await db.query(`UPDATE source_goal_previews SET status='stale' WHERE goal_id=$1`,[id]);}
-   const stored=await sessions.addMessage(g.space_id,g.owner_user_id,sessionId,{role:'user',content:input.content.trim(),metadata:{...(input.search_path?{source_goal_search_path:input.search_path}:{}),...(input.session_config!==undefined?{source_goal_session_config:input.session_config}:{}),source_goal_message_key:input.idempotency_key,source_goal_dispatch_pending:true,source_goal_cycle:cycle,source_goal_paused_request:g.status==='paused'}});if(!stored)throw new HttpError(404,'Conversation unavailable');return {sessionId,id:stored.id,run_id:null};
-  });
+   const stored=await sessions.addMessage(g.space_id,g.owner_user_id,sessionId,{role:'user',content:input.content.trim(),metadata:{...(input.search_path?{source_goal_search_path:input.search_path}:{}),...(input.session_config!==undefined?{source_goal_session_config:input.session_config}:{}),source_goal_message_key:input.idempotency_key,source_goal_dispatch_pending:true,source_goal_cycle:cycle,source_goal_paused_request:g.status==='paused'}});if(!stored)throw new HttpError(404,'Conversation unavailable');return {sessionId,id:stored.id,run_id:null as string|null};
+  })();
   if(message.run_id)return {session_id:message.sessionId,run_id:message.run_id};
-  try{const queued=await queueSourceGoalAgent(this.db,this.config,identity,id,'explore',undefined,{sessionId:message.sessionId,messageId:message.id});return {session_id:message.sessionId,...queued};}
-  catch(error){
-   // Queue admission and attachment are atomic. Preserve any committed binding
-   // after an uncertain response; otherwise release this failed dispatch claim.
-   const attached=(await this.db.query('SELECT run_id FROM messages WHERE id=$1 AND session_id=$2',[message.id,message.sessionId])).rows[0];
-   if(attached?.run_id)return {session_id:message.sessionId,run_id:attached.run_id};
-   const code=goalDispatchErrorCode(error);
-   await this.db.query(`UPDATE messages SET metadata_json=(metadata_json-'source_goal_dispatch_pending')||$3::jsonb WHERE id=$1 AND session_id=$2 AND run_id IS NULL`,[message.id,message.sessionId,{source_goal_dispatch_failed:true,source_goal_dispatch_error:code}]);throw error;
-  }
+  const queued=await queueSourceGoalAgent(db,this.config,identity,id,'explore',undefined,{sessionId:message.sessionId,messageId:message.id});
+  if(!('run_id' in queued))throw sourceGoalError(409,'source_goal_execution_setup_required');
+  return {session_id:message.sessionId,...queued};
+  });
  }
 }

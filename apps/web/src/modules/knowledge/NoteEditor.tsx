@@ -12,7 +12,7 @@ import {
 import { inquiryApi, knowledgeApi, notesApi, ApiRequestError } from '../../api/client'
 import { useSpace } from '../../contexts/SpaceContext'
 import { cn, errMsg, isNotFoundError } from '../../lib/utils'
-import type { EntityLink, EntityLinkType, KnowledgeItemSummary, Note, NoteProjectShare, NoteRevision, NoteSummary } from '../../types/api'
+import type { EntityLink, NoteLinkType, KnowledgeItemSummary, Note, NoteProjectShare, NoteRevision, NoteSummary } from '../../types/api'
 import { Button } from '../../components/ui/button'
 import { Badge } from '../../components/ui/badge'
 import { Label } from '../../components/ui/label'
@@ -40,7 +40,7 @@ import {
  * link type's name but deliberately not its endpoints, so a combination that
  * reads oddly is a wording choice, not a broken edge.
  */
-const LINK_TYPE_OPTIONS: { value: EntityLinkType; label: string }[] = [
+const LINK_TYPE_OPTIONS: { value: NoteLinkType; label: string }[] = [
   { value: 'related_to', label: 'related to' },
   { value: 'references', label: 'references' },
   { value: 'derived_from', label: 'derived from' },
@@ -155,7 +155,7 @@ export default function NoteEditor({ noteId, onNoteResolved }: NoteEditorProps) 
   const [searchResults, setSearchResults] = useState<{ value: string; label: string }[]>([])
   const [searching, setSearching] = useState(false)
   const [linkTargetId, setLinkTargetId] = useState('')
-  const [linkType, setLinkType] = useState<EntityLinkType>('related_to')
+  const [linkType, setLinkType] = useState<NoteLinkType>('related_to')
   const [linking, setLinking] = useState(false)
 
   const [panel, setPanel] = useState<StatusPanel>(null)
@@ -703,7 +703,7 @@ export default function NoteEditor({ noteId, onNoteResolved }: NoteEditorProps) 
               <div className="flex items-end gap-2">
                 <div className="min-w-0 flex-1">
                   <Label className="text-xs">Relation</Label>
-                  <Select size="sm" dropUp value={linkType} onChange={v => setLinkType(v as EntityLinkType)} options={LINK_TYPE_OPTIONS} />
+                  <Select size="sm" dropUp value={linkType} onChange={v => setLinkType(v as NoteLinkType)} options={LINK_TYPE_OPTIONS} />
                 </div>
                 <Button size="sm" variant="outline" onClick={addLink} disabled={linking || !linkTargetId}>
                   Add link

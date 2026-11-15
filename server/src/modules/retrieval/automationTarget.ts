@@ -1,3 +1,4 @@
+import {admitAutomationEffect} from '../automations/effectAuthority.js';
 import { getDbPool } from "../../db/pool.js";
 import { withTransaction } from "../../db/tx.js";
 import {
@@ -75,6 +76,7 @@ async function execute(
   if (!config.databaseUrl) throw new HttpError(502, "SERVER_DATABASE_URL is required");
   const pool = getDbPool(config.databaseUrl);
   const started = await withTransaction(pool, async (client) => {
+    await admitAutomationEffect(client);
     await lockAndCheckAutomationBudget(client, automation);
     const automationRunId = await new PgAutomationRepository(client).createAutomationRun({
       automationId: automation.id,
@@ -94,6 +96,7 @@ async function execute(
     ).scan(fireInput.spaceId, fireInput.actorUserId);
     const settings = await readSpaceRetrievalSettings(pool, fireInput.spaceId);
     const persisted = await withTransaction(pool, async (client) => {
+      await admitAutomationEffect(client);
       const reportContext = {
         spaceId: fireInput.spaceId,
         ownerUserId: fireInput.actorUserId,
@@ -149,6 +152,7 @@ async function execute(
     };
   } catch (error) {
     await withTransaction(pool, async (client) => {
+      await admitAutomationEffect(client);
       await new PgAutomationRepository(client).completeNativeAutomationRun({
         automationRunId: started.automationRunId,
         status: "failed",

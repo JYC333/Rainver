@@ -50,6 +50,7 @@ export * from "./researchArea.js";
 export * from "./projectSources.js";
 export * from "./projectOperations.js";
 export * from "./projects.js";
+export * from "./projectAgents.js";
 export * from "./projectWork.js";
 export * from "./taskMerges.js";
 export * from "./proposals.js";

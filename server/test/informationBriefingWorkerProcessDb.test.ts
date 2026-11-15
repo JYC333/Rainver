@@ -22,7 +22,7 @@ const workers: WorkerProcess[] = [];
 beforeAll(async () => {
   home = await mkdtemp(join(tmpdir(), "rainver-briefing-worker-"));
   await buildServerDist();
-}, 600_000);
+});
 afterAll(async () => { if (home) await rm(home, { recursive: true, force: true }); });
 beforeEach(async () => {
   if (!db.available) return;
@@ -88,7 +88,7 @@ describe("Briefing Runs on real jobs-worker processes", () => {
     second.send({ cmd: "policy", prompt: { answer: answerAll }, terminate: "ack" });
     // Recovery stops the old launch first and settles only on the Host's confirmation.
     expect((await second.next(isFrame("terminate", run.id))).frame).toMatchObject({ launch_id: old.launchId, force: true });
-    expect(await settledVersion(requested.briefing.id)).toMatchObject({ status: "failed", error_code: "orphaned", attempt: 1 });
+    expect(await settledVersion(requested.briefing.id)).toMatchObject({ status: "failed", error_code: "execution_controller_lost", attempt: 1 });
     expect(await attempts(run.id)).toEqual([expect.objectContaining({ attempt_number: 1, status: "orphaned", launch_id: old.launchId })]);
 
     const again = await retry(requested.briefing.id);

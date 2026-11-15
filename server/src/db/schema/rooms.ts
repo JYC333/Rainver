@@ -1,5 +1,6 @@
 import {
   bigint,
+  jsonb,
   boolean,
   check,
   foreignKey,
@@ -29,6 +30,7 @@ export const rooms = pgTable("rooms", {
   createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" }).notNull(),
   archivedAt: timestamp("archived_at", { withTimezone: true, mode: "string" }),
+  conversationDefaultsJson: jsonb("conversation_defaults_json").default([]).notNull(),
   rosterRevision: bigint("roster_revision", { mode: "number" }).default(0).notNull(),
   /**
    * The Project's one mainline conversation. Project members belong to it by

@@ -1,3 +1,5 @@
+import {admitMaterialization} from './workspaceRetention.js';
+import type {ExecutionWorkspaceRef} from '@rainver/protocol';
 import {reconcileLocalChanges} from './localChangeReconciliation.js';
 import {workspaceDeltaAlreadyApplied} from './appliedWorkspaceDelta.js';
 import {workspaceIdentity} from './worktreeIdentity.js';
@@ -163,6 +165,7 @@ interface TaskMergeFinishResult {
 }
 
 interface MergeTarget {
+  materializationRef?:ExecutionWorkspaceRef;
   targetRef?: string;
   sourceCommit?: string;
   baseCommit?: string;
@@ -583,6 +586,7 @@ export async function prepareTaskMerge(input: MergeTarget & { author: GitIdentit
   if (!validTarget(input)) return stepError("The Location, Task or merge id cannot name a Task worktree.");
   const { locationId, taskId, mergeId } = input;
   const outcome = await withTaskHeld(taskLeaseKey(locationId, taskId), async (): Promise<TaskMergeStepResult> => {
+    if(input.materializationRef)await admitMaterialization(locationId,taskId,input.materializationRef);
     // A Location the Task's Runs worked in place — not a git checkout, or one
     // with no commit yet — has no Task branch: nothing to merge.
     if (input.locationRoot) {
@@ -716,6 +720,7 @@ export async function continueTaskMerge(input: MergeTarget): Promise<TaskMergeSt
   if (!validTarget(input)) return stepError("The Location, Task or merge id cannot name a Task worktree.");
   const { locationId, taskId, mergeId } = input;
   const outcome = await withTaskHeld(taskLeaseKey(locationId, taskId), async (): Promise<TaskMergeStepResult> => {
+    if(input.materializationRef)await admitMaterialization(locationId,taskId,input.materializationRef);
     const record = await readMergeRecord(locationId, taskId);
     if (!record || record.merge_id !== mergeId) return stepError("no_merge");
     if (record.state === "rebased" && record.task_commit) return rebasedAnswer(record, record.task_commit);
@@ -1129,6 +1134,7 @@ export async function mergeResolutionWorktree(
 /** Verify the exact candidate tree after commands, under the same owner lease. */
 export async function sealMergeCandidate(input:MergeTarget & {candidateCommit:string}):Promise<boolean>{
  const sealed=await withTaskHeld(taskLeaseKey(input.locationId,input.taskId),async()=>{
+  if(input.materializationRef)await admitMaterialization(input.locationId,input.taskId,input.materializationRef);
   const repo=await usableRepository(input.locationRoot),record=await readMergeRecord(input.locationId,input.taskId);
   if(record?.merge_id!==input.mergeId||record.task_commit!==input.candidateCommit)return false;
   const {path,entry}=await worktreeAt(repo,input.locationId,input.taskId);
@@ -1166,6 +1172,7 @@ export async function canAutomaticallyRepairMerge(input:MergeTarget):Promise<boo
 export async function prepareConflictResolution(input:MergeTarget):Promise<string[]|null>{
  if(!validTarget(input))return null;
  const result=await withTaskHeld(taskLeaseKey(input.locationId,input.taskId),async()=>{
+  if(input.materializationRef)await admitMaterialization(input.locationId,input.taskId,input.materializationRef);
   const record=await readMergeRecord(input.locationId,input.taskId);
   if(!record||record.merge_id!==input.mergeId||record.state!=='conflict'||conflictsCut(record)||record.conflicts.length===0)return null;
   await writeMergeRecord(input.locationId,input.taskId,{...record,conflicts:record.conflicts.map(c=>({...c,required:false}))});
@@ -1176,6 +1183,7 @@ export async function prepareConflictResolution(input:MergeTarget):Promise<strin
 /** Reuse the same restricted resolution path for one bounded verification repair. */
 export async function prepareVerificationRepair(input:MergeTarget):Promise<string[]|null>{
  const result=await withTaskHeld(taskLeaseKey(input.locationId,input.taskId),async()=>{
+  if(input.materializationRef)await admitMaterialization(input.locationId,input.taskId,input.materializationRef);
   const repo=await usableRepository(input.locationRoot),record=await readMergeRecord(input.locationId,input.taskId);
   if(record?.merge_id!==input.mergeId||record.state!=='rebased'||!record.task_commit)return null;
   const files=nulFields(await gitRaw(['diff','--name-only','-z',record.onto_commit,record.task_commit],repo.root));

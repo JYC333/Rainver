@@ -139,6 +139,9 @@ export const AmbientSessionCountSchema = z.object({
   runtime_key: RuntimeKeySchema,
   installation: z.string().min(1).max(64),
   session_count: z.number().int().min(0),
+  /** Content-free discovery inventory; absent on older hosts means unknown. */
+  sessions: z.array(z.object({ session_id: z.string().min(1).max(256), updated_at: z.string().max(64).nullable() })).max(50).optional(),
+  observed_at: z.string().datetime().optional(),
   oldest_updated_at: z.string().max(64).nullable(),
   newest_updated_at: z.string().max(64).nullable(),
   /** Set when the runtime could not be asked; the count is then unknown, not zero. */
@@ -173,9 +176,21 @@ export type AmbientImportPolicyEntry = z.infer<typeof AmbientImportPolicyEntrySc
 
 export const AmbientImportPolicySchema = z.object({
   entries: z.array(AmbientImportPolicyEntrySchema).default([]),
-  /** Set once the banner has been answered, so it is not shown again. */
+  /** First policy interaction, retained for audit; never suppresses reminders. */
   offered_at: z.string().max(64).nullable().default(null),
+  reminder: z.object({
+    enabled: z.boolean(),
+    snoozed_until: z.string().datetime().nullable(),
+  }).optional(),
 });
+export const AmbientImportAttentionSchema = z.object({
+  new_sessions: z.number().int().nonnegative(),
+  updated_sessions: z.number().int().nonnegative(),
+  incomplete_sessions: z.number().int().nonnegative(),
+  /** Discovery unavailable/stale or timestamps insufficient to decide. */
+  uncertain: z.boolean(),
+});
+export type AmbientImportAttention = z.infer<typeof AmbientImportAttentionSchema>;
 export type AmbientImportPolicy = z.infer<typeof AmbientImportPolicySchema>;
 
 /**

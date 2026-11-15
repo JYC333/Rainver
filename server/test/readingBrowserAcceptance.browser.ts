@@ -272,10 +272,10 @@ it.each([['en',1440,1000],['zh-CN',390,844]] as const)('walks built Reading with
       expect((await db.pool.query("SELECT status FROM proposals WHERE space_id=$1 AND proposal_type='source_material_retention'",[space])).rows.map(r=>r.status)).toEqual(['accepted']);
       expect(await materialCounts()).toEqual(beforeConsent);
       // FIXTURE: there is currently no API to grant model egress after a Source
-      // is created (connection PATCH is retired with 410; channel updates carry
+      // is created (the connection PATCH URL is removed; channel updates carry
       // no consent), so the owner's grant is written as the canonical consent/policy.
       const consentConnection=(await db.pool.query<{connection_id:string}>('SELECT connection_id FROM source_items WHERE id=$1',[consentItem])).rows[0].connection_id;
-      expect((await app.inject({method:'PATCH',url:`/api/v1/sources/connections/${consentConnection}`,headers:{'x-rainver-space-id':space,'content-type':'application/json'},payload:JSON.stringify({consent:{allow_external_model_egress:true}})})).statusCode).toBe(410);
+      expect((await app.inject({method:'PATCH',url:`/api/v1/sources/connections/${consentConnection}`,headers:{'x-rainver-space-id':space,'content-type':'application/json'},payload:JSON.stringify({consent:{allow_external_model_egress:true}})})).statusCode).toBe(404);
       await db.pool.query(`UPDATE source_connections SET consent_json=COALESCE(consent_json,'{}'::jsonb)||'{"allow_external_model_egress":true}'::jsonb,policy_json=COALESCE(policy_json,'{}'::jsonb)||'{"source_egress_configured":true,"source_egress_class":"external_provider_allowed"}'::jsonb WHERE id=$1`,[consentConnection]);
       await prepare.click();await page.getByText(en?'Queued':'排队中',{exact:true}).waitFor();
       expect(await materialCounts()).toEqual({runs:beforeConsent.runs+1,jobs:beforeConsent.jobs+1});

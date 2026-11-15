@@ -1,7 +1,7 @@
 import {once} from 'node:events';
 import {PgRunToolIdentityRepository} from '../src/modules/runs/runToolIdentityRepository.js';
 import {randomUUID} from 'node:crypto';
-import {mkdtemp,rm,symlink} from 'node:fs/promises';
+import {mkdtemp,rm,symlink,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
@@ -131,13 +131,18 @@ describe('operation process/connection failure acceptance (real PG)',()=>{
 
 
 it('runs the pre-core server code against the additive schema and interleaves old/new cancellation receipts',async()=>{
-  // Immutable pre-core source, compiled with installed workspace dependencies. No product database or worktree mutation.
+  // Immutable pre-core server and protocol sources; external dependencies stay installed.
+  // Pin the type contract too: current protocol additions must not rewrite historical code.
   const root=fileURLToPath(new URL('../../',import.meta.url)),old=await mkdtemp(join(home,'pre-core-'));
-  const archive=execFileSync('git',['archive','95d61d90','server/src','server/tsconfig.json','server/package.json'],{cwd:root,maxBuffer:64*1024*1024});
+  const archive=execFileSync('git',['archive','95d61d90','server/src','server/tsconfig.json','server/package.json','packages/protocol'],{cwd:root,maxBuffer:64*1024*1024});
   execFileSync('tar',['-x','-C',old],{input:archive});
   await symlink(join(root,'node_modules'),join(old,'node_modules'),'dir');
   await symlink(join(root,'server/node_modules'),join(old,'server/node_modules'),'dir');
-  await promisify(execFile)(process.execPath,[join(root,'server/node_modules/typescript/bin/tsc'),'-p',join(old,'server/tsconfig.json')],{maxBuffer:16*1024*1024});
+  await symlink(join(root,'packages/protocol/node_modules'),join(old,'packages/protocol/node_modules'),'dir');
+  const tsc=join(root,'server/node_modules/typescript/bin/tsc');
+  await promisify(execFile)(process.execPath,[tsc,'-p',join(old,'packages/protocol/tsconfig.build.json')],{maxBuffer:16*1024*1024});
+  await writeFile(join(old,'server/tsconfig.compat.json'),JSON.stringify({extends:'./tsconfig.json',compilerOptions:{paths:{'@rainver/protocol':['../packages/protocol/dist/index.d.ts']}}}));
+  await promisify(execFile)(process.execPath,[tsc,'-p',join(old,'server/tsconfig.compat.json')],{maxBuffer:16*1024*1024});
   const legacy=child({legacy:true,dist:pathToFileURL(join(old,'server/dist/')).href}),ready=await legacy.next('ready');
   const oldResult=await request(ready.address!,randomUUID(),true);expect(oldResult.status).toBe(200);expect(oldResult.body).toMatchObject({already_terminal:false});
   const modern=await retry(randomUUID());expect(modern.body).toMatchObject({data:{already_terminal:true}});

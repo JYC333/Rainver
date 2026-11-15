@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
 import { JobHandlerRegistry } from "../src/modules/jobs/handlerRegistry.js";
 import { PgJobQueueRepository } from "../src/modules/jobs/repository.js";
@@ -17,8 +17,14 @@ import { SystemActionDispatcher } from "../src/modules/systemActions/systemActio
 import { resetTables } from "./support/resetTables.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { seedServerRuntimeProfile } from "./support/domainSeeds.js";
+import {seedSpaceMember} from './support/domainSeeds.js';
+import {buildModuleServer} from './support/moduleServer.js';
+import {__setAuthIdentityForTests} from '../src/modules/auth/identity.js';
+import {policyModule} from '../src/modules/policy/index.js';
+import {systemActionsModule} from '../src/modules/systemActions/index.js';
 
 describe("runToolGrantProvisioningDb", () => {
+  afterEach(()=>__setAuthIdentityForTests(null));
   // The real creation path must persist the fail-closed intersection of Run
   // capabilities, immutable AgentVersion permissions, and the System Action
   // Registry. A FakeDb cannot prove which columns the INSERT actually writes.
@@ -107,13 +113,13 @@ describe("runToolGrantProvisioningDb", () => {
     return result.rows[0]?.permission_snapshot_json ?? null;
   }
 
-  async function createDeniedRunForAuthorization() {
+  async function createDeniedRunForAuthorization(userId=USER) {
     const repository = new PgRunRepository(db.pool);
     const created = await repository.createQueuedRun({
       execution_kind: "agent",
       agent_id: AGENT,
       space_id: SPACE,
-      user_id: USER,
+      user_id: userId,
       mode: "live",
       run_type: "agent",
       trigger_origin: "manual",
@@ -191,6 +197,61 @@ describe("runToolGrantProvisioningDb", () => {
   }
 
   describe("run tool grant provisioning", () => {
+    it('shares keyed authorization decisions across real REST/core entries and reauthorizes replay',async()=>{
+      const {request}=await createPendingAuthorizationRequest();
+      const app=buildModuleServer(loadConfig({SERVER_DATABASE_URL:db.connectionUri}),[policyModule,systemActionsModule]);
+      __setAuthIdentityForTests({spaceId:SPACE,userId:USER});
+      const url=`/api/v1/authorization-requests/${request.id}/approve`,key=randomUUID();
+      try{
+        expect((await app.inject({method:'POST',url,payload:{}})).statusCode).toBe(422);
+        expect((await app.inject({method:'POST',url,payload:{approved_by_user:USER},headers:{'idempotency-key':randomUUID()}})).statusCode).toBe(422);
+        const first=await app.inject({method:'POST',url,payload:{},headers:{'idempotency-key':key}});expect(first.statusCode,first.body).toBe(200);
+        const replay=await app.inject({method:'POST',url:'/api/v1/actions/policy.authorization_request.approve',payload:{request_id:request.id},headers:{'idempotency-key':key}});
+        expect(replay.json()).toEqual(first.json());
+        expect((await db.pool.query('SELECT id FROM action_approval_grants WHERE space_id=$1',[SPACE])).rows).toHaveLength(1);
+        expect((await db.pool.query("SELECT id FROM jobs WHERE job_type='authorization_request_reconcile' AND payload_json->>'authorization_request_id'=$1",[request.id])).rows).toHaveLength(1);
+        await db.pool.query("UPDATE space_memberships SET role='member' WHERE space_id=$1 AND user_id=$2",[SPACE,USER]);
+        expect((await app.inject({method:'POST',url,payload:{},headers:{'idempotency-key':key}})).statusCode).toBe(404);
+      }finally{__setAuthIdentityForTests(null);await app.close();}
+    });
+    it('keeps requester authority separate from the approving owner, while retaining owner rejection after requester exit',async()=>{
+      const requester=randomUUID();await seedSpaceMember(db.pool,{space:SPACE,user:requester});
+      const fixture=await createDeniedRunForAuthorization(requester);
+      const request=await fixture.service.createFromDeniedDecision({spaceId:SPACE,runId:fixture.created.id,agentId:AGENT,policyDecisionRecordId:fixture.policyDecisionRecordId,reason:'Bounded requester permission'});
+      const authorityClient=await db.pool.connect();
+      try{await authorityClient.query('BEGIN');await fixture.service.authorizeDecision(authorityClient,{spaceId:SPACE,userId:USER},request.id,'approved');await authorityClient.query('ROLLBACK');}finally{authorityClient.release();}
+      await db.pool.query("UPDATE space_memberships SET status='left' WHERE space_id=$1 AND user_id=$2",[SPACE,requester]);
+      await expect(fixture.service.decide({spaceId:SPACE,userId:USER},request.id,'approved')).rejects.toMatchObject({statusCode:403});
+      await expectPendingWithoutEffects(request.id);
+      expect(await fixture.service.decide({spaceId:SPACE,userId:USER},request.id,'rejected')).toMatchObject({status:'rejected',resulting_action_grant_id:null});
+    });
+    it('joins a raw owner transaction and rolls back the grant, request decision and required reconcile Job together',async()=>{
+      const {request,service}=await createPendingAuthorizationRequest();const client=await db.pool.connect();
+      try{
+        await client.query('BEGIN');await service.decideInTransaction(client,{spaceId:SPACE,userId:USER},request.id,'approved');
+        expect((await client.query('SELECT id FROM action_approval_grants WHERE space_id=$1',[SPACE])).rows).toHaveLength(1);
+        await client.query('ROLLBACK');
+      }finally{client.release();}
+      await expectPendingWithoutEffects(request.id);
+    });
+    it('rolls back all authorization effects on mandatory operation audit failure and recovers with the original key',async()=>{
+      const {request}=await createPendingAuthorizationRequest();
+      const app=buildModuleServer(loadConfig({SERVER_DATABASE_URL:db.connectionUri}),[policyModule,systemActionsModule]);
+      __setAuthIdentityForTests({spaceId:SPACE,userId:USER});
+      await db.pool.query(`CREATE FUNCTION refuse_authorization_operation_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF EXISTS(SELECT 1 FROM action_approval_grants) THEN RAISE EXCEPTION 'injected authorization audit refusal'; END IF; RETURN NEW; END $$`);
+      await db.pool.query('CREATE CONSTRAINT TRIGGER refuse_authorization_operation_audit AFTER INSERT ON policy_decision_records DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION refuse_authorization_operation_audit()');
+      const url=`/api/v1/authorization-requests/${request.id}/approve`,key=randomUUID();
+      try{
+        const failed=await app.inject({method:'POST',url,payload:{},headers:{'idempotency-key':key}});expect(failed.statusCode,failed.body).toBeGreaterThanOrEqual(500);
+        await expectPendingWithoutEffects(request.id);
+        await db.pool.query('DROP TRIGGER refuse_authorization_operation_audit ON policy_decision_records');
+        const recovered=await app.inject({method:'POST',url,payload:{},headers:{'idempotency-key':key}});expect(recovered.statusCode,recovered.body).toBe(200);
+      }finally{
+        await db.pool.query('DROP TRIGGER IF EXISTS refuse_authorization_operation_audit ON policy_decision_records');
+        await db.pool.query('DROP FUNCTION refuse_authorization_operation_audit()');
+        __setAuthIdentityForTests(null);await app.close();
+      }
+    });
     it("persists declared and permitted agent-tool grants when a run is created", async (ctx) => {
       if (!db.available || !db.pool) return ctx.skip();
       const repository = new PgRunRepository(db.pool);

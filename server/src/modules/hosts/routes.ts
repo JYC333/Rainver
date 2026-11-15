@@ -1,3 +1,4 @@
+import {registerDaemonWorkspaceOperations} from './workspaceOperationRoutes.js';
 import {reconcilePendingManagedWorkspaceArchives} from './managedWorkspaceArchiveRecovery.js';
 import { cutOffRevokedHost } from "./revocation.js";
 import { activeRuntimeCommands, registerHostOperationRoutes } from "./operationRoutes.js";
@@ -15,7 +16,6 @@ import { HostDaemonFrameSchema, HostHelloInfoSchema, HostRunDiffUploadSchema,
 import { scheduleAmbientSyncs } from "../importedSessions/syncScheduler.js";
 import { authRepositoryFromConfig, sessionRefreshSink, sessionTokenFromRequest, introspectIdentity, type AuthFailure } from "../auth/identity.js";
 import { hostRepositoryFromConfig, type HostFailure, type DaemonHelloInfo, type HostRow, type HostUploadRefusal } from "./repository.js";
-import { PgProjectFolderRepository } from "../projectFolders/repository.js";
 import { PgWorkspaceLocationRepository } from "../projectFolders/workspaceLocations.js";
 import { HttpError, dbPool } from "../routeUtils/common.js";
 import { requireInstanceAdmin } from "../routeUtils/access.js";
@@ -181,6 +181,7 @@ function daemonHelloInfo(frame: HostHelloInfo): DaemonHelloInfo {
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   app.register(websocketPlugin);
   registerHostOperationRoutes(app, context);
+  registerDaemonWorkspaceOperations(app, context.config);
 
   app.post("/api/v1/hosts/pairing-codes", async (request, reply) => {
     const requestId = resolveRequestId(request);
@@ -573,36 +574,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     return reply.code(204).send();
   });
 
-  app.post("/api/v1/hosts/me/workspaces", async (request, reply) => {
-    const requestId = resolveRequestId(request);
-    reply.header(REQUEST_ID_HEADER, requestId);
-    const hosts = hostRepositoryFromConfig(context.config);
-    const folders = PgProjectFolderRepository.fromConfig(context.config);
-    if (!hosts) {
-      return sendErrorEnvelope(reply, 502, errorEnvelope("identity_db_unavailable", "Identity database is unavailable", requestId));
-    }
-    const host = await authenticateHost(request, hosts);
-    if (!host) return reply.code(401).send({ detail: "Invalid host token" });
-    if (!host.owner_user_id) return reply.code(403).send({ detail: "The server host cannot register daemon workspaces" });
-    const payload = body<{ project_id: string; name: string; display_path?: string | null }>(request);
-    if (typeof payload.project_id !== "string" || !payload.project_id) {
-      return reply.code(422).send({ detail: "project_id is required" });
-    }
-    if (typeof payload.name !== "string" || !payload.name.trim()) {
-      return reply.code(422).send({ detail: "name is required" });
-    }
-    try {
-      const created = await folders.createRemoteWorkspace(payload.project_id, host.owner_user_id, host.id, {
-        name: payload.name,
-        displayPath: typeof payload.display_path === "string" ? payload.display_path : null,
-      });
-      return reply.code(201).send(created);
-    } catch (error) {
-      if (error instanceof HttpError) return reply.code(error.statusCode).send({ detail: error.message });
-      throw error;
-    }
-  });
-
   app.get("/api/v1/hosts/me/workspaces", async (request, reply) => {
     const requestId = resolveRequestId(request);
     reply.header(REQUEST_ID_HEADER, requestId);
@@ -614,23 +585,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!host) return reply.code(401).send({ detail: "Invalid host token" });
     const locations = new PgWorkspaceLocationRepository(getDbPool(context.config.databaseUrl));
     return reply.send({ items: await locations.listForHost(host.id) });
-  });
-
-  app.delete("/api/v1/hosts/me/workspaces/:folderId", async (request, reply) => {
-    const requestId = resolveRequestId(request);
-    reply.header(REQUEST_ID_HEADER, requestId);
-    const hosts = hostRepositoryFromConfig(context.config);
-    if (!hosts || !context.config.databaseUrl) {
-      return sendErrorEnvelope(reply, 502, errorEnvelope("identity_db_unavailable", "Identity database is unavailable", requestId));
-    }
-    const host = await authenticateHost(request, hosts);
-    if (!host) return reply.code(401).send({ detail: "Invalid host token" });
-    const locationId = params(request).folderId;
-    if (!locationId) return reply.code(400).send({ detail: "folderId is required" });
-    const locations = new PgWorkspaceLocationRepository(getDbPool(context.config.databaseUrl));
-    const removed = await locations.unregisterForHost(host.id, locationId);
-    if (!removed) return reply.code(404).send({ detail: "Workspace not found" });
-    return reply.code(204).send();
   });
 
   // Upload endpoints: the daemon posts its diff/output-directory

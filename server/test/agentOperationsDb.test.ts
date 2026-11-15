@@ -51,7 +51,7 @@ describe('Agent definition operations (real PostgreSQL)',()=>{
  it('places Project creation in its Space for writers only',async()=>{
   const created=await call('agent.create',{name:'Project agent',project_id:project});
   expect(created.statusCode,created.body).toBe(201);
-  expect(await rows('SELECT space_id,project_id,visibility FROM agents WHERE id=$1',[created.json().data.id])).toEqual([{space_id:team,project_id:project,visibility:'space_shared'}]);
+  expect(await rows('SELECT space_id,project_id,access_project_id,visibility FROM agents WHERE id=$1',[created.json().data.id])).toEqual([{space_id:team,project_id:null,access_project_id:project,visibility:'space_shared'}]);
   as(team,member);
   expect((await call('agent.create',{name:'Intruder',project_id:project})).statusCode).toBe(404);
   await db.pool.query("UPDATE projects SET status='archived' WHERE id=$1",[project]);as(team,user);

@@ -1,3 +1,4 @@
+import {registerOperationAdapters} from '../systemActions/operations/routeAdapter.js';
 /**
  * Policy module routes — internal, service-authenticated enforcement port.
  *
@@ -20,7 +21,8 @@ import { sessionActor } from '../systemActions/operations/actor.js';
 import { resolveRequestId } from '../../gateway/requestContext.js';
 import { AuthorizationRequestService } from "./authorizationRequestService.js";
 import { RuntimeContextPolicyRepository } from "./runtimeContextPolicyRepository.js";
-import { dbPool, jsonBody as publicJsonBody, params, requiredString, resolveIdentity, sendRouteError, HttpError } from "../routeUtils/common.js";
+import { registerRuntimeContextPolicyOperationRoutes } from "./runtimeContextOperations.js";
+import { dbPool, jsonBody as publicJsonBody, params, requiredString, resolveIdentity, sendRouteError } from "../routeUtils/common.js";
 
 function jsonBody(request: FastifyRequest): unknown {
   const text = request.body instanceof Buffer ? request.body.toString("utf8") : "";
@@ -58,27 +60,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     } catch (error) { return sendRouteError(reply, error); }
   });
 
-  app.put("/api/v1/runtime-context/policies/:scopeType/:scopeId", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
-    try {
-      const scopeType = protocol.RuntimeContextPolicyScopeSchema.parse(requiredString(params(request).scopeType, "scope_type"));
-      const scopeId = requiredString(params(request).scopeId, "scope_id");
-      const parsed = protocol.RuntimeContextPolicyWriteRequestSchema.safeParse(publicJsonBody(request));
-      if (!parsed.success) throw new HttpError(422, parsed.error.issues[0]?.message ?? "Invalid Runtime Context Policy");
-      const version = await runtimeContextPolicies().write(identity, scopeType, scopeId, parsed.data);
-      return reply.send(protocol.RuntimeContextPolicyVersionSchema.parse(version));
-    } catch (error) { return sendRouteError(reply, error); }
-  });
+  registerRuntimeContextPolicyOperationRoutes(app, context.config);
 
-  app.post("/api/v1/runtime-context/policies/resolve", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
-    try {
-      const parsed = protocol.RuntimeContextPolicyResolveRequestSchema.safeParse(publicJsonBody(request));
-      if (!parsed.success) throw new HttpError(422, parsed.error.issues[0]?.message ?? "Invalid policy resolution request");
-      const resolved = await runtimeContextPolicies().resolve(identity, parsed.data);
-      return reply.send(protocol.RuntimeContextResolvedPolicySchema.parse(resolved));
-    } catch (error) { return sendRouteError(reply, error); }
-  });
   app.get("/api/v1/runs/:runId/authorization-requests", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
     try {
@@ -86,20 +69,10 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       return reply.send(await authorizationRequests().listForRun(identity, runId));
     } catch (error) { return sendRouteError(reply, error); }
   });
-  app.post("/api/v1/authorization-requests/:requestId/approve", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
-    try {
-      const requestId = requiredString(params(request).requestId, "request_id");
-      return reply.send(await authorizationRequests().decide(identity, requestId, "approved"));
-    } catch (error) { return sendRouteError(reply, error); }
-  });
-  app.post("/api/v1/authorization-requests/:requestId/reject", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
-    try {
-      const requestId = requiredString(params(request).requestId, "request_id");
-      return reply.send(await authorizationRequests().decide(identity, requestId, "rejected"));
-    } catch (error) { return sendRouteError(reply, error); }
-  });
+  registerOperationAdapters(app,context.config,[
+    {method:'POST',url:'/api/v1/authorization-requests/:requestId/approve',operation:'policy.authorization_request.approve',params:{requestId:'request_id'}},
+    {method:'POST',url:'/api/v1/authorization-requests/:requestId/reject',operation:'policy.authorization_request.reject',params:{requestId:'request_id'}},
+  ]);
   for (const [url,id] of [
     ['/api/v1/policy/action-grants','policy.action_grant.create'],
     ['/api/v1/policy/action-grants/:grantId/revoke','policy.action_grant.revoke'],

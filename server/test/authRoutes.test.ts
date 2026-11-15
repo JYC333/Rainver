@@ -69,21 +69,6 @@ function fakeRepo(overrides: Partial<AuthRepository> = {}): AuthRepository {
 
 function fakeSpaceRepo(overrides: Partial<SpaceRepository> = {}): SpaceRepository {
   return {
-    async acceptInvitation() { return { space_id: "space-new" }; },
-    async createSpace(_userId, input) {
-      return {
-        id: "space-new",
-        name: input.name,
-        type: input.type ?? "team",
-        role: "owner",
-        oversight_mode: input.oversight_mode ?? "none",
-        egress_notifications_enabled: true,
-        member_count: 1,
-        created_by_user_id: "user-1",
-        created_at: "2026-06-15T12:00:00.000Z",
-        updated_at: "2026-06-15T12:00:00.000Z",
-      };
-    },
     async listMembers() {
       return [
         {
@@ -96,31 +81,14 @@ function fakeSpaceRepo(overrides: Partial<SpaceRepository> = {}): SpaceRepositor
         },
       ];
     },
-    async createInvitation(_userId, spaceId, input) {
-      return {
-        id: "invite-1",
-        space_id: spaceId,
-        invited_email: input.email,
-        role: input.role ?? "member",
-        token: "raw-token",
-        status: "available",
-        expires_at: "2026-06-22T12:00:00.000Z",
-      };
-    },
     async getSnapshotDefaults() {
       return {
         snapshot_retention_days_default: null,
         snapshot_max_count_default: null,
       };
     },
-    async updateSnapshotDefaults(_userId, _spaceId, data) {
-      return data;
-    },
     async getContentEgressSetting(_userId, spaceId) {
       return { space_id: spaceId, member_copy_out_enabled: false };
-    },
-    async updateContentEgressSetting(_userId, spaceId, enabled) {
-      return { space_id: spaceId, member_copy_out_enabled: enabled };
     },
     async getRetrievalSettings(_userId, spaceId) {
       return {
@@ -138,26 +106,6 @@ function fakeSpaceRepo(overrides: Partial<SpaceRepository> = {}): SpaceRepositor
         embedding_dimensions: 2560,
         max_results_default: 50,
         ranking_config: rankingConfig(),
-        created_at: "2026-06-15T12:00:00.000Z",
-        updated_at: "2026-06-15T12:00:00.000Z",
-      };
-    },
-    async updateRetrievalSettings(_userId, spaceId, data) {
-      return {
-        space_id: spaceId,
-        default_search_mode: data.default_search_mode ?? "hybrid",
-        rerank_enabled: data.rerank_enabled ?? false,
-        query_rewrite_enabled: data.query_rewrite_enabled ?? false,
-        query_rewrite_default: data.query_rewrite_default ?? false,
-        use_query_cache: data.use_query_cache ?? true,
-        include_trace: data.include_trace ?? false,
-        external_egress_enabled: data.external_egress_enabled ?? true,
-        retrieval_tool_mode: data.retrieval_tool_mode ?? "off",
-        context_ops_review_mode: data.context_ops_review_mode ?? "private_only",
-        context_ops_scan_mode: data.context_ops_scan_mode ?? "admins",
-        embedding_dimensions: data.embedding_dimensions ?? 2560,
-        max_results_default: data.max_results_default ?? 50,
-        ranking_config: data.ranking_config ?? rankingConfig(),
         created_at: "2026-06-15T12:00:00.000Z",
         updated_at: "2026-06-15T12:00:00.000Z",
       };
@@ -372,19 +320,11 @@ describe("native server auth routes", () => {
     expect(missing.json()).toEqual({ detail: "Space not found" });
   });
 
-  it("serves space create, members, invitations, and accept locally", async () => {
+  // Space creation, invitations and claims are core operations (spaceOperationsDb.test.ts).
+  it("serves space members locally", async () => {
     __setAuthRepositoryForTests(fakeRepo());
     __setSpaceRepositoryForTests(fakeSpaceRepo());
     app = server();
-
-    const created = await app.inject({
-      method: "POST",
-      url: "/api/v1/spaces",
-      headers: { "content-type": "application/json" },
-      payload: JSON.stringify({ name: "Team", type: "team", oversight_mode: "content" }),
-    });
-    expect(created.statusCode).toBe(201);
-    expect(created.json()).toMatchObject({ id: "space-new", role: "owner", oversight_mode: "content" });
 
     const members = await app.inject({
       method: "GET",
@@ -402,39 +342,6 @@ describe("native server auth routes", () => {
       },
     ]);
 
-    const invite = await app.inject({
-      method: "POST",
-      url: "/api/v1/spaces/space-new/invitations",
-      headers: { "content-type": "application/json" },
-      payload: JSON.stringify({ email: "invitee@example.test", role: "member" }),
-    });
-    expect(invite.statusCode).toBe(201);
-    expect(invite.json()).toMatchObject({ token: "raw-token", invited_email: "invitee@example.test" });
-
-    const accepted = await app.inject({
-      method: "POST",
-      url: "/api/v1/invitations/accept",
-      headers: { "content-type": "application/json" },
-      payload: JSON.stringify({ token: "raw-token" }),
-    });
-    expect(accepted.statusCode).toBe(200);
-    expect(accepted.json()).toEqual({ space_id: "space-new" });
-  });
-
-  it("requires an authenticated account to accept a Space invitation", async () => {
-    __setAuthRepositoryForTests(fakeRepo({
-      async getCurrentUser() { return { statusCode: 401, detail: "Authentication required" }; },
-    }));
-    __setSpaceRepositoryForTests(fakeSpaceRepo());
-    app = server();
-
-    const response = await app.inject({
-      method: "POST",
-      url: "/api/v1/invitations/accept",
-      headers: { "content-type": "application/json" },
-      payload: JSON.stringify({ token: "raw-token" }),
-    });
-    expect(response.statusCode).toBe(401);
   });
 
   it("serves space retrieval settings locally", async () => {
@@ -462,47 +369,6 @@ describe("native server auth routes", () => {
       max_results_default: 50,
     });
 
-    const updated = await app.inject({
-      method: "PATCH",
-      url: "/api/v1/spaces/space-1/retrieval-settings",
-      headers: { "content-type": "application/json" },
-      payload: JSON.stringify({
-        default_search_mode: "hybrid_rerank",
-        rerank_enabled: true,
-        query_rewrite_enabled: true,
-        query_rewrite_default: true,
-        use_query_cache: false,
-        include_trace: true,
-        external_egress_enabled: false,
-        context_ops_review_mode: "members",
-        context_ops_scan_mode: "members",
-        embedding_dimensions: 768,
-        max_results_default: 12,
-      }),
-    });
-    expect(updated.statusCode).toBe(200);
-    expect(updated.json()).toMatchObject({
-      default_search_mode: "hybrid_rerank",
-      rerank_enabled: true,
-      query_rewrite_enabled: true,
-      query_rewrite_default: true,
-      use_query_cache: false,
-      include_trace: true,
-      external_egress_enabled: false,
-      context_ops_review_mode: "members",
-      context_ops_scan_mode: "members",
-      embedding_dimensions: 768,
-      max_results_default: 12,
-    });
-
-    const immutable = await app.inject({
-      method: "PATCH",
-      url: "/api/v1/spaces/space-1/retrieval-settings",
-      headers: { "content-type": "application/json" },
-      payload: JSON.stringify({ oversight_mode: "full" }),
-    });
-    expect(immutable.statusCode).toBe(422);
-    expect(immutable.json()).toEqual({ detail: "oversight_mode is immutable after Space creation" });
   });
 
   it("serves logout locally and clears the session cookie", async () => {

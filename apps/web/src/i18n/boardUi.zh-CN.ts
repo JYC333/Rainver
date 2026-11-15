@@ -1,4 +1,5 @@
 export const boardUiZhCN = { board_ui: {
+    task_text_updated: '更新了任务标题或描述',
   rename_column:'改名：{{name}}', column_actions:'列操作：{{name}}', add_after:'在右侧新增列', remove_named:'删除列“{{name}}”？', drag_column:'移动列：{{name}}', drag_column_help:'拖动以排序；键盘可按空格拿起、用左右键移动，再按空格放下。', meaning_help:'名称可自行修改；状态含义决定任务与 Agent 的行为。',
   meaning_for:'状态关联：{{name}}', remap_title:'修改“{{name}}”的状态关联？', remap_help:'该列当前的任务也会迁移到新状态；仍需满足权限和完成条件。若校验失败，整次变更不会保存。',
   name:'列名称', meaning:'状态含义', add:'新增列', remove:'删除列',

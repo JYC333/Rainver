@@ -20,6 +20,7 @@ import { PgJobQueueRepository } from "../src/modules/jobs/repository.js";
 import { loadConfig } from "../src/config.js";
 import { RunRecoveryService, resumeUnsettledRuns } from "../src/modules/runs/recovery.js";
 import { RunMaterializationService } from "../src/modules/runs/materializationService.js";
+import { EXECUTION_CONTROLLER_LOST } from "../src/modules/runs/retryPolicy.js";
 
 const SPACE = "81111111-1111-4111-8111-111111111111";
 const PROJECT = "81111111-1111-4111-8111-111111111112";
@@ -222,6 +223,63 @@ beforeEach(async () => {
 });
 
 describe("run attempts and supervisor against shared PostgreSQL", () => {
+  it("continues after two controller losses on the same route and retains fallback for a real runtime failure", async () => {
+    const runId = await seedRun();
+    const repository = new PgRunRepository(db.pool);
+    const routing = new PgRouteDecisionRepository(db.pool);
+    const finalizer = new PostRunFinalizationService(repository, undefined, undefined, undefined, undefined, new PgRunSupervisor(db.pool));
+    for (let number = 1; number <= 3; number++) {
+      const run = await repository.getAgentRun(SPACE, runId);
+      expect((await routing.routeRun(run!)).runtime_profile_id).toBe(PROFILE);
+      await repository.markRunRunning({ run_id: runId, space_id: SPACE, started_at: new Date().toISOString() });
+      const controllerLost = number < 3;
+      await repository.markRunTerminal({
+        run_id: runId, space_id: SPACE, status: controllerLost ? "orphaned" : "failed",
+        error_json: { error_code: controllerLost ? EXECUTION_CONTROLLER_LOST : "adapter_runtime_error" },
+        completed_at: new Date().toISOString(),
+      });
+      await finalizer.finalize(runId, SPACE);
+      // Replaying finalization cannot consume recovery twice or enqueue twice.
+      await expect(finalizer.finalize(runId, SPACE)).rejects.toBeInstanceOf(NonTerminalRunError);
+      expect((await repository.getRun(SPACE, runId))?.status).toBe("queued");
+      expect((await repository.getLatestRunAttempt(SPACE, runId))?.attempt_number).toBe(number + 1);
+    }
+    expect((await routing.routeRun((await repository.getAgentRun(SPACE, runId))!)).runtime_profile_id).toBe(FALLBACK_PROFILE);
+    await repository.markRunRunning({ run_id: runId, space_id: SPACE, started_at: new Date().toISOString() });
+    await repository.markRunTerminal({ run_id: runId, space_id: SPACE, status: "succeeded",
+      output_text: "Completed the interrupted task", completed_at: new Date().toISOString() });
+    await finalizer.finalize(runId, SPACE);
+    expect((await repository.getRun(SPACE, runId))?.status).toBe("succeeded");
+    expect((await db.pool.query(
+      `SELECT decision FROM run_supervisor_decisions WHERE run_id = $1 ORDER BY next_attempt_number`, [runId],
+    )).rows).toEqual([
+      { decision: "retry_same_route" }, { decision: "retry_same_route" }, { decision: "retry_fallback_route" },
+    ]);
+    expect((await db.pool.query(
+      `SELECT count(*)::int AS count FROM jobs WHERE payload_json->>'run_id' = $1`, [runId],
+    )).rows[0]?.count).toBe(3);
+  });
+
+  it.each([
+    { name: "bounds repeated infrastructure interruptions", errors: [EXECUTION_CONTROLLER_LOST, EXECUTION_CONTROLLER_LOST, EXECUTION_CONTROLLER_LOST, EXECUTION_CONTROLLER_LOST], max: undefined },
+    { name: "honors an explicit physical attempt cap", errors: [EXECUTION_CONTROLLER_LOST, EXECUTION_CONTROLLER_LOST], max: 2 },
+    { name: "does not reset real runtime failure allowance", errors: [EXECUTION_CONTROLLER_LOST, EXECUTION_CONTROLLER_LOST, "adapter_runtime_error", "adapter_runtime_error"], max: undefined },
+    { name: "does not grant extra recovery to an unclassified orphan", errors: ["orphaned", "orphaned"], max: undefined },
+  ])("$name and releases an exhausted chat with a terminal result", async ({ errors, max }) => {
+    const runId = await seedRun({ max_attempts: max, model_override_json: { chat_turn: { schema_version: "chat_turn.v1" } } });
+    const repository = new PgRunRepository(db.pool);
+    const finalizer = new PostRunFinalizationService(repository, undefined, undefined, undefined, undefined, new PgRunSupervisor(db.pool));
+    for (const [index, code] of errors.entries()) {
+      await repository.markRunRunning({ run_id: runId, space_id: SPACE, started_at: new Date().toISOString() });
+      const status = code === "adapter_runtime_error" ? "failed" : "orphaned";
+      await repository.markRunTerminal({ run_id: runId, space_id: SPACE, status,
+        error_json: { error_code: code }, completed_at: new Date().toISOString() });
+      await finalizer.finalize(runId, SPACE);
+      expect((await repository.getRun(SPACE, runId))?.status).toBe(index === errors.length - 1 ? status : "queued");
+    }
+    expect((await repository.listRunAttempts(SPACE, runId))).toHaveLength(errors.length);
+  });
+
   it("records physical attempts and retries the same route before human review", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
     const runId = await seedRun({ max_attempts: 2 });
@@ -423,6 +481,45 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
       { decision: "retry_same_route", reason_code: "semantic_rejection" },
       { decision: "human_review", reason_code: "retry_attempt_cap_reached" },
     ]);
+  });
+
+  it.for(['resume', 'cancelled', 'offline'] as const)('confirms the previous physical launch before rebinding a resumed Run: %s', async (mode, ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const { HostConnectionRegistry } = await import('../src/modules/hosts/connectionRegistry.js');
+    const { bindHostAttemptLaunch } = await import('../src/modules/runs/executionControl.js');
+    const runId = await seedRun(), repository = new PgRunRepository(db.pool);
+    await repository.markRunRunning({ run_id: runId, space_id: SPACE, started_at: new Date().toISOString() });
+    const previous = randomUUID(), next = randomUUID();
+    expect(await repository.bindAttemptLaunch({ space_id: SPACE, run_id: runId, launch_id: previous })).toBe(true);
+    const hosts = new HostConnectionRegistry();
+    let sent!: () => void;
+    const requested = new Promise<void>(resolve => { sent = resolve; });
+    const frames: unknown[] = [];
+    if (mode !== 'offline') hosts.registerConnection('host', { send(frame) { frames.push(frame); sent(); }, close() {} });
+    const binding = bindHostAttemptLaunch(repository, hosts, { space_id: SPACE, run_id: runId, host_id: 'host', launch_id: next });
+    if (mode !== 'offline') {
+      await requested;
+      expect(frames).toEqual([{ type: 'terminate', run_id: runId, launch_id: previous, force: false }]);
+      expect((await repository.getLatestRunAttempt(SPACE, runId))?.launch_id).toBe(previous);
+      if (mode === 'cancelled') await repository.markRunCancelling({ run_id: runId, space_id: SPACE, requested_at: new Date().toISOString(), reason: 'Stop while resuming', requested_by_user_id: USER });
+      hosts.receiveComplete('host', runId, { exit_code: 0, timed_out: false, error: null }, previous);
+    }
+    expect(await binding).toBe(mode === 'resume' ? 'bound' : mode === 'offline' ? 'previous_launch_unconfirmed' : 'closed');
+    expect((await repository.getLatestRunAttempt(SPACE, runId))?.launch_id).toBe(mode === 'resume' ? next : previous);
+  });
+
+  it('fences competing launch replacements and a stale physical attempt', async ctx => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const runId = await seedRun(), repository = new PgRunRepository(db.pool), previous = randomUUID();
+    await repository.markRunRunning({ run_id: runId, space_id: SPACE, started_at: new Date().toISOString() });
+    await repository.bindAttemptLaunch({ space_id: SPACE, run_id: runId, launch_id: previous });
+    expect(await repository.bindAttemptLaunch({ space_id: SPACE, run_id: runId, launch_id: randomUUID() })).toBe(false);
+    const attempt = (await repository.getLatestRunAttempt(SPACE, runId))!, candidates = [randomUUID(), randomUUID()];
+    const results = await Promise.all(candidates.map(launch_id => repository.bindAttemptLaunch({ space_id: SPACE, run_id: runId, launch_id, expected_launch_id: previous, expected_attempt_id: attempt.id })));
+    expect(results.filter(Boolean)).toHaveLength(1);
+    const winner = candidates[results.indexOf(true)]!;
+    expect((await repository.getLatestRunAttempt(SPACE, runId))?.launch_id).toBe(winner);
+    expect(await repository.bindAttemptLaunch({ space_id: SPACE, run_id: runId, launch_id: randomUUID(), expected_launch_id: winner, expected_attempt_id: randomUUID() })).toBe(false);
   });
 
   it("keeps cancellation in cancelling until the terminal write confirms the attempt", async (ctx) => {
@@ -1322,9 +1419,8 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
       .toHaveLength(1);
   });
 
-  it("enforces a run cost cap across attempts before scheduling a retry", async (ctx) => {
-    if (!db.available || !db.pool) return ctx.skip();
-    const runId = await seedRun({ max_attempts: 2, max_cost: 1 });
+  it.each(["runtime_stall_timeout", EXECUTION_CONTROLLER_LOST])("enforces a run cost cap before retrying %s", async (code) => {
+    const runId = await seedRun({ max_cost: 1 });
     const repository = new PgRunRepository(db.pool);
     const usage = new PgUsageRepository(db.pool);
     const instanceId = await usage.getOrCreateInstanceId();
@@ -1359,8 +1455,8 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
     await repository.markRunTerminal({
       run_id: runId,
       space_id: SPACE,
-      status: "failed",
-      error_json: { error_code: "runtime_stall_timeout" },
+      status: code === EXECUTION_CONTROLLER_LOST ? "orphaned" : "failed",
+      error_json: { error_code: code },
       completed_at: new Date().toISOString(),
     });
     await new PostRunFinalizationService(
@@ -1422,6 +1518,9 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
     expect((await repository.getLatestRunAttempt(SPACE, runId))?.ended_at).toBeNull();
     registry.receiveComplete(SERVER_HOST, runId, { exit_code: 1, timed_out: false, error: null }, launchId);
     await expect(recovery).resolves.toMatchObject({ status: status === "cancelling" ? "cancelled" : "orphaned" });
+    expect((await repository.getRun(SPACE, runId))?.error_json).toMatchObject({
+      error_code: status === "cancelling" ? "run_cancelled" : EXECUTION_CONTROLLER_LOST,
+    });
     expect((await repository.getLatestRunAttempt(SPACE, runId))?.status).toBe(status === "cancelling" ? "cancelled" : "orphaned");
     const finalizer = new PostRunFinalizationService(repository, undefined, undefined, undefined, undefined, new PgRunSupervisor(db.pool));
     await finalizer.finalize(runId, SPACE);

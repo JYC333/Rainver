@@ -49,8 +49,9 @@ export type RemoteProviderBindingFrame = HostLaunchProviderBinding;
  * substrate as well as of Rainver's own Memory
  * ([ADR 0003](../../../../.agent/decisions/0003-memory-proposal-flow.md) §6).
  *
- * The container is the Conversation for a Room turn, the owner for a direct
- * chat, and the WorkspaceLocation for everything else — a Task thread, an
+ * The container is the Conversation for a Room turn and for a direct chat
+ * placed in a Project (its Session), the owner for any other direct chat, and
+ * the WorkspaceLocation for everything else — a Task thread, an
  * Automation, a Plan or Workflow node, an evolution run whose Folder prefers
  * a remote Location. Those last have no conversation to be the boundary of,
  * and the Location is the thing their vendor session already belongs to.

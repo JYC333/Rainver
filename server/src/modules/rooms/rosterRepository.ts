@@ -1,5 +1,6 @@
+import { effectiveRoomAgentGrantSql, roomAgentUseSql } from "./agentUsageSql.js";
 import { randomUUID } from "node:crypto";
-import type { Queryable } from "../routeUtils/common.js";
+import { escapeLikePattern, type Queryable } from "../routeUtils/common.js";
 import { contentReadSql } from "../access/contentAccessSql.js";
 
 interface RoomRosterAgentCandidate {
@@ -9,6 +10,7 @@ interface RoomRosterAgentCandidate {
   owner_user_id: string | null;
   visibility: string;
   in_room: boolean;
+  in_project: boolean;
   member_status: "active" | "removed" | null;
   private: boolean;
   shared_with_user_ids: string[];
@@ -70,15 +72,23 @@ export class PgRoomRosterRepository {
     room_id: string;
     limit: number;
     offset: number;
+    /** Case-insensitive name filter over the whole eligible set, not one page. */
+    q?: string | null;
   }): Promise<{ items: RoomRosterAgentCandidate[]; total: number }> {
+    const params: unknown[] = [input.space_id, input.user_id, input.room_id];
+    const term = input.q?.trim();
+    const search = term
+      ? `AND a.name ILIKE $${params.push(`%${escapeLikePattern(term)}%`)} ESCAPE '\\'`
+      : "";
     const where = `
       a.space_id = $1
       AND a.agent_kind <> 'system_assistant'
       AND a.status = 'active'
       AND (a.project_id IS NULL OR a.project_id = room.project_id)
+      AND (a.access_project_id IS NULL OR a.access_project_id = room.project_id OR a.owner_user_id = $2)
       AND (a.visibility <> 'selected_users' OR a.owner_user_id = $2)
-      AND ${contentReadSql("agent", "a", "$2")}`;
-    const params: unknown[] = [input.space_id, input.user_id, input.room_id];
+      AND ${contentReadSql("agent", "a", "$2")}
+      ${search}`;
     const total = await this.db.query<{ total: string }>(
       `SELECT count(*)::text AS total
          FROM agents a
@@ -93,15 +103,23 @@ export class PgRoomRosterRepository {
               a.owner_user_id,
               a.visibility,
               COALESCE(member.status = 'active', false) AS in_room,
+              EXISTS (
+                SELECT 1 FROM project_agent_links link
+                 WHERE link.space_id = a.space_id
+                   AND link.project_id = room.project_id
+                   AND link.agent_id = a.id
+                   AND link.status = 'active'
+              ) AS in_project,
               member.status AS member_status,
-              (a.visibility <> 'space_shared') AS private,
+              (a.visibility <> 'space_shared' OR (a.access_project_id IS NOT NULL AND a.access_project_id <> room.project_id)) AS private,
               COALESCE((
                 SELECT jsonb_agg(grant_row.grantee_user_id ORDER BY grant_row.grantee_user_id)
                   FROM room_agent_access_grants grant_row
                  WHERE grant_row.space_id = a.space_id
                    AND grant_row.room_id = $3
                    AND grant_row.agent_id = a.id
-                   AND grant_row.revoked_at IS NULL
+                   AND ${effectiveRoomAgentGrantSql("a", "grant_row", "room")}
+                   AND ${roomAgentUseSql("a", "grant_row.grantee_user_id", "grant_row.room_id")}
               ), '[]'::jsonb) AS shared_with_user_ids
               ,binding.workspace_mode,
               -- Whether re-adding this Agent has any host state to bring back:
@@ -151,8 +169,8 @@ export class PgRoomRosterRepository {
            LIMIT 1
         ) binding ON true
         WHERE ${where}
-        ORDER BY member.status = 'active' DESC, a.created_at ASC, a.id ASC
-        LIMIT $4 OFFSET $5`,
+        ORDER BY member.status = 'active' DESC, in_project DESC, a.created_at ASC, a.id ASC
+        LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
       [...params, input.limit, input.offset],
     );
     return { items: rows.rows, total: Number(total.rows[0]?.total ?? 0) };
@@ -171,6 +189,7 @@ export class PgRoomRosterRepository {
     agent_kind: string;
     status: string;
     project_id: string | null;
+    access_project_id: string | null;
   } | null> {
     const result = await this.db.query<{
       id: string;
@@ -179,8 +198,9 @@ export class PgRoomRosterRepository {
       agent_kind: string;
       status: string;
       project_id: string | null;
+      access_project_id: string | null;
     }>(
-      `SELECT a.id, a.owner_user_id, a.visibility, a.agent_kind, a.status, a.project_id
+      `SELECT a.id, a.owner_user_id, a.visibility, a.agent_kind, a.status, a.project_id, a.access_project_id
          FROM agents a
          JOIN rooms room
            ON room.space_id = a.space_id
@@ -275,10 +295,52 @@ export class PgRoomRosterRepository {
     const result = await this.db.query(
       `UPDATE room_agent_access_grants
           SET revoked_at = now(), revoked_by_user_id = $4
-        WHERE space_id = $1 AND room_id = $2 AND grantee_user_id = $3 AND revoked_at IS NULL`,
+        WHERE space_id = $1 AND room_id = $2 AND (grantee_user_id = $3 OR granted_by_user_id = $3) AND revoked_at IS NULL`,
       [input.space_id, input.room_id, input.user_id, input.revoked_by_user_id],
     );
     return result.rowCount ?? 0;
+  }
+
+  /** Caller holds the Project audience fence, before Rooms and grants. Loss
+   * of issuer management is durable: rejoining requires fresh Room consent. */
+  async revokeIssuedGrantsForProject(spaceId: string, projectId: string, userId: string, actorId: string): Promise<void> {
+    await this.db.query(
+      `SELECT id FROM rooms WHERE space_id=$1 AND project_id=$2 ORDER BY id FOR UPDATE`, [spaceId, projectId],
+    );
+    await this.db.query(
+      `UPDATE room_agent_access_grants grant_row SET revoked_at=now(), revoked_by_user_id=$4
+        FROM rooms room WHERE room.space_id=$1 AND room.project_id=$2 AND grant_row.space_id=room.space_id
+          AND grant_row.room_id=room.id AND grant_row.granted_by_user_id=$3 AND grant_row.revoked_at IS NULL`,
+      [spaceId, projectId, userId, actorId],
+    );
+    await this.db.query(
+      `UPDATE room_user_invitations i SET status='invalidated', resolved_at=now(), updated_at=now()
+         FROM rooms r WHERE r.space_id=$1 AND r.project_id=$2 AND i.space_id=r.space_id AND i.room_id=r.id
+           AND i.status='pending' AND EXISTS (SELECT 1 FROM room_invitation_agent_approvals a
+             WHERE a.space_id=i.space_id AND a.invitation_id=i.id AND a.owner_user_id=$3)`,
+      [spaceId, projectId, userId],
+    );
+  }
+
+  /** User row is locked by the account writer. Grant issuers take that lock
+   * before Room/invitation locks, so disable either follows a grant or blocks it. */
+  async revokeCrossProjectGrantsForDisabledOwner(userId: string, actorId: string): Promise<void> {
+    await this.db.query(
+      `UPDATE room_agent_access_grants g SET revoked_at=now(), revoked_by_user_id=$2
+         FROM agents a, rooms r
+        WHERE g.agent_id=a.id AND g.space_id=a.space_id AND g.room_id=r.id AND g.space_id=r.space_id
+          AND a.owner_user_id=$1 AND a.access_project_id IS NOT NULL AND a.access_project_id<>r.project_id
+          AND g.revoked_at IS NULL`, [userId, actorId],
+    );
+    await this.db.query(
+      `UPDATE room_user_invitations i SET status='invalidated', resolved_at=now(), updated_at=now()
+         WHERE i.status='pending' AND EXISTS (
+           SELECT 1 FROM room_invitation_agent_approvals approval
+           JOIN agents a ON a.space_id=approval.space_id AND a.id=approval.agent_id
+           JOIN rooms r ON r.space_id=i.space_id AND r.id=i.room_id
+           WHERE approval.space_id=i.space_id AND approval.invitation_id=i.id
+             AND approval.owner_user_id=$1 AND a.access_project_id IS NOT NULL AND a.access_project_id<>r.project_id)`, [userId],
+    );
   }
 
   async grantPrivateAgent(input: {
@@ -323,7 +385,7 @@ export class PgRoomRosterRepository {
           AND member.status = 'active'
           AND member.role = 'member'
           AND agent.status = 'active'
-          AND agent.visibility <> 'space_shared'
+          AND (agent.visibility <> 'space_shared' OR EXISTS (SELECT 1 FROM rooms scope_room WHERE scope_room.id=member.room_id AND scope_room.space_id=member.space_id AND agent.access_project_id<>scope_room.project_id))
           AND agent.owner_user_id IS NOT NULL
         ORDER BY member.agent_id ASC`,
       [input.space_id, input.room_id],

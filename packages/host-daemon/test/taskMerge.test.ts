@@ -443,7 +443,7 @@ describe("task_merge_prepare", () => {
     expect(conflict.conflicted_files).toHaveLength(500);
     for (const name of names) await writeFile(join(worktreePath("t-many"), name), "both\n");
     expect(await continueTaskMerge(target("t-many", "merge-many"))).toMatchObject({ outcome: "unresolved" });
-  }, 60_000);
+  });
 
   it("takes only the conflicted paths from the worktree, so a reset worktree cannot revert main", async () => {
     await initRepository();

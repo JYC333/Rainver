@@ -293,7 +293,7 @@ describe('production operation-core cancellation pilot',()=>{
     expect(await cancelJobCount()).toBe(1);
     expect((await db.pool.query("SELECT id FROM run_events WHERE run_id=$1 AND event_type='action_completed'",[runId])).rows).toHaveLength(2);
     await db.pool.query("UPDATE runs SET permission_snapshot_json='{}'::jsonb WHERE id=$1",[runId]);
-    expect(await transport.call(run,call)).toMatchObject({httpStatus:404});
+    expect(await transport.call(run,call)).toMatchObject({httpStatus:403,body:{error:{code:'operation_not_granted'}}});
   });
   it('rolls back cancellation, Job and request on a real enqueue failure',async()=>{
     await seedOperation();

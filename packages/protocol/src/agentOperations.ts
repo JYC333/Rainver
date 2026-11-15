@@ -34,7 +34,9 @@ export const AGENT_OPERATION_SCHEMAS={
  'agent.runtime_profile.ensure_host':{input:z.object({...agent,execution_host_id:id,workspace_location_id:id.nullable().optional(),workspace_mode:z.enum(['location','managed']),runtime_key:z.string().trim().min(1),runtime_installation:z.string().trim().min(1)}).strict(),output:AgentRuntimeProfileReceiptSchema},
  'conversation.session_config.save':{input:ConversationSessionConfigSaveSchema.extend(agent).strict(),output:z.object({id,space_id:id,agent_id:id,session_id:id}).strict()},
  'agent.run.create':{input:z.object({...agent,...runCreate}).strict(),output:z.object({id,space_id:id,agent_id:id,run_id:id}).strict()},
- 'agent.chat.reset_context':{input:z.object(agent).strict(),output:z.object({id,space_id:id,agent_id:id,session_reset:z.literal(true),thread_id:id,workspace_mode:z.enum(['location','managed'])}).strict()},
+ 'agent.chat.reset_context':{input:z.object({...agent,
+  // A direct conversation placed in a Project has its own Host container; without it, the person's own direct one is reset.
+  session_id:id.optional()}).strict(),output:z.object({id,space_id:id,agent_id:id,session_reset:z.literal(true),thread_id:id,workspace_mode:z.enum(['location','managed'])}).strict()},
 } as const;
 export const AGENT_OPERATION_TITLES:Record<keyof typeof AGENT_OPERATION_SCHEMAS,string>={
  'agent.create':'Create an Agent',

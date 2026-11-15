@@ -12,6 +12,7 @@ import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 import { bodyWithheld, type WithAccessLevel } from "../access/contentAccessTypes.js";
 import { recordDetailRead } from "../contentAccess/audit.js";
 import { sourceDerivedArtifactReadableClause } from "../sources/sourceItemAccess.js";
+import { retrievalArtifactWithheld, withheldArtifactTitle } from "../retrieval/artifactRelease.js";
 
 const ARTIFACT_ACCESS = contentResourceDefinition("artifact")!;
 
@@ -135,7 +136,7 @@ export class PgArtifactRepository {
       [...built.params, filters.limit, filters.offset],
     );
     return {
-      items: await Promise.all(rows.rows.map(async row=>artifactToOut(await this.gateResearchOrigin(spaceId,userId,row),false))),
+      items: await Promise.all(rows.rows.map(async row=>artifactToOut(await this.gateResearchOrigin(spaceId,userId,row,"artifact list read"),false))),
       total: numberValue(total.rows[0]?.total) ?? 0,
       limit: filters.limit,
       offset: filters.offset,
@@ -213,20 +214,68 @@ export class PgArtifactRepository {
     userId: string,
     artifactId: string,
   ): Promise<WithAccessLevel<ArtifactRow> | null> {
-    const result = await this.db.query<WithAccessLevel<ArtifactRow>>(
-      `${artifactSelectSql("$3")}
-        WHERE a.id = $1
-          AND a.space_id = $2
-          AND ${contentReadSql("artifact", "a", "$3")}
-          AND ${roomRunReadAccessSql("a.run_id", "a.space_id", "$3")}
-          AND ${sourceDerivedArtifactReadableClause("a", "$3")}`,
-      [artifactId, spaceId, userId],
-    );
-    return result.rows[0]?this.gateResearchOrigin(spaceId,userId,result.rows[0]):null;
+    const row = await loadDetailRow(this.db, spaceId, userId, artifactId);
+    return row?this.gateResearchOrigin(spaceId,userId,row,"artifact detail read"):null;
   }
-  private async gateResearchOrigin(spaceId:string,userId:string,row:WithAccessLevel<ArtifactRow>):Promise<WithAccessLevel<ArtifactRow>>{
-    try{await assertResearchArtifactReadable(this.db,{spaceId,userId},row.id);return row;}catch(error){if(!(error instanceof ResearchCallContentUnavailable))throw error;return {...row,title:"Research report artifact",content:null,metadata_json:null,storage_ref:null,storage_path:null,mime_type:null,owner_user_id:null,run_id:null,proposal_id:null,project_folder_id:null,exportable:false,preview:false,access_level:"summary",effective_access_level:"summary"};}
+  private async gateResearchOrigin(spaceId:string,userId:string,row:WithAccessLevel<ArtifactRow>,auditReason:string):Promise<WithAccessLevel<ArtifactRow>>{
+    const withheld=await originWithholding(this.db,spaceId,userId,row,auditReason);
+    if(withheld==="research")return {...row,title:"Research report artifact",content:null,metadata_json:null,storage_ref:null,storage_path:null,mime_type:null,owner_user_id:null,run_id:null,proposal_id:null,project_folder_id:null,exportable:false,preview:false,access_level:"summary",effective_access_level:"summary"};
+    if(withheld==="retrieval")return {...row,title:withheldArtifactTitle(row.artifact_type,row.title),content:null,metadata_json:null,storage_ref:null,storage_path:null,exportable:false,preview:false,access_level:"summary",effective_access_level:"summary"};
+    return row;
   }
+}
+
+/** The detail reader's row gate: content ACL, the producing Run's Room and
+ * the Source-derived gate (`sourceDerivedArtifactReadableClause`). */
+async function loadDetailRow(db: Queryable, spaceId: string, userId: string, artifactId: string): Promise<WithAccessLevel<ArtifactRow> | null> {
+  const result = await db.query<WithAccessLevel<ArtifactRow>>(
+    `${artifactSelectSql("$3")}
+      WHERE a.id = $1
+        AND a.space_id = $2
+        AND ${contentReadSql("artifact", "a", "$3")}
+        AND ${roomRunReadAccessSql("a.run_id", "a.space_id", "$3")}
+        AND ${sourceDerivedArtifactReadableClause("a", "$3")}`,
+    [artifactId, spaceId, userId],
+  );
+  return result.rows[0] ?? null;
+}
+
+/** Which origin gate withholds a readable row's own fields (title included):
+ * a research-call output whose chain is no longer readable, or a Brief /
+ * Explain / persisted report whose contributing refs no longer pass the
+ * canonical release gate. A Brief/Explain body and metadata (answer,
+ * citations, gaps, target) and a persisted report's findings, counts and
+ * count-bearing title are derived from other objects: list, detail and export
+ * release them only while every contributing ref passes that gate. */
+async function originWithholding(db: Queryable, spaceId: string, userId: string, row: ArtifactRow, auditReason: string | null): Promise<"research" | "retrieval" | null> {
+  try{await assertResearchArtifactReadable(db,{spaceId,userId},row.id);}catch(error){if(!(error instanceof ResearchCallContentUnavailable))throw error;return "research";}
+  return await retrievalArtifactWithheld(db,{spaceId,userId},row,auditReason) ? "retrieval" : null;
+}
+
+/**
+ * Whether the Artifact detail reader would show this person the Artifact's
+ * own title now: the same row gate (content ACL, Run Room, Source-derived
+ * gate) and origin gates (research call, retrieval/report release) as
+ * `getVisible`, recording no read. A summary-level Artifact's title is
+ * released, as on its detail page; a withheld or unreadable one is not.
+ */
+export async function artifactTitleReleased(db: Queryable, identity: { spaceId: string; userId: string }, artifactId: string): Promise<boolean> {
+  const row = await loadDetailRow(db, identity.spaceId, identity.userId, artifactId);
+  return Boolean(row) && await originWithholding(db, identity.spaceId, identity.userId, row!, null) === null;
+}
+
+/**
+ * The Artifact's inline body as the detail reader would release it to this
+ * person now — the same row gate and origin gates (research call with its
+ * recursive `input_refs`, retrieval/report release) as `getVisible`, at
+ * `full` level — or null when that reader would withhold it. Records no read;
+ * a caller that must hold the decision to its response holds
+ * `lockArtifactReleaseClosure` first.
+ */
+export async function artifactBodyReleased(db: Queryable, identity: { spaceId: string; userId: string }, artifactId: string): Promise<string | null> {
+  const row = await loadDetailRow(db, identity.spaceId, identity.userId, artifactId);
+  if (!row || bodyWithheld(row.effective_access_level)) return null;
+  return await originWithholding(db, identity.spaceId, identity.userId, row, null) === null ? row.content : null;
 }
 
 export class ArtifactValidationError extends Error {

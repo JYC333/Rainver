@@ -417,7 +417,7 @@ describe("resolvePrompt (real Postgres)", () => {
     expect(result.validation_errors).toEqual([]);
     expect(result.resolution_trace[0]).toContain("production:system");
     expect(result.rendered_messages?.find((m) => m.role === "user")?.content).toContain("shadow test");
-  }, 15_000);
+  });
 
   it("rejects same-key prompt registry rows that would shadow a built-in prompt", async () => {
     if (!db.available) return;

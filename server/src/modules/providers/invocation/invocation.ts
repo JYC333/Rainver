@@ -1,3 +1,5 @@
+import {AsyncLocalStorage} from 'node:async_hooks';
+import {performJobEffect} from '../../jobs/effectAuthority.js';
 /**
  * Resilient provider invocation for the provider API-key channel.
  *
@@ -67,6 +69,8 @@ export interface ProviderChatRequestBody {
   egressPolicy?: RetrievalEgressPolicy | null;
   /** Managed Runtime Context deliveries authorize one physical provider only. */
   allow_provider_fallback?: boolean;
+  /** Durable Job owners may forbid every resend, including key rotation and JSON correction. */
+  single_attempt?: true;
   /** Optional lifecycle integration for formal bounded-task Runs. */
   providerTaskRunLifecycle?: ProviderTaskRunLifecycle;
   metering: ProviderMeteringContext;
@@ -173,6 +177,20 @@ function httpClient(profile?: ResolvedNetworkProfile | null): ProviderHttpClient
   return httpClientOverride ?? { fetch: defaultProviderFetch };
 }
 
+// The invocation target is frozen before SDK preparation; the callback runs
+// at each physical fetch, after that preparation and immediately before I/O.
+const sendFence = new AsyncLocalStorage<(() => Promise<void>) | undefined>();
+function withSendFence<T>(target: InvocationTarget, spaceId: string, policy: RetrievalEgressPolicy | null | undefined, model: string | null | undefined, work: () => Promise<T>): Promise<T> {
+  const guard = policy?.authorizeSend;
+  const destination = providerEgressDestination({ ...target.provider, space_id: target.provider.home_space_id, model }, spaceId);
+  return sendFence.run(guard ? () => guard(destination) : undefined, work);
+}
+async function providerEffect<T>(effect: () => Promise<T>): Promise<T> {
+  const guard = sendFence.getStore();
+  if (guard) { await guard(); return effect(); }
+  return performJobEffect(effect);
+}
+
 async function fetchProviderResponse(
   profile: ResolvedNetworkProfile | null | undefined,
   url: string,
@@ -184,10 +202,10 @@ async function fetchProviderResponse(
     // identity representation avoids Brotli/gzip decompression failures from
     // provider or proxy content-encoding mismatches.
     headers.set("accept-encoding", "identity");
-    return await httpClient(profile).fetch(url, {
+    return await providerEffect(()=>httpClient(profile).fetch(url, {
       ...init,
       headers: Object.fromEntries(headers.entries()),
-    });
+    }));
   } catch (error) {
     if (error instanceof ProviderInvocationError) throw error;
     throw new ProviderInvocationError(
@@ -586,7 +604,7 @@ function attemptOnce(
   }
   return completePiAiChat(
     provider,
-    httpClient(target.network_profile).fetch as typeof globalThis.fetch,
+    ((url,init)=>providerEffect(()=>httpClient(target.network_profile).fetch(url as string,init))) as typeof globalThis.fetch,
     apiKey,
     body,
   );
@@ -1106,6 +1124,10 @@ async function invokeProviderWithPool(
           throw error;
         }
         const decision = error.resilience;
+        if (body.single_attempt) {
+          await recordFailure(store, candidate, decision);
+          throw error;
+        }
         if (decision.failure_class === "permanent") {
           await recordFailure(store, candidate, decision);
           throw error;
@@ -1185,7 +1207,7 @@ async function completeAuthorizedProviderChat(
     throw structuredOutputUnsupportedError(primary.provider.provider_type);
   }
   const chain: InvocationTarget[] = [primary];
-  for (const fallbackId of body.allow_provider_fallback === false ? [] : primary.fallback_provider_ids) {
+  for (const fallbackId of (body.single_attempt || body.allow_provider_fallback === false) ? [] : primary.fallback_provider_ids) {
     try {
       chain.push(await store.getInvocationTarget(
         spaceId,
@@ -1208,15 +1230,15 @@ async function completeAuthorizedProviderChat(
     }
     try {
       try {
-        const result = await invokeProviderWithPool(store, target, effectiveBody, attribution);
+        const result = await withSendFence(target, spaceId, body.egressPolicy, effectiveBody.model, () => invokeProviderWithPool(store, target, effectiveBody, attribution));
         return { ...result, provider_id: target.provider.id };
       } catch (error) {
         // Weak instruction followers often fix their JSON when shown the
         // exact validation failure; one corrective round-trip is far cheaper
         // than failing the whole task.
         const corrective = structuredOutputCorrectionBody(effectiveBody, error);
-        if (!corrective) throw error;
-        const corrected = await invokeProviderWithPool(store, target, corrective, attribution);
+        if (body.single_attempt || !corrective) throw error;
+        const corrected = await withSendFence(target, spaceId, body.egressPolicy, corrective.model, () => invokeProviderWithPool(store, target, corrective, attribution));
         return { ...corrected, provider_id: target.provider.id };
       }
     } catch (error) {
@@ -1266,6 +1288,7 @@ function structuredOutputCorrectionBody(
 }
 
 interface ProviderTextCompletionInput {
+  single_attempt?: true;
   provider_id: string;
   model?: string | null;
   system: string;
@@ -1292,6 +1315,8 @@ interface ProviderMessagesCompletionInput {
   task?: string | null;
   egressPolicy?: RetrievalEgressPolicy | null;
   allow_provider_fallback?: boolean;
+  /** Durable Job owners may forbid every resend, including key rotation and JSON correction. */
+  single_attempt?: true;
   metering: ProviderMeteringContext;
   spend: CredentialSpendBasis;
   providerTaskRunLifecycle?: ProviderTaskRunLifecycle;
@@ -1326,6 +1351,7 @@ export async function completeProviderText(
     metering: input.metering,
     spend: input.spend,
     providerTaskRunLifecycle: input.providerTaskRunLifecycle,
+    single_attempt: input.single_attempt,
   });
 }
 
@@ -1353,6 +1379,7 @@ export async function completeProviderMessages(
     cache_strategy: input.cache_strategy,
     egressPolicy: input.egressPolicy,
     allow_provider_fallback: input.allow_provider_fallback,
+    single_attempt: input.single_attempt,
     metering: meteringContext(input.metering, input.task),
     spend: input.spend,
     providerTaskRunLifecycle: input.providerTaskRunLifecycle,
@@ -1362,7 +1389,7 @@ export async function completeProviderMessages(
   // Auxiliary task policies may intentionally reroute generic work, but they
   // must not silently replace a Research execution contract.
   await store.authorizeCredentialSpend(spaceId, input.provider_id || null, input.spend);
-  const taskChain = input.output_format || !input.task || input.allow_provider_fallback === false
+  const taskChain = input.single_attempt || input.output_format || !input.task || input.allow_provider_fallback === false
     ? null
     : await store.getTaskChain(spaceId, input.task);
   let lastError: unknown = null;
@@ -1411,6 +1438,7 @@ export async function completeProviderMessages(
 }
 
 interface ProviderEmbeddingInput {
+  single_attempt?: true;
   /** Caller's own provider; used as the safety net after any task chain. */
   provider_id?: string | null;
   model?: string | null;
@@ -1433,6 +1461,7 @@ interface ProviderEmbeddingResult {
 }
 
 interface ProviderRerankInput {
+  single_attempt?: true;
   /** Caller's own provider; used as the safety net after any task chain. */
   provider_id?: string | null;
   model?: string | null;
@@ -1490,9 +1519,10 @@ export async function completeProviderEmbedding(
           input.egressPolicy,
           meteringContext(input.metering, input.task),
           attribution,
+          input.single_attempt,
         );
       } catch (error) {
-        if (isUsageMeteringFailure(error)) throw error;
+        if (input.single_attempt || isUsageMeteringFailure(error)) throw error;
         lastError = error;
         if (
           error instanceof ProviderInvocationError &&
@@ -1520,6 +1550,7 @@ export async function completeProviderEmbedding(
     input.egressPolicy,
     meteringContext(input.metering, input.task),
     attribution,
+    input.single_attempt,
   );
 }
 
@@ -1534,10 +1565,11 @@ async function completeProviderEmbeddingWithFallback(
   egressPolicy?: RetrievalEgressPolicy | null,
   metering?: ProviderMeteringContext | null,
   attribution?: UsageAttribution,
+  singleAttempt?: true,
 ): Promise<ProviderEmbeddingResult> {
   const target = await store.getInvocationTarget(spaceId, providerId, metering?.subject_user_id);
   const chain: InvocationTarget[] = [target];
-  for (const fallbackId of target.fallback_provider_ids) {
+  for (const fallbackId of singleAttempt ? [] : target.fallback_provider_ids) {
     try {
       chain.push(await store.getInvocationTarget(spaceId, fallbackId, metering?.subject_user_id));
     } catch {
@@ -1552,7 +1584,7 @@ async function completeProviderEmbeddingWithFallback(
       continue;
     }
     try {
-      return await invokeEmbeddingProviderWithPool(
+      return await withSendFence(candidate, spaceId, egressPolicy, index === 0 ? model : null, () => invokeEmbeddingProviderWithPool(
         store,
         candidate,
         index === 0 ? model : null,
@@ -1561,9 +1593,10 @@ async function completeProviderEmbeddingWithFallback(
         inputType,
         metering,
         attribution,
-      );
+        singleAttempt,
+      ));
     } catch (error) {
-      if (isUsageMeteringFailure(error)) throw error;
+      if (singleAttempt || isUsageMeteringFailure(error)) throw error;
       lastError = error;
       if (
         error instanceof ProviderInvocationError &&
@@ -1587,6 +1620,7 @@ async function invokeEmbeddingProviderWithPool(
   inputType?: "query" | "document",
   metering?: ProviderMeteringContext | null,
   attribution?: UsageAttribution,
+  singleAttempt?: true,
 ): Promise<ProviderEmbeddingResult> {
   if (target.candidates.length === 0) {
     throw new ProviderInvocationError(
@@ -1630,6 +1664,7 @@ async function invokeEmbeddingProviderWithPool(
           error,
         });
         lastError = error;
+        if (singleAttempt) throw error;
         if (!(error instanceof ProviderInvocationError) || !error.resilience) {
           throw error;
         }
@@ -1842,9 +1877,10 @@ export async function completeProviderRerank(
           input.egressPolicy,
           meteringContext(input.metering, input.task),
           attribution,
+          input.single_attempt,
         );
       } catch (error) {
-        if (isUsageMeteringFailure(error)) throw error;
+        if (input.single_attempt || isUsageMeteringFailure(error)) throw error;
         lastError = error;
         if (
           error instanceof ProviderInvocationError &&
@@ -1872,6 +1908,7 @@ export async function completeProviderRerank(
     input.egressPolicy,
     meteringContext(input.metering, input.task),
     attribution,
+    input.single_attempt,
   );
 }
 
@@ -1886,10 +1923,11 @@ async function completeProviderRerankWithFallback(
   egressPolicy?: RetrievalEgressPolicy | null,
   metering?: ProviderMeteringContext | null,
   attribution?: UsageAttribution,
+  singleAttempt?: true,
 ): Promise<ProviderRerankResult> {
   const target = await store.getInvocationTarget(spaceId, providerId, metering?.subject_user_id);
   const chain: InvocationTarget[] = [target];
-  for (const fallbackId of target.fallback_provider_ids) {
+  for (const fallbackId of singleAttempt ? [] : target.fallback_provider_ids) {
     try {
       chain.push(await store.getInvocationTarget(spaceId, fallbackId, metering?.subject_user_id));
     } catch {
@@ -1904,7 +1942,7 @@ async function completeProviderRerankWithFallback(
       continue;
     }
     try {
-      return await invokeRerankProviderWithPool(
+      return await withSendFence(candidate, spaceId, egressPolicy, index === 0 ? model : null, () => invokeRerankProviderWithPool(
         store,
         candidate,
         index === 0 ? model : null,
@@ -1913,9 +1951,10 @@ async function completeProviderRerankWithFallback(
         topN,
         metering,
         attribution,
-      );
+        singleAttempt,
+      ));
     } catch (error) {
-      if (isUsageMeteringFailure(error)) throw error;
+      if (singleAttempt || isUsageMeteringFailure(error)) throw error;
       lastError = error;
       if (
         error instanceof ProviderInvocationError &&
@@ -1939,6 +1978,7 @@ async function invokeRerankProviderWithPool(
   topN?: number | null,
   metering?: ProviderMeteringContext | null,
   attribution?: UsageAttribution,
+  singleAttempt?: true,
 ): Promise<ProviderRerankResult> {
   if (target.candidates.length === 0) {
     throw new ProviderInvocationError(
@@ -1982,6 +2022,7 @@ async function invokeRerankProviderWithPool(
           error,
         });
         lastError = error;
+        if (singleAttempt) throw error;
         if (!(error instanceof ProviderInvocationError) || !error.resilience) {
           throw error;
         }

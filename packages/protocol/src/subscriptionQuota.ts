@@ -85,9 +85,31 @@ export const SubscriptionQuotaHoldSchema = z.object({
 }).strict();
 export type SubscriptionQuotaHold = z.infer<typeof SubscriptionQuotaHoldSchema>;
 
+/** Display-only named allowances; never used as account admission meters. */
+export const ConversationQuotaDisplayWindowSchema = z.object({
+  id: z.string().min(1).max(256),
+  label: z.string().min(1).max(256),
+  group: z.enum(["account", "native", "third_party", "other"]),
+  utilization: z.number().min(0).max(100).nullable(),
+  resets: z.string().max(512).nullable(),
+  checked_at: ISODateTimeSchema.nullable(),
+}).strict();
+export type ConversationQuotaDisplayWindow = z.infer<typeof ConversationQuotaDisplayWindowSchema>;
+
 /** A CLI login a conversation's Agents run on, with its latest reading. */
 export const ConversationSubscriptionLoginSchema = z.object({
   account_label: z.string(),
+  /**
+   * Opaque, Host-scoped key of this login and the account it currently reads;
+   * it changes when the copy is signed in to another account. Carries no
+   * account identity. Used only to key a person's own dismissal of a warning.
+   */
+  login_key: z.string().min(1).max(64),
+  pool_key: z.string().min(1).max(64).optional(),
+  agent_ids: z.array(IdSchema).optional(),
+  windows: z.array(SubscriptionQuotaWindowSchema.extend({checked_at:ISODateTimeSchema.nullable()}).strict()).max(2).optional(),
+  display_windows: z.array(ConversationQuotaDisplayWindowSchema).max(64).optional(),
+  refresh_target: z.object({host_id:IdSchema,runtime_key:z.string().min(1).max(64),installation:z.string().min(1).max(64)}).strict().optional(),
   window: SubscriptionQuotaWindowSchema.nullable(),
   checked_at: ISODateTimeSchema.nullable(),
 }).strict();

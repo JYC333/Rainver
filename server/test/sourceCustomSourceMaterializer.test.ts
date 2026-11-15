@@ -38,7 +38,7 @@ beforeAll(async () => {
   artifactStorageRoot = await mkdtemp(join(tmpdir(), "custom-source-materializer-artifacts-"));
   config = { ...loadConfig({}), artifactStorageRoot };
   service = new CustomSourceMaterializationService(db.pool, config, instanceSettings());
-}, 120_000);
+});
 
 afterAll(async () => {
   if (artifactStorageRoot) await rm(artifactStorageRoot, { recursive: true, force: true });

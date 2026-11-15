@@ -434,10 +434,8 @@ async function filterBySourcePolicy<T extends { source_connection_ids: string[] 
 ): Promise<T[]> {
   const sourceConnectionIds = uniqueSourceConnectionIds(rows);
   if (sourceConnectionIds.length === 0) return [...rows];
-  const [snapshots, viewerSpaceRole] = await Promise.all([
-    loadSourcePolicySnapshots(db, spaceId, sourceConnectionIds),
-    loadViewerSpaceRole(db, spaceId, userId),
-  ]);
+  const snapshots = await loadSourcePolicySnapshots(db, spaceId, sourceConnectionIds);
+  const viewerSpaceRole = await loadViewerSpaceRole(db, spaceId, userId);
   return rows.filter((row) =>
     row.source_connection_ids.every((sourceConnectionId) => {
       const snapshot = snapshots.get(sourceConnectionId);

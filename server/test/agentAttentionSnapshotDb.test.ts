@@ -209,7 +209,7 @@ describe('global Agent Attention snapshot', () => {
       const changed=await nextFrame(); expect(changed.frame.type).toBe('attention.invalidation'); expect(changed.frame.seq).toBe(3);
       expect(changed.frame.counts?.working).toBe(1); expect(changed.frame.page).toBeNull();
     } finally {controller.abort(); await reader?.cancel().catch(()=>{}); await app.close()}
-  },15000);
+  });
 
   const directSession = async (runIds: string[]) => {
     const session = randomUUID();

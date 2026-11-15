@@ -1,13 +1,16 @@
 import { randomUUID } from "node:crypto";
-import type { Pool, PoolClient } from "../../db/pool.js";
 import type { ServerConfig } from "../../config.js";
-import { HttpError, type Queryable } from "../routeUtils/common.js";
+import { HttpError, withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
 import { enforce } from "./service.js";
 import { withPolicyAuditRecovery } from "./auditWriter.js";
 import { loadActionRegistry } from "./actionRegistry.js";
 import { ActionApprovalGrantService } from "./actionApprovalGrantService.js";
 import { redactEvidenceText } from "../runs/evidenceRedaction.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
+import {lockProjectAudience} from '../projects/access.js';
+import {lockDemotionReleaseClosure} from '../contentAccess/demotionReleaseClosure.js';
+import {runReadSql} from '../access/contentAccessSql.js';
+import {canReadAgent} from '../agents/agentAccess.js';
 
 interface DecisionRow {
   id: string;
@@ -65,7 +68,7 @@ const REQUEST_COLUMNS = `
  */
 export class AuthorizationRequestService {
   constructor(
-    private readonly db: Pool,
+    private readonly db: Queryable,
     private readonly config: Pick<ServerConfig, "databaseUrl">,
   ) {}
 
@@ -78,9 +81,7 @@ export class AuthorizationRequestService {
   }): Promise<AuthorizationRequestOut> {
     const reason = redactEvidenceText(input.reason.trim()) ?? "";
     if (!reason || reason.length > 1000) throw new HttpError(422, "reason must contain 1 to 1000 characters");
-    const client = await this.db.connect();
-    try {
-      await client.query("BEGIN");
+    return withQueryableTransaction(this.db,async client=>{
       const decisionResult = await client.query<DecisionRow>(
         `SELECT id, space_id, run_id, actor_type, actor_id, action,
                 resource_type, resource_id, decision,
@@ -95,7 +96,7 @@ export class AuthorizationRequestService {
            FROM runs
           WHERE id = $1 AND space_id = $2 AND agent_id = $3
             AND status = 'running'
-          LIMIT 1`,
+          LIMIT 1 FOR UPDATE`,
         [input.runId, input.spaceId, input.agentId],
       );
       const decision = decisionResult.rows[0];
@@ -182,14 +183,8 @@ export class AuthorizationRequestService {
         [input.runId, input.spaceId, request.id, now],
       );
       if (!paused.rows[0]) throw new HttpError(409, "Run could not be paused for authorization review");
-      await client.query("COMMIT");
       return request;
-    } catch (error) {
-      await client.query("ROLLBACK").catch(() => undefined);
-      throw error;
-    } finally {
-      client.release();
-    }
+    });
   }
 
   async listForRun(identity: { spaceId: string; userId: string }, runId: string): Promise<AuthorizationRequestOut[]> {
@@ -228,9 +223,37 @@ export class AuthorizationRequestService {
     requestId: string,
     decision: "approved" | "rejected",
   ): Promise<AuthorizationRequestOut> {
-    const client = await this.db.connect();
-    try {
-      await client.query("BEGIN");
+    return withQueryableTransaction(this.db,client=>this.decideInTransaction(client,identity,requestId,decision));
+  }
+
+  /** Same owner for REST/core and internal callers; no transaction escape. */
+  async authorizeDecision(db:Queryable,identity:{spaceId:string;userId:string},requestId:string,decision:'approved'|'rejected'){
+    const candidate=(await db.query<AuthorizationRequestOut>(`SELECT ${REQUEST_COLUMNS} FROM authorization_requests WHERE id=$1 AND space_id=$2`,[requestId,identity.spaceId])).rows[0];
+    if(!candidate)throw new HttpError(404,'Authorization request not found');
+    const before=(await db.query<RunRow>('SELECT id,space_id,agent_id,instructed_by_user_id,project_id FROM runs WHERE id=$1 AND space_id=$2',[candidate.run_id,identity.spaceId])).rows[0];
+    if(!before)throw new HttpError(404,'Run not found');
+    if(decision==='approved'){
+      const requester={spaceId:identity.spaceId,userId:candidate.instructed_by_user_id};
+      // One discovered closure: Agent/Run Projects and shares, Folder, Room,
+      // memberships, roots and grants. Rechecking the requester never uses
+      // the approving owner's oversight or role as a substitute.
+      await lockDemotionReleaseClosure(db,requester,{resource:{type:'agent',id:candidate.agent_id},runIds:[candidate.run_id],artifactIds:[],proposalIds:[]});
+      const readable=await db.query(`SELECT id FROM runs request_run WHERE id=$1 AND space_id=$2 AND ${runReadSql('$3','request_run',{includeOversight:false})}`,[candidate.run_id,identity.spaceId,candidate.instructed_by_user_id]);
+      if(!readable.rows.length||!await canReadAgent(db,requester,candidate.agent_id))throw new HttpError(403,'Requester no longer reaches this Run or Agent');
+    }else if(before.project_id)await lockProjectAudience(db,identity.spaceId,before.project_id);
+    const people=[...new Set([identity.userId,...(decision==='approved'?[candidate.instructed_by_user_id]:[])])].sort();
+    await db.query("SELECT id FROM users WHERE id=ANY($1::varchar[]) AND status='active' ORDER BY id FOR SHARE",[people]);
+    const members=(await db.query<{user_id:string;role:string}>("SELECT user_id,role FROM space_memberships WHERE space_id=$1 AND user_id=ANY($2::varchar[]) AND status='active' ORDER BY id FOR SHARE",[identity.spaceId,people])).rows;
+    const active=(await db.query<{id:string}>("SELECT id FROM users WHERE id=ANY($1::varchar[]) AND status='active'",[people])).rows;
+    if(active.length!==people.length||members.length!==people.length||members.find(m=>m.user_id===identity.userId)?.role!=='owner')throw new HttpError(403,'Current owner and requester authority required');
+    await db.query('SELECT id FROM agents WHERE id=$1 AND space_id=$2 FOR SHARE',[candidate.agent_id,identity.spaceId]);
+    const run=(await db.query<RunRow&{status:string}>('SELECT id,space_id,agent_id,instructed_by_user_id,project_id,status FROM runs WHERE id=$1 AND space_id=$2 FOR SHARE',[candidate.run_id,identity.spaceId])).rows[0];
+    if(!run||run.project_id!==before.project_id||run.agent_id!==candidate.agent_id||run.instructed_by_user_id!==candidate.instructed_by_user_id)throw new HttpError(409,'Authorization requester changed');
+    return candidate;
+  }
+
+  async decideInTransaction(client:Queryable,identity:{spaceId:string;userId:string},requestId:string,decision:'approved'|'rejected'):Promise<AuthorizationRequestOut>{
+      await this.authorizeDecision(client,identity,requestId,decision);
       const locked = await client.query<AuthorizationRequestOut>(
         `SELECT ${REQUEST_COLUMNS}
            FROM authorization_requests
@@ -275,18 +298,11 @@ export class AuthorizationRequestService {
         // the normal stale-lock reclaimer has run.
         max_attempts: 900,
       });
-      await client.query("COMMIT");
       return decided;
-    } catch (error) {
-      await client.query("ROLLBACK").catch(() => undefined);
-      throw error;
-    } finally {
-      client.release();
-    }
   }
 
   private async createGrant(
-    client: PoolClient,
+    client: Queryable,
     identity: { spaceId: string; userId: string },
     request: AuthorizationRequestOut,
   ): Promise<string> {

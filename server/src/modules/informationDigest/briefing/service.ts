@@ -1,3 +1,6 @@
+import {briefingRunContext} from './settlement.js';
+import {preparedRunTerminalOwner} from '../../systemActions/operations/proposalTransitions.js';
+import {admitAutomationEffect} from '../../automations/effectAuthority.js';
 import {
   BRIEFING_PROTOCOL_VERSION, type Briefing, type BriefingHighlight, type BriefingKind, type BriefingOverviewResponse,
 } from "@rainver/protocol";
@@ -52,7 +55,10 @@ export class InformationBriefingService {
    * One request, decided in one short transaction under the scope lock (see `decideRequest`).
    */
   async request(adapter: BriefingScopeAdapter, userId: string, input: BriefingRequestInput): Promise<{ created: boolean; briefing: Briefing }> {
-    const outcome = await withQueryableTransaction(this.db, (tx) => decideRequest(tx, adapter, userId, input));
+    const outcome = await withQueryableTransaction(this.db, async (tx) => {
+      await admitAutomationEffect(tx);
+      return decideRequest(tx, adapter, userId, input);
+    });
     return { created: outcome.created, briefing: await projectBriefing(this.db, new PgBriefingRepository(this.db), adapter, outcome.row) };
   }
 
@@ -69,6 +75,7 @@ export class InformationBriefingService {
       const code = error instanceof HttpError ? (error.responseBody as { code?: string } | undefined)?.code : undefined;
       if (!code || !BLOCKING_CODES.has(code)) throw error;
       const row = await withQueryableTransaction(this.db, async (tx) => {
+        await admitAutomationEffect(tx);
         const repository = new PgBriefingRepository(tx);
         await repository.lockScope(adapter.scope);
         const existing = await repository.findLiveDay(adapter.scope, input.day.date);
@@ -117,19 +124,53 @@ export class InformationBriefingService {
     return projectBriefing(this.db, repository, adapter, row);
   }
 
-  /** Stops the current attempt through the canonical Run stop; its terminal projection records the cancellation. */
-  async cancel(adapter: BriefingScopeAdapter, userId: string, briefingId: string): Promise<Briefing> {
+  /** Resolve only scope authority and immutable attempt identity. Stopping must
+   * remain possible when the attempt's input Source no longer consents. */
+  async cancellationTarget(adapter: BriefingScopeAdapter, userId: string, briefingId: string) {
     if (!(await adapter.canGenerate(this.db, userId))) throw new HttpError(403, "Cancelling this briefing requires write access", { code: "briefing_writer_required" });
-    const repository = new PgBriefingRepository(this.db);
-    const row = await repository.get(adapter.scope.spaceId, briefingId);
+    const row = await new PgBriefingRepository(this.db).get(adapter.scope.spaceId, briefingId);
     if (!row || row.scope_key !== adapter.scope.key) throw new HttpError(404, "Briefing not found");
-    if (row.status === "queued" && row.run_id) {
-      const { buildRunOrchestration } = await import("../../runs/orchestrationFactory.js");
-      await buildRunOrchestration(this.config).orchestration.cancelRun({
-        run_id: row.run_id, space_id: row.space_id, requested_by_user_id: userId, reason: "Briefing cancelled",
-      });
-    }
-    return projectBriefing(this.db, repository, adapter, (await repository.get(adapter.scope.spaceId, briefingId))!);
+    return row;
+  }
+
+  /** Intent, attempt and receipt commit together. Run before version locks
+   * matches canonical terminal settlement; never declare the briefing cancelled. */
+  async requestCancel(adapter: BriefingScopeAdapter, userId: string, briefingId: string) {
+    return withQueryableTransaction(this.db, async tx => {
+      const service = new InformationBriefingService(tx, this.config);
+      const before = await service.cancellationTarget(adapter, userId, briefingId);
+      if (before.run_id) preparedRunTerminalOwner(tx, adapter.scope.spaceId, before.run_id);
+      if (before.run_id) await tx.query('SELECT id FROM runs WHERE space_id=$1 AND id=$2 FOR UPDATE', [adapter.scope.spaceId, before.run_id]);
+      const repository = new PgBriefingRepository(tx);
+      const row = await repository.get(adapter.scope.spaceId, briefingId, true);
+      if (!row || row.run_id !== before.run_id || row.attempt !== before.attempt) throw new HttpError(409, 'Briefing attempt changed', {code:'briefing_changed'});
+      await service.cancellationTarget(adapter, userId, briefingId);
+      const run = row.run_id ? await new PgRunRepository(tx).getRun(row.space_id, row.run_id) : null;
+      const context = run ? briefingRunContext(run) : null;
+      if (row.run_id && (!run || context?.id !== row.id || context.attempt !== row.attempt || context.scope_key !== row.scope_key || run.instructed_by_user_id !== row.requested_by_user_id)) throw new HttpError(409, 'Briefing Run is unavailable', {code:'briefing_changed'});
+      const requested = row.status === 'queued' && run
+        ? await new PgRunRepository(tx).markRunCancelling({run_id:run.id,space_id:row.space_id,requested_by_user_id:userId,requested_at:new Date().toISOString(),reason:'Briefing cancelled'})
+        : null;
+      return {briefing_id:row.id,attempt:row.attempt,run_id:row.run_id,status:requested?.status ?? run?.status ?? row.status};
+    });
+  }
+
+  /** Exact admitted Run only; retrying an old stop must never cancel a new attempt.
+   * The existing cancelling sweep recovers an interrupted Host notification. */
+  async finishCancel(adapter: BriefingScopeAdapter, userId: string, briefingId: string, runId: string | null, attempt: number) {
+    if (!runId) return;
+    const row = await this.cancellationTarget(adapter, userId, briefingId);
+    if (row.run_id !== runId || row.attempt !== attempt || row.status !== 'queued') return;
+    const run = await new PgRunRepository(this.db).getRun(row.space_id, runId);
+    if (run?.status !== 'cancelling') return;
+    const { buildRunOrchestration } = await import("../../runs/orchestrationFactory.js");
+    await buildRunOrchestration(this.config).orchestration.cancelRun({run_id:runId,space_id:row.space_id,requested_by_user_id:userId,reason:'Briefing cancelled'});
+  }
+
+  async cancel(adapter: BriefingScopeAdapter, userId: string, briefingId: string): Promise<Briefing> {
+    const intent = await this.requestCancel(adapter, userId, briefingId);
+    await this.finishCancel(adapter, userId, briefingId, intent.run_id, intent.attempt);
+    return this.get(adapter, userId, briefingId);
   }
 }
 
@@ -436,6 +477,7 @@ async function startHeldDay(tx: Queryable, adapter: BriefingScopeAdapter, held: 
  */
 export async function resumeHeldDays(db: Queryable, adapter: BriefingScopeAdapter): Promise<void> {
   await withQueryableTransaction(db, async (tx) => {
+    await admitAutomationEffect(tx);
     const repository = new PgBriefingRepository(tx);
     await repository.lockScope(adapter.scope);
     // Each held day at most once: stop when one starts a Run, or stays held.

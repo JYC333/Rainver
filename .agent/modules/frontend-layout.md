@@ -141,3 +141,15 @@ the settings parent, without an additional icon or breadcrumb trail. The three s
 roots have no extra navigation row or Home button.
 The mobile row remains available when Global Rail is hidden; desktop and mobile
 More use the same settings ownership/highlight rules.
+
+On desktop, the open Room conversation fills its Project Area height, without a
+fixed chat height ceiling. Its Room summary and conversation-list heading stay
+above a shrinkable, internally scrolling list; the transcript owns its separate
+scroller. Long conversation lists do not extend the Area or document. On smaller
+screens the stacked navigation keeps a bounded conversation-list scroller.
+
+Panel conversation setup has its own scroller capped at half the available conversation
+height, keeping execution confirmation reachable without pushing the message
+composer out of the Project chat sidecar. The composer can also scroll on very
+short viewports. Its expanded Runtime & workspace disclosure has a separate bounded
+scroller so it cannot consume the whole panel.

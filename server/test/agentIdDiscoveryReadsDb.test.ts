@@ -20,12 +20,9 @@ import { registerProjectResearchSystemActionExecutors } from "../src/modules/pro
 import type { SystemActionExecutor } from "../src/modules/systemActions/gateway.js";
 import type { RunRecord } from "../src/modules/runs/repository.js";
 
-// An object's id reaches an Agent by being read from a tool result, never by
-// being composed from a title: `inquiry.list_threads` and
-// `research.list_operations` are those reads, and the actions they feed answer
-// an invented id with the real ones. (`task.list` is covered in
-// projectWorkActionsDb.test.ts, `proposal.list_pending` in roomsDb.suite.ts,
-// each beside the actions they feed.)
+// Explicit authorized list reads discover ids. Failed writes never inline a list,
+// and missing, private and foreign targets share the same Agent 404 response.
+const UNAVAILABLE = 'Object unavailable. Check only the current Run action list and objects returned by authorized reads. Do not guess names or ids, replay writes, or promise an unverified repair.';
 
 const SPACE = "55555555-5555-4555-8555-555555555555";
 // A real Agent row: the Project's account attributes an advancement to the
@@ -69,6 +66,11 @@ async function executorsFor(projectId: string, instructedBy = OWNER): Promise<Ma
   return executors;
 }
 
+async function explicitList(projectId: string, tool: 'inquiry.list_threads' | 'research.list_operations', person = OWNER) {
+  const executors = await executorsFor(projectId, person);
+  return (await executors.get(tool)!({}, {idempotency_key: randomUUID()} as never) as ExecutorResult).modelResult;
+}
+
 async function coreToolFor(projectId:string,tool:string,instructedBy=OWNER) {
   const id=randomUUID();
   await seedRun(db.pool,{id,space:SPACE,owner:instructedBy,agent:AGENT,version:AGENT_VERSION,existingAgent:true});
@@ -108,7 +110,7 @@ describe("the reads an Agent gets ids from (real Postgres)", () => {
     expect((questionsOnly.modelResult as { threads: Array<{ thread_id: string }> }).threads.map((t) => t.thread_id)).toEqual([question.id]);
   });
 
-  it("answers an invented thread_id on research.start_acquisition with the ids that exist", async () => {
+  it("hides an invented or foreign thread_id without listing visible Threads", async () => {
     if (!db.available) return;
     const project = await new PgProjectRepository(db.pool).create(identity(), { name: "Agent memory" });
     const question = await new InquiryThreadService(db.pool).createThread(identity(), project.id as string, { kind: "question", statement: "How should agent memory be classified?" });
@@ -116,17 +118,21 @@ describe("the reads an Agent gets ids from (real Postgres)", () => {
     const start = await coreToolFor(project.id as string, "research.start_acquisition");
     const missing = await start({ thread_id: "memory-classification" });
     expect(missing.httpStatus).toBe(404);
-    expect(missing.body.error.message).toBe(`No active Question Thread has id 'memory-classification'. Read inquiry.list_threads for the complete paginated list. First matching ids: ${question.id} — How should agent memory be classified?`);
-    // A Thread in another Project is refused with the same hint, never by its own existence.
+    expect(missing.body.error.message).toBe(UNAVAILABLE);
+    expect(JSON.stringify(missing)).not.toContain(question.id);
+    const list = await explicitList(project.id as string, 'inquiry.list_threads');
+    expect(list).toMatchObject({threads: [expect.objectContaining({thread_id: question.id})]});
+    // A Thread in another Project is refused with the same response, never by its own existence.
     const other = await new PgProjectRepository(db.pool).create(identity(), { name: "Elsewhere" });
     const foreign = await new InquiryThreadService(db.pool).createThread(identity(), other.id as string, { kind: "question", statement: "Foreign" });
     const crossProject = await start({ thread_id: foreign.id });
     expect(crossProject.httpStatus).toBe(404);
-    expect(crossProject.body.error.message).not.toContain("Foreign");
+    expect(crossProject.body.error.message).toBe(UNAVAILABLE);
+    expect(JSON.stringify(crossProject)).not.toContain(question.id);
     expect((await db.pool.query("SELECT count(*)::int AS n FROM project_operations WHERE space_id=$1",[SPACE])).rows[0].n).toBe(0);
   });
 
-  it("lists the Project's live research Operations, and answers an invented operation_id with them", async () => {
+  it("lists visible research Operations only on explicit reads", async () => {
     if (!db.available) return;
     const project = await new PgProjectRepository(db.pool).create(identity(), { name: "Agent memory" });
     const running = randomUUID();
@@ -151,7 +157,8 @@ describe("the reads an Agent gets ids from (real Postgres)", () => {
     const cancel=await coreCancelFor(project.id as string);
     const missing=await cancel('classification-run');
     expect(missing.httpStatus).toBe(404);
-    expect(missing.body.error.message).toBe(`No research Operation has id 'classification-run'. Use one of these ids exactly: ${running} — Acquisition: classification (active)`);
+    expect(missing.body.error.message).toBe(UNAVAILABLE);
+    expect(JSON.stringify(missing)).not.toContain(running);
   });
 
   it("stops listing research Operations once the instructing person's Project membership is gone", async () => {
@@ -186,7 +193,7 @@ describe('core cancellation discovery privacy',()=>{
     const project=await new PgProjectRepository(db.pool).create(identity(),{name:'Current'});
     const terminal=await researchRow(project.id as string,'Finished','completed');
     const result=await (await coreCancelFor(project.id as string))('unknown');
-    expect(result.httpStatus).toBe(404);expect(result.body.error.message).toContain('no research running');
+    expect(result.httpStatus).toBe(404);expect(result.body.error.message).toBe(UNAVAILABLE);
     expect(JSON.stringify(result)).not.toContain(terminal);
   });
   it('never offers ids on cross-Project targets or mismatched caller Project hints',async()=>{
@@ -198,10 +205,11 @@ describe('core cancellation discovery privacy',()=>{
     const cancel=await coreCancelFor(current.id as string);
     const outside=await cancel(foreignSpaceId),missing=await cancel(randomUUID());
     expect(outside.httpStatus).toBe(missing.httpStatus);
-    expect(outside.body.error.message.replace(foreignSpaceId,'<target>')).toBe(missing.body.error.message.replace(/No research Operation has id '[^']*'/,"No research Operation has id '<target>'"));
-    expect(outside.body.error.message).toContain(visible);
+    expect(outside.body.error.message).toBe(UNAVAILABLE);
+    expect(missing.body.error.message).toBe(UNAVAILABLE);
+    expect(JSON.stringify(outside)).not.toContain(visible);
     for(const result of [await cancel(foreign),await cancel('unknown',{project_id:other.id}),await cancel(visible,{project_id:other.id})]) {
-      expect(result.httpStatus).toBe(404);expect(result.body.error.message).toBe('operation not found');
+      expect(result.httpStatus).toBe(404);expect(result.body.error.message).toBe(UNAVAILABLE);
       expect(JSON.stringify(result)).not.toContain(visible);expect(JSON.stringify(result)).not.toContain('Secret other');
     }
     expect((await db.pool.query('SELECT status FROM project_operations WHERE id=$1',[foreign])).rows[0].status).toBe('active');
@@ -211,14 +219,16 @@ describe('core cancellation discovery privacy',()=>{
     const project=await new PgProjectRepository(db.pool).create(identity(),{name:'Current'});
     await db.pool.query("INSERT INTO project_members(id,space_id,project_id,user_id,role,status,created_at,updated_at) VALUES($1,$2,$3,$4,'member','active',now(),now())",[randomUUID(),SPACE,project.id,member]);
     const visible=await researchRow(project.id as string,'Visible'),cancel=await coreCancelFor(project.id as string,member);
-    expect((await cancel('unknown')).body.error.message).toContain(visible);
+    expect((await cancel('unknown')).body.error.message).toBe(UNAVAILABLE);
+    const list = await explicitList(project.id as string, 'research.list_operations', member);
+    expect(list).toMatchObject({operations: [expect.objectContaining({operation_id: visible})]});
     await db.pool.query('DELETE FROM project_members WHERE project_id=$1 AND user_id=$2',[project.id,member]);
-    expect((await cancel('unknown')).body.error.message).toBe('operation not found');
+    expect((await cancel('unknown')).body.error.message).toBe(UNAVAILABLE);
     const ownerCancel=await coreCancelFor(project.id as string);
     await db.pool.query("UPDATE runs SET permission_snapshot_json='{}'::jsonb WHERE project_id=$1",[project.id]);
-    expect((await ownerCancel('unknown')).body.error.message).toBe('operation not found');
+    expect(await ownerCancel('unknown')).toMatchObject({httpStatus:403,body:{error:{code:'operation_not_granted'}}});
   });
-  it('filters private bound calls from hints and never offers hints for their existing ids',async()=>{
+  it('filters private bound calls from explicit lists and hides their existing ids',async()=>{
     const member=randomUUID();await seedSpaceMember(db.pool,{space:SPACE,user:member});
     const project=await new PgProjectRepository(db.pool).create(identity(),{name:'Current'});
     await db.pool.query("INSERT INTO project_members(id,space_id,project_id,user_id,role,status,created_at,updated_at) VALUES($1,$2,$3,$4,'member','active',now(),now())",[randomUUID(),SPACE,project.id,member]);
@@ -229,7 +239,11 @@ describe('core cancellation discovery privacy',()=>{
     await createResearchWorkflow(db.pool,{id:workflow,spaceId:SPACE,projectId:project.id as string,title:'Private workflow',status:'active',state:{},startedByUserId:OWNER,primaryThreadId:thread.id as string,now:new Date().toISOString()});
     const privateId=(await createBoundResearchOperation(db.pool,identity(),project.id as string,{title:'Private title',intentText:'Private investigation',status:'active',steps:[],progress:{schema_version:'project_research_operation.v1',workflow_id:workflow,thread_scope:[{thread_id:thread.id,version:1,kind:'question',statement:'Private question'}],idempotency:{key,fingerprint:key},history:{max_items:20},channel_ids:[]}})).id;
     const cancel=await coreCancelFor(project.id as string,member),missing=await cancel('unknown');
-    expect(missing.body.error.message).toContain(visible);expect(JSON.stringify(missing)).not.toContain(privateId);expect(JSON.stringify(missing)).not.toContain('Private title');
-    expect((await cancel(privateId)).body.error.message).toBe('operation not found');
+    expect(missing.body.error.message).toBe(UNAVAILABLE);expect(JSON.stringify(missing)).not.toContain(visible);expect(JSON.stringify(missing)).not.toContain(privateId);expect(JSON.stringify(missing)).not.toContain('Private title');
+    expect((await cancel(privateId)).body.error.message).toBe(UNAVAILABLE);
+    const list = await explicitList(project.id as string, 'research.list_operations', member);
+    expect(list).toMatchObject({operations: [expect.objectContaining({operation_id: visible})]});
+    expect(JSON.stringify(list)).not.toContain(privateId);
+    expect(JSON.stringify(list)).not.toContain('Private title');
   });
 });

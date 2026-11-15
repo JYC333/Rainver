@@ -1,7 +1,8 @@
+import {admitFiling} from './admission.js';
 import { resolveContentCreationContext } from "../access/creationContext.js";
 import { PgKnowledgeRepository } from "../knowledge/repository.js";
-import { HttpError, withDbTransaction, type Queryable } from "../routeUtils/common.js";
-import { getDbPool, type Pool } from "../../db/pool.js";
+import { HttpError, withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
+import { getDbPool } from "../../db/pool.js";
 import type { ServerConfig } from "../../config.js";
 
 interface ActivityRow {
@@ -32,7 +33,7 @@ interface CaptureFilingResult {
  * path. Nothing is copied — the capture stays put and a new object is created.
  */
 export class CaptureFilingService {
-  constructor(private readonly pool: Pool) {}
+  constructor(private readonly pool: Queryable) {}
 
   static fromConfig(config: ServerConfig): CaptureFilingService {
     if (!config.databaseUrl) throw new HttpError(502, "SERVER_DATABASE_URL is required");
@@ -45,7 +46,8 @@ export class CaptureFilingService {
     targetProjectId: string;
     title?: string;
   }): Promise<CaptureFilingResult> {
-    return withDbTransaction(this.pool, async (client) => {
+    return withQueryableTransaction(this.pool, async (client) => {
+      await admitFiling(client,input);
       const activity = await this.loadOwnedCapture(client, input.userId, input.activityId);
       const targetSpaceId = await this.targetSpaceId(client, input.targetProjectId);
       const context = await resolveContentCreationContext(client, {

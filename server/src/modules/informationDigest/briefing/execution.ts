@@ -20,13 +20,13 @@ export type BriefingEgress = BriefingExecution | { destination: RetrievalEgressD
  * enabled runtime profile usable by them now — the same rule material
  * processing uses. No system Agent's authority is borrowed.
  */
-export async function selectExecution(db: Queryable, spaceId: string, userId: string, requested: Partial<BriefingExecution>): Promise<BriefingExecution> {
+export async function selectExecution(db: Queryable, spaceId: string, userId: string, requested: Partial<BriefingExecution>, lock = false): Promise<BriefingExecution> {
   const selected = (await db.query<BriefingExecution>(
     `SELECT a.id AS agent_id, p.id AS runtime_profile_id
        FROM agents a JOIN agent_runtime_profiles p ON p.agent_id = a.id AND p.space_id = a.space_id
       WHERE a.space_id = $1 AND a.owner_user_id = $2 AND a.status = 'active' AND a.agent_kind <> 'system_assistant'
         AND p.enabled = true AND ($3::varchar IS NULL OR a.id = $3) AND ($4::varchar IS NULL OR p.id = $4)
-      ORDER BY p.is_default DESC, a.created_at, p.id LIMIT 1`,
+      ORDER BY p.is_default DESC, a.created_at, p.id LIMIT 1${lock ? " FOR SHARE OF a,p" : ""}`,
     [spaceId, userId, requested.agent_id ?? null, requested.runtime_profile_id ?? null],
   )).rows[0];
   if (!selected) throw new HttpError(409, "Choose one of your Agents with an enabled runtime to generate briefings", { code: "briefing_execution_setup_required" });

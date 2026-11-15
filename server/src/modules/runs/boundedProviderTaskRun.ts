@@ -92,6 +92,8 @@ interface BoundedProviderTaskBase {
   /** Domain gate executed inside the canonical attempt/Delivery transaction. */
   authorizeAttempt?: (db: Queryable, refs: import('../providers/commands/types.js').ProviderTaskAttemptRefs) => Promise<void>;
   allowProviderFallback?: boolean;
+  /** A durable owner decides recovery after this one physical send. */
+  singleAttempt?: true;
   deadlineSeconds?: number;
   /**
    * Whether a failed task marks the Run failed. A job-driven task hands this
@@ -133,6 +135,7 @@ export async function runBoundedProviderTask(
       messages: input.messages,
       task: input.task,
       allow_provider_fallback: input.allowProviderFallback,
+      single_attempt: input.singleAttempt,
       ...(input.completion === "structured" ? { output_format: input.outputFormat } : {}),
       metering: {
         ...(input.metering ?? {}),

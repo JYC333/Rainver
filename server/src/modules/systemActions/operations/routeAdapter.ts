@@ -1,7 +1,7 @@
 import type {FastifyInstance} from 'fastify';
 import type {ServerConfig} from '../../../config.js';
 import {resolveRequestId} from '../../../gateway/requestContext.js';
-import {introspectIdentity} from '../../auth/identity.js';
+import {introspectIdentity,introspectPersonIdentity} from '../../auth/identity.js';
 import {jsonBody} from '../../routeUtils/common.js';
 import {OperationError,markedRefusal} from './errors.js';
 import {sessionActor} from './actor.js';
@@ -15,11 +15,18 @@ export interface OperationAdapterRoute {
   readonly method:'POST'|'PUT'|'PATCH'|'DELETE';
   readonly url:string;
   readonly operation:string;
+  readonly bodyLimit?:number;
+  readonly admission?:'person';
   readonly params?:Readonly<Record<string,string>>;
   readonly query?:Readonly<Record<string,string>>;
   readonly fixed?:Readonly<Record<string,unknown>>;
   /** Target fields an existing body schema itself carries; accepted only when equal to the URL's. */
   readonly restated?:readonly string[];
+  /** The path parameter naming the Space this command acts in. The session is
+   * resolved for that Space (active membership required, as the legacy route
+   * did), it becomes the actor's Space and the `space_id` target; a header or
+   * query naming another Space is refused. */
+  readonly spaceParam?:string;
   /** An explicit owner-provided step that must run before, never inside, the
    * operation transaction (for example provider-funded summary preparation).
    * It changes no state the operation authorizes; the operation rechecks everything. */
@@ -37,17 +44,21 @@ export interface OperationAdapterRoute {
 /** Formal adapters only: identity, transport key and the typed operation envelope; no domain logic. */
 export function registerOperationAdapters(app:FastifyInstance,config:ServerConfig,routes:readonly OperationAdapterRoute[]):void{
   for(const route of routes){
-    app.route({method:route.method,url:route.url,config:{operation:route.operation},async handler(request,reply){
+    app.route({method:route.method,url:route.url,...(route.bodyLimit?{bodyLimit:route.bodyLimit}:{}),config:{operation:route.operation},async handler(request,reply){
       const requestId=resolveRequestId(request);
       reply.header('x-request-id',requestId).header('cache-control','private, no-store');
       const fail=(e:OperationError)=>reply.code(e.httpStatus).send(e.body(requestId));
-      const identity=await introspectIdentity(config,request,reply);
+      const pathSpace=route.spaceParam?((request.params??{}) as Record<string,string|undefined>)[route.spaceParam]:undefined;
+      if(route.spaceParam&&!pathSpace)return fail(new OperationError('operation_not_found',404));
+      const identity=route.admission==='person'?await introspectPersonIdentity(config,request,reply):await introspectIdentity(config,request,reply,pathSpace);
       if(!identity.ok)return fail(identity.reason==='denied'?new OperationError(identity.statusCode===401?'authentication_required':'operation_not_found',identity.statusCode===401?401:404):new OperationError('operation_temporarily_unavailable',503,true));
+      if(pathSpace&&identity.spaceId!==pathSpace)return fail(new OperationError('operation_not_found',404));
       let body:Record<string,unknown>;
       try{body=request.body===undefined?{}:jsonBody(request);}catch{return fail(new OperationError('operation_invalid_input',422));}
       const target:Record<string,unknown>={};
       const params=(request.params??{}) as Record<string,string|undefined>;
       for(const [param,field] of Object.entries(route.params??{}))if(params[param]!==undefined)target[field]=params[param];
+      if(pathSpace)target.space_id=pathSpace;
       const query=(request.query??{}) as Record<string,unknown>;
       for(const [name,field] of Object.entries(route.query??{})){const value=query[name];if(typeof value==='string'&&value.trim())target[field]=value.trim();}
       Object.assign(target,route.fixed??{});

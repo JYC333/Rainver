@@ -10,7 +10,7 @@ const job={id:'dispatch-job',space_id:space,user_id:user,job_type:'source_extrac
 const pageOf=items=>({items,total:items.length,limit:100,offset:0})
 before(async()=>{server=await preview({configFile:false,preview:{host:'127.0.0.1',port:0}});base=`http://127.0.0.1:${server.httpServer.address().port}`;browser=await chromium.launch({executablePath:process.env.CHROMIUM_EXECUTABLE})})
 after(async()=>{await browser?.close();await new Promise(r=>server.httpServer.close(r))})
-test('Source parent entries explain enqueue and reach the existing unknown-outcome Job result',{timeout:90000},async()=>{
+test('Source parent entries explain enqueue and reach the existing unknown-outcome Job result',async()=>{
  const out=process.env.SOURCE_DISPATCH_SHOTS??'/tmp/source-dispatch-shots';await mkdir(out,{recursive:true})
  for(const [locale,theme,width] of [['en','dark',1280],['zh-CN','dark',390],['en','light',390],['zh-CN','light',1280]]){
   const page=await browser.newPage({viewport:{width,height:900},serviceWorkers:'block'}),errors=[]

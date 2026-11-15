@@ -1,3 +1,36 @@
+import {ACCOUNT_OPERATION_SCHEMAS,DAEMON_WORKSPACE_OPERATION_SCHEMAS} from './accountWorkspaceOperations.js';
+import {CONTEXT_OPS_OPERATION_SCHEMAS} from './contextOps.js';
+import {RESEARCH_STRATEGY_OPERATION_SCHEMAS} from './researchDiscovery.js';
+import {ATTENTION_OPERATION_SCHEMAS} from './agentAttention.js';
+import {PERSONAL_MEMORY_GRANT_OPERATION_SCHEMAS} from './personalMemoryGrantOperations.js';
+import {CAPTURE_FILING_OPERATION_SCHEMAS} from './capturefiling.js';
+import {CROSS_SPACE_RETRIEVAL_OPERATION_SCHEMAS,CROSS_SPACE_SETTING_OPERATION_SCHEMAS} from './crossSpaceRetrieval.js';
+import {LEARNING_OPERATION_SCHEMAS} from './learningOperations.js';
+import {FOCUS_OPERATION_SCHEMAS} from './focusOperations.js';
+import {GRAPH_OPERATION_SCHEMAS} from './graphOperations.js';
+import {ACTIVITY_OPERATION_SCHEMAS} from './activityOperations.js';
+import { DIGEST_OPERATION_SCHEMAS } from './digestOperations.js';
+import { INTEREST_OPERATION_SCHEMAS } from './interestOperations.js';
+import { READING_OPERATION_SCHEMAS } from './readingOperations.js';
+import {BUNDLE_DECISION_OPERATION_SCHEMAS,PROPOSAL_APPLY_OPERATION_SCHEMAS,PROPOSAL_REJECTION_OPERATION_SCHEMAS,PROPOSAL_CONSENT_OPERATION_SCHEMAS} from './proposalOperations.js';
+import {AUTOMATION_FIRE_OPERATION_SCHEMAS,AUTOMATION_CONFIGURATION_OPERATION_SCHEMAS} from './automationOperations.js';
+import {AUTHORIZATION_REQUEST_OPERATION_SCHEMAS} from './authorizationRequestOperations.js';
+import {SKILL_LOCAL_OPERATION_SCHEMAS,SKILL_IO_OPERATION_SCHEMAS} from './skillOperations.js';
+import {PUBLICATION_OPERATION_SCHEMAS} from './publicationOperations.js';
+import {EVOLUTION_ASSET_OPERATION_SCHEMAS} from './evolutionAssetOperations.js';
+import {PROMPT_OPERATION_SCHEMAS} from './promptOperations.js';
+import {RUNTIME_CONTEXT_REQUEST_OPERATION_SCHEMAS} from './runtimeContextRequestOperations.js';
+import {RUNTIME_CONTEXT_OPERATION_SCHEMAS} from './runtimeContextOperations.js';
+import {EVOLUTION_OPERATION_SCHEMAS} from './evolutionOperations.js';
+import {SPACE_OPERATION_SCHEMAS} from './spaceOperations.js';
+import {READER_OPERATION_SCHEMAS} from './readerOperations.js';
+import {CONTENT_RETRIEVAL_OPERATION_SCHEMAS} from './contentRetrievalOperations.js';
+import {ACADEMIC_OPERATION_SCHEMAS} from './academicOperations.js';
+import {MEMORY_OPERATION_SCHEMAS} from './memoryOperations.js';
+import {KNOWLEDGE_RETRIEVAL_OPERATION_SCHEMAS,MEMORY_RETRIEVAL_OPERATION_SCHEMAS} from './knowledgeRetrievalOperations.js';
+import {OBJECT_SCHEMA_OPERATION_SCHEMAS} from './objectSchemaOperations.js';
+import {KNOWLEDGE_PROPOSAL_SCHEMAS} from './knowledgeProposalOperations.js';
+import {RELATION_OPERATION_SCHEMAS} from './relationOperations.js';
 import {RESEARCH_EXECUTION_SCHEMAS} from './researchExecutionOperations.js';
 import {ResearchAdhocInputSchema,ResearchAdhocReceiptSchema} from './researchAdhocOperation.js';
 import {PROJECT_SOURCE_PROPOSAL_SCHEMAS} from './projectSourceProposalOperations.js';
@@ -8,6 +41,7 @@ import {AGENT_CHAT_OPERATION_SCHEMAS,AGENT_OPERATION_SCHEMAS} from './agentOpera
 import {HOST_COMMAND_OPERATION_SCHEMAS,HOST_DIRECT_OPERATION_SCHEMAS} from './hostOperations.js';
 import {SETTINGS_COMMAND_OPERATION_SCHEMAS,SETTINGS_DIRECT_OPERATION_SCHEMAS} from './settingsOperations.js';
 import {ROOM_OPERATION_SCHEMAS} from './roomOperations.js';
+import {PROJECT_AGENT_OPERATION_SCHEMAS} from './projectAgents.js';
 import {AGENT_GROUP_OPERATION_SCHEMAS} from './agentGroupOperations.js';
 import {RUN_OPERATION_SCHEMAS} from './runOperations.js';
 import {SESSION_OPERATION_SCHEMAS,SESSION_QUERY_SCHEMAS} from './sessionOperations.js';
@@ -26,6 +60,9 @@ import {WorkspaceVerificationGetInputSchema,WorkspaceVerificationConfigureInputS
 import {KNOWLEDGE_REVIEW_SCHEMAS} from './knowledgeReviewOperations.js';
 import {KNOWLEDGE_OBJECT_SCHEMAS} from './knowledgeObjectOperations.js';
 import {NOTE_OBJECT_SCHEMAS} from './noteObjectOperations.js';
+import {SOURCE_OBJECT_SCHEMAS,NOTE_LINK_SCHEMAS} from './sourceObjectOperations.js';
+import {NOTE_SOURCE_BLOCK_SCHEMAS} from './noteSourceBlockOperations.js';
+import {SOURCE_GOAL_SCHEMAS} from './sourceGoalOperations.js';
 import {SourceProcessingCreateSchema,SourceProcessingUpdateSchema,SourceProcessingDispatchSchema,SourceExtractionDispatchSchema,SourceProcessingRuleSchema,SourceDispatchReceiptSchema} from './sourceProcessingOperations.js';
 import {SourceChannelCreateInputSchema,SourceChannelCreateOutputSchema} from './sourceChannelCreateOperation.js';
 import {NoteControlTargetSchema,NoteRollbackInputSchema,NoteControlReceiptSchema} from './noteControlOperations.js';
@@ -39,6 +76,7 @@ import {BoardConfigurationInputSchema, BoardColumnSelectionSchema, TaskCompletio
 import { IdSchema } from './common.js';
 import { z } from 'zod';
 import {TaskSpacePlacementInputSchema,TaskSpacePlacementOutputSchema} from './taskSpacePlacement.js';
+import {TaskCreateOperationInputSchema,TaskCreateOperationOutputSchema,TaskUpdateInputSchema,TaskUpdateOutputSchema,TaskEvaluationRecordInputSchema,TaskEvaluationRecordOutputSchema,TaskPlanRequestInputSchema,TaskRunCreateInputSchema,TaskRunReceiptSchema,BoardCreateInputSchema,BoardUpdateInputSchema,BoardReceiptSchema,PlanExecuteInputSchema,PlanExecuteOutputSchema,PlanReconcileInputSchema,PlanReconcileOutputSchema,JobCancelInputSchema,JobCancelOutputSchema} from './taskBoardPlanJob.js';
 import {SourceBackfillPreviewInputSchema,SourceBackfillCreateInputSchema,SourceBackfillControlInputSchema,SourceBackfillPreviewOutputSchema,SourceBackfillReceiptSchema} from './sourceBackfillOperations.js';
 export const OperationActorSchema = z.object({
   principal: z.object({
@@ -56,7 +94,7 @@ export const OperationActorSchema = z.object({
   space_id: z.string().min(1)
 }).strict();
 export type OperationActor = z.infer<typeof OperationActorSchema>;
-export const OPERATION_ERROR_CODES = ['authentication_required', 'operation_not_found', 'operation_version_unsupported', 'operation_invalid_input', 'idempotency_key_required', 'idempotency_key_reused', 'idempotency_in_progress', 'operation_approval_mapping_unavailable', 'operation_approval_state_inconsistent', 'operation_approval_rejected', 'operation_approval_expired', 'operation_approval_superseded', 'operation_result_unavailable', 'operation_invalid_output', 'operation_audit_unavailable', 'operation_temporarily_unavailable', 'operation_internal_error', 'operation_conflict', 'operation_limit_exceeded'] as const;
+export const OPERATION_ERROR_CODES = ['authentication_required', 'operation_not_granted', 'operation_not_found', 'operation_version_unsupported', 'operation_invalid_input', 'idempotency_key_required', 'idempotency_key_reused', 'idempotency_in_progress', 'operation_approval_mapping_unavailable', 'operation_approval_state_inconsistent', 'operation_approval_rejected', 'operation_approval_expired', 'operation_approval_superseded', 'operation_result_unavailable', 'operation_invalid_output', 'operation_audit_unavailable', 'operation_temporarily_unavailable', 'operation_internal_error', 'operation_conflict', 'operation_limit_exceeded'] as const;
 export type OperationErrorCode = typeof OPERATION_ERROR_CODES[number];
 export const OperationErrorSchema = z.object({
   error: z.object({
@@ -168,7 +206,8 @@ export const CollaborationParticipantsOutputSchema = z.object({
   group_id: IdSchema.max(36), task_id: IdSchema.max(36), participant_agent_ids: collaborationParticipants,
   max_delegations: z.number().int().positive(),
 }).strict();
-export const OPERATION_SCHEMA_TABLE = {
+const BASE_OPERATION_SCHEMA_TABLE = {
+  ...ACCOUNT_OPERATION_SCHEMAS,...DAEMON_WORKSPACE_OPERATION_SCHEMAS,
   'knowledge.candidate.extract':{input:KnowledgeExtractionInputSchema,output:KnowledgeExtractionReceiptSchema},
   "workspace.integration.verification.get":{input:WorkspaceVerificationGetInputSchema,output:WorkspaceVerificationViewSchema},
   "workspace.integration.verification.configure":{input:WorkspaceVerificationConfigureInputSchema,output:WorkspaceVerificationViewSchema},
@@ -187,6 +226,29 @@ export const OPERATION_SCHEMA_TABLE = {
   'source.channel.create':{input:SourceChannelCreateInputSchema,output:SourceChannelCreateOutputSchema},
   ...NOTE_OBJECT_SCHEMAS,
   ...KNOWLEDGE_OBJECT_SCHEMAS,
+  ...RELATION_OPERATION_SCHEMAS,
+  ...PUBLICATION_OPERATION_SCHEMAS,
+  ...AUTOMATION_CONFIGURATION_OPERATION_SCHEMAS,
+  ...SKILL_LOCAL_OPERATION_SCHEMAS,
+  ...AUTHORIZATION_REQUEST_OPERATION_SCHEMAS,
+  ...SKILL_IO_OPERATION_SCHEMAS,
+  ...READER_OPERATION_SCHEMAS,
+  ...SPACE_OPERATION_SCHEMAS,
+  ...EVOLUTION_OPERATION_SCHEMAS,
+  ...RUNTIME_CONTEXT_OPERATION_SCHEMAS,
+  ...EVOLUTION_ASSET_OPERATION_SCHEMAS,
+  ...PROMPT_OPERATION_SCHEMAS,
+  ...RUNTIME_CONTEXT_REQUEST_OPERATION_SCHEMAS,
+  ...ACADEMIC_OPERATION_SCHEMAS,
+  ...KNOWLEDGE_PROPOSAL_SCHEMAS,
+  ...OBJECT_SCHEMA_OPERATION_SCHEMAS,
+  ...KNOWLEDGE_RETRIEVAL_OPERATION_SCHEMAS,
+  ...MEMORY_OPERATION_SCHEMAS,
+  ...MEMORY_RETRIEVAL_OPERATION_SCHEMAS,
+  ...SOURCE_OBJECT_SCHEMAS,
+  ...NOTE_LINK_SCHEMAS,
+  ...NOTE_SOURCE_BLOCK_SCHEMAS,
+  ...SOURCE_GOAL_SCHEMAS,
   ...KNOWLEDGE_REVIEW_SCHEMAS,
   ...RESEARCH_WORKSPACE_SCHEMAS,
   ...RESEARCH_EXECUTION_SCHEMAS,
@@ -211,6 +273,7 @@ export const OPERATION_SCHEMA_TABLE = {
   ...SETTINGS_DIRECT_OPERATION_SCHEMAS,
   ...AGENT_CHAT_OPERATION_SCHEMAS,
   ...ROOM_OPERATION_SCHEMAS,
+  ...PROJECT_AGENT_OPERATION_SCHEMAS,
   ...AGENT_GROUP_OPERATION_SCHEMAS,
   ...RUN_OPERATION_SCHEMAS,
   ...SESSION_OPERATION_SCHEMAS,
@@ -237,6 +300,16 @@ export const OPERATION_SCHEMA_TABLE = {
   'board.configure':{input:BoardConfigureOperationInputSchema,output:BoardConfigureOperationOutputSchema},
   'task.move_to_column':{input:TaskMoveOperationInputSchema,output:TaskMoveOperationOutputSchema},
   'task.place_in_space_board':{input:TaskSpacePlacementInputSchema,output:TaskSpacePlacementOutputSchema},
+  'task.create':{input:TaskCreateOperationInputSchema,output:TaskCreateOperationOutputSchema},
+  'task.update':{input:TaskUpdateInputSchema,output:TaskUpdateOutputSchema},
+  'task.evaluation.record':{input:TaskEvaluationRecordInputSchema,output:TaskEvaluationRecordOutputSchema},
+  'task.plan.request':{input:TaskPlanRequestInputSchema,output:TaskRunReceiptSchema},
+  'task.run.create':{input:TaskRunCreateInputSchema,output:TaskRunReceiptSchema},
+  'board.create':{input:BoardCreateInputSchema,output:BoardReceiptSchema},
+  'board.update':{input:BoardUpdateInputSchema,output:BoardReceiptSchema},
+  'plan.execute':{input:PlanExecuteInputSchema,output:PlanExecuteOutputSchema},
+  'plan.reconcile':{input:PlanReconcileInputSchema,output:PlanReconcileOutputSchema},
+  'job.cancel':{input:JobCancelInputSchema,output:JobCancelOutputSchema},
   'source.backfill.preview':{input:SourceBackfillPreviewInputSchema,output:SourceBackfillPreviewOutputSchema},
   'source.backfill.create_plan':{input:SourceBackfillCreateInputSchema,output:SourceBackfillReceiptSchema},
   'source.backfill.pause':{input:SourceBackfillControlInputSchema,output:SourceBackfillReceiptSchema},
@@ -251,6 +324,8 @@ export const OPERATION_SCHEMA_TABLE = {
     output: ActionCatalogOutputSchema
   }
 } as const;
+export const OPERATION_SCHEMA_TABLE:typeof CONTEXT_OPS_OPERATION_SCHEMAS & typeof CONTENT_RETRIEVAL_OPERATION_SCHEMAS & typeof RESEARCH_STRATEGY_OPERATION_SCHEMAS & typeof CROSS_SPACE_RETRIEVAL_OPERATION_SCHEMAS & typeof ATTENTION_OPERATION_SCHEMAS & typeof PERSONAL_MEMORY_GRANT_OPERATION_SCHEMAS & typeof CAPTURE_FILING_OPERATION_SCHEMAS & typeof CROSS_SPACE_SETTING_OPERATION_SCHEMAS & typeof LEARNING_OPERATION_SCHEMAS & typeof FOCUS_OPERATION_SCHEMAS & typeof GRAPH_OPERATION_SCHEMAS & typeof ACTIVITY_OPERATION_SCHEMAS & typeof DIGEST_OPERATION_SCHEMAS & typeof INTEREST_OPERATION_SCHEMAS & typeof READING_OPERATION_SCHEMAS & typeof BASE_OPERATION_SCHEMA_TABLE & typeof AUTOMATION_FIRE_OPERATION_SCHEMAS & typeof PROPOSAL_CONSENT_OPERATION_SCHEMAS & typeof PROPOSAL_REJECTION_OPERATION_SCHEMAS & typeof PROPOSAL_APPLY_OPERATION_SCHEMAS & typeof BUNDLE_DECISION_OPERATION_SCHEMAS = {
+ ...CONTEXT_OPS_OPERATION_SCHEMAS,...CONTENT_RETRIEVAL_OPERATION_SCHEMAS,...RESEARCH_STRATEGY_OPERATION_SCHEMAS,...CROSS_SPACE_RETRIEVAL_OPERATION_SCHEMAS,...ATTENTION_OPERATION_SCHEMAS,...PERSONAL_MEMORY_GRANT_OPERATION_SCHEMAS,...CAPTURE_FILING_OPERATION_SCHEMAS,...CROSS_SPACE_SETTING_OPERATION_SCHEMAS,...LEARNING_OPERATION_SCHEMAS,...FOCUS_OPERATION_SCHEMAS,...GRAPH_OPERATION_SCHEMAS,...ACTIVITY_OPERATION_SCHEMAS,...DIGEST_OPERATION_SCHEMAS,...INTEREST_OPERATION_SCHEMAS,...READING_OPERATION_SCHEMAS,...BASE_OPERATION_SCHEMA_TABLE,...AUTOMATION_FIRE_OPERATION_SCHEMAS,...PROPOSAL_CONSENT_OPERATION_SCHEMAS,...PROPOSAL_REJECTION_OPERATION_SCHEMAS,...PROPOSAL_APPLY_OPERATION_SCHEMAS,...BUNDLE_DECISION_OPERATION_SCHEMAS};
 export type OperationId = keyof typeof OPERATION_SCHEMA_TABLE;
 export type OperationInput<Id extends OperationId> = z.input<(typeof OPERATION_SCHEMA_TABLE)[Id]['input']>;
 export type OperationOutput<Id extends OperationId> = z.output<(typeof OPERATION_SCHEMA_TABLE)[Id]['output']>;

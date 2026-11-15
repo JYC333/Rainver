@@ -1,3 +1,4 @@
+import {writeJsonDurable as writeJson} from './durableFile.js';
 import {workspaceDeltaAlreadyApplied} from './appliedWorkspaceDelta.js';
 import {assertWorkspaceCheckoutAllowed} from './workspaceBaseline.js';
 import {join} from 'node:path';
@@ -8,7 +9,7 @@ import {captureWorkspaceTree} from './gitDiff.js';
 import {executionWorkspacePath} from './executionWorkspace.js';
 import {leaseOwnedByRun,isLeaseBusy} from './locationLease.js';
 import {workspaceWorktreeKey,workspaceRunKey} from './worktreeIdentity.js';
-import {checkLocationRepository,gitOrThrow,isAncestor,readJson,writeJson,writeCommit,taskBranchRef,taskLeaseKey,withTaskHeld,useTaskWorktree,isTaskWorktreeInUse,WORKTREE_TIMEOUT_MS} from './taskWorktree.js';
+import {checkLocationRepository,gitOrThrow,isAncestor,readJson,writeCommit,taskBranchRef,taskLeaseKey,withTaskHeld,useTaskWorktree,isTaskWorktreeInUse,WORKTREE_TIMEOUT_MS} from './taskWorktree.js';
 import {mergeTrees,publishWorkspaceCommit,overlappingLocalChanges} from './taskMerge.js';
 import {assertChainUnchanged,assertPublicationTarget,freezePublicationChain,writeMergeCommit,type FrozenChain} from './publicationChain.js';
 import {hasUnresolvedMarkers,pickCommit,rebaseCommits,replayCommits,type RebaseStop} from './nativeRebase.js';
@@ -73,7 +74,14 @@ export async function executeNativeWorkspaceIntegration(locationRoot:string|null
    const {request_id:_,...meaning}=frame;
    const fingerprint=JSON.stringify(meaning);
    const prior=await readJson(answerPath);
-   if(prior){if(prior.fingerprint!==fingerprint)return fail('native_integration_request_changed');const {type:_,request_id:__,...answer}=HostDaemonFrameSchema.parse({...prior.answer as object,type:'workspace_integration_result',request_id:frame.request_id}) as HostDaemonFrameOf<'workspace_integration_result'>;return answer;}
+   if(prior){
+    if(prior.fingerprint!==fingerprint)return fail('native_integration_request_changed');
+    const {type:_,request_id:__,...answer}=HostDaemonFrameSchema.parse({...prior.answer as object,type:'workspace_integration_result',request_id:frame.request_id}) as HostDaemonFrameOf<'workspace_integration_result'>;
+    // A busy target has not published anything. Retain its request identity,
+    // but recheck the lease and all publication guards on the same retry.
+    // This also recovers busy receipts written by older Hosts after restart.
+    if(answer.ok||answer.error!=='location_busy')return answer;
+   }
    let stored=await readJson(journalPath) as unknown as Journal|null;
    const snapshot=async(message:string)=>{
     const head=await gitOrThrow(['rev-parse','HEAD'],root);

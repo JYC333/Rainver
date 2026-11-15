@@ -226,7 +226,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     // Same answer for "no such action" and "granted to some other Run": the
     // token holder learns only about its own surface.
     if (!tool) {
-      return reply.code(404).send({ detail: `This Run has no action '${actionId}'` });
+      return reply.code(403).send({ok:false,error_code:"system_action_not_granted",detail:"This action is not available to this Run. Read rainver list; do not guess another name."});
     }
     return reply.send({
       name: tool.name,
@@ -271,7 +271,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         ok: false,
         tool: actionId,
         error_code: "system_action_failed",
-        error: error instanceof Error ? error.message : "Run tool call failed",
+        error: "Run tool call failed. Check the current action list and visible state before deciding the next step.",
       });
     }
   });

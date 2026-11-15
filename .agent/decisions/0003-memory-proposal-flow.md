@@ -189,6 +189,13 @@ The owner's static `agents.role_instruction` is a different field with a
 different author and is not touched by any of this: the person sets the role,
 the Agent evolves the persona, and the prompt renders role first.
 
+The retained-Project isolation boundary (B8/B10) is stricter than this accepted
+same-Project Room crossing: work using an Agent outside its retained Project
+cannot create or revise its global persona, including by owner-approved proposal.
+The canonical writer and acceptance check canonical Run provenance, while delivery
+quarantines historical persona with foreign-Project Run provenance. Section 5's
+unattended exception applies only inside that boundary.
+
 ### 5. Who may change a persona is decided by who is responsible for the Run
 
 A persona entry is delivered in every Room and every conversation, so a person

@@ -186,3 +186,63 @@ describe('Continuing from an imported session', () => {
     expect(screen.queryByRole('button', { name: /Continue/ })).not.toBeInTheDocument()
   })
 })
+
+it('folds consecutive tool activity, keeps messages ordered and preserves picks when folded', async () => {
+  const user = userEvent.setup({ delay: null })
+  const message = (id: string, kind: string, text: string) => ({ id, kind, text, sequence: 0, tool_name: null, tool_status: null, tool_input: null, tool_output: null, created_at: '' })
+  vi.mocked(ambientSessionsApi.records).mockResolvedValue({
+    session: session('space_shared'),
+    records: [
+      message('user', 'user_message', 'Inspect the parser'),
+      { ...message('tool-1', 'tool_call', ''), tool_name: 'Read', tool_input: 'parser.ts', tool_output: 'parser contents', tool_status: 'completed' },
+      { ...message('tool-2', 'tool_call', ''), tool_name: 'Bash', tool_input: 'pnpm test', tool_output: 'Tests passed', tool_status: 'completed' },
+      message('answer', 'agent_message', 'The parser is correct'),
+      { ...message('tool-3', 'tool_call', ''), tool_name: 'Read', tool_input: 'README.md' },
+    ], truncated: false,
+  } as never)
+  renderView()
+  const groups = await screen.findAllByTestId('imported-activity')
+  expect(groups).toHaveLength(2)
+  expect(screen.getByText('Inspect the parser')).toBeVisible()
+  expect(screen.getByText('The parser is correct')).toBeVisible()
+  expect(screen.queryByText('parser contents')).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: /Read/ })).not.toBeInTheDocument()
+  const groupButton = screen.getByRole('button', { name: 'Work details (2)' })
+  await user.click(groupButton)
+  // One disclosure for the work, another for individual call details.
+  expect(screen.queryByText('parser contents')).not.toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: /Read/ }))
+  expect(screen.getByText('parser contents')).toBeVisible()
+  const checkboxes = screen.getAllByLabelText('Pick this record')
+  await user.click(checkboxes[1]!)
+  await user.click(groupButton)
+  expect(screen.getByRole('button', { name: /Work details.*1 picked/ })).toHaveAttribute('aria-expanded', 'false')
+  await user.click(screen.getByRole('button', { name: 'Use in Rainver' }))
+  await waitFor(() => expect(JSON.parse(sessionStorage.getItem('rainver.reference.room.room-main')!))
+    .toEqual([{ kind: 'imported_records', id: SESSION, item_ids: ['tool-1'] }]))
+})
+
+it('explains a recorded Codex writer lock while keeping existing history readable', async () => {
+  vi.mocked(ambientSessionsApi.records).mockResolvedValue({
+    session: { ...session('space_shared'), runtime_key: 'codex_cli', load_state: 'partial', last_error: '{"data":{"reason":"thread_active_writer"}}' },
+    records: [{ id: 'kept', kind: 'user_message', text: 'Already imported history', sequence: 0 }], truncated: false,
+  } as never)
+  renderView()
+  expect(await screen.findByRole('alert')).toHaveTextContent('Close this session in Codex App')
+  expect(screen.getByRole('alert')).toHaveTextContent('Deleting imported history will not release')
+  expect(screen.getByText('Session in use')).toBeVisible()
+  expect(screen.getByText('Already imported history')).toBeVisible()
+})
+
+it.each([
+  ['codex_cli', 'complete', 'thread_active_writer'],
+  ['claude_code', 'partial', 'thread_active_writer'],
+  ['codex_cli', 'partial', 'load timed out'],
+])('does not mislabel %s/%s with an unrelated or stale error as occupied', async (runtime_key, load_state, last_error) => {
+  vi.mocked(ambientSessionsApi.records).mockResolvedValue({
+    session: { ...session('space_shared'), runtime_key, load_state, last_error }, records: [], truncated: false,
+  } as never)
+  renderView()
+  await screen.findByRole('heading', { name: 'Branch review' })
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+})

@@ -334,8 +334,11 @@ export function startBackgroundServices(
   if (config.databaseUrl) {
     // Subscription quota is readable only on the host that holds the login, so
     // this asks each online host about each copy someone has logged into and
-    // caches the numbers. A fallback path: nobody is waiting on it, and it
-    // exists so a card is not blank when nothing has run for a while.
+    // caches the numbers, every 15 minutes, skipping a copy read in the last
+    // half of that. This is the only automatic probe: conversations and
+    // cards read the cache, so one login is asked once per pass however many
+    // conversations use it. The Room admission gate's own freshness probe
+    // (`rooms/subscriptionLogins.ts`) is separate and unchanged.
     tasks.push({
       name: "host_usage_quota_refresh",
       intervalSeconds: HOST_USAGE_REFRESH_INTERVAL_SECONDS,

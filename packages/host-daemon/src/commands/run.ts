@@ -1,3 +1,5 @@
+import {onWorkspaceSweepContinuation,takeWorkspaceSweepContinuation} from '../workspaceFilePages.js';
+import {acquireDaemonLease} from '../daemonLease.js';
 import {publicWorkspaceError,resolveWorkspaceScope} from '../workspaceScope.js';
 import {executeGitBranchAlign,recoverBranchAlignments} from '../gitBranchAlign.js';
 import {executeWorkspaceIntegration} from '../workspaceIntegration.js';
@@ -221,7 +223,7 @@ function toAmbientImportRequest(
  * `execution.ts`. This function does not return; it runs until the process
  * is killed, the way a service managed by systemd or launchd does.
  */
-export async function runService(options: { log?: (line: string) => void } = {}): Promise<void> {
+async function runServiceHeld(options: { log?: (line: string) => void } = {}): Promise<void> {
   const log = options.log ?? ((line: string) => console.log(`[rainver-host] ${line}`));
   // A service's PATH is not the owner's shell's: the CLIs they installed
   // themselves live in directories it never sees (`userPath.ts`).
@@ -365,14 +367,25 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
       socket.send(JSON.stringify(payload));
     };
     const currentWorkspaces = async () => (await loadConfig())?.workspaces ?? workspaces;
+    let sweepRunning=false;
+    let sweepContinuation:ReturnType<typeof setTimeout>|undefined;
     const sweepWorktrees = () => {
+      if(sweepRunning)return;
+      sweepRunning=true;
       void currentWorkspaces()
         .then((ws) => sweepTaskWorktrees({ workspaces: ws, workspacesRoot: workspacesRoot(), log }))
         .then((removed) => {
           if (removed > 0) log(`removed ${removed} unsettled Task worktree${removed === 1 ? "" : "s"}`);
         })
-        .catch((error) => log(`task worktree sweep failed: ${error instanceof Error ? error.message : String(error)}`));
+        .catch((error) => log(`task worktree sweep failed: ${error instanceof Error ? error.message : String(error)}`))
+        .finally(()=>{sweepRunning=false;if(helloAcked&&takeWorkspaceSweepContinuation()){sweepContinuation=setTimeout(()=>{sweepContinuation=undefined;sweepWorktrees();},1000);sweepContinuation.unref?.();}});
     };
+    // RPC releases can add work between hourly ticks. Wake the same bounded
+    // scanner promptly, rather than only setting a flag for the next hour.
+    const stopSweepWake=onWorkspaceSweepContinuation(()=>{
+      if(!helloAcked||sweepRunning||sweepContinuation)return;
+      sweepContinuation=setTimeout(()=>{sweepContinuation=undefined;sweepWorktrees();},1000);sweepContinuation.unref?.();
+    });
     /** A Task workspace's Location on this machine, the same resolution a launch uses. */
     const taskLocationRoot = async (workspace: { workspace_location_id: string; workspace_relative_path?: string }) => resolveLocationCwd(
       await currentWorkspaces(),
@@ -1039,6 +1052,9 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
       if (heartbeatTimer) clearInterval(heartbeatTimer);
       if (archiveSweepTimer) clearInterval(archiveSweepTimer);
       if (taskWorktreeSweepTimer) clearInterval(taskWorktreeSweepTimer);
+      stopSweepWake();
+      if(sweepContinuation)clearTimeout(sweepContinuation);
+      helloAcked=false;
       if (updateRestartTimer) clearInterval(updateRestartTimer);
       sourceChannel.disconnect();
       for (const controller of folderReadControllers.values()) controller.abort();
@@ -1115,4 +1131,10 @@ export function requestFailureFrame(
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** Hold the same kernel lease as local recovery for the daemon's full lifetime. */
+export async function runService(options:{log?:(line:string)=>void}={}):Promise<void>{
+ const release=process.platform==='linux'?await acquireDaemonLease(configDir()):async()=>{};
+ try{await runServiceHeld(options);}finally{await release();}
 }

@@ -179,7 +179,7 @@ it('refuses actual Agent transport calls despite owner instruction and injected 
     ['project.operation.cancel',{project_id:project,operation_id:existing.id}],
   ] as const) {
     const response=await transport.call(run,{id:randomUUID(),name,arguments:args});
-    expect(response).toMatchObject({httpStatus:404,body:{error:{code:'operation_not_found'}}});
+    expect(response).toMatchObject({httpStatus:403,body:{ok:false,error_code:'system_action_not_granted'}});
   }
   expect((await rows('project_operations')).rows).toHaveLength(1);
   expect((await db.pool.query('SELECT status FROM project_operations WHERE id=$1',[existing.id])).rows[0].status).toBe('draft');
@@ -269,7 +269,8 @@ it('preserves large intent/detail and ordered drafts while the shared HTTP body 
   const accepted=await create({...body(),intent_text:text,steps:Array.from({length:101},(_,n)=>({title:`Step ${n}`,detail:n===0?{text}:{}}))});
   expect(accepted.statusCode,accepted.body).toBe(201);
   expect((await rows('project_operation_steps')).rows).toHaveLength(101);
-  const oversized=' '.repeat(app.initialConfig.bodyLimit!+1);
+  // The generic action route also transports the bounded Activity upload envelope.
+  const oversized=' '.repeat(36*1024*1024+1);
   for(const generic of [false,true]) {
     const result=await app.inject({method:'POST',url:generic?'/api/v1/actions/project.operation.create':`/api/v1/projects/${project}/operations`,payload:oversized,headers:{'content-type':'application/json','idempotency-key':randomUUID()}});
     expect(result.statusCode).toBe(413);

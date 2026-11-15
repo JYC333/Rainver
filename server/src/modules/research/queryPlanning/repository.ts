@@ -206,13 +206,13 @@ export class ResearchQueryRepository {
     return (await this.getStrategy(identity.spaceId, input.projectId, strategyId))!;
   }
 
-  async createAttempt(spaceId: string, input: CreateResearchQueryAttemptInput): Promise<StoredResearchQueryAttempt> {
+  async createAttempt(spaceId: string, input: CreateResearchQueryAttemptInput, reservedId?: string): Promise<StoredResearchQueryAttempt> {
     const direction = protocol.ResearchQueryAttemptDirectionSchema.parse(input.direction);
     const semanticQuery = protocol.ResearchSemanticQuerySchema.parse(input.semanticQuery);
     const compiledQuery = protocol.ResearchCompiledQuerySchema.parse(input.compiledQuery);
     if (input.sequence < 1 || input.sequence > MAX_RESEARCH_QUERY_ATTEMPTS) throw new HttpError(422, `Research query attempt sequence must be between 1 and ${MAX_RESEARCH_QUERY_ATTEMPTS}`);
 
-    const id = randomUUID();
+    const id = reservedId === undefined ? randomUUID() : protocol.ResearchQueryAttemptSchema.shape.id.parse(reservedId);
     const createdAt = new Date().toISOString();
     await withQueryableTransaction(this.db, async (db) => {
       const plan = await db.query<{ provider_key: string }>(

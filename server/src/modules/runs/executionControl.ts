@@ -1,5 +1,6 @@
 import type { CliProcessRegistry } from "./localCliExecution.js";
 import type { RunAttemptRecord, RunRecord } from "./repository.js";
+import type { PgRunRepository } from "./repository.js";
 import type { RuntimeStopOutcome } from "./runTimeLimit.js";
 import { sharedHostConnectionRegistry, type HostConnectionRegistry } from "../hosts/connectionRegistry.js";
 
@@ -9,6 +10,33 @@ interface ExecutionControlRepository {
 
 export interface ExecutionStopResult extends RuntimeStopOutcome {
   attempt_number: number | null;
+}
+
+/** A parked/resumed Run still names its previous physical launch. Confirm that
+ * launch has finished before replacing its nonce; a missing controller after
+ * server restart is not evidence that its Host process exited. */
+export async function bindHostAttemptLaunch(
+  repository: Pick<PgRunRepository, 'getLatestRunAttempt' | 'bindAttemptLaunch'>,
+  hosts: HostConnectionRegistry,
+  input: { space_id: string; run_id: string; host_id: string; launch_id: string },
+): Promise<'bound' | 'closed' | 'previous_launch_unconfirmed'> {
+  const previous = await repository.getLatestRunAttempt(input.space_id, input.run_id);
+  if (!previous || !['queued', 'running'].includes(previous.status)) return 'closed';
+  if (previous?.launch_id && previous.launch_id !== input.launch_id) {
+    const stopped = await stopHostAttempt(hosts, input.host_id, input.run_id, previous.launch_id, false);
+    if (!stopped.confirmed_exit) return 'previous_launch_unconfirmed';
+  }
+  return await repository.bindAttemptLaunch({ ...input, expected_launch_id: previous.launch_id, expected_attempt_id: previous.id }) ? 'bound' : 'closed';
+}
+
+export async function stopHostAttempt(hosts: HostConnectionRegistry, hostId: string, runId: string, launchId: string, force: boolean) {
+  let confirmed_exit = await hosts.stopAttempt(hostId, runId, launchId, force ? 2_000 : 5_000, force);
+  let force_kill_escalated = force;
+  if (!confirmed_exit && !force) {
+    force_kill_escalated = true;
+    confirmed_exit = await hosts.stopAttempt(hostId, runId, launchId, 2_000, true);
+  }
+  return { confirmed_exit, force_kill_escalated };
 }
 
 /** One stop protocol for cancellation, explicit deadlines and lost-worker recovery. */
@@ -42,11 +70,7 @@ export class RunExecutionControl {
         const hostId = await this.resolveHostId(run);
         if (!hostId) return result;
         result.process_terminated = this.hosts.isOnline(hostId);
-        result.confirmed_exit = await this.hosts.stopAttempt(hostId, run.id, attempt.launch_id, force ? 2_000 : 5_000, force);
-        if (!result.confirmed_exit && !force) {
-          result.force_kill_escalated = true;
-          result.confirmed_exit = await this.hosts.stopAttempt(hostId, run.id, attempt.launch_id, 2_000, true);
-        }
+        Object.assign(result, await stopHostAttempt(this.hosts, hostId, run.id, attempt.launch_id, force));
         return result;
       }
       if (registered) {

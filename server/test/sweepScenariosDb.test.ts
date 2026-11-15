@@ -1,3 +1,4 @@
+import {executeDigestBackfill} from './support/digestBackfillHarness.js';
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
@@ -271,11 +272,13 @@ describe("language never decides a report's day or its access", () => {
       const backfilled = await app.inject({
         method: "POST",
         url: `/api/v1/spaces/${SPACE}/information-digests/personal/backfill`,
-        headers: { "accept-language": "zh-CN" },
+        headers: { "accept-language": "zh-CN", "idempotency-key":randomUUID() },
         payload: { date: day },
       });
-      expect(backfilled.statusCode).toBe(201);
-      expect(backfilled.json()).toMatchObject({ digest: { digest_date: day, timezone: english.json().timezone } });
+      expect(backfilled.statusCode,backfilled.body).toBe(202);
+      await executeDigestBackfill(db.pool,loadConfig({SERVER_DATABASE_URL:db.connectionUri}),backfilled.json().data.job_id);
+      const ready=await read('zh-CN');
+      expect(ready.json()).toMatchObject({status:'available',digest:{digest_date:day,timezone:english.json().timezone}});
 
       // Another member gets their own personal digest, never the first
       // person's, identically in either language.

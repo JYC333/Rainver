@@ -1,3 +1,4 @@
+import { SourceObjectRefusal } from "../sourceObjectErrors.js";
 import { assertSourceConnectionReadable } from "../sourceConnectionAccess.js";
 import type {
   CustomSourceInstanceRunnerSettingsUpdate,
@@ -164,7 +165,7 @@ function normalizeCreatorRoles(value: unknown): string[] {
   const normalized = ["owner", "admin"];
   for (const role of roles) {
     if (!CREATOR_ROLE_VALUES.has(role)) {
-      throw new HttpError(422, `Unsupported Custom Source creator role: ${role}`);
+      throw new SourceObjectRefusal(422, `Unsupported Custom Source creator role: ${role}`);
     }
     if (!normalized.includes(role)) normalized.push(role);
   }
@@ -173,26 +174,26 @@ function normalizeCreatorRoles(value: unknown): string[] {
 
 function normalizeCapturePolicy(value: unknown): string {
   if (typeof value === "string" && SOURCE_CAPTURE_POLICY_SET.has(value)) return value;
-  throw new HttpError(422, "Unsupported Custom Source capture policy");
+  throw new SourceObjectRefusal(422, "Unsupported Custom Source capture policy");
 }
 
 function normalizeRetentionPolicy(value: unknown): string {
   if (typeof value === "string" && RETENTION_POLICY_VALUES.has(value)) return value;
-  throw new HttpError(422, "Unsupported Custom Source retention policy");
+  throw new SourceObjectRefusal(422, "Unsupported Custom Source retention policy");
 }
 
 function normalizeAllowedDomain(value: string): string {
   const raw = value.trim().toLowerCase().replace(/^\*\./, "");
-  if (!raw) throw new HttpError(422, "allowed_domains entries must be non-empty");
+  if (!raw) throw new SourceObjectRefusal(422, "allowed_domains entries must be non-empty");
   const candidate = raw.includes("://") ? raw : `https://${raw}`;
   let hostname: string;
   try {
     hostname = new URL(candidate).hostname.toLowerCase().replace(/\.$/, "");
   } catch {
-    throw new HttpError(422, `Invalid allowed domain: ${value}`);
+    throw new SourceObjectRefusal(422, `Invalid allowed domain: ${value}`);
   }
   if (!hostname || hostname.includes("..") || /\s/.test(hostname)) {
-    throw new HttpError(422, `Invalid allowed domain: ${value}`);
+    throw new SourceObjectRefusal(422, `Invalid allowed domain: ${value}`);
   }
   return hostname;
 }
@@ -200,7 +201,7 @@ function normalizeAllowedDomain(value: string): string {
 function normalizeAllowedDomains(value: unknown): string[] {
   if (!Array.isArray(value)) return SPACE_POLICY_DEFAULTS.allowed_domains;
   const domains = value.map((item) => {
-    if (typeof item !== "string") throw new HttpError(422, "allowed_domains must contain strings");
+    if (typeof item !== "string") throw new SourceObjectRefusal(422, "allowed_domains must contain strings");
     return normalizeAllowedDomain(item);
   });
   return [...new Set(domains)];
@@ -212,9 +213,9 @@ function normalizeDownloadBytesMax(value: unknown): number {
     : typeof value === "string" && value.trim()
       ? Number(value)
       : NaN;
-  if (!Number.isInteger(numberValue)) throw new HttpError(422, "download_bytes_max must be an integer byte count");
+  if (!Number.isInteger(numberValue)) throw new SourceObjectRefusal(422, "download_bytes_max must be an integer byte count");
   if (numberValue < DOWNLOAD_BYTES_MIN || numberValue > DOWNLOAD_BYTES_MAX) {
-    throw new HttpError(422, "download_bytes_max must be between 1024 and 104857600 bytes");
+    throw new SourceObjectRefusal(422, "download_bytes_max must be between 1024 and 104857600 bytes");
   }
   return numberValue;
 }

@@ -186,17 +186,20 @@ describe("ContextOpsService", () => {
       source_policy_warnings: {
         external_egress_disabled_source_count: 3,
       },
+      // Report counts and codes are released only through the current report
+      // closure on real PostgreSQL (contextReportOperationsDb); this fake
+      // database proves no closure, so derived counts and codes fail closed.
       maintenance: {
         recent_report_count: 1,
-        finding_counts: { duplicate: 2 },
+        finding_counts: {},
         // Counted over the window, not over the page of recent packets.
         pending_packet_count: 3,
       },
       diagnostics: {
         recent_report_count: 1,
-        diagnostic_code_counts: { low_coverage: 1, insufficient_trend_sample: 1 },
-        trend_metric_deltas: { recall_delta: -0.2 },
-        insufficient_trend_sample: true,
+        diagnostic_code_counts: {},
+        trend_metric_deltas: {},
+        insufficient_trend_sample: false,
       },
       retrieval_feedback: {
         recent_event_count: 3,

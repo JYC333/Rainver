@@ -1,3 +1,4 @@
+import {admitAutomationEffect} from './effectAuthority.js';
 import type { PoolClient } from "../../db/pool.js";
 import { lockActiveProjectForMutation } from "../projects/access.js";
 import { HttpError, type Queryable } from "../routeUtils/common.js";
@@ -106,6 +107,7 @@ export async function lockAndCheckAutomationBudget(
   client: PoolClient,
   auto: AutomationRow,
 ): Promise<void> {
+  await admitAutomationEffect(client);
   if (auto.project_id) {
     await lockActiveProjectForMutation(client, auto.space_id, auto.project_id);
   }

@@ -1,3 +1,4 @@
+import {lockGoal} from './transaction.js';
 import {collectionDiscoveryContext} from './collectionDiscovery.js';
 import {freezeCollectionContext} from './collectionContext.js';
 import {collectionPrompt,COLLECTION_INSTRUCTION} from './collectionPrompt.js';
@@ -37,7 +38,7 @@ export async function bindNativeSource(db:Queryable,config:ServerConfig,identity
  * owns execution, permission requests, cancellation, budget and timeout. */
 export async function queueNativeSearch(db:Pool,config:ServerConfig,identity:SpaceUserIdentity,g:GoalRow,spec:SourceGoalBindingSpec,cursor:Record<string,unknown>):Promise<never>{
  const runId=await withDbTransaction(db,async tx=>{
-  await tx.query('SELECT id FROM source_goals WHERE id=$1 FOR UPDATE',[g.id]);const current=await requireGoal(tx,identity,g.id,true);if(current.status==='deleted'||current.status==='paused'&&current.compatibility_json?.execution_mode!=='manual')throw new HttpError(409,'source_goal_stopped');
+  await lockGoal(tx,g.id);const current=await requireGoal(tx,identity,g.id,true);if(current.status==='deleted'||current.status==='paused'&&current.compatibility_json?.execution_mode!=='manual')throw new HttpError(409,'source_goal_stopped');
   const c=await preflightGoalSource(tx,config,identity,{...current,execution_search_path:g.execution_search_path},spec);if(c.connector_key!=='agent_native_search'||spec.implementation.kind!=='agent_search'||!spec.implementation.route)throw new HttpError(409,'source_native_route_required');
   const route=spec.implementation.route;if(route.profile_sha256!==await nativeProfileFingerprint(tx,route.runtime_profile_id))throw new HttpError(409,'source_native_route_changed');if(route.agent_id!==current.agent_id||route.runtime_profile_id!==current.runtime_profile_id)throw new HttpError(403,'source_native_route_changed');
   const context=(await tx.query(`SELECT id,version_id,binding_id FROM source_goal_runs WHERE id=$1 AND goal_id=$2 AND status='running' UNION ALL SELECT id,version_id,NULL::varchar AS binding_id FROM source_goal_previews WHERE id=$1 AND goal_id=$2 AND status='running'`,[g.execution_scope,g.id])).rows[0];if(!context)throw new HttpError(403,'source_native_collection_context_required');if(!context.binding_id&&context.version_id!==current.current_version_id)throw new HttpError(409,'source_native_stale_result');

@@ -628,6 +628,9 @@ async function insertNotePlacement(
 async function assignNoteProjectRole(db: Queryable, input: NoteProjectRoleInput): Promise<void> {
   const at = input.at ?? new Date().toISOString();
   const role = input.role === null || input.role === undefined || input.role === "" ? null : input.role;
+  // Root before extension, like every Note writer (`writeNote`): this writer
+  // X-locks a `notes` row only while it already holds that note's root.
+  await lockNoteRoots(db, input.spaceId, [input.noteId]);
   if (role === null) {
     await db.query(
       `UPDATE notes SET project_role = NULL, role_project_id = NULL WHERE object_id = $1 AND space_id = $2`,
@@ -642,10 +645,23 @@ async function assignNoteProjectRole(db: Queryable, input: NoteProjectRoleInput)
   if (actorUserId) {
     await assertProjectWriter(db, input.spaceId, projectId, actorUserId);
   }
+  // The note displaced from this role is another Note: its root is locked
+  // before its row, and only locked rows are cleared. A holder that appears
+  // after the last read is refused by the one-note-per-role index instead.
+  const displaced = new Set<string>();
+  for (;;) {
+    const found = (await db.query<{ object_id: string }>(
+      `SELECT object_id FROM notes WHERE space_id = $1 AND role_project_id = $2 AND project_role = $3 AND object_id <> $4`,
+      [input.spaceId, projectId, role, input.noteId],
+    )).rows.map((row) => row.object_id).filter((id) => !displaced.has(id));
+    if (!found.length) break;
+    await lockNoteRoots(db, input.spaceId, found);
+    for (const id of found) displaced.add(id);
+  }
   await db.query(
     `UPDATE notes SET project_role = NULL, role_project_id = NULL
-      WHERE space_id = $1 AND role_project_id = $2 AND project_role = $3 AND object_id <> $4`,
-    [input.spaceId, projectId, role, input.noteId],
+      WHERE space_id = $1 AND role_project_id = $2 AND project_role = $3 AND object_id = ANY($4::varchar[])`,
+    [input.spaceId, projectId, role, [...displaced]],
   );
   await db.query(
     `UPDATE notes SET project_role = $3, role_project_id = $2 WHERE object_id = $4 AND space_id = $1`,
@@ -654,6 +670,13 @@ async function assignNoteProjectRole(db: Queryable, input: NoteProjectRoleInput)
   await db.query(
     `UPDATE space_objects SET updated_at = $3 WHERE id = $1 AND space_id = $2`,
     [input.noteId, input.spaceId, at],
+  );
+}
+
+async function lockNoteRoots(db: Queryable, spaceId: string, noteIds: string[]): Promise<void> {
+  await db.query(
+    `SELECT id FROM space_objects WHERE space_id = $1 AND id = ANY($2::varchar[]) ORDER BY id FOR UPDATE`,
+    [spaceId, [...new Set(noteIds)].sort()],
   );
 }
 

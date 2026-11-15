@@ -3,18 +3,18 @@ import * as protocol from "@rainver/protocol";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
   dbPool,
-  jsonBody,
   params,
   requiredString,
   resolveIdentity,
   sendRouteError,
 } from "../routeUtils/common.js";
 import { WorkContextService } from "./workContextService.js";
-import { createProductionRuntimeContextPlanningService } from "./productionAcquisition.js";
-import { RuntimeContextContinuityService } from "./continuity/service.js";
+import { registerRuntimeContextPreviewRoutes } from "./previewRequests.js";
+import { registerRuntimeContextOperationRoutes } from "./operations.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   const workContexts = () => new WorkContextService(dbPool(context.config));
+  registerRuntimeContextOperationRoutes(app, context.config);
 
   app.get("/api/v1/runtime-context/work-contexts/:scopeId", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -42,21 +42,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.put("/api/v1/runtime-context/work-contexts/:scopeId/retrieval", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const state = await workContexts().setRetrievalSwitch(
-        identity,
-        requiredString(params(request).scopeId, "scope_id"),
-        jsonBody(request),
-      );
-      return reply.send(protocol.WorkRetrievalSwitchSchema.parse(state));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
   // One knowledge retrieval switch per Room Conversation, independent of recipients.
   app.get("/api/v1/runtime-context/room-conversations/:sessionId/retrieval", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -71,67 +56,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.put("/api/v1/runtime-context/room-conversations/:sessionId/retrieval", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const service = workContexts();
-      return reply.send(protocol.WorkRetrievalSwitchSchema.parse(
-        await service.setRoomConversationRetrievalSwitch(identity, requiredString(params(request).sessionId, "session_id"), jsonBody(request)),
-      ));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
+  registerRuntimeContextPreviewRoutes(app, context);
 
-  app.post("/api/v1/runtime-context/work-contexts", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const created = await workContexts().create(identity, jsonBody(request));
-      return reply.code(201).send(protocol.WorkContextSetupSchema.parse(created));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.post("/api/v1/runtime-context/preview", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const parsed = protocol.TurnContextRequestSchema.safeParse(jsonBody(request));
-      if (!parsed.success) return reply.code(422).send({ detail: "Invalid Turn Context Request" });
-      const envelope = await createProductionRuntimeContextPlanningService(dbPool(context.config), context.config).preview({
-        identity,
-        turn: parsed.data,
-      });
-      return reply.send(protocol.RuntimeContextEnvelopeSchema.parse(envelope));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.post("/api/v1/runtime-context/work-contexts/:scopeId/checkpoint-corrections", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const scopeId = requiredString(params(request).scopeId, "scope_id");
-      const active = await workContexts().getActive(identity, scopeId);
-      if (!active) return reply.code(404).send({ detail: "Work Context is not readable" });
-      const parsed = protocol.SemanticCheckpointCorrectionRequestSchema.safeParse(jsonBody(request));
-      if (!parsed.success) return reply.code(422).send({ detail: "Invalid checkpoint correction" });
-      const correctionId = await new RuntimeContextContinuityService(dbPool(context.config))
-        .correctSemanticCheckpoint({
-          spaceId: identity.spaceId,
-          workContextScopeId: scopeId,
-          checkpointId: parsed.data.checkpoint_id,
-          identity,
-          canonicalRef: parsed.data.canonical_ref,
-          correction: parsed.data.correction as Record<string, unknown>,
-        });
-      return reply.code(201).send({ id: correctionId });
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 }

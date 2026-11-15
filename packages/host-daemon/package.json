@@ -1,7 +1,7 @@
 {
   "name": "@rainver/host-daemon",
   "version": "0.4.8",
-  "description": "Thin execution-host bridge for ADR 0016: registers a personal machine with an Rainver control plane, registers pre-existing directories as trusted-host workspaces, and holds an outbound heartbeat connection. No planner, no memory, no business logic \u2014 see .agent/decisions/0016-control-plane-execution-hosts.md.",
+  "description": "Thin execution-host bridge for ADR 0016: registers a personal machine with an Rainver control plane, registers pre-existing directories as trusted-host workspaces, and holds an outbound heartbeat connection. No planner, no memory, no business logic — see .agent/decisions/0016-control-plane-execution-hosts.md.",
   "private": true,
   "type": "module",
   "engines": {
@@ -23,7 +23,8 @@
     "build": "tsc -p tsconfig.build.json",
     "pretest": "pnpm run build:workspace-deps",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "verify": "pnpm run build:workspace-deps && pnpm exec tsc --noEmit && pnpm exec vitest run"
   },
   "dependencies": {
     "@crawlee/basic": "3.18.2",

@@ -1,3 +1,4 @@
+import { EvolutionAssetRefusal } from "./assetRefusal.js";
 import { randomUUID } from "node:crypto";
 import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
 import {
@@ -121,11 +122,11 @@ export class EvaluationHarnessService {
     options: {trustedReadingSample?:boolean} = {},
   ): Promise<Record<string, unknown>> {
     if (input.source_run_id) {
-      throw new HttpError(422, "Use the from-run endpoint when source_run_id is provided");
+      throw new EvolutionAssetRefusal(422, "Use the from-run endpoint when source_run_id is provided");
     }
     const baselineOutput = input.baseline_output_json;
     if (baselineOutput === undefined) {
-      throw new HttpError(422, "baseline_output_json is required unless creating a case from a run");
+      throw new EvolutionAssetRefusal(422, "baseline_output_json is required unless creating a case from a run");
     }
     return this.insertCase(identity, assetId, input, baselineOutput, options.trustedReadingSample === true);
   }
@@ -138,11 +139,11 @@ export class EvaluationHarnessService {
     const run = await new PgRunRepository(this.db).getVisibleRun(identity.spaceId, identity.userId, input.source_run_id);
     if (!run) throw new HttpError(404, "Source run not found");
     if (run.status !== "succeeded" && run.status !== "degraded") {
-      throw new HttpError(422, "Only a successful or degraded terminal run can create an evaluation case");
+      throw new EvolutionAssetRefusal(422, "Only a successful or degraded terminal run can create an evaluation case");
     }
     const evaluation = await new PgRunRepository(this.db).getLatestRunEvaluation(identity.spaceId, run.id);
     if (!evaluation || evaluation.outcome_status !== "passed") {
-      throw new HttpError(422, "Source run must have a passed post-run evaluation");
+      throw new EvolutionAssetRefusal(422, "Source run must have a passed post-run evaluation");
     }
     return this.insertCase(identity, assetId, input, run.output_json);
   }
@@ -158,23 +159,23 @@ export class EvaluationHarnessService {
     const candidate = await this.versionRow(assetId, candidateVersionId);
     if (!candidate) throw new HttpError(404, "Candidate version not found");
     if (candidate.status !== "candidate" && candidate.status !== "testing") {
-      throw new HttpError(422, "Only a candidate or testing version can be evaluated");
+      throw new EvolutionAssetRefusal(422, "Only a candidate or testing version can be evaluated");
     }
     await this.assertVisibleVersion(identity, asset, candidate);
     const evaluationCase = await this.caseRow(identity, assetId, caseId);
     const candidateRunId = optionalString(input.candidate_run_id);
-    if (!candidateRunId) throw new HttpError(422, "candidate_run_id is required");
+    if (!candidateRunId) throw new EvolutionAssetRefusal(422, "candidate_run_id is required");
     const candidateRun = await new PgRunRepository(this.db).getVisibleRun(identity.spaceId, identity.userId, candidateRunId);
     if (!candidateRun) throw new HttpError(404, "Candidate run not found");
     if (candidateRun.status !== "succeeded" && candidateRun.status !== "degraded") {
-      throw new HttpError(422, "Candidate run must be successful or degraded before evaluation");
+      throw new EvolutionAssetRefusal(422, "Candidate run must be successful or degraded before evaluation");
     }
     const candidateEvaluation = await new PgRunRepository(this.db).getLatestRunEvaluation(identity.spaceId, candidateRun.id);
     if (!candidateEvaluation || candidateEvaluation.outcome_status !== "passed") {
-      throw new HttpError(422, "Candidate run must have a passed post-run evaluation");
+      throw new EvolutionAssetRefusal(422, "Candidate run must have a passed post-run evaluation");
     }
     if (candidateRun.workflow_version_id !== candidateVersionId) {
-      throw new HttpError(422, "Candidate run must execute the requested candidate asset version");
+      throw new EvolutionAssetRefusal(422, "Candidate run must execute the requested candidate asset version");
     }
     const evalSuiteRef = {
       kind: "evaluation_case",
@@ -328,17 +329,17 @@ export class EvaluationHarnessService {
     const asset = await this.requireWritableAsset(identity, assetId);
     if((input.input_json as {kind?:string}|null)?.kind==='reading_method_sample.v1'&&!trustedReadingSample)throw new HttpError(403,'Reading samples must be prepared through the bounded Source-authorized endpoint');
     const name = optionalString(input.name);
-    if (!name) throw new HttpError(422, "name is required");
+    if (!name) throw new EvolutionAssetRefusal(422, "name is required");
     const baselineVersionId = optionalString(input.baseline_version_id);
-    if (!baselineVersionId) throw new HttpError(422, "baseline_version_id is required");
+    if (!baselineVersionId) throw new EvolutionAssetRefusal(422, "baseline_version_id is required");
     const baselineVersion = await this.versionRow(assetId, baselineVersionId);
     if (!baselineVersion || baselineVersion.status !== "approved") {
-      throw new HttpError(422, "baseline_version_id must reference an approved version of this asset");
+      throw new EvolutionAssetRefusal(422, "baseline_version_id must reference an approved version of this asset");
     }
     await this.assertVisibleVersion(identity, asset, baselineVersion);
     const recipe = objectFixture(input.verification_recipe_json, "verification_recipe_json");
     if (!Array.isArray(recipe.checks) || recipe.checks.length === 0) {
-      throw new HttpError(422, "verification_recipe_json.checks must contain at least one check");
+      throw new EvolutionAssetRefusal(422, "verification_recipe_json.checks must contain at least one check");
     }
     const caseInput = objectFixture(input.input_json ?? {}, "input_json");
     const expectation = objectFixture(input.expectation_json ?? {}, "expectation_json");
@@ -460,10 +461,10 @@ function caseOut(row: EvaluationCaseRow): Record<string, unknown> {
 }
 
 function fixtureValue(value: unknown, field: string): unknown {
-  if (value === undefined) throw new HttpError(422, `${field} is required`);
+  if (value === undefined) throw new EvolutionAssetRefusal(422, `${field} is required`);
   const sanitized = sanitizeEvidenceJson(value);
   const bytes = Buffer.byteLength(JSON.stringify(sanitized) ?? "null", "utf8");
-  if (bytes > MAX_FIXTURE_BYTES) throw new HttpError(422, `${field} exceeds the ${MAX_FIXTURE_BYTES}-byte limit`);
+  if (bytes > MAX_FIXTURE_BYTES) throw new EvolutionAssetRefusal(422, `${field} exceeds the ${MAX_FIXTURE_BYTES}-byte limit`);
   return sanitized;
 }
 
@@ -471,7 +472,7 @@ function objectFixture(value: unknown, field: string): Record<string, unknown> {
   const fixture = fixtureValue(value, field);
   const object = objectValue(fixture);
   if (fixture === null || typeof fixture !== "object" || Array.isArray(fixture)) {
-    throw new HttpError(422, `${field} must be a JSON object`);
+    throw new EvolutionAssetRefusal(422, `${field} must be a JSON object`);
   }
   return object;
 }

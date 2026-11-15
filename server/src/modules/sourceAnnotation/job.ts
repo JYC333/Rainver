@@ -1,3 +1,4 @@
+import {executeSourceDispatch} from '../sources/sourceDispatchExecution.js';
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
 import type { JobEnvelopeForHandler, JobHandlerRegistry, JobHandlerResult } from "../jobs/handlerRegistry.js";
@@ -9,7 +10,7 @@ export function registerSourceAnnotationHandler(
   config: ServerConfig,
 ): void {
   if (!config.databaseUrl) return;
-  registry.register(SOURCE_ANNOTATION_JOB_TYPE, async (job) => handleSourceAnnotationJob(job, config));
+  registry.register(SOURCE_ANNOTATION_JOB_TYPE, async (job) => executeSourceDispatch(getDbPool(config.databaseUrl!),job,()=>handleSourceAnnotationJob(job, config)));
 }
 
 /**
@@ -59,7 +60,7 @@ async function drainSpace(
   let skipped = 0;
   let failed = 0;
   for (let pass = 0; pass < MAX_PASSES_PER_JOB; pass += 1) {
-    const result = await service.annotatePendingBatch(job.space_id);
+    const result = await service.annotatePendingBatch(job.space_id,undefined,job);
     if (result.status === "no_work") break;
     results.push(result);
     annotated += result.annotated;

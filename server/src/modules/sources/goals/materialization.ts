@@ -1,3 +1,5 @@
+import {lockActivePerson} from '../../access/activePerson.js';
+import {lockProjectAudience} from '../../projects/access.js';
 import {OperationalAlertService} from '../../notifications/index.js';
 import {prepareThemeOriginals} from './themePreparation.js';
 import {validBusinessTime,safeBusinessCursor} from './watermark.js';
@@ -14,6 +16,7 @@ import {PgCustomSourceHandlerRepository} from '../customSources/customSourceHand
 import {requireGoal,activeGoalIntent,requireGoalSource,goalSourceFingerprint,type GoalRow} from './access.js';
 import type {GoalExecutionResult} from './service.js';
 import type {GoalBindingRow} from './worker.js';
+import {lockGoal} from './transaction.js';
 /** The canonical Source materializer is the only item writer. The business
  * cursor commits with accepted material; no retry rewrites successful history. */
 export async function materializeGoalBatch(db:Pool,config:ServerConfig,g:GoalRow,b:GoalBindingRow,token:string,runId:string,run:GoalExecutionResult,history=false){
@@ -21,7 +24,20 @@ export async function materializeGoalBatch(db:Pool,config:ServerConfig,g:GoalRow
  return withDbTransaction(db,async tx=>{
   const native=(await tx.query<{id:string}>(`SELECT result_json->>'native_run_id' AS id FROM source_goal_runs WHERE id=$1 AND space_id=$2`,[runId,g.space_id])).rows[0];
   if(native?.id){const nativeRun=await new (await import('../../runs/repository.js')).PgRunRepository(tx).getRun(g.space_id,native.id);if(!nativeRun)throw new HttpError(409,'Native reading Run missing');await (await import('../../runtimeContext/index.js')).lockReadingRunAuthority(tx,nativeRun);await (await import('../../prompts/reading/dispatch.js')).assertReadingRunDispatch(tx,nativeRun);}
-  const locked=await tx.query(`SELECT id FROM source_goal_bindings WHERE id=$1 AND lease_token=$2 AND lease_until>now() AND revision=$3 FOR UPDATE`,[b.id,token,b.revision]);if(!locked.rows[0])throw new HttpError(409,'Execution lease changed');
+  // A valid lease is not execution authority. The commit holds the Goal closure
+  // in canonical order — Project audience, active person, Goal (`lockGoal`), binding, then the Source's
+  // read authority — and re-verifies under it, so a pause/delete, Project writer
+  // revocation, Source pause or consent change either commits first and refuses
+  // this batch, or waits for it.
+  if(g.project_id)await lockProjectAudience(tx,g.space_id,g.project_id);
+  await lockActivePerson(tx,g.space_id,g.owner_user_id);
+  await lockGoal(tx,g.id,'share',g.space_id);
+  // Lock first: neither transaction-start now() nor a predicate evaluated
+  // before waiting establishes a live lease after the lock was acquired.
+  await tx.query(`SELECT id FROM source_goal_bindings WHERE id=$1 AND goal_id=$2 AND space_id=$3 FOR UPDATE`,[b.id,g.id,g.space_id]);
+  const assertLease=async()=>{if(!(await tx.query(`SELECT id FROM source_goal_bindings WHERE id=$1 AND goal_id=$4 AND space_id=$5 AND lease_token=$2 AND revision=$3 AND lease_until>clock_timestamp()`,[b.id,token,b.revision,g.id,g.space_id])).rows.length)throw new HttpError(409,'Execution lease changed');};
+  await assertLease();
+  await (await import('../../runtimeContext/index.js')).lockSourceConnectionAuthority(tx,g.space_id,b.spec_json.source_connection_id,g.owner_user_id);
   const goal=await requireGoal(tx,identity,g.id,true);if(goal.status!=='running' || goal.active_version_id!==g.active_version_id)throw new Error('source_authority_revoked');
   const live=b.spec_json.implementation.kind==='agent_search'?await preflightGoalSource(tx,config,identity,await activeGoalIntent(tx,goal),b.spec_json):await requireGoalSource(tx,config,identity,await activeGoalIntent(tx,goal),b.spec_json);if(b.fixture_json?.authority_sha256 && b.fixture_json.authority_sha256!==goalSourceFingerprint(live))throw new Error('source_authority_revoked');
   const known=await tx.query<{id:string;source_external_id:string;source_uri:string|null;content_state:string;excerpt:string|null}>(`SELECT id,source_external_id,source_uri,content_state,excerpt FROM source_items WHERE space_id=$1 AND connection_id=$2 AND (source_external_id=ANY($3::varchar[]) OR source_uri=ANY($4::text[]))`,[g.space_id,live.id,output.items.map(i=>i.external_id),output.items.map(i=>i.source_uri)]);
@@ -76,6 +92,9 @@ export async function materializeGoalBatch(db:Pool,config:ServerConfig,g:GoalRow
   if(run.cursor.unrecoverable_remainder===true)await tx.query(`UPDATE source_goal_bindings SET gaps_json=gaps_json || $2::jsonb WHERE id=$1 AND NOT EXISTS(SELECT 1 FROM jsonb_array_elements(gaps_json) gap WHERE gap->>'reason'='source_recipe_truncated' AND gap->>'revision'=$3)`,[b.id,JSON.stringify([{from:{watermark:b.cursor_json.watermark??null},at:new Date().toISOString(),status:'unrecoverable',reason:'source_recipe_truncated',recoverable:false,revision:String(b.revision)}]),String(b.revision)]);
   if(!history)await tx.query(`UPDATE source_goal_bindings SET cursor_json=$3,status='active',failures=0,fixture_json=COALESCE(fixture_json,'{}'::jsonb)-'collection_error',last_success_at=now(),retry_at=NULL,updated_at=now() WHERE id=$1 AND lease_token=$2`,[b.id,token,cursor]);
   if(!history)await prepareThemeOriginals(tx,config,identity,g.id,memberIds,runId);
+  // Lease must still be live at the final commit decision, not only admission.
+  // The binding lock prevents replacement/renewal until this transaction ends.
+  await assertLease();
   return {...result,goal_items_new:newItems,cursor:history?b.cursor_json:cursor};
  });
 }

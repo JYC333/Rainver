@@ -314,7 +314,7 @@ export function ResearchSetupDialog({
     if (!draft.research_context_version_id || engineBusy || evaluationProviders.length === 0) return
     setEngineBusy('search'); setEngineError(null)
     try {
-      const result = await researchDiscoveryApi.evaluate({
+      const receipt = await researchDiscoveryApi.evaluate({
         project_id: projectId,
         research_context_version_id: draft.research_context_version_id,
         providers: evaluationProviders,
@@ -322,6 +322,7 @@ export function ResearchSetupDialog({
         execution: { model_provider_id: draft.execution.model_provider_id || undefined, model_name: draft.execution.model_name.trim() || undefined },
         ...(webCredentialId ? { credentials: { web_search: webCredentialId } } : {}),
       })
+      const result=await researchDiscoveryApi.waitEvaluation(receipt)
       setEngineResult(result.strategy)
       setAttemptHistory({})
       setMaterializedResult(null)
@@ -334,11 +335,12 @@ export function ResearchSetupDialog({
     if (!engineResult || retryingProvider || engineBusy) return
     setRetryingProvider(providerKey); setEngineError(null)
     try {
-      const result = await researchDiscoveryApi.retryProvider(engineResult.id, providerKey, {
+      const receipt = await researchDiscoveryApi.retryProvider(engineResult.id, providerKey, {
         project_id: projectId,
         execution: { model_provider_id: draft.execution.model_provider_id || undefined, model_name: draft.execution.model_name.trim() || undefined },
         ...(webCredentialId ? { credentials: { web_search: webCredentialId } } : {}),
       })
+      const result=await researchDiscoveryApi.waitEvaluation(receipt)
       setEngineResult(result.strategy)
       setAttemptHistory({})
       setSelectedProviders(current => {

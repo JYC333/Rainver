@@ -138,7 +138,9 @@ describe('Project execution Areas', () => {
       ['Pulse', ''],
       ['Board', '/board'],
       ['Updates', '/updates'],
-      ['Conversations', '/conversations'],
+      // Agents and Rooms are parallel entries; the cross-Room list is reached from Rooms.
+      ['Agents', '/agents'],
+      ['Rooms', '/rooms'],
       ['Notes', '/notes'],
       ['Problems', '/inquiry'],
       ['Reading', '/sources'],

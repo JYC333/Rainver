@@ -33,6 +33,8 @@ const TaskDetailPage = lazy(() => import('../tasks/TaskDetailPage'))
 const ProjectUpdatesPage = lazy(() => import('./ProjectUpdatesPage'))
 const ProjectRoomsPage = lazy(() => import('../agent_groups/AgentGroupsPage'))
 const ProjectNotesPage = lazy(() => import('./notes/ProjectNotesPage'))
+const ProjectAgentsPage = lazy(() => import('./agents/ProjectAgentsPage'))
+const ProjectAgentChatPage = lazy(() => import('./agents/ProjectAgentChatPage'))
 
 function PageFallback() {
   return (
@@ -85,6 +87,10 @@ export default function ProjectsModule() {
         <Route path="delivery" element={<Navigate to="../board" replace />} />
         <Route path="operations" element={<OperationsRedirect />} />
         <Route path="rooms" element={<Suspense fallback={<PageFallback />}><ProjectRoomsPage /></Suspense>} />
+        {/* The Project's Agents, beside its Rooms: a Project Agent is not a Room
+            member, and independent use in the Project opens no Room. */}
+        <Route path="agents" element={<Suspense fallback={<PageFallback />}><ProjectAgentsPage /></Suspense>} />
+        <Route path="agents/:agentId/chat" element={<Suspense fallback={<PageFallback />}><ProjectAgentChatPage /></Suspense>} />
         {/* Splat, like /knowledge/notes: the open note changes the URL without
             remounting the surface, so its tree and tabs stay alive. */}
         <Route path="notes/*" element={<Suspense fallback={<PageFallback />}><ProjectNotesPage /></Suspense>} />

@@ -1,3 +1,4 @@
+import { SourceObjectRefusal } from "../sourceObjectErrors.js";
 import { assertSourceConnectionManageable } from "../sourceConnectionAccess.js";
 import { randomUUID } from "node:crypto";
 import * as protocol from "@rainver/protocol";
@@ -12,8 +13,7 @@ import {
   objectValue,
   optionalString,
   requiredString,
-  withDbTransaction,
-  type Pool,
+  withQueryableTransaction,
   type Queryable,
   type SpaceUserIdentity,
 } from "../../routeUtils/common.js";
@@ -56,7 +56,7 @@ import {
  */
 export class CustomSourceCreateFlowService {
   constructor(
-    private readonly pool: Pool,
+    private readonly pool: Queryable,
     private readonly config: ServerConfig,
     /**
      * The outbound boundary live fetches go through. Production leaves it out
@@ -68,7 +68,7 @@ export class CustomSourceCreateFlowService {
 
   async createDraft(identity: SpaceUserIdentity, body: Record<string, unknown>) {
     if (Object.hasOwn(body, "credential_ref") && body.credential_ref != null) {
-      throw new HttpError(422, "credential_ref is not accepted directly — create a Custom Source credential first and reference it by credential_id");
+      throw new SourceObjectRefusal(422, "credential_ref is not accepted directly — create a Custom Source credential first and reference it by credential_id");
     }
     const credentialId = optionalString(body.credential_id);
     const endpointUrl = requiredString(body.endpoint_url, "endpoint_url");
@@ -78,14 +78,14 @@ export class CustomSourceCreateFlowService {
     const settings = await settingsRepo.getEffectiveSettings(identity);
     await settingsRepo.requireCustomSourceCreator(identity, settings.space.creator_roles);
     if (settings.space.allowed_domains.length > 0 && !domainAllowed(hostname, settings.space.allowed_domains)) {
-      throw new HttpError(422, `Domain not allowed by Space Custom Source policy: ${hostname}`);
+      throw new SourceObjectRefusal(422, `Domain not allowed by Space Custom Source policy: ${hostname}`);
     }
     if (credentialId) {
       await new CustomSourceCredentialService(this.pool, this.config).requireOwnCredential(identity, credentialId);
     }
 
     const config = objectValue(body.config);
-    return withDbTransaction(this.pool, async (client) => {
+    return withQueryableTransaction(this.pool, async (client) => {
       const channel = await new SourceChannelService(client, this.config).create(identity, {
         project_id: optionalString(body.project_id),
         visibility: optionalString(body.visibility),
@@ -141,7 +141,7 @@ export class CustomSourceCreateFlowService {
     );
 
     if (body.generation_mode !== "pipeline") {
-      throw new HttpError(422, "generation_mode must be pipeline; generated-code handlers have been removed");
+      throw new SourceObjectRefusal(422, "generation_mode must be pipeline; generated-code handlers have been removed");
     }
 
     const baseLimits = {
@@ -155,7 +155,7 @@ export class CustomSourceCreateFlowService {
 
     const parsedPipeline = protocol.CustomSourcePipelineDefinitionSchema.safeParse(body.pipeline);
     if (!parsedPipeline.success) {
-      throw new HttpError(422, "generation_mode 'pipeline' requires a valid pipeline definition in body.pipeline");
+      throw new SourceObjectRefusal(422, "generation_mode 'pipeline' requires a valid pipeline definition in body.pipeline");
     }
     const pipeline = parsedPipeline.data;
     const policyEnvelope: CustomSourcePolicyEnvelope = {
@@ -186,12 +186,21 @@ export class CustomSourceCreateFlowService {
     return handlerVersionOut(version);
   }
 
+  /** The pre-effect checks of a handler test: a managed Custom Source and a testable version. */
+  async admitTest(identity: SpaceUserIdentity, connectionId: string, body: Record<string, unknown>) {
+    await this.requireCustomSourceConnection(identity, connectionId);
+    const version = await this.requireHandlerVersion(identity, connectionId, requiredString(body.handler_version_id, "handler_version_id"));
+    if (version.status !== "draft" && version.status !== "test_failed") {
+      throw new SourceObjectRefusal(409, `Handler version must be draft or test_failed to test (was ${version.status})`);
+    }
+  }
+
   async testHandler(identity: SpaceUserIdentity, connectionId: string, body: Record<string, unknown>) {
     const connection = await this.requireCustomSourceConnection(identity, connectionId);
     const versionId = requiredString(body.handler_version_id, "handler_version_id");
     const version = await this.requireHandlerVersion(identity, connectionId, versionId);
     if (version.status !== "draft" && version.status !== "test_failed") {
-      throw new HttpError(409, `Handler version must be draft or test_failed to test (was ${version.status})`);
+      throw new SourceObjectRefusal(409, `Handler version must be draft or test_failed to test (was ${version.status})`);
     }
 
     const settings = await new PgCustomSourceHandlerRepository(this.pool, this.config).getEffectiveSettings(identity);
@@ -333,11 +342,11 @@ export class CustomSourceCreateFlowService {
     assertDeclarativeHandlerVersion(version);
 
     if (version.status !== "draft") {
-      throw new HttpError(409, `Handler version must be in draft status to activate (was ${version.status})`);
+      throw new SourceObjectRefusal(409, `Handler version must be in draft status to activate (was ${version.status})`);
     }
     const testResult = version.test_result_json as { status?: string } | null;
     if (testResult?.status !== "succeeded") {
-      throw new HttpError(409, "Handler version must pass a fixture test before activation");
+      throw new SourceObjectRefusal(409, "Handler version must pass a fixture test before activation");
     }
 
     const settings = await new PgCustomSourceHandlerRepository(this.pool, this.config).getEffectiveSettings(identity);
@@ -405,7 +414,7 @@ export class CustomSourceCreateFlowService {
         deltas: evaluation.deltas,
         proposedEnvelope: envelopeOf(version),
       });
-      const created = await withDbTransaction(this.pool, async (client) => {
+      const created = await withQueryableTransaction(this.pool, async (client) => {
         const proposal = await insertProposalRow(client, {
           spaceId: identity.spaceId,
           proposalType,
@@ -430,7 +439,7 @@ export class CustomSourceCreateFlowService {
         );
         const row = updatedVersion.rows[0];
         if (!row) {
-          throw new HttpError(409, "Handler version is no longer eligible for activation approval");
+          throw new SourceObjectRefusal(409, "Handler version is no longer eligible for activation approval");
         }
         return { proposal, version: row };
       });
@@ -481,7 +490,7 @@ export class CustomSourceCreateFlowService {
     connectionId: string,
     fn: (client: Queryable) => Promise<T>,
   ): Promise<T> {
-    return withDbTransaction(this.pool, async (client) => {
+    return withQueryableTransaction(this.pool, async (client) => {
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
         `custom_source_generate:${identity.spaceId}:${connectionId}`,
       ]);
@@ -532,7 +541,7 @@ export class CustomSourceCreateFlowService {
     // Every caller changes the connection's handler.
     await assertSourceConnectionManageable(this.pool, identity, row.id);
     if (row.handler_kind !== "generated_custom") {
-      throw new HttpError(422, "Source connection is not a Custom Source");
+      throw new SourceObjectRefusal(422, "Source connection is not a Custom Source");
     }
     return row;
   }
@@ -627,7 +636,7 @@ export class CustomSourceCreateFlowService {
       [versionId, identity.spaceId, nextVersionStatus, JSON.stringify(input.test_result)],
     );
     if (!versionResult.rows[0]) {
-      throw new HttpError(409, "Handler version is no longer testable");
+      throw new SourceObjectRefusal(409, "Handler version is no longer testable");
     }
     return {
       run: handlerRunOut(runResult.rows[0]!),
@@ -685,7 +694,7 @@ function envelopeOf(version: HandlerVersionRow): CustomSourcePolicyEnvelope {
  * `superseded_at` so callers needing to display it don't have to re-query.
  */
 export async function activateCustomSourceHandlerVersion(
-  pool: Pool,
+  pool: Queryable,
   identity: SpaceUserIdentity,
   connectionId: string,
   versionId: string,
@@ -696,7 +705,7 @@ export async function activateCustomSourceHandlerVersion(
   scheduleRule?: unknown,
 ): Promise<string> {
   const now = new Date().toISOString();
-  await withDbTransaction(pool, async (client) => {
+  await withQueryableTransaction(pool, async (client) => {
     const target = await client.query<Pick<HandlerVersionRow, "language" | "policy_envelope_json">>(
       `SELECT language, policy_envelope_json FROM source_handler_versions
         WHERE id = $1 AND space_id = $2 AND source_connection_id = $3`,
@@ -733,7 +742,7 @@ export async function activateCustomSourceHandlerVersion(
     // a stale pointer would leave the version activated meanwhile `active`
     // beside this one.
     if (current && (current.active_handler_version_id ?? null) !== previousActiveVersionId) {
-      throw new HttpError(409, "Another handler version was activated meanwhile; check the connection again");
+      throw new SourceObjectRefusal(409, "Another handler version was activated meanwhile; check the connection again");
     }
     const schedule = current
       ? resolveRequestedSourceSchedule({
@@ -756,7 +765,7 @@ export async function activateCustomSourceHandlerVersion(
       [versionId, identity.spaceId, now, expectedStatus],
     );
     if ((activated.rowCount ?? 0) === 0) {
-      throw new HttpError(409, "Handler version is no longer eligible for activation");
+      throw new SourceObjectRefusal(409, "Handler version is no longer eligible for activation");
     }
     const updatedConnection = await client.query<{
       id: string;
@@ -793,7 +802,7 @@ export async function activateCustomSourceHandlerVersion(
 export function assertDeclarativeHandlerVersion(version: Pick<HandlerVersionRow, "language" | "policy_envelope_json">): void {
   if (version.language !== "declarative_pipeline_v1"
     || objectValue(version.policy_envelope_json).language !== "declarative_pipeline_v1") {
-    throw new HttpError(409, "Handler language has been removed; only declarative_pipeline_v1 handlers are supported");
+    throw new SourceObjectRefusal(409, "Handler language has been removed; only declarative_pipeline_v1 handlers are supported");
   }
 }
 
@@ -882,13 +891,13 @@ export function evaluateCustomSourceActivation(
 
 function requireCapturePolicy(value: string): SourceCapturePolicy {
   const parsed = parseSourceCapturePolicy(value);
-  if (!parsed) throw new HttpError(422, "Unsupported Custom Source capture policy");
+  if (!parsed) throw new SourceObjectRefusal(422, "Unsupported Custom Source capture policy");
   return parsed;
 }
 
 function requireRetentionPolicy(value: string): SourceRetentionPolicy {
   const parsed = parseSourceRetentionPolicy(value);
-  if (!parsed) throw new HttpError(422, "Unsupported Custom Source retention policy");
+  if (!parsed) throw new SourceObjectRefusal(422, "Unsupported Custom Source retention policy");
   return parsed;
 }
 
@@ -900,7 +909,7 @@ function parseHostname(url: string): string {
     }
     return parsed.hostname;
   } catch {
-    throw new HttpError(422, "endpoint_url must be a valid HTTP(S) URL");
+    throw new SourceObjectRefusal(422, "endpoint_url must be a valid HTTP(S) URL");
   }
 }
 
@@ -912,7 +921,7 @@ function parseOrigin(url: string): string {
     }
     return parsed.origin;
   } catch {
-    throw new HttpError(422, "endpoint_url must be a valid HTTP(S) URL");
+    throw new SourceObjectRefusal(422, "endpoint_url must be a valid HTTP(S) URL");
   }
 }
 

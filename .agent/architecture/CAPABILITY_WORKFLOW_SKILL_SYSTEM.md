@@ -162,13 +162,16 @@ person has one pending review per snapshot: asking again for the same review
 409 `skill_review_pending` with its `proposal_id`, and the package panel shows
 that pending proposal to decide first. Approving a review supersedes every other
 pending review of the package (their bindings must be requested again as binding
-proposals). Reviews, bindings and turn selection take the package advisory lock
-(`lockSkillPackage`) before the package row, and the supersede step skips
-reviews another transaction holds (`FOR UPDATE SKIP LOCKED`), so two reviews
-approved at once do not deadlock: the second finds the package reviewed and its
-approval marks it `superseded` (`superseded_by_proposal_id`) instead of failing,
-which is also what approving any review skipped that way does later. Nothing is
-enabled without that approval. The applier
+proposals). The canonical decision owner first discovers the whole pending package review
+set and its linked requests, admits every sorted request key, then locks the
+review closure and Proposal/request rows before the package advisory lock
+(`lockSkillPackage`) and package row. Review creation shares the nonwaiting
+review closure gate. Applying a review supersedes every obsolete sibling and
+its linked request in the same transaction; no `SKIP LOCKED` partial set or
+automatic write retry is allowed. An already obsolete review is superseded
+with `superseded_by_proposal_id`; its binding must be requested again as a
+binding proposal. Binding and turn selection retain their package lock.
+Nothing is enabled without approval. The applier
 owns `skill_bindings`; each binding pins a package id and hash and one scope:
 Space, current user, Project or Agent. Effective precedence is
 Project > Agent > user > Space; a narrower disabled binding suppresses the

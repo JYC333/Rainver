@@ -1,3 +1,10 @@
+import { seedSpaceMember } from "./support/domainSeeds.js";
+import { randomUUID } from "node:crypto";
+import { PgProjectRepository } from "../src/modules/projects/repository.js";
+import { RoomRosterService } from "../src/modules/rooms/rosterService.js";
+import { PgRoomRepository } from "../src/modules/rooms/repository.js";
+import { PgRoomRosterRepository } from "../src/modules/rooms/rosterRepository.js";
+import { waitForBlockedBy } from "./support/lockWait.js";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -488,20 +495,76 @@ describe("registration and Better Auth facade primitives", () => {
     const headers = { cookie: `better-auth.session_token=${encodeURIComponent(admin.raw)}`, origin: "http://localhost:5173" };
     try {
       for (const action of ["enable", "disable"]) {
-        const response = await app.inject({ method: "POST", url: `/api/v1/auth/admin/users/${pending.userId}/${action}`, headers, payload: {} });
-        expect(response.statusCode).toBe(400);
+        const response = await app.inject({ method: "POST", url: `/api/v1/auth/admin/users/${pending.userId}/${action}`, headers: { ...headers, 'idempotency-key': randomUUID() }, payload: {} });
+        expect(response.statusCode).toBe(422);
         await expect(db.pool.query("SELECT status FROM users WHERE id = $1", [pending.userId]))
           .resolves.toMatchObject({ rows: [{ status: "pending" }] });
       }
       // Once admitted (what RegistrationService.complete leaves behind), the
       // account is the administrator's to disable and re-enable.
       await db.pool.query("UPDATE users SET status = 'active' WHERE id = $1", [pending.userId]);
-      const disable = await app.inject({ method: "POST", url: `/api/v1/auth/admin/users/${pending.userId}/disable`, headers, payload: {} });
+      // Real account writer, real Room grants: only retained cross-Project
+      // grants are permanently revoked; ordinary private sharing keeps its policy.
+      const space = randomUUID();
+      await db.pool.query("INSERT INTO spaces(id,name,type,created_at,updated_at) VALUES($1,'Lifecycle','team',now(),now())", [space]);
+      for (const [user, role] of [[admin.userId, "owner"], [pending.userId, "member"]]) {
+        await db.pool.query("INSERT INTO space_memberships(id,space_id,user_id,role,status,created_at,updated_at) VALUES($1,$2,$3,$4,'active',now(),now())", [randomUUID(), space, user, role]);
+      }
+      const adminIdentity = { spaceId: space, userId: admin.userId };
+      const ownerIdentity = { spaceId: space, userId: pending.userId };
+      const projects = new PgProjectRepository(db.pool);
+      const source = await projects.create(adminIdentity, { name: "A" });
+      const destination = await projects.create(adminIdentity, { name: "B" });
+      await projects.addMember(adminIdentity, String(source.id), { user_id: pending.userId, role: "member" });
+      const invitee = randomUUID();
+      await seedSpaceMember(db.pool, { space, user: invitee });
+      await projects.addMember(adminIdentity, String(destination.id), { user_id: invitee, role: "member" });
+      await projects.addMember(adminIdentity, String(destination.id), { user_id: pending.userId, role: "member" });
+      const room = (await db.pool.query("SELECT id FROM rooms WHERE project_id=$1 AND is_mainline=true", [destination.id])).rows[0].id;
+      await new RoomRosterService(db.pool).inviteUser(adminIdentity, room, { user_id: pending.userId });
+      const cross = randomUUID(), local = randomUUID();
+      for (const [agent, retained] of [[cross, source.id], [local, null]]) {
+        await db.pool.query(`INSERT INTO agents(id,space_id,owner_user_id,name,status,agent_kind,visibility,access_project_id,created_at,updated_at)
+          VALUES($1,$2,$3,'Specialist','active','standard','private',$4,now(),now())`, [agent, space, pending.userId, retained]);
+      }
+      const tx = await db.pool.connect();
+      let disable;
+      let invitationId = "";
+      try {
+        await tx.query("BEGIN");
+        const pid = (await tx.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
+        const roster = new RoomRosterService(tx);
+        for (const agent of [cross, local]) await roster.addExistingAgent(ownerIdentity, room, { agent_id: agent, confirm_room_share: true, share_private_with_member_ids: [admin.userId] });
+        invitationId = (await roster.inviteUser(adminIdentity, room, { user_id: invitee })).id;
+        disable = app.inject({ method: "POST", url: `/api/v1/auth/admin/users/${pending.userId}/disable`, headers: { ...headers, 'idempotency-key': randomUUID() }, payload: {} });
+        // inject is thenable; start it while the grant transaction retains its issuer lock.
+        const response = Promise.resolve(disable);
+        await waitForBlockedBy(db.pool, pid);
+        await tx.query("COMMIT");
+        disable = await response;
+      } finally { await tx.query("ROLLBACK"); tx.release(); }
+      // The reference set grew while admission waited for the owner. The core
+      // refuses drift instead of adding lower-order locks after the wait.
+      expect(disable.statusCode).toBe(409);
+      expect((await db.pool.query("SELECT status FROM users WHERE id=$1", [pending.userId])).rows[0].status).toBe("active");
+      disable = await app.inject({ method: "POST", url: `/api/v1/auth/admin/users/${pending.userId}/disable`, headers: { ...headers, 'idempotency-key': randomUUID() }, payload: {} });
+      expect(disable.statusCode).toBe(200);
+      expect((await db.pool.query("SELECT agent_id FROM room_agent_access_grants WHERE room_id=$1 AND revoked_at IS NULL ORDER BY agent_id", [room])).rows)
+        .toEqual([{ agent_id: local }]);
+      await expect(new RoomRosterService(db.pool).addExistingAgent(ownerIdentity, room, { agent_id: cross, confirm_room_share: true, share_private_with_member_ids: [admin.userId] })).rejects.toMatchObject({ statusCode: 404 });
       expect(disable.statusCode).toBe(200);
       await expect(db.pool.query("SELECT status FROM users WHERE id = $1", [pending.userId]))
         .resolves.toMatchObject({ rows: [{ status: "disabled" }] });
-      const enable = await app.inject({ method: "POST", url: `/api/v1/auth/admin/users/${pending.userId}/enable`, headers, payload: {} });
+      const enable = await app.inject({ method: "POST", url: `/api/v1/auth/admin/users/${pending.userId}/enable`, headers: { ...headers, 'idempotency-key': randomUUID() }, payload: {} });
       expect(enable.statusCode).toBe(200);
+      expect((await new RoomRosterService(db.pool).decideInvitation(ownerIdentity, room, invitationId, { agent_id: cross, decision: "approved" })).status).toBe("invalidated");
+      expect((await db.pool.query("SELECT id FROM room_agent_access_grants WHERE room_id=$1 AND agent_id=$2 AND revoked_at IS NULL", [room, cross])).rows).toEqual([]);
+      const members = await new PgRoomRepository(db.pool).listAgentMembers(space, room, admin.userId);
+      expect(members.find(row => row.agent_id === cross)?.private_shared_user_ids).toEqual([]);
+      const candidates = await new PgRoomRosterRepository(db.pool).listAgentCandidates({ space_id: space, user_id: pending.userId, room_id: room, limit: 50, offset: 0 });
+      expect(candidates.items.find(row => row.agent_id === cross)?.shared_with_user_ids).toEqual([]);
+      await new RoomRosterService(db.pool).addExistingAgent(ownerIdentity, room, { agent_id: cross, confirm_room_share: true, share_private_with_member_ids: [admin.userId] });
+      expect((await new PgRoomRepository(db.pool).listAgentMembers(space, room, admin.userId)).find(row => row.agent_id === cross)?.private_shared_user_ids.sort()).toEqual([admin.userId, pending.userId].sort());
       await expect(db.pool.query("SELECT status FROM users WHERE id = $1", [pending.userId]))
         .resolves.toMatchObject({ rows: [{ status: "active" }] });
     } finally {

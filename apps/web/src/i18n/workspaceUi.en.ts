@@ -2,6 +2,7 @@
 export const workspaceUiEn = {
   workspace_ui: {
     execution: {
+      lifecycle: {"awaiting_release": "Published · waiting for workspace users to exit", "cleanup": "Published · reclaiming temporary resources", "blocked": "Published · resource cleanup needs recovery", "complete": "Publication and resource lifecycle complete"},
       reconcile_checking: 'Checking saved changes against the target. This comparison does not call a model.',
       reconcile_done: 'The saved changes are already present in the target; this batch is closed.',
       reconcile_unmatched: 'The entire saved change could not be matched. Later edits or deleted files can prevent a match. If its work was adopted or replaced, use Keep without merging to close this old batch while preserving its saved result.',
@@ -158,6 +159,7 @@ export const workspaceUiEn = {
       "unpublished_changes": "it has saved changes that are not integrated",
       "kept_without_merging": "it holds changes kept without merging",
       "discarded": "the reviewed saved source was explicitly discarded",
+      "primary_conversation": "it is the reusable primary conversation workspace",
       "private_baseline": "it contains a private snapshot baseline",
       "unmerged_source": "Git could not prove its content is in the target",
       "safety_review": "it needs a safety review",

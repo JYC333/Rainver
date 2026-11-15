@@ -114,7 +114,7 @@ it('refuses actual Agent tool calls even with owner instruction and injected imm
   const transport=new CliAgentToolTransport(loadConfig({SERVER_DATABASE_URL:db.connectionUri}));
   for(const [name,args] of [['policy.action_grant.create',payload()],['policy.action_grant.revoke',{grant_id:randomUUID()}]] as const) {
     const result=await transport.call(run,{id:randomUUID(),name,arguments:args});
-    expect(result).toMatchObject({httpStatus:404,body:{error:{code:'operation_not_found'}}});
+    expect(result).toMatchObject({httpStatus:403,body:{ok:false,error_code:'system_action_not_granted'}});
   }
   expect((await db.pool.query('SELECT id FROM action_approval_grants WHERE space_id=$1',[space])).rows).toHaveLength(0);
   expect((await db.pool.query('SELECT id FROM operation_idempotency WHERE space_id=$1',[space])).rows).toHaveLength(0);

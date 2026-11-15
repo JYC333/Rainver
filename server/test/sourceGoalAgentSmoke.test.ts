@@ -1,4 +1,5 @@
 import {sharedHostConnectionRegistry} from '../src/modules/hosts/connectionRegistry.js';
+import {previewNow} from './support/sourceGoalPreview.js';
 import {MIN_HOST_DAEMON_VERSION} from '../src/modules/hosts/daemonCompatibility.js';
 import type {HostDaemonFrame,HostServerFrame} from '@rainver/protocol';
 import {runSourceGoalTick} from '../src/modules/sources/goals/worker.js';
@@ -64,11 +65,11 @@ it.skipIf(process.env.SOURCE_GOAL_AGENT_SMOKE!=='1')('uses the real existing nat
   const moduleUrl=new URL('../../packages/host-daemon/dist/sourceExecutionChannel.js',import.meta.url).href;const {SourceExecutionChannel}=await import(moduleUrl);
   const channel=new SourceExecutionChannel({root:join(root,'source-os'),node:process.execPath,maxConcurrent:1,enabled:true,bwrap:process.env.SOURCE_EXECUTION_BWRAP,cgroupRoot:process.env.SOURCE_EXECUTION_CGROUP_ROOT},(frame:HostDaemonFrame)=>{if(frame.type==='source_request')sharedHostConnectionRegistry.receiveSourceRequest(sourceHost,frame.execution_id,frame.request);if(frame.type==='source_result')sharedHostConnectionRegistry.receiveSourceResult(sourceHost,frame.execution_id,frame.result);});
   const sink={send:(frame:HostServerFrame)=>channel.handle(frame),close:()=>channel.disconnect()};sharedHostConnectionRegistry.registerConnection(sourceHost,sink,true);sourceCleanup=()=>{sharedHostConnectionRegistry.unregisterConnection(sourceHost,sink,true);channel.disconnect();};
-  const preview=await service.preview(identity,goal.id,read.versions[0].id,AbortSignal.timeout(30000));Object.assign(report,{preview});if(process.env.SOURCE_GOAL_AGENT_EVIDENCE)await writeFile(process.env.SOURCE_GOAL_AGENT_EVIDENCE,JSON.stringify(report,null,2));expect(preview.complete,JSON.stringify(preview)).toBe(true);
+  const preview=await previewNow(service,identity,goal.id,read.versions[0].id,AbortSignal.timeout(30000));Object.assign(report,{preview});if(process.env.SOURCE_GOAL_AGENT_EVIDENCE)await writeFile(process.env.SOURCE_GOAL_AGENT_EVIDENCE,JSON.stringify(report,null,2));expect(preview.complete,JSON.stringify(preview)).toBe(true);
   await service.follow(identity,goal.id,{version_id:read.versions[0].id,idempotency_key:'live-confirmed'});await runSourceGoalTick(db.pool,config,goal.id,identity.spaceId);
   changed=true;await runSourceGoalTick(db.pool,config,goal.id,identity.spaceId);const binding=(await db.pool.query('SELECT * FROM source_goal_bindings WHERE goal_id=$1',[goal.id])).rows[0];expect(binding.status).toBe('repair_required');
   await db.pool.query(`UPDATE source_goal_bindings SET retry_at=now()-interval '1 second' WHERE id=$1`,[binding.id]);const repair=await queueSourceGoalAgent(db.pool,config,identity,goal.id,'repair',binding.id);const repairResult=await buildRunOrchestration(config).orchestration.executeRun({run_id:repair.run_id,space_id:identity.spaceId,worker_id:'source-goal-live-smoke',command_source:'internal'});
   Object.assign(report,{repair_status:repairResult.status,repair_usage:(await db.pool.query('SELECT model,input_tokens,output_tokens,total_tokens,estimated_cost_usd,cost_accuracy FROM token_usage_events WHERE run_id=$1',[repair.run_id])).rows,repair_records:(await db.pool.query('SELECT status,base_revision,candidate_json,validation_json FROM source_goal_repairs WHERE binding_id=$1',[binding.id])).rows});if(process.env.SOURCE_GOAL_AGENT_EVIDENCE)await writeFile(process.env.SOURCE_GOAL_AGENT_EVIDENCE,JSON.stringify(report,null,2));expect((await db.pool.query('SELECT revision FROM source_goal_bindings WHERE id=$1',[binding.id])).rows[0].revision).toBe(1);
 
  }finally{sourceCleanup?.();vi.restoreAllMocks();daemon?.kill('SIGTERM');await app?.close();if(upstream)await new Promise<void>(r=>upstream!.close(()=>r()));await rm(root,{recursive:true,force:true});}
-},420000);
+});

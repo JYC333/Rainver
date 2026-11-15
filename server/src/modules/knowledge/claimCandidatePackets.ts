@@ -13,6 +13,7 @@ import {
   type ChildProposalDraft,
 } from "../proposals/reviewPackets.js";
 import { loadSourcePolicySnapshots } from "../retrieval/sourcePolicy.js";
+import { retrievalArtifactWithheld } from "../retrieval/artifactRelease.js";
 import { CLAIM_KINDS } from "./knowledgeRepositoryRows.js";
 import {
   contentOwnerFilterSql,
@@ -232,7 +233,13 @@ async function loadVisibleSourceArtifacts(
       ],
     ],
   );
-  return result.rows;
+  // A Brief whose contributing refs are no longer releasable to the owner
+  // cannot seed candidates; it reads as not visible.
+  const released: SourceArtifactRow[] = [];
+  for (const row of result.rows) {
+    if (!await retrievalArtifactWithheld(db, { spaceId, userId: ownerUserId }, row, "claim candidate packet source read")) released.push(row);
+  }
+  return released;
 }
 
 async function buildCandidates(

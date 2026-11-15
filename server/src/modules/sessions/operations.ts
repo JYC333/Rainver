@@ -1,3 +1,4 @@
+import {assertDirectSettingsActor} from '../systemActions/operations/actor.js';
 import {SESSION_OPERATION_SCHEMAS,SESSION_QUERY_SCHEMAS,type OperationActor,type RegisteredSystemActionDefinition} from '@rainver/protocol';
 import type {ServerConfig} from '../../config.js';
 import {getDbPool} from '../../db/pool.js';
@@ -37,6 +38,11 @@ export function sessionOperationRegistrations(definitions:ReadonlyMap<string,Reg
    return {authority:`session:${i.session_id}`,targets:{session_id:i.session_id},resourceType:'session',resourceId:i.session_id!};
   },
   async authorize(db,raw,a){const i=raw as Input,p=person(a);
+   if(id==='conversation.execution.initialize')await assertDirectSettingsActor(db,a);
+   if(a.principal.kind==='agent'){
+    const run=(await db.query<{session_id:string|null}>(`SELECT session_id FROM runs WHERE id=$1 AND space_id=$2`,[a.run_id,a.space_id])).rows[0];
+    if(!run?.session_id || run.session_id!==i.session_id || a.effective_origin!=='manual')throw hidden();
+   }
    if(id==='session.create'){await lockPlacement(db,a,i.project_id);return;}
    if(id==='conversation.execution.initialize'||id==='conversation.execution.attachment.mutate'||id==='conversation.execution.preflight'){
     // Room conversations are reached through their Room audience; direct ones are the person's own.
@@ -95,7 +101,7 @@ export function sessionOperationRegistrations(definitions:ReadonlyMap<string,Reg
     }
    }
   },
-  ...(id==='session.delete'?{async afterCommit(_raw:unknown,a:OperationActor){
+  ...(id==='session.delete'?{async afterCommit(raw:unknown,a:OperationActor){
    // Host archive after commit; each thread's durable intent is retried on Host reconnect and by the recovery pass.
    const pool=getDbPool(config.databaseUrl!);
    const pending=await pool.query<{id:string;agent_id:string;execution_host_id:string}>(
@@ -104,6 +110,17 @@ export function sessionOperationRegistrations(definitions:ReadonlyMap<string,Reg
         AND (space_id IS NULL OR space_id=$2)`,[a.on_behalf_of_user_id,a.space_id]);
    for(const thread of pending.rows){
     await sendPendingManagedWorkspaceArchive(pool,thread.id,{hostId:thread.execution_host_id,agentId:thread.agent_id,containerKind:'direct',containerId:a.on_behalf_of_user_id!}).catch(()=>undefined);
+   }
+   // A Project direct conversation is its own Conversation container: its threads archive under the Session.
+   const sessionId=(raw as Input).session_id!;
+   const conversation=await pool.query<{id:string;agent_id:string;execution_host_id:string}>(
+    `SELECT thread.id,thread.agent_id,thread.execution_host_id FROM host_threads thread
+      JOIN sessions s ON s.id=thread.session_id AND s.space_id=thread.space_id
+      WHERE thread.container_kind='conversation' AND thread.session_id=$1 AND thread.space_id=$2 AND s.user_id=$3 AND s.room_id IS NULL
+        AND thread.status='closed' AND thread.pending_archive_at IS NOT NULL AND thread.execution_host_id IS NOT NULL AND thread.agent_id IS NOT NULL
+      ORDER BY thread.archive_generation NULLS FIRST`,[sessionId,a.space_id,a.on_behalf_of_user_id]);
+   for(const thread of conversation.rows){
+    await sendPendingManagedWorkspaceArchive(pool,thread.id,{hostId:thread.execution_host_id,agentId:thread.agent_id,containerKind:'conversation',containerId:sessionId}).catch(()=>undefined);
    }
   }}:{}),
   classifyError(e){

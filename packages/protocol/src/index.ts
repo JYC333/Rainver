@@ -1,3 +1,5 @@
+export * from './spaceOperations.js';
+export * from './contextReportOperations.js';
 export * from './noteControlOperations.js';
 export * from './sourceMonitorOperations.js';
 export * from './sourceRecipeOperations.js';
@@ -192,9 +194,15 @@ export * from './runtimeFailures.js';
 
 export * from './taskLifecycle.js';
 export * from './taskSpacePlacement.js';
+export * from './taskBoardPlanJob.js';
 export * from './sourceBackfillOperations.js';
 
 export * from "./evolutionBundle.js";
+export * from "./evolutionOperations.js";
+export * from "./runtimeContextOperations.js";
+export * from "./evolutionAssetOperations.js";
+export * from "./promptOperations.js";
+export * from "./runtimeContextRequestOperations.js";
 
 export * from './inquiryCreationOperations.js';
 
@@ -211,6 +219,9 @@ export * from './sourceProcessingOperations.js';
 export * from './noteObjectOperations.js';
 
 export * from './knowledgeObjectOperations.js';
+export * from './sourceObjectOperations.js';
+export * from './noteSourceBlockOperations.js';
+export * from './sourceGoalOperations.js';
 
 export * from './knowledgeReviewOperations.js';
 
@@ -224,6 +235,7 @@ export * from './projectManagementOperations.js';
 export * from './researchAgentOperations.js';
 export * from './agentOperations.js';
 export * from './roomOperations.js';
+export * from './projectAgents.js';
 export * from './agentGroupOperations.js';
 export * from './runOperations.js';
 export * from './sessionOperations.js';
@@ -250,3 +262,44 @@ export * from './importedHistoryExtractionOperation.js';
 export * from './projectLive.js';
 export * from './hostOperations.js';
 export * from './settingsOperations.js';
+
+export * from './relationOperations.js';
+
+export * from './knowledgeProposalOperations.js';
+
+export * from './objectSchemaOperations.js';
+
+export * from './knowledgeRetrievalOperations.js';
+
+export * from './memoryOperations.js';
+
+export * from './academicOperations.js';
+export * from './contentRetrievalOperations.js';
+
+export * from './readerOperations.js';
+
+export * from './publicationOperations.js';
+
+export * from './skillOperations.js';
+
+export * from './authorizationRequestOperations.js';
+
+export * from './automationOperations.js';
+
+export * from './proposalOperations.js';
+
+export * from './readingOperations.js';
+
+export * from './interestOperations.js';
+
+export * from './digestOperations.js';
+
+export * from './activityOperations.js';
+
+export * from './graphOperations.js';
+export * from './focusOperations.js';
+export * from './learningOperations.js';
+
+export * from './personalMemoryGrantOperations.js';
+
+export * from './accountWorkspaceOperations.js';

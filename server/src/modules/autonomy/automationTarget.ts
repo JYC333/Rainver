@@ -1,3 +1,4 @@
+import {admitAutomationEffect} from '../automations/effectAuthority.js';
 import { getDbPool } from "../../db/pool.js";
 import { withTransaction } from "../../db/tx.js";
 import { automationTargetHandlerRegistry } from "../automations/targetRegistry.js";
@@ -53,6 +54,7 @@ export function registerAutonomousTickAutomationTarget(): void {
       const result = launch
         ? await launchTick(config, automation, triggerType, preflightSnapshot)
         : await withTransaction(pool, async (client) => {
+          await admitAutomationEffect(client);
             const tick = await new AutonomyService(client).observeTick({
               spaceId: fireInput.spaceId,
               automationId: automation.id,
@@ -65,6 +67,7 @@ export function registerAutonomousTickAutomationTarget(): void {
           });
       if (launch && advanceSchedule) {
         await withTransaction(pool, async (client) => {
+          await admitAutomationEffect(client);
           await new PgAutomationRepository(client).advanceSchedule(automation);
         });
       }

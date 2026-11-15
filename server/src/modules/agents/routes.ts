@@ -284,12 +284,24 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!identity) return reply;
     const agentId = params(request).agentId ?? "";
     const sessionId = stringValue(routeQuery(request).session_id);
+    const requestedProjectId = stringValue(routeQuery(request).project_id);
     const sessions = new PgSessionRepository(dbPool(context.config));
     const visibleSession = sessionId
       ? await sessions.getConversationForBackendSelection(identity.spaceId, identity.userId, sessionId)
       : null;
     if (sessionId && !visibleSession) {
       return reply.code(404).send({ detail: "Session not found" });
+    }
+    if (requestedProjectId && visibleSession && requestedProjectId !== visibleSession.project_id) {
+      return reply.code(404).send({ detail: "Session not found in this Project" });
+    }
+    const projectId = visibleSession?.project_id ?? requestedProjectId ?? null;
+    if (projectId) {
+      try {
+        await assertProjectReadable(dbPool(context.config), identity.spaceId, projectId, identity.userId);
+      } catch (error) {
+        return sendRouteError(reply, error);
+      }
     }
     const directAgent = await PgAgentChatRepository
       .fromConfig(context.config)
@@ -308,7 +320,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
     const repository = new PgConversationBackendRepository(dbPool(context.config));
     const [options, binding, sessionConfig] = await Promise.all([
-      repository.listOptions(identity.spaceId, identity.userId, agentId),
+      repository.listOptions(identity.spaceId, identity.userId, agentId, projectId),
       sessionId
         ? repository.findBinding(identity.spaceId, identity.userId, sessionId, agentId)
         : Promise.resolve(null),

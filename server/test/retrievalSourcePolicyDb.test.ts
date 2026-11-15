@@ -47,7 +47,7 @@ beforeEach(async () => {
       [id, SPACE, user, role],
     );
   }
-}, 30_000);
+});
 
 async function seedRestrictedAndOpen(): Promise<void> {
   // Restricted source: only OWNER may read (no allowed readers, admins denied).

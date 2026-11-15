@@ -1,5 +1,4 @@
 import type { ProposalApplierRegistry, ProposalApplyContext, ProposalApplyResult } from "../proposals/applierRegistry.js";
-import { getDbPool } from "../../db/pool.js";
 import { resolveAgentActorId } from "../../db/actorResolver.js";
 import { optionalString } from "../routeUtils/common.js";
 import { createFollowUpTask, parseFollowUpTaskPayload } from "./followUpTask.js";
@@ -18,7 +17,7 @@ async function applyFollowUpTaskProposal(ctx: ProposalApplyContext): Promise<Pro
     ctx.db,
     { spaceId: ctx.proposal.space_id, userId: ctx.userId },
     {
-      pool: getDbPool(ctx.config.databaseUrl!),
+      pool: ctx.db,
       fields,
       projectId: optionalString(ctx.proposal.project_id ?? null),
       projectFolderId: optionalString(ctx.proposal.project_folder_id),

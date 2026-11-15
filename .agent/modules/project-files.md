@@ -467,7 +467,18 @@ a reported failure are facts the Agent already read, so its answer stands.
 - `publish` supplies `verification={commit,checks:[{command,summary}],note}`.
   These are Agent-reported checks, explicitly labeled `agent_attested.v1`.
   Empty checks require an honest note; no Folder command configuration is needed.
-- `workspace.change.get` returns current revision/progress. Only merged/no_changes
+- `workspace.change.get` returns current revision/progress. It and each visible
+  `workspace.change.list` item also return per-action `actions` with availability,
+  blocker, safe recovery guidance and input requirements for completion actions,
+  retry and abandon. These are advisory server-admission checks, not grants or
+  Host/Git proofs: execution rechecks authority, state, exact revision and all
+  remaining inputs. The projection calls the existing workspace authorizer with
+  each action's original mode; list/get visibility never widens old-workspace
+  completion or retry authority. A shared delegated writer sees checkpoint
+  available while prepare/publish/reconcile/retry/abandon require its coordinator.
+  Ungranted operations are omitted. `can_retry`/`closable` remain compatibility hints.
+  Visible native-state refusals give a safe reason and a current-state read;
+  hidden objects keep uniform 404 without revealing their existence. Only merged/no_changes
   completes publication. A moving target returns to this same Agent. Publication
   verifies tree equality, Git integrity, current authority and the short target
   lease/CAS; it cannot silently include files changed after the checks.
@@ -485,7 +496,7 @@ Conversation source worktrees and their ignored dependencies persist while a
 Run uses them. The existing cleanup Job owns reclamation, with active
 Run/command/checkpoint guards and expected-tip fencing. A source whose batches
 all closed as integrated/no changes is reclaimed (tree, Git registration, managed
-branch, owned refs, receipts) a short grace after the last Run exits; the same
+branch, owned refs, receipts) immediately after the last using Run exits; the same
 conversation later rebuilds the same workspace identity from the target. Unmerged,
 blocked, kept-without-merging and private-baseline work keeps its branch with no
 automatic expiry unless the person explicitly requests reviewed discard. A past Run's file preview reads its exact version through an
@@ -495,6 +506,20 @@ period and Git cleanly reports it missing; a missing file, refused read, a
 Host that cannot read its object store (permissions, corruption: 503) or an
 offline Host is never shown as expired. See *Source retention and reclamation* in
 [Hosts](hosts.md).
+
+Adoption evidence binds the saved generation/base/source to an exact historical
+publication or parent checkpoint. Later target edits do not revoke an adoption
+still in target history; a rewrite that removes its proof keeps the source.
+Manual Git merges follow the same proof. A parent checkpoint may adopt a child
+before publication, but is never displayed as root publication: reclaim-6 Hosts
+pin it under the existing parent recovery ref before releasing the child branch.
+That ref remains until its contents are proved in the target. Older Hosts defer.
+
+Directory idle clocks use Run end and observed content changes, not status-only
+updates. Safe idle edits are saved as unpublished work before the new 24-hour
+clock starts; staged/unique ignored/nested contents outside the snapshot
+contract remain intact. Branch/ref release has independent proofs and runs immediately after the last using Run exits.
+Historical equal-tip groups are audit information, never deletion permission.
 
 Workspace batch rows show, once per workspace generation, its retention state,
 reason and time (grace end, hold end or reclaim time) and for current Project
@@ -665,10 +690,29 @@ A later writable Run in the same conversation workspace can also use the existin
 `workspace.change.abandon` command after an explicit request to close obsolete,
 already adopted or superseded work. It checks origin visibility and current
 Project/Host authority, preserves the saved source and records the reason, and
-cannot claim a merge succeeded. A later generation may withdraw retained work only for the same conversation,
-Project and registered Location; publication/retry does not gain that reach. This covers intentional later retirement of a file that makes exact
+cannot claim a merge succeeded. A later generation may withdraw retained work for the same conversation,
+Project and registered Location. A manually instructed conversation writer may
+also inspect and close the same person's other conversation/delegation workspaces
+in its Project (`workspaceProjectCleanup.ts`). Both origin and all contributors
+must remain fully readable, Project write access and remote Host ownership must
+still hold. Project list, get and abandon share this authorizer; the list exposes
+the readable conversation/summary and reports exact-review requirements.
+Cross-conversation closure always requires exact-source review and the person's
+applicable instruction on the requesting conversation's canonical message branch,
+including empty batches. Earlier authorization can continue on that branch; no
+repeat confirmation or caller-entered ids are needed. Automatic/delegated and
+read-only/unbound callers do not gain this reach. Completion, publication,
+integration retry, verification repair and runtime placement retain their original
+scope; get reports `can_retry:false` for cleanup-only access. Existing source
+review, revision CAS, dependency/checkpoint checks and Host cleanup/retention Jobs
+still perform every mutation. This covers intentional later retirement of a file that makes exact
 patch-presence proof impossible. Raw closure reasons and submission actor details
 stay out of shared workspace progress; durable command history retains them.
+
+Reuse / Dependency Check: this extends the existing workspace authorizer,
+canonical message provenance and Operation Core abandon/cleanup path. It adds
+no schema, queue, approval mechanism or external dependency; authorization is
+domain policy, while Git effects and durable Jobs remain in their current owners.
 
 A terminal batch whose checkpoint recovery was exhausted can be explicitly kept
 without merging even when its checkpoint is still pending. Its checkpoint status
@@ -704,14 +748,23 @@ administrator's oversight-only access through a nested provenance predicate.
 `source_commit`, `user_request_quote` and concrete `findings`. For open batches with saved differences
 an Agent must supply it. Existing withdrawal of failed/blocked work stays compatible. The quote must occur in
 the canonical current user message of its manual Run (the server-owned
-`chat_turn.v1.user_message_id` pointer). The existing Runtime Context message
-reader verifies Space, session, author, direct-chat Run/retry binding and live
-Room membership. Turn session/person/Agent/Project identities must match the Run;
+`chat_turn.v1.user_message_id` pointer), or in the same person's earlier user
+message on the current visible conversation branch. The current message must
+first pass the existing Runtime Context reader; historical sources also pass
+that reader with their original Run binding. Space, session, author,
+direct-chat Run/retry binding and live Room membership remain checked. Earlier
+sources must precede the current message on its visible path and must not be
+retry-superseded. Other branches, other authors, future messages and unlinked
+history do not qualify. Turn session/person/Agent/Project identities must match the Run;
 assistant/system messages, handoffs and delegated/unattended turns are refused.
 Malformed structured input never falls back to matching assembled context. Legacy
 non-chat Runs still use their server-owned prompt/instruction. The audit stores
-the resolved message or Run-request reference alongside the review. The Agent is responsible for interpreting an explicit request
-to close the work; substring matching establishes provenance, not semantic approval.
+the original message or Run-request reference alongside the review. The Agent is responsible for interpreting an explicit request
+to close this exact work, including any later change or revocation; substring
+matching establishes provenance, not semantic approval. An applicable earlier
+request need not be repeated, and the server resolves its message id. This
+continuity is limited to reviewed closure; squash publication still requires
+the current direct request.
 Unattended turns cannot use this route. Existing Project/Host/Run-body and
 conversation/delegation-tree authority still applies. List reports `review_required`
 until the caller supplies a review; get supplies the saved source identity.
@@ -756,14 +809,81 @@ unfinished batch or active Run still keeps the workspace current.
 
 `workspace.change.abandon` with `reclaim: true` and an exact `review` requests
 physical reclamation of an obsolete saved generation (including a previously
-abandoned batch). A normal close still retains source. The existing authorizer
-covers the conversation/delegation tree; Agent requests must quote the current
-canonical direct human request, and this mode requires an explicit request to
+abandoned batch or a closed `no_changes` review). Closed unchanged reviews require
+the same explicit reclamation and exact-source review; ordinary closure cannot
+reopen them. List/get report this review requirement instead of an unrecoverable
+closed-state blocker. Integrated publication receipts remain unchanged when
+their source is reclaimed. A normal close still retains source. The existing authorizer
+covers the conversation/delegation tree; Agent requests must quote an applicable
+canonical direct human request on this conversation branch, and this mode requires an explicit request to
 discard the saved source and reclaim branch/files, not merely close its record.
 The batch revision, saved source, current generation and workspace head must
-match; every binding must be saved, no other batch or integration may be active,
+match; every binding must be saved before physical cleanup, no other batch or integration may be active,
 and an unconfirmed earlier cleanup cannot be replaced. The workspace retires so
 a new turn allocates a new generation rather than inheriting the discard grant.
+
+A cancelled/failed binding with no recorded launch (`start_commit` absent,
+sequence zero) can recover its pending checkpoint automatically in the existing
+checkpoint Job or the existing cleanup Job after reviewed reclamation. The exact prior Host launch must
+confirm exit and no execution lock may remain. Host `inspect` with the saved
+expected tip returns `unchanged_commit` only under the workspace lease, with no
+launch/Run receipt or unsettled writer, a recognised clean worktree and the same
+branch/HEAD. Only that positive proof records an unchanged checkpoint and its
+recovery evidence; missing receipts alone do not. Dirty, moved, busy or unknown
+work stays pending, including when recovery was previously exhausted. This
+also lets an authorized retry finish old records without a separate repair Run.
+The Operation Core command freezes only the authorized intent and source; it
+never calls the Host while holding its database transaction. Eligible terminal
+sequence-zero bindings may remain pending on that receipt. Cleanup performs the
+positive proof and saves them before any physical removal; unknown, dirty or
+active work stays retained and the receipt never claims it was deleted.
+That proof can also cover a branch-only remainder of earlier worktree cleanup:
+the exact saved branch must remain unchanged, with no checkout elsewhere,
+unregistered directory, unsettled Run/merge record or whole-tree quarantine.
+The existing cleanup Job can then save the terminal zero-launch binding and
+continue its already-authorized reclamation without a new repair Run.
+
+Checkpoint retry state is binding-local (`checkpoint_recovery_json` on
+`execution_workspace_runs`) and belongs to its current launch sequence. The
+workspace read model derives `integration_detail.checkpoint_recovery` from
+pending bindings; old change-set JSON is historical evidence only. New launches
+clear their own pending result/recovery, never a sibling's state, and old launch
+reports cannot reopen saved work. Runtime exit, Job recovery and periodic
+reconciliation share `hosts/workspaceCheckpoints.ts`. A current checkpoint must
+be saved before dependent children are admitted; an obsolete Job is reported as
+superseded, while a real failure remains retryable or explicitly exhausted.
+
+Checkpoint recovery policy and scheduling are centralized in
+`workspaceCheckpointRecovery.ts`, shared by new-turn admission and periodic
+reconciliation. Environmental preconditions (offline/busy Host, capability
+upgrade, unavailable launch identity) enter `waiting` and defer the existing Job
+without spending its operation-failure retry budget. Legacy exhausted environment
+waits resume automatically; a new turn also reoffers an exhausted operational
+checkpoint under a fresh recovery identity. Old Jobs remain superseded. Safety
+blocks are never reset by this path. Admission commits the checkpoint Job before
+deferring the new turn (`workspace_checkpoint_recovering`), rather than failing
+that turn or allocating a replacement worktree with unverified content.
+
+Recovery examines every persisted dispatch attempt, not only the latest retry:
+a retry without a launch nonce cannot erase an earlier orphaned execution. It
+confirms each dispatched process exited and recovers the Host's original launch
+receipt before checkpointing any dirty files. A changed launch sequence supersedes
+the old Job and is saved by its correctly fenced continuation.
+
+Recovery observes state, performs Host I/O without a database row lock, then
+commits under owner revision/generation/epoch, binding request, change revision,
+latest attempt and live-writer checks. A clean unchanged saved tree can settle a
+terminal unlaunched binding against that version. An entirely absent Host owner
+can settle a never-materialized empty batch as `no_changes`. Both retain the
+truthful null `start_commit`, recording a settled outcome of `unchanged` or
+`not_started`. Only complete Host absence with no persisted dispatch can establish
+`not_started`, which invents no commit; missing receipts alone prove neither outcome.
+
+Closure/refusal responses retain HTTP 409 with a specific message and
+`error.metadata.code`: revision/source moved, request not found, Run active,
+checkpoint pending, Host upgrade required, safety block, cleanup pending or
+active dependencies. The Agent can distinguish a reread/retry from work that
+must first settle, without asking the person to enter commands or repeat ids.
 
 The existing cleanup Job, dependency checks, Host lease, dirty-tree refusal,
 expected-tip CAS, quarantine and materialization fences perform deletion. Host
@@ -775,3 +895,196 @@ Recoverable checkpoints/base remain in existing run-history refs for the
 configured period (default 30 days), with durable expiry Jobs; managed branches
 and worktree files do not remain for that period. Other live dependencies still
 protect their shared source refs.
+
+The same cleanup Job finishes later recovery-ref pages using the completed
+release's exact history keepers on reclaim-7 Hosts. Earlier rewritten snapshots
+need not appear in the final tip's ancestry: their exact generation-owned backup
+must still exist durably, with no later launch or remaining source resources.
+The redundant recovery names are then released; historical file previews keep
+their existing retention and expiry. Old proof-waiting pages resume once after
+the Host upgrade. Missing backup evidence keeps the page pending rather than
+inventing completion. This reuses the existing release journal, leases, Git CAS,
+history retention and Jobs; it adds no schema, dependency or cleanup runner.
+
+Optional Host cleanup capabilities do not gate supported isolated execution.
+Unknown extensions are omitted individually at heartbeat ingestion. Missing
+execution capability pauses background reconciliation; a successful fenced Host
+inspection clears the old diagnostic and recalculates pending history. Actual
+cleanup blocks remain, without preventing supported new turns from continuing.
+
+Current/history SQL excludes acknowledged old missing assessments from its
+missing-branch filter, matching the saved-work state projection; later open saved
+work remains current while a closed missing record alone remains history.
+
+
+Native delegated publication records exact child adoption in the same database
+transaction as its merged outcome (`hosts/workspaceNativeAdoption.ts`). The
+receipt carries the base/source/generation, integration attempt, target and
+parent-owned landing checkpoint. Historical backfill uses that same writer;
+external manual Git keeps the existing strict content proof. An empty delegated
+review can release its redundant resource only when its inherited baseline is
+preserved in a proven parent checkpoint and the Host durably pins that version.
+Publication outcome and physical reclamation remain separate current facts;
+this receipt alone does not mean cleanup finished.
+
+### Landing versus release progress
+
+The shared workspace list consumes the typed `lifecycle` returned by the Run
+and conversation readers. It keeps published temporary work pending through
+`awaiting_release`/`cleanup`, displays cleanup recovery separately from merge
+failure, and polls until the lifecycle settles. Legacy batches without this
+record retain their publication and cleanup displays. No new publication or
+cleanup write is made by rendering or polling.
+
+
+Failed/cancelled temporary sources on preserve-source Hosts expose their exact
+`retention.preserved_commit` and `retention.recovery_ref`; the batch remains saved
+and unmerged. Reusing its bounded slot does not adopt its old result. Recovery
+metadata stays on that old batch even while a new batch uses the directory.
+Legacy lifecycle backfill requires matching settled integration/batch facts;
+a `reclaimed` label alone cannot complete a temporary lifecycle without actual
+Host inventory proving branch, worktree and registration absence.
+
+
+The optional lifecycle `slot_use_id` distinguishes successive uses of one stable
+workspace branch, including equal source commits. New source cleanup is linked
+to its exact integration before enqueueing; a late prior-use response cannot
+finish or overwrite the new use. Controlled and native no-change landings share
+the exact parent-receipt writer. Recovery records remain history until an
+explicit new submission reactivates their batch; submission clears the historical
+`slot_recovery` marker while retaining its recovery evidence. See the Host guide's
+reused-slot fences and focused real-PG/Host-Git acceptance.
+
+
+Temporary workspace admission counts the primary coordinator inside the declared
+collaboration total. Release waits use persistent current-use timing rather than
+Run age; explicit holds remain temporary and releasing one wakes the pending Job.
+Before reuse, the old lifecycle settles against its confirmed physical inventory
+and cleanup evidence under lock. Permanent terminal checkpoint failures surface
+as `workspace_checkpoint_blocked` in the existing cleanup errors/attention;
+normal pending or live work does not. See ADR 0029 and the Hosts guide for the
+clock, proof and epoch boundaries.
+
+Slot waits now precede the running transition in the real `agent_run` worker.
+Clearing or shortening a hold wakes only the exact current workspace/use Jobs,
+including claimed work; the old future wait deadline is reset. A remaining
+shortened hold is re-evaluated at once. Capacity retries re-read active Room
+membership every 30 seconds, preserve the fixed collaboration limit, and keep a
+minimum slot for ordinary noncollaborative work. Another Task's blocked resource
+at the existing bound returns a specific resource refusal; its existing recovery
+controls must resolve it before retry, without discarding or adopting its work.
+Checkpoint attention preserves unrelated inspection errors and their first time.
+See the Hosts guide's queued admission and wake recovery contract.
+
+Reviewed reclamation also accepts `integrated` sources. Publication facts remain
+`integrated`/`merged` or `no_changes`; only unpublished withdrawal becomes
+`abandoned`/`superseded`. The exact source review, applicable current/earlier
+branch instruction, revision and workspace/dependency checks still apply.
+`workspacePublicationState.ts` defines terminal publication and the conservative
+legacy no-change settlement used by execution and read-only applicability/list.
+A residual `verifying` merge qualifies only with matching completed native
+no-change receipts, generation/source, no outstanding integration Job and no
+native request lock. Pending publication and genuinely active integration stay
+blocked. Reclamation records the existing integration's cleanup responsibility;
+it never submits another merge. Unfinished lists include incomplete landing
+lifecycles and an exact outstanding discard intent. Operation idempotency keys
+replay one admission; a different stale request must reread the revision.
+
+List/get and admission share a batched read-only discard assessment. It reports
+an already reclaimed generation, missing/moved source or generation, safety block,
+Host reclaim level below 5, unreplaceable cleanup and missing publication landing
+as distinct blockers. A fresh request for a reclaimed generation is refused as
+`workspace_discard_already_reclaimed`; it cannot rearm cleanup, regress retention,
+rewrite completion time or create another cleanup operation. Terminal merge
+statuses permit reclamation only when the batch itself is closed.
+
+The shared dependency predicate includes every live binding and Review, owed
+checkpoint, active sibling batch/merge, unreleased or live empty child, pending
+native receipt, integration Job and native advisory lock. Admission may defer
+only terminal unlaunched checkpoint proof; cleanup requires saved bindings.
+After Host inspection, cleanup rechecks the dependencies, head and safety state
+under the workspace row lock before raising its release epoch. Host leases and
+Git CAS still prove physical deletion. Publication and dependency reads are
+batched once per list page and reused by each item's action projection.
+
+Legacy no-change settlement records the matching native receipt request in
+`cleanup_settlement`; it preserves the original completion time. A publication
+without either `merged_commit` or `onto_commit` has blocked lifecycle ownership
+with a null landing, never a fabricated landing or completed lifecycle. Explicit
+reclamation waits for that evidence to be repaired.
+
+### Recovery of retained lifecycle obligations
+
+`workspace.change.get` includes path-free `diagnostics` for unfinished cleanup
+resources and checkpoint bindings, including their current reason, retry time,
+attempt count and recovery guidance. A null saved source is
+`workspace_discard_source_unconfirmed`, distinct from a moved generation/head.
+Neither a missing saved head nor a terminal Run establishes empty content.
+
+`workspace.retention.update` with `action: recover`, `change_set_id` and the
+current `expected_revision` reoffers existing cleanup or terminal unlaunched
+checkpoint obligations. It is visible to Agents through the normal registry,
+scenario allowance, grant, policy and Operation Core audit path. Agents may
+use person-initiated `recover` and `retry`; unattended origins are refused by the
+existing Project-write policy gate. Hold, release, acknowledge-missing and reclaim-now remain person-only. The shared authorizer permits the same manually
+instructed Project writer's cross-conversation cleanup scope, not another
+person's work or cross-conversation publication/integration retry. Active writers,
+safety-blocked checkpoints and changed generations/revisions refuse recovery.
+No discard intent, publication job, new Run or source deletion grant is created.
+Permanent cleanup refusals retain their specific Host reason and require their own
+remedy. `diagnostics.recovery_mode` distinguishes `recover` from `retry`.
+A manually instructed Agent may retry an existing blocked cleanup in the current
+generation with the current batch revision. It reoffers only that generation's
+resources; a sent request keeps its full frozen payload and operation identity.
+It neither clears inspection/checkpoint evidence nor grants publication, discard
+or release of a different source. Host safety and dependency checks run again.
+Diagnostics use a nullable recovery action: old-generation, launched and blocked
+obligations do not advertise generic recover. Current safety blocks remain conservative;
+unrelated old cleanup keys do not block independently recoverable current debt.
+List projections reuse recovery admission per workspace within the read and never
+lock writer authority in a read-only transaction; execution rechecks current revision
+and authority under locks.
+
+Recovery schedules the canonical checkpoint Job even for a retired owner, but
+only a terminal sequence-zero binding may settle there. The Host must confirm
+exit of every dispatched attempt and prove an unchanged saved workspace head,
+or complete absence for a never-dispatched batch with no baseline or source. A null source can adopt only the batch's non-null base, with matching batch/workspace
+generation and head equal to that base. Existing sources require the same generation
+and matching head. After Host I/O, the locked transaction rechecks batch generation,
+base, source and revision, workspace generation/epoch/head, binding, attempt and nonce
+before saving either binding or source. A null-base never-dispatched batch may settle
+only on complete absence; it does not adopt a historical workspace head.
+Explicit exhausted-checkpoint retries target only the authorized change set;
+background reconciliation retains its existing workspace-wide semantics.
+Dirty or unknown files retain the debt; abandoned and published receipts remain
+unchanged. Re-read after recovery before considering any reviewed discard.
+
+### Selected-batch checkpoint recovery diagnostics
+
+`workspace.change.get` projects checkpoint recovery actions for the selected
+change set only. Other batch obligations remain visible without an action and
+instruct the caller to obtain recovery authority for that batch. Diagnostics do
+not expose additional batch, Run or owner identifiers. Explicit recovery never
+reactivates another batch's exhausted checkpoint. Current-generation launched
+pending checkpoints retain the conservative `checkpoint_pending` gate in both
+advisory applicability and locked execution; their standard checkpoint worker
+must settle them. Older generations do not impose that gate on current debt.
+Existing frozen cleanup requests remain workspace-scoped and replay unchanged.
+
+
+### Closed cleanup history and missing-child dependencies
+
+Reconciliation may inspect a retired owner even when an old checkpoint is blocked.
+Only a fenced Host receipt confirming no branch, worktree, registration, Run/merge
+record, active lease or whole-tree quarantine can close cleanup attention for an
+unsaved source whose batches are all already abandoned and have no saved source.
+The receipt is scoped to generation and materialization epoch. No binding becomes
+`saved`, no merge is claimed and no cleanup/deletion request is issued. Original
+checkpoint failures remain readable as history with non-actionable diagnostics;
+new work, a new epoch or reappearing resources invalidates this disposition.
+
+Parent retention and reviewed-discard admission share the missing-child rule:
+`missing/missing_acknowledged` with its recorded acknowledgement, confirmed source
+absence and completed cleanup no longer pins the parent merely because an old head
+is recorded. Unacknowledged absence, quarantine, incomplete cleanup, open child
+batches and live Runs continue to block. This never supplies adoption proof.

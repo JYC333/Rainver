@@ -29,6 +29,12 @@ export class CliAgentToolTransport {
     call: { id: string; name: string; arguments: unknown },
   ): Promise<unknown> {
     this.assertActive(run);
+    const dispatcher = await SystemActionDispatcher.create(this.config, run, this.deps);
+    // Use exactly the model-facing catalogue, including disabled bindings/plugins.
+    if (!dispatcher.listGrantedDefinitions().some(tool => tool.name === call.name)) {
+      const denied = await dispatcher.dispatch({id:call.id,name:call.name,arguments_json:'{}'});
+      return new OperationToolResponse(403, denied.modelResult as Record<string,unknown>, denied.summary);
+    }
     const definition=(await loadSystemActionRegistry(this.config)).get(call.name as never);
     if(definition?.execution){
       const runtime=await operationRuntime(this.config);
@@ -41,7 +47,6 @@ export class CliAgentToolTransport {
         return new OperationToolResponse(result.httpStatus, {ok:true,tool:call.name,...result.body.data as Record<string,unknown>},result.summary);
       return result;
     }
-    const dispatcher = await SystemActionDispatcher.create(this.config, run, this.deps);
     const result = await dispatcher.dispatch({
       id: call.id,
       name: call.name,

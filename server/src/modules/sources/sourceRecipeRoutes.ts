@@ -9,34 +9,27 @@ import {
   resolveIdentity,
   sendRouteError,
 } from "../routeUtils/common.js";
-import { enforceSources } from "./enforceSources.js";
 import { SourceRecipeService } from "./sourceRecipeService.js";
 import {introspectIdentity} from '../auth/identity.js';
 import {resolveRequestId} from '../../gateway/requestContext.js';
 import {sessionActor} from '../systemActions/operations/actor.js';
 import {OperationError} from '../systemActions/operations/errors.js';
 import {operationRuntime} from '../systemActions/operations/runtime.js';
+import {registerOperationAdapters} from '../systemActions/operations/routeAdapter.js';
 
 /** Level 2 Source recipe routes: plan/create, dry-run preview, activation, and the recipe-version read model. */
 export function registerSourceRecipeRoutes(app: FastifyInstance, context: ModuleContext): void {
   const recipeService = () => new SourceRecipeService(dbPool(context.config), context.config);
+  registerOperationAdapters(app, context.config, [
+    { method: 'POST', url: '/api/v1/sources/source-recipes/plan', operation: 'source.recipe.plan.request' },
+    { method: 'POST', url: '/api/v1/sources/source-recipes/:connectionId/dry-run', operation: 'source.recipe.dry_run.request', params: { connectionId: 'source_connection_id' } },
+    { method: 'POST', url: '/api/v1/sources/source-recipes/:connectionId/activate', operation: 'source.recipe.activate', params: { connectionId: 'source_connection_id' } },
+  ]);
 
   app.get("/api/v1/sources/source-recipes/primitives", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     return reply.send(recipeService().listPrimitives());
-  });
-
-  app.post("/api/v1/sources/source-recipes/plan", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const gate = await enforceSources(context, identity, "source.recipe.create", "source_connection");
-      if (gate.blocked) return reply.code(403).send(gate.reply403);
-      return reply.send(await recipeService().planSource(identity, jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
   });
 
   app.post("/api/v1/sources/source-recipes", {config:{operation:'source.recipe.create'}}, async (request, reply) => {
@@ -48,47 +41,6 @@ export function registerSourceRecipeRoutes(app: FastifyInstance, context: Module
     const key=request.headers['idempotency-key'];
     const result=await(await operationRuntime(context.config)).execute('source.recipe.create',body,sessionActor({spaceId:auth.spaceId,userId:auth.userId}),requestId,typeof key==='string'?key:undefined);
     return reply.code(result.http_status).send(result.body);
-  });
-
-  app.post("/api/v1/sources/source-recipes/:connectionId/activate", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const connectionId = params(request).connectionId ?? "";
-      const gate = await enforceSources(context, identity, "source.recipe.activate", "source_connection", connectionId);
-      if (gate.blocked) return reply.code(403).send(gate.reply403);
-      return reply.send(await recipeService().activateRecipe(identity, connectionId, jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.post("/api/v1/sources/custom-sources/:connectionId/bridge-pipeline", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const connectionId = params(request).connectionId ?? "";
-      const gate = await enforceSources(context, identity, "source.recipe.create", "source_connection", connectionId);
-      if (gate.blocked) return reply.code(403).send(gate.reply403);
-      return reply.code(201).send(
-        await recipeService().bridgePipelineHandler(identity, connectionId, jsonBody(request)),
-      );
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.post("/api/v1/sources/source-recipes/:connectionId/dry-run", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const connectionId = params(request).connectionId ?? "";
-      const gate = await enforceSources(context, identity, "source.recipe.dry_run", "source_connection", connectionId);
-      if (gate.blocked) return reply.code(403).send(gate.reply403);
-      return reply.send(await recipeService().dryRunRecipeVersion(identity, connectionId, jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
   });
 
   app.get("/api/v1/sources/connections/:connectionId/recipe-versions", async (request, reply) => {

@@ -1,5 +1,6 @@
-import type { HostUsageQuota, SubscriptionQuotaWindow, SubscriptionUsageLine } from "@rainver/protocol";
-import { accountQuota } from "../hosts/subscriptionUsage.js";
+import { createHash } from "node:crypto";
+import { HostUsageQuotaSchema, type HostUsageQuota, type SubscriptionQuotaWindow, type SubscriptionUsageLine, type ConversationQuotaDisplayWindow } from "@rainver/protocol";
+import { accountQuota, quotaWindows, subscriptionPoolId } from "../hosts/subscriptionUsage.js";
 import type { Pool } from "../../db/pool.js";
 import { hasSubscriptionQuota } from "../hosts/capabilities.js";
 import { refreshHostUsage } from "../hosts/usageService.js";
@@ -22,6 +23,7 @@ export interface SubscriptionLogin {
   host_name: string;
   runtime_key: string;
   installation: string;
+  agent_ids?: string[];
 }
 
 export interface QuotaReading {
@@ -110,6 +112,40 @@ export function fullerWindow(quota: HostUsageQuota | null | undefined, now?: Dat
 /** The latest cached reading of a login; nothing is asked of the host. */
 export async function cachedQuotaReading(db: Queryable, login: SubscriptionLogin): Promise<QuotaReading> {
   return quotaReading(await cachedQuota(db, login));
+}
+
+/**
+ * The latest cached reading of a login, with an opaque key for the login and
+ * the account it currently reads (the Usage page's pool identity). A
+ * conversation's client keys a person's dismissal of a warning by it, so a
+ * different account on the same copy is a different key. Host-scoped and
+ * hashed: it names no account and does not match the same account on another
+ * Host. pool_key separately allows grouping only inside the given Space and
+ * conversation; without that scope it stays copy-local. Nothing probes the host.
+ */
+export async function cachedLoginReading(db: Queryable, login: SubscriptionLogin, groupScope?:{spaceId:string;sessionId:string}): Promise<QuotaReading & { login_key: string; pool_key:string; windows:Array<SubscriptionQuotaWindow & {checked_at:string|null}>; display_windows:ConversationQuotaDisplayWindow[] }> {
+  const cached = await cachedQuota(db, login);
+  const account = HostUsageQuotaSchema.shape.account.safeParse(cached?.quota_json?.account).data ?? null;
+  const pool = subscriptionPoolId(login.host_id, login.runtime_key, login.installation, account);
+  const key = createHash("sha256")
+    .update(JSON.stringify(["conversation-quota-login", login.host_id, login.runtime_key, login.installation, pool]))
+    .digest("hex").slice(0, 24);
+  const quota=cached ? accountQuota(cached.quota_json) : null;
+  const windows:Array<SubscriptionQuotaWindow & {checked_at:string|null}>=[];
+  for(const kind of ['session','week'] as const){
+    const pct=kind==='session'?quota?.session_pct:quota?.week_pct;
+    if(typeof pct!=='number')continue;
+    const id=kind==='session'?'five_hour':'seven_day';
+    windows.push({kind,utilization:clampPct(pct),resets_at:resetsAtOf(kind==='session'?quota?.session_resets:quota?.week_resets),checked_at:cached?quota?.window_checked_at?.[id]??iso(cached.checked_at):null});
+  }
+  const antigravity=account?.product==='antigravity'||login.runtime_key==='acp_antigravity_acp';
+  const display_windows:ConversationQuotaDisplayWindow[] = cached?.quota_json.available ? quotaWindows(cached.quota_json).filter(window=>window.id.length>0).slice(0,64).map(window => ({
+    id:window.id, label:window.label||window.id,
+    group:antigravity&&/^gemini-/.test(window.id)?'native':antigravity&&/^3p-/.test(window.id)?'third_party':window.scope==='model'||window.scope==='family'?'other':'account',
+    utilization:window.used_pct===null?null:clampPct(window.used_pct), resets:window.resets?.slice(0,512)??null,
+    checked_at:cached.quota_json.window_checked_at?.[window.id]??iso(cached.checked_at),
+  })) : [];
+  return { display_windows, ...quotaReading(cached), login_key: key, pool_key:createHash('sha256').update(JSON.stringify(['conversation-quota-pool',groupScope?.spaceId??key,groupScope?.sessionId??key,pool])).digest('hex').slice(0,24), windows };
 }
 
 interface CachedQuota {
@@ -264,12 +300,14 @@ export async function discussionSubscriptionUsage(db: Queryable, spaceId: string
 /** Every login a conversation's Agents run on, from its host threads. */
 export async function conversationSubscriptionLogins(db: Queryable, spaceId: string, sessionId: string): Promise<SubscriptionLogin[]> {
   const rows = (await db.query<SubscriptionLogin>(
-    `SELECT DISTINCT thread.execution_host_id AS host_id, host.name AS host_name, thread.runtime_key,
-            thread.runtime_installation AS installation
+    `SELECT thread.execution_host_id AS host_id, host.name AS host_name, thread.runtime_key,
+            thread.runtime_installation AS installation, COALESCE(array_agg(DISTINCT thread.agent_id) FILTER (WHERE thread.agent_id IS NOT NULL),ARRAY[]::varchar[]) AS agent_ids
        FROM host_threads thread
        JOIN hosts host ON host.id = thread.execution_host_id
       WHERE thread.space_id = $1 AND thread.session_id = $2 AND thread.container_kind = 'conversation'
         AND thread.status IN ('active', 'session_reset')
+        AND NOT EXISTS (SELECT 1 FROM runs run WHERE run.id=thread.last_run_id AND (run.model_provider_id IS NOT NULL OR NULLIF(run.model_override_json->'conversation_backend'->>'model_provider_id','') IS NOT NULL))
+      GROUP BY thread.execution_host_id,host.name,thread.runtime_key,thread.runtime_installation
       ORDER BY host.name, thread.runtime_key, thread.runtime_installation`,
     [spaceId, sessionId],
   )).rows;

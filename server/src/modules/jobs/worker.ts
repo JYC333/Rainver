@@ -70,7 +70,8 @@ export class JobWorker {
       heartbeatTimer.unref?.();
 
       const result = await handler(envelope);
-      const completed = await this.queue.completeJob(job.id, result ?? null, this.workerId);
+      const completed = await this.queue.completeJob(job.id, result ?? null, this.workerId)
+        || await this.queue.confirmCompletedJob?.(job.id,result??null,this.workerId,job.attempts) === true;
       if (!completed) {
         const message = "Job completion skipped because ownership or status changed";
         await this.safeAppendEvent(job.id, "warning", message, {

@@ -1,6 +1,6 @@
 import type { AutomationTargetType } from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
-import { HttpError } from "../routeUtils/common.js";
+import { HttpError, type Queryable } from "../routeUtils/common.js";
 import type {
   AutomationRepositoryPort,
   AutomationRow,
@@ -47,6 +47,8 @@ export interface AutomationTargetHost {
 }
 
 export interface AutomationTargetPreflightContext {
+  /** Configuration owner's transaction, when configuring under an outer owner. */
+  db?: Queryable;
   config: ServerConfig;
   repo: AutomationRepositoryPort;
   host: AutomationTargetHost;

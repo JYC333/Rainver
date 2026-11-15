@@ -19,6 +19,7 @@ type RerankSystemPromptResolver = (
 ) => Promise<string | null>;
 
 interface ProviderRerankerOptions {
+  singleAttempt?: true;
   /** Caller's own provider; the task chain is tried first, this is the safety net. */
   providerId?: string | null;
   /** When set, a best-effort provider-egress audit row is written per rerank call. */
@@ -51,12 +52,14 @@ export class ProviderReranker implements Reranker {
   private readonly systemPromptResolver: RerankSystemPromptResolver | null;
   private readonly egressPolicy: RetrievalEgressPolicy;
   private readonly spend: CredentialSpendBasis;
+  private readonly singleAttempt?: true;
 
   constructor(
     private readonly store: ProviderCommandStore,
     options: ProviderRerankerOptions,
   ) {
     this.spend = options.spend;
+    this.singleAttempt = options.singleAttempt;
     this.providerId = options.providerId ?? null;
     this.databaseUrl = options.databaseUrl ?? null;
     this.surface = options.surface ?? null;
@@ -105,6 +108,7 @@ export class ProviderReranker implements Reranker {
         egressPolicy: effectivePolicy,
         metering: { subject_user_id: viewerUserId },
         spend: this.spend,
+        single_attempt: this.singleAttempt,
       });
     } catch {
       return null;
@@ -140,6 +144,7 @@ export class ProviderReranker implements Reranker {
         egressPolicy,
         metering: { subject_user_id: viewerUserId },
         spend: this.spend,
+        single_attempt: this.singleAttempt,
       });
       const scores: RerankScore[] = [];
       const seen = new Set<number>();

@@ -7,8 +7,9 @@ import {afterEach,beforeEach,expect,it} from 'vitest';
 import {useTestDatabase} from './support/testDatabase.js';
 import {resetTables} from './support/resetTables.js';
 import {seedSpaceOwnerProject,seedRun,seedSpaceMember} from './support/domainSeeds.js';
-import {waitForLockWaiter} from './support/lockWait.js';
+import {waitForLockWaiter,waitForBlockedBy} from './support/lockWait.js';
 import {buildModuleServer} from './support/moduleServer.js';
+import {requireCurrentWebDist,webRoot} from './support/webDist.js';
 import {tasksModule} from '../src/modules/tasks/index.js';
 import {systemActionsModule} from '../src/modules/systemActions/index.js';
 import {__setAuthIdentityForTests} from '../src/modules/auth/identity.js';
@@ -17,13 +18,16 @@ import {PgTaskRepository} from '../src/modules/tasks/repository.js';
 import {CliAgentToolTransport} from '../src/modules/runs/cliToolTransport.js';
 import {operationRuntime} from '../src/modules/systemActions/operations/runtime.js';
 import {runActor} from '../src/modules/systemActions/operations/actor.js';
-import {TASK_LIFECYCLE_OPERATIONS as ids} from '../src/modules/projectWork/taskLifecycleOperations.js';
+import {TASK_LIFECYCLE_OPERATIONS} from '../src/modules/projectWork/taskLifecycleOperations.js';
+// task.update is the Task owner's single editor; its Agent path shares these lifecycle guarantees.
+const ids=[...TASK_LIFECYCLE_OPERATIONS,'task.update'] as const;
 import {registerProjectWorkSystemActionExecutors} from '../src/modules/projectWork/projectWorkSystemActionExecutors.js';
 import {getProjectBoard} from '../src/modules/projectWork/boardReadModel.js';
 const db=useTestDatabase(import.meta.filename);
 let space:string,owner:string,project:string,run:string,task:string,record:any;
 let app:ReturnType<typeof buildModuleServer>,config:ReturnType<typeof loadConfig>;
 const input=(id:string)=>({task_id:task,...({
+ 'task.update':{title:'Edited title',description:'Edited description'},
  'task.report':{summary:'Readable progress',outcome:'done'},
  'task.complete':{summary:'Work complete'},
  'task.request_review':{reason:'Choose next step',options:['Accept','Revise']},
@@ -69,13 +73,13 @@ it.each(ids)('replays %s through Agent/core with one event chain and current gra
  const before=await events(),engine=await operationRuntime(config),actor=await runActor(db.pool,record);
  const replay=await engine.execute(id,body,actor,randomUUID(),key);
  expect(replay.replayed).toBe(true);expect((replay.body as any).data).toEqual(one.body.data);expect(await events()).toEqual(before);
- const changed=id==='task.handoff'?{...body,note:'Changed'}:id==='task.set_status'?{...body,status:'blocked'}:{...body,...(id==='task.delete'||id==='task.request_review'?{reason:'Changed'}:{summary:'Changed'})};
+ const changed=id==='task.update'?{...body,title:'Changed'}:id==='task.handoff'?{...body,note:'Changed'}:id==='task.set_status'?{...body,status:'blocked'}:{...body,...(id==='task.delete'||id==='task.request_review'?{reason:'Changed'}:{summary:'Changed'})};
  expect(((await engine.execute(id,changed,actor,randomUUID(),key)).body as any).error.code).toBe('idempotency_key_reused');
  const actorRow=(await db.pool.query('SELECT agent_id,user_id FROM actors WHERE id=$1',[before.at(-1).actor_id])).rows[0];
  expect(actorRow).toMatchObject({agent_id:record.agent_id,user_id:null});
  expect(before.at(-1).data_json.run_id).toBe(run);
  await db.pool.query("UPDATE runs SET permission_snapshot_json='{}' WHERE id=$1",[run]);
- expect((await engine.execute(id,body,actor,randomUUID(),key)).http_status).toBe(404);
+ expect((await engine.execute(id,body,actor,randomUUID(),key)).http_status).toBe(403);
 });
 it.each(ids)('rejects concurrent same-key %s before a second domain invocation',async id=>{
  const body=input(id),key=randomUUID(),lock=await db.pool.connect();
@@ -187,7 +191,7 @@ it('hides cross-Space Tasks and never replays a receipt across user and Agent id
  expect((await db.pool.query('SELECT principal_kind FROM operation_idempotency WHERE space_id=$1 AND idempotency_key=$2',[space,key])).rows.map(r=>r.principal_kind).sort()).toEqual(['agent','user']);
 });
 
-it.each(ids)('offers safe missing-id discovery for %s only inside the live authorized Run Project',async id=>{
+it.each(ids)('keeps missing and hidden objects indistinguishable for %s while refusing revoked tools explicitly',async id=>{
  const peer=randomUUID();await seedSpaceMember(db.pool,{space,user:peer});
  await db.pool.query("INSERT INTO project_members(id,space_id,project_id,user_id,role,status,created_at,updated_at) VALUES($1,$2,$3,$4,'member','active',now(),now())",[randomUUID(),space,project,peer]);
  const privateTask=await new PgTaskRepository(db.pool).createTask({spaceId:space,userId:owner},{project_id:project,title:'Never disclose private work',visibility:'private'});
@@ -197,18 +201,35 @@ it.each(ids)('offers safe missing-id discovery for %s only inside the live autho
  record=(await db.pool.query('SELECT * FROM runs WHERE id=$1',[run])).rows[0];
  const missing=await agent(id,{...input(id),task_id:'composed-task-title'});
  expect(missing.httpStatus).toBe(404);
- expect(missing.body.error.message).toBe(`No Task in this Project has id 'composed-task-title'. Use one of these ids exactly: ${task} — Lifecycle`);
+ expect(missing.body.error.message).toContain('objects returned by authorized reads');
+ expect(JSON.stringify(missing.body)).not.toContain(task);
  for(const target of [privateTask,otherTask]){
   const denied=await agent(id,{...input(id),task_id:target.id});
-  expect(denied.httpStatus).toBe(404);expect(denied.body.error.message).toBe('operation not found');
+  expect(denied.httpStatus).toBe(404);expect(denied.body.error.message).toBe(missing.body.error.message);
   expect(JSON.stringify(denied.body)).not.toContain(task);
  }
  await db.pool.query("UPDATE project_members SET role='viewer' WHERE project_id=$1 AND user_id=$2",[project,peer]);
  const revoked=await agent(id,{...input(id),task_id:'composed-task-title'});
- expect(revoked.body.error.message).toBe('operation not found');
+ expect(revoked.body.error.message).toBe(missing.body.error.message);
  await db.pool.query("UPDATE project_members SET role='member' WHERE project_id=$1 AND user_id=$2",[project,peer]);
  await db.pool.query("UPDATE runs SET permission_snapshot_json='{}' WHERE id=$1",[run]);
- expect((await agent(id,{...input(id),task_id:'composed-task-title'})).body.error.message).toBe('operation not found');
+ expect(await agent(id,{...input(id),task_id:'composed-task-title'})).toMatchObject({httpStatus:403,body:{error:{code:'operation_not_granted'}}});
+});
+it.each(ids)('refuses a missing %s target without waiting for the Project mutation lock',async id=>{
+ const holder=await db.pool.connect();
+ let pending:ReturnType<typeof agent>|undefined;
+ let settled=false;
+ try{
+  await holder.query('BEGIN');
+  await holder.query('SELECT id FROM projects WHERE id=$1 AND space_id=$2 FOR UPDATE',[project,space]);
+  const pid=(await holder.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
+  pending=agent(id,{...input(id),task_id:'missing-target'}).finally(()=>{settled=true;});
+  await waitForBlockedBy(db.pool,pid,{settled:()=>settled});
+  expect(settled).toBe(true);
+ }finally{
+  await holder.query('ROLLBACK');holder.release();
+  if(pending)expect(await pending).toMatchObject({httpStatus:404,body:{error:{code:'operation_not_found'}}});
+ }
 });
 it('treats cross-Space missing ids like random missing ids, and never gives users Agent discovery',async()=>{
  const elsewhere=randomUUID(),other=randomUUID(),foreign=randomUUID();
@@ -222,12 +243,13 @@ it('treats cross-Space missing ids like random missing ids, and never gives user
  const user=await generic('task.set_status',{task_id:missing,status:'ready'});
  expect(user.json().error.message).toBe('operation not found');
 });
-it('bounds safe discovery to the existing 50-Task list limit',async()=>{
+it('does not inline a visible Task catalogue into a hidden-object refusal',async()=>{
  const more=Array.from({length:51},()=>randomUUID());
  await db.pool.query("INSERT INTO tasks(id,space_id,project_id,title,status,owner_user_id,created_by_user_id,visibility,created_at,updated_at) SELECT id,$2,$3,'Visible card','ready',$4,$4,'space_shared',now(),now() FROM unnest($1::varchar[]) id",[more,space,project,owner]);
  const result=await agent('task.report',{task_id:'made-up-id',summary:'Report'});
  expect(result.httpStatus).toBe(404);
- expect(result.body.error.message.match(/ — /g)).toHaveLength(50);
+ expect(result.body.error.message).toContain('objects returned by authorized reads');
+ expect(result.body.error.message).not.toContain('Visible card');
 });
 it('gives fixed safe Artifact guidance to an Agent completion refusal while preserving canonical metadata',async()=>{
  await db.pool.query("UPDATE tasks SET required_outputs_json='[\"report\"]' WHERE id=$1",[task]);
@@ -250,6 +272,7 @@ it('preserves human blocker normalization without a new field quota and keeps hu
 });
 
 it('saves Project contracts and standalone Board changes from the rendered Task Detail parent against real PG routes',async()=>{
+ await requireCurrentWebDist();
  const space=randomUUID(),owner=randomUUID(),project=randomUUID();
  await seedSpaceOwnerProject(db.pool,{space,owner,project,spaceType:'household'});
  const identity={spaceId:space,userId:owner},repository=new PgTaskRepository(db.pool);
@@ -259,7 +282,7 @@ it('saves Project contracts and standalone Board changes from the rendered Task 
  await repository.updateTask(identity,standalone.id,{board_id:first.id});
  const app=buildModuleServer(loadConfig({SERVER_DATABASE_URL:db.connectionUri}),[tasksModule,projectWorkModule,systemActionsModule]);
  __setAuthIdentityForTests(identity);
- const web=join(import.meta.dirname,'../../apps/web'),shots=process.env.TASK_CONTRACT_VISUAL_OUT??'/tmp/rainver-task-contract-review';
+ const web=webRoot,shots=process.env.TASK_CONTRACT_VISUAL_OUT??'/tmp/rainver-task-contract-review';
  const {preview}=await import(pathToFileURL(join(web,'node_modules/vite/dist/node/index.js')).href);
  const {chromium}=await import(pathToFileURL(join(web,'node_modules/playwright-core/index.mjs')).href);
  let server:any,browser:any;
@@ -334,4 +357,31 @@ it('saves Project contracts and standalone Board changes from the rendered Task 
   if(server)await new Promise<void>(resolve=>server.httpServer.close(()=>resolve()));
   await app.close();__setAuthIdentityForTests(null);
  }
-},90000);
+});
+
+it('edits parent and child independently, preserves omitted fields, and can clear description',async()=>{
+ const repo=new PgTaskRepository(db.pool);
+ const child=await repo.createTask({spaceId:space,userId:owner},{project_id:project,task_role:'subtask',parent_task_id:task,title:'Child',description:'Keep',status:'ready',visibility:'space_shared'});
+ expect((await agent('task.update',{task_id:task,title:'Parent renamed'})).httpStatus).toBe(200);
+ const edited=await agent('task.update',{task_id:child.id,title:'Child renamed'});
+ expect(edited.httpStatus,JSON.stringify(edited.body)).toBe(200);
+ expect(edited.body.data).toMatchObject({task_id:child.id,title:'Child renamed',description:'Keep'});
+ expect((await agent('task.update',{task_id:child.id,description:null})).httpStatus).toBe(200);
+ const result=(await db.pool.query('SELECT title,description,parent_task_id,status FROM tasks WHERE id=$1',[child.id])).rows[0];
+ expect(result).toMatchObject({title:'Child renamed',description:null,parent_task_id:task,status:'ready'});
+ const board=await getProjectBoard(db.pool,{spaceId:space,userId:owner},project);
+ expect(board.cards.find(c=>c.id===task)?.title).toBe('Parent renamed');
+ expect((await db.pool.query("SELECT * FROM project_work_events WHERE subject_id=$1 AND event_kind='task.content_changed'",[child.id])).rows).toHaveLength(2);
+});
+it.each([{},{title:''},{title:'   '},{title:null},{description:3},{status:'done'},{parent_task_id:'other'},{assigned_agent_id:null},{priority:'high'}])('rejects invalid or out-of-scope edit fields %j',async patch=>{
+ const result=await agent('task.update',{task_id:task,...patch});
+ expect(result.httpStatus).toBe(422);
+ expect((await events()).filter(e=>e.event_kind==='task.content_changed')).toHaveLength(0);
+});
+it('records public Board text edits using the same canonical event and does not emit no-op edits',async()=>{
+ const updated=await app.inject({method:'PATCH',url:`/api/v1/tasks/${task}`,payload:{title:'Board rename'},headers:{'idempotency-key':randomUUID()}});
+ expect(updated.statusCode,updated.body).toBe(200);
+ const before=(await events()).filter(e=>e.event_kind==='task.content_changed');expect(before).toHaveLength(1);
+ expect((await agent('task.update',{task_id:task,title:'Board rename'})).httpStatus).toBe(200);
+ expect((await events()).filter(e=>e.event_kind==='task.content_changed')).toEqual(before);
+});

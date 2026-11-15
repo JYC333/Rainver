@@ -1,3 +1,4 @@
+import {RelationInputError} from './operationErrors.js';
 import type { ServerConfig } from "../../config.js";
 import {
   dateIso,
@@ -8,7 +9,8 @@ import {
   optionalString,
   numberValue,
   toDbDate,
-  withDbTransaction,
+  withQueryableTransaction,
+  type Queryable,
   type SpaceUserIdentity,
 } from "../routeUtils/common.js";
 import {
@@ -149,7 +151,7 @@ function sourceLinkOut(row: RelationSourceLinkRow) {
 
 function assertConfidence(value: number | null): void {
   if (value !== null && (value < 0 || value > 1)) {
-    throw new HttpError(422, "confidence must be between 0 and 1");
+    throw new RelationInputError(422, "confidence must be between 0 and 1");
   }
 }
 
@@ -160,13 +162,13 @@ export class RelationsService {
   }
 
   constructor(
-    private readonly pool: import("../../db/pool.js").Pool,
+    private readonly pool: Queryable,
     private readonly repository: RelationsRepository,
   ) {}
 
   async createPerson(identity: SpaceUserIdentity, body: Record<string, unknown>): Promise<PersonOut> {
     const title = requiredString(body.title, "title");
-    return withDbTransaction(this.pool, async (client) => {
+    return withQueryableTransaction(this.pool, async (client) => {
       const row = await this.repository.createPerson(client, {
         spaceId: identity.spaceId,
         projectId: optionalString(body.project_id),
@@ -209,7 +211,7 @@ export class RelationsService {
     // Title and summary live on space_objects, pronouns and headline on
     // relation_people: one transaction, so a refused second write does not
     // leave the first one committed.
-    const updated = await withDbTransaction(this.pool, (client) =>
+    const updated = await withQueryableTransaction(this.pool, (client) =>
       this.repository.updatePerson(client, identity.spaceId, objectId, identity.userId, patch),
     );
     if (!updated) throw new HttpError(404, "Relation person not found");
@@ -226,13 +228,13 @@ export class RelationsService {
   async createOrganization(identity: SpaceUserIdentity, body: Record<string, unknown>): Promise<OrganizationOut> {
     const title = requiredString(body.title, "title");
     const orgType = optionalString(body.org_type) ?? "other";
-    if (!ORG_TYPES.has(orgType)) throw new HttpError(422, `org_type must be one of ${[...ORG_TYPES].join(", ")}`);
+    if (!ORG_TYPES.has(orgType)) throw new RelationInputError(422, `org_type must be one of ${[...ORG_TYPES].join(", ")}`);
     const parentObjectId = optionalString(body.parent_organization_object_id);
     if (parentObjectId) {
       const parent = await this.repository.getOrganization(this.pool, identity.spaceId, parentObjectId, identity.userId);
-      if (!parent) throw new HttpError(422, "parent_organization_object_id does not reference an existing organization");
+      if (!parent) throw new RelationInputError(422, "parent_organization_object_id does not reference an existing organization");
     }
-    return withDbTransaction(this.pool, async (client) => {
+    return withQueryableTransaction(this.pool, async (client) => {
       const row = await this.repository.createOrganization(client, {
         spaceId: identity.spaceId,
         projectId: optionalString(body.project_id),
@@ -265,9 +267,9 @@ export class RelationsService {
   async createIdentity(identity: SpaceUserIdentity, objectId: string, body: Record<string, unknown>) {
     await this.requireOwnedRelationObject(identity, objectId);
     const idType = requiredString(body.id_type, "id_type");
-    if (!IDENTITY_TYPES.has(idType)) throw new HttpError(422, `id_type must be one of ${[...IDENTITY_TYPES].join(", ")}`);
+    if (!IDENTITY_TYPES.has(idType)) throw new RelationInputError(422, `id_type must be one of ${[...IDENTITY_TYPES].join(", ")}`);
     const source = optionalString(body.source) ?? "manual";
-    if (!PROVENANCE_SOURCES.has(source)) throw new HttpError(422, `source must be one of ${[...PROVENANCE_SOURCES].join(", ")}`);
+    if (!PROVENANCE_SOURCES.has(source)) throw new RelationInputError(422, `source must be one of ${[...PROVENANCE_SOURCES].join(", ")}`);
     const confidence = numberValue(body.confidence);
     assertConfidence(confidence);
     let row;
@@ -283,7 +285,7 @@ export class RelationsService {
       });
     } catch (error) {
       if (isUniqueViolation(error)) {
-        throw new HttpError(409, "This identity already exists for the relation object");
+        throw new RelationInputError(409, "This identity already exists for the relation object");
       }
       throw error;
     }
@@ -305,16 +307,14 @@ export class RelationsService {
     const personObjectId = requiredString(body.person_object_id, "person_object_id");
     const organizationObjectId = requiredString(body.organization_object_id, "organization_object_id");
     const source = optionalString(body.source) ?? "manual";
-    if (!PROVENANCE_SOURCES.has(source)) throw new HttpError(422, `source must be one of ${[...PROVENANCE_SOURCES].join(", ")}`);
+    if (!PROVENANCE_SOURCES.has(source)) throw new RelationInputError(422, `source must be one of ${[...PROVENANCE_SOURCES].join(", ")}`);
     const confidence = numberValue(body.confidence);
     assertConfidence(confidence);
     await this.requireOwnedRelationObject(identity, personObjectId);
-    const [person, organization] = await Promise.all([
-      this.repository.getPerson(this.pool, identity.spaceId, personObjectId, identity.userId),
-      this.repository.getOrganization(this.pool, identity.spaceId, organizationObjectId, identity.userId),
-    ]);
-    if (!person) throw new HttpError(422, "person_object_id does not reference an existing relation person");
-    if (!organization) throw new HttpError(422, "organization_object_id does not reference an existing relation organization");
+    const person = await this.repository.getPerson(this.pool, identity.spaceId, personObjectId, identity.userId);
+    const organization = await this.repository.getOrganization(this.pool, identity.spaceId, organizationObjectId, identity.userId);
+    if (!person) throw new RelationInputError(422, "person_object_id does not reference an existing relation person");
+    if (!organization) throw new RelationInputError(422, "organization_object_id does not reference an existing relation organization");
     return new PgKnowledgeRepository(this.pool).proposeObjectRelation(identity, {
       from_object_id: personObjectId,
       to_object_id: organizationObjectId,
@@ -370,7 +370,7 @@ export class RelationsService {
     await this.requireOwnedRelationObject(identity, objectId);
     const linkType = requiredString(body.link_type, "link_type");
     if (!SOURCE_LINK_TYPES.has(linkType)) {
-      throw new HttpError(422, `link_type must be one of ${[...SOURCE_LINK_TYPES].join(", ")}`);
+      throw new RelationInputError(422, `link_type must be one of ${[...SOURCE_LINK_TYPES].join(", ")}`);
     }
     const activityId = optionalString(body.activity_id);
     const sourceItemId = optionalString(body.source_item_id);
@@ -430,46 +430,46 @@ export class RelationsService {
     },
   ): Promise<void> {
     if (input.linkType === "activity" && !input.activityId) {
-      throw new HttpError(422, "activity_id is required for activity source links");
+      throw new RelationInputError(422, "activity_id is required for activity source links");
     }
     if (input.linkType === "source_item" && !input.sourceItemId) {
-      throw new HttpError(422, "source_item_id is required for source_item source links");
+      throw new RelationInputError(422, "source_item_id is required for source_item source links");
     }
     if (input.linkType === "evidence" && !input.evidenceId) {
-      throw new HttpError(422, "evidence_id is required for evidence source links");
+      throw new RelationInputError(422, "evidence_id is required for evidence source links");
     }
     if (input.linkType === "external" && !input.externalRef) {
-      throw new HttpError(422, "external_ref is required for external source links");
+      throw new RelationInputError(422, "external_ref is required for external source links");
     }
     const targetCount = [input.activityId, input.sourceItemId, input.evidenceId, input.externalRef]
       .filter((target) => target !== null).length;
     if (targetCount !== 1) {
-      throw new HttpError(422, "Exactly one source link target is required");
+      throw new RelationInputError(422, "Exactly one source link target is required");
     }
 
-    const checks: Array<Promise<void>> = [];
+    const checks: Array<() => Promise<void>> = [];
     if (input.activityId) {
       checks.push(
-        this.repository.activityExistsInSpace(identity.spaceId, input.activityId, identity.userId).then((exists) => {
-          if (!exists) throw new HttpError(422, "activity_id does not reference an activity in this space");
+        () => this.repository.activityExistsInSpace(identity.spaceId, input.activityId!, identity.userId).then((exists) => {
+          if (!exists) throw new RelationInputError(422, "activity_id does not reference an activity in this space");
         }),
       );
     }
     if (input.sourceItemId) {
       checks.push(
-        this.repository.sourceItemExistsInSpace(identity.spaceId, input.sourceItemId, identity.userId).then((exists) => {
-          if (!exists) throw new HttpError(422, "source_item_id does not reference a source item in this space");
+        () => this.repository.sourceItemExistsInSpace(identity.spaceId, input.sourceItemId!, identity.userId).then((exists) => {
+          if (!exists) throw new RelationInputError(422, "source_item_id does not reference a source item in this space");
         }),
       );
     }
     if (input.evidenceId) {
       checks.push(
-        this.repository.evidenceExistsInSpace(identity.spaceId, input.evidenceId, identity.userId).then((exists) => {
-          if (!exists) throw new HttpError(422, "evidence_id does not reference extracted evidence in this space");
+        () => this.repository.evidenceExistsInSpace(identity.spaceId, input.evidenceId!, identity.userId).then((exists) => {
+          if (!exists) throw new RelationInputError(422, "evidence_id does not reference extracted evidence in this space");
         }),
       );
     }
-    await Promise.all(checks);
+    for (const check of checks) await check();
   }
 }
 

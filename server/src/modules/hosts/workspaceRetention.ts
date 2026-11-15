@@ -1,3 +1,5 @@
+import {childSourceHeldSql,closedCheckpointHistorySql} from '../projectFolders/workspaceReleaseState.js';
+import {workspaceDiscardDependenciesSql} from '../projectFolders/workspaceDiscardDependencies.js';
 import type {Queryable} from '../routeUtils/common.js';
 import type {WorkspaceRetention} from '@rainver/protocol';
 
@@ -10,9 +12,10 @@ import type {WorkspaceRetention} from '@rainver/protocol';
  * Unmerged, blocked, kept-without-merging or private work is never released by
  * age; only its physical tree follows the existing idle rule.
  */
-export const workspaceRetentionSettings={graceMs:10*60_000,localPreimageRetentionMs:7*24*60*60_000,runHistoryRetentionMs:30*24*60*60_000};
+export const workspaceRetentionSettings={graceMs:0,localPreimageRetentionMs:7*24*60*60_000,runHistoryRetentionMs:30*24*60*60_000};
 export function configureWorkspaceRetention(config:{workspaceReclaimGraceMinutes?:number;workspaceLocalPreimageRetentionDays?:number;workspaceRunHistoryRetentionDays?:number}){
- if(config.workspaceReclaimGraceMinutes!==undefined)workspaceRetentionSettings.graceMs=config.workspaceReclaimGraceMinutes*60_000;
+ // Kept as a configuration input for compatibility; closed sources never wait.
+ workspaceRetentionSettings.graceMs=0;
  if(config.workspaceLocalPreimageRetentionDays!==undefined)workspaceRetentionSettings.localPreimageRetentionMs=config.workspaceLocalPreimageRetentionDays*24*60*60_000;
  if(config.workspaceRunHistoryRetentionDays!==undefined)workspaceRetentionSettings.runHistoryRetentionMs=config.workspaceRunHistoryRetentionDays*24*60*60_000;
 }
@@ -28,14 +31,18 @@ const ACTIVE_MERGE=`('queued','rebasing','resolving','verifying','waiting_local_
 
 /** One snapshot of durable facts; call inside the transaction that acts on it. */
 export async function assessWorkspaceRetention(db:Queryable,workspaceId:string):Promise<RetentionAssessment>{
- const f=(await db.query<{owner_state:string;generation:number;head_commit:string|null;baseline_mode:string|null;quarantined:boolean;discard:boolean;target_moved_since_refusal:boolean;retention_json:Record<string,unknown>;run_active:boolean;checkpoint_owed:boolean;checkpoint_blocked:boolean;change_pending:boolean;unpublished:boolean;blocked_change:boolean;kept:boolean;integration_active:boolean;child_dependency:boolean;dependent_cleanup:boolean;merged:boolean;branch_missing:boolean;last_activity:string|null;now:string}>(`SELECT w.state AS owner_state,w.generation,w.retention_json,w.head_commit,w.baseline_mode,now()::text AS now,
+ const f=(await db.query<{closed_history:boolean;primary_retained:boolean;owner_state:string;generation:number;head_commit:string|null;baseline_mode:string|null;quarantined:boolean;discard:boolean;target_moved_since_refusal:boolean;retention_json:Record<string,unknown>;run_active:boolean;checkpoint_owed:boolean;checkpoint_blocked:boolean;change_pending:boolean;unpublished:boolean;unproven_child:boolean;blocked_change:boolean;kept:boolean;integration_active:boolean;release_dependency:boolean;child_dependency:boolean;dependent_cleanup:boolean;merged:boolean;branch_missing:boolean;last_activity:string|null;now:string}>(`SELECT ${closedCheckpointHistorySql('w')} AS closed_history,w.state AS owner_state,w.generation,w.retention_json,w.head_commit,w.baseline_mode,now()::text AS now,
+  w.owner_kind='conversation' AND w.parent_workspace_id IS NULL AND w.state='ready'
+   AND EXISTS(SELECT 1 FROM task_merges landed WHERE landed.workspace_id=w.id AND landed.generation=w.generation AND landed.detail_json ? 'lifecycle')
+   AND NOT EXISTS(SELECT 1 FROM execution_workspaces newer WHERE newer.space_id=w.space_id AND newer.session_id=w.session_id
+    AND newer.workspace_location_id=w.workspace_location_id AND newer.owner_kind='conversation' AND newer.generation>w.generation) AS primary_retained,
   COALESCE(w.retention_json->'discard_intent'->>'source_commit','')=w.head_commit
    AND w.retention_json->'discard_intent'->>'generation'=w.generation::text
-   AND EXISTS(SELECT 1 FROM workspace_change_sets c WHERE c.id=w.retention_json->'discard_intent'->>'change_set_id' AND c.workspace_id=w.id AND c.generation=w.generation AND c.state='abandoned' AND c.source_commit=w.head_commit AND c.verification_json->'closure_review'->>'disposition'='discard_requested')
+   AND EXISTS(SELECT 1 FROM workspace_change_sets c WHERE c.id=w.retention_json->'discard_intent'->>'change_set_id' AND c.workspace_id=w.id AND c.generation=w.generation AND c.state IN ('abandoned','integrated','no_changes') AND c.source_commit=w.head_commit AND c.verification_json->'closure_review'->>'disposition'='discard_requested')
    AND NOT EXISTS(SELECT 1 FROM workspace_change_sets c WHERE c.workspace_id=w.id AND c.state IN ('open','ready','integrating','blocked'))
    AND NOT EXISTS(SELECT 1 FROM execution_workspace_runs b WHERE b.workspace_id=w.id AND b.checkpoint_state<>'saved') AS discard,
   -- The Host's last inventory found neither branch nor worktree of a never-released generation.
-  COALESCE(w.inventory_json->>'branch','')='false' AND COALESCE(w.inventory_json->>'worktree','')='false' AND COALESCE(w.retention_json->>'state','') NOT IN ('reclaimed','reclaiming') AND w.head_commit IS NOT NULL AS branch_missing,
+  COALESCE(w.inventory_json->>'branch','')='false' AND COALESCE(w.inventory_json->>'worktree','')='false' AND COALESCE(w.retention_json->>'state','') NOT IN ('reclaimed','reclaiming') AND w.retention_json->>'preserved_commit' IS DISTINCT FROM w.head_commit AND w.head_commit IS NOT NULL AS branch_missing,
   COALESCE((w.inventory_json->>'quarantined_whole')::int,0)>0 AS quarantined,
   -- A refused proof is retried only once the Location's target moved through a later integration.
   EXISTS(SELECT 1 FROM task_merges m WHERE m.workspace_location_id=w.workspace_location_id AND m.status IN ('merged','no_changes')
@@ -45,24 +52,29 @@ export async function assessWorkspaceRetention(db:Queryable,workspaceId:string):
   EXISTS(SELECT 1 FROM execution_workspace_runs b JOIN workspace_change_sets c ON c.id=b.change_set_id WHERE b.workspace_id=w.id AND b.checkpoint_state='blocked' AND c.state<>'abandoned') AS checkpoint_blocked,
   EXISTS(SELECT 1 FROM workspace_change_sets c WHERE c.workspace_id=w.id AND (c.state IN ('ready','integrating') OR c.state='open' AND c.verification_json->'native_progress'->>'status'='pending')) AS change_pending,
   EXISTS(SELECT 1 FROM workspace_change_sets c WHERE c.workspace_id=w.id AND c.state='open' AND (c.source_commit IS DISTINCT FROM c.base_commit AND c.source_commit IS NOT NULL OR c.verification_json ? 'submitted_commit')) AS unpublished,
-  EXISTS(SELECT 1 FROM workspace_change_sets c WHERE c.workspace_id=w.id AND c.state='blocked') AS blocked_change,
-  EXISTS(SELECT 1 FROM workspace_change_sets c WHERE c.workspace_id=w.id AND c.state='abandoned' AND (c.source_commit IS DISTINCT FROM c.base_commit AND c.source_commit IS NOT NULL OR c.verification_json->>'pending_checkpoint_retained'='true' OR c.verification_json->>'blocked_bindings_retained'='true' AND EXISTS(SELECT 1 FROM execution_workspace_runs b WHERE b.change_set_id=c.id AND b.checkpoint_state='blocked'))) AS kept,
+  w.owner_kind='delegation' AND EXISTS(SELECT 1 FROM workspace_change_sets c WHERE c.workspace_id=w.id AND c.generation=w.generation AND (c.verification_json->>'slot_use_id') IS NOT DISTINCT FROM (w.retention_json->>'slot_use_id') AND c.source_commit=w.head_commit
+   AND c.source_commit IS DISTINCT FROM c.base_commit AND c.state IN ('integrated','no_changes')
+   AND (c.verification_json->>'adoption_source' IS DISTINCT FROM w.head_commit OR c.verification_json->>'adoption_generation' IS DISTINCT FROM w.generation::text)) AS unproven_child,
+  EXISTS(SELECT 1 FROM workspace_change_sets c WHERE c.workspace_id=w.id AND c.state='blocked' AND NOT COALESCE(c.verification_json->>'slot_recovery'='true',false)) AS blocked_change,
+  EXISTS(SELECT 1 FROM workspace_change_sets c WHERE c.workspace_id=w.id AND (w.owner_kind<>'delegation' OR c.generation=w.generation AND (c.verification_json->>'slot_use_id') IS NOT DISTINCT FROM (w.retention_json->>'slot_use_id')) AND c.state='abandoned' AND (c.source_commit IS DISTINCT FROM c.base_commit AND c.source_commit IS NOT NULL OR c.verification_json->>'pending_checkpoint_retained'='true' OR c.verification_json->>'blocked_bindings_retained'='true' AND EXISTS(SELECT 1 FROM execution_workspace_runs b WHERE b.change_set_id=c.id AND b.checkpoint_state='blocked'))) AS kept,
   EXISTS(SELECT 1 FROM task_merges m WHERE m.workspace_id=w.id AND m.status IN ${ACTIVE_MERGE}) AS integration_active,
+  ${workspaceDiscardDependenciesSql('w.id',"''",'false',false)} AS release_dependency,
   EXISTS(SELECT 1 FROM execution_workspaces child WHERE child.parent_workspace_id=w.id AND (
     EXISTS(SELECT 1 FROM workspace_change_sets c WHERE c.workspace_id=child.id AND c.state IN ('open','ready','integrating','blocked'))
     OR EXISTS(SELECT 1 FROM execution_workspace_runs b JOIN runs r ON r.id=b.run_id AND r.space_id=b.space_id WHERE b.workspace_id=child.id AND r.status IN ${ACTIVE_RUN})
     -- A child proves its own release against this branch: it goes first.
-    OR child.head_commit IS NOT NULL AND COALESCE(child.retention_json->>'state','')<>'reclaimed')) AS child_dependency,
+    OR ${childSourceHeldSql('child')})) AS child_dependency,
   EXISTS(SELECT 1 FROM jsonb_each(w.cleanup_json) res WHERE res.key NOT LIKE 'source-g%' AND COALESCE(res.value->>'kind','') NOT IN ('local_preimages','run_history','ref_pages') AND res.value->>'state'<>'cleaned') AS dependent_cleanup,
   EXISTS(SELECT 1 FROM task_merges m WHERE m.workspace_id=w.id AND m.status='merged') AS merged,
-  GREATEST((SELECT MAX(COALESCE(r.ended_at,r.updated_at)) FROM execution_workspace_runs b JOIN runs r ON r.id=b.run_id AND r.space_id=b.space_id WHERE b.workspace_id=w.id),
-   (SELECT MAX(c.updated_at) FROM workspace_change_sets c WHERE c.workspace_id=w.id))::text AS last_activity
+  GREATEST((SELECT MAX(COALESCE(r.ended_at,r.created_at)) FROM execution_workspace_runs b JOIN runs r ON r.id=b.run_id AND r.space_id=b.space_id WHERE b.workspace_id=w.id),
+   (w.retention_json->>'content_changed_at')::timestamptz)::text AS last_activity
   FROM execution_workspaces w WHERE w.id=$1`,[workspaceId])).rows[0];
  if(!f)return {state:'retained',reason:'workspace_missing',reclaim_after:null,hold_until:null};
  const hold=typeof f.retention_json.hold_until==='string'?f.retention_json.hold_until:null;
  const result=(state:RetentionAssessment['state'],reason:string,after:string|null=null):RetentionAssessment=>({state,reason,reclaim_after:after,hold_until:hold});
  if(f.owner_state==='blocked')return result('retained','safety_review');
  if(f.run_active)return result('active','run_active');
+ if(f.closed_history)return result('retained','kept_without_merging');
  if(f.checkpoint_owed)return result('active','checkpoint_pending');
  if(f.integration_active||f.change_pending)return result('active','integration_pending');
  if(f.dependent_cleanup)return result('active','dependent_cleanup');
@@ -72,27 +84,32 @@ export async function assessWorkspaceRetention(db:Queryable,workspaceId:string):
  if(f.child_dependency)return result('retained','child_workspace_dependency');
  if(f.blocked_change||f.checkpoint_blocked)return result('retained','blocked_changes');
  if(f.unpublished)return result('retained','unpublished_changes');
+ // Exact reviewed discard authorizes release, not adoption. Keep the safety
+ // and dependency gates, but do not demand merge proof for explicit disposal.
+ if(f.unproven_child&&!f.discard)return result('retained','child_adoption_unproven');
+ if(f.release_dependency)return result('active','workspace_dependencies');
  // Explicit discard never proves adoption and cannot bypass physical safety or children.
  if(f.discard&&!f.quarantined){
   if(hold&&Date.parse(hold)>Date.parse(f.now))return result('held','held_by_user',hold);
   return result('reclaimable','discarded');
  }
  if(f.kept)return result('retained','kept_without_merging');
+ if(f.primary_retained)return result('retained','primary_conversation');
  // A snapshot baseline holds the person's uncommitted source edits: the
  // branch may be their only committed copy, whatever its merge facts say.
  if(f.baseline_mode==='snapshot')return result('retained','private_baseline');
  // Quarantined whole trees are unsaved work; nothing is released beside them.
  if(f.quarantined)return result('retained','quarantined');
  // The Host's Git proof already refused this exact tip: keep it until the tip
- // changes or the target moves through a later integration (or a person asks).
- if(f.head_commit&&f.retention_json.proof_refused_tip===f.head_commit&&!f.target_moved_since_refusal)return result('retained',typeof f.retention_json.proof_refused_reason==='string'?f.retention_json.proof_refused_reason:'unmerged_source');
+ // changes, a known integration lands, or a bounded periodic Git retry is due.
+ // Only Git proof refusals expire; uncaptured content still needs intervention.
+ if(f.head_commit&&f.retention_json.proof_refused_tip===f.head_commit&&!f.target_moved_since_refusal
+  &&(f.retention_json.proof_refused_reason!=='unmerged_source'||typeof f.retention_json.proof_refused_at!=='string'||Date.parse(f.now)-Date.parse(f.retention_json.proof_refused_at)<3600_000))return result('retained',typeof f.retention_json.proof_refused_reason==='string'?f.retention_json.proof_refused_reason:'unmerged_source');
  const now=Date.parse(f.now);
  if(hold&&Date.parse(hold)>now)return result('held','held_by_user',hold);
- const requested=typeof f.retention_json.reclaim_requested_at==='string'?Date.parse(f.retention_json.reclaim_requested_at):NaN;
- const last=f.last_activity?Date.parse(f.last_activity):NaN;
- const after=Number.isFinite(last)?last+workspaceRetentionSettings.graceMs:now;
+ // All safety and explicit-hold gates passed: release immediately, regardless
+ // of legacy grace configuration or how recently this Run ended.
  const reason=f.merged?'merged':'no_changes';
- if(after>now&&!(Number.isFinite(requested)&&requested>=last))return result('grace',reason,new Date(after).toISOString());
  return result('reclaimable',reason);
 }
 
@@ -109,7 +126,7 @@ export async function reclaimProofCommits(db:Queryable,workspaceId:string,genera
    UNION ALL SELECT onto_commit FROM task_merges WHERE workspace_id=$1 AND generation=$2 AND status='no_changes'
    UNION ALL SELECT detail_json->>'already_present_at' FROM task_merges WHERE workspace_id=$1 AND generation=$2 AND status='no_changes'
    -- Target tips recorded by exact adoption proof of settled saved work.
-   UNION ALL SELECT verification_json->>'already_present_at' FROM workspace_change_sets WHERE workspace_id=$1 AND generation=$2 AND state='no_changes'
+   UNION ALL SELECT verification_json->>'already_present_at' FROM workspace_change_sets WHERE workspace_id=$1 AND generation=$2 AND (verification_json->>'slot_use_id') IS NOT DISTINCT FROM (SELECT retention_json->>'slot_use_id' FROM execution_workspaces WHERE id=$1) AND state IN ('integrated','no_changes')
   ) x WHERE x.commit ~ '^[0-9a-f]{40}([0-9a-f]{24})?$' LIMIT 50`,[workspaceId,generation])).rows;
  return rows.map(r=>r.commit);
 }
@@ -117,8 +134,14 @@ export async function reclaimProofCommits(db:Queryable,workspaceId:string,genera
 /** Recorded bases of this generation's closed batches; the Host only uses ones it can verify. */
 export async function reclaimBaseCommits(db:Queryable,workspaceId:string,generation:number):Promise<string[]>{
  const rows=(await db.query<{commit:string}>(`SELECT DISTINCT x.commit FROM (
-   SELECT base_commit AS commit FROM workspace_change_sets WHERE workspace_id=$1 AND generation=$2 AND state IN ('integrated','no_changes','abandoned')
+   SELECT base_commit AS commit FROM workspace_change_sets c WHERE workspace_id=$1 AND generation=$2 AND state IN ('integrated','no_changes','abandoned')
+  AND EXISTS(SELECT 1 FROM execution_workspaces w WHERE w.id=$1 AND (w.owner_kind<>'delegation' OR (c.verification_json->>'slot_use_id') IS NOT DISTINCT FROM (w.retention_json->>'slot_use_id')))
    UNION ALL SELECT base_commit FROM execution_workspaces WHERE id=$1 AND generation=$2
+   -- A parent's private baseline is a candidate only. The Host still requires
+   -- it to be common history and verifies the whole child delta against Git.
+   UNION ALL SELECT p.base_commit FROM execution_workspaces w JOIN execution_workspaces p ON p.id=w.parent_workspace_id
+    AND p.space_id=w.space_id AND p.project_id=w.project_id AND p.execution_host_id=w.execution_host_id AND p.workspace_location_id=w.workspace_location_id
+    WHERE w.id=$1 AND w.generation=$2
   ) x WHERE x.commit ~ '^[0-9a-f]{40}([0-9a-f]{24})?$' LIMIT 50`,[workspaceId,generation])).rows;
  return rows.map(r=>r.commit);
 }
@@ -163,7 +186,7 @@ export async function refReleasePlan(db:Queryable,w:{id:string;generation:number
  const release:RefRelease[]=[...owned.release];let shared=0;
  const merges=(await db.query<{id:string;commits:string[]}>(`SELECT id,ARRAY[source_commit,task_commit,merged_commit] AS commits FROM task_merges WHERE workspace_id=$1 AND generation=$2 AND status IN ('merged','no_changes')`,[w.id,w.generation])).rows;
  for(const m of merges)release.push({ref:`refs/rainver/recovery/${m.id}`});
- const discarded=(await db.query<{commit:string}>(`SELECT c.source_commit AS commit FROM workspace_change_sets c JOIN execution_workspaces w ON w.id=c.workspace_id WHERE w.id=$1 AND c.generation=$2 AND c.state='abandoned'
+ const discarded=(await db.query<{commit:string}>(`SELECT c.source_commit AS commit FROM workspace_change_sets c JOIN execution_workspaces w ON w.id=c.workspace_id WHERE w.id=$1 AND c.generation=$2 AND c.state IN ('abandoned','integrated','no_changes')
   AND w.retention_json->'discard_intent'->>'source_commit'=w.head_commit`,[w.id,w.generation])).rows.map(r=>r.commit);
  const candidates=[...new Set([...discarded,...merges.flatMap(m=>m.commits).filter((c):c is string=>typeof c==='string'&&COMMIT.test(c))])];
  const sources:RefRelease[]=[];
@@ -202,12 +225,18 @@ export async function freeSourceCommits(db:Queryable,w:{hostId:string;workspaceI
 }
 /** The attributable part of one page of the workspace's owned refs (Host inventory, by name). */
 export async function ownedRefReleases(db:Queryable,w:{id:string;generation:number},ownedRefs:ReadonlyArray<{ref:string;commit:string}>){
- const closed=new Set((await db.query<{commit:string}>(`SELECT unnest(ARRAY[source_commit,base_commit]) AS commit FROM workspace_change_sets WHERE workspace_id=$1 AND state IN ('integrated','no_changes','abandoned')`,[w.id])).rows.map(r=>r.commit).filter(Boolean));
+ const closed=new Set((await db.query<{commit:string}>(`SELECT unnest(ARRAY[source_commit,base_commit]) AS commit FROM workspace_change_sets c WHERE workspace_id=$1 AND generation=$2 AND state IN ('integrated','no_changes','abandoned')
+  AND EXISTS(SELECT 1 FROM execution_workspaces w WHERE w.id=$1 AND (w.owner_kind<>'delegation' OR (c.verification_json->>'slot_use_id') IS NOT DISTINCT FROM (w.retention_json->>'slot_use_id')))
+ UNION SELECT b.checkpoint_commit FROM execution_workspace_runs b JOIN workspace_change_sets c ON c.id=b.change_set_id
+  WHERE b.workspace_id=$1 AND c.workspace_id=$1 AND c.generation=$2 AND b.checkpoint_state='saved' AND c.state IN ('integrated','no_changes','abandoned')
+  AND EXISTS(SELECT 1 FROM execution_workspaces w WHERE w.id=$1 AND (w.owner_kind<>'delegation' OR (c.verification_json->>'slot_use_id') IS NOT DISTINCT FROM (w.retention_json->>'slot_use_id')))
+ UNION SELECT verification_json->'adoption_checkpoint'->>'commit' FROM workspace_change_sets WHERE state IN ('integrated','no_changes') AND verification_json->'adoption_checkpoint'->>'workspace_id'=$1 AND verification_json->'adoption_checkpoint'->>'generation'=$2::text`,[w.id,w.generation])).rows.map(r=>r.commit).filter(Boolean));
  const release:RefRelease[]=[];let retained=0;
  for(const owned of ownedRefs){
   const parts=owned.ref.split('/');
   if(parts[2]==='recovery'&&parts[3]===w.id&&parts.length===5){
-   // An idle sync's old tip: only a tip some closed batch recorded is attributable.
+   // A closed batch's tip/base or saved Run checkpoint is attributable. The
+   // Host still proves target adoption or a completed release's durable backup.
    if(closed.has(parts[4]!)&&owned.commit===parts[4])release.push({ref:owned.ref,expected_commit:owned.commit});else retained++;
   }else if(parts[2]==='native-preimages'&&parts[3]===w.id&&parts[4]===`g${w.generation}`)release.push({ref:owned.ref,expected_commit:owned.commit});
   else retained++;
@@ -250,4 +279,45 @@ export async function classifyLocationRefs(db:Queryable,hostId:string,refs:Reado
   if(!owner)unclaimed.push({ref,reason:'unknown_owner'});
  }
  return unclaimed;
+}
+
+/** Exact evidence only; closed child records nominate a Host checkpoint proof. */
+export async function reclaimCheckpoint(db:Queryable,w:{id:string;generation:number;head_commit:string|null;parent_workspace_id:string|null}){
+ const rows=(await db.query<{checkpoint:{workspace_id:string;generation:number;commit:string;base_commit:string}}>(`SELECT c.verification_json->'adoption_checkpoint' AS checkpoint
+  FROM workspace_change_sets c WHERE c.workspace_id=$1 AND c.generation=$2 AND (c.verification_json->>'slot_use_id') IS NOT DISTINCT FROM (SELECT retention_json->>'slot_use_id' FROM execution_workspaces WHERE id=$1) AND c.state IN ('integrated','no_changes') AND c.source_commit=$3
+   AND c.verification_json->'adoption_checkpoint'->>'source_commit'=$3
+   AND c.verification_json->'adoption_checkpoint'->>'child_generation'=$2::text
+   AND c.verification_json->'adoption_checkpoint'->>'workspace_id'=$4
+   AND c.verification_json->'adoption_checkpoint'->>'base_commit'=c.base_commit
+  ORDER BY c.sequence DESC LIMIT 1`,[w.id,w.generation,w.head_commit,w.parent_workspace_id])).rows;
+ const c=rows[0]?.checkpoint;
+ return c&&COMMIT.test(c.commit)&&COMMIT.test(c.base_commit)&&Number.isSafeInteger(c.generation)&&c.generation>0?{workspace_id:c.workspace_id,generation:c.generation,commit:c.commit,base_commit:c.base_commit}:undefined;
+}
+
+/** A child's recorded publication landed on its parent's target, not on the
+ * parent's private source branch. Freeze that actual target for Host proof. */
+export async function reclaimTarget(db:Queryable,w:{id:string;generation:number;head_commit:string|null;target_ref:string|null}){
+ const row=(await db.query<{target:string}>(`SELECT verification_json->>'adoption_target_ref' AS target FROM workspace_change_sets
+  WHERE workspace_id=$1 AND generation=$2 AND (verification_json->>'slot_use_id') IS NOT DISTINCT FROM (SELECT retention_json->>'slot_use_id' FROM execution_workspaces WHERE id=$1) AND state IN ('integrated','no_changes') AND source_commit=$3
+   AND verification_json->>'adoption_source'=$3 AND verification_json->>'adoption_generation'=$2::text
+   AND verification_json->>'adoption_proof' IN ('published_parent_paths','target_paths_match')
+  ORDER BY sequence DESC LIMIT 1`,[w.id,w.generation,w.head_commit])).rows[0];
+ const target=row?.target?.startsWith('refs/heads/')?row.target:w.target_ref;
+ if(!target?.startsWith('refs/heads/rainver/'))return target;
+ // Private delegation targets cannot prove their own recovery pins. Resolve
+ // only the same Host/Location's actual parent chain, bounded and cycle-safe.
+ const shared=(await db.query<{target_ref:string}>(`WITH RECURSIVE owners AS (
+  SELECT id,parent_workspace_id,target_ref,execution_host_id,workspace_location_id,ARRAY[id::text] AS seen,0 AS depth FROM execution_workspaces WHERE id=$1
+  UNION ALL SELECT p.id,p.parent_workspace_id,p.target_ref,p.execution_host_id,p.workspace_location_id,o.seen||p.id::text,o.depth+1
+   FROM owners o JOIN execution_workspaces p ON p.id=o.parent_workspace_id AND p.execution_host_id=o.execution_host_id AND p.workspace_location_id=o.workspace_location_id
+   WHERE o.depth<16 AND NOT p.id=ANY(o.seen)
+ ) SELECT target_ref FROM owners WHERE target_ref LIKE 'refs/heads/%' AND target_ref NOT LIKE 'refs/heads/rainver/%' ORDER BY depth ASC LIMIT 1`,[w.id])).rows[0];
+ return shared?.target_ref??target;
+}
+
+/** Both child release and parent recovery-ref release require reclaim:6. A
+ * downgrade must not let an older Host treat checkpoint pins as ordinary refs. */
+export async function hasAdoptionPins(db:Queryable,workspaceId:string):Promise<boolean>{
+ return Boolean((await db.query(`SELECT 1 FROM workspace_change_sets WHERE
+  verification_json->'adoption_checkpoint'->>'workspace_id'=$1 LIMIT 1`,[workspaceId])).rowCount);
 }

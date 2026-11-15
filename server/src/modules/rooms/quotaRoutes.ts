@@ -24,7 +24,7 @@ export function registerQuotaRoutes(app: FastifyInstance, context: ModuleContext
     try {
       const quota = await withDbTransaction(pool(context), async (client) => {
         await requireConversation(client, identity, request, false);
-        return conversationQuota(client, identity.spaceId, sessionId(request), identity.userId);
+        return conversationQuota(client, identity.spaceId, sessionId(request), identity.userId, context.config);
       });
       return reply.send(protocol.RoomConversationQuotaSchema.parse(quota));
     } catch (error) {

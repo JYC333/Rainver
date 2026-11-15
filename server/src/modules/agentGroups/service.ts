@@ -1409,6 +1409,7 @@ export class AgentGroupRunService {
       // and is allowed the same things there. Do not declare an empty
       // allowance. A delegated specialist could call no action at all.
       ...conversationToolGrantInputFor({
+        delegated: true,
         room_id: group.room_id,
         project_id: parentRun.project_id,
         // Only a Room child carries the parent's `chat_turn`, and the resource
@@ -1771,7 +1772,7 @@ interface PreparedRoomHostDispatch {
   git_snapshot: RunGitSnapshot;
 }
 
-async function recordHostDispatch(
+export async function recordHostDispatch(
   threads: PgHostThreadRepository,
   thread: HostThread,
   input: { lastRunId: string; sessionId: string; dispatchLockId: string },
@@ -1787,7 +1788,14 @@ export async function prepareHostConversationDispatch(input: {
   delegationId?: string;
   db: Queryable;
   backend: ResolvedConversationBackend;
-  container: { kind: "conversation"; conversation_id: string } | { kind: "direct"; user_id: string };
+  /**
+   * `direct: true` marks a person's direct conversation placed in a Project.
+   * It runs in its own Conversation container (thread, managed cwd, runtime
+   * profile and archive keys are this Session's), so one Agent's chats in two
+   * Projects never share host state. The Room-only Location rules below
+   * (stale Location admission, isolated-workspace rebinding) stay Room-only.
+   */
+  container: { kind: "conversation"; conversation_id: string; direct?: true } | { kind: "direct"; user_id: string };
   sessionId: string;
   spaceId: string;
   projectId: string | null;
@@ -1813,12 +1821,16 @@ export async function prepareHostConversationDispatch(input: {
   // A Project Room can contain several Conversations. Runtime continuity and
   // the managed cwd therefore belong to this Conversation, not to the Room.
   const conversationScoped = input.container.kind === "conversation";
+  const projectDirect = input.container.kind === "conversation" && input.container.direct === true;
+  if (projectDirect && (input.sessionId !== (input.container as { conversation_id: string }).conversation_id || !input.projectId)) {
+    throw new HostDispatchRefusal(422, "A Project direct conversation is its own Session's container");
+  }
   const directUserId = input.container.kind === "direct" ? input.container.user_id : null;
 
   const target = input.backend.workspace_mode === "location"
     ? await new PgWorkspaceLocationRepository(input.db).resolveDispatchTarget(
         input.backend.workspace_location_id!,
-        { allowStale: conversationScoped },
+        { allowStale: conversationScoped && !projectDirect },
       )
     : (await input.db.query<{
         host_id: string;
@@ -1921,7 +1933,7 @@ export async function prepareHostConversationDispatch(input: {
   }
   // Reset before rendering the prompt: a fresh private cwd needs the standing
   // context as well as a fresh vendor session.
-  if(conversationScoped && !input.delegationId && input.backend.workspace_mode==='location' && hostThread.vendor_session_id && (target.capabilities_json as {execution_workspaces?:{version:number}}|null)?.execution_workspaces?.version===2){
+  if(conversationScoped && !projectDirect && !input.delegationId && input.backend.workspace_mode==='location' && hostThread.vendor_session_id && (target.capabilities_json as {execution_workspaces?:{version:number}}|null)?.execution_workspaces?.version===2){
     const current=(await input.db.query<{id:string;generation:number}>(`SELECT id,generation FROM execution_workspaces WHERE session_id=$1 AND space_id=$2 AND workspace_location_id=$3 AND owner_kind='conversation' ORDER BY generation DESC LIMIT 1`,[input.sessionId,input.spaceId,input.backend.workspace_location_id])).rows[0];
     const binding=(await input.db.query<{execution_workspace_json:{id:string;generation:number}|null}>('SELECT execution_workspace_json FROM host_threads WHERE id=$1',[hostThread.id])).rows[0]?.execution_workspace_json;
     if(!current||current.id!==binding?.id||current.generation!==binding.generation)hostThread=await threads.resetConversationAgent(hostThread.id)??hostThread;

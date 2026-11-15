@@ -10,9 +10,10 @@ import {
   HttpError,
   optionalString,
   requiredString,
-  type Pool,
+  type Queryable,
   type SpaceUserIdentity,
 } from "../../routeUtils/common.js";
+import { SourceObjectRefusal } from "../sourceObjectErrors.js";
 import { PgCustomSourceHandlerRepository } from "../customSources/customSourceHandlerRepository.js";
 import { CustomSourceCredentialService } from "../customSources/customSourceCredentialService.js";
 import { fetchCustomSourceEndpointHtml } from "../customSources/customSourceEndpointFetch.js";
@@ -45,7 +46,7 @@ import {
  */
 export class SourceRecipeDryRunService {
   constructor(
-    private readonly pool: Pool,
+    private readonly pool: Queryable,
     private readonly config: ServerConfig,
     /**
      * The outbound boundary live fetches go through. Production leaves it out
@@ -55,19 +56,26 @@ export class SourceRecipeDryRunService {
     private readonly guard?: OutboundGuard,
   ) {}
 
-  async dryRunRecipeVersion(identity: SpaceUserIdentity, connectionId: string, body: Record<string, unknown>) {
+  /** The pre-effect checks of a dry-run: a recipe Source, a testable version and a valid stored recipe. */
+  async admitDryRun(identity: SpaceUserIdentity, connectionId: string, body: Record<string, unknown>) {
     const connection = await this.requireRecipeConnection(identity, connectionId);
     const versionId = requiredString(body.recipe_version_id, "recipe_version_id");
     const versionRow = await getSourceRecipeVersion(this.pool, identity.spaceId, connectionId, versionId);
     if (!versionRow) throw new HttpError(404, "Recipe version not found");
     if (versionRow.status !== "draft" && versionRow.status !== "test_failed") {
-      throw new HttpError(409, `Recipe version must be draft or test_failed to dry-run (was ${versionRow.status})`);
+      throw new SourceObjectRefusal(409, `Recipe version must be draft or test_failed to dry-run (was ${versionRow.status})`);
     }
 
     const recipeParse = protocol.SourceRecipeDefinitionSchema.safeParse(versionRow.recipe_json);
     if (!recipeParse.success) {
-      throw new HttpError(422, "Stored recipe definition no longer passes schema validation");
+      throw new SourceObjectRefusal(422, "Stored recipe definition no longer passes schema validation");
     }
+    return { connection, versionId, versionRow, recipe: recipeParse.data };
+  }
+
+  async dryRunRecipeVersion(identity: SpaceUserIdentity, connectionId: string, body: Record<string, unknown>) {
+    const { connection, versionId, versionRow, recipe: admittedRecipe } = await this.admitDryRun(identity, connectionId, body);
+    const recipeParse = { data: admittedRecipe };
     const recipe: SourceRecipeDefinition = recipeParse.data;
     const envelope: SourcePolicyEnvelope = protocol.SourcePolicyEnvelopeSchema.parse(
       versionRow.policy_envelope_json,
@@ -172,7 +180,7 @@ export class SourceRecipeDryRunService {
     const row = result.rows[0];
     if (!row) throw new HttpError(404, "Source connection not found");
     if (row.handler_kind !== "recipe") {
-      throw new HttpError(422, "Source connection is not a recipe source");
+      throw new SourceObjectRefusal(422, "Source connection is not a recipe source");
     }
     return row;
   }

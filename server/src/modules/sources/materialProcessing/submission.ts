@@ -8,7 +8,7 @@ import {HttpError,withDbTransaction,type Queryable} from '../../routeUtils/commo
 import {assertSafeGoalMessage} from '../goals/messageSafety.js';
 import {agentReadingPolicy} from './policy.js';
 import {assertMaterialProcessingDispatch} from './dispatch.js';
-import {materialItemContext} from './items.js';
+import {materialItemContext,lockMaterialReadingMutation} from './items.js';
 const MAX_SUBMISSIONS=3;
 /** Bound to the authenticated canonical Run, never to caller-supplied identity.
  * Invalid attempts consume the same finite allowance as corrected submissions. */
@@ -16,6 +16,7 @@ async function admitted(tx:Queryable,config:ServerConfig,run:RunRecord){
  const current=(await tx.query<RunRecord>(`SELECT * FROM runs WHERE id=$1 AND space_id=$2 FOR SHARE`,[run.id,run.space_id])).rows[0];
  if(!current||current.status!=='running'||!current.started_at||materialRunExpired(current))throw new HttpError(403,'source_material_submission_inactive');
  const grants=(current.permission_snapshot_json as {tool_grants?:{action_id:string}[]}|null)?.tool_grants??[];if(!grants.some(g=>g.action_id==='source.material.submit'))throw new HttpError(403,'source_native_context_refused');
+ await lockMaterialReadingMutation(tx,current);
  const itemContext=materialItemContext(current);let audit:{id:string;result_json:{search_submission?:SourceMaterialSubmission;submission_attempts?:number}};
  if(itemContext){
   const row=(await tx.query<{id:string;metadata_json:{material_submission?:SourceMaterialSubmission;submission_attempts?:number}}>("SELECT id,metadata_json FROM extraction_jobs WHERE id=$1 AND space_id=$2 AND metadata_json->>'run_id'=$3 AND status IN ('pending','running') FOR UPDATE",[itemContext.id,current.space_id,current.id])).rows[0];if(!row)throw new HttpError(403,'source_material_context_refused');

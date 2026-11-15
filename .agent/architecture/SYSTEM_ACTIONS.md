@@ -36,6 +36,32 @@ There are currently no public `external_mcp` actions, and no MCP surface.
 an external MCP client becoming a requirement, which is a different question
 from how Rainver's own dispatched agents call back.
 
+## Agent discovery, failures and recovery
+
+The current Run catalogue from `SystemActionDispatcher.listGrantedDefinitions`
+is the single entry check for both CLI operation branches and ACP dispatch.
+This includes binding/profile/plugin enablement, not just the grant snapshot.
+`list` and `describe` expose only that catalogue. Describe and call return the
+same permission refusal for an unknown name and an unavailable registered name
+(HTTP 403 `system_action_not_granted` on the Run REST surface); neither confirms
+what another Run can use. A live grant revoked after discovery returns
+`operation_not_granted` / 403 from Operation Core. Object visibility failures
+remain uniform `operation_not_found` / 404.
+
+Request validation uses the existing Zod input schema. Public diagnostics expose
+at most twenty schema-owned top-level field names (or `$`) and Zod issue codes,
+plus `rainver describe` guidance. They omit input values, unknown keys, custom
+validator messages, expected bounds and union internals. Operation Core and the
+legacy gateway share this projection; invalid output and unexpected route
+exceptions never echo raw validation/exception text.
+
+Work Skill and shared Room rules require the Agent to stop guessing after 404:
+check only its current catalogue and authorized visible reads, never try
+alternate names/ids, automatically replay writes or promise an unverified fix.
+The CLI prints the same stop guidance on 404 and describe guidance on 422;
+it makes one request and never retries a write. There is no global counter,
+mutable per-Agent failure budget or new permission framework.
+
 ## Dispatch boundary
 
 Three layers, each owning exactly one concern:
@@ -445,8 +471,11 @@ Project for Space-level Knowledge), `project.propose_definition` (direction),
 `source.channel.propose_activation` / `project.source.propose_bind` /
 `source.backfill.propose_start` / `project.monitoring.propose` (money).
 
-`task.create` takes its Project from the Run, not the input, and re-checks
-Project writer authority under the aggregate lock. `task.report`,
+`task.create` is a core-owned command shared by the Run tool and the person's
+`POST /tasks`. For an Agent it takes its Project from the stored Run (a
+different input Project is a hidden 404), re-checks the instructing person's
+Project writer authority under the aggregate lock, refuses person-only fields
+and keeps the five-per-turn ceiling under the turn fan-out lock. `task.report`,
 `task.handoff`, `task.set_status`, `task.complete` and `task.request_review`
 resolve their Task through the content read predicate for the instructing user *and* the
 Run's own Project: an Agent's reach is that person's and never wider, and a
@@ -656,13 +685,13 @@ knowledge review gate), while the other two are `durable` direct writes —
 Thread structure stays direct and a `note_link` is navigational with no graph
 authority (B12A).
 
-`note.link.create` allows ordinary human navigation links. The link, unlink
-and atomic-jot HTTP routes call `knowledge/noteLinkPolicy.ts`, which evaluates
-the policy and requires a durable audit before proceeding. The canonical
-repository still requires current Note/Project write authority, a writable
-source for incoming links and readable typed endpoints in the same Space.
-This is not an Agent tool grant or canonical graph write. Core migration of
-these HTTP entries remains separate work. `inquiry.thread.create` is enforced
+`note.link.create` allows ordinary human navigation links. The retained link,
+unlink and atomic-jot URLs are formal adapters for the human-only core commands
+`knowledge.note.link.create/delete` and `knowledge.note.jot`, whose admission
+records the decision in the operation transaction. The canonical repository
+still requires current Note/Project write authority, a writable source for
+incoming links and readable typed endpoints in the same Space. This is not an
+Agent tool grant or canonical graph write. `inquiry.thread.create` is enforced
 through its own core/dispatcher entry points.
 
 Standing Project Research adds one Source action,
@@ -704,14 +733,12 @@ Three layers keep a composed id out of an action:
    and if nothing matches, ask instead of sending a constructed id.
 2. **The schema.** Every `*_id` input for an already-existing object carries a
    `.describe()` naming the read it comes from.
-3. **The failure.** An unknown id answers with the ids that do exist
-   (`… Use one of these ids exactly: <id> — <title>`), so the next call can
-   correct itself. `task.*`, `proposal.decide`, `research.start_acquisition`
-   and `research.cancel_acquisition` all do this. Cancellation uses its core domain
-   error, not a legacy cancellation executor: only a truly absent target for an
-   authorized current Run Project receives the canonical visible active list.
-   Existing same-Space cross-Project/private targets and missing grants return the
-   hidden error without discovery ids.
+3. **The failure.** Core Agent actions return a fixed 404 for missing and hidden
+   targets, with no echoed id or inline object list. The Agent must stop guessing
+   and use the matching explicit authorized read. A revoked action grant returns
+   403 and directs the Agent to its current action catalogue. The legacy
+   conversation-only `proposal.decide` still uses its own authorized pending-list
+   hint; it has not migrated to the core Agent result adapter.
 
 The Room focus sentence carries `task_id:` alongside the title, so the Task a
 person is looking at is addressable without a `task.list` round trip.
@@ -1044,6 +1071,14 @@ mode/gate/Run-liveness requirements and requester namespace are rechecked before
 canonical application; a metadata change cannot silently reinterpret a pending
 request. The transaction port refuses ABORT as well as COMMIT/ROLLBACK.
 
+Locked actor admission reuses `lockActivePerson` to hold users before Space
+memberships with separate `FOR SHARE` statements. A joined lock cannot promise
+that order against invitation acceptance's user lock and membership upsert.
+Missing/inactive authority remains hidden as 404; SQL failures propagate.
+Nonlocking preflight/query checks, Agent/Run/grant checks and replay stay intact.
+This local lock order does not move actor admission ahead of a registration's
+Project/Source authorization closure (see DATABASE_AND_TRANSACTIONS).
+
 Stage-1 contracts were reviewed and committed. The stage-2 source now composes
 `systemActions/operations/` as an opt-in execution path over the same protocol
 registry. `execution: {kind, tx: "core_owned"}` is required; legacy visibility
@@ -1109,13 +1144,14 @@ families retain their existing domain-specific semantics.
 pairs, distinguishing unmigrated business routes from existing auth/internal/
 binary transport exemptions and the generic command adapter. `operationRoutes`
 captures onRoute registrations from real modules and activated bundled plugins and fails on additions or drift;
-an annotation or `/internal*` prefix cannot add an unlisted route. The corrected baseline and bounded P5 progress are recorded in
-[Plan 5](../plans/operation-core/05-core-module-operation-migration.md). Current
-inventory has 635 method/path pairs (594 legacy business, 31 exact transport
-exemptions and ten core adapter entries). Two grant, two Project operation,
-one existing Board URL and the Task delete URL have migrated; named move and
-status URLs were added. The remaining 579 baseline core legacy entries and 15 plugin entries are not
-completed by this family. Activation grants no exemption for plugin bypasses.
+an annotation or `/internal*` prefix cannot add an unlisted route. P5 migration is complete; its temporary
+[plan ledger](../plans/operation-core/05-core-module-operation-migration.md) is retired.
+Current inventory has **630 method/path pairs: 575 core adapters, 15 P4 legacy
+business entries and 40 exact protocol-owner exemptions**. Remaining legacy
+entries are Diary/Finance in P4, not a P5 queue. Exemptions do not waive owning
+protocol authorization, audit or replay safety; see the permanent
+[P5 acceptance and limits](OPERATION_CORE_ACCEPTANCE.md#p5-closeout).
+Plugin activation grants no exemption for bypasses.
 
 The cancellation pilot and process-death/COMMIT-loss, worker recovery and local
 historical-source cutover checks are implemented; executable evidence and limits
@@ -1197,13 +1233,14 @@ REST compatibility exception: the legacy writer preflight keeps its 403 error
 shape. PolicyGateway denial inside the shared core is intentionally hidden as
 404 on both REST and generic entries (instead of the old REST 403 `{detail}`).
 This is a stricter disclosure mapping, never an authorization fallback. The
-cancellation domain's authorized missing-id discovery is Agent-only, scoped to
-the live Run Project and canonical list read gates; it is not enabled for REST.
+Agent adapter returns one uniform missing/hidden-object 404 without target echoes
+or inline discovery. Explicit list reads retain live Run Project and canonical
+content gates; revoked Run action grants return 403.
 
 
 Stage-4 fault and scope evidence is in [Operation core acceptance](OPERATION_CORE_ACCEPTANCE.md).
-Missing cancellation ids are checked only within the actor Space: another
-Space's existing UUID has exactly the same hint behavior as an absent UUID.
+Cancellation targets are checked only within the actor Space: another Space's
+existing UUID has exactly the same hidden 404 response as an absent UUID.
 The canonical query never widens to inspect other Spaces. Production approval
 mappings remain off; the eight legacy writer families are explicitly inventoried
 in the acceptance guide, not claimed migrated by canonical fixture tests.
@@ -1514,6 +1551,21 @@ reason; `retry` keeps an issued release's epoch and plan so the Host resumes it.
 Rainver without adoption proof (never as merged; see hosts.md, *Adoption and
 record reconciliation*).
 
+`workspace.change.get` and each visible `workspace.change.list` item additionally
+return advisory `actions`: operation, optional completion action (`checkpoint`,
+`prepare`, `publish`, `reconcile`), availability, blocker, safe guidance and input
+requirements. Retry and abandon have separate entries. Only the Run's granted
+operations are advertised. The owning workspace module reuses
+`authorizedWorkspaceChange` with each action's existing recovery/closure mode,
+shared-delegation restrictions and the same admission predicates used by native
+completion, retry and closure. Read-only projection takes no authority locks.
+A Project metadata row from another conversation stays outside completion
+and retry authority; a shared delegated writer may checkpoint but may not
+publish or close its coordinator's batch. Execution still rechecks all live
+policy, revision, input/provenance and Host/Git conditions. `available` describes
+server admission, not guaranteed success or advance approval. Existing
+`can_retry` and `closable` remain compatibility hints.
+
 `workspace.change.list` is an Agent/public query with the Agent workspaces
 overview's visibility and per-item closability; `workspace.branch.align` is a
 person-only durable command (intent + Job, Host-guarded CAS, recovery ref).
@@ -1710,6 +1762,7 @@ same registrations. Families and owners:
 | Agent definition | `agent.create`, `agent.template.instantiate`, `agent.update`, `agent.config.update`, `agent.version.restore`, `agent.runtime_profile.create` / `.update` / `.ensure_host`, `agent.runtime_default.set`, `agent.assistant_settings.update` | `agents/operations.ts` |
 | Direct conversation | `agent.run.create`, `agent.chat.send`, `agent.chat.retry`, `agent.chat.reset_context`, `conversation.session_config.save` | `agents/operations.ts`, `agents/chatOperations.ts` |
 | Room | `room.create`, `room.agent.add` / `.add_preset` / `.remove` / `.reset_context` / `.summarize_context` / `.restart_from_summary`, `room.invitation.create` / `.decide`, `room.member.remove`, `room.owner.transfer` / `.claim`, `room.conversation.create` / `.attach_references`, `room.message.send` / `.withdraw_queued` / `.retry` / `.continue_after_proposal`, `room.quota.continue`, `room.discussion.start` / `.stop` / `.extend` | `rooms/operations.ts` |
+| Project Agent list | `project.agent.add`, `project.agent.remove` (policy action `project.management.write`; Project writer under the archive fence; the add accepts only an Agent the person may link) | `projects/projectAgentOperations.ts` |
 | Agent group | `agent_group.create`, `.update`, `.message.send`, `.status.set` (pause/resume/cancel URLs fix `status`) | `agentGroups/operations.ts` |
 | Run | `run.stop`, `run.abandon`, `run.resume`, `run.execute`, `run.finalize`, `run.quota_recovery.update`, `run.live_input.submit` | `runs/operations.ts` |
 | Session | `session.create`, `session.delete`, `session.message.add`, `session.reflect` (`memory_create` Proposal), `conversation.execution.initialize`, `conversation.execution.attachment.mutate`; query `conversation.execution.preflight` | `sessions/operations.ts` |
@@ -1806,7 +1859,7 @@ the Run bearer-token Agent tool transport, where each action is admitted by its
 own core registration or inventoried legacy executor. `POST
 /agents/:agentId/host-state/reset` moved with the Host block to the journaled
 `agent.host_state.reset` Host command (see "Host commands" below); Agent
-Attention's `/me/agent-attention/*` read markers stay with the other `/me/*` rows.
+Attention's two write markers are person-scoped core commands, described below.
 
 ## Host commands
 
@@ -1826,7 +1879,7 @@ success. The full status matrix, journal capability and reset fence are in
 [hosts.md](../modules/hosts.md), section "Host commands".
 Seven are transactional with no Host effect (`host.runtime.provisioning.retry`,
 `host.provider_proxy.set`, `host.revoke`, `host.location.ambient.policy.set`,
-`host.location.ambient.dismiss`, `imported_session.visibility.set`,
+`host.location.ambient.reminder.set`, `imported_session.visibility.set`,
 `imported_session.delete`). Policy actions: `host.manage`,
 `host.workspace.register`, `host.account.manage`, `agent.host_state.reset`
 and `host.import.manage` (`packages/protocol/src/policy.ts`).
@@ -1839,8 +1892,29 @@ command for the same Host scope while one is active is 409 `host_command_busy`.
 The transport `Idempotency-Key` and this active-scope rule are separate: the
 key replays its receipt only to a caller who may still read the command.
 Exemptions are exact method/path pairs in `server/test/operationRoutes.test.ts`:
-pairing-code issuance, daemon registration and the `/hosts/me/*` bearer-token
-protocol, and five interactive relays whose payload or answer is never stored.
+pairing-code issuance, daemon registration, the exact remaining `/hosts/me/*`
+transport routes, and five interactive relays whose payload or answer is never
+stored. Bearer authentication alone never makes a business write exempt.
+
+The two daemon workspace writes and instance-admin account enable/disable are
+four additional corrected core entries. Their strict DTOs live in
+`accountWorkspaceOperations.ts`; owner registrations in Hosts/auth reuse the
+existing executor, branded transaction, audit writer and receipt store. Daemon
+workspace admission accepts only the adapter's live bearer proof; serialized
+system actors fail closed. Account status uses closed person admission and
+current instance-admin authority without request-Space membership. Both paths
+own their Project-before-person lock closure and reauthorize successful receipt
+output. Location deletion preserves its Folder; disable revokes retained Room
+consent and sessions atomically, and enable never restores them. No Host IO,
+new Job engine, schema or approval mapping is introduced.
+
+Reuse / Dependency Check: existing core executor/person admission, Host bearer
+repository, Project writer fences, Folder/Location repositories, Room consent
+revocation and PostgreSQL transaction/audit helpers; no new dependency.
+Actual registered inventory after this correction is **630 = 575 core +
+15 P4 legacy + 40 exact transport exemptions**. The original 90-entry batch
+keeps its count; these four formerly misclassified writes are recorded
+separately, without declaring independent review or whole-batch acceptance.
 
 ## System settings and tool configuration commands
 
@@ -1942,7 +2016,172 @@ exactly that command with a bounded window and never resubmit. Deletes answer
 policy refusals are 409/422 refusals (were 403/413). A deployer-offline update is
 409 `deployer_offline` (was 503).
 
-Personal `/me/*` writes (agent attention read markers, capture filing,
-cross-Space retrieval) stay with their owners as legacy: their authority is the
-person across Spaces, not the request Space the operation core scopes actor,
-idempotency and audit to.
+`capture.file` is the first named person-scoped core command. Its strict keyed
+`POST /me/filings` adapter and generic action share canonical personal receipt
+storage. `admission: {kind: 'person'}` is server-only and closed to reviewed,
+ungrantable human commands; it cannot accompany approval, placement or Run
+preparation. Core validates the active person independently of the browsed
+Space, locates their real owned Personal Space for audit/receipt storage, and
+never turns that locator into destination authority. Filing pins all discovered
+Project audiences before people, memberships and content roots, rechecks its
+closure, requires ownership/full access to the canonical personal capture and
+current destination Project writer authority. The existing filing/Note writer
+joins core's transaction. Cached output rechecks capture, Project and Note
+access; new keys cannot file an already filed capture.
+
+Agent attention read markers and cross-Space retrieval remain legacy. They do
+not inherit filing's closed person admission until their own complete domain
+admission and replay contracts are migrated.
+
+Reuse / Dependency Check: extends the existing OperationExecutor, Zod contracts,
+formal REST adapter, branded transaction and canonical filing/Note writers;
+reuses Project audience and Source-release closure locks. No dependency added;
+third-party evaluation is inapplicable to Rainver authorization semantics.
+
+Task editing is exposed as one `task.update` action for both parent Tasks and
+subtasks: the Agent tool schema is projected to title and/or nullable
+description, while a person's `PATCH /tasks/:id` keeps the full contract. It is
+a core-owned command with current Task grants, Project writer checks and
+origin-gated `task.content.update` policy, using the same Task repository as
+Board edits.
+
+### Workspace completion response compatibility
+
+`workspace.change.get` returns optional nullable `lifecycle` alongside legacy
+`progress` and `integration_status`. The lifecycle has a stable integration
+`operation_id`, `phase`, exact workspace/generation/base/source/target/landing,
+publication status and source cleanup key. `merged`/`no_changes` still complete
+publication; a temporary lifecycle completes only after confirmed reclamation.
+An Agent must report an outstanding cleanup phase accurately, and must not retry
+prepare/publish to recover cleanup. Existing Jobs continue cleanup independently;
+the publishing Agent's own cwd is never an awaited prerequisite for its reply.
+Historical responses may omit lifecycle, which is not proof of resource release.
+
+
+Workspace retention responses may include `preserved_commit` / `recovery_ref`
+for a failed/cancelled temporary source retained under an exact durable recovery
+pin. The CLI's ordinary JSON read displays these fields; checkpoint remains a
+private save, and neither preservation nor slot reuse publishes the saved batch.
+The internal Host cleanup frame's optional `preserve_commit` is server-owned,
+capability-gated and exact-tip fenced; it is not an Agent discard command.
+
+### Targeted Publication commands
+
+`publication.create`, `publication.import`, and `publication.revoke` are
+human-only core commands over the existing `PublicationService` and snapshot
+registry. Retained `/publications` POST URLs are formal adapters; generic action
+URLs share their key namespace and current authorization. Inputs are strict;
+outputs preserve the existing Publication/import shapes within the core
+`status`/`data` envelope. Import receipts permit a null resource ID for another
+member's existing private copy. Source ownership/full read, all explicit target
+memberships, immutable hash/version checks and canonical Memory import provenance
+remain required. No approval mapping or Agent grant is enabled by this family.
+
+### Skills and bounded authorization decisions
+
+Skills exposes `skill.binding.propose`, `skill.review.propose`,
+`skill.overlay.upsert`, `skill.source.scan`, `skill.source.preview` and
+`skill.source.import`. Existing URLs are formal keyed adapters. Binding/review
+commands create the existing canonical Proposals (receipts name their IDs);
+they do not apply content or require approval of creating a Proposal. New review
+creation is 201, existing pending review is 200, and core receipts preserve that
+status on replay. Source commands return 202 with a single-attempt Job; the
+owning source reader releases its result under current person/Host authority.
+Retained import URLs accept up to5 MiB for bounded base64 package bytes.
+Generic command JSON has a36 MiB transport ceiling for Activity uploads; Skill
+schema/package limits remain unchanged.
+No Agent surface or production approval mapping is added.
+
+`policy.authorization_request.approve` / `.reject` adapt the existing owner-only
+URLs to the canonical transaction-aware AuthorizationRequest writer. Approval
+checks the requester's own Run/Agent/Room/Project/Folder reach and the deciding
+owner separately; it never substitutes the approver for the requester. Grant,
+decision, required audit and reconcile Job are atomic. Rejection is still
+available after requester exit. The typed browser API rereads the decided
+request through the existing Run request list. These commands do not enable
+Proposal/Bundle mappings, which remain on their existing owner paths.
+
+Focus classification, Graph private view-state and Learning's objective/item/
+mastery writes now use seven human-only core commands. Their retained adapters
+reuse `operations/routeAdapter.ts`; strict schemas, policy registry
+and typed clients share the canonical operation keys. Focus/Learning retain their
+actual transaction writers and reuse Source release locks for the full reference
+closure before policy/effects and cached-result release. Classification grants
+no reach; private Graph scope strings are not access references. See the Graph
+and Spaced Repetition guides and Plan05's third-batch continuation.
+
+The cross-Space retrieval owner also registers the human-only
+`space.egress_notifications.update` command. Its retained PATCH binds the URL
+Space through the shared adapter's `spaceParam`; generic input must match the
+actor's Space. It uses the existing `space.settings.update` policy, current
+owner/admin authority on first use and replay, and the canonical queryable
+setting/notification writer. It does not turn any `/me` stateful reader into an
+exempt GET or grant cross-Space authority to the Space-scoped operation core.
+
+
+### Personal grant and attention commands
+
+The retained POST grant preview/create/revoke URLs execute
+`personal_memory_grant.preview|create|revoke`; attention views POST and
+read-state PATCH execute `attention.views.record` and
+`attention.read_state.change`. All five require an explicit Idempotency-Key,
+strict protocol DTOs and human person admission. Their real owned Personal
+Space stores policy audit/receipts only; it supplies no target authorization.
+The typed clients unwrap success envelopes; attention conflicts carry the
+canonical current state in `error.metadata.current`.
+
+Grant creation pins the target Run/Agent Project/share/Folder/Room closure,
+active granting person and current non-oversight Run read, then owned Personal
+Space and sorted existing grant rows. Revocation needs the active grant owner,
+including after target exit, and exclusively locks the grant; delivery's
+conditional used transition is preserved. Domain events, state, mandatory audit
+and receipt share one transaction. Replay rechecks current target authority
+and usable grant state; revoke replay rechecks the owner.
+
+Attention discovers the connected Run/Task/Proposal/Room/Session closure and
+subject revisions before locking, pins canonical audiences/person/root/grants,
+then message/authorization/merge rows, and rediscovers drift. Both canonical
+writers join the core transaction. POST views writes real read decisions;
+neither method is exempt. Replay reauthorizes visible subjects and never
+overwrites a later manual unread. These commands add no external IO or Job.
+Grant acquisition and derived egress retain their existing Source/consent and
+proposal gates; no Memory applier or linked approval mapping is added.
+
+### Personal cross-Space retrieval commands
+
+The five retained `/me/retrieval` POSTs execute `personal.retrieval.search`,
+`resolve`, `summary.store`, `egress.disclose` and `fused.store` (each under the
+`personal.retrieval` prefix). All require strict DTOs and an explicit retry key;
+search persists pointers and resolve writes B11 audit, so both are core commands.
+Person admission uses the owned Personal Space only for audit/receipts. The
+canonical retrieval owner discovers every source/destination before one global
+Project/audience, person/Space, Folder/root/grant/Source, extension/lineage lock
+sequence and rechecks drift. Search is lexical without provider IO and rereads
+content after locking. Stored Artifact metadata records each pointer's original
+required access level, preserving legitimate summary-only storage while refusing
+a full-derived body after demotion; older unmarked artifacts require full access. Current source authority gates replay and ordinary
+Artifact/Reader reads of stored summaries/conclusions; unresolved fresh pointers
+remain unresolved. Summary placement, disclosure settings, fused provenance,
+egress notifications, B11/policy audit and receipt retain one transaction.
+Reuse / Dependency Check: existing executor/person admission, retrieval/Source
+release closure, adapters, Artifact writer and typed operation client; no new
+dependency, engine, Job, Memory writer or approval mapping.
+
+The human-only Research strategy `research.strategy.materialize` and
+`research.strategy.activate` commands retain their two POST URLs as formal core
+adapters and require a transport key. Their canonical writers, both original
+Source/binding policy gates, audit and receipt share one transaction; current
+Project/Source/provenance authority is rechecked on replay. They enable no Agent
+grant or approval mapping. See [Research calls](PROJECT_RESEARCH_CALLS.md#query-strategy-human-commands).
+
+### Activity file and voice capture command
+
+Human-only `activity.upload` and its retained multipart URL use strict inputs,
+an explicit key, canonical current creation/replay authority, mandatory audit
+and a single-attempt Job. The202 output reserves an Activity id and names its
+Job; it never claims a stored Activity. Generic JSON accepts the same bounded
+file bytes as base64. The owner worker stores the file outside transactions
+and atomically commits Activity/audit/Job completion under current authority/
+claim. Generic Job views withhold private byte input and results. See
+[Activity](../modules/activity.md#file-and-voice-upload) for bounds, exact byte
+payload ownership, uncertain-start and cleanup limits. P4 is unchanged.

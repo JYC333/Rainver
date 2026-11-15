@@ -1,3 +1,4 @@
+import { assertPersonaRunNotIsolated } from "./personaIsolation.js";
 import {
   MemoryProposalCreateCommandSchema,
   MemoryProposalUpdateCommandSchema,
@@ -324,6 +325,7 @@ export function registerMemoryDirectWriteExecutors(
     return withQueryableTransaction(db, async (tx) => {
       const requestedType = typeof command.memory_type === "string" ? command.memory_type : "semantic";
       await assertSessionNotLooping(tx, config, run, await countUnderUserId(requestedType));
+      if (requestedType === PERSONA_MEMORY_TYPE) await assertPersonaRunNotIsolated(tx, run.space_id, run.agent_id!, [run.id]);
       if (requestedType === PERSONA_MEMORY_TYPE && await personaWritesInThisRun(tx) > 0) {
         throw new HttpError(
           429,
@@ -397,6 +399,7 @@ export function registerMemoryDirectWriteExecutors(
       // rewriting what it has become would otherwise produce a version chain
       // nobody can read and a notification nobody can act on, and the version
       // chain is what makes a persona reversible in one step.
+      if (target?.memory_type === PERSONA_MEMORY_TYPE) await assertPersonaRunNotIsolated(tx, run.space_id, run.agent_id!, [run.id]);
       if (target?.memory_type === PERSONA_MEMORY_TYPE && await personaWritesInThisRun(tx) > 0) {
         throw new HttpError(
           429,

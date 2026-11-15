@@ -20,7 +20,7 @@ class ObservationDb {
 
 describe("Context Ops context observations", () => {
   it("generates a review-only artifact without canonical writes", async () => {
-    vi.spyOn(ContextOpsService.prototype, "getSummary").mockResolvedValue({
+    vi.spyOn(ContextOpsService.prototype, "getSummaryWithSources").mockResolvedValue({ sourceArtifactIds: ["maintenance-1"], summary: {
       generated_at: "2026-06-29T00:00:00.000Z",
       source_policy_warnings: {
         warning_counts: {
@@ -46,7 +46,7 @@ describe("Context Ops context observations", () => {
           artifact_type: "retrieval_brief",
         },
       ],
-    } as never);
+    } as never });
     const db = new ObservationDb();
 
     const result = await runContextObservationScan(db, {
@@ -74,6 +74,10 @@ describe("Context Ops context observations", () => {
     expect(result.artifact_id).toEqual(expect.any(String));
     const sql = db.calls.map((call) => call.sql).join("\n");
     expect(sql).toContain("INSERT INTO artifacts");
+    // The persisted counts name the reports they were computed from.
+    const insert = db.calls.find((call) => call.sql.includes("INSERT INTO artifacts"))!;
+    expect(JSON.stringify(insert.params)).toContain('\\"source_artifact_ids\\":[\\"maintenance-1\\"]');
+    expect(JSON.stringify(insert.params)).toContain('\\"dependency_closure\\":{\\"version\\":1}');
     expect(sql).not.toContain("INSERT INTO memory_entries");
     expect(sql).not.toContain("INSERT INTO knowledge_items");
     expect(sql).not.toContain("INSERT INTO capability");
@@ -81,14 +85,14 @@ describe("Context Ops context observations", () => {
   });
 
   it("supports preview scans without writing artifacts", async () => {
-    vi.spyOn(ContextOpsService.prototype, "getSummary").mockResolvedValue({
+    vi.spyOn(ContextOpsService.prototype, "getSummaryWithSources").mockResolvedValue({ sourceArtifactIds: ["maintenance-1"], summary: {
       generated_at: "2026-06-29T00:00:00.000Z",
       source_policy_warnings: { warning_counts: {} },
       embedding_backlog: { missing_embedding_chunks: 0 },
       maintenance: { pending_packet_count: 0, finding_counts: {} },
       memory_provenance: { context_injection_count: 0, maintenance_scan_count: 0 },
       recent_context_briefs: [],
-    } as never);
+    } as never });
     const db = new ObservationDb();
 
     const result = await runContextObservationScan(db, {

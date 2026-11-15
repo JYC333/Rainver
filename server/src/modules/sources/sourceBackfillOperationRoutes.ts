@@ -13,6 +13,7 @@ export function registerBackfillOperationRoutes(app:FastifyInstance,context:Modu
   for(const [suffix,id] of [
     ['/preview','source.backfill.preview'],['','source.backfill.create_plan'],
     ['/:planId/pause','source.backfill.pause'],['/:planId/resume','source.backfill.resume'],
+    ['/:planId/propose-start','source.backfill.start.propose'],
   ] as const)app.post(base+suffix,{config:{operation:id}},async(request,reply)=>{
     const requestId=resolveRequestId(request);reply.header('cache-control','private, no-store');
     const resolved=await introspectIdentity(context.config,request,reply);

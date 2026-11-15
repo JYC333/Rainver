@@ -338,7 +338,10 @@ inspected or modified during implementation.
 Invocation `PluginDb` joins the existing P1 transaction under local runtime
 role/search_path/Space/person GUCs, expires on return and restores the host
 before core request/result/audit writes. It owns only private savepoints, not
-COMMIT/pool/session controls. Host-owned nested savepoints remain compatible.
+COMMIT/pool/session controls. Host-owned nested savepoints remain compatible. Canonical Proposal decisions
+may nest bounded ports; the trusted plugin host resolves those active ports
+to the same owning transaction before changing roles. The plugin never
+receives that host client.
 Queries retain PostgreSQL READ ONLY. SQL guards also refuse SELECT INTO,
 LISTEN, prepared statements, holdable cursors and session/advisory controls.
 Role/GUC tripwires poison a corrupted connection rather than returning it to the

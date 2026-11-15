@@ -242,6 +242,81 @@ its execution snapshot is frozen. New recipients inherit the same choice;
 existing Runs keep their original version. With no explicit Conversation choice,
 retrieval is off. Both composers show one short switch without Agent names.
 Governing policy can still forbid retrieval.
+Both `PUT` URLs, `POST /api/v1/runtime-context/work-contexts` (Setup versions),
+`POST .../work-contexts/:scopeId/checkpoint-corrections` and
+`PUT /api/v1/runtime-context/policies/:scopeType/:scopeId` are formal adapters
+over keyed, strict, human-only core commands (`runtime_context.*`, see
+`runtimeContext/operations.ts` and `policy/runtimeContextOperations.ts`). The
+owners keep their advisory locks, stale-base checks, governing-policy limits and
+own `work_context_setup.change` / `runtime_context_policy.change` decision
+records inside the operation transaction; receipts carry ids and versions only
+and clients reread the switch, Setup or policy through the GET readers. A
+replay is released only while the person can still read that Work Context or
+Room Conversation, or still change that policy scope. The Room switch takes
+the Room and member rows `FOR SHARE` before writing the session, the order the
+Room writers use. Known stale-base, scope and policy-limit refusals are an
+explicit message allowlist; any other domain error stays internal.
+`POST /api/v1/runtime-context/policies/resolve` is the read-only core query
+`runtime_context.policy.resolve`. `POST /api/v1/runtime-context/preview` is the
+keyed command `runtime_context.preview.request`: it checks the Work Context is
+readable under its lock and commits a single-attempt `runtime_context_preview`
+Job (`runtimeContext/previewRequests.ts`), because planning can embed the
+retrieval intent and records context-injection reads. The Job rechecks the Work
+Context, and its start fence means an unknown outcome is never re-run.
+`GET /api/v1/runtime-context/preview-requests/:jobId` releases the envelope only
+to the requester and only while every part of it is still current, decided in
+one transaction by `releaseRuntimeContextPreview`: the Work Context lock and its
+locked active Setup (the planned version), then the Delivery gate itself
+(`PgInvocationDeliveryAuthorizer.authorizePreviewRelease`) over **every** item,
+blocked ones included — Run, Agent, Project, Folder and egress authority; the
+current Message and continuity; Room recipient/routing/briefing items;
+Evidence Matrix Artifact body as the ordinary Artifact detail reader releases
+it (`artifactBodyReleased`: row ACL, Run Room, Source-derived gate, its
+research call and, recursively, every `input_refs` Artifact, Note, Thread and
+Task with their Source policy, including a Project-less input Artifact's
+owning Task through `task_artifacts`), under `lockArtifactReleaseClosure`; Skill
+package binding and package
+(compared key-order independently, since the stored plan comes back from
+jsonb); Project Brief/Instruction versions; the Run's own AgentVersion
+instruction; retrieval source, Source policy and egress (a trimmed ranked item
+is compared with the canonical trim) — and finally the retrieval release
+closure. Each owner check takes its `FOR SHARE` locks in that transaction, so
+a concurrent revocation either commits first and is seen or waits for the
+release decision. The gate's outer lock order, all `FOR SHARE`, is the
+canonical release-closure order: the Work Context lock → every Project its
+checks lock, with its audience, in id order → this person's Space membership
+→ Space → the Run's Folder → Rooms and this person's Room member rows → the
+Run → Setup, Agent, Folder, Project, egress and each item's owner check.
+Projects (`discoverEnvelopeProjects`, `runtimeContext/envelopeAuthority.ts`:
+the Run's and control's Project, the Rooms' Projects, the Project of each
+automation whose workflow the Run belongs to, the Agent's content ACL
+Projects (including its mandatory retained access Project for ordinary Agent content authority; Room-only use instead rests on the locked target Room and its grants), briefing reference/version closures, Reading Method authority, each
+Matrix release closure, Brief/Instruction versions, retrieval items and, for a
+preview, its Work Context's Project and its retrieval release closure) come
+first because Project archive takes the Project `FOR UPDATE` and then cancels
+its workflow Runs `FOR UPDATE`. Rooms (the Run's conversation Room, a
+`room_recipient` scope's Room, each Matrix closure's Rooms) come before the
+Run because "Continue anyway" and the other Room writers take the Room before
+its Runs. Both sets are discovered without locks; while the gate runs, a
+Project lock outside its held set (`holdProjects`/`assertProjectHeld`,
+checked by `lockProjectAudience` and `assertProjectReadableLocked` too) or a
+Room outside its set (the Run's Room and the recipient Room are re-derived
+under the Run lock) is a 409 (withheld), never a lock taken after the Run. The
+`room_recipient` Agent read also rests on the scope's recipient row, its Room
+Agent member row and the Room's Agent grants, which are not row-locked: every
+writer of a member's status or a grant (`RoomRosterService` add/remove Agent
+and User, invitation activation and decision) takes that Room `FOR UPDATE`
+first, the scope row is insert-only and a member's Room never changes, so the
+Room share excludes them; its Project check rests on the held Room Project
+audience. The preview release runs its Work Context check and the retrieval
+release closure after the gate, under the same held set. The Work Context
+check itself (`assertActiveWorkContextReadable`) locks the effective Project
+before the scope rows (session, Room, root Run, workflow execution). A PersonalMemoryGrant (execution-only, and authorizing it
+consumes the grant) or any source type no owner re-checks fails closed. Any
+refusal withholds the whole envelope — body, structure and provenance:
+`result` is null, `withheld` is 1, and a fresh preview may be requested. The
+Job applies the same gate to the envelope it produced and stores it only if it
+would be released.
 The switch also withholds the managed retrieval tools from a Run planned under
 an off setup, and narrows them to the chosen domains under an on one
 (knowledge, memory, projects → Project summaries, sources; inquiry has no
@@ -251,6 +326,13 @@ references and `input_resource` descriptors reach the turn either way.
 
 ## Security boundaries
 
+- A Room-only cross-Project Agent use does not authorize its retained Project.
+  Acquisition withholds old Agent instructions, role/persona and Agent-bound
+  Skills; automatic retrieval retains only target-Project objects. The final
+  Project dependency closure refuses foreign Project context even for a viewer
+  of both Projects. Global interactive search/brief tools are withheld because
+  their LLM stages do not have a Project filter. Room grants are rechecked under
+  the target Room lock before Delivery; generic content reads retain their ACL.
 - All acquisition is Space- and instructing-user-scoped and revalidated in the
   Delivery transaction.
 - Delivery revalidates the latest Setup version and its effective bindings:

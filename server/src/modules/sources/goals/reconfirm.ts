@@ -1,7 +1,9 @@
 import type {ServerConfig} from '../../../config.js';
+import {goalTransaction,lockGoal} from './transaction.js';
 import type {SourceGoalBindingSpec} from '@rainver/protocol';
 import {SourceGoalPlanSchema} from '@rainver/protocol';
-import {HttpError,withDbTransaction,type Pool,type Queryable,type SpaceUserIdentity} from '../../routeUtils/common.js';
+import {HttpError,type Queryable,type SpaceUserIdentity} from '../../routeUtils/common.js';
+import {isOperationTransaction} from '../../../db/operationTransaction.js';
 import {activeGoalIntent,goalSourceRow,goalSourceFingerprint,goalSourceScope,requireGoal,type GoalRow,type GoalSourceScope} from './access.js';
 import {canRestoreGoalChannel,confirmChannelRestorationState} from './channelRestoration.js';
 import {assertLegacySourceOwner} from './compatibility.js';
@@ -114,9 +116,9 @@ async function lockSourceAuthority(tx:Queryable,spaceId:string,spec:SourceGoalBi
  * same binding revision and fingerprint, compared under the Source locks above;
  * repeats of a confirmation that already took effect return the binding as it is.
  */
-export async function confirmBindingSource(db:Pool,config:ServerConfig,identity:SpaceUserIdentity,goalId:string,bindingId:string,input:{binding_revision:number;authority:string;restore_channel?:boolean}){
- try{return await withDbTransaction(db,async tx=>{
-  await tx.query('SELECT id FROM source_goals WHERE id=$1 AND space_id=$2 FOR UPDATE',[goalId,identity.spaceId]);
+export async function confirmBindingSource(db:Queryable,config:ServerConfig,identity:SpaceUserIdentity,goalId:string,bindingId:string,input:{binding_revision:number;authority:string;restore_channel?:boolean}){
+ try{return await goalTransaction(db,async tx=>{
+  await lockGoal(tx,goalId,'update',identity.spaceId);
   const g=await requireGoal(tx,identity,goalId,true);
   const b=(await tx.query<BindingRow>('SELECT id,goal_id,source_connection_id,spec_json,status,revision,lease_token,last_success_at::text,fixture_json FROM source_goal_bindings WHERE id=$1 AND goal_id=$2 AND space_id=$3 FOR UPDATE',[bindingId,goalId,identity.spaceId])).rows[0];
   if(!b)throw new HttpError(404,'Binding not found');
@@ -145,7 +147,8 @@ export async function confirmBindingSource(db:Pool,config:ServerConfig,identity:
   return {binding_id:b.id,binding_revision:updated.revision,status:updated.status};
  });}catch(error){
   // A Source write holding its rows in the opposite order: the Source is being changed now. Nothing was confirmed.
-  if((error as {code?:string})?.code==='40P01')throw sourceGoalError(409,'source_scope_changed');
+  // Inside an operation transaction the deadlock aborts the transaction: it stays a transient failure, never a cached refusal.
+  if((error as {code?:string})?.code==='40P01'&&!isOperationTransaction(db))throw sourceGoalError(409,'source_scope_changed');
   throw error;
  }
 }

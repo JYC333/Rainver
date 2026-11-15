@@ -473,7 +473,8 @@ function hashValue(value: unknown): string {
   return createHash("sha256").update(stableJson(value)).digest("hex");
 }
 
-function stableJson(value: unknown): string {
+/** Key-order independent JSON text, so a value read back from jsonb compares equal. */
+export function stableJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
   if (value && typeof value === "object") {
     const record = value as Record<string, unknown>;

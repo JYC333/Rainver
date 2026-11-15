@@ -11,6 +11,8 @@ export function sourceGoalErrorKind(error:unknown){
   source_goal_source_inactive:'errorSourceInactive',
   source_goal_transfer_changed:'errorConflict',source_goal_owns_schedule:'errorConflict',
   source_quota_exhausted:'errorLimited',source_cooldown:'errorLimited',
+  // Core command refusals carry the domain code (a budget limit or an administrator policy, original status in metadata).
+  source_goal_budget_exhausted:'errorBudget',source_credential_policy_disabled:'errorAccess',
  }
  const structured=e?.code&&categories[e.code];if(structured)return structured
  // Compatibility with older detail-only responses. Stable codes take precedence.

@@ -1,215 +1,30 @@
-import { afterEach, describe, expect, it } from "vitest";
-import type { FastifyInstance } from "fastify";
-import { buildModuleServer } from "./support/moduleServer.js";
-import { skillsModule } from "../src/modules/skills/index.js";
-import { loadConfig } from "../src/config.js";
-import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
-import { __setSkillsIdentityForTests, __setSkillsRepositoryFactoryForTests, __setSkillsFetcherForTests } from "../src/modules/skills/routes.js";
-
-let app: FastifyInstance | undefined;
-
-afterEach(async () => {
-  __setSkillsIdentityForTests(null);
-  __setSkillsRepositoryFactoryForTests(null);
-  __setSkillsFetcherForTests(null);
-  await app?.close();
-  app = undefined;
+import {afterEach,beforeEach,describe,expect,it} from 'vitest';
+import {randomUUID} from 'node:crypto';
+import {useTestDatabase} from './support/testDatabase.js';
+import {seedSkillOperationHarness} from './support/skillOperationHarness.js';
+import {__setAuthIdentityForTests} from '../src/modules/auth/identity.js';
+const db=useTestDatabase(import.meta.filename);
+let fixture:Awaited<ReturnType<typeof seedSkillOperationHarness>>;
+beforeEach(async()=>{
+ fixture=await seedSkillOperationHarness(db.pool,db.connectionUri);
+ __setAuthIdentityForTests({spaceId:fixture.space,userId:fixture.owner});
 });
-
-function config() {
-  return loadConfig({
-    SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver",
-  });
-}
-
-describe("skill local overlays", () => {
-  it("stores local overlay config without changing the imported skill snapshot", async () => {
-    __setSkillsIdentityForTests({ spaceId: "space-1", userId: "user-1" });
-    const repo = fakeOverlayRepository();
-    __setSkillsRepositoryFactoryForTests(() => repo);
-    app = buildModuleServer(config(), [skillsModule]);
-
-    const before = await app.inject({
-      method: "GET",
-      url: "/api/v1/skills/index",
-    });
-    expect(before.statusCode).toBe(200);
-    expect(before.json().items[0]).toMatchObject({
-      effective_name: "Public Skill",
-      overlay: null,
-      skill_package: {
-        normalized_json: {
-          name: "Public Skill",
-        },
-      },
-    });
-
-    const saved = await app.inject({
-      method: "PUT",
-      url: "/api/v1/skills/pkg-1/local-overlay",
-      headers: { "content-type": "application/json" },
-      payload: JSON.stringify({
-        scope_type: "space",
-        overlay_json: {
-          alias: "pub",
-          display_name: "Team Public Skill",
-          endpoint_defaults: { base_url: "https://skill.internal" },
-          credential_ref: "credential_profile:skill-runtime",
-          default_scope: "project_folder",
-          runtime_preference: "codex_cli",
-        },
-      }),
-    });
-    expect(saved.statusCode).toBe(200);
-    expect(saved.json()).toMatchObject({
-      skill_package_id: "pkg-1",
-      overlay_json: {
-        alias: "pub",
-        display_name: "Team Public Skill",
-        credential_ref: "credential_profile:skill-runtime",
-      },
-    });
-
-    const after = await app.inject({
-      method: "GET",
-      url: "/api/v1/skills/index",
-    });
-    expect(after.statusCode).toBe(200);
-    const item = after.json().items[0];
-    expect(item).toMatchObject({
-      effective_name: "Team Public Skill",
-      effective_alias: "pub",
-      skill_package: {
-        normalized_json: {
-          name: "Public Skill",
-          requested_permissions: ["network"],
-        },
-      },
-    });
-    expect(item.skill_package.normalized_json).not.toHaveProperty("alias");
-    expect(JSON.stringify(item)).not.toContain("sk-live-secret");
-  });
-
-  it("rejects a credential secret nested inside an array in the overlay", async () => {
-    __setSkillsIdentityForTests({ spaceId: "space-1", userId: "user-1" });
-    const repo = fakeOverlayRepository();
-    __setSkillsRepositoryFactoryForTests(() => repo);
-    app = buildModuleServer(config(), [skillsModule]);
-
-    const res = await app.inject({
-      method: "PUT",
-      url: "/api/v1/skills/pkg-1/local-overlay",
-      headers: { "content-type": "application/json" },
-      payload: JSON.stringify({
-        scope_type: "space",
-        overlay_json: {
-          endpoint_defaults: {
-            headers: [{ name: "x-auth", api_key: "sk-live-secret" }],
-          },
-        },
-      }),
-    });
-
-    expect(res.statusCode).toBe(422);
-    expect(res.json()).toEqual({
-      detail: "skill overlay must reference credentials instead of embedding secrets",
-    });
-  });
-
-  it("rejects embedded credential secrets in overlay defaults", async () => {
-    __setSkillsIdentityForTests({ spaceId: "space-1", userId: "user-1" });
-    const repo = fakeOverlayRepository();
-    __setSkillsRepositoryFactoryForTests(() => repo);
-    app = buildModuleServer(config(), [skillsModule]);
-
-    const res = await app.inject({
-      method: "PUT",
-      url: "/api/v1/skills/pkg-1/local-overlay",
-      headers: { "content-type": "application/json" },
-      payload: JSON.stringify({
-        scope_type: "space",
-        overlay_json: {
-          endpoint_defaults: {
-            api_key: "sk-live-secret",
-          },
-        },
-      }),
-    });
-
-    expect(res.statusCode).toBe(422);
-    expect(res.json()).toEqual({
-      detail: "skill overlay must reference credentials instead of embedding secrets",
-    });
-  });
+afterEach(async()=>{__setAuthIdentityForTests(null);await fixture?.app.close();});
+describe('Skill overlays through their real operation',()=>{
+ it('updates the library presentation without changing original bytes or trust',async()=>{
+  const before=(await fixture.app.inject({method:'GET',url:'/api/v1/skills/index'})).json();
+  const original=(await db.pool.query('SELECT content_base64 FROM skill_package_files WHERE skill_package_id=$1',[fixture.pkg])).rows;
+  const response=await fixture.app.inject({method:'PUT',url:`/api/v1/skills/${fixture.pkg}/local-overlay`,headers:{'idempotency-key':randomUUID()},payload:{scope_type:'space',overlay_json:{alias:'alias',display_name:'Local name',credential_ref:'credential_profile:skill-runtime'}}});
+  expect(response.statusCode,response.body).toBe(200);
+  expect(response.json().data.overlay_json).toMatchObject({alias:'alias',credential_ref:'credential_profile:skill-runtime'});
+  const after=(await fixture.app.inject({method:'GET',url:'/api/v1/skills/index'})).json();
+  expect(after.items[0]).toMatchObject({effective_name:'Local name',effective_alias:'alias'});
+  expect(after.items[0].skill_package).toEqual(before.items[0].skill_package);
+  expect((await db.pool.query('SELECT content_base64 FROM skill_package_files WHERE skill_package_id=$1',[fixture.pkg])).rows).toEqual(original);
+ });
+ it.each([{endpoint_defaults:{api_key:'secret'}},{user_preferences:{nested:[{access_token:'secret'}]}}])('refuses embedded credentials before any overlay write',async overlay_json=>{
+  const response=await fixture.app.inject({method:'PUT',url:`/api/v1/skills/${fixture.pkg}/local-overlay`,headers:{'idempotency-key':randomUUID()},payload:{scope_type:'space',overlay_json}});
+  expect(response.statusCode,response.body).toBe(422);
+  expect((await db.pool.query('SELECT id FROM skill_local_overlays')).rows).toHaveLength(0);
+ });
 });
-
-function fakeOverlayRepository() {
-  let overlay: Record<string, unknown> | null = null;
-  const skillPackage = {
-    id: "pkg-1",
-    source_id: "source-1",
-    package_name: "public-skill",
-    version: "1.0.0",
-    license: null,
-    raw_storage_ref: null,
-    manifest_json: { package_hash: "hash-1" },
-    normalized_json: {
-      name: "Public Skill",
-      description: "Imported source material.",
-      version: "1.0.0",
-      requested_permissions: ["network"],
-    },
-    risk_level: "low",
-    status: "reviewed",
-    created_at: "2026-06-20T00:00:00.000Z",
-    updated_at: "2026-06-20T00:00:00.000Z",
-    pending_proposal: null,
-  };
-
-  return {
-    async listSkillLibraryIndex() {
-      const overlayJson = (overlay?.overlay_json ?? {}) as Record<string, unknown>;
-      return {
-        items: [
-          {
-            skill_package: skillPackage,
-            overlay,
-            effective_name: typeof overlayJson.display_name === "string" ? overlayJson.display_name : "Public Skill",
-            effective_alias: typeof overlayJson.alias === "string" ? overlayJson.alias : null,
-            requested_permissions: ["network"],
-          },
-        ],
-      };
-    },
-    async getSkillLocalOverlay() {
-      return overlay;
-    },
-    async upsertSkillLocalOverlay(
-      identity: SpaceUserIdentity,
-      skillPackageId: string,
-      body: {
-        scope_type: string;
-        scope_id?: string | null;
-        overlay_json?: Record<string, unknown>;
-      },
-    ) {
-      overlay = {
-        id: "overlay-1",
-        space_id: identity.spaceId,
-        skill_package_id: skillPackageId,
-        scope_type: body.scope_type,
-        scope_id: body.scope_id ?? null,
-        overlay_json: {
-          endpoint_defaults: {},
-          user_preferences: {},
-          ...(body.overlay_json ?? {}),
-        },
-        status: "active",
-        created_by_user_id: identity.userId,
-        created_at: "2026-06-20T00:00:00.000Z",
-        updated_at: "2026-06-20T00:00:00.000Z",
-      };
-      return overlay;
-    },
-  } as never;
-}

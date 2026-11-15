@@ -16,6 +16,7 @@ type RoomServicePort = Pick<
   | "getRoom"
   | "getProjectMainline"
   | "listProjectConversations"
+  | "listProjectRooms"
   | "listAgentCandidates"
   | "listInvitations"
   | "listPendingApprovals"
@@ -122,6 +123,18 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
+  app.get("/api/v1/projects/:projectId/rooms", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      const projectId = requiredString(params(request).projectId, "project_id");
+      const page = parsePage(query(request), 50);
+      return reply.send(await service(context).listProjectRooms(identity, projectId, page));
+    } catch (error) {
+      return sendRoomError(reply, error);
+    }
+  });
+
   app.get("/api/v1/projects/:projectId/conversations", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
@@ -141,7 +154,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       return reply.send(await service(context).listAgentCandidates(
         identity,
         roomId(request),
-        parsePage(query(request), 50),
+        { ...parsePage(query(request), 50), q: optionalString(query(request).q) ?? null },
       ));
     } catch (error) {
       return sendRoomError(reply, error);

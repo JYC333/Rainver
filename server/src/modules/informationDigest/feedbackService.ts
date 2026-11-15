@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { lockSourceRetrievalRelease } from '../sources/retrievalReleaseLocks.js';
+import { canonical } from '../systemActions/operations/repository.js';
 import { HttpError, type Queryable, withQueryableTransaction } from "../routeUtils/common.js";
 import { InterestProfileService } from "../interestProfile/service.js";
 import { DEFAULT_INTEREST_PROFILE_SETTINGS } from "../interestProfile/settings.js";
@@ -21,6 +23,42 @@ interface SerendipityFeedbackResult {
 export class SerendipityFeedbackService {
   constructor(private readonly db: Queryable) {}
 
+  /** Authority-free discovery of all recommendation effects precedes the
+   * shared Project/person/Space/Source lock order. No retained Source text is
+   * read or released by this owner-private feedback operation. */
+  private async authorize(spaceId:string,userId:string,digestItemId:string) {
+    const discover=async()=> {
+      const item=(await this.db.query<{domain_key:string;source_item_id:string|null}>(
+        `SELECT p.target_domain_key AS domain_key,i.source_item_id
+         FROM information_digest_items i JOIN information_digests d ON d.id=i.digest_id AND d.space_id=i.space_id
+         JOIN information_digest_serendipity_pool p ON p.id=i.serendipity_pool_item_id AND p.space_id=i.space_id
+         WHERE i.space_id=$1 AND i.id=$2 AND i.section='serendipity'
+           AND d.digest_type='personal' AND d.owner_user_id=$3`,[spaceId,digestItemId,userId])).rows[0];
+      if(!item)throw new HttpError(404,'Personal serendipity item not found');
+      const pools=(await this.db.query<{id:string;source_item_id:string;source_connection_id:string|null}>(
+        `SELECT p.id,p.source_item_id,c.source_connection_id FROM information_digest_serendipity_pool p
+         LEFT JOIN source_channels c ON c.space_id=p.space_id AND c.id=p.source_channel_id
+         WHERE p.space_id=$1 AND p.user_id=$2 AND p.target_domain_key=$3 ORDER BY p.id`,[spaceId,userId,item.domain_key])).rows;
+      const activities=(await this.db.query<{id:string}>(
+        `SELECT a.id FROM activity_records a WHERE a.space_id=$1 AND a.user_id=$2 AND EXISTS(
+         SELECT 1 FROM information_digest_serendipity_pool p WHERE p.space_id=$1 AND p.user_id=$2 AND p.target_domain_key=$3
+         AND p.source_channel_id IS NOT NULL AND a.aggregate_key='source:recommendation:' || $2 || ':' || p.source_channel_id) ORDER BY a.id`,[spaceId,userId,item.domain_key])).rows;
+      return {item,pools,activities};
+    };
+    const before=await discover();
+    const effects=[
+      ...[...new Set(before.pools.flatMap(p=>p.source_connection_id?[p.source_connection_id]:[]))].map(id=>({object_type:'source_connection' as const,object_id:id})),
+      ...before.activities.map(a=>({object_type:'activity' as const,object_id:a.id})),
+    ];
+    await lockSourceRetrievalRelease(this.db,spaceId,userId,[
+      ...[...new Set([before.item.source_item_id,...before.pools.map(p=>p.source_item_id)].filter((id):id is string=>Boolean(id)))].map(id=>({object_type:'source_item' as const,object_id:id})),
+      ...effects,
+    ],[],undefined,[],[],effects);
+    if(before.pools.length)await this.db.query('SELECT id FROM information_digest_serendipity_pool WHERE space_id=$1 AND id=ANY($2::varchar[]) ORDER BY id FOR SHARE',[spaceId,before.pools.map(p=>p.id)]);
+    if(canonical(before)!==canonical(await discover()))throw new HttpError(409,'Serendipity recommendation references changed; reload before updating');
+    return before;
+  }
+
   async record(
     spaceId: string,
     userId: string,
@@ -29,6 +67,7 @@ export class SerendipityFeedbackService {
     at = new Date(),
   ): Promise<SerendipityFeedbackResult> {
     return withQueryableTransaction(this.db, async (tx) => {
+      const closure=await new SerendipityFeedbackService(tx).authorize(spaceId,userId,digestItemId);
       await tx.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [
         `information-digest-feedback:${spaceId}:${digestItemId}`,
       ]);
@@ -99,8 +138,9 @@ export class SerendipityFeedbackService {
              FROM information_digest_serendipity_pool pool
             WHERE sub.space_id=$1 AND sub.user_id=$2 AND sub.status='pending'
               AND pool.space_id=sub.space_id AND pool.user_id=sub.user_id
-              AND pool.source_channel_id=sub.source_channel_id AND pool.target_domain_key=$3`,
-          [spaceId, userId, item.domain_key, now],
+              AND pool.source_channel_id=sub.source_channel_id AND pool.target_domain_key=$3
+              AND pool.id=ANY($5::varchar[])`,
+          [spaceId, userId, item.domain_key, now, closure.pools.map(p=>p.id)],
         );
         await tx.query(
           `UPDATE activity_records activity
@@ -111,8 +151,8 @@ export class SerendipityFeedbackService {
                  WHERE pool.space_id=$1 AND pool.user_id=$2 AND pool.target_domain_key=$3
                    AND pool.source_channel_id IS NOT NULL
                    AND activity.aggregate_key='source:recommendation:' || $2 || ':' || pool.source_channel_id
-              )`,
-          [spaceId, userId, item.domain_key, now],
+              ) AND activity.id=ANY($5::varchar[])`,
+          [spaceId, userId, item.domain_key, now, closure.activities.map(a=>a.id)],
         );
       }
       return { digest_item_id: digestItemId, domain_key: item.domain_key, feedback,

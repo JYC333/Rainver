@@ -4,6 +4,7 @@ import {
   AMBIENT_TRIM_LIMITS,
   AmbientImportPolicySchema,
   AmbientSessionImportSchema,
+  AmbientSessionCountSchema,
   OWN_INSTALLATION,
   type AmbientImportPolicy,
   type AmbientImportPolicyEntry,
@@ -12,6 +13,7 @@ import {
   type AmbientUsage,
   type AmbientSyncReport,
 } from "@rainver/protocol";
+import { importAttention } from "./attention.js";
 import { createHash } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
 import { HttpError, dbPool, withQueryableTransaction, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
@@ -172,7 +174,7 @@ export class ImportedSessionService {
       [locationId],
     );
     const raw = result.rows[0]?.ambient_session_counts_json;
-    return Array.isArray(raw) ? (raw as AmbientSessionCount[]) : [];
+    return Array.isArray(raw) ? raw.flatMap(value => { const parsed = AmbientSessionCountSchema.safeParse(value); return parsed.success ? [parsed.data] : []; }) : [];
   }
 
   /**
@@ -222,14 +224,31 @@ export class ImportedSessionService {
       (existing) => !(existing.runtime_key === entry.runtime_key && existing.installation === entry.installation),
     );
     entries.push(entry);
-    return { entries, offered_at: policy.offered_at ?? new Date().toISOString() };
+    return { ...policy, entries, offered_at: policy.offered_at ?? new Date().toISOString() };
     });
   }
 
-  /** Marks the offer answered without consenting, so the banner stops asking. */
-  async dismissOffer(identity: SpaceUserIdentity, locationId: string): Promise<AmbientImportPolicy> {
+  /** Preferences do not grant import/sync consent. The row lock preserves other switches. */
+  async setReminder(identity: SpaceUserIdentity, locationId: string, mode: 'later' | 'never' | 'enable'): Promise<AmbientImportPolicy> {
     await this.requireTarget(identity, locationId);
-    return this.rewritePolicy(locationId, (policy) => ({ ...policy, offered_at: policy.offered_at ?? new Date().toISOString() }));
+    return this.rewritePolicy(locationId, policy => ({ ...policy, reminder: {
+      enabled: mode !== 'never',
+      snoozed_until: mode === 'later' ? new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString() : null,
+    } }));
+  }
+
+  async offer(identity: SpaceUserIdentity, locationId: string) {
+    const target = await this.requireTarget(identity, locationId);
+    const policy = await this.readPolicy(locationId);
+    const counts = await this.counts(identity, locationId);
+    const sessions = await this.sessions.listForLocation(identity.spaceId, locationId);
+    const excluded = new Set<string>();
+    const threads = new PgHostThreadRepository(this.db);
+    for (const count of counts) {
+      const ids = await threads.listVendorSessionIds({ workspaceLocationId: locationId, runtimeKey: count.runtime_key, runtimeInstallation: count.installation });
+      for (const id of ids) excluded.add(JSON.stringify([count.runtime_key, count.installation, id]));
+    }
+    return { policy, counts, attention: importAttention(counts, sessions, excluded, target.host_online) };
   }
 
   /**

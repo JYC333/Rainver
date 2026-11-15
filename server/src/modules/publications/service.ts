@@ -1,5 +1,5 @@
+import {assertProjectReadableLocked} from "../projects/access.js";
 import { createHash, randomUUID } from "node:crypto";
-import type { Pool } from "../../db/pool.js";
 import type { ServerConfig } from "../../config.js";
 import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 import { contentDecisionFromDb, contentOwnerFromDb } from "../access/contentAccessQuery.js";
@@ -8,7 +8,7 @@ import {
   HttpError,
   type Queryable,
   type SpaceUserIdentity,
-  withDbTransaction,
+  withQueryableTransaction,
 } from "../routeUtils/common.js";
 import { publicationAdapter } from "./publicationRegistry.js";
 
@@ -72,7 +72,7 @@ export interface CreatePublicationInput {
 }
 
 export class PublicationService {
-  constructor(private readonly pool: Pool) {}
+  constructor(private readonly pool: Queryable) {}
 
   static fromConfig(config: ServerConfig): PublicationService {
     return new PublicationService(dbPool(config));
@@ -81,7 +81,8 @@ export class PublicationService {
   async create(identity: SpaceUserIdentity, input: CreatePublicationInput) {
     const adapter = requireAdapter(input.resource_type);
     const targetSpaceIds = dedupeTargetSpaces(identity.spaceId, input.target_space_ids);
-    return withDbTransaction(this.pool, async (db) => {
+    return withQueryableTransaction(this.pool, async (db) => {
+      await lockPublicationSource(db, identity, input.resource_type, input.resource_id, targetSpaceIds);
       const decision = await contentDecisionFromDb(
         db,
         identity,
@@ -240,7 +241,7 @@ export class PublicationService {
   }
 
   async import(identity: SpaceUserIdentity, publicationId: string) {
-    return withDbTransaction(this.pool, async (db) => {
+    return withQueryableTransaction(this.pool, async (db) => {
       await assertActiveMemberships(db, identity.userId, [identity.spaceId]);
       const result = await db.query<PublicationRow>(
         `SELECT cp.*
@@ -289,7 +290,8 @@ export class PublicationService {
   }
 
   async revoke(identity: SpaceUserIdentity, publicationId: string) {
-    return withDbTransaction(this.pool, async (db) => {
+    return withQueryableTransaction(this.pool, async (db) => {
+      await assertActiveMemberships(db, identity.userId, [identity.spaceId]);
       const now = new Date().toISOString();
       const result = await db.query<PublicationRow>(
         `UPDATE content_publications cp
@@ -335,10 +337,13 @@ async function assertActiveMemberships(
   userId: string,
   spaceIds: readonly string[],
 ): Promise<void> {
+  const user = await db.query("SELECT id FROM users WHERE id=$1 AND status='active' FOR SHARE",[userId]);
+  if (!user.rows.length) throw new HttpError(404, "Target space not found");
   const result = await db.query<{ space_id: string }>(
     `SELECT space_id FROM space_memberships
-      WHERE user_id = $1 AND space_id = ANY($2::varchar[]) AND status = 'active'`,
-    [userId, spaceIds],
+      WHERE user_id = $1 AND space_id = ANY($2::varchar[]) AND status = 'active'
+      ORDER BY space_id FOR SHARE`,
+    [userId, [...spaceIds].sort()],
   );
   const active = new Set(result.rows.map((row) => row.space_id));
   if (spaceIds.some((spaceId) => !active.has(spaceId))) {
@@ -478,4 +483,30 @@ function dateIso(value: unknown): string {
 
 function nullableDateIso(value: unknown): string | null {
   return value == null ? null : dateIso(value);
+}
+
+/** Source authority is held through snapshot creation and the operation receipt.
+ * Project admission precedes person/membership and resource locks, matching the
+ * owning content writers. No target Space is used to resolve live source data. */
+export async function lockPublicationSource(
+  db: Queryable, identity: SpaceUserIdentity, resourceType: string,
+  resourceId: string, targets: readonly string[],
+): Promise<void> {
+  const definition = contentResourceDefinition(resourceType);
+  if (!definition?.publishable || !publicationAdapter(resourceType)) throw new HttpError(422, "Resource type is not publishable");
+  const projectColumn = definition.projectColumn;
+  const discover = async () => (await db.query<{project_id:string|null}>(
+    `SELECT ${projectColumn ?? "NULL::varchar"} AS project_id FROM ${definition.tableName} WHERE id=$1 AND space_id=$2`,
+    [resourceId,identity.spaceId],
+  )).rows[0];
+  const before = await discover();
+  if (!before) throw new HttpError(404, "Content not found");
+  if (before.project_id) await assertProjectReadableLocked(db,identity.spaceId,before.project_id,identity.userId);
+  await assertActiveMemberships(db,identity.userId,[...new Set([identity.spaceId,...targets])].sort());
+  await db.query(`SELECT id FROM ${definition.tableName} WHERE id=$1 AND space_id=$2 FOR SHARE`,[resourceId,identity.spaceId]);
+  if ((await discover())?.project_id !== before.project_id) throw new HttpError(409,"Content placement changed");
+  if (!await contentOwnerFromDb(db,identity,resourceType,resourceId)
+      || await contentDecisionFromDb(db,identity,resourceType,resourceId,{includeOversight:false}) !== 'full') {
+    throw new HttpError(404,"Content not found");
+  }
 }

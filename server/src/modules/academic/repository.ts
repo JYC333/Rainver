@@ -1,7 +1,6 @@
 import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter.js";
 import { objectStatusScalarSql } from "../../db/objectStatusSql.js";
 import { randomUUID } from "node:crypto";
-import type { PoolClient } from "../../db/pool.js";
 import { HttpError, type Queryable } from "../routeUtils/common.js";
 import { contentReadSql } from "../access/contentAccessSql.js";
 import { canonicalAcademicIdentity } from "./identity.js";
@@ -50,7 +49,7 @@ export class AcademicRepository {
   constructor(private readonly db: Queryable) {}
 
   async createPaper(
-    client: PoolClient,
+    client: Queryable,
     input: {
       spaceId: string;
       projectId: string | null;

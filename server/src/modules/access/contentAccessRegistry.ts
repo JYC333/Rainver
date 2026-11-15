@@ -7,6 +7,8 @@ export interface ContentResourceDefinition {
   ownerColumn: string;
   projectFolderColumn?: string;
   projectColumn?: string;
+  /** Independent Project ACL; intersects with ownership scope when both exist. */
+  accessProjectColumn?: string;
   contextTaintColumn?: string;
   projectShare?: ContentProjectShareDeclaration;
   activePredicate?: (alias: string) => string;
@@ -33,6 +35,7 @@ function definitions(): readonly ContentResourceDefinition[] {
         ownerColumn: declaration.ownerColumn,
         ...(declaration.projectFolderColumn ? { projectFolderColumn: declaration.projectFolderColumn } : {}),
         ...(declaration.projectColumn ? { projectColumn: declaration.projectColumn } : {}),
+        ...(declaration.accessProjectColumn ? { accessProjectColumn: declaration.accessProjectColumn } : {}),
         ...(declaration.contextTaintColumn ? { contextTaintColumn: declaration.contextTaintColumn } : {}),
         ...(declaration.projectShare ? { projectShare: declaration.projectShare } : {}),
         ...(declaration.activePredicate ? { activePredicate: declaration.activePredicate } : {}),

@@ -1,7 +1,7 @@
 import { StrictMode } from 'react'
 import ChatPanel from '../modules/agents/ChatPanel'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom'
 
 // vi.mock factories are hoisted above the module body, so anything they reference
@@ -24,7 +24,7 @@ const { agent, getMock, messagesMock, backendsMock, hostsMock, turnMock, runGetM
 }))
 
 vi.mock('../api/client', () => ({
-  agentsApi: { get: getMock, chat: vi.fn(), conversationBackends: backendsMock },
+  agentsApi: { get: getMock, chat: vi.fn(), saveConversationSessionConfig: vi.fn(), conversationBackends: backendsMock, resetContext: vi.fn() },
   sessionsApi: { messages: messagesMock },
   hostsApi: { list: hostsMock },
   runsApi: { get: runGetMock, turn: turnMock },
@@ -122,6 +122,89 @@ describe('AssistantChatPage conversation backends', () => {
     Element.prototype.scrollTo = vi.fn() as unknown as typeof Element.prototype.scrollTo
   })
 
+  it('accepts first-message select/boolean drafts and permits the second message without a URL remount or catalog reload', async () => {
+    const options = [
+      {id:'model',name:'Model',description:null,type:'select',category:'model',current_value:'current',options:[{value:'current',name:'Current'},{value:'next',name:'Next'}]},
+      {id:'fast',name:'Fast mode',description:null,type:'boolean',category:'model_config',current_value:false},
+    ]
+    backendsMock.mockResolvedValue({options:[{runtime_profile_id:'runtime-1',runtime_key:'opencode',usable:true,session_config_options:options}],binding:{runtime_profile_id:'runtime-1'},session_config:[]})
+    vi.mocked(agentsApi.chat).mockImplementation(async (_id, _body, callbacks) => {
+      callbacks?.onAccepted?.(acceptedDraftTurn)
+      return {session_id:'draft-session',run_id:'draft-run',ok:true,reply:'Done',assistant_message:null} as never
+    })
+    render(<MemoryRouter future={routerFuture}><ChatPanel agent={{...agent, project_id: null, access_level: 'full'}} /></MemoryRouter>)
+    const input = await enabledComposer()
+    fireEvent.click(screen.getByRole('button',{name:'Conversation settings · 1'}))
+    fireEvent.click(screen.getByRole('button',{name:'Model'}))
+    fireEvent.click(screen.getByRole('option',{name:'Next'}))
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('switch',{name:'Fast mode'}))
+    fireEvent.click(screen.getByRole('button',{name:'Close'}))
+    fireEvent.change(input,{target:{value:'First'}})
+    fireEvent.keyDown(input,{key:'Enter'})
+    await waitFor(() => expect(agentsApi.chat).toHaveBeenCalledOnce())
+    expect(vi.mocked(agentsApi.chat).mock.calls[0][1].session_config).toEqual([
+      {id:'model',type:'select',category:'model',value:'next'},
+      {id:'fast',type:'boolean',category:'model_config',value:true},
+    ])
+    fireEvent.change(input,{target:{value:'Second'}})
+    await waitFor(() => expect(screen.getByRole('button',{name:'Send'})).not.toBeDisabled())
+    fireEvent.keyDown(input,{key:'Enter'})
+    await waitFor(() => expect(agentsApi.chat).toHaveBeenCalledTimes(2))
+    expect(vi.mocked(agentsApi.chat).mock.calls[1][1]).toMatchObject({session_id:'draft-session',message:'Second'})
+    expect(vi.mocked(agentsApi.chat).mock.calls[1][1].session_config).toBeUndefined()
+    expect(backendsMock).toHaveBeenCalledOnce()
+  })
+
+  it('applies a model with the first message and switches to persisted-session settings after acceptance', async () => {
+    const options = [{id:'model',name:'Model',description:null,type:'select',category:'model',current_value:'current',
+      options:[{value:'current',name:'Current'},{value:'next',name:'Next'}]}]
+    backendsMock.mockResolvedValue({options:[{runtime_profile_id:'runtime-1',runtime_key:'opencode',usable:true,session_config_options:options}],binding:{runtime_profile_id:'runtime-1'},session_config:[]})
+    vi.mocked(agentsApi.saveConversationSessionConfig).mockClear()
+    vi.mocked(agentsApi.chat).mockImplementation(async (_id, body, callbacks) => {
+      expect(body.session_id).toBeUndefined()
+      expect(body.session_config).toEqual([{id:'model',type:'select',category:'model',value:'next'}])
+      backendsMock.mockResolvedValue({options:[{runtime_profile_id:'runtime-1',runtime_key:'opencode',usable:true,session_config_options:options}],binding:{runtime_profile_id:'runtime-1'},session_config:body.session_config})
+      callbacks?.onAccepted?.(acceptedDraftTurn)
+      return {schema_version:'chat_turn_completion.v1', session_id:'draft-session', run_id:'draft-run', ok:true, reply:'Done', assistant_message:null, action_previews:[]} as never
+    })
+    renderPage()
+    const input = await enabledComposer()
+    fireEvent.click(screen.getByRole('button',{name:'Conversation settings · 1'}))
+    expect(screen.getByRole('button',{name:'Other parameters · Assistant'})).toHaveAttribute('aria-expanded','true')
+    fireEvent.click(screen.getByRole('button',{name:'Model'}))
+    fireEvent.click(screen.getByRole('option',{name:'Next'}))
+    expect(agentsApi.saveConversationSessionConfig).not.toHaveBeenCalled()
+    expect(within(screen.getByRole('dialog')).getByText('Choices apply with your first message.')).toBeVisible()
+    fireEvent.click(screen.getByRole('button',{name:'Close'}))
+    fireEvent.change(input,{target:{value:'Use selected model'}})
+    fireEvent.keyDown(input,{key:'Enter',shiftKey:false})
+    await waitFor(() => expect(agentsApi.chat).toHaveBeenCalledOnce())
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('session=draft-session'))
+    expect(agentsApi.saveConversationSessionConfig).not.toHaveBeenCalled()
+  })
+
+  it('blocks an existing direct conversation send until model drafts are saved or discarded', async () => {
+    const options = [{ id: 'model', name: 'Model', description: null, type: 'select', category: 'model', current_value: 'current', options: [{value:'current',name:'Current'}, {value:'next',name:'Next'}] }]
+    backendsMock.mockResolvedValue({ options: [{ runtime_profile_id: 'runtime-1', name:'Managed', runtime_key:'opencode', usable:true, session_config_options:options }], binding:{runtime_profile_id:'runtime-1'}, session_config:[] })
+    vi.mocked(agentsApi.saveConversationSessionConfig).mockRejectedValue(new Error('Permission changed'))
+    renderPage('/agents/a1/chat?session=s1')
+    const input = await enabledComposer()
+    fireEvent.change(input, {target:{value:'Keep this message'}})
+    fireEvent.click(screen.getByRole('button',{name:'Conversation settings · 1'}))
+    fireEvent.click(screen.getByRole('button',{name:'Model'}))
+    fireEvent.click(screen.getByRole('option',{name:'Next'}))
+    await screen.findByRole('alert')
+    fireEvent.keyDown(screen.getByRole('dialog'),{key:'Escape'})
+    await waitFor(()=>expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(screen.getByRole('button',{name:/Conversation settings · 1.*Save failed/})).toBeVisible()
+    fireEvent.keyDown(input,{key:'Enter',shiftKey:false})
+    await screen.findByRole('dialog')
+    expect(agentsApi.chat).not.toHaveBeenCalled()
+    expect(input).toHaveValue('Keep this message')
+    fireEvent.click(screen.getByRole('button',{name:'Discard changes'}))
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
   it('receives the background integration result in an open direct conversation through the shared visible-surface refresh',async()=>{
     render(<MemoryRouter><ChatPanel agent={agent as never} initialSessionId="session-outcome"/></MemoryRouter>)
     await waitFor(()=>expect(messagesMock).toHaveBeenCalledWith('session-outcome',expect.objectContaining({spaceId:'personal-1'})))
@@ -970,5 +1053,28 @@ describe('AssistantChatPage conversation backends', () => {
     fireEvent.keyDown(input, { key: 'Enter', shiftKey: false })
     await waitFor(() => expect(agentsApi.chat).toHaveBeenCalledWith('a1', expect.objectContaining({ restore_workspace: true }), expect.any(Object)))
     expect(screen.getByText(/Managed workspace on Workstation/)).toBeInTheDocument()
+  })
+  it('in a Project conversation, offers no restore of the person\'s direct workspace and resets only that conversation', async () => {
+    backendsMock.mockResolvedValue({ options: [{
+      runtime_profile_id: 'runtime-host', name: 'Host runtime', runtime_key: 'claude_code', model_name: null, usable: true,
+      host_bound: true, host_id: 'host-1', workspace_mode: 'managed', host_name: 'Workstation', host_online: true, host_owner_is_me: true,
+    }], binding: null })
+    // The person's own direct container has an archive; a Project conversation is not that container.
+    hostsMock.mockResolvedValue({ items: [{ id: 'host-1', owner_user_id: 'u1', name: 'Workstation', status: 'online', managed_workspaces_json: [{
+      agent_id: 'a1', container_kind: 'direct', container_id: 'u1', archived_available: true,
+    }] }] })
+    messagesMock.mockResolvedValue([])
+    vi.mocked(agentsApi.resetContext).mockResolvedValue({ agent_id: 'a1', session_reset: true, thread_id: 't1', workspace_mode: 'managed' } as never)
+    getMock.mockResolvedValue(agent)
+    render(
+      <MemoryRouter future={routerFuture}>
+        <ChatPanel agent={agent as never} projectId="project-1" initialSessionId="s-project" />
+      </MemoryRouter>,
+    )
+    expect(await screen.findByText(/Managed workspace on Workstation/)).toBeInTheDocument()
+    expect(screen.queryByLabelText(/restore previous managed workspace/i)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Reset context' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Reset context' }))
+    await waitFor(() => expect(agentsApi.resetContext).toHaveBeenCalledWith('a1', expect.objectContaining({ sessionId: 's-project' })))
   })
 })

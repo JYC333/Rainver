@@ -27,3 +27,21 @@ describe("deriveAmbientActivity", () => {
     expect(derived.files).toEqual(["src/app.ts"]);
   });
 });
+
+import { AmbientImportPolicySchema, AmbientSessionCountSchema } from '../src/ambientSessions.js';
+import { HOST_DIRECT_OPERATION_SCHEMAS } from '../src/hostOperations.js';
+
+it('keeps old-host discovery unknown and bounds new content-free discovery inventory', () => {
+  const old = { location_id: 'location', runtime_key: 'codex_cli', installation: 'own', session_count: 1, oldest_updated_at: null, newest_updated_at: null, error: null };
+  expect(AmbientSessionCountSchema.parse(old).sessions).toBeUndefined();
+  const inventory = [{ session_id: 'one', updated_at: null, title: 'must not cross this contract', cwd: '/private' }];
+  expect(AmbientSessionCountSchema.parse({ ...old, sessions: inventory }).sessions).toEqual([{ session_id: 'one', updated_at: null }]);
+  expect(AmbientSessionCountSchema.safeParse({ ...old, sessions: Array(51).fill(inventory[0]) }).success).toBe(false);
+});
+it('does not interpret legacy offered_at as permanent opt-out and requires an explicit reminder choice', () => {
+  expect(AmbientImportPolicySchema.parse({ offered_at: '2026-01-01' }).reminder).toBeUndefined();
+  const input = HOST_DIRECT_OPERATION_SCHEMAS['host.location.ambient.reminder.set'].input;
+  expect(input.safeParse({ location_id: 'location' }).success).toBe(false);
+  expect(input.parse({ location_id: 'location', mode: 'never' }).mode).toBe('never');
+  expect(input.safeParse({ location_id: 'location', mode: 'never', sync: true }).success).toBe(false);
+});

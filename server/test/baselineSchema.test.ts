@@ -3,12 +3,8 @@ import {seedSpaceOwnerProject} from './support/domainSeeds.js';
 import { join } from "node:path";
 import { existsSync, readFileSync, readdirSync, mkdtempSync, copyFileSync, rmSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 
-// Every test here drops and reapplies the whole baseline, so each one costs
-// 5-10s alone and considerably more under parallel load. The global 30s
-// ceiling would fail them on contention rather than on anything being wrong.
-vi.setConfig({ testTimeout: 180_000 });
 import { Pool } from "pg";
 import { OBJECT_PROFILE_KEY_VALUES_BY_BASE_OBJECT_TYPE } from "@rainver/protocol";
 import { useTestDatabase } from "./support/testDatabase.js";
@@ -374,7 +370,7 @@ describe("server runner applies the migration chain", () => {
     for (const t of REPRESENTATIVE_TABLES) {
       expect(tables).toContain(t);
     }
-  }, 120_000);
+  });
 
   it("creates the Machine/Host/Location topology from the baseline alone", async () => {
     if (!db.available) return;
@@ -406,7 +402,7 @@ describe("server runner applies the migration chain", () => {
       `SELECT version FROM public.${RUNNER_TABLE} ORDER BY version`,
     );
     expect(applied.rows.map((row) => row.version)).toEqual(loadMigrations(MIGRATIONS_DIR).map((f) => f.version));
-  }, 120_000);
+  });
 
   it("rejects unknown user states, and constrains object_type by format only", async () => {
     if (!db.available) return;
@@ -456,7 +452,7 @@ describe("server runner applies the migration chain", () => {
          'private', 'full', 'user-1', now(), now()
        )`,
     );
-  }, 120_000);
+  });
 
   it("enforces object kind registry constraints in Postgres", async () => {
     if (!db.available) return;
@@ -551,7 +547,7 @@ describe("server runner applies the migration chain", () => {
          'kind-archived-reuse', 'space-1', 'email', 'Email replacement', 'source', 'active', now(), now()
        )`,
     )).rejects.toThrow();
-  }, 120_000);
+  });
 
   it("admits exactly the protocol's subtype keys for each base object type", async () => {
     if (!db.available) return;
@@ -576,15 +572,15 @@ describe("server runner applies the migration chain", () => {
         [randomUUID(), baseObjectType],
       )).rejects.toMatchObject({ constraint: "ck_space_object_profiles_key_by_base_object_type" });
     }
-  }, 120_000);
+  });
 
-  it.for(["0015", "0016"])("upgrades the published chain through %s without rewriting history or losing existing data", async (lastPublished, ctx) => {
+  it.for(["0015", "0016", "0018"])("upgrades the published chain through %s without rewriting history or losing existing data", async (lastPublished, ctx) => {
     if (!db.available) return ctx.skip();
     await resetSchema(db.pool);
     const prefix = mkdtempSync(join(tmpdir(), 'rainver-published-host-prefix-'));
     try {
       const published = loadMigrations(MIGRATIONS_DIR).filter(m => m.version <= lastPublished);
-      expect(published.at(-1)?.name).toBe(lastPublished === '0016' ? 'project_folder_io_intents' : 'host_tool_presentation');
+      expect(published.at(-1)?.name).toBe(lastPublished === '0018' ? 'workspace_operation_core' : lastPublished === '0016' ? 'project_folder_io_intents' : 'host_tool_presentation');
       const folderIo = loadMigrations(MIGRATIONS_DIR).find(m => m.version === '0016')!;
       expect(folderIo.name).toBe('project_folder_io_intents');
       expect(folderIo.checksum).toBe('d9f71a47ef6e95f046901e6af5c4da815aebe156e391b4fa1ea45a683f353307');
@@ -621,5 +617,5 @@ describe("server runner applies the migration chain", () => {
     for (const t of REPRESENTATIVE_TABLES) {
       expect(tables).toContain(t);
     }
-  }, 120_000);
+  });
 });

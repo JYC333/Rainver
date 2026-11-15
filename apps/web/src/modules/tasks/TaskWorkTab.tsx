@@ -1,3 +1,4 @@
+import {useAppTranslation} from '../../i18n'
 import { SpaceLink as Link } from "../../core/spaceNav";
 import { useCallback, useEffect, useState } from 'react'
 import { toast } from 'sonner'
@@ -70,6 +71,7 @@ export default function TaskWorkTab({ taskId, refreshToken = 0 }: {
   /** Incremented by the page after a write that may have changed the Work view. */
   refreshToken?: number
 }) {
+  const {t}=useAppTranslation()
   const [view, setView] = useState<TaskWorkView | null>(null)
   const [loading, setLoading] = useState(true)
   const load = useCallback(async () => {
@@ -160,7 +162,7 @@ export default function TaskWorkTab({ taskId, refreshToken = 0 }: {
                 <span className="min-w-0">
                   <span className="font-medium">{actorLabel(event.actor)}</span>
                   {' — '}
-                  <span className="text-muted-foreground">{eventSummary(event.event_kind, event.data_json)}</span>
+                  <span className="text-muted-foreground">{event.event_kind==='task.content_changed'?t('board_ui.task_text_updated'):eventSummary(event.event_kind, event.data_json)}</span>
                 </span>
               </li>
             ))}

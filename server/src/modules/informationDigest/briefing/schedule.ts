@@ -1,3 +1,4 @@
+import { lockActivePerson } from '../../access/activePerson.js';
 import { HttpError, withQueryableTransaction, type Queryable } from "../../routeUtils/common.js";
 import type { BriefingScopeAdapter } from "./contract.js";
 import { selectExecution } from "./execution.js";
@@ -53,9 +54,10 @@ export async function setDailyBriefing(
   return withQueryableTransaction(db, async (tx) => {
     if (!(await adapter.canGenerate(tx, userId))) throw new HttpError(403, "Changing the daily briefing requires write access", { code: "briefing_writer_required" });
     if(adapter.scope.type==='project')throw new HttpError(410,'Project daily analysis is managed by Following',{code:'project_daily_briefing_replaced'});
+    await lockActivePerson(tx, adapter.scope.spaceId, userId);
+    const execution = input.daily_enabled ? await selectExecution(tx, adapter.scope.spaceId, userId, input, true) : null;
     const automation = await scopeDigestAutomation(tx, adapter, true);
     if (!automation) throw new HttpError(409, "This scope has no daily digest schedule yet", { code: "digest_schedule_missing" });
-    const execution = input.daily_enabled ? await selectExecution(tx, adapter.scope.spaceId, userId, input) : null;
     const briefing = execution
       ? { enabled: true, user_id: userId, agent_id: execution.agent_id, runtime_profile_id: execution.runtime_profile_id }
       : { enabled: false };

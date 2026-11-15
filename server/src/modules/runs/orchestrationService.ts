@@ -1,4 +1,5 @@
-import {checkpointWorkspaceRun} from "../hosts/executionWorkspaceJobs.js";
+import {admitDelegatedExecutionWorkspace} from '../projectFolders/workspaceAdmission.js';
+import {checkpointWorkspaceRun} from "../hosts/workspaceCheckpoints.js";
 import {ExecutionWorkspaceRefSchema} from "@rainver/protocol";
 import { readOnlyWorkspaceHostRefusal } from "./workspaceAccessPolicy.js";
 import { isAbsolute, relative as relativePath, resolve, sep } from "node:path";
@@ -25,6 +26,8 @@ import { AgentGroupRunLifecycleProjector } from "../agentGroups/lifecycleProject
 import type { CliProcessRegistry } from "./localCliExecution.js";
 import { PgRunRepository } from "./repository.js";
 import { RunExecutionControl } from "./executionControl.js";
+import { EXECUTION_CONTROLLER_LOST } from "./retryPolicy.js";
+import { runAssignedTask } from "./runAssignedTask.js";
 import { JobDeferredError } from "../jobs/handlerRegistry.js";
 import { dispatchesToHostDaemon } from "./runRemoteness.js";
 import type { VerificationTarget } from "./verification/types.js";
@@ -710,7 +713,7 @@ export class RunOrchestrationService {
         const stopped = await this.executionControl.stop(run, true);
         if (!stopped.confirmed_exit) throw new JobDeferredError("Waiting for the interrupted Run attempt to confirm exit", 30_000);
         interruptedAttemptNumber = stopped.attempt_number;
-        throw new RunPreparationError("orphaned", "The previous worker lost this Run's execution controller; its Host attempt has stopped.");
+        throw new RunPreparationError(EXECUTION_CONTROLLER_LOST, "The previous worker lost this Run's execution controller; its Host attempt has stopped.");
       }
       let effectiveBindings = this.workContextResolver
         ? await this.workContextResolver(run)
@@ -890,6 +893,11 @@ export class RunOrchestrationService {
       await (await import('../informationDigest/briefing/settlement.js')).assertBriefingDispatch(this.config, run);
       await (await import('../prompts/reading/dispatch.js')).assertReadingDispatch(this.config,run);
       await (await import('../knowledgePromotion/extractionDispatch.js')).assertKnowledgeExtractionDispatch(this.config,run);
+      // Workspace deferral is queued admission, before attempts or delegation
+      // state advance. Never roll an already-started Run back to queued.
+      const executionPort = await this.resolveExecutionPort(routedRun);
+      const resolved = await this.enforceRuntimePolicy(routedRun, input, executionPort.hostKind);
+      if(this.config.databaseUrl)await admitDelegatedExecutionWorkspace(getDbPool(this.config.databaseUrl),routedRun,executionPort,this.config,this.adapters.hostCli?.connectionRegistry);
       const running = await this.repository.markRunRunning({
         run_id: run.id,
         space_id: run.space_id,
@@ -916,15 +924,7 @@ export class RunOrchestrationService {
       const contextBoundRunning = applyEffectiveWorkContextBindings(running, effectiveBindings);
       await this.markDelegatedRunRunningBestEffort(contextBoundRunning);
 
-      // Resolved once, here (ADR 0016), rather than separately inside
-      // `enforceRuntimePolicy` and `prepareRuntimeContext` — both need to
-      // agree on the same host_kind for the same run, and re-querying
-      // per-caller risks the two disagreeing under a concurrent host change.
-      const executionPort = await this.resolveExecutionPort(contextBoundRunning);
-      // Policy gate + server-owned adapter resolution first. The run row and
-      // agent/runtime configuration own the adapter and sandbox level; request
-      // bodies never override executable paths, permissions, or runtime policy.
-      const resolved = await this.enforceRuntimePolicy(contextBoundRunning, input, executionPort.hostKind);
+      // Reuse the host and policy resolved during queued admission.
       const effectiveRun: AgentRunRecord = {
         ...contextBoundRunning,
         runtime_key: resolved.runtime_key,
@@ -1563,7 +1563,15 @@ export class RunOrchestrationService {
     } catch (error) {
       // An offline Host or a missing exit confirmation is a wait, never proof
       // that the old process stopped. Keep the Run and return the job attempt.
-      if (error instanceof JobDeferredError) throw error;
+      if (error instanceof JobDeferredError) {
+        // Cancellation may have arrived while queued admission held the lock.
+        // No launch exists yet; settle it under this owner before returning.
+        if (run.status === "queued" && !step) {
+          const cancelled=await this.publishPendingCancellation(run,new Date().toISOString());
+          if(cancelled){executionLockHeld=false;await this.markDelegatedRunTerminal(cancelled);return {run_id:run.id,status:'cancelled',error_code:'run_cancelled'};}
+        }
+        throw error;
+      }
       const completedAt = new Date().toISOString();
       const message = errorMessage(error);
       if (error instanceof RunApprovalRequiredError) {
@@ -1583,7 +1591,7 @@ export class RunOrchestrationService {
       }
       const errorCode =
         error instanceof RunPreparationError ? error.code : "run_orchestration_failed";
-      const failureStatus = errorCode === "orphaned" ? "orphaned" : "failed";
+      const failureStatus = errorCode === "orphaned" || errorCode === EXECUTION_CONTROLLER_LOST ? "orphaned" : "failed";
       if (step) {
         await this.updateRunStepStatusBestEffort({
           step_id: step.id,
@@ -1650,7 +1658,7 @@ export class RunOrchestrationService {
           });
         }
       }
-      if (!failedRun && errorCode === "orphaned") {
+      if (!failedRun && failureStatus === "orphaned") {
         const current = await this.repository.getRun(run.space_id, run.id);
         return { run_id: run.id, status: protocolRunStatus(current?.status ?? run.status),
           skipped: true, skip_reason: "interrupted_attempt_already_settled" };
@@ -2337,7 +2345,7 @@ export class RunOrchestrationService {
             expected_setup_version: Number(effectiveBindings.workContextSetupRef.version),
             current_message_ref: currentRuntimeContextInputRef(run),
             one_off_refs: [],
-            retrieval_intent: await retrievalIntentFor(input.retrieval_intent ?? input.prompt ?? run.prompt),
+            retrieval_intent: await retrievalIntentFor(input.retrieval_intent ?? runAssignedTask(run) ?? input.prompt),
             invocation_purpose: "agent_task",
           },
         });

@@ -391,6 +391,7 @@ describe('operation package lifecycle through canonical consumers', () => {
     const accepted = await app.inject({
       method: 'POST',
       url: `/api/v1/proposals/${submitted.json().proposal_id}/accept`,
+      headers: {'idempotency-key': randomUUID()},
       payload: {}
     });
     expect(accepted.statusCode, accepted.body).toBe(200);
@@ -705,7 +706,7 @@ describe('operation package lifecycle through canonical consumers', () => {
     const resource = await admitted();
     resource.onDispose(async () => {
       // No other backend holds any lock on the enablement or hold tables, nor an open transaction.
-      observedLocks.push((await db.pool.query("SELECT count(*)::int AS n FROM pg_locks l JOIN pg_class c ON c.oid=l.relation WHERE c.relname IN ('official_plugin_enablements','official_plugin_scope_holds') AND l.pid<>pg_backend_pid()")).rows[0].n);
+      observedLocks.push((await db.pool.query("SELECT count(*)::int AS n FROM pg_locks l JOIN pg_class c ON c.oid=l.relation WHERE l.database=(SELECT oid FROM pg_database WHERE datname=current_database()) AND c.relname IN ('official_plugin_enablements','official_plugin_scope_holds') AND l.pid<>pg_backend_pid()")).rows[0].n);
       observedLocks.push((await db.pool.query("SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND state LIKE 'idle in transaction%'")).rows[0].n);
       // A dispose that writes the same rows in another connection must not wait on the cleanup.
       await withTransaction(db.pool, async tx => {

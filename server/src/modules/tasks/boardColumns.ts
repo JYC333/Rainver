@@ -45,7 +45,7 @@ export async function taskColumnPlacement(db:Queryable,spaceId:string,projectId:
   if(typeof body.column_id!=="string")throw new BoardMutationError(422,"Invalid column ID");
   const row = (await db.query<{board_id:string;status_key:string}>(`SELECT c.board_id,c.status_key FROM board_columns c
     JOIN boards b ON b.id=c.board_id AND b.space_id=c.space_id WHERE c.space_id=$1 AND c.id=$2
-    AND c.deleted_at IS NULL AND b.deleted_at IS NULL AND b.status='active' AND b.project_id IS NOT DISTINCT FROM $3::varchar`,
+    AND c.deleted_at IS NULL AND b.deleted_at IS NULL AND b.status='active' AND b.project_id IS NOT DISTINCT FROM $3::varchar FOR SHARE OF c,b`,
     [spaceId,body.column_id,projectId])).rows[0];
   if (!row || body.board_id && body.board_id!==row.board_id) throw new BoardMutationError(404,'Board column not found');
   const blockedOverlay=body.status==='blocked' && row.status_key==='in_progress';

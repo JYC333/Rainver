@@ -1,5 +1,9 @@
+import {runWorkspaceSweep,runWorkspaceSweepStages,sweepWorkspaceFilePage} from './workspaceFilePages.js';
+import {pruneWorkspaceReceipts} from './workspaceReceiptExpiry.js';
+import {sweepIgnoredBlockedReceipts} from './workspaceIgnoredReceipts.js';
+import {preserveIgnoredWorkspaceFiles,sweepRetiredIgnored} from './workspaceIgnored.js';
 import { ownedBranchName, workspaceIdentity } from "./worktreeIdentity.js";
-import { cp, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, stat, statfs, unlink, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, open, opendir, readFile, readdir, realpath, rename, rm, statfs, unlink, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -40,7 +44,8 @@ import { locationRepositoryDirectory, tryHoldRepositories } from "./repositoryGa
  * `core.excludesFile`) are never committed; they go with the worktree when it
  * is removed — at settle, branch delete and sweep — and when a different Run
  * of the Task takes it over, which recreates it. A retry or resumption of the
- * same Run finds them where it left them.
+ * same Run finds them where it left them. Isolated workspace cleanup below
+ * instead preserves ignored bytes (except dependencies) in manifest quarantine.
  *
  * What the branch cannot hold is moved to quarantine
  * (`<config>/task-worktrees-quarantine/<location_id>/`), never deleted on the
@@ -68,8 +73,6 @@ const SYSTEM_GIT_IDENTITY = Object.freeze({ name: "Rainver", email: "rainver@loc
 /** What a refused settle or branch delete answers while the Task is in use; the control plane retries it later. */
 export const TASK_BUSY = "task_busy";
 const DAY_MS = 24 * 60 * 60 * 1000;
-/** How long a settled Run's answer is kept for a repeated settle. */
-const RUN_RECORD_RETENTION_MS = 30 * DAY_MS;
 /**
  * How long the nested repositories and submodule histories of a worktree whose
  * work is on the branch are kept in quarantine. A repository with submodules
@@ -141,18 +144,16 @@ export async function checkLocationRepository(locationRoot: string): Promise<Loc
   if (!root) return { kind: "not_git" };
   const dotGit = join(root, ".git");
   if (!(await isRealDirectory(dotGit))) return { kind: "not_git" };
-  const [inside, prefix, commonDir] = await Promise.all([
-    runLocationGit(["rev-parse", "--is-inside-work-tree"], root),
-    runLocationGit(["rev-parse", "--show-prefix"], root),
-    runLocationGit(["rev-parse", "--git-common-dir"], root),
-  ]);
-  for (const result of [inside, prefix, commonDir]) {
-    if (result.code !== 0) return { kind: "unusable", reason: result.stderr.trim().slice(0, 400) || `git exited ${result.code}` };
-  }
-  if (inside.stdout.trim() !== "true" || prefix.stdout.trim() !== "") {
+  // The first two fields cannot contain newlines; the final path can. Keep
+  // the empty top-level prefix and remove only Git's final record terminator.
+  const probe = await runLocationGit(["rev-parse", "--is-inside-work-tree", "--show-prefix", "--git-common-dir"], root);
+  if (probe.code !== 0 || probe.incomplete) return { kind: "unusable", reason: probe.stderr.trim().slice(0, 400) || `git exited ${probe.code}` };
+  const fields = /^(true|false)\n([^\n]*)\n([\s\S]*)\n$/.exec(probe.stdout);
+  if (!fields) return { kind: "unusable", reason: "git repository probe returned invalid output" };
+  if (fields[1] !== "true" || fields[2] !== "") {
     return { kind: "unusable", reason: "git does not treat the Location as the top of its working tree" };
   }
-  const gitCommonDir = await realpath(resolve(root, commonDir.stdout.trim())).catch(() => null);
+  const gitCommonDir = await realpath(resolve(root, fields[3]!)).catch(() => null);
   if (gitCommonDir !== dotGit) return { kind: "unusable", reason: "the Location's git directory is not its own .git" };
   if (!(await commitOfRef(root, "HEAD"))) {
     // An unborn branch is a fresh repository; anything else is a broken HEAD.
@@ -331,7 +332,7 @@ async function readTaskRecord(locationId: string, taskId: string): Promise<TaskR
   return { run_id, start_commit, location_root, updated_at,...(typeof value.settled_commit==='string'&&COMMIT_ID.test(value.settled_commit)?{settled_commit:value.settled_commit}:{}) };
 }
 
-async function readRunRecord(runId: string): Promise<RunRecord | null> {
+export async function readRunRecord(runId: string): Promise<RunRecord | null> {
   if (!ID_SEGMENT.test(runId)) return null;
   const value = await readJson(runRecordPath(runId));
   if (!value) return null;
@@ -539,7 +540,7 @@ async function nestedRepositoryDirs(path: string): Promise<string[]> {
       continue;
     }
     for (const entry of entries) {
-      if (entry.name !== ".git" && entry.isDirectory()) pending.push(join(dir, entry.name));
+      if (entry.name !== ".git" && entry.name !== "node_modules" && entry.isDirectory()) pending.push(join(dir, entry.name));
     }
   }
   return found;
@@ -1247,7 +1248,7 @@ export interface BranchReleaseHook {
   /** Under the same lease, after the branch was actually deleted. */
   released?(repoRoot: string): Promise<void>;
 }
-type TaskBranchDeleteInput = { locationRoot: string | null; locationId: string; taskId: string; expectedCommit?: string; retainBranch?: boolean; branchRelease?: BranchReleaseHook };
+type TaskBranchDeleteInput = { locationRoot: string | null; locationId: string; taskId: string; expectedCommit?: string; retainBranch?: boolean; branchRelease?: BranchReleaseHook; captureIntent?:(commit:string)=>Promise<void> };
 export async function deleteTaskBranch(input: TaskBranchDeleteInput): Promise<TaskBranchDeleteResult> {
   const { locationId, taskId } = input;
   if (!validTaskWorktreeIds(locationId, taskId)) {
@@ -1297,7 +1298,43 @@ export async function deleteTaskBranchHeld(input: TaskBranchDeleteInput): Promis
     if (base) {
       const state = await worktreeState(repo, path, ref, false);
       if (state.kind === "worktree") {
-        if(workspaceIdentity(taskId) && await gitOrThrow(["status","--porcelain","--untracked-files=all"],path))return {ok:false,deleted:false,error:"workspace_uncheckpointed"};
+        if(workspaceIdentity(taskId)){
+          // A nested repository or unique ignored file is outside our snapshot
+          // contract. Keep it in place, including when the tracked tree is clean.
+          if((await nestedRepositoryDirs(path)).length)return {ok:false,deleted:false,error:'workspace_uncaptured_nested'};
+          const ignored=await runLocationGit(['ls-files','--others','--ignored','--exclude-standard','--directory','-z'],path,30000,{maxOutputBytes:128*1024});
+          if(ignored.code!==0||ignored.incomplete)
+            return {ok:false,deleted:false,error:'workspace_uncaptured_ignored'};
+          if(await gitOrThrow(['status','--porcelain','--untracked-files=all'],path)){
+            // A release permission never captures or discards a newer edit.
+            if(!input.retainBranch||workspaceIdentity(taskId)?.integration_id||!input.captureIntent)return {ok:false,deleted:false,error:'workspace_uncheckpointed'};
+            // A staged preimage distinct from the working bytes needs explicit
+            // preservation; never replace it with a snapshot of only the files.
+            const staged=await runLocationGit(['diff','--cached','--quiet','--no-ext-diff','--no-textconv'],path);
+            if(staged.incomplete||![0,1].includes(staged.code!))return {ok:false,deleted:false,error:'workspace_uncaptured_index'};
+            const index=await gitOrThrow(['write-tree'],path);
+            const first=await captureWorkspaceTree(path,CAPTURE_TIMEOUT_MS),second=await captureWorkspaceTree(path,CAPTURE_TIMEOUT_MS);
+            if(staged.code===1&&index!==first)return {ok:false,deleted:false,error:'workspace_uncaptured_index'};
+            if(!first||first!==second)return {ok:false,deleted:false,error:'workspace_uncaptured_content'};
+            const captured=await writeCommit(repo.root,first,tip!,SYSTEM_GIT_IDENTITY,'Rainver: preserve idle workspace edits');
+            // Check once more before moving the branch. A failed capture leaves
+            // both index and files intact, and no old release is renewed.
+            if(await gitOrThrow(['write-tree'],path)!==index||await captureWorkspaceTree(path,CAPTURE_TIMEOUT_MS)!==first)return {ok:false,deleted:false,error:'workspace_uncaptured_content'};
+            await input.captureIntent(captured);
+            await moveBranch(repo.root,ref,captured,tip!,'rainver: preserve idle workspace edits');
+            await gitOrThrow(['read-tree',captured],path);
+            return {ok:false,deleted:false,tip:captured,error:'workspace_content_captured'};
+          }
+        }
+        if(workspaceIdentity(taskId)){
+          let preserved;
+          try{preserved=await preserveIgnoredWorkspaceFiles(path,configDir(),locationId,taskId);}
+          catch(error){return {ok:false,deleted:false,error:error instanceof Error&&/^workspace_(?:ignored_[a-z_]+|uncaptured_ignored)$/.test(error.message)?error.message:'workspace_uncaptured_ignored'};}
+          try{
+            if(await gitOrThrow(['status','--porcelain','--untracked-files=all'],path)){await preserved.rollback();return {ok:false,deleted:false,error:'workspace_uncheckpointed'};}
+            await preserved.commit();
+          }catch(error){await preserved.rollback();throw error;}
+        }
         quarantined=(await retireWorktree(repo, locationId, taskId, path)) === "quarantined";
       }
       else if (state.kind === "junk") await removeJunk(repo, { locationId, taskId }, path);
@@ -1346,29 +1383,31 @@ export async function sweepTaskWorktrees(input: {
   log?: (line: string) => void;
   now?: number;
 }): Promise<number> {
+  return runWorkspaceSweep(async()=>{
   const log = input.log ?? (() => {});
   const now = input.now ?? Date.now();
   let removed = 0;
   const root = await realpath(configDir()).catch(() => null);
   const worktreesRoot = root ? join(root, "task-worktrees") : null;
+  await runWorkspaceSweepStages('maintenance',[async()=>{
   if (worktreesRoot && await isRealDirectory(worktreesRoot)) {
-    for (const locationId of await readdir(worktreesRoot).catch(() => [] as string[])) {
-      if (!ID_SEGMENT.test(locationId)) continue;
+    await sweepWorkspaceFilePage(worktreesRoot,'worktree-locations',async locationId=>{
+      if (!ID_SEGMENT.test(locationId)) return;
       const base = await worktreesBase(locationId, false);
-      if (!base) continue;
-      for (const taskId of await readdir(base).catch(() => [] as string[])) {
-        if (!TASK_ID.test(taskId) && !workspaceIdentity(taskId)) continue;
+      if (!base) return;
+      await sweepWorkspaceFilePage(base,'worktrees-'+locationId,async taskId=>{
+        if (!TASK_ID.test(taskId) && !workspaceIdentity(taskId)) return;
         try {
           if (await sweepOne(input, locationId, taskId, join(base, taskId), now, log)) removed += 1;
         } catch (error) {
           log(`task worktree sweep of ${locationId}/${taskId} failed: ${error instanceof Error ? error.message : String(error)}`);
         }
-      }
-    }
+      },log);
+    },log);
   }
-  await pruneRunRecords(now);
-  await pruneRetiredQuarantine(now, log);
+  },()=>pruneWorkspaceReceipts(now,log),()=>pruneRetiredQuarantine(now,log)]);
   return removed;
+  });
 }
 
 /** Whether the worktree was last used more than a day ago (its record, else the directory's mtime). */
@@ -1424,12 +1463,25 @@ async function sweepOne(
     const tip = await commitOfRef(repo.root, ref);
     if (!tip) throw new Error("the Task branch is gone; leaving its worktree");
     await clearStaleLock([state.entry], "index.lock");
+    // Source capture belongs to the server's acknowledgement/content-clock
+    // flow. The legacy local sweep cannot collapse a distinct staging version
+    // or create an unacknowledged source checkpoint on its own.
+    if(workspaceIdentity(taskId)&&await gitOrThrow(['status','--porcelain','--untracked-files=all'],path))return false;
     const committed = await commitLeftovers(repo, path, ref, tip, record?.run_id ?? null);
     if (committed === null) {
       log(`task worktree ${locationId}/${taskId}: git could not capture it; moved aside with its contents intact`);
       await quarantine(repo, locationId, taskId, path);
-    } else if ((await retireWorktree(repo, locationId, taskId, path)) === "quarantined") {
-      log(`task worktree ${locationId}/${taskId}: it held a nested repository or could not be removed; moved aside`);
+    } else {
+      if(workspaceIdentity(taskId)){
+        const preserved=await preserveIgnoredWorkspaceFiles(path,configDir(),locationId,taskId);
+        try{
+          if(await gitOrThrow(['status','--porcelain','--untracked-files=all'],path)){await preserved.rollback();return false;}
+          await preserved.commit();
+        }catch(error){await preserved.rollback();throw error;}
+      }
+      if ((await retireWorktree(repo, locationId, taskId, path)) === "quarantined") {
+        log(`task worktree ${locationId}/${taskId}: it held a nested repository or could not be removed; moved aside`);
+      }
     }
     return true;
   });
@@ -1466,48 +1518,34 @@ async function pruneRetiredQuarantine(now: number, log: (line: string) => void):
   const root = await realpath(configDir()).catch(() => null);
   const base = root ? join(root, "task-worktrees-quarantine") : null;
   if (!base || !(await isRealDirectory(base))) return;
-  for (const locationId of await readdir(base).catch(() => [] as string[])) {
+  await sweepWorkspaceFilePage(base,'quarantine-locations',async locationId=>{
     const dir = join(base, locationId);
-    if (!ID_SEGMENT.test(locationId) || !(await isRealDirectory(dir))) continue;
-    for (const name of await readdir(dir).catch(() => [] as string[])) {
+    if (!ID_SEGMENT.test(locationId) || !(await isRealDirectory(dir))) return;
+    await runWorkspaceSweepStages('quarantine-'+locationId,[
+    ()=>sweepIgnoredBlockedReceipts(root!,locationId,log).catch(error=>log(String(error))),
+    ()=>sweepRetiredIgnored(root!,locationId,now,log).catch(error=>log(String(error))),
+    ()=>sweepWorkspaceFilePage(dir,'retired-'+locationId,async name=>{
       const match = RETIRED_TARGET.exec(name);
-      if (!match) continue;
+      if (!match) return;
       const madeAt = Date.parse(`${match[1]}T${match[2]}:${match[3]}:${match[4]}.${match[5]}Z`);
-      if (!Number.isFinite(madeAt) || now - madeAt < RETIRED_QUARANTINE_RETENTION_MS) continue;
+      if (!Number.isFinite(madeAt) || now - madeAt < RETIRED_QUARANTINE_RETENTION_MS) return;
       const path = join(dir, name);
-      if (!(await isRealDirectory(path))) continue;
+      if (!(await isRealDirectory(path))) return;
       await rm(path, { recursive: true, force: true })
         .catch((error: unknown) => log(`quarantined ${locationId}/${name} could not be deleted: ${error instanceof Error ? error.message : String(error)}`));
-    }
-  }
+    },log)]);
+  },log);
 }
-
-/** Settled Runs' and finished merges' stored answers, after 30 days. */
-async function pruneRunRecords(now: number): Promise<void> {
-  for (const directory of [join(configDir(), "task-runs"), join(configDir(), "task-merges"),join(configDir(),"workspace-launches"),join(configDir(),"workspace-cleanup")]) {
-    for (const name of await readdir(directory).catch(() => [] as string[])) {
-      const path = join(directory, name);
-      const info = await stat(path).catch(() => null);
-      if (info?.isFile() && now - info.mtimeMs > RUN_RECORD_RETENTION_MS){
-        const receipt=await readJson(path);
-        // A live/retained generic owner may still need replay after a long
-        // offline period. These small identity receipts outlive physical trees.
-        if(workspaceIdentity(String(receipt?.task_id??''))||directory.endsWith('workspace-launches')&&typeof receipt?.generation==='number')continue;
-        if(directory.endsWith("workspace-cleanup")&&(await readJson(path))?.state!=="cleaned")continue;
-        await rm(path, { force: true });
-      }
-    }
-  }
-}
-
 
 /** Logical, owner-scoped cleanup proof; never exposes another workspace or Host path. */
 async function quarantineCounts(locationId:string,key:string){
  const quarantineDir=await daemonDir('task-worktrees-quarantine',locationId,false);
  let whole=0,retired=0;
- for(const name of quarantineDir?await readdir(quarantineDir).catch(()=>[]):[]){
+ if(!quarantineDir)return {whole,retired};
+ for await(const {name} of await opendir(quarantineDir)){
   if(!name.startsWith(`${key}-`))continue;
-  if(RETIRED_TARGET.test(name))retired++;else whole++;
+  if(name===`${key}-blocked-ignored.json`)continue; // Diagnostic, never a physical quarantine.
+  if(RETIRED_TARGET.test(name)||/^.+-(?:preserved|retired)-ignored$/.test(name))retired++;else whole++;
  }
  return {whole,retired};
 }
@@ -1525,4 +1563,26 @@ export async function ownedWorkspaceInventory(repo:LocationRepository,locationId
    merge_record:Boolean(await lstat(mergeRecordPath(locationId,key)).catch(()=>null)),
    quarantined_whole:whole,retained_quarantine:retired,active:isTaskBusy(taskLeaseKey(locationId,key)),
    free_bytes:volume?Math.max(0,volume.bavail*volume.bsize):null};
+}
+
+/** Positive recovery evidence for a Run with no launch receipt. Read under the
+ * same lease as launch/cleanup; never manufacture a checkpoint for dirty work. */
+export async function unchangedWorkspaceWithoutRun(repo:LocationRepository,locationId:string,key:string,runId:string,expected:string){
+ return await withTaskHeld(taskLeaseKey(locationId,key),async()=>{
+  const inventory=await ownedWorkspaceInventory(repo,locationId,key);
+  if(inventory.run_record||inventory.merge_record||inventory.quarantined_whole||await readRunRecord(runId))return false;
+  // A settled cleanup may have removed the tree and its registration while
+  // retaining the managed branch. Prove that exact tip under the same lease;
+  // an absent, moved or quarantined source cannot supply unchanged evidence.
+  if(!inventory.worktree&&!inventory.registration)
+   return !(await listWorktrees(repo.root)).some(w=>w.branch===taskBranchRef(key))
+    &&await commitOfRef(repo.root,taskBranchRef(key))===expected;
+  if(!inventory.registration)return false;
+  const base=await worktreesBase(locationId,false);
+  if(!base)return false;
+  const path=join(base,key),state=await worktreeState(repo,path,taskBranchRef(key),false);
+  if(state.kind!=='worktree'||!state.onBranch||await commitOfRef(repo.root,taskBranchRef(key))!==expected)return false;
+  return await gitOrThrow(['rev-parse','HEAD'],path)===expected
+   &&await gitOrThrow(['status','--porcelain=v1','--untracked-files=all'],path)==='';
+ })??false;
 }

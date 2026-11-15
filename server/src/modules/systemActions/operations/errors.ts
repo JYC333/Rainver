@@ -21,7 +21,7 @@ export class OperationError extends Error {
 }
 /** Only explicitly classified domain failures may be cached. */
 export class OperationBusinessError extends OperationError {
-  constructor(code: 'operation_conflict' | 'operation_invalid_input', status: 409 | 422, domain: string) {
+  constructor(code: 'operation_conflict' | 'operation_invalid_input' | 'operation_limit_exceeded', status: 409 | 422 | 429, domain: string) {
     super(code, status, false, domain);
   }
 }
@@ -37,8 +37,8 @@ export const hidden = () => new OperationError('operation_not_found', 404);
 export class OperationRefusal extends OperationBusinessError {
   private readonly detail: string;
   private readonly details: Record<string, unknown>;
-  constructor(status: 409 | 422, domain: string, detail: string, details: unknown = {}) {
-    super(status === 409 ? 'operation_conflict' : 'operation_invalid_input', status, domain);
+  constructor(status: 409 | 422 | 429, domain: string, detail: string, details: unknown = {}) {
+    super(status === 429 ? 'operation_limit_exceeded' : status === 409 ? 'operation_conflict' : 'operation_invalid_input', status, domain);
     this.detail = detail.slice(0, 2000);
     this.details = details && typeof details === 'object' && !Array.isArray(details) ? JSON.parse(JSON.stringify(details)) as Record<string, unknown> : {};
   }
@@ -49,9 +49,20 @@ export class OperationRefusal extends OperationBusinessError {
     return body;
   }
 }
-/** Classify a marked domain error into a refusal; 400 and 422 are invalid input, 409 a conflict. */
+/** Only marked business errors: 400/422 invalid input, 409 conflict, 429 limit. */
 export function markedRefusal(error: {statusCode: number; message: string; responseBody?: unknown}, domain: string): OperationRefusal | undefined {
+  if (error.statusCode === 429) return new OperationRefusal(429, domain, error.message, error.responseBody);
   if (error.statusCode === 409) return new OperationRefusal(409, domain, error.message, error.responseBody);
   if (error.statusCode === 400 || error.statusCode === 422) return new OperationRefusal(422, domain, error.message, error.responseBody);
   return undefined;
+}
+
+/** Request-schema failures expose only explicitly sanitized public fields. */
+export class OperationInputError extends OperationError {
+  constructor(private readonly details:Record<string,unknown>){super('operation_invalid_input',422);}
+  override body(requestId:string):OperationErrorBody {
+    const body=super.body(requestId);body.error.metadata=this.details;
+    body.error.message='Invalid action input. Describe the listed action and correct the indicated fields.';
+    return body;
+  }
 }

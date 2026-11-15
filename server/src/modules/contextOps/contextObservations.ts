@@ -7,6 +7,7 @@ import type {
 import type { Queryable } from "../routeUtils/common.js";
 import { insertArtifactRow } from "../artifacts/reviewArtifactWriter.js";
 import { ContextOpsService } from "./service.js";
+import { reportDependencyClosureMarker } from "../retrieval/reportClosureContract.js";
 
 const CONTEXT_OBSERVATION_REPORT_ARTIFACT_TYPE = "context_observation_report";
 
@@ -18,7 +19,7 @@ export async function runContextObservationScan(
     request: ContextOpsContextObservationScanRequest;
   },
 ): Promise<{ report: ContextOpsContextObservationReport; artifact_id: string | null; canonical_write_performed: false }> {
-  const summary = await new ContextOpsService(db).getSummary({
+  const { summary, sourceArtifactIds } = await new ContextOpsService(db).getSummaryWithSources({
     spaceId: input.spaceId,
     userId: input.userId,
     windowDays: input.request.window_days,
@@ -54,6 +55,7 @@ export async function runContextObservationScan(
         spaceId: input.spaceId,
         ownerUserId: input.userId,
         report,
+        sourceArtifactIds,
         createdAt: generatedAt,
       })
     : null;
@@ -131,11 +133,19 @@ async function persistContextObservationReport(
     spaceId: string;
     ownerUserId: string;
     report: ContextOpsContextObservationReport;
+    /** The maintenance/diagnostics reports whose released findings the
+     * observations count; each read rechecks them. */
+    sourceArtifactIds: readonly string[];
     createdAt: string;
   },
 ): Promise<string> {
   const id = randomUUID();
-  const payload = { ...input.report, artifact_id: id };
+  const payload = {
+    ...input.report,
+    artifact_id: id,
+    source_artifact_ids: [...input.sourceArtifactIds],
+    dependency_closure: reportDependencyClosureMarker(),
+  };
   return insertArtifactRow(db, {
     id,
     spaceId: input.spaceId,

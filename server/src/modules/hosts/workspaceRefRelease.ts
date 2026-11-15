@@ -73,6 +73,7 @@ import {claimSourceDeletions,clearSourceDeletions,keepSourceDeletionIntents,lock
  * (`history_scan`) and reads the remaining pages before deleting anything.
  */
 export type DelayedRefKind='ref_pages'|'local_preimages'|'run_history';
+export const HISTORY_CHECKPOINT_PROTOCOL=7;
 export interface RefInflight {
  /** The Host operation id; re-sent unchanged until a reply confirms it. */
  operation_id:string;
@@ -210,7 +211,9 @@ export async function advanceRefRelease(db:Queryable,w:Row,key:string,r:Workspac
  // fence) stays as it is. Reconcile resumes this once the Host reports the level.
  const needed=requiredRefLevel(r);
  if((w.host_reclaim??0)<needed)return hostUpgradeWait(r,save,needed);
- const next={...r,state:'running' as const,attempts:r.attempts+1};
+ // An older inflight journal replays its frozen result. Only a fresh claim
+ // actually evaluates the new history proof; reconciliation wakes it afterwards.
+ const next={...r,...(!r.inflight&&r.kind==='ref_pages'&&(w.host_reclaim??0)>=HISTORY_CHECKPOINT_PROTOCOL?{history_proof_level:HISTORY_CHECKPOINT_PROTOCOL}:{}),state:'running' as const,attempts:r.attempts+1};
  await save(next);
  const wait=async(error:string,ms:number):Promise<never>=>{
   await save({...next,state:'retry_wait',attempts:r.attempts,error,next_retry_at:new Date(Date.now()+ms).toISOString()});
@@ -360,7 +363,7 @@ export async function advanceRefRelease(db:Queryable,w:Row,key:string,r:Workspac
    answer={ok:true,branch:null,commit:null,error:null,inventory:{ref_operation:inflight.operation_id,retained_refs:[]}} as unknown as TaskBranchReply<'execution_workspace_command'>;
   }else{
    answer=await hosts.requestTaskBranch(w.execution_host_id,'execution_workspace_command',{workspace:frame,action:'release_refs',operation_id:inflight.operation_id,retain_branch:true,
-    release_refs:toHost(inflight.refs),...(inflight.pins?.length?{pin_sources:inflight.pins}:{}),...(inflight.settle?{settle_operations:settleChain(inflight).slice(1).map(o=>o.operation_id)}:{}),
+    release_refs:toHost(inflight.refs),...(r.reclaim_proof?{reclaim_proof:r.reclaim_proof,reclaim_bases:r.reclaim_bases??[]}:{}),...(inflight.pins?.length?{pin_sources:inflight.pins}:{}),...(inflight.settle?{settle_operations:settleChain(inflight).slice(1).map(o=>o.operation_id)}:{}),
     ...(inflight.keep?.length?{keep_sources:inflight.keep}:{}),...(inflight.release_keepers?.length?{release_keepers:inflight.release_keepers}:{}),
     // Only a fenced claim may delete shared sources on a reclaim-4 Host.
     ...(inflight.fence===FENCE_VERSION&&inflight.refs.some(x=>x.ref.startsWith(SOURCE_PREFIX))?{source_fence:true as const}:{})});
@@ -511,6 +514,15 @@ export async function advanceRefRelease(db:Queryable,w:Row,key:string,r:Workspac
   return page('workspace_ref_operation_settled');
  }
  const now=Date.now();
+ const unprovenPin=retainedNow.find(x=>x.reason.startsWith('checkpoint_not_in_'));
+ if(unprovenPin){
+  // Re-evaluate against the shared target through the existing Job/reconcile
+  // path. A proof refusal retains every pin and is not a transport attempt.
+  const proof_waits=Math.min((r.proof_waits??0)+1,9);
+  const wait=Math.min(7*86400_000,3600_000*2**(proof_waits-1));
+  await save({...outcome,proof_waits,state:'retry_wait',attempts:0,error:unprovenPin.reason,next_retry_at:new Date(now+wait).toISOString()});
+  throw new JobDeferredError(unprovenPin.reason,wait);
+ }
  const dueLeft=(outcome.release_refs??[]).filter(x=>dueOf(x)<=now);
  const later=(outcome.release_refs??[]).filter(x=>dueOf(x)>now);
  const morePages=r.kind==='ref_pages'&&typeof outcome.owned_after==='string';

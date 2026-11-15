@@ -152,8 +152,12 @@ describe('Inquiry and canonical Task associations (real PostgreSQL)',()=>{
   const runId=randomUUID(),agent=randomUUID();await seedRun(db.pool,{id:runId,space,owner,agent,version:randomUUID()});
   await db.pool.query(`UPDATE runs SET project_id=$2,instructed_by_user_id=$3,status='running',permission_snapshot_json=$4::jsonb WHERE id=$1`,[runId,project,owner,JSON.stringify({tool_grants:[{action_id:'inquiry.link_task'}]})]);
   app=buildModuleServer(config(),[inquiryModule,tasksModule,projectWorkModule]);
-  const posted=await app.inject({method:'POST',url:'/api/v1/tasks',payload:{project_id:project,title:'Human Task',source_run_id:runId,links:[{entity_type:'inquiry_thread',entity_id:thread,role:'executes'}]}});
-  expect(posted.statusCode).toBe(201);expect(posted.json().source_run_id).toBeNull();
+  // Run provenance is server-owned: a body claiming a Run is refused, not silently attributed.
+  const claimed=await app.inject({method:'POST',url:'/api/v1/tasks',headers:{'idempotency-key':randomUUID()},payload:{project_id:project,title:'Human Task',source_run_id:runId,links:[{entity_type:'inquiry_thread',entity_id:thread,role:'executes'}]}});
+  expect(claimed.statusCode).toBe(422);expect(claimed.json().error.code).toBe('operation_invalid_input');
+  const posted=await app.inject({method:'POST',url:'/api/v1/tasks',headers:{'idempotency-key':randomUUID()},payload:{project_id:project,title:'Human Task',links:[{entity_type:'inquiry_thread',entity_id:thread,role:'executes'}]}});
+  expect(posted.statusCode,posted.body).toBe(201);
+  expect((await db.pool.query(`SELECT source_run_id,visibility FROM tasks WHERE id=$1`,[posted.json().data.task_id])).rows[0]).toEqual({source_run_id:null,visibility:'space_shared'});
   expect((await db.pool.query(`SELECT id FROM project_work_events WHERE space_id=$1 AND (data_json->>'run_id'=$2 OR correlation_id=$2)`,[space,runId])).rows).toEqual([]);
   const run={...(await db.pool.query(`SELECT * FROM runs WHERE id=$1`,[runId])).rows[0],project_id:project,instructed_by_user_id:owner} as AgentRunRecord;
   const map=new Map<SystemActionId,SystemActionExecutor>();registerInquirySystemActionExecutors(map,config(),run);

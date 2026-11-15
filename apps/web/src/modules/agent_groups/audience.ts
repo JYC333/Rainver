@@ -12,7 +12,18 @@
  * The viewer is always excluded: "with you, Alice and Bob" is noise on a label
  * the viewer is reading.
  */
-export function audienceLabel(input: { otherMemberNames: string[]; agentCount: number }): string {
+export function audienceLabel(
+  input: { otherMemberNames: string[]; agentCount: number },
+  t?: (key: string, options?: Record<string, unknown>) => string,
+): string {
+  if (t) {
+    const names = input.otherMemberNames
+    const joined = names.length <= 2
+      ? names.join(t('collab_ui.audience.and'))
+      : `${names.slice(0, -1).join(t('collab_ui.audience.comma'))}${t('collab_ui.audience.and')}${names[names.length - 1]}`
+    const localized = names.length === 0 ? t('collab_ui.audience.just_you') : t('collab_ui.audience.with', { names: joined })
+    return input.agentCount === 0 ? localized : `${localized} · ${t('collab_ui.audience.agents', { count: input.agentCount })}`
+  }
   const people = input.otherMemberNames.length === 0
     ? 'Just you'
     : `With ${formatNames(input.otherMemberNames)}`
@@ -21,6 +32,26 @@ export function audienceLabel(input: { otherMemberNames: string[]; agentCount: n
   // announce an implementation detail on exactly the Room a person just made.
   if (input.agentCount === 0) return people
   return `${people} · ${input.agentCount === 1 ? '1 agent' : `${input.agentCount} agents`}`
+}
+
+/**
+ * Who can see a Room, as the Rooms index and the Room header say it: the
+ * mainline is the whole Project; a limited Room is named by its audience.
+ */
+export function roomVisibilityLabel(
+  input: { isMainline: boolean; otherMemberNames: string[] },
+  t: (key: string, options?: Record<string, unknown>) => string,
+): string {
+  if (input.isMainline) return t('collab_ui.audience.everyone')
+  return audienceLabel({ otherMemberNames: input.otherMemberNames, agentCount: 0 }, t)
+}
+
+/** "2 people · 1 agent", pluralized per locale. */
+export function rosterCountsLabel(
+  input: { people: number; agents: number },
+  t: (key: string, options?: Record<string, unknown>) => string,
+): string {
+  return `${t('collab_ui.rooms.people', { count: input.people })} · ${t('collab_ui.rooms.agents', { count: input.agents })}`
 }
 
 // Not `Intl.ListFormat`: the web target's lib is ES2020, and raising it for

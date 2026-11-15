@@ -1,12 +1,13 @@
-import { mkdir, unlink, writeFile } from "node:fs/promises";
-import { basename, extname, join } from "node:path";
-import { randomUUID } from "node:crypto";
+import {registerOperationAdapters} from '../systemActions/operations/routeAdapter.js';
+import { basename } from "node:path";
+import {resolveRequestId} from '../../gateway/requestContext.js';
+import {operationRuntime} from '../systemActions/operations/runtime.js';
+import {sessionActor} from '../systemActions/operations/actor.js';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
   HttpError,
   dbPool,
-  jsonBody,
   optionalString,
   parsePage,
   params,
@@ -14,93 +15,27 @@ import {
   resolveIdentity,
   sendRouteError,
 } from "../routeUtils/common.js";
-import { PgActivityRepository, summaryInputFromBody } from "./repository.js";
-import {
-  applyContentCreationContext,
-  resolveContentCreationContext,
-} from "../access/creationContext.js";
+import { PgActivityRepository } from "./repository.js";
 
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   const repository = () => new PgActivityRepository(dbPool(context.config));
 
-  app.post("/api/v1/activity", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const body = jsonBody(request);
-      const creation = await resolveContentCreationContext(dbPool(context.config), {
-        userId: identity.userId,
-        requestSpaceId: identity.spaceId,
-        projectId: optionalString(body.project_id),
-      });
-      return reply.send(await repository().create(
-        { spaceId: creation.spaceId, userId: identity.userId },
-        applyContentCreationContext(body, creation),
-      ));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
+  registerOperationAdapters(app,context.config,[{method:'POST',url:'/api/v1/activity',operation:'activity.create'}]);
 
-  app.post("/api/v1/activity/upload", async (request, reply) => {
+  app.post("/api/v1/activity/upload", {config:{operation:'activity.upload'}}, async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
+    const requestId=resolveRequestId(request);
+    reply.header('x-request-id',requestId).header('cache-control','private, no-store');
     try {
       const upload = await parseMultipartUpload(request);
-      if (upload.file.length === 0) throw new HttpError(422, "uploaded file is empty");
-      if (upload.file.length > MAX_UPLOAD_BYTES) {
-        throw new HttpError(413, `file exceeds ${MAX_UPLOAD_BYTES / (1024 * 1024)} MB limit`);
-      }
-      // Everything the request can be refused for comes before the file
-      // reaches disk. Do not write a file a refused upload has no record for.
-      const kind = (upload.fields.kind || "file").toLowerCase();
-      if (kind !== "file" && kind !== "voice") throw new HttpError(422, "kind must be 'file' or 'voice'");
-      const originalName = basename(upload.filename || "");
-      const creation = await resolveContentCreationContext(dbPool(context.config), {
-        userId: identity.userId,
-        requestSpaceId: identity.spaceId,
-        projectId: optionalString(upload.fields.project_id),
-      });
-      const ext = extname(originalName).slice(0, 16);
-      const storedName = `${randomUUID().replace(/-/g, "")}${ext}`;
-      const dir = join(context.config.rainverHome, "storage", "uploads", creation.spaceId);
-      await mkdir(dir, { recursive: true });
-      const storedPath = join(dir, storedName);
-      await writeFile(storedPath, upload.file);
-      const contentType = upload.contentType || "application/octet-stream";
-      const title =
-        upload.fields.title ||
-        originalName ||
-        (kind === "voice" ? "Voice capture" : "Uploaded file");
-      const content =
-        upload.fields.note ||
-        (kind === "voice"
-          ? `Voice capture (${contentType}, ${upload.file.length} bytes)`
-          : `File capture: ${originalName || storedName} (${contentType}, ${upload.file.length} bytes)`);
-      let out: Awaited<ReturnType<ReturnType<typeof repository>["create"]>>;
-      try {
-        out = await repository().create({ spaceId: creation.spaceId, userId: identity.userId }, applyContentCreationContext({
-          source_type: kind === "voice" ? "voice_capture" : "file_capture",
-          content,
-          title,
-          project_folder_id: upload.fields.project_folder_id,
-          metadata_json: {
-            capture_kind: kind,
-            filename: originalName || null,
-            mime_type: contentType,
-            size_bytes: upload.file.length,
-            stored_path: `${creation.spaceId}/${storedName}`,
-          },
-        }, creation));
-      } catch (error) {
-        // The record is what makes the file reachable; without it the file
-        // would stay on disk with nothing to clean it up.
-        await unlink(storedPath).catch(() => undefined);
-        throw error;
-      }
-      return reply.send(out);
+      const key=request.headers['idempotency-key'];
+      const out=await (await operationRuntime(context.config)).execute('activity.upload',{
+        ...upload.fields,filename:basename(upload.filename??''),content_type:upload.contentType||'application/octet-stream',content_base64:upload.file.toString('base64'),
+      },sessionActor(identity),requestId,typeof key==='string'?key:undefined);
+      return reply.code(out.http_status).send(out.body);
     } catch (error) {
       return sendRouteError(reply, error);
     }
@@ -145,51 +80,13 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.patch("/api/v1/activity/:activityId/review", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(
-        await repository().setStatus(identity, params(request).activityId ?? "", "processed"),
-      );
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
+  registerOperationAdapters(app,context.config,[{method:'PATCH',url:'/api/v1/activity/:activityId/review',operation:'activity.review',params:{activityId:'activity_id'}}]);
 
-  app.patch("/api/v1/activity/:activityId/archive", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(
-        await repository().setStatus(identity, params(request).activityId ?? "", "archived"),
-      );
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
+  registerOperationAdapters(app,context.config,[{method:'PATCH',url:'/api/v1/activity/:activityId/archive',operation:'activity.archive',params:{activityId:'activity_id'}}]);
 
-  app.post("/api/v1/activity/:activityId/consolidate", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(await repository().consolidate(identity, params(request).activityId ?? ""));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
+  registerOperationAdapters(app,context.config,[{method:'POST',url:'/api/v1/activity/:activityId/consolidate',operation:'activity.consolidate',params:{activityId:'activity_id'}}]);
 
-  app.post("/api/v1/activity/summary-runs", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply
-        .code(201)
-        .send(await repository().createSummaryRun(identity, summaryInputFromBody(jsonBody(request))));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
+  registerOperationAdapters(app,context.config,[{method:'POST',url:'/api/v1/activity/summary-runs',operation:'activity.summary.request'}]);
 }
 
 interface ParsedUpload {
@@ -254,6 +151,8 @@ async function parseMultipartUpload(request: FastifyRequest): Promise<ParsedUplo
         fileContentType = part.mimetype || null;
       } else if (typeof part.value === "string") {
         if (part.valueTruncated) throw new HttpError(413, "field exceeds the upload limit");
+        if(!['kind','title','note','project_id','project_folder_id'].includes(part.fieldname))throw new HttpError(422,'unknown upload field');
+        if(Object.hasOwn(fields,part.fieldname))throw new HttpError(422,'duplicate upload field');
         fields[part.fieldname] = part.value;
       }
     }

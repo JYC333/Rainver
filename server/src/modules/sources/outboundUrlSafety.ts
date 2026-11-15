@@ -1,3 +1,4 @@
+import {performJobEffect} from '../jobs/effectAuthority.js';
 import {
   createOutboundGuard,
   guardedFetch,
@@ -50,7 +51,7 @@ export async function fetchGuarded(
   guard: OutboundGuard = outboundGuard,
 ): Promise<GuardedResponse> {
   try {
-    return await guardedFetch(request, { guard, fetch: undiciPinnedFetch });
+    return await guardedFetch(request, { guard, fetch: (url,init,pinned)=>performJobEffect(()=>undiciPinnedFetch(url,init,pinned)) });
   } catch (error) {
     if (error instanceof OutboundAddressRefusedError) throw new OutboundRefusedError(error.message);
     if (error instanceof OutboundGuardError) throw new HttpError(error.status, error.message);

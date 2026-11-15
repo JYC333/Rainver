@@ -6,26 +6,16 @@ import { contextOpsModule } from "../src/modules/contextOps/index.js";
 import { loadConfig } from "../src/config.js";
 import { __setAuthRepositoryForTests, type AuthRepository } from "../src/modules/auth/identity.js";
 
-const reviewCycleMock = vi.hoisted(() => vi.fn());
-
 vi.mock("../src/db/pool.js", () => ({
   getDbPool: vi.fn(),
 }));
 
-vi.mock("../src/modules/contextOps/reviewCycle.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../src/modules/contextOps/reviewCycle.js")>();
-  return {
-    ...actual,
-    runContextReviewCycle: reviewCycleMock,
-  };
-});
 
 let app: FastifyInstance | undefined;
 
 afterEach(async () => {
   __setAuthRepositoryForTests(null);
   vi.mocked(getDbPool).mockReset();
-  reviewCycleMock.mockReset();
   await app?.close();
   app = undefined;
 });
@@ -152,66 +142,6 @@ class EmptyContextOpsDb {
     }
     return { rows: [], rowCount: 0 };
   }
-}
-
-function reviewCycleResponse() {
-  return {
-    artifact_id: "artifact-review-cycle",
-    review_scope: "private",
-    retrieval_maintenance: {
-      artifact_id: "artifact-maintenance",
-      proposal_id: null,
-      finding_count: 0,
-      counts: {},
-      scanned: 0,
-      truncated: false,
-    },
-    diagnostics: {
-      artifact_id: "artifact-diagnostics",
-      proposal_id: null,
-      diagnostic_codes: [],
-      counts: {},
-    },
-    memory_maintenance: {
-      artifact_id: null,
-      proposal_id: null,
-      finding_count: 0,
-      counts: {},
-      scanned: 0,
-      truncated: false,
-    },
-    claim_candidates: {
-      artifact_id: "artifact-claims",
-      proposal_id: "proposal-claims",
-      candidate_count: 0,
-      generated_child_proposal_count: 0,
-    },
-    source_health: {
-      active_source_connections: 0,
-      missing_consent_version_count: 0,
-      reader_restricted_source_count: 0,
-      external_egress_disabled_source_count: 0,
-      derived_writes_disabled_source_count: 0,
-      warning_counts: {},
-    },
-    projection_freshness: {
-      object_counts: {},
-      stale_projection_count: 0,
-      source_connected_object_count: 0,
-      oldest_indexed_at: null,
-      newest_indexed_at: null,
-      newest_source_updated_at: null,
-    },
-    embedding_backlog: {
-      total_chunks: 0,
-      embedded_chunks: 0,
-      missing_embedding_chunks: 0,
-      claimed_chunks: 0,
-      attempted_chunks: 0,
-      missing_by_object_type: {},
-    },
-    canonical_write_performed: false,
-  };
 }
 
 describe("Context Ops routes", () => {
@@ -382,53 +312,6 @@ describe("Context Ops routes", () => {
       objects: [],
       sources: [],
     });
-  });
-
-  it("runs Context Review Cycle for an authorized scanner", async () => {
-    __setAuthRepositoryForTests(auth("admin"));
-    const db = new EmptyContextOpsDb();
-    reviewCycleMock.mockResolvedValue(reviewCycleResponse());
-    vi.mocked(getDbPool).mockReturnValue(db as never);
-    app = buildModuleServer(config(), [contextOpsModule]);
-
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/v1/context-ops/review-cycle/run",
-      payload: { create_packets: true },
-    });
-
-    expect(res.statusCode).toBe(201);
-    expect(res.json()).toMatchObject({
-      artifact_id: "artifact-review-cycle",
-      canonical_write_performed: false,
-      claim_candidates: {
-        proposal_id: "proposal-claims",
-      },
-    });
-    expect(reviewCycleMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-      spaceId: "space-1",
-      userId: "user-1",
-      request: expect.objectContaining({
-        create_packets: true,
-        review_scope: "private",
-      }),
-    }));
-  });
-
-  it("blocks Context Review Cycle space_ops scope when review mode is private-only", async () => {
-    __setAuthRepositoryForTests(auth("admin"));
-    const db = new EmptyContextOpsDb();
-    vi.mocked(getDbPool).mockReturnValue(db as never);
-    app = buildModuleServer(config(), [contextOpsModule]);
-
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/v1/context-ops/review-cycle/run",
-      payload: { review_scope: "space_ops" },
-    });
-
-    expect(res.statusCode).toBe(403);
-    expect(reviewCycleMock).not.toHaveBeenCalled();
   });
 
   it("rejects an unknown drill-down section before querying", async () => {

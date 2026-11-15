@@ -1,4 +1,5 @@
 import {checkRepairCalibration,CALIBRATION_UNAVAILABLE} from './calibration.js';
+import {goalTransaction,lockGoal} from './transaction.js';
 import {sourceGoalError} from './dispatchError.js';
 import {GOAL_CURSOR_RESET_SQL} from './selection.js';
 import {retainGoalSample,cleanGoalSamples} from './samples.js';
@@ -7,7 +8,7 @@ import {enforce} from '../../policy/index.js';
 import {loadActionRegistry} from '../../policy/actionRegistry.js';
 import {randomUUID} from 'node:crypto';
 import {CustomSourceHandlerOutputSchema,SourceGoalRepairSchema,type SourceGoalBindingSpec} from '@rainver/protocol';
-import {HttpError,withDbTransaction,type Pool,type SpaceUserIdentity} from '../../routeUtils/common.js';
+import {HttpError,type Pool,type SpaceUserIdentity} from '../../routeUtils/common.js';
 import {PgCustomSourceHandlerRepository} from '../customSources/customSourceHandlerRepository.js';
 import type {ServerConfig} from '../../../config.js';
 import {activeGoalIntent,requireGoal,requireGoalSource,requireAuthorRun,goalSourceFingerprint,type GoalRow} from './access.js';
@@ -82,7 +83,8 @@ export class SourceGoalRepairService {
   try{return await this.publish(identity,goalId,candidateId,true);}catch(error){if(!(error instanceof HttpError) || ![403,409].includes(error.statusCode))throw error;await this.db.query(`UPDATE source_goal_bindings SET status='paused',retry_at=NULL WHERE id=$1 AND revision=$2 AND status IN ('repairing','repair_required')`,[input.binding_id,b.revision]);return {repair_id:candidateId,status:'validated'};}
  }
  async publish(identity:SpaceUserIdentity,goalId:string,candidateId:string,automatic=true){
-  return withDbTransaction(this.db,async db=>{
+  return goalTransaction(this.db,async db=>{
+   await lockGoal(db,goalId,'update',identity.spaceId);
    const g=await requireGoal(db,identity,goalId,true);if(g.status!=='running')throw new HttpError(409,'Goal no longer running');
    const c=await db.query<{binding_id:string;base_revision:number;candidate_json:SourceGoalBindingSpec;created_by_run_id:string;status:string;validation_json:{live_sample:unknown}}>(`SELECT * FROM source_goal_repairs WHERE id=$1 AND space_id=$2 AND status='validated' FOR UPDATE`,[candidateId,g.space_id]);const candidate=c.rows[0];if(!candidate)throw new HttpError(409,'Validated repair required');
    if(automatic)await requireAuthorRun(db,g,candidate.created_by_run_id,'repair',candidate.binding_id);
@@ -103,7 +105,8 @@ export class SourceGoalRepairService {
   });
  }
  async rollback(identity:SpaceUserIdentity,goalId:string,bindingId:string,expectedRevision:number){
-  return withDbTransaction(this.db,async db=>{
+  return goalTransaction(this.db,async db=>{
+   await lockGoal(db,goalId,'update',identity.spaceId);
    const g=await requireGoal(db,identity,goalId,true);const b=await db.query<{previous_spec_json:SourceGoalBindingSpec}>(`SELECT previous_spec_json FROM source_goal_bindings WHERE id=$1 AND goal_id=$2 FOR UPDATE`,[bindingId,goalId]);if(!b.rows[0]?.previous_spec_json)throw new HttpError(409,'No previous implementation');await requireGoalSource(db,this.config,identity,g,b.rows[0].previous_spec_json);
    const r=await db.query(`UPDATE source_goal_bindings SET spec_json=previous_spec_json,previous_spec_json=spec_json,fixture_json=COALESCE(fixture_json->'previous',fixture_json),${GOAL_CURSOR_RESET_SQL},revision=revision+1,status='active',updated_at=now() WHERE id=$1 AND revision=$2 AND lease_token IS NULL RETURNING revision`,[bindingId,expectedRevision]);if(!r.rows[0])throw new HttpError(409,'Rollback revision/lease changed');return {status:'rolled_back',revision:r.rows[0].revision};
   });

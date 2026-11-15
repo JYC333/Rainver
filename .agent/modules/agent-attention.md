@@ -62,6 +62,15 @@ and do not promote the parent for that question.
 
 ## Reading automation and result presentation
 
+Conversation pickers and Room conversation lists reuse the mounted Project-filtered
+Agent Attention store (`all_visible`), including its pagination and SSE invalidation.
+They display personal unread dots without acknowledging anything. Work DTOs expose
+`unread_session_ids` from the canonical read projection before child pagination,
+so a Task containing replies in several Sessions only marks the unread Sessions.
+Session-owned works retain the same overall unread indication as Agent Work.
+Actual displayed replies still use `useAttentionViewing`; opening a list is not a
+view report. These mounted windows share the existing filtered-read capacity costs.
+
 Following collection (`source_goal.purpose=collect`, system/job origin) and
 Following theme synthesis (`information_briefing.scope_key=following:…`,
 system/job origin) are identified from the persisted Run contract. Their normal
@@ -174,7 +183,8 @@ query/body `space_id` selects an independently reauthorized source.
 - `PATCH /api/v1/me/agent-attention/read-state`: strict body with `space_id`,
   typed `identity`, exact displayed `subject`, `state_version`, and
   `action=read|unread`. `user_id` is rejected. Returns the updated subject state;
-  stale reading decisions or changed source revisions return 409 with `current`.
+  stale reading decisions or changed source revisions return 409 with
+  `error.metadata.current` (the typed UI consumer reads it).
 
 - `POST /api/v1/me/agent-attention/views`: strict body with `space_id`,
   `session_id` and 1–200 `message_ids` a conversation surface displayed. The
@@ -185,6 +195,15 @@ query/body `space_id` selects an independently reauthorized source.
   reading versions actually written by this report are returned, never current
   versions of skipped or conflicted subjects. This is how every surface — Room page, Project
   sidecar, direct chat and the Agent Work detail alike — says what was seen.
+
+Both writes are keyed person-scoped core commands (strict DTOs, mandatory
+policy audit and receipt in the canonical writer transaction). The REST wire
+uses operation success envelopes; typed clients retain the subject state and
+`{read_count,read_states}` return shapes. The Personal Space owns receipts only.
+Current source audiences and the connected Run/Task/Room/Session/grant closure
+are discovered, locked and rechecked through commit; replay reauthorizes its
+subjects without reapplying a later read decision. The query/stream APIs and
+Agent fields retain their existing contracts.
 
 Opening a parent summary grants no bulk acknowledgement, and child pages do not
 write reading state. Reading does follow chat order within one transcript: each

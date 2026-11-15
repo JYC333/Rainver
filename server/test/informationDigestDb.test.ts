@@ -1,3 +1,4 @@
+import {executeDigestBackfill} from './support/digestBackfillHarness.js';
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { InformationDigestService } from "../src/modules/informationDigest/service.js";
@@ -599,6 +600,43 @@ describe("information digest persistence", () => {
     expect(pool.rows).toEqual([{ status: "standby" }]);
   });
 
+  it.each(['positive','revoked','audit','concurrent'])('formal feedback retains atomic owner state and receipt: %s',async mode=>{
+    const outside=await seedItem({title:'Feedback command',hour:11,linked:false});
+    await new PgSerendipityRepository(db.pool).addPoolItem({spaceId:SPACE,userId:OWNER,sourceItemId:outside,sourceChannelId:CHANNEL,targetDomainKey:'artificial_intelligence',origin:'weekly_probe',probePeriod:DATE});
+    const digest=(await new InformationDigestService(db.pool).scheduledPersonal(SPACE,OWNER,PERIOD,null)).digest;
+    const item=digest.items.find(row=>row.section==='serendipity')!;
+    const app=buildModuleServer(loadConfig({SERVER_DATABASE_URL:db.connectionUri}),[informationDigestModule]);
+    __setAuthIdentityForTests({spaceId:SPACE,userId:OWNER});const key=randomUUID();
+    const write=(payload:object={feedback:mode==='audit'?'never':'interesting'},withKey=true)=>app.inject({method:'POST',url:`/api/v1/spaces/${SPACE}/information-digests/items/${item.id}/serendipity-feedback`,payload,headers:withKey?{'idempotency-key':key}:{}});
+    try {
+      expect((await write({},false)).statusCode).toBe(422);
+      expect((await write({feedback:'interesting',user_id:OTHER})).statusCode).toBe(422);
+      if(mode==='audit') {
+        await db.pool.query("CREATE FUNCTION refuse_digest_feedback_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'audit unavailable'; END $$");
+        await db.pool.query('CREATE CONSTRAINT TRIGGER refuse_digest_feedback_audit AFTER INSERT ON policy_decision_records DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION refuse_digest_feedback_audit()');
+        try {
+          const failed=await write();expect(failed.statusCode,failed.body).toBe(503);
+          expect((await db.pool.query('SELECT id FROM information_digest_serendipity_feedback')).rows).toEqual([]);
+          expect((await db.pool.query('SELECT id FROM information_digest_serendipity_domain_states')).rows).toEqual([]);
+          expect((await db.pool.query('SELECT id FROM operation_idempotency')).rows).toEqual([]);
+        } finally {
+          await db.pool.query('DROP TRIGGER refuse_digest_feedback_audit ON policy_decision_records');await db.pool.query('DROP FUNCTION refuse_digest_feedback_audit()');
+        }
+      }
+      if(mode==='concurrent') {
+        const results=await Promise.all([write(),write()]);
+        expect(results.some(r=>r.statusCode===200)).toBe(true);
+        expect(results.every(r=>[200,409].includes(r.statusCode))).toBe(true);
+      }
+      const first=await write();expect(first.statusCode,first.body).toBe(200);expect(first.json().data.feedback).toBe(mode==='audit'?'never':'interesting');
+      if(mode==='revoked') {
+        await db.pool.query("UPDATE space_memberships SET status='inactive' WHERE space_id=$1 AND user_id=$2",[SPACE,OWNER]);expect((await write()).statusCode).toBe(404);
+      } else expect((await write()).json().data).toEqual(first.json().data);
+      expect((await db.pool.query('SELECT id FROM information_digest_serendipity_feedback')).rows).toHaveLength(1);
+      expect((await db.pool.query('SELECT id FROM interest_topics')).rows).toEqual([]);
+    } finally {await app.close();}
+  });
+
   it("records explicit feedback in independent cooldown state without touching the interest profile", async () => {
     if (!db.available) return;
     const outside = await seedItem({ title: "Outside feedback", hour: 11, linked: false });
@@ -715,20 +753,21 @@ describe("information digest persistence", () => {
       expect(await footprint()).toEqual(before);
 
       // Today has not ended: no backfill for it.
-      const early = await app.inject({ method: "POST", url: `/api/v1/spaces/${SPACE}/information-digests/personal/backfill`, payload: { date: DATE } });
+      const early = await app.inject({ method: "POST", url: `/api/v1/spaces/${SPACE}/information-digests/personal/backfill`, headers:{"idempotency-key":randomUUID()}, payload: { date: DATE } });
       expect(early.statusCode).toBe(422);
-      expect(early.json()).toMatchObject({ code: "digest_day_not_complete" });
+      expect(early.json()).toMatchObject({error:{metadata:{code:"digest_day_not_complete"}}});
 
       const [a, b] = await Promise.all([
-        app.inject({ method: "POST", url: `/api/v1/spaces/${SPACE}/information-digests/personal/backfill`, payload: { date: yesterday } }),
-        app.inject({ method: "POST", url: `/api/v1/spaces/${SPACE}/information-digests/personal/backfill`, payload: { date: yesterday } }),
+        app.inject({ method: "POST", url: `/api/v1/spaces/${SPACE}/information-digests/personal/backfill`, headers:{"idempotency-key":randomUUID()}, payload: { date: yesterday } }),
+        app.inject({ method: "POST", url: `/api/v1/spaces/${SPACE}/information-digests/personal/backfill`, headers:{"idempotency-key":randomUUID()}, payload: { date: yesterday } }),
       ]);
-      expect([a.statusCode, b.statusCode].sort()).toEqual([200, 201]);
-      expect(a.json().digest.id).toBe(b.json().digest.id);
-      expect((await db.pool.query(`SELECT id FROM information_digests WHERE digest_date=$1`, [yesterday])).rows).toHaveLength(1);
-
-      const read = await app.inject({ method: "GET", url: `/api/v1/spaces/${SPACE}/information-digests/personal?date=${yesterday}` });
-      expect(read.json()).toMatchObject({ status: "available", digest: { id: a.json().digest.id, generation_kind: "backfill" } });
+      expect([a.statusCode,b.statusCode]).toEqual([202,202]);
+      expect(a.json().data.job_id).toBe(b.json().data.job_id);
+      expect((await db.pool.query(`SELECT id FROM information_digests WHERE digest_date=$1`,[yesterday])).rows).toHaveLength(0);
+      const result=await executeDigestBackfill(db.pool,loadConfig({SERVER_DATABASE_URL:db.connectionUri}),a.json().data.job_id);
+      expect((await db.pool.query(`SELECT id FROM information_digests WHERE digest_date=$1`,[yesterday])).rows).toHaveLength(1);
+      const read=await app.inject({method:'GET',url:`/api/v1/spaces/${SPACE}/information-digests/personal?date=${yesterday}`});
+      expect(read.json()).toMatchObject({status:'available',digest:{id:result.digest_id,generation_kind:'backfill'}});
     } finally {
       __setAuthIdentityForTests(null);
       await app.close();
@@ -746,9 +785,9 @@ describe("information digest persistence", () => {
       const read = await app.inject({ method: "GET", url: `/api/v1/spaces/${SPACE}/projects/${PROJECT}/information-digests?date=${yesterday}` });
       expect(read.json()).toMatchObject({ status: "missing", reason: "not_generated", backfill_available: false });
       const response = await app.inject({
-        method: "POST", url: `/api/v1/spaces/${SPACE}/projects/${PROJECT}/information-digests/backfill`, payload: { date: yesterday },
+        method: "POST", url: `/api/v1/spaces/${SPACE}/projects/${PROJECT}/information-digests/backfill`, headers:{"idempotency-key":randomUUID()}, payload: { date: yesterday },
       });
-      expect(response.statusCode).toBe(403);
+      expect(response.statusCode).toBe(404);
       expect((await db.pool.query(`SELECT id FROM information_digests WHERE project_id=$1`, [PROJECT])).rows).toEqual([]);
     } finally {
       __setAuthIdentityForTests(null);

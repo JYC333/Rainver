@@ -12,6 +12,7 @@ describe('Agent Attention transport', () => {
     const signal = new AbortController().signal
     await agentAttentionApi.list({ scope: 'all_visible', space_id: 'space-b', view: 'history', since: '2026-01-01T00:00:00Z', cursor: 'opaque+/=' }, { signal })
     await agentAttentionApi.item({ ...work().identity, space_id: 'space-b', runs_cursor: 'child+/=' }, { signal })
+    vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({status:'succeeded',data:{state:work().read_states[0]}}),{headers:{'Content-Type':'application/json'}}))
     const source = work()
     await agentAttentionApi.setReadState({ identity: source.identity, space_id: source.space_id, subject: source.read_states[0]!.subject,
       state_version: 0, action: 'read' }, { signal })

@@ -1,6 +1,7 @@
 import {SourceMaterialReadingContentSchema} from '@rainver/protocol';
 import type {ServerConfig} from '../../../config.js';
-import {HttpError,withDbTransaction,type Pool,type SpaceUserIdentity} from '../../routeUtils/common.js';
+import {SourceObjectRefusal} from '../sourceObjectErrors.js';
+import {HttpError,type Queryable,type SpaceUserIdentity} from '../../routeUtils/common.js';
 import {PgReaderRepository} from '../../reader/repository.js';
 import {agentReadingDocument,agentReadingMetadata,saveSourceReadingDocument} from './documents.js';
 import {requireProcessingItem} from './items.js';
@@ -27,22 +28,22 @@ export interface ShownVersion { artifact_id:string; source_snapshot_id:string|nu
  * read state follows the writer's revision guards. One material per request;
  * nothing is backfilled.
  */
-export async function showAgentTextAsMarkdown(db:Pool,config:ServerConfig,identity:SpaceUserIdentity,itemId:string,shown:ShownVersion){
- return withDbTransaction(db,async tx=>{
+export async function showAgentTextAsMarkdown(tx:Queryable,config:ServerConfig,identity:SpaceUserIdentity,itemId:string,shown:ShownVersion){
+ {
   // The same authority as reading it again: a writer of the material, under the Source's storage policy.
   const {source,item:authorizedItem}=await requireProcessingItem(tx,identity,itemId);
   if(source&&!agentReadingPolicy(source).content)throw new HttpError(403,'source_material_storage_consent_required');
   const item=(await tx.query<{content_hash:string|null;source_uri:string|null}>(`SELECT content_hash,source_uri FROM source_items WHERE id=$1 AND space_id=$2 AND deleted_at IS NULL FOR UPDATE`,[itemId,identity.spaceId])).rows[0];
   if(!item)throw new HttpError(404,'Material not found');
   const version=await new PgReaderRepository(tx,config).shownSourceItemVersion(identity,itemId);
-  if(!version||version.artifactId!==shown.artifact_id||version.snapshotId!==shown.source_snapshot_id){const message='The text was updated; look at it again before choosing';throw Object.assign(new HttpError(409,message,{detail:message,code:'reading_version_changed'}),{code:'reading_version_changed'});}
+  if(!version||version.artifactId!==shown.artifact_id||version.snapshotId!==shown.source_snapshot_id){const message='The text was updated; look at it again before choosing';throw Object.assign(new SourceObjectRefusal(409,message,{code:'reading_version_changed'}),{code:'reading_version_changed'});}
   const syntax=version.content.agentTextSyntax;
-  if(syntax!=='undeclared'&&syntax!=='plain')throw new HttpError(409,'Only Agent text shown literally can be shown as Markdown');
-  if(authorizedItem.project_id)throw new HttpError(409,'Project analysis has an independent version; the original document cannot be replaced by a syntax conversion');
+  if(syntax!=='undeclared'&&syntax!=='plain')throw new SourceObjectRefusal(409,'Only Agent text shown literally can be shown as Markdown');
+  if(authorizedItem.project_id)throw new SourceObjectRefusal(409,'Project analysis has an independent version; the original document cannot be replaced by a syntax conversion');
   const meta=version.content.metadata;
   const content=SourceMaterialReadingContentSchema.safeParse({kind:meta.reading_content_kind,format:meta.reading_content_format,syntax:'markdown',text:version.content.text,sources:meta.reading_sources});
-  if(!content.success)throw new HttpError(409,'The saved Agent text cannot be converted');
+  if(!content.success)throw new SourceObjectRefusal(409,'The saved Agent text cannot be converted');
   const saved=await saveSourceReadingDocument(tx,{spaceId:identity.spaceId,itemId,document:agentReadingDocument(content.data,item.source_uri??''),metadata:agentReadingMetadata(content.data),agentProvided:true,expectedHash:item.content_hash});
   return {artifact_id:saved.artifactId};
- });
+ }
 }

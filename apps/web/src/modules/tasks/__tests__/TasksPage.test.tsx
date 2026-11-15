@@ -69,7 +69,7 @@ describe('TasksPage', () => {
   })
 
   it('offers only Boards and Agents from the Personal Space a new Task is written to', async () => {
-    mocked.createTask.mockResolvedValue({ ...TASK, id: 'task-2', space_id: 'personal-1' })
+    mocked.createTask.mockResolvedValue({ task_id: 'task-2', space_id: 'personal-1', project_id: null, title: 'Plan launch', status: 'inbox', column_id: null })
     renderPage()
     await screen.findByText('Ship it')
     fireEvent.click(screen.getByRole('button', { name: /New task/ }))

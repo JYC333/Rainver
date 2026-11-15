@@ -374,16 +374,15 @@ describe('manifest plugin through real P1 HTTP and Agent consumers', () => {
     expect(replay.statusCode, replay.body).toBe(200);
     expect(replay.json().replayed).toBe(true);
     await db.pool.query("UPDATE runs SET permission_snapshot_json='{}'::jsonb WHERE id=$1", [run.id]);
-    expect((await wire()).statusCode).toBe(404);
+    const revoked = await wire();
+    expect(revoked.statusCode).toBe(403);
+    expect(revoked.json()).toMatchObject({ok:false,error_code:'system_action_not_granted'});
     await db.pool.query('UPDATE runs SET permission_snapshot_json=$2::jsonb WHERE id=$1', [run.id, JSON.stringify({
       tool_grants: grants
     })]);
     await withTransaction(db.pool, tx => pluginServiceFor(config).disablePlugin(tx, pid, space, owner));
-    expect(((await transport.call(run, {
-      id: randomUUID(),
-      name: id('write'),
-      arguments: {}
-    })) as OperationToolResponse).httpStatus).toBe(404);
+    const disabled = await transport.call(run, {id:randomUUID(),name:id('write'),arguments:{}});
+    expect(disabled).toMatchObject({httpStatus:403,body:{error_code:'system_action_not_granted'}});
     expect(await buildRunToolGrants(allowed, {
       allowed_tools: allowed
     }, {

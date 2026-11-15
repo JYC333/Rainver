@@ -102,6 +102,36 @@ const AGENT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const CONV = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
 describe("handleLaunch", () => {
+  it('refuses a second physical launch of one Run until the original process exits', async () => {
+    const first = collectSend(), duplicate = collectSend();
+    try {
+      await handleLaunch({ run_id: 'same-run', launch_id: 'first', workspace_location_id: 'folder-1', argv: ['node', '-e', 'setInterval(() => {}, 1000)'] }, first.send, () => {});
+      await waitFor(() => frameIndex(first.frames, 'launched') >= 0);
+      await handleLaunch({ run_id: 'same-run', launch_id: 'second', workspace_location_id: 'folder-1', argv: ['true'] }, duplicate.send, () => {});
+      expect(await duplicate.complete()).toMatchObject({ launch_id: 'second', error: expect.stringContaining('run_previous_launch_active') });
+      expect(frameIndex(duplicate.frames, 'waiting_for_workspace')).toBe(-1);
+      expect(frameIndex(first.frames, 'complete')).toBe(-1);
+      await handleLaunch({ run_id: 'same-run', launch_id: 'first', workspace_location_id: 'folder-1', argv: ['true'] }, duplicate.send, () => {});
+      expect(duplicate.frames).toHaveLength(1);
+    } finally { handleTerminate({ run_id: 'same-run', launch_id: 'first', force: true }); await first.complete(); }
+    const resumed = collectSend();
+    await handleLaunch({ run_id: 'same-run', launch_id: 'after-exit', workspace_location_id: 'folder-1', argv: ['true'] }, resumed.send, () => {});
+    expect((await resumed.complete()).exit_code).toBe(0);
+  });
+
+  it('does not enqueue a second execution behind its own queued launch', async () => {
+    const held = 'outside-writer', runId = 'same-queued-run';
+    await acquireLocationLeases(['folder-1'], { runId: held, launchId: held }, () => {});
+    const first = collectSend(), duplicate = collectSend();
+    const preparation = handleLaunch({ run_id: runId, launch_id: 'queued-first', workspace_location_id: 'folder-1', argv: ['true'] }, first.send, () => {});
+    try {
+      await waitFor(() => frameIndex(first.frames, 'waiting_for_workspace') >= 0);
+      await handleLaunch({ run_id: runId, launch_id: 'queued-second', workspace_location_id: 'folder-1', argv: ['true'] }, duplicate.send, () => {});
+      expect(await duplicate.complete()).toMatchObject({ error: expect.stringContaining('run_previous_launch_active') });
+      expect(frameIndex(duplicate.frames, 'waiting_for_workspace')).toBe(-1);
+    } finally { releaseLocationLeases(['folder-1'], held); await preparation; await first.complete(); }
+  });
+
   it("waits for an exited attempt's cleanup instead of confirming it absent mid-upload", async () => {
     let uploading!: () => void;
     const uploadStarted = new Promise<void>(resolve => { uploading = resolve; });
@@ -120,6 +150,9 @@ describe("handleLaunch", () => {
     try {
       await handleLaunch({ run_id: "finishing", launch_id: "finishing-1", workspace_location_id: "folder-1", argv: ["true"] }, current.send, () => {});
       await uploadStarted;
+      const duplicate = collectSend();
+      await handleLaunch({ run_id: 'finishing', launch_id: 'finishing-2', workspace_location_id: 'folder-1', argv: ['true'] }, duplicate.send, () => {});
+      expect(await duplicate.complete()).toMatchObject({ error: expect.stringContaining('run_previous_launch_active') });
       const acknowledgement = collectSend();
       handleTerminate({ run_id: "finishing", launch_id: "finishing-1", force: true }, () => {}, acknowledgement.send);
       expect(acknowledgement.frames).toEqual([]);
@@ -381,7 +414,7 @@ describe("handleLaunch", () => {
     const done = await complete();
     expect(done.timed_out).toBe(false);
     expect(done.exit_code).toBe(0);
-  }, 10000);
+  });
 
   it("keeps stdin open across multiple stdin frames when keep_stdin_open is set", async () => {
     const { frames, send, complete } = collectSend();
@@ -565,7 +598,7 @@ describe("handleLaunch", () => {
     handleTerminate({ run_id: "run-6",force: true });
     const done = await complete();
     expect(done.exit_code).not.toBe(0);
-  }, 10000);
+  });
 
   it("resolves codex_cli's ACP adapter to this daemon's own installed, on-disk entrypoint", () => {
     const entrypoint = resolveAcpEntrypoint("codex-acp");
@@ -634,7 +667,7 @@ describe("handleLaunch", () => {
     await other.complete();
     const output = other.frames.filter((f) => f.type === "output").map((f) => f.chunk).join("");
     expect(output).toBe("unset");
-  }, 10000);
+  });
 });
 
 describe("handleLaunch with a provider binding", () => {
@@ -952,13 +985,9 @@ describe("a retry that reuses the run id", () => {
     dir_env: { RAINVER_SKILL_PATH: "rainver/SKILL.md" },
   };
 
-  it("leaves the run directory to the newer attempt and tags each frame with its own launch", async () => {
-    // A supervisor retry lands within seconds of the first attempt's kill,
-    // while that attempt is still uploading; both attempts share
-    // `<config>/runs/<run_id>/`. The first attempt's cleanup must not delete
-    // the second attempt's Skill and launcher out from under a live child.
-    // An unsupported personal Host cannot use a read-only label to bypass its
-    // lease. A retry retains launch identity and directory ownership through cleanup.
+  it("waits for previous output cleanup before recreating the Run directory for a retry", async () => {
+    // Both launches use <config>/runs/<run_id>. A retry is admitted only
+    // after the original has captured its outputs and released that directory.
     const readOnly = { sandbox_mode: "read_write", egress_profile: "none" } as const;
     const first = collectSend();
     await handleLaunch(
@@ -975,9 +1004,11 @@ describe("a retry that reuses the run id", () => {
     const firstDone = await first.complete();
     expect(firstDone).toMatchObject({ type: "complete", run_id: "run-retry", launch_id: "launch-1" });
     const secondDone = await second.complete();
-    expect(secondDone).toMatchObject({ type: "complete", run_id: "run-retry", launch_id: "launch-2", exit_code: 0 });
-    expect(frames(second.send).join("")).toContain("# the skill");
-    // The second attempt's own cleanup removed the directory at its end.
+    expect(secondDone).toMatchObject({ launch_id: "launch-2", exit_code: 1, error: expect.stringContaining('run_previous_launch_active') });
+    const resumed = collectSend();
+    await handleLaunch({ run_id: 'run-retry', launch_id: 'retry-after-cleanup', workspace_location_id: 'folder-1', argv: ['sh', '-c', 'cat "$RAINVER_SKILL_PATH"'], work_surface: surface, isolation: readOnly }, resumed.send, () => {});
+    expect(await resumed.complete()).toMatchObject({ exit_code: 0, launch_id: 'retry-after-cleanup' });
+    expect(frames(resumed.send).join("")).toContain("# the skill");
     expect(existsSync(join(configDir, "runs", "run-retry"))).toBe(false);
   });
 
@@ -1334,16 +1365,13 @@ describe("Location lease", () => {
       running.send,
       () => {},
     );
-    const queued = collectSend();
-    const queuedLaunch = handleLaunch(
-      { run_id: "attempts", launch_id: "attempt-2", workspace_location_id: "folder-1", argv: ["true"] },
-      queued.send,
-      () => {},
-    );
-    await waitFor(() => frameIndex(queued.frames, "waiting_for_workspace") >= 0);
+    // A pre-upgrade launch may already be queued beside its predecessor.
+    // New launches refuse that overlap, but exact cancellation must still work.
+    let waiting = false;
+    const queuedLaunch = acquireLocationLeases(['folder-1'], { runId: 'attempts', launchId: 'attempt-2' }, () => { waiting = true; });
+    await waitFor(() => waiting);
     handleTerminate({ run_id: "attempts", launch_id: "attempt-2", force: true });
-    await queuedLaunch;
-    expect(await queued.complete()).toMatchObject({ exit_code: 1, error: expect.stringMatching(/waited for its workspace/) });
+    expect(await queuedLaunch).toBe('cancelled');
     // The running attempt was not the one named.
     expect(await running.complete()).toMatchObject({ exit_code: 0 });
   });
@@ -1355,19 +1383,13 @@ describe("Location lease", () => {
       running.send,
       () => {},
     );
-    const queued = collectSend();
-    const queuedLaunch = handleLaunch(
-      { run_id: "all-attempts", launch_id: "all-2", workspace_location_id: "folder-1", argv: ["true"] },
-      queued.send,
-      () => {},
-    );
-    await waitFor(() => frameIndex(queued.frames, "waiting_for_workspace") >= 0);
+    let waiting = false;
+    const queuedLaunch = acquireLocationLeases(['folder-1'], { runId: 'all-attempts', launchId: 'all-2' }, () => { waiting = true; });
+    await waitFor(() => waiting);
     handleTerminate({ run_id: "all-attempts", force: true });
-    await queuedLaunch;
-    expect(await queued.complete()).toMatchObject({ exit_code: 1 });
-    expect(frameIndex(queued.frames, "launched")).toBe(-1);
+    expect(await queuedLaunch).toBe('cancelled');
     expect((await running.complete()).exit_code).not.toBe(0);
-  }, 10000);
+  });
 
   it("does not start an attempt a terminate reached while it was still being prepared", async () => {
     const { frames: sent, send, complete } = collectSend();

@@ -374,7 +374,9 @@ features over the unified Reading list (source items only).
   CPU throttle — a proxy, not a device; set before measuring): for a
   2,000-paragraph article, open ≤3 s, scroll frame p95 ≤50 ms, find (~1,000
   matches) ≤400 ms,
-  place measurement p95 ≤8 ms. `reader-journeys.browser.mjs` measures it.
+  place measurement p95 ≤8 ms. `reader-journeys.browser.mjs` measures it and
+  warns on timing exceedances without failing the run. Its matrix open-time
+  budget also warns; memory and functional assertions still fail.
   Decorations are rebuilt only when the document or what they show changes,
   not on selection changes.
 
@@ -578,3 +580,88 @@ Bound Research report resolution and annotation reads enforce the report call
 gate, including originating Thread/Run and current Source access. Research
 archive artifacts use the same provenance checks through the canonical Artifact
 ACL and full-content gate; opening an archive ID cannot bypass a withheld report.
+
+
+### Write operations (operation core)
+
+All twelve retained Reader write URLs are formal core adapters (human session
+only, explicit `Idempotency-Key`, strict input, no Agent visibility, no approval
+mapping), registered in `server/src/modules/reader/operations.ts` and
+`operationRoutes.ts`. Thirteen operations, because the proposals URL serves two
+proposal kinds:
+
+| URL | Operation | Writer |
+| --- | --- | --- |
+| `POST /reader/annotations` | `reader.annotation.create` | `PgAnnotationRepository.createAnnotation` |
+| `PATCH /reader/annotations/:id` | `reader.annotation.update` | `updateAnnotation` (author only; Undo restore) |
+| `DELETE /reader/annotations/:id` | `reader.annotation.archive` | `archiveAnnotation` (author only) |
+| `PATCH /reader/annotations/:id/range` | `reader.annotation.range.replace` | Reader write Job → `replaceAnnotationRange` |
+| `POST /reader/annotations/:id/comments` | `reader.comment.create` | `PgCommentRepository.createComment` |
+| `PATCH /reader/comments/:id` | `reader.comment.update` | `updateComment` |
+| `PATCH /reader/comment-threads/:id` | `reader.thread.update` | `updateThread` |
+| `POST /reader/annotations/:id/evidence` | `reader.evidence.create` | `createEvidence` (candidate Evidence) |
+| `POST /reader/annotations/:id/proposals` | `reader.memory.propose` / `reader.knowledge.propose` | `createProposal` (pending proposal only) |
+| `PUT /reader/documents/:type/:id/position` | `reader.position.write` | Reader write Job → `ReaderPositionStore.write` |
+| `PUT /reader/preferences/appearance` | `reader.appearance.set` | `ReaderAppearanceSettings.set` |
+| `POST /reader/documents/:type/:id/note` | `reader.document_note.create` | `ReaderDocumentNotes.create` (canonical Note writer) |
+
+- Proposals: the body's `proposal_type` selects the operation through the shared
+  `registerActionSplitAdapter` (`discriminant: 'proposal_type'`); the value stays
+  in the body, so each strict schema refuses any other kind with no write.
+  `memory_create` carries gate class `belief_reach`, `knowledge_create`
+  `exposure`; both use policy action `proposal.create`, every other Reader
+  command `reader.write`. Proposal review/apply is unchanged (B10, ADR 0003):
+  no active Memory or accepted Knowledge is written here.
+- Admission: `resolve` binds the authority-free target lineage
+  (comment → thread → annotation → document); `authorize` runs the Reader target
+  fence below and refuses a changed lineage. Domain 400/409/422 refusals are
+  cached as `operation_conflict`/`operation_invalid_input` (domain `reader`)
+  without reflecting server text; 403/404 are `operation_not_found`.
+- Receipts are identity/kind only (`ReaderWriteReceipt`), never a quote, comment
+  or position. Every fresh or replayed release reruns the current document gate
+  and the annotation/comment/thread, Evidence, proposal, note or Job identity as
+  the person alone; lost access replays as `operation_not_found`. The web client
+  rereads bodies through the ordinary Reader GET readers.
+- Reader target fence (`writeAuthority.ts`, also used by direct repository
+  callers): discovery, then `lockReaderDocumentClosure` (`provenance.ts`), the
+  document-version row and annotation/thread/comment rows, rediscovery, then
+  `assertDocumentReadable` and the annotation's own `full` decision (an author's
+  own archived annotation passes so Undo works; the writer still enforces
+  authorship). The closure is exactly what the document gate consults: retained
+  Source bodies and their Source/connection/channel/subscription locks; for a
+  research report, its operation, research call Thread, requesting Run, typed
+  input references (Note/Thread, Task and its grants, Artifact) and Source
+  items/channels; and, level by level, the research operations that produced
+  any Artifact in the closure (bounded at 200 nodes). If the same document root
+  only moved its retained-body pointers while the writer waited, the new
+  closure is pinned once; any other change is a conflict. Report reads keep
+  per-reference `unavailable`; the closure never denies a whole report for a
+  cited reference.
+- Body-reading writers (position, range) never read a file inside a
+  transaction. The operation queues one `reader_document_write` Job
+  (`max_attempts=1`) and returns 202. The handler uses the Source dispatch start
+  fence: it prepares the document's file-backed bodies outside any transaction
+  under the Job effect credential and seals them, then one short settlement
+  transaction locks this Job's current claim row, re-runs the fence and the
+  current-version check, and calls the canonical writer with only the sealed
+  bodies. A body pointer that moved after preparation is never read
+  (`ReaderPreparationStale`, a 409): a range replacement reports `conflict`;
+  a position write, whose access and claim checks already passed, reports
+  `not_accepted` and writes no position row (the report was not measured on the
+  version the document now has). A lost
+  claim writes nothing; an unknown outcome is not repeated. Results are status
+  only (`applied`, `not_accepted`, `conflict`, `invalid`, `unavailable`),
+  suppressed from generic `/jobs`, and released by
+  `GET /reader/write-requests/:jobId` to the requester under current document
+  access. Direct pool callers may still prepare first via
+  `readerFilesOutsideTransaction`; inside a transaction a missing preparation is
+  an error.
+
+### Internal DB writer transaction boundary
+
+Annotation creation/update/archive, comment creation/update, thread update,
+annotation-derived Evidence and proposal submission own a short transaction when
+called with a Pool and join a caller transaction (including the operation core)
+through `withQueryableTransaction`. Admission, row writes and inherited grants
+commit or roll back together. Comment authorship alone no longer authorizes
+editing after document or annotation access is lost.

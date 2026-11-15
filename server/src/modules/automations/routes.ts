@@ -1,9 +1,9 @@
+import {registerAutomationFireResultRoute} from './fireRequests.js';
+import {registerOperationAdapters} from '../systemActions/operations/routeAdapter.js';
 import type { FastifyInstance } from "fastify";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
   dbPool,
-  HttpError,
-  jsonBody,
   optionalString,
   params,
   query,
@@ -16,6 +16,13 @@ import { PgAutomationRepository } from "./repository.js";
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   const service = () =>
     new AutomationService(context.config, new PgAutomationRepository(dbPool(context.config)));
+  registerAutomationFireResultRoute(app,context);
+  registerOperationAdapters(app,context.config,[
+    {method:'POST',url:'/api/v1/spaces/:spaceId/automations/:automationId/fire',spaceParam:'spaceId',operation:'automation.fire',params:{automationId:'automation_id'}},
+    {method:'POST',url:'/api/v1/spaces/:spaceId/automations',spaceParam:'spaceId',operation:'automation.create'},
+    {method:'PATCH',url:'/api/v1/spaces/:spaceId/automations/:automationId',spaceParam:'spaceId',operation:'automation.update',params:{automationId:'automation_id'}},
+    {method:'PUT',url:'/api/v1/spaces/:spaceId/automations/autonomy',spaceParam:'spaceId',operation:'automation.autonomy.configure'},
+  ]);
 
   app.get("/api/v1/spaces/:spaceId/automations", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -30,23 +37,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         includeOpsView: true,
       });
       return reply.send(rows.map(automationToOut));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.post("/api/v1/spaces/:spaceId/automations", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    const spaceId = params(request).spaceId ?? identity.spaceId;
-    if (spaceId !== identity.spaceId) return reply.code(403).send({ detail: "Access denied" });
-    try {
-      const row = await service().create({
-        spaceId,
-        ownerUserId: identity.userId,
-        body: jsonBody(request),
-      });
-      return reply.code(201).send(automationToOut(row));
     } catch (error) {
       return sendRouteError(reply, error);
     }
@@ -71,23 +61,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.put("/api/v1/spaces/:spaceId/automations/autonomy", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    const spaceId = params(request).spaceId ?? identity.spaceId;
-    if (spaceId !== identity.spaceId) return reply.code(403).send({ detail: "Access denied" });
-    try {
-      const row = await service().enableAutonomy({
-        spaceId,
-        actorUserId: identity.userId,
-        body: jsonBody(request),
-      });
-      return reply.send(automationToOut(row));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
   app.get("/api/v1/spaces/:spaceId/automations/:automationId", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
@@ -101,49 +74,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       );
       if (!row) return reply.code(404).send({ detail: "Automation not found" });
       return reply.send(automationToOut(row));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.patch("/api/v1/spaces/:spaceId/automations/:automationId", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    const spaceId = params(request).spaceId ?? identity.spaceId;
-    if (spaceId !== identity.spaceId) return reply.code(403).send({ detail: "Access denied" });
-    try {
-      const row = await service().update({
-        spaceId,
-        automationId: params(request).automationId ?? "",
-        actorUserId: identity.userId,
-        body: jsonBody(request),
-      });
-      return reply.send(automationToOut(row));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.post("/api/v1/spaces/:spaceId/automations/:automationId/fire", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    const spaceId = params(request).spaceId ?? identity.spaceId;
-    if (spaceId !== identity.spaceId) return reply.code(403).send({ detail: "Access denied" });
-    try {
-      const body = jsonBody(request);
-      const triggerType = optionalString(body.trigger_type);
-      if (triggerType && triggerType !== "manual") {
-        throw new HttpError(422, "Public automation fire only supports trigger_type='manual'");
-      }
-      const result = await service().fire({
-        spaceId,
-        automationId: params(request).automationId ?? "",
-        actorUserId: identity.userId,
-        prompt: optionalString(body.prompt),
-        instruction: optionalString(body.instruction),
-        triggerType: "manual",
-      });
-      return reply.send(result);
     } catch (error) {
       return sendRouteError(reply, error);
     }

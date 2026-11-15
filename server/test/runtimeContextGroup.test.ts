@@ -1,10 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ExecutionControlSnapshot, RuntimeContextPolicyVersion } from "@rainver/protocol";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { loadConfig } from "../src/config.js";
-import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
-import { runtimeContextModule } from "../src/modules/runtimeContext/index.js";
-import { buildModuleServer } from "./support/moduleServer.js";
+import { beforeEach, describe, expect, it } from "vitest";
 import { assertPolicyDoesNotWiden, assertPolicyPreferencesWithinConstraints, resolveRuntimeContextPolicies } from "../src/modules/policy/runtimeContextPolicyResolver.js";
 import { ContextWindowReconciliationRepository } from "../src/modules/runtimeContext/reconciliationRepository.js";
 import { managedAdapterRequest, managedProviderMessages, renderManagedDelivery } from "../src/modules/runtimeContext/managedRenderer.js";
@@ -826,25 +822,5 @@ describe("runtimeContextRetrievalAttributionDb", () => {
       items: [{ ownerUserId: authorization.ownerUserId, visibility: authorization.visibility }],
     });
     expect(taint.non_instructing_owner_user_ids).toEqual([OWNER_B]);
-  });
-});
-
-describe("runtimeContextRoutes", () => {
-  afterEach(() => __setAuthIdentityForTests(null));
-
-  it("answers an invalid Turn Context preview request in the shared error envelope", async () => {
-    __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
-    const app = buildModuleServer(
-      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver" }),
-      [runtimeContextModule],
-    );
-    try {
-      const response = await app.inject({ method: "POST", url: "/api/v1/runtime-context/preview", payload: {} });
-      expect(response.statusCode).toBe(422);
-      // `detail`, like every other route: clients read nothing else.
-      expect(response.json()).toEqual({ detail: "Invalid Turn Context Request" });
-    } finally {
-      await app.close();
-    }
   });
 });

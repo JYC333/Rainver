@@ -1,3 +1,8 @@
+import {randomUUID} from 'node:crypto';
+import {seedSpaceOwnerProject,seedRun,seedSpaceMember} from './support/domainSeeds.js';
+import {PgSessionRepository} from '../src/modules/sessions/repository.js';
+import {conversationQuota} from '../src/modules/rooms/quotaGate.js';
+import {canManageHost,lockManagedHost} from '../src/modules/hosts/hostCommands.js';
 import { Client } from "pg";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
@@ -12,8 +17,9 @@ import {
   refreshHostUsage,
   invalidateHostUsage,
   usageFailureEndsReading,
+  HOST_USAGE_REFRESH_INTERVAL_SECONDS,
 } from "../src/modules/hosts/usageService.js";
-import { liveQuotaSource } from "../src/modules/rooms/subscriptionLogins.js";
+import { cachedLoginReading, liveQuotaSource } from "../src/modules/rooms/subscriptionLogins.js";
 import { readSubscriptionQuotaPools } from "../src/modules/hosts/subscriptionUsage.js";
 import { buildModuleServer } from "./support/moduleServer.js";
 import { waitForLockWaiter } from "./support/lockWait.js";
@@ -298,6 +304,113 @@ describe("subscription account projection (real Postgres)", () => {
       await refreshHostUsage(db.pool, "visible-host", "codex_cli", "own", registry({ codex_cli: { ...reading, account: other } }));
       expect((await readSubscriptionQuotaPools(db.pool, "user-1", true)).filter(pool => pool.account?.product === "codex")).toHaveLength(2);
     }
+  });
+  it("sweeps each login once per 15-minute pass, shared by every reader, and skips a copy just read", async ctx => {
+    if (!db.available) return ctx.skip();
+    expect(HOST_USAGE_REFRESH_INTERVAL_SECONDS).toBe(15 * 60);
+    let probes = 0;
+    const answers: Array<(value: unknown) => void> = [];
+    const counting = {
+      isOnline: () => true,
+      requestUsageProbe: () => { probes += 1; return new Promise(resolve => { answers.push(resolve); }); },
+    } as unknown as HostConnectionRegistry;
+    // The scheduled pass and a concurrent explicit refresh of the same copy share one provider query.
+    const sweep = refreshAllHostUsage(db.pool, counting);
+    await vi.waitFor(() => expect(probes).toBe(1));
+    const joined = refreshHostUsage(db.pool, "host-1", "claude_code", "own", counting);
+    expect(probes).toBe(1);
+    answers[0]!(quota(30));
+    expect(await sweep).toBe(1);
+    expect((await joined).quota.session_pct).toBe(30);
+    const login = { host_id: "host-1", host_name: "Server", runtime_key: "claude_code", installation: "own" };
+    // Any number of conversations reading this login read the cache: no further probe.
+    const reads = await Promise.all([1, 2, 3].map(() => cachedLoginReading(db.pool, login)));
+    expect(probes).toBe(1);
+    expect(new Set(reads.map(read => read.login_key)).size).toBe(1);
+    expect(reads[0]!.window).toMatchObject({ kind: "session", utilization: 30 });
+    // Fake clock: a pass seven minutes later skips the fresh copy; one past half the cadence asks again.
+    const checked = Date.parse(reads[0]!.checked_at!);
+    expect(await refreshAllHostUsage(db.pool, counting, { now: () => checked + 7 * 60_000 })).toBe(0);
+    expect(probes).toBe(1);
+    const next = refreshAllHostUsage(db.pool, counting, { now: () => checked + 15 * 60_000 });
+    await vi.waitFor(() => expect(probes).toBe(2));
+    answers[1]!(quota(35));
+    expect(await next).toBe(1);
+  });
+  it("retries a transiently failed copy on the next pass instead of treating it as fresh", async ctx => {
+    if (!db.available) return ctx.skip();
+    await refreshHostUsage(db.pool, "host-1", "claude_code", "own", registry({ claude_code: quota(80) }));
+    const measured = new Date(Date.now() - 20 * 60_000).toISOString();
+    await db.pool.query(`UPDATE host_runtime_usage SET checked_at=$1 WHERE host_id='host-1'`, [measured]);
+    const offline = registry({ claude_code: { available: false, session_pct: null, session_resets: null, week_pct: null, week_resets: null, error: "Host is offline" } });
+    expect(await refreshAllHostUsage(db.pool, offline)).toBe(1);
+    const [kept] = await readHostUsage(db.pool, "host-1");
+    expect(new Date(kept!.checked_at).toISOString()).toBe(measured);
+    expect(await refreshAllHostUsage(db.pool, offline)).toBe(1);
+  });
+  it("still sweeps a copy whose Runs keep refreshing only one window", async ctx => {
+    if (!db.available) return ctx.skip();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const t0 = Date.parse("2026-11-12T10:00:00.000Z");
+      vi.setSystemTime(t0);
+      let probes = 0;
+      const full = {
+        isOnline: () => true,
+        requestUsageProbe: () => { probes += 1; return Promise.resolve({ ...quota(20), week_pct: 60, week_resets: "Resets later" }); },
+      } as unknown as HostConnectionRegistry;
+      await refreshHostUsage(db.pool, "host-1", "claude_code", "own", full);
+      expect(probes).toBe(1);
+      const runReport = async (minutes: number) => {
+        vi.setSystemTime(t0 + minutes * 60_000);
+        await mergeRunQuota(db.pool, {
+          hostId: "host-1", runtimeKey: "claude_code", installation: "own",
+          quota: { rate_limit_type: "five_hour", utilization: 0.3, resets_at: 1_800_000_000 },
+        });
+      };
+      // Runs keep reporting the session window: the row's clock moves, the week's does not.
+      await runReport(5);
+      expect(await refreshAllHostUsage(db.pool, full, { now: () => t0 + 5 * 60_000 })).toBe(0);
+      await runReport(10);
+      const [partial] = await readHostUsage(db.pool, "host-1");
+      expect(Date.parse(partial!.checked_at)).toBe(t0 + 10 * 60_000);
+      expect(Date.parse(partial!.quota.window_checked_at!.week!)).toBe(t0);
+      // Ten minutes after the last full measurement the sweep asks again, despite a reading just now.
+      expect(await refreshAllHostUsage(db.pool, full, { now: () => t0 + 10 * 60_000 })).toBe(1);
+      expect(probes).toBe(2);
+      const [measured] = await readHostUsage(db.pool, "host-1");
+      expect(Date.parse(measured!.quota.window_checked_at!.week!)).toBe(t0 + 10 * 60_000);
+      // Fully measured: the next pass inside half the cadence skips it again.
+      await runReport(14);
+      expect(await refreshAllHostUsage(db.pool, full, { now: () => t0 + 14 * 60_000 })).toBe(0);
+      expect(probes).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("keys a conversation's login by copy and current account, without naming the account", async ctx => {
+    if (!db.available) return ctx.skip();
+    await remote("visible-host");
+    const server = { host_id: "host-1", host_name: "Server", runtime_key: "claude_code", installation: "own" };
+    const laptop = { ...server, host_id: "visible-host", host_name: "visible-host" };
+    await refreshHostUsage(db.pool, "host-1", "claude_code", "own", registry({ claude_code: {...quota(75),week_pct:35} }));
+    await refreshHostUsage(db.pool, "visible-host", "claude_code", "own", registry({ claude_code: {...quota(75),week_pct:35} }));
+    const first = await cachedLoginReading(db.pool, server);
+    expect(first.windows.map(w=>w.kind)).toEqual(['session','week']);
+    const context={spaceId:'space-a',sessionId:'session-a'};
+    const scoped=await cachedLoginReading(db.pool,server,context);
+    expect((await cachedLoginReading(db.pool,laptop,context)).pool_key).toBe(scoped.pool_key);
+    expect((await cachedLoginReading(db.pool,server,{...context,sessionId:'other'})).pool_key).not.toBe(scoped.pool_key);
+    expect((await cachedLoginReading(db.pool,server,{...context,spaceId:'other'})).pool_key).not.toBe(scoped.pool_key);
+    expect(first.login_key).toMatch(/^[0-9a-f]{24}$/);
+    expect(first.login_key).not.toContain(account.account_id.slice(0, 8));
+    // The same account on another Host is not correlatable through the key.
+    expect((await cachedLoginReading(db.pool, laptop)).login_key).not.toBe(first.login_key);
+    await refreshHostUsage(db.pool, "host-1", "claude_code", "own", registry({ claude_code: quota(76) }));
+    expect((await cachedLoginReading(db.pool, server)).login_key).toBe(first.login_key);
+    // Signed in to another account: a new key, so a dismissal of the old one does not carry over.
+    await refreshHostUsage(db.pool, "host-1", "claude_code", "own", registry({ claude_code: quota(76, { ...account, account_id: "c".repeat(64) }) }));
+    expect((await cachedLoginReading(db.pool, server)).login_key).not.toBe(first.login_key);
   });
   it("does not retain the previous account's model windows after a login switch", async ctx => {
     if (!db.available) return ctx.skip();
@@ -652,4 +765,52 @@ describe("a probe that outlives its answer or its authority (real Postgres)", ()
       });
     }
   });
+});
+
+
+it('projects Agent membership and refresh visibility through canonical Host authority',async()=>{
+ const space=randomUUID(),owner=randomUUID(),project=randomUUID(),admin=randomUUID();
+ await seedSpaceOwnerProject(db.pool,{space,owner,project});
+ await db.pool.query("UPDATE space_memberships SET role='admin' WHERE space_id=$1 AND user_id=$2",[space,owner]);
+ await seedSpaceMember(db.pool,{space,user:admin});
+ await db.pool.query("UPDATE users SET email='instance@test.invalid' WHERE id=$1",[admin]);
+ const config={...loadConfig({SERVER_DATABASE_URL:db.connectionUri}),instanceAdminEmail:'instance@test.invalid'};
+ const room=(await db.pool.query('SELECT id FROM rooms WHERE project_id=$1',[project])).rows[0].id;
+ const session=await new PgSessionRepository(db.pool).createRoomConversation({space_id:space,room_id:room,project_id:project,project_folder_id:null,title:'Usage',metadata:{}});
+ const agents:string[]=[];
+ for(const provider of [false,false,true]){
+   const agent=randomUUID(),run=randomUUID();agents.push(agent);
+   await seedRun(db.pool,{id:run,space,owner,agent,version:randomUUID()});
+   if(provider)await db.pool.query(`UPDATE runs SET model_override_json=$2::jsonb WHERE id=$1`,[run,JSON.stringify({conversation_backend:{model_provider_id:'provider-api'}})]);
+   await db.pool.query(`INSERT INTO host_threads(id,space_id,execution_host_id,workspace_mode,session_id,agent_id,container_kind,runtime_key,runtime_installation,last_run_id,status,created_by_user_id,created_at,updated_at) VALUES($1,$2,'host-1','managed',$3,$4,'conversation','claude_code','own',$5,'active',$6,now(),now())`,[randomUUID(),space,session.id,agent,run,owner]);
+ }
+ const regular=await conversationQuota(db.pool,space,session.id,owner,config);
+ expect(regular.logins).toHaveLength(1);
+ expect(regular.logins[0].agent_ids?.sort()).toEqual(agents.slice(0,2).sort());
+ expect(regular.logins[0].refresh_target).toBeUndefined();
+ expect(await canManageHost(db.pool,config,'host-1',owner,{allowBuiltin:true})).toBe(false);
+ await expect(lockManagedHost(db.pool,config,'host-1',owner,{allowBuiltin:true})).rejects.toThrow('Host not found');
+ const privileged=await conversationQuota(db.pool,space,session.id,admin,config);
+ expect(privileged.logins[0].refresh_target?.host_id).toBe('host-1');
+ expect(await canManageHost(db.pool,config,'host-1',admin,{allowBuiltin:true})).toBe(true);
+ await db.pool.query("UPDATE hosts SET status='revoked' WHERE id='host-1'");
+ expect((await conversationQuota(db.pool,space,session.id,admin,config)).logins[0].refresh_target).toBeUndefined();
+});
+
+it("projects all independent Antigravity buckets for display without changing admission meters", async ctx => {
+  if (!db.available) return ctx.skip();
+  const measured=new Date().toISOString(), older=new Date(Date.now()-60000).toISOString();
+  const windows=[
+    {id:'gemini-weekly',label:'Gemini weekly',scope:'family',used_pct:0,resets:null},
+    {id:'3p-weekly',label:'Claude / GPT weekly',scope:'family',used_pct:91,resets:null},
+    {id:'new-family',label:'New family',scope:'family',used_pct:null,resets:null},
+  ];
+  await db.pool.query(`INSERT INTO host_runtime_usage (host_id,runtime_key,installation,quota_json,checked_at) VALUES ('host-1','acp_antigravity_acp','own',$1::jsonb,$2)`,[JSON.stringify({available:true,session_pct:99,session_resets:null,week_pct:null,week_resets:null,error:null,account:{provider:'google',product:'antigravity',account_id:'a'.repeat(64),organization_id:null},windows,window_checked_at:{'3p-weekly':older}}),measured]);
+  const reading=await cachedLoginReading(db.pool,{host_id:'host-1',host_name:'Server',runtime_key:'acp_antigravity_acp',installation:'own'},{spaceId:'s',sessionId:'c'});
+  expect(reading.window).toBeNull();expect(reading.windows).toEqual([]);
+  expect(reading.display_windows).toEqual([
+    {id:'gemini-weekly',label:'Gemini weekly',group:'native',utilization:0,resets:null,checked_at:measured},
+    {id:'3p-weekly',label:'Claude / GPT weekly',group:'third_party',utilization:91,resets:null,checked_at:older},
+    {id:'new-family',label:'New family',group:'other',utilization:null,resets:null,checked_at:measured},
+  ]);
 });

@@ -301,6 +301,15 @@ a discussion — and the Manager's own judgment decides whether to delegate.
   conversation) reads only its own request; the session it resumes
   already holds the conversation.
 
+Conversation participation is independent of the Room's available roster and of
+one message's recipients. Initialization snapshots the selected participants into
+conversation backend bindings; later Room changes cannot enroll old conversations.
+The shared execution-context editor adds/removes participants while preserving
+existing thread/configuration identity, and the compact entry names participants
+and their saved native model. Room Members owns defaults for future initialization.
+UI and Assistant settings use the same operation-core commands and current-person
+permission checks; see [Rooms](../modules/rooms.md#conversation-participants-and-room-defaults).
+
 ## Rendering
 
 `apps/web/src/modules/conversation/` owns shared conversation presentation.
@@ -335,9 +344,65 @@ participant replies and discussion replies are not folded merely by author.
 chat, the Room page, and the Project sidecar; it owns runtime-control layout,
 focus treatment, and submission. Room injects its mention-capable editor while
 direct chat injects plain text. Both render the selected ACP installation's
-generic options through `ConversationAgentSessionConfigs`: one Agent keeps the
-fast inline controls, while two or more Agents share one **Agent settings**
-trigger whose dialog labels one option row per Agent. `ConversationView`
+generic options through `ConversationAgentSessionConfigs`: one always-visible
+**Conversation settings · N** entry counts current participants, including Agents
+without editable options. The initial Agents tab shows only participants as compact
+name/saved-model disclosures, with one Agent expanded at a time. Model/mode/reasoning
+controls have visible labels. Removal and its confirmation sit beside that Agent's
+parameters; the hosting Agent explains why it cannot leave. Add Agent from Room
+keeps the current roster visible, searches Room candidates and uses explicit Add/Cancel
+actions after candidate/CLI selection. A draft edits the initialization selection;
+an initialized conversation writes one participant delta immediately. These are not
+one atomic settings save. Existing bindings are retained on removal and restored
+on rejoin using explicit participant deltas and CAS.
+`useConversationSettings` retains unsaved quota consent and save errors outside the
+settings dialog. The collapsed Agent and composer entry expose pending state.
+Room/sidecar/Agent Work and direct-chat sends open the Agents tab and stop before
+submission until model/consent drafts are explicitly saved or discarded. Message
+drafts remain intact; no automatic save or resend occurs. A first direct-chat message
+still persists its initial options in the existing creation transaction. Settings
+drafts remain in memory and reset with conversation/identity/permission lifetime.
+The Runtime environment tab leads with server readiness/recovery, Host/Primary,
+Files & Code, attachments and isolation/baseline controls. `ConversationEnvironmentSummary`
+keeps per-Agent CLI/model/context, handoff/summary links and cache-reset recovery
+behind the clearly labelled Agent session diagnostics entry. Missing Git metadata
+in managed or non-code folders does not appear as a Git failure; code snapshots
+show branch and dirty state without a commit hash. Dirty draft initialization requires
+an explicit committed-version or private-snapshot baseline selection. The tab retains
+permissions, isolation/baseline and recovery controls. There is no separate Execution
+Context card or Project-sidecar runtime editor. Preflight remains mounted while the
+dialog is closed so readiness does not depend on opening settings. The dialog has a
+bounded viewport height and internal scrolling in full Room, Project sidecar and
+Agent Work consumers. A direct chat uses the same entry with its single Agent.
+Direct ChatPanel reserves mobile space below its composer so the Shell capture
+action cannot intercept Send.
+A successful settings write followed by a failed catalog read exposes read-only
+refresh recovery rather than another save; sending remains blocked until verified.
+Local discard remains available for uncommitted model and quota-consent drafts even
+when a Run locks settings, save authority is unavailable, or the catalog has no
+configurable options. It performs no server write. Saving blocks discard; a committed
+write awaiting readback cannot be discarded, and read recovery remains available
+without settings-write authority.
+Saved model changes retain their canonical service/operation and explicit pending,
+saved and failure feedback; runtime readback updates the compact model summary.
+Existing sessions lacking preflight show loading/error with retry, suppress their
+unknown count, and never render an editable draft roster. Recovery restores the
+server roster and readiness. Successful participant writes consume their revision
+even if refresh fails; CAS conflicts require refresh and explicit reselection.
+Model readback preserves other Agents' unsaved drafts within the same scope.
+Reuse / Dependency Check: reuse the typed settings/participant commands, Radix
+Dialog/Tabs and shared Select/Button; keep draft state in the existing React
+lifetimes and extend the built-app Chromium fixture. No new dependency, backend
+writer or global save transaction.
+Creating a draft keeps the settings dialog open.
+Active execution locks edits without changing its frozen snapshot; refresh and
+new-conversation navigation remain available. Queued Run snapshots are already
+frozen, so a settings save affects later Runs and does not freeze navigation or
+rewrite the queued Run. Worker/viewer
+identities cannot edit. A missing or refused catalog explains why and never inherits
+another participant's configuration. Draft messages survive settings and recovery.
+Initialized Host/Primary are explicitly immutable; reconnect or start a new
+conversation rather than implying cross-Host thread migration. `ConversationView`
 supplies the generic
 message list used by direct and notebook chat; Room keeps its audience,
 reference, routing, and proposal-aware transcript while reusing
@@ -486,8 +551,29 @@ the Space's warning line; while Agent-triggered turns are held at the reserve
 line it adds "Waiting for the window (resets HH:MM) · continue anyway". Above
 the composer `ConversationQuotaLine` shows any login of the conversation past
 the warning line and any held turns with the same "continue anyway"
-(`GET …/quota`, re-read as the transcript grows and when a shown discussion's
-record changes; `POST …/quota/continue`). The detail's `waves[].run_ids` is
+(`GET …/quota`, `POST …/quota/continue`). `useConversationQuota` re-reads that
+cache read as the transcript grows, when a Run settles (its live reading is
+already in the cache), when a shown discussion's record changes, and every
+five minutes while the page is visible; a hidden page reads nothing and reads
+once on return. Each reading belongs to one lifetime — room and conversation,
+viewer and Space, the panel's `ConversationScope` request lifetime and the
+browser `sessionEpoch` — and a change starts a new one during render, so the
+old line is gone before any effect runs. A read or "continue anyway" answer
+from an earlier lifetime never lands, even back on the same conversation
+(A → B → A), nor after logout or unmount; within a lifetime the latest request
+wins. The provider is never asked from here: the server's
+15-minute host sweep refreshes the shared per-login cache. Each warned login
+shows when it was read (`checked_at`), and "may be out of date" past 30
+minutes (two sweeps). A person may hide an ordinary warning for three hours
+(`quotaDismissal.ts`): keyed by the login's `login_key` and window, it shows
+again at once when usage rises 5 points above the dismissed reading, crosses
+the reserve line or reaches 100%, and lapses when the window resets or another
+window or account is read; small fluctuation and ordinary refreshes keep it
+hidden. Held turns, their "continue anyway" and an exhausted window are never
+hidden. The dismissal is display-only — it changes no budget, reserve, hold or
+override authority — and lives in `sessionStorage` under a user- and
+Space-scoped key (`scopedUserStorageKey`), so it is per person, never shared,
+and cleared with the session leftovers at logout (`lib/sessionResidue.ts`). The detail's `waves[].run_ids` is
 also the authoritative live index for Runs started by hidden continuation
 messages: the client loads and streams those Runs immediately, so later rounds
 show which Agent is working before any reply becomes a visible message.
@@ -933,3 +1019,109 @@ metadata. It applies only to the saving person, Agent, runtime profile and runti
 key; ordinary options and other members' preferences are preserved. Recovery
 uses the existing same-installation model alternative and Supervisor budget;
 revoking the setting pauses a settings-authorized successor before admission.
+
+## Compact account usage
+
+The Room composer has a permanent compact ring and optional percentage independent
+of dismissed quota warnings; Usage is retained only as its accessible name and
+panel heading. Its ring reports the fullest known shared account window among
+the selected recipients. For a login with only independent native allowances it
+names one native window explicitly in the tooltip/accessibility label, never an
+account total or an inferred current-model allowance. Unknown is a dash, never zero. The desktop popover/mobile
+bottom dialog groups connection copies by a server-derived opaque account pool scoped to this Space and conversation,
+unions Agent ids and chooses the freshest reading per window without summing
+percentages. All account cards form one continuous list, with selected recipients
+first and no Other accounts heading, in the same height-bounded internal scroller.
+Each window keeps
+its own reading clock and reset. Display-only `display_windows` reuses
+`hosts/subscriptionUsage.quotaWindows`, preserving stable vendor ids, labels,
+nullable readings and per-window clocks. Absent windows are omitted, measured
+zero remains visible. Antigravity `gemini-*` native buckets appear first;
+`3p-*` shared third-party buckets are folded together (not duplicated per model),
+and unclassified scoped buckets remain under Other allowances. Folded allowance
+groups expose a warning summary when any allowance reaches the
+Space warning line. No model routing is guessed from a label, and no independent
+allowance is added to or averaged with another. The admission `window/windows`
+contract and 15-minute probe schedule remain unchanged. ModelProvider-bound latest threads are excluded
+from subscription accounts. This is account capacity, not conversation cost;
+reliable per-conversation cost is not inferred from account percentages.
+Manual refresh reuses the canonical Host usage command with source Space and
+existing remote Host-owner / built-in Host instance-admin authority; cached GET never probes. The 15-minute background
+scan and snoozable warning remain unchanged. Number visibility uses user/Space
+session storage and existing logout cleanup. No new library, DB table or quota
+collector is introduced: Radix Popover/Dialog and shared Button own interaction.
+
+Participation editing uses explicit deltas plus the preflight participation revision;
+complete snapshots also require that revision for initialized conversations.
+Runtime-only requests do not enroll or remove Agents. Summary participant ids
+represent shared roster state while runtime/profile details remain viewer scoped.
+Command runtime choices explicitly project only Agent, profile, runtime key and
+installation; pinned read projections carry extra state and must not be forwarded
+to strict inputs. Missing manager runtime information gives reload/settings guidance.
+Local draft participant overrides reset when the Conversation, Room or permission
+scope changes; pending callbacks from the old scope cannot update the new one.
+This clears only unsaved selection, never the initialized shared participant list.
+Draft mention/discussion candidates follow the explicit initialization selection
+in Rooms, the Project panel and Agent Work; before selection is available they use
+the uninitialized roster semantics. The singular runtime resolves the active manager; models saved in the composer
+refresh scoped execution summaries immediately. Room defaults are per-Agent
+patches with CAS on the existing Room roster revision, preserving omitted entries.
+Delegated and continuation Runs cannot use the three settings write operations,
+even when their effective root origin is manual. See [Rooms](../modules/rooms.md#conversation-participants-and-room-defaults).
+
+### Conversation settings interaction
+
+The shared settings dialog keeps one model Select mounted in every Agent row.
+A separate button discloses other parameters; a single participant opens with
+all parameters visible. Room membership edits remain immediate revisioned deltas,
+and the manager uses a badge instead of a disabled removal action.
+
+For an existing session, selecting a model immediately uses the canonical settings
+command and catalog readback. The submitted configuration combines the saved
+baseline with only the model selection. Other parameter and quota consent drafts
+are preserved, require explicit Save, and are restored after model readback.
+A synchronous per-Agent guard prevents overlapping saves; controls show saving
+until readback completes. Send remains guarded with its message intact on a
+pending or failed change. A committed write with failed readback retries only
+the catalog read. Local failed choices may be discarded even during a running
+turn, but committed read obligations cannot be discarded. Scope changes invalidate
+callbacks. Direct chat before session creation edits the first-message selections
+without issuing a save or claiming persistence. Acceptance advances those submitted
+choices to the session baseline, including embedded chats without URL navigation.
+Dirty comparison uses selection id/type/value rather than array order or metadata;
+reverting a choice clears dirty state without hiding real parameter or consent edits.
+In-place model menus fit their clipping ancestors and scroll their own options.
+Select captions use a non-label wrapper so pointer selection cannot reactivate
+the trigger through native label activation before first send.
+Expired catalog reloads reject instead of reporting a successful refresh.
+
+Runtime environment presents readiness, device connectivity, a read-only working
+folder, workspace mode and existing directory grants. Empty attachment state shows
+only Add folder; permission consequences appear beside actual grant operations.
+Fixed-environment rationale accompanies New conversation with another environment.
+Diagnostics and session recovery remain in one disclosure. Dirty-workspace baseline
+selection and its server gate remain mandatory.
+
+Agent settings keep the name, compact model selector, short removal action and
+parameter disclosure on one row. The model selector sizes to its selected name instead of a fixed truncated width.
+The model label remains available to assistive
+technology; expanding adds only other parameters below that same row.
+
+The compact model trigger uses the shared Select ghost variant and opt-in Radix
+Popover overlay, escaping dialog scroll containers without growing their scroll
+height. Host/主持 occupies the existing Remove action width and explains the
+hosting participant requirement without offering a removal action.
+Reuse / Dependency Check: reuse the installed Radix Popover and existing shared
+wrapper for collision/dismissal/focus layers; no new dependency or positioning
+engine. Other Select consumers keep their existing rendering.
+
+Agent row disclosure uses a full-width keyboard-accessible button behind the
+name and empty space, retaining its chevron and expanded state. Model text
+triggers omit their own chevron; model menus and participant actions remain
+independent siblings, so their clicks do not toggle the parameter disclosure.
+
+Composer Agent/File/Skill autocomplete uses ComposerSuggestions with the shared
+Radix Popover layer outside transcript clipping. It anchors to the editor, keeps
+typing focus, contains menu scrolling and preserves keyboard/click insertion.
+Reuse / Dependency Check: reuse the installed Radix Popover and shared dialog
+container support; no new positioning engine or dependency.

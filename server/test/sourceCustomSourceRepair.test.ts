@@ -1,3 +1,5 @@
+import {adminSession} from './support/adminSession.js';
+import {waitForBlockedBy} from './support/lockWait.js';
 import { mkdtemp, rm } from "node:fs/promises";
 import { TWO_ARTICLE_HTML, CUSTOM_SOURCE_LIST_PIPELINE } from "./support/customSourceFixtures.js";
 import { tmpdir } from "node:os";
@@ -113,6 +115,73 @@ describe("CustomSourceRepairService.repairHandler (declarative_pipeline_v1)", ()
     if (result.status !== "active") throw new Error("unreachable");
     expect((result.handler_version.manifest_json as { pipeline: { steps: unknown[] } }).pipeline.steps).toHaveLength(3);
   });
+});
+
+describe("CustomSourceRepairService.repairHandler commit barrier", () => {
+  // Admission passed and the repair's external test is running; the person then
+  // pauses the Source (the canonical channel writer commits) or it is deleted.
+  // The tested candidate may settle the Source only under what it was admitted
+  // against: it must not activate, revive the paused channel, or schedule a scan.
+  async function repairWhile(change: (connectionId: string) => Promise<void>, statusCode=409) {
+    const { connectionId, activeVersionId } = await createActivePipelineConnection();
+    await upsertCustomSourceSpacePolicy(db.pool, SPACE_A, { same_envelope_repair_auto_apply: true });
+    const testHandler = CustomSourceCreateFlowService.prototype.testHandler;
+    vi.spyOn(CustomSourceCreateFlowService.prototype, "testHandler").mockImplementation(async function (this: CustomSourceCreateFlowService, ...args) {
+      const outcome = await testHandler.apply(this, args);
+      await change(connectionId);
+      return outcome;
+    });
+    await expect(repairService!.repairHandler(IDENTITY, connectionId, { fixture_html: FIXTURE_HTML }))
+      .rejects.toMatchObject({ statusCode });
+    const after = (await db.pool.query<{ active_handler_version_id: string; repair_status: string }>(
+      `SELECT active_handler_version_id, repair_status FROM source_connections WHERE id = $1`, [connectionId])).rows[0]!;
+    expect(after).toMatchObject({ active_handler_version_id: activeVersionId, repair_status: "repair_required" });
+    expect((await db.pool.query(`SELECT id FROM source_handler_versions WHERE source_connection_id = $1 AND status = 'active'`, [connectionId])).rows)
+      .toEqual([{ id: activeVersionId }]);
+    return connectionId;
+  }
+
+  it("a Source paused while its repair was tested stays paused, with the tested version not activated", async () => {
+    if (!db.available) return;
+    const { SourceChannelService } = await import("../src/modules/sources/channels/sourceChannelService.js");
+    const connectionId = await repairWhile(async (id) => {
+      const channel = (await db.pool.query<{ id: string }>(`SELECT id FROM source_channels WHERE source_connection_id = $1`, [id])).rows[0]!.id;
+      await new SourceChannelService(db.pool, config!).update(IDENTITY, channel, { status: "paused" });
+    });
+    expect((await db.pool.query(`SELECT status FROM source_channels WHERE source_connection_id = $1`, [connectionId])).rows)
+      .toEqual([{ status: "paused" }]);
+  });
+
+  it("a Source deleted while its repair was tested is not revived", async () => {
+    if (!db.available) return;
+    const connectionId = await repairWhile(async (id) => {
+      await db.pool.query(`UPDATE source_connections SET deleted_at = now() WHERE id = $1`, [id]);
+    });
+    expect((await db.pool.query(`SELECT deleted_at IS NOT NULL AS deleted FROM source_connections WHERE id = $1`, [connectionId])).rows[0]).toEqual({ deleted: true });
+  });
+  it('a user disabled through the real auth endpoint while its repair was tested cannot activate it',async()=>{
+    const admin=await adminSession(db.pool,config!,SPACE_A);
+    try{await repairWhile(async()=>{expect((await admin.disable(IDENTITY.userId)).statusCode).toBe(200);},403);}
+    finally{await admin.app.close();}
+  });
+
+  it('final repair authority locks users until commit, so auth disable waits for activation',async()=>{
+    const {connectionId}=await createActivePipelineConnection();
+    await upsertCustomSourceSpacePolicy(db.pool,SPACE_A,{same_envelope_repair_auto_apply:true});
+    const admin=await adminSession(db.pool,config!,SPACE_A),holder=await db.pool.connect();let done=false,disabled=false;
+    let repairing:ReturnType<CustomSourceRepairService['repairHandler']>|undefined,disabling:ReturnType<typeof admin.disable>|undefined;
+    try{
+      await holder.query('BEGIN');await holder.query('LOCK TABLE scheduler_tasks IN SHARE MODE');
+      const pid=Number((await holder.query('SELECT pg_backend_pid() pid')).rows[0].pid);
+      repairing=repairService!.repairHandler(IDENTITY,connectionId,{fixture_html:FIXTURE_HTML}).finally(()=>{done=true;});
+      await waitForBlockedBy(db.pool,pid,{settled:()=>done});expect(done).toBe(false);
+      const repairPid=Number((await db.pool.query('SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND $1::int=ANY(pg_blocking_pids(pid))',[pid])).rows[0].pid);
+      disabling=admin.disable(IDENTITY.userId).finally(()=>{disabled=true;});
+      await waitForBlockedBy(db.pool,repairPid,{settled:()=>disabled});expect(disabled).toBe(false);
+      await holder.query('COMMIT');expect((await repairing).status).toBe('active');expect((await disabling).statusCode).toBe(200);
+    }finally{await holder.query('ROLLBACK').catch(()=>undefined);holder.release();await Promise.allSettled([repairing,disabling]);await admin.app.close();}
+  });
+
 });
 
 describe("CustomSourceRepairService.repairHandler", () => {

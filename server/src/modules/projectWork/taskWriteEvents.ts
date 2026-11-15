@@ -1,3 +1,4 @@
+import {randomUUID} from 'node:crypto';
 import type { TaskCompletionOverride } from "@rainver/protocol";
 import { HttpError, type Queryable } from "../routeUtils/common.js";
 import { resolveUserActorId } from "../../db/actorResolver.js";
@@ -190,4 +191,17 @@ export async function markTaskRunStarted(db:Queryable,context:{spaceId:string;us
  if(!row)throw new HttpError(404,'Task not found');if(row.status==='in_progress')return;
  await db.query(`UPDATE tasks SET status='in_progress',blocked_reason=NULL,updated_at=$3 WHERE id=$1 AND space_id=$2`,[context.taskId,context.spaceId,context.at]);
  await recordTaskFlowChange(db,{...context,projectId:row.project_id,reason:'Execution Run admitted'},{fromStatus:row.status,toStatus:'in_progress',overridden:[],basedOn:`run:${context.runId}`});
+}
+
+/** Title/description edits share the Board writer and its transaction. */
+export async function recordTaskContentChange(db:Queryable,context:UserTaskEventContext,fields:string[]):Promise<void>{
+  const actorId=await actorFor(db,context);
+  if(!actorId || !context.projectId || fields.length===0)return;
+  await appendProjectWorkEvent(db,{
+    spaceId:context.spaceId,projectId:context.projectId,eventKind:'task.content_changed',
+    subjectType:'task',subjectId:context.taskId,actorId,
+    idempotencyKey:`task.content_changed:${context.taskId}:${randomUUID()}`,
+    ...(context.runId?{correlationId:context.runId,runId:context.runId}:{}),
+    data:{fields,origin:context.actorId?'agent':'user'},
+  });
 }

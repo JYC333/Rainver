@@ -1,3 +1,5 @@
+import { waitForBlockedBy } from "./support/lockWait.js";
+import { seedSpaceMember } from "./support/domainSeeds.js";
 import { assertSelectedSkillBindings } from "../src/modules/skills/selectedSkills.js";
 import { SkillPackageSchema } from "@rainver/protocol";
 import { previewSkillFiles } from "../src/modules/skills/skillImporter.js";
@@ -60,7 +62,7 @@ const THREAD = "30000000-0000-4000-8000-000000000013";
 const PROFILE = "30000000-0000-4000-8000-000000000015";
 
 
-const db = useTestDatabase(import.meta.filename, { max: 2 });
+const db = useTestDatabase(import.meta.filename, { max: 4 });
 afterEach(() => vi.restoreAllMocks());
 
 beforeEach(async () => {
@@ -1206,6 +1208,40 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       requireLiveAuthorization: true,
     });
     await expect(create("opencode")).resolves.toBeDefined();
+    if (setupFolder === FOLDER) {
+      // Retained Agent ACL Project differs from the execution Project. Both
+      // discovery and the final owner check must lock its membership to commit.
+      const accessProject = randomUUID(), accessOwner = randomUUID();
+      await seedSpaceMember(db.pool, {space: SPACE, user: accessOwner});
+      await db.pool.query("UPDATE spaces SET type='team' WHERE id=$1", [SPACE]);
+      await db.pool.query("INSERT INTO projects(id,space_id,owner_user_id,name,status,created_at,updated_at) VALUES($1,$2,$3,'Access Project','active',now(),now())", [accessProject, SPACE, accessOwner]);
+      await seedMainlineRoomsForAllProjects(db.pool);
+      await db.pool.query("INSERT INTO project_members(id,space_id,project_id,user_id,role,status,created_at,updated_at) VALUES($1,$2,$3,$4,'member','active',now(),now())", [randomUUID(), SPACE, accessProject, USER]);
+      await db.pool.query("UPDATE agents SET project_id=NULL,access_project_id=$2 WHERE id=$1", [AGENT, accessProject]);
+      const holder = await db.pool.connect();
+      let revoke: Promise<unknown> | undefined;
+      try {
+        await holder.query("BEGIN");
+        const pid = (await holder.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
+        await new PgInvocationDeliveryAuthorizer().authorize(holder, {
+          spaceId: SPACE, invocationId: RUN, envelope: planned, control: authoritative,
+          runtimeKey: "opencode", providerId: PROVIDER, model: "gpt-4o",
+          usageSourceId: "retained-access-race", viewerUserId: USER,
+        }, authoritative);
+        let settled = false;
+        revoke = db.pool.query("UPDATE project_members SET status='revoked' WHERE project_id=$1 AND user_id=$2", [accessProject, USER]).finally(() => { settled = true; });
+        await waitForBlockedBy(db.pool, pid, {settled: () => settled});
+        expect(settled).toBe(false);
+        await holder.query("COMMIT");
+        await revoke;
+      } finally {
+        await holder.query("ROLLBACK");
+        holder.release();
+        await revoke;
+      }
+      await expect(create("opencode")).rejects.toMatchObject({statusCode: 404});
+      await db.pool.query("UPDATE project_members SET status='active' WHERE project_id=$1 AND user_id=$2", [accessProject, USER]);
+    }
     if (setupFolder === null) {
       await db.pool.query(`UPDATE runs SET project_folder_id=NULL WHERE id=$1`, [RUN]);
       await expect(create("opencode")).rejects.toMatchObject({ statusCode: 409 });

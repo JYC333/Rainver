@@ -1,3 +1,5 @@
+import {isOperationTransaction} from '../../db/operationTransaction.js';
+import { EvolutionAssetRefusal } from "./assetRefusal.js";
 import {withBundleDecisionOwner} from '../systemActions/operations/proposalTransitions.js';
 import {withPolicyAuditRecovery} from '../policy/auditWriter.js';
 import {queueBundleDecision,decisionReceipt,assertNoActiveBundleDecision} from './bundleDecisionJob.js';
@@ -5,9 +7,9 @@ import type {FrozenBundleMember} from './bundleDecisionTypes.js';
 import {sha256Json} from './hash.js';
 import type {PgProposalApplyService} from '../proposals/applyService.js';
 import { randomUUID } from "node:crypto";
-import type { Pool, PoolClient } from "../../db/pool.js";
+import type { Pool } from "../../db/pool.js";
 import { contentReadSql } from "../access/contentAccessSql.js";
-import { HttpError, optionalString, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
+import { HttpError, optionalString, withQueryableTransaction, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 import { insertProposalRow } from "../proposals/reviewPackets.js";
 import type { ProposalTransactionResult } from "../proposals/applyService.js";
 import { lockEvolutionAssets } from "./assetLocks.js";
@@ -210,82 +212,16 @@ function rollbackSummaryForMembers(
 }
 
 export class EvolutionBundleRepository {
-  constructor(private readonly db: Pool) {}
+  constructor(private readonly db: Queryable, private readonly databaseUrl: string | undefined = (db as Pool).options?.connectionString) {}
 
   async create(
     identity: SpaceUserIdentity,
     input: { title: string; description?: string | null; proposalIds: string[] },
   ): Promise<Record<string, unknown>> {
-    const title = input.title.trim();
-    if (!title) throw new HttpError(422, "title is required");
-    const proposalIds = [...new Set(input.proposalIds.map((id) => id.trim()).filter(Boolean))];
-    if (proposalIds.length === 0) throw new HttpError(422, "proposal_ids must contain at least one proposal");
-    if (proposalIds.length > 50) throw new HttpError(422, "A bundle cannot contain more than 50 proposals");
-
-    const client = await this.db.connect();
-    try {
-      await client.query("BEGIN");
-      const selected = await client.query<ProposalSelectionRow>(
-        `SELECT p.id, p.proposal_type, p.status, p.risk_level, p.title, p.summary, p.payload_json
-           FROM proposals p
-          WHERE p.space_id = $1
-            AND p.id = ANY($2::varchar[])
-            AND p.status = 'pending'
-            AND ${contentReadSql("proposal", "p", "$3")}
-          FOR UPDATE`,
-        [identity.spaceId, proposalIds, identity.userId],
-      );
-      if (selected.rows.length !== proposalIds.length) {
-        throw new HttpError(409, "Every proposal must be visible, pending, and belong to the active space");
-      }
-      if (selected.rows.some((row) => row.proposal_type === "evolution_bundle_rollback")) {
-        throw new HttpError(422, "Bundle rollback proposals cannot be nested in another evolution bundle");
-      }
-      const special = selected.rows
-        .map((row) => ({ row, reason: bundleBlockedProposalReason(row) }))
-        .find((item) => item.reason);
-      if (special?.reason) {
-        throw new HttpError(422, special.reason);
-      }
-      const existingMember = await client.query<{ proposal_id: string; bundle_id: string }>(
-        `SELECT proposal_id, bundle_id
-           FROM evolution_bundle_members
-          WHERE proposal_id = ANY($1::varchar[])
-          LIMIT 1
-          FOR UPDATE`,
-        [proposalIds],
-      );
-      if (existingMember.rows[0]) {
-        throw new HttpError(409, `Proposal ${existingMember.rows[0].proposal_id} already belongs to evolution bundle ${existingMember.rows[0].bundle_id}`);
-      }
-
-      const bundleId = randomUUID();
-      const now = new Date().toISOString();
-      const risk = selected.rows.reduce<BundleRisk>((current, row) => maxRisk(current, row.risk_level), "low");
-      await client.query(
-        `INSERT INTO evolution_bundles (
-           id, space_id, title, description, status, risk_level, created_by_user_id, created_at, updated_at
-         ) VALUES ($1, $2, $3, $4, 'pending_review', $5, $6, $7, $7)`,
-        [bundleId, identity.spaceId, title, input.description?.trim() || null, risk, identity.userId, now],
-      );
-      for (const [index, proposalId] of proposalIds.entries()) {
-        await client.query(
-          `INSERT INTO evolution_bundle_members (
-             id, bundle_id, proposal_id, position, status, before_snapshot_json, after_snapshot_json, created_at
-           ) VALUES ($1, $2, $3, $4, 'pending', '{}'::jsonb, '{}'::jsonb, $5)`,
-          [randomUUID(), bundleId, proposalId, index + 1, now],
-        );
-      }
-      await client.query("COMMIT");
-      const result = await this.get(identity, bundleId);
-      if (!result) throw new HttpError(500, "Evolution bundle was not visible after creation");
-      return result;
-    } catch (error) {
-      await client.query("ROLLBACK").catch(() => undefined);
-      throw error;
-    } finally {
-      client.release();
-    }
+    const bundleId = await withQueryableTransaction(this.db, (db) => createEvolutionBundle(db, identity, input));
+    const result = await this.get(identity, bundleId);
+    if (!result) throw new HttpError(500, "Evolution bundle was not visible after creation");
+    return result;
   }
 
   async list(identity: SpaceUserIdentity, limit = 50, offset = 0): Promise<Record<string, unknown>[]> {
@@ -418,7 +354,7 @@ export class EvolutionBundleRepository {
           AND EXISTS (SELECT 1 FROM evolution_bundles b WHERE b.id = $1 AND b.space_id = $3)`,
       [bundleId, proposalId, identity.spaceId, status, note, identity.userId, now, JSON.stringify(beforeSnapshot ?? {}), JSON.stringify(afterSnapshot)],
     );
-    if ((result.rowCount ?? 0) !== 1) throw new HttpError(409, "Bundle member was already decided");
+    if ((result.rowCount ?? 0) !== 1) throw new EvolutionAssetRefusal(409, "Bundle member was already decided");
     await this.refreshBundleStatus(db, bundleId, identity.spaceId);
   }
 
@@ -432,15 +368,15 @@ export class EvolutionBundleRepository {
     if(!visible)throw new HttpError(404,'Evolution bundle not found');
     const members=await this.memberRows(identity,bundleId);
     if(decisions.some(d=>d.decision==='approve' && members.some(m=>m.proposal_id===d.proposalId&&m.proposal_type==='code_patch'))){
-      return queueBundleDecision(this.db,identity,bundleId,decisions,proposalService);
+      return queueBundleDecision(this.db,identity,bundleId,decisions,proposalService,this.databaseUrl);
     }
     return this.decideAtomic(identity,bundleId,decisions,proposalService);
   }
 
   /** One canonical DB writer for synchronous and durable mixed decisions. */
-  async decideAtomic(identity:SpaceUserIdentity,bundleId:string,decisions:EvolutionBundleDecision[],proposalService:ProposalDecisionPort,commitReceipt?: (client:PoolClient)=>Promise<void>,frozen?:FrozenBundleMember[]):Promise<Record<string,unknown>>{
-    if(!this.db.options.connectionString)throw new HttpError(503,'Bundle decisions require configured audit recovery');
-    return withPolicyAuditRecovery(this.db.options.connectionString,()=>this.decideUnlocked(identity,bundleId,decisions,proposalService,commitReceipt,frozen));
+  async decideAtomic(identity:SpaceUserIdentity,bundleId:string,decisions:EvolutionBundleDecision[],proposalService:ProposalDecisionPort,commitReceipt?: (client:Queryable)=>Promise<void>,frozen?:FrozenBundleMember[]):Promise<Record<string,unknown>>{
+    if(!this.databaseUrl)throw new HttpError(503,'Bundle decisions require configured audit recovery');
+    return withPolicyAuditRecovery(this.databaseUrl,()=>this.decideUnlocked(identity,bundleId,decisions,proposalService,commitReceipt,frozen));
   }
 
   private async decideUnlocked(
@@ -448,21 +384,21 @@ export class EvolutionBundleRepository {
     bundleId: string,
     decisions: EvolutionBundleDecision[],
     proposalService: ProposalDecisionPort,
-    commitReceipt?: (client:PoolClient)=>Promise<void>,
+    commitReceipt?: (client:Queryable)=>Promise<void>,
     frozen?:FrozenBundleMember[],
   ): Promise<Record<string, unknown>> {
     const unique = new Map<string, EvolutionBundleDecision>();
     for (const decision of decisions) {
       if (!decision.proposalId || !["approve", "reject"].includes(decision.decision)) {
-        throw new HttpError(422, "Each decision requires proposal_id and decision=approve|reject");
+        throw new EvolutionAssetRefusal(422, "Each decision requires proposal_id and decision=approve|reject");
       }
       unique.set(decision.proposalId, decision);
     }
-    if (unique.size === 0) throw new HttpError(422, "decisions must contain at least one member decision");
+    if (unique.size === 0) throw new EvolutionAssetRefusal(422, "decisions must contain at least one member decision");
     const initial = await this.get(identity, bundleId);
     if (!initial) throw new HttpError(404, "Evolution bundle not found");
     if (["rolled_back", "rollback_failed"].includes(String(initial.status))) {
-      throw new HttpError(409, `Evolution bundle is already ${String(initial.status)}`);
+      throw new EvolutionAssetRefusal(409, `Evolution bundle is already ${String(initial.status)}`);
     }
 
     // One request approves its members in position order, so a rollback that
@@ -471,46 +407,42 @@ export class EvolutionBundleRepository {
     const ordered = [...unique.values()].sort(
       (left, right) => (positions.get(left.proposalId) ?? 0) - (positions.get(right.proposalId) ?? 0),
     );
-    const client = await this.db.connect();
     const results:ProposalTransactionResult<unknown>[]=[];
     try {
-      await client.query('BEGIN');
-      await withBundleDecisionOwner(client,identity.spaceId,[...unique.keys()],async()=>{
+      await withQueryableTransaction(this.db,client=>withBundleDecisionOwner(client,identity.spaceId,[...unique.keys()],async()=>{
         await lockBundleDecision(client,bundleId);
         if(!commitReceipt)await assertNoActiveBundleDecision(client,identity.spaceId,bundleId);
         const bundle=(await client.query<{status:string}>('SELECT status FROM evolution_bundles WHERE id=$1 AND space_id=$2 FOR UPDATE',[bundleId,identity.spaceId])).rows[0];
         if(!bundle)throw new HttpError(404,'Evolution bundle not found');
-        if(['rolled_back','rollback_failed'].includes(bundle.status))throw new HttpError(409,`Evolution bundle is already ${bundle.status}`);
+        if(['rolled_back','rollback_failed'].includes(bundle.status))throw new EvolutionAssetRefusal(409,`Evolution bundle is already ${bundle.status}`);
         for(const decision of ordered){
           const member=await this.memberFromDb(client,identity,bundleId,decision.proposalId,true);
           if(!member)throw new HttpError(404,'Evolution bundle member not found');
           if(member.status!=='pending'){
-            if(frozen)throw new HttpError(409,'Frozen member was decided outside this intent');
-            if(member.status!==(decision.decision==='approve'?'approved':'rejected'))throw new HttpError(409,'Bundle member has a different decision');
+            if(frozen)throw new EvolutionAssetRefusal(409,'Frozen member was decided outside this intent');
+            if(member.status!==(decision.decision==='approve'?'approved':'rejected'))throw new EvolutionAssetRefusal(409,'Bundle member has a different decision');
             continue;
           }
           const expected=frozen?.find(m=>m.proposalId===decision.proposalId);
           if(expected){const current=(await client.query<{payload_json:Record<string,unknown>}>('SELECT payload_json FROM proposals WHERE id=$1 AND space_id=$2',[decision.proposalId,identity.spaceId])).rows[0];
-            if(!current||sha256Json(current.payload_json)!==expected.payloadHash)throw new HttpError(409,'Frozen bundle payload changed');}
+            if(!current||sha256Json(current.payload_json)!==expected.payloadHash)throw new EvolutionAssetRefusal(409,'Frozen bundle payload changed');}
           const before=decision.decision==='approve'?await this.captureSnapshotForProposal(client,identity.spaceId,decision.proposalId,member.proposal_type):{};
           const onDecision=()=>this.recordMemberDecisionOnDb(client,identity,bundleId,decision.proposalId,decision.decision==='approve'?'approved':'rejected',decision.note??null,before);
           const result=decision.decision==='approve'
             ?await proposalService.acceptInTransaction(client,decision.proposalId,identity,{allowBundleMemberDecision:true},onDecision)
             :await proposalService.rejectInTransaction(client,decision.proposalId,identity,onDecision);
-          if(!result)throw new HttpError(409,'Proposal was no longer pending or visible');
+          if(!result)throw new EvolutionAssetRefusal(409,'Proposal was no longer pending or visible');
           results.push(result);
-          if(frozen && decision.decision==='approve' && (result.outcome as {proposal?:{status?:string}}).proposal?.status!=='accepted')throw new HttpError(409,'Frozen member was not accepted');
+          if(frozen && decision.decision==='approve' && (result.outcome as {proposal?:{status?:string}}).proposal?.status!=='accepted')throw new EvolutionAssetRefusal(409,'Frozen member was not accepted');
         }
         await this.refreshBundleStatus(client,bundleId,identity.spaceId);
         await commitReceipt?.(client);
-      },identity.userId);
-      await client.query('COMMIT');
+      },identity.userId));
     }catch(error){
-      await client.query('ROLLBACK').catch(()=>undefined);
       for(const result of results.reverse())await result.rollback?.().catch(()=>undefined);
       throw error;
-    }finally{client.release();}
-    for(const result of results)await result.postCommit?.().catch(()=>undefined);
+    }
+    if(!isOperationTransaction(this.db))for(const result of results)await result.postCommit?.().catch(()=>undefined);
     const updated = await this.get(identity, bundleId);
     if (!updated) throw new HttpError(500, "Evolution bundle disappeared after decision");
     return updated;
@@ -521,15 +453,14 @@ export class EvolutionBundleRepository {
     bundleId: string,
     proposalService: ProposalDecisionPort,
   ): Promise<Record<string, unknown>> {
-    if(!this.db.options.connectionString)throw new HttpError(503,'Bundle decisions require configured audit recovery');
-    return withPolicyAuditRecovery(this.db.options.connectionString,async()=>{
+    if(!this.databaseUrl)throw new HttpError(503,'Bundle decisions require configured audit recovery');
+    return withPolicyAuditRecovery(this.databaseUrl,async()=>{
       const visible = await this.get(identity, bundleId);
       if (!visible) throw new HttpError(404, "Evolution bundle not found");
       if (visible.status === "rolled_back") return visible;
-      const client = await this.db.connect();
       const transactionResults:ProposalTransactionResult<unknown>[]=[];
       try {
-        await client.query("BEGIN");
+        await withQueryableTransaction(this.db,async client=>{
         const roots=(await client.query<{id:string}>("SELECT id FROM proposals WHERE space_id=$1 AND proposal_type='evolution_bundle_rollback' AND payload_json->>'bundle_id'=$2 AND status='pending' ORDER BY id",[identity.spaceId,bundleId])).rows.map(r=>r.id);
         await withBundleDecisionOwner(client,identity.spaceId,roots,async()=>{
         await lockBundleDecision(client,bundleId);
@@ -549,7 +480,7 @@ export class EvolutionBundleRepository {
         const assessment = rollbackSummaryForMembers(row.status, members);
         if (!assessment.rollbackable) {
           const message = `Rollback preflight failed: ${assessment.rollback_blockers.join("; ")}`;
-          throw new HttpError(409, message, {
+          throw new EvolutionAssetRefusal(409, message, {
             detail: message,
             rollbackable: false,
             rollback_blockers: assessment.rollback_blockers,
@@ -587,17 +518,14 @@ export class EvolutionBundleRepository {
               requiredApproverRole: null,
             });
         const transactionResult=await proposalService.acceptInTransaction(client,rollbackProposal.id,identity);
-        if(!transactionResult)throw new HttpError(409,'Rollback proposal was no longer pending or visible');
+        if(!transactionResult)throw new EvolutionAssetRefusal(409,'Rollback proposal was no longer pending or visible');
         transactionResults.push(transactionResult);
         },identity.userId);
-        await client.query("COMMIT");
-        for(const transactionResult of transactionResults)await transactionResult.postCommit?.().catch(()=>undefined);
+        });
+        if(!isOperationTransaction(this.db))for(const transactionResult of transactionResults)await transactionResult.postCommit?.().catch(()=>undefined);
       } catch (error) {
-        await client.query("ROLLBACK").catch(() => undefined);
         for(const transactionResult of transactionResults.reverse())await transactionResult.rollback?.().catch(()=>undefined);
         throw error;
-      } finally {
-        client.release();
       }
       const result = await this.get(identity, bundleId);
       if (!result) throw new HttpError(500, "Evolution bundle disappeared after rollback proposal apply");
@@ -667,7 +595,7 @@ export class EvolutionBundleRepository {
     const row = proposal.rows[0];
     if (!row) throw new HttpError(404, "Proposal not found in this space");
     if (expectedProposalType && expectedProposalType !== row.proposal_type) {
-      throw new HttpError(409, "Proposal type changed while deciding the bundle");
+      throw new EvolutionAssetRefusal(409, "Proposal type changed while deciding the bundle");
     }
     if (row.proposal_type !== "evolvable_asset_version_promote") {
       return {
@@ -678,7 +606,7 @@ export class EvolutionBundleRepository {
     }
     const payload = record(row.payload_json);
     const assetId = optionalString(payload.asset_id);
-    if (!assetId) throw new HttpError(422, "Promotion proposal is missing asset_id");
+    if (!assetId) throw new EvolutionAssetRefusal(422, "Promotion proposal is missing asset_id");
     // The snapshot is the rollback boundary. It must be captured while the
     // same asset-level lock used by promotion apply and rollback is held;
     // otherwise another promotion could commit between the snapshot read and
@@ -814,7 +742,7 @@ export async function applyEvolutionBundleRollback(
   if (!row) throw new HttpError(404, "Evolution bundle not found");
   if (row.status === "rolled_back") return;
   if (!["applied", "partially_approved"].includes(row.status)) {
-    throw new HttpError(409, `Evolution bundle is not rollbackable while ${row.status}`);
+    throw new EvolutionAssetRefusal(409, `Evolution bundle is not rollbackable while ${row.status}`);
   }
 
   const members = await db.query<BundleMemberRow>(
@@ -830,16 +758,16 @@ export async function applyEvolutionBundleRollback(
       FOR UPDATE OF bm`,
     [bundleId, identity.spaceId],
   );
-  if (members.rows.length === 0) throw new HttpError(409, "Evolution bundle has no approved members to roll back");
+  if (members.rows.length === 0) throw new EvolutionAssetRefusal(409, "Evolution bundle has no approved members to roll back");
   const assetIds = new Set<string>();
   for (const member of members.rows) {
     const before = snapshotJson(member.before_snapshot_json);
     const after = snapshotJson(member.after_snapshot_json);
     if (before.kind !== "evolvable_asset_promotion" || after.kind !== "evolvable_asset_promotion") {
-      throw new HttpError(409, `Proposal ${member.proposal_id} has no supported rollback snapshot`);
+      throw new EvolutionAssetRefusal(409, `Proposal ${member.proposal_id} has no supported rollback snapshot`);
     }
     if (typeof after.asset_id !== "string" || !after.asset_id) {
-      throw new HttpError(409, `Proposal ${member.proposal_id} has an invalid rollback snapshot`);
+      throw new EvolutionAssetRefusal(409, `Proposal ${member.proposal_id} has an invalid rollback snapshot`);
     }
     assetIds.add(after.asset_id);
   }
@@ -899,11 +827,11 @@ async function restorePromotionSnapshot(
   const before = beforeValue as unknown as PromotionSnapshot;
   const after = afterValue as unknown as PromotionSnapshot;
   if (before.kind !== "evolvable_asset_promotion" || after.kind !== "evolvable_asset_promotion") {
-    throw new HttpError(409, "Bundle contains an unsupported rollback snapshot");
+    throw new EvolutionAssetRefusal(409, "Bundle contains an unsupported rollback snapshot");
   }
   const current = await capturePromotionSnapshot(client, after.asset_id, after.space_id);
   if (stableJsonStringify(current) !== stableJsonStringify(after)) {
-    throw new HttpError(409, `Asset ${after.asset_id} changed after bundle apply; refusing unsafe rollback`);
+    throw new EvolutionAssetRefusal(409, `Asset ${after.asset_id} changed after bundle apply; refusing unsafe rollback`);
   }
   const now = new Date().toISOString();
   for (const version of before.versions) {
@@ -952,4 +880,74 @@ export async function lockBundleDecision(db:Queryable,bundleId:string){
  // Domain serialization follows complete key admission; never a session lock
  // spanning per-member transactions. Disjoint decisions retain row-lock waiting.
  await db.query('SELECT id FROM evolution_bundles WHERE id=$1 FOR UPDATE',[bundleId]);
+}
+
+/**
+ * Groups pending Proposals the person can see into one review bundle, in the
+ * caller's transaction. Each Proposal row is locked before its membership is
+ * checked, so a Proposal joins at most one bundle; deciding the bundle stays
+ * on the canonical Proposal decision path.
+ */
+export async function createEvolutionBundle(
+  db: Queryable,
+  identity: SpaceUserIdentity,
+  input: { title: string; description?: string | null; proposalIds: string[] },
+): Promise<string> {
+  const title = input.title.trim();
+  if (!title) throw new EvolutionAssetRefusal(422, "title is required");
+  const proposalIds = [...new Set(input.proposalIds.map((id) => id.trim()).filter(Boolean))];
+  if (proposalIds.length === 0) throw new EvolutionAssetRefusal(422, "proposal_ids must contain at least one proposal");
+  if (proposalIds.length > 50) throw new EvolutionAssetRefusal(422, "A bundle cannot contain more than 50 proposals");
+  const selected = await db.query<ProposalSelectionRow>(
+    `SELECT p.id, p.proposal_type, p.status, p.risk_level, p.title, p.summary, p.payload_json
+       FROM proposals p
+      WHERE p.space_id = $1
+        AND p.id = ANY($2::varchar[])
+        AND p.status = 'pending'
+        AND ${contentReadSql("proposal", "p", "$3")}
+      FOR UPDATE`,
+    [identity.spaceId, proposalIds, identity.userId],
+  );
+  if (selected.rows.length !== proposalIds.length) {
+    throw new EvolutionAssetRefusal(409, "Every proposal must be visible, pending, and belong to the active space");
+  }
+  if (selected.rows.some((row) => row.proposal_type === "evolution_bundle_rollback")) {
+    throw new EvolutionAssetRefusal(422, "Bundle rollback proposals cannot be nested in another evolution bundle");
+  }
+  const special = selected.rows
+    .map((row) => ({ row, reason: bundleBlockedProposalReason(row) }))
+    .find((item) => item.reason);
+  if (special?.reason) {
+    throw new EvolutionAssetRefusal(422, special.reason);
+  }
+  const existingMember = await db.query<{ proposal_id: string; bundle_id: string }>(
+    `SELECT proposal_id, bundle_id
+       FROM evolution_bundle_members
+      WHERE proposal_id = ANY($1::varchar[])
+      LIMIT 1
+      FOR UPDATE`,
+    [proposalIds],
+  );
+  if (existingMember.rows[0]) {
+    throw new EvolutionAssetRefusal(409, `Proposal ${existingMember.rows[0].proposal_id} already belongs to evolution bundle ${existingMember.rows[0].bundle_id}`);
+  }
+
+  const bundleId = randomUUID();
+  const now = new Date().toISOString();
+  const risk = selected.rows.reduce<BundleRisk>((current, row) => maxRisk(current, row.risk_level), "low");
+  await db.query(
+    `INSERT INTO evolution_bundles (
+       id, space_id, title, description, status, risk_level, created_by_user_id, created_at, updated_at
+     ) VALUES ($1, $2, $3, $4, 'pending_review', $5, $6, $7, $7)`,
+    [bundleId, identity.spaceId, title, input.description?.trim() || null, risk, identity.userId, now],
+  );
+  for (const [index, proposalId] of proposalIds.entries()) {
+    await db.query(
+      `INSERT INTO evolution_bundle_members (
+         id, bundle_id, proposal_id, position, status, before_snapshot_json, after_snapshot_json, created_at
+       ) VALUES ($1, $2, $3, $4, 'pending', '{}'::jsonb, '{}'::jsonb, $5)`,
+      [randomUUID(), bundleId, proposalId, index + 1, now],
+    );
+  }
+  return bundleId;
 }

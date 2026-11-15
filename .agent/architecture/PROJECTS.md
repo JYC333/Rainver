@@ -210,6 +210,107 @@ membership APIs and role-grant checks, `accessibleProjectIds`/`canReadProject`,
 the Space member directory, shared Dialog/Select/Button and i18n. No schema,
 authentication mechanism, invitation flow or dependency is added.
 
+### Project Agents
+
+A Project's Agent list is `project_agent_links` (schema
+`server/src/db/schema/projectAgents.ts`, owner `server/src/modules/projects/`):
+one row per Project × existing Agent, `active` or `removed`, with who added it.
+It is a reference, never a copy — one Agent keeps one definition, runtime
+profiles and memory across every Project and Room it is used in — and it is
+separate from Room rosters (`room_agent_members`):
+
+- **What a link allows.** Starting new independent work with that Agent placed
+  in this Project: the Agent's first turn in a direct conversation placed in
+  the Project (`agent.chat.send` with `project_id`, whether it creates the
+  Session or names one created empty beforehand with `session.create`) is
+  refused with 409 unless the Agent is on the list (the link is held
+  `FOR SHARE` for the admission) or is the Project's own managed Assistant. A
+  Session in which that Agent already has a Run is an admitted conversation
+  and keeps going after the link is removed; removal stops new conversations,
+  not existing ones. That conversation is a direct session with Project
+  context; it is in no Room and reads no Room history.
+- **Its own Host container.** A host-bound direct conversation placed in a
+  Project runs in that Session's Conversation container, not the person's
+  Agent × person direct one: its `host_threads` row is
+  `container_kind = 'conversation'` keyed `(session_id, agent_id)`, the
+  managed cwd is the daemon's `conversations/<session_id>`, the runtime profile
+  is `agents/<agent_id>/profiles/conversation/<session_id>/…`, and archive
+  intents are keyed by the Session. The same Agent used directly in two
+  Projects (or outside any Project) therefore shares no cwd, vendor session,
+  CLI memory or archive. Such a conversation has no earlier container to
+  restore (`restore_workspace` is refused with 422), `agent.chat.reset_context`
+  with its `session_id` resets only its thread, and `session.delete` closes
+  its threads with a pending archive (cwd once, with the first managed
+  thread). Room-only Location rules (stale-Location admission,
+  isolated-workspace rebinding) are not applied to it. Non-Project direct
+  chats keep the Agent × person container; a Project session from before this
+  change that already ran on that container starts a fresh Conversation
+  container (history is replayed into the fresh vendor session), and a retry
+  of one of its failed turns is refused for review because its pinned thread
+  changed.
+- **What a link does not do.** It adds the Agent to no Room, grants no Room
+  history, and shares nothing: every list read ANDs the viewer's Agent content
+  ACL, so an Agent definition appears only to people its own ACL admits. A live
+  Room use grant may expose a minimal `room_only` Project list entry with no
+  description and only authorized Room links; it grants no direct conversation,
+  configuration or global history access.
+- **Who may link.** A Project writer (`project.agent.add`, rechecked under the
+  archive fence), for an Agent in the Project's Space that they can read,
+  that is `standard`, active, and — unless it
+  is `space_shared` — their own. Cross-Space links are impossible by the
+  composite foreign key. `project.agent.remove` needs the same writer
+  authority and an Agent the remover can read; it leaves every Room roster as
+  it is. That the link is still active is the first execution's precondition,
+  not authority: a replay of a removal that succeeded returns its stored
+  receipt (live writer and read authority are still rechecked), while a fresh
+  removal of an unlinked Agent answers 404.
+- **Room interplay.** `room.agent.add` and `room.agent.add_preset` upsert the
+  link in the Room transaction; `room.agent.remove` keeps it. Adding an Agent
+  that is already an active member also completes a missing link (removed from
+  the Project list, or a roster from before links) without a roster change —
+  no `roster_revision` bump, so pending invitation snapshots stay valid — and
+  under the first add's rule: a private Agent is linked only by its owner
+  (anyone else gets the first add's 404). Reaching a limited Room still needs
+  its own Room writer authority.
+- **Reads.** `GET /api/v1/projects/:projectId/agents` (Project readers; `q`,
+  `limit`, `offset`; `viewer_can_write`) returns each Agent with the Rooms it
+  is in **among Rooms the viewer is an active member of** — never a hint of a
+  limited Room the viewer is outside (ADR 0018 decision 3).
+  `GET /api/v1/projects/:projectId/agents/:agentId` returns that one entry
+  under the same gates — 404 when it is not on the list, was removed, or is
+  not readable by the viewer — so a single-link check never depends on paging.
+  `GET /api/v1/projects/:projectId/agent-candidates` returns the viewer's
+  linkable Agents with `linked`.
+- **Reusable identity cutover.** `0019_agent_workspace_and_conversation` makes every
+  standard Agent reusable through this relation. Its old Project survives as
+  `access_project_id`, an independent content/policy scope that linking never
+  widens. Missing original links are backfilled, removed links stay removed,
+  and existing Sessions, Runs and default Profiles are untouched. Conversation
+  setup and backend options use the Conversation Project to admit Locations,
+  never the Agent's content scope. See [Agents](../modules/agents.md#reusable-agent-identity-and-project-boundaries).
+- **Migration.** `0019_agent_workspace_and_conversation` backfills links from Agents created
+  in the Project (`agents.project_id`) and from mainline-Room specialists. It
+  deliberately does not read limited-Room rosters, which would turn a private
+  roster into a Project-wide fact.
+
+The web surface is `/projects/:projectId/agents`
+(`modules/projects/agents/`): **Add existing Agent** (primary, server search
+and paging), **Create new Agent** (secondary; `/agents/new` returns here with
+`created_agent` for a one-click add), **Use in this Project**
+(`/projects/:projectId/agents/:agentId/chat`, the shared `ChatPanel` with
+`projectId`; its "not on this Project's list" notice comes only from that
+single-entry read's 404), **Add to Room** (a chosen Room from the viewer's Rooms index; a
+private Agent is shared only with that Room's current members after its owner
+confirms), and **Configure** / **Work history** (`/agents/:id`,
+`?tab=runs`).
+
+Reuse / Dependency Check
+- Existing repository capability found? Room roster add/presets, the Agent content ACL (`contentReadSql`), Project writer/archive fences, operation-core registrations and route adapters, `escapeLikePattern`, the shared ChatPanel direct conversation.
+- Existing installed dependency found? Drizzle schema/migrations, zod, Radix-based shared controls, i18next.
+- Mature external option evaluated? n/a — domain authorization relation.
+- Chosen approach: extend (one link table and two core commands; no new subsystem).
+- Why: Room rosters cannot express "works for this Project but is in no Room" without making Project use a Room audience.
+
 ### ProjectPublicSummary
 
 Two tables, one row each per Project, because the draft a writer edits and the
@@ -1389,7 +1490,9 @@ space.
   pause/remove, health, and the materialized project item collection. Global
   Sources remains the source-level management surface.
 - Project conversation enters the project-bound Room surface at
-  `/projects/{id}/rooms?room={roomId}`, listed from `/projects/{id}/conversations`. A Room may own multiple durable Conversations; each
+  `/projects/{id}/rooms?room={roomId}` (the Room's conversation list) from the
+  Project's Rooms index; `/projects/{id}/conversations` remains the cross-Room
+  list with imported CLI history, reached from the Rooms index. A Room may own multiple durable Conversations; each
   explicit draft pins one Host, CLI installation, and Primary Workspace in its
   Conversation execution context, then each message opens one auditable
   collaboration task whose Runs retain the validated `project_id`, pinned
@@ -1612,19 +1715,21 @@ Canonical Knowledge requires a promotion Proposal.
 
 ## Project navigation and review
 
-All Project routes share one persistent navigation shell in two tiers. Four
+All Project routes share one persistent navigation shell in two tiers. Five
 promoted destinations are always visible — **Pulse** (the index route),
-**Board**, **Updates**, **Conversations** — because they are what a person
-opens a Project to do, and a Project is pushed forward through conversation,
-so all of it is one list at the first level rather than a Room picker two
-clicks down (`GET /projects/{id}/conversations`: every conversation the viewer
-can see across the Project's Rooms, mainline first, each opening in its Room;
-reading it enrols the viewer in the mainline like opening the Project does).
+**Board**, **Agents**, **Rooms**, **Updates**. Agents and Rooms are parallel
+because they are separate relations: the Agents this Project works with (each
+usable on its own, see "Project Agents"), and the Rooms that decide who can
+see which conversations ([ADR 0018](../decisions/0018-room-as-visibility-boundary.md),
+amended). The Rooms index lists the viewer's Rooms and links the cross-Room
+conversation list (`GET /projects/{id}/conversations`: every conversation the
+viewer can see across the Project's Rooms, mainline first, each opening in its
+Room; reading it, like the Rooms index, enrols the viewer in the mainline).
 Everything else sits under a collapsible **Areas** disclosure whose open state
 is remembered per browser — five entries, flat: Notes, Inquiry, Sources,
 Files & Code, Decisions. Research is reached inside Inquiry; `/research`
-redirects there. The Rooms page (roster, invitations, the
-full conversation surface) is reached from Conversations.
+redirects there. A Room's members (roster, invitations) and its
+conversations are reached from Rooms.
 Reading recommendations and All material are the primary Sources views; candidate review and daily editions remain secondary destinations. Knowledge review and Experiments
 are views of Inquiry. Project `/learning` redirects to Pulse. `/operations`
 redirects to the `/inquiry/records` Runs tab. `/digest` and `/raw` redirect to Sources

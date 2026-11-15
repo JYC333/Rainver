@@ -16,6 +16,23 @@ import type {
 import { HttpError, type Queryable } from "../src/modules/routeUtils/common.js";
 
 describe("AdaptiveQueryOrchestrator", () => {
+  it("single-attempt evaluation propagates an unknown preview without selection or fallback", async () => {
+    const store = new FakeStore(["arxiv"]);
+    let sends = 0;
+    const orchestrator = new AdaptiveQueryOrchestrator({} as Queryable, {} as ServerConfig, {
+      repository: store, singleAttempt: true,
+      contextRepository: {get: async () => contextVersion()},
+      intentPlanner: {plan: async (_identity, _context, execution) => {
+        expect(execution?.singleAttempt).toBe(true); return semanticIntent();
+      }},
+      previewGateway: {preview: async (_identity, request) => {
+        expect(request.singleAttempt).toBe(true); sends++; throw new HttpError(503, "unknown");
+      }},
+    });
+    await expect(orchestrator.evaluate({spaceId:"space",userId:"user"},{...input(["arxiv"]),execution:{modelProviderId:"provider",spend:{kind:"person",user_id:"user"}}})).rejects.toThrow("unknown");
+    expect(sends).toBe(1); expect(store.selected).toHaveLength(0); expect(store.finalized).toBe(false);
+  });
+
   it("evaluates providers independently and selects after different attempt counts", async () => {
     const store = new FakeStore(["arxiv", "openalex"]);
     const calls: Record<string, number> = {};

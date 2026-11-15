@@ -1,3 +1,6 @@
+import {lockSpaceRole} from '../../spaces/writers.js';
+import {lockReadingMutation} from '../readingMutationAccess.js';
+import {withQueryableTransaction,type Queryable} from '../../routeUtils/common.js';
 import {explicitRunTimeLimit} from '../../runs/runTimeLimit.js';
 import {goalCollectionReadableSql} from '../goals/itemVisibility.js';
 import {randomUUID} from 'node:crypto';
@@ -5,12 +8,12 @@ import {PROJECT_DEEP_READING_LIMITS,ProjectDeepReadRequestSchema} from '@rainver
 import type {ServerConfig} from '../../../config.js';
 import {HttpError,type Pool,type SpaceUserIdentity} from '../../routeUtils/common.js';
 import {readingProjectContext} from '../readingMethods/context.js';
-import {MaterialItemProcessingService} from '../materialProcessing/items.js';
+import {MaterialItemProcessingService,materialItemContext} from '../materialProcessing/items.js';
 import {projectMaterialRowsSql} from '../readingMaterial.js';
 import {sourceItemFullContentReadClause,sourceDerivedArtifactReadableClause} from '../sourceItemAccess.js';
 import {deepReadOf,assertDeepReadingAccess} from './contract.js';
-import {PgRunRepository,type RunRecord} from '../../runs/repository.js';
-async function assertFavoriteMaterial(db:Pool,identity:SpaceUserIdentity,projectId:string,itemId:string){
+import {PgRunRepository} from '../../runs/repository.js';
+export async function assertFavoriteMaterial(db:Queryable,identity:SpaceUserIdentity,projectId:string,itemId:string){
  await readingProjectContext(db,identity,projectId);
  if(!(await db.query(`SELECT i.id FROM source_items i WHERE i.space_id=$1 AND i.id=$2 AND i.deleted_at IS NULL AND ${sourceItemFullContentReadClause('i','$3')}`,[identity.spaceId,itemId,identity.userId])).rows.length)throw new HttpError(404,'Project material not found');
  if(!(await db.query(`SELECT 1 FROM (${projectMaterialRowsSql('$1','$2')} UNION ALL SELECT gi.source_item_id,'following',gi.id,g.project_id FROM source_goal_items gi JOIN source_goals g ON g.id=gi.goal_id AND g.space_id=gi.space_id WHERE gi.space_id=$1 AND g.project_id=$2 AND g.status<>'deleted' AND gi.selection_status<>'not_selected' AND ${goalCollectionReadableSql('gi','$4','gi.associated_at')}) membership WHERE source_item_id=$3 LIMIT 1`,[identity.spaceId,projectId,itemId,identity.userId])).rows.length)throw new HttpError(404,'Project material not found');
@@ -18,9 +21,13 @@ async function assertFavoriteMaterial(db:Pool,identity:SpaceUserIdentity,project
 export async function favoriteStatus(db:Pool,identity:SpaceUserIdentity,projectId:string,itemId:string){
  await assertFavoriteMaterial(db,identity,projectId,itemId);return {item_id:itemId,favorite:(await db.query<{favorite:boolean}>('SELECT favorite FROM source_item_user_states WHERE space_id=$1 AND source_item_id=$2 AND user_id=$3',[identity.spaceId,itemId,identity.userId])).rows[0]?.favorite??false};
 }
-export async function favoriteMaterial(db:Pool,identity:SpaceUserIdentity,projectId:string,itemId:string,favorite:boolean){
- await assertFavoriteMaterial(db,identity,projectId,itemId);
- await db.query(`INSERT INTO source_item_user_states(id,space_id,source_item_id,user_id,favorite,created_at,updated_at) VALUES($1,$2,$3,$4,$5,now(),now()) ON CONFLICT(space_id,source_item_id,user_id) DO UPDATE SET favorite=excluded.favorite,updated_at=now()`,[randomUUID(),identity.spaceId,itemId,identity.userId,favorite]);return {item_id:itemId,favorite};
+export async function favoriteMaterial(db:Queryable,identity:SpaceUserIdentity,projectId:string,itemId:string,favorite:boolean){
+ return withQueryableTransaction(db,async tx=>{
+ await assertFavoriteMaterial(tx,identity,projectId,itemId);
+ await lockReadingMutation(tx,identity,itemId,projectId);
+ await assertFavoriteMaterial(tx,identity,projectId,itemId);
+ await tx.query(`INSERT INTO source_item_user_states(id,space_id,source_item_id,user_id,favorite,created_at,updated_at) VALUES($1,$2,$3,$4,$5,now(),now()) ON CONFLICT(space_id,source_item_id,user_id) DO UPDATE SET favorite=excluded.favorite,updated_at=now()`,[randomUUID(),identity.spaceId,itemId,identity.userId,favorite]);return {item_id:itemId,favorite};
+ });
 }
 export async function favoriteList(db:Pool,identity:SpaceUserIdentity,projectId:string,offset=0){
  await readingProjectContext(db,identity,projectId);
@@ -28,11 +35,15 @@ export async function favoriteList(db:Pool,identity:SpaceUserIdentity,projectId:
  const rows=(await db.query(`SELECT i.id AS item_id,i.title,i.source_uri FROM source_item_user_states s JOIN source_items i ON i.id=s.source_item_id AND i.space_id=s.space_id WHERE s.space_id=$1 AND s.user_id=$2 AND s.favorite AND i.deleted_at IS NULL AND ${sourceItemFullContentReadClause('i','$2')} AND (EXISTS(SELECT 1 FROM (${projectMaterialRowsSql('$1','$3')}) membership WHERE membership.source_item_id=i.id) OR EXISTS(SELECT 1 FROM source_goal_items gi JOIN source_goals g ON g.id=gi.goal_id AND g.space_id=gi.space_id WHERE gi.space_id=i.space_id AND gi.source_item_id=i.id AND g.project_id=$3 AND g.status<>'deleted' AND gi.selection_status<>'not_selected' AND ${goalCollectionReadableSql('gi','$2','gi.associated_at')})) ORDER BY s.updated_at DESC,i.id LIMIT 26 OFFSET $4`,[identity.spaceId,identity.userId,projectId,offset])).rows;
  return {items:rows.slice(0,25),next_offset:rows.length>25&&offset+25<=10000?offset+25:null};
 }
-export async function startDeepReading(db:Pool,config:ServerConfig,identity:SpaceUserIdentity,projectId:string,itemId:string,raw:unknown){
+export async function startDeepReadingIn(db:Queryable,identity:SpaceUserIdentity,projectId:string,itemId:string,raw:unknown){
  const input=ProjectDeepReadRequestSchema.parse(raw);
+ await lockReadingMutation(db,identity,itemId,projectId,true);
  if(input.following&&!(await db.query("SELECT id FROM source_goals WHERE space_id=$1 AND project_id=$2 AND id=$3 AND active_version_id=$4 AND status='running'",[identity.spaceId,projectId,input.following.goal_id,input.following.version_id])).rows.length)throw new HttpError(409,'Select an active confirmed Following purpose');
  await readingProjectContext(db,identity,projectId);
- return new MaterialItemProcessingService(db,config).start(identity,itemId,{...input,investigation:true,deep_read:{project_id:projectId,following:input.following,rerun:!!input.rerun_of,rerun_of:input.rerun_of,retry_of:input.retry_of}});
+ return MaterialItemProcessingService.startIn(db,identity,itemId,{...input,investigation:true,deep_read:{project_id:projectId,following:input.following,rerun:!!input.rerun_of,rerun_of:input.rerun_of,retry_of:input.retry_of}});
+}
+export async function startDeepReading(db:Pool,_config:ServerConfig,identity:SpaceUserIdentity,projectId:string,itemId:string,raw:unknown){
+ return withQueryableTransaction(db,tx=>startDeepReadingIn(tx,identity,projectId,itemId,raw));
 }
 export async function readDeepOperations(db:Pool,identity:SpaceUserIdentity,projectId:string,id?:string,offset=0){
  await readingProjectContext(db,identity,projectId);
@@ -48,12 +59,43 @@ export async function readDeepOperations(db:Pool,identity:SpaceUserIdentity,proj
  }
  return {items,next_offset:!id&&rows.length>25&&offset+25<=10000?offset+25:null,limits:PROJECT_DEEP_READING_LIMITS};
 }
+/** Exact owner identity is sufficient for stopping a private investigation. Input
+ * access is deliberately absent: withdrawing a Source must not prevent a stop. */
+export async function ownedDeepReading(db:Queryable,identity:SpaceUserIdentity,projectId:string,id:string){
+ const operation=(await db.query<{id:string;source_item_id:string;metadata_json:{run_id:string}}>("SELECT id,source_item_id,metadata_json FROM extraction_jobs WHERE id=$1 AND space_id=$2 AND metadata_json->>'user_id'=$3 AND metadata_json->>'deep_project'=$4 AND metadata_json->>'material_processing'='true'",[id,identity.spaceId,identity.userId,projectId])).rows[0];
+ if(!operation)throw new HttpError(404,'Deep reading operation not found');
+ const run=await new PgRunRepository(db).getRun(identity.spaceId,operation.metadata_json.run_id);
+ if(!run||run.instructed_by_user_id!==identity.userId||deepReadOf(run)?.project_id!==projectId||run.project_id!==projectId||materialItemContext(run)?.id!==operation.id)throw new HttpError(404,'Deep reading operation not found');
+ return {operation,run};
+}
+/** Durable intent only. Keep the operation pending until canonical Run settlement;
+ * a running Host must acknowledge exit before cancellation is terminal. */
+export async function requestDeepReadingCancel(db:Queryable,identity:SpaceUserIdentity,projectId:string,id:string){
+ return withQueryableTransaction(db,async tx=>{
+  await lockSpaceRole(tx,identity.spaceId,identity.userId);
+  const before=await ownedDeepReading(tx,identity,projectId,id);
+  // Run before extraction projection, matching the terminal owner admission.
+  await tx.query('SELECT id FROM runs WHERE space_id=$1 AND id=$2 FOR UPDATE',[identity.spaceId,before.run.id]);
+  await tx.query('SELECT id FROM extraction_jobs WHERE space_id=$1 AND id=$2 FOR UPDATE',[identity.spaceId,id]);
+  const current=await ownedDeepReading(tx,identity,projectId,id);
+  if(current.run.id!==before.run.id)throw new HttpError(409,'Deep reading operation changed');
+  const requested=await new PgRunRepository(tx).markRunCancelling({run_id:current.run.id,space_id:identity.spaceId,requested_by_user_id:identity.userId,requested_at:new Date().toISOString(),reason:'Private deep reading cancelled by owner'});
+  return {id,run_id:current.run.id,status:requested?.status??current.run.status};
+ });
+}
+/** Process IO is outside the intent transaction; an interrupted stop is recovered
+ * by the existing cancelling-Run sweep and the material terminal reconciler. */
+export async function finishDeepReadingCancel(db:Pool,config:ServerConfig,identity:SpaceUserIdentity,projectId:string,id:string){
+ const {run}=await ownedDeepReading(db,identity,projectId,id);
+ const {buildRunOrchestration}=await import('../../runs/orchestrationFactory.js');
+ await buildRunOrchestration(config).orchestration.cancelRun({run_id:run.id,space_id:identity.spaceId,requested_by_user_id:identity.userId,reason:'Private deep reading cancelled by owner'});
+ const current=(await new PgRunRepository(db).getRun(identity.spaceId,run.id))!;
+ if(['succeeded','degraded','failed','cancelled','orphaned'].includes(current.status))await new MaterialItemProcessingService(db,config).reconcileTerminal(current.id);
+ return {id,status:current.status};
+}
 export async function cancelDeepReading(db:Pool,config:ServerConfig,identity:SpaceUserIdentity,projectId:string,id:string){
- // Cancellation needs ownership, not access to the withdrawn input or report.
- const operation=(await db.query<{metadata_json:{run_id:string}}>("SELECT metadata_json FROM extraction_jobs WHERE id=$1 AND space_id=$2 AND metadata_json->>'user_id'=$3 AND metadata_json->>'deep_project'=$4",[id,identity.spaceId,identity.userId,projectId])).rows[0];if(!operation)throw new HttpError(404,'Deep reading operation not found');
- const {buildRunOrchestration}=await import('../../runs/orchestrationFactory.js');await buildRunOrchestration(config).orchestration.cancelRun({run_id:operation.metadata_json.run_id,space_id:identity.spaceId,requested_by_user_id:identity.userId,reason:'Private deep reading cancelled by owner'});
- const run=(await db.query<RunRecord>('SELECT * FROM runs WHERE id=$1 AND space_id=$2',[operation.metadata_json.run_id,identity.spaceId])).rows[0];if(run&&['succeeded','degraded','failed','cancelled','orphaned'].includes(run.status))await new MaterialItemProcessingService(db,config).reconcileTerminal(run.id);
- return {id,status:run?.status??'queued'};
+ await requestDeepReadingCancel(db,identity,projectId,id);
+ return finishDeepReadingCancel(db,config,identity,projectId,id);
 }
 
 /** Explicit choices for one authorized material, not private per-member activity. */

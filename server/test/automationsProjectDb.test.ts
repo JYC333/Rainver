@@ -52,6 +52,7 @@ import { decidePersonaWrite } from "../src/modules/memory/memoryApplyRepository.
 import { registerWorkflowExecutionProposalAppliers } from "../src/modules/automations/workflowExecutionProposalApplier.js";
 import type { ProposalApplierRegistry, ProposalApplyContext } from "../src/modules/proposals/applierRegistry.js";
 import { withTransaction } from "../src/db/tx.js";
+import { operationTransaction } from "../src/db/operationTransaction.js";
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OTHER_SPACE = "22222222-2222-4222-8222-222222222222";
@@ -220,6 +221,24 @@ function createAutomation(input: Parameters<AutomationService["create"]>[0]) {
 }
 
 describeWithPostgres("Automation × Project binding (real Postgres)", () => {
+  it("preflights the uncommitted Agent state on the configuration owner's port", async () => {
+    const client = await db.pool.connect();
+    const port = operationTransaction(client);
+    try {
+      await client.query("BEGIN");
+      await client.query("UPDATE agents SET status='inactive' WHERE id=$1", [AGENT]);
+      await expect(AutomationService.forConfigurationTransaction(config, port.db).create({
+        spaceId: SPACE, ownerUserId: OWNER,
+        body: { name: "Uncommitted Agent", agent_id: AGENT, project_folder_id: PROJECT_FOLDER },
+      })).rejects.toThrow("Agent is not active (status=inactive)");
+      expect((await db.pool.query("SELECT status FROM agents WHERE id=$1", [AGENT])).rows[0]?.status).toBe("active");
+    } finally {
+      await client.query("ROLLBACK");
+      port.close();
+      client.release();
+    }
+  });
+
   it("joins an existing transaction for project-fenced create and update", async () => {
     if (!db.available) return;
     const client = await db.pool.connect();
@@ -1029,6 +1048,24 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
       `UPDATE evolvable_assets SET current_system_version_id = $2 WHERE id = $1`,
       [WORKFLOW_ASSET, WORKFLOW_VERSION],
     );
+
+    const configurationClient = await db.pool.connect();
+    const configurationPort = operationTransaction(configurationClient);
+    try {
+      await configurationClient.query("BEGIN");
+      await configurationClient.query("UPDATE evolvable_asset_versions SET status='draft' WHERE id=$1", [WORKFLOW_VERSION]);
+      await expect(AutomationService.forConfigurationTransaction(config, configurationPort.db).create({
+        spaceId: SPACE, ownerUserId: OWNER,
+        body: {
+          name: "Uncommitted version", agent_id: AGENT, project_folder_id: PROJECT_FOLDER,
+          config_json: { target_type: "workflow", workflow_asset_key: "workflow.automation-test", workflow_resolution: "pin", workflow_version_id: WORKFLOW_VERSION },
+        },
+      })).rejects.toThrow("explicit_version_id must reference an approved version");
+    } finally {
+      await configurationClient.query("ROLLBACK");
+      configurationPort.close();
+      configurationClient.release();
+    }
 
     const automation = await createAutomation({
       spaceId: SPACE,

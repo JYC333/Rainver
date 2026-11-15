@@ -1,5 +1,6 @@
+import { EvolutionAssetRefusal } from "../../evolution/assetRefusal.js";
 import { readingMethodContext } from './methodContext.js';
-import {HttpError,withDbTransaction,type Pool,type SpaceUserIdentity} from '../../routeUtils/common.js';
+import {HttpError,withQueryableTransaction,type Queryable,type SpaceUserIdentity} from '../../routeUtils/common.js';
 import {lockEvolutionAssets} from '../../evolution/assetLocks.js';
 import {PromptRepository} from '../repository.js';
 import {resolvePrompt} from '../resolver.js';
@@ -8,8 +9,8 @@ import {READING_METHOD_KEY} from './runtime.js';
 import {assertReadingPromotion} from './workspace.js';
 
 /** Same proposal/applier as every prompt; retries of this explicit request reuse its pending proposal. */
-export async function proposeReadingMethod(db:Pool,identity:SpaceUserIdentity,versionId:string,evaluationId:string,projectId:string|null){
- return withDbTransaction(db,async tx=>{
+export async function proposeReadingMethod(db:Queryable,identity:SpaceUserIdentity,versionId:string,evaluationId:string,projectId:string|null){
+ return withQueryableTransaction(db,async tx=>{
   const key=(await tx.query(`SELECT a.asset_key FROM evolvable_assets a JOIN evolvable_asset_versions v ON v.asset_id=a.id WHERE v.id=$1 AND a.asset_key IN ('reading.project_investigation','prompt.revision.method')`,[versionId])).rows[0]?.asset_key;if(!key)throw new HttpError(404,'Method not found');const asset=await readingAsset(tx,identity,true,String(key));await lockEvolutionAssets(tx,[asset.id]);
   const target={type:projectId?'project':'space',id:projectId??identity.spaceId};
   await assertReadingPromotion(tx,identity,versionId,[evaluationId],target);
@@ -19,11 +20,11 @@ export async function proposeReadingMethod(db:Pool,identity:SpaceUserIdentity,ve
  });
 }
 /** Resolving the expected effective version and rollback write share the canonical asset lock. */
-export async function rollbackReadingMethod(db:Pool,identity:SpaceUserIdentity,itemId:string|null,projectId:string|null,expectedVersionId:string,targetKey=READING_METHOD_KEY){
- return withDbTransaction(db,async tx=>{
+export async function rollbackReadingMethod(db:Queryable,identity:SpaceUserIdentity,itemId:string|null,projectId:string|null,expectedVersionId:string,targetKey=READING_METHOD_KEY){
+ return withQueryableTransaction(db,async tx=>{
   const ctx=await readingMethodContext(tx,identity,itemId,projectId);const asset=await readingAsset(tx,identity,true,targetKey);await lockEvolutionAssets(tx,[asset.id]);
   const effective=await resolvePrompt(tx,{...identity,assetKey:targetKey,projectId:ctx.projectId});
-  if(effective.version_id!==expectedVersionId)throw new HttpError(409,'Effective method changed; refresh before rollback');
+  if(effective.version_id!==expectedVersionId)throw new EvolutionAssetRefusal(409,'Effective method changed; refresh before rollback');
   return new PromptRepository(tx).rollbackDeployment(identity,targetKey,{scope_type:ctx.projectId?'project':'space',scope_id:ctx.projectId??identity.spaceId,label:'production'});
  });
 }

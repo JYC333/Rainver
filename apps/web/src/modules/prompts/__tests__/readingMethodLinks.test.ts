@@ -1,3 +1,4 @@
+// @vitest-environment node
 import {expect,it} from 'vitest'
 import {readingMethodReturn} from '../readingMethodLinks'
 it('preserves serendipity and exact edition/list return context without arbitrary redirects',()=>{

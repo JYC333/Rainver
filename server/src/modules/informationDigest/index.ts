@@ -21,7 +21,7 @@ export const informationDigestModule: ServerModule = {
 export {themeCollectionDay,beginThemeRound,wakeThemeRounds,wakeThemeRoundsForItem,themeCollectionTargets,retryThemeCollectionTarget} from './topics/rounds.js';
 export {registerProjectReadingJobs} from './topics/jobs.js';
 
-export {configureThemeAnalysis} from './topics/service.js';
+export {configureThemeAnalysis,readThemeRounds,settleThemeRound,cancelThemeRoundIn,stopThemeRoundRun} from './topics/service.js';
 
 export {themeRunReadable} from './topics/runAccess.js';
 

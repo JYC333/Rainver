@@ -727,7 +727,7 @@ export function loadConfig(env: RawEnv = process.env): ServerConfig {
   );
   const workspaceReclaimGraceMinutes = parseBoundedInt(
     env.SERVER_WORKSPACE_RECLAIM_GRACE_MINUTES,
-    10,
+    0,
     "SERVER_WORKSPACE_RECLAIM_GRACE_MINUTES",
     0,
     7 * 24 * 60,

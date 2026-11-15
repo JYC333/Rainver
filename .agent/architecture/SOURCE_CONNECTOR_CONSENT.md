@@ -31,10 +31,10 @@ as code and seed changes; there is no runtime connector upload surface:
 `source_connections.consent_json` and `source_connections.policy_json` are
 normalized into versioned JSON documents when a Source Channel implicitly
 creates its connection (`normalizeSourceConnectionCreateGovernance`). Connections
-are internal provenance: the `/sources/connections` list/create/read/update/
-delete, scan, draft, proposal, recommendation and subscription routes return 410
-and point callers at Source Channels. Only the per-connection Custom Source and
-Recipe read models (`…/:connectionId/custom-source`, `handler-versions`,
+are internal provenance with no connection-level list/create/read/update/
+delete, scan, draft, proposal, recommendation or subscription URL; those
+former routes are not registered (an unknown URL, 404). Callers use Source
+Channels. Only the per-connection Custom Source and Recipe read models (`…/:connectionId/custom-source`, `handler-versions`,
 `handler-runs`, `recipe-versions`) remain live. Retrieval projections
 carry explicit source connection ids and reload current source policy snapshots
 at read/egress time.

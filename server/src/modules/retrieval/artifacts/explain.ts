@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import type { RetrievalExplainResponse } from "@rainver/protocol";
 import type { Queryable } from "../../routeUtils/common.js";
 import { insertArtifactRow } from "../../artifacts/reviewArtifactWriter.js";
+import type { JobEnvelopeForHandler } from "../../jobs/handlerRegistry.js";
+import { settleRetrievalArtifact } from "../artifactRelease.js";
 
 export const RETRIEVAL_EXPLAIN_REPORT_ARTIFACT_TYPE = "retrieval_explain_report";
 
@@ -15,14 +17,17 @@ interface RetrievalExplainReportArtifactContext {
   settingsSnapshot?: Record<string, unknown>;
 }
 
+/** Same post-I/O settlement as Brief Artifacts; additionally requires the
+ * owner's CURRENT Space maintenance role inside the settlement transaction. */
 export async function persistRetrievalExplainReportArtifact(
   db: Queryable,
   input: RetrievalExplainReportArtifactContext,
+  job?: JobEnvelopeForHandler,
 ): Promise<string> {
   const ownerUserId = normalizedOwner(input.ownerUserId);
   const now = new Date().toISOString();
   const payload = explainReportPayload(input, ownerUserId, now);
-  return insertArtifactRow(db, {
+  return settleRetrievalArtifact(db, { spaceId: input.spaceId, userId: ownerUserId }, { artifact_type: RETRIEVAL_EXPLAIN_REPORT_ARTIFACT_TYPE, metadata_json: payload }, (tx) => insertArtifactRow(tx, {
     spaceId: input.spaceId,
     ownerUserId,
     artifactType: RETRIEVAL_EXPLAIN_REPORT_ARTIFACT_TYPE,
@@ -32,7 +37,7 @@ export async function persistRetrievalExplainReportArtifact(
     canonicalFormat: "retrieval_explain_report.v1",
     visibility: "private",
     createdAt: now,
-  });
+  }), job);
 }
 
 function explainReportPayload(

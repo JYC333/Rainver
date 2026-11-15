@@ -1,9 +1,12 @@
+import {assertDirectSettingsActor} from '../systemActions/operations/actor.js';
+import { PgConversationExecutionContextRepository } from "../sessions/executionContextRepository.js";
+import { PgRoomRepository } from "../rooms/repository.js";
 import {AGENT_OPERATION_SCHEMAS,type OperationActor,type RegisteredSystemActionDefinition} from '@rainver/protocol';
 import type {ServerConfig} from '../../config.js';
 import type {Queryable} from '../routeUtils/common.js';
 import type {OperationRegistration} from '../systemActions/operations/types.js';
 import {OperationBusinessError,OperationError,hidden,markedRefusal} from '../systemActions/operations/errors.js';
-import {assertProjectWriter,assertProjectWriterForMutation,lockActiveProjectForMutation,ProjectArchivedMutationError} from '../projects/access.js';
+import {assertProjectWriter,lockProjectAudience,assertProjectWriterForMutation,lockActiveProjectForMutation,ProjectArchivedMutationError} from '../projects/access.js';
 import {isSpaceOwnerOrAdmin} from '../access/roles.js';
 import {PgRunRepository,RunCreateValidationError} from '../runs/repository.js';
 import {RunBudgetExceededError,RunBudgetSourceReferenceError} from '../runs/budgetEnforcement.js';
@@ -83,13 +86,27 @@ export function agentOperationRegistrations(definitions:ReadonlyMap<string,Regis
     case 'agent.run.create':
      await lockProjectPlacement(db,a,i.project_id);await assertVisibleAgent(db,a,i.agent_id!);return;
     case 'agent.chat.reset_context':
-     if(!await new PgAgentChatRepository(db).getAgentForChat(a.space_id,p.userId,i.agent_id!))throw hidden();return;
+     if(!await new PgAgentChatRepository(db).getAgentForChat(a.space_id,p.userId,i.agent_id!))throw hidden();
+     if(i.session_id){
+      // Serialize with this conversation's turns, then check it is still the person's own.
+      await new PgConversationRuntimeSessionRepository(db).lockConversation(a.space_id,String(i.session_id));
+      if(!await new PgSessionRepository(db).getSession(a.space_id,p.userId,String(i.session_id)))throw hidden();
+     }
+     return;
     case 'conversation.session_config.save':{
+     await assertDirectSettingsActor(db,a);
+     if(a.principal.kind==='agent'){
+      const run=(await db.query<{session_id:string|null}>(`SELECT session_id FROM runs WHERE id=$1 AND space_id=$2`,[a.run_id,a.space_id])).rows[0];
+      if(!run?.session_id || run.session_id!==i.session_id || a.effective_origin!=='manual')throw hidden();
+     }
      const session=await new PgSessionRepository(db).getConversationForBackendSelection(a.space_id,p.userId,String(i.session_id));
      if(!session)throw hidden();
      if(session.room_id){
       if(!session.project_id)throw hidden();
+      await lockProjectAudience(db,a.space_id,session.project_id);
+      if(!await new PgRoomRepository(db).getVisibleRoom(a.space_id,p.userId,session.room_id,true))throw hidden();
       await assertProjectWriterForMutation(db,a.space_id,session.project_id,p.userId);
+      if(!await new PgConversationExecutionContextRepository(db).canAgentParticipate({id:session.id,space_id:a.space_id,room_id:session.room_id,project_id:session.project_id,project_folder_id:session.project_folder_id??null},i.agent_id!,p.userId))throw hidden();
       if(!(await db.query("SELECT 1 FROM room_agent_members WHERE space_id=$1 AND room_id=$2 AND agent_id=$3 AND status='active' FOR SHARE",[a.space_id,session.room_id,i.agent_id])).rows[0])throw hidden();
      }else if(session.agent_id&&session.agent_id!==i.agent_id)throw hidden();
      await new PgConversationRuntimeSessionRepository(db).lockConversation(a.space_id,session.id);return;
@@ -177,6 +194,17 @@ export function agentOperationRegistrations(definitions:ReadonlyMap<string,Regis
      return {id:run.id,space_id:a.space_id,agent_id:agentId,run_id:run.id};
     }
     case 'agent.chat.reset_context':{
+     if(i.session_id){
+      // A Project direct conversation: only that Session's own thread, never the person's general direct one.
+      const threads=new PgHostThreadRepository(db);
+      const thread=await threads.lockDirectConversationAgent(a.space_id,String(i.session_id),agentId);
+      if(!thread)throw hidden();
+      if(thread.host_owner_user_id&&thread.host_owner_user_id!==p.userId)throw hidden();
+      if(thread.dispatch_lock_id)throw new ResetContextConflict();
+      const updated=await threads.resetConversationAgent(thread.id);
+      if(!updated)throw hidden();
+      return {id:updated.id,space_id:a.space_id,agent_id:agentId,session_reset:true as const,thread_id:updated.id,workspace_mode:updated.workspace_mode};
+     }
      const thread=(await db.query<{id:string;dispatch_lock_id:string|null;host_owner_user_id:string|null}>(
       `SELECT thread.id,thread.dispatch_lock_id,host.owner_user_id AS host_owner_user_id FROM host_threads thread LEFT JOIN hosts host ON host.id=thread.execution_host_id
         WHERE thread.agent_id=$1 AND thread.container_kind='direct' AND thread.container_user_id=$2 AND thread.status IN ('active','session_reset') LIMIT 1 FOR UPDATE OF thread`,[agentId,p.userId])).rows[0];

@@ -1,12 +1,12 @@
 import {z} from 'zod';
 import {
- CreateRoomRequestSchema,RoomAgentAddRequestSchema,RoomAgentPresetRequestSchema,RoomAgentResetContextRequestSchema,
+ RoomConversationDefaultSchema, CreateRoomRequestSchema,RoomAgentAddRequestSchema,RoomAgentPresetRequestSchema,RoomAgentResetContextRequestSchema,
  RoomInvitationCreateRequestSchema,RoomInvitationDecisionRequestSchema,RoomOwnerTransferRequestSchema,
  SendRoomMessageRequestSchema,ContinueRoomAfterProposalRequestSchema,
 } from './rooms.js';
 import {OpenRoomDiscussionRequestSchema,ExtendRoomDiscussionRequestSchema} from './roomDiscussions.js';
 import {AttachThreadReferencesRequestSchema} from './threadReferences.js';
-import {ConversationRetryRequestSchema,ConversationRetryResponseSchema} from './memorySessions.js';
+import {ConversationBackendOptionSchema,ConversationRetryRequestSchema,ConversationRetryResponseSchema} from './memorySessions.js';
 
 const id=z.string().trim().min(1).max(36);
 const room={room_id:id};
@@ -18,6 +18,8 @@ const conversationReceipt=receipt.extend({session_id:id}).strict();
 const turnReceipt=conversationReceipt.extend({message_id:id,task_group_ids:z.array(id).min(1),run_ids:z.array(id).min(1)}).strict();
 
 export const ROOM_OPERATION_SCHEMAS={
+ 'room.defaults.save':{input:z.object({...room,expected_revision:z.number().int().nonnegative(),defaults:z.array(RoomConversationDefaultSchema).max(100)}).strict(),output:receipt},
+ 'room.settings.read':{input:z.object({room_id:id.optional()}).strict(),output:z.object({room_id:id,session_id:id.nullable(),revision:z.number().int().nonnegative(),defaults:z.array(RoomConversationDefaultSchema),agents:z.array(z.object({agent_id:id,agent_name:z.string(),role:z.enum(['manager','member']),options:z.array(ConversationBackendOptionSchema)}).strict())}).strict()},
  'room.create':{input:CreateRoomRequestSchema,output:receipt.extend({project_id:id}).strict()},
  'room.agent.add':{input:RoomAgentAddRequestSchema.extend(room).strict(),output:receipt.extend({agent_id:id,restore_requested:z.boolean()}).strict()},
  'room.agent.add_preset':{input:RoomAgentPresetRequestSchema.extend(room).strict(),output:receipt},
@@ -46,6 +48,8 @@ export const ROOM_OPERATION_SCHEMAS={
  'room.discussion.extend':{input:ExtendRoomDiscussionRequestSchema.extend({...conversation,discussion_id:id}).strict(),output:conversationReceipt.extend({discussion_id:id}).strict()},
 } as const;
 export const ROOM_OPERATION_TITLES:Record<keyof typeof ROOM_OPERATION_SCHEMAS,string>={
+ 'room.defaults.save':'Set defaults for new Room conversations',
+ 'room.settings.read':'Read current Room conversation defaults',
  'room.create':'Open a Room in a Project',
  'room.agent.add':'Add an Agent to a Room',
  'room.agent.add_preset':'Add a preset Agent to a Room',

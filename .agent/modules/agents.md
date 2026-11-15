@@ -475,6 +475,18 @@ Run:
   Check constraints reject hybrid Agent/provider_task shapes.
 ```
 
+## Tool failure recovery
+
+All Agent calls use the current Run catalogue from the System Action dispatcher;
+an absent operation is an explicit permission refusal, indistinguishable from an
+unknown name. Domain-hidden objects remain 404. The Work Skill and shared Room
+execution rules require checking only current tools and visible objects after
+404, without alternate-name/id probing, automatic write replay or unverified
+repair promises. Field errors point to `describe` and expose only safe field
+names/codes. Workspace action hints use the owning module's live authorizer and
+admission rules; they never confer write authority. See
+[SYSTEM_ACTIONS](../architecture/SYSTEM_ACTIONS.md#agent-discovery-failures-and-recovery).
+
 ## Main Flows
 
 **Queued run creation**
@@ -651,6 +663,123 @@ version (the old route silently dropped them).
 
 All edit paths preserve the version-immutability invariant (append, never mutate). Direct
 version creation via `POST /agents/{id}/versions` remains disabled.
+
+## Reusable Agent identity and Project boundaries
+
+Standard Agents have no execution-owning `project_id`. `project_agent_links`
+places the same identity in each Project; each Conversation chooses its own
+Host, CLI installation and workspace. `access_project_id` independently retains
+a Project content ACL and the management boundary of its Agent policy. Creating a standard
+Agent with a Project sets that access scope and creates its Project link in
+the same transaction. Linking elsewhere grants no content access.
+
+Migration `0019_agent_workspace_and_conversation` performs the one-time cutover for
+all old standard Agents, including archived identities. It copies their old
+Project into `access_project_id`, adds missing original-Project links without
+reactivating removed links (unattributable links are skipped), and clears only
+their execution ownership. IDs,
+versions, grants, policy versions, default Profiles, Sessions, Host threads and
+Run snapshots stay unchanged. It requires stopped old writers; there is no
+conversion button or runtime legacy adapter. Managed `system_assistant`
+identities retain their Project ownership and provisioning rules.
+
+An Agent policy keeps its original Project parent and management boundary and
+contributes on every execution. With no explicit execution Project or Folder,
+policy resolution falls back to the retained access Project, preserving legacy
+direct-chat Project and Agent constraints. An explicit Project B resolves B's
+Project policy plus the Agent policy, without loading A's Project policy.
+Constraint intersection and preference clamping use the canonical resolver;
+immutable AgentVersion constraints remain Agent behavior everywhere.
+
+The retained access Project remains a mandatory dependency for Agent **content**
+reads and ordinary direct use. It is not an execution grant. A Project-writer
+Room member who owns the Agent may explicitly authorize its use in another
+Project's Room. This reuses `room_agent_access_grants`, exact current-member
+confirmation and the Room lock; it never clears `access_project_id` or changes
+visibility. Even a `space_shared` Agent needs this owner confirmation when its
+retained access Project differs. Non-owners cannot add such an Agent merely
+because they can read both Projects.
+
+`rooms/agentUsageSql.ts` is the execution-only predicate for roster dispatch,
+Conversation preflight/init, queued binding/authorization and Work Context
+Delivery. It checks active Space/Project/Room authority, active specialist
+membership and a live grant from the Agent's current owner. For cross-Project
+use, that owner must remain an active person, Space member, Project reader and
+writer, and Room member. Room removal revokes both received and issued grants;
+Project removal or loss of write authority revokes issued grants transactionally.
+Restoring membership after Room/Project revocation needs fresh consent. Project audience and Room locks fence
+Delivery against these changes; Agent locks protect owner changes. A B-only member can
+execute in B without reading A, the Agent definition or its other work. A
+Project link shown solely through this grant returns `room_only`, no description,
+and only the viewer's Rooms; its UI opens the Room rather than direct chat,
+configuration or global history. Generic Agent content gates do not accept it.
+
+Cross-Project execution withholds the old role, AgentVersion system instruction,
+capability descriptions, persona and Agent-bound Skill packages. Legacy free-text
+fields cannot prove absence of Project-derived facts. Notes are delivered only
+within the target Project (and in an isolated execution, only from this Room).
+The reverse boundary is enforced too: an isolated Run cannot create or revise
+global persona through direct writes, proposal creation, or owner acceptance.
+The canonical applier rechecks canonical Run provenance and retention under
+an Agent share lock; owner approval grants no cross-Project content transfer.
+Delivery quarantines historical persona with foreign-Project Run provenance,
+including provenance copied along revisions.
+The target Project's published context and explicitly selected Project Skills
+remain available. Runtime Context automatic retrieval filters to target-Project
+objects before delivery; the final release closure rejects foreign Project
+dependencies even for a viewer of both Projects. Interactive global search/brief
+tools, whose LLM stages have no Project filter, are withheld for isolated use.
+Typed Runtime Context constraints still intersect normally; arbitrary old Agent
+policy bags are not a model-visible input.
+
+Conversation × Agent Host threads, managed cwd and CLI profiles are separate
+for A and B. There is no history/attachment replay from the original Project;
+archive restoration is limited to this same Room. Removing a specialist or user
+revokes future use, including queued Runs; invitation activation extends Room
+use only after the current owner approves the exact roster snapshot. Delivery
+holds Room/audience locks through commit, ordering release against revocation.
+
+Location Profile admission requires the current actor's Host ownership,
+Project writer access and an active Project Agent link (or that Project's
+managed Assistant). Conversation setup passes its actual Project; an explicit
+non-Project context cannot infer one from a Location. Candidate Profiles hide
+Locations outside the Conversation's Project. For a draft direct chat,
+`GET /agents/:id/conversation-backends?project_id=` carries a read-checked
+Project until a Session exists; thereafter the Session is authoritative, and a
+mismatched Project is refused. Dispatch and retry retain
+the Run/Location Project check. Existing initialized Conversations keep their
+pins after link removal; live Project and Agent content authority is rechecked
+before queued execution. New direct Conversation setup resolves its explicitly
+selected Agent before considering historical Host threads or an Assistant.
+
+Reuse / Dependency Check: extend `project_agent_links`, canonical content ACL,
+Profile admission, Conversation bindings and runtime-policy resolver. Drizzle
+and the existing PostgreSQL migration runner own schema changes; shared real-PG
+fixtures own verification. This is domain authorization, so no external engine
+or additional dependency is needed.
+
+## Project Agents and independent use
+
+The Agent library (`/agents`) creates, configures and directly uses Agents
+with no Project or Room. A Project's Agent list is a separate, Project-owned
+reference (`project_agent_links`, [PROJECTS](../architecture/PROJECTS.md#project-agents)):
+the same Agent can be on several Projects' lists and in several Rooms without
+being copied, and each Room conversation keeps its own Conversation × Agent
+host thread and CLI state (see [rooms](rooms.md)). Being on a Project's list
+is what lets a person start a direct conversation with the Agent placed in
+that Project (the Agent's first turn in a Project-placed direct session —
+new, or created empty beforehand — returns 409 otherwise; the Project's
+managed Assistant is exempt; a session where the Agent already ran keeps
+going). That conversation is a direct session with Project context — it is in
+no Room, carries no Room transcript, and its Run gets the same Project tool
+allowance as other Project-placed direct turns. On a Host it is its own
+Conversation container (thread, managed cwd, runtime profile and archive keyed
+by the Session; see [PROJECTS](../architecture/PROJECTS.md#project-agents)),
+never the Agent × person direct container that non-Project direct chats share.
+Agent creation from a Project's Agents page or a Room's members carries a
+validated `return_to` (`projects/agentCreationReturn.ts`) and comes back with
+the new Agent named for one explicit add; `/agents/:id?tab=runs` opens the
+Agent's Runs as its work history.
 
 ## Frontend Agent Configuration Surfaces
 

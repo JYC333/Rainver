@@ -1,3 +1,4 @@
+import { EvolutionAssetRefusal } from "../evolution/assetRefusal.js";
 import type { PromptResolveResult } from "@rainver/protocol";
 import { PromptAssetContentSchema } from "@rainver/protocol";
 import { assetAllowsUserScope,canViewVersionScope } from "../evolution/assetAccess.js";
@@ -27,7 +28,7 @@ export async function resolvePrompt(db: Queryable, input: ResolvePromptInput): P
   const promptAsset = await findPromptAssetForKey(db, { spaceId: input.spaceId, userId: input.userId }, input.assetKey);
   if (!promptAsset) throw new HttpError(404, `No active prompt asset registered for asset_key '${input.assetKey}'`);
   const label = normalizedLabel(input.label ?? "production");
-  if (input.allowUserPin && !input.userId) throw new HttpError(422, "allowUserPin requires userId");
+  if (input.allowUserPin && !input.userId) throw new EvolutionAssetRefusal(422, "allowUserPin requires userId");
   const allowUserDeployment = Boolean(input.allowUserPin && input.userId && assetAllowsUserScope(promptAsset.row, input.userId));
   if (input.allowUserPin && input.userId && !allowUserDeployment) {
     throw new HttpError(403, "User-scoped prompt deployments are not allowed for this asset");
@@ -120,9 +121,9 @@ async function resolveExplicitVersion(
   input: ResolvePromptInput,
 ): Promise<ResolvedPromptVersionRow> {
   const version = await versionContent(db, assetId, versionId, { approvedOnly: true });
-  if (!version) throw new HttpError(422, "explicit_version_id must reference an approved version of this prompt asset");
+  if (!version) throw new EvolutionAssetRefusal(422, "explicit_version_id must reference an approved version of this prompt asset");
   if (!canUseVersionForResolution(version, input, Boolean(input.allowUserPin))) {
-    throw new HttpError(422, "explicit_version_id must reference an approved version visible to this resolution scope");
+    throw new EvolutionAssetRefusal(422, "explicit_version_id must reference an approved version visible to this resolution scope");
   }
   return resolved(version, [`explicit_override:${version.id}`], null);
 }
@@ -159,7 +160,7 @@ async function resolveViaDeploymentRefs(
     if (!versionId) continue;
     const version = await versionContent(db, assetId, versionId, { approvedOnly: label === "production" });
     if (!version || !canUseVersionForResolution(version, input, allowUserDeployment)) {
-      throw new HttpError(422, `Active ${label} ${attempt.scopeType} deployment references a missing, non-approved, or non-visible prompt version`);
+      throw new EvolutionAssetRefusal(422, `Active ${label} ${attempt.scopeType} deployment references a missing, non-approved, or non-visible prompt version`);
     }
     if(version.status!=="approved" && !await canViewVersionScope(db,{spaceId:input.spaceId,userId:input.userId},version))throw new HttpError(404,"Prompt version not found");
     return resolved(version, [`${label}:${attempt.scopeType}:${version.id}`], null);
@@ -217,6 +218,6 @@ function resolved(
 
 function normalizedLabel(label: string): string {
   const value = label.trim();
-  if (!/^[a-z][a-z0-9_.-]{0,63}$/.test(value)) throw new HttpError(422, "prompt deployment label is invalid");
+  if (!/^[a-z][a-z0-9_.-]{0,63}$/.test(value)) throw new EvolutionAssetRefusal(422, "prompt deployment label is invalid");
   return value;
 }

@@ -26,6 +26,7 @@ GET  /api/v1/proposals
 POST /api/v1/proposals/{id}/accept
 POST /api/v1/proposals/{id}/reject
 GET  /api/v1/content-access/:resourceType/:resourceId/access-logs
+PUT  /api/v1/content-access/:resourceType/:resourceId   (core content.access.update)
 ```
 
 ## Related Files

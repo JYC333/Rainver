@@ -8,11 +8,10 @@ import type {
   RuntimeContextPolicyWriteRequest,
   RuntimeContextResolvedPolicy,
 } from "@rainver/protocol";
-import { withTransaction } from "../../db/tx.js";
 import { isSpaceOwnerOrAdmin } from "../access/roles.js";
 import { contentReadSql } from "../access/contentAccessSql.js";
 import { canReadProject } from "../projects/access.js";
-import { HttpError, type Queryable } from "../routeUtils/common.js";
+import { HttpError, withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
 import {
   assertPolicyDoesNotWiden,
   assertPolicyPreferencesWithinConstraints,
@@ -108,7 +107,8 @@ export class RuntimeContextPolicyRepository {
     if (scopeType === "user" && Object.keys(policy.constraints).length > 0) {
       throw new HttpError(422, "User Runtime Context Policy may contain preferences only");
     }
-    return withTransaction(this.pool, async (client) => {
+    // Joins an operation transaction; standalone callers still get their own.
+    return withQueryableTransaction(this.pool, async (client) => {
       await assertScopeMutable(client, identity, scopeType, scopeId);
       await client.query(
         `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
@@ -228,7 +228,9 @@ export async function resolveRuntimeContextPolicyForExecution(
     if (projectId && agent.project_id && projectId !== agent.project_id) {
       throw new HttpError(422, "Agent Project scope mismatch");
     }
-    projectId ??= agent.project_id;
+    // Preserve legacy direct-chat policy defaults; an explicit execution
+    // Project replaces this parent layer, never the Agent's own constraints.
+    projectId ??= agent.project_id ?? agent.access_project_id;
   }
   if (projectId) scopes.push({ scopeType: "project", scopeId: projectId });
   if (input.projectFolderId) scopes.push({ scopeType: "project_folder", scopeId: input.projectFolderId });
@@ -260,7 +262,9 @@ async function resolutionScopes(
     const agent = await agentRecord(db, identity.spaceId, input.agent_id);
     if (!agent) throw new HttpError(404, "Agent not found");
     if (projectId && agent.project_id && agent.project_id !== projectId) throw new HttpError(422, "Agent Project scope mismatch");
-    projectId ??= agent.project_id;
+    // Preserve legacy direct-chat policy defaults; an explicit execution
+    // Project replaces this parent layer, never the Agent's own constraints.
+    projectId ??= agent.project_id ?? agent.access_project_id;
   }
   if (projectId) {
     const readable = isSpaceOwnerOrAdmin(role)
@@ -297,7 +301,8 @@ async function parentScopes(
   } else if (scopeType === "agent") {
     const agent = await agentRecord(db, identity.spaceId, scopeId);
     if (!agent) throw new HttpError(404, "Agent not found");
-    if (agent.project_id) parents.push({ scopeType: "project", scopeId: agent.project_id });
+    const policyProjectId = agent.access_project_id ?? agent.project_id;
+    if (policyProjectId) parents.push({ scopeType: "project", scopeId: policyProjectId });
   }
   return parents;
 }
@@ -334,7 +339,8 @@ async function assertScopeReadable(
   }
   const agent = await agentRecord(db, identity.spaceId, scopeId);
   if (!agent) throw new HttpError(404, "Agent not found");
-  if (agent.project_id && await isProjectOwner(db, identity, agent.project_id)) return;
+  const policyProjectId = agent.access_project_id ?? agent.project_id;
+  if (policyProjectId && await isProjectOwner(db, identity, policyProjectId)) return;
   const visible = await db.query(
     `SELECT 1
        FROM agents a
@@ -374,6 +380,16 @@ async function insertMutationDecision(
   );
 }
 
+/** The current authority to change this scope's policy, held for the transaction. */
+export async function assertRuntimeContextPolicyScopeMutable(
+  db: Queryable,
+  identity: RuntimeContextPolicyIdentity,
+  scopeType: RuntimeContextPolicyScope,
+  scopeId: string,
+): Promise<void> {
+  return assertScopeMutable(db, identity, scopeType, scopeId);
+}
+
 async function assertScopeMutable(
   db: Queryable,
   identity: RuntimeContextPolicyIdentity,
@@ -407,7 +423,8 @@ async function assertScopeMutable(
   const agent = await agentRecord(db, identity.spaceId, scopeId);
   if (!agent) throw new HttpError(404, "Agent not found");
   if (agent.owner_user_id === identity.userId) return;
-  if (agent.project_id && await isProjectOwner(db, identity, agent.project_id, true)) return;
+  const policyProjectId = agent.access_project_id ?? agent.project_id;
+  if (policyProjectId && await isProjectOwner(db, identity, policyProjectId, true)) return;
   throw new HttpError(403, "Requires Agent or Project owner role");
 }
 
@@ -494,8 +511,8 @@ async function projectExists(db: Queryable, spaceId: string, projectId: string):
 }
 
 async function agentRecord(db: Queryable, spaceId: string, agentId: string) {
-  const result = await db.query<{ project_id: string | null; owner_user_id: string | null; visibility: string }>(
-    `SELECT project_id, owner_user_id, visibility FROM agents
+  const result = await db.query<{ project_id: string | null; access_project_id: string | null; owner_user_id: string | null; visibility: string }>(
+    `SELECT project_id, access_project_id, owner_user_id, visibility FROM agents
       WHERE id = $1 AND space_id = $2 AND status <> 'archived'`,
     [agentId, spaceId],
   );

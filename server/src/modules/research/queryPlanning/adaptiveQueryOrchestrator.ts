@@ -50,7 +50,7 @@ interface AdaptiveResearchQueryProviderRetryInput {
   execution?: ResearchIntentExecution;
 }
 
-interface ResearchQueryStore {
+export interface ResearchQueryStore {
   createStrategy: ResearchQueryRepository["createStrategy"];
   markStrategyEvaluating: ResearchQueryRepository["markStrategyEvaluating"];
   recordSemanticIntent: ResearchQueryRepository["recordSemanticIntent"];
@@ -63,7 +63,9 @@ interface ResearchQueryStore {
   getStrategy: ResearchQueryRepository["getStrategy"];
 }
 
-interface AdaptiveResearchQueryDependencies {
+export interface AdaptiveResearchQueryDependencies {
+  /** One send per request, with no implicit provider/key/correction retry. */
+  singleAttempt?: true;
   repository?: ResearchQueryStore;
   contextRepository?: Pick<ResearchContextRepository, "get">;
   intentPlanner?: { plan(identity: SpaceUserIdentity, context: ResearchContextVersion["context"], execution?: ResearchIntentExecution): Promise<ResearchSemanticQuery> };
@@ -90,12 +92,14 @@ export class AdaptiveQueryOrchestrator {
   private readonly evaluator: AdaptiveQueryEvaluator;
   private readonly compiler: ResearchProviderCompiler;
   private readonly ladder: ResearchQueryLadderBuilder;
+  private readonly singleAttempt?: true;
 
   constructor(
     private readonly db: Queryable,
     config: ServerConfig,
     dependencies: AdaptiveResearchQueryDependencies = {},
   ) {
+    this.singleAttempt = dependencies.singleAttempt;
     this.repository = dependencies.repository ?? new ResearchQueryRepository(db);
     this.contextRepository = dependencies.contextRepository ?? new ResearchContextRepository(db);
     this.intentPlanner = dependencies.intentPlanner ?? new ResearchIntentPlanner(db, config);
@@ -128,7 +132,7 @@ export class AdaptiveQueryOrchestrator {
     await this.repository.markStrategyEvaluating(identity.spaceId, strategy.id);
     let intent: ResearchSemanticQuery;
     try {
-      intent = await this.intentPlanner!.plan(identity, contextVersion.context, input.execution);
+      intent = await this.intentPlanner!.plan(identity, contextVersion.context, this.intentExecution(input.execution));
     } catch (error) {
       await Promise.all(strategy.provider_plans.map((plan) => this.repository.markProviderUnavailable(identity.spaceId, plan.id, {
         failed: true,
@@ -139,7 +143,7 @@ export class AdaptiveQueryOrchestrator {
     }
     await this.repository.recordSemanticIntent(identity.spaceId, strategy.id, intent);
 
-    await Promise.all(strategy.provider_plans.map((plan) => this.evaluateProvider(
+    await this.evaluateProviders(strategy.provider_plans.map((plan) => this.evaluateProvider(
       identity,
       input,
       contextVersion,
@@ -171,7 +175,7 @@ export class AdaptiveQueryOrchestrator {
     if (!contextVersion) throw new HttpError(404, "Research context version not found");
     // The monitored query is a trimmed step of the original intent; the terms
     // it left out are what a broaden or narrow step can add back.
-    const intent = source.semantic_intent ?? await this.intentPlanner!.plan(identity, contextVersion.context);
+    const intent = source.semantic_intent ?? await this.intentPlanner!.plan(identity, contextVersion.context, this.intentExecution());
     const startingSteps = new Map(selected.map((item) => [item.provider, {
       sequence: 1, direction: "initial" as const, semanticQuery: item.query,
     }]));
@@ -192,7 +196,7 @@ export class AdaptiveQueryOrchestrator {
       semanticIntent: intent,
     });
     await this.repository.markStrategyEvaluating(identity.spaceId, strategy.id);
-    await Promise.all(strategy.provider_plans.map((plan) => this.evaluateProvider(
+    await this.evaluateProviders(strategy.provider_plans.map((plan) => this.evaluateProvider(
       identity,
       {
         projectId: input.projectId,
@@ -245,7 +249,7 @@ export class AdaptiveQueryOrchestrator {
     // attempt query below is only where this round starts.
     let intent = strategy.semantic_intent;
     if (!intent) {
-      intent = await this.intentPlanner!.plan(identity, contextVersion.context, input.execution);
+      intent = await this.intentPlanner!.plan(identity, contextVersion.context, this.intentExecution(input.execution));
       await this.repository.recordSemanticIntent(identity.spaceId, strategy.id, intent);
     }
     // Seed the new round with that attempt's exact compiled combination (not
@@ -277,6 +281,19 @@ export class AdaptiveQueryOrchestrator {
     );
     await this.repository.finalizeStrategy(identity.spaceId, strategy.id, { force: true });
     return (await this.repository.getStrategy(identity.spaceId, input.projectId, strategy.id))!;
+  }
+
+  private async evaluateProviders(work: Promise<void>[]): Promise<void> {
+    if (!this.singleAttempt) { await Promise.all(work); return; }
+    // A failed provider must not close the Job credential while another
+    // already-sent provider is still producing its bounded response.
+    const outcomes = await Promise.allSettled(work);
+    const failed = outcomes.find((outcome): outcome is PromiseRejectedResult => outcome.status === "rejected");
+    if (failed) throw failed.reason;
+  }
+
+  private intentExecution(execution?: ResearchIntentExecution): ResearchIntentExecution | undefined {
+    return this.singleAttempt && execution ? { ...execution, singleAttempt: true } : execution;
   }
 
   private async evaluateProvider(
@@ -327,11 +344,13 @@ export class AdaptiveQueryOrchestrator {
       let preview;
       try {
         preview = await this.previewGateway.preview(identity, {
+          singleAttempt: this.singleAttempt,
           compiledQuery: compiled,
           accessibleResultCap: policy.accessibleResultCap,
           credentialId: input.credentials?.[plan.provider_key],
         });
       } catch (error) {
+        if (this.singleAttempt) throw error;
         await this.repository.completeAttempt(identity.spaceId, attempt.id, { errorClass: errorClass(error) });
         if (observed.length > 0) {
           const best = bestObservedAttempt(observed);
@@ -418,12 +437,14 @@ export class AdaptiveQueryOrchestrator {
     const compiled = this.compiler.compile(plan.provider_key, semanticQuery, { pageSize: IMPORT_PAGE_SIZE });
     try {
       await this.previewGateway.preview(identity, {
+        singleAttempt: this.singleAttempt,
         compiledQuery: compiled,
         accessibleResultCap: IMPORT_PAGE_SIZE,
         credentialId: input.credentials?.[plan.provider_key],
       });
       return null;
     } catch (error) {
+      if (this.singleAttempt) throw error;
       return `The query was validated on a small preview but did not answer at the ${IMPORT_PAGE_SIZE}-result page size history import uses (${errorMessage(error)}). The import will retry at smaller pages; expect it to be slower, or narrow the query.`;
     }
   }
@@ -448,7 +469,7 @@ function bestObservedAttempt(observed: ObservedAttempt[]): ObservedAttempt {
   return [...pool].sort((left, right) => right.evaluation.score - left.evaluation.score)[0]!;
 }
 
-function assertContextAssessmentPassed(assessment: Record<string, unknown>): void {
+export function assertContextAssessmentPassed(assessment: Record<string, unknown>): void {
   const finer = assessment.finer;
   if (assessment.answerable !== true || !finer || typeof finer !== "object" || Array.isArray(finer)) {
     throw new HttpError(422, "Research context has not passed question assessment");

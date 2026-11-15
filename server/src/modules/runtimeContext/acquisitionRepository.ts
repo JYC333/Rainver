@@ -119,7 +119,9 @@ export class PgRuntimeContextAcquisitionRepository {
               r.data_exposure_level, r.trust_level, r.visibility,
               r.has_context_taint, r.context_taint_json,
               r.contract_snapshot_json,
-              av.system_prompt,
+              CASE WHEN agent.access_project_id IS NOT NULL AND r.project_id IS NOT NULL
+                     AND agent.access_project_id <> r.project_id THEN NULL
+                   ELSE av.system_prompt END AS system_prompt,
               COALESCE(NULLIF(r.capabilities_json, '[]'::jsonb), av.capabilities_json) AS capabilities_json,
               av.memory_policy_json, r.model_override_json, r.host_task_thread_id
          FROM runs r

@@ -1,7 +1,8 @@
+import {PERSON_OPERATIONS} from './operations/personAdmission.js';
 import { jsonBody } from '../routeUtils/common.js';
 import type { FastifyInstance } from 'fastify';
 import type { ServerConfig } from '../../config.js';
-import { introspectIdentity } from '../auth/identity.js';
+import { introspectIdentity,introspectPersonIdentity } from '../auth/identity.js';
 import { resolveRequestId } from '../../gateway/requestContext.js';
 import { sessionActor } from './operations/actor.js';
 import { operationRuntime } from './operations/runtime.js';
@@ -13,13 +14,17 @@ export function registerRoutes(app: FastifyInstance, config: ServerConfig): void
     app.route({
       method,
       url,
+      // Activity upload carries at most 25 MiB as base64. Individual strict
+      // command schemas keep their own smaller budgets.
+      ...(kind==='command'?{bodyLimit:36*1024*1024}:{}),
       config: {
         operationEntry: true
       },
       handler: async (request, reply) => {
         const requestId = resolveRequestId(request);
         reply.header('cache-control', 'private, no-store');
-        const resolved = await introspectIdentity(config, request, reply);
+        const operationId=(request.params as {opId:string}).opId;
+        const resolved = await (PERSON_OPERATIONS.has(operationId)?introspectPersonIdentity(config,request,reply):introspectIdentity(config, request, reply));
         if (!resolved.ok) {
           const error = resolved.reason === 'denied' ? resolved.statusCode === 401 ? new OperationError('authentication_required', 401) : new OperationError('operation_not_found', 404) : new OperationError('operation_temporarily_unavailable', 503, true);
           return reply.code(error.httpStatus).send(error.body(requestId));

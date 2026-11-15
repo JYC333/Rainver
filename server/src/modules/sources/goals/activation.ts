@@ -1,7 +1,7 @@
 import {randomUUID} from 'node:crypto';
 import {SourceGoalPlanSchema,type SourceGoalBindingSpec} from '@rainver/protocol';
 import type {ServerConfig} from '../../../config.js';
-import {HttpError,type Pool,type Queryable,type SpaceUserIdentity} from '../../routeUtils/common.js';
+import {HttpError,type Queryable,type SpaceUserIdentity} from '../../routeUtils/common.js';
 import {PgSchedulerTaskStore} from '../../scheduler/taskStore.js';
 import {openSubscriptionWindow} from '../channels/subscriptionWindows.js';
 import {goalSourceFingerprint,goalSourceScope,type GoalRow} from './access.js';
@@ -70,16 +70,20 @@ async function promoteNativeDraft(db:Queryable,config:ServerConfig,identity:Spac
  await openSubscriptionWindow(db,{spaceId:g.space_id,channelId:spec.source_channel_id,userId:g.owner_user_id,at:new Date().toISOString()});
  return preflightGoalSource(db,config,identity,{...g,execution_search_path:'agent'},spec);
 }
-/** Post-commit cleanup of collections from versions older than the
- * authoritative active version. A delayed caller whose version is no longer
- * active does nothing, and every victim is re-checked against the current
- * active version immediately before its cancellation (version CAS), so stale
- * cleanup can never cancel work of a newer active plan. */
-export async function cancelSupersededCollections(db:Pool,config:ServerConfig,identity:SpaceUserIdentity,goalId:string,versionId:string){
- const stale=await db.query<{id:string;version_id:string}>(`SELECT r.id,s.version_id FROM source_goals g JOIN source_goal_runs s ON s.goal_id=g.id AND s.space_id=g.space_id JOIN runs r ON r.id=s.result_json->>'native_run_id' AND r.space_id=s.space_id WHERE g.id=$1 AND g.space_id=$2 AND g.active_version_id=$3 AND s.binding_id IS NOT NULL AND s.version_id<>g.active_version_id AND r.status IN ('queued','running','waiting_for_review','waiting_for_dependency')`,[goalId,identity.spaceId,versionId]);
- if(!stale.rows.length)return;const {buildRunOrchestration}=await import('../../runs/orchestrationFactory.js');const {orchestration}=buildRunOrchestration(config);
- for(const run of stale.rows){
-  const superseded=await db.query(`SELECT 1 FROM source_goals WHERE id=$1 AND space_id=$2 AND active_version_id IS DISTINCT FROM $3`,[goalId,identity.spaceId,run.version_id]);
-  if(superseded.rows[0])await orchestration.cancelRun({run_id:run.id,space_id:identity.spaceId,requested_by_user_id:identity.userId,reason:'A newly confirmed Source plan superseded this collection'});
- }
+/** Cancellation intent for collections of versions older than the
+ * authoritative active version, in the activating transaction under the goal
+ * lock: a delayed caller whose version is no longer active marks nothing, so
+ * work of a newer active plan is never cancelled. The process stop follows
+ * the commit (stopCancellingGoalRuns); the Run sweep finishes a lost one. */
+export async function markSupersededCollectionsIn(db:Queryable,identity:SpaceUserIdentity,goalId:string,versionId:string){
+ const stale=await db.query<{id:string}>(`SELECT r.id FROM source_goals g JOIN source_goal_runs s ON s.goal_id=g.id AND s.space_id=g.space_id JOIN runs r ON r.id=s.result_json->>'native_run_id' AND r.space_id=s.space_id WHERE g.id=$1 AND g.space_id=$2 AND g.active_version_id=$3 AND s.binding_id IS NOT NULL AND s.version_id<>g.active_version_id AND r.status IN ('queued','running','waiting_for_review','waiting_for_dependency') ORDER BY r.id`,[goalId,identity.spaceId,versionId]);
+ const {PgRunRepository}=await import('../../runs/repository.js');const runs=new PgRunRepository(db);
+ for(const run of stale.rows)await runs.markRunCancelling({run_id:run.id,space_id:identity.spaceId,requested_at:new Date().toISOString(),reason:'A newly confirmed Source plan superseded this collection',requested_by_user_id:identity.userId});
+}
+/** Post-commit, rebuildable: deliver the stop of every goal Run (planning,
+ * repair, native collection) whose cancellation intent is already committed. */
+export async function stopCancellingGoalRuns(db:Queryable,config:ServerConfig,identity:SpaceUserIdentity,goalId:string,reason:string){
+ const runs=await db.query<{id:string}>(`SELECT r.id FROM runs r WHERE r.space_id=$1 AND r.status='cancelling' AND (r.contract_snapshot_json->'workflow_input_json'->'source_goal'->>'goal_id'=$2 OR EXISTS(SELECT 1 FROM source_goal_runs s WHERE s.space_id=r.space_id AND s.goal_id=$2 AND s.result_json->>'native_run_id'=r.id)) ORDER BY r.id`,[identity.spaceId,goalId]);
+ if(!runs.rows.length)return;const {buildRunOrchestration}=await import('../../runs/orchestrationFactory.js');const {orchestration}=buildRunOrchestration(config);
+ for(const run of runs.rows)await orchestration.cancelRun({run_id:run.id,space_id:identity.spaceId,requested_by_user_id:identity.userId,reason});
 }

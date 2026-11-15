@@ -354,10 +354,8 @@ async function filterClaimsBySourcePolicyWithSourceIds(
   if (allSourceIds.length === 0) {
     return { rows: [...rows], sourceIdsByClaim, sourcePolicySnapshots: {} };
   }
-  const [snapshots, viewerSpaceRole] = await Promise.all([
-    loadSourcePolicySnapshots(db, spaceId, allSourceIds),
-    loadViewerSpaceRole(db, spaceId, userId),
-  ]);
+  const snapshots = await loadSourcePolicySnapshots(db, spaceId, allSourceIds);
+  const viewerSpaceRole = await loadViewerSpaceRole(db, spaceId, userId);
   const sourcePolicySnapshots: Record<string, unknown> = {};
   for (const [id, snapshot] of snapshots.entries()) sourcePolicySnapshots[id] = snapshot;
   return {

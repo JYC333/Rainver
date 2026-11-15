@@ -22,7 +22,7 @@ const folder = { id: 'folder-aw', space_id: space, project_id: project.id, name:
 const base = { generation: 1, revision: 3, workspace_location_id: 'location-aw', summary: null, base_commit: 'a'.repeat(40), source_commit: 'b'.repeat(40), workspace_state: 'ready', baseline_mode: 'committed', cleanup_state: 'cleaned', cleanup_errors: [], can_manage: true, integration_id: null, integration_revision: null, integration_status: null, attempt_id: null, onto_commit: null, candidate_commit: null, merged_commit: 'c'.repeat(40), integration_detail: null, native_integration: true }
 const reclaimed = { state: 'grace', reason: 'merged', reclaim_after: '2026-11-09T10:00:00Z', hold_until: null, reclaimed_at: null, assessed_at: now, retained_refs: 0, unclaimed_refs: 3 }
 const parentChange = { ...base, change_set_id: 'change-parent', workspace_id: 'ws-parent', parent_workspace_id: null, target_ref: 'refs/heads/dev', state: 'integrated', landing: 'target', summary: 'Split the login handler and kept the session API unchanged.', retention: reclaimed }
-const childChange = { ...base, change_set_id: 'change-child', workspace_id: 'ws-child', parent_workspace_id: 'ws-parent', target_ref: 'refs/heads/rainver/workspace-ws-parent-g1', state: 'integrated', landing: 'parent', summary: 'Added regression tests for expired sessions.' }
+const childChange = { ...base, lifecycle:{operation_id:'integration-child',phase:'awaiting_release',workspace_id:'ws-child',generation:1,base_commit:'a'.repeat(40),source_commit:'b'.repeat(40),target_ref:'refs/heads/parent',landed_commit:'c'.repeat(40),publication_status:'merged',cleanup_key:'source-g1'}, change_set_id: 'change-child', workspace_id: 'ws-child', parent_workspace_id: 'ws-parent', target_ref: 'refs/heads/rainver/workspace-ws-parent-g1', state: 'integrated', landing: 'parent', summary: 'Added regression tests for expired sessions.' }
 const retainedChange = { ...base, change_set_id: 'change-old', workspace_id: 'ws-old', parent_workspace_id: null, target_ref: 'refs/heads/dev', state: 'blocked', workspace_state: 'ready', source_commit: 'd'.repeat(40), merged_commit: null, integration_id: 'merge-old', integration_revision: 4, integration_status: 'conflict', integration_detail: { error: 'integration_requires_semantic_decision', conflicted_files: ['src/session.ts'] }, cleanup_state: 'pending', summary: 'Earlier cookie migration.' }
 const parent = run({ id: 'run-parent', space_id: space, agent_id: manager.id, session_id: session.id, run_type: 'conversation', status: 'succeeded', owner_user_id: user, instructed_by_user_id: user, contract_snapshot_json: { execution_workspace_version: 1 }, workspace_changes: [parentChange] })
 const child = run({ id: 'run-child', space_id: space, agent_id: helper.id, session_id: session.id, parent_run_id: parent.id, delegation_id: 'delegation-aw', run_type: 'conversation', status: 'succeeded', owner_user_id: user, instructed_by_user_id: user, contract_snapshot_json: { execution_workspace_version: 1, workspace_access: 'write' }, workspace_changes: [childChange] })
@@ -207,6 +207,8 @@ for (const locale of ['en', 'zh-CN']) for (const theme of ['dark', 'light']) for
       await capture(page, `group-entry-${tag}`, false)
       await summary.locator('summary').first().click()
       assert.equal(await summary.getByTestId(/^workspace-change-/).count(), 2)
+      await summary.getByText(L(locale,'Published · waiting for workspace users to exit','已合入 · 等待工作区使用者退出'),{exact:true}).waitFor()
+      assert.equal(await summary.getByTestId('workspace-change-change-child').getByText(L(locale,'Workspace files reclaimed · saved work retained','工作区文件已回收 · 成果已保留'),{exact:true}).count(),0)
       assert.equal(await summary.getByRole('link', { name: L(locale, 'Run details', '运行详情'), exact: true }).count(), 2)
       await summary.evaluate(e => e.scrollIntoView({ block: 'start' }))
       await capture(page, `group-expanded-${tag}`, false)
@@ -328,16 +330,16 @@ for(const locale of ['en','zh-CN'])for(const theme of ['dark','light'])for(const
   try{
    await page.goto(`${baseUrl}/spaces/${space}/projects/${project.id}/files/workspaces`);await light()
    await page.getByTestId(`agent-workspace-group-${groupKey('conv-cookie')}`).waitFor()
-   const pulse=page.getByRole('link',{name:/^Pulse/,includeHidden:true})
+   const pulse=page.getByRole('link',{name:new RegExp(`^${L(locale,'Pulse','概览')}`),includeHidden:true})
    await page.waitForFunction(()=>document.querySelector('[data-project-navigation] a')&&window.__projectChanged)
    assert.match(await pulse.innerText(),/1/)
    seen.liveStage=1;await page.evaluate(()=>window.__projectChanged())
    await page.getByTestId(`agent-workspace-group-${groupKey('conv-cookie')}`).waitFor({state:'detached'})
    await page.getByText(L(locale,'Nothing active or pending','没有进行中或待处理的工作'),{exact:true}).waitFor()
-   await page.waitForFunction(()=>[...document.querySelectorAll('[data-project-navigation] a')].find(e=>e.textContent.includes('Pulse'))?.textContent.trim()==='Pulse')
+   await page.waitForFunction(label=>[...document.querySelectorAll('[data-project-navigation] a')].find(e=>e.textContent.includes(label))?.textContent.trim()===label,L(locale,'Pulse','概览'))
    seen.liveStage=2;await page.evaluate(()=>window.__projectChanged())
    await page.getByTestId(`agent-workspace-group-${groupKey('conv-new')}`).waitFor()
-   await page.waitForFunction(()=>[...document.querySelectorAll('[data-project-navigation] a')].find(e=>e.textContent.includes('Pulse'))?.textContent.includes('1'))
+   await page.waitForFunction(label=>[...document.querySelectorAll('[data-project-navigation] a')].find(e=>e.textContent.includes(label))?.textContent.includes('1'),L(locale,'Pulse','概览'))
    assert.equal(await page.evaluate(()=>window.__projectStreamConnections),1)
    await capture(page,`live-project-${locale}-${theme}-${width}`)
    assert.deepEqual(seen.errors,[])

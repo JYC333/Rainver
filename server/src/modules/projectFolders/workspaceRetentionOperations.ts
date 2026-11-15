@@ -1,3 +1,8 @@
+import {workspaceStateRefusal} from './workspaceActionRules.js';
+import {reconcileCheckpointObligations} from './workspaceCheckpointRecovery.js';
+import {workspaceRecoveryBlocker} from './workspaceRecoveryDiagnostics.js';
+import {wakeJobWorkers} from '../jobs/wakeSignal.js';
+import {wakeSlotHoldWaiters} from './delegatedWorkspaceSlots.js';
 import {randomUUID} from 'node:crypto';
 import {WorkspaceRetentionUpdateInputSchema,WorkspaceRetentionSchema,type RegisteredSystemActionDefinition} from '@rainver/protocol';
 import type {Queryable} from '../routeUtils/common.js';
@@ -20,31 +25,60 @@ type Row=ExecutionWorkspaceRow&{cleanup_json:Record<string,WorkspaceCleanupResou
  */
 export function workspaceRetentionRegistration(definitions:ReadonlyMap<string,RegisteredSystemActionDefinition>):OperationRegistration{
  async function subject(db:Queryable,raw:unknown,actor:Parameters<OperationRegistration['execute']>[2],lock=false){
-  if(actor.run_id||actor.principal.kind!=='user')throw hidden();
   const input=WorkspaceRetentionUpdateInputSchema.parse(raw);
-  return {input,c:await authorizedWorkspaceChange(db,input.change_set_id,actor,lock,false)};
+  if((actor.run_id||actor.principal.kind!=='user')&&!['recover','retry'].includes(input.action))throw hidden();
+  const cleanup=['recover','retry'].includes(input.action);
+  return {input,c:await authorizedWorkspaceChange(db,input.change_set_id,actor,lock,cleanup,false,cleanup)};
  }
  return {
   definition:definitions.get('workspace.retention.update')!,
+  async afterCommit(){wakeJobWorkers();},
   async resolve(db,raw,actor){const {c}=await subject(db,raw,actor);return {authority:`workspace:${c.workspace_id}`,targets:{workspace_id:c.workspace_id,change_set_id:c.id},resourceType:'project',resourceId:c.project_id};},
   async authorize(db,raw,actor){await subject(db,raw,actor,true);},
   async authorizeResult(db,raw,actor){
+   const exact=(raw as {change_set_id?:string}).change_set_id;
+   if(exact){await authorizedWorkspaceChange(db,exact,actor,false,true,true,true);return;}
    const workspaceId=(raw as {workspace_id?:string}).workspace_id;
    const change=(await db.query<{id:string}>('SELECT id FROM workspace_change_sets WHERE workspace_id=$1 AND space_id=$2 ORDER BY sequence DESC LIMIT 1',[workspaceId,actor.space_id])).rows[0];
    if(!change)throw hidden();
-   await authorizedWorkspaceChange(db,change.id,actor,false,false,true);
+   await authorizedWorkspaceChange(db,change.id,actor,false,true,true,true);
   },
   async execute(db,raw,actor){
    const {input,c}=await subject(db,raw,actor,true);
    const w=(await db.query<Row>(`SELECT w.*,(h.capabilities_json->'execution_workspaces'->>'reclaim')::int AS host_reclaim FROM execution_workspaces w JOIN hosts h ON h.id=w.execution_host_id WHERE w.id=$1 FOR UPDATE OF w`,[c.workspace_id])).rows[0];
    if(!w)throw hidden();
+   const agentRetry=input.action==='retry'&&(Boolean(actor.run_id)||actor.principal.kind!=='user');
+   if(agentRetry){
+    if(c.generation!==w.generation)throw workspaceStateRefusal('workspace_discard_source_moved');
+    if(input.expected_revision!==c.revision)throw workspaceStateRefusal('revision_moved');
+    const blocker=await workspaceRecoveryBlocker(db,w.id,'retry');
+    if(blocker)throw workspaceStateRefusal(blocker);
+   }
    const state=typeof w.retention_json.state==='string'?w.retention_json.state:null;
    const source=w.cleanup_json[`source-g${w.generation}`];
    const user=actor.on_behalf_of_user_id!;
-   if(input.action==='hold'){
+   if(input.action==='recover'){
+    if(c.generation!==w.generation)throw workspaceStateRefusal('workspace_discard_source_moved');
+    // Recovery does not mint a discard, publication, new launch or arbitrary
+    // checkpoint grant. Retired owners can prove only terminal unlaunched debt.
+    if(input.expected_revision!==c.revision)throw workspaceStateRefusal('revision_moved');
+    const blocker=await workspaceRecoveryBlocker(db,w.id);
+    if(blocker)throw workspaceStateRefusal(blocker);
+    await reconcileCheckpointObligations(db,w,user,true,c.id);
+    for(const [key,r] of Object.entries(w.cleanup_json)){
+     if(r.state==='cleaned'||r.workspace.generation!==w.generation)continue;
+     // A permanent refusal needs its own evidence resolution, not a generic
+     // state reset. Waiting/running requests retain their full journal identity.
+     if(r.state==='blocked')continue;
+     const payload={workspace_id:w.id,resource_key:key,operation_id:r.operation_id};
+     if(!(await db.query("SELECT 1 FROM jobs WHERE job_type='execution_workspace_cleanup' AND status IN ('pending','claimed','running') AND payload_json @> $1::jsonb",[JSON.stringify(payload)])).rowCount)
+      await new PgJobQueueRepository(db).enqueue({job_type:'execution_workspace_cleanup',space_id:w.space_id,user_id:user,payload,scheduled_at:r.next_retry_at?new Date(r.next_retry_at):undefined});
+    }
+   }else if(input.action==='hold'){
     if(state==='reclaimed'||state==='reclaiming')throw conflict();
     const until=new Date(Date.now()+input.hold_days!*24*60*60_000).toISOString();
     await recordRetention(db,w.id,{hold_until:until,reclaim_requested_at:null});
+    if(typeof w.retention_json.hold_until==='string'&&Date.parse(until)<Date.parse(w.retention_json.hold_until))await wakeSlotHoldWaiters(db,w.id);
     // The hold only postpones an otherwise eligible release. Active or retained
     // work keeps showing its own (stronger) reason; the hold applies later.
     const assessment=await assessWorkspaceRetention(db,w.id);
@@ -52,12 +86,14 @@ export function workspaceRetentionRegistration(definitions:ReadonlyMap<string,Re
    }else if(input.action==='release_hold'){
     if(typeof w.retention_json.hold_until!=='string')throw conflict();
     await recordRetention(db,w.id,{hold_until:null});
+    await wakeSlotHoldWaiters(db,w.id);
     await offer(db,w,source,user);
    }else if(input.action==='reclaim_now'){
     if(!hostReleasesRefs(w.host_reclaim)||source?.state==='running'||source?.release_epoch!==undefined&&source.state!=='cleaned')throw conflict();
     // Skips only the short grace, a hold the person lifts by asking, and a
     // remembered proof refusal (the Host proves the tip again against Git).
     await recordRetention(db,w.id,{hold_until:null,reclaim_requested_at:new Date().toISOString(),proof_refused_tip:null,proof_refused_reason:null,proof_refused_at:null});
+    await wakeSlotHoldWaiters(db,w.id);
     const assessment=await assessWorkspaceRetention(db,w.id);
     if(assessment.state!=='reclaimable')throw conflict();
     await recordRetention(db,w.id,{state:'reclaimable',reason:assessment.reason,reclaim_after:null});
@@ -82,21 +118,23 @@ export function workspaceRetentionRegistration(definitions:ReadonlyMap<string,Re
     const after=await assessWorkspaceRetention(db,w.id);
     await recordRetention(db,w.id,{state:after.state,reason:after.reason,reclaim_after:after.reclaim_after});
    }else{
-    // Retry re-delivers blocked cleanup with a fresh operation identity and
-    // budget; the Job still re-checks tip, generation, leases and proof.
-    const blocked=Object.entries(w.cleanup_json).filter(([,r])=>r.state==='blocked');
-    if(!blocked.length&&!w.inventory_json?.reconciliation_error)throw conflict();
+    // Retry re-delivers blocked cleanup; a sent request keeps its journal
+    // identity and plan. The Job still rechecks generation, leases and proof.
+    const blocked=Object.entries(w.cleanup_json).filter(([,r])=>r.state==='blocked'&&(!agentRetry||r.workspace.id===w.id&&r.workspace.generation===w.generation));
+    if(!blocked.length&&(agentRetry||!w.inventory_json?.reconciliation_error))throw conflict();
     for(const [key,r] of blocked){
      // A release keeps its epoch and plan: the Host resumes that exact release
      // (journal keyed by identity and epoch) instead of losing its remaining work.
-     const restored={...r,state:'pending' as const,attempts:0,error:null,next_retry_at:null,operation_id:randomUUID()};
+     const restored={...r,state:'pending' as const,attempts:0,error:null,next_retry_at:null,operation_id:r.cleanup_sent||!r.kind&&r.release_epoch!==undefined?r.operation_id:randomUUID()};
      await db.query("UPDATE execution_workspaces SET cleanup_json=jsonb_set(cleanup_json,ARRAY[$2],$3::jsonb,true) WHERE id=$1 AND cleanup_json->$2->>'operation_id'=$4",[w.id,key,JSON.stringify(restored),r.operation_id]);
      await new PgJobQueueRepository(db).enqueue({job_type:'execution_workspace_cleanup',space_id:w.space_id,user_id:user,payload:{workspace_id:w.id,resource_key:key,operation_id:restored.operation_id}});
     }
-    await db.query("UPDATE execution_workspaces SET inventory_json=inventory_json-'reconciliation_error'-'reconciliation_failed_at' WHERE id=$1",[w.id]);
+    // Retrying cleanup is no evidence that a blocked checkpoint was saved.
+    // Only the reconciliation checkpoint fence may clear that diagnostic.
+    if(!agentRetry)await db.query("UPDATE execution_workspaces SET inventory_json=inventory_json-'reconciliation_error'-'reconciliation_failed_at' WHERE id=$1 AND inventory_json->>'reconciliation_error' IS DISTINCT FROM 'workspace_checkpoint_blocked'",[w.id]);
     await refreshCleanupSummary(db,w.id);
    }
-   return {workspace_id:w.id,retention:await currentRetention(db,w.id)};
+   return {change_set_id:c.id,workspace_id:w.id,retention:await currentRetention(db,w.id)};
   },
  };
 }

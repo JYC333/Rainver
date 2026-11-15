@@ -15,6 +15,8 @@ import {registerProjectWorkSystemActionExecutors} from '../src/modules/projectWo
 import {resolveAgentActorId} from '../src/db/actorResolver.js';
 import {setTaskStatus} from '../src/modules/projectWork/taskActions.js';
 import {getTaskWorkView} from '../src/modules/projectWork/boardReadModel.js';
+import {CliAgentToolTransport} from '../src/modules/runs/cliToolTransport.js';
+import {loadConfig} from '../src/config.js';
 const db=useTestDatabase(import.meta.filename);
 let space:string,owner:string,project:string,thread:string,agent:string,room:string,run:RunRecord;
 const identity=()=>({spaceId:space,userId:owner});
@@ -22,6 +24,13 @@ const repo=()=>new PgTaskRepository(db.pool);
 const service=()=>new InquiryTaskAssociationService(db.pool);
 const ref=(id=thread,role='investigates')=>({entity_type:'inquiry_thread',entity_id:id,role});
 const dispatch=(id:string)=>({idempotency_key:id} as never);
+async function coreCreate(input:object,key:string){
+ await db.pool.query("UPDATE runs SET status='running',permission_snapshot_json=$2::jsonb WHERE id=$1",[run.id,JSON.stringify({tool_grants:[{action_id:'task.create'}]})]);
+ const record=(await db.pool.query('SELECT * FROM runs WHERE id=$1',[run.id])).rows[0];
+ const result:any=await new CliAgentToolTransport(loadConfig({SERVER_DATABASE_URL:db.connectionUri})).call(record,{id:key,name:'task.create',arguments:input});
+ if(result.httpStatus>=400)throw Object.assign(new Error(result.body.error.code),{statusCode:result.httpStatus});
+ return result;
+}
 function tools(){const map=new Map<SystemActionId,SystemActionExecutor>();registerProjectWorkSystemActionExecutors(map,{databaseUrl:db.connectionUri} as never,run);return map;}
 const command=(key:string,extra:Record<string,unknown>)=>({idempotency_key:key,reason:'Follow the requested work',role:'investigates',...extra});
 const revision=async(id=thread)=>(await db.pool.query(`SELECT problem_revision FROM inquiry_threads WHERE object_id=$1`,[id])).rows[0].problem_revision;
@@ -53,7 +62,7 @@ describe('P4 targeted repair, real PostgreSQL',()=>{
   await repo().updateTask(identity(),a.id,{links:[ref(thread,'prepares')]});
   await repo().updateTask(identity(),a.id,{links:[ref(thread,'prepares')]});
   await service().link(identity(),project,thread,command('same',{task_id:a.id}));
-  await map.get('task.create')!({title:'Single tool',links:[ref()]},dispatch('single'));
+  await coreCreate({title:'Single tool',links:[ref()]},'single');
   const batch=map.get('task.create_batch')!;const input={request_summary:'Create the requested list',tasks:[{title:'Batch one',links:[ref()]},{title:'Batch two',links:[ref()]}]};
   await batch(input,dispatch('batch'));await batch(input,dispatch('retry'));
   await batch({request_summary:'Link the existing requested item',tasks:[{title:'Batch one',links:[ref(thread,'executes')]}]},dispatch('existing-new-role'));
@@ -69,7 +78,7 @@ describe('P4 targeted repair, real PostgreSQL',()=>{
   await expect(repo().createTask(identity(),{project_id:project,title:'Rejected repository',links:[ref(),ref(archived)]})).rejects.toMatchObject({statusCode:409});
   await expect(repo().updateTask(identity(),old.id,{links:[ref(archived,'prepares')]})).rejects.toMatchObject({statusCode:409});
   await expect(service().link(identity(),project,archived,command('closed',{task_id:old.id}))).rejects.toMatchObject({statusCode:409});
-  const map=tools();await expect(map.get('task.create')!({title:'Rejected single',links:[ref(archived)]},dispatch('closed-single'))).rejects.toMatchObject({statusCode:409});
+  const map=tools();await expect(coreCreate({title:'Rejected single',links:[ref(archived)]},'closed-single')).rejects.toMatchObject({statusCode:409});
   await expect(map.get('task.create_batch')!({request_summary:'Two requested items',tasks:[{title:'Valid first',links:[ref()]},{title:'Rejected later',links:[ref(archived)]}]},dispatch('closed-batch'))).rejects.toMatchObject({statusCode:409});
   expect(await beforeCounts()).toEqual(before);expect(await revision()).toBe(baseline);
   expect((await service().tasks(identity(),project,archived)).items[0].id).toBe(old.id);expect((await service().threads(identity(),old.id)).items[0].lifecycle_status).toBe(lifecycle);

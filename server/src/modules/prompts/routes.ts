@@ -1,9 +1,8 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
-import { HttpError, dbPool, jsonBody, optionalString, params, query, resolveIdentity, sendRouteError } from "../routeUtils/common.js";
-import { assertCanResolveForScopes } from "../evolution/assetAccess.js";
+import { HttpError, dbPool, optionalString, params, query, resolveIdentity, sendRouteError } from "../routeUtils/common.js";
 import { PromptRepository } from "./repository.js";
-import { resolvePrompt } from "./resolver.js";
+import { registerPromptOperationRoutes } from "./operations.js";
 
 let repositoryFactoryOverride: ((context: ModuleContext) => PromptRepository) | null = null;
 
@@ -26,6 +25,7 @@ function requireParam(request: FastifyRequest, name: string): string {
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   const base = "/api/v1/prompts/assets";
+  registerPromptOperationRoutes(app, context.config);
 
   app.get(base, async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -58,77 +58,10 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post(`${base}/:assetKey/versions`, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply
-        .code(201)
-        .send(await repository(context).createVersion(identity, requireParam(request, "assetKey"), jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.post(`${base}/:assetKey/resolve`, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const body = jsonBody(request);
-      const projectId = optionalString(body.project_id);
-      const agentId = optionalString(body.agent_id);
-      await assertCanResolveForScopes(dbPool(context.config), identity, { projectId, agentId });
-      return reply.send(await resolvePrompt(dbPool(context.config), {
-        spaceId: identity.spaceId,
-        userId: identity.userId,
-        assetKey: requireParam(request, "assetKey"),
-        projectId,
-        agentId,
-        explicitVersionId: optionalString(body.explicit_version_id),
-        allowUserPin: body.allow_user_pin === true,
-        label: optionalString(body.label),
-        variables: typeof body.variables === "object" && body.variables !== null && !Array.isArray(body.variables)
-          ? body.variables as Record<string, unknown>
-          : undefined,
-      }));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.post(`${base}/:assetKey/render-preview`, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(await repository(context).renderPreview(identity, requireParam(request, "assetKey"), jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.post(`${base}/:assetKey/evaluate`, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply
-        .code(201)
-        .send(await repository(context).recordEvaluation(identity, requireParam(request, "assetKey"), jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.post(`${base}/:assetKey/promote`, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply
-        .code(201)
-        .send(await repository(context).createPromotionProposal(identity, requireParam(request, "assetKey"), jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
   app.get(`${base}/:assetKey/deployments`, async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -142,30 +75,5 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.put(`${base}/:assetKey/deployments/:label`, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(
-        await repository(context).setDeployment(
-          identity,
-          requireParam(request, "assetKey"),
-          requireParam(request, "label"),
-          jsonBody(request),
-        ),
-      );
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 
-  app.post(`${base}/:assetKey/rollback`, async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(await repository(context).rollbackDeployment(identity, requireParam(request, "assetKey"), jsonBody(request)));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
 }

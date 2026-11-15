@@ -189,6 +189,7 @@ permission manifest that routes risk and enables unknown-action fail-closed beha
   `research.acquisition.start`, `research.acquisition.cancel`, `retrieval.search`,
   `retrieval.brief`, `memory.retrieval.search`, `memory.retrieval.brief`, `project.summary.search`,
   `project.summary.brief`, `source.retrieval.search`, `source.retrieval.brief`,
+  `source.retrieval.request`, `source.retrieval.reindex`,
   `policy.action_grant.create`, `policy.action_grant.revoke`, `source.backfill.plan`,
   `source.backfill.manage`, `task.plan.propose`, `project.brief.propose`, `task.list`,
   `proposal.list`, `research.operation.list`, `memory.write`,
@@ -273,6 +274,7 @@ fail closed via `unknown_policy_action` DENY if ever passed to `engineCheck` or
 | `retrieval.search` / `retrieval.brief` | `server/src/modules/retrieval/tool/service.ts` | Uses `enforce()` before managed-run Knowledge search/brief execution. Domain must be enabled, an instructed-user viewer must exist, and audit is pointer-only. **fail_closed**. |
 | `memory.retrieval.search` / `memory.retrieval.brief` | `server/src/modules/retrieval/tool/service.ts`, `server/src/modules/runs/managedRetrievalTools.ts` | Uses `enforce()` before explicitly opted-in managed-run Memory retrieval. Disabled-domain calls are denied/audited before returning a model-visible domain-not-enabled tool result. **fail_closed**. |
 | `project.summary.search` / `project.summary.brief` | `server/src/modules/retrieval/tool/service.ts`, `server/src/modules/runs/managedRetrievalTools.ts` | Uses `enforce()` before explicitly opted-in Project public-summary retrieval. Disabled-domain calls are denied/audited before returning a model-visible domain-not-enabled tool result. **fail_closed**. |
+| `source.retrieval.request` / `source.retrieval.reindex` | `server/src/modules/sources/retrievalOperations.ts` | Human-only core commands behind the retained Source search/brief/reindex URLs. Request admission and its single-attempt Job intent are audited in the operation transaction; provider work runs in the Job. Reindex requires Space owner/admin. **fail_closed**. The Custom Source and recipe actions (`source.custom.*`, `source.recipe.activate`, `source.recipe.dry_run`) are now enforced by `sources/customSources/operations.ts` / `sources/sourceRecipeOperations.ts`, fail-closed. |
 | `memory.write` | `server/src/modules/systemActions/systemActionDispatcher.ts` | An Agent's own bounded write (ADR 0003 §2). In `ORIGIN_GATED_PROJECT_WRITES`: allowed from a person's turn, `require_approval` from an unattended origin — **except** a persona write on an `agent`-scope entry, the single exception ADR 0003 §5 and ADR 0017 §1–§2 name, whose origin test runs the other way round. The exemption is scoped to that one write, never to the action: `memoryPolicyContext` resolves it server-side from the input for a create and from the target row for a revision, and `ruleUnattendedProjectWrite` reads only that flag. What the exemption grants is passage past the *origin* boundary; `decidePersonaWrite` then applies ADR 0003 §5's table, so an unattended Run whose responsible person is not the Agent's owner leaves a proposal for the owner rather than applying. Reach changes become proposals in `memoryDirectWriteExecutors.ts`. **fail_closed**. |
 
 ### Non-PolicyGateway revalidation guards
@@ -641,8 +643,61 @@ retried as a fresh same-scope write. Ask AI and Notebook similarly commit privat
 Run/Job admission and recheck frozen Source/Note audience before dispatch and
 publication. None of these changes enables a production approval mapping.
 
-Human Note navigation policy (2026-11-10): `note.link.create` is wired_direct,
-low-risk/default allow, with mandatory fail-closed audit at
-`knowledge/noteLinkPolicy.ts` for human link/unlink/jot HTTP entries. Canonical
-repository Note/Project write and endpoint read checks remain in force. No
-Agent tool, canonical graph authority or core migration completion is implied.
+Human Note navigation policy: `note.link.create` is wired_direct, low-risk/
+default allow, enforced by the core operations `knowledge.note.link.create/
+delete` and `knowledge.note.jot` (`knowledge/noteLinkOperations.ts`) with the
+executor's mandatory fail-closed audit. Canonical repository Note/Project write
+and endpoint read checks remain in force. No Agent tool or canonical graph
+authority is implied. `evidence.create/update/link` are enforced the same way by
+`source.evidence.*` (`sources/sourceObjectOperations.ts`), now fail-closed; the
+former route gate allowed on audit error.
+
+Reading preference policy: `reading.preference.write` is human-only,
+low-risk/default allow, enforced in `informationDigest/readingOperations.ts`.
+The canonical owner rechecks and holds active account, Space membership and
+Project reader authority through commit; its private opt-in, mandatory policy
+audit and operation receipt share one transaction. Replays retain current
+read-authority checks. No generation, Source grant, spending or proposal is
+created by this command.
+
+Reading item state policy: `reading.item_state.write` protects the three
+human-only commands for exact-item favorite, Project state and personal state.
+Formal retained adapters and typed clients require a key. Canonical Source and
+Reading membership checks run under the discovered dependency locks through
+commit, including replay; private state, required audit and receipt share the
+core transaction. Immutable topic-change acknowledgments retain their independent
+state and collecting-Source gate. No Agent capability, generation, Job or spend
+is introduced by these three commands.
+
+Reading Job commands (`reading.composition.retry`, `reading.deep_read.start`,
+`reading.deep_read.cancel`, `reading.annotation.retry`) are human-only keyed
+core registrations with fail-closed audit. Canonical owners hold current Source
+and reference closure through commit; workers retain claim/Delivery/result gates,
+and deep cancellation retains owner-only stopping after input withdrawal.
+
+Interest Profile policy: `interest.profile.write` protects all eight owner-only,
+human API commands with required keys and fail-closed transactional audit.
+Explicit settings/topic/candidate writes join the canonical profile transaction;
+Source-backed starter/history effects pin and recheck the complete current
+Reading/release authority closure, including cached-result replay. Mandatory
+history annotation Job intents commit with state and receipt. No Agent activation,
+subscription activation, Memory write or approval mapping is granted. See
+[the owner guide](../modules/information-digest.md#interest-profile-operation-boundary).
+
+Serendipity feedback: `digest.serendipity.feedback` is a keyed owner-private
+core command. The existing owner serializes item/domain state and commits
+feedback, bounded pending-recommendation updates, mandatory audit and receipt
+in one transaction. Source/recommendation roots are discovered and pinned
+before effects; replay checks active person/membership and personal digest
+ownership, without releasing Source content. B54 forbids interest-fact writes;
+no Memory, provider or Job capability is added.
+
+Daily capture report: `daily_capture.run` admits its private queued ProviderTask
+Run and single-attempt Job through the core with required key/audit/receipt.
+The scheduler uses that same admission owner. `dailyReports/authority.ts` pins
+and rechecks frozen capture/settings versions and the complete Source release
+closure, with current consent/derived-write and actual-provider egress gates.
+The handler checks its stored intent, worker/attempt and canonical Delivery
+references before sends and transactional result/audit/Run/Job settlement.
+Unknown starts do not retry. Generic Job views withhold report content; B10
+remains proposal-only. See [Activity](../modules/activity.md#daily-capture-reports).

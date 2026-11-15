@@ -1,3 +1,4 @@
+import {registerOperationAdapters} from '../systemActions/operations/routeAdapter.js';
 import { InstanceInvitationCreateSchema } from "@rainver/protocol";
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
@@ -199,6 +200,10 @@ async function authResponse(runtime: NonNullable<ModuleContext["authRuntime"]>, 
 }
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
+  registerOperationAdapters(app,context.config,[
+    {method:'POST',url:'/api/v1/auth/admin/users/:userId/disable',operation:'auth.user.disable',admission:'person',params:{userId:'user_id'}},
+    {method:'POST',url:'/api/v1/auth/admin/users/:userId/enable',operation:'auth.user.enable',admission:'person',params:{userId:'user_id'}},
+  ]);
   const runtime = context.authRuntime ?? createAuthRuntime(context.config);
   if (runtime && !context.authRuntime) setAuthRuntimeForComposition(runtime);
   const registration = runtime ? new RegistrationService(runtime.pool, context.config) : null;
@@ -532,31 +537,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const user = await currentUser(context, request, reply); if (!user || isFailure(user) || !user.is_instance_admin) return reply.code(403).send({ code: "forbidden", message: "Administrator access required" });
     const users = await runtime.pool.query<{ id: string; email: string; display_name: string; status: string; registration_source: string; last_login_at: Date | string | null; account_count: string }>(`SELECT u.id, u.email, u.display_name, u.status, u.registration_source, u.last_login_at, count(a.id)::text AS account_count FROM users u LEFT JOIN auth_accounts a ON a.user_id = u.id GROUP BY u.id ORDER BY u.created_at ASC`);
     return reply.send(users.rows.map((row) => ({ ...row, account_count: Number(row.account_count) })));
-  });
-
-  app.post("/api/v1/auth/admin/users/:userId/disable", async (request, reply) => {
-    if (!runtime) return runtimeOrError(context, reply);
-    const actor = await currentUser(context, request, reply); if (!actor || isFailure(actor) || !actor.is_instance_admin) return reply.code(403).send({ code: "forbidden", message: "Administrator access required" });
-    const userId = typeof routeParams(request).userId === "string" ? routeParams(request).userId : ""; if (userId === actor.id) return genericAuthFailure(reply, 400);
-    // Only an admitted account can be disabled: a pending identity belongs to
-    // RegistrationService until it completes or the reconciler reclaims it,
-    // and reclaiming only looks for 'pending'.
-    const disabled = await runtime.pool.query("UPDATE users SET status = 'disabled', updated_at = now() WHERE id = $1 AND status IN ('active', 'disabled')", [userId]);
-    if (!disabled.rowCount) return genericAuthFailure(reply, 400);
-    await runtime.pool.query("DELETE FROM user_sessions WHERE user_id = $1", [userId]);
-    return reply.send({ ok: true });
-  });
-
-  app.post("/api/v1/auth/admin/users/:userId/enable", async (request, reply) => {
-    if (!runtime) return runtimeOrError(context, reply);
-    const actor = await currentUser(context, request, reply); if (!actor || isFailure(actor) || !actor.is_instance_admin) return reply.code(403).send({ code: "forbidden", message: "Administrator access required" });
-    const userId = typeof routeParams(request).userId === "string" ? routeParams(request).userId : "";
-    // Enable reverses disable and nothing else. A pending identity becomes
-    // active only through RegistrationService.complete, which creates its
-    // Personal Space and consumes its intent in the same transaction.
-    const enabled = await runtime.pool.query("UPDATE users SET status = 'active', updated_at = now() WHERE id = $1 AND status IN ('active', 'disabled')", [userId]);
-    if (!enabled.rowCount) return genericAuthFailure(reply, 400);
-    return reply.send({ ok: true });
   });
 
   app.post("/api/v1/auth/admin/users/:userId/reset-link", async (request, reply) => {

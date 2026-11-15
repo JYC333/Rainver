@@ -1,7 +1,8 @@
+import { proposalReportDependencies as proposalReportDependenciesSync } from "../retrieval/proposalReportDependencies.js";
 import {CodePatchDecisionRefusal} from '../projectFolders/codePatchDecisionErrors.js';
 import {codePatchDecisionAudit,codePatchEffectReceipt} from '../projectFolders/codePatchEffectContext.js';
 import {assertCurrentActor,sessionActor} from '../systemActions/operations/actor.js';
-import {hasPreparedProposalDecisionOwner,withCheckpointDecisionOwner,lockProposalTransitions} from '../systemActions/operations/proposalTransitions.js';
+import {assertProposalTransaction,withCheckpointDecisionOwner,lockProposalTransitions} from '../systemActions/operations/proposalTransitions.js';
 import {OperationError} from '../systemActions/operations/errors.js';
 import {pluginProposalContributor} from '../plugins/proposalContributions.js';
 import {operationProposalService} from "../systemActions/operations/approvals.js";
@@ -112,8 +113,9 @@ async function authorizeProposalDecision(
   proposal: ApplyProposalRow | null,
   identity: { spaceId: string; userId: string },
   kind: ProposalDecisionKind,
+  expectedStatus = DECISION_STATUS[kind],
 ): Promise<ApplyProposalRow | null> {
-  if (!proposal || proposal.space_id !== identity.spaceId || proposal.status !== DECISION_STATUS[kind]) return null;
+  if (!proposal || proposal.space_id !== identity.spaceId || proposal.status !== expectedStatus) return null;
   if ((await contentDecisionFromDb(client, identity, "proposal", proposal.id)) === "deny") return null;
   if (!(await roomRunReadableForUser(client, proposal, identity.userId))) return null;
   return proposal;
@@ -333,6 +335,22 @@ export class PgProposalApplyService {
     await transitions.finish();return {rolled_back_paths:paths};
   }
 
+  /** Refuses (409) accepting a report-derived Proposal whose report is not
+   * releasable to the decider now (`proposalReportWithheld`). Returns the
+   * checked dependency key for the post-lock comparison. */
+  private async assertReportDependenciesReleasable(client: Queryable, proposalId: string, identity: { spaceId: string; userId: string }): Promise<string> {
+    const row = (await client.query<{ proposal_type: string; payload_json: unknown }>(
+      "SELECT proposal_type, payload_json FROM proposals WHERE space_id = $1 AND id = $2",
+      [identity.spaceId, proposalId],
+    )).rows[0];
+    if (!row) return "";
+    const { proposalReportWithheld } = await import("../retrieval/proposalReportRelease.js");
+    if (await proposalReportWithheld(client, identity, row)) {
+      throw new ProposalApplyHttpError(409, "The report this proposal derives from is no longer available to you");
+    }
+    return reportDependencyKey(row.proposal_type, row.payload_json);
+  }
+
   async acceptInTransaction(
     client: Queryable,
     proposalId: string,
@@ -343,6 +361,11 @@ export class PgProposalApplyService {
     let rollbackOnFailure: (() => Promise<void>) | null = null;
     try {
       if(!await this.visibleDecisionCandidate(client,proposalId,identity))return null;
+      // A report-derived Proposal applies findings frozen from its report; it
+      // is decided only while that report is releasable to the decider. The
+      // report closure (Source rows first) is pinned before the Proposal row
+      // lock and held to commit; the locked payload must name the same reports.
+      const reportDependencies = await this.assertReportDependenciesReleasable(client, proposalId, identity);
       if((!this.decisionHooks || !isPolicyAuditRecoveryActive()) &&
         (await client.query('SELECT id FROM operation_idempotency WHERE proposal_id=$1 AND space_id=$2',[proposalId,identity.spaceId])).rowCount)
         throw new OperationError('operation_approval_mapping_unavailable',503);
@@ -353,6 +376,9 @@ export class PgProposalApplyService {
         client, await this.getProposalForUpdate(client, proposalId), identity, "accept",
       );
       if (!proposal || proposal.preview) return null;
+      if (reportDependencyKey(proposal.proposal_type, proposal.payload_json) !== reportDependencies) {
+        throw new ProposalApplyHttpError(409, "The report this proposal derives from changed; review it again");
+      }
 
       await this.assertBundleMemberMayBeDecided(client, proposal.id, options.allowBundleMemberDecision === true);
       assertIncompleteCodePatchConfirmation(
@@ -361,11 +387,12 @@ export class PgProposalApplyService {
         options.confirmIncompletePatch === true,
       );
       await this.assertRequiredContextOwnerApprovals(client, proposal);
-      await this.enforceApplyPolicy(client, proposal, identity.userId,transitions.hasAnyLinked||hasPreparedProposalDecisionOwner(client));
+      if(isMemoryProposal(proposal.proposal_type))await assertCurrentActor(client,sessionActor(identity),true);
+      await this.enforceApplyPolicy(client, proposal, identity.userId,true);
       if(await this.decisionHooks?.beforeApply?.(client,proposalId)===false)return null;
       let result:ProposalApplyResult;
-      const apply = (db:Queryable = client) => {
-        const config=hasPreparedProposalDecisionOwner(client)?{...this.config,auditTransaction:db}:this.config;
+      const apply = (db:Queryable = client, requester?:protocol.OperationActor) => {
+        const config={...this.config,auditTransaction:db};
         return this.registry.apply({
         proposalTransitions:transitions,
         config,
@@ -385,6 +412,7 @@ export class PgProposalApplyService {
           project_id: proposal.project_id,
         },
         userId: identity.userId,
+        requester,
       });};
       try { result = this.decisionHooks?.runApply ? await this.decisionHooks.runApply(client,proposalId,apply) : await apply(); } catch(error) {
         if(!this.decisionHooks?.applyFailed)throw error;
@@ -410,6 +438,71 @@ export class PgProposalApplyService {
       rollbackOnFailure = null;
       throw normalizeApplyError(error);
     }
+  }
+
+  /** Formal decision port: typed effects or durable external-effect intent,
+   * never a new transaction or a nested top-level executor. */
+  async acceptOperationInTransaction(db:Queryable,id:string,identity:{spaceId:string;userId:string},options:ProposalAcceptOptions={}) {
+    await assertProposalTransaction(db);
+    const proposal=await this.getProposalForUpdate(db,id,false);
+    if(proposal?.proposal_type==='code_patch')return (await import('../projectFolders/codePatchDecision.js')).queueCodePatchInTransaction(this.config,this,db,id,identity,'apply',options);
+    return (await this.acceptInTransaction(db,id,identity,options))?.outcome??null;
+  }
+
+  async rollbackInTransaction(db:Queryable,id:string,identity:{spaceId:string;userId:string}) {
+    await assertProposalTransaction(db);
+    const result=await (await import('../projectFolders/codePatchDecision.js')).queueCodePatchInTransaction(this.config,this,db,id,identity,'rollback');
+    return result as protocol.CodePatchDecisionReceipt|null;
+  }
+
+  /** Called after complete key admission and before Proposal rows, preserving
+   * Source/report release lock order for packet and derived child writers. */
+  async prepareReportDependenciesInTransaction(db:Queryable,ids:readonly string[],identity:{spaceId:string;userId:string}) {
+    for(const id of [...ids].sort()){
+      if(!await this.visibleDecisionCandidate(db,id,identity))throw new ProposalApplyHttpError(404,'Proposal not found');
+      await this.assertReportDependenciesReleasable(db,id,identity);
+    }
+  }
+
+  async authorizeBundleOperationInTransaction(db:Queryable,ids:readonly string[],identity:{spaceId:string;userId:string},decision:'approve'|'reject') {
+    await assertProposalTransaction(db);
+    for(const id of [...ids].sort()) {
+      const proposal=await this.getProposalForUpdate(db,id,false);
+      if(!proposal || !await this.visibleDecisionCandidate(db,id,identity) || proposal.preview)throw new ProposalApplyHttpError(404,'Proposal not found');
+      if(proposal.project_id)await db.query('SELECT id FROM projects WHERE id=$1 AND space_id=$2 FOR SHARE',[proposal.project_id,identity.spaceId]);
+      if(decision==='reject') {if(!await canRejectProposal(db,proposal,identity.userId))throw new ProposalApplyHttpError(404,'Proposal not found');}
+      else await this.enforceApplyPolicy(db,proposal,identity.userId,true,'bundle_operation_authorize');
+    }
+  }
+
+  /** Recheck the rollback's own authority on replay, never member approval roles. */
+  async authorizeBundleRollbackOperationInTransaction(db:Queryable,bundleId:string,identity:{spaceId:string;userId:string}) {
+    await assertProposalTransaction(db);
+    const row=(await db.query<{id:string}>(`SELECT id FROM proposals WHERE space_id=$1
+      AND proposal_type='evolution_bundle_rollback' AND payload_json->>'bundle_id'=$2
+      AND status IN ('pending','accepted') ORDER BY created_at DESC,id DESC LIMIT 1`,[identity.spaceId,bundleId])).rows[0];
+    if(!row)return; // First execution creates and authorizes the canonical rollback Proposal.
+    const proposal=await this.getProposalForUpdate(db,row.id,false);
+    if(!proposal||!await this.visibleDecisionCandidate(db,row.id,identity))throw new ProposalApplyHttpError(404,'Proposal not found');
+    await this.enforceApplyPolicy(db,proposal,identity.userId,true,'bundle_rollback_operation_authorize');
+  }
+
+  async authorizeAcceptOperationInTransaction(db:Queryable,id:string,identity:{spaceId:string;userId:string},replay=false) {
+    await assertProposalTransaction(db);
+    const proposal=await this.getProposalForUpdate(db,id,false);
+    if(!proposal || !await this.visibleDecisionCandidate(db,id,identity) || proposal.preview || !['pending','accepted','superseded','rolled_back'].includes(proposal.status))throw new ProposalApplyHttpError(404,'Proposal not found');
+    await assertCurrentActor(db,sessionActor(identity),true);
+    if(proposal.project_id)await db.query('SELECT id FROM projects WHERE id=$1 AND space_id=$2 FOR SHARE',[proposal.project_id,identity.spaceId]);
+    await this.enforceApplyPolicy(db,proposal,identity.userId,true,'operation_accept_authorize');
+  }
+
+  async authorizeRollbackOperationInTransaction(db:Queryable,id:string,identity:{spaceId:string;userId:string},replay=false) {
+    await assertProposalTransaction(db);
+    const proposal=await this.getProposalForUpdate(db,id,false);
+    if(!proposal || proposal.proposal_type!=='code_patch' || !await this.visibleDecisionCandidate(db,id,identity) || proposal.preview || !['accepted','rolled_back'].includes(proposal.status))throw new ProposalApplyHttpError(404,'Proposal not found');
+    await assertCurrentActor(db,sessionActor(identity),true);
+    if(proposal.project_id)await db.query('SELECT id FROM projects WHERE id=$1 AND space_id=$2 FOR SHARE',[proposal.project_id,identity.spaceId]);
+    await this.enforceApplyPolicy(db,proposal,identity.userId,true,'operation_rollback_authorize');
   }
 
   async acceptAgentProposalIfGranted(
@@ -515,6 +608,28 @@ export class PgProposalApplyService {
     }
   }
 
+  /** Formal public rejection preserves the canonical Bundle gate. */
+  async rejectOperationInTransaction(client:Queryable,proposalId:string,identity:{spaceId:string;userId:string}) {
+    return this.rejectTransaction(client,proposalId,identity);
+  }
+
+  async authorizeRejectOperationInTransaction(client:Queryable,proposalId:string,identity:{spaceId:string;userId:string},replay=false) {
+    await assertProposalTransaction(client);
+    if(!await this.visibleDecisionCandidate(client,proposalId,identity))throw new ProposalApplyHttpError(404,'Proposal not found');
+    if(!replay)await lockProposalTransitions(client,identity.spaceId,[proposalId],true,false);
+    const candidate=await this.getProposalForUpdate(client,proposalId);
+    if(!candidate || !(replay?['rejected']:['pending','rejected']).includes(candidate.status))throw new ProposalApplyHttpError(404,'Proposal not found');
+    const proposal=await authorizeProposalDecision(client,candidate,identity,'reject',candidate.status);
+    if(!proposal)throw new ProposalApplyHttpError(404,'Proposal not found');
+    if(proposal.project_id)await client.query('SELECT id FROM projects WHERE id=$1 AND space_id=$2 FOR NO KEY UPDATE',[proposal.project_id,identity.spaceId]);
+    if(!await canRejectProposal(client,proposal,identity.userId))throw new ProposalApplyHttpError(404,'Proposal not found');
+    await this.assertBundleMemberMayBeDecided(client,proposal.id,false);
+  }
+
+  async afterRejectOperationCommit(proposal:ProposalOut) {
+    await this.emitDecisionSignalBestEffort({spaceId:proposal.space_id,proposalId:proposal.id,status:'rejected',proposalType:proposal.proposal_type,createdByRunId:proposal.created_by_run_id??null});
+  }
+
   async rejectInTransaction(
     client: Queryable,
     proposalId: string,
@@ -579,46 +694,69 @@ export class PgProposalApplyService {
     const client = await this.connect();
     try {
       await client.query("BEGIN");
-      const proposal = await authorizeProposalDecision(
-        client, await this.getProposalForUpdate(client, proposalId), identity, "egress_approval",
-      );
-      if (!proposal) throw new ProposalApplyHttpError(404, "Proposal not found");
-      const taintOwnerApprovers = requiredTaintOwnerApprovers(proposal.payload_json);
-      if (taintOwnerApprovers.length > 0) {
-        if (!taintOwnerApprovers.includes(identity.userId)) {
-          throw new ProposalApplyHttpError(403, "only a required taint owner can approve this egress");
-        }
-        if (grantIdInput) {
-          throw new ProposalApplyHttpError(422, "grant_id must be omitted for context-taint owner approval");
-        }
-        const approval = await this.upsertEgressApproval(client, proposal, identity.userId, null, {
-          approval_type: "egress_granting_user",
-          approval_source: "context_taint_owner",
-          raw_private_memory_included: false,
-          personal_summary_persisted: false,
-        });
-        await client.query("COMMIT");
-        return approvalToOut(approval);
-      }
-      const grantId = grantIdInput ?? await this.inferGrantId(client, proposal);
-      if (!grantId) throw new ProposalApplyHttpError(422, "grant_id is required");
-      const grant = await this.getGrant(client, grantId);
-      if (!grant) throw new ProposalApplyHttpError(403, "grant not found");
-      this.validateGrantApproval(proposal, grant, identity.userId, grantId);
-
-      const approval = await this.upsertEgressApproval(client, proposal, identity.userId, grantId, {
-        approval_type: "egress_granting_user",
-        raw_private_memory_included: false,
-        personal_summary_persisted: false,
-      }, grant.target_space_id);
+      const approval = await this.approveEgressGrantingUserInTransaction(client, proposalId, identity, grantIdInput);
       await client.query("COMMIT");
-      return approvalToOut(approval);
+      return approval;
     } catch (error) {
       await client.query("ROLLBACK").catch(() => undefined);
       throw error;
     } finally {
       client.release();
     }
+  }
+
+  /** Join the caller's transaction; the consent belongs to identity.userId,
+   * independently of the Proposal's requester or eventual decider. */
+  async approveEgressGrantingUserInTransaction(
+    client: Queryable,
+    proposalId: string,
+    identity: { spaceId: string; userId: string },
+    grantIdInput: string | null,
+  ): Promise<ProposalApprovalOut> {
+    const consent = await this.authorizeEgressConsentInTransaction(client, proposalId, identity, grantIdInput);
+    return approvalToOut(await this.upsertEgressApproval(client, consent.proposal, identity.userId,
+      consent.grantId, consent.metadata, consent.targetSpaceId));
+  }
+
+  /** Read and pin current consent authority on every invocation, including replay.
+   * Never publishes or accepts the Proposal and never substitutes its requester. */
+  async authorizeEgressConsentInTransaction(
+    client: Queryable,
+    proposalId: string,
+    identity: { spaceId: string; userId: string },
+    grantIdInput: string | null,
+  ) {
+    await assertProposalTransaction(client);
+    await assertCurrentActor(client, sessionActor(identity), true);
+    const proposal = await authorizeProposalDecision(
+      client, await this.getProposalForUpdate(client, proposalId), identity, "egress_approval",
+    );
+    if (!proposal) throw new ProposalApplyHttpError(404, "Proposal not found");
+    const taintOwnerApprovers = requiredTaintOwnerApprovers(proposal.payload_json);
+    if (taintOwnerApprovers.length > 0) {
+      if (!taintOwnerApprovers.includes(identity.userId)) {
+        throw new ProposalApplyHttpError(403, "only a required taint owner can approve this egress");
+      }
+      if (grantIdInput) {
+        throw new ProposalApplyHttpError(422, "grant_id must be omitted for context-taint owner approval");
+      }
+      return { proposal, grantId: null, targetSpaceId: proposal.space_id, metadata: {
+        approval_type: "egress_granting_user",
+        approval_source: "context_taint_owner",
+        raw_private_memory_included: false,
+        personal_summary_persisted: false,
+      } };
+    }
+    const grantId = grantIdInput ?? await this.inferGrantId(client, proposal);
+    if (!grantId) throw new ProposalApplyHttpError(422, "grant_id is required");
+    const grant = await this.getGrant(client, grantId);
+    if (!grant) throw new ProposalApplyHttpError(403, "grant not found");
+    this.validateGrantApproval(proposal, grant, identity.userId, grantId);
+    return { proposal, grantId, targetSpaceId: grant.target_space_id, metadata: {
+      approval_type: "egress_granting_user",
+      raw_private_memory_included: false,
+      personal_summary_persisted: false,
+    } };
   }
 
   private async upsertEgressApproval(
@@ -784,7 +922,7 @@ export class PgProposalApplyService {
       },
       role,
       this.registry.registeredTypes(),
-    );
+    ).catch(error=>{throw normalizeApplyError(error);});
     if (result.status !== "allow") {
       if(proposal.proposal_type==='code_patch'&&result.status!=='error')throw new CodePatchDecisionRefusal(403,'Code patch decision refused by policy');
       throw policyResultToHttpError(result);
@@ -845,14 +983,14 @@ export class PgProposalApplyService {
     const requiredOwners = requiredTaintOwnerApprovers(proposal.payload_json);
     if (requiredOwners.length === 0) return;
     const approved = await client.query<{ approver_user_id: string }>(
-      `SELECT DISTINCT approver_user_id
+      `SELECT approver_user_id
          FROM proposal_approvals
         WHERE proposal_id = $1
           AND approval_type = 'egress_granting_user'
           AND approver_user_id = ANY($2::varchar[])
           AND grant_id IS NULL
           AND status = 'approved'
-          AND revoked_at IS NULL`,
+          AND revoked_at IS NULL ORDER BY approver_user_id,id FOR SHARE`,
       [proposal.id, requiredOwners],
     );
     const approvedIds = new Set(approved.rows.map((row) => row.approver_user_id));
@@ -871,7 +1009,7 @@ export class PgProposalApplyService {
       `SELECT id, granting_user_id, target_space_id, target_run_id, status,
               egress_review_expires_at
          FROM personal_memory_grants
-        WHERE id = $1`,
+        WHERE id = $1 FOR SHARE`,
       [grantId],
     );
     return result.rows[0] ?? null;
@@ -1226,4 +1364,14 @@ function dateFrom(value: unknown): Date | null {
     return Number.isNaN(date.getTime()) ? null : date;
   }
   return null;
+}
+
+/** Stable key of a Proposal's frozen report dependencies. */
+function reportDependencyKey(proposalType: string, payloadJson: unknown): string {
+  const deps = proposalReportDependenciesSync(proposalType, payloadJson);
+  return deps ? JSON.stringify([deps.malformed, [...deps.artifactIds].sort()]) : "";
+}
+
+function isMemoryProposal(type:string):boolean {
+  return type==='memory_create'||type==='memory_update'||type==='memory_archive';
 }

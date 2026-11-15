@@ -1,4 +1,5 @@
 import { randomUUID, createHash } from 'node:crypto';
+import {JobEffectLeaseLost} from '../src/modules/jobs/effectAuthority.js';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -355,6 +356,60 @@ describe('standalone code patch durable decision boundary', () => {
     for(const result of outcomes){expect(result.status).toBe('rejected');if(result.status==='rejected')expect(result.reason).toMatchObject({statusCode:409});}
     expect((await db.pool.query('SELECT id,status,job_id FROM code_patch_decisions ORDER BY id')).rows).toEqual(before);
     expect((await db.pool.query("SELECT id FROM jobs WHERE job_type='code_patch_decision'")).rows).toHaveLength(2);
+  });
+  it.each(['pending','compensating'].flatMap(status=>[false,true].map(sameWorker=>({status,sameWorker}))))('rejects a lost claim without changing a $status intent or its files (same worker: $sameWorker)',async({status,sameWorker})=>{
+    if(!db.available)return;
+    const f=await enqueue(),row=await state(f.id),effect=row.effect_json;
+    if(status==='compensating'){
+      const files=new CodePatchFileTransaction(root,false);
+      effect.before=await files.prepare(effect.operations);
+      await files.applyPrepared(effect.operations,effect.before);
+    }
+    await db.pool.query('UPDATE code_patch_decisions SET status=$2,effect_json=$3::jsonb WHERE id=$1',[f.id,status,JSON.stringify(effect)]);
+    await db.pool.query("UPDATE jobs SET status='running',claimed_by=$2,attempts=2 WHERE id=$1",[row.job_id,sameWorker?'expired-worker':'replacement-worker']);
+    const before=await state(f.id);
+    await expect(executeCodePatchDecision(config(),f.id,space,{jobId:row.job_id,workerId:'expired-worker',userId:owner,attempts:1})).rejects.toBeInstanceOf(JobEffectLeaseLost);
+    expect(await state(f.id)).toEqual(before);
+    expect(await readFile(join(root,'one.txt'),'utf8')).toBe(status==='compensating'?'after':'before');
+    expect((await db.pool.query('SELECT status FROM proposals WHERE id=$1',[f.p.id])).rows[0].status).toBe('pending');
+  });
+  it('leaves known preimages for the current claim when ownership changes during IO',async()=>{
+    if(!db.available)return;
+    const f=await enqueue(),row=await state(f.id),original=CodePatchFileTransaction.prototype.applyPrepared;
+    await db.pool.query("UPDATE jobs SET status='running',claimed_by='patch-worker',attempts=1 WHERE id=$1",[row.job_id]);
+    const spy=vi.spyOn(CodePatchFileTransaction.prototype,'applyPrepared').mockImplementation(async function(this:CodePatchFileTransaction,...args){
+      const result=await original.apply(this,args);
+      await db.pool.query('UPDATE jobs SET attempts=2 WHERE id=$1',[row.job_id]);
+      return result;
+    });
+    await expect(executeCodePatchDecision(config(),f.id,space,{jobId:row.job_id,workerId:'patch-worker',userId:owner,attempts:1})).rejects.toBeInstanceOf(JobEffectLeaseLost);
+    spy.mockRestore();
+    expect(await state(f.id)).toMatchObject({status:'applying',error:null,effect_json:{before:expect.any(Array)}});
+    expect((await state(f.id)).effect_json.receipt).toBeUndefined();
+    expect((await state(f.id)).effect_json.before).toHaveLength(2);
+    expect(await readFile(join(root,'one.txt'),'utf8')).toBe('after');
+    expect((await db.pool.query('SELECT status FROM proposals WHERE id=$1',[f.p.id])).rows[0].status).toBe('pending');
+    await executeCodePatchDecision(config(),f.id,space,{jobId:row.job_id,workerId:'patch-worker',userId:owner,attempts:2});
+    expect((await state(f.id)).status).toBe('succeeded');
+  });
+  it('does not settle compensation under an expired claim and lets the current owner finish it',async()=>{
+    if(!db.available)return;
+    const f=await enqueue(),row=await state(f.id),effect=row.effect_json,files=new CodePatchFileTransaction(root,false);
+    effect.before=await files.prepare(effect.operations);await files.applyPrepared(effect.operations,effect.before);
+    await db.pool.query("UPDATE code_patch_decisions SET status='compensating',effect_json=$2::jsonb WHERE id=$1",[f.id,JSON.stringify(effect)]);
+    await db.pool.query("UPDATE jobs SET status='running',claimed_by='cleanup-worker',attempts=1 WHERE id=$1",[row.job_id]);
+    const original=CodePatchFileTransaction.prototype.compensatePrepared;
+    const spy=vi.spyOn(CodePatchFileTransaction.prototype,'compensatePrepared').mockImplementation(async function(this:CodePatchFileTransaction,...args){
+      await original.apply(this,args);await db.pool.query('UPDATE jobs SET attempts=2 WHERE id=$1',[row.job_id]);
+    });
+    await expect(executeCodePatchDecision(config(),f.id,space,{jobId:row.job_id,workerId:'cleanup-worker',userId:owner,attempts:1})).rejects.toBeInstanceOf(JobEffectLeaseLost);
+    spy.mockRestore();
+    expect((await state(f.id)).status).toBe('compensating');
+    expect((await state(f.id)).effect_json.compensated).not.toBe(true);
+    expect(await readFile(join(root,'one.txt'),'utf8')).toBe('before');
+    await executeCodePatchDecision(config(),f.id,space,{jobId:row.job_id,workerId:'cleanup-worker',userId:owner,attempts:2});
+    expect((await state(f.id)).status).toBe('failed');
+    expect((await state(f.id)).effect_json.compensated).toBe(true);
   });
   it('defers busy-folder cleanup without consuming attempts or claiming operator repair',async()=>{if(!db.available)return;
     const f=await enqueue(),row=await state(f.id),effect=row.effect_json;

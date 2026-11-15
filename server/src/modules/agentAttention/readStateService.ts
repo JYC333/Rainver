@@ -1,7 +1,7 @@
+import {admitAttention} from './admission.js';
 import { isDeepStrictEqual } from "node:util";
-import type { Pool } from "../../db/pool.js";
 import type { AgentAttentionReadRequest, AgentAttentionReadState, AgentAttentionViewRequest, AgentAttentionViewResult, AgentWorkIdentity } from "@rainver/protocol";
-import { withTransaction } from "../../db/tx.js";
+import {withQueryableTransaction} from "../routeUtils/common.js";
 import { HttpError, type Queryable } from "../routeUtils/common.js";
 import { AgentAttentionRepository, subjectId, type WorkTarget } from "./repository.js";
 import { projectWorks, workKey, readState } from "./readModel.js";
@@ -21,8 +21,9 @@ export function findWork(items: Awaited<ReturnType<typeof loadWorks>>, spaceId: 
 }
 
 /** Serializes only this user's subject decisions; no business state is written. */
-export async function changeReadState(pool: Pool, userId: string, input: AgentAttentionReadRequest): Promise<AgentAttentionReadState> {
-  return withTransaction(pool, async db => {
+export async function changeReadState(pool: Queryable, userId: string, input: AgentAttentionReadRequest): Promise<AgentAttentionReadState> {
+  return withQueryableTransaction(pool, async db => {
+    await admitAttention(db,userId,input.space_id,input.identity);
     const repository = new AgentAttentionRepository(db);
     const lockKey = `${userId}:${workKey(input.space_id, input.identity)}:${input.subject.kind}:${subjectId(input.subject)}`;
     await db.query(`SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, [lockKey]);
@@ -52,8 +53,9 @@ export async function changeReadState(pool: Pool, userId: string, input: AgentAt
  * that decision waits for. Unknown or unauthorized ids are ignored; a lost CAS
  * race is left for the next report. Nothing else is acknowledged.
  */
-export async function recordViews(pool: Pool, userId: string, input: AgentAttentionViewRequest): Promise<AgentAttentionViewResult> {
-  return withTransaction(pool, async db => {
+export async function recordViews(pool: Queryable, userId: string, input: AgentAttentionViewRequest): Promise<AgentAttentionViewResult> {
+  return withQueryableTransaction(pool, async db => {
+    await admitAttention(db,userId,input.space_id,{kind:"session",source_id:input.session_id});
     const repository = new AgentAttentionRepository(db);
     await db.query(`SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, [`${userId}:${input.space_id}:views:${input.session_id}`]);
     const ids = new Set(input.message_ids);

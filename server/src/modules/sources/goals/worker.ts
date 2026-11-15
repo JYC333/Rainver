@@ -31,16 +31,27 @@ import {activeGoalIntent,requireGoal,requireGoalSource,goalSourceFingerprint,typ
 import {validateGoalSample} from './validation.js';
 import type {GoalExecutionPort} from './service.js';
 export interface GoalBindingRow {id:string;space_id:string;goal_id:string;spec_json:SourceGoalBindingSpec;fixture_json?:{authority_sha256?:string};previous_spec_json:SourceGoalBindingSpec|null;revision:number;cursor_json:Record<string,unknown>;gaps_json:unknown[];failures:number;lease_token:string|null;lease_until?:string|null;last_success_at?:string|null;}
-export async function enqueueDueSourceGoals(db:Pool){
+export async function enqueueDueSourceGoals(db:Pool,config:ServerConfig){
+ // Recovery belongs to this existing scheduler lifecycle, including manual
+ // previews and stopped goals which have no due collection task. Run finalizers
+ // still settle their own completion immediately; this pass recovers crashes,
+ // expired deadlines and interrupted materialization without a page read.
+ const recoveryFailures:unknown[]=[];
+ const pending=await db.query<{goal_id:string}>(`SELECT goal_id FROM source_goal_runs WHERE status IN ('queued','accepted','materializing') AND result_json ? 'native_run_id' GROUP BY goal_id ORDER BY min(started_at),goal_id LIMIT 25`);
+ for(const {goal_id} of pending.rows)try{await reconcileNativeSearch(db,config,goal_id);}catch(error){recoveryFailures.push(error);}
+
  const tasks=await new PgSchedulerTaskStore(db).listDue('source_goal_tick',new Date().toISOString(),25);
  const goals=(await db.query<GoalRow>("SELECT * FROM source_goals WHERE id=ANY($1::varchar[]) AND status='running'",[tasks.map(t=>t.task_key)])).rows;
  const groups=new Map<string,string[]>();
  for(const g of goals){const key=g.project_id?`${g.space_id}:${g.project_id}`:g.id;groups.set(key,[...(groups.get(key)??[]),g.id]);}
- const failures:unknown[]=[];
+ const failures:unknown[]=[...recoveryFailures];
  for(const ids of groups.values())try{await withDbTransaction(db,async tx=>{
   // One logical scheduler cohort is frozen under the same sorted goal locks
   // used by canonical manual/version admission, never by arrival proximity.
-  const locked=(await tx.query<GoalRow>("SELECT * FROM source_goals WHERE id=ANY($1::varchar[]) AND status='running' ORDER BY id FOR UPDATE",[ids])).rows;
+  // Canonical closure order (`lockGoal`): the cohort's Project row before its goals.
+  const project=goals.find(g=>g.id===ids[0])?.project_id??null,space=goals.find(g=>g.id===ids[0])!.space_id;
+  if(project)await tx.query('SELECT id FROM projects WHERE id=$1 AND space_id=$2 FOR UPDATE',[project,space]);
+  const locked=(await tx.query<GoalRow>("SELECT * FROM source_goals WHERE id=ANY($1::varchar[]) AND status='running' AND project_id IS NOT DISTINCT FROM $2::varchar ORDER BY id FOR UPDATE",[ids,project])).rows;
   const due=[];
   for(const g of locked){const task=await new PgSchedulerTaskStore(tx).get('source_goal_tick',g.id);if(task?.next_run_at&&Date.parse(String(task.next_run_at))<=Date.now())due.push({g,task});}
   const cohorts=new Map<string,typeof due>();

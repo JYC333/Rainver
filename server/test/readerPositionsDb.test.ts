@@ -178,13 +178,14 @@ describe('reading position rules', () => {
     const gate = new Promise<void>(resolve => { release = resolve });
     let locked: () => void = () => {}
     const holding = new Promise<void>(resolve => { locked = resolve });
-    // Pause the position transaction right after it took the document's row.
+    // Pause the position transaction right after it took the document's row
+    // (after the Reader closure fence's person/Project locks that precede it).
     const paused = { query: db.pool.query.bind(db.pool), connect: async () => {
       const client = await db.pool.connect();
       const query = client.query.bind(client);
       (client as unknown as { query: unknown }).query = async (...args: Parameters<typeof query>) => {
         const result = await query(...args);
-        if (typeof args[0] === 'string' && args[0].includes('FOR SHARE')) { locked(); await gate }
+        if (typeof args[0] === 'string' && args[0].includes('FROM source_items') && args[0].includes('FOR SHARE')) { locked(); await gate }
         return result;
       };
       return client;

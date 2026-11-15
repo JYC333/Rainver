@@ -10,6 +10,7 @@ import { Input } from '../../components/ui/input'
 import { SearchableMultiSelect } from '../../components/ui/searchable-multi-select'
 import { errMsg } from '../../lib/utils'
 import { useSpace } from '../../contexts/SpaceContext'
+import { useAppTranslation } from '../../i18n'
 import type { ProjectReader, Room } from '../../types/api'
 
 /**
@@ -43,6 +44,7 @@ export function LimitedRoomDialog({ open, projectId, onClose, onOpened }: {
   onOpened: (room: Room) => void
 }) {
   const { userId } = useSpace()
+  const { t } = useAppTranslation()
   const [candidates, setCandidates] = useState<ProjectReader[]>([])
   const [selected, setSelected] = useState<string[]>([])
   const [title, setTitle] = useState('')
@@ -75,7 +77,7 @@ export function LimitedRoomDialog({ open, projectId, onClose, onOpened }: {
       // Keyed, so a double click cannot leave two half-populated groups.
       const room = await roomsApi.create({
         project_id: projectId,
-        title: title.trim() || 'Limited group',
+        title: title.trim() || t('collab_ui.limited_room.default_title'),
       }, idempotencyKey.current)
       // Each invitation activates immediately when the Room holds no private
       // specialists, which a Room created a moment ago does not. One failing
@@ -115,20 +117,17 @@ export function LimitedRoomDialog({ open, projectId, onClose, onOpened }: {
     <Dialog open={open} onOpenChange={next => { if (!next) onClose() }}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>Who can see this?</DialogTitle>
+          <DialogTitle>{t('collab_ui.limited_room.title')}</DialogTitle>
         </DialogHeader>
         <div className="space-y-3">
-          <p className="text-xs text-muted-foreground">
-            Only the people you pick will see these conversations. Nobody else in the Project
-            is told they exist.
-          </p>
+          <p className="text-xs text-muted-foreground">{t('collab_ui.limited_room.description')}</p>
           <SearchableMultiSelect
-            ariaLabel="People who can see this"
-            placeholder="Choose people"
-            searchPlaceholder="Search this Project"
+            ariaLabel={t('collab_ui.limited_room.people')}
+            placeholder={t('collab_ui.limited_room.choose')}
+            searchPlaceholder={t('collab_ui.limited_room.search')}
             emptyMessage={loadFailed
-              ? 'Could not load who reads this Project.'
-              : 'Nobody else reads this Project.'}
+              ? t('collab_ui.limited_room.load_failed')
+              : t('collab_ui.limited_room.nobody')}
             options={candidates.map(reader => ({
               value: reader.user_id,
               label: personLabel(reader),
@@ -137,16 +136,16 @@ export function LimitedRoomDialog({ open, projectId, onClose, onOpened }: {
             onChange={setSelected}
           />
           <Input
-            aria-label="Name this group"
-            placeholder="Name this group (optional)"
+            aria-label={t('collab_ui.limited_room.name')}
+            placeholder={t('collab_ui.limited_room.name')}
             value={title}
             onChange={event => setTitle(event.target.value)}
           />
         </div>
         <DialogFooter>
-          <Button size="sm" variant="outline" onClick={onClose} disabled={creating}>Cancel</Button>
+          <Button size="sm" variant="outline" onClick={onClose} disabled={creating}>{t('collab_ui.common.cancel')}</Button>
           <Button size="sm" onClick={() => void create()} disabled={creating || selected.length === 0}>
-            {creating ? 'Creating…' : 'Create'}
+            {creating ? t('collab_ui.limited_room.creating') : t('collab_ui.limited_room.create')}
           </Button>
         </DialogFooter>
       </DialogContent>

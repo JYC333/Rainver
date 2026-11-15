@@ -1,0 +1,42 @@
+import {randomUUID} from 'node:crypto';
+import {afterEach,beforeEach,expect,it} from 'vitest';
+import {useTestDatabase} from './support/testDatabase.js';
+import {resetTables} from './support/resetTables.js';
+import {seedSpaceOwnerProject,seedSpaceMember} from './support/domainSeeds.js';
+import {buildModuleServer} from './support/moduleServer.js';
+import {academicModule} from '../src/modules/academic/index.js';
+import {systemActionsModule} from '../src/modules/systemActions/index.js';
+import {__setAuthIdentityForTests} from '../src/modules/auth/identity.js';
+import {loadConfig} from '../src/config.js';
+import {RelationsService} from '../src/modules/relations/service.js';
+import {RelationsRepository} from '../src/modules/relations/repository.js';
+const db=useTestDatabase(import.meta.filename);
+let space:string,owner:string,project:string,app:ReturnType<typeof buildModuleServer>;
+const call=(id:string,payload:object,key=randomUUID())=>app.inject({method:'POST',url:'/api/v1/actions/'+id,payload,headers:{'idempotency-key':key}});
+beforeEach(async()=>{
+ await resetTables(db.pool,['spaces','users'],{cascade:true});space=randomUUID();owner=randomUUID();project=randomUUID();
+ await seedSpaceOwnerProject(db.pool,{space,owner,project,spaceType:'team'});
+ app=buildModuleServer(loadConfig({SERVER_DATABASE_URL:db.connectionUri}),[academicModule,systemActionsModule]);__setAuthIdentityForTests({spaceId:space,userId:owner});
+});
+afterEach(async()=>{__setAuthIdentityForTests(null);await app?.close();});
+it('creates one paper across REST and generic replay with identity-only receipts and preserves proposal review',async()=>{
+ const key=randomUUID(),body={project_id:project,title:'PRIVATE paper title',doi:'10.1000/one'};
+ const created=await app.inject({method:'POST',url:'/api/v1/academic/papers',payload:body,headers:{'idempotency-key':key}});
+ expect(created.statusCode,created.body).toBe(201);expect(created.body).not.toContain(body.title);
+ expect((await call('academic.paper.create',body,key)).json()).toEqual(created.json());
+ const object=created.json().data.object_id;
+ const person=await new RelationsService(db.pool,new RelationsRepository(db.pool)).createPerson({spaceId:space,userId:owner},{project_id:project,title:'Person',visibility:'space_shared'});
+ const author=await call('academic.paper.author.propose',{object_id:object,person_object_id:person.object_id});
+ expect(author.statusCode,author.body).toBe(202);expect(author.body).not.toContain('Person');
+ expect((await db.pool.query('SELECT proposal_type,status FROM proposals')).rows).toMatchObject([{proposal_type:'object_relation_create',status:'pending'}]);
+ expect((await db.pool.query('SELECT id FROM object_relations')).rows).toEqual([]);
+ expect((await call('academic.paper.create',body)).statusCode).toBe(409);
+});
+it('binds update targets and refuses replay after ownership withdrawal',async()=>{
+ const created=await call('academic.paper.create',{project_id:project,title:'Paper'});expect(created.statusCode,created.body).toBe(201);
+ const object=created.json().data.object_id,key=randomUUID(),payload={object_id:object,title:'Changed'};
+ expect((await call('academic.paper.update',payload,key)).statusCode).toBe(200);
+ expect((await app.inject({method:'PATCH',url:`/api/v1/academic/papers/${object}`,payload,headers:{'idempotency-key':randomUUID()}})).statusCode).toBe(422);
+ const peer=randomUUID();await seedSpaceMember(db.pool,{space,user:peer});await db.pool.query('UPDATE space_objects SET owner_user_id=$2,created_by_user_id=$2 WHERE id=$1',[object,peer]);
+ expect((await call('academic.paper.update',payload,key)).statusCode).toBe(404);
+});

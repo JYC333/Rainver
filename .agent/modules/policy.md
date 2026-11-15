@@ -49,8 +49,17 @@ the server; the shared table grants no authority on its own.
 
 Policy does not own proposal mutations. Authorization-request approval uses
 the same transaction-bound ActionApprovalGrant writer as the public operations.
-Its still-unmigrated approval command retains its own grant policy admission and
-audit in the approval transaction, without recursively dispatching an operation.
+Its approve/reject URLs are formal core adapters with strict keyed inputs.
+`AuthorizationRequestService.decideInTransaction` joins the same query port,
+retaining grant policy admission and audit without recursively dispatching an
+operation. Approval pins the original requester's Agent/Run release closure
+(Project, Folder, Room, memberships and grants), separately checks their current
+reach and the deciding Space owner, and commits the bounded grant, decision and
+reconcile Job together. Owner rejection remains possible after requester exit.
+The create-from-denial owner also joins existing transactions and locks its Run
+before inserting/upserting the request. Real-PG `runToolGroup` cases cover keyed
+REST/generic replay, requester/owner revocation, raw outer rollback and mandatory
+operation audit commit failure with same-key recovery.
 
 Owner-started Reading goal setup can request a pending Source activation review
 without a second Run grant merely to submit the proposal. The owning Sources
@@ -109,9 +118,10 @@ fail-closed defence-in-depth. `current_enforcement_point="not_implemented"`. Not
 to any business code. `computeDecision` (`gateway.ts`) always denies reserved actions
 (`policy_action_not_implemented`) regardless of registry `default_decision`. Not full RBAC/ABAC — they express intent and default risk.
 
-Human Note link/unlink/jot routes enforce `note.link.create` (low risk, allow,
-mandatory fail-closed audit) through `knowledge/noteLinkPolicy.ts`. Canonical
-object/Project access gates remain mandatory; no Agent capability is added.
+Human Note link/unlink/jot core commands enforce `note.link.create` (low risk,
+allow, mandatory fail-closed audit) through the operation executor
+(`knowledge/noteLinkOperations.ts`). Canonical object/Project access gates
+remain mandatory; no Agent capability is added.
 
 ### Wired actions
 
@@ -167,7 +177,13 @@ object/Project access gates remain mandatory; no Agent capability is added.
 | `source.retrieval.search` | retrieval_tool | low | deny (allow only by rule) | managed retrieval tools via `enforce()` |
 | `source.retrieval.brief` | retrieval_tool | low | deny (allow only by rule) | managed retrieval tools via `enforce()` |
 | `conversation.history.read` | session | low | allow (audit_required) | `server/src/modules/sessions/conversationHistorySystemActionExecutors.ts` |
-| `source.goal.manage` | source_goal | medium | allow (audit_required) | `server/src/modules/sources/goals/routes.ts` |
+| `relation.write` | space_object | medium | allow (audit_required) | `server/src/modules/relations/operations.ts`; owner/Project and source-reference authority under core transaction |
+| `reader.write` | reader_document | low | allow (audit_required) | `server/src/modules/reader/operations.ts`; Reader target fence and nested document closure under core transaction; position/range bodies via the Reader write Job |
+| `space.create` | space | low | allow (audit_required) | `server/src/modules/spaces/operations.ts`; household/team creation by an active person, creator becomes owner |
+| `space.membership.manage` | space | medium | allow (audit_required) | `server/src/modules/spaces/operations.ts`; invitation at or below the live inviter role, hashed caller secret; atomic claim by the invited account |
+| `space.settings.update` | space | medium | allow (audit_required) | `server/src/modules/spaces/operations.ts`; owner/admin under locked membership; embedding backfill Job intent in the same transaction |
+| `content.access.manage` | content | medium | allow (audit_required) | `server/src/modules/contentAccess/operations.ts`; owner or Space owner/admin, disclosure-gated narrowing, canonical Memory version, tainted widening to `egress_review` |
+| `source.goal.manage` | source_goal | medium | allow (audit_required) | `server/src/modules/sources/goals/operations.ts` (core goal commands); Agent goal actions through the Dispatcher |
 | `project.monitoring.configure` | project | medium | allow (audit_required) | `server/src/modules/projects/monitoring/routes.ts` |
 | `research.result.read` | project_operation | low | allow (audit_required) | `server/src/modules/systemActions/systemActionDispatcher.ts` |
 | `research.result.adopt` | project_operation | medium | allow (audit_required) | `server/src/modules/systemActions/systemActionDispatcher.ts` |
@@ -529,3 +545,12 @@ The active-scope unique index and stale exact-scope expiry remain domain rules,
 independent of core request deduplication. This family has no external effects,
 Jobs or production approval mapping. Evidence and limits live in
 [Operation core acceptance](../architecture/OPERATION_CORE_ACCEPTANCE.md).
+
+### Reusable Agent context policy
+
+Execution and policy preview resolve the same scope chain. An explicit Project
+(or Folder's Project) supplies the Project policy; without one, the Agent's
+owning or retained access Project supplies the legacy default. Agent policy
+always contributes and intersects constraints, including when executing in a
+different Project. Its original Project remains the policy-management parent,
+not an additional Project policy layer on execution in B.

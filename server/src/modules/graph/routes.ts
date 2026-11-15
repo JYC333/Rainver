@@ -1,3 +1,4 @@
+import {registerOperationAdapters} from '../systemActions/operations/routeAdapter.js';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
@@ -7,7 +8,6 @@ import {
   dbPool,
   HttpError,
   intQuery,
-  jsonBody,
   optionalString,
   query,
   resolveIdentity,
@@ -15,7 +15,7 @@ import {
 import { assertProjectInSpace } from "../projects/access.js";
 import { GraphProjectionBuilder, parseGraphLensId, type ServerGraphProjectionMode } from "./projectionBuilder.js";
 import { GraphProjectionRepository } from "./projectionRepository.js";
-import { GraphViewStateRepository, normalizeStateObject } from "./viewStateRepository.js";
+import { GraphViewStateRepository } from "./viewStateRepository.js";
 
 const DEFAULT_LIMIT = 300;
 const HARD_LIMIT = 2000;
@@ -69,19 +69,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.put("/api/v1/graph/view-state", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const body = jsonBody(request);
-      const scopeKey = optionalString(body.scope_key);
-      if (!scopeKey) throw new HttpError(422, "scope_key is required");
-      const stateJson = normalizeStateObject(body.state_json ?? {});
-      return reply.send(await viewStates().upsert(identity, scopeKey, stateJson));
-    } catch (error) {
-      return sendGraphRouteError(request, reply, error);
-    }
-  });
+  registerOperationAdapters(app,context.config,[{"method": "PUT", "url": "/api/v1/graph/view-state", "operation": "graph.view_state.save"}]);
+
 }
 
 function parseMode(value: string): ServerGraphProjectionMode {

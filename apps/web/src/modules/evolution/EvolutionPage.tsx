@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Copy as CopyIcon, GitBranch, Inbox as InboxIcon, Loader2, Pencil, Play, Plus, RefreshCw } from 'lucide-react'
 import { toast } from 'sonner'
-import { evolutionApi } from '../../api/client'
+import { EvolutionRunNotSelected, evolutionApi } from '../../api/client'
 import { useSpace } from '../../contexts/SpaceContext'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { errMsg } from '../../lib/utils'
@@ -441,13 +441,16 @@ export default function EvolutionPage() {
     setRunningTargetId(targetId)
     try {
       const result = await evolutionApi.runTarget(targetId, { agent_id: selectedAgentId, mode: 'dry_run' })
-      toast.success(result.proposal_ids.length > 0
-        ? t('evolution.run_complete_with_proposals', { count: result.proposal_ids.length })
-        : t('evolution.run_complete'))
+      // Queued with its Job; the Run list shows it as it executes.
+      toast.success(t('evolution.run_queued', { id: result.run_id.slice(-8) }))
       await load()
       await loadTargetSignals(targetId)
     } catch (e) {
-      toast.error(errMsg(e))
+      if (e instanceof EvolutionRunNotSelected) {
+        // Not a failure: the selector's recorded decision appears in the decision list.
+        toast.info(t('evolution.run_not_selected'))
+        await load()
+      } else toast.error(errMsg(e))
     } finally {
       setRunningTargetId(null)
     }

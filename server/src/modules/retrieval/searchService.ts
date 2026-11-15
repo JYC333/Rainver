@@ -249,6 +249,7 @@ export interface RetrievalSearchServiceOptions {
   // it per request with source policy snapshots before handing payload content to
   // rerank/synthesis providers.
   egressPolicy?: RetrievalEgressPolicy;
+  sendAuthority?: import("./egress/egressPolicy.js").RetrievalSendAuthority;
 }
 
 /**
@@ -265,6 +266,7 @@ export class RetrievalSearchService {
   private readonly synthesizer?: Synthesizer;
   private readonly synthesisConfig: SynthesisConfig;
   private readonly egressPolicy: RetrievalEgressPolicy;
+  private readonly sendAuthority?: import("./egress/egressPolicy.js").RetrievalSendAuthority;
 
   constructor(
     private readonly db: Queryable,
@@ -279,6 +281,7 @@ export class RetrievalSearchService {
     this.synthesizer = options.synthesizer;
     this.synthesisConfig = options.synthesisConfig ?? DEFAULT_SYNTHESIS_CONFIG;
     this.egressPolicy = options.egressPolicy ?? ALLOW_ALL_EGRESS;
+    this.sendAuthority = options.sendAuthority;
   }
 
   async search(input: SearchInput): Promise<RetrievalSearchResponse> {
@@ -374,6 +377,71 @@ export class RetrievalSearchService {
       total: items.length,
       ...(input.includeTrace ? { trace: trace as unknown as Record<string, unknown> } : {}),
     };
+  }
+
+  /**
+   * Release an already-computed result set again under the viewer's CURRENT
+   * access: every returned object goes back through the same single read gate
+   * as a live search (the domain adapter's revalidation, then the Source read
+   * policy over the projection's Source connections), and the released reads
+   * are audited (B11). Returns the `object_type:object_id` keys that may be
+   * released; anything else — unprojected, unregistered or no longer fully
+   * readable — must be withheld by the caller.
+   */
+  async revalidateForRelease(
+    input: Pick<SearchInput, "spaceId" | "viewerUserId" | "agentId">,
+    refs: readonly { object_type: RetrievalObjectType; object_id: string }[],
+    /** Null for a decision-only check that releases nothing (no read audit). */
+    auditReason: string | null,
+  ): Promise<Set<string>> {
+    const candidates: SearchCandidate[] = [];
+    const seen = new Set<string>();
+    for (const ref of refs) {
+      const key = `${ref.object_type}:${ref.object_id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const candidate = await this.loadProjectedTarget(input.spaceId, ref.object_type, ref.object_id);
+      if (candidate) {
+        // Projection policy lineage can be stale. Release uses the canonical
+        // lineage under the caller-owned closure locks, just as the read gate.
+        const canonical=await this.registry.adapterFor(ref.object_type)?.loadCanonical(this.db,input.spaceId,ref.object_type,ref.object_id);
+        if(canonical)candidates.push({...candidate,sourceConnectionIds:canonical.sourceConnectionIds});
+      }
+    }
+    const cache = await this.revalidateCandidates(candidates, input.viewerUserId, input.spaceId, undefined, input.agentId);
+    const released = candidates.filter((candidate) => cache.get(candidateKey(candidate)));
+    if (auditReason !== null) await this.recordReturnedReads(
+      input,
+      released.map((candidate) => ({ object_type: candidate.objectType, object_id: candidate.objectId })),
+      "search_hit",
+      auditReason,
+    );
+    return new Set(released.map(candidateKey));
+  }
+
+  /**
+   * The same read gate as `revalidateForRelease` — the adapter's revalidation,
+   * then the Source read policy (consent, archive, owner) — over each object's
+   * CANONICAL Source lineage only, with no projection dependency. For a stored
+   * result whose references need not be indexed (Context Ops reports, whose
+   * Memory/Knowledge findings come from canonical rows). Decision only: it
+   * releases and audits nothing itself. Returns the releasable keys.
+   */
+  async revalidateCanonicalForRelease(
+    input: Pick<SearchInput, "spaceId" | "viewerUserId" | "agentId">,
+    refs: readonly { object_type: RetrievalObjectType; object_id: string }[],
+  ): Promise<Set<string>> {
+    const candidates: ReleaseCandidate[] = [];
+    const seen = new Set<string>();
+    for (const ref of refs) {
+      const key = `${ref.object_type}:${ref.object_id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const canonical = await this.registry.adapterFor(ref.object_type)?.loadCanonical(this.db, input.spaceId, ref.object_type, ref.object_id);
+      if (canonical) candidates.push({ objectType: ref.object_type, objectId: ref.object_id, sourceConnectionIds: canonical.sourceConnectionIds });
+    }
+    const cache = await this.revalidateCandidates(candidates, input.viewerUserId, input.spaceId, undefined, input.agentId);
+    return new Set(candidates.filter((candidate) => cache.get(candidateKey(candidate))).map(candidateKey));
   }
 
   async explainTarget(input: ExplainInput): Promise<RetrievalExplainResponse | null> {
@@ -1603,7 +1671,7 @@ export class RetrievalSearchService {
         viewerUserId,
         query,
         rerankCandidates,
-        await this.egressPolicyForSourcePayload(spaceId, rerankCandidates),
+        await this.egressPolicyForSourcePayload(spaceId, windowed.map(({candidate, revalidated}) => ({objectType:candidate.objectType,objectId:candidate.objectId,...revalidated,sourceConnectionIds:candidate.sourceConnectionIds}))),
       );
     } catch {
       scores = null;
@@ -1617,7 +1685,7 @@ export class RetrievalSearchService {
   }
 
   private async revalidateCandidates(
-    candidates: readonly SearchCandidate[],
+    candidates: readonly ReleaseCandidate[],
     viewerUserId: string,
     spaceId: string,
     cache: Map<string, RevalidatedObject | null> = new Map(),
@@ -1626,7 +1694,7 @@ export class RetrievalSearchService {
   ): Promise<Map<string, RevalidatedObject | null>> {
     const byType = new Map<RetrievalObjectType, string[]>();
     const seen = new Set<string>();
-    const pending: SearchCandidate[] = [];
+    const pending: ReleaseCandidate[] = [];
     for (const candidate of candidates) {
       const key = candidateKey(candidate);
       if (cache.has(key) || seen.has(key)) continue;
@@ -1670,7 +1738,7 @@ export class RetrievalSearchService {
   }
 
   private async enforceSourceReadPolicy(
-    candidates: readonly SearchCandidate[],
+    candidates: readonly ReleaseCandidate[],
     viewerUserId: string,
     spaceId: string,
     agentId: string | null | undefined,
@@ -1700,13 +1768,14 @@ export class RetrievalSearchService {
 
   private async egressPolicyForSourcePayload(
     spaceId: string,
-    candidates: readonly { sourceConnectionIds?: readonly string[] }[],
+    candidates: readonly import("./egress/egressPolicy.js").RetrievalSendCandidate[],
   ): Promise<RetrievalEgressPolicy> {
     const sourceIds = uniqueSourceConnectionIds(candidates);
-    if (sourceIds.length === 0) return this.egressPolicy;
+    const policy = {...this.egressPolicy, ...(this.sendAuthority ? {authorizeSend:this.sendAuthority(candidates)} : {})};
+    if (sourceIds.length === 0) return policy;
     const snapshots = await loadSourcePolicySnapshots(this.db, spaceId, sourceIds);
     return {
-      ...this.egressPolicy,
+      ...policy,
       sourcePolicies: sourceEgressPoliciesForSnapshots(snapshots),
       payloadSourceConnectionIds: sourceIds,
     };
@@ -1772,6 +1841,9 @@ function countMoved(
   });
   return moved;
 }
+
+/** What the read gate needs from a candidate: its identity and Source lineage. */
+type ReleaseCandidate = Pick<SearchCandidate, "objectType" | "objectId" | "sourceConnectionIds">;
 
 function uniqueSourceConnectionIds(
   refs: readonly { sourceConnectionIds?: readonly string[] }[],

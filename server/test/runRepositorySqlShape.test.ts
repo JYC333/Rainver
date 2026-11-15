@@ -88,6 +88,42 @@ class RunCreateSqlShapeDb implements Queryable {
       };
       return { rows: [row as RunRecord as Row], rowCount: 1 };
     }
+    // Match the command before generic table reads: admission has correlated Session subqueries.
+    if (sql.includes("UPDATE runs") && sql.includes("status = 'running'")) {
+      const row: Partial<RunRecord> = {
+        id: String(params[1]),
+        space_id: "space-1",
+        agent_id: "agent-1",
+        agent_name: "Coding Reviewer",
+        agent_version_id: "version-1",
+        runtime_profile_id: "profile-1",
+        system_prompt: "You are Coding Reviewer.",
+        status: "running",
+        mode: "live",
+        prompt: "hello",
+        instruction: null,
+        project_folder_id: null,
+        session_id: null,
+        parent_run_id: null,
+        root_run_id: null,
+        run_group_id: "group-1",
+        delegation_id: null,
+        project_id: null,
+        runtime_key: "opencode",
+        model_provider_id: "provider-1",
+        model_override_json: { messages: [{ role: "user", content: "hello" }] },
+        runtime_profile_snapshot_json: {},
+        runtime_config_json: {},
+        required_sandbox_level: "none",
+        trigger_origin: "manual",
+        instructed_by_user_id: "user-1",
+        instructed_by_agent_id: null,
+        error_message: null,
+        started_at: String(params[2]),
+        ended_at: null,
+      };
+      return { rows: [row as RunRecord as Row], rowCount: 1 };
+    }
     if (
       sql.includes("FROM project_folders") ||
       sql.includes("FROM sessions") ||
@@ -135,41 +171,6 @@ class RunCreateSqlShapeDb implements Queryable {
         created_at: "2026-07-05T00:00:00.000Z",
         updated_at: "2026-07-05T00:00:00.000Z",
         visibility: "space_shared",
-      };
-      return { rows: [row as RunRecord as Row], rowCount: 1 };
-    }
-    if (sql.includes("UPDATE runs") && sql.includes("status = 'running'")) {
-      const row: Partial<RunRecord> = {
-        id: String(params[1]),
-        space_id: "space-1",
-        agent_id: "agent-1",
-        agent_name: "Coding Reviewer",
-        agent_version_id: "version-1",
-        runtime_profile_id: "profile-1",
-        system_prompt: "You are Coding Reviewer.",
-        status: "running",
-        mode: "live",
-        prompt: "hello",
-        instruction: null,
-        project_folder_id: null,
-        session_id: null,
-        parent_run_id: null,
-        root_run_id: null,
-        run_group_id: "group-1",
-        delegation_id: null,
-        project_id: null,
-        runtime_key: "opencode",
-        model_provider_id: "provider-1",
-        model_override_json: { messages: [{ role: "user", content: "hello" }] },
-        runtime_profile_snapshot_json: {},
-        runtime_config_json: {},
-        required_sandbox_level: "none",
-        trigger_origin: "manual",
-        instructed_by_user_id: "user-1",
-        instructed_by_agent_id: null,
-        error_message: null,
-        started_at: String(params[2]),
-        ended_at: null,
       };
       return { rows: [row as RunRecord as Row], rowCount: 1 };
     }

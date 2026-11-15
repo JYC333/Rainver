@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { POLICY_ACTION_REGISTRY, SYSTEM_ACTION_GATE_CLASSES, SYSTEM_ACTION_REGISTRY, SystemActionDefinitionSchema, systemActionInputJsonSchema, TaskInquiryThreadsPageSchema } from "../src/index.js";
+import { POLICY_ACTION_REGISTRY, SYSTEM_ACTION_GATE_CLASSES, SYSTEM_ACTION_REGISTRY, SystemActionDefinitionSchema, systemActionInputJsonSchema, TaskInquiryThreadsPageSchema, TaskUpdateAgentInputSchema } from "../src/index.js";
 import type { SystemActionDefinition } from "../src/index.js";
 
 describe("SYSTEM_ACTION_REGISTRY", () => {
@@ -362,4 +362,24 @@ it('keeps Agent Task controls reason-required without human completion overrides
   const d=SYSTEM_ACTION_REGISTRY.find(a=>a.id===id)!;
   expect(d.allowed_actor_types).toEqual(['agent']);expect(d.visibility.has('public_api')).toBe(false);
  }
+});
+
+
+it('exposes a bounded Task text edit contract for parent Tasks and subtasks',()=>{
+ const action=SYSTEM_ACTION_REGISTRY.find(action=>action.id==='task.update')!;
+ expect(action.execution).toEqual({kind:'command',tx:'core_owned'});
+ expect(action.input_schema.safeParse({task_id:'task',title:'  New title  '}).success).toBe(true);
+ expect(action.input_schema.safeParse({task_id:'child',description:null}).success).toBe(true);
+ for(const patch of [{},{title:''},{title:'  '},{title:null},{description:1},{status:'done'},{board_id:null}])
+   expect(action.input_schema.safeParse({task_id:'task',...patch}).success).toBe(false);
+ // One canonical action: a person's PATCH keeps the full contract; the Agent tool sees only text.
+ expect(SYSTEM_ACTION_REGISTRY.filter(a=>a.id==='task.update')).toHaveLength(1);
+ expect(action.allowed_actor_types).toEqual(['user','agent']);
+ expect(action.policy_action).toBe('task.content.update');
+ expect(action.input_schema.safeParse({task_id:'task',parent_task_id:'parent',assigned_agent_id:null}).success).toBe(true);
+ for(const patch of [{},{parent_task_id:'parent'},{assigned_agent_id:'a'},{status:'done'}])
+   expect(TaskUpdateAgentInputSchema.safeParse({task_id:'task',...patch}).success).toBe(false);
+ expect(TaskUpdateAgentInputSchema.safeParse({task_id:'child',description:null}).success).toBe(true);
+ const json=systemActionInputJsonSchema(action);
+ expect(Object.keys((json as {properties:object}).properties).sort()).toEqual(['description','task_id','title']);
 });

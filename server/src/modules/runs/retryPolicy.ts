@@ -1,6 +1,10 @@
 import { getRuntimeAdapterSpec } from "../runtimeAdapters/specs.js";
 
+// Emitted only after the old, exact Host launch has confirmed its exit.
+export const EXECUTION_CONTROLLER_LOST = "execution_controller_lost";
+
 const RETRYABLE_RUN_ERROR_CODES = new Set([
+  EXECUTION_CONTROLLER_LOST,
   "adapter_timeout",
   // A host daemon reports these two. Do not also list
   // `cli_adapter_timeout`, `cli_stall_timeout`, or
@@ -36,6 +40,9 @@ export function isRetryableRunErrorCode(errorCode: string): boolean {
 export const SUBSCRIPTION_QUOTA_EXHAUSTED = "subscription_quota_exhausted";
 
 export function retryTaskInstruction(reasonCode: string): string {
+  if (reasonCode === EXECUTION_CONTROLLER_LOST) {
+    return "Continue the task interrupted by a worker restart. First inspect the current workspace and completed actions; preserve prior progress. Do not replay completed side effects. If an action's outcome cannot be established, ask the person before repeating it. Follow current instructions and authorization; do not change model, funding or collaboration bounds.";
+  }
   return reasonCode === SUBSCRIPTION_QUOTA_EXHAUSTED
     ? "Continue the task interrupted by quota exhaustion. First inspect current workspace and completed actions; preserve prior progress. Do not replay completed side effects. If an action's outcome cannot be established, ask the person before repeating it. Follow current instructions and authorization; do not change model, funding or collaboration bounds."
     : "Re-attempt the original task and correct that failure; do not merely repeat the prior response.";

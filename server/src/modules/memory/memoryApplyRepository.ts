@@ -1,3 +1,4 @@
+import { assertPersonaRunNotIsolated, assertPersonaMemoryNotIsolated } from "./personaIsolation.js";
 /**
  * Memory proposal appliers.
  *
@@ -454,6 +455,14 @@ export class PgMemoryApplyRepository {
     }
   }
 
+  private async assertPersonaProposal(proposal: ApplyProposal, agentId: string | null): Promise<void> {
+    if (!agentId) throw new MemoryApplyError("persona must name its Agent");
+    const runIds = provenanceEntriesFromPayload(proposal.payload_json ?? {})
+      .filter(entry => entry.source_type === "run").map(entry => entry.source_id);
+    if (proposal.created_by_run_id) runIds.push(proposal.created_by_run_id);
+    await assertPersonaRunNotIsolated(this.db, proposal.space_id, agentId, [...new Set(runIds)]);
+  }
+
   private assertNoEgressContext(proposal: ApplyProposal): void {
     const payload = proposal.payload_json ?? {};
     // Same-space run proposals (created_by_run_id / source_run_id) are allowed.
@@ -480,6 +489,8 @@ export class PgMemoryApplyRepository {
     const memType = strOr(payload.memory_type) ?? "semantic";
     const scope = memoryScope(strOr(payload.target_scope) ?? strOr(payload.scope_type) ?? "user");
     const namespace = strOr(payload.target_namespace) ?? strOr(payload.namespace) ?? "user.default";
+
+    if (scope === "agent" && memType === PERSONA_MEMORY_TYPE) await this.assertPersonaProposal(proposal, strOr(payload.agent_id) ?? proposal.created_by_agent_id ?? null);
 
     const acting = String(proposal.created_by_user_id ?? userId);
     const entries = provenanceEntriesFromPayload(payload);
@@ -584,6 +595,10 @@ export class PgMemoryApplyRepository {
     }
     const namespace = strOr(payload.target_namespace) ?? old.namespace ?? "user.default";
     const memType = strOr(payload.memory_type) ?? old.memory_type;
+    if (scope === "agent" && memType === PERSONA_MEMORY_TYPE) {
+      await this.assertPersonaProposal(proposal, old.agent_id);
+      await assertPersonaMemoryNotIsolated(this.db, proposal.space_id, old.agent_id!, old.id);
+    }
     const rootId = old.root_memory_id ?? old.id;
 
     const entries = provenanceEntriesFromPayload(payload);
@@ -841,6 +856,10 @@ export class PgMemoryApplyRepository {
       // that crossed from one Agent to another would claim a continuity that
       // never happened — and could leave the first with no persona at all.
       throw new MemoryApplyError("that is another Agent's own memory, not yours to revise");
+    }
+    if (scope === "agent" && memoryType === PERSONA_MEMORY_TYPE) {
+      await assertPersonaRunNotIsolated(this.db, input.spaceId, input.agentId, [input.runId]);
+      if (old) await assertPersonaMemoryNotIsolated(this.db, input.spaceId, input.agentId, old.id);
     }
     const agentWrite = scope === "agent" ? this.resolveAgentWrite(input, memoryType, old) : null;
     // No subject comes from the command: the tool schemas have no such field,
@@ -1426,8 +1445,8 @@ export class PgMemoryApplyRepository {
      */
     agentId?: string,
   ): Promise<DirectWriteTarget | null> {
-    const locked = await this.db.query<{ id: string; created_by: string | null }>(
-      `SELECT id, created_by FROM memory_entries
+    const locked = await this.db.query<{ id: string; created_by: string | null; scope_type: string; memory_type: string; agent_id: string }>(
+      `SELECT id, created_by, scope_type, memory_type, agent_id FROM memory_entries
         WHERE id = $1 AND space_id = $2
           -- The person's own entries, and this Agent's own — never another
           -- Agent's, even one the same person owns: an agent-scope row is the
@@ -1440,6 +1459,9 @@ export class PgMemoryApplyRepository {
     );
     const owned = locked.rows[0];
     if (!owned) return null;
+    if (owned.scope_type === "agent" && owned.memory_type === PERSONA_MEMORY_TYPE) {
+      await assertPersonaMemoryNotIsolated(this.db, spaceId, owned.agent_id, memoryId);
+    }
     const found = await this.getActive(memoryId, spaceId);
     if (!found) return null;
     return { ...found, created_by: owned.created_by ?? "" };

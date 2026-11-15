@@ -95,7 +95,7 @@ describe('Agent attention durable read model',()=>{
     const base=await request();await changeReadState(db.pool,user,base);
     await db.pool.query(`UPDATE space_memberships SET status='revoked' WHERE user_id=$1`,[user]);
     expect((await page()).items).toHaveLength(0);
-    await expect(changeReadState(db.pool,user,{...base,state_version:1})).rejects.toMatchObject({statusCode:404});
+    await expect(changeReadState(db.pool,user,{...base,state_version:1})).rejects.toMatchObject({statusCode:403});
     await db.pool.query(`UPDATE space_memberships SET status='active' WHERE user_id=$1`,[user]);
     await db.pool.query(`DELETE FROM runs WHERE id=$1`,[base.identity.source_id]);expect((await page()).items).toHaveLength(0);
   });
@@ -105,7 +105,7 @@ describe('Agent attention durable read model',()=>{
       VALUES($1,'Other','active',$2,'system',now(),now())`,[other,`${other}@test.invalid`]);
     await db.pool.query(`UPDATE runs SET owner_user_id=$1`,[other]);expect((await page()).items).toHaveLength(0);
     expect((await page({scope:'all_visible'})).items[0]!.mine).toBe(false);
-    await expect(changeReadState(db.pool,user,{...base,space_id:randomUUID()})).rejects.toMatchObject({statusCode:404});
+    await expect(changeReadState(db.pool,user,{...base,space_id:randomUUID()})).rejects.toMatchObject({statusCode:403});
   });
 });
 
@@ -149,6 +149,7 @@ describe('visibility, grouping and HTTP contracts',()=>{
     await db.pool.query(`UPDATE runs SET owner_user_id=$2,access_level='summary',error_json='{"authorization_request_id":"private"}' WHERE id=$1`,[id,other]);
     const item=(await page({scope:'all_visible'})).items[0]!;
     expect(item.access_level).toBe('summary');expect(item.reasons).toEqual([]);
+    expect(item.unread_session_ids).toEqual([]);
     expect(item.runs[0]!.agent_name).toBeNull();
     expect(item.runs[0]!.turn_state).toBeNull();expect(item.read_states.every(s=>s.subject.kind==='run_result')).toBe(true);
   });
@@ -335,12 +336,15 @@ describe('read cursor across surfaces',()=>{
     const unread=async()=>(await page()).items[0]!.read_states.filter(r=>r.unread).map(r=>r.subject.kind==='message'&&r.subject.message_id);
     expect((await page()).items[0]!.identity).toEqual({kind:'task',source_id:task});
     expect((await unread()).sort()).toEqual([...replies].sort());
+    expect((await page()).items[0]!.unread_session_ids).toEqual([...sessions].sort());
     await recordViews(db.pool,user,{space_id:space,session_id:sessions[1]!,message_ids:[replies[1]!]});
     expect(await unread()).toEqual([replies[0]]);
+    expect((await page()).items[0]!.unread_session_ids).toEqual([sessions[0]]);
     await ownReply(sessions[1]!,later);
     expect(await unread()).toEqual([replies[0]]);
     await ownReply(sessions[0]!,later);
     expect(await unread()).toEqual([]);
+    expect((await page()).items[0]!.unread_session_ids).toEqual([]);
   });
   it.each([false,true])('view reports return only their committed versions for ordered manual unread, including Task-owned conversations (task=%s)',async taskOwned=>{
     const asking=await run(),session=await sessionWith(asking),message=randomUUID();
@@ -375,7 +379,7 @@ describe('read cursor across surfaces',()=>{
     const reopened=await recordViews(db.pool,user,{space_id:space,session_id:session,message_ids:[message]});
     expect(reopened).toMatchObject({read_count:1,read_states:[{subject:viewed.read_states[0]!.subject,state_version:3,unread:false,manual_unread:false}]});
     expect((await page()).items[0]!).toMatchObject({unread:false});
-    expect(await recordViews(db.pool,user,{space_id:randomUUID(),session_id:session,message_ids:[message]})).toEqual({read_count:0,read_states:[]});
+    await expect(recordViews(db.pool,user,{space_id:randomUUID(),session_id:session,message_ids:[message]})).rejects.toMatchObject({statusCode:403});
   });
 });
 
@@ -391,16 +395,16 @@ describe('Agent attention HTTP boundary',()=>{
       expect((await app.inject({method:'GET',url:`/api/v1/me/agent-attention/item?space_id=${space}&kind=run&source_id=${item.identity.source_id}`})).statusCode).toBe(200);
       expect((await app.inject({method:'GET',url:`/api/v1/me/agent-attention/item?space_id=${randomUUID()}&kind=run&source_id=${item.identity.source_id}`})).statusCode).toBe(404);
       const input={identity:item.identity,space_id:space,subject:item.read_states[0].subject,state_version:0,action:'read'};
-      expect((await app.inject({method:'PATCH',url:'/api/v1/me/agent-attention/read-state',payload:{...input,user_id:user}})).statusCode).toBe(422);
-      const patched=await app.inject({method:'PATCH',url:'/api/v1/me/agent-attention/read-state',payload:input});
+      expect((await app.inject({method:'PATCH',headers:{'idempotency-key':randomUUID()},url:'/api/v1/me/agent-attention/read-state',payload:{...input,user_id:user}})).statusCode).toBe(422);
+      const patched=await app.inject({method:'PATCH',headers:{'idempotency-key':randomUUID()},url:'/api/v1/me/agent-attention/read-state',payload:input});
       expect(patched.statusCode,patched.body).toBe(200);
-      const conflict=await app.inject({method:'PATCH',url:'/api/v1/me/agent-attention/read-state',payload:input});
-      expect(conflict.statusCode).toBe(409);expect(conflict.json().current.state_version).toBe(1);
+      const conflict=await app.inject({method:'PATCH',headers:{'idempotency-key':randomUUID()},url:'/api/v1/me/agent-attention/read-state',payload:input});
+      expect(conflict.statusCode).toBe(409);expect(conflict.json().error.metadata.current.state_version).toBe(1);
       const view={space_id:space,session_id:randomUUID(),message_ids:[randomUUID()]};
-      expect((await app.inject({method:'POST',url:'/api/v1/me/agent-attention/views',payload:{...view,user_id:user}})).statusCode).toBe(422);
-      expect((await app.inject({method:'POST',url:'/api/v1/me/agent-attention/views',payload:{...view,message_ids:[]}})).statusCode).toBe(422);
-      const viewed=await app.inject({method:'POST',url:'/api/v1/me/agent-attention/views',payload:view});
-      expect(viewed.statusCode,viewed.body).toBe(200);expect(viewed.json()).toEqual({read_count:0,read_states:[]});
+      expect((await app.inject({method:'POST',headers:{'idempotency-key':randomUUID()},url:'/api/v1/me/agent-attention/views',payload:{...view,user_id:user}})).statusCode).toBe(422);
+      expect((await app.inject({method:'POST',headers:{'idempotency-key':randomUUID()},url:'/api/v1/me/agent-attention/views',payload:{...view,message_ids:[]}})).statusCode).toBe(422);
+      const viewed=await app.inject({method:'POST',headers:{'idempotency-key':randomUUID()},url:'/api/v1/me/agent-attention/views',payload:view});
+      expect(viewed.statusCode,viewed.body).toBe(200);expect(viewed.json().data).toEqual({space_id:space,session_id:view.session_id,read_count:0,read_states:[]});
       for(const suffix of ['?limit=101','?user_id=x','?cursor=bad','?since=2026-01-01T00:00:00Z']) {
         expect((await app.inject({method:'GET',url:'/api/v1/me/agent-attention'+suffix})).statusCode).toBe(422);
       }
@@ -567,6 +571,7 @@ it('hides conversation-derived group titles after archival without hiding readab
     expect(after.statusCode, after.body).toBe(200);
     expect(after.json().items).toHaveLength(1);
     expect(after.json().items[0]).toMatchObject({ title: 'Agent work', identity: { kind: 'run', source_id: run } });
+    expect(after.json().items[0].unread_session_ids).toEqual([]);
     expect(after.body).not.toContain(marker);
     const item = await detail('run', run);
     expect(item.statusCode, item.body).toBe(200);

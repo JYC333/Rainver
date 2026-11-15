@@ -1,8 +1,10 @@
+import type {ReadingVersionRow} from './rows.js';
+import { EvolutionAssetRefusal } from "../../evolution/assetRefusal.js";
 import { readingMethodContext } from './methodContext.js';
 import { startProviderGeneration } from './providerGeneration.js';
 import { resolveRevisionMethod } from './revisionMethod.js';
 import { ReadingMethodGenerationSchema, type ReadingMethodGenerationView } from '@rainver/protocol';
-import { HttpError, withDbTransaction, withQueryableTransaction, type Pool, type Queryable, type SpaceUserIdentity } from '../../routeUtils/common.js';
+import { HttpError, withQueryableTransaction, type Queryable, type SpaceUserIdentity } from '../../routeUtils/common.js';
 import type { ServerConfig } from '../../../config.js';
 import { PgRunRepository } from '../../runs/repository.js';
 import { PgJobQueueRepository } from '../../jobs/repository.js';
@@ -27,14 +29,14 @@ async function ownedRun(db: Queryable, identity: SpaceUserIdentity, id: string) 
   return run;
 }
 const generationSql = `contract_snapshot_json->'workflow_input_json'->'reading_method_generation'`;
-export async function startReadingGeneration(db: Pool, identity: SpaceUserIdentity, raw: unknown) {
+export async function startReadingGeneration(db: Queryable, identity: SpaceUserIdentity, raw: unknown) {
   const parsed = ReadingMethodGenerationSchema.safeParse(raw);
-  if (!parsed.success) throw new HttpError(422, parsed.error.message);
+  if (!parsed.success) throw new EvolutionAssetRefusal(422, parsed.error.message);
   const input = parsed.data;
   assertSafeGoalMessage(input.description);
   if (!input.agent_id && !input.runtime_profile_id) return startProviderGeneration(db, identity, input);
-  if (!input.agent_id || !input.runtime_profile_id) throw new HttpError(422, 'Legacy execution requires both Agent and Profile');
-  return withDbTransaction(db, async tx => {
+  if (!input.agent_id || !input.runtime_profile_id) throw new EvolutionAssetRefusal(422, 'Legacy execution requires both Agent and Profile');
+  return withQueryableTransaction(db, async tx => {
   await tx.query(`SELECT pg_advisory_xact_lock(hashtextextended($1,0))`,[`prompt-generation:${identity.spaceId}:${identity.userId}`]);
     const asset = await readingAsset(tx, identity,true,input.target_key);
     await lockEvolutionAssets(tx, [asset.id]);
@@ -44,21 +46,21 @@ export async function startReadingGeneration(db: Pool, identity: SpaceUserIdenti
       ...identity,
       projectId: ctx.projectId
     }, null,input.target_key);
-    if (effective.frozen.version_id !== input.parent_version_id || effective.frozen.content_hash !== input.parent_content_hash) throw new HttpError(409, 'Effective method changed; refresh before generating');
-    const parent = (await tx.query(`SELECT * FROM evolvable_asset_versions WHERE id=$1 AND asset_id=$2`, [input.parent_version_id, asset.id])).rows[0];
+    if (effective.frozen.version_id !== input.parent_version_id || effective.frozen.content_hash !== input.parent_content_hash) throw new EvolutionAssetRefusal(409, 'Effective method changed; refresh before generating');
+    const parent = (await tx.query<ReadingVersionRow>(`SELECT * FROM evolvable_asset_versions WHERE id=$1 AND asset_id=$2`, [input.parent_version_id, asset.id])).rows[0];
     if (!parent || !(await canViewVersionScope(tx, identity, parent))) throw new HttpError(404, 'Parent method not found');
     await tx.query(`SELECT id FROM agents WHERE id=$1 AND space_id=$2 FOR SHARE`, [input.agent_id, identity.spaceId]);
     await tx.query(`SELECT id FROM agent_runtime_profiles WHERE id=$1 AND space_id=$2 AND agent_id=$3 FOR SHARE`, [input.runtime_profile_id, identity.spaceId, input.agent_id]);
     const option = (await new PgConversationBackendRepository(tx).listOptions(identity.spaceId, identity.userId, input.agent_id!)).find(p => p.runtime_profile_id === input.runtime_profile_id && p.usable !== false);
-    if (!option) throw new HttpError(409, 'Choose a usable owned Agent runtime');
+    if (!option) throw new EvolutionAssetRefusal(409, 'Choose a usable owned Agent runtime');
     if (!(await tx.query(`SELECT id FROM agents WHERE id=$1 AND space_id=$2 AND owner_user_id=$3 AND status='active'`, [input.agent_id, identity.spaceId, identity.userId])).rows.length) throw new HttpError(403, 'Use your own active Agent');
     const session = await resolveSessionConfig([], async () => [], option.session_config_options ?? []);
     const profileHash = await nativeProfileFingerprint(tx, input.runtime_profile_id!);
     if (input.retry_of) {
       const retry = await ownedRun(tx, identity, input.retry_of);
-      if ((generationOf(retry)!.target_key??READING_METHOD_KEY)!==(input.target_key??READING_METHOD_KEY) || generationOf(retry)!.item_id !== (input.item_id ?? null) || generationOf(retry)!.project_id !== ctx.projectId || !generationTerminal.has(retry.status)) throw new HttpError(409, 'Retry must name a finished generation for this result');
+      if ((generationOf(retry)!.target_key??READING_METHOD_KEY)!==(input.target_key??READING_METHOD_KEY) || generationOf(retry)!.item_id !== (input.item_id ?? null) || generationOf(retry)!.project_id !== ctx.projectId || !generationTerminal.has(retry.status)) throw new EvolutionAssetRefusal(409, 'Retry must name a finished generation for this result');
       const view = await readReadingGeneration(tx, identity, retry.id);
-      if (!['failed', 'degraded', 'cancelled', 'blocked', 'orphaned'].includes(view.status)) throw new HttpError(409, 'Only unsuccessful terminal generations may be retried');
+      if (!['failed', 'degraded', 'cancelled', 'blocked', 'orphaned'].includes(view.status)) throw new EvolutionAssetRefusal(409, 'Only unsuccessful terminal generations may be retried');
     }
     const revisionMethod = await resolveRevisionMethod(tx, identity, ctx.projectId);
     const inputKey = sha256Json([revisionMethod.version_id, revisionMethod.content_hash, identity.userId, {...input,retry_of:undefined}, ctx.projectId, ctx.authority, profileHash, session.selections]);
@@ -71,8 +73,8 @@ export async function startReadingGeneration(db: Pool, identity: SpaceUserIdenti
       active: number;
       daily: number;
     }>(`SELECT count(*) FILTER (WHERE status IN ('queued','running','waiting_review','waiting_user'))::int active,count(*) FILTER (WHERE created_at>now()-interval '1 day')::int daily FROM runs WHERE space_id=$1 AND instructed_by_user_id=$2 AND ${generationSql} IS NOT NULL`, [identity.spaceId, identity.userId])).rows[0]!;
-    if (counts.active) throw new HttpError(409, 'A reading-method generation is already running');
-    if (counts.daily >= 3) throw new HttpError(429, 'At most three reading-method generations per day');
+    if (counts.active) throw new EvolutionAssetRefusal(409, 'A reading-method generation is already running');
+    if (counts.daily >= 3) throw new EvolutionAssetRefusal(429, 'At most three reading-method generations per day');
     const prompt = `${revisionMethod.text}
 Return ONLY JSON with schema "${GENERATION_SCHEMA}", method (40..12000 characters), summary (1..1600 characters), and changes (1..8 strings, each 1..400 characters). The schema is code-owned.
 <revision_input>${JSON.stringify({ baseline_method: effective.text, description: input.description })}</revision_input>`;
@@ -213,14 +215,29 @@ export async function listReadingGenerations(db: Queryable, identity: SpaceUserI
   }>(`SELECT id FROM runs WHERE space_id=$1 AND instructed_by_user_id=$2 AND ${generationSql} IS NOT NULL AND (${generationSql}->>'item_id' IS NULL OR ${generationSql}->>'item_id'=$3) AND ${generationSql}->>'project_id' IS NOT DISTINCT FROM $4 AND COALESCE(${generationSql}->>'target_key','reading.project_investigation')=$5 ORDER BY created_at DESC,id DESC LIMIT 10`, [identity.spaceId, identity.userId, itemId, projectId,targetKey])).rows;
   return Promise.all(ids.map(r => readReadingGeneration(db, identity, r.id)));
 }
-export async function cancelReadingGeneration(db: Pool, config: ServerConfig, identity: SpaceUserIdentity, id: string) {
+/**
+ * The durable stop, in the caller's transaction: a provider task ends here; an
+ * Agent Run is marked cancelling and its process is stopped after commit
+ * (a stale cancelling Run is also swept). No process or Host work runs here.
+ */
+export async function requestReadingGenerationCancel(db: Queryable, identity: SpaceUserIdentity, id: string): Promise<{ run_id: string; stop_process: boolean }> {
   const run = await ownedRun(db, identity, id);
-  if(run.execution_kind==='provider_task'){if(!generationTerminal.has(run.status))await new PgRunRepository(db).markRunTerminal({run_id:id,space_id:identity.spaceId,status:'cancelled',completed_at:new Date().toISOString()});return readReadingGeneration(db,identity,id);}
-  if (!generationTerminal.has(run.status)) await (await import('../../runs/orchestrationFactory.js')).buildRunOrchestration(config).orchestration.cancelRun({
-    space_id: identity.spaceId,
-    run_id: id,
-    requested_by_user_id: identity.userId
-  });
+  if (generationTerminal.has(run.status)) return { run_id: id, stop_process: false };
+  const runs = new PgRunRepository(db), now = new Date().toISOString();
+  if (run.execution_kind === 'provider_task') {
+    await runs.markRunTerminal({ run_id: id, space_id: identity.spaceId, status: 'cancelled', completed_at: now });
+    return { run_id: id, stop_process: false };
+  }
+  await runs.markRunCancelling({ run_id: id, space_id: identity.spaceId, requested_at: now, reason: 'Reading method generation cancelled by its owner', requested_by_user_id: identity.userId });
+  return { run_id: id, stop_process: true };
+}
+/** Process stop after the cancellation intent committed; never inside a transaction. */
+export async function stopReadingRun(config: ServerConfig, identity: SpaceUserIdentity, runId: string): Promise<void> {
+  await (await import('../../runs/orchestrationFactory.js')).buildRunOrchestration(config).orchestration.cancelRun({ space_id: identity.spaceId, run_id: runId, requested_by_user_id: identity.userId });
+}
+export async function cancelReadingGeneration(db: Queryable, config: ServerConfig, identity: SpaceUserIdentity, id: string) {
+  const out = await withQueryableTransaction(db, tx => requestReadingGenerationCancel(tx, identity, id));
+  if (out.stop_process) await stopReadingRun(config, identity, id);
   return readReadingGeneration(db, identity, id);
 }
 export function registerReadingGenerationSettlement() {

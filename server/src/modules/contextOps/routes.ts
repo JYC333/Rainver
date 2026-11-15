@@ -1,16 +1,15 @@
+import {registerOperationAdapters} from '../systemActions/operations/routeAdapter.js';
 import type { FastifyInstance, FastifyReply } from "fastify";
 import * as protocol from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
-import { dbPool, intQuery, jsonBody, query, resolveIdentity, sendRouteError, HttpError, withDbTransaction } from "../routeUtils/common.js";
+import { dbPool, intQuery, query, resolveIdentity, sendRouteError, HttpError } from "../routeUtils/common.js";
 import { authRepositoryFromConfig } from "../auth/identity.js";
 import { readSpaceRetrievalSettings } from "../retrieval/settings.js";
 import { knowledgeRetrievalRegistry } from "../knowledge/retrievalAdapter.js";
 import { roleCanInitiateContextOpsScan, roleCanReviewSpaceOps, type SpaceRole } from "./reviewPolicy.js";
 import { isSpaceOwnerOrAdmin } from "../access/roles.js";
 import { ContextOpsService } from "./service.js";
-import { runContextReviewCycle } from "./reviewCycle.js";
-import { runContextObservationScan } from "./contextObservations.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   app.get("/api/v1/context-ops/summary", async (request, reply) => {
@@ -76,54 +75,10 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/context-ops/review-cycle/run", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const parsed = protocol.ContextReviewCycleRequestSchema.safeParse(jsonBody(request));
-      if (!parsed.success) throw new HttpError(422, validationMessage(parsed.error.issues));
-      const access = await requireSpaceContextOpsRole(context.config, identity, reply);
-      if (!access) return reply;
-      if (!access.canScan) {
-        throw new HttpError(403, "Requires space owner/admin role or enabled Context Ops member scan access");
-      }
-      if (parsed.data.review_scope === "space_ops" && !access.includeSpaceOpsReports) {
-        throw new HttpError(403, "space-wide Context Ops review is not enabled for this reviewer");
-      }
-      const result = await withDbTransaction(dbPool(context.config), async (client) =>
-        runContextReviewCycle(client, {
-          spaceId: identity.spaceId,
-          userId: identity.userId,
-          request: parsed.data,
-        }));
-      return reply.code(201).send(protocol.ContextReviewCycleResponseSchema.parse(result));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.post("/api/v1/context-ops/context-observations/scan", async (request, reply) => {
-    const identity = await resolveIdentity(context.config, request, reply);
-    if (!identity) return reply;
-    try {
-      const parsed = protocol.ContextOpsContextObservationScanRequestSchema.safeParse(jsonBody(request));
-      if (!parsed.success) throw new HttpError(422, validationMessage(parsed.error.issues));
-      const access = await requireSpaceContextOpsRole(context.config, identity, reply);
-      if (!access) return reply;
-      if (!access.canScan) {
-        throw new HttpError(403, "Requires space owner/admin role or enabled Context Ops member scan access");
-      }
-      const result = await withDbTransaction(dbPool(context.config), async (client) =>
-        runContextObservationScan(client, {
-          spaceId: identity.spaceId,
-          userId: identity.userId,
-          request: parsed.data,
-        }));
-      return reply.code(201).send(protocol.ContextOpsContextObservationScanResponseSchema.parse(result));
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
+  registerOperationAdapters(app,context.config,[
+    {method:'POST',url:'/api/v1/context-ops/review-cycle/run',operation:'context_ops.review_cycle.run'},
+    {method:'POST',url:'/api/v1/context-ops/context-observations/scan',operation:'context_ops.observations.scan'},
+  ]);
 }
 
 async function requireSpaceContextOpsRole(
@@ -158,11 +113,4 @@ async function requireSpaceContextOpsRole(
     isSpaceAdmin: isSpaceOwnerOrAdmin(role),
     canScan,
   };
-}
-
-function validationMessage(issues: Array<{ path: Array<string | number>; message: string }>): string {
-  const issue = issues[0];
-  if (!issue) return "Invalid request body";
-  const path = issue.path.length ? `${issue.path.join(".")}: ` : "";
-  return `${path}${issue.message}`;
 }

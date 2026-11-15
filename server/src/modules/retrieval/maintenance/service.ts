@@ -117,13 +117,13 @@ export class RetrievalMaintenanceService {
     // Over-fetch by one so truncation is visible without a second count query.
     const fetch = limit + 1;
 
-    const [duplicates, orphans, thin, stale, relations] = await Promise.all([
-      this.detectDuplicates(spaceId, objectTypes, fetch),
-      this.detectOrphans(spaceId, objectTypes, fetch),
-      this.detectThin(spaceId, objectTypes, fetch),
-      this.detectStale(spaceId, objectTypes, fetch),
-      this.detectRelationSuggestions(spaceId, objectTypes, fetch),
-    ]);
+    // The report worker joins one transaction connection; never queue queries
+    // concurrently on it (pg@9 rejects that use).
+    const duplicates = await this.detectDuplicates(spaceId, objectTypes, fetch);
+    const orphans = await this.detectOrphans(spaceId, objectTypes, fetch);
+    const thin = await this.detectThin(spaceId, objectTypes, fetch);
+    const stale = await this.detectStale(spaceId, objectTypes, fetch);
+    const relations = await this.detectRelationSuggestions(spaceId, objectTypes, fetch);
 
     // Revalidate every referenced object once, through the adapter gate.
     const refs = [
@@ -352,12 +352,10 @@ export class RetrievalMaintenanceService {
       sourceIdsByKey.set(`${row.object_type}:${row.object_id}`, ids);
       for (const id of ids) allSourceIds.add(id);
     }
-    const [snapshots, viewerSpaceRole] = allSourceIds.size
-      ? await Promise.all([
-          loadSourcePolicySnapshots(this.db, spaceId, [...allSourceIds]),
-          loadViewerSpaceRole(this.db, spaceId, viewerUserId),
-        ])
-      : [new Map(), null as string | null];
+    const snapshots = allSourceIds.size
+      ? await loadSourcePolicySnapshots(this.db, spaceId, [...allSourceIds]) : new Map();
+    const viewerSpaceRole = allSourceIds.size
+      ? await loadViewerSpaceRole(this.db, spaceId, viewerUserId) : null;
     const allowed = new Set<string>();
     for (const key of keys) {
       const ids = sourceIdsByKey.get(key) ?? [];

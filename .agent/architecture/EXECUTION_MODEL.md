@@ -102,6 +102,13 @@ natural-language failure classifier and no retry authority alongside
 moves the Run to `waiting_for_review`; explicit runtime-profile selections
 remain hard pins and therefore cannot be rerouted.
 
+Without an explicit `max_attempts`, the default allows two Agent execution
+attempts plus at most three confirmed `execution_controller_lost` recoveries
+(five physical attempts total). A Server replacement is not a runtime failure:
+recovery retains the previous eligible Profile and checks completed progress
+before continuing. Explicit attempt caps and aggregate cost caps still bound
+all attempts; the Supervisor remains the sole recovery authority.
+
 Interactive Chat and Room Runs may use bounded automatic retry for retryable
 failures, but an exhausted or non-retryable execution failure remains terminal
 so the conversation can publish a failure reply. It must not be converted into
@@ -134,6 +141,12 @@ materializer path. Chat/Room completion recovery only projects Runs that have a
 completed current-version finalization for the latest Attempt that is settled
 (`settled_at`): delegation reconciliation, the Supervisor decision and
 settlement all committed.
+
+A deferred Job keeps an explicit wakeup that moved `scheduled_at` after its
+current claim, so a handler returning an older hold deadline cannot overwrite a
+concurrent release. Deferral still refunds the claimed attempt. Pending and
+already-claimed Agent Jobs both become due when a workspace hold is released;
+the Operation's after-commit signal wakes local worker loops.
 
 **Job** — background system task (import, consolidation, backup, agent-run dispatch). Separate from Run. Job handlers create or dispatch Runs; jobs themselves are not product execution records.
 
@@ -1017,7 +1030,9 @@ verification recipe, baseline version, and source run; sensitive fixture data
 is sanitized and bounded before persistence.
 
 `POST /api/v1/evolution/assets/:assetId/versions/:versionId/evaluation-cases/:caseId/execute`
-requires a `candidate_run_id` and creates an `evolvable_asset_evaluation` job.
+requires a `candidate_run_id` and creates an `evolvable_asset_evaluation` job
+(core command `evolution.asset.evaluation.execute`: the queued evaluation run
+and the Job intent commit in the operation transaction under the asset lock).
 The worker re-reads that run's durable output after validating its visibility,
 terminal status, passed post-run evaluation, and exact candidate-version pin.
 It then evaluates candidate and baseline outputs with
@@ -1153,8 +1168,15 @@ Accepted proposals are applied through `ProposalApplyService`.
 **Unsupported apply types (remain pending-only):**
 - A proposal type with no registered applier fails closed on acceptance with `UnknownProposalApplierError` (422) and the proposal stays `pending`. Legacy capability install/update/enable/disable appliers are removed; migration `0004_remove_capability_layer` supersedes their pending proposals with a reason. Skill review and original-package binding retain their registered appliers.
 
-Automation manual and schedule-triggered fire queue runs through the existing
-runtime gates. The `/automations` UI supports agent-run, maintenance, and
+Automation manual and schedule-triggered fire commit single-attempt
+`automation_fire` Jobs through one domain admission/intent owner. The keyed
+manual core command commits intent/audit/receipt together; the scheduler commits
+intent and exact-slot advancement together. The existing worker invokes the
+target registry and current Run owners after rechecking configuration/version,
+people, permissions, autonomy and trusted claim; target transactions and actual
+external boundaries recheck them again. Started unknown work is never retried.
+See [Automations](../modules/automations.md) for the HTTP 202 and private result
+contract. Created Runs continue through the existing runtime gates. The `/automations` UI supports agent-run, maintenance, and
 versioned Workflow targets. Workflow targets carry `workflow_asset_key`,
 `workflow_resolution`, optional `workflow_version_id`, and `input_json`;
 scheduled Workflow targets are pinned for reproducibility. Each fire creates a
@@ -1211,3 +1233,53 @@ repositories. Host checkpoint order is persisted; a late reply cannot replace a
 newer workspace head. Runtime profile cache identity is Agent × workspace UUID,
 or Agent × integration-attempt UUID for bounded repair. Failed work is saved and
 kept private; terminal Run status alone never publishes changes.
+
+
+### Manual Source Job execution ownership
+
+`sourceDispatchExecution` retains its existing single-attempt start/receipt
+fence. Its callback now carries an invocation-scoped Job execution credential
+(`jobs/effectAuthority.ts`) through asynchronous preparation. Actual guarded
+Source fetch, provider embedding/rerank/chat HTTP and Host Source/Agent launch
+consume it with a claim-conditioned `UPDATE jobs` immediately before sending.
+This is the irreversible-start linearization point, on the same row that
+`cancelJob` and stuck reclaim transition; no DB transaction waits for a provider.
+The marker retains `source_dispatch=started` and adds `effect_started=true`.
+A cancellation/reclaim that wins first prevents the late worker's send. A start
+that wins first remains potentially indeterminate until the receipt; cancellation
+cannot retract I/O. Further boundaries still require the live claim. Reclaim
+settles a started dispatch failed/unknown even with unused attempts, never queues
+another physical attempt. Busy release cannot clear an effect-started marker.
+
+Host capacity queues capture the credential for the actual later launch; the
+pending entry reserves capacity while the admission write waits, and a replaced
+or cancelled launch never sends. Source broker callbacks entering from a socket
+also capture the credential. It is sealed when the handler exits. A denied boundary permanently marks this
+invocation as having lost execution: SDK error wrapping or retrieval degradation
+cannot convert it into a successful dispatch receipt. A durable Job
+handoff (`enqueue`/`ensureAgentRunJob`) consumes the credential on the enqueue
+transaction's client, holding the parent Job row until the downstream intent
+commits or rolls back. That intent is an admitted transfer to the existing Job/Run
+lifecycle, not a provider call inside a transaction. The credential grants no
+content, consent, approval, spend or secret authority and replaces none of those
+gates. Retrieval, recipe/custom requests, Goal preview, manual extraction and
+manual post-processing share this path; automatic Jobs keep their existing
+lifecycle. No new queue, retry engine, schema or migration is introduced.
+
+### Generic Job cancellation (`job.cancel`)
+
+`POST /api/v1/jobs/:jobId/cancel` is the formal adapter of the core
+`job.cancel` command (explicit Idempotency-Key, one policy decision, receipt
+in the same transaction). Only the Job's own requesting person in that Space
+may cancel it; other Jobs answer as not found. It keeps the queue's terminal
+contract: only `pending` or `claimed` Jobs, in the single status-guarded
+`cancelJob` statement, so a Job a worker has started (or that ended) is a
+deterministic 409 and keeps its state. For a Run-backed Job (`agent_run`,
+`provider_task_run`) the Run behind it is admitted as a terminal owner before
+the Job row lock and ends `cancelled` in the same transaction as the Job and
+its `status_change` event. Run finalization (Task settlement) runs after commit
+on the committed state; if the process stops first, the owed-finalization sweep
+completes it. A claimed Job's worker loses its claim-conditioned start; a Job
+whose irreversible effect already started keeps the existing outcome-unknown
+marker. This is not Research or deployment cancellation, which keep their own
+commands and semantics.

@@ -192,6 +192,25 @@ const CHAT = {
 };
 
 describe("provider invocation resilience", () => {
+  it.each([429, 503])("single-attempt chat does not retry, rotate or fall back after %s", async status => {
+    const store = makeStore({
+      p1: target("p1", [{member:"m1",key:"k1"},{member:"m2",key:"k2"}], {fallback_provider_ids:["p2"]}),
+      p2: target("p2", [{member:"m3",key:"k3"}]),
+    }, []);
+    const sends = scriptedHttp([{status}, {status:200}]);
+    await expect(completeProviderChat(store,"space-1",{...CHAT,provider_id:"p1",single_attempt:true,spend:{kind:"person",user_id:"user-1"}})).rejects.toBeInstanceOf(ProviderInvocationError);
+    expect(sends).toHaveLength(1);
+    expect(sends[0]!.key).toBe("k1");
+  });
+
+  it("single-attempt chat does not retry an unknown network failure", async () => {
+    const store = makeStore({p1:target("p1",[{member:"m1",key:"k1"},{member:"m2",key:"k2"}])},[]);
+    let sends=0;
+    __setProviderHttpClientForTests({fetch:async()=>{sends++;throw new TypeError("fetch failed");}});
+    await expect(completeProviderChat(store,"space-1",{...CHAT,provider_id:"p1",single_attempt:true,spend:{kind:"person",user_id:"user-1"}})).rejects.toBeInstanceOf(ProviderInvocationError);
+    expect(sends).toBe(1);
+  });
+
   it("refuses a Cohere embedding batch that returns fewer vectors than it was sent", async () => {
     // Results are matched to inputs by position. A batch short by one would
     // shift every later vector onto the neighbouring chunk, with the right
@@ -1630,4 +1649,21 @@ describe("rotation strategy ordering", () => {
     );
     expect(ordered.map((m) => m.position)).toEqual([1, 2, 0]);
   });
+});
+
+describe('single-attempt Think auxiliary invocations',()=>{
+ it.each(['text','embedding','rerank'] as const)('%s never retries a key or falls through provider/task chains after an ambiguous response',async kind=>{
+  const first=target('first',[{member:'a',key:'a'},{member:'b',key:'b'}],{provider_type:kind==='rerank'?'cohere':'openai',fallback_provider_ids:['fallback']}),fallback=target('fallback',[{member:'c',key:'c'}]);
+  const store=makeStore({first,fallback},[],{aux:[{provider_id:'first',model:'test'},{provider_id:'fallback',model:'test'}]});let sends=0;
+  __setProviderHttpClientForTests({fetch:async()=>{sends++;throw new TypeError('fetch failed');}});
+  const common={provider_id:'fallback',task:'aux',single_attempt:true as const,metering:{subject_user_id:'user-1'},spend:{kind:'person' as const,user_id:'user-1'}};
+  const invocation=kind==='text'?completeProviderText(store,'space-1',{...common,system:'System',user:'Question'}):kind==='embedding'?completeProviderEmbedding(store,'space-1',{...common,inputs:['Question']}):completeProviderRerank(store,'space-1',{...common,query:'Question',documents:['Document']});
+  await expect(invocation).rejects.toBeDefined();expect(sends).toBe(1);
+ });
+ it.each(['embedding','rerank'] as const)('%s never rotates or retries a rate-limited key in single-attempt mode',async kind=>{
+  const first=target('first',[{member:'a',key:'a'},{member:'b',key:'b'}],{provider_type:kind==='rerank'?'cohere':'openai'}),store=makeStore({first},[]);let sends=0;
+  __setProviderHttpClientForTests({fetch:async()=>{sends++;return new Response(JSON.stringify({error:{message:'rate limited'}}),{status:429,headers:{'content-type':'application/json'}});}});
+  const common={provider_id:'first',single_attempt:true as const,metering:{subject_user_id:'user-1'},spend:{kind:'person' as const,user_id:'user-1'}};
+  await expect(kind==='embedding'?completeProviderEmbedding(store,'space-1',{...common,inputs:['Question']}):completeProviderRerank(store,'space-1',{...common,query:'Question',documents:['Document']})).rejects.toBeDefined();expect(sends).toBe(1);
+ });
 });

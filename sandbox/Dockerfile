@@ -46,6 +46,9 @@ RUN pnpm install --frozen-lockfile \
     --filter @rainver/outbound-guard \
     --filter @rainver/host-daemon
 
+# Workspace library prebuild hooks resolve this shared helper from the repo root.
+COPY tools/typescript/prepareIncremental.mjs ./tools/typescript/
+
 COPY packages/protocol/tsconfig.json packages/protocol/tsconfig.build.json ./packages/protocol/
 COPY packages/protocol/src ./packages/protocol/src
 RUN pnpm --filter @rainver/protocol build

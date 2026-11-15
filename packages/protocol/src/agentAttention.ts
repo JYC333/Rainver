@@ -237,6 +237,8 @@ export const AgentWorkItemSchema = z.object({
   reasons: z.array(AgentAttentionReasonSchema).max(100),
   read_states: z.array(AgentAttentionReadStateSchema).max(100),
   unread: z.boolean(),
+  /** Authorized conversations with unread subjects, before child pagination. */
+  unread_session_ids: z.array(IdSchema).optional(),
   /** Business activity time; reading cannot extend the retention window. */
   last_activity_at: ISODateTimeSchema,
   /** All visible members before child pagination; never counts hidden members. */
@@ -338,3 +340,9 @@ export const AgentAttentionStreamFrameSchema = z.object({
   notices: z.array(AgentAttentionNoticeSchema).max(100),
 }).strict();
 export type AgentAttentionStreamFrame = z.infer<typeof AgentAttentionStreamFrameSchema>;
+
+
+export const ATTENTION_OPERATION_SCHEMAS={
+ 'attention.views.record':{input:AgentAttentionViewRequestSchema,output:AgentAttentionViewResultSchema.extend({space_id:IdSchema,session_id:IdSchema}).strict()},
+ 'attention.read_state.change':{input:AgentAttentionReadRequestSchema,output:z.object({space_id:IdSchema,identity:AgentWorkIdentitySchema,state:AgentAttentionReadStateSchema}).strict()},
+} as const;

@@ -1,7 +1,11 @@
+import {lockProjectAudience} from '../../projects/access.js';
+import {lockActivePerson} from '../../access/activePerson.js';
+import { SourceObjectRefusal } from "../sourceObjectErrors.js";
 import { assertSourceConnectionManageable } from "../sourceConnectionAccess.js";
+import { assertProjectWriterForMutation } from "../../projects/access.js";
 import type { CustomSourcePolicyEnvelope } from "@rainver/protocol";
 import type { ServerConfig } from "../../../config.js";
-import { HttpError, optionalString, withDbTransaction, type Pool, type SpaceUserIdentity } from "../../routeUtils/common.js";
+import { HttpError, optionalString, withQueryableTransaction, type Queryable, type SpaceUserIdentity } from "../../routeUtils/common.js";
 import { insertProposalRow } from "../../proposals/reviewPackets.js";
 import {
   HANDLER_VERSION_COLUMNS,
@@ -24,6 +28,9 @@ interface RepairableConnection {
   id: string;
   active_handler_version_id: string;
   repair_status: string;
+  status: string;
+  /** Every channel's id:status at admission; a pause or archive meanwhile is a change. */
+  channel_state: string;
 }
 
 /**
@@ -46,20 +53,36 @@ interface RepairableConnection {
  * `custom_source_policy_delta`/`custom_source_credentialed_source` proposal
  * types a fresh activation would use, not `custom_source_repair_activation`.
  */
+async function channelState(db: Queryable, spaceId: string, connectionId: string, lock = false): Promise<string> {
+  const rows = (await db.query<{ id: string; status: string }>(
+    `SELECT id, status FROM source_channels WHERE source_connection_id = $1 AND space_id = $2 ORDER BY id${lock ? " FOR UPDATE" : ""}`,
+    [connectionId, spaceId],
+  )).rows;
+  return rows.map((row) => `${row.id}:${row.status}`).join(",");
+}
+
 export class CustomSourceRepairService {
   private readonly createFlow: CustomSourceCreateFlowService;
 
   constructor(
-    private readonly pool: Pool,
+    private readonly pool: Queryable,
     private readonly config: ServerConfig,
   ) {
     this.createFlow = new CustomSourceCreateFlowService(pool, config);
   }
 
+  /** The pre-effect checks of a repair: a managed, repairable Custom Source with no repair in progress. */
+  async admitRepair(identity: SpaceUserIdentity, connectionId: string) {
+    const connection = await this.requireRepairableConnection(identity, connectionId);
+    if (connection.repair_status === "repair_pending") {
+      throw new SourceObjectRefusal(409, "A repair is already in progress for this Custom Source");
+    }
+  }
+
   async repairHandler(identity: SpaceUserIdentity, connectionId: string, body: Record<string, unknown>) {
     const connection = await this.requireRepairableConnection(identity, connectionId);
     if (connection.repair_status === "repair_pending") {
-      throw new HttpError(409, "A repair is already in progress for this Custom Source");
+      throw new SourceObjectRefusal(409, "A repair is already in progress for this Custom Source");
     }
     const activeVersion = await this.requireHandlerVersion(identity, connectionId, connection.active_handler_version_id);
     assertDeclarativeHandlerVersion(activeVersion);
@@ -116,6 +139,7 @@ export class CustomSourceRepairService {
 
     try {
       return await this.decideAndActivateOrPropose(identity, connectionId, {
+        admitted: connection,
         newVersion,
         activeVersion,
         activeEnvelope,
@@ -154,13 +178,19 @@ export class CustomSourceRepairService {
     identity: SpaceUserIdentity,
     connectionId: string,
     input: {
+      admitted: RepairableConnection;
       newVersion: { id: string };
       activeVersion: HandlerVersionRow;
       activeEnvelope: CustomSourcePolicyEnvelope;
       testOutcome: { version: { policy_envelope_json: unknown }; test_result: Record<string, unknown> };
     },
   ) {
-    const { newVersion, activeVersion, activeEnvelope, testOutcome } = input;
+    const { admitted, newVersion, activeVersion, activeEnvelope, testOutcome } = input;
+    // The external generate/test ran outside any transaction; its result may
+    // settle the Source only under the authority it was admitted with, held to
+    // this commit.
+    return withQueryableTransaction(this.pool, async (tx) => {
+    await this.lockRepairCommit(tx, identity, connectionId, admitted);
     const settings = await new PgCustomSourceHandlerRepository(this.pool, this.config).getSettings(identity);
     const newEnvelope = testOutcome.version.policy_envelope_json as CustomSourcePolicyEnvelope;
     const evaluation = evaluateCustomSourceActivation(newEnvelope, {
@@ -172,8 +202,8 @@ export class CustomSourceRepairService {
     });
 
     if (evaluation.withinEnvelope && settings.space.same_envelope_repair_auto_apply) {
-      await activateCustomSourceHandlerVersion(this.pool, identity, connectionId, newVersion.id, activeVersion.id, "draft");
-      const activated = await new PgCustomSourceHandlerRepository(this.pool, this.config).getHandlerVersion(
+      await activateCustomSourceHandlerVersion(tx, identity, connectionId, newVersion.id, activeVersion.id, "draft");
+      const activated = await new PgCustomSourceHandlerRepository(tx, this.config).getHandlerVersion(
         identity,
         connectionId,
         newVersion.id,
@@ -189,7 +219,7 @@ export class CustomSourceRepairService {
     }
 
     const fixtureComparison = { deltas: evaluation.deltas, test_result: testOutcome.test_result };
-    const created = await withDbTransaction(this.pool, async (client) => {
+    const created = await withQueryableTransaction(tx, async (client) => {
       let proposalType: string;
       let payload: Record<string, unknown>;
       let summary: string;
@@ -264,7 +294,7 @@ export class CustomSourceRepairService {
         [newVersion.id, identity.spaceId, proposal.id],
       );
       const row = updatedVersion.rows[0];
-      if (!row) throw new HttpError(409, "Handler version is no longer eligible for repair approval");
+      if (!row) throw new SourceObjectRefusal(409, "Handler version is no longer eligible for repair approval");
       return { proposal, version: row };
     });
 
@@ -274,6 +304,41 @@ export class CustomSourceRepairService {
       proposal_id: created.proposal.id,
       handler_version: handlerVersionOut(created.version),
     };
+    });
+  }
+
+  /**
+   * The repair's commit barrier, in the canonical closure order: the Source's
+   * Project audience (Project, Project members, users, Space memberships FOR
+   * SHARE), the caller's active user and membership and Project writer check,
+   * then the Source row FOR UPDATE. Under those locks it re-verifies what
+   * the worker was admitted against: the caller still manages the Source (and
+   * writes its Project), the Source is not deleted, paused or otherwise changed
+   * meanwhile, this repair still owns `repair_pending`, and the active version
+   * is the one tested against. A tested candidate never revives a Source that
+   * was stopped or taken out of the caller's hands while the test ran.
+   */
+  private async lockRepairCommit(db: Queryable, identity: SpaceUserIdentity, connectionId: string, admitted: RepairableConnection) {
+    const changed = () => new SourceObjectRefusal(409, "The Custom Source changed while its repair was tested; the repaired version was not applied");
+    const before = (await db.query<{ project_id: string | null }>(
+      `SELECT project_id FROM source_connections WHERE id = $1 AND space_id = $2`,
+      [connectionId, identity.spaceId],
+    )).rows[0];
+    if (!before) throw changed();
+    if (before.project_id) await lockProjectAudience(db,identity.spaceId,before.project_id);
+    await lockActivePerson(db,identity.spaceId,identity.userId);
+    if (before.project_id) await assertProjectWriterForMutation(db, identity.spaceId, before.project_id, identity.userId);
+    const current = (await db.query<{ project_id: string | null; status: string; repair_status: string; active_handler_version_id: string | null; deleted_at: unknown }>(
+      `SELECT project_id, status, repair_status, active_handler_version_id, deleted_at
+         FROM source_connections WHERE id = $1 AND space_id = $2 FOR UPDATE`,
+      [connectionId, identity.spaceId],
+    )).rows[0];
+    if (!current || current.deleted_at || current.project_id !== before.project_id) throw changed();
+    await assertSourceConnectionManageable(db, identity, connectionId);
+    if (current.status !== admitted.status || current.repair_status !== "repair_pending"
+      || current.active_handler_version_id !== admitted.active_handler_version_id) throw changed();
+    // Activation also sets the channel active: a channel paused or archived meanwhile is not revived.
+    if (await channelState(db, identity.spaceId, connectionId, true) !== admitted.channel_state) throw changed();
   }
 
   async rollbackHandler(identity: SpaceUserIdentity, connectionId: string, body: Record<string, unknown>) {
@@ -285,7 +350,7 @@ export class CustomSourceRepairService {
     if (!target) throw new HttpError(404, "No previous handler version available to roll back to");
     assertDeclarativeHandlerVersion(target);
     if (target.status !== "superseded" || !target.activated_at) {
-      throw new HttpError(409, "Rollback target must be a previously active (superseded) handler version");
+      throw new SourceObjectRefusal(409, "Rollback target must be a previously active (superseded) handler version");
     }
 
     await activateCustomSourceHandlerVersion(
@@ -320,8 +385,9 @@ export class CustomSourceRepairService {
       handler_kind: string;
       active_handler_version_id: string | null;
       repair_status: string;
+      status: string;
     }>(
-      `SELECT id, handler_kind, active_handler_version_id, repair_status
+      `SELECT id, handler_kind, active_handler_version_id, repair_status, status
          FROM source_connections
         WHERE space_id = $1 AND id = $2 AND deleted_at IS NULL`,
       [identity.spaceId, connectionId],
@@ -329,11 +395,11 @@ export class CustomSourceRepairService {
     const row = result.rows[0];
     if (!row) throw new HttpError(404, "Source connection not found");
     await assertSourceConnectionManageable(this.pool, identity, row.id);
-    if (row.handler_kind !== "generated_custom") throw new HttpError(422, "Source connection is not a Custom Source");
+    if (row.handler_kind !== "generated_custom") throw new SourceObjectRefusal(422, "Source connection is not a Custom Source");
     if (!row.active_handler_version_id) {
-      throw new HttpError(409, "Custom Source has no active handler version to repair or roll back");
+      throw new SourceObjectRefusal(409, "Custom Source has no active handler version to repair or roll back");
     }
-    return { id: row.id, active_handler_version_id: row.active_handler_version_id, repair_status: row.repair_status };
+    return { id: row.id, active_handler_version_id: row.active_handler_version_id, repair_status: row.repair_status, status: row.status, channel_state: await channelState(this.pool, identity.spaceId, row.id) };
   }
 
   private async requireHandlerVersion(

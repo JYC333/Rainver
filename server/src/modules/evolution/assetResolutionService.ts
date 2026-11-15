@@ -1,3 +1,4 @@
+import { EvolutionAssetRefusal } from "./assetRefusal.js";
 import { HttpError, type Queryable } from "../routeUtils/common.js";
 import { assetAllowsUserScope, canReadAssetOwnerScope, type EvolvableAssetAccessRow } from "./assetAccess.js";
 
@@ -77,14 +78,14 @@ export async function resolveEvolvableAssetVersion(
   const assetRow = await firstReadableAssetForResolution(db, input, asset.rows);
   if (!assetRow) throw new HttpError(404, `No active evolvable asset registered for asset_key '${input.assetKey}'`);
   if (assetRow.asset_key !== input.assetKey) {
-    throw new HttpError(422, `asset_id does not reference asset_key '${input.assetKey}'`);
+    throw new EvolutionAssetRefusal(422, `asset_id does not reference asset_key '${input.assetKey}'`);
   }
   if (input.assetType && assetRow.asset_type !== input.assetType) {
-    throw new HttpError(422, `asset_key '${input.assetKey}' is asset_type '${assetRow.asset_type}', not '${input.assetType}'`);
+    throw new EvolutionAssetRefusal(422, `asset_key '${input.assetKey}' is asset_type '${assetRow.asset_type}', not '${input.assetType}'`);
   }
   const assetId = assetRow.id;
   if (input.allowUserPin && !input.userId) {
-    throw new HttpError(422, "allowUserPin requires userId");
+    throw new EvolutionAssetRefusal(422, "allowUserPin requires userId");
   }
   const allowUserPin = Boolean(input.allowUserPin && input.userId && assetAllowsUserScope(assetRow, input.userId));
   if (input.allowUserPin && input.userId && !allowUserPin) {
@@ -95,10 +96,10 @@ export async function resolveEvolvableAssetVersion(
   if (input.explicitVersionId) {
     const version = await versionContent(db, assetId, input.explicitVersionId, { approvedOnly: true });
     if (!version) {
-      throw new HttpError(422, "explicit_version_id must reference an approved version of this asset");
+      throw new EvolutionAssetRefusal(422, "explicit_version_id must reference an approved version of this asset");
     }
     if (!canUseVersionForResolution(version, resolutionInput)) {
-      throw new HttpError(422, "explicit_version_id must reference an approved version visible to this resolution scope");
+      throw new EvolutionAssetRefusal(422, "explicit_version_id must reference an approved version visible to this resolution scope");
     }
     trace.push(`explicit_override:${version.id}`);
     return resolved(assetId, version, trace, null);
@@ -187,7 +188,7 @@ async function resolveViaPin(
   if (!pinRow) return null;
   const version = await versionContent(db, assetId, pinRow.version_id, { approvedOnly: true });
   if (!version || !canUseVersionForResolution(version, input)) {
-    throw new HttpError(422, `Active ${scopeType} pin references a missing, non-approved, or non-visible asset version`);
+    throw new EvolutionAssetRefusal(422, `Active ${scopeType} pin references a missing, non-approved, or non-visible asset version`);
   }
   trace.push(`${scopeType}_pin:${version.id}`);
   return version;

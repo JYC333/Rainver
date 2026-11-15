@@ -1,3 +1,9 @@
+import {publicRoom} from './repository.js';
+import { lockProjectAudience } from "../projects/access.js";
+import { PgConversationExecutionContextRepository } from "../sessions/executionContextRepository.js";
+import { PgConversationBackendRepository } from "../sessions/conversationBackendRepository.js";
+import { validateSessionConfig } from "../sessions/sessionConfig.js";
+import { roomAgentGrantIssuerSql } from "./agentUsageSql.js";
 import type { RoomAgentPresetRequest, RoomDetail } from "@rainver/protocol";
 import { RoomMutationError } from "./roomMutationError.js";
 import { randomUUID } from "node:crypto";
@@ -24,6 +30,7 @@ import {
   type RoomInvitationRecord,
 } from "./rosterRepository.js";
 import { listRoomAgentPresets, roomAgentPresetById } from "./presets.js";
+import { PgProjectAgentRepository } from "../projects/projectAgents.js";
 import { PgHostThreadRepository } from "../hosts/threadRepository.js";
 import { sendPendingManagedWorkspaceArchive } from "../hosts/managedWorkspaceOperations.js";
 import { PgSessionRepository } from "../sessions/repository.js";
@@ -47,6 +54,7 @@ export class RoomRosterService {
   async listAgentCandidates(identity: RoomIdentity, roomId: string, input: {
     limit: number;
     offset: number;
+    q?: string | null;
   }) {
     const room = await this.requireRoomMember(identity, roomId);
     const candidates = await new PgRoomRosterRepository(this.pool).listAgentCandidates({
@@ -55,6 +63,7 @@ export class RoomRosterService {
       room_id: room.id,
       limit: input.limit,
       offset: input.offset,
+      q: input.q ?? null,
     });
     return {
       agents: candidates.items,
@@ -82,6 +91,12 @@ export class RoomRosterService {
         lock: true,
       });
       if (!agent) throw new HttpError(404, "Agent not found in this Room's Project");
+      // Sharing execution is an owner decision; the source Project ACL stays intact.
+      const isolated = Boolean(agent.access_project_id && agent.access_project_id !== room.project_id);
+      const requiresGrant = agent.visibility !== "space_shared" || isolated;
+      if (isolated && agent.owner_user_id !== identity.userId) {
+        throw new HttpError(404, "Agent not found in this Room's Project");
+      }
       if (agent.agent_kind === "system_assistant") {
         throw new RoomMutationError(409, "The managed Room Assistant cannot be added as a specialist");
       }
@@ -94,9 +109,24 @@ export class RoomRosterService {
       if (member?.role === "manager") {
         throw managedRoomAgentImmutable();
       }
-      // Re-adding an already active specialist is a state-idempotent no-op.
-      // In particular, it must not invalidate pending invitation snapshots.
-      if (member?.status === "active") {
+      // Re-adding an already active specialist leaves the roster as it is: no
+      // roster_revision bump, so pending invitation snapshots stay valid. It
+      // still completes the Project link, which a removal from the Project's
+      // list (or a Room roster from before links existed) can have left
+      // missing. An explicit restricted-Agent confirmation instead refreshes
+      // the exact current Room audience below (including newly enrolled mainline members).
+      // Linking follows the first add's rule — a private Agent only
+      // by its owner — so a Room grant never becomes a Project link.
+      if (member?.status === "active" && (!requiresGrant || input.confirm_room_share !== true)) {
+        if (requiresGrant && agent.owner_user_id !== identity.userId) {
+          throw new HttpError(404, "Agent not found in this Room's Project");
+        }
+        await new PgProjectAgentRepository(client).upsertActive({
+          spaceId: identity.spaceId,
+          projectId: room.project_id,
+          agentId: agent.id,
+          userId: identity.userId,
+        });
         const restoreTarget = input.restore_workspace === true
           ? await findManagedWorkspaceRestoreTarget(client, identity.spaceId, agent.id, room.id, identity.userId)
           : null;
@@ -104,13 +134,13 @@ export class RoomRosterService {
       }
       const activeUsers = await repository.activeMemberIds(identity.spaceId, room.id);
       const requestedGrantees = uniqueIds(input.share_private_with_member_ids ?? []);
-      if (agent.visibility !== "space_shared") {
+      if (requiresGrant) {
         if (agent.owner_user_id !== identity.userId) {
           throw new HttpError(404, "Agent not found in this Room's Project");
         }
         const requiredGrantees = activeUsers.filter((userId) => userId !== identity.userId).sort();
         if (!sameIds(requestedGrantees, requiredGrantees)
-          || (requiredGrantees.length > 0 && input.confirm_room_share !== true)) {
+          || ((requiredGrantees.length > 0 || isolated) && input.confirm_room_share !== true)) {
           throw new RoomMutationError(409, "Confirm Room-only sharing for the displayed private-Agent members", {
             code: "private_agent_share_confirmation_required",
             detail: "This private Agent stays private outside the Room. Confirm the exact Room members who will receive a Room-only grant.",
@@ -124,6 +154,16 @@ export class RoomRosterService {
         room_id: room.id,
         agent_id: agent.id,
       });
+      // A Room's Agents are the Project's Agents: adding one from the Room
+      // completes the Project link in the same transaction. The link shares
+      // nothing — a private Agent stays readable only by those its own ACL
+      // (and this Room's explicit grants, inside this Room) admits.
+      await new PgProjectAgentRepository(client).upsertActive({
+        spaceId: identity.spaceId,
+        projectId: room.project_id,
+        agentId: agent.id,
+        userId: identity.userId,
+      });
       if (input.restore_workspace === true) {
         restoreTarget = await findManagedWorkspaceRestoreTarget(
           client,
@@ -133,8 +173,8 @@ export class RoomRosterService {
           identity.userId,
         );
       }
-      if (agent.visibility !== "space_shared") {
-        for (const userId of requestedGrantees) {
+      if (requiresGrant) {
+        for (const userId of uniqueIds([...requestedGrantees, ...(isolated ? [identity.userId] : [])])) {
           await repository.grantPrivateAgent({
             space_id: identity.spaceId,
             room_id: room.id,
@@ -233,6 +273,12 @@ export class RoomRosterService {
         room_id: room.id,
         agent_id: agent.id,
       });
+      await new PgProjectAgentRepository(client).upsertActive({
+        spaceId: identity.spaceId,
+        projectId: room.project_id,
+        agentId: agent.id,
+        userId: identity.userId,
+      });
       for (const userId of activeUsers.filter((userId) => userId !== identity.userId)) {
         await roster.grantPrivateAgent({
           space_id: identity.spaceId,
@@ -258,6 +304,8 @@ export class RoomRosterService {
       });
       if (!member) throw new HttpError(404, "Room Agent member not found");
       if (member.role === "manager") throw managedRoomAgentImmutable();
+      await client.query(`UPDATE session_conversation_backends b SET participating=false,updated_at=clock_timestamp()
+        FROM sessions s WHERE b.space_id=$1 AND b.agent_id=$3 AND b.session_id=s.id AND s.space_id=$1 AND s.room_id=$2 AND b.participating`,[identity.spaceId,room.id,agentId]);
       const threadRepository = new PgHostThreadRepository(client);
       const closedThreads = await threadRepository.closeConversationAgentForRoom(identity.spaceId, room.id, agentId);
       // Every closed thread with a host, not only the managed-workspace ones:
@@ -551,7 +599,7 @@ export class RoomRosterService {
             AND approval.status='pending' AND invitation.status='pending'
             AND invitation.expires_at > now()
             AND room.status='active'
-            AND agent.status='active' AND agent.visibility <> 'space_shared'
+            AND agent.status='active' AND (agent.visibility <> 'space_shared' OR agent.access_project_id<>room.project_id)
             AND ${projectReadAccessSql("project.space_id", "project.id", "$2")}
           ORDER BY invitation.expires_at ASC, invitation.created_at ASC, approval.agent_id ASC
           LIMIT $3 OFFSET $4`,
@@ -569,7 +617,7 @@ export class RoomRosterService {
           WHERE approval.space_id=$1 AND approval.owner_user_id=$2
             AND approval.status='pending' AND invitation.status='pending'
             AND invitation.expires_at > now() AND room.status='active'
-            AND agent.status='active' AND agent.visibility <> 'space_shared'
+            AND agent.status='active' AND (agent.visibility <> 'space_shared' OR agent.access_project_id<>room.project_id)
             AND ${projectReadAccessSql("project.space_id", "project.id", "$2")}`,
         [identity.spaceId, identity.userId],
       ),
@@ -583,6 +631,14 @@ export class RoomRosterService {
   }) {
     try {
       return await withQueryableTransaction(this.pool, async (client) => {
+        // Account disable locks its user before revoking grants/invitations.
+        // Pin all approval owners first, so it cannot interleave with activation.
+        const issuers = await client.query<{ owner_user_id: string }>(
+          `SELECT DISTINCT owner_user_id FROM room_invitation_agent_approvals
+            WHERE space_id=$1 AND invitation_id=$2 ORDER BY owner_user_id`, [identity.spaceId, invitationId],
+        );
+        const lockedOwners = uniqueIds([identity.userId, ...issuers.rows.map(row => row.owner_user_id)]).sort();
+        await client.query(`SELECT id FROM users WHERE id=ANY($1::varchar[]) ORDER BY id FOR SHARE`, [lockedOwners]);
         // Every invitation mutation takes the Room lock before the invitation
         // lock. This matches inviteUser and prevents Room↔invitation deadlocks
         // under concurrent approvals and invitations.
@@ -596,6 +652,9 @@ export class RoomRosterService {
         });
         if (!invitation || invitation.room_id !== roomId) throw new HttpError(404, "Room invitation not found");
         const approvals = await roster.listApprovals(identity.spaceId, invitation.id, true);
+        if (approvals.some(approval => !lockedOwners.includes(approval.owner_user_id))) {
+          throw new HttpError(409, "Invitation ownership changed; read again");
+        }
         await assertActiveSpaceUser(client, identity.spaceId, identity.userId);
         await assertProjectReadable(client, identity.spaceId, room.project_id, identity.userId);
         const isAuthorized = invitation.invited_by_user_id === identity.userId
@@ -808,6 +867,8 @@ export class RoomRosterService {
     await assertActiveSpaceUser(client, identity.spaceId, invitation.invitee_user_id);
     await assertProjectReadable(client, identity.spaceId, room.project_id, invitation.invitee_user_id);
     const roster = new PgRoomRosterRepository(client);
+    await client.query(`SELECT a.id FROM agents a JOIN room_agent_members m ON m.space_id=a.space_id AND m.agent_id=a.id
+      WHERE m.space_id=$1 AND m.room_id=$2 AND m.status='active' ORDER BY a.id FOR SHARE OF a`, [identity.spaceId, room.id]);
     const currentPrivate = await roster.listPrivateRoster({ space_id: identity.spaceId, room_id: room.id });
     const currentIds = currentPrivate.map((agent) => agent.agent_id).sort();
     const approvedIds = approvals.map((approval) => approval.agent_id).sort();
@@ -822,6 +883,21 @@ export class RoomRosterService {
         invitation_id: invitation.id,
         detail: "The active private specialist roster changed while this invitation was pending.",
       });
+    }
+    for (const agent of currentPrivate) {
+      const valid = await client.query(
+        `SELECT 1 FROM agents a JOIN rooms r ON r.space_id=a.space_id AND r.id=$4
+          WHERE a.space_id=$1 AND a.id=$2 AND a.owner_user_id=$3 AND a.status='active'
+            AND EXISTS (SELECT 1 FROM users u JOIN space_memberships sm ON sm.user_id=u.id
+              WHERE u.id=a.owner_user_id AND u.status='active' AND sm.space_id=a.space_id AND sm.status='active')
+            AND ${roomAgentGrantIssuerSql("a", "r")}`,
+        [identity.spaceId, agent.agent_id, agent.owner_user_id, room.id],
+      );
+      if (!valid.rows.length) {
+        throw new RoomMutationError(409, "The Agent owner can no longer authorize this invitation; recreate it", {
+          code: "invitation_snapshot_stale", invitation_id: invitation.id,
+        });
+      }
     }
     await client.query(
       `INSERT INTO room_user_members (
@@ -919,12 +995,38 @@ export class RoomRosterService {
     }
   }
 
+  async saveConversationDefaults(identity: RoomIdentity, roomId: string, defaults: import("@rainver/protocol").RoomConversationDefault[], expectedRevision: number) {
+    return withQueryableTransaction(this.pool,async tx=>{
+      const visible=await new PgRoomRepository(tx).getVisibleRoom(identity.spaceId,identity.userId,roomId);
+      if(!visible)throw new HttpError(404,"Room not found");
+      await lockProjectAudience(tx,identity.spaceId,visible.project_id);
+      return new RoomRosterService(tx).withRoomWriter(identity,roomId,async (db,room)=>{
+      if(room.roster_revision!==Number(expectedRevision))throw new RoomMutationError(409,"Room defaults changed; refresh and retry");
+      if(new Set(defaults.map(item=>item.agent_id)).size!==defaults.length) throw new RoomMutationError(422,"Each Agent may have only one Room default");
+      const roster=await new PgRoomRepository(db).listAgentMembers(identity.spaceId,roomId,identity.userId);
+      for(const item of defaults){
+        const member=roster.find(member=>member.agent_id===item.agent_id);
+        if(!member || member.role==='manager'&&!item.participating) throw new RoomMutationError(422,"Keep the Room manager and select active Room Agents");
+        if(!await new PgConversationExecutionContextRepository(db).canAgentParticipate({id:'',space_id:identity.spaceId,room_id:roomId,project_id:room.project_id,project_folder_id:room.project_folder_id},item.agent_id,identity.userId)) throw new HttpError(403,"Agent use is not authorized in this Room");
+        if(item.runtime_profile_id){
+          const option=(await new PgConversationBackendRepository(db).listOptions(identity.spaceId,identity.userId,item.agent_id,room.project_id)).find(option=>option.runtime_profile_id===item.runtime_profile_id);
+          if(!option || option.usable===false) throw new RoomMutationError(409,"Room default runtime is unavailable to you");
+          validateSessionConfig(item.session_config,option.session_config_options??[]);
+        } else if(item.session_config.length) throw new RoomMutationError(422,"Choose a runtime before saving model defaults");
+      }
+      await db.query(`UPDATE rooms SET conversation_defaults_json=$3::jsonb,roster_revision=roster_revision+1,updated_at=now() WHERE space_id=$1 AND id=$2`,[identity.spaceId,roomId,JSON.stringify([...(room.conversation_defaults_json??[]).filter(item=>!defaults.some(patch=>patch.agent_id===item.agent_id)),...defaults])]);
+      });
+    });
+  }
+
   private async withRoomWriter<T>(
     identity: RoomIdentity,
     roomId: string,
     work: (client: Queryable, room: RoomRecord) => Promise<T>,
   ): Promise<T> {
     return withQueryableTransaction(this.pool, async (client) => {
+      const actor = await client.query(`SELECT id FROM users WHERE id=$1 AND status='active' FOR SHARE`, [identity.userId]);
+      if (!actor.rows.length) throw new HttpError(404, "Room not found in this space");
       const room = await new PgRoomRepository(client).getVisibleRoom(identity.spaceId, identity.userId, roomId, true);
       if (!room) throw new HttpError(404, "Room not found in this space");
       try {
@@ -1002,7 +1104,7 @@ export class RoomRosterService {
     const room = await repository.getVisibleRoom(identity.spaceId, identity.userId, roomId);
     if (!room) throw new HttpError(404, "Room not found in this space");
     return {
-      room,
+      room:publicRoom(room),
       user_members: await repository.listUserMembers(identity.spaceId, room.id),
       agent_members: await repository.listAgentMembers(identity.spaceId, room.id, identity.userId),
       viewer_can_write: await canWriteProject(client, identity.spaceId, room.project_id, identity.userId),

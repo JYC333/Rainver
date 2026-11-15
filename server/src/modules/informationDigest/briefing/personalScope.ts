@@ -1,5 +1,4 @@
 import type { Queryable } from "../../routeUtils/common.js";
-import { canReadProject } from "../../projects/access.js";
 import { goalCollectionReadableSql } from "../../sources/goals/itemVisibility.js";
 import { ReadingPreferences } from "../readingPreferences.js";
 import { contentChangedInWindowSql, everyReader, hydrateCandidates, liveScopeMembers, sharedItems, type CandidateSignal } from "./candidates.js";
@@ -32,11 +31,7 @@ const PROJECT_LABEL = (project: string, what: string) => `'Project "' || left(${
 export function personalBriefingScope(spaceId: string, userId: string): BriefingScopeAdapter {
   const audience = [userId];
   /** Projects this reader opted into their Reading and may read now. */
-  const optedProjects = async (db: Queryable) => {
-    const enabled = await new ReadingPreferences(db).enabled({ spaceId, userId });
-    const readable = await Promise.all(enabled.map(async (projectId) => (await canReadProject(db, spaceId, projectId, userId)) ? projectId : null));
-    return readable.filter((projectId): projectId is string => Boolean(projectId));
-  };
+  const optedProjects = (db: Queryable) => new ReadingPreferences(db).readableEnabled({ spaceId, userId });
   /**
    * The Projects this reader chose for their Reading and that still exist,
    * whether or not they may read them today: losing access is not leaving.

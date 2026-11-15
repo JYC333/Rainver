@@ -17,8 +17,27 @@ describe('host capability normalization', () => {
     expect(current.execution_workspaces).toEqual({ version: 2, reclaim: 4 })
   })
 
-  it.each([{ version: 3 }, { version: 2, reclaim: 5 }])('refuses unsupported workspace protocols %j', offered => {
+  it.each([1, 2, 3, 4, 5, 6, 7, 8])('preserves additive workspace reclamation level %s', reclaim => {
+    const offered = { version: 2, reclaim }
+    expect(normalizeHostCapabilities({ execution_workspaces: offered }).execution_workspaces).toEqual(offered)
+  })
+
+  it.each([{ version: 3 }, { version: '2' }, {}])('refuses unsupported execution protocols %j', offered => {
     expect(normalizeHostCapabilities({ execution_workspaces: offered }).execution_workspaces).toBeUndefined()
+  })
+
+  it.each([
+    { reclaim: 0, shared_review: 1, preserve_source: 1, lifecycle: 1 },
+    { reclaim: 1.5, shared_review: 1, preserve_source: 1, lifecycle: 1 },
+    { reclaim: 2147483648, shared_review: 1, preserve_source: 1, lifecycle: 1 },
+    { reclaim: '7', shared_review: 1, preserve_source: 1, lifecycle: 1 },
+    { reclaim: 7, shared_review: 2, preserve_source: 1, lifecycle: 1 },
+    { reclaim: 7, shared_review: 1, preserve_source: 2, lifecycle: 1 },
+    { reclaim: 7, shared_review: 1, preserve_source: 1, lifecycle: 2 },
+  ])('keeps isolated execution and valid extensions when one extension is unknown: %j', extensions => {
+    const current = normalizeHostCapabilities({ execution_workspaces: { version: 2, ...extensions } })
+    const valid = Object.fromEntries(Object.entries(extensions).filter(([key, value]) => key === 'reclaim' ? value === 7 : value === 1))
+    expect(current.execution_workspaces).toEqual({ version: 2, ...valid })
   })
 
   it('keeps modern generic ACP options and drops obsolete top-level option maps', () => {

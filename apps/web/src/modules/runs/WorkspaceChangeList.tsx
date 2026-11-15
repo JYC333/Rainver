@@ -104,11 +104,12 @@ export function WorkspaceChangeList({entries,onChanged,showRunLink=false}:{entri
      {!saved&&!checkpointBlocked&&!terminal&&<span className="text-xs text-muted-foreground">{t('workspace_ui.execution.checkpoint_pending')}</span>}
      {target&&<span className="min-w-0 break-all text-xs text-muted-foreground">{t('workspace_ui.execution.target',{target})}</span>}
     </div>
+    {c.lifecycle&&<p role="status" className="text-xs text-muted-foreground">{t(`workspace_ui.execution.lifecycle.${c.lifecycle.phase}`)}</p>}
     {c.summary&&<p className="break-words text-sm">{c.summary}</p>}
     {typeof c.integration_detail?.continuation_from_workspace_id==='string'&&<p role="status" className="text-xs text-muted-foreground">{t('workspace_ui.execution.continued')}</p>}
     {message&&<p role="status" className="break-words text-xs text-muted-foreground">{t('workspace_ui.execution.blocked_detail',{reason:t(`workspace_ui.execution.reason.${message}`,{defaultValue:message})})}</p>}
     {c.integration_status==='conflict'&&Array.isArray(c.integration_detail?.conflicted_files)&&<ul className="break-words pl-4 text-xs text-muted-foreground">{c.integration_detail.conflicted_files.filter((path):path is string=>typeof path==='string').slice(0,50).map(path=><li key={path}>{path}</li>)}</ul>}
-    {(terminal||c.cleanup_state==='blocked')&&!(firstOfWorkspace&&c.retention?.state==='reclaimed')&&<p className="text-xs text-muted-foreground">{t(c.integration_detail?.pending_checkpoint_retained===true?'workspace_ui.execution.retained_pending_checkpoint':`workspace_ui.execution.cleanup.${c.cleanup_state}`)}</p>}
+    {!c.lifecycle&&(terminal||c.cleanup_state==='blocked')&&!(firstOfWorkspace&&c.retention?.state==='reclaimed')&&<p className="text-xs text-muted-foreground">{t(c.integration_detail?.pending_checkpoint_retained===true?'workspace_ui.execution.retained_pending_checkpoint':`workspace_ui.execution.cleanup.${c.cleanup_state}`)}</p>}
     {(Number(c.inventory?.quarantined_whole??0)>0||Number(c.inventory?.retained_quarantine??0)>0)&&<p className="text-xs text-muted-foreground">{t('workspace_ui.execution.retained_evidence',{whole:Number(c.inventory?.quarantined_whole??0),captured:Number(c.inventory?.retained_quarantine??0)})}</p>}
     {c.cleanup_errors.map((e,i)=><p key={i} className="break-words text-xs text-muted-foreground">{e}</p>)}
     {/* A missing-branch reading is not repeated while the batch is merging or its Run is working: the live state above outranks it. */}

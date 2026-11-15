@@ -1,3 +1,4 @@
+import {checkpointRecoveryProjectionSql} from './workspaceCheckpointState.js';
 import {canWriteProject} from '../projects/access.js';
 import {WorkspaceChangeViewSchema,WorkspaceRetentionSchema,type WorkspaceChangeView,type WorkspaceRetention} from '@rainver/protocol';
 import {projectAttentionRegistry,type ProjectAttentionAdapter,type ProjectAttentionItem} from '../projects/attentionRegistry.js';
@@ -48,11 +49,11 @@ export async function readVisibleWorkspaceChanges(db:Queryable,spaceId:string,us
   origin.status AS run_status,origin.agent_id AS run_agent_id,
   w.id AS workspace_id,w.generation,w.workspace_location_id,w.parent_workspace_id,w.target_ref,c.base_commit,c.source_commit,
   w.inventory_json AS inventory,w.state AS workspace_state,w.baseline_mode,w.cleanup_state,w.cleanup_json,w.retention_json,w.project_id,m.id AS integration_id,m.revision AS integration_revision,m.status AS integration_status,m.attempt_id,
-  m.onto_commit,m.task_commit AS candidate_commit,m.merged_commit,
+  m.onto_commit,m.task_commit AS candidate_commit,m.merged_commit,m.detail_json->'lifecycle' AS lifecycle,
   CASE WHEN m.resolution_run_id IS NOT NULL AND EXISTS(SELECT 1 FROM runs repair WHERE repair.id=m.resolution_run_id AND repair.space_id=c.space_id AND ${runBodyReadableSql('repair',user)})
    THEN m.resolution_run_id ELSE NULL END AS resolution_run_id,
   CASE WHEN EXISTS(SELECT 1 FROM execution_workspace_runs blocked WHERE blocked.change_set_id=c.id AND blocked.checkpoint_state='blocked')
-   THEN COALESCE(m.detail_json,'{}'::jsonb)||c.verification_json||'{"checkpoint_blocked":true}'::jsonb ELSE COALESCE(m.detail_json,c.verification_json) END AS integration_detail,
+   THEN COALESCE(m.detail_json,'{}'::jsonb)||c.verification_json||'{"checkpoint_blocked":true}'::jsonb ELSE COALESCE(m.detail_json,c.verification_json) END-'checkpoint_recovery'||${checkpointRecoveryProjectionSql('c')} AS integration_detail,
   CASE WHEN c.state<>'integrated' THEN NULL WHEN w.parent_workspace_id IS NULL THEN 'target'
    WHEN EXISTS(SELECT 1 FROM workspace_change_sets adopter WHERE adopter.workspace_id=w.parent_workspace_id AND adopter.space_id=c.space_id
     AND jsonb_typeof(adopter.verification_json->'adopted_child_change_ids')='array' AND (adopter.verification_json->'adopted_child_change_ids') ? c.id) THEN 'parent'
@@ -78,6 +79,7 @@ export async function readVisibleWorkspaceChanges(db:Queryable,spaceId:string,us
   const project=String(project_id);
   if(!writable.has(project))writable.set(project,await canWriteProject(db,spaceId,project,userId));
   const cleanup_errors=Object.values((cleanup_json??{}) as Record<string,{error?:string}>).map(r=>r.error).filter((e):e is string=>typeof e==='string').slice(0,5);
+  if((publicView.inventory as Record<string,unknown>|null)?.checkpoint_reconciliation_failed_at||(publicView.inventory as Record<string,unknown>|null)?.reconciliation_error==='workspace_checkpoint_blocked')cleanup_errors.unshift('workspace_checkpoint_blocked');
   const retention=currentRetention(retentionView(retention_json).retention,publicView.state==='open'?String(change_updated_at):null);
   entries.push({change:WorkspaceChangeViewSchema.parse({...publicView,cleanup_errors,...(retention?{retention}:{}),can_manage:writable.get(project)}),run:{id:String(originating_run_id),status:run_status,agent_id:run_agent_id}});
  }
@@ -108,7 +110,7 @@ export async function workspaceChangesForRun(db:Queryable,run:Pick<RunRecord,'id
  * delegated child workspaces forked from them. The caller authorizes the
  * conversation; each row is still filtered through its origin Run. `$2` is
  * the conversation and `$3` the Project; `scope` may narrow further. */
-const CONVERSATION_PENDING=`w.project_id=$3 AND (c.state IN ('open','ready','integrating','blocked') OR w.cleanup_state='blocked') AND (
+const CONVERSATION_PENDING=`w.project_id=$3 AND (c.state IN ('open','ready','integrating','blocked') OR w.cleanup_state='blocked' OR m.detail_json->'lifecycle'->>'phase' IN ('awaiting_release','cleanup','blocked')) AND (
    (w.owner_kind='conversation' AND w.session_id=$2)
    OR (w.owner_kind='delegation' AND EXISTS(SELECT 1 FROM execution_workspaces parent WHERE parent.id=w.parent_workspace_id AND parent.space_id=w.space_id AND parent.owner_kind='conversation' AND parent.session_id=$2)))`;
 export async function workspaceChangesForConversation(db:Queryable,input:{spaceId:string;sessionId:string;projectId:string},userId:string,page:{cursor?:string|null;limit?:number;scope?:{where:string;params:unknown[]}}={}){
@@ -139,7 +141,7 @@ export function currentRetention(retention:WorkspaceRetention|undefined,openWork
 export function retentionView(raw:unknown):{retention?:WorkspaceRetention}{
  if(!raw||typeof raw!=='object'||!('state' in raw))return {};
  const r=raw as Record<string,unknown>,text=(v:unknown)=>typeof v==='string'?v:null,count=(v:unknown)=>typeof v==='number'&&Number.isSafeInteger(v)&&v>=0?v:0;
- const parsed=WorkspaceRetentionSchema.safeParse({state:r.state,reason:typeof r.reason==='string'?r.reason.slice(0,64):'unknown',reclaim_after:text(r.reclaim_after),hold_until:text(r.hold_until),reclaimed_at:text(r.reclaimed_at),assessed_at:text(r.assessed_at),retained_refs:count(r.retained_refs),unclaimed_refs:count(r.unclaimed_refs)});
+ const parsed=WorkspaceRetentionSchema.safeParse({state:r.state,reason:typeof r.reason==='string'?r.reason.slice(0,64):'unknown',reclaim_after:text(r.reclaim_after),hold_until:text(r.hold_until),reclaimed_at:text(r.reclaimed_at),assessed_at:text(r.assessed_at),...(typeof r.preserved_commit==='string'?{preserved_commit:r.preserved_commit}:{}),...(typeof r.recovery_ref==='string'?{recovery_ref:r.recovery_ref}:{}),retained_refs:count(r.retained_refs),unclaimed_refs:count(r.unclaimed_refs)});
  return parsed.success?{retention:parsed.data}:{};
 }
 const workspaceAttentionAdapter:ProjectAttentionAdapter={

@@ -1,7 +1,7 @@
+import type {ProviderTaskAttemptRefs} from '../providers/commands/types.js';
+import type {DailyReportSnapshot} from './authority.js';
 import { randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
-import { getDbPool } from "../../db/pool.js";
-import { withTransaction } from "../../db/tx.js";
 import { PgRunRepository } from "../runs/repository.js";
 import { canonicalRunOutput } from "../runs/orchestrationResults.js";
 import {
@@ -21,7 +21,7 @@ import {
   PgDailyReportSettingsRepository,
 } from "./repository.js";
 
-interface DailyReportResult {
+export interface DailyReportResult {
   run_id: string | null;
   artifact_id: string | null;
   proposal_ids: string[];
@@ -150,13 +150,20 @@ interface DailyReportGenerationInput {
   createMemoryProposalsOverride?: boolean | null;
 }
 
+export interface DailyReportExecution {
+ runId:string;
+ snapshot:DailyReportSnapshot;
+ authorizeAttempt:(db:Queryable,refs:ProviderTaskAttemptRefs)=>Promise<void>;
+ settle:(work:(db:Queryable)=>Promise<DailyReportResult>)=>Promise<DailyReportResult>;
+}
+
 export class DailyCaptureReportService {
   constructor(
     private readonly db: Queryable,
     private readonly config: ServerConfig,
   ) {}
 
-  async generateForDate(input: DailyReportGenerationInput): Promise<DailyReportResult> {
+  async generateForDate(input: DailyReportGenerationInput, execution: DailyReportExecution): Promise<DailyReportResult> {
     assertValidLocalDate(input.localDate);
     assertValidTimezone(input.setting.timezone || "UTC");
     // One generation per person and day at a time, held across the Provider
@@ -166,11 +173,11 @@ export class DailyCaptureReportService {
     return withDedicatedSessionAdvisoryLock(
       this.db,
       `daily_capture_report_generation:${input.spaceId}:${input.userId}:${input.localDate}`,
-      () => this.generateLocked(input),
+      () => this.generateLocked(input, execution),
     );
   }
 
-  private async generateLocked(input: DailyReportGenerationInput): Promise<DailyReportResult> {
+  private async generateLocked(input: DailyReportGenerationInput, execution: DailyReportExecution): Promise<DailyReportResult> {
     {
       // One report per person and day, never rewritten: a second request for
       // a day that has one answers with it.
@@ -191,7 +198,7 @@ export class DailyCaptureReportService {
       }
     }
 
-    const captures = await this.selectCaptures(input);
+    const captures = execution.snapshot.captures;
     const captureIds = captures.map((row) => row.id);
     if (captures.length === 0) {
       return {
@@ -231,6 +238,10 @@ export class DailyCaptureReportService {
     const duplicateOf: { value: { id: string; run_id: string | null } | null } = { value: null };
     const task = await runBoundedProviderTask(this.db, this.config, {
       completion: "text",
+      runId: execution.runId,
+      failRunOnError: false,
+      allowProviderFallback: false,
+      authorizeAttempt: execution.authorizeAttempt,
       spaceId: input.spaceId,
       userId: input.userId,
       task: "daily_report",
@@ -266,12 +277,10 @@ export class DailyCaptureReportService {
           );
         }
         try {
-          persisted.value = await this.persistSuccessfulReport({
-            input,
-            report,
-            captureIds,
-            captureCount: captures.length,
-            runId,
+          await execution.settle(async db => {
+            persisted.value = await this.persistSuccessfulReportWithDb(db, {input,report,captureIds,captureCount:captures.length,runId});
+            const value=persisted.value;
+            return {run_id:runId,artifact_id:value.artifactId,proposal_ids:value.proposalIds,experience_proposal_ids:value.experienceProposalIds,memory_proposal_ids:value.memoryProposalIds,capture_count:captures.length,status:'succeeded',summary_preview:value.summaryPreview};
           });
         } catch (error) {
           if (error instanceof DailyReportAlreadyExistsError) {
@@ -328,31 +337,6 @@ export class DailyCaptureReportService {
     };
   }
 
-  private async persistSuccessfulReport(args: {
-    input: {
-      spaceId: string;
-      userId: string;
-      setting: SettingRow;
-      localDate: string;
-      createExperienceProposalsOverride?: boolean | null;
-      createMemoryProposalsOverride?: boolean | null;
-    };
-    report: StructuredDailyReport;
-    captureIds: string[];
-    captureCount: number;
-    runId: string;
-  }): Promise<{
-    artifactId: string;
-    proposalIds: string[];
-    experienceProposalIds: string[];
-    memoryProposalIds: string[];
-    summaryPreview: string;
-  }> {
-    const persist = async (db: Queryable) => this.persistSuccessfulReportWithDb(db, args);
-    if (!this.config.databaseUrl) return persist(this.db);
-    return withTransaction(getDbPool(this.config.databaseUrl), persist);
-  }
-
   private async persistSuccessfulReportWithDb(
     db: Queryable,
     args: {
@@ -401,7 +385,7 @@ export class DailyCaptureReportService {
          $1, $2, $3, 'daily_capture_report', $4, $5, 'text/markdown',
          true, '[]'::jsonb, false, $6, $7::jsonb,
          $8, $9, $10, $10,
-         'space_shared', 'medium'
+         'private', 'medium'
        )`,
       [
         artifactId,
@@ -516,32 +500,6 @@ export class DailyCaptureReportService {
     return result.rows[0] ?? null;
   }
 
-  private async selectCaptures(input: {
-    spaceId: string;
-    userId: string;
-    setting: SettingRow;
-    localDate: string;
-  }): Promise<Array<{ id: string; title: string | null; content: string | null }>> {
-    const sourceTypes = Array.isArray(input.setting.include_source_types_json)
-      ? input.setting.include_source_types_json.map(String)
-      : ["user_capture"];
-    const bounds = localDayUtcBounds(input.localDate, input.setting.timezone);
-    const result = await this.db.query<{ id: string; title: string | null; content: string | null }>(
-      `SELECT id, title, content
-         FROM activity_records ar
-        WHERE ar.space_id = $1
-          AND ${contentReadSql("activity", "ar", "$2")}
-          AND ${contentOwnerFilterSql("activity", "ar", "$2")}
-          AND ar.activity_type = ANY($3::text[])
-          AND ar.status <> 'archived'
-          AND ar.occurred_at >= $4
-          AND ar.occurred_at < $5
-        ORDER BY ar.occurred_at ASC`,
-      [input.spaceId, input.userId, sourceTypes, bounds.startUtcIso, bounds.endUtcIso],
-    );
-    return result.rows;
-  }
-
   private async insertExperienceProposal(
     db: Queryable,
     input: { spaceId: string; userId: string; setting: SettingRow },
@@ -566,7 +524,7 @@ export class DailyCaptureReportService {
         title: candidate.title,
         content: candidate.content,
         content_format: "markdown",
-        visibility: "space_shared",
+        visibility: "private",
         owner_user_id: input.userId,
         tags: ["daily-capture-report"],
         confidence,
@@ -582,7 +540,7 @@ export class DailyCaptureReportService {
       },
       createdByUserId: input.userId,
       createdByRunId: runId,
-      visibility: "space_shared",
+      visibility: "private",
       riskLevel: "low",
     });
     return row.id;
@@ -614,7 +572,7 @@ export class DailyCaptureReportService {
         memory_type: memoryType,
         target_scope: "user",
         target_namespace: "user.default",
-        target_visibility: "space_shared",
+        target_visibility: "private",
         owner_user_id: input.userId,
         provenance_entries: sourceIds.map((id) => ({
           source_type: "activity",
@@ -628,7 +586,7 @@ export class DailyCaptureReportService {
       },
       createdByUserId: input.userId,
       createdByRunId: runId,
-      visibility: "space_shared",
+      visibility: "private",
       riskLevel: "low",
     });
     return row.id;

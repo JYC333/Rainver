@@ -154,3 +154,12 @@ it('never labels an empty open batch or externally adopted work as saved private
  expect(await screen.findByText('No saved difference')).toBeInTheDocument()
  expect(screen.queryByText('Saved privately')).not.toBeInTheDocument()
 })
+
+it('keeps a published batch visibly pending while its resource lifecycle awaits release',async()=>{
+ const lifecycle={operation_id:'integration',phase:'awaiting_release' as const,workspace_id:'workspace',generation:1,base_commit:'a'.repeat(40),source_commit:'b'.repeat(40),target_ref:'refs/heads/main',landed_commit:'c'.repeat(40),publication_status:'merged' as const,cleanup_key:'source-g1'};
+ const published={...run,workspace_changes:[{...change,state:'integrated' as const,can_manage:false,lifecycle}]};
+ vi.mocked(runsApi.get).mockResolvedValue(published);
+ render(<MemoryRouter><WorkspaceChangesCard run={published}/></MemoryRouter>);
+ expect(await screen.findByText('Published · waiting for workspace users to exit')).toBeInTheDocument();
+ expect(screen.queryByText('Publication and resource lifecycle complete')).not.toBeInTheDocument();
+});

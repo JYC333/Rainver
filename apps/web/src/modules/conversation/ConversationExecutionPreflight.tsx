@@ -1,6 +1,11 @@
+import { InitializedSummary, localizedWorkspaceReason } from './ConversationEnvironmentSummary'
+import { runtimeChoice } from './runtimeChoice'
+import type {ConversationPinnedRuntime} from '@rainver/protocol'
+import { ConversationAgentSessionConfigs, ConversationAgentConfiguration, type AgentSessionConfiguration } from './ConversationSessionConfig'
+import { ConversationParticipantsEditor, ConversationDraftParticipants } from './ConversationParticipantsEditor'
 import { ConversationScope, useConversationScope } from './ConversationScope'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronDown, ChevronRight, Loader2, RefreshCw, Shield, Unplug } from 'lucide-react'
+import { Info, Loader2, RefreshCw, Shield } from 'lucide-react'
 import { toast } from 'sonner'
 import { roomsApi, sessionsApi } from '../../api/client'
 import { ConversationLink as Link } from './ConversationScope'
@@ -19,14 +24,18 @@ import type {
 } from '../../types/api'
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
-import { Card } from '../../components/ui/card'
+import { Popover, PopoverTrigger, PopoverContent } from '../../components/ui/popover'
 import { Label } from '../../components/ui/label'
 import { Select } from '../../components/ui/select'
 import { ConversationCacheNotice, isPromptCacheExpired } from './ConversationCacheNotice'
 import { ConversationGitContext } from './ConversationGitContext'
 import { commandCenterHostPath } from '../command_center/hostLinks'
 
-interface ConversationExecutionPreflightProps {
+export interface ConversationExecutionPreflightProps {
+  settingsOpen?: boolean
+  onSettingsOpenChange?: (open: boolean) => void
+  agentConfigurations?: AgentSessionConfiguration[]
+  disabled?: boolean
   spaceId?: string
   projectId: string
   roomId: string
@@ -47,10 +56,14 @@ interface ConversationExecutionPreflightProps {
  * selection and the explicit actions that the user requested.
  */
 export function ConversationExecutionPreflight(props: ConversationExecutionPreflightProps) {
-  return <ConversationScope key={`${props.spaceId ?? ''}:${props.roomId}:${props.sessionId ?? 'new'}`} spaceId={props.spaceId}><ConversationExecutionPreflightContent key={`${props.spaceId ?? ''}:${props.roomId}:${props.sessionId ?? 'new'}`} {...props} /></ConversationScope>
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  useEffect(() => { setSettingsOpen(false) }, [props.spaceId, props.roomId])
+  return <ConversationScope key={`${props.spaceId ?? ''}:${props.roomId}:${props.sessionId ?? 'new'}`} spaceId={props.spaceId}><ConversationExecutionPreflightContent key={`${props.spaceId ?? ''}:${props.roomId}:${props.sessionId ?? 'new'}`} {...props} settingsOpen={props.settingsOpen ?? settingsOpen} onSettingsOpenChange={props.onSettingsOpenChange ?? setSettingsOpen} /></ConversationScope>
 }
 
-function ConversationExecutionPreflightContent({
+export function ConversationExecutionPreflightContent({
+  settingsOpen,
+  onSettingsOpenChange,
   projectId,
   roomId,
   sessionId,
@@ -60,6 +73,8 @@ function ConversationExecutionPreflightContent({
   onNewConversation,
   onReadyChange,
   onSummaryChange,
+  agentConfigurations = [],
+  disabled = false,
 }: ConversationExecutionPreflightProps) {
   const scope = useConversationScope()
   const { t } = useAppTranslation()
@@ -70,14 +85,17 @@ function ConversationExecutionPreflightContent({
   const [primaryKey, setPrimaryKey] = useState('')
   const [runtimeProfileId, setRuntimeProfileId] = useState('')
   const [participantRuntimeProfileIds, setParticipantRuntimeProfileIds] = useState<Record<string, string>>({})
+  const [draftParticipants,setDraftParticipants]=useState<Record<string,boolean>>({})
   const [attachLocationId, setAttachLocationId] = useState('')
   const [attachMode, setAttachMode] = useState<ConversationAttachmentAccessMode>('write')
   const [loading, setLoading] = useState(false)
-  const [baselineMode,setBaselineMode]=useState<'committed'|'snapshot'|''>('snapshot')
+  const [baselineMode,setBaselineMode]=useState<'committed'|'snapshot'|''>('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [executionDetailsOpen, setExecutionDetailsOpen] = useState(false)
   const requestSequence = useRef(0)
+  const executionScope = useMemo(() => ({ scope, roomId, sessionId }), [scope, roomId, sessionId])
+  const activeScope = useRef(executionScope)
+  activeScope.current = executionScope
   const hostSelectionTouched = useRef(false)
   const primarySelectionTouched = useRef(false)
 
@@ -89,22 +107,24 @@ function ConversationExecutionPreflightContent({
     setPrimaryKey('')
     setRuntimeProfileId('')
     setParticipantRuntimeProfileIds({})
+    setDraftParticipants({})
     setAttachLocationId('')
-    setBaselineMode('snapshot')
+    setBaselineMode('')
+    setBusy(false)
     setError(null)
-    setExecutionDetailsOpen(false)
     hostSelectionTouched.current = false
     primarySelectionTouched.current = false
     onReadyChange?.(false)
     onSummaryChange?.(null)
-  }, [onReadyChange, onSummaryChange, sessionId, scope])
+    return () => { requestSequence.current += 1 }
+  }, [onReadyChange, onSummaryChange, roomId, sessionId, scope])
 
   useEffect(() => {
     if (suppliedDetail !== undefined) setDetail(suppliedDetail)
   }, [suppliedDetail, scope])
 
   useEffect(() => {
-    if (!sessionId || suppliedDetail?.agent_members.some(member => member.role === 'manager')) return
+    if (suppliedDetail?.agent_members.some(member => member.role === 'manager')) return
     let active = true
     roomsApi.get(roomId, scope)
       .then(next => { if (active) setDetail(next) })
@@ -124,7 +144,7 @@ function ConversationExecutionPreflightContent({
     setError(null)
     try {
       const next = await sessionsApi.executionContext(sessionId, scope)
-      if (scope.signal?.aborted || sequence !== requestSequence.current) return
+      if (activeScope.current !== executionScope || scope.signal?.aborted || sequence !== requestSequence.current) return
       setPreflight(next)
       setBaselineMode(previous=>next.summary.workspace_baseline??(next.summary.state==='initialized'?'':previous))
       setProfiles(next.available_runtime_profiles ?? [])
@@ -133,33 +153,41 @@ function ConversationExecutionPreflightContent({
       // reported false while `ready` (from the kept preflight) stayed true, so
       // the next good refresh changed nothing and sending stayed disabled.
       onReadyChange?.(Boolean(next.summary.state === 'initialized' && next.summary.can_send))
+      return true
     } catch (cause) {
-      if (scope.signal?.aborted || sequence !== requestSequence.current) return
+      if (activeScope.current !== executionScope || scope.signal?.aborted || sequence !== requestSequence.current) return
       const message = errMsg(cause)
       setError(message)
+      setPreflight(null)
+      setProfiles([])
       onReadyChange?.(false)
       onSummaryChange?.(null)
+      return false
     } finally {
-      setLoading(false)
+      if (activeScope.current === executionScope && !scope.signal?.aborted && sequence === requestSequence.current) setLoading(false)
     }
-  }, [onReadyChange, onSummaryChange, sessionId, scope])
+  }, [onReadyChange, onSummaryChange, sessionId, scope, executionScope])
 
   useEffect(() => { void reload() }, [reload, scope])
 
   useEffect(() => {
     if (!sessionId) return
+    const settingsSaved=(event:Event)=>{const value=(event as CustomEvent).detail;if(value?.sessionId===sessionId&&value?.spaceId===scope.spaceId)void reload()}
+    window.addEventListener('conversation-settings-saved',settingsSaved)
     const refresh = () => { if (document.visibilityState === 'visible') void reload() }
     const interval = window.setInterval(refresh, 30_000)
     window.addEventListener('focus', refresh)
     document.addEventListener('visibilitychange', refresh)
     return () => {
       window.clearInterval(interval)
+      window.removeEventListener('conversation-settings-saved',settingsSaved)
       window.removeEventListener('focus', refresh)
       document.removeEventListener('visibilitychange', refresh)
     }
   }, [reload, sessionId, scope])
 
   const summary = preflight?.summary ?? null
+  const summaryRuntimes: ConversationPinnedRuntime[] = summary?.runtimes?.length ? summary.runtimes : (summary?.runtime ? [summary.runtime] : [])
   const initialized = summary?.state === 'initialized'
   const locations = preflight?.available_primary_locations ?? []
   const executableLocations = locations.filter(location => location.execution_ready)
@@ -197,7 +225,7 @@ function ConversationExecutionPreflightContent({
   }, [hostId, participantMembers, profiles, selectedPrimary, scope])
   const candidateProfiles = manager ? candidateProfilesByAgent.get(manager.agent_id) ?? [] : []
   const selectedProfile = candidateProfiles.find(profile => runtimeCandidateKey(profile) === runtimeProfileId) ?? null
-  const participantChoices = participantMembers.map(member => {
+  const participantChoices = participantMembers.filter(member=>member.role==='manager'||(draftParticipants[member.agent_id]??((detail??suppliedDetail)?.room.conversation_defaults_json?.find(item=>item.agent_id===member.agent_id)?.participating!==false))).map(member => {
     const options = candidateProfilesByAgent.get(member.agent_id) ?? []
     const selectedId = member.role === 'manager' ? runtimeProfileId : participantRuntimeProfileIds[member.agent_id] ?? ''
     return {
@@ -207,6 +235,10 @@ function ConversationExecutionPreflightContent({
       selected: options.find(profile => runtimeCandidateKey(profile) === selectedId) ?? null,
     }
   })
+  const draftParticipantIds = participantChoices.map(choice => choice.member.agent_id).join(',')
+  useEffect(() => {
+    if (summary?.state === 'draft') onSummaryChange?.({...summary, participant_agent_ids: draftParticipantIds ? draftParticipantIds.split(',') : []})
+  }, [summary, draftParticipantIds, onSummaryChange])
   const participantBlockReason = participantChoices.length === 0
     ? t('conversation_ui.preflight.agent_setup_pending')
     : participantChoices.find(choice => choice.options.length === 0)
@@ -223,13 +255,9 @@ function ConversationExecutionPreflightContent({
     participantBlockReason,
   })
   const ready = Boolean(sessionId && initialized && summary?.can_send)
-  useEffect(()=>{if(!initialized)setBaselineMode('snapshot')},[primaryKey,hostId,initialized])
+  useEffect(()=>{if(!initialized)setBaselineMode('')},[primaryKey,hostId,initialized])
   const baselineRequired=Boolean(!initialized&&selectedLocation?.git?.dirty&&!baselineMode)
   const effectiveDraftBlockedReason=(selectedPrimary?.kind==='location'&&selectedHost?.isolated_workspaces_available===false?t('workspace_ui.execution.host_upgrade_required'):null)??draftBlockedReason??(baselineRequired?t('workspace_ui.execution.baseline_required'):null)
-
-  useEffect(() => {
-    if (initialized && (summary?.blocked_reason || error)) setExecutionDetailsOpen(true)
-  }, [error, initialized, summary?.blocked_reason, scope])
 
   useEffect(() => {
     if (!preflight || initialized) return
@@ -293,36 +321,42 @@ function ConversationExecutionPreflightContent({
   useEffect(() => { onReadyChange?.(ready) }, [onReadyChange, ready, scope])
 
   async function openDraft(): Promise<void> {
+    const sequence = requestSequence.current
     setBusy(true)
     setError(null)
     try {
       const conversation = await roomsApi.createConversation(roomId, scope)
+      if (activeScope.current !== executionScope || scope.signal?.aborted || sequence !== requestSequence.current) return
       // The Room response can be older than the provisioning transaction that
       // just completed. Refresh the authoritative roster before rendering the
       // draft so a newly-created Project Agent is immediately selectable.
       const nextDetail = await roomsApi.get(roomId, scope).catch(() => null)
+      if (activeScope.current !== executionScope || scope.signal?.aborted || sequence !== requestSequence.current) return
       if (nextDetail) setDetail(nextDetail)
-      if (!scope.signal?.aborted) onConversationCreated?.(conversation)
+      if (activeScope.current === executionScope && !scope.signal?.aborted) onConversationCreated?.(conversation)
     } catch (cause) {
+      if (activeScope.current !== executionScope || scope.signal?.aborted || sequence !== requestSequence.current) return
       const message = errMsg(cause)
       setError(message)
       toast.error(message)
     } finally {
-      setBusy(false)
+      if (activeScope.current === executionScope && !scope.signal?.aborted && sequence === requestSequence.current) setBusy(false)
     }
   }
 
   async function chooseBaseline(mode:'committed'|'snapshot'){
     if(!initialized){setBaselineMode(mode);return;}
-    if(!sessionId||!summary?.host||!summary.primary||!summary.runtime)return;
+    const managerRuntime = summaryRuntimes.find(pin => pin.agent_id === manager?.agent_id)
+      ?? (summary?.runtime?.agent_id === manager?.agent_id ? summary.runtime : null)
+    if(!sessionId||!summary?.host||!summary.primary||!managerRuntime)return;
     setBusy(true);setError(null)
     try{
       const primary=summary.primary.kind==='managed'?{kind:'managed' as const}:{kind:'location' as const,workspace_location_id:summary.primary.workspace_location_id}
-      await sessionsApi.initializeExecution(sessionId,{selection:{execution_host_id:summary.host.host_id,primary},runtime:summary.runtime,workspace_baseline:mode},scope)
-      if(scope.signal?.aborted)return;
+      await sessionsApi.initializeExecution(sessionId,{selection:{execution_host_id:summary.host.host_id,primary},runtime:runtimeChoice(managerRuntime),workspace_baseline:mode},scope)
+      if(activeScope.current !== executionScope || scope.signal?.aborted)return;
       setBaselineMode(mode);await reload()
-    }catch(e){if(!scope.signal?.aborted)setError(errMsg(e))}
-    finally{if(!scope.signal?.aborted)setBusy(false)}
+    }catch(e){if(activeScope.current === executionScope && !scope.signal?.aborted)setError(errMsg(e))}
+    finally{if(activeScope.current === executionScope && !scope.signal?.aborted)setBusy(false)}
   }
 
   async function initialize(): Promise<void> {
@@ -353,16 +387,19 @@ function ConversationExecutionPreflightContent({
         ? { workspace_baseline: baselineMode }
         : {}
       await sessionsApi.initializeExecution(sessionId, additional_runtimes.length > 0
-        ? { selection, runtime, additional_runtimes,...workspaceBaseline }
-        : { selection, runtime,...workspaceBaseline }, scope)
-      await reload()
+        ? { selection, runtime, participant_agent_ids:participantChoices.map(choice=>choice.member.agent_id), additional_runtimes,...workspaceBaseline }
+        : { selection, runtime,participant_agent_ids:participantChoices.map(choice=>choice.member.agent_id),...workspaceBaseline }, scope)
+      if (activeScope.current !== executionScope || scope.signal?.aborted) return
+      if (!await reload()) return
+      if (activeScope.current !== executionScope || scope.signal?.aborted) return
       toast.success(t('conversation_ui.preflight.initialized_toast'))
     } catch (cause) {
+      if (activeScope.current !== executionScope || scope.signal?.aborted) return
       const message = errMsg(cause)
       setError(message)
       toast.error(message)
     } finally {
-      setBusy(false)
+      if (activeScope.current === executionScope && !scope.signal?.aborted) setBusy(false)
     }
   }
 
@@ -391,105 +428,95 @@ function ConversationExecutionPreflightContent({
           action: 'revoke', mutation_id: crypto.randomUUID(), attachment_id: attachmentId,
         }, scope)
       }
+      if (activeScope.current !== executionScope || scope.signal?.aborted) return
       setAttachLocationId('')
       await reload()
     } catch (cause) {
+      if (activeScope.current !== executionScope || scope.signal?.aborted) return
       const message = errMsg(cause)
       setError(message)
       toast.error(message)
     } finally {
-      setBusy(false)
+      if (activeScope.current === executionScope && !scope.signal?.aborted) setBusy(false)
     }
   }
 
+  function settings(environment: React.ReactNode) {
+    const ids = initialized
+      ? summary?.participant_agent_ids ?? summaryRuntimes.map(pin => pin.agent_id)
+      : participantChoices.map(choice => choice.member.agent_id)
+    const locked = !sessionId || !preflight || loading || Boolean(error) || scope.actionRole === 'worker' || scope.actionRole === 'viewer' || disabled || busy || Boolean(summary?.dispatch_locked) || !detail?.viewer_can_write
+    const renderAgent = (id: string, actions: React.ReactNode) => {
+      const config = agentConfigurations.find(agent => agent.id === id)
+      const member = participantMembers.find(member => member.agent_id === id)
+      const pin = summaryRuntimes.find(pin => pin.agent_id === id)
+      return <ConversationAgentConfiguration agent={config ?? {
+        id, name: member?.agent_name ?? t('conversation_ui.preflight.unknown_agent'),
+        options: [], value: [], persistedValue: pin?.session_config ?? [], onChange: () => undefined,
+        unavailableReason: profiles.some(profile => profile.agent_id === id && profile.usable) ? undefined : t('conversation_ui.settings.unavailable'),
+      }} disabled={locked} actions={actions} defaultExpanded={ids.length === 1} />
+    }
+    const unavailable = sessionId && !preflight
+    const recovery = <div className="space-y-2 text-xs" role="status">
+      <p>{loading ? t('conversation_ui.preflight.loading') : error ?? t('conversation_ui.preflight.unavailable')}</p>
+      {!loading && <Button size="sm" variant="outline" onClick={() => void reload()}>{t('conversation_ui.preflight.retry')}</Button>}
+    </div>
+    const participants = unavailable ? recovery : initialized && summary && detail
+      ? <ConversationParticipantsEditor summary={summary} profiles={profiles} availableAgents={preflight?.available_participant_agents} detail={detail} onSaved={async saved => { const result = await reload(); if (saved && result === false && activeScope.current === executionScope && !scope.signal?.aborted) setError(t('conversation_ui.participants.saved_refresh_failed')); return result }} disabled={locked}
+          renderAgent={renderAgent} />
+      : <ConversationDraftParticipants members={participantMembers} ids={ids}
+          onChange={(id, participating) => setDraftParticipants(current => ({ ...current, [id]: participating }))}
+          disabled={locked} renderAgent={renderAgent} />
+    return <ConversationAgentSessionConfigs agents={agentConfigurations} open={settingsOpen} onOpenChange={onSettingsOpenChange} participantCount={unavailable ? null : ids.length}
+      participants={participants} environment={environment} environmentIssue={unavailable ? null : !ready ? error ?? effectiveDraftBlockedReason ?? t('conversation_ui.preflight.review_first') : null} disabled={locked} />
+  }
+
   if (!sessionId) {
-    return (
-      <Card className="m-3 space-y-2 border-dashed p-3" data-testid="execution-preflight-draft">
+    return settings(
+      <div className="space-y-2" data-testid="execution-preflight-draft">
         <div className="flex items-center gap-2 text-sm font-medium"><Shield className="size-4" />{t('conversation_ui.preflight.setup_title')}</div>
         <p className="text-xs text-muted-foreground">{t('conversation_ui.preflight.setup_description')}</p>
         <div className="flex flex-wrap gap-2">
-          <Button size="sm" disabled={busy} onClick={() => void openDraft()}>{busy ? <Loader2 className="mr-1 size-3.5 animate-spin" /> : null}{t('conversation_ui.preflight.configure')}</Button>
+          <Button size="sm" disabled={busy || disabled || scope.actionRole === 'worker' || scope.actionRole === 'viewer' || !detail?.viewer_can_write} onClick={() => void openDraft()}>{busy ? <Loader2 className="mr-1 size-3.5 animate-spin" /> : null}{t('conversation_ui.preflight.configure')}</Button>
           <Link to="/command-center" className="inline-flex items-center text-xs underline">{t('conversation_ui.preflight.configure_host')}</Link>
         </div>
         {error && <p className="text-xs text-destructive">{error}</p>}
-      </Card>
+      </div>
     )
   }
 
-  if (loading && !preflight) return <Card className="m-3 p-3 text-xs text-muted-foreground"><Loader2 className="mr-1 inline size-3.5 animate-spin" />{t('conversation_ui.preflight.loading')}</Card>
-  if (!preflight) return <Card className="m-3 space-y-2 p-3 text-xs"><p className="text-destructive">{error ?? t('conversation_ui.preflight.unavailable')}</p><Button size="sm" variant="outline" onClick={() => void reload()}><RefreshCw className="mr-1 size-3.5" />{t('conversation_ui.preflight.retry')}</Button></Card>
+  if (loading && !preflight) return settings(<div className="text-xs text-muted-foreground"><Loader2 className="mr-1 inline size-3.5 animate-spin" />{t('conversation_ui.preflight.loading')}</div>)
+  if (!preflight) return settings(<div className="space-y-2 text-xs"><p className="text-destructive">{error ?? t('conversation_ui.preflight.unavailable')}</p><Button size="sm" variant="outline" onClick={() => void reload()}><RefreshCw className="mr-1 size-3.5" />{t('conversation_ui.preflight.retry')}</Button></div>)
 
-  const cacheNotice = initialized && summary?.runtimes?.some(isPromptCacheExpired) ? <ConversationCacheNotice
+  const cacheNotice = initialized && summary?.runtimes?.some(isPromptCacheExpired) ? <ConversationCacheNotice expanded
     runtimes={summary.runtimes ?? []}
     nameForAgent={id => participantMembers.find(member => member.agent_id === id)?.agent_name
       ?? profiles.find(profile => profile.agent_id === id)?.agent_name ?? t('conversation_ui.preflight.unknown_agent')}
-    disabled={busy || loading || summary.dispatch_locked || !detail?.viewer_can_write}
+    disabled={disabled || busy || loading || summary.dispatch_locked || !detail?.viewer_can_write}
     onReset={async agentId => {
       if (!sessionId) return
       await roomsApi.resetAgentContext(roomId, agentId, sessionId, scope)
+      if (activeScope.current !== executionScope || scope.signal?.aborted) return
       await reload()
     }}
   /> : null
 
-  if (initialized && !executionDetailsOpen) {
-    return (
-      <Card className="mx-3 my-2 p-0" data-testid="execution-preflight-collapsed">
-        <button
-          type="button"
-          className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs text-muted-foreground hover:text-foreground"
-          aria-expanded="false"
-          onClick={() => setExecutionDetailsOpen(true)}
-        >
-          <Shield className="size-3.5" />
-          <span className="flex-1">{t('conversation_ui.preflight.configured')}</span>
-          <ChevronRight className="size-3.5" />
-        </button>
-        {cacheNotice && <div className="px-2.5 pb-2.5">{cacheNotice}</div>}
-      </Card>
-    )
-  }
-
-  return (
-    <Card className="m-3 space-y-3 p-3" data-testid="execution-preflight">
-      <div className="flex items-start justify-between gap-2">
-        <div>
-          <div className="flex items-center gap-2 text-sm font-medium"><Shield className="size-4" />{t('conversation_ui.preflight.title')}</div>
-          <p className="text-xs text-muted-foreground">{initialized ? t('conversation_ui.preflight.pinned') : t('conversation_ui.preflight.review_first')}</p>
-        </div>
-        <div className="flex items-center gap-1">
-          {initialized && <Button size="sm" variant="ghost" aria-label={t('conversation_ui.preflight.collapse')} aria-expanded="true" onClick={() => setExecutionDetailsOpen(false)}><ChevronDown className="size-3.5" /></Button>}
-          <Button size="sm" variant="ghost" aria-label={t('conversation_ui.preflight.refresh')} onClick={() => void reload()} disabled={loading || busy}><RefreshCw className={`size-3.5 ${loading || busy ? 'animate-spin' : ''}`} /></Button>
-        </div>
+  return settings(
+    <fieldset disabled={scope.actionRole === 'worker' || scope.actionRole === 'viewer' || !detail?.viewer_can_write} className="min-w-0 space-y-3" data-testid="execution-preflight">
+      <div className="flex flex-wrap items-center gap-2 text-sm"><Badge variant={ready ? 'success' : 'warning'}>{t(ready ? 'conversation_ui.settings.ready' : 'conversation_ui.settings.blocked')}</Badge><Button asChild size="sm" variant="outline"><Link to={`/projects/${projectId}/files`}>{t('conversation_ui.changes.files')}</Link></Button>
+        <Button size="sm" variant="ghost" className="ml-auto" aria-label={t('conversation_ui.preflight.refresh')} onClick={() => void reload()} disabled={loading || busy}><RefreshCw className={`size-3.5 ${loading || busy ? 'animate-spin' : ''}`} /></Button>
       </div>
-
-      {cacheNotice}
-      {(initialized?summary?.primary?.kind==='location':selectedPrimary?.kind==='location')&&<p className="text-xs text-muted-foreground">{t('workspace_ui.execution.isolation_preflight')}</p>}
+      {!initialized && <p className="text-xs text-muted-foreground">{t('conversation_ui.preflight.review_first')}</p>}
       {((initialized?summary?.git?.dirty:selectedLocation?.git?.dirty)||summary?.attachments.some(a=>a.status==='active'&&a.git_dirty))&&<div className="space-y-2 rounded-md border border-border bg-muted/20 p-3">
         <p className="text-sm font-medium">{t('workspace_ui.execution.baseline_title')}</p>
         <p className="text-xs text-muted-foreground">{t('workspace_ui.execution.baseline_description')}</p>
-        <div className="flex flex-wrap gap-2"><Button size="sm" variant={baselineMode==='committed'?'default':'outline'} disabled={busy} onClick={()=>void chooseBaseline('committed')}>{t('workspace_ui.execution.baseline_committed')}</Button><Button size="sm" variant={baselineMode==='snapshot'?'default':'outline'} disabled={busy} onClick={()=>void chooseBaseline('snapshot')}>{t('workspace_ui.execution.baseline_snapshot')}</Button></div>
+        <div className="flex flex-wrap gap-2"><Button size="sm" variant={baselineMode==='committed'?'default':'outline'} disabled={busy || disabled || loading || Boolean(summary?.dispatch_locked)} onClick={()=>void chooseBaseline('committed')}>{t('workspace_ui.execution.baseline_committed')}</Button><Button size="sm" variant={baselineMode==='snapshot'?'default':'outline'} disabled={busy || disabled || loading || Boolean(summary?.dispatch_locked)} onClick={()=>void chooseBaseline('snapshot')}>{t('workspace_ui.execution.baseline_snapshot')}</Button></div>
         {baselineMode&&<p className="text-xs text-muted-foreground">{t(`workspace_ui.execution.baseline_selected_${baselineMode}`)}</p>}
       </div>}
       {initialized ? (
-        <InitializedSummary summary={summary!} profiles={profiles} participants={participantMembers} />
+        <InitializedSummary summary={summary!} profiles={profiles} participants={participantMembers} cacheNotice={cacheNotice} />
       ) : (
-        <div className="space-y-2">
-          <div className="rounded border border-border bg-muted/20 px-2 py-1.5 text-xs">
-            <span className="font-medium">{t('conversation_ui.preflight.agents')}</span>
-            <div className="mt-1 space-y-1">
-              {participantChoices.map(({ member, options, selected }) => (
-                <div key={member.agent_id} className="flex items-center justify-between gap-2">
-                  <span className="min-w-0 flex-1">{member.agent_name}{member.role === 'manager' ? t('conversation_ui.preflight.manager_suffix') : ''}</span>
-                  <span className={selected ? 'text-muted-foreground' : 'text-destructive'}>
-                    {selected ? t('conversation_ui.preflight.runtime_ready') : options.length === 0 ? t('conversation_ui.preflight.runtime_unavailable') : t('conversation_ui.preflight.choose_runtime')}
-                  </span>
-                </div>
-              ))}
-              {participantChoices.length === 0 && (
-                <span className="text-destructive">{t('conversation_ui.preflight.agent_setup_pending')}</span>
-              )}
-            </div>
-          </div>
+        <fieldset disabled={disabled || busy || loading || Boolean(summary?.dispatch_locked)} className="space-y-2">
           <SelectionField label={t('conversation_ui.preflight.host')} value={hostId} onChange={value => { hostSelectionTouched.current = true; setHostId(value) }} options={preflight.available_hosts.map(host => ({ value: host.host_id, label: hostLabel(host) }))} placeholder={t('conversation_ui.preflight.choose_host')} />
           <SelectionField label={t('conversation_ui.preflight.primary')} value={primaryKey} onChange={value => { primarySelectionTouched.current = true; setPrimaryKey(value) }} options={[
             { value: 'managed', label: t('conversation_ui.preflight.managed_workspace') },
@@ -505,7 +532,7 @@ function ConversationExecutionPreflightContent({
               <Link to={`/projects/${projectId}/files?setup=folder`} className="underline">{t('conversation_ui.preflight.connect_folder')}</Link>
             </div>
           )}
-          {participantChoices.map(({ member, options, selectedId }) => (
+          {participantChoices.filter(choice => choice.options.length > 0 && (!choice.selected || choice.options.length > 1)).map(({ member, options, selectedId }) => (
             <SelectionField
               key={member.agent_id}
               label={member.role === 'manager' ? t('conversation_ui.preflight.cli_installation') : t('conversation_ui.preflight.cli_installation_for', { agent: member.agent_name })}
@@ -525,11 +552,11 @@ function ConversationExecutionPreflightContent({
           {effectiveDraftBlockedReason && <p className="text-xs text-destructive">{effectiveDraftBlockedReason}</p>}
           <div className="flex flex-wrap gap-2">
             <Button size="sm" disabled={busy || effectiveDraftBlockedReason !== null} onClick={() => void initialize()}>{busy ? <Loader2 className="mr-1 size-3.5 animate-spin" /> : null}{t('conversation_ui.preflight.confirm')}</Button>
-            {!manager && <Button size="sm" variant="outline" disabled={busy} onClick={() => void openDraft()}>{t('conversation_ui.preflight.retry_agent')}</Button>}
+            {!manager && <Button size="sm" variant="outline" disabled={busy || disabled || scope.actionRole === 'worker' || scope.actionRole === 'viewer' || !detail?.viewer_can_write} onClick={() => void openDraft()}>{t('conversation_ui.preflight.retry_agent')}</Button>}
             {/* The Host chosen above, when there is one; otherwise the overview. */}
             <Link to={hostId ? commandCenterHostPath(hostId, 'runtime') : '/command-center'} className="inline-flex items-center text-xs underline">{t('conversation_ui.preflight.configure_host')}</Link>
           </div>
-        </div>
+        </fieldset>
       )}
 
       {initialized && <AttachmentControls
@@ -540,11 +567,11 @@ function ConversationExecutionPreflightContent({
         mode={attachMode}
         onModeChange={setAttachMode}
         onMutate={mutateAttachment}
-        disabled={busy}
+        disabled={busy || disabled || loading || Boolean(error) || Boolean(summary?.dispatch_locked)}
       />}
-      {onNewConversation && initialized && <Button size="sm" variant="outline" onClick={onNewConversation}>{t('conversation_ui.preflight.new_conversation')}</Button>}
+      {onNewConversation && initialized && <div className="flex flex-wrap items-center gap-2"><Button size="sm" variant="outline" onClick={onNewConversation}>{t('conversation_ui.preflight.new_conversation')}</Button><Popover><PopoverTrigger asChild><Button type="button" size="sm" variant="ghost" aria-label={t('conversation_ui.settings.environment_help')}><Info className="size-3.5" /></Button></PopoverTrigger><PopoverContent className="text-xs">{t('conversation_ui.settings.locked')}</PopoverContent></Popover></div>}
       {error && <p className="text-xs text-destructive">{error}</p>}
-    </Card>
+    </fieldset>
   )
 }
 
@@ -557,51 +584,6 @@ function SelectionField({ label, value, onChange, options, placeholder, disabled
   disabled?: boolean
 }) {
   return <div className="space-y-1"><Label className="text-xs">{label}</Label><Select ariaLabel={label} value={value} onChange={onChange} options={[{ value: '', label: placeholder, disabled: true }, ...options]} disabled={disabled} /></div>
-}
-
-function InitializedSummary({ summary, profiles, participants }: {
-  summary: ConversationExecutionSummary
-  profiles: ConversationExecutionRuntimeProfile[]
-  participants: RoomDetail['agent_members']
-}) {
-  const { t } = useAppTranslation()
-  const host = summary.host
-  const primary = summary.primary
-  const runtime = summary.runtime
-  const pinnedRuntimes = summary.runtimes ?? []
-  const runtimes: PinnedRuntime[] = pinnedRuntimes.length > 0 ? pinnedRuntimes : runtime ? [runtime] : []
-  return <div className="space-y-1.5 text-xs">
-    <div className="space-y-1">
-      <span className="font-medium">{t('conversation_ui.preflight.agents_cli')}</span>
-      {runtimes.length > 0 ? runtimes.map(pinned => (
-        <div key={pinned.agent_id}>
-          <SummaryRow
-            label={participants.find(participant => participant.agent_id === pinned.agent_id)?.agent_name
-              ?? profiles.find(profile => profile.runtime_profile_id === pinned.runtime_profile_id)?.agent_name
-              ?? t('conversation_ui.preflight.unknown_agent')}
-            value={`${pinned.runtime_key} · ${pinned.runtime_installation}${sessionOccupancy(pinned)}`}
-          />
-          {pinned.handoff_artifact_id ? (
-            <div className="pl-26 text-muted-foreground">
-              {t('conversation_ui.preflight.session_renewed')}<Link to={`/artifacts/${pinned.handoff_artifact_id}`} className="underline">{t('conversation_ui.preflight.open_handoff')}</Link>
-            </div>
-          ) : null}
-          {pinned.summary_artifact_id ? (
-            <div className="pl-26 text-muted-foreground">
-              {t('conversation_ui.preflight.summary_written', { tokens: formatTokens(pinned.context_tokens) })}<Link to={`/artifacts/${pinned.summary_artifact_id}`} className="underline">{t('conversation_ui.preflight.open_summary')}</Link>
-            </div>
-          ) : null}
-
-        </div>
-      )) : <SummaryRow label={t('conversation_ui.preflight.agent_cli')} value={t('conversation_ui.preflight.unavailable_value')} />}
-    </div>
-    <SummaryRow label={t('conversation_ui.preflight.host_label')} value={host ? `${host.host_name}${host.online ? t('conversation_ui.preflight.daemon_online_suffix') : t('conversation_ui.preflight.daemon_offline_suffix')}` : t('conversation_ui.preflight.unavailable_value')} tone={host?.online === false ? 'danger' : undefined} />
-    <SummaryRow label={t('conversation_ui.preflight.primary_cwd')} value={primary?.display_path ?? (primary?.kind === 'managed' ? t('conversation_ui.preflight.managed_workspace') : t('conversation_ui.preflight.unavailable_value'))} />
-    <ConversationGitContext snapshot={summary.git ?? null} />
-    {summary.blocked_reason && <p className="rounded bg-destructive/10 px-2 py-1 text-destructive">{localizedWorkspaceReason(summary.blocked_reason,t)}</p>}
-    {host?.online === false && <div className="flex items-center gap-1 text-muted-foreground"><Unplug className="size-3.5" />{t('conversation_ui.preflight.offline_note')}<Link to={commandCenterHostPath(host.host_id, 'connection')} className="underline">{t('conversation_ui.preflight.reconnect_host')}</Link></div>}
-    {!runtime && <p className="text-muted-foreground">{t('conversation_ui.preflight.runtime_gone')}</p>}
-  </div>
 }
 
 function managedGitSnapshot(): NonNullable<ConversationExecutionSummary['git']> {
@@ -627,6 +609,7 @@ function AttachmentControls({ summary, locations, selectedLocationId, onLocation
   disabled: boolean
 }) {
   const { t } = useAppTranslation()
+  const [adding, setAdding] = useState(false)
   const hostId = summary.host?.host_id
   const attached = new Set(summary.attachments.filter(item => item.status === 'active').map(item => item.workspace_location_id))
   const candidates = locations.filter(location => {
@@ -634,11 +617,11 @@ function AttachmentControls({ summary, locations, selectedLocationId, onLocation
     return summary.primary?.kind !== 'location' || location.workspace_location_id !== summary.primary.workspace_location_id
   })
   return <div className="space-y-2 border-t border-border pt-2">
-      <div className="text-xs font-medium">{t('conversation_ui.preflight.attached_folders')}</div>
-    {summary.attachments.length === 0 && <p className="text-xs text-muted-foreground">{t('conversation_ui.preflight.no_attachments')}</p>}
-    {summary.attachments.map(attachment => {
+      {summary.attachments.some(item => item.status === 'active') && <div className="text-xs font-medium">{t('conversation_ui.preflight.attached_folders')}</div>}
+
+    {summary.attachments.filter(item => item.status === 'active').map(attachment => {
       return <div key={attachment.id} className="flex flex-wrap items-center gap-2 rounded border border-border px-2 py-1 text-xs">
-      <span className="min-w-0 flex-1 truncate">{attachment.folder_name}{attachment.display_path ? ` · ${attachment.display_path}` : ''} · {attachment.access_mode === 'write' ? t('conversation_ui.preflight.access_write') : t('conversation_ui.preflight.access_read')}</span>
+      <div className="flex min-w-0 basis-full items-center gap-2"><span title={attachment.display_path ?? attachment.folder_name} className="min-w-0 flex-1 truncate">{attachment.folder_name}{attachment.display_path ? ` · ${attachment.display_path}` : ''}</span><Badge variant="outline" className="shrink-0">{t(attachment.access_mode === 'write' ? 'conversation_ui.preflight.access_write' : 'conversation_ui.preflight.access_read')}</Badge></div>
       {attachment.status === 'active' && <>
         <Button size="sm" variant="ghost" disabled={disabled || attachment.access_mode === 'write'} onClick={() => void onMutate('set_access', attachment.id, 'write')}>{t('conversation_ui.preflight.grant_write')}</Button>
         <Button size="sm" variant="ghost" disabled={disabled || attachment.access_mode === 'read'} onClick={() => void onMutate('set_access', attachment.id, 'read')}>{t('conversation_ui.preflight.read_only')}</Button>
@@ -646,30 +629,15 @@ function AttachmentControls({ summary, locations, selectedLocationId, onLocation
       </>}
     </div>
     })}
-    {candidates.length > 0 && <div className="flex flex-wrap items-end gap-2">
+    <Button size="sm" variant="outline" disabled={disabled} onClick={() => setAdding(!adding)}>{t('conversation_ui.settings.add_folder')}</Button>
+    {adding && candidates.length === 0 && <p className="text-xs text-muted-foreground">{t('conversation_ui.settings.no_folders')}</p>}
+    {adding && candidates.length > 0 && <div className="flex flex-wrap items-end gap-2">
       <div className="min-w-0 flex-1"><SelectionField label={t('conversation_ui.preflight.folder')} value={selectedLocationId} onChange={onLocationChange} options={candidates.map(location => ({ value: location.workspace_location_id, label: `${location.folder_name}${location.display_path ? ` · ${location.display_path}` : ''}` }))} placeholder={t('conversation_ui.preflight.choose_attach')} disabled={disabled} /></div>
       <div className="w-24"><SelectionField label={t('conversation_ui.preflight.access')} value={mode} onChange={value => onModeChange(value as ConversationAttachmentAccessMode)} options={[{ value: 'read', label: t('conversation_ui.preflight.read') }, { value: 'write', label: t('conversation_ui.preflight.write') }]} placeholder={t('conversation_ui.preflight.access')} disabled={disabled} /></div>
       <Button size="sm" disabled={disabled || !selectedLocationId} onClick={() => void onMutate('attach')}>{t('conversation_ui.preflight.attach')}</Button>
     </div>}
-    <p className="text-xs text-muted-foreground">{t('conversation_ui.preflight.attach_note')}</p>
+    {(adding || summary.attachments.some(item => item.status === 'active')) && <p className="text-xs text-muted-foreground">{t('conversation_ui.preflight.attach_note')}</p>}
   </div>
-}
-
-type PinnedRuntime = ConversationExecutionSummary['runtimes'][number]
-
-function formatTokens(tokens: number | null | undefined): string {
-  if (tokens == null) return i18n.t('conversation_ui.preflight.unknown_tokens')
-  return tokens >= 1000 ? `${Math.round(tokens / 1000)}k` : String(tokens)
-}
-
-/** How full this Agent's vendor session is, as its runtime last reported it. */
-function sessionOccupancy(pinned: PinnedRuntime): string {
-  if (pinned.context_tokens == null || !pinned.context_window_tokens) return ''
-  return i18n.t('conversation_ui.preflight.context_full', { percent: Math.round((pinned.context_tokens / pinned.context_window_tokens) * 100) })
-}
-
-function SummaryRow({ label, value, tone }: { label: string; value: string; tone?: 'danger' }) {
-  return <div className="flex gap-2"><span className="w-24 shrink-0 text-muted-foreground">{label}</span><span className={tone === 'danger' ? 'text-destructive' : ''}>{value}</span></div>
 }
 
 function hostLabel(host: ConversationExecutionHostSummary): string {
@@ -691,14 +659,8 @@ function runtimeCandidateKey(profile: ConversationExecutionRuntimeProfile): stri
 function suggestedRuntimeCandidateKey(profiles: ConversationExecutionRuntimeProfile[]): string {
   const preferred = profiles.filter(profile => profile.preferred)
   const persisted = profiles.filter(profile => profile.runtime_profile_id !== null)
-  const candidate = preferred.length === 1
-    ? preferred[0]
-    : persisted.length === 1
-      ? persisted[0]
-      : profiles.length === 1
-        ? profiles[0]
-        : null
-  return candidate ? runtimeCandidateKey(candidate) : ''
+  const suggested = preferred.length === 1 ? preferred[0] : persisted.length === 1 ? persisted[0] : profiles.length === 1 ? profiles[0] : null
+  return suggested ? runtimeCandidateKey(suggested) : ''
 }
 
 function draftReason(input: {
@@ -718,11 +680,4 @@ function draftReason(input: {
   if (!input.profile) return input.candidateProfileCount > 1 ? i18n.t('conversation_ui.preflight.reason.choose_cli') : i18n.t('conversation_ui.preflight.reason.no_cli')
   if (input.participantBlockReason) return input.participantBlockReason
   return null
-}
-
-
-function localizedWorkspaceReason(reason:string|null|undefined,t:(key:string)=>string){
- if(reason==='waiting_for_baseline')return t('workspace_ui.execution.baseline_required');
- if(reason==='execution_workspace_host_upgrade_required')return t('workspace_ui.execution.host_upgrade_required');
- return reason;
 }

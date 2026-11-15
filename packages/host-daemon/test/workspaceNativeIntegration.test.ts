@@ -7,8 +7,8 @@ import {afterEach,beforeEach,expect,it} from 'vitest';
 import {saveConfig} from '../src/config.js';
 import {prepareExecutionWorkspace,executionWorkspacePath,executeWorkspaceCommand} from '../src/executionWorkspace.js';
 import {executeWorkspaceIntegration} from '../src/workspaceIntegration.js';
-import {checkLocationRepository,taskLeaseKey,deleteTaskBranch,settleTaskRun} from '../src/taskWorktree.js';
-import {workspaceWorktreeKey,workspaceRunKey} from '../src/worktreeIdentity.js';
+import {checkLocationRepository,taskLeaseKey,deleteTaskBranch} from '../src/taskWorktree.js';
+import {workspaceWorktreeKey} from '../src/worktreeIdentity.js';
 import {acquireLocationLeases,releaseLocationLeases} from '../src/locationLease.js';
 import type {HostServerFrameOf} from '@rainver/protocol';
 let sandbox:string,root:string,config:string,cwd:string,base:string,lease:string;
@@ -31,6 +31,7 @@ function frame(action:'native_prepare'|'native_checkpoint'|'native_publish',extr
 }
 const call=(action:Parameters<typeof frame>[0],extra:Parameters<typeof frame>[1]={})=>executeWorkspaceIntegration(root,frame(action,extra));
 async function checkpoint(){const saved=await call('native_checkpoint');expect(saved.ok).toBe(true);return saved.candidate_commit!;}
+async function checkpointAfterExit(){return executeWorkspaceCommand(root,{type:'execution_workspace_command',request_id:randomUUID(),operation_id:randomUUID(),workspace:{kind:'location',workspace_location_id:location,execution_workspace:ref},action:'checkpoint',run_id:runId,author,retain_branch:true});}
 beforeEach(async()=>{
  sandbox=await realpath(await mkdtemp(join(tmpdir(),'rainver-native-')));root=join(sandbox,'repo');config=join(sandbox,'host');await mkdir(root);await mkdir(config);
  process.env.RAINVER_HOST_CONFIG_DIR=config;ref={id:randomUUID(),generation:1};runId=randomUUID();mergeId=randomUUID();
@@ -75,6 +76,37 @@ it('replays lost responses without resetting edits made after preparation',async
  await init();await writeFile(join(cwd,'feature.txt'),'feature\n');const request=frame('native_prepare'),first=await executeWorkspaceIntegration(root,request);
  await writeFile(join(cwd,'feature.txt'),'later work\n');expect(await executeWorkspaceIntegration(root,{...request,request_id:randomUUID()})).toEqual(first);expect(await readFile(join(cwd,'feature.txt'),'utf8')).toBe('later work\n');
 });
+it('retries a persisted busy publication with the same identity after the target is released',async()=>{
+ await init();await writeFile(join(cwd,'feature.txt'),'feature\n');await call('native_prepare');
+ const request=frame('native_publish',{verified_commit:await checkpoint()}),target=git('rev-parse','dev'),holder='target-writer';
+ await acquireLocationLeases([location],{runId:holder,launchId:holder},()=>{throw new Error('unexpected queue');});
+ try{
+  expect(await executeWorkspaceIntegration(root,request)).toMatchObject({ok:false,error:'location_busy'});
+  const receipt=join(config,'workspace-native',location,workspaceWorktreeKey(ref),`request-${request.operation_id}.json`);
+  expect(JSON.parse(await readFile(receipt,'utf8')).answer).toMatchObject({ok:false,error:'location_busy'});
+  expect(await executeWorkspaceIntegration(root,{...request,request_id:randomUUID()})).toMatchObject({ok:false,error:'location_busy'});
+  expect(await executeWorkspaceIntegration(root,{...request,request_id:randomUUID(),message:'different request'})).toMatchObject({ok:false,error:'native_integration_request_changed'});
+  expect(git('rev-parse','dev')).toBe(target);
+ }finally{releaseLocationLeases([location],holder);}
+ const published=await executeWorkspaceIntegration(root,{...request,request_id:randomUUID()});
+ expect(published).toMatchObject({ok:true,outcome:'merged'});
+ expect(git('show','dev:feature.txt')).toBe('feature');
+ expect(await executeWorkspaceIntegration(root,{...request,request_id:randomUUID()})).toMatchObject({
+  ok:true,outcome:'merged',candidate_commit:published.candidate_commit,onto_commit:published.onto_commit,
+ });
+ expect(git('rev-parse','dev')).toBe(published.candidate_commit);
+});
+it('revalidates checked content when retrying a busy publication instead of publishing later edits',async()=>{
+ await init();await writeFile(join(cwd,'feature.txt'),'checked feature\n');await call('native_prepare');
+ const request=frame('native_publish',{verified_commit:await checkpoint()}),target=git('rev-parse','dev'),holder='target-writer';
+ await acquireLocationLeases([location],{runId:holder,launchId:holder},()=>{throw new Error('unexpected queue');});
+ try{expect(await executeWorkspaceIntegration(root,request)).toMatchObject({ok:false,error:'location_busy'});}
+ finally{releaseLocationLeases([location],holder);}
+ await writeFile(join(cwd,'feature.txt'),'unverified later edits\n');
+ expect(await executeWorkspaceIntegration(root,{...request,request_id:randomUUID()})).toMatchObject({ok:false,error:'native_verified_version_changed'});
+ expect(git('rev-parse','dev')).toBe(target);
+ expect(await readFile(join(cwd,'feature.txt'),'utf8')).toBe('unverified later edits\n');
+});
 it('requires the live launch owner and prevents premature worktree cleanup',async()=>{
  await init();expect(await call('native_prepare',{run_id:randomUUID()})).toMatchObject({ok:false,error:'native_integration_run_not_active'});
  expect(await deleteTaskBranch({locationRoot:root,locationId:location,taskId:workspaceWorktreeKey(ref)})).toMatchObject({ok:false,error:'task_busy'});
@@ -107,7 +139,7 @@ it('blocks only the overlapping file whose local edit conflicts, leaving the che
 });
 it('settles and reclaims the physical worktree only after the Agent exits',async()=>{
  await init();await writeFile(join(cwd,'feature.txt'),'feature\n');await call('native_prepare');await call('native_publish',{verified_commit:await checkpoint()});releaseLocationLeases([lease],launch);
- const settled=await settleTaskRun({locationRoot:root,locationId:location,taskId:workspaceWorktreeKey(ref),runId:workspaceRunKey(runId,ref),author,message:'Done'});expect(settled.ok).toBe(true);expect(await readFile(join(cwd,'node_modules','prepared'),'utf8')).toBe('keep');
+ const settled=await checkpointAfterExit();expect(settled.ok).toBe(true);expect(await readFile(join(cwd,'node_modules','prepared'),'utf8')).toBe('keep');
  expect(await executeWorkspaceCommand(root,{type:'execution_workspace_command',request_id:randomUUID(),workspace:{kind:'location',workspace_location_id:location,execution_workspace:ref},action:'cleanup',operation_id:randomUUID(),expected_commit:settled.commit!,retain_branch:true})).toMatchObject({ok:true,cleanup_state:'cleaned'});await expect(readFile(join(cwd,'node_modules','prepared'))).rejects.toThrow();await expect(readFile(join(config,'workspace-native',location,workspaceWorktreeKey(ref),`${mergeId}.json`))).rejects.toThrow();
 });
 it('publishes an independent commit without importing private branch history',async()=>{
@@ -147,7 +179,7 @@ it('preserves ignored prepared files when an incoming target starts tracking the
 it('keeps an Agent private commit identity and saves checkpoints without publication',async()=>{
  await init();await writeFile(join(cwd,'private.txt'),'private\n');workGit('add','.');workGit('commit','-qm','Keep this commit');const commit=workGit('rev-parse','HEAD');
  expect(await checkpoint()).toBe(commit);expect(git('rev-parse','dev')).toBe(base);releaseLocationLeases([lease],launch);
- expect(await settleTaskRun({locationRoot:root,locationId:location,taskId:workspaceWorktreeKey(ref),runId:workspaceRunKey(runId,ref),author,message:'System checkpoint'})).toMatchObject({ok:true,commit});
+ expect(await checkpointAfterExit()).toMatchObject({ok:true,commit});
  expect(workGit('rev-parse','HEAD')).toBe(commit);expect(workGit('log','-1','--format=%s')).toBe('Keep this commit');expect(await readFile(join(cwd,'node_modules','prepared'),'utf8')).toBe('keep');
 });
 it('runs two native conversations independently and repairs their target race in the same worktrees',async()=>{

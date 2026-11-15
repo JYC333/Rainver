@@ -1,10 +1,11 @@
 import {retryableNativeCollection} from './collectionRetry.js';
+import {goalTransaction,lockGoal} from './transaction.js';
 import {projectReadingDay} from '../../informationDigest/index.js';
 import {randomUUID} from 'node:crypto';
 import type {SourceGoalBindingSpec} from '@rainver/protocol';
 import {SourceGoalCheckRequestSchema} from '@rainver/protocol';
 import type {ServerConfig} from '../../../config.js';
-import {HttpError,withDbTransaction,type Pool,type Queryable,type SpaceUserIdentity} from '../../routeUtils/common.js';
+import {HttpError,type Queryable,type SpaceUserIdentity} from '../../routeUtils/common.js';
 import {PgJobQueueRepository} from '../../jobs/repository.js';
 import {PgSourcesRepository} from '../repository.js';
 import {activeGoalIntent,requireGoal,requireLegacyGoalSource,goalSourceFingerprint,type GoalRow} from './access.js';
@@ -44,10 +45,10 @@ export async function enqueueGoalCollection(db:Queryable,g:GoalRow,slot?:string,
 
 /** Metadata-only admission; execution, budgets, cursors and materialization stay
  * in the canonical worker. A manual check never changes the automatic cadence. */
-export async function requestGoalCheck(db:Pool,config:ServerConfig,identity:SpaceUserIdentity,id:string,raw:unknown){
+export async function requestGoalCheck(db:Queryable,config:ServerConfig,identity:SpaceUserIdentity,id:string,raw:unknown){
  const input=SourceGoalCheckRequestSchema.parse(raw);
- return withDbTransaction(db,async tx=>{
-  await tx.query('SELECT id FROM source_goals WHERE id=$1 AND space_id=$2 FOR UPDATE',[id,identity.spaceId]);
+ return goalTransaction(db,async tx=>{
+  await lockGoal(tx,id,'update',identity.spaceId);
   const g=await requireGoal(tx,identity,id,true);
   if(g.status!=='running'||g.compatibility_json?.execution_mode==='manual')throw sourceGoalError(409,'source_goal_stopped');
   if(g.active_version_id!==input.expected_version_id)throw sourceGoalError(409,'source_goal_message_superseded');

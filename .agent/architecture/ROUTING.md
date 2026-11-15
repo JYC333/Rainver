@@ -143,6 +143,10 @@ score; non-explicit dispatch may select another eligible Profile. On retry,
 the persisted fallback chain constrains which untried Profiles can be selected.
 Routing records a decision per physical attempt; the Supervisor, not the
 router, decides whether a failed Run should be retried.
+For a Supervisor `execution_controller_lost` recovery, routing constrains the
+next attempt to the previous eligible Profile and preserves its fallback chain.
+A Server restart is not evidence that the runtime failed. Actual runtime
+failures continue to advance through untried eligible Profiles as before.
 
 ## Tool and capability channels
 

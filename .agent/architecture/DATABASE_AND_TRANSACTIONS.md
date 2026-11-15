@@ -40,6 +40,19 @@ boundary admission, group lifecycle projection, quota-held dispatch) asks for
 `independentPool(db, purpose)`, which fails closed on a client or core port
 instead of joining the caller or opening a second connection.
 
+Operation resolution may read the existing host-authored invocation port (request id and validated command key) to discover that request's cached output roots before domain locks. The key never enters the business DTO or grants authority; resolved authority/targets still determine its request scope and fingerprint. Capture relocation uses this for current cross-Space replay checks.
+
+The named person-scoped `capture.file` registration separates storage from
+authority: core resolves the person's actual owned Personal Space for receipt
+and policy rows while its actor remains the verified person. No request-Space
+membership authorizes the transfer. The canonical filing owner discovers and
+locks Project/audience -> person/membership -> content/grant closure before
+rechecking source ownership and destination writer authority. Its Queryable
+service joins the branded transaction, so Note/provenance, capture state, audit
+and receipt roll back together. Successful receipt replay repeats current domain
+admission before output is released. This is a closed human-only exception,
+without approval mapping, plugin enablement or a new memory writer.
+
 ## Prepared Run terminal owners
 
 `withRunTerminalOwner` reuses `withQueryableTransaction`, the existing operation
@@ -121,6 +134,72 @@ preflight disclosure. The update locks the resource and disclosure row,
 recomputes readers, consuming Runs, and still-shared derived outputs, rejects a
 changed or expired exposure snapshot, narrows policy/grants, and consumes the
 confirmation id together. There is no silent or one-step demotion path.
+Disclosure creation and readback are each one transaction that releases a
+named Run's, Artifact's or Proposal's title only under
+`lockDemotionReleaseClosure` (`contentAccess/demotionReleaseClosure.ts`).
+That lock reuses `lockSourceRetrievalRelease` for Projects/audience → person
+and membership → Space → Folders → Rooms → Room members → content rows (the
+demoted resource, Runs, outputs, report and lineage Artifacts, Source
+items/snapshots/connections, Threads), each followed by its shares and grants
+→ channels, subscriptions and windows; the Rooms and members are its
+`beforeContent` step. It then locks research Operations → Following goals and
+versions → Run groups and sessions, all `FOR SHARE`. The Room comes before
+its members, Runs, groups and conversations because every Room-exclusive
+writer takes it first: the roster writer (Room → members), the Room Agent
+context reset and summary restart (Room `FOR UPDATE OF room` → member → the
+`host_threads` row joined with its session, host and Agent `FOR UPDATE` → the
+conversation append lock `sessions FOR UPDATE`), and `room.quota.continue`
+(Room `FOR UPDATE OF room` → conversation queue and turn advisory locks →
+every held queued Run of the conversation `FOR UPDATE OF run`, recovery holds
+included, before it filters them). A quota recovery hold keeps the Run's
+accepted Invocation Snapshot (the supervisor requeues the same Run, then
+holds it), so a disclosure can name it. Groups and sessions stay after the
+Runs because the Run status writers (supervisor requeue and quota hold, hold
+notice) update the Run before appending to its conversation. Ownership
+and every title are re-read after the locks, and the response is built before
+commit. A lineage that changed while waiting, or a deadlock or lock-timeout
+abort, is a 409. The confirming recompute takes the same closure inside the
+policy transaction.
+
+`lockArtifactReleaseClosure` (same file) is that closure for an Artifact body
+another surface releases on the Artifact reader's own decision
+(`artifactBodyReleased`, `artifacts/repository.ts`): the Runtime Context
+Evidence Matrix, in preview release and execution Delivery alike. It first
+discovers the research dependency set the full content gate
+(`assertResearchArtifactReadable`) walks —
+`discoverResearchArtifactDependencies` (`projectResearch/researchArtifactClosure.ts`):
+the recursive `input_refs` Artifacts (cycles deduplicated, more than 200 is a
+409) and every Note, Thread and Task those calls reference — then takes the
+demotion closure over all of them, with the referenced Tasks and this person's
+Task grants after the Source closure, and discovers the dependency set again
+under the locks. A different answer is a 409, which the caller treats as
+withheld.
+
+The Tasks include the implicit owners: an `artifact` input ref also passes
+`referenceReadableSql` (`inquiry/problemReferences.ts`) when the Artifact has
+no Project and a `task_artifacts` link names a live Task of the call's Project
+this person reads at `full`. Discovery therefore returns every link of every
+dependency Artifact (`taskArtifactLinks`) and its Task; the closure takes each
+Task's Folder in the Folder phase (`lockSourceRetrievalRelease`
+`additionalFolders`, with its Project's audience), the Task row and this
+person's Task grants after the content rows — the content-policy writer
+(`ContentAccessService.updatePolicy`) takes the Task `FOR UPDATE` before its
+grants, so either order serializes — and then the links `FOR SHARE`. Links
+are only inserted (`applyRunArtifactDeclarations`); a link added, or a Task
+moved to another Project, between discovery and the locks is a different
+second discovery and a 409. Deleting a locked link or Task waits.
+
+The Delivery gate (`PgInvocationDeliveryAuthorizer.authorizeEnvelope`) holds
+the Run `FOR SHARE` from early on, and a Room writer takes the Room before that
+Room's Runs ("Continue anyway": Room `FOR UPDATE` → conversation queue → every
+held Run of the conversation `FOR UPDATE`, recovery holds included). So the
+gate takes its Rooms first: after the Work Context lock and the person's Space
+membership, `lockEnvelopeRooms` share-locks, in id order with this person's
+member rows, the Run's own conversation Room (group or session), the Room of a
+`room_recipient` scope, and every Room of each Evidence Matrix release closure
+(`artifactReleaseRooms`). The later message, continuity and Matrix gates
+re-lock only those; one outside the set (`HeldRooms`) is a 409 before anything
+else is locked. No deadlock is caught or retried.
 
 If a transaction fails, callers must not continue as though the transaction were clean.
 
@@ -160,6 +239,21 @@ reference messages → briefing rows → audience (`lockProjectAudience`, or a
 personal owner's Reading opt-in shared lock) → context roots (Tasks, Goals) →
 scope signals → content grants and subscriptions → Source items and
 connections.
+
+Goal writers follow the same audience-before-roots order
+(`sources/goals/transaction.ts#lockGoal`): the goal's Project row (FOR UPDATE)
+before the goal row, re-checking that the goal did not move Projects in between.
+The Goal core commands, every domain Goal writer, topic analysis, the scheduler
+cohort (Project, then its goals in id order) and goal creation (Project FOR
+UPDATE before the writer check's share lock) take it; a reading Run's Delivery
+(`lockReadingRunAuthority`) locks every Project audience, its Following goals' own
+Projects included, before those goals. No Goal holder therefore waits for its
+Project while a Delivery holds that Project and waits for the Goal. A Source Goal
+collection batch commit takes Project and Goal share, the binding (lease, revision)
+FOR UPDATE and the Source connection's read authority (row, owner subscriptions,
+content ACL) before its final re-verification, so a pause/delete, Project writer
+removal or Source change serializes against the batch instead of slipping between
+its check and its writes.
 
 It is then re-verified against the destination the Delivery is authorized for
 (`informationDigest/briefing/referenceDelivery.ts`). Project membership writers
@@ -231,6 +325,9 @@ Invitation approval transactions take the Room lock before the invitation lock,
 then compare the persisted revision and current private-Agent owner/status
 projection; a mismatch invalidates approvals and cannot silently widen access.
 Activation inserts the human membership and all Room-only grants atomically.
+A specialist or preset add also upserts the Agent's `project_agent_links` row
+in the same transaction, so a Room member is never missing from the Project's
+Agent list; a removal leaves that row.
 Unexpired invitations with a stale roster snapshot are explicitly invalidated
 and recreated, and private-Agent owners have a Space-level pending-approval
 inbox whose rows are filtered by current Project read access before they can be
@@ -977,3 +1074,88 @@ catching a SQL error and continuing an aborted outer transaction. Real PG tests
 retain a caller BEGIN and verify rejection leaves it usable; normal Pool scans
 retain progress. JSON-null Job payload run_id is consistently excluded from both
 Run discovery and abandoned-Run projection; the Job itself still expires normally.
+
+
+### Source result release and final Source commits (a83 follow-up)
+
+`source/retrieval` request GETs use a caller-owned writable transaction for their
+canonical recheck and B11 audit. `sources/retrievalReleaseLocks.ts` discovers the
+whole hit set's actual Evidence/item/snapshot/ontology provenance, Source
+connections and Project/share/folder scopes without releasing content. It locks
+Projects/audiences in id order, the active viewer (users before Space membership),
+Space/folders, all resource roots and grants in type/id order, then channels,
+subscriptions and historical windows in id order. Discovery is compared again
+under those locks; scope/lineage drift returns 409 for a fresh read. Archived or
+missing origins remain a canonical-gate withholding, not an ACL fallback. The
+adapter, canonical Source policy lineage and B11 insert use that same client;
+locks end only after the audit commits. This is the two Source retrieval types'
+release closure, not a new generic authorization authority.
+
+Custom Source repair's final transaction takes Project audience, active caller
+(users then active membership), Project writer authority, Source and channels.
+Collection takes Project audience, active owner, Project/Goal, binding and Source
+read authority before rechecking. The production auth disable endpoint updates
+`users.status`; its update now conflicts with either commit's user share lock.
+
+Collection locks the binding first and checks token, revision and
+`lease_until > clock_timestamp()` together afterwards. It checks them again at
+the final commit decision after materialization and theme preparation. The rule
+is lease validity at admission and at that final decision: expiry before either
+rolls back items, membership, notifications and cursor. The locked binding keeps
+reclaim/renewal/replacement behind the transaction through COMMIT; PostgreSQL
+cannot assert wall-clock time at the physical COMMIT acknowledgement. No claim
+of an unbounded valid lease, or of validity beyond that final decision, is made.
+
+Native digest backfill settles its deterministic snapshot, execution audit and
+Job together under `lockCurrentJobClaim`. The queue worker recognizes an atomic
+settlement only after `confirmCompletedJob` independently matches persisted
+completed status, worker, attempt and exact result. A handler flag or a different
+terminal receipt cannot substitute for that check. No effect is re-executed.
+
+Briefing content queries retain the read-only data transaction. The existing
+host audit callback receives the validated DTO plus an optional original result
+for owner-private non-wire audit references; only the audit port writes B11.
+Adoption uses the Source release closure's `writtenProjects` option to take the
+canonical destination write lock in the initial sorted Project phase, avoiding
+late shared-lock upgrades when the Task writer joins.
+
+
+The reviewed Reading preference/annotation/Source-backed interest registrations
+use `domainAuthorizationFirst`: request reservation and nonlocking actor/grant
+checks precede their complete domain closure; core then rechecks and pins the
+actor in that same transaction before policy/effects. On replay, the original
+result closure is locked instead of a fresh candidate discovery. The opt-in
+rejects approval mappings, placement and terminal-Run owners; other operations
+are unchanged. See the Information Digest owner guide for discovery/recheck and
+the real invitation-writer cycle negative control.
+
+The core's locked `assertCurrentActor` uses `lockActivePerson`: separate users
+then Space-membership `FOR SHARE` statements, never a joined two-table lock.
+Invitation acceptance takes the user `FOR UPDATE` before its membership upsert;
+even its active-member refusal locks the conflicting membership. This order
+also applies to default core commands, not only domain-first registrations.
+The nonlocking preflight stays nonlocking; authority refusals stay hidden 404s,
+and database failures propagate. Existing Project/Source closure placement,
+Agent/Run/grant validation and receipt reauthorization remain unchanged.
+
+
+Daily report worker admission, provider-attempt admission, send admission and
+settlement take the existing Source/current-authority closure before the Job
+claim row, then the Run row. Failure cleanup takes Job claim before Run too.
+This matches `PgJobQueueRepository.cancelJob`: its conditional Job UPDATE owns
+that row before `endRunBehindJob` invokes the canonical Run terminal writer.
+`withRunTerminalOwner` pre-admits linked request/Proposal transitions; unlinked
+shared advisory admission does not lock the Run row. It must not be mistaken
+for Run-before-Job serialization. The reclaim owner remains nonwaiting (Run
+NOWAIT, then Job SKIP LOCKED), so it never waits back on a held Job. No authority
+closure is moved behind domain locks, and no transaction spans provider I/O.
+
+Personal cross-Space retrieval extends the existing Source/retrieval release
+closure to a batch of Space scopes; the single-Space entry delegates to the same
+phases. All Project audiences precede all viewer/grantor roots and memberships,
+then Spaces, Folders, resources/grants/Source subscriptions, extensions and
+lineage. Every discovered closure is reread before use. Only the named person
+pointer resolver may pin an inactive source membership so canonical access can
+return unresolved; destination Personal membership stays mandatory. No inactive
+membership grants content authority. Pointer state, source audit, summaries,
+disclosure consumption, fused provenance/egress and core receipts commit together.

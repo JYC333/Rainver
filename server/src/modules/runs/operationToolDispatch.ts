@@ -1,8 +1,9 @@
+import {safeInputErrors} from '../systemActions/inputErrors.js';
 import type { OperationActor, OperationResponse, RegisteredSystemActionDefinition as SystemActionDefinition, CanonicalToolCall } from '@rainver/protocol';
 import type { ServerConfig } from '../../config.js';
 import { dbPool } from '../routeUtils/common.js';
 import { runActor, assertCurrentActor, assertOperationGrant } from '../systemActions/operations/actor.js';
-import { OperationError, hidden } from '../systemActions/operations/errors.js';
+import { OperationError, OperationInputError, hidden } from '../systemActions/operations/errors.js';
 import { operationToolResponse, type OperationToolResponse } from '../systemActions/operations/agentResult.js';
 import type { AgentRunRecord } from './repository.js';
 import { defaultActionEventSink } from './actionEvents.js';
@@ -25,7 +26,8 @@ export async function dispatchRunOperation(
     await assertCurrentActor(db, actor);
     await assertOperationGrant(db, actor, call.name);
     if (!definition.allowed_actor_types.includes('agent') || !definition.visibility.has('agent_tool')) throw hidden();
-    if (!definition.input_schema.safeParse(call.arguments).success) throw new OperationError('operation_invalid_input', 422);
+    const parsed=definition.input_schema.safeParse(call.arguments);
+    if (!parsed.success) throw new OperationInputError(safeInputErrors(definition,parsed.error));
     try { await sink?.('action_invoked', eventCall, {action_version: definition.version}); }
     catch (error) {
       if ((await loadActionRegistry(config)).get(definition.policy_action)?.record_failure_mode === 'fail_closed') throw error;

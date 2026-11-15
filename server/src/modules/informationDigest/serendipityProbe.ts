@@ -1,3 +1,4 @@
+import {withAutomationEffectTransaction} from '../automations/effectAuthority.js';
 import { createHash } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
 import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
@@ -42,7 +43,7 @@ export class SerendipityProbeService {
     const gaps = domainDefinitions().filter((domain) => !covered.has(domain.key) && !excluded.has(domain.key));
     const selected = rotateDomains(gaps, userId, period, settings.probe_domain_budget);
     const domainKeys = selected.map((domain) => domain.key);
-    const runId = await this.repo.startProbe(spaceId, userId, period, domainKeys);
+    const runId = await withAutomationEffectTransaction(this.db,tx=>new PgSerendipityRepository(tx).startProbe(spaceId,userId,period,domainKeys));
     if (!runId) {
       return { period_start: period, status: "skipped", domain_keys: domainKeys, request_count: 0,
         external_result_count: 0, source_recommendation_count: 0, already_ran: true };
@@ -53,7 +54,7 @@ export class SerendipityProbeService {
     let requests = 0;
     const failures: unknown[] = [];
     try {
-      recommendations = await this.repo.recommendExistingSources(spaceId, userId, domainKeys, period, settings.probe_domain_budget);
+      recommendations = await withAutomationEffectTransaction(this.db,tx=>new PgSerendipityRepository(tx).recommendExistingSources(spaceId,userId,domainKeys,period,settings.probe_domain_budget));
       const identity = { spaceId, userId };
       if (await this.provider.available(identity)) {
         for (const domain of selected) {
@@ -61,20 +62,22 @@ export class SerendipityProbeService {
           requests += 1;
           try {
             const samples = await this.provider.search(identity, domain.label);
-            const itemIds = await materializeExternalDiscovery(this.db, {
-              spaceId,
-              projectId: null,
-              userId,
-              samples,
-              discoveryKey: `serendipity:${period}:${domain.key}`,
+            await withAutomationEffectTransaction(this.db,async tx=>{
+              const itemIds = await materializeExternalDiscovery(tx, {
+                spaceId,
+                projectId: null,
+                userId,
+                samples,
+                discoveryKey: `serendipity:${period}:${domain.key}`,
+              });
+              for (const itemId of itemIds) {
+                if (await new PgSerendipityRepository(tx).addPoolItem({
+                  spaceId, userId, sourceItemId: itemId, targetDomainKey: domain.key,
+                  origin: "weekly_probe", probePeriod: period,
+                  metadata: { domain_label: domain.label },
+                })) externalResults += 1;
+              }
             });
-            for (const itemId of itemIds) {
-              if (await this.repo.addPoolItem({
-                spaceId, userId, sourceItemId: itemId, targetDomainKey: domain.key,
-                origin: "weekly_probe", probePeriod: period,
-                metadata: { domain_label: domain.label },
-              })) externalResults += 1;
-            }
           } catch (error) {
             failures.push(error);
           }
@@ -88,11 +91,11 @@ export class SerendipityProbeService {
         : requests === 0
           ? (total > 0 ? "degraded" : "skipped")
           : "succeeded";
-      await this.repo.finishProbe(runId, { status, requests, results: total, error: failures[0] });
+      await withAutomationEffectTransaction(this.db,tx=>new PgSerendipityRepository(tx).finishProbe(runId,{status,requests,results:total,error:failures[0]}));
       return { period_start: period, status, domain_keys: domainKeys, request_count: requests,
         external_result_count: externalResults, source_recommendation_count: recommendations, already_ran: false };
     } catch (error) {
-      await this.repo.finishProbe(runId, { status: "failed", requests, results: recommendations + externalResults, error });
+      await withAutomationEffectTransaction(this.db,tx=>new PgSerendipityRepository(tx).finishProbe(runId,{status:"failed",requests,results:recommendations+externalResults,error}));
       throw error;
     }
   }

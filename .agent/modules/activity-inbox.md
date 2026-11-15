@@ -46,6 +46,7 @@ ActivityRecord:
 
 ```
 POST   /api/v1/activity                    — ingest
+POST   /api/v1/activity/upload             — keyed multipart upload intent (202; single-attempt Job)
 GET    /api/v1/activity                    — list (filter: source_type, status, project_folder)
 GET    /api/v1/activity/{id}
 PATCH  /api/v1/activity/{id}/review        — mark as reviewed (status-only; no proposals)
@@ -207,3 +208,9 @@ mounting drops it, since every row would repeat it.
 
 ## Related Decisions
 - [0003-memory-proposal-flow.md](../decisions/0003-memory-proposal-flow.md)
+
+File/voice capture uses `activity.upload` and its typed queued intent, not an
+immediate saved-record response. The Activity owner worker alone creates the
+record after file storage, with current authority, mandatory audit and Job
+completion in one transaction. See [Activity](activity.md#file-and-voice-upload)
+for transport bounds, replay, byte privacy and crash cleanup limits.

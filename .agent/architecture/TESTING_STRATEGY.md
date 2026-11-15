@@ -7,6 +7,9 @@ them fast. Commands are in [`../COMMANDS.md`](../COMMANDS.md).
 
 Eight Vitest suites, one per package, each run from its package root:
 
+Server no-emit typechecking includes its cross-package Host integration fixtures
+under the repository root; the production server build keeps `rootDir: src`.
+
 | Package | Tests | Notes |
 |---|---|---|
 | `server/` | `test/**/*.test.ts` | Real PostgreSQL for anything durable; shared helpers in `test/support/` |
@@ -58,6 +61,11 @@ public behavior. Do not test removed routes, private call chains, mock call
 order, implementation-specific module boundaries, vendor internals behind
 runtime/provider adapters, or styling from backend tests; do not add
 coverage-only tests with no product assertion.
+
+The Room execution-context DB contract test imports only the browser-safe pure
+`runtimeChoice` DTO projector from the web package to validate the same four-field
+input against the real server boundary. This is a test-only contract probe, with
+no React, browser globals, API client or production server-to-web dependency.
 
 ## Fixtures And Fakes
 
@@ -180,6 +188,7 @@ before writing setup.
 | `testPartition` | `partitionTests(part, parts, routes)` — deals one long `<name>.suite.ts` across `<name>.N.test.ts` entry files |
 | `builtinSkillFixture` | The sample built-in Skill package (test data only) |
 | `lockWait` | Waits until a backend in the file's own database is blocked on a lock, for race tests |
+| `webDist` | `await requireCurrentWebDist()` — first line of a browser case that serves `apps/web/dist` through `vite preview`; refuses a missing build, or one whose `dist/build-inputs.json` (content hashes the web build records, `apps/web/buildInputs.ts`) no longer matches the checkout, before a browser starts (build web first; it never builds; never compares mtimes) |
 | `modernIteration` | `ModernIterationService` — Inquiry iteration service sending the complete current command |
 | `monitoringFixture` | Real-Postgres Project monitoring world (`ProjectMonitoringService` over an arXiv source chain) |
 | `outboundGuard` | Outbound guard settings that admit loopback/`.test` upstreams in tests |
@@ -206,14 +215,31 @@ Vitest 4 with `experimental.fsModuleCache` on, cached per package under
 `node_modules/.vitest-cache`; the first run after a dependency change
 repopulates it.
 
-**Two server projects, split by `vi.mock`.** Module evaluation is the largest
+**Server projects split by setup needs and `vi.mock`.** Module evaluation is the largest
 cost of the server suite: every file that imports a service pulls in most of
 the module graph (~1.3s). `server/vitest.config.ts` therefore runs files
 without `vi.mock()` in a `shared` project with `isolate: false` — one module
 graph per worker, evaluated once — and files that `vi.mock()` in an `isolated`
 project, because a mock stays registered for every file that follows in its
-worker. Membership is computed from the file contents; the hygiene test
-freezes the isolated list so it only shrinks.
+worker. A conservative, reviewed pure-file list gets the same isolation split
+(`pure` / `pure-isolated`) without global setup or SQL capture. Remaining files
+retain `shared` / `isolated` integration setup; a filename containing `Db` is
+not the classifier. Unreviewed files keep integration preparation. Config
+regression checks compare all project assignments with the complete on-disk
+file set and require exactly one assignment and unchanged mock isolation.
+The hygiene test freezes the mocking list so it only shrinks.
+
+`test/setupIntegration.ts` shares one coordinator-owned setup and root-provided
+Postgres context between the two integration projects, including when CI disables
+container reuse. Its dynamic import keeps Testcontainers, migrations and plugin
+builds outside pure runs. Both integration projects release their reference at
+teardown; the last release runs the existing global cleanup. Explicit browser
+configs opt back into integration setup and SQL capture after replacing projects.
+
+Reuse / Dependency Check: extends Vitest projects and provided context plus the
+existing shared-Postgres setup; Vitest remains the external runner. No new
+runner or container manager. A small coordinator reference count prevents two
+integration projects from starting two containers when reuse is disabled.
 
 Sharing a worker means module-level state outlives a file. Three rules follow,
 all enforced by the hygiene test: a file that sets a `__set*ForTests` seam
@@ -226,8 +252,10 @@ before it in that worker.
 
 The web suite runs at full parallelism and starts a jsdom environment per file.
 Test files that touch no DOM declare `// @vitest-environment node` on their
-first line; `src/test/setup.ts` installs its DOM shims and per-test cleanup only
-where a DOM exists. `asyncUtilTimeout` is 15s so `findBy*` waits out a lazy
+first line; `src/test/setup.ts` awaits `setupDom.ts` only where a DOM exists.
+Node files do not import Testing Library, React or jest-dom through setup.
+`setupDom.ts` retains DOM shims, React cleanup and localStorage cleanup.
+`asyncUtilTimeout` is 15s so `findBy*` waits out a lazy
 chunk that is still transforming under load.
 
 Two Vitest 4 behaviors to write for: a `vi.fn()` used as a class needs a
@@ -236,26 +264,75 @@ Two Vitest 4 behaviors to write for: a `vi.fn()` used as a class needs a
 files that spy on the same method in several tests restore mocks in
 `afterEach`.
 
-## Time Budgets Are Enforced
+## Time Budgets Are Advisory
 
-Per-call cost grows with the schema (`TRUNCATE ... CASCADE` across the tables)
-and with the module graph (building the whole server to test one module). A
-rule that only looks at new tests misses that, so every run is measured and
-fails on a doubling:
+Pure performance measurements warn; they never determine whether a completed
+run passes. Functional assertions, collection errors and infrastructure errors
+still fail. Do not catch arbitrary errors and relabel them as performance warnings.
 
-1. Vitest's `experimental.importDurations` with `failOnDanger` fails a run when
-   any one import exceeds the danger threshold.
-2. `tools/vitest/budgetReporter.mjs` fails a run when a file's import time or a
-   test's duration exceeds the package budget, or when the suite's total import
-   or test time exceeds the committed baseline by more than the tolerance.
-   Budgets: `server/test/perf-budget.json`, `apps/web/src/test/perf-budget.json`.
-   Totals are per-file sums, not wall clock, but still swing with machine load,
-   so the tolerance is 2x: the gate catches doublings and the ten slowest files
-   it prints every run make drift visible. Raising a limit is an edit to the
-   budget file, reviewed with the change that needed it.
-3. `testHygiene.test.ts` in the server and web suites fails on the rules in the two sections
-   above, plus real-time sleeps and bare `userEvent.setup()`, with exemptions
-   listed per file.
+1. Server/web `experimental.importDurations` uses `failOnDanger: false` and
+   `print: "on-warn"`: slow imports remain visible, including danger imports.
+2. `tools/vitest/budgetReporter.mjs` prints individual file-import and test
+   exceedances, whole-suite total exceedances and the ten slowest files.
+   Thresholds remain in `server/test/perf-budget.json` and
+   `apps/web/src/test/perf-budget.json`. Totals are per-file sums, not wall clock;
+   partial runs do not check totals. Exceedances produce warnings without changing
+   the exit status. Invalid configuration or reporter errors still fail.
+3. Reader browser timings and test-only elapsed-time checks warn on threshold
+   exceedance. Reader memory/DOM checks, query-count invariants, and assertions
+   that production safety deadlines reject/abort still fail normally.
+4. `testHygiene.test.ts` still enforces fixture/runtime hygiene, including
+   real-time sleeps and bare `userEvent.setup()`, with per-file exemptions.
+
+### Execution deadlines are not completed performance measurements
+
+All eight packages set `testTimeout: 0` and `hookTimeout: 0`. The four
+explicit server browser configs inherit those values. Per-test/hook runtime
+arguments and the baseline-schema override have been removed; the Node browser
+case's explicit whole-test runtime limit is removed too. No test is failed merely
+for taking longer than a runtime budget.
+
+The existing reporter also uses Vitest's `onTestCaseResult` and
+`onTestModuleEnd` hooks to warn when a test or a file's tests and hooks took more
+than 5s. Packages without committed aggregate budgets use this same reporter for
+these warnings only. Server/web retain their existing end-of-run budgets.
+Worker events can be buffered, so warnings use Vitest's completed measurements
+rather than promising an exact mid-test alarm. No custom timers, runner or
+supervisor are added. An unfinished test/hook cannot produce its completed
+measurement warning; lack of a warning is not evidence of completion.
+
+Testing Library's 15s DOM waits, Playwright observations, `expect.poll`,
+`vi.waitFor` / `vi.waitUntil` and fixture waits for an expected state retain their
+assertion timeouts: an observation that never appears is a real unmet condition.
+Production API, network, DB and execution safety deadlines are unchanged.
+
+CI retains its existing outer job deadlines (verify: 45 minutes). Local commands
+have no uniform outer supervisor: with `testTimeout: 0`, a stuck test or hook can
+hang indefinitely. Use the terminal tool's existing session cancellation or
+Ctrl-C to stop it; do not add an inner hard failure to compensate. Report a
+cancelled run as **incomplete**, separately from assertion failures and completed
+passes. The reporter labels a runner-reported interruption incomplete; abrupt
+process termination may prevent any final reporter output. Inspect the terminal
+exit/signal and unfinished work, never interpret absent errors or partial passed
+cases as a passing run. No catch may turn cancellation into success.
+
+The reporter cancellation fixture uses a separate POSIX process group and
+terminates its remaining forks after the intentional coordinator cancellation.
+Its Linux regression checks that the reported worker is no longer live. This
+covers that fixture, not arbitrary descendant cleanup after an operator kills a
+whole suite. Windows retains the existing coordinator-only cancellation check.
+The private deep-reading recovery case observes its rerun's durable terminal
+status while waiting for a prompt. A failed/cancelled/orphaned Run fails that
+business assertion and reaches existing worker teardown; it cannot hold the
+fixture forever waiting for a prompt that will never arrive. This uses the
+existing state-observation helper, not a whole-test runtime deadline.
+
+Reporter regression checks: `node --test tools/vitest/budgetReporter.test.mjs`
+from the repository root (requires the server's installed Vitest dependency).
+They exercise budget/import warnings and a failing assertion in real Vitest
+subprocesses, plus deterministic threshold details and browser timing warnings. They also load
+all eight package configs and four server browser configs to protect unlimited
+test/hook runtime and budget reporter registration.
 
 Wall clock has two floors: total work divided by workers, and the slowest
 single file, whose tests run one after another. The server config caps workers
@@ -329,3 +406,31 @@ outside the code namespace; this is distinct from the framework-only benchmark.
 while making the user bus unavailable. Default tests never depend on that OS
 infrastructure. Broker-to-registry cancellation and cached-output reauthorization
 use real-PG fixtures around the transport boundary.
+
+## Workspace dependency preparation
+
+Server and Host daemon `verify` prepare their dependencies once, then invoke
+TypeScript and Vitest directly. Independent `typecheck` / `test` retain their
+preparation hooks. The five dependency libraries keep their existing build
+scripts and use TypeScript's incremental `-p` compilation, with metadata under
+`dist/.tsbuildinfo`; CI's explicit builds populate the same metadata. A warm
+preparation invokes compilers for content validation but emits no unchanged
+outputs. This is not a promise of zero compiler processes.
+
+`tools/typescript/prepareIncremental.mjs` handles two gaps in compiler metadata:
+a changed lock hash, and a missing expected JS/declaration output, discard only
+that library's build info. `tsc -p` then checks source and compiler options by
+content, including new files and edits with preserved mtimes. Do not replace it
+with an mtime-only `tsc -b` up-to-date check: it can miss deleted outputs. The
+helper is confined to the five libraries' existing `src/**/*.ts` → `dist`
+layout; new output kinds require extending the owning build deliberately.
+
+Reuse / Dependency Check: reuses the existing package build/preparation hooks,
+pnpm dependency selection and installed TypeScript incremental compiler. The
+compiler owns source/config invalidation; the small prebuild repair checks lock
+identity and missing outputs only. No custom source cache, build graph or runner
+is introduced.
+
+Compiler-preparation regression: `node --test tools/typescript/prepareIncremental.test.mjs`
+uses temporary libraries to verify warm no-emit, preserved-mtime source/config
+and lock changes, new source files and missing JS/declaration repair.

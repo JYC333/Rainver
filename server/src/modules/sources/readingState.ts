@@ -69,7 +69,7 @@ export class SourceReadingStateService {
    * Copies neither fabricate opens nor replace existing origins; the anchor
    * origin is resolved by the authenticated reading-context service.
    */
-  async update(identity: SpaceUserIdentity, itemId: string, change: ReadingStateRequest, anchorOrigin: "library" | "serendipity" | "project" = "project") {
+  async update(identity: SpaceUserIdentity, itemId: string, change: ReadingStateRequest, anchorOrigin: "library" | "serendipity" | "project" = "project", pinnedItems?: readonly string[]) {
     return withQueryableTransaction(this.db, async tx => {
       const store = new SourceItemUserStateStore(tx);
       const anchor = await tx.query<{ key: string; canonical_uri: string | null; reading_initial_hash: string | null }>(
@@ -89,6 +89,7 @@ export class SourceReadingStateService {
         ), ${readingIdentityCtesSql('candidates', 'resolved')}
         SELECT i.id,i.reading_key FROM resolved i WHERE i.id<>$4 OR i.family_key=$2`,
         [identity.spaceId,key,identity.userId,itemId,anchor.rows[0].canonical_uri]);
+      if (pinnedItems && candidates.rows.some(row => !pinnedItems.includes(row.id))) throw new HttpError(409, "Reading family changed; reload before updating reading state");
       const current = candidates.rows.find(row => row.id===itemId);
       const members = candidates.rows.filter(row => row.reading_key===current?.reading_key);
       // Recheck the anchor after taking the identity lock: content may change.

@@ -61,11 +61,43 @@ git pull && ./ops/scripts/start.sh --prod --detach
 # inherit its public visibility; a prod machine pulls without logging in.
 ```
 
+## Test timing semantics
+
+Server/web import, individual-test and cumulative performance budgets are
+advisory: measurements, slowest files and exceeded thresholds remain visible,
+without changing a completed run's exit status. Reader browser elapsed-time
+budgets also warn. Real assertions and runner/configuration errors still fail.
+
+All packages disable Vitest's elapsed-runtime failures with `testTimeout: 0`
+and `hookTimeout: 0`; server browser configs inherit these settings. The existing
+reporter warns on completed tests or files (including hooks) exceeding 5s;
+server/web also keep their end-of-run budget warnings. Functional observation waits still fail when their
+expected state never appears. Production safety deadlines are unchanged.
+
+A stuck local test can hang indefinitely. Cancel it with Ctrl-C or the terminal
+tool's existing session cancellation. CI retains its outer job timeouts (verify:
+45 minutes). A cancelled/unfinished run is **incomplete**, never passed and not
+an assertion failure; check the exit/signal even if earlier cases passed. See
+[Testing Strategy](architecture/TESTING_STRATEGY.md#execution-deadlines-are-not-completed-performance-measurements)
+for warning and cancellation limitations.
+
+```bash
+# Focused budget semantics regression checks, from repository root.
+node --test tools/vitest/budgetReporter.test.mjs tools/typescript/prepareIncremental.test.mjs
+```
+
 ## Server
 
 ```bash
 cd server
 
+# One verification flow: prepares workspace dependencies once, then checks
+# types and runs Vitest without repeating lifecycle prehooks.
+pnpm run verify
+
+# Independent entry points still prepare workspace dependencies correctly.
+# Warm preparation checks content with tsc incrementality and emits no unchanged
+# outputs; missing JS/declarations or a changed lock discard compiler metadata.
 # Build/typecheck/test
 pnpm run build
 pnpm run typecheck
@@ -74,6 +106,7 @@ pnpm test
 # Local iteration: run only the files for the module you touched. The full
 # server suite is ~1:40 (web ~40s); one file is 5–20s. Real-Postgres files
 # work alone — each clones its own database from the shared template.
+pnpm exec vitest run --project pure --project pure-isolated  # reviewed pure files, no Docker/plugin setup
 pnpm exec vitest run test/memoryApply*                 # a file or glob
 pnpm exec vitest run test/roomsDb -t "dedupe"          # one test by name
 # A long suite split across entry files (roomsDb.1/2/3.test.ts registering
@@ -83,6 +116,16 @@ pnpm exec vitest run test/roomsDb -t "dedupe"          # one test by name
 # quarter of the suite (~70s) — barely faster than running everything.
 # Run the full suite before committing, or leave it to CI, which runs it on
 # every push. Every run prints the ten slowest files by import and test time.
+
+# The full suite includes two real-Chromium cases (pluginFrontendDb against a
+# Vite dev server; taskLifecycleOperationsDb's Task Detail case against the
+# built web app). That case refuses up front a missing apps/web/dist, or one
+# whose dist/build-inputs.json (the content hash of every file the build read)
+# no longer matches the checkout. Prepare them as CI does: Chromium once per
+# machine (Playwright Core's locked version picks its matching build), web
+# after any change to what it bundles.
+pnpm --dir ../apps/web exec playwright-core install chromium
+pnpm --filter @rainver/protocol --filter @rainver/reader-document build && pnpm --filter @rainver/web build
 
 # Real-Postgres tests share one tuned container and reuse it across local runs.
 # Opt out when a CI/job boundary requires the container to be stopped afterward.
@@ -278,15 +321,16 @@ pnpm run preview
 # is a test waiting for something that never arrived. An effect from mount
 # can flush after the click the test just made. Reproduce that by running
 # the one file in a loop.
-# `maxTestMs` in src/test/perf-budget.json stays above that 15s ceiling, so
-# the wait is reported as a test failure rather than a budget violation.
+# Performance budget exceedances only warn; DOM wait errors still fail.
 # Run this suite alone. Its budget totals are per-file sums and grow when
 # another suite runs beside it.
 pnpm test
 
 # Real layout regression (separate from jsdom): build, then check the Room and
-# Agent Work routes with mixed Markdown at mobile/desktop breakpoints, and the
-# Library Reader with a synthetic Chinese/English article (screenshots go to /tmp).
+# Agent Work routes with mixed Markdown at mobile/desktop breakpoints, the
+# Library Reader with a synthetic Chinese/English article, and the Project
+# Agents / Rooms entries in both themes and locales (screenshots go to /tmp;
+# COLLAB_SHOTS overrides /tmp/rainver-collab-shots).
 # Playwright Core is a dev dependency; it does not download browsers on install.
 pnpm exec playwright-core install chromium
 pnpm run build
@@ -491,7 +535,7 @@ file; real Git repositories in a temporary Host config for the daemon file):
 
 ```bash
 cd packages/host-daemon
-pnpm exec vitest run test/workspaceRetention.test.ts test/taskWorktree.test.ts test/workspaceReview.test.ts
+pnpm exec vitest run test/workspaceRetention.test.ts test/workspaceIgnoredSweep.test.ts test/daemonLease.test.ts test/taskWorktree.test.ts test/workspaceReview.test.ts test/capabilities.test.ts
 cd ../../server
 pnpm exec vitest run test/workspaceRetentionDb.test.ts test/workspaceSourceFenceDb.test.ts test/hostThreadsDb.test.ts test/agentWorkspacesDb.test.ts test/delegatedWorkspacePlacementDb.test.ts test/hostUploads.test.ts
 cd ../apps/web
@@ -500,6 +544,12 @@ pnpm run build
 node --test src/__tests__/workspace-concurrency.browser.mjs
 node --test src/__tests__/agent-workspaces.browser.mjs
 ```
+
+Reclaim-6 adds exact adopting-checkpoint pins in the existing recovery namespace.
+The retention files cover historical same-file edits, force rewrite, dirty/new
+sources, unpublished-parent recovery, capture reply replay, state-only clocks,
+and a 22-branch equal-tip group that remains unproven. These are isolated PG/Git
+checks; they do not audit or clean live unknown branches.
 
 Controlled publication, adoption reconciliation and Active management add:
 
@@ -745,3 +795,199 @@ modules, drives actual operations/Proposal/Jobs/restore and emits screenshots
 outside the repo. Authentication bootstrap/seams select seeded real people; domain data is
 real isolated PG (not cookie/SSO acceptance). Normal frontend builds do not activate the demonstration plugin.
 See [the permanent matrix](architecture/OFFICIAL_OPTIONAL_MODULES.md#operation-platform-acceptance).
+
+Idle reclamation focused regressions (same runtime; shared real PG required):
+from `packages/host-daemon`, run `pnpm exec vitest run test/workspaceRetention.test.ts
+ test/taskWorktree.test.ts test/daemonLease.test.ts test/config.test.ts`; from `server`, run `REQUIRE_TEST_POSTGRES=true pnpm exec
+ vitest run test/workspaceRetentionDb.test.ts test/workspaceSourceFenceDb.test.ts`.
+The retention DB file includes real Host Git capture/lost-reply/acknowledgement/
+idle-expiry cleanup, plus parent pin downgrade and blocked-ref retry checks.
+Preflight Docker and loopback permissions before starting these checks.
+
+### Ignored workspace recovery (Host owner, local installation)
+
+List snapshots with `rainver-host ignored list --location <location> --limit 256`.
+The JSON response is `{items, errors, next}`; repeat with `--after <next>` until
+`next` is null (maximum limit 512). An empty items page may still have `next`.
+`--key <listed-key>` reads an exact snapshot/status directly. For
+mutations stop the Host first (service or foreground); CLI and daemon share a
+Linux kernel flock. util-linux `flock` must be available.
+Use keys from the list, and an existing destination for restoration:
+
+```bash
+rainver-host ignored restore --location <location> --key <key> --destination <directory>
+rainver-host ignored discard --location <location> --key <key> --confirm-discard
+rainver-host ignored rebuildable --location <location> --key <key> --confirm-rebuildable
+```
+
+For continuous future outputs, register an exact directory prefix at the Location
+checkout, or use a listed blocked workspace key to validate its original root:
+
+```bash
+rainver-host ignored declare-root --location <location> --prefix build/cache --confirm-rebuildable
+rainver-host ignored declare-root --location <location> --key <listed-key> --prefix build/cache --confirm-rebuildable
+```
+
+The declaration applies per Location; capture revalidates paths, sensitive content
+and symlinks. Only matching roots expire in 30 days; mixed unknown siblings remain.
+Large explicitly reconstructible roots use same-filesystem moves under the active
+root quota, while unknown content keeps the 1 GiB bound. Snapshot `rebuildable`
+authority applies only to that reviewed snapshot. Unknown assets never expire automatically. Restore refuses
+collisions. The list also exposes legacy UUID snapshot keys for recovery. See [Hosts](modules/hosts.md#idle-reclamation-preservation-and-checkpoint-pin-lifecycle)
+for quotas, interrupted-journal recovery and current deduplication limits.
+### Host daemon combined verification
+
+From `packages/host-daemon`, `pnpm run verify` prepares protocol, outbound-guard,
+folder-read and agent-cli once, then runs typecheck and tests directly. Separate
+`pnpm run typecheck` and `pnpm test` keep their preparation hooks. CI's explicit
+library builds and these hooks share TypeScript incremental metadata in each
+library's `dist`; no environment variable bypasses preparation.
+
+
+### Bounded workspace reclamation regressions
+
+Preflight Node 24, offline dependencies, Docker availability and loopback access.
+From `packages/host-daemon`, run `pnpm exec vitest run test/workspaceRetention.test.ts
+test/workspaceIgnoredSweep.test.ts test/daemonLease.test.ts test/taskMerge.test.ts
+test/workspaceRetentionBarriers.test.ts`. From `server`, run
+`REQUIRE_TEST_POSTGRES=true pnpm exec vitest run test/workspaceRetentionDb.test.ts
+test/workspaceSourceFenceDb.test.ts test/agentGuides.test.ts --maxWorkers=1`.
+The million-file/dependency trees are never enumerated by these fixtures; the
+10,050-snapshot test does perform real temporary-directory creation, fsync,
+retirement and child-process restart continuation. It can exceed one minute on
+slow disks; wait for actual convergence, not a fixed one-hour scheduler tick.
+The receipt fixture proves immediate 4,200-reply deletion without aging. Tests
+retain corrupt/unknown content and verify bytes, epoch replay refusal and real
+post-release Git conflict-resolution startup. None audits or cleans live assets.
+For paths containing `:`, invoke package-local `node node_modules/vitest/vitest.mjs`
+and `node node_modules/typescript/bin/tsc` from their owning packages if pnpm
+cannot construct PATH; these execute the same tools in this worktree.
+
+
+The retention fixtures also cover 600 legacy retired manifests plus a saturated
+128-slot active inventory (including corruption), exact retired restore/expiry,
+same-epoch candidate journal replay, ignored-refusal convergence and a slow
+Git-stage scheduling fault. The PG file proves source E release to E+1 followed
+by renewed candidate cleanup and actual branch/worktree absence, and reaches all
+250 waiting proof owners across 63 rounds that each exceed the five-minute floor.
+For a narrow repair iteration use `-t 'renews candidate|250 waiting|frozen attempt'`
+in the server file and `-t 'over 512|same-epoch candidate|ignored refusals|rotates maintenance|conflict-resolution candidate'`
+in the Host file. A name-filtered run's unselected tests are not environment skips.
+
+Candidate disposal/legacy upgrade focused checks (Node 24, same worktree, real PG
+and temporary Host Git; Docker and loopback preflight required): from
+`packages/host-daemon`, `node node_modules/vitest/vitest.mjs run test/workspaceRetention.test.ts -t 'tombstones a cleaned candidate|conflict-resolution candidate'`;
+from `server`, `REQUIRE_TEST_POSTGRES=true node node_modules/vitest/vitest.mjs run test/workspaceRetentionDb.test.ts -t 'frozen attempt epoch|renews candidate cleanup' --maxWorkers=1`.
+These prove candidate-only E+1 fencing and journal expiry, safe missing-epoch
+resolution, multi-attempt owner backfill/real deletion, and unknown/live retention.
+
+### Workspace landing lifecycle verification
+
+Use Node 24 and the same checkout's workspace dependencies. From `server`, run
+`REQUIRE_TEST_POSTGRES=true node node_modules/vitest/vitest.mjs run test/workspaceRetentionDb.test.ts --maxWorkers=1`.
+For native response and reader admission regressions run
+`test/hostThreadsDb.test.ts test/delegatedWorkspacePlacementDb.test.ts` with
+`-t 'finishes native integration|pending publication'`. These tests use the
+shared real PostgreSQL template and isolated Host Git fixtures, not product data.
+From `apps/web`, run the owning workspace card/summary tests, build, then
+`node --test --test-name-pattern='one collapsed|Files & Code entry' src/__tests__/agent-workspaces.browser.mjs`.
+The browser fixture uses real Chromium with synthetic API data in both themes,
+English/Chinese and 390/1280 widths. `AGENT_WORKSPACE_SHOTS` selects an external
+screenshot directory. It does not establish live multi-Agent resource convergence.
+
+
+Focused bounded-slot lifecycle verification (Node 24, owning package cwd):
+from `server`, use `REQUIRE_TEST_POSTGRES=true node node_modules/vitest/vitest.mjs run
+test/delegatedWorkspacePlacementDb.test.ts test/workspaceRetentionDb.test.ts
+-t 'converges real parallel|confirmed released slot|backfills only a trustworthy|keeps one integration'
+--maxWorkers=1` (one command). This uses real PG and temporary Host Git; three
+parallel merge/cancel/failure rounds keep two reusable temporary slots, return
+to one main tree/branch and zero temporary trees/branches, and retain readable
+unmerged recovery refs. From `packages/host-daemon`, run
+`node node_modules/vitest/vitest.mjs run test/workspaceRetention.test.ts
+-t 'preserves an unmerged cancelled|durably links'`: separate built Host processes
+exercise lost-reply/restart and stale cleanup after rematerialization.
+Browser fixture screenshots remain presentation evidence only, not proof of
+physical convergence or a deployed Host upgrade.
+
+
+Reused-slot lifecycle regression (Node 24, offline lockfile dependencies, Docker
+and loopback permission preflight; package-local commands also work in paths
+containing `:`): from `server`, run `REQUIRE_TEST_POSTGRES=true node
+node_modules/vitest/vitest.mjs run test/delegatedWorkspacePlacementDb.test.ts
+test/hostThreadsDb.test.ts test/workspaceRetentionDb.test.ts
+test/workspaceSourceFenceDb.test.ts test/workspaceFrozenRetryDb.test.ts
+--maxWorkers=1` (one command). Host native and preservation guards: from
+`packages/host-daemon`, run `node node_modules/vitest/vitest.mjs run
+test/workspaceNativeIntegration.test.ts test/workspaceRetention.test.ts
+test/workspaceRetentionBarriers.test.ts`. Name-filtered unselected cases are
+not environment skips. Local fixture transports do not prove live vendor login.
+
+
+### Slot release admission regressions
+
+Use Node 24 and offline installed dependencies in this same isolated worktree.
+A colon in the worktree path requires direct package-local compiler/runner paths.
+Prepare protocol, outbound-guard, folder-read, reader-document and agent-cli with
+their existing incremental prebuild helper and `node node_modules/typescript/bin/tsc
+-p tsconfig.build.json` before checking server/Host consumers. From `server`:
+
+```bash
+node node_modules/typescript/bin/tsc -p tsconfig.typecheck.json
+REQUIRE_TEST_POSTGRES=true node node_modules/vitest/vitest.mjs run test/delegatedWorkspacePlacementDb.test.ts test/workspaceRetentionDb.test.ts test/hostThreadsDb.test.ts test/workspaceSourceFenceDb.test.ts test/agentGuides.test.ts test/jobsSchedulers.test.ts --maxWorkers=1
+```
+
+From `packages/host-daemon`, run `node node_modules/vitest/vitest.mjs run
+ test/workspaceRetention.test.ts test/workspaceNativeIntegration.test.ts
+ test/taskWorktree.test.ts test/workspaceReview.test.ts test/capabilities.test.ts`.
+The placement fixture proves a two-hour capacity queue starts a fresh release
+clock, persisted retries time out without renewal, hold deadline/release wakeup,
+claimed-Job hold-release wakeup without stale-deadline overwrite,
+old awaiting/blocked use settlement before reuse, checkpoint attention that survives
+cleanup summary/retry until saved evidence, and stale scan fencing. Fixed coordinator plus two participants permits total three trees,
+including in a larger Room; five Host-Git rounds measure that actual peak with
+process leases and final primary-one/temporary-zero convergence. These are
+isolated fixture resources, not an audit or cleanup of live unknown assets.
+
+### Real agent_run slot admission verification
+
+Use Node 24 and offline lockfile dependencies in this same worktree, with
+Docker/shared PostgreSQL and loopback permission. In colon-containing paths use
+the direct package-local tools. From `server`:
+
+```bash
+node node_modules/typescript/bin/tsc -p tsconfig.typecheck.json
+REQUIRE_TEST_POSTGRES=true node node_modules/vitest/vitest.mjs run test/delegatedWorkspacePlacementDb.test.ts test/runOrchestrationService.test.ts test/jobsSchedulers.test.ts test/workspaceRetentionDb.test.ts test/workspaceActiveManagementDb.test.ts test/hostThreadsDb.test.ts test/workspaceSourceFenceDb.test.ts test/agentGuides.test.ts --maxWorkers=1
+```
+
+The placement file includes JobWorker → agent_run handler → executeRun, using
+real PostgreSQL and a deterministic ACP Host (no supplier inference). Capacity,
+release-pending and multi-day hold each defer twice, retain queued Run/delegation,
+spend no attempt, release execution locks, then launch exactly once after release
+with attempt 1 and no orphan event. It also covers queued/racing cancellation,
+authorization revoked during wait, reclaim-now/discard/shorter-hold wakeups for
+pending and claimed Jobs with app/DB clock skew, exact workspace/use isolation,
+minimum ordinary capacity, cross-Task safety refusal, and independent first-time
+checkpoint attention. Existing temporary Host-Git lifecycle rounds remain in the
+file; these fixture results do not prove live-provider or unknown-asset cleanup.
+
+Published-source reviewed reclamation: from `server`, Node 24,
+`REQUIRE_TEST_POSTGRES=true node node_modules/vitest/vitest.mjs run test/workspaceActiveManagementDb.test.ts test/workspaceRetentionDb.test.ts test/workspaceSourceFenceDb.test.ts test/agentGuides.test.ts --maxWorkers=1`.
+The active-management file uses real PG Operation Core and temporary Host Git
+for integrated/no-change receipt preservation, legacy verifying refusal and
+settlement, concurrent same-key admission, exact-tip release and history expiry.
+These fixtures do not deploy code or remove live workspace assets.
+
+### Interrupted workspace cleanup recovery
+
+From `packages/protocol`, run `node node_modules/typescript/bin/tsc -p tsconfig.build.json`
+and `node node_modules/vitest/vitest.mjs run`. From `server`, run
+`REQUIRE_TEST_POSTGRES=true node node_modules/vitest/vitest.mjs run test/workspaceRetentionDb.test.ts test/workspaceActiveManagementDb.test.ts test/workspaceSourceFenceDb.test.ts --maxWorkers=1`.
+The new cases cover atomic epoch/plan rollback, identical lost-receipt delivery,
+duplicate enqueue, source-null unchanged/dirty/offline/active Host observations,
+and same-person cross-conversation recovery without publication/deletion grants.
+They use the existing real PostgreSQL clone and temporary Host Git fixtures;
+no product database or real retained workspace is touched. A missing container
+runtime or denied child-process Git prevents acceptance and must be reported.
+Run the Host retention, barriers and durability files listed above as well;
+retained receipts and epoch/CAS guards remain part of the same contract.

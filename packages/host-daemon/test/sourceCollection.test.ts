@@ -49,7 +49,7 @@ describe.skipIf(process.env.SOURCE_EXECUTION_OS_SMOKE!=="1")("C3 real isolated c
     note:"Real HTTP fixture and isolated handlers; fixture broker uses guardedFetch, server-PG broker/registry regression is verified separately. Business cursors are not advanced."
   },null,2));
   }finally{await new Promise<void>(r=>server.close(()=>r()))}
- },15000);
+ });
 });
 it("recovery preserves a live lease and removes a dead-owned collection lease",async()=>{
  const root=await mkdtemp(join(tmpdir(),"source-recovery-test-"));roots.push(root);

@@ -1,4 +1,6 @@
-import {changeReadingState} from '../sources/goals/changeDelivery.js';
+import { lockReadingMutation } from '../sources/readingMutationAccess.js';
+import { withQueryableTransaction } from '../routeUtils/common.js';
+import {assertReadingChange,changeReadingState} from '../sources/goals/changeDelivery.js';
 import type { ReadingPage, ReadingQuery, ReadingStateRequest } from '@rainver/protocol';
 import { HttpError, type Queryable, type SpaceUserIdentity } from '../routeUtils/common.js';
 import { assertProjectReadable } from '../projects/access.js';
@@ -41,9 +43,9 @@ export class ReadingService {
         ? Buffer.from(JSON.stringify({ ...scope, fingerprint: result.fingerprint, asOf, at: last.available_at, key: last.key })).toString('base64url') : null,
     };
   }
-  async state(identity: SpaceUserIdentity, itemId: string, change: ReadingStateRequest, projectId?: string) {
+  async requireState(identity: SpaceUserIdentity, itemId: string, change: ReadingStateRequest, projectId?: string) {
     if (projectId) await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
-    if(change.topic_change_id)return changeReadingState(this.db,identity,itemId,change,projectId);
+    if(change.topic_change_id){ await assertReadingChange(this.db,identity,itemId,change.topic_change_id,projectId); return null; }
     const context = await new ReadingRepository(this.db).rows(identity, await new ReadingPreferences(this.db).enabled(identity), {
       view:'all',limit:1,asOf:new Date().toISOString(),anchorId:itemId,projectId,
     });
@@ -52,7 +54,16 @@ export class ReadingService {
     const origin=projectId ? 'project' : readingOrigin(row);
     // The Sources service owns identity membership, current reauthorization and
     // the only state writer. This adapter cannot pass arbitrary member IDs.
-    return new SourceReadingStateService(this.db).update(identity, itemId, change, origin);
+    return origin;
+  }
+  async state(identity: SpaceUserIdentity, itemId: string, change: ReadingStateRequest, projectId?: string) {
+    return withQueryableTransaction(this.db,async tx=>{
+      await new ReadingService(tx).requireState(identity,itemId,change,projectId);
+      const pinnedItems=await lockReadingMutation(tx,identity,itemId,projectId);
+      const origin=await new ReadingService(tx).requireState(identity,itemId,change,projectId);
+      if(change.topic_change_id)return changeReadingState(tx,identity,itemId,change,projectId);
+      return new SourceReadingStateService(tx).update(identity,itemId,change,origin ?? "project",pinnedItems);
+    });
   }
 }
 function decodeCursor(value: string): Cursor {

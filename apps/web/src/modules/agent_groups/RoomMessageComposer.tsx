@@ -1,3 +1,4 @@
+import { ComposerSuggestions } from '../conversation/ComposerSuggestions'
 import { skillReferenceRanges, SkillMenuEmptyHint, useAvailableSkills } from '../conversation/conversationSkills'
 import { useAppTranslation } from '../../i18n'
 import type { ConversationInputSkillPart } from '@rainver/protocol'
@@ -289,6 +290,7 @@ export function RoomMessageComposer({
 }) {
   const scope = useConversationScope()
   const { t } = useAppTranslation()
+  const suggestionAnchor = useRef<HTMLDivElement>(null)
   const [mentionRange, setMentionRange] = useState<MentionRange | null>(null)
   const route = roomMessageRoute(value, managerAgentId)
   const skillCatalog = useAvailableSkills({
@@ -712,7 +714,7 @@ export function RoomMessageComposer({
 
   return (
     <div className="space-y-2">
-      <div className="relative">
+      <div ref={suggestionAnchor} className="relative">
         {!hasEditorContent && (
           <div className="pointer-events-none absolute left-3 top-2 z-10 text-sm text-muted-foreground">
             Message...
@@ -720,10 +722,10 @@ export function RoomMessageComposer({
         )}
         <EditorContent editor={editor} />
         {mentionRange && (
-          <div className="absolute bottom-full left-0 z-20 mb-2 w-80 overflow-hidden rounded-md border border-border bg-popover shadow-lg">
+          <ComposerSuggestions anchorRef={suggestionAnchor} onDismiss={() => updateMentionRange(null)}>
             <div className="border-b border-border px-2 py-1 text-[11px] font-medium text-muted-foreground">{mentionRange.trigger === '/' ? t('skill_packages.invoke') : '@ · Agents · Files · Skills'}</div>
             {fileLoading && <p className="flex items-center gap-1.5 px-2 py-2 text-xs text-muted-foreground"><Loader2 className="size-3.5 animate-spin" /> Searching authorized files…</p>}
-            <div role="listbox" aria-label="Agents and Files" className="max-h-64 overflow-auto p-1">
+            <div role="listbox" aria-label="Agents and Files" className="min-h-0 max-h-64 overflow-auto p-1">
               {suggestions.map((suggestion, index) => (
                 <button
                   key={suggestion.type === 'agent' ? `agent:${suggestion.agent.id}` : suggestion.type === 'skill' ? `skill:${suggestion.skill.skill_package_id}` : `file:${suggestion.file.projectFolderId}:${suggestion.file.path}`}
@@ -751,7 +753,7 @@ export function RoomMessageComposer({
               )}
             </div>
             {fileError && <p className="px-2 pb-2 text-xs text-destructive" role="alert">{fileError}</p>}
-          </div>
+          </ComposerSuggestions>
         )}
       </div>
       {value.mentionRoute.default_route && (

@@ -1,6 +1,5 @@
 import {sourcesModule} from '../src/modules/sources/index.js';
 import {buildModuleServer} from './support/moduleServer.js';
-import {RETIRED_SOURCE_CONNECTION_ROUTES} from '../src/modules/sources/retiredConnectionRoutes.js';
 import {PluginHost} from '../src/modules/plugins/host/index.js';
 import {BUILT_IN_PLUGINS} from '../src/modules/plugins/builtInPlugins.js';
 import { SYSTEM_ACTION_REGISTRY } from "@rainver/protocol";
@@ -18,8 +17,8 @@ interface InventoryRow {
 const path = new URL('../src/modules/systemActions/operations/routeInventory.json', import.meta.url);
 /**
  * Host block (P5) exemptions, exact method/path pairs. Daemon registration and
- * the daemon's bearer-token API are the Host's own authentication protocol (no
- * user session principal exists to admit); issuing a pairing code is a user's
+ * the exact bearer credential/Run transports below are Host protocol; the
+ * daemon workspace business writes are core entries. Issuing a pairing code is a user's
  * credential issuance whose one-time secret may not be kept for replay. The relays carry interactive input or a live read
  * that is never persisted (keystrokes, one-time OAuth codes, Host-private
  * directory listings, an account status), so no replayable result may be kept.
@@ -30,8 +29,6 @@ const HOST_TRANSPORT_EXEMPTIONS: ReadonlyArray<{ method: string; path: string; r
   { method: 'POST', path: '/api/v1/hosts/pairing-codes', reason: 'Signed-in user credential issuance for Host pairing (same class as auth keys): user-level, not Space-scoped; the one-time code is hashed at rest, expires, and is shown once, so a replayable result would have to keep the plaintext secret' },
   { method: 'POST', path: '/api/v1/hosts/register', reason: HOST_PAIRING },
   { method: 'POST', path: '/api/v1/hosts/me/revoke', reason: HOST_PAIRING },
-  { method: 'POST', path: '/api/v1/hosts/me/workspaces', reason: HOST_PAIRING },
-  { method: 'DELETE', path: '/api/v1/hosts/me/workspaces/:folderId', reason: HOST_PAIRING },
   { method: 'POST', path: '/api/v1/hosts/me/runs/:runId/diff', reason: `${HOST_PAIRING}; idempotent per launch attempt` },
   { method: 'POST', path: '/api/v1/hosts/me/runs/:runId/outputs', reason: `${HOST_PAIRING}; idempotent per launch attempt` },
   { method: 'POST', path: '/api/v1/hosts/:hostId/browse-directories', reason: HOST_RELAY },
@@ -49,13 +46,42 @@ const HOST_TRANSPORT_EXEMPTIONS: ReadonlyArray<{ method: string; path: string; r
 const SETTINGS_TRANSPORT_EXEMPTIONS: ReadonlyArray<{ method: string; path: string; reason: string }> = [
   { method: 'POST', path: '/api/v1/providers/subscriptions/login/input', reason: 'Instance-admin interactive relay into an in-process managed subscription OAuth login; the one-time code is never persisted or replayed (credential channel, ADR 0008)' },
 ];
+// Baseline transport entries are enumerated by exact method/path. A new route
+// needs its own owner review; matching a namespace or containing media/upload
+// cannot authorize an exemption. Pending media deletion only discards unclaimed
+// upload staging; it never deletes a message or its attached media.
+const BASELINE_TRANSPORT_EXEMPTIONS: ReadonlyArray<{ method: string; path: string; reason: string }> = [
+  { method: "POST", path: "/api/v1/auth/admin/invitations", reason: "Existing authentication/session protocol owned by auth" },
+  { method: "POST", path: "/api/v1/auth/admin/users/:userId/reset-link", reason: "Existing authentication/session protocol owned by auth" },
+  { method: "POST", path: "/api/v1/auth/google/link", reason: "Existing authentication/session protocol owned by auth" },
+  { method: "POST", path: "/api/v1/auth/google/unlink", reason: "Existing authentication/session protocol owned by auth" },
+  { method: "POST", path: "/api/v1/auth/keys", reason: "Existing authentication/session protocol owned by auth" },
+  { method: "DELETE", path: "/api/v1/auth/keys/:keyId", reason: "Existing authentication/session protocol owned by auth" },
+  { method: "POST", path: "/api/v1/auth/logout", reason: "Existing authentication/session protocol owned by auth" },
+  { method: "POST", path: "/api/v1/auth/password/change", reason: "Existing authentication/session protocol owned by auth" },
+  { method: "POST", path: "/api/v1/auth/password/set", reason: "Existing authentication/session protocol owned by auth" },
+  { method: "POST", path: "/api/v1/auth/reauth", reason: "Existing authentication/session protocol owned by auth" },
+  { method: "POST", path: "/api/v1/auth/reauth/google", reason: "Existing authentication/session protocol owned by auth" },
+  { method: "POST", path: "/api/v1/auth/reauth/google/complete", reason: "Existing authentication/session protocol owned by auth" },
+  { method: "POST", path: "/api/v1/auth/recovery/complete", reason: "Existing authentication/session protocol owned by auth" },
+  { method: "POST", path: "/api/v1/auth/recovery/request", reason: "Existing authentication/session protocol owned by auth" },
+  { method: "POST", path: "/api/v1/auth/register", reason: "Existing authentication/session protocol owned by auth" },
+  { method: "POST", path: "/api/v1/auth/register/complete", reason: "Existing authentication/session protocol owned by auth" },
+  { method: "POST", path: "/api/v1/auth/register/google", reason: "Existing authentication/session protocol owned by auth" },
+  { method: "POST", path: "/api/v1/auth/registration-intents", reason: "Existing authentication/session protocol owned by auth" },
+  { method: "POST", path: "/api/v1/auth/sessions/:sessionId/revoke", reason: "Existing authentication/session protocol owned by auth" },
+  { method: "POST", path: "/api/v1/auth/sessions/revoke-others", reason: "Existing authentication/session protocol owned by auth" },
+  { method: "POST", path: "/api/v1/auth/sign-in/email", reason: "Existing authentication/session protocol owned by auth" },
+  { method: "POST", path: "/api/v1/conversation-inputs/media", reason: "Existing binary/multipart transport; owning authorization remains required" },
+  { method: "DELETE", path: "/api/v1/conversation-inputs/media/:mediaId", reason: "Owner-only disposal of pending, unclaimed binary upload staging; claimed message media cannot be deleted here" },
+  { method: "POST", path: "/internal/deployment/heartbeat", reason: "Existing authenticated internal service transport; exact path only" },
+  { method: "POST", path: "/internal/deployment/jobs/:jobId/events", reason: "Existing authenticated internal service transport; exact path only" },
+  { method: "POST", path: "/internal/policy/enforce-proposal-apply", reason: "Existing authenticated internal service transport; exact path only" },
+  { method: "POST", path: "/internal/policy/enforce", reason: "Existing authenticated internal service transport; exact path only" },
+  { method: "POST", path: "/internal/runs/execute", reason: "Existing authenticated internal service transport; exact path only" },
+];
 // Inventory compares exact current method/path pairs; annotations alone never admit a route.
 function classification(method: string, path: string): InventoryRow {
-  if(RETIRED_SOURCE_CONNECTION_ROUTES.some(route=>route.method===method&&route.path===path))return {
-    method,path,classification:'transport_exempt',
-    reason:'Exact retired Source connection URL; fixed 410 refusal only, no auth lookup, domain writer or fallback'
-  };
-
   if (path === '/api/v1/actions/:opId' || path === '/api/v1/projects/:projectId/research/operations/:operationId/cancel') return {
     method,
     path,
@@ -72,24 +98,8 @@ function classification(method: string, path: string): InventoryRow {
   if (hostTransport) return { method, path, classification: 'transport_exempt', reason: hostTransport.reason };
   const settingsTransport = SETTINGS_TRANSPORT_EXEMPTIONS.find(row => row.method === method && row.path === path);
   if (settingsTransport) return { method, path, classification: 'transport_exempt', reason: settingsTransport.reason };
-  if (path.startsWith('/internal/')) return {
-    method,
-    path,
-    classification: 'transport_exempt',
-    reason: 'Existing authenticated internal service transport; exact path only'
-  };
-  if (path.startsWith('/api/v1/auth/')) return {
-    method,
-    path,
-    classification: 'transport_exempt',
-    reason: 'Existing authentication/session protocol owned by auth'
-  };
-  if (path.includes('/upload') || path.includes('/media')) return {
-    method,
-    path,
-    classification: 'transport_exempt',
-    reason: 'Existing binary/multipart transport; owning authorization remains required'
-  };
+  const baselineTransport = BASELINE_TRANSPORT_EXEMPTIONS.find(row => row.method === method && row.path === path);
+  if (baselineTransport) return { method, path, classification: 'transport_exempt', reason: baselineTransport.reason };
   return {
     method,
     path,
@@ -98,6 +108,23 @@ function classification(method: string, path: string): InventoryRow {
   };
 }
 describe('operation route migration contract', () => {
+  it('keeps the four corrected business writes out of exact transport exemptions',()=>{
+    const inventory=JSON.parse(readFileSync(path,'utf8')) as InventoryRow[];
+    for(const [method,url] of [['POST','/api/v1/hosts/me/workspaces'],['DELETE','/api/v1/hosts/me/workspaces/:folderId'],['POST','/api/v1/auth/admin/users/:userId/disable'],['POST','/api/v1/auth/admin/users/:userId/enable']]){
+      expect(classification(method!,url!).classification).toBe('legacy_business');
+      expect(inventory.find(row=>row.method===method&&row.path===url)?.classification).toBe('core_entry');
+    }
+  });
+  it.each([
+    ['POST', '/api/v1/auth/unreviewed-domain-write'],
+    ['DELETE', '/api/v1/auth/sign-in/email'],
+    ['POST', '/internal/unreviewed-domain-write'],
+    ['DELETE', '/internal/runs/execute'],
+    ['POST', '/api/v1/library/media/publish'],
+    ['DELETE', '/api/v1/activity/upload'],
+  ])('requires an individual exemption for %s %s', (method, path) => {
+    expect(classification(method, path).classification).toBe('legacy_business');
+  });
   it('keeps every mutating core route in the exact core and bundled-plugin migration inventory', async () => {
     const config = loadConfig({}),
       app = createServerApp(config, {
@@ -140,22 +167,45 @@ describe('operation route migration contract', () => {
 });
 
 
-describe('retired Source connection transport',()=>{
-  it.each(RETIRED_SOURCE_CONNECTION_ROUTES)('$method $path stays a fixed refusal without database or authenticated work',async route=>{
-    const config=loadConfig({});expect(config.databaseUrl).toBeNull();
-    const app=buildModuleServer(config,[sourcesModule]);
-    try{
-      const response=await app.inject({method:route.method,url:route.path.replace(':connectionId','known-or-absent'),...(route.method==='GET'?{}:{payload:{status:'active',credential_id:'untrusted-body'}})});
-      expect(response.statusCode,response.body).toBe(410);expect(response.json()).toEqual({detail:route.detail});expect(response.headers['set-cookie']).toBeUndefined();
-    }finally{await app.close();}
+/** Former connection-level URLs, removed in favour of Source Channels; not a live manifest. */
+const REMOVED_SOURCE_CONNECTION_URLS = [
+  ['GET', '/api/v1/sources/connections'],
+  ['POST', '/api/v1/sources/connections'],
+  ['POST', '/api/v1/sources/connections/drafts'],
+  ['POST', '/api/v1/sources/connections/proposals'],
+  ['GET', '/api/v1/sources/connections/known-or-absent'],
+  ['PATCH', '/api/v1/sources/connections/known-or-absent'],
+  ['DELETE', '/api/v1/sources/connections/known-or-absent'],
+  ['POST', '/api/v1/sources/connections/known-or-absent/recommendations'],
+  ['POST', '/api/v1/sources/connections/known-or-absent/subscription'],
+  ['POST', '/api/v1/sources/connections/known-or-absent/scan'],
+] as const;
+describe('removed Source connection URLs', () => {
+  it.each(REMOVED_SOURCE_CONNECTION_URLS)('%s %s is not registered', async (method, url) => {
+    const app = buildModuleServer(loadConfig({}), [sourcesModule]);
+    try {
+      await app.ready();
+      expect(app.hasRoute({ method, url: url.replace('known-or-absent', ':connectionId') })).toBe(false);
+      const response = await app.inject({ method, url, ...(method === 'GET' ? {} : { payload: { status: 'active' } }) });
+      expect(response.statusCode, response.body).toBe(404);
+    } finally { await app.close(); }
   });
-  it('keeps live Channel subscription and connection Recipe reads outside prefix exemptions',async()=>{
-    const app=buildModuleServer(loadConfig({}),[sourcesModule]);
-    try{
-      const live=await app.inject({method:'POST',url:'/api/v1/sources/channels/channel/subscription',payload:{status:'subscribed'}});
-      expect(live.statusCode).not.toBe(410);expect(live.statusCode).toBeGreaterThanOrEqual(400);
-      const recipe=await app.inject({method:'GET',url:'/api/v1/sources/connections/connection/recipe-versions'});expect(recipe.statusCode).not.toBe(410);
-      expect(RETIRED_SOURCE_CONNECTION_ROUTES.filter(r=>r.method!=='GET')).toHaveLength(8);
-    }finally{await app.close();}
+  it('keeps nearby live Channel and connection-scoped Recipe / custom Source routes registered', async () => {
+    const app = buildModuleServer(loadConfig({}), [sourcesModule]);
+    try {
+      await app.ready();
+      for (const [method, url] of [
+        ['POST', '/api/v1/sources/channels/:channelId/subscription'],
+        ['GET', '/api/v1/sources/connections/:connectionId/recipe-versions'],
+        ['GET', '/api/v1/sources/connections/:connectionId/recipe-versions/:versionId'],
+        ['GET', '/api/v1/sources/connections/:connectionId/custom-source'],
+        ['GET', '/api/v1/sources/connections/:connectionId/handler-versions'],
+      ] as const) expect(app.hasRoute({ method, url }), `${method} ${url}`).toBe(true);
+      const live = await app.inject({ method: 'POST', url: '/api/v1/sources/channels/channel/subscription', payload: { status: 'subscribed' } });
+      expect(live.statusCode).not.toBe(404);
+      expect(live.statusCode).toBeGreaterThanOrEqual(400);
+      const recipe = await app.inject({ method: 'GET', url: '/api/v1/sources/connections/connection/recipe-versions' });
+      expect(recipe.statusCode).not.toBe(404);
+    } finally { await app.close(); }
   });
 });

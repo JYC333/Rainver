@@ -75,6 +75,209 @@ artifact's production context remains unchanged.
   origin gates plus the artifact's own full-content and Room gates, so opening
   a document cannot bypass an export refusal.
 
+## Retrieval-derived Briefs and Explain reports
+
+`retrieval_brief`, `retrieval_explain_report` and `ask_space_session` bodies
+and metadata are derived from other Space objects.
+`retrieval/artifactRelease.ts` is their one release gate and
+`retrieval/releaseClosure.ts` the one closure it runs (shared with
+`releaseContentRequest` and `lockContentRetrievalRelease`):
+
+- **Contributions.** A Brief/Explain contributes `item_refs`, `citations`,
+  `gap_analysis.stale/thin`, any ref-shaped gap record and `target`, all in
+  one registry (mixed-domain fails closed; Explain must be Knowledge). An Ask
+  Space session records `contributions` — every answering domain's complete
+  refs, including a domain whose own Brief failed to save, since the combined
+  answer, gap summary and provenance derive from it. Every `provenance` entry
+  and every nested `brief_artifact_refs` Brief (same owner, type
+  `retrieval_brief`) must lie inside that domain's contributions. A session
+  without `contributions` (written before this gate), an unknown domain, a ref
+  outside its domain, or a missing/foreign nested Brief fails closed.
+- **Domain lineage, one ordered lock set.** Knowledge/Memory: root
+  (`space_object`/`memory`), extension row (`knowledge_items`, `notes`,
+  `claims`, `sources`), Source connections, accepted `provenance_links` and
+  `claim_sources` with their claim roots. Inquiry: the Thread root
+  `space_object` (grants, shares, Project audience) and `inquiry_threads`.
+  Project summary: the Project audience, its
+  `project_public_summary_publications` row and the publication's Source
+  connections. Source: its `source_item`/`extracted_evidence` closure. Order
+  (all `FOR SHARE`): Project audiences (sorted) → person, Space, folders, roots
+  with shares and grants, Source channels/subscriptions/windows → every
+  domain's extension rows (sorted) → provenance/claim-source rows. This is the
+  order the real writers take: Note save/rollback/metadata/role/relocation,
+  Knowledge and Claim update/archive, the Source object update and Inquiry
+  operation admission all lock the root before the extension (and Claim
+  sources after it); the only extension-before-root writers, the Inquiry
+  Thread services, first take the Thread's Project `FOR UPDATE`, so they
+  serialize with the closure on the Project; publication publish/revoke
+  X-lock only the publication row. The writer-by-writer contract is in
+  `releaseClosure.ts`. Rediscovery after waiting must match, else 409 (fails
+  closed).
+- **Decision.** Each ref needs its canonical root decision `full`
+  (`contentDecisionFromDb` on `space_object`/`memory`; a Thread or Knowledge
+  root at `summary` does not prove its full content is readable), its adapter's
+  current read, and `revalidateForRelease` (canonical Source lineage and
+  policy). Source adapters are full-only; a Project summary has no per-person
+  root and rests on its live publication, active Project and Source policy.
+  Explain additionally needs the current Space maintenance role.
+
+Any withheld, unknown or unparseable dependency (or a lineage change while
+waiting) withholds the whole derived object — never only a snippet:
+list/detail keep the row's id/title/type with `content`, `metadata_json` and
+storage cleared, `exportable=false`, `access_level='summary'`; export returns
+404; `contentDecisionFromDb('artifact')` returns `deny`; the Reader's artifact
+loader, Claim Candidate Packet sources and eval-diagnostics aggregates skip it;
+the Context Ops Explain drill-down clears its diagnostic codes. Released
+list/detail/Reader/packet reads are audited through the release path only when
+the whole object is released; decision-only checks and aggregates are not.
+Persisted Knowledge/Memory reports have their own closure, below; other
+Artifact types are unchanged.
+
+Persistence settles the same way after provider I/O
+(`settleRetrievalArtifact`): one short transaction locks the current Job claim
+(`lockCurrentJobClaim`, when a Job runs it), re-runs that closure for the
+owner (and Explain's role), and only then inserts the row; provider and
+combined-synthesis I/O stay outside it and an unknown outcome is not retried.
+A lost claim (`JobEffectLeaseLost`) or withdrawn authority
+(`RetrievalArtifactWithheld`) writes nothing; Brief callers report
+`artifact_error`, Explain reports `retrieval_explain_persist_withheld`, and
+Ask Space reports `session_artifact_error: ask_space_session_withheld`.
+Context Ops Brief summaries list only the owner's own query title and surface.
+
+## Persisted Knowledge and Memory reports
+
+A report written by a Knowledge/Memory report operation (or the Context Ops
+review cycle and observation scan) is the same derived body as that
+operation's poll result, so it passes the same gate on every read.
+`CONTEXT_REPORT_ARTIFACT_OPERATIONS` (`retrieval/artifactRelease.ts`) maps each
+stored type to its operation: `retrieval_maintenance_report`,
+`memory_maintenance_report`, `retrieval_eval_report` (a `product_diagnostic`
+one is a diagnostics report), `retrieval_calibration_decision`,
+`claim_contradiction_report`, `claim_candidate_packet`,
+`relation_discovery_report`, `object_schema_suggestion_report`,
+`context_review_cycle_report`, `context_observation_report`.
+`retrievalArtifactWithheld` runs `withheldContextReport`
+(`retrieval/contextReports.ts`, shared with `releaseContextReport`) in one
+transaction: every typed reference in the stored metadata
+(`contextReportReferences`: `findings[].objects`, proposed-action endpoints,
+Memory targets, source/evidence Artifacts, proposals, activities) pinned in the
+shared closure order, the operation's current authority
+(`authorizeContextReport`: person, Context Ops scan opt-in or admin for
+`knowledge.eval.report`, Space-wide reviewer for a `space_ops` report), `full`
+on every reference, then the canonical Source policy gate. Any refusal, lost
+authority, lineage change, missing metadata, or a maintenance finding without
+well-formed `objects` refs (an older or damaged record) withholds the report
+whole. A referenced Artifact is decided by `contentDecisionFromDb`, so a
+Claim Candidate Packet or review-cycle report falls with a withheld source
+report.
+
+Exits that apply it: Artifact list/detail/export (as above, and the stored
+"N findings" title becomes the type label, e.g. "Retrieval maintenance
+report"), `contentDecisionFromDb('artifact')`, the Reader artifact loader,
+Claim Candidate Packet sources, eval-diagnostics aggregates, and Context Ops:
+the summary's maintenance `finding_counts` and diagnostics codes/trend
+metrics are aggregated only over released reports, the maintenance and
+diagnostics drill-downs return a withheld report under its type label with
+no codes or finding count, and a maintenance packet whose report is withheld or missing
+is listed by its type label. `recent_report_count` and
+`pending_packet_count` still count the viewer's own rows.
+
+Producers run their scan and insert in the one Job transaction that holds
+the current claim and report authority (`runContextReport`), with no
+provider I/O, so there is no post-I/O settlement. The Context Ops
+review-cycle/observation routes and the retrieval maintenance automation
+target also write without provider I/O; their reports are gated on read like
+any other.
+
+**Dependency closure per stored shape.** A report is only as checkable as
+the references its producer stores beside its numbers. Producers that
+aggregate (and so would otherwise drop the objects behind a count) record the
+complete contributing set and stamp `dependency_closure: {version: 1}`
+(`REPORT_DEPENDENCY_CLOSURE_VERSION`, `retrieval/reportClosureContract.ts`).
+A stamped report whose closure is empty is a legitimate empty report and is
+released; an unstamped aggregate (an older record whose producer dropped the
+references) fails closed. `[]` alone is never read as "no dependencies".
+
+| Stored type | What its numbers/text derive from | Recorded closure | Unchecked/legacy shape |
+|---|---|---|---|
+| `retrieval_maintenance_report`, `memory_maintenance_report` | findings | `findings[].objects` | finding without well-formed `objects` → withheld |
+| `retrieval_eval_report` (`product_diagnostic`, incl. review-cycle diagnostics) | released Briefs, maintenance and eval reports of both windows | `source_artifact_ids` (each rechecked recursively) + stamp | unstamped → withheld |
+| `retrieval_eval_report` (submitted, `knowledge.eval.report`) | the submitter's own request | its typed refs | — |
+| `retrieval_calibration_decision` | evidence reports | `evidence_artifacts[].artifact_id` | — |
+| `claim_contradiction_report` | claim pairs | finding claim ids | — |
+| `claim_candidate_packet` | source reports | `source_artifacts[].artifact_id` | — |
+| `relation_discovery_report` | candidate endpoints/evidence | candidate object ids, `evidence_refs` | — |
+| `object_schema_suggestion_report` | every visible row of a kind, a published Project public summary included | one `evidence_refs` entry per counted row (`visible_usage_count === evidence_refs.length`; a summary's ref is `{object_type: 'project_public_summary', object_id: <project id>}`) + stamp | unstamped, or a positive count without its rows (including an older Project-summary finding with `[]`) → withheld (also at poll); a zero count with `[]` is released |
+| `context_review_cycle_report` | child maintenance/diagnostics/Memory/claim reports | child `artifact_id`s | — |
+| `context_observation_report` | released maintenance/diagnostics reports of the summary | `source_artifact_ids` (`getSummaryWithSources`) + stamp | unstamped → withheld |
+
+A published Project public summary is not exempt for being Space-public.
+The scan counts it only while its publication exists, its Project is active
+and the publication's `source_refs_json` Sources pass the viewer's Source
+policy. Its ref is then rechecked by `withheldContextReport` through the
+Project retrieval registry, inside the same shared release closure
+(`lockRetrievalReleaseClosure` / `withheldPinnedReleaseRefs`) that Ask Space and
+Briefs use. That closure pins the Project audience and the publication row,
+requires the live publication and an active Project (the adapter's
+`revalidate`), and applies the Source policy to the publication's Source
+references. Withdrawing the publication, archiving the Project or revoking a
+referenced Source's consent therefore withholds the stored report and its poll
+result. The summary has no content resource of its own and records no content
+read. A referenced
+report Artifact is rechecked through `contentDecisionFromDb` →
+`retrievalArtifactWithheld`; the chain of reports on that path is tracked
+(`AsyncLocalStorage`), so a cycle or a chain deeper than 8 fails closed
+instead of recursing.
+
+**Report-derived Proposals.** A review packet (`retrieval_maintenance_packet`,
+`memory_maintenance_packet`, `retrieval_diagnostics_packet`,
+`relation_discovery_packet` by `report_artifact_id`; `claim_candidate_packet`
+by `packet_artifact_id`) and a child generated from one
+(`report_artifact_id`, `source_report_artifact_id`,
+`source_maintenance_report_artifact_id`,
+`source_candidate_packet_artifact_id`, or a `derived_review` Artifact
+provenance entry), at the top level or nested in the child's packet context,
+repeat their report's findings in title, summary
+(`proposed_content`), rationale and provenance. Those dependencies are frozen
+in the payload when the Proposal is generated
+(`proposalReportDependencies`, `retrieval/proposalReportDependencies.ts`) and
+checked now by `proposalReportWithheld` (`retrieval/proposalReportRelease.ts`):
+each named Artifact must exist, be a gated report and pass its closure. A
+packet without its report reference fails closed. The shared child INSERT
+(`acceptReviewPacket`) stores each producer's payload as built, so the
+extractor reads every producer's actual shape:
+
+| Packet → child types | Where the child names its report |
+|---|---|
+| `retrieval_maintenance_packet` → `object_relation_create` | top level: `source_maintenance_report_artifact_id`, `provenance_entries` (`derived_review` Artifact) |
+| `memory_maintenance_packet` → `memory_archive`, `memory_update` | top level: `source_report_artifact_id` |
+| `claim_candidate_packet` → `claim_create`, `object_relation_create` | `metadata.claim_candidate_packet.{source_candidate_packet_artifact_id, provenance_entries}` plus the candidate's `metadata.source_artifact_ids` (the Brief / maintenance / diagnostics / Memory maintenance / contradiction report it was read from) |
+| `relation_discovery_packet` → `object_relation_create`, `knowledge_create` | `metadata.relation_discovery_packet.source_report_artifact_id` |
+| `retrieval_diagnostics_packet` | acknowledge-only, no children |
+
+A child carrying a nested packet context that names no report (an older or
+damaged record) fails closed. A Proposal with no packet context (an
+ordinary `claim_create`, `knowledge_create`, imported-history `memory_create`)
+keeps only its own gates. Exits: Proposal
+list/detail (`PgProposalRepository.releaseReportFields` — the type label as
+title, empty `proposed_content`/`rationale`, null `title_parts`/provenance;
+id, type, status, visibility and decision fields unchanged, so the
+Proposal's own view permission and revision semantics stay), and Context Ops
+packet titles. Acceptance (`acceptInTransaction`, also reached by Agent
+`proposal.decide`) pins the same closure before the Proposal row lock, refuses
+409 while withheld, and refuses 409 if the locked payload names different
+reports; the B10 applier and its provenance run unchanged afterwards.
+Reject stays available.
+
+Known limits: scan-footprint counts (`scanned`, `candidates_examined`,
+`sources_scanned`, `links_extracted`, `scanned.visible_usage_rows`) and the
+Context Ops health counts embedded in observation/review-cycle reports
+(Source-policy warnings, embedding backlog, Memory access counters,
+`pending_packet_count`) carry no object identity and are not part of the
+closure; `recent_report_count`/`pending_packet_count` still count the
+viewer's own rows; a reference whose type has no content resource
+definition fails the whole report closed.
+
 ## Storage Rules
 
 - File artifacts are copied or registered into managed artifact storage.

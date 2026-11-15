@@ -22,7 +22,7 @@ import {EvolvableAssetEvaluationRepository} from '../src/modules/evolution/asset
 const db=useTestDatabase(import.meta.filename,{max:10});const w=briefingWorld(db);const identity={spaceId:SPACE,userId:OWNER};let item:string,home:string;let worker:WorkerProcess|undefined;
 const key='reading.project_investigation';
 const sample=READING_METHOD_FIXTURE;
-beforeAll(async()=>{home=await mkdtemp(join(tmpdir(),'reading-method-test-'));await buildServerDist();},600000);
+beforeAll(async()=>{home=await mkdtemp(join(tmpdir(),'reading-method-test-'));await buildServerDist();});
 afterEach(async()=>{await worker?.kill();worker=undefined;});
 afterAll(async()=>{await rm(home,{recursive:true,force:true});});
 beforeEach(async()=>{if(!db.available)return;await w.seed();await db.pool.query(`UPDATE space_memberships SET role='admin' WHERE space_id=$1 AND user_id=$2`,[SPACE,OWNER]);await db.pool.query(`DELETE FROM evolvable_assets WHERE asset_key=$1`,[key]);item=await w.material('Synthetic original result');await new RuntimeContextPolicyRepository(db.pool).write(identity,'space',SPACE,{base_version_id:null,policy:{constraints:{},preferences:{}},reason:'Synthetic test policy'});registerReadingTrialSettlement();});
@@ -49,7 +49,7 @@ it('real worker → synthetic ACP Host → canonical settlement completes both r
  expect((await readingWorkspace(db.pool,identity,item,PROJECT)).effective_version_id).toBe(trial.baseline_version_id);
  expect(readingMethodOf((await w.runs().getRun(SPACE,queued.run_id!))!)?.version_id).toBe(trial.candidate_version_id);const nextItem=await w.material('After rollback');await db.pool.query('UPDATE source_items SET project_id=$2 WHERE id=$1',[nextItem,PROJECT]);const next=await service.start(identity,nextItem,{agent_id:AGENT,runtime_profile_id:PROFILE});expect(readingMethodOf((await w.runs().getRun(SPACE,next.run_id!))!)?.version_id).toBe(trial.baseline_version_id);
 
-},60000);
+});
 it('settlement projects failure/cancel once and ignores unrelated or late repeats',async()=>{const {request}=await prepared();const trial=await startReadingTrial(db.pool,w.config(),identity,request);const reconcile=runFinalizationReconcilerRegistry.entries().find(r=>r.key==='reading_method_pair')!;await w.finishRun(trial.baseline!.run_id,'synthetic failure','failed');const candidate=await w.finishRun(trial.candidate!.run_id,'','cancelled');await reconcile.reconcile(db.pool,candidate);await reconcile.reconcile(db.pool,{...candidate,status:'succeeded',output_json:{summary:'STALE_SUCCESS_MUST_NOT_REPLACE_CANCEL'}});expect((await readReadingTrial(db.pool,identity,trial.id)).status).toBe('cancelled');});
 it('a real material preparation freezes the deployed method in the Source-owned production Run',async()=>{await initializeReading(db.pool,w.config(),identity);await db.pool.query(`UPDATE source_connections SET capture_policy='extract_text',policy_json='{"retention_policy":"full_text"}' WHERE id=$1`,[CONNECTION]);const operation=await new MaterialItemProcessingService(db.pool,w.config()).start(identity,item,{agent_id:AGENT,runtime_profile_id:PROFILE});expect(operation.status).toBe('queued');const run=(await w.runs().getRun(SPACE,operation.run_id!))!;expect(readingMethodOf(run)?.version_id).toBe((await readingWorkspace(db.pool,identity,item)).effective_version_id);expect(run.prompt).toContain('Investigate a resource');expect((await db.pool.query(`SELECT retrieval_preferences_json FROM work_context_setups WHERE work_context_scope_id=$1`,[run.id])).rows[0].retrieval_preferences_json).toEqual({enabled:false});});
 
@@ -63,7 +63,7 @@ it('rejects a revoked Source before actual worker Delivery, settles both jobs, a
  await worker.kill();worker=undefined;
  await db.pool.query(`UPDATE source_connections SET consent_json='{"allow_external_model_egress":true,"allow_local_provider_egress":true}' WHERE id=$1`,[CONNECTION]);
  const a=await startReadingTrial(db.pool,w.config(),identity,{...request,retry_of:first.id});const b=await startReadingTrial(db.pool,w.config(),identity,{...request,retry_of:first.id});expect(a.id).not.toBe(first.id);expect(b.id).toBe(a.id);
-},60000);
+});
 
 it('canonical Source authority locks serialize revocation in either direction, not a timing sleep',async()=>{
  const {request}=await prepared();const pair=await startReadingTrial(db.pool,w.config(),identity,request);const run=(await w.runs().getRun(SPACE,pair.baseline!.run_id))!;
@@ -113,7 +113,7 @@ it('a killed worker recovers the original attempt, releases the pair and ignores
  // Explicit retry is a new bounded pair, not an infinite background re-run.
  const again=await startReadingTrial(db.pool,w.config(),identity,{...request,retry_of:pair.id});expect(again.id).not.toBe(pair.id);
  expect((await until(()=>readReadingTrial(db.pool,identity,again.id),r=>!['queued','running'].includes(r.status),'explicit retry result',250)).status).toBe('passed');
-},60000);
+});
 
 it('the owner can stop queued comparison Runs after input or maintenance authority is withdrawn, without returning the private text',async()=>{
  const {request}=await prepared();const pair=await startReadingTrial(db.pool,w.config(),identity,request);

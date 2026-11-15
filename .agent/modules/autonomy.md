@@ -124,3 +124,8 @@ tick writes. This removes the old direct terminal SQL; it grants no new mapping.
 - `server/src/db/schema/autonomy.ts`
 - [automations.md](automations.md)
 - [RUNS_AND_OUTPUTS.md](../architecture/RUNS_AND_OUTPUTS.md)
+
+Automation fire observation and each candidate admission also recheck the current
+fire configuration/people/permissions and trusted Job claim before their writes.
+They use the Automation invocation capability; the autonomy discoverer, day-pool
+admission and canonical Run owner remain unchanged. See [automations](automations.md).

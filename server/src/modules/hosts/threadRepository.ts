@@ -367,6 +367,69 @@ export class PgHostThreadRepository {
     return result.rows.map((row) => ({ ...normalizeReturnedThread(row), include_workspace: row.include_workspace }));
   }
 
+  /**
+   * Close every thread of one Project direct conversation, which is its own
+   * Conversation container (no Room): each Agent's runtime profile archives,
+   * and the shared managed cwd moves exactly once, with the first managed
+   * thread. Same intent fields as a Room removal, fixed when this commits.
+   */
+  async closeDirectConversationThreads(spaceId: string, sessionId: string): Promise<
+    Array<HostThread & { include_workspace: boolean }>
+  > {
+    const result = await this.db.query<HostThread & { include_workspace: boolean }>(
+      `WITH closing AS (
+         SELECT thread.id,
+                thread.workspace_mode = 'managed'
+                  AND thread.id = (SELECT min(managed.id) FROM host_threads managed
+                                    WHERE managed.space_id = thread.space_id AND managed.session_id = thread.session_id
+                                      AND managed.container_kind = 'conversation' AND managed.workspace_mode = 'managed'
+                                      AND managed.status IN ('active', 'session_reset')) AS include_workspace
+           FROM host_threads thread
+           JOIN sessions conversation ON conversation.id = thread.session_id AND conversation.space_id = thread.space_id
+          WHERE thread.space_id = $1 AND thread.session_id = $2
+            AND conversation.room_id IS NULL
+            AND thread.container_kind = 'conversation' AND thread.agent_id IS NOT NULL
+            AND thread.status IN ('active', 'session_reset')
+          FOR UPDATE OF thread
+       )
+       UPDATE host_threads thread
+          SET status = 'closed',
+              retired_vendor_session_ids = CASE WHEN vendor_session_id IS NULL THEN retired_vendor_session_ids ELSE retired_vendor_session_ids || to_jsonb(vendor_session_id) END,
+              vendor_session_id = NULL,
+              pending_archive_at = COALESCE(thread.pending_archive_at, now()),
+              archive_generation = CASE WHEN thread.pending_archive_at IS NULL OR thread.archive_generation IS NULL
+                                        THEN nextval('managed_workspace_generation_seq') ELSE thread.archive_generation END,
+              archive_include_workspace = CASE WHEN thread.pending_archive_at IS NULL OR thread.archive_include_workspace IS NULL
+                THEN closing.include_workspace ELSE thread.archive_include_workspace END,
+              archive_scope_confirmed = CASE WHEN thread.pending_archive_at IS NULL OR thread.archive_include_workspace IS NULL
+                THEN true ELSE thread.archive_scope_confirmed END,
+              updated_at = now()
+         FROM closing
+        WHERE thread.id = closing.id
+      RETURNING thread.*, thread.archive_include_workspace AS include_workspace`,
+      [spaceId, sessionId],
+    );
+    return result.rows.map((row) => ({ ...normalizeReturnedThread(row), include_workspace: row.include_workspace }));
+  }
+
+  /** The active Conversation thread of one Agent in one Project direct conversation, locked for a reset. */
+  async lockDirectConversationAgent(spaceId: string, sessionId: string, agentId: string): Promise<{ id: string; dispatch_lock_id: string | null; host_owner_user_id: string | null } | null> {
+    const result = await this.db.query<{ id: string; dispatch_lock_id: string | null; host_owner_user_id: string | null }>(
+      `SELECT thread.id, thread.dispatch_lock_id, host.owner_user_id AS host_owner_user_id
+         FROM host_threads thread
+         JOIN sessions conversation ON conversation.id = thread.session_id AND conversation.space_id = thread.space_id
+         LEFT JOIN hosts host ON host.id = thread.execution_host_id
+        WHERE thread.space_id = $1 AND thread.session_id = $2 AND thread.agent_id = $3
+          AND conversation.room_id IS NULL AND conversation.project_id IS NOT NULL
+          AND thread.container_kind = 'conversation' AND thread.delegation_id IS NULL
+          AND thread.status IN ('active', 'session_reset')
+        LIMIT 1
+        FOR UPDATE OF thread`,
+      [spaceId, sessionId, agentId],
+    );
+    return result.rows[0] ?? null;
+  }
+
   async resetConversationAgent(threadId: string): Promise<HostThread | null> {
     // A person's reset starts the Agent clean: the last handoff is not
     // carried into the new session either.

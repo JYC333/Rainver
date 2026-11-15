@@ -1,3 +1,4 @@
+import { roomAgentUseSql } from "../rooms/agentUsageSql.js";
 import { randomUUID } from "node:crypto";
 import type { Queryable } from "../routeUtils/common.js";
 import {
@@ -541,13 +542,21 @@ export class PgAgentGroupRepository {
               a.status AS agent_status,
               a.agent_kind,
               a.current_version_id AS agent_current_version_id
-         FROM agent_run_group_members m
-         JOIN agent_run_groups group_row
-           ON group_row.space_id = m.space_id AND group_row.id = m.group_id
+         FROM agent_run_groups group_row
+         JOIN LATERAL (
+           SELECT old.* FROM agent_run_group_members old WHERE old.space_id=group_row.space_id AND old.group_id=group_row.id AND group_row.room_id IS NULL
+           UNION ALL
+           SELECT rm.id,rm.space_id,group_row.id AS group_id,rm.agent_id,rm.role,'active' AS status,COALESCE(old.capabilities_json,'{}'::jsonb) AS capabilities_json,COALESCE(old.context_policy_json,'{}'::jsonb) AS context_policy_json,rm.created_at,rm.updated_at
+             FROM room_agent_members rm LEFT JOIN agent_run_group_members old ON old.space_id=rm.space_id AND old.group_id=group_row.id AND old.agent_id=rm.agent_id WHERE rm.space_id=group_row.space_id AND rm.room_id=group_row.room_id AND rm.status='active'
+         ) m ON true
          JOIN agents a
            ON a.space_id = m.space_id
           AND a.id = m.agent_id
         WHERE m.space_id = $1 AND m.group_id = $2 AND m.agent_id = $3
+          AND (group_row.room_id IS NULL OR ${roomAgentUseSql("a", "$4", "group_row.room_id")})
+          AND (group_row.room_id IS NULL OR NOT EXISTS (SELECT 1 FROM conversation_execution_contexts ctx WHERE ctx.space_id=group_row.space_id AND ctx.session_id=group_row.session_id AND ctx.state='initialized') OR EXISTS (SELECT 1 FROM session_conversation_backends participant
+            WHERE participant.space_id=group_row.space_id AND participant.session_id=group_row.session_id
+              AND participant.agent_id=a.id AND participant.participating))
           AND (
             group_row.room_id IS NULL
             OR EXISTS (
@@ -584,27 +593,7 @@ export class PgAgentGroupRepository {
                  AND room_user.status = 'active'
             )
           )
-          AND (
-            ${contentReadSql("agent", "a", "$4")}
-            OR (
-              group_row.room_id IS NOT NULL
-              AND EXISTS (
-                SELECT 1
-                  FROM room_agent_access_grants room_grant
-                  JOIN room_user_members room_member
-                    ON room_member.space_id = room_grant.space_id
-                   AND room_member.room_id = room_grant.room_id
-                   AND room_member.user_id = $4
-                   AND room_member.status = 'active'
-                 WHERE a.visibility <> 'space_shared'
-                   AND room_grant.space_id = a.space_id
-                   AND room_grant.room_id = group_row.room_id
-                   AND room_grant.agent_id = a.id
-                   AND room_grant.grantee_user_id = $4
-                   AND room_grant.revoked_at IS NULL
-              )
-            )
-          )`,
+          AND (group_row.room_id::varchar IS NOT NULL OR ${contentReadSql("agent", "a", "$4")})`,
       [input.space_id, input.group_id, input.agent_id, input.user_id],
     );
     return result.rows[0] ?? null;
@@ -616,6 +605,7 @@ export class PgAgentGroupRepository {
       `SELECT a.id, a.status, a.agent_kind
          FROM agents a
         WHERE a.space_id = $1 AND a.id = ANY($3::varchar[])
+          AND ($4::varchar IS NULL OR ${roomAgentUseSql("a", "$2", "$4")})
           AND (
             $4::varchar IS NULL
             OR EXISTS (
@@ -652,27 +642,7 @@ export class PgAgentGroupRepository {
                  AND room_user.status = 'active'
             )
           )
-          AND (
-            ${contentReadSql("agent", "a", "$2")}
-            OR (
-              $4::varchar IS NOT NULL
-              AND EXISTS (
-                SELECT 1
-                  FROM room_agent_access_grants room_grant
-                  JOIN room_user_members room_member
-                    ON room_member.space_id = room_grant.space_id
-                   AND room_member.room_id = room_grant.room_id
-                   AND room_member.user_id = $2
-                   AND room_member.status = 'active'
-                 WHERE a.visibility <> 'space_shared'
-                   AND room_grant.space_id = a.space_id
-                   AND room_grant.room_id = $4
-                   AND room_grant.agent_id = a.id
-                   AND room_grant.grantee_user_id = $2
-                   AND room_grant.revoked_at IS NULL
-              )
-            )
-          )`,
+          AND ($4::varchar IS NOT NULL OR ${contentReadSql("agent", "a", "$2")})`,
       [spaceId, userId, agentIds, roomId ?? null],
     );
     return result.rows;
@@ -689,15 +659,22 @@ export class PgAgentGroupRepository {
     const result = await this.db.query<AgentCapabilitySnapshotRecord>(
       `SELECT a.id,
               COALESCE(NULLIF(a.name, ''), a.id) AS name,
-              a.description,
-              a.role_instruction,
-              COALESCE(av.capabilities_json, '[]'::jsonb) AS capabilities_json
+              CASE WHEN a.access_project_id IS NOT NULL AND EXISTS (
+                SELECT 1 FROM rooms WHERE id=$4 AND space_id=$1 AND project_id<>a.access_project_id
+              ) THEN NULL ELSE a.description END AS description,
+              CASE WHEN a.access_project_id IS NOT NULL AND EXISTS (
+                SELECT 1 FROM rooms WHERE id=$4 AND space_id=$1 AND project_id<>a.access_project_id
+              ) THEN NULL ELSE a.role_instruction END AS role_instruction,
+              CASE WHEN a.access_project_id IS NOT NULL AND EXISTS (
+                SELECT 1 FROM rooms WHERE id=$4 AND space_id=$1 AND project_id<>a.access_project_id
+              ) THEN '[]'::jsonb ELSE COALESCE(av.capabilities_json, '[]'::jsonb) END AS capabilities_json
          FROM agents a
          LEFT JOIN agent_versions av
            ON av.id = a.current_version_id
           AND av.space_id = a.space_id
           AND av.agent_id = a.id
         WHERE a.space_id = $1 AND a.id = ANY($3::varchar[])
+          AND ($4::varchar IS NULL OR ${roomAgentUseSql("a", "$2", "$4")})
           AND (
             $4::varchar IS NULL
             OR EXISTS (
@@ -734,27 +711,7 @@ export class PgAgentGroupRepository {
                  AND room_user.status = 'active'
             )
           )
-          AND (
-            ${contentReadSql("agent", "a", "$2")}
-            OR (
-              $4::varchar IS NOT NULL
-              AND EXISTS (
-                SELECT 1
-                  FROM room_agent_access_grants room_grant
-                  JOIN room_user_members room_member
-                    ON room_member.space_id = room_grant.space_id
-                   AND room_member.room_id = room_grant.room_id
-                   AND room_member.user_id = $2
-                   AND room_member.status = 'active'
-                 WHERE a.visibility <> 'space_shared'
-                   AND room_grant.space_id = a.space_id
-                   AND room_grant.room_id = $4
-                   AND room_grant.agent_id = a.id
-                   AND room_grant.grantee_user_id = $2
-                   AND room_grant.revoked_at IS NULL
-              )
-            )
-          )`,
+          AND ($4::varchar IS NOT NULL OR ${contentReadSql("agent", "a", "$2")})`,
       [spaceId, userId, ids, roomId ?? null],
     );
     return result.rows;

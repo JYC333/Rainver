@@ -34,8 +34,53 @@ runs and unrelated proposals do not create orphan evolution signals.
 
 Signals expose a triage state (`new`, `acknowledged`, `dismissed`, or
 `actioned`) and support `PATCH /api/v1/evolution/signals/:signalId` plus the
-convenience `POST /api/v1/evolution/signals/:signalId/dismiss`. Triage is
-space-scoped and does not mutate system-wide signals.
+convenience `POST /api/v1/evolution/signals/:signalId/dismiss`, which pins
+`dismissed`. Triage is space-scoped and does not mutate system-wide signals.
+
+Target create/edit (`POST /api/v1/evolution/targets`, `PATCH .../:targetId`),
+manual signal creation (`POST .../targets/:targetId/signals`) and both triage
+URLs are formal adapters over strict, keyed, human-only core commands
+(`evolution.target.create|update`, `evolution.signal.create|triage`,
+`evolution/operations.ts`). Authority is unchanged: any active member of the
+Space, fenced by the executor's locked person check. A target edit locks the
+Space-owned row (a system target is a 409 refusal, a retired type may only stay
+archived); a signal share-locks its target; triage locks the signal. Receipts
+carry ids only; clients reread through `GET .../targets/:targetId` and the
+signal reader `GET /api/v1/evolution/signals/:signalId`. A replay is released
+only while the Space can still read that target or signal.
+
+`POST /api/v1/evolution/targets/:targetId/run` is the keyed core command
+`evolution.target.run` (`evolution/assetOperations.ts`). It selects a strategy
+and writes the queued dry-run Evolution Run, its review signal, the selector
+decision and the `agent_run` Job intent in one transaction (`202`); the Run
+executes in that Job, never in the request. The command share-locks the target
+row before its first runnable read and holds it to commit — the target writer
+(`updateTarget`) takes the same row `FOR UPDATE` first — so a concurrent
+disable/archive either commits first and the start refuses (409), or waits until
+the Run, decision and Job are committed. When no active strategy passes the
+selector, the receipt is `status: not_selected` with the recorded selector
+decision and reason, so that decision is kept instead of being rolled back with
+a refusal. The web client surfaces it as `EvolutionRunNotSelected`; the
+Evolution page shows a translated hint (not a failure) and reloads, so the
+decision appears under Selection records, while a queued start shows the queued
+toast and the Run appears in the Runs list after the same reload. A missing Agent, an Agent without a version, live mode or a Run
+budget refusal is a deterministic 422/409.
+
+Evolvable-asset writes are keyed core commands under the same owners
+(`EvolvableAssetRepository`, `EvaluationHarnessService`,
+`EvolvableAssetEvaluationRepository`, `RunWorkflowService`): asset create,
+version create/edit/forward move, pin set/remove, evaluation case create (direct
+or from a Run), evaluation evidence, evaluation case execution (the queued
+evaluation run and its `evolvable_asset_evaluation` Job commit together),
+promotion Proposal and workflow save from a Run (a draft within its risk bounds
+or a `workflow_save` Proposal). Every command on an existing asset takes the
+canonical asset lock (`lockEvolutionAssets`) before the owner reads the version
+state, so the checks and the write hold until commit; asset creation takes the
+Space asset-key lock. Owner refusals are the marked `EvolutionAssetRefusal`
+class (409/422; a daily limit is a 409 conflict for that key); other errors stay
+internal. Asset resolution and workflow-from-Run preview are read-only core
+queries on their retained POST URLs. Receipts carry ids; clients reread
+through the asset, versions, pins, evaluation-case and evaluation-run readers.
 
 ## Autonomous review consumption
 
@@ -60,6 +105,14 @@ reviewable proposal types are not hidden behind an evolution-specific prefix.
 Incomplete `code_patch` proposals and granting-user `egress_review` proposals
 are intentionally not bundleable: their confirmation/approval flows must stay
 on their dedicated server endpoints.
+`POST /api/v1/evolution/bundles` is the keyed core command
+`evolution.bundle.create`; it locks every named Proposal, then checks
+membership, in the operation transaction. Deciding (`/decide`, `/approve`,
+`/reject`) and `/rollback` remain on the bundle routes: they are the canonical
+Proposal decision path (`PgProposalApplyService` accept/reject with its policy
+audit recovery, applier rollback/post-commit compensation and the durable
+code-patch decision Job), the same owner as `/proposals/:id/accept|reject|rollback`,
+and move with that family.
 A bundle never replaces
 the proposal apply boundary: each member is accepted or rejected through the
 standard `PgProposalApplyService`, including its policy, role, risk, and
@@ -101,6 +154,10 @@ that final DB transaction performs no filesystem IO. It commits the decision
 receipt with all selected DB members and linked request results, or rolls all of
 those DB changes back and recovers failed audits through the canonical helper.
 The Job's live claim is checked before IO and locked through final DB commit.
+Both Bundle and standalone patch workers also fence by the Job attempt number,
+check ownership before compensation, and hold the claim through preparation.
+An expired delivery cannot change an active intent or compensate its files;
+immutable terminal receipts remain replayable without re-executing effects.
 
 This is **not** cross-filesystem/database atomic visibility: files may be changed
 while the receipt is `applying`. Failure starts durable `compensating`; recovery

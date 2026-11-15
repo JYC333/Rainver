@@ -1,10 +1,11 @@
+import { roomAgentUseSql } from "../rooms/agentUsageSql.js";
 import { createHash, randomUUID } from "node:crypto";
 import * as protocol from "@rainver/protocol";
 import type { Pool } from "../../db/pool.js";
 import type { RuntimeContextResolvedPolicy, WorkContextSetupWriteRequest } from "@rainver/protocol";
 import { HttpError, dateIso, withQueryableTransaction, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 import { assertProjectReadable, assertProjectReadableLocked } from "../projects/access.js";
-import { contentReadSql, projectReadAccessSql } from "../access/contentAccessSql.js";
+import { contentReadSql } from "../access/contentAccessSql.js";
 import { projectFolderReadAccessSql } from "../projectFolders/access.js";
 import { resolveRuntimeContextPolicyForExecution } from "../policy/runtimeContextPolicyRepository.js";
 import { ensureRoomConversationScope } from "../policy/executionControlSnapshots.js";
@@ -372,30 +373,40 @@ async function readActiveWorkContext(
   );
   const row = result.rows[0];
   if (!row) return null;
-  if (lock) {
-    await lockWorkContextScopeAuthority(
-      db,
-      identity,
-      row.scope_kind as WorkContextSetupWriteRequest["scope_kind"],
-      scopeId,
-    );
-  }
-  const scopeBindings = await resolveWorkContextScopeBindings(
-    db,
-    identity,
-    row.scope_kind as WorkContextSetupWriteRequest["scope_kind"],
-    scopeId,
-  );
+  const scopeKind = row.scope_kind as WorkContextSetupWriteRequest["scope_kind"];
+  const scopeBindings = await resolveWorkContextScopeBindings(db, identity, scopeKind, scopeId);
   assertStoredSetupMatchesScope(row, scopeBindings);
   const effectiveProjectId = row.project_id ?? scopeBindings.project_id;
-  if (effectiveProjectId) {
-    if (lock) {
-      await assertProjectReadableLocked(db, identity.spaceId, effectiveProjectId, identity.userId);
-    } else {
-      await assertProjectReadable(db, identity.spaceId, effectiveProjectId, identity.userId);
-    }
+  if (!lock) {
+    if (effectiveProjectId) await assertProjectReadable(db, identity.spaceId, effectiveProjectId, identity.userId);
+    return toOut(row);
   }
+  // The Project before the scope rows (session, Room, root Run, workflow
+  // execution): Project archive takes the Project `FOR UPDATE` and then its
+  // workflow executions and Runs, so a scope row share taken first would be
+  // held while archive, holding the Project, waits on it. The scope's Project
+  // is read again under the scope locks; a change is a 409, not a late lock.
+  if (effectiveProjectId) await assertProjectReadableLocked(db, identity.spaceId, effectiveProjectId, identity.userId);
+  await lockWorkContextScopeAuthority(db, identity, scopeKind, scopeId);
+  const locked = await resolveWorkContextScopeBindings(db, identity, scopeKind, scopeId);
+  if ((row.project_id ?? locked.project_id) !== effectiveProjectId) {
+    throw new HttpError(409, "Work Context Project changed; read again");
+  }
+  assertStoredSetupMatchesScope(row, locked);
   return toOut(row);
+}
+
+/** The Project `assertActiveWorkContextReadable` locks for this scope, read without locks. */
+export async function workContextEffectiveProject(db: Queryable, identity: SpaceUserIdentity, scopeId: string): Promise<string | null> {
+  const row = (await db.query<{ scope_kind: string; project_id: string | null }>(
+    `SELECT scope_kind,project_id FROM work_context_setups
+      WHERE space_id=$1 AND work_context_scope_id=$2 AND user_id=$3
+      ORDER BY version DESC LIMIT 1`,
+    [identity.spaceId, scopeId, identity.userId],
+  )).rows[0];
+  if (!row) return null;
+  if (row.project_id) return row.project_id;
+  return (await resolveWorkContextScopeBindings(db, identity, row.scope_kind as WorkContextSetupWriteRequest["scope_kind"], scopeId)).project_id;
 }
 
 async function lockWorkContextScopeAuthority(
@@ -430,10 +441,10 @@ async function lockWorkContextScopeAuthority(
           AND member.user_id=$3 AND member.status='active'
         WHERE scope.id=$1 AND scope.space_id=$2
           AND recipient.status='active' AND recipient_agent.status='active'
+          AND ${roomAgentUseSql("recipient_agent", "$3", "room.id")}
           AND room.status='active' AND session.room_id IS NOT NULL
           AND (
-            recipient_agent.visibility = 'space_shared'
-            OR recipient_agent.owner_user_id = $3
+            ${contentReadSql("agent", "recipient_agent", "$3", { includeOversight: false })}
             OR EXISTS (
               SELECT 1 FROM room_agent_access_grants room_grant
                WHERE room_grant.space_id = recipient.space_id
@@ -516,10 +527,10 @@ async function inferWorkContextScopeKind(
         AND member.user_id=$3 AND member.status='active'
       WHERE scope.id=$1 AND scope.space_id=$2
         AND recipient.status='active' AND recipient_agent.status='active'
+          AND ${roomAgentUseSql("recipient_agent", "$3", "room.id")}
         AND room.status='active'
         AND (
-          recipient_agent.visibility = 'space_shared'
-          OR recipient_agent.owner_user_id = $3
+          ${contentReadSql("agent", "recipient_agent", "$3", { includeOversight: false })}
           OR EXISTS (
             SELECT 1 FROM room_agent_access_grants room_grant
              WHERE room_grant.space_id = recipient.space_id
@@ -581,7 +592,7 @@ async function assertSetupReferences(
           AND (a.project_id IS NULL OR a.project_id IS NOT DISTINCT FROM $3)
           AND a.status='active'
           AND (
-            ${contentReadSql("agent", "a", "$4")}
+            ( $5::varchar <> 'room_recipient' AND ${contentReadSql("agent", "a", "$4")})
             OR (
               $5::varchar = 'room_recipient'
               AND ${roomScopedAgentReadSql("a", "$4", "$6")}
@@ -596,39 +607,12 @@ async function assertSetupReferences(
 
 /** Room-only Agent grants are valid only for the recipient scope that owns the setup. */
 export function roomScopedAgentReadSql(agentAlias: string, userExpr: string, scopeExpr: string): string {
-  return `EXISTS (
-    SELECT 1
-      FROM room_conversation_recipients conversation_scope
-      JOIN room_agent_members recipient
-        ON recipient.id=conversation_scope.room_agent_member_id
-       AND recipient.space_id=conversation_scope.space_id
-      JOIN rooms room_scope
-        ON room_scope.id=recipient.room_id AND room_scope.space_id=recipient.space_id
-      JOIN room_user_members room_member
-        ON room_member.space_id=recipient.space_id
-       AND room_member.room_id=recipient.room_id
-       AND room_member.user_id=${userExpr}
-       AND room_member.status='active'
-     WHERE conversation_scope.id=${scopeExpr}
-       AND recipient.space_id=${agentAlias}.space_id
-       AND recipient.agent_id=${agentAlias}.id
-       AND recipient.status='active'
-       AND room_scope.status='active'
-       AND (${agentAlias}.project_id IS NULL OR ${agentAlias}.project_id=room_scope.project_id)
-       AND ${projectReadAccessSql("room_scope.space_id", "room_scope.project_id", userExpr)}
-       AND (
-         ${agentAlias}.visibility='space_shared'
-         OR ${agentAlias}.owner_user_id=${userExpr}
-         OR EXISTS (
-           SELECT 1 FROM room_agent_access_grants room_grant
-            WHERE room_grant.space_id=recipient.space_id
-              AND room_grant.room_id=recipient.room_id
-              AND room_grant.agent_id=${agentAlias}.id
-              AND room_grant.grantee_user_id=${userExpr}
-              AND room_grant.revoked_at IS NULL
-         )
-       )
-  )`;
+  return `EXISTS (SELECT 1 FROM room_conversation_recipients conversation_scope
+    JOIN room_agent_members recipient ON recipient.id=conversation_scope.room_agent_member_id
+      AND recipient.space_id=conversation_scope.space_id
+    WHERE conversation_scope.id=${scopeExpr} AND recipient.agent_id=${agentAlias}.id
+      AND recipient.space_id=${agentAlias}.space_id
+      AND ${roomAgentUseSql(agentAlias, userExpr, "recipient.room_id")})`;
 }
 
 /**
@@ -762,10 +746,10 @@ export async function resolveWorkContextScopeBindings(
           AND member.user_id=$3 AND member.status='active'
         WHERE scope.id=$1 AND scope.space_id=$2
           AND recipient.status='active' AND recipient_agent.status='active'
+          AND ${roomAgentUseSql("recipient_agent", "$3", "room.id")}
           AND room.status='active' AND s.room_id IS NOT NULL
           AND (
-            recipient_agent.visibility = 'space_shared'
-            OR recipient_agent.owner_user_id = $3
+            ${contentReadSql("agent", "recipient_agent", "$3", { includeOversight: false })}
             OR EXISTS (
               SELECT 1 FROM room_agent_access_grants room_grant
                WHERE room_grant.space_id = recipient.space_id

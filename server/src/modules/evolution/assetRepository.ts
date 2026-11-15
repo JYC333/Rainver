@@ -1,3 +1,4 @@
+import { EvolutionAssetRefusal } from "./assetRefusal.js";
 import { randomUUID } from "node:crypto";
 import * as protocol from "@rainver/protocol";
 import {
@@ -53,7 +54,7 @@ function requiredDateIso(value: unknown): string {
 function enumValue(value: unknown, allowed: Set<string>, field: string): string | null {
   const text = optionalString(value);
   if (!text) return null;
-  if (!allowed.has(text)) throw new HttpError(422, `${field} must be one of ${[...allowed].join(", ")}`);
+  if (!allowed.has(text)) throw new EvolutionAssetRefusal(422, `${field} must be one of ${[...allowed].join(", ")}`);
   return text;
 }
 
@@ -190,7 +191,7 @@ export class EvolvableAssetRepository {
     const params: unknown[] = [identity.spaceId];
     const clauses = ["(space_id = $1 OR space_id IS NULL)"];
     if (filters.assetType) {
-      if (!ASSET_TYPES.has(filters.assetType)) throw new HttpError(422, "asset_type is invalid");
+      if (!ASSET_TYPES.has(filters.assetType)) throw new EvolutionAssetRefusal(422, "asset_type is invalid");
       params.push(filters.assetType);
       clauses.push(`asset_type = $${params.length}`);
     }
@@ -207,11 +208,11 @@ export class EvolvableAssetRepository {
 
   async createAsset(identity: SpaceUserIdentity, body: Record<string, unknown>): Promise<Record<string, unknown>> {
     const assetType = enumValue(body.asset_type, ASSET_TYPES, "asset_type");
-    if (!assetType) throw new HttpError(422, "asset_type is required");
+    if (!assetType) throw new EvolutionAssetRefusal(422, "asset_type is required");
     const assetKey = optionalString(body.asset_key);
-    if (!assetKey) throw new HttpError(422, "asset_key is required");
+    if (!assetKey) throw new EvolutionAssetRefusal(422, "asset_key is required");
     const displayName = optionalString(body.display_name);
-    if (!displayName) throw new HttpError(422, "display_name is required");
+    if (!displayName) throw new EvolutionAssetRefusal(422, "display_name is required");
     const ownerScopeType = enumValue(body.owner_scope_type, OWNER_SCOPE_TYPES, "owner_scope_type") ?? "space";
     const ownerScope = await normalizeAssetOwnerScopeForCreate(
       this.db,
@@ -233,14 +234,14 @@ export class EvolvableAssetRepository {
         [assetKey],
       );
       if (reserved.rows[0]) {
-        throw new HttpError(409, "system prompt asset_key is reserved; evolve the existing prompt asset instead");
+        throw new EvolutionAssetRefusal(409, "system prompt asset_key is reserved; evolve the existing prompt asset instead");
       }
     }
     const existing = await this.db.query<{ id: string }>(
       `SELECT id FROM evolvable_assets WHERE space_id = $1 AND asset_key = $2 LIMIT 1`,
       [identity.spaceId, assetKey],
     );
-    if (existing.rows[0]) throw new HttpError(409, "asset_key is already in use in this space");
+    if (existing.rows[0]) throw new EvolutionAssetRefusal(409, "asset_key is already in use in this space");
     const id = randomUUID();
     const now = new Date().toISOString();
     await this.db.query(
@@ -293,7 +294,7 @@ export class EvolvableAssetRepository {
     const row = await this.assetRow(identity.spaceId, assetId);
     if (!row) throw new HttpError(404, "Evolvable asset not found");
     await assertCanWriteAssetOwnerScope(this.db, identity, row);
-    if (!ASSET_TYPES.has(row.asset_type)) throw new HttpError(409, "Retired evolvable assets are read-only");
+    if (!ASSET_TYPES.has(row.asset_type)) throw new EvolutionAssetRefusal(409, "Retired evolvable assets are read-only");
     return row;
   }
 
@@ -348,7 +349,7 @@ export class EvolvableAssetRepository {
     let originalParentGeneration: unknown;
     if (parentVersionId) {
       const parent = await this.versionRow(assetId, parentVersionId);
-      if (!parent || !await canViewVersionScope(this.db, identity, parent)) throw new HttpError(422, "parent_version_id does not reference a readable version of this asset");
+      if (!parent || !await canViewVersionScope(this.db, identity, parent)) throw new EvolutionAssetRefusal(422, "parent_version_id does not reference a readable version of this asset");
       originalParentGeneration=(parent.content_json as {reading_generation?:unknown}|null)?.reading_generation;
       parentGeneration = ['approved','deprecated'].includes(parent.status)?undefined:originalParentGeneration;
     }
@@ -401,9 +402,9 @@ export class EvolvableAssetRepository {
     if (!current || !await canViewVersionScope(this.db, identity, current)) throw new HttpError(404, "Asset version not found");
     await normalizeVersionScopeForWrite(this.db, identity, current.scope_type, current.scope_id);
     assertAssetAllowsTargetScope(asset, identity, current.scope_type, current.scope_id);
-    if ((current.content_json as {reading_generation?:unknown}|null)?.reading_generation) throw new HttpError(409, "Generated methods are immutable; create a child version");
+    if ((current.content_json as {reading_generation?:unknown}|null)?.reading_generation) throw new EvolutionAssetRefusal(409, "Generated methods are immutable; create a child version");
     if (current.status !== "draft") {
-      throw new HttpError(422, "Only draft versions can be edited — create a child version instead");
+      throw new EvolutionAssetRefusal(422, "Only draft versions can be edited — create a child version instead");
     }
     const contentJson = body.content_json === undefined
       ? optionalObject(current.content_json)
@@ -420,7 +421,7 @@ export class EvolvableAssetRepository {
         WHERE asset_id = $1 AND id = $2 AND status = 'draft'`,
       [assetId, versionId, contentRef, contentHash, validatedContentJson ? JSON.stringify(validatedContentJson) : null, now],
     );
-    if (updated.rowCount !== 1) throw new HttpError(409, "The version left draft; create a child version instead");
+    if (updated.rowCount !== 1) throw new EvolutionAssetRefusal(409, "The version left draft; create a child version instead");
     const row = await this.versionRow(assetId, versionId);
     if (!row) throw new HttpError(500, "Failed to update asset version");
     return versionOut(row, false);
@@ -438,12 +439,12 @@ export class EvolvableAssetRepository {
     await normalizeVersionScopeForWrite(this.db, identity, current.scope_type, current.scope_id);
     assertAssetAllowsTargetScope(asset, identity, current.scope_type, current.scope_id);
     const status = optionalString(body.status);
-    if (!status) throw new HttpError(422, "status is required");
+    if (!status) throw new EvolutionAssetRefusal(422, "status is required");
     if (status === "approved" || status === "deprecated") {
-      throw new HttpError(422, "'approved' and 'deprecated' are only reachable through the promotion proposal flow");
+      throw new EvolutionAssetRefusal(422, "'approved' and 'deprecated' are only reachable through the promotion proposal flow");
     }
     if (!DIRECT_VERSION_TRANSITIONS[current.status]?.has(status)) {
-      throw new HttpError(
+      throw new EvolutionAssetRefusal(
         422,
         status === "draft"
           ? "A version cannot return to draft once it left it; create a child version to change its content"
@@ -455,7 +456,7 @@ export class EvolvableAssetRepository {
       `UPDATE evolvable_asset_versions SET status = $3, updated_at = $4 WHERE asset_id = $1 AND id = $2 AND status = $5`,
       [assetId, versionId, status, now, current.status],
     );
-    if (moved.rowCount !== 1) throw new HttpError(409, "The version's status changed; reload and try again");
+    if (moved.rowCount !== 1) throw new EvolutionAssetRefusal(409, "The version's status changed; reload and try again");
     const updated = await this.versionRow(assetId, versionId);
     if (!updated) throw new HttpError(500, "Failed to transition asset version");
     return versionOut(updated, false);
@@ -494,11 +495,11 @@ export class EvolvableAssetRepository {
     body: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
     const asset = await this.requireWritableAsset(identity, assetId);
-    if (!PIN_SCOPE_TYPES.has(scopeType)) throw new HttpError(422, "scope_type must be one of space, project, user, agent");
+    if (!PIN_SCOPE_TYPES.has(scopeType)) throw new EvolutionAssetRefusal(422, "scope_type must be one of space, project, user, agent");
     await assertCanPinScope(this.db, identity, scopeType, scopeId);
     assertAssetAllowsTargetScope(asset, identity, scopeType, scopeId);
     const versionId = optionalString(body.version_id);
-    if (!versionId) throw new HttpError(422, "version_id is required");
+    if (!versionId) throw new EvolutionAssetRefusal(422, "version_id is required");
     const id = randomUUID();
     await withQueryableTransaction(this.db, async (db) => {
       // Under the asset lock a promotion takes to deprecate earlier versions:
@@ -511,10 +512,10 @@ export class EvolvableAssetRepository {
         [assetId, versionId],
       );
       const version = found.rows[0];
-      if (!version) throw new HttpError(422, "version_id does not reference a version of this asset");
-      if (version.status !== "approved") throw new HttpError(422, "Only an approved version can be pinned");
+      if (!version) throw new EvolutionAssetRefusal(422, "version_id does not reference a version of this asset");
+      if (version.status !== "approved") throw new EvolutionAssetRefusal(422, "Only an approved version can be pinned");
       if (!versionServesScope(identity, { scopeType, scopeId }, version)) {
-        throw new HttpError(422, "version_id is not visible to the target pin scope");
+        throw new EvolutionAssetRefusal(422, "version_id is not visible to the target pin scope");
       }
       // Archive any existing active pin for this exact scope target (same
       // scope_type AND scope_id — not just scope_type, which would archive an
@@ -559,10 +560,10 @@ async function validateAssetVersionContent(
   contentJson: Record<string, unknown> | null,
 ): Promise<Record<string, unknown> | null> {
   if (assetType !== "workflow_template") return contentJson;
-  if (!contentJson) throw new HttpError(422, "workflow_template versions require content_json");
+  if (!contentJson) throw new EvolutionAssetRefusal(422, "workflow_template versions require content_json");
   const parsed = protocol.WorkflowDefinitionSchema.safeParse(contentJson);
   if (!parsed.success) {
-    throw new HttpError(422, `workflow_definition.v1 is invalid: ${parsed.error.issues[0]?.message ?? "invalid content"}`);
+    throw new EvolutionAssetRefusal(422, `workflow_definition.v1 is invalid: ${parsed.error.issues[0]?.message ?? "invalid content"}`);
   }
   return parsed.data as Record<string, unknown>;
 }

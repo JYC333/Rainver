@@ -1,3 +1,4 @@
+import { ComposerSuggestions } from './ComposerSuggestions'
 import { ConversationFilePreview } from "./ConversationFilePreview"
 import { hasSkillReference, skillReferenceRanges, skillReferenceText, SkillMenuEmptyHint, useAvailableSkills, type SkillReferenceRange } from './conversationSkills'
 import { useAppTranslation } from '../../i18n'
@@ -193,6 +194,7 @@ function ConversationTextEditor({ input, onInputChange, onSend, placeholder, dis
   const { t } = useAppTranslation()
   const canSend = useConversationInputSendGuard()
   const textarea = useRef<HTMLTextAreaElement>(null)
+  const suggestionAnchor = useRef<HTMLDivElement>(null)
   const pendingCaret = useRef<number | null>(null)
   const backdrop = useRef<HTMLDivElement>(null)
   const [range, setRange] = useState<{ from: number; to: number; query: string } | null>(null)
@@ -246,14 +248,15 @@ function ConversationTextEditor({ input, onInputChange, onSend, placeholder, dis
     setRange(null)
     textarea.current?.focus()
   }
-  return <div className="relative">
-    {range && onInputPartsChange && <div className="absolute bottom-full z-20 max-h-64 w-80 max-w-full overflow-auto rounded border bg-popover p-1 shadow-lg" role="listbox" aria-label={t('skill_packages.invoke')}>
+  return <div ref={suggestionAnchor} className="relative">
+    {range && onInputPartsChange && <ComposerSuggestions anchorRef={suggestionAnchor} onDismiss={() => setRange(null)}>
+      <div className="min-h-0 max-h-64 overflow-auto p-1" role="listbox" aria-label={t('skill_packages.invoke')}>
       {suggestions.map((skill, itemIndex) => <button key={skill.skill_package_id} type="button" role="option" aria-selected={itemIndex === index}
         onMouseDown={event => event.preventDefault()} onClick={() => choose(itemIndex)} className={`block w-full rounded p-2 text-left text-sm ${itemIndex === index ? 'bg-accent' : ''}`}>
         /{skill.display_name} <span className="text-xs text-muted-foreground">{skill.package_hash.slice(0, 8)}</span>
       </button>)}
       {(!suggestions.length || error || inputParts.filter(part => part.kind === 'skill').length >= 4) && <p className="p-2 text-xs">{error || (loading ? t('management_ui.skills.loading_detail') : inputParts.filter(part => part.kind === 'skill').length >= 4 ? t('skill_packages.limit') : loaded && !skills.length ? <SkillMenuEmptyHint /> : t('skill_packages.no_matches'))}</p>}
-    </div>}
+    </div></ComposerSuggestions>}
     {references.length > 0 && <SkillReferenceBackdrop ref={backdrop} text={input} references={references} />}
     <Textarea ref={textarea} value={input}
       onChange={event => changeText(event.target.value, event.target.selectionStart)}

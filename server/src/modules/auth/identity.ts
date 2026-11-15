@@ -73,7 +73,8 @@ export function authRepositoryFromConfig(config: ServerConfig): AuthRepository |
  * Auth refreshed while validating is set on the response, so the sliding
  * window reaches the browser from every route that resolves identity.
  */
-export async function introspectIdentity(config: ServerConfig, request: FastifyRequest, reply?: FastifyReply): Promise<IntrospectionResult> {
+/** `spaceId` is a Space an adapter's URL names; a header or query naming a different one is refused. */
+export async function introspectIdentity(config: ServerConfig, request: FastifyRequest, reply?: FastifyReply, spaceId?: string): Promise<IntrospectionResult> {
   if (identityOverride) {
     const value = typeof identityOverride === "function" ? await identityOverride(request) : identityOverride;
     if (value) return { ok: true, spaceId: value.spaceId, userId: value.userId, sessionId: value.sessionId ?? "", setCookies: [] };
@@ -82,9 +83,23 @@ export async function introspectIdentity(config: ServerConfig, request: FastifyR
   if (!repository) return { ok: false, reason: "unavailable", statusCode: 502, body: "" };
   const query = request.query as Record<string, unknown> | undefined;
   const requestedSpaceHeader = headerValue(request.headers["x-rainver-space-id"]);
-  const identity = await repository.resolveIdentity({ authorization: headerValue(request.headers.authorization), sessionToken: sessionTokenFromRequest(request), requestedSpaceId: requestedSpaceHeader ?? (typeof query?.space_id === "string" ? query.space_id : undefined) });
+  const selected = requestedSpaceHeader ?? (typeof query?.space_id === "string" ? query.space_id : undefined);
+  if (spaceId !== undefined && selected !== undefined && selected !== spaceId) return { ok: false, reason: "denied", statusCode: 404, body: authFailureBody("Not found") };
+  const identity = await repository.resolveIdentity({ authorization: headerValue(request.headers.authorization), sessionToken: sessionTokenFromRequest(request), requestedSpaceId: spaceId ?? selected });
   if (identity.ok && reply) sessionRefreshSink(reply)(identity.setCookies ?? []);
   return identity;
+}
+/** Session identity for the named person-scoped operations; ignores browsed Space. */
+export async function introspectPersonIdentity(config:ServerConfig,request:FastifyRequest,reply:FastifyReply):Promise<IntrospectionResult>{
+  if(identityOverride){const value=typeof identityOverride==='function'?await identityOverride(request):identityOverride;if(value)return {ok:true,userId:value.userId,spaceId:value.spaceId};}
+  const repository=authRepositoryFromConfig(config);
+  if(!repository)return {ok:false,reason:'unavailable',statusCode:502,body:''};
+  if(headerValue(request.headers.authorization)?.startsWith('Bearer '))return {ok:false,reason:'denied',statusCode:501,body:authFailureBody(API_KEYS_NOT_IMPLEMENTED)};
+  const user=await repository.getCurrentUser(sessionTokenFromRequest(request),sessionRefreshSink(reply));
+  if('statusCode' in user)return {ok:false,reason:'denied',statusCode:user.statusCode,body:authFailureBody(user.detail)};
+  // This is only the transport's locator. Core independently resolves canonical storage.
+  if(!user.default_space_id)return {ok:false,reason:'denied',statusCode:404,body:authFailureBody('Not found')};
+  return {ok:true,userId:user.id,spaceId:user.default_space_id};
 }
 export function sessionCookieName(config: ServerConfig): string { return getCookies({ baseURL: config.frontendUrl }).sessionToken.name }
 export function sessionTokenFromRequest(request: FastifyRequest): string | undefined {

@@ -44,7 +44,7 @@ beforeAll(async () => {
             ($4,$2,$5,'member','active',now(),now())`,
     [randomUUID(), SPACE, OWNER, randomUUID(), OTHER],
   );
-}, 180_000);
+});
 
 afterAll(async () => {
   __setManagedSubscriptionOAuthForTests(null);
@@ -218,7 +218,8 @@ describe("managed subscription OAuth refresh is a once-only credential step", ()
     const vendor = rotatingVendor({
       async duringRefresh() {
         locksDuringCall = Number((await db.pool.query(`SELECT count(*)::int AS n FROM pg_locks l JOIN pg_class c ON c.oid=l.relation
-          WHERE c.relname='credentials' AND l.pid<>pg_backend_pid()`)).rows[0].n);
+          WHERE c.relname='credentials' AND l.database=(SELECT oid FROM pg_database WHERE datname=current_database())
+          AND l.pid<>pg_backend_pid()`)).rows[0].n);
         const probe = await db.pool.connect();
         try {
           await probe.query("BEGIN");

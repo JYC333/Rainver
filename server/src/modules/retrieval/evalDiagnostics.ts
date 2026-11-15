@@ -1,5 +1,6 @@
 import type { RetrievalEvalReportCase, RetrievalEvalReportRequest } from "@rainver/protocol";
 import type { Queryable } from "../routeUtils/common.js";
+import { retrievalArtifactWithheld } from "./artifactRelease.js";
 import {
   contentOwnerFilterSql,
   contentReadSql,
@@ -7,6 +8,7 @@ import {
 } from "../access/contentAccessSql.js";
 
 interface BriefArtifactRow {
+  id: string;
   artifact_type: string;
   metadata_json: unknown;
 }
@@ -51,11 +53,46 @@ export async function buildRetrievalEvalDiagnosticsReport(
   db: Queryable,
   input: BuildRetrievalEvalDiagnosticsInput,
 ): Promise<RetrievalEvalReportRequest> {
+  return (await buildRetrievalEvalDiagnosticsReportWithSources(db, input)).report;
+}
+
+/** The diagnostics aggregate and the complete set of Artifacts (Briefs,
+ * maintenance and eval reports, both windows) whose released bodies it was
+ * computed from. The persisted report records `source_artifact_ids` so each
+ * read rechecks every contributing Artifact's current release closure. */
+export async function buildRetrievalEvalDiagnosticsReportWithSources(
+  db: Queryable,
+  input: BuildRetrievalEvalDiagnosticsInput,
+): Promise<{ report: RetrievalEvalReportRequest; sourceArtifactIds: string[] }> {
+  const {rows,previousRows}=await discoverDiagnosticsArtifacts(db,input);
+  // Aggregates count only Briefs whose contributing refs are still releasable
+  // to the owner (decision only; no object body is released here).
+  const sourceArtifactIds: string[] = [];
+  const released = async (list: BriefArtifactRow[]) => {
+    const out: Array<{ artifactType: string; metadata: unknown }> = [];
+    for (const row of list) {
+      if (!await retrievalArtifactWithheld(db, { spaceId: input.spaceId, userId: input.ownerUserId }, row, null)) {
+        out.push({ artifactType: row.artifact_type, metadata: row.metadata_json });
+        sourceArtifactIds.push(row.id);
+      }
+    }
+    return out;
+  };
+  const report = buildRetrievalEvalDiagnosticsReportFromArtifactMetadata(
+    await released(rows),
+    input,
+    await released(previousRows),
+  );
+  return { report, sourceArtifactIds };
+}
+
+/** Authority-free selection shared with Context Ops' pre-lock discovery. */
+export async function discoverDiagnosticsArtifacts(db:Queryable,input:BuildRetrievalEvalDiagnosticsInput){
   const artifactTypes = input.includeMaintenanceReports === false
     ? ["retrieval_brief", "retrieval_eval_report"]
     : ["retrieval_brief", "retrieval_maintenance_report", "retrieval_eval_report"];
   const rows = await db.query<BriefArtifactRow>(
-    `SELECT artifact_type, metadata_json
+    `SELECT id, artifact_type, metadata_json
        FROM artifacts a
       WHERE a.space_id = $1
         AND ${contentReadSql("artifact", "a", "$2")}
@@ -77,7 +114,7 @@ export async function buildRetrievalEvalDiagnosticsReport(
   const previousRows = input.comparePreviousWindow === false
     ? []
     : (await db.query<BriefArtifactRow>(
-        `SELECT artifact_type, metadata_json
+        `SELECT id, artifact_type, metadata_json
            FROM artifacts a
           WHERE a.space_id = $1
             AND ${contentReadSql("artifact", "a", "$2")}
@@ -98,11 +135,7 @@ export async function buildRetrievalEvalDiagnosticsReport(
         [input.spaceId, input.ownerUserId, input.windowDays, input.limit, artifactTypes],
       )).rows;
 
-  return buildRetrievalEvalDiagnosticsReportFromArtifactMetadata(
-    rows.rows.map((row) => ({ artifactType: row.artifact_type, metadata: row.metadata_json })),
-    input,
-    previousRows.map((row) => ({ artifactType: row.artifact_type, metadata: row.metadata_json })),
-  );
+  return {rows:rows.rows,previousRows};
 }
 
 export function buildRetrievalEvalDiagnosticsReportFromMetadata(

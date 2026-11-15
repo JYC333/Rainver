@@ -54,7 +54,7 @@ export function useTestDatabase(
       const name = fileUrl.split("/").pop()?.replace(/\.test\.ts$/, "") ?? fileUrl;
       console.warn(`[${name}] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
     }
-  }, 180_000);
+  });
 
   // An unreachable container reports each test as skipped, rather than
   // letting a body that returns early report a pass. CI sets

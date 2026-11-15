@@ -10,6 +10,14 @@ import { RuntimeSessionConfigSelectionSchema } from "./hosts.js";
 import { RuntimeKeySchema } from "./runtimeAuthority.js";
 import { RoomDiscussionSchema } from "./roomDiscussions.js";
 
+export const RoomConversationDefaultSchema = z.object({
+  agent_id: IdSchema,
+  participating: z.boolean(),
+  runtime_profile_id: IdSchema.nullable(),
+  session_config: z.array(RuntimeSessionConfigSelectionSchema).max(32),
+}).strict();
+export type RoomConversationDefault = z.infer<typeof RoomConversationDefaultSchema>;
+
 export const RoomSchema = z.object({
   id: IdSchema,
   space_id: IdSchema,
@@ -22,6 +30,7 @@ export const RoomSchema = z.object({
   updated_at: ISODateTimeSchema,
   archived_at: ISODateTimeSchema.nullish(),
   // Internal concurrency cursor surfaced when available; older clients may omit it.
+  conversation_defaults_json: z.array(RoomConversationDefaultSchema).optional(),
   roster_revision: z.number().int().nonnegative().optional(),
   /** The Project's mainline conversation, which every Project member belongs to. */
   is_mainline: z.boolean().default(false),
@@ -92,6 +101,8 @@ export const RoomAgentCandidateSchema = z.object({
   owner_user_id: IdSchema.nullish(),
   visibility: z.string().trim().min(1),
   in_room: z.boolean(),
+  /** Already on this Project's Agent list; the Room add dialog offers these first. */
+  in_project: z.boolean(),
   member_status: z.enum(["active", "removed"]).nullish(),
   private: z.boolean(),
   shared_with_user_ids: z.array(IdSchema).default([]),
@@ -237,6 +248,8 @@ export const RoomConversationSchema = z.object({
   status: z.string(),
   created_at: ISODateTimeSchema,
   updated_at: ISODateTimeSchema,
+  last_message_at: ISODateTimeSchema.nullable().optional(),
+  is_running: z.boolean().optional(),
   ...SecretResponseGuards,
 }).strict();
 export type RoomConversation = z.infer<typeof RoomConversationSchema>;
@@ -270,6 +283,7 @@ export const ProjectConversationSchema = z.object({
   last_message_role: z.string().nullable(),
   last_message_preview: z.string().nullable(),
   message_count: z.number().int().nonnegative(),
+  is_running: z.boolean().optional(),
 }).strict();
 export type ProjectConversation = z.infer<typeof ProjectConversationSchema>;
 

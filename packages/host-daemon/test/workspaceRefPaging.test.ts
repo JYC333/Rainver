@@ -78,7 +78,7 @@ describe('Location inventory beyond any output budget',()=>{
   expect(last.next).toBeNull();
   const end=await listRainverRefs(repoDir,all.at(-1));
   expect(end).toEqual({refs:[],next:null});
- },120_000);
+ });
 });
 
 describe('Location inventory at exact page boundaries',()=>{

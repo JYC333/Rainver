@@ -1,3 +1,6 @@
+import { useConversationSettings } from './useConversationSettings'
+import type { ConversationExecutionPreflightProps } from './ConversationExecutionPreflight'
+import {ConversationUsage} from './ConversationUsage'
 import { messageRunIds, delegatedChildren, isTerminalRunStatus, roomLiveRunAnchors, roomTurnGroups } from './roomTimeline'
 import { planTurnSummaries, usePresentedChanges } from './turnWorkspacePresentation'
 import { TurnWorkspaceSummary } from './TurnWorkspaceSummary'
@@ -7,7 +10,7 @@ import { ConversationFilePreview } from "./ConversationFilePreview"
 import { useAttentionViewing } from '../agent_work/AgentAttentionProvider'
 import { mergeAbortSignals } from '../../lib/mergeAbortSignals'
 import { ConversationScope, useConversationScope } from './ConversationScope'
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { cloneElement, isValidElement, Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Bot, Loader2, MessagesSquare, Quote, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { agentsApi, ApiRequestError, roomsApi, runsApi } from '../../api/client'
@@ -22,7 +25,6 @@ import type {
   OpenRoomDiscussionRequest,
   QueuedRoomMessage,
   RoomConversation as RoomConversationRecord,
-  RoomConversationQuota,
   RoomDetail,
   RoomDiscussion,
   RoomDiscussionDetail,
@@ -69,6 +71,7 @@ import {
 } from './DiscussionGroup'
 import { OpenDiscussionDialog } from './OpenDiscussionDialog'
 import { ConversationQuotaLine } from './ConversationQuotaLine'
+import { useConversationQuota } from './useConversationQuota'
 import { KnowledgeRetrievalToggle } from './KnowledgeRetrievalToggle'
 import { useStickToBottom } from 'use-stick-to-bottom'
 import { Conversation, ConversationContent, ConversationScrollButton } from '../../components/ai-elements/conversation'
@@ -183,6 +186,7 @@ interface ConversationSurfaceProps {
   /** The Files & Code sidecar's one implicit current-file producer. */
   implicitInputResource?: CurrentFileAttachment | null
   /** False while the execution context is missing, blocked, or being configured. */
+  participantAgentIds?: string[]
   executionReady?: boolean
   isOwner?: boolean
   emptyHint?: ReactNode
@@ -202,7 +206,7 @@ export function ConversationSurface(props: ConversationSurfaceProps) {
     const openingDraft = destination.id === null && props.conversationId !== null
     setDestination({ id: props.conversationId, epoch: destination.epoch + (openingDraft ? 0 : 1) })
   }
-  return <ConversationScope key={`${props.spaceId ?? ''}:${props.roomId}:${destination.epoch}`} spaceId={props.spaceId} actionUserId={userId} actionRole={actionRole}>
+  return <ConversationScope key={`${props.spaceId ?? ''}:${props.roomId}:${destination.epoch}:${userId}:${actionRole}:${props.readOnly}:${props.detail?.viewer_can_write}`} spaceId={props.spaceId} actionUserId={userId} actionRole={actionRole}>
     <ConversationSurfaceContent {...props} />
   </ConversationScope>
 }
@@ -227,6 +231,7 @@ function ConversationSurfaceContent({
   inputFileSources,
   implicitInputResource = null,
   composerAttachments,
+  participantAgentIds,
   executionReady = true,
   isOwner = false,
   emptyHint,
@@ -236,7 +241,8 @@ function ConversationSurfaceContent({
   onReadError,
 }: ConversationSurfaceProps) {
   const scope = useConversationScope()
-  const { userId } = useSpace()
+  const { userId, activeSpaceId } = useSpace()
+  const quotaSpaceId = scope.spaceId ?? activeSpaceId
   const { t } = useAppTranslation()
   const [detail, setDetail] = useState<RoomDetail | null>(suppliedDetail ?? null)
   const [messages, setMessages] = useState<RoomMessage[]>([])
@@ -270,6 +276,7 @@ function ConversationSurfaceContent({
   const [sending, setSending] = useState(false)
   const [savingSettings, setSavingSettings] = useState(0)
   const [loadedBackendCatalogs, setLoadedBackendCatalogs] = useState<Record<string, ConversationBackendCatalog>>({})
+  const settingsDraft = useConversationSettings(`${scope.spaceId}:${scope.actionUserId}:${roomId}:${conversationId}:${scope.actionRole}:${detail?.viewer_can_write}:${readOnly}`, previousConversationId.current === null && Boolean(conversationId))
   const [sessionConfig, setSessionConfig] = useState<Record<string, SessionConfigSelection[]>>({})
   const sendingRef = useRef(false)
   const [continuation, setContinuation] = useState<PendingProposalContinuation | null>(null)
@@ -284,8 +291,6 @@ function ConversationSurfaceContent({
    */
   const [discussionDetails, setDiscussionDetails] = useState<Record<string, RoomDiscussionDetail>>({})
   const detailVersions = useRef(new Map<string, string>())
-  /** The Space's subscription lines, this conversation's logins, and what is held (`modules/rooms.md`, "Subscription quota gate"). */
-  const [quota, setQuota] = useState<RoomConversationQuota | null>(null)
   /** Set when a send was refused for crossing an audience boundary. */
   const [disclosure, setDisclosure] = useState<
     { gainsAccessUserIds: string[]; detail: string; attachTo?: string } | null
@@ -548,7 +553,6 @@ function ConversationSurfaceContent({
     discussionsRef.current = {}
     setDiscussionDetails({})
     detailVersions.current.clear()
-    setQuota(null)
     setQueued([])
     fetchedTurns.current.clear()
     referencesAttachedRef.current = false
@@ -637,6 +641,7 @@ function ConversationSurfaceContent({
   const roomAgents = detail?.agent_members.map(member => ({
     id: member.agent_id, name: member.agent_name, kind: member.agent_kind, status: member.status,
   })) ?? []
+  const participantAgents=roomAgents.filter(agent=>!participantAgentIds||participantAgentIds.includes(agent.id))
   const labelAgents = [...roomAgents, ...agents.filter(agent => !roomAgents.some(item => item.id === agent.id))]
   // Who is speaking in a turn that has no reply yet: the Run record names
   // the Agent, the roster names it for people. Unknown until the Run has
@@ -653,13 +658,32 @@ function ConversationSurfaceContent({
       ?? 'the Manager'
   }
   const configurableAgentKey = roomAgents
-    .filter(agent => agent.status === 'active')
+    .filter(agent => agent.status === 'active' && (!participantAgentIds || participantAgentIds.includes(agent.id)))
     .map(agent => agent.id)
     .sort()
     .join(':')
   // A Conversation's binding is session-owned: its catalogs are read back
   // for the initialized session, never chosen elsewhere.
+  const [settingsVersion, setSettingsVersion] = useState(0)
+  const [backendErrors, setBackendErrors] = useState<Record<string, string>>({})
+  useEffect(() => {
+    const refresh = (event: Event) => {
+      const changed = (event as CustomEvent).detail
+      if (changed?.sessionId === conversationId && changed?.spaceId === scope.spaceId) setSettingsVersion(current => current + 1)
+    }
+    window.addEventListener('conversation-settings-saved', refresh)
+    return () => window.removeEventListener('conversation-settings-saved', refresh)
+  }, [conversationId, scope.spaceId])
+  const activeSettingsScope = useRef(scope)
+  activeSettingsScope.current = scope
+  useEffect(() => {
+    setBackendErrors({})
+    setLoadedBackendCatalogs({})
+    setSessionConfig({})
+  }, [scope, conversationId, detail?.viewer_can_write, readOnly])
   const backendCatalogs = loadedBackendCatalogs
+  const backendCatalogsRef = useRef(loadedBackendCatalogs)
+  backendCatalogsRef.current = loadedBackendCatalogs
   // Who the next message reaches: the manager when it is handed to them to
   // arrange or names nobody, otherwise the Agents it addresses.
   const composerRoute = useMemo(() => roomMessageRoute(composer, managerAgentId), [composer, managerAgentId])
@@ -691,31 +715,38 @@ function ConversationSurfaceContent({
     const requestedAgentIds = conversationId ? agentIds : []
     if (requestedAgentIds.length === 0) {
       setLoadedBackendCatalogs({})
+      setBackendErrors({})
       setSessionConfig({})
       return
     }
     let cancelled = false
-    Promise.all(requestedAgentIds.map(async agentId => ({
+    Promise.allSettled(requestedAgentIds.map(async agentId => ({
       agentId,
       catalog: await agentsApi.conversationBackends(agentId, { ...scope,
         ...(conversationId ? { sessionId: conversationId } : {}),
       }),
     }))).then(entries => {
       if (cancelled) return
-      const fetched = Object.fromEntries(entries.map(entry => [entry.agentId, entry.catalog]))
+      const fetched = Object.fromEntries(entries.flatMap(entry => entry.status === 'fulfilled' ? [[entry.value.agentId, entry.value.catalog]] : []))
+      setBackendErrors(Object.fromEntries(entries.flatMap((entry, index) => entry.status === 'rejected' ? [[requestedAgentIds[index]!, errMsg(entry.reason)]] : [])))
+      const previousCatalogs = backendCatalogsRef.current
       setLoadedBackendCatalogs(fetched)
       const catalogs = fetched
       setSessionConfig(current => Object.fromEntries(agentIds.map(agentId => {
         const catalog = catalogs[agentId]
-        const backend = catalog.binding ?? catalog.options.find(option => option.usable !== false)
-        const option = catalog.options.find(candidate => candidate.runtime_profile_id === backend?.runtime_profile_id)
-        return [agentId, mergeSessionConfig(option?.session_config_options ?? [], catalog.session_config ?? current[agentId] ?? [])]
+        const backend = catalog?.binding ?? catalog?.options.find(option => option.usable !== false)
+        const option = catalog?.options.find(candidate => candidate.runtime_profile_id === backend?.runtime_profile_id)
+        const previous = previousCatalogs[agentId]
+        const previousBackend = previous?.binding ?? previous?.options.find(option => option.usable !== false)
+        const previousOptions = previous?.options.find(option => option.runtime_profile_id === previousBackend?.runtime_profile_id)?.session_config_options ?? []
+        const dirty = current[agentId] !== undefined && JSON.stringify(current[agentId]) !== JSON.stringify(mergeSessionConfig(previousOptions, previous?.session_config ?? []))
+        return [agentId, mergeSessionConfig(option?.session_config_options ?? [], dirty ? current[agentId]! : catalog?.session_config ?? [])]
       })))
     }).catch(error => {
       if (!cancelled) toast.error(errMsg(error))
     })
     return () => { cancelled = true }
-  }, [configurableAgentKey, conversationId, executionReady, scope])
+  }, [configurableAgentKey, conversationId, executionReady, scope, settingsVersion, detail?.viewer_can_write, readOnly])
 
   const configuredBackendsFor = useCallback((recipientAgentIds: string[]): ConversationBackendSelection[] => {
     return recipientAgentIds.flatMap(agentId => {
@@ -733,6 +764,7 @@ function ConversationSurfaceContent({
   const sendMessage = useCallback(async (confirmDisclosure?: string[]) => {
     const text = composer.text.trim()
     if (!conversationId || sendingRef.current || savingSettings > 0 || !executionReady) return
+    if (!settingsDraft.beforeSend()) return
     const route = roomMessageRoute(composer, managerAgentId)
     const routingMode = route.routing_mode
     const segments = route.recipient_segments
@@ -871,29 +903,29 @@ function ConversationSurfaceContent({
     setDiscussions(current => ({ ...current, [discussion.id]: discussion }))
   }, [])
 
-  // The subscription line is a cache read on the server: re-read it as the
-  // transcript grows, which is when a window can have moved, and when a
-  // discussion's record changes — a hold starting or lifting bumps it.
-  const refreshQuota = useCallback(() => {
-    if (!conversationId) return
-    void roomsApi.conversationQuota(roomId, conversationId, scope)
-      .then(setQuota)
-      .catch(() => { /* the line is a courtesy; sending does not depend on it */ })
-  }, [conversationId, roomId, scope])
   const discussionsVersion = useMemo(
     () => Object.values(discussions).map(item => `${item.id}@${item.updated_at}`).sort().join('|'),
     [discussions],
   )
-  useEffect(() => { refreshQuota() }, [refreshQuota, messages.length, discussionsVersion])
+  const settledRunCount = Object.values(runs).filter(run => isTerminalRunStatus(run.status)).length
+  /**
+   * The Space's subscription lines, this conversation's logins, and what is
+   * held (`modules/rooms.md`, "Subscription quota gate"). A cache read on the
+   * server, re-read as the transcript grows or a Run settles (a finished Run
+   * folds its live reading into the cache), when a discussion's record
+   * changes (a hold starting or lifting bumps it), and periodically while
+   * the page is visible.
+   */
+  const { quota, adopt: adoptQuota, refresh: refreshQuota } = useConversationQuota(roomId, conversationId, scope, { userId, spaceId: quotaSpaceId }, [messages.length, discussionsVersion, settledRunCount])
 
   // "Continue anyway": the held turns are admitted now; their Runs arrive on
   // the next read, and each discussion's header re-reads its hold.
   const continuePastQuota = useCallback(async () => {
     if (!conversationId) throw new Error(t('conversation_ui.surface.unavailable'))
-    setQuota(await roomsApi.continuePastQuota(roomId, conversationId, scope))
+    adoptQuota(await roomsApi.continuePastQuota(roomId, conversationId, scope))
     detailVersions.current.clear()
     await loadMessages()
-  }, [conversationId, loadMessages, roomId, scope])
+  }, [adoptQuota, conversationId, loadMessages, roomId, scope])
 
   const stopDiscussion = useCallback(async (discussionId: string) => {
     if (!conversationId) throw new Error(t('conversation_ui.surface.unavailable'))
@@ -986,7 +1018,6 @@ function ConversationSurfaceContent({
   // planTurnSummaries). Pending work leaves out only what a summary displays.
   const summaryByAnchor = planTurnSummaries(roomTurnGroups(messages, runs), runs)
   const { presented: presentedChangeSetIds, report: reportPresented } = usePresentedChanges()
-  const settledRunCount = Object.values(runs).filter(run => isTerminalRunStatus(run.status)).length
   const timelineItems = groupDiscussionMessages(messages, discussions)
   const lastSegment = new Map(timelineItems.flatMap(item =>
     item.kind === 'discussion' ? [[item.discussionId, item.segment] as const] : []))
@@ -1079,6 +1110,48 @@ function ConversationSurfaceContent({
       </Fragment>
     )
   }
+
+  const settingsLocked = scope.actionRole === 'worker' || scope.actionRole === 'viewer' || sending || Object.values(runs).some(run => run.status === 'running')
+  const agentConfigurations = settingsDraft.configure(participantAgents.map(agent => {
+    const catalog = backendCatalogs[agent.id]
+    const backend = catalog?.binding ?? catalog?.options.find(option => option.usable !== false)
+    const option = catalog?.options.find(candidate => candidate.runtime_profile_id === backend?.runtime_profile_id)
+    return {
+      id: agent.id,
+      name: agent.name,
+      options: option?.session_config_options ?? [],
+      unavailableReason: backendErrors[agent.id] ?? (!option || option.usable === false ? option?.reason ?? t('conversation_ui.settings.unavailable') : undefined),
+      value: sessionConfig[agent.id] ?? [],
+      persistedValue: catalog?.session_config,
+      allowQuotaModelSwitch: catalog?.allow_quota_model_switch ?? false,
+      quotaModelSwitchAvailable: catalog?.allow_quota_model_switch === true || (option?.session_config_options ?? []).some(option => option.category === 'model' && option.type === 'select' && option.options.length > 1),
+      onReload: async () => {
+        const catalog = await agentsApi.conversationBackends(agent.id, { ...scope, sessionId: conversationId! })
+        if (scope.signal?.aborted || activeSettingsScope.current !== scope || previousConversationId.current !== conversationId) throw new DOMException('Conversation scope changed', 'AbortError')
+        const bound = catalog.binding ?? catalog.options.find(option => option.usable !== false)
+        const options = catalog.options.find(option => option.runtime_profile_id === bound?.runtime_profile_id)?.session_config_options ?? []
+        setSessionConfig(current => ({ ...current, [agent.id]: mergeSessionConfig(options, catalog.session_config ?? []) }))
+        setLoadedBackendCatalogs(current => ({ ...current, [agent.id]: catalog }))
+        return mergeSessionConfig(options, catalog.session_config ?? [])
+      },
+      onChange: (value: SessionConfigSelection[]) => setSessionConfig(current => ({ ...current, [agent.id]: value })),
+      onSave: conversationId && backend && option?.usable !== false && !backendErrors[agent.id] && !settingsLocked && !readOnly && detail?.viewer_can_write ? async (value: SessionConfigSelection[], allowQuotaModelSwitch?: boolean) => {
+        setSavingSettings(current => current + 1)
+        try {
+          const saved = await agentsApi.saveConversationSessionConfig(agent.id, {
+            session_id: conversationId, runtime_profile_id: backend.runtime_profile_id, session_config: value, ...(allowQuotaModelSwitch !== undefined ? { allow_quota_model_switch: allowQuotaModelSwitch } : {}),
+          }, scope)
+          if (scope.signal?.aborted || activeSettingsScope.current !== scope || previousConversationId.current !== conversationId) return
+          setSessionConfig(current => ({...current, [agent.id]: saved?.session_config ?? value}))
+          window.dispatchEvent(new CustomEvent('conversation-settings-saved',{detail:{sessionId:conversationId,spaceId:scope.spaceId}}))
+          setLoadedBackendCatalogs(current => ({ ...current,
+            [agent.id]: { ...current[agent.id]!, session_config: saved?.session_config ?? value, allow_quota_model_switch: saved?.allow_quota_model_switch ?? allowQuotaModelSwitch ?? current[agent.id]?.allow_quota_model_switch },
+          }))
+          return saved.session_config
+        } finally { setSavingSettings(current => current - 1) }
+      } : undefined,
+    }
+  }))
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -1202,7 +1275,7 @@ function ConversationSurfaceContent({
         allowCommands={!readOnly}
         onChanged={run => setRuns(current => ({ ...current, [run.id]: run }))}
       />
-      {!readOnly && <div className={compact ? 'space-y-2 border-t border-border p-3' : 'space-y-3 border-t border-border bg-card px-5 py-3'}>
+      {!readOnly && <div className={compact ? 'min-h-0 max-h-[45dvh] shrink-0 overflow-y-auto overscroll-contain space-y-2 border-t border-border p-3' : 'space-y-3 border-t border-border bg-card px-5 py-3'}>
         {/* A draft has to be visible to be a draft. Name the pick and give it
             a way to drop. On the same condition the send uses, not merely
             "there are picks". Do not show a banner for content the send
@@ -1226,16 +1299,19 @@ function ConversationSurfaceContent({
             )}
           </div>
         )}
-        {executionPreflight}
         {runSettings}
         {composerAttachments}
-        <ConversationQuotaLine quota={quota} onContinueAnyway={!readOnly && detail?.viewer_can_write ? continuePastQuota : undefined} />
+        <ConversationQuotaLine
+          quota={quota}
+          onContinueAnyway={!readOnly && detail?.viewer_can_write ? continuePastQuota : undefined}
+          dismissalScope={userId && quotaSpaceId ? { userId, spaceId: quotaSpaceId } : null}
+        />
         <ConversationComposer
           renderInputReferences={false}
           editor={<RoomMessageComposer
             value={composer}
             onChange={setComposer}
-            agents={roomAgents}
+            agents={participantAgents}
             members={detail?.agent_members ?? []}
             // Setup gates sending, not drafting: a blocked/offline preflight
             // must still let the user write and retain the message.
@@ -1255,6 +1331,7 @@ function ConversationSurfaceContent({
           />}
           controls={(
             <>
+              <ConversationUsage key={`${userId}:${quotaSpaceId}:${roomId}:${conversationId}`} quota={quota} selectedAgents={addressedAgentIds} agents={participantAgents} scope={{...scope,spaceId:quotaSpaceId??scope.spaceId}} userId={userId??''} onRefresh={refreshQuota}/>
               <KnowledgeRetrievalToggle sessionId={conversationId} disabled={sending} />
               {activeDiscussion && (
                 <div role="group" aria-label={t('conversation_ui.surface.destination')} className="flex items-center gap-1 text-xs">
@@ -1279,36 +1356,9 @@ function ConversationSurfaceContent({
                   <MessagesSquare className="size-3.5" />{t('conversation_ui.surface.open_discussion')}
                 </Button>
               )}
-              <ConversationAgentSessionConfigs key={`${scope.spaceId}:${conversationId}`}
-                agents={roomAgents.flatMap(agent => {
-                  const catalog = backendCatalogs[agent.id]
-                  const backend = catalog?.binding ?? catalog?.options.find(option => option.usable !== false)
-                  const option = catalog?.options.find(candidate => candidate.runtime_profile_id === backend?.runtime_profile_id)
-                  return option?.session_config_options?.length ? [{
-                    id: agent.id,
-                    name: agent.name,
-                    options: option.session_config_options,
-                    value: sessionConfig[agent.id] ?? [],
-                    persistedValue: catalog?.session_config,
-                    allowQuotaModelSwitch: catalog?.allow_quota_model_switch ?? false,
-                    quotaModelSwitchAvailable: catalog?.allow_quota_model_switch === true || option.session_config_options.some(option => option.category === 'model' && option.type === 'select' && option.options.length > 1),
-                    onChange: (value: SessionConfigSelection[]) => setSessionConfig(current => ({ ...current, [agent.id]: value })),
-                    onSave: conversationId && backend && !readOnly && detail?.viewer_can_write ? async (value: SessionConfigSelection[], allowQuotaModelSwitch?: boolean) => {
-                      setSavingSettings(current => current + 1)
-                      try {
-                        await agentsApi.saveConversationSessionConfig(agent.id, {
-                          session_id: conversationId, runtime_profile_id: backend.runtime_profile_id, session_config: value, ...(allowQuotaModelSwitch !== undefined ? { allow_quota_model_switch: allowQuotaModelSwitch } : {}),
-                        }, scope)
-                        if (scope.signal?.aborted || previousConversationId.current !== conversationId) return
-                        setLoadedBackendCatalogs(current => ({ ...current,
-                          [agent.id]: { ...current[agent.id]!, session_config: value, allow_quota_model_switch: allowQuotaModelSwitch ?? current[agent.id]?.allow_quota_model_switch },
-                        }))
-                      } finally { setSavingSettings(current => current - 1) }
-                    } : undefined,
-                  }] : []
-                })}
-                disabled={sending}
-              />
+              {isValidElement<ConversationExecutionPreflightProps>(executionPreflight)
+                ? cloneElement(executionPreflight, { agentConfigurations, disabled: settingsLocked, settingsOpen: settingsDraft.open, onSettingsOpenChange: settingsDraft.onOpenChange })
+                : <ConversationAgentSessionConfigs agents={agentConfigurations} open={settingsDraft.open} onOpenChange={settingsDraft.onOpenChange} disabled={settingsLocked} />}
             </>
           )}
           note={!executionReady ? t('conversation_ui.surface.configure_first') : undefined}
@@ -1328,7 +1378,7 @@ function ConversationSurfaceContent({
       {!readOnly && variant === 'full' && (
         <OpenDiscussionDialog
           open={discussionDialogOpen}
-          agents={roomAgents.filter(agent => agent.status === 'active')}
+          agents={participantAgents.filter(agent => agent.status === 'active')}
           onClose={() => setDiscussionDialogOpen(false)}
           onSubmit={openDiscussion}
         />

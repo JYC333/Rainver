@@ -1,9 +1,12 @@
+import {reserveWorkspaceLaunch,writeWorkspaceLaunch,readWorkspaceLaunch} from './workspaceLaunchIdentity.js';
+import {resumeIgnoredWorkspace} from './workspaceIgnored.js';
 import {cleanupNativeWorkspaceReceipts} from './workspaceNativeCleanup.js';
-import {admitMaterialization,completedRelease,historyKeepers,journaledRefOperation,keepRunHistory,pinSources,recordHistoryKeepers,refOperationDigest,releaseRequestDigest,runHistoryRefs,listRainverRefs,ownedWorkspaceRefs,rebuiltSinceRelease,recordedMaterializationEpoch,recordReleasedMaterialization,reclaimWorkspaceReceipts,releaseRefs,settleRefOperations,verifyBranchReclaim,keepSources,keptSources,releaseSourceKeepers,SourceRefWriteError,legacyReleaseRequestDigest,sameRequest,DIGEST_VERSION,RunHistoryError} from './workspaceRetention.js';
+import {releasedHistoryCheckpoints} from './workspaceRetention.js';
+import {keepAdoptionCheckpoint,admitMaterialization,completedRelease,historyKeepers,journaledRefOperation,keepRunHistory,pinSources,recordHistoryKeepers,refOperationDigest,releaseRequestDigest,runHistoryRefs,listRainverRefs,ownedWorkspaceRefs,rebuiltSinceRelease,recordedMaterializationEpoch,recordReleasedMaterialization,reclaimWorkspaceReceipts,releaseRefs,settleRefOperations,verifyBranchReclaim,keepSources,keptSources,releaseSourceKeepers,SourceRefWriteError,legacyReleaseRequestDigest,sameRequest,DIGEST_VERSION,RunHistoryError} from './workspaceRetention.js';
 import {syncExistingDurable,writeJsonDurable} from './durableFile.js';
-import {RefReadError} from './durableRef.js';
+import {syncRefDurable,readRef,RefReadError} from './durableRef.js';
 import {commitOfRef} from './mainBranch.js';
-import {overlappingLocalChanges} from './taskMerge.js';
+import {mergeResolutionWorktree,overlappingLocalChanges} from './taskMerge.js';
 import {archiveRuntimeProfileContainer} from './managedWorkspaces.js';
 import {admitLegacyArchive} from './legacyArchiveDrain.js';
 import {readWorkspaceFile} from './workspaceFileRead.js';
@@ -20,12 +23,14 @@ import { workspaceWorktreeKey,workspaceRunKey } from './worktreeIdentity.js';
 
 /** Narrow adapter over the single owned-worktree mechanical implementation. */
 export async function prepareExecutionWorkspace(repo:LocationRepository,locationId:string,ref:ExecutionWorkspaceRef,runId:string,attempt?:{launchId:string;onQueued:()=>void}){
-  const receiptRunId=workspaceRunKey(runId,ref);
+  const latestKey=workspaceRunKey(runId,ref);
+  const sequence=await reserveWorkspaceLaunch(locationId,workspaceWorktreeKey(ref),ref.launch_sequence_floor);
+  const receiptRunId=workspaceRunKey(runId,ref,sequence);
   const key=workspaceWorktreeKey(ref),branchRef=taskBranchRef(key);
   // Same identity after a reclaim: an older epoch's launch cannot rebuild it.
   await admitMaterialization(locationId,key,ref);
   const existing=await runLocationGit(['rev-parse','--verify',branchRef],repo.root);
-  const prior=await readJson(join(configDir(),'task-runs',`${receiptRunId}.json`));
+  const prior=await readJson(join(configDir(),'workspace-launches',`${latestKey}.json`));
   const active=await readJson(join(configDir(),'task-records',locationId,`${key}.json`));
   const refresh=ref.sync_to_target&&existing.code===0&&!prior&&!active
     &&(!ref.base_commit||existing.stdout.trim()===ref.base_commit);
@@ -35,8 +40,10 @@ export async function prepareExecutionWorkspace(repo:LocationRepository,location
   const receipt=join(configDir(),'workspace-baselines',locationId,`${key}.json`);
   if((existing.code!==0&&!base)||refresh){
     const holder=attempt?.launchId??`baseline:${runId}`;
+    // Reading the source checkout only (private index, own branch ref): shared,
+    // so it runs beside other readers and only waits for a writer there.
     const ids=[locationId,...workspacePathLeaseKeys(repo.root,[repo.root]),`workspace-git:${repo.gitCommonDir}`];
-    const outcome=await acquireLocationLeases(ids,{runId,launchId:holder},attempt?.onQueued??(()=>{}));
+    const outcome=await acquireLocationLeases([],{runId,launchId:holder},attempt?.onQueued??(()=>{}),ids);
     if(outcome!=='acquired')throw new Error('workspace_baseline_cancelled');
     try{
       const status=await gitOrThrow(['status','--porcelain','--untracked-files=all'],repo.root);
@@ -67,26 +74,30 @@ export async function prepareExecutionWorkspace(repo:LocationRepository,location
   base??=await gitOrThrow(['rev-parse','--verify',`${branchRef}^{commit}`],repo.root);
   await assertWorkspaceCheckoutAllowed(repo.root,base);
   const prepared=await prepareTaskWorktree(repo,locationId,key,receiptRunId,{baseCommit:base,keepTree:true});
-  const counterPath=join(configDir(),'workspace-sequences',locationId,`${key}.json`);
-  // The server's floor survives a reclaimed sequence receipt, so a rebuilt
-  // workspace never reports a sequence its older checkpoints already used.
-  const counter=await readJson(counterPath),sequence=Math.max(Number(counter?.sequence??0),ref.launch_sequence_floor??0)+1;
-  if(!Number.isSafeInteger(sequence)||sequence>2147483647)throw new Error('workspace_sequence_exhausted');
-  await writeJson(counterPath,{sequence});
+  await resumeIgnoredWorkspace(configDir(),locationId,key,prepared.root);
   const report={id:ref.id,generation:ref.generation,workspace_location_id:locationId,branch:prepared.branch,start_commit:prepared.startCommit,
     target_ref:targetRef,baseline_kind:baseline.kind,snapshot_head:baseline.head,baseline_tree:baseline.tree,launch_sequence:sequence};
-  await writeJson(join(configDir(),'workspace-launches',`${receiptRunId}.json`),report);
+  await writeWorkspaceLaunch(runId,ref,report);
   return {...prepared,targetRef,baselineKind:baseline.kind,snapshotHead:baseline.head,baselineTree:baseline.tree,launchSequence:sequence};
 }
-export async function checkpointExecutionWorkspace(input:{locationRoot:string;locationId:string;workspace:ExecutionWorkspaceRef;runId:string;author:GitIdentity;message:string}){
-  // The existing settle captures only this Run, owns its ref update and retains
-  // recovery evidence before reclaiming the physical tree. Next Run reconstructs it.
-  const key=workspaceWorktreeKey(input.workspace),receiptRunId=workspaceRunKey(input.runId,input.workspace),result=await settleTaskRun({...input,runId:receiptRunId,taskId:key});
-  if(result.ok&&result.branch&&!result.commit){
-    const receipt=await readJson(join(configDir(),'task-runs',`${receiptRunId}.json`));
-    if(receipt?.location_id===input.locationId&&receipt.task_id===key&&typeof receipt.start_commit==='string')return {...result,commit:receipt.start_commit};
-  }
-  return result;
+/** A resolution uses the existing conflicted candidate, never re-prepares or
+ * resets it. The caller holds that candidate's Task lease, as for admission. */
+export async function prepareExecutionWorkspaceResolution(repo:LocationRepository,locationId:string,ref:ExecutionWorkspaceRef){
+ if(!ref.integration_id)throw new Error('workspace_integration_attempt_missing');
+ const key=workspaceWorktreeKey(ref);
+ await admitMaterialization(locationId,key,ref);
+ return mergeResolutionWorktree(repo,locationId,key,ref.integration_id);
+}
+export async function checkpointExecutionWorkspace(input:{locationRoot:string;locationId:string;workspace:ExecutionWorkspaceRef;runId:string;launchSequence?:number;author:GitIdentity;message:string}){
+ const launch=await readWorkspaceLaunch(input.runId,input.workspace,input.launchSequence);
+ if(!launch||launch.report.workspace_location_id!==input.locationId)return {ok:false,branch:null,commit:null,error:'workspace_checkpoint_launch_moved'};
+ const key=workspaceWorktreeKey(input.workspace),result=await settleTaskRun({...input,runId:launch.runKey,taskId:key});
+ if(!result.ok||result.commit)return result;
+ // No-op and takeover settlements deliberately have no delta commit/branch.
+ // Their immutable receipt still names the exact saved tree.
+ const settled=await readRunRecord(launch.runKey);
+ return settled?.location_id===input.locationId&&settled.task_id===key
+  ?{...result,commit:settled.commit??settled.start_commit}:result;
 }
 export async function executionWorkspacePath(locationRoot:string,locationId:string,ref:ExecutionWorkspaceRef):Promise<string>{
   const check=await checkLocationRepository(locationRoot);
@@ -101,7 +112,7 @@ export async function executionWorkspacePath(locationRoot:string,locationId:stri
 
 import { configDir } from './config.js';
 import { executeManagedWorkspaceOperation } from './managedWorkspaceOperations.js';
-import { readJson, writeJson, deleteTaskBranchHeld, ownedWorkspaceInventory, withTaskHeld, taskLeaseKey, TASK_BUSY } from './taskWorktree.js';
+import { readJson, writeJson, deleteTaskBranchHeld, ownedWorkspaceInventory, readRunRecord, unchangedWorkspaceWithoutRun, withTaskHeld, taskLeaseKey, TASK_BUSY } from './taskWorktree.js';
 import type { HostServerFrameOf } from '@rainver/protocol';
 
 /** `hooks`: test seam on the legacy profile archive, as in managedWorkspaceOperations. */
@@ -149,10 +160,11 @@ export async function executeWorkspaceCommand(locationRoot:string|null,frame:Hos
   return {ok:true,branch,commit,file,error:null};
  }
  if(frame.action==='inspect'){
-  const stored=frame.run_id?await readJson(join(configDir(),'workspace-launches',`${workspaceRunKey(frame.run_id,ref)}.json`)):null;
+  const stored=frame.run_id?(await readWorkspaceLaunch(frame.run_id,ref,frame.launch_sequence))?.report:null;
   const launch=HostWorkspaceLaunchReportSchema.safeParse(stored);
   const info=launch.success&&launch.data.id===ref.id&&launch.data.generation===ref.generation&&launch.data.workspace_location_id===locationId?launch.data:null;
-  return {ok:true,branch,commit,inventory:await inventoryWithRefs(check.repo,locationId,key,ref,frame.list_after,frame.history_after),...(info?{launch_info:info}:{}),error:null};
+  const unchanged=!stored&&frame.run_id&&frame.expected_commit&&await unchangedWorkspaceWithoutRun(check.repo,locationId,key,workspaceRunKey(frame.run_id,ref),frame.expected_commit);
+  return {ok:true,branch,commit,inventory:{...await inventoryWithRefs(check.repo,locationId,key,ref,frame.list_after,frame.history_after),target_commit:ref.target_ref?await commitOfRef(check.repo.root,ref.target_ref):null},...(info?{launch_info:info}:{}),...(unchanged?{unchanged_commit:frame.expected_commit}:{}),error:null};
  }
  if(frame.action==='list_refs'){
   const listed=await listRainverRefs(locationRoot,frame.list_after);
@@ -165,7 +177,7 @@ export async function executeWorkspaceCommand(locationRoot:string|null,frame:Hos
   // lease, so it is ordered against launches and branch releases (which keep
   // Run history), and journaled by operation id: a reply proves the operation
   // finished; a re-delivery after it replays without touching Git.
-  const fingerprint=refOperationDigest(frame.release_refs,frame.pin_sources,frame.settle_operations,{keep:frame.keep_sources,release_keepers:frame.release_keepers,source_fence:frame.source_fence},
+  const fingerprint=refOperationDigest(frame.release_refs,frame.pin_sources,frame.settle_operations,{keep:frame.keep_sources,release_keepers:frame.release_keepers,source_fence:frame.source_fence,...(frame.reclaim_proof?{checkpoint:{target:ref.target_ref??null,proofs:frame.reclaim_proof,bases:frame.reclaim_bases??[]}}:{})},
    {id:ref.id,generation:ref.generation,locationId,integrationId:ref.integration_id??null,...(ref.materialization_epoch!==undefined?{epoch:ref.materialization_epoch}:{})});
   const keeperCommits=[...new Set([...(frame.keep_sources??[]),...(frame.release_keepers??[])])];
   const run=async()=>{
@@ -179,7 +191,13 @@ export async function executeWorkspaceCommand(locationRoot:string|null,frame:Hos
    const pinned=frame.pin_sources?.length?await pinSources(locationRoot,frame.pin_sources):[];
    if(frame.release_keepers?.length)await releaseSourceKeepers(locationRoot,ref,frame.release_keepers);
    const kept=keeperCommits.length?await keptSources(locationRoot,ref,keeperCommits):undefined;
-   const retained=await releaseRefs(locationRoot,ref,frame.release_refs??[],{rebuilt,keepers:await historyKeepers(locationId,key),sourceFence:frame.source_fence===true});
+   let preservedCheckpoints:string[]=[];
+   if(!rebuilt&&ref.materialization_epoch!==undefined&&frame.release_refs?.some(r=>r.ref.startsWith(`refs/rainver/recovery/${ref.id}/`))){
+    const inventory=await ownedWorkspaceInventory(check.repo,locationId,key);
+    if(!inventory.branch&&!inventory.worktree&&!inventory.registration&&!inventory.run_record&&!inventory.merge_record&&!inventory.quarantined_whole)
+     preservedCheckpoints=await releasedHistoryCheckpoints(locationId,key,ref,ref.materialization_epoch);
+   }
+   const retained=await releaseRefs(locationRoot,ref,frame.release_refs??[],{rebuilt,keepers:await historyKeepers(locationId,key),sourceFence:frame.source_fence===true,proofs:frame.reclaim_proof,bases:frame.reclaim_bases,preservedCheckpoints});
    return {retained,pinned,...(settled?{settled}:{}),...(kept?{kept}:{})};
   };
   let held:Awaited<ReturnType<typeof journaledRefOperation>>|null;
@@ -204,7 +222,7 @@ export async function executeWorkspaceCommand(locationRoot:string|null,frame:Hos
  }
  if(frame.action==='checkpoint'){
   if(!frame.run_id||!frame.author)return {ok:false,branch,commit,error:'workspace_checkpoint_input_required'};
-  return checkpointExecutionWorkspace({locationRoot,locationId,workspace:ref,runId:frame.run_id,author:frame.author,message:frame.message??'Workspace checkpoint'});
+  return checkpointExecutionWorkspace({locationRoot,locationId,workspace:ref,runId:frame.run_id,launchSequence:frame.launch_sequence,author:frame.author,message:frame.message??'Workspace checkpoint'});
  }
  // Fence, proof, branch/tree removal, ref and receipt release and the
  // completion record form one critical section under the Task lease. A launch
@@ -218,7 +236,7 @@ export async function executeWorkspaceCommand(locationRoot:string|null,frame:Hos
   if(error instanceof RunHistoryError)return {ok:false,branch,commit,cleanup_state:'retry_wait' as const,error:'workspace_run_history_failed'};
   throw error;
  }
- return held??{ok:false,branch,commit,cleanup_state:'retry_wait' as const,error:TASK_BUSY};
+ return held?{...held,...(frame.lifecycle_operation_id?{lifecycle_operation_id:frame.lifecycle_operation_id}:{})}:{ok:false,branch,commit,cleanup_state:'retry_wait' as const,error:TASK_BUSY};
 }
 
 async function cleanupHeld(repo:LocationRepository,locationRoot:string,locationId:string,key:string,ref:ExecutionWorkspaceRef,frame:HostServerFrameOf<'execution_workspace_command'>,branch:string){
@@ -226,12 +244,17 @@ async function cleanupHeld(repo:LocationRepository,locationRoot:string,locationI
  const commit=current.code===0?current.stdout.trim():null;
  const journal=join(configDir(),'workspace-cleanup',`${frame.operation_id}.json`);
  const epoch=ref.materialization_epoch;
+ const persist=(value:Record<string,unknown>)=>writeJsonDurable(journal,{...value,...(frame.lifecycle_operation_id?{lifecycle_operation_id:frame.lifecycle_operation_id}:{}),owner:{location_id:locationId,key,epoch:epoch??null}});
  // The whole request, not only its identity: the same operation or epoch with
  // a different history/ref list/target/proof is a different request.
- const request={id:ref.id,generation:ref.generation,locationId,integrationId:ref.integration_id??null,expected:frame.expected_commit,retain:frame.retain_branch,epoch,target:ref.target_ref??null,
+ const request={preserve:frame.preserve_commit,lifecycleOperationId:frame.lifecycle_operation_id,checkpoint:frame.reclaim_checkpoint,id:ref.id,generation:ref.generation,locationId,integrationId:ref.integration_id??null,expected:frame.expected_commit,retain:frame.retain_branch,epoch,target:ref.target_ref??null,
   history:frame.history_commits,proof:frame.reclaim_proof,bases:frame.reclaim_bases,refs:frame.release_refs,discard:frame.discard_commit};
  const digest={current:releaseRequestDigest(request),legacy:legacyReleaseRequestDigest(request)},fingerprint=digest.current,digest_version=DIGEST_VERSION;
  // A discard is a distinct exact-tip release, never a blanket proof bypass.
+ if(frame.preserve_commit&&(ref.integration_id||frame.retain_branch||epoch===undefined||frame.discard_commit||frame.reclaim_checkpoint||frame.preserve_commit!==frame.expected_commit))
+  return {ok:false,branch,commit,cleanup_state:'blocked' as const,error:'workspace_preservation_invalid'};
+ if(frame.reclaim_checkpoint&&(ref.integration_id||frame.retain_branch||epoch===undefined||frame.discard_commit||frame.reclaim_checkpoint.workspace_id===ref.id))
+  return {ok:false,branch,commit,cleanup_state:'blocked' as const,error:'workspace_adoption_invalid'};
  if(frame.discard_commit&&(ref.integration_id||frame.retain_branch||epoch===undefined||frame.discard_commit!==frame.expected_commit))
   return {ok:false,branch,commit,cleanup_state:'blocked' as const,error:'workspace_discard_invalid'};
  const prior=await readJson(journal);
@@ -240,28 +263,35 @@ async function cleanupHeld(repo:LocationRepository,locationRoot:string,locationI
  // before digest v2 is recognised by its v1 digest, so a resumed release continues.
  const priorInert=prior?.state==='blocked'&&prior.error==='workspace_quarantined';
  const priorSame=sameRequest(prior,digest);
+ if(prior&&frame.lifecycle_operation_id&&prior.lifecycle_operation_id!==frame.lifecycle_operation_id)return {ok:false,branch,commit,cleanup_state:'blocked' as const,error:'workspace_cleanup_owner_changed'};
  if(prior&&!priorSame&&!priorInert)return {ok:false,branch,commit,cleanup_state:'blocked' as const,error:'workspace_cleanup_identity_conflict'};
  // A journal from before v2 accepted here is bound to this request's full v2
  // digest before any answer (replay, refusal or run), so no later delivery of
  // this id that only v1 cannot tell apart (a changed kept_epoch) matches it.
- if(priorSame&&prior!.digest_version!==DIGEST_VERSION)await writeJsonDurable(journal,{...prior,fingerprint,digest_version});
+ if(priorSame&&prior!.digest_version!==DIGEST_VERSION)await persist({...prior,fingerprint,digest_version});
  const releasing=!frame.retain_branch&&!ref.integration_id;
  const failedRefs=(refs:Array<{reason:string}>)=>refs.some(r=>r.reason==='ref_release_failed'||r.reason==='ref_release_truncated');
  // A finished release of exactly this epoch replays its durable result before
  // the epoch fence: its own fence record must never make a crash-retried
  // delivery look like a newer materialization. Any newer launch since then
  // does not change what this release did or owes (history, later pages).
- if(releasing&&epoch!==undefined){
+ if((releasing||ref.integration_id)&&epoch!==undefined){
   const done=await completedRelease(locationId,key,ref,epoch,frame.expected_commit??null,digest);
   // Different content under a finished release's identity and epoch is refused,
   // never replayed as done. Once a newer launch rebuilt, the request is simply
   // obsolete and the epoch fence below answers it as moved.
   if(done==='conflict'&&!await rebuiltSinceRelease(locationId,key,epoch))return {ok:false,branch,commit,inventory:await inventoryWithRefs(repo,locationId,key,ref),cleanup_state:'blocked' as const,error:'workspace_release_request_conflict'};
   if(done&&done!=='conflict'){
-   await writeJsonDurable(journal,{fingerprint,digest_version,state:'cleaned',retained_refs:done.retained_refs,history_refs:done.history_refs,replayed:true,at:new Date().toISOString()});
+   await persist({fingerprint,digest_version,state:'cleaned',retained_refs:done.retained_refs,history_refs:done.history_refs,replayed:true,at:new Date().toISOString()});
    return {ok:true,branch,commit,inventory:{...done.inventory} as Awaited<ReturnType<typeof inventoryWithRefs>>,cleanup_state:'cleaned' as const,error:null};
   }
  }
+ if(frame.preserve_commit&&!commit){
+  const recovery=`refs/rainver/recovery/${ref.id}/${frame.preserve_commit}`;
+  if(await readRef(locationRoot,recovery)!==frame.preserve_commit)return {ok:false,branch,commit,cleanup_state:'blocked' as const,error:'workspace_preserved_source_missing'};
+  await syncRefDurable(locationRoot,recovery,frame.preserve_commit);
+ }
+ if(prior?.state==='expired')return {ok:false,branch,commit,cleanup_state:'blocked' as const,error:'workspace_cleanup_expired'};
  if(prior?.state==='cleaned'){
   const inventory=await inventoryWithRefs(repo,locationId,key,ref);
   if((frame.retain_branch||!inventory.branch||prior.branch_retained_reason)&&!inventory.worktree&&!inventory.registration&&!inventory.run_record&&!inventory.merge_record&&inventory.quarantined_whole===0){
@@ -269,17 +299,27 @@ async function cleanupHeld(repo:LocationRepository,locationRoot:string,locationI
    if(prior.digest_version===DIGEST_VERSION)await syncExistingDurable(journal);
    return {ok:true,branch,commit,inventory:{...inventory,...(typeof prior.branch_retained_reason==='string'?{branch_retained_reason:prior.branch_retained_reason}:{}),...(Array.isArray(prior.retained_refs)?{retained_refs:prior.retained_refs}:{})},cleanup_state:'cleaned' as const,error:null};
   }
+  // A terminal operation never receives a second physical deletion grant.
+  // Legacy candidates without a disposal fence may have been reconstructed;
+  // their journal remains a replay guard until a newer owner fence exists.
+  return {ok:false,branch,commit,inventory,cleanup_state:'blocked' as const,error:'workspace_materialization_moved'};
  }
  // The server raises the epoch before it issues a branch release, so every
  // later launch carries a newer one and is admitted (recorded) under this
  // lease. A cleanup for an older epoch (late, replayed or re-delivered) must
  // never remove that materialization, even at the same tip.
- if(epoch!==undefined&&epoch<await recordedMaterializationEpoch(locationId,key))
+ if((epoch??0)<await recordedMaterializationEpoch(locationId,key))
   return {ok:false,branch,commit,inventory:await inventoryWithRefs(repo,locationId,key,ref),cleanup_state:'blocked' as const,error:'workspace_materialization_moved'};
+ if(ref.integration_id&&(epoch??0)<await recordedMaterializationEpoch(locationId,`workspace:${ref.id}:${ref.generation}`))
+  return {ok:false,branch,commit,inventory:await inventoryWithRefs(repo,locationId,key,ref),cleanup_state:'blocked' as const,error:'workspace_source_materialization_moved'};
+ // Lost capture reply / crash after branch CAS: the durable intent identifies
+ // that exact source even though the request's old expected tip no longer does.
+ if(priorSame&&typeof prior?.capture_commit==='string'&&commit===prior.capture_commit)
+  return {ok:false,branch,commit,inventory:await inventoryWithRefs(repo,locationId,key,ref),cleanup_state:'retry_wait' as const,error:'workspace_content_captured'};
  // Physical safety precedes every release side effect: beside a whole-tree
  // quarantine (unsaved work) nothing is deleted, no ref, receipt or fence moves.
  if(releasing&&(await ownedWorkspaceInventory(repo,locationId,key)).quarantined_whole>0){
-  await writeJsonDurable(journal,{fingerprint,digest_version,state:'blocked',error:'workspace_quarantined',at:new Date().toISOString()});
+  await persist({fingerprint,digest_version,state:'blocked',error:'workspace_quarantined',at:new Date().toISOString()});
   return {ok:false,branch,commit,inventory:await inventoryWithRefs(repo,locationId,key,ref),cleanup_state:'blocked' as const,error:'workspace_quarantined'};
  }
  // Crash recovery: until the release finished, the Host's recorded epoch is
@@ -290,7 +330,7 @@ async function cleanupHeld(repo:LocationRepository,locationRoot:string,locationI
  const historyCandidates=[...new Set([...(frame.discard_commit?[frame.discard_commit]:[]),...(frame.history_commits??[]),...(priorSame?[...strings(prior!.history_intent),...strings(prior!.history_refs)]:[])])];
  // Versions whose object Git cleanly reports gone: never kept, recorded and reported as unavailable.
  let unavailable:string[]=priorSame?strings(prior!.history_unavailable):[];
- await writeJsonDurable(journal,{fingerprint,digest_version,state:'running',...(historyCandidates.length?{history_intent:historyCandidates}:{}),...(unavailable.length?{history_unavailable:unavailable}:{}),at:new Date().toISOString()});
+ await persist({fingerprint,digest_version,state:'running',...(historyCandidates.length?{history_intent:historyCandidates}:{}),...(unavailable.length?{history_unavailable:unavailable}:{}),at:new Date().toISOString()});
  let history:string[]=[];
  // Exact past Run versions the target cannot reach get owned refs before the
  // branch goes. The intent is durable before the first ref is created, and the
@@ -298,20 +338,36 @@ async function cleanupHeld(repo:LocationRepository,locationRoot:string,locationI
  // failure part-way), so every created ref gets its expiry.
  const keepHistory=async(root:string)=>{
   if(!historyCandidates.length)return;
-  await writeJsonDurable(journal,{fingerprint,digest_version,state:'running',history_intent:historyCandidates,at:new Date().toISOString()});
+  await persist({fingerprint,digest_version,state:'running',history_intent:historyCandidates,at:new Date().toISOString()});
   // The renewal is durable before any ref exists: an older expiry of the same
   // commit (a delayed release_refs, also under this lease) is then refused.
   if(epoch!==undefined)await recordHistoryKeepers(locationId,key,historyCandidates,epoch);
   // A read fault throws here, before the branch goes: the journal stays running and the release retries.
-  const kept=await keepRunHistory(root,ref,ref.target_ref?await commitOfRef(root,ref.target_ref):null,historyCandidates);
+  const kept=await keepRunHistory(root,ref,!frame.discard_commit&&ref.target_ref?await commitOfRef(root,ref.target_ref):null,historyCandidates);
   if(frame.discard_commit&&kept.unavailable.includes(frame.discard_commit))throw new RunHistoryError(frame.discard_commit,'discard source missing');
   history=kept.kept;unavailable=[...new Set([...unavailable,...kept.unavailable])];
-  await writeJsonDurable(journal,{fingerprint,digest_version,state:'running',history_intent:historyCandidates,history_refs:history,...(unavailable.length?{history_unavailable:unavailable}:{}),at:new Date().toISOString()});
+  await persist({fingerprint,digest_version,state:'running',history_intent:historyCandidates,history_refs:history,...(unavailable.length?{history_unavailable:unavailable}:{}),at:new Date().toISOString()});
  };
  const result=await deleteTaskBranchHeld({locationRoot,locationId,taskId:key,expectedCommit:frame.expected_commit,retainBranch:frame.retain_branch,
+  captureIntent:async captured=>{await persist({fingerprint,digest_version,state:'running',capture_commit:captured,at:new Date().toISOString()});},
   ...(releasing?{branchRelease:{
-   verify:(root:string,tip:string)=>frame.discard_commit?Promise.resolve(tip===frame.discard_commit?null:'workspace_generation_moved'):verifyBranchReclaim(root,tip,ref.target_ref,frame.reclaim_proof??[],frame.reclaim_bases??[]),
-   beforeRelease:keepHistory,
+   verify:async(root:string,tip:string)=>{
+    if(frame.reclaim_checkpoint){
+     const c=frame.reclaim_checkpoint;
+     // Proof only here: dirty-tree checks must precede the durable pin below.
+     return verifyBranchReclaim(root,tip,c.commit,[c.commit],[c.base_commit]);
+    }
+    return frame.preserve_commit?tip===frame.preserve_commit?null:'workspace_generation_moved':frame.discard_commit?tip===frame.discard_commit?null:'workspace_generation_moved':verifyBranchReclaim(root,tip,ref.target_ref,frame.reclaim_proof??[],frame.reclaim_bases??[]);
+   },
+   beforeRelease:async(root:string,tip:string)=>{
+    if(frame.preserve_commit){
+     const recovery=`refs/rainver/recovery/${ref.id}/${tip}`,old=await readRef(root,recovery);
+     if(old&&old!==tip)throw new Error('workspace_recovery_ref_changed');
+     await gitOrThrow(['update-ref',recovery,tip,old??'0'.repeat(tip.length)],root);await syncRefDurable(root,recovery,tip);
+    }
+    if(frame.reclaim_checkpoint)await keepAdoptionCheckpoint(root,tip,frame.reclaim_checkpoint);
+    await keepHistory(root);
+   },
   }}:{})});
  let retainedRefs:Array<{ref:string;reason:string}>=[];
  // Released: the branch went now, earlier in this epoch, or never existed, and
@@ -324,7 +380,7 @@ async function cleanupHeld(repo:LocationRepository,locationRoot:string,locationI
   // owned history refs (or still-present commits) instead of losing it.
   if(!result.tip)await keepHistory(locationRoot);
   // Run-history refs this release just (re)kept are renewed: a listed older expiry of them is refused here too.
-  retainedRefs=await releaseRefs(locationRoot,ref,frame.release_refs??[],{keepers:await historyKeepers(locationId,key)});
+  retainedRefs=await releaseRefs(locationRoot,ref,frame.release_refs??[],{keepers:await historyKeepers(locationId,key),proofs:frame.reclaim_proof,bases:frame.reclaim_bases,discardTip:frame.discard_commit});
   if(!failedRefs(retainedRefs))await reclaimWorkspaceReceipts(locationId,key,ref);
  }
  const inventory={...await inventoryWithRefs(repo,locationId,key,ref),...(result.branch_retained_reason?{branch_retained_reason:result.branch_retained_reason}:{}),...(retainedRefs.length?{retained_refs:retainedRefs}:{}),...(unavailable.length?{history_unavailable:unavailable.slice(0,1000)}:{})};
@@ -333,16 +389,16 @@ async function cleanupHeld(repo:LocationRepository,locationRoot:string,locationI
  const branchSettled=frame.retain_branch||!inventory.branch||Boolean(result.branch_retained_reason);
  const complete=result.ok&&branchSettled&&!inventory.worktree&&!inventory.registration&&!inventory.run_record&&!inventory.merge_record&&inventory.quarantined_whole===0&&!failedRefs(retainedRefs);
  // The release result and its fence are one atomic record (replayed above).
- if(complete&&released&&epoch!==undefined)await recordReleasedMaterialization(locationId,key,epoch,{id:ref.id,generation:ref.generation,expected_commit:frame.expected_commit??null,request:fingerprint,digest_version,history_refs:history,retained_refs:retainedRefs,inventory});
+ if(complete&&(released||ref.integration_id)&&epoch!==undefined)await recordReleasedMaterialization(locationId,key,epoch,{id:ref.id,generation:ref.generation,expected_commit:frame.expected_commit??null,request:fingerprint,digest_version,history_refs:history,retained_refs:retainedRefs,inventory});
  if(complete&&!ref.integration_id&&!released)await cleanupNativeWorkspaceReceipts(locationId,key);
- const state=complete?'cleaned':inventory.quarantined_whole>0||['workspace_generation_moved','workspace_uncheckpointed'].includes(result.error??'')?'blocked':'retry_wait';
- await writeJsonDurable(journal,{fingerprint,digest_version,state,...(unavailable.length?{history_unavailable:unavailable}:{}),error:inventory.quarantined_whole>0?'workspace_quarantined':result.error,...(historyCandidates.length?{history_intent:historyCandidates}:{}),...(result.branch_retained_reason?{branch_retained_reason:result.branch_retained_reason}:{}),...(retainedRefs.length?{retained_refs:retainedRefs}:{}),...(history.length?{history_refs:history}:{}),at:new Date().toISOString()});
- return {ok:complete,branch,commit,inventory:complete&&released&&epoch!==undefined?{...inventory,materialization_epoch:await recordedMaterializationEpoch(locationId,key)}:inventory,cleanup_state:state as 'cleaned'|'blocked'|'retry_wait',error:inventory.quarantined_whole>0?'workspace_quarantined':result.error};
+ const state=complete?'cleaned':inventory.quarantined_whole>0||result.error?.startsWith('workspace_ignored_quota')||['workspace_generation_moved','workspace_uncheckpointed','workspace_uncaptured_index','workspace_uncaptured_ignored','workspace_uncaptured_nested'].includes(result.error??'')?'blocked':'retry_wait';
+ await persist({fingerprint,digest_version,state,...(unavailable.length?{history_unavailable:unavailable}:{}),error:inventory.quarantined_whole>0?'workspace_quarantined':result.error,...(result.error==='workspace_content_captured'?{capture_commit:result.tip}:{}),...(historyCandidates.length?{history_intent:historyCandidates}:{}),...(result.branch_retained_reason?{branch_retained_reason:result.branch_retained_reason}:{}),...(retainedRefs.length?{retained_refs:retainedRefs}:{}),...(history.length?{history_refs:history}:{}),at:new Date().toISOString()});
+ return {ok:complete,branch,commit:result.tip??commit,inventory:complete&&(released||ref.integration_id)&&epoch!==undefined?{...inventory,materialization_epoch:await recordedMaterializationEpoch(locationId,key)}:inventory,cleanup_state:state as 'cleaned'|'blocked'|'retry_wait',error:inventory.quarantined_whole>0?'workspace_quarantined':result.error};
 }
 
 async function inventoryWithRefs(repo:LocationRepository,locationId:string,key:string,ref:ExecutionWorkspaceRef,after?:string,historyAfter?:string){
  const base=await ownedWorkspaceInventory(repo,locationId,key);
- if(ref.integration_id)return base;
+ if(ref.integration_id)return {...base,materialization_epoch:await recordedMaterializationEpoch(locationId,key)};
  // One bounded history page with its cursor and keeper epochs; the server
  // continues the pages durably until the cursor is null.
  const history=await runHistoryRefs(repo.root,ref,historyAfter);

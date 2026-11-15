@@ -34,7 +34,7 @@ All other routes, including system-metadata endpoints, are auth-gated:
 
 - `GET /api/v1/auth/reauth/status` — reports only whether the current user's signed recent-auth grant remains valid and when it expires; the browser uses it to gate Security-page controls, while each sensitive mutation still enforces the grant server-side.
 - `POST /api/v1/auth/admin/invitations` — instance-admin only; creates an email-bound account invitation, never a shared-Space membership or administrator grant.
-- `POST /api/v1/invitations/accept` — an active account may consume only an unexpired, available invitation addressed to its own normalized email; Space membership (if present) and token consumption commit together. Instance-only invitations grant no membership.
+- `POST /api/v1/invitations/accept` (core `space.invitation.accept`) — an active account may consume only an unexpired, available invitation addressed to its own normalized email; Space membership (if present) and token consumption commit together. Instance-only invitations grant no membership. The token reaches the idempotency store only as a keyed digest, and a replayed receipt is released only while the person is still an active member of that Space.
 - `GET /api/v1/skill-packages`, its content/binding reads, and `/api/v1/skills/*` selection/overlay APIs
 - `GET /api/v1/server/catalog`, `/catalog/capabilities`, `/catalog/agent-templates`
 - `GET /api/v1/server/notifications/webhooks/policy`, `POST .../webhooks/dispatch` (`notification.webhook.dispatch`: a keyed system command; the send runs after commit and its result is the issuer's status read)
@@ -228,7 +228,26 @@ Visibility demotion is forward-only. Narrowing a resource first requires an
 owner-only disclosure request that lists recorded readers, Runs whose immutable
 Invocation Snapshot source refs consumed the resource, and artifacts/proposals from those Runs
 that remain non-private, with UI links. A listed Run, artifact, or proposal the
-owner cannot read appears by pointer only, never with its instruction or title.
+owner cannot read appears by pointer only, never with its instruction or title;
+a Run's title is its instruction, so it needs full-level access (a summary
+reader gets the pointer). Owning the source never authorizes the objects it
+names. Creation, readback (including an expired or consumed disclosure) and the
+confirming recompute apply one title decision to every entry, each by that
+object's own detail reader: `runReadSql` plus the Run's full level;
+`artifactTitleReleased` (Artifact ACL, Run Room, Source-derived gate, research
+and retrieval/report release); `proposalTitleReleased` (Proposal ACL, Run Room,
+report-derived release). A revoked grant, a move to private, a lost Project
+membership, a withdrawn Source consent or a withheld report therefore leaves
+only the pointer, while an ordinary summary-level output keeps its title.
+Creation and readback each run in one transaction. That transaction
+share-locks the named objects' whole read closure in one global order
+(`lockDemotionReleaseClosure`, see DATABASE_AND_TRANSACTIONS), taking a Room
+before its members, Runs, groups and conversations as the Room writers
+(roster, context reset, "Continue anyway") do. It re-reads
+ownership and every decision after the locks and builds the response before
+commit, so a concurrent revocation is either seen or waits. The stored
+snapshot is not rewritten by reads; it stays what confirmation compares
+against.
 The subsequent policy update must carry
 the short-lived confirmation id. Confirmation locks the disclosure, recomputes
 the exposure inside the policy transaction, rejects any changed snapshot, and
@@ -276,8 +295,24 @@ Memory is the one resource whose access change is not a column update: who
 may read a version is part of what it was, so `PUT /content-access/memory/:id`
 is owner-only (a Space owner/admin who can see someone else's entry cannot
 widen it) and the Memory applier writes a new version carrying the content,
-provenance and the new grants (`modules/memory.md`). The response names the new
+provenance and the new grants (`modules/memory.md`). The receipt names the new
 version's id.
+
+The three content-access writes are core operations
+(`server/src/modules/contentAccess/operations.ts`; human API only, keyed):
+`content.access.update` (`PUT /content-access/:type/:id`),
+`content.demotion.disclose` (`POST .../demotion-disclosures`) and
+`content.publication.request` (`POST .../publication-proposals`, the canonical
+`egress_review` proposal, gate class `exposure`). Authority is the
+ContentAccessService rule (owner, or Space owner/admin; disclosure owner only)
+with the person's membership held until commit; grantee memberships are locked
+`FOR SHARE`, so a concurrent exit refuses the grant. Receipts carry identities
+only: the policy is reread through `GET /content-access/:type/:id` and a
+disclosure's recorded exposure through the owner-only
+`GET .../demotion-disclosures/:confirmationId`. The disclosure and taint codes
+(`demotion_disclosure_required`, `demotion_exposure_changed`,
+`context_taint_approval_required` with `required_approver_user_ids`) are typed
+refusal metadata.
 
 On `space_shared` resources, `content_access_grants` rows are per-user
 disclosure *upgrades*, not narrowing: the effective level is the widest of the
@@ -776,12 +811,31 @@ they return an empty snapshot payload there; only the publisher still receives
 the snapshot body. The imported copy is the surviving content, and it stays
 private to the importer.
 
+The three Publication commands use strict protocol inputs and the same
+core-owned transaction through both their retained REST URLs and generic action
+URLs. The canonical `PublicationService` joins the branded transaction port;
+snapshot/target rows, imported resources/provenance and the operation receipt
+commit or roll back together. Source creation pins Project read authority,
+active person and sorted source/target memberships, then the source row and
+rechecks ownership/full access. Import/revoke serialize on the Publication row;
+replay rechecks current authority and never discloses another importer's private
+copy ID. All three are human-only and grant no Agent execution authority.
+The browser helpers accept explicit retry keys and unwrap the core envelope.
+Real-PG evidence lives in `publicationOperationsDb.test.ts`; read-view and
+snapshot-adapter checks remain in `publicationsRoutes.test.ts` and
+`publicationRegistry.test.ts`.
+
 ### 8d. PersonalMemoryGrants
 
-All five `/personal-memory-grants` routes discard request `space_id`. Grants are
+The three `/personal-memory-grants` POSTs use strict keyed person core admission
+(request body `space_id` is rejected); the two GETs retain their user scope. Grants are
 user-centered objects that span two spaces by design: the personal space (where private
 memory lives) and the target space (where the run executes). Authority is `granting_user_id`
-throughout.
+throughout. Creation separately pins current target Run/Agent audiences and
+the active granting person through commit; the owned Personal Space supplies
+receipt/audit storage only. Owner revocation remains available after target exit.
+Receipt replay never substitutes for live target/read authority. No grant
+command reads private Memory or approves Source egress or a derived write.
 
 ### 8e. Personal aggregated retrieval
 
@@ -802,6 +856,14 @@ capture the caller owns in their own personal Space, re-checks writer authority
 on the target Project through `resolveContentCreationContext`, and creates a new
 object there. The capture is neither copied nor moved — it stays put, is marked
 `processed`, and records where it went in `payload_json.filed_into`.
+
+Filing's retained REST URL and generic `capture.file` action use typed person
+admission. The session identifies an active person without trusting the browsed
+Space; their real owned Personal Space stores audit/receipt rows only. Current
+source ownership/full read and destination Project writer access are pinned in
+canonical lock order and checked again on replay. No Personal Space membership
+substitutes for target authority. The existing Note writer preserves Activity
+provenance; state, policy audit and receipt share one transaction.
 
 The retrieval route enumerates the protocol retrieval vocabulary and executes a
 separate `RetrievalSearchService` pass for every active member Space. Each
@@ -836,6 +898,23 @@ explicit store action; a setting change invalidates that disclosure and requires
 redisclosure. Enabled source Spaces broadcast the resulting pointer-only egress
 notification. `/me/notifications` returns only notifications for Spaces where
 the recipient remains an active member.
+
+The retained setting PATCH is a formal adapter for
+`space.egress_notifications.update`, with a strict target DTO and the named
+Space as the operation actor's Space. Its human-only canonical writer pins the
+active account, membership and manager role (users before memberships), then
+locks the setting row. The setting, member notifications, policy audit and
+idempotency receipt share one transaction. A cached receipt requires the same
+current manager authority; replay emits no new notification. The direct service
+uses the same writer. This setting adapter grants no cross-Space content access
+and grants no person-scoped content authority. The five retrieval POSTs above
+are separately keyed person commands under `personal.retrieval.*`. Their shared
+canonical release owner discovers all source and destination scopes before one
+global lock order, pins actual grantors and current Source consent, then checks
+lineage drift and current access. A fresh resolve can withhold a revoked pointer;
+a cached content result is refused after withdrawal. Stored source-summary and
+fused-conclusion Artifact/Reader reads use that same current cross-Space gate;
+they cannot release old content just because a receipt or Artifact still exists.
 
 ### 8f. Capture relocation
 

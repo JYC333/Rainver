@@ -827,7 +827,7 @@ export function automationToOut(row: AutomationRow): Record<string, unknown> {
     config_json: row.config_json,
     next_run_at: row.next_run_at,
     last_fired_at: row.last_fired_at,
-    created_at: row.created_at,
-    updated_at: row.updated_at,
+    created_at: dateString(row.created_at),
+    updated_at: dateString(row.updated_at),
   };
 }
