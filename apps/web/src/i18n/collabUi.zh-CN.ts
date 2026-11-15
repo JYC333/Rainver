@@ -1,5 +1,6 @@
 /** Project Agent、Project Room、Room 成员与 Room 对话框架。 */
 export const collabUiZhCN = { collab_ui: {
+  mobile: { conversations: '对话与 Room 详情', search: '搜索对话', back: '返回 Project 页面' },
   nav: {
     pulse: '概览', board: '看板', agents: 'Agent', rooms: 'Room', updates: '动态', areas: '区域', needs_attention: '需要处理',
   },

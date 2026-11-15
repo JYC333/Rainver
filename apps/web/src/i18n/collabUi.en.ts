@@ -1,5 +1,6 @@
 /** Project Agents, Project Rooms, Room membership and the Room conversation frame. */
 export const collabUiEn = { collab_ui: {
+  mobile: { conversations: 'Conversations and Room details', search: 'Search conversations', back: 'Back to Project page' },
   nav: {
     pulse: 'Pulse', board: 'Board', agents: 'Agents', rooms: 'Rooms', updates: 'Updates', areas: 'Areas', needs_attention: 'Needs attention',
   },

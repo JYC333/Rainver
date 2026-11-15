@@ -175,7 +175,7 @@ function viewport(wide: boolean) {
   // jsdom has no matchMedia; the panel asks it whether it sits beside the
   // page (≥ lg) or would overlay it.
   window.matchMedia = ((query: string) => ({
-    matches: wide && query.includes('1024px'),
+    matches: query.includes('max-width') ? !wide : wide && query.includes('1024px'),
     media: query, onchange: null,
     addListener: () => {}, removeListener: () => {},
     addEventListener: () => {}, removeEventListener: () => {}, dispatchEvent: () => false,
@@ -633,14 +633,15 @@ describe('Project chat sidecar', () => {
 
   it('stays a button on a narrow viewport, where open would mean covering the page', async () => {
     viewport(false)
+    localStorage.setItem(`project.sidecar.${PROJECT}.open`, 'true')
     renderAt(`/spaces/space-1/projects/${PROJECT}/board`)
     expect(await screen.findByRole('button', { name: 'Open Project chat' })).toBeInTheDocument()
     expect(screen.queryByTestId('project-chat-sidecar')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Open Project chat' }))
     expect(await screen.findByTestId('project-chat-sidecar')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Close Project chat' }))
-    expect(screen.queryByTestId('project-chat-sidecar')).not.toBeInTheDocument()
-    expect(localStorage.getItem(`project.sidecar.${PROJECT}.open`)).toBe('false')
+    fireEvent.click(screen.getByRole('button', { name: 'Back to Project page' }))
+    await waitFor(() => expect(screen.queryByTestId('project-chat-sidecar')).not.toBeInTheDocument())
+    expect(localStorage.getItem(`project.sidecar.${PROJECT}.open`)).toBe('true')
     fireEvent.click(screen.getByRole('button', { name: 'Open Project chat' }))
     expect(await screen.findByTestId('project-chat-sidecar')).toBeInTheDocument()
   })

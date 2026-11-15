@@ -16,6 +16,7 @@ const DialogOverlay = forwardRef<
   return (
     <DialogPrimitive.Overlay
       ref={ref}
+      data-dialog-overlay=""
       className={cn(
         'fixed inset-0 z-50 bg-black/60',
         'data-[state=open]:animate-in   data-[state=closed]:animate-out',

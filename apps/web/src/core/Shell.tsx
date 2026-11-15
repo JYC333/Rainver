@@ -20,6 +20,7 @@ import { proposalsApi } from '../api/client'
 import { REVIEW_ATTENTION_CHANGED_EVENT } from './reviewAttention'
 import { AgentAttentionProvider } from '../modules/agent_work/AgentAttentionProvider'
 import { useAppTranslation } from '../i18n'
+import { useIPhonePwaViewport } from './useIPhonePwaViewport'
 
 const RAIL_KEY = 'rainver:rail-expanded'
 const SCENE_COLLAPSE_KEY = 'rainver:scene-collapsed'
@@ -155,6 +156,7 @@ export default function Shell() {
   return currentUser ? <AgentAttentionProvider userId={currentUser.id}><ShellContent /></AgentAttentionProvider> : <ShellContent />
 }
 function ShellContent() {
+  useIPhonePwaViewport()
   const { t } = useAppTranslation()
   const { theme } = useTheme()
   const { currentUser } = useAuth()
@@ -237,7 +239,7 @@ function ShellContent() {
     <ProjectCaptureTargetProvider>
     <div className="app-safe-shell fixed inset-0 flex overflow-hidden overscroll-none bg-background text-foreground">
       {/* data-shell-chrome: what the Reader's focus mode hides (see index.css). */}
-      <div data-shell-chrome className="contents">
+      <div data-shell-chrome data-app-chrome className="contents">
       <GlobalRail
         expanded={railExpanded}
         onToggle={() => setRailExpanded(v => !v)}
@@ -258,7 +260,7 @@ function ShellContent() {
       </div>
 
       <div className="flex-1 flex flex-col min-h-0 min-w-0">
-        <div data-shell-chrome className="contents">
+        <div data-shell-chrome data-app-chrome className="contents">
         <SceneHeader
           title={title}
           isHome={isHome}
@@ -275,10 +277,10 @@ function ShellContent() {
           <Outlet />
         </main>
 
-        <div data-shell-chrome className="contents"><MobileTabBar spaceId={preferredSpaceId} pendingReviewCount={pendingReviewCount} canManageSpace={canManageSpace} canManageInstance={canManageInstance} pluginModules={pluginNavItems} /></div>
+        <div data-shell-chrome data-app-chrome className="contents"><MobileTabBar spaceId={preferredSpaceId} pendingReviewCount={pendingReviewCount} canManageSpace={canManageSpace} canManageInstance={canManageInstance} pluginModules={pluginNavItems} /></div>
       </div>
 
-      <div data-shell-chrome className="contents"><FloatingQuickCapture /></div>
+      <div data-shell-chrome data-app-chrome className="contents"><FloatingQuickCapture /></div>
 
       <Toaster
         theme={theme}

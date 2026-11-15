@@ -2,7 +2,7 @@ import {SESSION_OPERATION_SCHEMAS, ROOM_OPERATION_SCHEMAS, AGENT_OPERATION_SCHEM
 import assert from 'node:assert/strict'
 import { after, before, test } from 'node:test'
 import { mkdirSync } from 'node:fs'
-import { chromium } from 'playwright-core'
+import { chromium, webkit } from 'playwright-core'
 import { preview } from 'vite'
 import { work, workRun, run, turn, page as workPage } from '../modules/agent_work/fixtures.test-support.ts'
 
@@ -53,6 +53,9 @@ async function mockApi(page, conversations = [session]) {
       default_space_id: room.space_id, instance_role: 'member' }
     else if (path === '/me/spaces') data = [{ id: room.space_id, name: 'Layout Space', type: 'personal', role: 'owner' }]
     else if (path === '/plugins/effective') data = { plugins: {} }
+    else if (path === '/me/summary') data = { pending_proposals_count: 0, assigned_tasks_count: 0, recent_runs: [], recent_participation: [], accessible_spaces_count: 1, spaces: [{ space_id: room.space_id, name: 'Layout Space', type: 'personal', pending_proposals_count: 0, assigned_tasks_count: 0, recent_failed_runs_count: 0 }] }
+    else if (path === '/me/timeline' || path === '/me/pending') data = []
+    else if (path === '/me/tasks') data = pageOf([])
     else if (path === '/rooms') data = pageOf([room])
     else if (path === `/rooms/${room.id}`) data = { room, viewer_can_write: false,
       other_member_names: [], agent_count: 0, agent_members: [], user_members: [] }
@@ -93,7 +96,7 @@ before(async () => {
     server = await preview({ configFile: false, preview: { host: '127.0.0.1', port: 0 } })
     baseUrl = `http://127.0.0.1:${server.httpServer.address().port}`
   }
-  browser = await chromium.launch({ executablePath: process.env.CHROMIUM_EXECUTABLE })
+  browser = process.env.LAYOUT_BROWSER === 'webkit' ? await webkit.launch() : await chromium.launch({ executablePath: process.env.CHROMIUM_EXECUTABLE })
 })
 after(async () => {
   await browser?.close()
@@ -415,11 +418,15 @@ test('mobile shell stays in the viewport and Project history scrolls independent
       ...pageOf(Array.from({ length: 30 }, (_, i) => ({ ...message, id: `scroll-message-${i}`, content: `Message ${i}\n\n${markdown}` }))), queued: [],
     } }))
     await page.goto(`${baseUrl}/spaces/${room.space_id}/projects/${project.id}/rooms?room=${room.id}&conversation=${session.id}`)
-    const log = page.getByRole('log').first()
+    assert.equal(await page.locator('meta[name="apple-mobile-web-app-status-bar-style"]').count(),0,
+      'do not opt into deprecated iOS translucent status-bar geometry')
+    assert.match(await page.locator('meta[name="viewport"]').getAttribute('content'),/viewport-fit=cover/)
+    const log = page.getByRole('log', {name:'Conversation messages',exact:true}).locator('.overscroll-y-contain').first()
     await log.locator('[data-role="agent"]').first().waitFor()
     const nav = page.getByRole('navigation', { name: 'Primary', exact: true })
     await log.scrollIntoViewIfNeeded()
-    const before = await nav.boundingBox()
+    assert.equal(await nav.isVisible(), false)
+    const before = await page.locator('[data-mobile-conversation-header]').boundingBox()
     const result = await log.evaluate(element => {
       const outer = document.querySelector('main.flex-1, main.min-h-0')
       const outerBefore = outer?.scrollTop
@@ -429,12 +436,12 @@ test('mobile shell stays in the viewport and Project history scrolls independent
         containment: getComputedStyle(element).overscrollBehaviorY, outerBefore, outerAfter: outer?.scrollTop,
         bodyHeight: document.scrollingElement.scrollHeight, viewport: innerHeight }
     })
-    assert.ok(result.total > result.height && result.scroll > 0, 'history owns a working scroll container')
+    assert.ok(result.total > result.height && result.scroll > 0, 'history owns a working scroll container '+JSON.stringify(result))
     assert.equal(result.containment, 'contain')
     assert.equal(result.outerAfter, result.outerBefore)
     assert.ok(result.bodyHeight <= result.viewport, 'document must not scroll behind the shell')
     await page.setViewportSize({ width: 393, height: 550 })
-    const after = await nav.boundingBox()
+    const after = await page.locator('[data-mobile-conversation-header]').boundingBox()
     assert.ok(before.bottom === undefined || before.y + before.height <= 680)
     assert.ok(after.y + after.height <= 551, 'navigation follows the dynamic viewport')
   } finally { await page.close() }
@@ -445,6 +452,8 @@ test('mobile Project chat close remains reachable and the panel can reopen', asy
   const page = await browser.newPage({ viewport: { width: 393, height: 680 }, isMobile: true, serviceWorkers: 'block' })
   try {
     await mockApi(page)
+    await page.route('**/api/v1/projects/*/overview',route=>route.fulfill({json:{project,brief:null,attention:[{id:'gate-layout',title:'Approve pending work',reason:'A person must decide',href:`/projects/${project.id}/board`,attention_class:'gate'}]}}))
+    await page.route('**/api/v1/projects/*/mainline-room',route=>route.fulfill({json:{room,viewer_can_write:false}}))
     await page.goto(`${baseUrl}/spaces/${room.space_id}/projects/${project.id}/files`)
     // Desktop browser emulation does not supply physical notch insets. Exercise
     // the shared layout contract with nonzero top, bottom and landscape insets.
@@ -454,15 +463,29 @@ test('mobile Project chat close remains reachable and the panel can reopen', asy
       }
     })
     await page.getByRole('button', { name: 'Open Project chat', exact: true }).click()
-    const close = page.getByRole('button', { name: 'Close Project chat', exact: true })
+    const close = page.getByRole('button', { name: 'Back to Project page', exact: true })
     const box = await close.boundingBox()
-    assert.ok(box.width >= 44 && box.height >= 44)
+    assert.ok(box.width >= 32 && box.height >= 32)
     assert.ok(box.x >= 12 && box.y >= 59 && box.y + box.height <= 646)
     assert.equal((await close.textContent()).trim(), '', 'uses the original icon without a new text button')
+    const gate=page.getByTestId('project-chat-sidecar').getByRole('link',{name:'Approve pending work',exact:true})
+    await gate.waitFor()
+    assert.ok(await gate.isVisible(),'Project attention remains visible when Shell navigation yields')
+    mkdirSync('/tmp/rainver-mobile-conversation',{recursive:true})
+    await page.screenshot({animations:'disabled',path:'/tmp/rainver-mobile-conversation/sidecar-attention.png'})
+    const transcript=page.getByTestId('project-chat-sidecar').getByRole('log',{name:'Conversation messages',exact:true})
+    await transcript.waitFor()
+    await transcript.evaluate(el=>{el.dataset.lifetime='sidecar'})
+    await page.setViewportSize({width:1280,height:680})
+    await page.waitForFunction(()=>!document.documentElement.hasAttribute('data-mobile-conversation'))
+    assert.equal(await transcript.getAttribute('data-lifetime'),'sidecar')
+    await page.setViewportSize({width:393,height:680})
+    await page.waitForFunction(()=>document.documentElement.hasAttribute('data-mobile-conversation'))
+    assert.equal(await transcript.getAttribute('data-lifetime'),'sidecar')
     const panelBox = await page.getByTestId('project-chat-sidecar').boundingBox()
     assert.ok(panelBox.y >= 59 && panelBox.y + panelBox.height <= 646)
     assert.ok(panelBox.x >= 12 && panelBox.x + panelBox.width <= 381)
-    const headerBox = await page.locator('header').first().boundingBox()
+    const headerBox = await page.locator('[data-mobile-conversation-header]').boundingBox()
     assert.ok(headerBox.y >= 59, 'Shell header also clears the status bar')
     await close.click()
     await page.getByTestId('project-chat-sidecar').waitFor({ state: 'hidden' })
@@ -494,7 +517,11 @@ test('Settings verifies the running build and exposes opt-in mobile layout diagn
     const served = await (await page.request.get(`${baseUrl}/version.json`)).json()
     assert.equal(diagnostic.build, served.id)
     assert.equal(diagnostic.window.width, 393)
-    assert.ok(diagnostic.shell.height > 0)
+    assert.ok(diagnostic.shell.rect.height > 0)
+    assert.equal(diagnostic.meta.statusBarStyle.length, 0)
+    assert.deepEqual(diagnostic.meta.buildInputs, [served.inputsHash])
+    assert.ok(diagnostic.viewportUnits['100dvh'].rect.height > 0)
+    assert.equal(typeof diagnostic.standalone.displayMode, 'boolean')
     assert.equal('url' in diagnostic, false)
     assert.equal('user' in diagnostic, false)
   } finally { await page.close() }
@@ -812,6 +839,7 @@ for (const [width, locale, theme] of [[1280, 'en', 'dark'], [1280, 'zh-CN', 'lig
         available_hosts: [], available_runtime_profiles: [], available_primary_locations: [],
       } }))
       await page.goto(`${baseUrl}/spaces/${room.space_id}/projects/${project.id}/files`)
+      if (width < 1024) await page.getByRole('button', { name: locale === 'en' ? 'Open Project chat' : '打开项目对话', exact: true }).click()
       const sidecar = page.getByTestId('project-chat-sidecar')
       const entry=sidecar.getByRole('button',{name:locale==='en'?/Conversation settings ·/:/对话设置 ·/})
       await entry.waitFor()
@@ -824,6 +852,7 @@ for (const [width, locale, theme] of [[1280, 'en', 'dark'], [1280, 'zh-CN', 'lig
       await confirm.scrollIntoViewIfNeeded()
       const box=await confirm.boundingBox();assert.ok(box.y>=0&&box.y+box.height<=520)
       await page.keyboard.press('Escape')
+      await dialog.waitFor({ state: 'hidden' })
       await editor.fill('Keep this draft visible')
       await editor.press('Tab')
       assert.equal(await editor.textContent(), 'Keep this draft visible')
@@ -921,6 +950,7 @@ test('Conversation settings unify Room sidecar and Agent Work with strict HTTP a
       })
       const path=surface==='Room'?`/spaces/${room.space_id}/projects/${project.id}/rooms?room=${room.id}&conversation=${session.id}`:surface==='Sidecar'?`/spaces/${room.space_id}/projects/${project.id}/files`:'/agent-work'
       await page.goto(baseUrl+path)
+      if(surface==='Sidecar' && width<1024) await page.getByRole('button',{name:locale==='en'?'Open Project chat':'打开项目对话',exact:true}).click()
       if(surface==='Agent Work')await page.locator('[data-work-row]').first().click()
       const unknownEntry=page.getByRole('button',{name:locale==='en'?'Conversation settings':'对话设置',exact:true})
       await unknownEntry.click()
@@ -1155,4 +1185,690 @@ test('Direct first-message drafts become the accepted baseline and allow the sec
     assert.equal(sends,2);assert.ok(reads>=2)
     assert.equal(await dialog.count(),0)
   } finally {await page.close()}
+})
+
+test('Project mobile full viewport preserves one transcript, Room drawer history and viewport recovery', async () => {
+  const shots = process.env.MOBILE_CONVERSATION_SHOTS ?? '/tmp/rainver-mobile-conversation'; mkdirSync(shots, { recursive: true })
+  for (const locale of ['en', 'zh-CN']) for (const theme of ['dark', 'light']) {
+    const page = await browser.newPage({ viewport: { width: 402, height: 812 }, serviceWorkers: 'block' })
+    try {
+      await page.addInitScript(({locale,theme}) => {
+        localStorage.setItem('rainver:locale',locale); localStorage.setItem('rainver:theme',theme)
+      }, {locale,theme})
+      await mockApi(page, [session, {...session,id:'other-layout',title:'Other conversation',is_running:true}])
+      await page.goto(baseUrl + '/home')
+      await page.getByRole('navigation',{name:locale==='en'?'Primary':'主导航',exact:true}).waitFor()
+      await page.waitForFunction(() => document.querySelector('.page-dashboard') && !document.querySelector('.page-dashboard .animate-pulse'))
+      await page.screenshot({animations:'disabled',path:`${shots}/${locale}-${theme}-home.png`})
+      await page.goto(`${baseUrl}/spaces/${room.space_id}/projects/${project.id}/rooms?room=${room.id}`)
+      const list = page.getByRole('navigation',{name:locale==='en'?'Conversations':'对话',exact:true})
+      await list.getByRole('button').first().waitFor()
+      await page.screenshot({animations:'disabled',path:`${shots}/${locale}-${theme}-entry.png`})
+      await list.getByRole('button').first().click()
+      const log = page.getByRole('log',{name:locale==='en'?'Conversation messages':'对话消息',exact:true})
+      await log.locator('[data-role="agent"]').first().waitFor()
+      await log.evaluate(el => { el.dataset.lifetime = 'same' })
+      for (const [width,height] of [[390,844],[402,812],[844,390],[402,812],[1280,900],[402,812]]) {
+        await page.setViewportSize({width,height})
+        await page.waitForFunction(({width,height}) => document.documentElement.hasAttribute('data-mobile-conversation') === (width < 1024) && (width >= 1024 || Math.abs(document.querySelector('.app-safe-shell').getBoundingClientRect().height-height)<2), {width,height})
+        assert.equal(await log.count(),1)
+        assert.equal(await log.getAttribute('data-lifetime'),'same','breakpoint must retain transcript lifetime')
+        const metrics = await page.evaluate(() => {
+          const rect = document.querySelector('.conversation-card').getBoundingClientRect()
+          return { top:rect.top,bottom:rect.bottom,height:rect.height,doc:document.documentElement.scrollHeight,inner:innerHeight,visual:visualViewport.height,css:document.documentElement.style.getPropertyValue('--conversation-visual-height'),width:document.documentElement.scrollWidth,focused:document.documentElement.hasAttribute('data-mobile-conversation') }
+        })
+        assert.equal(metrics.focused,width<1024)
+        assert.ok(metrics.doc<=height+1 && metrics.width<=width+1,JSON.stringify(metrics))
+        if(width<1024) { assert.ok(metrics.top<100 && Math.abs(metrics.bottom-height)<2,JSON.stringify(metrics)) }
+        await page.screenshot({animations:'disabled',path:`${shots}/${locale}-${theme}-${width}-${height}.png`})
+      }
+      const drawerButton = page.getByRole('button',{name:locale==='en'?'Conversations and Room details':'对话与 Room 详情',exact:true})
+      await drawerButton.click()
+      const dialog=page.getByRole('dialog'); await dialog.waitFor()
+      const drawerBox=await dialog.boundingBox()
+      assert.ok(drawerBox.x>=0 && drawerBox.y>=0 && drawerBox.x+drawerBox.width<=403 && drawerBox.y+drawerBox.height<=813,JSON.stringify(drawerBox))
+      await dialog.getByRole('textbox').fill('Other')
+      assert.equal(await dialog.getByRole('button',{name:/Other conversation/}).count(),1)
+      await page.screenshot({animations:'disabled',path:`${shots}/${locale}-${theme}-drawer.png`})
+      await page.goBack()
+      await dialog.waitFor({state:'hidden'})
+      await page.waitForFunction(() => document.activeElement?.getAttribute('aria-label')?.includes('Room'))
+      assert.equal(await log.getAttribute('data-lifetime'),'same')
+      await page.evaluate(() => {
+        for (const [edge,value] of Object.entries({top:62,bottom:34,left:12,right:12})) document.documentElement.style.setProperty(`--app-safe-${edge}`,`${value}px`)
+        Object.defineProperties(visualViewport,{height:{configurable:true,value:350},offsetTop:{configurable:true,value:24},scale:{configurable:true,value:1}})
+        visualViewport.dispatchEvent(new Event('resize'))
+        visualViewport.dispatchEvent(new Event('scroll'))
+      })
+      const keyboard = await page.locator('.app-safe-shell').boundingBox()
+      assert.ok(Math.abs(keyboard.y-24)<1 && Math.abs(keyboard.height-350)<1,JSON.stringify(keyboard))
+      const card = await page.locator('.conversation-card').boundingBox()
+      assert.ok(card.y>=86 && card.y+card.height<=375,JSON.stringify(card))
+      const send=await page.getByRole('button',{name:locale==='en'?'Send':'发送',exact:true}).boundingBox()
+      assert.ok(send.y>=card.y && send.y+send.height<=card.y+card.height+1,JSON.stringify({send,card}))
+      await page.screenshot({animations:'disabled',path:`${shots}/${locale}-${theme}-keyboard-insets.png`})
+      await page.evaluate(() => {Object.defineProperty(visualViewport,'scale',{configurable:true,value:1.5});visualViewport.dispatchEvent(new Event('resize'))})
+      const zoom = await page.locator('.app-safe-shell').boundingBox()
+      assert.ok(Math.abs(zoom.y)<1 && Math.abs(zoom.height-812)<1,'pinch zoom is not keyboard compensation')
+      await page.evaluate(() => {
+        for(const key of ['height','offsetTop','scale']) delete visualViewport[key]
+        visualViewport.dispatchEvent(new Event('resize'))
+      })
+      const restored=await page.locator('.conversation-card').boundingBox()
+      assert.ok(restored.y>=62 && Math.abs(restored.y+restored.height-778)<2,JSON.stringify(restored))
+      assert.equal(await log.getAttribute('data-lifetime'),'same')
+      await page.screenshot({animations:'disabled',path:`${shots}/${locale}-${theme}-restored-insets.png`})
+    } finally { await page.close() }
+  }
+})
+
+for (const surface of ['Room','Sidecar']) test(`mobile ${surface} conversation selection restores its draft and reading position without duplicate transcripts`, async () => {
+  const page=await browser.newPage({viewport:{width:402,height:812},serviceWorkers:'block'})
+  try {
+    await mockApi(page,[session,{...session,id:'other-layout',title:'Other conversation'}])
+    await page.route('**/api/v1/**/messages*',route=>route.fulfill({json:{...pageOf(Array.from({length:30},(_,i)=>({...message,id:`reading-${i}`,content:`Reading ${i}\n\n${markdown}`}))),queued:[]}}))
+    if(surface==='Sidecar') {
+      await page.route('**/api/v1/projects/*/mainline-room',route=>route.fulfill({json:{room,viewer_can_write:false}}))
+      await page.route(`**/api/v1/rooms/${room.id}`,async route=>{
+        await new Promise(resolve=>setTimeout(resolve,300))
+        await route.fulfill({json:{room,viewer_can_write:false,other_member_names:[],agent_count:0,agent_members:[],user_members:[]}})
+      })
+      await page.goto(`${baseUrl}/spaces/${room.space_id}/projects/${project.id}/files?projectChat=1`)
+    } else {
+      await page.goto(`${baseUrl}/spaces/${room.space_id}/projects/${project.id}/rooms?room=${room.id}&conversation=${session.id}`)
+    }
+    const log=page.getByRole('log',{name:'Conversation messages',exact:true})
+    const scroller=log.locator('.overscroll-y-contain').first()
+    await log.locator('[data-role="agent"]').first().waitFor()
+    const editor=page.locator('[contenteditable="true"]').first()
+    await editor.fill('Draft belongs to the first conversation')
+    await scroller.evaluate(el=>{el.scrollTop=el.scrollHeight})
+    const scrollBox=await scroller.boundingBox()
+    await page.mouse.move(scrollBox.x+2,scrollBox.y+2)
+    await page.mouse.wheel(0,-300)
+    await page.waitForFunction(()=>{const el=document.querySelector('[role="log"] .overscroll-y-contain');return el.scrollHeight-el.clientHeight-el.scrollTop>100})
+    await page.evaluate(()=>document.fonts.ready)
+    await scroller.evaluate(el=>{el.scrollTop=150;el.dispatchEvent(new Event('scroll'))})
+    await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))))
+    const readingTop=await scroller.evaluate(el=>el.scrollTop)
+    const pick=async(name)=>{
+      await page.getByRole('button',{name:'Conversations and Room details',exact:true}).click()
+      await page.getByRole('dialog').getByRole('button',{name:new RegExp('^'+name)}).click()
+      await page.getByRole('dialog').waitFor({state:'hidden'})
+      await log.locator('[data-role="agent"]').first().waitFor()
+    }
+    await pick('Other conversation')
+    assert.equal(await log.count(),1)
+    assert.equal(await editor.textContent(),'')
+    await editor.fill('Another draft')
+    await pick('Conversation')
+    await page.waitForFunction(()=>document.querySelector('[contenteditable="true"]')?.textContent==='Draft belongs to the first conversation')
+    await page.waitForFunction(top=>Math.abs(document.querySelector('[role="log"] .overscroll-y-contain').scrollTop-top)<2,readingTop,{timeout:3000}).catch(async()=>{throw new Error(JSON.stringify({expected:readingTop,actual:await scroller.evaluate(el=>({top:el.scrollTop,height:el.clientHeight,total:el.scrollHeight}))}))})
+    await page.waitForTimeout(400) // delayed sidecar detail hydration cannot reset restoration
+    assert.ok(Math.abs(await scroller.evaluate(el=>el.scrollTop)-readingTop)<2)
+    assert.equal(await log.count(),1)
+  } finally {await page.close()}
+})
+
+test('mobile whole-thread carry is reachable at 390 and 768 and desktop has one entry', async () => {
+  for (const width of [390,768,1280]) for (const locale of ['en','zh-CN']) {
+    const page=await browser.newPage({viewport:{width,height:900},serviceWorkers:'block'})
+    try {
+      await page.addInitScript(locale=>{localStorage.setItem('rainver:locale',locale);localStorage.setItem('rainver:theme',locale==='en'?'dark':'light')},locale)
+      await mockApi(page)
+      await page.goto(`${baseUrl}/spaces/${room.space_id}/projects/${project.id}/rooms?room=${room.id}&conversation=${session.id}`)
+      await page.getByRole('log').locator('[data-role="agent"]').first().waitFor()
+      const carryName=locale==='en'?'Carry into a new thread':'带入新的对话'
+      if(width<1024) {
+        await page.getByRole('button',{name:locale==='en'?'Conversations and Room details':'对话与 Room 详情',exact:true}).click()
+        await page.getByRole('dialog').getByText(locale==='en'?'Everyone in this Project':'本项目所有成员',{exact:true}).waitFor()
+      }
+      const carry=page.getByRole('button',{name:carryName,exact:true})
+      assert.equal(await carry.count(),1,'one accessible carry entry at each breakpoint')
+      await carry.scrollIntoViewIfNeeded()
+      await page.screenshot({path:`/tmp/review-carry-${locale}-${width}.png`,animations:'disabled'})
+      await carry.click()
+      await page.waitForURL(url=>url.searchParams.get('new')==='1'&&!url.searchParams.has('conversationDrawer'))
+      await page.getByText(locale==='en'?'A conversation will be attached to this conversation before the message':'一个对话 将在发送消息前附加到此对话',{exact:true}).waitFor()
+      assert.equal(await page.getByRole('log').count(),1)
+      assert.equal(await page.getByRole('button',{name:carryName,exact:true}).count(),0,'draft has no whole-thread source')
+      await page.screenshot({path:`/tmp/review-carry-${locale}-${width}-draft.png`,animations:'disabled'})
+    } finally {await page.close()}
+  }
+})
+
+test('mobile sidecar consumes owned history and preserves a closed desktop preference', async () => {
+  const page=await browser.newPage({viewport:{width:390,height:844},serviceWorkers:'block'})
+  try {
+    await page.addInitScript(()=>{
+      localStorage.setItem('rainver:locale','en')
+      localStorage.setItem('project.sidecar.project-layout.open','false')
+    })
+    await mockApi(page,[session,{...session,id:'other-layout',title:'Other conversation'}])
+    await page.route('**/api/v1/projects/*/mainline-room',route=>route.fulfill({json:{room,viewer_can_write:false}}))
+    await page.goto(baseUrl+'/home')
+    await page.locator('.page-dashboard').waitFor()
+    assert.equal(new URL(page.url()).pathname,'/home','establish an authenticated source before testing back navigation')
+    const source=`${baseUrl}/spaces/${room.space_id}/projects/${project.id}/files`
+    await page.goto(source)
+    const open=page.getByRole('button',{name:'Open Project chat',exact:true})
+    const close=page.getByRole('button',{name:'Back to Project page',exact:true})
+    for(const choice of ['Other conversation','New conversation',null]) {
+      await open.click()
+      await page.getByRole('button',{name:'Conversations and Room details',exact:true}).click()
+      const dialog=page.getByRole('dialog')
+      if(choice) await dialog.getByRole('button',{name:choice,exact:true}).click()
+      else await dialog.getByRole('button',{name:'Close',exact:true}).click()
+      await dialog.waitFor({state:'hidden'})
+      assert.ok(!new URL(page.url()).searchParams.has('conversationDrawer'))
+      await close.click()
+      await open.waitFor()
+      assert.equal(page.url(),source)
+      assert.equal(await page.evaluate(()=>localStorage.getItem('project.sidecar.project-layout.open')),'false')
+    }
+    await page.setViewportSize({width:1280,height:900})
+    await open.waitFor()
+    assert.equal(await page.getByTestId('project-chat-sidecar').count(),0)
+    assert.equal(await page.evaluate(()=>localStorage.getItem('project.sidecar.project-layout.open')),'false')
+    await page.goBack()
+    assert.equal(new URL(page.url()).pathname,'/home','one back after close reaches the source history entry')
+    await page.setViewportSize({width:390,height:844})
+    await page.goto(source+'?projectChat=1&conversationDrawer=1')
+    await page.getByRole('dialog').getByRole('button',{name:'Close',exact:true}).click()
+    await close.click()
+    await open.waitFor()
+    assert.equal(page.url(),source,'direct overlay deep link closes in place')
+  } finally {await page.close()}
+})
+
+// Insets/short heights are synthetic. Neither engine proves installed iOS coverage.
+test('Viewport probe entry, layout comparisons and input privacy', async () => {
+  const shots = '/tmp/rainver-viewport-probe'
+  mkdirSync(shots, { recursive: true })
+  for (const locale of ['en', 'zh-CN']) for (const theme of ['dark', 'light']) for (const width of [390, 1280]) {
+    const page = await browser.newPage({ viewport: { width, height: 812 }, serviceWorkers: 'block' })
+    try {
+      await page.addInitScript(({ locale, theme }) => {
+        localStorage.setItem('rainver:locale', locale)
+        localStorage.setItem('rainver:theme', theme)
+      }, { locale, theme })
+      await mockApi(page)
+      await page.goto(baseUrl + '/settings')
+      const diagnostics = page.locator('details').filter({ has: page.locator('summary', { hasText: locale === 'en' ? 'Layout diagnostics' : '布局诊断' }) })
+      await diagnostics.locator('summary').click()
+      const link = diagnostics.getByRole('link', { name: locale === 'en' ? 'Open viewport test' : '打开视口对照测试' })
+      await link.scrollIntoViewIfNeeded()
+      await page.screenshot({ path: `${shots}/entry-${locale}-${theme}-${width}.png` })
+      let apiCalls = 0
+      page.on('request', request => { if (new URL(request.url()).pathname.startsWith('/api/')) apiCalls++ })
+      await link.click()
+      await page.waitForURL('**/viewport-test/index.html?**')
+      await page.getByRole('heading', { name: locale === 'en' ? 'iPhone viewport test' : 'iPhone 视口对照' }).waitFor()
+      assert.equal(await page.locator('.viewport-test-shell').getAttribute('data-mode'), 'flow-vh', 'start with the phone-validated C layout')
+      assert.deepEqual(await page.locator('link[rel="manifest"]').evaluateAll(links => links.map(link => link.getAttribute('href'))), ['/viewport-test/manifest.webmanifest'])
+      const manifest = await (await page.request.get(baseUrl + '/viewport-test/manifest.webmanifest')).json()
+      assert.equal(manifest.id, '/viewport-test/')
+      assert.equal(manifest.scope, '/viewport-test/')
+      assert.equal(manifest.start_url, '/viewport-test/index.html')
+      assert.equal(await page.locator('[data-app-chrome]').count(), 0)
+      assert.match(await page.locator('meta[name="rainver-build-inputs"]').getAttribute('content'), /^[a-f0-9]{64}$/)
+      await page.evaluate(() => {
+        document.documentElement.style.setProperty('--app-safe-top', '62px')
+        document.documentElement.style.setProperty('--app-safe-bottom', '34px')
+      })
+      const input = page.getByRole('textbox', { name: locale === 'en' ? 'Type here to test the keyboard' : '在此输入以测试键盘', exact: true })
+      assert.equal(await input.evaluate(element => getComputedStyle(element).fontSize), '16px', 'actual pixels, not rem under the 14px root')
+      const headerState = await page.locator('.viewport-test-shell').evaluate(shell => {
+        const header = shell.querySelector('header'), heading = header.querySelector('h1'), main = shell.querySelector('main')
+        return { top: header.getBoundingClientRect().top, bottom: header.getBoundingClientRect().bottom,
+          titleTop: heading.getBoundingClientRect().top, mainTop: main.getBoundingClientRect().top,
+          background: getComputedStyle(header).backgroundColor, pageBackground: getComputedStyle(shell).backgroundColor,
+          safeBackingHeight: getComputedStyle(shell, '::before').height }
+      })
+      assert.equal(headerState.top, 0)
+      assert.ok(headerState.titleTop >= 62, 'title below top safe area')
+      assert.ok(headerState.mainTop >= headerState.bottom, 'scroll content below opaque header')
+      assert.equal(headerState.background, headerState.pageBackground)
+      assert.notEqual(headerState.background, 'rgba(0, 0, 0, 0)')
+      assert.equal(headerState.safeBackingHeight, 'auto', 'baseline has no hidden fixed backing')
+      await input.fill('PRIVATE-UNSENT-PROBE-TEXT')
+      for (const [index, mode] of ['fixed', 'flow-dvh', 'flow-vh'].entries()) {
+        await page.getByRole('group', { name: locale === 'en' ? 'Layout comparison' : '布局对照', exact: true }).getByRole('button').nth(index).click()
+        await page.getByRole('button', { name: locale === 'en' ? /Bottom button/ : /底部按钮/ }).click()
+        for (const height of [420, 812]) {
+          await page.setViewportSize({ width, height })
+          await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+          const geometry = await page.locator('.viewport-test-shell').evaluate(shell => {
+            const rect = shell.getBoundingClientRect(), footer = shell.querySelector('footer').getBoundingClientRect()
+            return { bottom: rect.bottom, footer: footer.bottom, overflow: document.documentElement.scrollWidth > innerWidth }
+          })
+          assert.ok(Math.abs(geometry.bottom - height) < 1, JSON.stringify({ mode, geometry, height }))
+          assert.ok(Math.abs(geometry.footer - height) < 1)
+          assert.equal(geometry.overflow, false)
+        }
+        await page.screenshot({ path: `${shots}/${locale}-${theme}-${width}-${mode}.png` })
+      }
+      assert.equal(await input.inputValue(), 'PRIVATE-UNSENT-PROBE-TEXT')
+      await page.getByRole('button', { name: locale === 'en' ? 'Record layout' : '采集布局', exact: true }).click()
+      await page.getByText(locale === 'en' ? 'Results (select to copy)' : '结果（选中文字复制）', { exact: true }).click()
+      assert.equal(await page.getByRole('textbox', { name: locale === 'en' ? 'Results (select to copy)' : '结果（选中文字复制）', exact: true }).evaluate(element => getComputedStyle(element).fontSize), '16px')
+      await page.locator('.viewport-test-shell main').evaluate(element => { element.scrollTop = element.scrollHeight })
+      assert.equal(await page.locator('.viewport-test-shell header').evaluate(element => element.getBoundingClientRect().top), 0, 'scrolling the report must not scroll text into the notch')
+      const report = await page.getByRole('textbox', { name: locale === 'en' ? 'Results (select to copy)' : '结果（选中文字复制）', exact: true }).inputValue()
+      assert.ok(!report.includes('PRIVATE-UNSENT-PROBE-TEXT'))
+      const samples = JSON.parse(report)
+      assert.ok(samples.length > 0 && samples.length <= 12)
+      const last = samples.at(-1)
+      assert.equal(last.mode, 'flow-vh')
+      assert.equal(last.safeArea.bottom, '34px')
+      assert.equal(last.taps, 3)
+      assert.equal(last.footer.bottom, 812)
+      assert.equal(apiCalls, 0, 'probe must not ask for identity or product content')
+      assert.deepEqual(await page.evaluate(() => Object.keys(localStorage).filter(key => localStorage.getItem(key)?.includes('PRIVATE-UNSENT-PROBE-TEXT'))), [])
+    } finally { await page.close() }
+  }
+})
+
+test('Viewport probe survives the existing root service worker without registering another', async () => {
+  const context = await browser.newContext({ serviceWorkers: 'allow' })
+  try {
+    const page = await context.newPage()
+    await mockApi(page)
+    await page.goto(baseUrl + '/settings')
+    await page.evaluate(() => navigator.serviceWorker.ready)
+    await page.waitForFunction(() => Boolean(navigator.serviceWorker.controller))
+    await page.goto(baseUrl + '/viewport-test/index.html')
+    await page.getByRole('heading', { name: 'iPhone viewport test' }).waitFor()
+    await page.reload()
+    await page.getByRole('heading', { name: 'iPhone viewport test' }).waitFor()
+    assert.equal(await page.locator('link[rel="manifest"]').getAttribute('href'), '/viewport-test/manifest.webmanifest')
+    const scopes = await page.evaluate(async () => (await navigator.serviceWorker.getRegistrations()).map(registration => new URL(registration.scope).pathname))
+    assert.deepEqual(scopes, ['/'])
+  } finally { await context.close() }
+  const fresh = await browser.newContext({ serviceWorkers: 'allow' })
+  try {
+    const page = await fresh.newPage()
+    await page.goto(baseUrl + '/viewport-test/index.html')
+    await page.getByRole('heading', { name: 'iPhone viewport test' }).waitFor()
+    assert.deepEqual(await page.evaluate(async () => (await navigator.serviceWorker.getRegistrations()).map(registration => registration.scope)), [])
+  } finally { await fresh.close() }
+})
+
+// Synthetic WebKit geometry only: CSS large viewport 874, API readout 812.
+// The real phone established C in the probe; these protect production wiring.
+test('iPhone PWA uses C on normal Home Settings Room and Project sidecar', async () => {
+  const shots = '/tmp/rainver-pwa-production'
+  mkdirSync(shots, { recursive: true })
+  for (const locale of ['en', 'zh-CN']) for (const theme of ['dark', 'light']) {
+    const page = await browser.newPage({ viewport: { width: 402, height: 874 }, userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148', serviceWorkers: 'block' })
+    try {
+      await page.addInitScript(({ locale, theme }) => {
+        localStorage.setItem('rainver:locale', locale)
+        localStorage.setItem('rainver:theme', theme)
+        Object.defineProperty(navigator, 'standalone', { configurable: true, value: true })
+        Object.defineProperty(window, 'innerHeight', { configurable: true, value: 812 })
+        const viewport = Object.assign(new EventTarget(), { height: 812, width: 402, offsetTop: 0, offsetLeft: 0, scale: 1 })
+        Object.defineProperty(window, 'visualViewport', { configurable: true, value: viewport })
+      }, { locale, theme })
+      await mockApi(page)
+      await page.route('**/api/v1/projects/*/mainline-room', route => route.fulfill({ json: { room, viewer_can_write: false } }))
+      const safe = () => page.evaluate(() => {
+        document.documentElement.style.setProperty('--app-safe-top', '62px')
+        document.documentElement.style.setProperty('--app-safe-bottom', '34px')
+      })
+      const bounds = () => page.locator('.app-safe-shell').evaluate(shell => {
+        const rect = shell.getBoundingClientRect(), nav = shell.querySelector('nav.md\\:hidden')
+        return { top: rect.top, bottom: rect.bottom, position: getComputedStyle(shell).position,
+          padBottom: getComputedStyle(shell).paddingBottom, navBottom: nav?.getBoundingClientRect().bottom,
+          navPadding: nav ? getComputedStyle(nav).paddingBottom : null }
+      })
+      await page.goto(baseUrl + '/home')
+      await page.locator('.page-dashboard').waitFor()
+      await safe()
+      await page.waitForFunction(() => document.documentElement.hasAttribute('data-iphone-pwa'))
+      assert.deepEqual(await bounds(), { top: 0, bottom: 874, position: 'relative', padBottom: '0px', navBottom: 874, navPadding: '34px' })
+      assert.equal(await page.getByText('Bottom boundary + safe area', { exact: true }).count(), 0)
+      // Stationary first frame, not the separate root-pan regression.
+      const topSurface = () => page.locator('.pwa-top-color-surface').evaluate(surface => {
+        const style = getComputedStyle(surface), rect = surface.getBoundingClientRect()
+        return { outsideRoot: surface.parentElement === document.body, empty: surface.childNodes.length === 0,
+          ariaHidden: surface.getAttribute('aria-hidden'), top: rect.top, width: rect.width, height: rect.height,
+          position: style.position, clip: style.backgroundClip, pointer: style.pointerEvents,
+          opaque: style.opacity === '1' && style.backgroundColor === getComputedStyle(document.body).backgroundColor,
+          hitThrough: document.elementFromPoint(200, 5) !== surface, scrollY, scale: visualViewport.scale }
+      })
+      const initialSurface = await topSurface()
+      assert.equal(await page.locator('.app-safe-shell').evaluate(shell => getComputedStyle(shell).paddingTop), '72px', '62px device inset plus 10px trial, applied once')
+      assert.deepEqual(initialSurface, { outsideRoot: true, empty: true, ariaHidden: 'true', top: 0, width: 402,
+        height: 11, position: 'fixed', clip: 'text', pointer: 'none', opaque: true, hitThrough: true, scrollY: 0, scale: 1 })
+      assert.equal(await page.locator('.app-safe-shell header').first().evaluate(header => header.getBoundingClientRect().top), 72,
+        'only the requested 10px trial beyond one device inset on first Home frame')
+
+      await page.screenshot({ path: `${shots}/home-${locale}-${theme}.png` })
+      await page.goto(baseUrl + '/settings')
+      await safe()
+      await page.locator('input').first().waitFor()
+      assert.equal(await page.locator('input').first().evaluate(input => getComputedStyle(input).fontSize), '16px')
+      await page.evaluate(() => { Object.assign(visualViewport, { height: 350, offsetTop: 24 }); visualViewport.dispatchEvent(new Event('resize')) })
+      await page.waitForFunction(() => document.querySelector('.app-safe-shell').getBoundingClientRect().height === 350)
+      assert.equal((await bounds()).bottom, 374)
+      assert.equal((await bounds()).navPadding, '0px')
+      await page.evaluate(() => { Object.assign(visualViewport, { scale: 1.5 }); visualViewport.dispatchEvent(new Event('resize')) })
+      assert.equal((await bounds()).bottom, 874, 'pinch must not be treated as keyboard')
+      await page.evaluate(() => { Object.assign(visualViewport, { height: 812, offsetTop: 0, scale: 1 }); visualViewport.dispatchEvent(new Event('resize')) })
+      assert.equal((await bounds()).bottom, 874)
+      await page.screenshot({ path: `${shots}/settings-${locale}-${theme}.png` })
+      await page.goto(`${baseUrl}/spaces/${room.space_id}/projects/${project.id}/rooms?room=${room.id}&conversation=${session.id}`)
+      await safe()
+      await page.getByRole('log', { name: locale === 'en' ? 'Conversation messages' : '对话消息', exact: true }).waitFor()
+      assert.equal((await bounds()).bottom, 874)
+      assert.equal(await page.evaluate(() => document.documentElement.style.getPropertyValue('--conversation-visual-height')), '100vh')
+      await page.screenshot({ path: `${shots}/room-${locale}-${theme}.png` })
+      assert.deepEqual(await topSurface(), initialSurface, 'navigation preserves the independent edge surface')
+      const mobileHeader = page.locator('[data-mobile-conversation-header]')
+      assert.equal((await mobileHeader.boundingBox()).y, 72)
+      await mobileHeader.locator('button').last().click()
+      const drawer = page.locator('.mobile-conversation-drawer')
+      await drawer.waitFor()
+      assert.equal((await drawer.boundingBox()).y, 72)
+      assert.equal(await drawer.locator('input').first().evaluate(input => getComputedStyle(input).fontSize), '16px')
+      await page.screenshot({ path: `${shots}/initial-drawer-${locale}-${theme}.png`, animations: 'disabled' })
+      assert.deepEqual(await topSurface(), initialSurface, 'portal must not hide the sampling surface')
+      await page.keyboard.press('Escape')
+      await drawer.waitFor({ state: 'detached' })
+
+      await page.goto(`${baseUrl}/spaces/${room.space_id}/projects/${project.id}/files`)
+      await safe()
+      await page.getByRole('button', { name: locale === 'en' ? 'Open Project chat' : '打开项目对话', exact: true }).click()
+      const panel = page.getByTestId('project-chat-sidecar')
+      await panel.getByRole('log', { name: locale === 'en' ? 'Conversation messages' : '对话消息', exact: true }).waitFor()
+      const box = await panel.boundingBox()
+      assert.ok(Math.abs(box.y - 72) < 1 && Math.abs(box.y + box.height - 840) < 1, JSON.stringify(box))
+      await page.screenshot({ path: `${shots}/sidecar-${locale}-${theme}.png` })
+      await page.setViewportSize({ width: 1280, height: 874 })
+      await page.waitForFunction(() => !document.documentElement.hasAttribute('data-iphone-pwa'))
+      assert.equal((await bounds()).position, 'fixed', 'desktop breakpoint restores original shell')
+      assert.equal(await page.locator('.app-safe-shell').evaluate(shell => getComputedStyle(shell).paddingTop), '62px', 'wide layout drops the trial clearance')
+      assert.equal(await page.locator('.pwa-top-color-surface').evaluate(surface => getComputedStyle(surface).display), 'none',
+        'desktop must not get the experimental edge surface')
+
+    } finally { await page.close() }
+  }
+})
+
+// Model the WebKit split explicitly: a layout owner can be taller than the
+// viewport used by fixed inset:0. This is not native keyboard/zoom emulation.
+test('mobile Room drawer covers C, avoids search autofocus and keeps touch input at 16px', async () => {
+  const shots = '/tmp/rainver-pwa-drawer'
+  mkdirSync(shots, { recursive: true })
+  const scenarios = [
+    { name: 'iphone-pwa', ua: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X)', installed: true, locale: 'en', theme: 'light' },
+    { name: 'desktop-ua-pwa', ua: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15)', installed: true, locale: 'zh-CN', theme: 'dark' },
+    { name: 'iphone-browser', ua: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X)', installed: false, locale: 'en', theme: 'dark' },
+  ]
+  for (const scenario of scenarios) {
+    const page = await browser.newPage({ viewport: { width: 402, height: 812 }, isMobile: true, hasTouch: true, userAgent: scenario.ua, serviceWorkers: 'block' })
+    try {
+      await page.addInitScript(scenario => {
+        localStorage.setItem('rainver:locale', scenario.locale)
+        localStorage.setItem('rainver:theme', scenario.theme)
+        Object.defineProperty(navigator, 'standalone', { configurable: true, value: scenario.installed })
+        const viewport = Object.assign(new EventTarget(), { height: 812, width: 402, offsetTop: 0, offsetLeft: 0, scale: 1 })
+        Object.defineProperty(window, 'visualViewport', { configurable: true, value: viewport })
+      }, scenario)
+      await mockApi(page, [{ ...session, title: 'Conversation alpha' }, { ...session, id: 'session-beta', title: 'Conversation beta' }])
+      await page.goto(`${baseUrl}/spaces/${room.space_id}/projects/${project.id}/rooms?room=${room.id}&conversation=${session.id}`)
+      const transcript = page.getByRole('log', { name: scenario.locale === 'en' ? 'Conversation messages' : '对话消息', exact: true })
+      await transcript.waitFor()
+      await page.addStyleTag({ content: 'html[data-test-large-viewport] { --app-pwa-height: 874px !important; --conversation-visual-height: 874px !important; }' })
+      await transcript.evaluate(element => { element.dataset.drawerLifetime = 'retained' })
+      assert.equal(await page.evaluate(() => document.documentElement.hasAttribute('data-iphone-pwa')), scenario.installed)
+      assert.equal(await page.locator('.pwa-top-color-surface').evaluate(surface => getComputedStyle(surface).display),
+        scenario.installed ? 'block' : 'none', 'ordinary Safari must not receive the compatibility surface')
+
+      const applyGeometry = () => page.evaluate(installed => {
+        const root = document.documentElement
+        root.style.setProperty('--app-safe-top', '62px')
+        root.style.setProperty('--app-safe-bottom', '34px')
+        if (installed) {
+          root.setAttribute('data-test-large-viewport', '')
+          root.style.setProperty('--app-pwa-height', '874px')
+          root.style.setProperty('--conversation-visual-height', '874px')
+        }
+      }, scenario.installed)
+      await applyGeometry()
+      const trigger = page.locator('[data-mobile-conversation-header] button').last()
+      await trigger.click()
+      const drawer = page.locator('.mobile-conversation-drawer')
+      await drawer.waitFor()
+      assert.equal(await drawer.evaluate(element => document.activeElement === element), true, 'open focuses the labelled container, not a text field')
+      const search = drawer.getByRole('textbox')
+      assert.equal(await search.evaluate(element => getComputedStyle(element).fontSize), '16px', 'portal font guard also works without the PWA flag')
+      await applyGeometry()
+      const backdrop = page.locator('[data-dialog-overlay]')
+      const total = scenario.installed ? 874 : 812
+      assert.ok((await backdrop.boundingBox()).height >= total, 'backdrop must cover the layout owner, not stop at the short fixed viewport')
+      const rest = await drawer.boundingBox()
+      assert.ok(Math.abs(rest.y - (scenario.installed ? 72 : 62)) < 1 && Math.abs(rest.y + rest.height - total) < 1, JSON.stringify(rest))
+      assert.ok(await drawer.evaluate(element => parseFloat(getComputedStyle(element).paddingBottom) >= 34), 'bottom safe area belongs inside the drawer background')
+      const shot = await page.screenshot({ path: `${shots}/${scenario.name}-open.png`, fullPage: true, animations: 'disabled' })
+      if (scenario.theme === 'light') {
+        const pixels = await page.evaluate(async base64 => {
+          const image = new Image()
+          image.src = 'data:image/png;base64,' + base64
+          await image.decode()
+          const canvas = document.createElement('canvas')
+          canvas.width = image.width; canvas.height = image.height
+          const context = canvas.getContext('2d')
+          context.drawImage(image, 0, 0)
+          const bottom = [...context.getImageData(image.width - 10, image.height - 10, 1, 1).data].slice(0, 3)
+          context.fillStyle = getComputedStyle(document.body).backgroundColor
+          context.fillRect(0, 0, 1, 1)
+          const background = [...context.getImageData(0, 0, 1, 1).data].slice(0, 3)
+          return { bottom, background }
+        }, shot.toString('base64'))
+        const paintBounds = await backdrop.evaluate(element => ({ position: getComputedStyle(element).position, height: element.getBoundingClientRect().height,
+          cssHeight: document.documentElement.style.getPropertyValue('--app-pwa-height'), scrollHeight: document.documentElement.scrollHeight }))
+        assert.ok(pixels.bottom.reduce((a, b) => a + b, 0) < pixels.background.reduce((a, b) => a + b, 0) * 0.8,
+          'backdrop must actually paint the bottom, not just report a taller rect: ' + JSON.stringify({ pixels, paintBounds }))
+      }
+      await search.fill('alpha')
+      assert.equal(await drawer.locator('nav button').count(), 1, 'search remains usable')
+      await page.evaluate(() => { document.documentElement.removeAttribute('data-test-large-viewport'); Object.assign(visualViewport, { height: 350, offsetTop: 24 }); visualViewport.dispatchEvent(new Event('resize')) })
+      const keyboard = await drawer.boundingBox()
+      assert.equal(keyboard.y, scenario.installed ? 96 : 86, 'keyboard top includes each owned inset once')
+      assert.ok(Math.abs(keyboard.y + keyboard.height - 374) < 1, 'no extra 34px above the keyboard: ' + JSON.stringify(keyboard))
+      assert.equal(await search.evaluate(element => document.activeElement === element), true)
+      await page.screenshot({ path: `${shots}/${scenario.name}-keyboard.png`, fullPage: true, animations: 'disabled' })
+      await page.evaluate(() => { Object.assign(visualViewport, { height: 812, offsetTop: 0 }); visualViewport.dispatchEvent(new Event('resize')) })
+      await applyGeometry()
+      assert.ok((await backdrop.boundingBox()).height >= total)
+      await search.press('Escape')
+      await drawer.waitFor({ state: 'hidden' })
+      assert.equal(await transcript.getAttribute('data-drawer-lifetime'), 'retained')
+      await page.waitForFunction(() => document.activeElement?.closest('[data-mobile-conversation-header]'))
+      await backdrop.waitFor({ state: 'detached' })
+      assert.equal(await page.locator('[data-dialog-overlay]').count(), 0)
+    } finally { await page.close() }
+  }
+})
+
+test('iPhone PWA allows native dragging without scroll corrections and restores keyboard and zoom', async () => {
+  // Mobile WebKit automation has no wheel API. Its desktop mode checks the
+  // same scroll containment; neither engine recreates native iPhone bounce.
+  const page = await browser.newPage({ viewport: { width: 402, height: 812 }, hasTouch: true, isMobile: process.env.LAYOUT_BROWSER !== 'webkit',
+    userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X)', serviceWorkers: 'block' })
+  try {
+    await page.addInitScript(() => {
+      localStorage.setItem('rainver:locale', 'en')
+      localStorage.setItem('rainver:theme', 'light')
+      Object.defineProperty(navigator, 'standalone', { configurable: true, value: true })
+      const viewport = Object.assign(new EventTarget(), { height: 812, width: 402, offsetTop: 0, offsetLeft: 0, scale: 1 })
+      Object.defineProperty(window, 'visualViewport', { configurable: true, value: viewport })
+      window.__rootCorrections = 0
+      const original = window.scrollTo.bind(window)
+      window.scrollTo = (...args) => { window.__rootCorrections++; return original(...args) }
+    })
+    await mockApi(page)
+    await page.goto(baseUrl + '/home')
+    await page.locator('.page-dashboard').waitFor()
+    await page.addStyleTag({ content: 'html[data-test-large-viewport] { --app-pwa-height: 874px !important; --conversation-visual-height: 874px !important; }' })
+    await page.evaluate(() => {
+      document.documentElement.setAttribute('data-test-large-viewport', '')
+      document.documentElement.style.setProperty('--app-safe-top', '62px')
+      document.documentElement.style.setProperty('--app-safe-bottom', '34px')
+      document.querySelector('.app-safe-shell main').scrollTop = 50
+    })
+    if (process.env.LAYOUT_BROWSER === 'webkit') {
+      await page.mouse.move(200, 300)
+      await page.mouse.wheel(0, 200)
+    } else {
+      // Actual browser touch input, not a scrollTop assignment or wheel proxy.
+      const touch = await page.context().newCDPSession(page)
+      await touch.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: 200, y: 500 }] })
+      for (let step = 1; step <= 10; step++) {
+        await touch.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: 200, y: 500 - step * 15 }] })
+      }
+      await touch.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+      await touch.detach()
+    }
+    await page.waitForFunction(() => document.querySelector('.app-safe-shell main').scrollTop > 50)
+    // WebKit wheel scrolling is asynchronous; sample after it settles, not
+    // between animation frames, before checking unrelated root-edge input.
+    await page.evaluate(() => new Promise((resolve, reject) => {
+      const main = document.querySelector('.app-safe-shell main')
+      const deadline = performance.now() + 5000
+      let previous = -1, stable = 0
+      const next = () => {
+        const value = main.scrollTop
+        stable = value === previous ? stable + 1 : 0
+        previous = value
+        if (stable >= 8) resolve()
+        else if (performance.now() > deadline) reject(new Error('inner scroll did not settle'))
+        else requestAnimationFrame(next)
+      }
+      requestAnimationFrame(next)
+    }))
+
+    const mainScroll = await page.locator('.app-safe-shell main').evaluate(el => el.scrollTop)
+    await page.mouse.move(200, 20)
+    await page.mouse.wheel(0, 500)
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+    await page.waitForFunction(() => scrollY > 0)
+    assert.ok(await page.evaluate(() => scrollY > 0), 'outer edge dragging must remain possible')
+    assert.equal(await page.locator('.app-safe-shell main').evaluate(el => el.scrollTop), mainScroll)
+    await page.evaluate(() => { document.scrollingElement.scrollTop = 0 }) // test setup for idle offset checks
+    await page.waitForFunction(() => scrollY === 0)
+    for (const offset of [-120, -24, 24, 120, -8, 0]) {
+      await page.evaluate(offset => {
+        visualViewport.offsetTop = offset
+        visualViewport.dispatchEvent(new Event('scroll'))
+        window.dispatchEvent(new Event('scroll'))
+      }, offset)
+      assert.equal(await page.locator('.app-safe-shell header').first().evaluate(el => el.getBoundingClientRect().top), 72,
+        'idle viewport offsets must not create a moving layout feedback loop')
+    }
+    assert.equal(await page.evaluate(() => window.__rootCorrections), 0)
+    await page.evaluate(() => { visualViewport.scale = 1.5; visualViewport.dispatchEvent(new Event('resize')) })
+    assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).overflowY), 'visible')
+    assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).overflowY), 'visible', 'release root for zoom panning')
+    assert.equal(await page.evaluate(() => visualViewport.scale), 1.5)
+    await page.evaluate(() => {
+      document.documentElement.removeAttribute('data-test-large-viewport')
+      Object.assign(visualViewport, { height: 350, offsetTop: 24, scale: 1 })
+      visualViewport.dispatchEvent(new Event('resize'))
+    })
+    assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).overflowY), 'visible')
+    assert.equal(await page.locator('.app-safe-shell').evaluate(el => el.getBoundingClientRect().bottom), 374)
+    await page.evaluate(() => {
+      Object.assign(visualViewport, { height: 812, offsetTop: 24 })
+      visualViewport.dispatchEvent(new Event('resize'))
+      document.documentElement.setAttribute('data-test-large-viewport', '')
+    })
+    assert.equal(await page.locator('.app-safe-shell header').first().evaluate(el => el.getBoundingClientRect().top), 72)
+    assert.equal(await page.locator('.app-safe-shell').evaluate(el => el.getBoundingClientRect().bottom), 874)
+    assert.equal(await page.evaluate(() => window.__rootCorrections), 0)
+    mkdirSync('/tmp/rainver-pwa-no-jitter', { recursive: true })
+    await page.screenshot({ path: '/tmp/rainver-pwa-no-jitter/home.png', fullPage: true, animations: 'disabled' })
+    await page.goto(`${baseUrl}/spaces/${room.space_id}/projects/${project.id}/rooms?room=${room.id}&conversation=${session.id}`)
+    await page.getByRole('log', { name: 'Conversation messages', exact: true }).waitFor()
+    await page.evaluate(() => {
+      document.documentElement.style.setProperty('--app-safe-top', '62px')
+      document.documentElement.style.setProperty('--app-safe-bottom', '34px')
+    })
+    await page.locator('[data-mobile-conversation-header] button').last().click()
+    const drawer = page.locator('.mobile-conversation-drawer')
+    await drawer.waitFor()
+    assert.equal((await drawer.boundingBox()).y, 72)
+    await page.screenshot({ path: '/tmp/rainver-pwa-no-jitter/drawer.png', fullPage: true, animations: 'disabled' })
+    assert.equal(await page.evaluate(() => window.__rootCorrections), 0)
+  } finally { await page.close() }
+})
+
+test('Viewport top schemes show version evidence and preserve only bounded verdicts across reload', async () => {
+  const shots = '/tmp/rainver-top-comparison'
+  mkdirSync(shots, { recursive: true })
+  for (const locale of ['en', 'zh-CN']) for (const theme of ['light', 'dark']) {
+    const page = await browser.newPage({ viewport: { width: 390, height: 874 }, serviceWorkers: 'block' })
+    try {
+      await page.addInitScript(({ locale, theme }) => {
+        localStorage.setItem('rainver:locale', locale)
+        localStorage.setItem('rainver:theme', theme)
+      }, { locale, theme })
+      let apiCalls = 0
+      page.on('request', request => { if (new URL(request.url()).pathname.startsWith('/api/')) apiCalls++ })
+      await page.goto(baseUrl + '/viewport-test/index.html')
+      await page.locator('[data-probe-version-status="current"]').waitFor()
+      await page.getByText(locale === 'en' ? 'Test page version · TOP-TEST-2' : '测试页版本 · TOP-TEST-2', { exact: true }).waitFor()
+      const modes = ['baseline', 'solid', 'text-clip', 'clearance', 'sticky']
+      const group = page.getByRole('group', { name: locale === 'en' ? 'Top-edge comparison' : '顶部方案对照', exact: true })
+      for (const [index, mode] of modes.entries()) {
+        await group.getByRole('button').nth(index).click()
+        await page.evaluate(() => {
+          document.documentElement.style.setProperty('--app-safe-top', '62px')
+          document.documentElement.style.setProperty('--app-safe-bottom', '34px')
+          document.querySelector('.viewport-test-shell main').scrollTop = 0
+        })
+        const geometry = await page.locator('.viewport-test-shell').evaluate(shell => {
+          const target = shell.querySelector('[data-top-target]'), edge = document.querySelector('.viewport-test-top-surface')
+          return { target: target.getBoundingClientRect().top, bottom: shell.getBoundingClientRect().bottom,
+            inset: getComputedStyle(shell.querySelector('header')).paddingTop,
+            surface: edge ? { parent: edge.parentElement.tagName, height: edge.getBoundingClientRect().height,
+              clip: getComputedStyle(edge).backgroundClip, pointer: getComputedStyle(edge).pointerEvents } : null,
+            overflow: document.documentElement.scrollWidth > innerWidth }
+        })
+        assert.equal(geometry.bottom, 874, 'top comparison must not change C bottom height')
+        assert.equal(geometry.overflow, false)
+        assert.ok(geometry.target >= 62)
+        assert.equal(parseFloat(geometry.inset), 62 + 10.5 + (mode === 'clearance' ? 16 : 0))
+        if (mode === 'solid' || mode === 'text-clip') {
+          assert.equal(geometry.surface.parent, 'BODY', 'surface must not be inside clipped Shell')
+          assert.equal(geometry.surface.height, mode === 'solid' ? 62 : 11)
+          assert.equal(geometry.surface.pointer, 'none')
+          if (mode === 'text-clip') assert.equal(geometry.surface.clip, 'text')
+        } else assert.equal(geometry.surface, null)
+        assert.equal(new URL(page.url()).searchParams.get('top'), mode)
+        await page.screenshot({ path: `${shots}/${locale}-${theme}-${mode}.png`, animations: 'disabled' })
+        await page.getByRole('button', { name: locale === 'en' ? 'Still blurred' : '仍虚化', exact: true }).click()
+      }
+      const editor = page.getByRole('textbox', { name: locale === 'en' ? 'Type here to test the keyboard' : '在此输入以测试键盘', exact: true })
+      await editor.fill('PRIVATE-TOP-COMPARISON')
+      assert.equal(await editor.evaluate(el => getComputedStyle(el).fontSize), '16px')
+      await page.reload()
+      assert.equal(await page.locator('.viewport-test-shell').getAttribute('data-top'), 'sticky')
+      const outcomes = page.getByRole('list', { name: locale === 'en' ? 'Your comparison results' : '我的对照结果', exact: true })
+      assert.equal(await outcomes.locator('li').count(), 5)
+      assert.equal(await outcomes.getByText(locale === 'en' ? /Still blurred/ : /仍虚化/).count(), 5)
+      assert.equal(await editor.inputValue(), '')
+      assert.ok(!(await page.evaluate(() => sessionStorage.getItem('rainver:viewport-top-observations'))).includes('PRIVATE-TOP-COMPARISON'))
+      await page.route('**/version.json?*', route => route.fulfill({ json: { id: 'different-server-build', builtAt: 'today' } }))
+      await page.getByRole('button', { name: locale === 'en' ? 'Check for updates' : '检查更新', exact: true }).click()
+      await page.locator('[data-probe-version-status="available"]').waitFor()
+      assert.equal(await page.getByText(/different-server-build/).count(), 1)
+      await page.route('**/version.json?*', route => route.abort())
+      await page.getByRole('button', { name: locale === 'en' ? 'Check for updates' : '检查更新', exact: true }).click()
+      await page.locator('[data-probe-version-status="error"]').waitFor()
+      assert.equal(apiCalls, 0)
+    } finally { await page.close() }
+  }
 })

@@ -41,6 +41,9 @@ import { ConversationStatusIndicator } from '../conversation/ConversationUnreadD
 import { ConversationExecutionPreflight } from '../conversation/ConversationExecutionPreflight'
 import { conversationInputSourcesFromExecutionSummary } from '../conversation/ConversationInputComposer'
 
+import { useMobileBreakpoint, useMobileConversation } from '../conversation/mobile/useMobileConversation'
+import { MobileConversationNavigation } from '../conversation/mobile/MobileConversationNavigation'
+
 const LIST_PAGE_SIZE = 100
 
 /**
@@ -91,6 +94,8 @@ export default function AgentGroupsPage() {
    */
   const startingNew = search.get('new') === '1'
   const inConversation = Boolean(roomId && (conversationId || startingNew))
+  const mobile = useMobileBreakpoint()
+  useMobileConversation(inConversation)
   // Read inside callbacks that must not depend on the current query string.
   const searchRef = useRef(search)
   useEffect(() => { searchRef.current = search }, [search])
@@ -468,10 +473,24 @@ export default function AgentGroupsPage() {
   // conversation list uses; this only words it.
   const roomAudience = audienceLabel({ otherMemberNames: detail.other_member_names, agentCount: detail.agent_count }, t)
   return (
-    <div className="flex min-w-0 flex-col gap-4 p-4 md:p-6 lg:h-full lg:min-h-0 lg:overflow-hidden">
-      {approvalsCard}
+    <div className="project-room-conversation flex min-w-0 flex-col gap-4 p-4 md:p-6 lg:h-full lg:min-h-0 lg:overflow-hidden">
+      {mobile && <MobileConversationNavigation
+        title={currentConversation?.title || t('collab_ui.conversation.new')}
+        room={titleOf(detail.room)} audience={visibility}
+        conversations={conversations} selected={conversationId} unread={unreadConversations}
+        onSelect={openConversation} onNew={() => startConversation()}
+        onCarry={currentConversation ? () => startConversation([{ kind: 'thread', id: currentConversation.id }]) : undefined}
+        carryLabel={t('collab_ui.conversation.carry')}
+        back={<Button asChild size="sm" variant="ghost" className="min-h-11 min-w-11"><Link to={projectBase}><ArrowLeft className="size-5" /><span className="sr-only">{t('collab_ui.room.back')}</span></Link></Button>}
+      >
+        <Button asChild size="sm" variant="ghost"><Link to={roomListHref()}>{t('collab_ui.room.tab_conversations')}</Link></Button>
+        <Button asChild size="sm" variant="ghost"><Link to={roomListHref('members')}><Users className="size-4" />{t('collab_ui.conversation.members_link')}</Link></Button>
+        <RoomProjectStatePanel overview={overview} />
+      </MobileConversationNavigation>}
+      {(overview?.attention.length ?? 0) > 0 && <div className="conversation-mobile-attention max-h-[20dvh] shrink-0 overflow-y-auto px-2 lg:hidden"><RoomProjectStatePanel overview={overview} /></div>}
+      {approvalsCard && <div className="conversation-approvals">{approvalsCard}</div>}
       <section className="grid min-w-0 grid-cols-1 items-start gap-4 lg:min-h-0 lg:flex-1 lg:grid-rows-[minmax(0,1fr)] lg:items-stretch lg:grid-cols-[220px_minmax(0,1fr)] xl:grid-cols-[230px_minmax(0,1fr)_240px]">
-        <aside aria-label={t('collab_ui.conversation.navigation')} className="flex min-w-0 flex-col gap-3 lg:min-h-0 lg:overflow-hidden">
+        <aside aria-label={t('collab_ui.conversation.navigation')} className="conversation-desktop-navigation flex min-w-0 flex-col gap-3 lg:min-h-0 lg:overflow-hidden">
           <Card className="mb-0 shrink-0 space-y-3 p-3">
             <div className="space-y-1">
               <Link to={roomListHref()} className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:underline">
@@ -515,13 +534,13 @@ export default function AgentGroupsPage() {
           </aside>
         </aside>
 
-        <main aria-label="Conversation" className="min-w-0 lg:min-h-0 lg:overflow-hidden">
-          <Card className="mb-0 flex h-[calc(100dvh-12rem)] min-h-[280px] flex-col overflow-hidden lg:h-full lg:min-h-0">
+        <main aria-label="Conversation" className="conversation-main min-w-0 lg:min-h-0 lg:overflow-hidden">
+          <Card className="conversation-card mb-0 flex h-[calc(100dvh-12rem)] min-h-[280px] flex-col overflow-hidden lg:h-full lg:min-h-0">
             {!currentConversation && conversations.length > 0 && !startingNew ? (
               <div className="m-auto text-sm text-muted-foreground">{t('collab_ui.conversation.choose')}</div>
             ) : (
               <>
-                <div className="shrink-0 border-b border-border px-4 py-3 md:px-5">
+                <div className="conversation-desktop-heading shrink-0 border-b border-border px-4 py-3 md:px-5">
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
                       <CardTitle className="text-base">
@@ -617,7 +636,7 @@ export default function AgentGroupsPage() {
           </Card>
         </main>
 
-        <aside aria-label={t('collab_ui.conversation.project_state')} className="lg:hidden xl:col-start-auto xl:block xl:min-h-0 xl:overflow-y-auto xl:overscroll-y-contain">
+        <aside aria-label={t('collab_ui.conversation.project_state')} className="conversation-desktop-state lg:hidden xl:col-start-auto xl:block xl:min-h-0 xl:overflow-y-auto xl:overscroll-y-contain">
           <RoomProjectStatePanel overview={overview} />
         </aside>
       </section>

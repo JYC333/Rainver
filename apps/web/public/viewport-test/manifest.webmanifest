@@ -1,0 +1,12 @@
+{
+  "id": "/viewport-test/",
+  "name": "Rainver Viewport Test",
+  "short_name": "Rainver Test",
+  "start_url": "/viewport-test/index.html",
+  "scope": "/viewport-test/",
+  "display": "standalone",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

@@ -1125,3 +1125,48 @@ Radix Popover layer outside transcript clipping. It anchors to the editor, keeps
 typing focus, contains menu scrolling and preserves keyboard/click insertion.
 Reuse / Dependency Check: reuse the installed Radix Popover and shared dialog
 container support; no new positioning engine or dependency.
+
+### Mobile Project conversation frame
+
+`conversation/mobile/` owns only the compact navigation drawer and viewport
+subscription. Room and Project sidecar keep their existing ConversationSurface,
+execution preflight, Room permissions, draft scope and file-resource validation.
+The drawer searches only the current Room's conversations and retains existing
+unread/running projections. No second transcript, transport or backend writer is
+introduced. See [Frontend Layout](../modules/frontend-layout.md) for Shell,
+safe-area and visual-viewport ownership.
+
+Narrow installed iPhone PWAs share `core/useIPhonePwaViewport` geometry with the
+normal-page Shell: `100vh` normal flow at rest (the device-verified C probe),
+unzoomed visual height for keyboard-sized overlap, then C after dismissal. This
+keeps Room/sidecar/drawer sizing from restoring the shorter resting API height.
+The common composer frame marks its input so the iPhone PWA mode can apply an
+actual 16px focus size without changing Reader typography or desktop editors.
+
+The Room drawer focuses its dialog container on open, preserving the Radix focus
+trap and close-focus restoration without automatically activating search/keyboard.
+Coarse-pointer input font protection also applies outside PWA detection and to
+portals. Drawer height consumes the keyboard-adjusted bottom safe inset; the
+shared modal backdrop explicitly covers C's height in installed iOS mode.
+
+Reuse / Dependency Check: reuse installed Radix Dialog and shared Button/Input,
+existing Room selection and Reader's unzoomed VisualViewport calculation. No
+new dependency or gesture library; native browser Back remains available.
+Mobile Room selection retains a bounded in-memory numeric reading position per
+Space/person/role/Room/conversation/permission scope, cleared with session residue.
+It reuses use-stick-to-bottom, restoring an explicit reading offset only away
+from the tail; desktop following is unchanged. Shared Room drafts opt into the
+existing epoch-guarded unmount flush so immediate close/switch does not lose the
+last debounced edit. No second conversation stays mounted for this purpose.
+
+Mobile Room navigation exposes whole-thread carry only for the selected existing
+conversation, using the same thread reference and audience as the desktop entry.
+The drawer and Project chat overlay only pop history entries pushed by their
+mounted owner; a direct deep link closes by replacement. Selection/new-thread
+navigation follows the drawer pop, so it does not leave a duplicate closed entry.
+Mobile open/close never changes the remembered desktop sidecar preference.
+Reading positions use source/user/role/Room/conversation and permission-lifetime
+keys, not asynchronous detail hydration. Restoration waits for a successful read
+owned by that conversation. Only ready transcript scroll events save positions;
+spinner/detached DOM cleanup cannot overwrite them. Known permission changes
+still dispose the request scope and protected state (including an initial denial).

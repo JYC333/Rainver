@@ -33,3 +33,33 @@ describe('build verification', () => {
     expect(reload).not.toHaveBeenCalled()
   })
 })
+
+describe('content-free layout diagnostics', () => {
+  it('reads actual DOM meta and removes all temporary probes', async () => {
+    const { collectLayoutDiagnostics } = await import('../layoutDiagnostics')
+    vi.stubGlobal('matchMedia', () => ({ matches: false }))
+    vi.stubGlobal('CSS', { supports: () => true })
+    document.head.innerHTML = '<meta name="viewport" content="width=device-width, viewport-fit=cover"><meta name="apple-mobile-web-app-capable" content="yes">'
+    document.body.innerHTML = '<div id="root"><div class="app-safe-shell">private content</div></div>'
+    const before = document.body.innerHTML
+    const data = collectLayoutDiagnostics()
+    expect(data.meta.viewport).toEqual(['width=device-width, viewport-fit=cover'])
+    expect(data.meta.statusBarStyle).toEqual([])
+    expect(data.meta.appleWebAppCapable).toEqual(['yes'])
+    expect(data.viewportUnits).toHaveProperty('100svh')
+    expect(document.body.innerHTML).toBe(before)
+    expect(JSON.stringify(data)).not.toContain('private content')
+    document.head.innerHTML = ''; document.body.innerHTML = ''
+  })
+  it('does not fetch a cross-origin manifest or retain manifest text', async () => {
+    const { readManifestDisplay } = await import('../layoutDiagnostics')
+    document.head.innerHTML = '<link rel="manifest" href="https://external.test/private.json">'
+    const fetch = vi.fn(); vi.stubGlobal('fetch', fetch)
+    expect(await readManifestDisplay()).toEqual({ status: 'cross-origin-skipped' })
+    expect(fetch).not.toHaveBeenCalled()
+    document.head.innerHTML = '<link rel="manifest" href="/manifest.webmanifest">'
+    fetch.mockResolvedValue(new Response(JSON.stringify({ display: 'standalone', name: 'Private project', start_url: '/secret', display_override: ['browser', 'secret'] })))
+    expect(await readManifestDisplay()).toEqual({ status: 'read', display: 'standalone', displayOverride: ['browser'] })
+    document.head.innerHTML = ''
+  })
+})

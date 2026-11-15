@@ -1,0 +1,45 @@
+/* Only loaded by the independent test document; never a production Shell fix.
+   B and C differ only in the viewport height unit. Insets have one owner. */
+html, body, #root { margin: 0; height: auto; min-height: 0; overflow: visible; }
+.viewport-test-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--background);
+}
+.viewport-test-shell.app-safe-shell { padding-top: 0; }
+.viewport-test-shell > header {
+  position: relative;
+  top: 0;
+  z-index: 1;
+  padding-top: calc(var(--app-safe-top) + 0.75rem);
+  background: var(--background);
+}
+/* Separate top experiments: baseline has no fixed backing at all. */
+.viewport-test-shell[data-top="sticky"] > header { position: sticky; }
+.viewport-test-shell[data-top="clearance"] > header { padding-top: calc(var(--app-safe-top) + 0.75rem + 16px); }
+.viewport-test-top-surface {
+  position: fixed;
+  inset: 0 0 auto;
+  height: var(--app-safe-top);
+  background-color: var(--background);
+  z-index: 60;
+  pointer-events: none;
+}
+.viewport-test-top-surface[data-top="text-clip"] {
+  height: 11px;
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+.viewport-test-ruler {
+  height: 4px;
+  background: repeating-linear-gradient(to right, var(--foreground) 0 10px, var(--background) 10px 20px);
+}
+/* The root font is 14px: text-base (1rem) is NOT the iOS 16px focus threshold.
+   Include the readonly report because it can also receive keyboard focus. */
+.viewport-test-shell textarea { font-size: 16px; }
+.viewport-test-shell[data-mode="fixed"] { position: fixed; inset: 0; }
+.viewport-test-shell[data-mode="flow-dvh"] { position: relative; height: 100dvh; }
+.viewport-test-shell[data-mode="flow-vh"] { position: relative; height: 100vh; }
+.viewport-test-edge { padding-bottom: var(--app-safe-bottom); }

@@ -127,3 +127,13 @@ The generic Prompt Library entry uses the Shell return link. A Reading Method
 workbench with an explicit Reading/Project origin owns its contextual return link
 instead; Shell suppresses its settings link there. Both decisions share the
 prompt-route helpers so only one return target is offered.
+
+Mobile Project conversation mode hides Shell-owned `data-app-chrome` below `lg`
+while keeping the shared providers and one conversation mounted. See
+[Frontend Layout](frontend-layout.md) for safe-area/keyboard ownership and the
+content-free Settings diagnostics. Normal Project pages keep their Shell.
+
+`useIPhonePwaViewport` selects normal-flow C height for narrow installed iPhones
+on ordinary pages too; browser tabs and desktop PWAs keep the fixed Shell.
+It shares keyboard/zoom geometry with mobile conversations and preserves the
+single bottom-safe-area owner. See [Frontend Layout](frontend-layout.md).

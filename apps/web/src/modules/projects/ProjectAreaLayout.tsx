@@ -134,7 +134,7 @@ export default function ProjectAreaLayout() {
   if (!visibleProject || visibleProject.current_user_can_read === false) return <ProjectDetailPage key={scope} onAccessChanged={() => setCleared(n => n + 1)} />
   return (
     <ProjectFolderConversationProvider key={projectId} projectId={projectId}>
-      <div className={cn('lg:grid lg:grid-cols-[220px_minmax(0,1fr)]',boardArea?'flex h-full min-h-0 flex-col overflow-hidden':'min-h-full lg:h-full lg:min-h-0 lg:overflow-hidden')}>
+      <div className={cn('project-area-layout lg:grid lg:grid-cols-[220px_minmax(0,1fr)]',boardArea?'flex h-full min-h-0 flex-col overflow-hidden':'min-h-full lg:h-full lg:min-h-0 lg:overflow-hidden')}>
       <aside data-project-navigation data-shell-chrome className={cn('border-b border-border bg-muted/20 p-4 lg:min-h-0 lg:overflow-y-auto lg:overscroll-y-contain lg:border-b-0 lg:border-r',boardArea&&'max-h-[40dvh] shrink-0 overflow-y-auto overscroll-y-contain lg:max-h-none')}>
         <div className="flex min-w-0 items-center justify-between gap-3 px-2 lg:mb-5">
           <p className="min-w-0 break-words font-semibold">{visibleProject?.name ?? 'Project'}</p>
@@ -223,7 +223,7 @@ export default function ProjectAreaLayout() {
           a private one. */}
       <div className={cn('flex min-w-0',boardArea?'min-h-0 flex-1 overflow-hidden':'lg:min-h-0 lg:overflow-hidden')}>
         <main data-project-area-content className={cn('min-w-0 flex-1',boardArea?'min-h-0 overflow-hidden':'lg:min-h-0 lg:overflow-y-auto lg:overscroll-y-contain')}><Outlet context={{ onAccessChanged: () => setCleared(n => n + 1) }} /></main>
-        <div data-shell-chrome className="contents"><ProjectChatSidecar /></div>
+        <div data-shell-chrome className="contents"><ProjectChatSidecar attention={visibleOverview?.attention} /></div>
       </div>
       </div>
     </ProjectFolderConversationProvider>

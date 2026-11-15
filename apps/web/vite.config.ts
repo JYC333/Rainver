@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { resolve } from 'node:path'
 import type { PreRenderedChunk } from 'rollup'
 import { defineConfig } from 'vite'
@@ -40,6 +40,7 @@ export default defineConfig(({ mode }) => ({
   define: { __APP_BUILD__: JSON.stringify(appBuild) },
   build: {
     rollupOptions: {
+      input: { app: resolve(projectRoot, 'index.html'), viewportTest: resolve(projectRoot, 'viewport-test/index.html') },
       output: {
         // Stable prefixes let Workbox keep the optional graph engine out of
         // the application shell without changing Rollup's natural ownership
@@ -94,10 +95,23 @@ export default defineConfig(({ mode }) => ({
       // checkout (server/test/support/webDist.ts); see buildInputs.ts.
       name: 'rainver-build-inputs',
       apply: 'build',
-      generateBundle() {
+      generateBundle: { order: 'post', handler(_options, bundle) {
         const inputs = collectBuildInputs(repoRoot, projectRoot, this.getModuleIds())
-        this.emitFile({ type: 'asset', fileName: BUILD_INPUTS_FILE, source: JSON.stringify(inputs) })
-      },
+        const source = JSON.stringify(inputs)
+        const inputsHash = createHash('sha256').update(source).digest('hex')
+        for (const [name, html] of Object.entries(bundle)) {
+          if (name.endsWith('.html') && html.type === 'asset' && typeof html.source === 'string') {
+            if (name === 'viewport-test/index.html') {
+              html.source = html.source.replace(/<link\b[^>]*rel="manifest"[^>]*>/g, '')
+                .replace('</head>', '<link rel="manifest" href="/viewport-test/manifest.webmanifest" /></head>')
+            }
+            html.source = html.source.replace('</head>', `<meta name="rainver-build-inputs" content="${inputsHash}" /></head>`)
+          }
+        }
+        const version = bundle['version.json']
+        if (version?.type === 'asset') version.source = JSON.stringify({ ...appBuild, inputsHash })
+        this.emitFile({ type: 'asset', fileName: BUILD_INPUTS_FILE, source })
+      } },
     },
     react(),
     tailwindcss(),
@@ -125,7 +139,7 @@ export default defineConfig(({ mode }) => ({
         // server. Do not fall through to the SPA fallback. It serves the cached
         // index.html for it, the app loads at that URL, sees a 401 from /me,
         // and bounces to /login without ever leaving the browser.
-        navigateFallbackDenylist: [/^\/api\//, /^\/version\.json$/],
+        navigateFallbackDenylist: [/^\/api\//, /^\/version\.json$/, /^\/viewport-test(?:\/|$)/],
         globPatterns: ['**/*.{js,css,html}'],
         globIgnores: [
           '**/GraphView-*.js',

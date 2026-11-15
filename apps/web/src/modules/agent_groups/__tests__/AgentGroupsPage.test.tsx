@@ -2476,6 +2476,36 @@ describe('Rooms page', () => {
     expect(vi.mocked(roomsApi.sendMessage).mock.calls[0]![2]).not.toHaveProperty('references')
   })
 
+  it('carries the selected whole thread from the mobile drawer with the exact reference', async () => {
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: query.includes('max-width'), media: query, onchange: null,
+      addEventListener: vi.fn(), removeEventListener: vi.fn(), addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(),
+    }))
+    try {
+      vi.mocked(roomsApi.messages).mockResolvedValue(polarsMessages as never)
+      vi.mocked(roomsApi.attachReferences).mockResolvedValue({ messages: [] } as never)
+      vi.mocked(roomsApi.createConversation).mockResolvedValue({ ...initialConversation, id: 'session-new' } as never)
+      vi.mocked(roomsApi.sendMessage).mockResolvedValue({
+        message: { id: 'm-2', session_id: 'session-new', role: 'user', content: 'Next', metadata_json: {} },
+        conversation: { ...initialConversation, id: 'session-new' }, task_group_ids: [], run_ids: [],
+      } as never)
+      renderRooms('/spaces/space-1/projects/project-1/rooms?room=room-1&conversation=session-1')
+      fireEvent.click(await screen.findByRole('button', { name: 'Conversations and Room details' }))
+      const drawer = await screen.findByRole('dialog')
+      expect(within(drawer).getByText('With Member')).toBeInTheDocument()
+      fireEvent.click(within(drawer).getByRole('button', { name: 'Carry into a new thread' }))
+      expect(await screen.findByText(/will be attached to this conversation before the message/)).toBeInTheDocument()
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      fireEvent.change(await screen.findByLabelText('Room message'), { target: { value: 'Next' } })
+      await configureConversation()
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).not.toBeDisabled())
+      fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+      await waitFor(() => expect(roomsApi.attachReferences).toHaveBeenCalledWith('room-1', 'session-new', {
+        references: [{ kind: 'thread', id: 'session-1' }],
+      }, expect.any(Object)))
+    } finally { cleanup(); vi.unstubAllGlobals() }
+  })
+
   it('attaches nothing when the disclosure is declined', async () => {
     // Declining is a real answer, not a dismissal: no partial attach, because
     // the picks are resolved and written in one transaction on the server.

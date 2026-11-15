@@ -25,7 +25,7 @@ export function MobileTabBar({ spaceId, pendingReviewCount = 0, canManageSpace =
     (!item.requiresSpaceAdmin || canManageSpace) && (!item.requiresInstanceAdmin || canManageInstance))
   const moreActive = !MOBILE_TAB_ITEMS.some(item => railItemActive(item, pathname))
   return <nav aria-label={t('shell.primary_navigation')}
-    className="md:hidden shrink-0 flex items-stretch border-t border-border bg-card" style={{ paddingBottom: 'var(--app-safe-bottom)' }}>
+    className="md:hidden shrink-0 flex items-stretch border-t border-border bg-card" style={{ paddingBottom: 'max(0px, calc(var(--app-safe-bottom) - var(--app-pwa-keyboard-inset, 0px)))' }}>
     {MOBILE_TAB_ITEMS.map(item => {
       const Icon = item.icon
       return <Link key={item.id} to={item.scope === 'space' ? spacePath(spaceId, item.to) : item.to}

@@ -73,7 +73,7 @@ import { OpenDiscussionDialog } from './OpenDiscussionDialog'
 import { ConversationQuotaLine } from './ConversationQuotaLine'
 import { useConversationQuota } from './useConversationQuota'
 import { KnowledgeRetrievalToggle } from './KnowledgeRetrievalToggle'
-import { useStickToBottom } from 'use-stick-to-bottom'
+import { useConversationScroll } from './mobile/useConversationScroll'
 import { Conversation, ConversationContent, ConversationScrollButton } from '../../components/ai-elements/conversation'
 
 /**
@@ -206,14 +206,22 @@ export function ConversationSurface(props: ConversationSurfaceProps) {
     const openingDraft = destination.id === null && props.conversationId !== null
     setDestination({ id: props.conversationId, epoch: destination.epoch + (openingDraft ? 0 : 1) })
   }
+  // Reading-position namespaces survive initial detail hydration. Keep the
+  // existing scope disposal for every supplied permission transition below.
+  const [permission, setPermission] = useState({ value: props.detail?.viewer_can_write, epoch: 0 })
+  const suppliedPermission = props.detail?.viewer_can_write
+  const changedPermission = suppliedPermission !== undefined && permission.value !== suppliedPermission
+  const permissionEpoch = permission.epoch + (changedPermission && (permission.value !== undefined || suppliedPermission === false) ? 1 : 0)
+  if (changedPermission) setPermission({ value: suppliedPermission, epoch: permissionEpoch })
   return <ConversationScope key={`${props.spaceId ?? ''}:${props.roomId}:${destination.epoch}:${userId}:${actionRole}:${props.readOnly}:${props.detail?.viewer_can_write}`} spaceId={props.spaceId} actionUserId={userId} actionRole={actionRole}>
-    <ConversationSurfaceContent {...props} />
+    <ConversationSurfaceContent {...props} permissionEpoch={permissionEpoch} />
   </ConversationScope>
 }
 
 function ConversationSurfaceContent({
   roomId,
   conversationId,
+  permissionEpoch,
   detail: suppliedDetail,
   variant,
   agents = [],
@@ -239,7 +247,7 @@ function ConversationSurfaceContent({
   readOnly = false,
   onMessagesDisplayed,
   onReadError,
-}: ConversationSurfaceProps) {
+}: ConversationSurfaceProps & { permissionEpoch: number }) {
   const scope = useConversationScope()
   const { userId, activeSpaceId } = useSpace()
   const quotaSpaceId = scope.spaceId ?? activeSpaceId
@@ -250,13 +258,15 @@ function ConversationSurfaceContent({
   // next turn boundary; the poll replaces this with what still waits.
   const [queued, setQueued] = useState<QueuedRoomMessage[]>([])
   const [messagesLoading, setMessagesLoading] = useState(true)
+  const [messagesOwner, setMessagesOwner] = useState<string | null>(null)
+  const messagesReady = !messagesLoading && messagesOwner === conversationId
   useAttentionViewing(scope.spaceId, conversationId, {
     messages: messages.map(message => ({ id: message.id, content: message.content, awaitingAnswer: message.metadata_json?.awaiting_answer })),
-    ready: !messagesLoading,
+    ready: messagesReady,
   })
   useEffect(() => {
-    if (!messagesLoading && messages.length) onMessagesDisplayed?.(messages.map(message => message.id))
-  }, [messagesLoading, messages, onMessagesDisplayed])
+    if (messagesReady && messages.length) onMessagesDisplayed?.(messages.map(message => message.id))
+  }, [messagesReady, messages, onMessagesDisplayed])
   const readErrorRef = useRef(onReadError)
   readErrorRef.current = onReadError
   const [hasOlderMessages, setHasOlderMessages] = useState(false)
@@ -269,7 +279,7 @@ function ConversationSurfaceContent({
   const fetchedTurns = useRef(new Set<string>())
   const streamControllers = useRef(new Map<string, AbortController>())
   const requestSequence = useRef(0)
-  const scrolling = useStickToBottom({ initial: 'smooth', resize: 'smooth' })
+  const scrolling = useConversationScroll(conversationId ? `${scope.spaceId}:${scope.actionUserId}:${scope.actionRole}:${roomId}:${conversationId}:${permissionEpoch}:${readOnly}` : null, messagesReady)
   const previousConversationId = useRef<string | null | undefined>(undefined)
   const [resetToken, setResetToken] = useState(0)
   const [restoredDraft, setRestoredDraft] = useState<{ token: number; text: string; routeChoice: ComposerValue['routeChoice'] } | null>(null)
@@ -312,6 +322,7 @@ function ConversationSurfaceContent({
     setParts: setInputParts,
   } = useConversationDraft({
     destination: draftDestination,
+    flushOnUnmount: true,
     initialValue: emptyRoomMessageComposerValue,
     textOf: composerText,
     withText: composerWithText,
@@ -460,6 +471,7 @@ function ConversationSurfaceContent({
       !options.replace && current.length > 0 && current.every(message => message.session_id === conversationId)
         ? mergeMessages(current, page.items)
         : page.items)
+    setMessagesOwner(conversationId)
     setHasOlderMessages(page.items.length === MESSAGE_PAGE_SIZE)
     setQueued(page.queued ?? [])
     refreshDiscussions(page.items)
@@ -542,9 +554,9 @@ function ConversationSurfaceContent({
   // A new conversation starts from nothing and follows its tail.
   useEffect(() => {
     let cancelled = false
-    void scrolling.scrollToBottom()
     setContinuation(null)
     setMessagesLoading(true)
+    setMessagesOwner(null)
     setMessages([])
     setHasOlderMessages(false)
     setRuns({})
@@ -1275,7 +1287,7 @@ function ConversationSurfaceContent({
         allowCommands={!readOnly}
         onChanged={run => setRuns(current => ({ ...current, [run.id]: run }))}
       />
-      {!readOnly && <div className={compact ? 'min-h-0 max-h-[45dvh] shrink-0 overflow-y-auto overscroll-contain space-y-2 border-t border-border p-3' : 'space-y-3 border-t border-border bg-card px-5 py-3'}>
+      {!readOnly && <div data-conversation-composer className={compact ? 'min-h-0 max-h-[45dvh] shrink-0 overflow-y-auto overscroll-contain space-y-2 border-t border-border p-3' : 'space-y-3 border-t border-border bg-card px-5 py-3'}>
         {/* A draft has to be visible to be a draft. Name the pick and give it
             a way to drop. On the same condition the send uses, not merely
             "there are picks". Do not show a banner for content the send

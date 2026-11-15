@@ -45,7 +45,7 @@ export function ConversationComposer({ editor, controls, note, sending, inputDis
   const canSend = !sendDisabled && !inputDraft.unresolved && !imageUnsupported
   return (
     <ConversationInputSendGuardContext.Provider value={() => canSend}>
-      <div
+      <div data-conversation-input
         className="rounded-lg border border-border bg-background focus-within:ring-1 focus-within:ring-ring"
         onPaste={event => { if(inputAttachmentsEnabled)inputDraft.onPaste(event); onPaste?.(event) }}
         onDragOver={event => { if(inputAttachmentsEnabled)inputDraft.onDragOver(event); onDragOver?.(event) }}
@@ -58,7 +58,7 @@ export function ConversationComposer({ editor, controls, note, sending, inputDis
           {imageUnsupported && <p className="border-b border-destructive/30 bg-destructive/5 px-3 py-1.5 text-xs text-destructive" role="alert">{inputCapabilityMessage ?? t('conversation_ui.composer.image_unsupported')}</p>}
           {editor}
         </div>
-        <div className="flex min-h-10 items-end justify-between gap-2 px-2 pb-2">
+        <div data-conversation-controls className="flex min-h-10 items-end justify-between gap-2 px-2 pb-2">
           <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
             {inputAttachmentsEnabled&&inputDraft.controls}
             {controls}

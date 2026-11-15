@@ -8,7 +8,7 @@ import { projectsApi, roomsApi } from '../../../api/client'
 import { errMsg } from '../../../lib/utils'
 import { useAppTranslation } from '../../../i18n'
 import { SpaceLink as Link } from '../../../core/spaceNav'
-import type { ConversationExecutionSummary, Room, RoomConversation as RoomConversationRecord } from '../../../types/api'
+import type { ConversationExecutionSummary, ProjectOverview, Room, RoomConversation as RoomConversationRecord } from '../../../types/api'
 import { Button } from '../../../components/ui/button'
 import { Select } from '../../../components/ui/select'
 import { sortRoomConversations, useRoomConversationRefresh } from '../../conversation/useRoomConversationRefresh'
@@ -34,6 +34,12 @@ import { useProjectFolderConversation, type CurrentFileAttachment } from '../Pro
  * worse Room rather than a better sidecar.
  */
 
+import { inProjectHref } from '../taskHref'
+import { useMobileBreakpoint, useMobileConversation } from '../../conversation/mobile/useMobileConversation'
+import { MobileConversationNavigation, MobileConversationBack } from '../../conversation/mobile/MobileConversationNavigation'
+
+import { useConversationOverlay } from '../../conversation/mobile/useConversationOverlay'
+
 const STORAGE_PREFIX = 'project.sidecar'
 
 function readStored(key: string): string | null {
@@ -42,7 +48,7 @@ function readStored(key: string): string | null {
 function defaultOpen(key: string): boolean {
   const stored = readStored(key)
   if (stored !== null) return stored === 'true'
-  try { return window.matchMedia('(min-width: 1024px)').matches } catch { return false }
+  return true
 }
 /** Width bounds, in px: narrower than this the composer wraps into uselessness, wider it eats the page. */
 const MIN_WIDTH = 288
@@ -72,7 +78,7 @@ export function focusRefsFor(pathname: string): Array<{ type: 'task'; id: string
   return task?.[1] ? [{ type: 'task', id: task[1] }] : []
 }
 
-export default function ProjectChatSidecar() {
+export default function ProjectChatSidecar({ attention = [] }: { attention?: ProjectOverview['attention'] }) {
   const { t } = useAppTranslation()
   const { projectId = '', spaceId } = useParams()
   const requestScope = useMemo(() => ({ spaceId }), [spaceId])
@@ -88,9 +94,18 @@ export default function ProjectChatSidecar() {
   // way in, so the panel is there on first arrival rather than a button —
   // where it sits *beside* the page. Below `lg` it overlays the page, and an
   // overlay that opens itself on a phone covers the Pulse someone came for.
-  const [open, setOpen] = useState(() => defaultOpen(openKey))
+  const mobileChat = useConversationOverlay('projectChat')
+  const [desktopOpen, setDesktopOpen] = useState(() => defaultOpen(openKey))
+  const mobile = useMobileBreakpoint()
+  const open = mobile ? mobileChat.open : desktopOpen
+  const setOpen = (value: boolean) => {
+    if (!mobile) setDesktopOpen(value)
+    else if (value) mobileChat.show()
+    else mobileChat.close()
+  }
   // Remembered per browser, not per Project: how wide you like the panel is
   // about your screen, not about the work.
+  useMobileConversation(open && !onRoomsArea)
   const [width, setWidth] = useState(storedWidth)
   useEffect(() => { writeStored(WIDTH_KEY, String(width)) }, [width])
   const asideRef = useRef<HTMLElement | null>(null)
@@ -157,8 +172,8 @@ export default function ProjectChatSidecar() {
 
   // Per Project: whether you want the Agent alongside one Project says nothing
   // about whether you want it alongside another.
-  useEffect(() => { setOpen(defaultOpen(openKey)) }, [openKey])
-  useEffect(() => { writeStored(openKey, String(open)) }, [openKey, open])
+  useEffect(() => { setDesktopOpen(defaultOpen(openKey)) }, [openKey])
+  useEffect(() => { if (!mobile) writeStored(openKey, String(desktopOpen)) }, [openKey, desktopOpen, mobile])
 
   useEffect(() => {
     if (!projectId || !open || onRoomsArea) return
@@ -283,7 +298,26 @@ export default function ProjectChatSidecar() {
           if (event.key === 'ArrowRight') setWidth(current => Math.max(MIN_WIDTH, current - 16))
         }}
       />
-      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border p-3">
+      {mobile && <MobileConversationNavigation
+        title={conversations.find(item => item.id === sessionId)?.title || t('collab_ui.conversation.new')}
+        room={room?.is_mainline ? t('collab_ui.rooms.default_room') : room?.title ?? t('collab_ui.sidecar.title')}
+        audience={t('collab_ui.audience.everyone')}
+        conversations={conversations} selected={sessionId} unread={unreadConversations}
+        onSelect={id => { setExecutionReady(false); setSessionId(id); if (room) writeStored(conversationKey(room.id), id) }} onNew={startThread}
+        back={<MobileConversationBack label={t('collab_ui.mobile.back')} onClick={() => setOpen(false)} />}
+      >
+        <Button asChild variant="ghost" size="sm"><Link to={room ? `/projects/${projectId}/rooms?room=${room.id}&view=members` : `/projects/${projectId}/rooms`}>{t('collab_ui.conversation.members_link')}</Link></Button>
+      </MobileConversationNavigation>}
+      {mobile && attention.length > 0 && <div className="max-h-[20dvh] shrink-0 overflow-y-auto border-b border-border px-3 py-2">
+        <p className="text-xs font-medium">{t('collab_ui.nav.needs_attention')}</p>
+        {attention.map(item => {
+          const href = inProjectHref(projectId, item.href)
+          return href
+            ? <Button key={item.id} asChild variant="ghost" size="sm" className="h-auto w-full justify-start whitespace-normal text-left"><Link to={href}>{item.title}</Link></Button>
+            : <p key={item.id} className="text-xs">{item.title}</p>
+        })}
+      </div>}
+      <div className="hidden shrink-0 items-center justify-between gap-2 border-b border-border p-3 lg:flex">
         {/* The Project's default Room, named: this panel is a Room
             conversation, not a Project Agent's independent work. */}
         <span className="min-w-0">
@@ -305,7 +339,7 @@ export default function ProjectChatSidecar() {
       </div>
 
       {conversations.length > 1 && (
-        <div className="shrink-0 border-b border-border p-2">
+        <div className="hidden shrink-0 border-b border-border p-2 lg:block">
           <Select
             ariaLabel="Conversation"
             value={sessionId}
