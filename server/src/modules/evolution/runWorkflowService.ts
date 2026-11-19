@@ -1,4 +1,5 @@
 import { EvolutionAssetRefusal } from "./assetRefusal.js";
+import { bodyWithheld } from "../access/contentAccessTypes.js";
 import { randomUUID } from "node:crypto";
 import * as protocol from "@rainver/protocol";
 import type { WorkflowDefinition } from "@rainver/protocol";
@@ -105,8 +106,14 @@ export class RunWorkflowService {
 
   private async visibleSuccessfulRun(identity: SpaceUserIdentity, runId: string): Promise<RunRecord> {
     const id = requiredString(runId, "run_id");
-    const run = await new PgRunRepository(this.db).getVisibleRun(identity.spaceId, identity.userId, id);
+    const runs = new PgRunRepository(this.db);
+    const run = await runs.getVisibleRun(identity.spaceId, identity.userId, id);
     if (!run) throw new HttpError(404, "Run not found");
+    // A workflow is derived from the Run's prompts and step text, in the
+    // caller's own right: oversight is audit, not a route to copy out.
+    if (bodyWithheld(run.effective_access_level) || await runs.ownRunBodyLevel(run, identity.userId) !== "full") {
+      throw new EvolutionAssetRefusal(422, "Saving a Run as a workflow reads its prompts, which needs full read access to that Run");
+    }
     if (run.status !== "succeeded" && run.status !== "degraded") {
       throw new EvolutionAssetRefusal(422, "Only a successful or degraded terminal run can be saved as a workflow");
     }
@@ -127,6 +134,12 @@ export class RunWorkflowService {
       repository.listChildRuns(identity.spaceId, run.id, identity.userId),
       repository.listRunSteps(identity.spaceId, run.id),
     ]);
+    // Children the caller cannot discover are not listed and contribute
+    // nothing; every listed child must release its prompt to the caller alone.
+    const childLevels = await Promise.all(children.map((child) => repository.ownRunBodyLevel(child, identity.userId)));
+    if (children.some((child, index) => bodyWithheld(child.effective_access_level) || childLevels[index] !== "full")) {
+      throw new EvolutionAssetRefusal(422, "Saving a Run as a workflow reads every child Run's prompt, which needs full read access to each of them");
+    }
     const sourceRunIds = [run.id, ...children.map((child) => child.id)];
     const [artifacts, verification] = await Promise.all([
       this.listArtifacts(identity.spaceId, sourceRunIds),

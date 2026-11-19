@@ -1,5 +1,6 @@
 import {createHash} from "node:crypto";
 import type { Pool } from "../../db/pool.js";
+import type { TransactionRunner } from "../../db/tx.js";
 import { SourceRequestSchema, type SourceResponse } from "@rainver/protocol";
 import { outboundGuard, fetchGuarded, type OutboundGuard } from "./outboundUrlSafety.js";
 import { admitSourceRequestGroups, coolDownSourceRequests, type RequestQuotaWindow } from "./sourceRequestQuota.js";
@@ -24,7 +25,14 @@ export interface SourceRequestGrant {
   routes: readonly SourceRequestRoute[];
   maxBytes: number;
   deadlineMs: number;
-  authorize: () => Promise<void>;
+  /** Physical redirect hops allowed per call (default: the guard's). 0 refuses every redirect before a second send. */
+  maxRedirects?: number;
+  /** Exact per-hop URL rule, applied with route matching on the first URL and every redirect hop, before credentials. */
+  assertHopUrl?: (url: URL) => void;
+  /** Runs immediately before each physical send, redirects included, before quota admission (e.g. a per-page send budget). */
+  beforePhysicalSend?: (url: URL) => void;
+  /** Receives the call's combined abort signal (caller, per-call and deadline) so a slow check can be cancelled. */
+  authorize: (signal?: AbortSignal) => Promise<void>;
 }
 
 /** Byte replacement preserves every untouched byte, including PDF and non-UTF8.
@@ -47,10 +55,12 @@ function routeFor(grant: SourceRequestGrant, url: URL, method: "GET" | "HEAD"): 
   const matches=grant.routes.filter(route=>route.origin===url.origin && route.methods.includes(method)
     && (path===route.path_prefix || path.startsWith(route.path_prefix.endsWith("/")?route.path_prefix:route.path_prefix+"/")));
   if (matches.length!==1 || [...url.searchParams.keys()].some(key=>!matches[0].query_keys?.includes(key))) throw new SourceRequestError("source_scope_refused");
+  if (grant.assertHopUrl) { try { grant.assertHopUrl(url); } catch { throw new SourceRequestError("source_scope_refused"); } }
   return matches[0];
 }
 export type SourceRequestBroker = ((raw:unknown, perCallSignal?:AbortSignal)=>Promise<SourceResponse>) & {readonly scopeSha256:string;readonly authorizeExecution:(signal:AbortSignal)=>Promise<void>};
-export function createSourceRequestBroker(pool: Pool, grant: SourceRequestGrant, signal: AbortSignal,
+/** `pool` serves only the quota transactions; a caller with a request deadline passes its own bounded runner. */
+export function createSourceRequestBroker(pool: Pool | TransactionRunner, grant: SourceRequestGrant, signal: AbortSignal,
   guard: OutboundGuard = outboundGuard): SourceRequestBroker {
   // Permission callbacks stay live; configuration is a snapshot for checkpoint identity.
   grant={...grant,quota:grant.quota.map(w=>({...w})),endpointQuotas:grant.endpointQuotas?.map(g=>({...g,windows:g.windows.map(w=>({...w}))})),
@@ -58,7 +68,8 @@ export function createSourceRequestBroker(pool: Pool, grant: SourceRequestGrant,
   let sequence=0, busy=false;
   if(!/^[A-Za-z0-9:_-]{1,256}$/.test(grant.scopeId))throw new SourceRequestError("source_scope_invalid");
   if (!Number.isInteger(grant.maxBytes) || grant.maxBytes<1 || grant.maxBytes>8*1024*1024
-    || !Number.isInteger(grant.deadlineMs) || grant.deadlineMs<1 || grant.deadlineMs>120_000) throw new Error("Invalid request bounds");
+    || !Number.isInteger(grant.deadlineMs) || grant.deadlineMs<1 || grant.deadlineMs>120_000
+    || grant.maxRedirects!==undefined && (!Number.isInteger(grant.maxRedirects) || grant.maxRedirects<0 || grant.maxRedirects>5)) throw new Error("Invalid request bounds");
   for (const route of grant.routes) {
     const origin=new URL(route.origin);
     if (origin.origin!==route.origin || !route.path_prefix.startsWith("/") || /[%\\?#]/.test(route.path_prefix)
@@ -76,9 +87,10 @@ export function createSourceRequestBroker(pool: Pool, grant: SourceRequestGrant,
       const scoped: OutboundGuard={pin:async(url,s)=>{routeFor(grant,url,request.method);check();return guard.pin(url,s);}};
       const response=await fetchGuarded({url:request.url,method:request.method,headers:request.headers,
         maxDownloadBytes:grant.maxBytes,deadlineMs:grant.deadlineMs,signal:combined,readErrorBody:true,
+        ...grant.maxRedirects!==undefined?{maxRedirects:grant.maxRedirects}:{},
         headersForHop:async(url)=>{
           check(); const route=routeFor(grant,url,request.method);
-          try { await grant.authorize(); } catch { throw new SourceRequestError("source_authority_revoked"); }
+          try { await grant.authorize(combined); } catch { throw new SourceRequestError("source_authority_revoked"); }
           check(); let credentials:Record<string,string>;try{credentials=await route.credentialHeaders?.() ?? {}}catch{throw new SourceRequestError("source_credential_unavailable");}check();
           for(const value of Object.values(credentials)) {
             const secret=value.replace(/^(?:Bearer|Basic|Token|ApiKey)\s+/i,"");
@@ -87,11 +99,12 @@ export function createSourceRequestBroker(pool: Pool, grant: SourceRequestGrant,
           }
           return {credentialHeaders:credentials};
         },
-        beforeSend:async()=>{
-          check();
+        beforeSend:async(url)=>{
+          check(); routeFor(grant,url,request.method);
+          if(grant.beforePhysicalSend){try{grant.beforePhysicalSend(url)}catch(error){throw error instanceof SourceRequestError?error:new SourceRequestError("source_budget_exhausted");}}
           const admission=await admitSourceRequestGroups(pool,[{key:grant.quotaGroup,windows:grant.quota},...grant.endpointQuotas??[]],combined);
           check(); if(!admission.allowed) throw new SourceRequestError("source_quota_exhausted",admission.retryAt);
-          try{await grant.authorize()}catch{throw new SourceRequestError("source_authority_revoked");}
+          try{await grant.authorize(combined)}catch{throw new SourceRequestError("source_authority_revoked");}
           check();
         },
       },scoped);
@@ -115,11 +128,12 @@ export function createSourceRequestBroker(pool: Pool, grant: SourceRequestGrant,
     } finally {busy=false;}
   };
   const scopeSha256=createHash("sha256").update(JSON.stringify({scope:grant.scopeId,account:grant.quotaGroup,quota:grant.quota,endpoints:grant.endpointQuotas,
-    routes:grant.routes.map(r=>({origin:r.origin,path:r.path_prefix,methods:r.methods,query:r.query_keys,credentialed:!!r.credentialHeaders})),maxBytes:grant.maxBytes,deadline:grant.deadlineMs})).digest("hex");
+    routes:grant.routes.map(r=>({origin:r.origin,path:r.path_prefix,methods:r.methods,query:r.query_keys,credentialed:!!r.credentialHeaders})),maxBytes:grant.maxBytes,deadline:grant.deadlineMs,
+    ...grant.maxRedirects!==undefined?{maxRedirects:grant.maxRedirects}:{},...grant.assertHopUrl?{exactHopUrl:true}:{},...grant.beforePhysicalSend?{sendBudget:true}:{}})).digest("hex");
   const authorizeExecution=async(perCall:AbortSignal)=>{
     const combined=AbortSignal.any([signal,perCall]);
     if(combined.aborted)throw new SourceRequestError("source_cancelled");
-    try{await grant.authorize()}catch{throw new SourceRequestError("source_authority_revoked");}
+    try{await grant.authorize(combined)}catch{throw new SourceRequestError("source_authority_revoked");}
     if(combined.aborted)throw new SourceRequestError("source_cancelled");
   };
   return Object.defineProperties(broker,{scopeSha256:{value:scopeSha256,writable:false},authorizeExecution:{value:authorizeExecution,writable:false}}) as SourceRequestBroker;

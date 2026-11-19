@@ -22,8 +22,14 @@ export function catalogRegistration(config:ServerConfig,definitions: ReadonlyMap
     async authorize() {/* Live membership is enforced by core; these are public metadata only. */},
     async execute(db,_input,actor) {
       const enabled=[];
+      // One live enablement read per plugin for this call.
+      const pluginEnabled=new Map<string,boolean>();
       for(const d of definitions.values()){
-        if(d.id.startsWith("plugin.")){const id=d.id.split(".")[1]!;if(!await operationPluginEnabled(db,id,actor.space_id,actor.on_behalf_of_user_id!,config))continue;}
+        if(d.id.startsWith("plugin.")){
+          const id=d.id.split(".")[1]!;
+          if(!pluginEnabled.has(id))pluginEnabled.set(id,await operationPluginEnabled(db,id,actor.space_id,actor.on_behalf_of_user_id!,config));
+          if(!pluginEnabled.get(id))continue;
+        }
         enabled.push(d);
       }
       return {

@@ -61,10 +61,21 @@ case "$release_channel" in
   *) echo "--channel must be stable, edge, or nightly" >&2; exit 2 ;;
 esac
 RELEASE_BASE_URL="${RAINVER_HOST_RELEASE_BASE_URL:-$REPOSITORY_DOWNLOAD_ROOT/host-$release_channel}"
-if [[ "$ensure_adapters" == true && -z "${RAINVER_HOST_RELEASE_BASE_URL:-}" ]]; then
-  installed_build_id="$(tr -d '\r\n' < "$INSTALL_ROOT/current/BUILD_ID")"
-  [[ "$installed_build_id" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "The active Host build id is invalid." >&2; exit 1; }
-  RELEASE_BASE_URL="$REPOSITORY_DOWNLOAD_ROOT/host-build-$installed_build_id"
+# An adapter request is pinned to one build for its whole run, so a concurrent
+# update switching `current` cannot change which pack it fetches or installs:
+# the requesting daemon's build (its adapter root is releases/<build>), else
+# the active build, read once.
+adapter_build_pin=""
+if [[ "$ensure_adapters" == true ]]; then
+  if [[ -n "${RAINVER_HOST_ADAPTER_ROOT:-}" ]]; then
+    adapter_build_pin="$(basename "$RAINVER_HOST_ADAPTER_ROOT")"
+  elif [[ -f "$INSTALL_ROOT/current/BUILD_ID" ]]; then
+    adapter_build_pin="$(tr -d '\r\n' < "$INSTALL_ROOT/current/BUILD_ID")"
+  fi
+  [[ "$adapter_build_pin" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "The requesting Host build id is invalid." >&2; exit 1; }
+  if [[ -z "${RAINVER_HOST_RELEASE_BASE_URL:-}" ]]; then
+    RELEASE_BASE_URL="$REPOSITORY_DOWNLOAD_ROOT/host-build-$adapter_build_pin"
+  fi
 fi
 
 if [[ "$(uname -s)" != "Linux" ]]; then
@@ -84,6 +95,17 @@ case "$(uname -m)" in
   aarch64|arm64) release_arch="arm64" ;;
   *) echo "Unsupported Linux architecture: $(uname -m)" >&2; exit 1 ;;
 esac
+
+# A daemon asks for the adapter pack of the build it runs (its adapter root is
+# releases/<build>). Only the active build's pack can be downloaded, so while
+# that daemon still waits to restart into a newer current build, refuse before
+# downloading anything: the restarted daemon installs its own pack.
+if [[ "$ensure_adapters" == true && -n "${RAINVER_HOST_ADAPTER_ROOT:-}" && -f "$INSTALL_ROOT/current/BUILD_ID" ]]; then
+  if [[ "$adapter_build_pin" != "$(tr -d '\r\n' < "$INSTALL_ROOT/current/BUILD_ID")" ]]; then
+    echo "This Host build ($adapter_build_pin) is not the installed current build; adapters are installed after it restarts into that build." >&2
+    exit 1
+  fi
+fi
 
 temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/rainver-host-install.XXXXXX")"
 trap 'rm -rf "$temp_dir"' EXIT
@@ -279,6 +301,38 @@ if [[ "$ensure_adapters" == false ]]; then
   fi
 fi
 
+# Installs into one root from different processes — a timer update, a manual
+# update, a daemon's adapter request — serialize on one kernel lock, the same
+# way the daemon lease does (daemonLease.ts): a stable lock inode that is never
+# unlinked, released by the kernel when the holder exits, and no fallback when
+# flock is missing. Every placement re-checks completeness under the lock, so
+# a second install of the same build keeps the directory the first one placed
+# (contents and permissions unchanged) instead of replacing it, and retained-
+# release cleanup never runs beside another process's placement: a staging
+# directory it finds while holding the lock is a leftover of an install that
+# died, never one in progress. Downloads stay outside the lock.
+install_lock_fd=""
+install_lock() {
+  if ! command -v flock >/dev/null 2>&1; then
+    echo "Installing Rainver Host needs flock (util-linux) to coordinate concurrent installs." >&2
+    exit 1
+  fi
+  if [[ -z "$install_lock_fd" ]]; then
+    local lock_path="$INSTALL_ROOT/.install.lock"
+    mkdir -p "$INSTALL_ROOT"
+    if [[ -L "$lock_path" ]]; then
+      echo "Refusing a symbolic link as the install lock: $lock_path" >&2
+      exit 1
+    fi
+    (umask 077; : >> "$lock_path")
+    exec {install_lock_fd}>>"$lock_path"
+  fi
+  flock --exclusive "$install_lock_fd"
+}
+install_unlock() {
+  if [[ -n "$install_lock_fd" ]]; then flock --unlock "$install_lock_fd"; fi
+}
+
 # Puts an unpacked payload at its final directory without the final name ever
 # holding a partial tree. The temporary directory is often another filesystem
 # (tmpfs), where `mv` is a copy that an interruption leaves half done; so the
@@ -286,7 +340,7 @@ fi
 # last step is a same-filesystem rename. A leftover staging directory is swept
 # with the other retained-release housekeeping; a leftover under the final
 # name cannot happen from here, and one from an older installer is replaced
-# by the completeness checks at each call site.
+# by the completeness checks at each call site. Callers hold install_lock.
 place_payload_dir() {
   local payload="$1" destination="$2" parent stage
   parent="$(dirname "$destination")"
@@ -315,11 +369,23 @@ install_adapter_pack() {
     echo "Downloaded adapter pack has an invalid build id." >&2
     exit 1
   fi
+  # The pin is fixed for this run and needs no lock. Which build is active is
+  # read only under the install lock, so an update switching `current` while
+  # this request downloaded or waited is seen here and refused, never placed.
+  if [[ -n "$adapter_build_pin" && "$adapter_build_id" != "$adapter_build_pin" ]]; then
+    echo "The adapter pack does not match the active Host build. Update this Host." >&2
+    exit 1
+  fi
+  install_lock
   if [[ ! -f "$INSTALL_ROOT/current/BUILD_ID" || "$adapter_build_id" != "$(tr -d '\r\n' < "$INSTALL_ROOT/current/BUILD_ID")" ]]; then
     echo "The adapter pack does not match the active Host build. Update this Host." >&2
     exit 1
   fi
   mkdir -p "$INSTALL_ROOT/adapters/releases"
+  # Pruning keeps the new pack, the one adapters/current named, and the pack
+  # of the build this update replaced: a daemon still on that build reads its
+  # own version directory, which an adapter request may have added without
+  # ever naming it in adapters/current.
   local previous_adapter_build_id=""
   if [[ -f "$INSTALL_ROOT/adapters/current/BUILD_ID" ]]; then
     previous_adapter_build_id="$(tr -d '\r\n' < "$INSTALL_ROOT/adapters/current/BUILD_ID")"
@@ -328,12 +394,21 @@ install_adapter_pack() {
   if [[ ! -f "$adapter_dir/package.json" || "$(tr -d '\r\n' < "$adapter_dir/BUILD_ID" 2>/dev/null)" != "$adapter_build_id" ]]; then
     place_payload_dir "$payload" "$adapter_dir"
   fi
+  # An adapter request only adds its own build's version directory, which is
+  # all its daemon reads (launchers name adapters/releases/<build>). It never
+  # writes adapters/current or prunes: those belong to updates alone, so an
+  # update switching `current` concurrently cannot be overwritten from here.
+  if [[ -n "$adapter_build_pin" ]]; then
+    echo "Installed Rainver Host adapters $adapter_build_id."
+    return
+  fi
   ln -s "releases/$adapter_build_id" "$INSTALL_ROOT/adapters/.current-$$"
   mv -Tf "$INSTALL_ROOT/adapters/.current-$$" "$INSTALL_ROOT/adapters/current"
   if [[ ! -f "$CONFIG_DIR/update-restart-requested" ]]; then
     while IFS= read -r -d '' candidate; do
       candidate_id="$(basename "$candidate")"
-      if [[ "$candidate_id" != "$adapter_build_id" && "$candidate_id" != "$previous_adapter_build_id" ]]; then
+      if [[ "$candidate_id" != "$adapter_build_id" && "$candidate_id" != "$previous_adapter_build_id" \
+        && "$candidate_id" != "${previous_build_id:-}" ]]; then
         rm -rf -- "$candidate"
       fi
     done < <(find "$INSTALL_ROOT/adapters/releases" -mindepth 1 -maxdepth 1 -type d -print0)
@@ -395,9 +470,11 @@ else
   fi
   node_version="$("$node_payload/bin/node" --version | tr -d '\r\n')"
   node_dir="$INSTALL_ROOT/runtime/node-${node_version}-${release_arch}"
+  install_lock
   if [[ ! -x "$node_dir/bin/node" ]]; then place_payload_dir "$node_payload" "$node_dir"; fi
   ln -s "$(basename "$node_dir")" "$INSTALL_ROOT/runtime/.node-current-$$"
   mv -Tf "$INSTALL_ROOT/runtime/.node-current-$$" "$INSTALL_ROOT/runtime/node-current"
+  install_unlock
   node_command="$INSTALL_ROOT/runtime/node-current/bin/node"
 fi
 
@@ -429,6 +506,8 @@ fi
 # Fail before switching current, pruning rollback builds or restarting services.
 ensure_read_only_support "$node_command" "$payload/app/dist/cli.js"
 
+# Held to exit: switching current, pruning, the adapter pack and launchers.
+install_lock
 printf '%s\n' "$release_channel" > "$INSTALL_ROOT/channel"
 changed=true
 previous_build_id=""
@@ -469,7 +548,16 @@ if [[ "$restart_pending" == false ]]; then
   done < <(find "$INSTALL_ROOT/releases" -mindepth 1 -maxdepth 1 -type d -print0)
 fi
 
-if command -v codex >/dev/null 2>&1 || command -v claude >/dev/null 2>&1; then
+# Detect vendor CLIs on the PATH the daemon runs with (the captured
+# service.env, read the way its launcher reads it) as well as this
+# invocation's: a timer-driven update has only systemd's minimal PATH.
+service_env="${XDG_CONFIG_HOME:-$HOME/.config}/rainver-host/service.env"
+detection_path="$PATH"
+if [[ -f "$service_env" ]]; then
+  captured_path="$(set +eu; set -a; source "$service_env" >/dev/null 2>&1; printf '%s' "${PATH:-}")"
+  detection_path="${captured_path:+$captured_path:}$PATH"
+fi
+if PATH="$detection_path" command -v codex >/dev/null 2>&1 || PATH="$detection_path" command -v claude >/dev/null 2>&1; then
   install_adapter_pack
 fi
 
@@ -481,7 +569,6 @@ printf '#!/usr/bin/env bash\nexport RAINVER_HOST_INSTALL_ROOT=%q\nexport RAINVER
   "$INSTALL_ROOT/releases/$build_id/app/dist/cli.js" > "$BIN_DIR/rainver-host"
 chmod 755 "$BIN_DIR/rainver-host"
 
-service_env="${XDG_CONFIG_HOME:-$HOME/.config}/rainver-host/service.env"
 mkdir -p "$(dirname "$service_env")"
 if [[ ! -f "$service_env" ]]; then
   # The service needs the interactive user's CLI PATH, but the install may be

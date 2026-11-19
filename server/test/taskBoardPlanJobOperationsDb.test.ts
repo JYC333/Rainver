@@ -149,11 +149,13 @@ describe('Task evaluation, planning and Run commands',()=>{
  });
  it('queues one Task Run with its link, Job and in-progress event atomically; role and parent Run are not caller-owned',async()=>{
   const task=await projectTask({status:'ready',assigned_agent_id:agent});
-  for(const extra of [{role:'merge'},{parent_run_id:run},{run_type:'system'},{trigger_origin:'manual'}])
+  for(const extra of [{role:'merge'},{parent_run_id:run},{run_type:'system'},{trigger_origin:'manual'},{mode:'live',trigger_origin:'automation'}])
    expect((await send('POST',`/api/v1/tasks/${task.id}/runs`,extra)).statusCode,JSON.stringify(extra)).toBe(422);
+  expect(await count('SELECT count(*) AS n FROM runs WHERE agent_id=$1 AND id<>$2',[agent,run])).toBe(0);
   const key=randomUUID(),queued=await send('POST',`/api/v1/tasks/${task.id}/runs`,{mode:'live'},key);
   expect(queued.statusCode,queued.body).toBe(201);
   const runId=queued.json().data.run_id;
+  expect((await db.pool.query('SELECT trigger_origin FROM runs WHERE id=$1',[runId])).rows).toEqual([{trigger_origin:'manual'}]);
   expect((await db.pool.query('SELECT role FROM task_runs WHERE task_id=$1 AND run_id=$2',[task.id,runId])).rows[0].role).toBe('primary');
   expect(await count("SELECT count(*) AS n FROM jobs WHERE job_type='agent_run' AND payload_json->>'run_id'=$1",[runId])).toBe(1);
   expect((await db.pool.query('SELECT status FROM tasks WHERE id=$1',[task.id])).rows[0].status).toBe('in_progress');

@@ -54,6 +54,17 @@ function makeServer({ versions = {}, failReadOnce = false, failCreateOnce = fals
     const method = route.request().method()
     const body = () => route.request().postDataJSON()
     const json = data => route.fulfill({ json: data })
+    // Writes are keyed commands that return identities only; bodies are reread through the GET readers.
+    const receipt = (kind, { status = 200, document_id = null, annotation_id = null, ...extra } = {}) => route.fulfill({ status, json: { status: 'succeeded', data: {
+      id: extra.job_id ?? annotation_id ?? document_id ?? kind, space_id: spaceId, document_type: document_id ? 'source_item' : null, document_id, annotation_id, kind, ...extra } } })
+    // The two body-reading writers run as one-attempt Jobs; their result is read once through the write-request reader.
+    const queued = (result, document_id = null) => {
+      state.jobs ??= new Map(); const job_id = `job-${state.jobs.size + 1}`
+      state.jobs.set(job_id, result)
+      return receipt('job', { status: 202, job_id, document_id, annotation_id: result.annotation_id })
+    }
+    const job = /^\/reader\/write-requests\/([^/]+)$/.exec(path)
+    if (job) return state.jobs?.has(job[1]) ? json({ job_id: job[1], status: 'completed', result: state.jobs.get(job[1]) }) : route.fulfill({ status: 404, json: { detail: 'Unknown write request' } })
     if (path === '/me') return json({ id: 'user-j', name: 'Journey tester', email: 'j@example.test', default_space_id: spaceId, instance_role: 'member' })
     if (path === '/me/spaces') return json([{ id: spaceId, name: 'Journey Space', type: 'personal', role: 'owner' }])
     if (path === '/agents') return json([{ id: 'research-agent', name: 'Research Agent', created_by_user_id: 'user-j', agent_kind: 'personal', status: 'active' }])
@@ -62,7 +73,11 @@ function makeServer({ versions = {}, failReadOnce = false, failCreateOnce = fals
       { id: 'antigravity-native', name: 'Antigravity', runtime_key: 'antigravity', enabled: true, is_default: false, backend_mode: 'runtime_native', provider_binding: { model: null } },
     ])
     if (path === '/agents/research-agent/conversation-backends') return json({ options: ['opencode-api', 'antigravity-native'].map(runtime_profile_id => ({ runtime_profile_id, usable: true, session_config_options: [] })), session_config: [] })
-    if (/^\/sources\/items\/[^/]+\/processing\/start$/.test(path)) { state.prepared = body(); return json({ status: 'queued', run_id: 'research-run' }) }
+    // Preparing a material is one keyed command; its processing state is reread afterwards.
+    if (path === '/actions/source.material.start' && method === 'POST') {
+      const { source_item_id, ...selection } = body(); state.prepared = selection; state.preparedItem = source_item_id
+      return json({ status: 'succeeded', data: { id: source_item_id, space_id: spaceId, status: 'queued', run_id: 'research-run' } })
+    }
     if (path === '/plugins/effective') return json({ plugins: {} })
     if (path === '/sources/goals') return json({ goals: [{ id: 'topic-a', space_id: spaceId, project_id: null, status: 'running', display: { version_id: null, title: 'Robot learning', summary: 'Robot learning updates' }, intent_json: { intent: 'Robot learning' }, compatibility_json: {}, follow_state: { intent: 'following', phase: 'scheduled' } }] })
     if (path === `/spaces/${spaceId}/reading`) {
@@ -76,14 +91,15 @@ function makeServer({ versions = {}, failReadOnce = false, failCreateOnce = fals
         ? { current: state.positions.get(item.source_item_id).current.progress, furthest: state.positions.get(item.source_item_id).furthest?.progress ?? 0 } : null }))
       return json({ items, total: all.length, next_cursor: start + limit < all.length ? String(start + limit) : null })
     }
-    const state_ = /^\/spaces\/[^/]+\/reading\/items\/([^/]+)\/state$/.exec(path)
-    if (state_ && method === 'PATCH') {
+    if (path === '/actions/reading.personal_state.set' && method === 'POST') {
       state.readCalls++
       if (state.failRead) { state.failRead = false; return route.fulfill({ status: 503, json: { detail: 'Read state temporarily unavailable' } }) }
-      if (body().read_status === 'unread') state.read.delete(state_[1]); else state.read.add(state_[1]); return json({ updated: 1 })
+      const input = body()
+      if (input.read_status === 'unread') state.read.delete(input.item_id); else state.read.add(input.item_id)
+      return json({ status: 'succeeded', data: { space_id: input.space_id, item_id: input.item_id, user_id: 'user-j', updated: 1 } })
     }
     if (path === '/reader/preferences/appearance') {
-      if (method === 'PUT') state.appearance = body()
+      if (method === 'PUT') { state.appearance = body(); return receipt('appearance') }
       return json(state.appearance)
     }
     const position = /^\/reader\/documents\/source_item\/([^/]+)\/position$/.exec(path)
@@ -92,12 +108,13 @@ function makeServer({ versions = {}, failReadOnce = false, failCreateOnce = fals
       if (method === 'PUT') {
         const report = body(); state.puts.push({ id, ...report })
         const existing = state.positions.get(id)
-        if (!existing || Date.parse(report.client_at) > Date.parse(existing.current_client_at)) {
+        const accepted = !existing || Date.parse(report.client_at) > Date.parse(existing.current_client_at)
+        if (accepted) {
           const sameVersion = existing && existing.structure_hash === report.structure_hash
           const furthest = report.reset_furthest ? report.current : report.dwelled && (!sameVersion || !existing?.furthest || report.current.progress > existing.furthest.progress) ? report.current : sameVersion ? existing.furthest : null
           state.positions.set(id, { content_hash: report.content_hash, structure_hash: report.structure_hash, current: report.current, furthest, current_client_at: report.client_at, updated_at: report.client_at, revision: (existing?.revision ?? 0) + 1 })
         }
-        return json({ position: state.positions.get(id) ?? null, accepted: true })
+        return queued({ outcome: accepted ? 'applied' : 'not_accepted', annotation_id: null }, id)
       }
       return json({ position: state.positions.get(id) ?? null, accepted: true })
     }
@@ -113,7 +130,10 @@ function makeServer({ versions = {}, failReadOnce = false, failCreateOnce = fals
     const documentNote = /^\/reader\/documents\/source_item\/([^/]+)\/note$/.exec(path)
     if (documentNote) {
       state.documentNotes ??= new Map()
-      if (method === 'POST' && !state.documentNotes.has(documentNote[1])) state.documentNotes.set(documentNote[1], { id: `note-${documentNote[1]}`, space_id: 'personal-notes-space', status: 'active' })
+      if (method === 'POST') {
+        if (!state.documentNotes.has(documentNote[1])) state.documentNotes.set(documentNote[1], { id: `note-${documentNote[1]}`, space_id: 'personal-notes-space', status: 'active' })
+        return receipt('note', { status: 201, document_id: documentNote[1], note_space_id: 'personal-notes-space' })
+      }
       return json({ note: state.documentNotes.get(documentNote[1]) ?? null })
     }
     const annotations = /^\/reader\/documents\/source_item\/([^/]+)\/annotations$/.exec(path)
@@ -123,18 +143,18 @@ function makeServer({ versions = {}, failReadOnce = false, failCreateOnce = fals
       if (state.failCreate) { state.failCreate = false; return route.fulfill({ status: 503, json: { detail: 'Annotation service busy' } }) }
       const input = body(); const id = `ann-${state.annotations.size + 1}`
       const created = { ...input, id, space_id: spaceId, project_id: null, color: null, label: null, visibility: 'private', status: 'active', anchor_state: 'verified', created_by_user_id: 'user-j', created_at: now, updated_at: now }
-      state.annotations.set(id, created); return json(created)
+      state.annotations.set(id, created); return receipt('annotation', { status: 201, document_id: input.document_id, annotation_id: id })
     }
     const rangeEdit = /^\/reader\/annotations\/([^/]+)\/range$/.exec(path)
     if (rangeEdit && method === 'PATCH') {
       const current = state.annotations.get(rangeEdit[1]), input = body()
-      if (!current || current.status !== 'active' || current.quote_text !== input.expected_quote_text) return route.fulfill({ status: 409, json: { detail: 'Annotation changed' } })
+      if (!current || current.status !== 'active' || current.quote_text !== input.expected_quote_text) return queued({ outcome: 'conflict', annotation_id: null }, current?.document_id ?? null)
       Object.assign(current, { quote_text: input.quote_text, anchor_json: input.anchor_json, anchor_state: 'unverified' })
-      return json(current)
+      return queued({ outcome: 'applied', annotation_id: current.id }, current.document_id)
     }
     const one = /^\/reader\/annotations\/([^/]+)$/.exec(path)
-    if (one && method === 'DELETE') { state.annotations.get(one[1]).status = 'archived'; return route.fulfill({ status: 204, body: '' }) }
-    if (one && method === 'PATCH') { Object.assign(state.annotations.get(one[1]), body()); return json(state.annotations.get(one[1])) }
+    if (one && method === 'DELETE') { const current = state.annotations.get(one[1]); current.status = 'archived'; return receipt('annotation', { document_id: current.document_id, annotation_id: current.id }) }
+    if (one && method === 'PATCH') { const current = Object.assign(state.annotations.get(one[1]), body()); return receipt('annotation', { document_id: current.document_id, annotation_id: current.id }) }
     if (/^\/reader\/annotations\/[^/]+\/threads$/.test(path)) return json({ items: [] })
     if (/^\/sources\/items\/[^/]+\/processing$/.test(path)) return json(state.prepared ? {status:'queued',run_id:'research-run'} : { status: 'idle' })
     if (path === '/me/agent-attention/stream') return route.fulfill({ status: 503, body: '' })
@@ -458,7 +478,11 @@ test('a document without text shows no reading percentage or position actions; o
     // Registered after the fixture, so these answer first for this item.
     await page.route('**/api/v1/reader/documents/source_item/item-empty', route => route.fulfill({ json: prepared ? documentFor('item-empty', article(1, 2), 'prepared') : empty }))
     await page.route('**/api/v1/sources/items/item-empty/processing', route => route.fulfill({ json: prepared ? { status: 'succeeded', run_id: 'run-e' } : { status: 'idle' } }))
-    await page.route('**/api/v1/sources/items/item-empty/processing/start', route => { prepared = true; return route.fulfill({ json: { status: 'queued', run_id: 'run-e' } }) })
+    await page.route('**/api/v1/actions/source.material.start', route => {
+      if (route.request().postDataJSON().source_item_id !== 'item-empty') return route.fallback()
+      prepared = true
+      return route.fulfill({ json: { status: 'succeeded', data: { id: 'item-empty', space_id: spaceId, status: 'queued', run_id: 'run-e' } } })
+    })
     await page.goto(`${baseUrl}/spaces/${spaceId}/library/items/item-empty`)
     await page.getByRole('button', { name: 'Read and prepare' }).waitFor()
     await settle(page)
@@ -513,7 +537,13 @@ for (const width of [320, 390, 1280]) {
       await page.route('**/api/v1/reader/documents/source_item/item-agent', route => route.fulfill({ json: agentDoc() }))
       let requests = 0
       let asked = null
-      await page.route('**/api/v1/sources/items/item-agent/reading-syntax', route => { requests++; asked = route.request().postDataJSON(); structured = true; return route.fulfill({ json: { artifact_id: 'art-md' } }) })
+      // One keyed material command names the shown version; the document is then reread.
+      await page.route('**/api/v1/actions/source.material.show_markdown', route => {
+        const { source_item_id: itemId, ...input } = route.request().postDataJSON()
+        assert.equal(itemId, 'item-agent'); assert.ok(route.request().headers()['idempotency-key'])
+        requests++; asked = input; structured = true
+        return route.fulfill({ json: { status: 'succeeded', data: { id: 'item-agent', space_id: spaceId, artifact_id: 'art-md' } } })
+      })
       await page.goto(`${baseUrl}/spaces/${spaceId}/library/items/item-agent`)
       await page.locator('.reader-surface p').first().waitFor()
       await page.evaluate(() => document.fonts.ready)
@@ -1152,7 +1182,7 @@ test('Following management stays single-column and adjustments remain in a usabl
    results:{items_total:20,important_total:10,changes_total:3,last_outcome:'failed',last_checked_at:now,last_success_at:now,next_check_at:now}}
   const spec={source_connection_id:'source-layout',source_channel_id:'channel-layout',reason:title,implementation:{kind:'agent_search',query:'Find agent workbenches and architecture evidence / 查找工作台架构资料'},supports_history:false}
   const plan={title,summary:'Synthetic collection direction',intent_snapshot:{intent:'持续收集相关产品与架构资料 / Collect relevant products and architecture material',includes:['Architecture / 架构','Product releases / 产品发布'],excludes:['Promotional posts / 推广内容']},analysis_brief:'Manual deep reading compares design decisions.',sources:[spec],limitations:[]}
-  const goal={agent_id:'research-agent',runtime_profile_id:'antigravity-native',id:'topic-a',space_id:spaceId,owner_user_id:'user-j',project_id:projectId,intent_json:{intent:title},budget_json:{interval_seconds:86400},compatibility_json:{},status:'running',revision:1,current_version_id:'version-layout',active_version_id:'version-layout',follow_state:follow}
+  const goal={agent_id:'research-agent',runtime_profile_id:'antigravity-native',id:'topic-a',space_id:spaceId,owner_user_id:'user-j',project_id:projectId,intent_json:{intent:title},display:{version_id:'version-layout',title,summary:'Synthetic collection direction'},budget_json:{interval_seconds:86400},compatibility_json:{},status:'running',revision:1,current_version_id:'version-layout',active_version_id:'version-layout',follow_state:follow}
   const fixture={...base,route:async route=>{
    const url=new URL(route.request().url()),path=url.pathname.replace('/api/v1','')
    if(route.request().method()!=='GET'&&/^\/sources\/goal/.test(path))writes.push(path)
@@ -1217,13 +1247,14 @@ test('Following source status refusal keeps the management page and offers expli
   const spec={source_connection_id:'source-recovery',source_channel_id:'channel-recovery',reason:'Robotics feed',implementation:{kind:'connector'},supports_history:false}
   const fixture={...base,route:async route=>{
    const path=new URL(route.request().url()).pathname.replace('/api/v1',''),method=route.request().method()
-   if(path==='/sources/goals/topic-a/check'){writes.push('check');failed=true;return route.fulfill({status:409,json:{error:'source_goal_source_inactive',message:'source_goal_source_inactive'}})}
+   // Check now is a keyed core command; its refusal carries the domain code in metadata.
+   if(path==='/actions/source.goal.check'){assert.equal(route.request().postDataJSON().goal_id,'topic-a');writes.push('check');failed=true;return route.fulfill({status:409,json:{error:{code:'operation_conflict',message:'The connected source is not active',metadata:{code:'source_goal_source_inactive'}}}})}
+   if(path==='/actions/source.goal.binding.confirm_source'){const body=route.request().postDataJSON();assert.deepEqual(body,{goal_id:'topic-a',binding_id:'b',binding_revision:0,authority:'a'.repeat(64),restore_channel:true});assert.ok(route.request().headers()['idempotency-key']);writes.push('restore');restored=true;return route.fulfill({json:{status:'succeeded',data:{id:'topic-a',space_id:spaceId,binding_id:'b',status:'active',revision:1}}})}
    if(path==='/sources/goals/topic-a/bindings/b/source-confirmation'){
-    if(method==='POST'){const body=route.request().postDataJSON();assert.deepEqual(body,{binding_revision:0,authority:'a'.repeat(64),restore_channel:true});writes.push('restore');restored=true;return route.fulfill({json:{binding_id:'b',binding_revision:1,status:'active'}})}
     return route.fulfill({json:{binding_id:'b',binding_revision:0,resolvable_by:'you',source_name:'Robotics feed',restore_channel:true,current:{capture_policy:'reference_only',retention_policy:'metadata_only',source_status:'active',channel_status:'paused',uses_credential:false},changed:['channel_status'],related_changes:[],authority:'a'.repeat(64)}})
    }
    if(path==='/sources/goals/topic-a'){
-    reads++;return route.fulfill({json:{goal:{id:'topic-a',owner_user_id:'user-j',space_id:spaceId,project_id:null,agent_id:'a',runtime_profile_id:'p',status:'running',active_version_id:'v',current_version_id:'v',intent_json:{intent:'Robot learning'},budget_json:{interval_seconds:86400},
+    reads++;return route.fulfill({json:{goal:{id:'topic-a',owner_user_id:'user-j',space_id:spaceId,project_id:null,agent_id:'a',runtime_profile_id:'p',status:'running',active_version_id:'v',current_version_id:'v',intent_json:{intent:'Robot learning'},display:{version_id:'v',title:'Robot learning',summary:'Collect robotics updates'},budget_json:{interval_seconds:86400},
      follow_state:{intent:'following',phase:failed&&!restored?'waiting_for_permission':'scheduled',health:failed&&!restored?'needs_permission':'ok',collections:{queued:0,running:0},pending_adjustment:false,results:{items_total:20,important_total:10,changes_total:0,last_outcome:'new_items',last_new_items:2,last_checked_at:now,last_success_at:now,next_check_at:now},sources:[{binding_id:'b',source_connection_id:'source-recovery',status:'active',health:failed&&!restored?'needs_permission':'ok',attention:failed&&!restored?'source_changed':null,resolvable_by:'you',error:failed&&!restored?'source_goal_source_inactive':null,failures:0,last_success_at:now,retry_at:null}]}},
      versions:[{id:'v',revision:1,plan_json:{summary:'Collect robotics updates',sources:[spec],limitations:[]}}],previews:[],agent_runs:[],native_runs:[],messages:[],changes:[],repairs:[],runs:[],bindings:[{id:'b',status:'active',spec_json:spec,gaps_json:[],cursor_json:{}}]}})
    }
@@ -1261,7 +1292,7 @@ test('Topic analysis waits for authorized settings and refreshes finished rounds
    if(route.request().method()!=='GET')writes++
    if(path==='/sources/goals')return route.fulfill({json:{goals:[goal]}})
    if(path===`/spaces/${spaceId}/projects/layout-project/reading-compositions`)return route.fulfill({json:{latest:null,history:[],composition_status:'waiting_for_analysis',rounds:[{id:'r',goal_id:'topic-a',status:'blocked',error_code:'briefing_output_invalid',coverage:{complete:true}}],cross_theme_status:'not_generated'}})
-   if(path==='/sources/goals/topic-a/theme-rounds/retry'){assert.deepEqual(route.request().postDataJSON(),{round_id:'r'});retried=true;return route.fulfill({json:{}})}
+   if(path==='/actions/source.goal.theme.retry'){assert.deepEqual(route.request().postDataJSON(),{goal_id:'topic-a',round_id:'r'});assert.ok(route.request().headers()['idempotency-key']);retried=true;return route.fulfill({json:{status:'succeeded',data:{id:'topic-a',space_id:spaceId,round_id:'r'}}})}
    if(path==='/sources/goals/topic-a/theme-rounds'){reads++;if(reads===1)await held;return route.fulfill({json:{analysis:{enabled:true,version_id:'v'},latest:null,rounds:[{id:'r',version_id:'v',status:retryMode?(retried?'generating':'blocked'):reads===1?'collecting':'complete',error_code:retryMode&&!retried?'briefing_output_invalid':null,coverage:{complete:true}}]}})}
    if(path==='/sources/goals/topic-a')return route.fulfill({json:{goal,versions:[{id:'v',revision:1,plan_json:{summary:'Current purpose',sources:[],limitations:[]}}],previews:[],agent_runs:[],native_runs:[],messages:[],changes:[],repairs:[],runs:[],bindings:[]}})
    if(path==='/projects/layout-project')return route.fulfill({json:{id:'layout-project',space_id:spaceId,name:'Layout Project',status:'active'}})
@@ -1300,7 +1331,7 @@ test('Composition retries only its own failure and reports queued and completed 
   const base=makeServer(),zh=locale==='zh-CN';let writes=0,afterRetry=0
   const fixture={...base,route:async route=>{
    const path=new URL(route.request().url()).pathname.replace('/api/v1','')
-   if(path===`/spaces/${spaceId}/projects/layout-project/reading-compositions/retry`){writes++;return route.fulfill({json:{status:'queued'}})}
+   if(path==='/actions/reading.composition.retry'){assert.deepEqual(route.request().postDataJSON(),{space_id:spaceId,project_id:'layout-project'});assert.ok(route.request().headers()['idempotency-key']);writes++;return route.fulfill({json:{status:'succeeded',data:{space_id:spaceId,project_id:'layout-project',user_id:'user-j',status:'queued',round_ids:['r']}}})}
    if(path===`/spaces/${spaceId}/projects/layout-project/reading-compositions`)return route.fulfill({json:{latest:null,history:[],composition_status:!writes?'failed':++afterRetry===1?'queued':'complete',rounds:[{id:'r',goal_id:'topic-a',status:'complete',error_code:null,coverage:{complete:true}}],cross_theme_status:'not_generated'}})
    if(path==='/projects/layout-project')return route.fulfill({json:{id:'layout-project',space_id:spaceId,name:'Layout Project',status:'active',current_user_can_write:true}})
    if(path==='/projects/layout-project/overview')return route.fulfill({json:{attention:[]}})
@@ -1408,7 +1439,9 @@ test('Overview sections stay concise and full analyses return to the same topic 
    const source=topics.first().getByRole('link',{name:zh?'查看来源：Exact retained source':'View source: Exact retained source',exact:true}).first();assert.ok(new URL(await source.getAttribute('href'),baseUrl).searchParams.get('version')==='original-v1')
    await overview.getByRole('button',{name:zh?'历史与归档':'History & archive',exact:true}).click();await page.getByRole('dialog').getByRole('link').waitFor();await page.screenshot({path:join(output,`${tag}-daily-history.png`),animations:'disabled'})
    await page.getByRole('dialog').getByRole('link').click();await overview.getByText(zh?/历史版本 · 只读/:/Historical · read only/).waitFor();assert.equal(await topics.count(),1)
-   await overview.getByRole('button',{name:zh?'历史与归档':'History & archive',exact:true}).click();await page.getByRole('button',{name:zh?'更早记录':'Older records',exact:true}).click();const earlier=page.getByRole('dialog').getByRole('link');await earlier.waitFor();await earlier.click();await settle(page);assert.equal(new URL(page.url()).searchParams.get('date'),previous);assert.equal(await topics.count(),1);assert.equal(await overview.getByText(/did not pass format/).count(),0)
+   await overview.getByRole('button',{name:zh?'历史与归档':'History & archive',exact:true}).click();await page.getByRole('button',{name:zh?'更早记录':'Older records',exact:true}).click();const earlier=page.getByRole('dialog').getByRole('link');await earlier.waitFor();await earlier.click();await page.waitForURL(url=>url.searchParams.get('date')===previous)
+   // The earlier day's edition is read after navigation; wait for it to render before counting.
+   await page.waitForFunction(()=>document.querySelectorAll('[data-reading-overview] [data-topic-overview]').length>0);await settle(page);assert.equal(await topics.count(),1);assert.equal(await overview.getByText(/did not pass format/).count(),0)
    await page.screenshot({path:join(output,`${tag}-previous-day.png`),animations:'disabled',fullPage:true})
    assert.equal(writes,0);assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false)
   }finally{await page.context().close()}

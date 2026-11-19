@@ -64,6 +64,7 @@ export const managementUiZhCN = {
       "install": "安装",
       "enable_install": "启用并安装",
       "upgrade_label": "升级 {{host}} 上的 {{name}}",
+      "managed_copy_version": "安装受管版 {{version}}",
       "managed_copy_label": "在 {{host}} 上安装 {{name}} 的受管副本",
       "install_label": "在 {{host}} 上安装 {{name}}",
       "enable_install_label": "在 {{host}} 上启用并安装 {{name}}",

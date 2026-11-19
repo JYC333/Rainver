@@ -29,7 +29,10 @@ describe("test hygiene", () => {
   });
 
   it("clears rows with resetTables, never TRUNCATE", () => {
-    expect(offenders((_, text) => /\bTRUNCATE\b(?![^\n]*\/\/)/.test(text.replace(/\/\/[^\n]*/g, "")))).toEqual([]);
+    expect(offenders((_, text) => /\bTRUNCATE\b(?![^\n]*\/\/)/.test(text.replace(/\/\/[^\n]*/g, "")), [
+      // Asserts the TRUNCATE *privilege* a runtime role must not hold (ADR 0031); it clears no rows.
+      "runtimeRolesDb.test.ts",
+    ])).toEqual([]);
   });
 
   it("builds only the module under test, not the whole server", () => {
@@ -55,6 +58,8 @@ describe("test hygiene", () => {
     expect(offenders((_, text) => /\bnew Pool\(/.test(text), [
       // Deliberately small pools, to prove the code under test survives saturation.
       "coreVersionIntegrityDb.test.ts",
+      // One-client main/control pools prove Gmail read cancellation never releases a client early.
+      "gmailMailReadDb.test.ts",
       "runSupervisorDb.test.ts",
       // Genuinely separate connections, to prove concurrent appends to one
       // conversation cannot both claim the same position on its path.
@@ -70,7 +75,7 @@ describe("test hygiene", () => {
       "agentsCrudRoutes.test.ts", "automationsProjectDb.test.ts", "claimReviewLoopRoutes.test.ts",
       "claimSourcesSourcePolicy.test.ts", "contextOpsRoutes.test.ts",
       "jobsSchedulers.test.ts", "knowledgeRetrievalEvalRoutes.test.ts",
-      "knowledgeRetrievalExplainRoutes.test.ts", "knowledgeRetrievalRoutes.test.ts", "memoryMaintenanceRoutes.test.ts",
+      "knowledgeRetrievalExplainRoutes.test.ts", "knowledgeRetrievalRoutes.test.ts",
       "objectProfileRegistry.test.ts", "publicationsRoutes.test.ts",
     ])).toEqual([]);
   });
@@ -138,7 +143,6 @@ describe("test hygiene", () => {
       "knowledgeRetrievalEvalRoutes.test.ts",
       "knowledgeRetrievalExplainRoutes.test.ts",
       "knowledgeRetrievalRoutes.test.ts",
-      "memoryMaintenanceRoutes.test.ts",
       "objectProfileRegistry.test.ts",
       "publicationsRoutes.test.ts",
       "retrievalReranker.test.ts",
@@ -155,6 +159,9 @@ describe("test hygiene", () => {
         if (Number(match[1].replaceAll("_", "")) > 100) return true;
       }
       return false;
-    })).toEqual([]);
+    }, [
+      // Real HTTP backpressure needs multiple production flush intervals while the client is paused.
+      "turnStreamAccess.test.ts",
+    ])).toEqual([]);
   });
 });

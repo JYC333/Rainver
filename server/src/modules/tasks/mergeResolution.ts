@@ -53,7 +53,7 @@ export class TaskMergeResolutionDispatcher implements TaskMergeConflictResolver 
     // `resolving` commit together; a refused admission rolls back only itself.
     await db.query("SAVEPOINT merge_resolution");
     try {
-      const runId = await new PgTaskRepository(pool).createMergeResolutionRun(
+      const runId = await new PgTaskRepository(pool, this.config).createMergeResolutionRun(
         { spaceId: merge.space_id, userId: merge.requested_by_user_id },
         merge.task_id,
         {

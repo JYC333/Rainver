@@ -4,6 +4,7 @@ import { useAppTranslation } from '../../i18n'
 import { formatDate } from '../../i18n/format'
 import { Button } from '../../components/ui/button'
 import type { OfficialPluginCleanupStatus } from '@rainver/protocol'
+import { announcePluginStateChanged } from './pluginStateEvents'
 
 interface EffectiveState {
   plugin_id: string
@@ -64,8 +65,7 @@ export default function PluginsPage() {
   const setAction = (id: string, state: ActionState[string]) =>
     setActions(prev => ({ ...prev, [id]: state }))
 
-  const notifyShell = () =>
-    window.dispatchEvent(new CustomEvent('rainver:plugin-state-changed'))
+  const notifyShell = announcePluginStateChanged
 
   const handleInstall = async (pluginId: string) => {
     setAction(pluginId, 'loading')

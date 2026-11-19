@@ -24,7 +24,6 @@ export type {
   FinanceWebHost,
 } from './host'
 
-const PLUGIN_ID = 'finance_ledger'
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
 const DECIMAL_RE = /^-?(?:\d+(?:\.\d*)?|\.\d+)$/
 
@@ -747,7 +746,7 @@ function ValidationPanel({
               <span style={{ ...monoStyle, fontSize: 11, background: '#fdecea', borderRadius: 4, padding: '1px 5px', marginRight: 6 }}>
                 {error.code}
               </span>
-              {error.message}
+              {error.directive_id ? `entry ${error.directive_id}` : ''}
             </li>
           ))}
         </ul>
@@ -1219,8 +1218,7 @@ function FinanceLedgerView({ api, book, books, onSelectBook, onCreateBook }: {
 }
 
 function FinancePage({ host }: { host: FinanceWebHost }) {
-  const { api, Link, usePluginState } = host
-  const { enabled, loading: pluginLoading } = usePluginState(PLUGIN_ID)
+  const { api } = host
   const [books, setBooks] = useState<FinanceBook[]>([])
   const [booksLoaded, setBooksLoaded] = useState(false)
   const [booksError, setBooksError] = useState<string | null>(null)
@@ -1247,28 +1245,8 @@ function FinancePage({ host }: { host: FinanceWebHost }) {
   }, [api])
 
   useEffect(() => {
-    if (enabled) loadBooks()
-  }, [enabled, loadBooks])
-
-  if (pluginLoading) return null
-
-  if (!enabled) {
-    return (
-      <div style={{ maxWidth: 520, margin: '80px auto', padding: '0 24px', textAlign: 'center' }}>
-        <div style={{ fontSize: 40, marginBottom: 16 }}>🏦</div>
-        <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 8 }}>Finance Ledger</h1>
-        <p style={{ color: '#666', marginBottom: 24 }}>
-          Double-entry bookkeeping for this space, compatible with Beancount import and export.
-        </p>
-        <Link
-          to="/plugins"
-          style={{ display: 'inline-block', padding: '8px 20px', borderRadius: 8, background: '#1976d2', color: '#fff', textDecoration: 'none', fontSize: 14, fontWeight: 500 }}
-        >
-          Install or enable in Optional Modules
-        </Link>
-      </div>
-    )
-  }
+    loadBooks()
+  }, [loadBooks])
 
   const createBook = async (name: string, currency: string) => {
     const result = await api.createBook({ name, base_currency: currency })

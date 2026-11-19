@@ -23,7 +23,7 @@ import { registerOperationAdapters } from "../systemActions/operations/routeAdap
 import { PgPlanRepository } from "../plans/repository.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
-  const repository = () => new PgTaskRepository(dbPool(context.config));
+  const repository = () => new PgTaskRepository(dbPool(context.config), context.config);
   // Formal adapters: identity, transport key and the typed envelope only.
   registerOperationAdapters(app, context.config, [
     { method: "POST", url: "/api/v1/tasks", operation: "task.create" },

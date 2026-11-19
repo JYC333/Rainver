@@ -1,9 +1,13 @@
-import { CANONICAL_ROLES } from "../policy/decisionCore.js";
 import { HttpError } from "../routeUtils/common.js";
 
 export type SpaceRole = "owner" | "admin" | "reviewer" | "member" | "guest";
 
-/** Space roles, lowest first. */
+/**
+ * Space roles, lowest first. Defined here, below the policy core that ranks by
+ * it: this module is imported by low-level access and retrieval code and must
+ * not pull the policy and plugin graph in with it.
+ */
+export const CANONICAL_ROLES = ["guest", "member", "reviewer", "admin", "owner"] as const satisfies readonly SpaceRole[];
 export const SPACE_ROLE_LADDER: readonly string[] = CANONICAL_ROLES;
 
 export function isKnownSpaceRole(value: string | null | undefined): value is SpaceRole {

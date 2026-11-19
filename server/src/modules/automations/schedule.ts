@@ -20,17 +20,25 @@ export function parseSchedule(configJson: Record<string, unknown> | null): {
   return { cron, timezone };
 }
 
-export function computeNextRunAt(
+function scheduleInterval(
   configJson: Record<string, unknown> | null,
-  after: Date = new Date(),
+  at: Date,
+  direction: "next" | "prev",
 ): Date {
   const { cron, timezone } = parseSchedule(configJson);
   try {
     // tz must always be passed explicitly — cron-parser falls back to the
     // host process's local timezone (not UTC) when it is omitted.
-    const interval = CronExpressionParser.parse(cron, { currentDate: after, tz: timezone });
-    return interval.next().toDate();
+    return CronExpressionParser.parse(cron, { currentDate: at, tz: timezone })[direction]().toDate();
   } catch (error) {
     throw new InvalidScheduleError(error instanceof Error ? error.message : String(error));
   }
+}
+
+export function computeNextRunAt(configJson: Record<string, unknown> | null, after = new Date()): Date {
+  return scheduleInterval(configJson, after, "next");
+}
+
+export function computePreviousRunAt(configJson: Record<string, unknown> | null, before: Date): Date {
+  return scheduleInterval(configJson, before, "prev");
 }

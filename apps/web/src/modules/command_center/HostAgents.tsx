@@ -5,7 +5,7 @@ import { useAppTranslation } from '../../i18n'
 import { acpAgentsApi, hostsApi, type AcpAgentOut, type AcpRegistryEntry } from '../../api/client'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '../../components/ui/dialog'
 import HostAgentCatalog from './HostAgentCatalog'
-import { hasStableUpdate } from './runtimeVersions'
+import { hasManagedUpdate, hasStableUpdate } from './runtimeVersions'
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
 import { errMsg } from '../../lib/utils'
@@ -17,6 +17,12 @@ import { SpaceLink } from '../../core/spaceNav'
 
 /** How long a finished, successful login stays on screen before the panel closes itself. */
 const LOGIN_PANEL_AUTO_CLOSE_MS = 3_000
+
+/** An open catalog can outlive the runtime definitions refresh. Keep the newer release. */
+function newerRelease(definition: string | null | undefined, catalog: string | undefined) {
+  if (!definition) return catalog
+  return catalog && hasStableUpdate(definition, catalog) ? catalog : definition
+}
 
 /** The copies of an adapter a host reports, in the shape the server stored. */
 function installationsOn(host: Host, adapter: HostRuntimeDefinitionOption): RuntimeInstallation[] {
@@ -128,16 +134,18 @@ export default function HostAgents({
         const adapter = builtinAdaptersByRegistryId.get(entry.id)
           ?? adapters.find(candidate => candidate.runtime_key === enabledRegistryById.get(entry.id)?.runtime_key)
         const copies = adapter ? installationsOn(host, adapter) : []
-        const managed = installedRegistryVersions.has(entry.id)
+        const managedVersions = installedRegistryVersions.has(entry.id)
           ? [installedRegistryVersions.get(entry.id)!]
-          : copies.filter(copy => copy.id !== 'own').flatMap(copy => copy.version ? [copy.version] : [])
+          : copies.filter(copy => copy.id !== 'own').map(copy => copy.version)
         const installed = copies.length > 0 || installedRegistryVersions.has(entry.id)
           || enabledRegistryById.get(entry.id)?.installed_on.some(item => item.host_id === host.id) === true
-        return {entry, installed, managed, runtimeKey: adapter?.runtime_key, own: copies.some(copy => copy.id === 'own'),
-          update: (managed.length > 0 && managed.every(version => hasStableUpdate(version, entry.version)))
-,
+        const version = newerRelease(adapter?.latest_managed_version, entry.version) ?? entry.version
+        return {
+          entry: { ...entry, version }, installed, managed: managedVersions.filter((value): value is string => value !== null),
+          runtimeKey: adapter?.runtime_key, own: copies.some(copy => copy.id === 'own'),
+          update: hasManagedUpdate(managedVersions, version),
           enabled: enabledRegistryById.has(entry.id) || Boolean(adapter),
-          }
+        }
       })
       .filter(row => !needle || row.entry.name.toLowerCase().includes(needle) || row.entry.id.toLowerCase().includes(needle))
       .sort((a,b) => Number(b.installed)-Number(a.installed) || a.entry.name.localeCompare(b.entry.name))
@@ -194,9 +202,12 @@ export default function HostAgents({
     }
   }
 
-  const install = (adapter: HostRuntimeDefinitionOption) => withBusy(adapter.runtime_key, async () => {
+  const install = (adapter: HostRuntimeDefinitionOption, registryVersion?: string) => withBusy(adapter.runtime_key, async () => {
     const nativeUpdate = repositoryAcpAdapter(adapter.runtime_key) && installationsOn(host, adapter).some(copy => copy.id !== 'own')
-    const result = await (nativeUpdate ? hostsApi.updateManagedRuntime(host.id, adapter.runtime_key) : hostsApi.installRuntime(host.id, adapter.runtime_key))
+    const request = nativeUpdate
+      ? hostsApi.updateManagedRuntime(host.id, adapter.runtime_key)
+      : hostsApi.installRuntime(host.id, adapter.runtime_key, ...(registryVersion ? [registryVersion] as const : []))
+    const result = await request
     if (!result.ok) throw new Error(result.error ?? 'install failed')
     const bridge = repositoryAcpAdapter(adapter.runtime_key)
     if (bridge && !nativeUpdate && result.installation?.startsWith('managed:')) setInstalledRegistryVersions(previous => new Map(previous).set(bridge.registry_id, result.installation!.slice('managed:'.length)))
@@ -276,27 +287,38 @@ export default function HostAgents({
       if (!result.ok) throw new Error(result.error ?? 'rollback failed')
     })
 
-  const runtimeRow = (adapter: HostRuntimeDefinitionOption) => (
-          <HostAgentRow
-            key={adapter.runtime_key}
-            host={host}
-            adapter={adapter}
-            copies={installationsOn(host, adapter)}
-            targetInstallation={runtimeTarget?.runtime_key === adapter.runtime_key ? runtimeTarget.installation : undefined}
-            installBusy={busy}
-            manageable={manageable}
-            usage={usageFor(usage, adapter.runtime_key)}
-            onInstall={() => { void install(adapter) }}
-            onUpdateOwn={() => { void updateOwn(adapter) }}
-            onUninstall={entry => { void uninstall(adapter, entry) }}
-            onRollback={() => { void rollback(adapter) }}
-            onLogin={(installation, target) => {
-              setUsage(previous => { const next = new Map(previous); next.delete(`${adapter.runtime_key}:${installation}`); return next })
-              clearLoginCloseTimer()
-              setLoginOpen(previous => ({ attempt: (previous?.attempt ?? 0) + 1, runtimeKey: adapter.runtime_key, installation, target }))
-            }}
-          />
-  )
+  const runtimeRow = (adapter: HostRuntimeDefinitionOption) => {
+    const copies = installationsOn(host, adapter)
+    const registryId = adapter.registry_id ?? enabledRegistryAgents?.find(agent => agent.runtime_key === adapter.runtime_key)?.id
+    const catalogVersion = registry?.find(entry => entry.id === registryId)?.version
+    const targetVersion = newerRelease(adapter.latest_managed_version, catalogVersion)
+      ?? (host.kind === 'server' ? adapter.server_supported_version : null)
+    const registryVersion = registryId && !repositoryAcpAdapter(adapter.runtime_key)
+      ? targetVersion ?? undefined
+      : undefined
+    return (
+      <HostAgentRow
+        key={adapter.runtime_key}
+        host={host}
+        adapter={{ ...adapter, latest_managed_version: targetVersion }}
+        copies={copies}
+        managedCopyVersion={registryVersion}
+        targetInstallation={runtimeTarget?.runtime_key === adapter.runtime_key ? runtimeTarget.installation : undefined}
+        installBusy={busy}
+        manageable={manageable}
+        usage={usageFor(usage, adapter.runtime_key)}
+        onInstall={() => { void install(adapter, registryVersion) }}
+        onUpdateOwn={() => { void updateOwn(adapter) }}
+        onUninstall={entry => { void uninstall(adapter, entry) }}
+        onRollback={() => { void rollback(adapter) }}
+        onLogin={(installation, target) => {
+          setUsage(previous => { const next = new Map(previous); next.delete(`${adapter.runtime_key}:${installation}`); return next })
+          clearLoginCloseTimer()
+          setLoginOpen(previous => ({ attempt: (previous?.attempt ?? 0) + 1, runtimeKey: adapter.runtime_key, installation, target }))
+        }}
+      />
+    )
+  }
 
   return (
     <div className="w-full border-t border-border pt-2 space-y-1" data-testid={`host-agents-${host.id}`}>

@@ -79,7 +79,16 @@ state, so the checks and the write hold until commit; asset creation takes the
 Space asset-key lock. Owner refusals are the marked `EvolutionAssetRefusal`
 class (409/422; a daily limit is a 409 conflict for that key); other errors stay
 internal. Asset resolution and workflow-from-Run preview are read-only core
-queries on their retained POST URLs. Receipts carry ids; clients reread
+queries on their retained POST URLs. Every command or query that copies or
+derives from a Run's body — evaluation case from a Run, evaluation of a
+candidate Run, workflow preview/save from a Run and its child Runs — requires
+full read access to each Run in the caller's own right (`bodyWithheld` on its
+`getVisibleRun` level and `ownRunBodyLevel` = `full`, which excludes
+oversight); summary-level or oversight-only visibility is a 422 refusal that
+returns no body. Child Runs are listed by `listChildRuns` under the same
+content, Room and domain read gates as `getVisibleRun`, so a child the caller
+cannot discover contributes nothing and is not mentioned, and the
+evaluation Job reads the gated candidate output internally. Receipts carry ids; clients reread
 through the asset, versions, pins, evaluation-case and evaluation-run readers.
 
 ## Autonomous review consumption

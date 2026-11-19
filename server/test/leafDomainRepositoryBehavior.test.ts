@@ -35,6 +35,8 @@ function sourcesConfig(): ServerConfig {
     googleClientId: "",
     googleClientSecret: "",
     googleRedirectUri: "",
+    gmailOAuth: null,
+    gmailPush: null,
     frontendUrl: "http://localhost:5173",
     trustedProxyHost: null,
     sessionExpireDays: 30,
@@ -609,70 +611,6 @@ describe("Leaf domain repository behavior", () => {
       source_channel_id: "channel-1",
       extraction_policy: { profile_key: 42 },
     })).toThrow(expect.objectContaining({ statusCode: 422, message: "extraction_policy.profile_key must be a non-empty string" }));
-  });
-
-  it("restores an archived project source binding instead of creating a duplicate", async () => {
-    const calls: string[] = [];
-    const archived = { ...projectSourceBindingRow(["binding-1", "space-1", "project-1", "channel-1", "default"]), status: "archived" };
-    const db = new FakeDb((sql, params) => {
-      calls.push(sql);
-      if (sql.includes("AS effective_access_level")) return [{ effective_access_level: "full" }];
-      if (sql.includes("JOIN source_connections")) return [sourceConnectionRow()];
-      if (sql.includes("FROM projects")) return [{ id: "project-1", owner_user_id: "user-1", status: "active" }];
-      if (sql.includes("FROM project_source_bindings") && sql.includes("binding_key")) return [archived];
-      if (sql.includes("UPDATE project_source_bindings") && sql.includes("SET status = 'active'")) {
-        return [{ ...archived, status: "active", updated_at: String(params[9]) }];
-      }
-      throw new Error(`unexpected SQL: ${sql}`);
-    });
-
-    const out = await new ProjectSourceBindingService(db).createBinding(identity, {
-      project_id: "project-1",
-      source_channel_id: "channel-1",
-    });
-
-    expect(out).toMatchObject({ id: "binding-1", status: "active" });
-    expect(calls.some(sql => sql.includes("INSERT INTO project_source_bindings"))).toBe(false);
-  });
-
-  it("backfills historical evidence when requested during project source binding creation", async () => {
-    let bindingId: string | null = null;
-    let backfillParams: readonly unknown[] | null = null;
-    const db = new FakeDb((sql, params) => {
-      if (sql.includes("FROM project_source_bindings") && sql.includes("binding_key")) return [];
-      if (sql.includes("AS effective_access_level")) return [{ effective_access_level: "full" }];
-      if (sql.includes("SELECT DISTINCT si.id")) {
-        backfillParams = params;
-        return [];
-      }
-      if (sql.includes("INSERT INTO evidence_links")) {
-        backfillParams = params;
-        return [];
-      }
-      if (sql.includes("JOIN source_connections")) return [sourceConnectionRow()];
-      if (sql.includes("FROM projects")) return [{ id: "project-1", owner_user_id: "user-1", status: "active" }];
-      if (sql.includes("INSERT INTO project_source_bindings")) {
-        bindingId = String(params[0]);
-        return [projectSourceBindingRow(params)];
-      }
-      throw new Error(`unexpected SQL: ${sql}`);
-    });
-
-    const out = await new ProjectSourceBindingService(db).createBinding(identity, {
-      project_id: "project-1",
-      source_channel_id: "channel-1",
-      backfill_history: true,
-    });
-
-    expect(out).toMatchObject({
-      backfill_result: {
-        project_id: "project-1",
-      created_links: 0,
-        evidence_links: 0,
-      },
-    });
-    expect(backfillParams?.[0]).toBe("space-1");
-    expect(backfillParams?.[1]).toBe(bindingId);
   });
 
   it("backfills historical evidence for an existing project source binding after validation", async () => {

@@ -1,4 +1,4 @@
-import {isWireRelativePath,looksSecretLikePath,runLocationGit} from '@rainver/folder-read';
+import {isEnvTemplatePath,isWireRelativePath,looksSecretLikePath,runLocationGit} from '@rainver/folder-read';
 import {gitOrThrow,type GitIdentity} from './taskWorktree.js';
 
 /** Bounds of a commit chain published with its identities (hosts.md, "Controlled Git publication"). */
@@ -16,7 +16,8 @@ const refuse=(code:string)=>{throw new Error(code);};
  * so a private snapshot baseline, earlier private checkpoints or another
  * branch's history can never travel with it; merges inside the chain are
  * refused for the same reason. Every changed path of every commit must be an
- * ordinary repository path, not a credential-like one.
+ * ordinary repository path, not a credential-like one; known committed env
+ * templates are ordinary. Every commit is checked, including later deletions.
  */
 export async function freezePublicationChain(repoRoot:string,strategy:FrozenChain['strategy'],base:string,tip:string,targetRef:string):Promise<FrozenChain>{
  if((await runLocationGit(['merge-base','--is-ancestor',base,targetRef],repoRoot)).code!==0)refuse('native_publication_chain_base_not_target_history');
@@ -32,7 +33,7 @@ export async function freezePublicationChain(repoRoot:string,strategy:FrozenChai
   const changed=await gitOrThrow(['diff-tree','--no-commit-id','--name-only','--no-renames','-r','-z',`${commit}^`,commit],repoRoot);
   for(const path of changed.split('\0').filter(Boolean)){
    if(++paths>MAX_CHAIN_PATHS)refuse('native_publication_chain_too_large');
-   if(!isWireRelativePath(path)||path.split('/').some(s=>s==='..'||s==='.git')||looksSecretLikePath(path))refuse('native_publication_chain_path_not_allowed');
+   if(!isWireRelativePath(path)||path.split('/').some(s=>s==='..'||s==='.git')||(looksSecretLikePath(path)&&!isEnvTemplatePath(path)))refuse('native_publication_chain_path_not_allowed');
   }
  }
  return {strategy,base,tip,commits};

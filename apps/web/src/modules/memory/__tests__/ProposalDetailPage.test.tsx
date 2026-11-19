@@ -4,7 +4,7 @@ import type { ReactNode } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Proposal } from '../../../types/api'
 
-const mocked = vi.hoisted(() => ({ get: vi.fn(), accept: vi.fn(), memoryGet: vi.fn(), reviseProposal: vi.fn() }))
+const mocked = vi.hoisted(() => ({ get: vi.fn(), accept: vi.fn(), reject: vi.fn(), memoryGet: vi.fn(), reviseProposal: vi.fn() }))
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }))
 vi.mock('../../../contexts/SpaceContext', () => ({
@@ -16,11 +16,12 @@ vi.mock('../../../core/spaceNav', async importOriginal => ({
 }))
 vi.mock('../../../components/ContentAccessControl', () => ({ ContentAccessControl: () => null }))
 vi.mock('../../../api/client', () => ({
-  proposalsApi: { get: mocked.get, accept: mocked.accept, reject: vi.fn(), approveEgressGrantingUserProposal: vi.fn() },
+  proposalsApi: { get: mocked.get, accept: mocked.accept, reject: mocked.reject, approveEgressGrantingUserProposal: vi.fn() },
   memoryApi: { get: mocked.memoryGet, reviseProposal: mocked.reviseProposal },
 }))
 
 import ProposalDetailPage from '../ProposalDetailPage'
+import { toast } from 'sonner'
 
 function proposal(overrides: Partial<Proposal>): Proposal {
   return {
@@ -79,6 +80,31 @@ describe('ProposalDetailPage', () => {
       fireEvent.click(screen.getByRole('button',{name:'Accept'}))
       await waitFor(()=>expect(mocked.accept).toHaveBeenCalledWith('proposal-revised',{}))
     }
+  })
+
+  it.each([
+    ['operation_approval_superseded', 'superseded', 'Not applied: this request changed after the proposal was made, so the old approval no longer applies. Review the current proposal instead.'],
+    ['operation_approval_expired', 'pending', 'Not applied: this proposal expired before it was approved. Ask for the change again if it is still needed.'],
+  ])('reports an accept decided as %s (also on replay) as not applied, never accepted', async (code, status, message) => {
+    const pending = proposal({ proposal_type: 'plugin_proposal' })
+    mocked.get.mockResolvedValueOnce(pending).mockResolvedValue({ ...pending, status })
+    mocked.accept.mockResolvedValue({ proposal: { ...pending, status }, result_type: 'operation_failure', result: { error: { code, request_id: 'r' } } })
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Accept' }))
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(message))
+    expect(toast.success).not.toHaveBeenCalled()
+    await waitFor(() => expect(mocked.get).toHaveBeenCalledTimes(2))
+  })
+
+  it('offers no decision once a refresh shows the proposal expired, and a refused decision shows the live state', async () => {
+    const pending = proposal({ proposal_type: 'plugin_proposal' })
+    mocked.get.mockResolvedValueOnce(pending).mockResolvedValue({ ...pending, expired: true })
+    mocked.reject.mockRejectedValue(new Error('Proposal not found'))
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Reject' }))
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Reject' })).toBeNull())
+    expect(screen.queryByRole('button', { name: 'Accept' })).toBeNull()
+    expect(toast.success).not.toHaveBeenCalled()
   })
 
   it('links an accepted workflow save to the draft it created in Evolution', async () => {

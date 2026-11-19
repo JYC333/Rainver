@@ -3,6 +3,8 @@
 
 /* Streamdown's Markdown utilities live in this installed dependency. */
 @source "../node_modules/streamdown/dist/*.js";
+/* Bundled plugin views live outside this package; scan their sources too. */
+@source "../../../plugins/official/*/web/src/**/*.{ts,tsx}";
 
 @custom-variant dark (&:is(.dark *));
 

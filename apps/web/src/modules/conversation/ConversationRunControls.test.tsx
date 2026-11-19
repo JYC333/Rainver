@@ -288,6 +288,48 @@ describe('ConversationRunControls', () => {
     expect(runsApiMock.resume).not.toHaveBeenCalled()
     expect(screen.queryByRole('button', { name: 'Resume' })).not.toBeInTheDocument()
   })
+  it('offers a sensitive plugin-data decision only to its data owner, never to a Space owner in their place', async () => {
+    const request = { id: 'authorization-d', status: 'pending', reason: 'Read my diary', request_kind: 'plugin_data', approver: 'data_owner', instructed_by_user_id: 'member-1' }
+    runsApiMock.authorizationRequests.mockResolvedValue([request])
+    const paused = run({ status: 'waiting_for_review', error_json: { authorization_request_id: 'authorization-d' } })
+    const { unmount } = render(<MemoryRouter><ConversationScope spaceId="source-b" actionUserId="owner-1" actionRole="owner"><ConversationRunControls spaceId="source-b" runId="run-1" run={paused} /></ConversationScope></MemoryRouter>)
+    expect(await screen.findByText('Read my diary')).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Approve authorization' })).not.toBeInTheDocument()
+    unmount()
+    runsApiMock.get.mockResolvedValue(run({ status: 'running' }))
+    render(<MemoryRouter><ConversationScope spaceId="source-b" actionUserId="member-1" actionRole="member"><ConversationRunControls spaceId="source-b" runId="run-1" run={paused} /></ConversationScope></MemoryRouter>)
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve authorization' }))
+    await waitFor(() => expect(authorizationApiMock.approve).toHaveBeenCalledWith('authorization-d', expect.objectContaining({ spaceId: 'source-b' })))
+  })
+  it('shows a Gmail consent card the mailbox and Project it allows only while the server projects it approvable', async () => {
+    const base = { status: 'pending', request_kind: 'plugin_data', approver: 'data_owner', instructed_by_user_id: 'member-1', action_id: 'source.gmail.mail.read' }
+    const paused = run({ status: 'waiting_for_review', error_json: { authorization_request_id: 'gmail-a' } })
+    const show = (request: Record<string, unknown>) => {
+      runsApiMock.authorizationRequests.mockResolvedValue([{ ...base, ...request }])
+      return render(<MemoryRouter><ConversationScope spaceId="source-b" actionUserId="member-1" actionRole="member"><ConversationRunControls spaceId="source-b" runId="run-1" run={paused} /></ConversationScope></MemoryRouter>)
+    }
+    let view = show({ id: 'gmail-a', reason: 'Summarize my mail', consent_state: 'approvable', consent_target: { project_id: 'p1', project_name: 'Thesis', mailbox_email: 'me@gmail.example', purpose: 'on_demand_read' } })
+    expect(await screen.findByText('Mailbox me@gmail.example · Project Thesis')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Approve authorization' })).toBeVisible()
+    view.unmount()
+    view = show({ id: 'gmail-b', reason: 'Old card', consent_state: 'superseded', consent_target: null })
+    expect(await screen.findByText(/earlier per-turn consent/)).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Approve authorization' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Reject authorization' })).toBeVisible()
+    view.unmount()
+    // Disconnected, reads turned off, reconnected, Project left or Run moved on: the server says it ended.
+    view = show({ id: 'gmail-c', reason: 'Ended card', consent_state: 'ended', consent_target: null })
+    expect(await screen.findByText(/changed after it was made/)).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Approve authorization' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Reject authorization' })).toBeVisible()
+    expect(screen.queryByText(/me@gmail\.example/)).not.toBeInTheDocument()
+    view.unmount()
+    // No projection (an older server, or not the owner's view): never offer approval on the client's own guess.
+    show({ id: 'gmail-d', reason: 'Unprojected card', consent_target: { project_id: 'p1', project_name: 'Thesis', mailbox_email: 'me@gmail.example', purpose: 'on_demand_read' } })
+    expect(await screen.findByText('Unprojected card')).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Approve authorization' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/me@gmail\.example/)).not.toBeInTheDocument()
+  })
   it('resumes supervisor review through the shared Run command and refreshes its caller', async () => {
     runsApiMock.get.mockResolvedValue(run({ status: 'running' }))
     const changed = vi.fn()

@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FastifyInstance } from "fastify";
@@ -14,6 +14,7 @@ import { buildModuleServer } from "./support/moduleServer.js";
 import { systemModule } from "../src/modules/system/index.js";
 import { catalogModule } from "../src/modules/catalog/index.js";
 import { loadConfig } from "../src/config.js";
+import { CATALOG_MANIFEST_MAX_BYTES, catalogSummary, listCapabilities } from "../src/modules/catalog/service.js";
 import { __setAuthIdentityForTests, __setAuthRepositoryForTests } from "../src/modules/auth/identity.js";
 import { deniedAuthRepository } from "./support/routeFakes.js";
 
@@ -168,5 +169,52 @@ describe("catalog agent templates listing", () => {
         description: "A template.",
       },
     ]);
+  });
+});
+
+const manifestDirs: string[] = [];
+afterEach(async () => {
+  for (const dir of manifestDirs.splice(0)) {
+    await chmod(join(dir, "catalog", "capabilities"), 0o755).catch(() => undefined);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+async function manifestCatalog() {
+  const dir = await mkdtemp(join(tmpdir(), "catalog-"));
+  manifestDirs.push(dir);
+  const root = join(dir, "catalog");
+  await mkdir(join(root, "capabilities"), { recursive: true });
+  return { dir, root };
+}
+
+async function capability(root: string, name: string, body: string) {
+  await mkdir(join(root, "capabilities", name), { recursive: true });
+  await writeFile(join(root, "capabilities", name, "capability.yaml"), body);
+}
+
+describe("catalog manifest reads", () => {
+  it("reads regular manifests, skips a symlinked manifest and lists an oversized one as a parse error", async () => {
+    const { dir, root } = await manifestCatalog();
+    await capability(root, "plain", "id: plain\nname: Plain\n");
+    await capability(root, "huge", `id: huge\ndescription: "${"x".repeat(CATALOG_MANIFEST_MAX_BYTES)}"\n`);
+    await writeFile(join(dir, "outside.yaml"), "id: outside\nname: Outside\n");
+    await mkdir(join(root, "capabilities", "linked"));
+    await symlink(join(dir, "outside.yaml"), join(root, "capabilities", "linked", "capability.yaml"));
+
+    const listed = await listCapabilities(root);
+    expect(listed.items).toEqual([
+      { id: "huge", name: null, version: null, description: null, enabled: null, parse_error: true },
+      { id: "plain", name: "Plain", version: null, description: null, enabled: null },
+    ]);
+    await expect(catalogSummary(root)).resolves.toEqual({ catalog_available: true, capabilities_count: 2, agent_templates_count: 0 });
+  });
+
+  it("reports a missing catalog as unavailable but an unreadable one as an error", async () => {
+    const { dir, root } = await manifestCatalog();
+    await expect(listCapabilities(join(dir, "absent"))).resolves.toEqual({ catalog_available: false, items: [] });
+    if (process.getuid?.() === 0) return; // root reads through mode bits
+    await chmod(join(root, "capabilities"), 0o000);
+    await expect(listCapabilities(root)).rejects.toMatchObject({ code: "EACCES" });
   });
 });

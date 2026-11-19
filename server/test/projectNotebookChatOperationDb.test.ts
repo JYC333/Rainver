@@ -89,7 +89,7 @@ it('holds the Project owning a context Note\'s Folder: member removal there wait
  await db.pool.query("INSERT INTO project_members(id,space_id,project_id,user_id,role,status,created_at,updated_at) VALUES($1,$2,$3,$4,'member','active',now(),now())",[randomUUID(),space,third,user]);
  await db.pool.query("INSERT INTO project_folders(id,space_id,project_id,name,status,kind,protected,system_managed,created_by_user_id,created_at,updated_at) VALUES($1,$2,$3,'Third folder','active','code',false,false,$4,now(),now())",[folder,space,third,peer]);
  await db.pool.query('UPDATE space_objects SET project_folder_id=$2 WHERE id=$1',[note.id,folder]);
- const contract={source_item_ids:[],note_refs:[{id:note.id}],session_id:null,provider_id:provider,model_name:null};
+ const contract={source_item_ids:[],source_item_connections:{},note_refs:[{id:note.id}],note_source_connection_ids:[],session_id:null,provider_id:provider,model_name:null};
  const authorize=(client:Queryable)=>authorizeNotebookChatAttempt(client,config,identity,project,contract);
  await expect(withTransaction(db.pool,authorize)).resolves.toBeUndefined();
  let checked!:()=>void,commit!:()=>void;const afterCheck=new Promise<void>(r=>{checked=r;}),mayCommit=new Promise<void>(r=>{commit=r;});

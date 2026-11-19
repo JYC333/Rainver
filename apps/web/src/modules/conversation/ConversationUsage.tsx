@@ -87,7 +87,8 @@ export function ConversationUsage({quota,selectedAgents,agents,scope,userId,onRe
   </section>
   const content=<div className="space-y-3">
     <p className="text-xs text-muted-foreground">{t('conversation_ui.usage.hint')}</p>
-    <Button type="button" size="sm" variant={numbers?'secondary':'ghost'} aria-pressed={numbers} onClick={()=>{setNumbers(!numbers);try{sessionStorage.setItem(pref,String(!numbers))}catch{}}}>{t('conversation_ui.usage.numbers')}</Button>
+    {/* An action label names what the click does, so it carries no aria-pressed: a pressed "Hide…" would read as the opposite state. */}
+    <Button type="button" size="sm" variant="outline" onClick={()=>{setNumbers(!numbers);try{sessionStorage.setItem(pref,String(!numbers))}catch{}}}>{t(numbers?'conversation_ui.usage.hide_numbers':'conversation_ui.usage.show_numbers')}</Button>
     {error&&<p role="alert" className="text-xs text-destructive">{error}</p>}
     <div className="max-h-[50dvh] space-y-2 overflow-y-auto overscroll-contain">{selected.length?selected.map(row):<p className="text-sm text-muted-foreground">{t('conversation_ui.usage.empty')}</p>}
       {other.map(row)}

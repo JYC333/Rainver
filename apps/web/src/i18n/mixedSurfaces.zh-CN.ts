@@ -14,6 +14,9 @@ export const mixedSurfacesZhCN = {
     code_patch_refresh: '刷新决定',
     code_patch_jobs: '打开任务队列',
     code_patch_queued: '代码补丁决定已记录，文件操作已入队；请在任务队列查看结果后继续。',
+    proposal_accept_superseded: '未生效：提案提出后，相关内容已变更，旧的批准不再适用。请审查当前的提案。',
+    proposal_accept_expired: '未生效：该提案在批准前已过期。如仍需要，请重新发起。',
+    proposal_accept_failed: '未生效：已批准的请求未能执行。',
     security: {
       load_failed: '安全信息暂时无法加载。',
       verification_expired: '验证已过期，请重新验证后继续。',
@@ -80,6 +83,8 @@ export const mixedSurfacesZhCN = {
       status_failed: '失败',
       status_rejected: '已拒绝',
       status_superseded: '重复 · 已合并',
+      status_expired: '已过期 · 未生效',
+      expired_description: '该提案在决定前已过期，未执行任何更改。如仍需要，请重新发起。',
       risk_low: '低风险',
       risk_medium: '中风险',
       risk_high: '高风险',

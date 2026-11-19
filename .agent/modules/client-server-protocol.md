@@ -195,6 +195,37 @@ Each server poll also writes an SSE keepalive comment, including when the turn
 has no changes, so long commands and approval waits do not trigger the proxy's
 idle read timeout. These comments create no progress events.
 
+Access is re-checked for the life of the stream, not only at connect. Every
+write after the opening snapshot — parts, state, live text and keepalives —
+leaves from one serial loop right after it re-resolves the opening session
+(pinned to the Space it resolved) and the Run's current full read
+(`currentTurnStreamAccess`); content is read before that check and written with
+no await after it. Text deltas are only buffered between checks and flushed at
+most every 250 ms, so checks are bounded per connection by time, not by token
+rate. The live text is bounded per stream by the delta bus's own limit
+(`MAX_BUFFERED_CHARACTERS`, 256 Ki UTF-16 units) and is all-or-nothing: if it
+would pass the limit, the bus replay already dropped its head, or a delta index
+is missing, the stream withdraws it (an empty `streamed` text part) and stops
+collecting it, while parts, state and the persisted reply keep arriving through
+the poll — a cut copy is never shown as the text so far. A live flush is
+skipped while the response still needs to drain; the next one carries the
+whole text. A revocation committed before a check starts stops every later byte,
+including text already buffered. The stream then ends with a typed `server.error`
+(`TurnStreamErrorSchema`): `status: 401` when the session ended (logout,
+revocation, disabled account, a different person behind the request) and
+`status: 404` when the Run is no longer readable in full (Space or Project
+removal, private, summary-only); a blocked turn's stream ends the same way.
+The web turn readers raise `auth:required` only for the 401. Every authenticated
+web SSE client (`turn`, Agent Attention, Project updates, Host/ordinary-tool and
+subscription login streams) cancels an unopened response's body and, for an HTTP
+401, raises the one `auth:required`, deduplicated by session epoch and skipped
+for an aborted request; in-stream business errors (a vendor login failing) never
+sign the browser out. The non-JSON control-plane reads — the image upload XHR,
+the image blob read and the Artifact export download — use the same
+`signalAuthRequired`: the epoch is captured when the request is sent, so a 401
+for a request sent before a sign-out (including another tab's) never signs out
+the next login, and an aborted request's 401 is ignored.
+
 `GET /api/v1/runs/{runId}/turn` is the same projection as a plain read, always
 whole: part indices restart at 0 and the reply and Proposals are appended
 unconditionally, so a partial read is not something a client could merge.

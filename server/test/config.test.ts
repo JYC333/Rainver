@@ -180,6 +180,52 @@ describe("loadConfig", () => {
       .toContain("secret");
   });
 
+  it("loads the Gmail OAuth client only as a complete, fixed-callback, secret-redacted triple", () => {
+    const gmail = {
+      GMAIL_OAUTH_CLIENT_ID: "gmail-client",
+      GMAIL_OAUTH_CLIENT_SECRET: "gmail-secret-value",
+      GMAIL_OAUTH_REDIRECT_URI: "https://rainver.example/api/v1/sources/gmail/oauth/callback",
+    };
+    expect(loadConfig({}).gmailOAuth).toBeNull();
+    expect(loadConfig(gmail).gmailOAuth).toEqual({ clientId: "gmail-client", clientSecret: "gmail-secret-value", redirectUri: gmail.GMAIL_OAUTH_REDIRECT_URI });
+    const codeOf = (env: Record<string, string>) => { try { loadConfig(env); } catch (err) { return (err as ConfigError).code; } return null; };
+    expect(codeOf({ GMAIL_OAUTH_CLIENT_ID: "gmail-client" })).toBe("incomplete_gmail_oauth_config");
+    for (const uri of ["https://rainver.example/api/v1/auth/callback/google", "https://rainver.example/api/v1/sources/gmail/oauth/callback?x=1",
+      "https://u:p@rainver.example/api/v1/sources/gmail/oauth/callback", "ftp://rainver.example/api/v1/sources/gmail/oauth/callback", "not a url"]) {
+      expect(codeOf({ ...gmail, GMAIL_OAUTH_REDIRECT_URI: uri })).toBe("invalid_gmail_oauth_redirect_uri");
+    }
+    expect(codeOf({ ...gmail, RAINVER_ENV: "prod", BETTER_AUTH_SECRET: "s", FRONTEND_URL: "https://rainver.example",
+      GOOGLE_REDIRECT_URI: "https://rainver.example/api/v1/auth/callback/google",
+      GMAIL_OAUTH_REDIRECT_URI: "http://rainver.example/api/v1/sources/gmail/oauth/callback" })).toBe("insecure_gmail_oauth_redirect_uri");
+    expect(describeConfig(loadConfig(gmail))).toContain("gmailOAuthConfigured=true");
+    expect(describeConfig(loadConfig(gmail))).not.toContain("gmail-secret-value");
+  });
+
+  it("loads Gmail push only as four values with the Gmail client, one Google Cloud project and the fixed push path", () => {
+    const gmail = {
+      GMAIL_OAUTH_CLIENT_ID: "gmail-client", GMAIL_OAUTH_CLIENT_SECRET: "gmail-secret-value",
+      GMAIL_OAUTH_REDIRECT_URI: "https://rainver.example/api/v1/sources/gmail/oauth/callback",
+    };
+    const push = {
+      GMAIL_PUBSUB_TOPIC: "projects/rainver-mail/topics/gmail", GMAIL_PUBSUB_SUBSCRIPTION: "projects/rainver-mail/subscriptions/gmail-push",
+      GMAIL_PUBSUB_PUSH_AUDIENCE: "https://rainver.example/api/v1/sources/gmail/push", GMAIL_PUBSUB_PUSH_SERVICE_ACCOUNT: "Gmail-Push@rainver-mail.iam.gserviceaccount.com",
+    };
+    expect(loadConfig(gmail).gmailPush).toBeNull();
+    expect(loadConfig({ ...gmail, ...push }).gmailPush).toEqual({ topicName: push.GMAIL_PUBSUB_TOPIC, subscriptionName: push.GMAIL_PUBSUB_SUBSCRIPTION,
+      audience: push.GMAIL_PUBSUB_PUSH_AUDIENCE, serviceAccountEmail: "gmail-push@rainver-mail.iam.gserviceaccount.com" });
+    const codeOf = (env: Record<string, string>) => { try { loadConfig(env); } catch (err) { return (err as ConfigError).code; } return null; };
+    expect(codeOf({ ...gmail, GMAIL_PUBSUB_TOPIC: push.GMAIL_PUBSUB_TOPIC })).toBe("incomplete_gmail_push_config");
+    expect(codeOf(push)).toBe("gmail_push_requires_oauth");
+    for (const bad of [
+      { GMAIL_PUBSUB_SUBSCRIPTION: "projects/other-project/subscriptions/gmail-push" },
+      { GMAIL_PUBSUB_TOPIC: "gmail" },
+      { GMAIL_PUBSUB_PUSH_AUDIENCE: "https://rainver.example/api/v1/sources/gmail/push?x=1" },
+      { GMAIL_PUBSUB_PUSH_AUDIENCE: "http://rainver.example/api/v1/sources/gmail/push" },
+      { GMAIL_PUBSUB_PUSH_SERVICE_ACCOUNT: "someone@gmail.com" },
+    ]) expect(codeOf({ ...gmail, ...push, ...bad }), JSON.stringify(bad)).toBe("invalid_gmail_push_config");
+    expect(describeConfig(loadConfig({ ...gmail, ...push }))).toContain("gmailPushConfigured=true");
+  });
+
   it("carries a machine code on every validation failure", () => {
     const codeOf = (env: Record<string, string>): string => {
       try {

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Pool } from "../../db/pool.js";
-import { withTransaction } from "../../db/tx.js";
+import { runTransaction, type TransactionRunner } from "../../db/tx.js";
 
 export interface RequestQuotaWindow { window: "minute" | "hour" | "day"; limit: number }
 interface WindowState { limit: number; used: number; reset: number }
@@ -24,17 +24,17 @@ function validate(key: string, policy: readonly RequestQuotaWindow[]): void {
  * Row lock serializes workers across processes. All windows debit together or none do.
  * UTC fixed windows: daily reset is 00:00 UTC, hourly/minute at UTC boundaries.
  * A more conservative limit persists through its current window, including omitted windows. */
-export async function admitSourceRequest(pool: Pool, key: string, policy: readonly RequestQuotaWindow[], signal?: AbortSignal): Promise<{ allowed: boolean; retryAt?: string }> {
+export async function admitSourceRequest(pool: Pool | TransactionRunner, key: string, policy: readonly RequestQuotaWindow[], signal?: AbortSignal): Promise<{ allowed: boolean; retryAt?: string }> {
   return admitSourceRequestGroups(pool, [{ key, windows: policy }], signal);
 }
 
 /** Account-wide windows and narrower endpoint windows are locked/debited together.
  * Sorting keeps two workers taking overlapping groups from deadlocking. */
-export async function admitSourceRequestGroups(pool: Pool, groups: readonly { key: string; windows: readonly RequestQuotaWindow[] }[], signal?: AbortSignal): Promise<{ allowed: boolean; retryAt?: string }> {
+export async function admitSourceRequestGroups(pool: Pool | TransactionRunner, groups: readonly { key: string; windows: readonly RequestQuotaWindow[] }[], signal?: AbortSignal): Promise<{ allowed: boolean; retryAt?: string }> {
   if (!groups.length || groups.length > 8 || new Set(groups.map(g => g.key)).size !== groups.length) throw new Error("Invalid quota groups");
   for (const group of groups) validate(group.key, group.windows);
   signal?.throwIfAborted();
-  return withTransaction(pool, async db => {
+  return runTransaction(pool, async db => {
     signal?.throwIfAborted();
     const locked: { key: string; states: Partial<Record<RequestQuotaWindow["window"], WindowState>>; cooldown: number; original: string }[] = [];
     for (const {key} of [...groups].sort((a,b) => a.key.localeCompare(b.key))) {
@@ -71,13 +71,13 @@ export async function admitSourceRequestGroups(pool: Pool, groups: readonly { ke
  * exactly as given. Sorted locks atomically extend account and all endpoint
  * groups without shortening them. */
 export const SOURCE_MAX_COOLDOWN_SECONDS = 86_400;
-export async function coolDownSourceRequests(pool: Pool, keys: string | readonly string[], retryAfter: string | null): Promise<string> {
+export async function coolDownSourceRequests(pool: Pool | TransactionRunner, keys: string | readonly string[], retryAfter: string | null): Promise<string> {
   const groups = [...new Set(typeof keys === "string" ? [keys] : keys)].sort();
   if (!groups.length || groups.length > 8 || groups.some(key => !/^[a-f0-9]{64}$/.test(key))) throw new Error("Invalid quota identity");
   const raw = retryAfter?.trim() ?? "";
   const delta = /^\d+$/.test(raw) ? Math.min(Number(raw), SOURCE_MAX_COOLDOWN_SECONDS) : null;
   const date = delta === null && /^[A-Za-z]{3}, \d{2} [A-Za-z]{3} \d{4} \d{2}:\d{2}:\d{2} GMT$/.test(raw) ? Date.parse(raw) : NaN;
-  return withTransaction(pool, async db => {
+  return runTransaction(pool, async db => {
     for (const key of groups) {
       await db.query(`INSERT INTO source_request_quota_state (group_key, windows_json) VALUES ($1,'{}'::jsonb) ON CONFLICT DO NOTHING`, [key]);
       await db.query(`SELECT group_key FROM source_request_quota_state WHERE group_key=$1 FOR UPDATE`, [key]);

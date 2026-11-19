@@ -178,6 +178,269 @@ describe("provider proxy server", () => {
     expect(upstream.requests).toHaveLength(1);
   });
 
+  it("holds a pinned lease to its model when a request names none: the local server must not pick one", async () => {
+    const upstream = await startMockUpstream();
+    upstreams.push(upstream);
+    const leases = new ProviderProxyLeaseRegistry();
+    const proxy = await startProviderProxyServer(config(), {
+      leaseRegistry: leases,
+      commandStore: { async resolveProviderApiKey() { return "provider-secret"; } },
+      resolveUsageAttribution: testUsageAttribution,
+      async recordUsageObservation() {},
+    });
+    handles.push(proxy);
+    const lease = leases.create(authorizedFor("space-1", "run-local", "provider-local"), {
+      run_id: "run-local", space_id: "space-1", provider_id: "provider-local", route: "openai",
+      upstream_base_url: `${upstream.baseUrl}/v1`, model: "llama3.1", pinned_model: "llama3.1", ttl_ms: 60_000,
+    });
+    for (const body of [JSON.stringify({ messages: [] }), JSON.stringify({ model: "", messages: [] }), "not json"]) {
+      const refused = await fetch(`${proxy.baseUrl}/openai/${lease.id}/chat/completions`, {
+        method: "POST", headers: { authorization: `Bearer ${lease.token}`, "content-type": "application/json" }, body,
+      });
+      expect(refused.status).toBe(403);
+    }
+    expect(upstream.requests).toHaveLength(0);
+  });
+
+  describe("a model-only lease (the model channel of a network-isolated Run)", () => {
+    async function setup(route: "anthropic" | "openai", requestPolicy: "model_only" | null = "model_only") {
+      const upstream = await startMockUpstream((_req, res) => {
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.write("event: ping\ndata: {\"part\":1}\n\n");
+        setTimeout(() => res.end("event: done\ndata: {\"part\":2}\n\n"), 20);
+      });
+      upstreams.push(upstream);
+      const leases = new ProviderProxyLeaseRegistry();
+      const proxy = await startProviderProxyServer(config(), {
+        leaseRegistry: leases,
+        commandStore: { async resolveProviderApiKey() { return "provider-secret"; } },
+        resolveUsageAttribution: testUsageAttribution,
+        async recordUsageObservation() {},
+      });
+      handles.push(proxy);
+      const lease = leases.create(authorizedFor("space-1", "run-iso", "provider-1"), {
+        run_id: "run-iso", space_id: "space-1", provider_id: "provider-1", route,
+        upstream_base_url: route === "openai" ? `${upstream.baseUrl}/v1` : upstream.baseUrl,
+        model: "leased-model", request_policy: requestPolicy, ttl_ms: 60_000,
+      });
+      // Each response is read to its end, as a CLI does, and returned with its body.
+      const send = async (path: string, body: unknown, init: { method?: string; contentType?: string } = {}) => {
+        const response = await fetch(`${proxy.baseUrl}/${route}/${lease.id}${path}`, {
+          method: init.method ?? "POST",
+          headers: { authorization: `Bearer ${lease.token}`, "content-type": init.contentType ?? "application/json" },
+          body: init.method === "GET" || init.method === "HEAD" ? undefined : typeof body === "string" ? body : JSON.stringify(body),
+        });
+        return { status: response.status, body: await response.text() };
+      };
+      return { upstream, leases, send };
+    }
+    // The shapes the installed Claude Code (2.1.318) and Codex (0.167.1) sent to a synthetic provider.
+    const claudeTurn = {
+      model: "leased-model", max_tokens: 32000, stream: true, metadata: { user_id: "{}" },
+      thinking: { type: "adaptive", display: "omitted" }, context_management: { edits: [{ type: "clear_thinking_20251015", keep: "all" }] },
+      output_config: { effort: "high" },
+      system: [{ type: "text", text: "sys" }, { type: "text", text: "sys", cache_control: { type: "ephemeral" } }],
+      tools: [{ name: "Bash", description: "run", input_schema: { type: "object" } }, { name: "DeferredToolPlaceholder", description: "x", input_schema: { type: "object", properties: {} }, defer_loading: true }],
+      messages: [
+        { role: "user", content: [{ type: "text", text: "hi" }] },
+        { role: "system", content: "note" },
+        { role: "assistant", content: [{ type: "tool_use", id: "toolu_1", name: "Bash", input: { command: "echo hi", url: "https://example.invalid/" } }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "hi", is_error: false, cache_control: { type: "ephemeral" } }] },
+        { role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgo=" } }] },
+      ],
+    };
+    const codexTurn = {
+      model: "leased-model", stream: true, store: false, tool_choice: "auto", parallel_tool_calls: true, reasoning: { summary: "auto" },
+      include: ["reasoning.encrypted_content"], prompt_cache_key: "k", client_metadata: { turn_id: "t" }, instructions: "be codex",
+      tools: [
+        { type: "function", name: "exec_command", description: "run", parameters: { type: "object" }, strict: false },
+        { type: "namespace", name: "multi_agent_v1", description: "agents", tools: [{ type: "function", name: "spawn", description: "s", parameters: {}, strict: false }] },
+      ],
+      input: [
+        { type: "message", id: "m1", role: "developer", content: [{ type: "input_text", text: "dev" }] },
+        { type: "message", id: "m2", role: "user", content: [{ type: "input_text", text: "hi" }] },
+        { type: "function_call", id: "fc_1", call_id: "call_1", name: "exec_command", arguments: "{}", status: "completed" },
+        { type: "function_call_output", id: "fo_1", call_id: "call_1", output: "ok" },
+      ],
+    };
+
+    it("forwards exactly the CLIs' inference requests, streamed, and nothing a lease of the same token would add", async () => {
+      const claude = await setup("anthropic");
+      const forwarded = await claude.send("/v1/messages?beta=true", claudeTurn);
+      expect(forwarded.status).toBe(200);
+      expect(forwarded.body).toContain('"part":2');
+      expect((await claude.send("/v1/messages/count_tokens?beta=true", { model: "leased-model", messages: claudeTurn.messages, tools: claudeTurn.tools })).status).toBe(200);
+      expect(claude.upstream.requests.map((r) => r.url)).toEqual(["/v1/messages?beta=true", "/v1/messages/count_tokens?beta=true"]);
+      const codex = await setup("openai");
+      expect((await codex.send("/responses", codexTurn)).status).toBe(200);
+      expect((await codex.send("/chat/completions", { model: "leased-model", stream: true, stream_options: { include_usage: true }, messages: [{ role: "user", content: "hi" }], tools: [{ type: "function", function: { name: "read", parameters: {} } }] })).status).toBe(200);
+      expect(codex.upstream.requests.map((r) => r.url)).toEqual(["/v1/responses", "/v1/chat/completions"]);
+    });
+
+    it("refuses resource endpoints, other methods, hosted tools, provider-side fetches, unknown fields and another or missing model", async () => {
+      const claude = await setup("anthropic");
+      const anthropicRefusals: Array<[string, unknown, { method?: string; contentType?: string }?]> = [
+        ["/v1/models", null, { method: "GET" }],
+        ["/api/hello", null, { method: "HEAD" }],
+        ["/v1/files", { model: "leased-model" }],
+        ["/v1/messages/batches", { requests: [] }],
+        ["/v1/messages/batches/b1/results", null, { method: "GET" }],
+        ["/v1/messages", claudeTurn, { method: "PUT" }],
+        ["/v1/messages?beta=false", claudeTurn],
+        ["/v1/messages?beta=true&x=1", claudeTurn],
+        ["/v1/messages", "not json"],
+        ["/v1/messages", JSON.stringify(claudeTurn), { contentType: "text/plain" }],
+        ["/v1/messages", { ...claudeTurn, model: undefined }],
+        ["/v1/messages", { ...claudeTurn, model: "other-model" }],
+        ["/v1/messages", { ...claudeTurn, mcp_servers: [{ type: "url", url: "https://mcp.example.invalid", name: "x" }] }],
+        ["/v1/messages", { ...claudeTurn, container: "c1" }],
+        ["/v1/messages", { ...claudeTurn, unknown_feature: true }],
+        ["/v1/messages", { ...claudeTurn, tools: [{ type: "web_search_20250305", name: "web_search" }] }],
+        ["/v1/messages", { ...claudeTurn, tools: [{ type: "web_fetch_20250910", name: "web_fetch" }] }],
+        ["/v1/messages", { ...claudeTurn, tools: [{ type: "code_execution_20250825", name: "code_execution" }] }],
+        ["/v1/messages", { ...claudeTurn, tools: [{ type: "tool_search_tool_regex_20251119", name: "tool_search" }] }],
+        ["/v1/messages", { ...claudeTurn, tools: [{ name: "Bash", input_schema: {}, allowed_callers: ["code_execution_20250825"] }] }],
+        ["/v1/messages", { ...claudeTurn, messages: [{ role: "user", content: [{ type: "image", source: { type: "url", url: "https://example.invalid/a.png" } }] }] }],
+        ["/v1/messages", { ...claudeTurn, messages: [{ role: "user", content: [{ type: "document", source: { type: "file", file_id: "file_1" } }] }] }],
+        ["/v1/messages", { ...claudeTurn, messages: [{ role: "user", content: [{ type: "tool_result", tool_use_id: "t", content: [{ type: "image", source: { type: "url", url: "https://example.invalid/b.png" } }] }] }] }],
+        ["/v1/messages", { ...claudeTurn, messages: [{ role: "user", content: [{ type: "container_upload", file_id: "file_1" }] }] }],
+        ["/v1/messages", { ...claudeTurn, messages: [{ role: "assistant", content: [{ type: "server_tool_use", id: "s", name: "web_search", input: {} }] }] }],
+        ["/v1/messages", { ...claudeTurn, messages: [{ role: "user", content: [{ type: "text", text: "x", extra: 1 }] }] }],
+        ["/v1/messages", { ...claudeTurn, context_management: { edits: [{ type: "fetch_everything_20990101" }] } }],
+      ];
+      for (const [path, body, init] of anthropicRefusals) {
+        const response = await claude.send(path, body, init);
+        expect(response.status, `${path} ${JSON.stringify(body)?.slice(0, 120)}`).toBe(403);
+        if (init?.method !== "HEAD") expect(JSON.parse(response.body)).toMatchObject({ error: "provider_proxy_request_not_leased" });
+      }
+      const codex = await setup("openai");
+      const openaiRefusals: Array<[string, unknown, { method?: string }?]> = [
+        ["/files", { purpose: "batch" }],
+        ["/batches", { input_file_id: "f", endpoint: "/v1/responses" }],
+        ["/responses/resp_1", null, { method: "GET" }],
+        ["/responses/resp_1", null, { method: "DELETE" }],
+        ["/responses/resp_1/input_items", null, { method: "GET" }],
+        ["/models", null, { method: "GET" }],
+        ["/vector_stores", { name: "x" }],
+        ["/responses", { ...codexTurn, model: undefined }],
+        ["/responses", { ...codexTurn, model: "gpt-other" }],
+        ["/responses", { ...codexTurn, tools: [...codexTurn.tools, { type: "web_search", external_web_access: true }] }],
+        ["/responses", { ...codexTurn, tools: [{ type: "web_search_preview" }] }],
+        ["/responses", { ...codexTurn, tools: [{ type: "file_search", vector_store_ids: ["v"] }] }],
+        ["/responses", { ...codexTurn, tools: [{ type: "code_interpreter", container: { type: "auto" } }] }],
+        ["/responses", { ...codexTurn, tools: [{ type: "mcp", server_url: "https://mcp.example.invalid", server_label: "x" }] }],
+        ["/responses", { ...codexTurn, tools: [{ type: "image_generation" }] }],
+        ["/responses", { ...codexTurn, tools: [{ type: "namespace", name: "n", tools: [{ type: "web_search" }] }] }],
+        ["/responses", { ...codexTurn, tool_choice: { type: "web_search_preview" } }],
+        ["/responses", { ...codexTurn, include: ["web_search_call.action.sources"] }],
+        ["/responses", { ...codexTurn, store: true }],
+        ["/responses", { ...codexTurn, background: true }],
+        ["/responses", { ...codexTurn, previous_response_id: "resp_0" }],
+        ["/responses", { ...codexTurn, conversation: "conv_1" }],
+        ["/responses", { ...codexTurn, unknown_feature: 1 }],
+        ["/responses", { ...codexTurn, input: [{ type: "item_reference", id: "msg_0" }] }],
+        ["/responses", { ...codexTurn, input: [{ type: "message", role: "user", content: [{ type: "input_image", image_url: "https://example.invalid/a.png" }] }] }],
+        ["/responses", { ...codexTurn, input: [{ type: "message", role: "user", content: [{ type: "input_file", file_id: "file_1" }] }] }],
+        ["/responses", { ...codexTurn, input: [{ type: "web_search_call", id: "ws", status: "completed" }] }],
+        ["/chat/completions", { model: "leased-model", messages: [], web_search_options: {} }],
+        ["/chat/completions", { model: "leased-model", messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: "https://example.invalid/a.png" } }] }] }],
+        ["/chat/completions", { model: "leased-model", messages: [{ role: "user", content: [{ type: "file", file: { file_id: "f" } }] }] }],
+      ];
+      for (const [path, body, init] of openaiRefusals) {
+        const response = await codex.send(path, body, init);
+        expect(response.status, `${path} ${JSON.stringify(body)?.slice(0, 120)}`).toBe(403);
+      }
+      // Nothing refused ever reached the provider.
+      expect(claude.upstream.requests).toHaveLength(0);
+      expect(codex.upstream.requests).toHaveLength(0);
+      // Inline images stay usable.
+      expect((await codex.send("/responses", { ...codexTurn, input: [{ type: "message", role: "user", content: [{ type: "input_image", image_url: "data:image/png;base64,iVBORw0KGgo=" }] }] })).status).toBe(200);
+    });
+
+    it("judges a tool's output as model input: no URL, file id or unknown block, and Responses must say store: false", async () => {
+      const codex = await setup("openai");
+      const call = { type: "function_call", call_id: "call_1", name: "exec_command", arguments: "{}" };
+      const withOutput = (item: Record<string, unknown>) => ({ ...codexTurn, input: [call, item] });
+      const fetches = [
+        [{ type: "input_image", image_url: "https://attacker.example.invalid/beacon.png" }],
+        [{ type: "input_image", image_url: { url: "https://attacker.example.invalid/beacon.png" } }],
+        [{ type: "input_image", file_id: "file_1" }],
+        [{ type: "input_file", file_url: "https://attacker.example.invalid/doc.pdf" }],
+        [{ type: "input_file", file_id: "file_1" }],
+        [{ type: "input_file", file_data: "data:application/pdf;base64,JVBERi0=", file_url: "https://attacker.example.invalid/doc.pdf" }],
+        [{ type: "input_text", text: "ok" }, { type: "web_fetch_result", url: "https://attacker.example.invalid/" }],
+        [{ type: "input_text", text: "ok", extra: 1 }],
+        { url: "https://attacker.example.invalid/" },
+        7,
+      ];
+      const refusals: unknown[] = [];
+      for (const output of fetches) {
+        refusals.push(withOutput({ type: "function_call_output", call_id: "call_1", output }));
+        refusals.push(withOutput({ type: "custom_tool_call_output", call_id: "call_1", output }));
+      }
+      refusals.push(
+        withOutput({ type: "local_shell_call_output", call_id: "call_1", output: [{ type: "input_image", image_url: "https://attacker.example.invalid/x.png" }] }),
+        withOutput({ type: "local_shell_call", call_id: "call_1", action: { type: "exec", command: ["ls"], url: "https://attacker.example.invalid/" } }),
+        withOutput({ type: "reasoning", summary: [{ type: "input_image", image_url: "https://attacker.example.invalid/x.png" }] }),
+        withOutput({ type: "reasoning", summary: [], content: [{ type: "reasoning_text", text: "t", file_id: "f" }] }),
+        withOutput({ type: "message", role: "assistant", content: [{ type: "output_text", text: "t", annotations: [{ type: "file_citation", file_id: "file_1", index: 0 }] }] }),
+        { ...codexTurn, store: undefined },
+        { ...codexTurn, store: true },
+        { ...codexTurn, store: "false" },
+        { ...codexTurn, store: 0 },
+        { ...codexTurn, store: null },
+      );
+      for (const body of refusals) {
+        const response = await codex.send("/responses", body);
+        expect(response.status, JSON.stringify(body).slice(-200)).toBe(403);
+        expect(JSON.parse(response.body)).toMatchObject({ error: "provider_proxy_request_not_leased" });
+      }
+      for (const store of ["yes", true, 1, null]) {
+        expect((await codex.send("/chat/completions", { model: "leased-model", store, messages: [{ role: "user", content: "hi" }] })).status).toBe(403);
+      }
+      // Nothing refused reached the provider: no attacker URL, file id or stored response.
+      expect(codex.upstream.requests).toHaveLength(0);
+
+      // Text and inline content a local tool returns still round-trip, and the provider receives store: false.
+      const inline = [
+        { type: "input_text", text: "LOCAL-TOOL-RAN" },
+        { type: "input_image", image_url: "data:image/png;base64,iVBORw0KGgo=", detail: "auto" },
+        { type: "input_file", filename: "out.pdf", file_data: "data:application/pdf;base64,JVBERi0=" },
+      ];
+      const allowed = [
+        withOutput({ type: "function_call_output", call_id: "call_1", output: "LOCAL-TOOL-RAN" }),
+        withOutput({ type: "function_call_output", call_id: "call_1", output: inline }),
+        withOutput({ type: "custom_tool_call_output", call_id: "call_1", output: inline }),
+        withOutput({ type: "local_shell_call_output", call_id: "call_1", output: "LOCAL-TOOL-RAN" }),
+        withOutput({ type: "reasoning", summary: [{ type: "summary_text", text: "s" }], encrypted_content: "e" }),
+        withOutput({ type: "message", role: "assistant", content: [{ type: "output_text", text: "t", annotations: [] }] }),
+      ];
+      for (const body of allowed) expect((await codex.send("/responses", body)).status, JSON.stringify(body).slice(-200)).toBe(200);
+      expect((await codex.send("/chat/completions", { model: "leased-model", store: false, messages: [{ role: "user", content: "hi" }] })).status).toBe(200);
+      expect((await codex.send("/chat/completions", { model: "leased-model", messages: [{ role: "user", content: "hi" }] })).status).toBe(200);
+      const received = codex.upstream.requests.map((r) => JSON.parse(r.body) as Record<string, unknown>);
+      expect(received).toHaveLength(allowed.length + 2);
+      for (const body of received.slice(0, allowed.length)) expect(body.store).toBe(false);
+      expect(codex.upstream.requests.some((r) => r.body.includes("attacker.example.invalid") || r.body.includes("file_1"))).toBe(false);
+    });
+
+    it("leaves an ordinary lease's requests as they were", async () => {
+      const ordinary = await setup("openai", null);
+      expect((await ordinary.send("/responses", { ...codexTurn, tools: [{ type: "web_search", external_web_access: true }] })).status).toBe(200);
+      expect((await ordinary.send("/models", null, { method: "GET" })).status).toBe(200);
+      expect(ordinary.upstream.requests.map((r) => r.url)).toEqual(["/v1/responses", "/v1/models"]);
+    });
+
+    it("is issued only for a named model", () => {
+      const leases = new ProviderProxyLeaseRegistry();
+      expect(() => leases.create(authorizedFor("space-1", "run-iso", "provider-1"), {
+        run_id: "run-iso", space_id: "space-1", provider_id: "provider-1", route: "anthropic",
+        upstream_base_url: "http://upstream.invalid", model: null, request_policy: "model_only", ttl_ms: 60_000,
+      })).toThrow(/one named model/);
+      expect(leases.size()).toBe(0);
+    });
+  });
+
   it("does not forward upstream encoding metadata after fetch decodes the body", async () => {
     const leases = new ProviderProxyLeaseRegistry();
     const proxy = await startProviderProxyServer(config(), {

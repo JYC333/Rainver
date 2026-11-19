@@ -7,6 +7,7 @@ import {getOrCreateSpaceRetrievalSettings,updateSpaceRetrievalSettings} from '..
 import {enqueueRetrievalEmbeddingBackfillWithQueue} from '../retrieval/embedding/job.js';
 import {PgJobQueueRepository} from '../jobs/repository.js';
 import {seedSpaceDefaults} from './spaceSeeds.js';
+import {lockSpaceAudienceForChange} from '../access/activePerson.js';
 
 /** A deterministic Space refusal. 403/404 are hidden by the operation core; 409/422 are typed. */
 export class SpaceCommandError extends Error {
@@ -85,7 +86,9 @@ export async function acceptInvitation(db:Queryable,userId:string,token:string):
       `SELECT id,space_id,invited_email,role FROM user_invitations WHERE token_hash=$1 AND status='available' AND expires_at>now() FOR UPDATE`,[hashOpaqueToken(token)])).rows[0];
     if(!row||normalizeAuthEmail(row.invited_email)!==normalizeAuthEmail(user.email))throw new SpaceCommandError(422,'Invalid invitation');
     if(row.space_id){
-      await lockSpaceRow(tx,row.space_id);
+      // The Space audience fence (taken directly, never upgraded from a share lock): a
+      // decision resting on the whole membership waits for, or precedes, this new member.
+      if(!await lockSpaceAudienceForChange(tx,row.space_id))throw new SpaceCommandError(404,'Space not found');
       const membership=await tx.query(
         `INSERT INTO space_memberships(id,space_id,user_id,role,status,created_at,updated_at) VALUES($1,$2,$3,$4,'active',now(),now())
          ON CONFLICT (space_id,user_id) DO UPDATE SET role=EXCLUDED.role,status='active',updated_at=now() WHERE space_memberships.status<>'active' RETURNING id`,
@@ -107,7 +110,7 @@ export async function updateSnapshotDefaults(db:Queryable,userId:string,spaceId:
   });
 }
 
-/** Whether members may copy content out of this Space (ADR 0013 amendment 6b); owner/admin only. */
+/** Whether members may copy content out of this Space (ADR 0013 decision 9); owner/admin only. */
 export async function updateContentEgress(db:Queryable,userId:string,spaceId:string,enabled:boolean):Promise<{space_id:string}>{
   return withQueryableTransaction(db,async tx=>{
     await lockSpaceManager(tx,spaceId,userId);

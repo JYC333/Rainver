@@ -147,13 +147,6 @@ test('browser timing warnings retain measured value and threshold', () => {
   assert.throws(() => warnTimeBudget('Reader open', 3001, undefined), TypeError);
 });
 
-test('owning configs keep import danger advisory and visible', () => {
-  for (const file of ['server/vitest.config.ts', 'apps/web/vitest.config.ts']) {
-    const source = readFileSync(new URL(`../../${file}`, import.meta.url), 'utf8');
-    assert.match(source, /importDurations: \{ print: "on-warn", failOnDanger: false/);
-  }
-});
-
 // Load each owning configuration; fixture-local timeouts cannot guard these.
 test('actual package and browser configs retain unlimited runtime and budget reporting', async () => {
   const { loadConfigFromFile } = await import(pathToFileURL(createRequire(join(vitestRoot, 'package.json')).resolve('vite')).href);
@@ -176,6 +169,11 @@ test('actual package and browser configs retain unlimited runtime and budget rep
       if (file.includes('-browser.config.ts')) {
         assert.deepEqual(config.globalSetup, ['./test/setupIntegration.ts'], `${file}: integration setup`);
         assert.deepEqual(config.setupFiles, ['./test/support/sqlCapture.ts'], `${file}: SQL capture`);
+      }
+      if (file === 'server/vitest.config.ts' || file === 'apps/web/vitest.config.ts') {
+        // Slow imports stay visible without turning machine load into failure.
+        assert.equal(config.experimental?.importDurations?.print, 'on-warn', `${file}: import durations visible`);
+        assert.equal(config.experimental?.importDurations?.failOnDanger, false, `${file}: import danger advisory`);
       }
       if (file === 'server/vitest.config.ts') {
         const filesBelow = directory => readdirSync(directory, { withFileTypes: true }).flatMap(entry => {

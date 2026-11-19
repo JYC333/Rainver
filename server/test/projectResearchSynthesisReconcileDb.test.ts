@@ -17,6 +17,11 @@ import { seedSpaceOwnerProject, seedAgentWithVersion, seedServerRuntimeProfile }
 import { resetTables } from "./support/resetTables.js";
 import { loadConfig, type ServerConfig } from "../src/config.js";
 import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator.js";
+import { ProjectResearchSynthesisCoordinator } from "../src/modules/projectResearch/pipeline/synthesisCoordinator.js";
+import { ProjectOperationService } from "../src/modules/projects/projectOperationService.js";
+import { runsModule } from "../src/modules/runs/index.js";
+import { __setRunsIdentityForTests } from "../src/modules/runs/routes.js";
+import { buildModuleServer } from "./support/moduleServer.js";
 import { registerProjectResearchExecutionHandlers } from "../src/modules/projectResearch/executionRegistration.js";
 import { canonicalRunOutput } from "../src/modules/runs/orchestrationResults.js";
 import { syncBuiltinPrompts } from "../src/modules/prompts/builtins.js";
@@ -59,7 +64,7 @@ beforeAll(async () => {
 });
 
 // The cancellation case installs its own provider client; reset it here.
-afterEach(() => { __setProviderHttpClientForTests(null); });
+afterEach(() => { __setProviderHttpClientForTests(null); __setRunsIdentityForTests(null); });
 
 beforeEach(async () => {
   if (!db.available) return;
@@ -343,6 +348,118 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
     expect(critiques.rows).toEqual([expect.objectContaining({ visibility: "private", owner_user_id: OWNER })]);
   });
 
+  it("lets a superseded draft Run's late completion neither fail the operation nor replace its current candidate", async () => {
+    if (!db.available) return;
+    const seeded = await seedCritiqueScenario({ depth: "full", round: 0, revisionCount: 0, output: { verdict: "pass", issues: [] } });
+    const before = await db.pool.query<{ status: string; progress_json: Record<string, unknown> }>(`SELECT status,progress_json FROM project_operations WHERE id=$1`, [OPERATION]);
+    // An earlier draft attempt the operation no longer waits for finishes late,
+    // first with output that would fail validation.
+    const staleRunId = randomUUID();
+    await seedSynthesisRun(staleRunId, "succeeded", synthesisContract());
+    await db.pool.query(`UPDATE runs SET output_json=$2::jsonb WHERE id=$1`, [staleRunId, stageOutput({ materialization: [] })]);
+    await new ProjectResearchOrchestrator(db.pool, CONFIG).reconcileCompletedRun(SPACE, staleRunId);
+    const afterStale = await db.pool.query<{ status: string; progress_json: Record<string, unknown> }>(`SELECT status,progress_json FROM project_operations WHERE id=$1`, [OPERATION]);
+    expect(afterStale.rows[0]).toEqual(before.rows[0]);
+
+    // Then as a valid candidate reaching the staging write directly.
+    const staleArchive = randomUUID();
+    await db.pool.query(
+      `INSERT INTO artifacts (id,space_id,run_id,project_id,artifact_type,surface_role,title,content,mime_type,
+         exportable,export_formats_json,canonical_format,preview,created_at,updated_at,visibility,owner_user_id,trust_level)
+       VALUES ($1,$2,$3,$4,'research_report.archive.v1','system_archive','Stale draft',$5,'application/json',
+         true,'["json"]'::jsonb,'json',false,now(),now(),'space_shared',$6,'high')`,
+      [staleArchive, SPACE, staleRunId, PROJECT, JSON.stringify(report), OWNER],
+    );
+    const coordinator = new ProjectResearchSynthesisCoordinator(db.pool, {} as ConstructorParameters<typeof ProjectResearchSynthesisCoordinator>[1]);
+    await expect(coordinator.stageCandidate({
+      spaceId: SPACE, projectId: PROJECT, workflowId: WORKFLOW, operationId: OPERATION, runId: staleRunId,
+      report: { ...report, summary: "Stale summary." }, archiveArtifactId: staleArchive,
+    })).resolves.toBe(false);
+    const afterStage = await db.pool.query<{ progress_json: { synthesis_critique: { report_run_id: string; archive_artifact_id: string } } }>(`SELECT progress_json FROM project_operations WHERE id=$1`, [OPERATION]);
+    expect(afterStage.rows[0]!.progress_json.synthesis_critique).toMatchObject({ report_run_id: seeded.candidateRunId, archive_artifact_id: seeded.archiveArtifactId });
+    const archives = await db.pool.query<{ id: string; content: string; metadata_json: Record<string, unknown> | null }>(`SELECT id,content,metadata_json FROM artifacts WHERE id = ANY($1::varchar[]) ORDER BY id`, [[seeded.archiveArtifactId, staleArchive]]);
+    for (const archive of archives.rows) {
+      expect(JSON.parse(archive.content).summary).toBe(report.summary);
+      expect(archive.metadata_json?.superseded_by_run_id).toBeUndefined();
+    }
+  });
+
+  it("stages a draft Archive only for a non-terminal operation in synthesis bound to that Run, and resumes only its unqueued critique", async () => {
+    if (!db.available) return;
+    const runId = randomUUID();
+    const archiveId = randomUUID();
+    await seedSynthesisRun(runId, "succeeded", synthesisContract());
+    await db.pool.query(
+      `INSERT INTO artifacts (id,space_id,run_id,project_id,artifact_type,surface_role,title,content,mime_type,
+         exportable,export_formats_json,canonical_format,preview,created_at,updated_at,visibility,owner_user_id,trust_level)
+       VALUES ($1,$2,$3,$4,'research_report.archive.v1','system_archive','Draft',$5,'application/json',
+         true,'["json"]'::jsonb,'json',false,now(),now(),'space_shared',$6,'high')`,
+      [archiveId, SPACE, runId, PROJECT, JSON.stringify(report), OWNER],
+    );
+    await seedSynthesisOperation(runId);
+    const coordinator = new ProjectResearchSynthesisCoordinator(db.pool, {} as ConstructorParameters<typeof ProjectResearchSynthesisCoordinator>[1]);
+    const stage = (summary: string) => coordinator.stageCandidate({
+      spaceId: SPACE, projectId: PROJECT, workflowId: WORKFLOW, operationId: OPERATION, runId,
+      report: { ...report, summary }, archiveArtifactId: archiveId,
+    });
+    const archiveSummary = async () => JSON.parse((await db.pool.query<{ content: string }>(`SELECT content FROM artifacts WHERE id=$1`, [archiveId])).rows[0]!.content).summary;
+    const snapshot = async () => (await db.pool.query(`SELECT status,progress_json FROM project_operations WHERE id=$1`, [OPERATION])).rows[0];
+
+    // A terminal operation that still names the Run, and one that left synthesis.
+    for (const [status, stageName] of [["failed", "synthesis"], ["active", "idea_review"]] as const) {
+      await db.pool.query(
+        `UPDATE project_operations SET status=$2, progress_json=jsonb_set(progress_json,'{current_stage}',to_jsonb($3::text)) WHERE id=$1`,
+        [OPERATION, status, stageName],
+      );
+      const before = await snapshot();
+      await expect(stage("Late draft.")).resolves.toBe(false);
+      expect(await archiveSummary()).toBe(report.summary);
+      expect(await snapshot()).toEqual(before);
+    }
+
+    await db.pool.query(`UPDATE project_operations SET status='active', progress_json=jsonb_set(progress_json,'{current_stage}','"synthesis"') WHERE id=$1`, [OPERATION]);
+    await expect(stage("Current draft.")).resolves.toBe(true);
+    expect(await archiveSummary()).toBe("Current draft.");
+    expect((await snapshot()).progress_json.synthesis_critique).toMatchObject({ status: "needs_queue", report_run_id: runId });
+    // The same candidate re-entering while its critique is unqueued may retry queueing it.
+    await expect(stage("Current draft.")).resolves.toBe(true);
+    // Once that critique is queued, a re-entry resumes nothing and writes nothing.
+    await db.pool.query(`UPDATE project_operations SET progress_json=jsonb_set(progress_json,'{synthesis_critique,status}','"queued"') WHERE id=$1`, [OPERATION]);
+    await expect(stage("Re-delivered draft.")).resolves.toBe(false);
+    expect(await archiveSummary()).toBe("Current draft.");
+  });
+
+  it("ignores superseded draft and critique Runs that failed or returned invalid output, even beside the current critique", async () => {
+    if (!db.available) return;
+    const seeded = await seedCritiqueScenario({ depth: "full", round: 0, revisionCount: 0, output: { verdict: "pass", issues: [] } });
+    const before = await db.pool.query<{ status: string; progress_json: Record<string, unknown> }>(`SELECT status,progress_json FROM project_operations WHERE id=$1`, [OPERATION]);
+    const staleFailedDraft = randomUUID();
+    await seedSynthesisRun(staleFailedDraft, "failed", synthesisContract(), "provider_rate_limited: stale attempt");
+    const staleFailedCritique = randomUUID();
+    await seedSynthesisRun(staleFailedCritique, "failed", critiqueContract(), "stale critique attempt");
+    const staleInvalidCritique = randomUUID();
+    await seedSynthesisRun(staleInvalidCritique, "succeeded", critiqueContract());
+    await db.pool.query(`UPDATE runs SET output_json=$2::jsonb WHERE id=$1`, [staleInvalidCritique, stageOutput({ verdict: "maybe" })]);
+
+    for (const stale of [staleFailedDraft, staleFailedCritique, staleInvalidCritique]) {
+      await new ProjectResearchOrchestrator(db.pool, CONFIG).reconcileCompletedRun(SPACE, stale);
+    }
+    const afterStale = await db.pool.query<{ status: string; progress_json: Record<string, unknown> }>(`SELECT status,progress_json FROM project_operations WHERE id=$1`, [OPERATION]);
+    expect(afterStale.rows[0]).toEqual(before.rows[0]);
+
+    // Overlapping callbacks: only the current critique decides the outcome.
+    await Promise.all([
+      new ProjectResearchOrchestrator(db.pool, CONFIG).reconcileCompletedRun(SPACE, seeded.critiqueRunId),
+      ...[staleFailedDraft, staleFailedCritique, staleInvalidCritique]
+        .map((stale) => new ProjectResearchOrchestrator(db.pool, CONFIG).reconcileCompletedRun(SPACE, stale)),
+    ]);
+    const operation = await db.pool.query<{ status: string; progress_json: Record<string, unknown> }>(`SELECT status,progress_json FROM project_operations WHERE id=$1`, [OPERATION]);
+    expect(operation.rows[0]).toMatchObject({ status: "active", progress_json: { current_stage: "idea_review" } });
+    expect(operation.rows[0]!.progress_json.error).toBeUndefined();
+    const reports = await db.pool.query<{ synthesis_run_id: string }>(`SELECT synthesis_run_id FROM project_research_reports WHERE operation_id=$1`, [OPERATION]);
+    expect(reports.rows).toEqual([{ synthesis_run_id: seeded.candidateRunId }]);
+  });
+
   it("never leaks the provider query-strategy diagnostics into report.limitations", async () => {
     if (!db.available) return;
     await seedQueryStrategy();
@@ -407,6 +524,62 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
       current_stage: "synthesis",
       synthesis_run_id: revisionRuns.rows[0]!.id,
       synthesis_critique: { revision_count: 1, status: "queued", run_id: revisionRuns.rows[0]!.id },
+    });
+  });
+
+  it("never publishes the superseded draft when the critique Run that asked for a revision is delivered again", async () => {
+    if (!db.available) return;
+    const seeded = await seedCritiqueScenario({ depth: "full", round: 0, revisionCount: 0, output: {
+      verdict: "revise",
+      issues: [{ severity: "critical", kind: "overreach", detail: "The conclusion exceeds the evidence.", affected_refs: ["ref-1"] }],
+    } });
+    // The verdict was applied but the revision is not queued yet: the
+    // critique Run is still named on the candidate awaiting its revision.
+    await db.pool.query(
+      `UPDATE project_operations
+          SET progress_json = jsonb_set(jsonb_set(progress_json, '{synthesis_critique,status}', '"revision_needed"'), '{synthesis_critique,revision_count}', '1')
+                              || '{"synthesis_run_id": null}'::jsonb
+        WHERE id=$1`,
+      [OPERATION],
+    );
+    const archiveBefore = (await db.pool.query(`SELECT content FROM artifacts WHERE id=$1`, [seeded.archiveArtifactId])).rows[0];
+
+    const orchestrator = new ProjectResearchOrchestrator(db.pool, CONFIG);
+    await orchestrator.reconcileCompletedRun(SPACE, seeded.critiqueRunId);
+    // A late failure of the same Run is not the operation's failure either.
+    await db.pool.query(`UPDATE runs SET status='failed', error_message='late duplicate' WHERE id=$1`, [seeded.critiqueRunId]);
+    await orchestrator.reconcileCompletedRun(SPACE, seeded.critiqueRunId);
+
+    expect((await db.pool.query(`SELECT id FROM project_research_reports WHERE operation_id=$1`, [OPERATION])).rows).toEqual([]);
+    expect((await db.pool.query(`SELECT content FROM artifacts WHERE id=$1`, [seeded.archiveArtifactId])).rows[0]).toEqual(archiveBefore);
+    const operation = (await db.pool.query<{ status: string; progress_json: Record<string, unknown> }>(`SELECT status,progress_json FROM project_operations WHERE id=$1`, [OPERATION])).rows[0]!;
+    expect(operation.status).not.toBe("failed");
+    expect(operation.progress_json).toMatchObject({
+      current_stage: "synthesis",
+      synthesis_critique: { status: "revision_needed", run_id: seeded.critiqueRunId, revision_count: 1 },
+    });
+  });
+
+  it("applies a revise verdict once: a repeated delivery after the revision is queued neither publishes nor queues another", async () => {
+    if (!db.available) return;
+    const seeded = await seedCritiqueScenario({ depth: "full", round: 0, revisionCount: 0, output: {
+      verdict: "revise",
+      issues: [{ severity: "critical", kind: "overreach", detail: "The conclusion exceeds the evidence.", affected_refs: ["ref-1"] }],
+    } });
+    const orchestrator = new ProjectResearchOrchestrator(db.pool, CONFIG);
+    await orchestrator.reconcileOperation(SPACE, OPERATION);
+    await orchestrator.reconcileCompletedRun(SPACE, seeded.critiqueRunId);
+
+    const revisionRuns = await db.pool.query<{ id: string }>(
+      `SELECT id FROM runs WHERE contract_snapshot_json->'workflow_input_json'->'project_research'->>'stage_key'='synthesis_revision'`,
+    );
+    expect(revisionRuns.rows).toHaveLength(1);
+    expect((await db.pool.query(`SELECT id FROM project_research_reports WHERE operation_id=$1`, [OPERATION])).rows).toEqual([]);
+    const operation = (await db.pool.query<{ progress_json: Record<string, unknown> }>(`SELECT progress_json FROM project_operations WHERE id=$1`, [OPERATION])).rows[0]!;
+    expect(operation.progress_json).toMatchObject({
+      current_stage: "synthesis",
+      synthesis_run_id: revisionRuns.rows[0]!.id,
+      synthesis_critique: { status: "queued", run_id: revisionRuns.rows[0]!.id, revision_count: 1 },
     });
   });
 
@@ -603,7 +776,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
       [randomUUID(), SPACE, PROJECT, WORKFLOW, OPERATION, `operation:${OPERATION}`, now],
     );
     await seedSynthesisRun(runId, "succeeded", { workflow_input_json: { project_research: {
-      workflow_id: WORKFLOW, operation_id: OPERATION, run_kind: "incremental", stage_key: "monitor_compare", source_item_ids: [sourceItem],
+      workflow_id: WORKFLOW, operation_id: OPERATION, run_kind: "incremental", stage_key: "monitor_compare", baseline_note_id: understandingId, source_item_ids: [sourceItem],
     } } });
     await db.pool.query(`UPDATE runs SET output_json=$2::jsonb WHERE id=$1`, [runId, stageOutput({ comparisons: [
       { source_item_id: sourceItem, stance: "contradicts", detail: "No effect under stronger controls.", affected_sections: ["understanding"] },
@@ -637,6 +810,303 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
       [SPACE, PROJECT],
     )).rows[0];
     expect(signal).toEqual({ classification: "contradicts", corpus_item_id: corpusItemId, status: "consolidated" });
+  });
+
+  it("ignores a comparison Run delivered after its operation left the comparison stage", async () => {
+    if (!db.available) return;
+    const now = new Date().toISOString(); const runId = randomUUID(); const sourceItem = randomUUID();
+    await db.pool.query(`UPDATE project_research_workflows SET current_stage='comparison' WHERE object_id=$1`, [WORKFLOW]);
+    const understandingId = await seedUnderstandingNote(now);
+    await seedResearchOperation(db.pool, { id: OPERATION, space: SPACE, project: PROJECT, owner: OWNER, progress: {}, now, title: "Monitor comparison" });
+    await seedSynthesisRun(runId, "succeeded", { workflow_input_json: { project_research: {
+      workflow_id: WORKFLOW, operation_id: OPERATION, run_kind: "incremental", stage_key: "monitor_compare", baseline_note_id: understandingId, source_item_ids: [sourceItem],
+    } } });
+    await db.pool.query(`UPDATE runs SET output_json=$2::jsonb WHERE id=$1`, [runId, stageOutput({ comparisons: [
+      { source_item_id: sourceItem, stance: "contradicts", detail: "Late result.", affected_sections: ["understanding"] },
+    ] })]);
+    // The operation moved on to another stage but still names this Run.
+    const progress = {
+      schema_version: "project_research_operation.v1", run_kind: "incremental", workflow_id: WORKFLOW,
+      research_question: "Does X improve Y?", thread_scope: threadScope,
+      agent_id: AGENT, runtime_profile_id: RUNTIME_PROFILE,
+      current_stage: "idea_review", stage_state: "waiting_review", comparison_run_id: runId,
+      comparison_source_item_ids: [sourceItem], source_item_ids: [sourceItem], channel_ids: [], checkpoint_ids: [], artifact_ids: [],
+      source_backfill_plan_ids: [], source_backfill_plan_id: null, partial: false, monitoring_active: false,
+      watermark: { before: null, after: now, overlap_hours: 48 },
+    };
+    await db.pool.query(
+      `UPDATE project_operations SET status='waiting_review', progress_json=$2::jsonb, updated_at=$3 WHERE id=$1`,
+      [OPERATION, JSON.stringify(progress), now],
+    );
+
+    const orchestrator = new ProjectResearchOrchestrator(db.pool, CONFIG);
+    await orchestrator.reconcileCompletedRun(SPACE, runId);
+    await orchestrator.reconcileCompletedRun(SPACE, runId);
+
+    const operation = (await db.pool.query<{ status: string; progress_json: Record<string, unknown> }>(`SELECT status,progress_json FROM project_operations WHERE id=$1`, [OPERATION])).rows[0]!;
+    expect(operation.status).toBe("waiting_review");
+    expect(operation.progress_json).toMatchObject({ current_stage: "idea_review", comparison_run_id: runId });
+    expect(operation.progress_json.comparison_results_json).toBeUndefined();
+    expect((await db.pool.query(`SELECT id FROM research_evidence_cards WHERE source_item_id=$1`, [sourceItem])).rows).toEqual([]);
+  });
+
+  it("never merges an already terminal comparison result whose baseline was not frozen or is Source-derived", async () => {
+    if (!db.available) return;
+    await db.pool.query(`UPDATE project_research_workflows SET current_stage='comparison' WHERE object_id=$1`, [WORKFLOW]);
+    const understandingId = await seedUnderstandingNote(new Date().toISOString());
+    // A Run sent before the baseline rule finished with a result still to merge; the worker's
+    // redelivery reaches the focused merge (reconcileOperation → the completed Run) only now.
+    for (const variant of ["not_frozen", "source_derived"] as const) {
+      const now = new Date().toISOString(); const runId = randomUUID(); const sourceItem = randomUUID(); const corpusItemId = randomUUID();
+      await db.pool.query(
+        `INSERT INTO source_items (id,space_id,owner_user_id,visibility,item_type,title,excerpt,first_seen_at,last_seen_at,content_state,retention_policy,created_at,updated_at)
+         VALUES ($1,$2,$3,'space_shared','feed_entry','Contradicting paper','No effect under stronger controls.',$4,$4,'excerpt_saved','summary_only',$4,$4)`,
+        [sourceItem, SPACE, OWNER, now],
+      );
+      await db.pool.query(
+        `INSERT INTO project_corpus_items (id,space_id,project_id,source_item_id,role,status,triage_status,triage_confirmed_by_user,read_status,created_at,updated_at)
+         VALUES ($1,$2,$3,$4,'candidate','active','relevant',true,'unread',$5,$5)`,
+        [corpusItemId, SPACE, PROJECT, sourceItem, now],
+      );
+      await db.pool.query(
+        `INSERT INTO project_corpus_item_sources (id,corpus_item_id,space_id,project_id,source_item_id,created_at) VALUES ($1,$2,$3,$4,$5,$6)`,
+        [randomUUID(), corpusItemId, SPACE, PROJECT, sourceItem, now],
+      );
+      if (variant === "source_derived") {
+        await db.pool.query(`INSERT INTO provenance_links(id,space_id,target_type,target_id,source_type,source_id,created_at) VALUES($1,$2,'note',$3,'source_item',$4,$5)`, [randomUUID(), SPACE, understandingId, sourceItem, now]);
+      }
+      await db.pool.query(`DELETE FROM project_operations WHERE id=$1`, [OPERATION]);
+      await seedResearchOperation(db.pool, { id: OPERATION, space: SPACE, project: PROJECT, owner: OWNER, progress: {}, now, title: "Monitor comparison" });
+      await seedSynthesisRun(runId, "succeeded", { workflow_input_json: { project_research: {
+        workflow_id: WORKFLOW, operation_id: OPERATION, run_kind: "incremental", stage_key: "monitor_compare", source_item_ids: [sourceItem],
+        ...(variant === "source_derived" ? { baseline_note_id: understandingId } : {}),
+      } } });
+      await db.pool.query(`UPDATE runs SET output_json=$2::jsonb WHERE id=$1`, [runId, stageOutput({ comparisons: [
+        { source_item_id: sourceItem, stance: "contradicts", detail: "UNMERGED_DETAIL", affected_sections: ["understanding"] },
+      ] })]);
+      const progress = {
+        schema_version: "project_research_operation.v1", run_kind: "incremental", workflow_id: WORKFLOW,
+        research_question: "Does X improve Y?", thread_scope: threadScope,
+        agent_id: AGENT, runtime_profile_id: RUNTIME_PROFILE,
+        current_stage: "comparison", stage_state: "running", comparison_run_id: runId,
+        comparison_source_item_ids: [sourceItem], source_item_ids: [sourceItem], channel_ids: [], checkpoint_ids: [], artifact_ids: [],
+        source_backfill_plan_ids: [], source_backfill_plan_id: null, partial: false, monitoring_active: false,
+        watermark: { before: null, after: now, overlap_hours: 48 },
+      };
+      await db.pool.query(`UPDATE project_operations SET progress_json=$4::jsonb, updated_at=$5 WHERE id=$1 AND space_id=$2 AND project_id=$3`, [OPERATION, SPACE, PROJECT, JSON.stringify(progress), now]);
+      await new ProjectResearchOrchestrator(db.pool, CONFIG).reconcileOperation(SPACE, OPERATION);
+      const operation = (await db.pool.query<{ status: string; progress_json: Record<string, unknown> }>(`SELECT status,progress_json FROM project_operations WHERE id=$1`, [OPERATION])).rows[0]!;
+      expect(operation.status, variant).not.toBe("completed");
+      expect(JSON.stringify(operation.progress_json), variant).toContain(variant === "not_frozen" ? "baseline was not frozen" : "baseline is no longer admissible");
+      expect(JSON.stringify(operation.progress_json.comparison_results_json ?? [])).not.toContain("UNMERGED_DETAIL");
+      expect((await db.pool.query(`SELECT 1 FROM research_evidence_cards WHERE source_item_id=$1`, [sourceItem])).rows).toEqual([]);
+      expect((await db.pool.query(`SELECT 1 FROM inquiry_evidence_signals WHERE space_id=$1 AND corpus_item_id=$2`, [SPACE, corpusItemId])).rows).toEqual([]);
+    }
+  });
+
+  /**
+   * Two comparison batches through the real reconcile entry: batch 1 is staged, `tamper` runs,
+   * then batch 2 (under its own admissible frozen baseline) finishes and the stage finalizes.
+   */
+  async function finalizeAfterStagedBatch(tamper: (run1: string) => Promise<unknown>, finalDb: typeof db.pool = db.pool) {
+    const now = new Date().toISOString();
+    const items = Array.from({ length: 7 }, () => randomUUID());
+    const [batch1, batch2] = [items.slice(0, 6), items.slice(6)];
+    await db.pool.query(`UPDATE project_research_workflows SET current_stage='comparison' WHERE object_id=$1`, [WORKFLOW]);
+    const understandingId = await seedUnderstandingNote(now);
+    for (const item of items) {
+      await db.pool.query(
+        `INSERT INTO source_items (id,space_id,owner_user_id,visibility,item_type,title,excerpt,first_seen_at,last_seen_at,content_state,retention_policy,created_at,updated_at)
+         VALUES ($1,$2,$3,'space_shared','feed_entry','Paper','Detail.',$4,$4,'excerpt_saved','summary_only',$4,$4)`,
+        [item, SPACE, OWNER, now],
+      );
+      const corpusItemId = randomUUID();
+      await db.pool.query(
+        `INSERT INTO project_corpus_items (id,space_id,project_id,source_item_id,role,status,triage_status,triage_confirmed_by_user,read_status,created_at,updated_at)
+         VALUES ($1,$2,$3,$4,'candidate','active','relevant',true,'unread',$5,$5)`,
+        [corpusItemId, SPACE, PROJECT, item, now],
+      );
+      await db.pool.query(
+        `INSERT INTO project_corpus_item_sources (id,corpus_item_id,space_id,project_id,source_item_id,created_at) VALUES ($1,$2,$3,$4,$5,$6)`,
+        [randomUUID(), corpusItemId, SPACE, PROJECT, item, now],
+      );
+    }
+    await seedResearchOperation(db.pool, { id: OPERATION, space: SPACE, project: PROJECT, owner: OWNER, progress: {}, now, title: "Monitor comparison" });
+    await db.pool.query(
+      `INSERT INTO research_scan_summaries (id,space_id,project_id,workflow_id,operation_id,scan_key,scanned_at,new_item_count,relevant_count,maybe_count,excluded_count,created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,7,7,0,0,$7)`,
+      [randomUUID(), SPACE, PROJECT, WORKFLOW, OPERATION, `operation:${OPERATION}`, now],
+    );
+    const batchRun = async (batch: string[], detail: string) => {
+      const runId = randomUUID();
+      await seedSynthesisRun(runId, "succeeded", { workflow_input_json: { project_research: {
+        workflow_id: WORKFLOW, operation_id: OPERATION, run_kind: "incremental", stage_key: "monitor_compare", baseline_note_id: understandingId, source_item_ids: batch,
+      } } });
+      await db.pool.query(`UPDATE runs SET output_json=$2::jsonb WHERE id=$1`, [runId, stageOutput({
+        comparisons: batch.map((item) => ({ source_item_id: item, stance: "contradicts", detail, affected_sections: ["understanding"] })),
+      })]);
+      return runId;
+    };
+    const run1 = await batchRun(batch1, "STAGED_BATCH_DETAIL");
+    await db.pool.query(
+      `UPDATE project_operations SET progress_json = $2::jsonb, updated_at = $3 WHERE id = $1`,
+      [OPERATION, JSON.stringify({
+        schema_version: "project_research_operation.v1", run_kind: "incremental", workflow_id: WORKFLOW,
+        research_question: "Does X improve Y?", thread_scope: threadScope, agent_id: AGENT, runtime_profile_id: RUNTIME_PROFILE,
+        current_stage: "comparison", stage_state: "running", comparison_run_id: run1,
+        comparison_source_item_ids: batch1, comparison_pending_source_item_ids: batch2, comparison_results_json: [],
+        source_item_ids: items, channel_ids: [], checkpoint_ids: [], artifact_ids: [],
+        source_backfill_plan_ids: [], source_backfill_plan_id: null, partial: false, monitoring_active: false,
+        watermark: { before: null, after: now, overlap_hours: 48 },
+      }), now],
+    );
+    await new ProjectResearchOrchestrator(db.pool, CONFIG).reconcileOperation(SPACE, OPERATION);
+    expect((await operationState(OPERATION)).comparison_results_json).toHaveLength(6);
+    await tamper(run1);
+    const run2 = await batchRun(batch2, "FINAL_BATCH_DETAIL");
+    await db.pool.query(
+      `UPDATE project_operations SET progress_json = jsonb_set(jsonb_set(progress_json, '{comparison_run_id}', to_jsonb($2::text)), '{comparison_pending_source_item_ids}', '[]'::jsonb) WHERE id=$1`,
+      [OPERATION, run2],
+    );
+    await new ProjectResearchOrchestrator(finalDb, CONFIG).reconcileOperation(SPACE, OPERATION);
+    return { items, batch1, batch2 };
+  }
+
+  it("a generic Project Operation read keeps focused staging progress but withholds the staged comparison text", async () => {
+    if (!db.available) return;
+    let staged: Record<string, any> | undefined;
+    await finalizeAfterStagedBatch(async () => { staged = await new ProjectOperationService(db.pool).get(identity, PROJECT, OPERATION) as Record<string, any>; });
+    const progress = staged!.progress_json;
+    expect(progress.current_stage).toBe("comparison");
+    expect(progress.comparison_pending_source_item_ids).toHaveLength(1);
+    // One id-only entry per staged result: the count still renders.
+    expect(progress.comparison_results_json).toHaveLength(6);
+    expect(Object.keys(progress.comparison_results_json[0])).toEqual(["source_item_id"]);
+    expect(progress.comparison_result_run_ids).toBeUndefined();
+    expect(JSON.stringify(staged)).not.toContain("STAGED_BATCH_DETAIL");
+    expect(JSON.stringify(staged)).not.toContain("contradicts");
+    // The stored state is unchanged for the final publication.
+    expect(JSON.stringify((await operationState(OPERATION)).comparison_results_json)).toContain("STAGED_BATCH_DETAIL");
+  });
+
+  it("the generic Run reads keep a staged focused batch Run's status but withhold its text; the final publication still merges it", async () => {
+    if (!db.available) return;
+    // A synthesis Run in the same Project is not a comparison and keeps its ordinary read.
+    const synthesisRun = randomUUID();
+    await seedSynthesisRun(synthesisRun, "succeeded", { workflow_input_json: { project_research: { workflow_id: WORKFLOW, operation_id: OPERATION, stage_key: "synthesis" } } });
+    await db.pool.query(`UPDATE runs SET output_json=$2::jsonb WHERE id=$1`, [synthesisRun, stageOutput({ draft: "SYNTHESIS_RUN_OUTPUT" })]);
+    const app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: db.connectionUri }), [runsModule]);
+    __setRunsIdentityForTests(identity);
+    const bodies: string[] = [];
+    try {
+      const { batch1 } = await finalizeAfterStagedBatch(async (run1) => {
+        const detailRead = await app.inject({ method: "GET", url: `/api/v1/runs/${run1}` });
+        expect(detailRead.statusCode).toBe(200);
+        expect(detailRead.json()).toMatchObject({ status: "succeeded", output_json: null, contract_snapshot_json: { workflow_input_json: null } });
+        const io = await app.inject({ method: "GET", url: `/api/v1/runs/${run1}/io` });
+        expect(io.json()).toMatchObject({ input: null, output: null });
+        const list = await app.inject({ method: "GET", url: `/api/v1/runs?project_id=${PROJECT}` });
+        expect(list.json().find((run: { id: string }) => run.id === run1)).toMatchObject({ status: "succeeded", output_json: null });
+        const trace = await app.inject({ method: "GET", url: `/api/v1/runs/${run1}/trace` });
+        bodies.push(detailRead.body, io.body, list.body, trace.body);
+        expect(list.body).toContain("SYNTHESIS_RUN_OUTPUT");
+      });
+      expect((await app.inject({ method: "GET", url: `/api/v1/runs/${synthesisRun}/io` })).body).toContain("SYNTHESIS_RUN_OUTPUT");
+      for (const body of bodies) expect(body).not.toContain("STAGED_BATCH_DETAIL");
+      // The internal merge read the stored batch: the final publication carries it.
+      expect((await db.pool.query(`SELECT comparison_detail FROM research_evidence_cards WHERE source_item_id=$1`, [batch1[0]])).rows[0])
+        .toEqual({ comparison_detail: "STAGED_BATCH_DETAIL" });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it.each([
+    ["staged before each result's Run was recorded", () => db.pool.query(`UPDATE project_operations SET progress_json = progress_json - 'comparison_result_run_ids' WHERE id=$1`, [OPERATION])],
+    ["whose Run's baseline was not frozen", (run1: string) => db.pool.query(`UPDATE runs SET contract_snapshot_json=contract_snapshot_json #- '{workflow_input_json,project_research,baseline_note_id}' WHERE id=$1`, [run1])],
+  ])("the final focused publication rechecks every staged batch: a staged result %s is refused and requeued, nothing is published", async (_label, tamper) => {
+    if (!db.available) return;
+    const { items, batch1 } = await finalizeAfterStagedBatch(tamper);
+    const operation = (await db.pool.query(`SELECT status,progress_json FROM project_operations WHERE id=$1`, [OPERATION])).rows[0];
+    expect(operation.status).toBe("failed");
+    expect(operation.progress_json.error?.message).toContain("could not be re-verified");
+    // Only the refused batch leaves the staged results; it goes back to be compared again.
+    expect(operation.progress_json.comparison_results_json.map((c: { source_item_id: string }) => c.source_item_id)).not.toEqual(expect.arrayContaining(batch1));
+    expect(operation.progress_json.comparison_pending_source_item_ids).toEqual(expect.arrayContaining(batch1));
+    expect((await db.pool.query(`SELECT count(*)::int AS n FROM research_evidence_cards WHERE source_item_id=ANY($1::text[])`, [items])).rows[0].n).toBe(0);
+    expect(JSON.stringify((await db.pool.query(`SELECT comparisons_json FROM research_scan_summaries WHERE operation_id=$1`, [OPERATION])).rows[0].comparisons_json)).not.toContain("STAGED_BATCH_DETAIL");
+    expect((await db.pool.query(`SELECT count(*)::int AS n FROM inquiry_evidence_signals WHERE space_id=$1 AND project_id=$2`, [SPACE, PROJECT])).rows[0].n).toBe(0);
+  });
+
+  /**
+   * Runs `interleave` once, just after the final publication has observed the
+   * staged results and is rechecking batch 1's Run (outside any lock), so a
+   * concurrent writer lands between that observation and the locked write.
+   */
+  async function finalizeWithInterleavedWriter(interleave: (query: (text: string, params?: unknown[]) => Promise<unknown>) => Promise<void>) {
+    let run1: string | null = null;
+    let fired = false;
+    // The pass runs in its own transaction; the write lands on that same client,
+    // after the unlocked observation and before the locked recheck.
+    const intercept = <T extends object>(target: T, client: boolean): T => new Proxy(target, {
+      get(inner, prop) {
+        const value = Reflect.get(inner, prop, inner);
+        if (prop === "connect" && !client) return async () => intercept(await (inner as typeof db.pool).connect(), true);
+        if (prop === "query") {
+          return async (...args: unknown[]) => {
+            const [text, params] = args as [unknown, unknown[] | undefined];
+            if (client && !fired && run1 && typeof text === "string" && params?.[0] === run1
+              && /^SELECT contract_snapshot_json FROM runs WHERE id=\$1/.test(text.trim())) {
+              fired = true;
+              await interleave((sql, values) => (inner as typeof db.pool).query(sql, values));
+            }
+            return (value as (...a: unknown[]) => unknown).apply(inner, args);
+          };
+        }
+        return typeof value === "function" ? value.bind(inner) : value;
+      },
+    });
+    // Batch 1's frozen baseline is refused, so the final publication takes the refusal branch.
+    const seeded = await finalizeAfterStagedBatch(async (staged) => {
+      run1 = staged;
+      await db.pool.query(`UPDATE runs SET contract_snapshot_json=contract_snapshot_json #- '{workflow_input_json,project_research,baseline_note_id}' WHERE id=$1`, [staged]);
+    }, intercept(db.pool, false));
+    expect(fired).toBe(true);
+    return seeded;
+  }
+
+  it("a refused final publication neither requeues nor fails over a newer comparison Run queued after it observed the staged batch", async () => {
+    if (!db.available) return;
+    const newerRun = randomUUID();
+    await seedSynthesisRun(newerRun, "queued", { workflow_input_json: { project_research: { workflow_id: WORKFLOW, operation_id: OPERATION, stage_key: "monitor_compare" } } });
+    const { items, batch1 } = await finalizeWithInterleavedWriter(async (query) => {
+      await query(`UPDATE project_operations SET progress_json = jsonb_set(progress_json, '{comparison_run_id}', to_jsonb($2::text)) WHERE id=$1`, [OPERATION, newerRun]);
+    });
+    const operation = (await db.pool.query(`SELECT status,progress_json FROM project_operations WHERE id=$1`, [OPERATION])).rows[0];
+    expect(operation.status).not.toBe("failed");
+    expect(operation.progress_json).toMatchObject({ current_stage: "comparison", comparison_run_id: newerRun, comparison_pending_source_item_ids: [] });
+    expect(operation.progress_json.error).toBeUndefined();
+    expect(operation.progress_json.comparison_results_json.map((c: { source_item_id: string }) => c.source_item_id)).toEqual(expect.arrayContaining(batch1));
+    expect((await db.pool.query(`SELECT count(*)::int AS n FROM research_evidence_cards WHERE source_item_id=ANY($1::text[])`, [items])).rows[0].n).toBe(0);
+  });
+
+  it("an error after a comparison batch was staged does not fail an operation now governed by another execution", async () => {
+    if (!db.available) return;
+    const { items } = await finalizeWithInterleavedWriter(async (query) => {
+      await query(
+        `UPDATE project_operations SET current_execution_id = (
+           SELECT id FROM workflow_executions WHERE space_id=$2 AND id IS DISTINCT FROM project_operations.current_execution_id
+            ORDER BY created_at LIMIT 1)
+          WHERE id=$1`,
+        [OPERATION, SPACE],
+      );
+      throw new Error("finalize read failed after staging");
+    });
+    const operation = (await db.pool.query(`SELECT status,progress_json FROM project_operations WHERE id=$1`, [OPERATION])).rows[0];
+    expect(operation.status).not.toBe("failed");
+    expect(operation.progress_json).toMatchObject({ current_stage: "comparison", comparison_run_id: null });
+    expect(operation.progress_json.error).toBeUndefined();
+    expect((await db.pool.query(`SELECT count(*)::int AS n FROM research_evidence_cards WHERE source_item_id=ANY($1::text[])`, [items])).rows[0].n).toBe(0);
   });
 
   it("stops the comparison stage and names the missing role when the project has no baseline", async () => {
@@ -749,7 +1219,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
     );
     const run1 = randomUUID();
     await seedSynthesisRun(run1, "succeeded", { workflow_input_json: { project_research: {
-      workflow_id: WORKFLOW, operation_id: OPERATION, run_kind: "incremental", stage_key: "monitor_compare", source_item_ids: batch1,
+      workflow_id: WORKFLOW, operation_id: OPERATION, run_kind: "incremental", stage_key: "monitor_compare", baseline_note_id: understandingId, source_item_ids: batch1,
     } } });
     await db.pool.query(`UPDATE runs SET output_json=$2::jsonb WHERE id=$1`, [run1, stageOutput({
       comparisons: batch1.map((item) => ({ source_item_id: item, stance: "supports", detail: "Replicates the effect.", affected_sections: ["understanding"] })),
@@ -785,7 +1255,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
     // batches is persisted together, exactly once.
     const run2 = randomUUID();
     await seedSynthesisRun(run2, "succeeded", { workflow_input_json: { project_research: {
-      workflow_id: WORKFLOW, operation_id: OPERATION, run_kind: "incremental", stage_key: "monitor_compare", source_item_ids: batch2,
+      workflow_id: WORKFLOW, operation_id: OPERATION, run_kind: "incremental", stage_key: "monitor_compare", baseline_note_id: understandingId, source_item_ids: batch2,
     } } });
     await db.pool.query(`UPDATE runs SET output_json=$2::jsonb WHERE id=$1`, [run2, stageOutput({
       comparisons: batch2.map((item) => ({ source_item_id: item, stance: "contradicts", detail: "No effect under stronger controls.", affected_sections: ["understanding"] })),
@@ -907,7 +1377,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
     const now = new Date().toISOString();
     const items = Array.from({ length: 6 }, () => randomUUID());
     await db.pool.query(`UPDATE project_research_workflows SET current_stage='comparison' WHERE object_id=$1`, [WORKFLOW]);
-    await seedUnderstandingNote(now);
+    const understandingId = await seedUnderstandingNote(now);
     for (const item of items) {
       await db.pool.query(
         `INSERT INTO source_items (id,space_id,owner_user_id,visibility,item_type,title,excerpt,first_seen_at,last_seen_at,content_state,retention_policy,created_at,updated_at)
@@ -944,7 +1414,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
       [randomUUID(), SPACE, PROJECT, WORKFLOW, OPERATION, `operation:${OPERATION}`, now],
     );
     await seedSynthesisRun("run-1", "succeeded", { workflow_input_json: { project_research: {
-      workflow_id: WORKFLOW, operation_id: OPERATION, run_kind: "incremental", stage_key: "monitor_compare", source_item_ids: items,
+      workflow_id: WORKFLOW, operation_id: OPERATION, run_kind: "incremental", stage_key: "monitor_compare", baseline_note_id: understandingId, source_item_ids: items,
     } } });
     // 4 valid matches; item[4] gets a structurally invalid entry (stance
     // outside the enum); item[5] is simply missing from the response —
@@ -1038,7 +1508,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
     const items = Array.from({ length: 12 }, () => randomUUID());
     const [batch1, rest] = [items.slice(0, 6), items.slice(6)];
     await db.pool.query(`UPDATE project_research_workflows SET current_stage='comparison' WHERE object_id=$1`, [WORKFLOW]);
-    await seedUnderstandingNote(now);
+    const understandingId = await seedUnderstandingNote(now);
     for (const item of items) {
       await db.pool.query(
         `INSERT INTO source_items (id,space_id,owner_user_id,visibility,item_type,title,excerpt,first_seen_at,last_seen_at,content_state,retention_policy,created_at,updated_at)
@@ -1075,7 +1545,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
       [randomUUID(), SPACE, PROJECT, WORKFLOW, OPERATION, `operation:${OPERATION}`, now],
     );
     await seedSynthesisRun("run-1", "succeeded", { workflow_input_json: { project_research: {
-      workflow_id: WORKFLOW, operation_id: OPERATION, run_kind: "incremental", stage_key: "monitor_compare", source_item_ids: batch1,
+      workflow_id: WORKFLOW, operation_id: OPERATION, run_kind: "incremental", stage_key: "monitor_compare", baseline_note_id: understandingId, source_item_ids: batch1,
     } } });
     // Every entry is fabricated — none of batch1's real ids appear anywhere
     // in the response. The run returned comparisons for papers that were
@@ -1264,7 +1734,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
       version: 3,
     });
     const adhocContract = (baseVersion: number) => ({ route_hints_json: { owner_domain: 'projectResearch', stage: 'research_adhoc', provider_id: PROVIDER, model: 'test-model' }, workflow_input_json: { research_adhoc: {
-      note_id: understandingId, base_version: baseVersion, source_item_ids: [],
+      note_id: understandingId, base_version: baseVersion, source_item_ids: [], note_source_connection_ids: [],
     } } });
     const output = canonicalRunOutput({
       success: true,

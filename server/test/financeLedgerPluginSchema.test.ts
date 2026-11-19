@@ -1,14 +1,9 @@
 import { describe, expect, it } from "vitest";
-import {
-  FINANCE_LEDGER_PLUGIN_ID,
-  financeLedgerDescriptor,
-} from "../src/modules/plugins/official/financeLedger.js";
+import type { RainverPlugin } from "@rainver/protocol";
+import { BUILT_IN_PLUGINS } from "../src/modules/plugins/builtInPlugins.js";
 import { getOfficialPlugin } from "../src/modules/plugins/registry.js";
-import { loadFinanceLedgerRuntime } from "./financeLedgerRuntime.js";
 
-const {
-  plugin: { financeLedgerPlugin },
-} = loadFinanceLedgerRuntime();
+const financeLedgerPlugin = BUILT_IN_PLUGINS.find((plugin) => plugin.id === "finance_ledger") as RainverPlugin;
 
 const REQUIRED_TABLES = [
   "finance_books",
@@ -38,43 +33,30 @@ const REQUIRED_TABLES = [
   "finance_exports",
 ];
 
-describe("finance ledger official plugin descriptor", () => {
-  it("is registered as a space-scoped official optional module", () => {
-    expect(getOfficialPlugin(FINANCE_LEDGER_PLUGIN_ID)).toEqual(financeLedgerDescriptor);
-    expect(financeLedgerDescriptor.scope).toBe("space");
-    expect(financeLedgerDescriptor.default_enabled).toBe(false);
-    expect(financeLedgerDescriptor.permissions.uses_ai).toBe(false);
+const SCHEMA = '"plugin_finance_ledger"';
+const columnsOf = (sql: string, prefix: string, table: string) => {
+  const start = sql.indexOf(`CREATE TABLE ${prefix}.${table} (`);
+  const block = sql.slice(start, sql.indexOf("\n)", start));
+  return block.split("\n").slice(1).map((line) => line.trim().split(/\s+/)[0]).filter((name) => name && name !== "CONSTRAINT" && !name.startsWith("--"));
+};
+
+describe("finance ledger operation package (Plan 7)", () => {
+  it("is a Space-level operation package, no longer a legacy descriptor", () => {
+    expect(getOfficialPlugin("finance_ledger")).toBeUndefined();
+    expect(financeLedgerPlugin.operationManifest).toMatchObject({ id: "finance_ledger", scope: "space", version: "1.0.0", migrations: ["0000_finance_records"] });
   });
 });
 
 describe("finance ledger plugin schema", () => {
-  it("bundles an installer-managed migration for all directive stream tables", () => {
-    const migration = financeLedgerPlugin.migrations?.find(
-      (candidate: { id: string }) => candidate.id === "0001_create_finance_ledger_tables",
-    );
-
-    expect(migration).toBeDefined();
-    for (const table of REQUIRED_TABLES) {
-      expect(migration!.sql).toContain(`CREATE TABLE public.${table}`);
+  it("creates every directive stream table, space scoped, in the package schema", () => {
+    const [migration] = financeLedgerPlugin.migrations!;
+    expect(migration!.id).toBe("0000_finance_records");
+    expect(migration!.sql).not.toContain("public.");
+    for (const table of [...REQUIRED_TABLES, "finance_import_entries"]) {
+      expect(migration!.sql).toContain(`CREATE TABLE ${SCHEMA}.${table}`);
+      expect(columnsOf(migration!.sql, SCHEMA, table)).toContain("space_id");
     }
-  });
-
-  it("bundles the per-entry import state as an appended migration", () => {
-    const ids = financeLedgerPlugin.migrations!.map((migration: { id: string }) => migration.id);
-    expect(ids).toEqual(["0001_create_finance_ledger_tables", "0002_import_entries"]);
-    const migration = financeLedgerPlugin.migrations![1]!;
-    expect(migration.sql).toContain("CREATE TABLE public.finance_import_entries");
-    expect(migration.sql).toContain("UNIQUE (import_source_id, entry_key)");
-    expect(migration.sql).toContain("finance_import_sources_book_content_hash_unique");
-  });
-
-  it("keeps finance tables space scoped", () => {
-    const migration = financeLedgerPlugin.migrations![0]!;
-    for (const table of REQUIRED_TABLES) {
-      const createIndex = migration.sql.indexOf(`CREATE TABLE public.${table}`);
-      const nextCreate = migration.sql.indexOf("CREATE TABLE public.", createIndex + 1);
-      const block = migration.sql.slice(createIndex, nextCreate === -1 ? undefined : nextCreate);
-      expect(block).toContain("space_id");
-    }
+    expect(migration!.sql).toContain("UNIQUE (import_source_id, entry_key)");
+    expect(migration!.sql).toContain("finance_import_sources_book_content_hash_unique");
   });
 });

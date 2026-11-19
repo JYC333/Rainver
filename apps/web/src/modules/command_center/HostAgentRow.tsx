@@ -1,11 +1,11 @@
 import { useAppTranslation } from '../../i18n'
 import { useEffect, useRef, useState } from 'react'
 import HostRuntimeVersions from './HostRuntimeVersions'
-import { hasStableUpdate } from './runtimeVersions'
+import { hasManagedUpdate, hasStableUpdate } from './runtimeVersions'
 import RuntimeAccountLink from './RuntimeAccountLink'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '../../components/ui/dialog'
 import { CircleArrowUp, Loader2 } from 'lucide-react'
-import { isOwnCliUpdateRuntimeKey } from '@rainver/protocol'
+import { ANTIGRAVITY_OWN_UPDATE_RUNTIME, isOwnCliUpdateRuntimeKey } from '@rainver/protocol'
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
 import type {
@@ -59,6 +59,7 @@ export default function HostAgentRow({
   onUninstall,
   onLogin,
   targetInstallation,
+  managedCopyVersion,
   onRollback,
 }: {
   host: Host
@@ -80,10 +81,19 @@ export default function HostAgentRow({
   onUninstall: (entry: RuntimeInstallation) => void
   onLogin: (installation: string, target: HostAgentLoginTarget) => void
   targetInstallation?: string
+  managedCopyVersion?: string
   onRollback: () => void
 }) {
   const { t } = useAppTranslation()
   const nativeCli = isOwnCliUpdateRuntimeKey(adapter.runtime_key)
+  const antigravityOwn = adapter.runtime_key === ANTIGRAVITY_OWN_UPDATE_RUNTIME
+  const ownLatest = antigravityOwn ? adapter.latest_managed_version : adapter.latest_own_version
+  const managed = copies.filter(copy => copy.id !== 'own')
+  const managedLatest = nativeCli ? adapter.latest_own_version : adapter.latest_managed_version
+  const canUpgradeManaged = hasManagedUpdate(
+    managed.map(copy => nativeCli ? copy.runtime_version ?? null : copy.version),
+    managedLatest,
+  )
   const [loginChoice, setLoginChoice] = useState<string | null>(null)
   const targetRef = useRef<HTMLSpanElement | null>(null)
   useEffect(() => {
@@ -142,16 +152,17 @@ export default function HostAgentRow({
               {(usage.has(entry.id) || entry.reports_subscription_quota) && (
                 <RuntimeAccountLink usage={entry.logged_in === false ? undefined : usage.get(entry.id)} hostId={host.id} runtimeKey={adapter.runtime_key} installation={entry.id} />
               )}
-              {manageable && host.kind === 'remote' && entry.id === 'own' && isOwnCliUpdateRuntimeKey(adapter.runtime_key) && hasStableUpdate(entry.version, adapter.latest_own_version) && (
+              {manageable && host.kind === 'remote' && entry.id === 'own' && (nativeCli || antigravityOwn) && hasStableUpdate(entry.version, ownLatest) && (
                 <Button size="sm" variant="ghost"
                   aria-label={`Update own ${adapter.display_name} on ${host.name}`}
                   aria-busy={installBusy.has(`${adapter.runtime_key}:own-update`)}
-                  disabled={host.status !== 'online'}
+                  title={antigravityOwn && !host.capabilities_json?.antigravity_own_updates ? t('management_ui.host_catalog.upgrade_host_required') : undefined}
+                  disabled={host.status !== 'online' || (antigravityOwn && !host.capabilities_json?.antigravity_own_updates)}
                   onClick={onUpdateOwn}>
                   {installBusy.has(`${adapter.runtime_key}:own-update`) ? <Loader2 className="h-3 w-3 animate-spin" /> : <CircleArrowUp className="h-3 w-3" />}
                 </Button>
               )}
-              {manageable && entry.id !== 'own' && (nativeCli ? hasStableUpdate(entry.runtime_version ?? null, adapter.latest_own_version) : adapter.latest_managed_version && adapter.latest_managed_version !== entry.version) && (
+              {manageable && entry === managed[0] && canUpgradeManaged && (
                 <Button
                   size="sm"
                   variant="ghost"
@@ -256,7 +267,7 @@ export default function HostAgentRow({
             disabled={host.status !== 'online' || installBusy.has(adapter.runtime_key)}
             onClick={onInstall}
           >
-            {installBusy.has(adapter.runtime_key) ? <Loader2 className="size-3 animate-spin" /> : '+ managed copy'}
+            {installBusy.has(adapter.runtime_key) ? <Loader2 className="size-3 animate-spin" /> : managedCopyVersion ? t('management_ui.host_catalog.managed_copy_version', { version: managedCopyVersion }) : '+ managed copy'}
           </Button>
         )}
       </span>

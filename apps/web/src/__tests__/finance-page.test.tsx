@@ -9,6 +9,10 @@ import type {
   FinanceImportResult,
   FinanceWebHost,
 } from '../../../../plugins/official/finance_ledger/web/src/host'
+import { financeOpsApi, FinanceOperationError } from '../../../../plugins/official/finance_ledger/web/src/opsApi'
+import views from '../../../../plugins/official/finance_ledger/web/src/operationViews'
+import { bundledPlugin } from '../modules/plugins/manifestCatalog'
+import type { PluginViewOps } from '@rainver/protocol'
 
 const book = {
   id: 'book-1', space_id: 'space-1', name: 'Household', base_currency: 'USD',
@@ -88,12 +92,8 @@ function fakeApi(overrides: Partial<FinanceApi> = {}): FinanceApi {
   }
 }
 
-function makeHost(api: FinanceApi, enabled = true): FinanceWebHost {
-  return {
-    api,
-    Link: ({ to, style, children }) => <a href={to} style={style}>{children}</a>,
-    usePluginState: () => ({ loading: false, enabled }),
-  }
+function makeHost(api: FinanceApi): FinanceWebHost {
+  return { api }
 }
 
 /** Renders the page and waits for the ledger's accounts, not just the book.
@@ -108,14 +108,6 @@ async function renderLoadedLedger(api: FinanceApi) {
 }
 
 describe('FinancePage', () => {
-  it('shows the enable/install path when the plugin is disabled', () => {
-    const Page = createFinancePage(makeHost(fakeApi(), false))
-    render(<Page />)
-    const link = screen.getByText('Install or enable in Optional Modules')
-    expect(link).toBeInTheDocument()
-    expect(link.closest('a')?.getAttribute('href')).toBe('/plugins')
-  })
-
   it('renders books, accounts, commodities, transactions, and balances', async () => {
     const Page = createFinancePage(makeHost(fakeApi()))
     render(<Page />)
@@ -175,7 +167,7 @@ describe('FinancePage', () => {
     const api = fakeApi({
       validateBook: vi.fn().mockResolvedValue({
         errors: [
-          { code: 'transaction_unbalanced', message: 'Transaction does not balance for USD: 5.00 USD', directiveId: 'dir-1' },
+          { code: 'transaction_unbalanced', directive_id: 'dir-1' },
         ],
       }),
     })
@@ -184,7 +176,8 @@ describe('FinancePage', () => {
     expect(screen.getByText('Not checked yet')).toBeInTheDocument()
     fireEvent.click(screen.getByText('Run checks'))
     expect(await screen.findByText('transaction_unbalanced')).toBeInTheDocument()
-    expect(screen.getByText('Transaction does not balance for USD: 5.00 USD')).toBeInTheDocument()
+    // Codes and entries only: the server never sends the text, which would name accounts and amounts.
+    expect(screen.getByText('entry dir-1')).toBeInTheDocument()
   })
 
   it('imports beancount text as proposed and reports the result', async () => {
@@ -434,5 +427,38 @@ describe('validateTransactionForm', () => {
     expect(validateTransactionForm('2026-06-01', [posting('a', '1.2.3'), posting('b', '')])).toMatch(/Invalid amount/)
     expect(validateTransactionForm('2026-06-01', [posting('a', ''), posting('b', '')])).toMatch(/At most one/)
     expect(validateTransactionForm('2026-06-01', [posting('a', '1', 'usd$'), posting('b', '')])).toMatch(/commodity/)
+  })
+
+  it('reads and writes only through the declared Finance operations, each write with its own key', async () => {
+    const manifest = bundledPlugin('finance_ledger')!.manifest
+    const declared = new Map(manifest.operations.map(o => [o.id, o.kind]))
+    const calls: Array<[string, string, unknown, string | null]> = []
+    const ops: PluginViewOps = {
+      query: vi.fn(async (id: string, input: unknown) => {
+        calls.push(['query', id, input, null])
+        if (id === 'plugin.finance_ledger.book.validate') return { error: { code: 'operation_invalid_input', message: 'book_not_found', metadata: { reason: 'book_not_found' }, retryable: false, request_id: 'r', domain: 'plugin.finance_ledger' } } as never
+        return { status: 'succeeded' as const, data: { books: [] } }
+      }) as PluginViewOps['query'],
+      command: vi.fn(async (id: string, input: unknown, key: string) => {
+        calls.push(['command', id, input, key])
+        return { status: 'succeeded' as const, data: {} }
+      }) as PluginViewOps['command'],
+    }
+    let n = 0
+    const api = financeOpsApi(ops, () => `key-${++n}`)
+    const methods = Object.keys(api) as Array<keyof FinanceApi>
+    expect(methods.sort()).toEqual(Object.keys(fakeApi()).sort())
+    await api.listBooks()
+    await api.importBeancount('book-1', { text: 'x' })
+    await api.createTransaction('book-1', { date: '2026-07-01', postings: [], post: true })
+    await api.getBalances('book-1', 'personal')
+    expect(calls.map(c => [c[1], c[3]])).toEqual([
+      ['plugin.finance_ledger.book.list', null], ['plugin.finance_ledger.import.beancount', 'key-1'],
+      ['plugin.finance_ledger.transaction.create', 'key-2'], ['plugin.finance_ledger.book.balances', null],
+    ])
+    for (const [kind, opId] of calls.map(c => [c[0], c[1]])) expect(declared.get(opId)).toBe(kind)
+    expect(calls[3]![2]).toEqual({ book_id: 'book-1', scope: 'personal' })
+    await expect(api.validateBook('book-1')).rejects.toEqual(new FinanceOperationError('operation_invalid_input', 'book_not_found'))
+    expect(Object.keys(views)).toEqual(manifest.web!.entries.map(e => e.id))
   })
 })

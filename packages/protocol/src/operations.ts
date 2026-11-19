@@ -3,6 +3,8 @@ import {CONTEXT_OPS_OPERATION_SCHEMAS} from './contextOps.js';
 import {RESEARCH_STRATEGY_OPERATION_SCHEMAS} from './researchDiscovery.js';
 import {ATTENTION_OPERATION_SCHEMAS} from './agentAttention.js';
 import {PERSONAL_MEMORY_GRANT_OPERATION_SCHEMAS} from './personalMemoryGrantOperations.js';
+import {PLUGIN_DATA_ACCESS_OPERATION_SCHEMAS} from './pluginDataAccessOperations.js';
+import {PLUGIN_PROJECT_BINDING_OPERATION_SCHEMAS} from './pluginProjectBindings.js';
 import {CAPTURE_FILING_OPERATION_SCHEMAS} from './capturefiling.js';
 import {CROSS_SPACE_RETRIEVAL_OPERATION_SCHEMAS,CROSS_SPACE_SETTING_OPERATION_SCHEMAS} from './crossSpaceRetrieval.js';
 import {LEARNING_OPERATION_SCHEMAS} from './learningOperations.js';
@@ -12,6 +14,7 @@ import {ACTIVITY_OPERATION_SCHEMAS} from './activityOperations.js';
 import { DIGEST_OPERATION_SCHEMAS } from './digestOperations.js';
 import { INTEREST_OPERATION_SCHEMAS } from './interestOperations.js';
 import { READING_OPERATION_SCHEMAS } from './readingOperations.js';
+import {GMAIL_OPERATION_SCHEMAS} from './gmail.js';
 import {BUNDLE_DECISION_OPERATION_SCHEMAS,PROPOSAL_APPLY_OPERATION_SCHEMAS,PROPOSAL_REJECTION_OPERATION_SCHEMAS,PROPOSAL_CONSENT_OPERATION_SCHEMAS} from './proposalOperations.js';
 import {AUTOMATION_FIRE_OPERATION_SCHEMAS,AUTOMATION_CONFIGURATION_OPERATION_SCHEMAS} from './automationOperations.js';
 import {AUTHORIZATION_REQUEST_OPERATION_SCHEMAS} from './authorizationRequestOperations.js';
@@ -74,6 +77,8 @@ import {InquiryThreadCreateInputSchema,InquiryThreadCreateReceiptSchema,NoteQues
 import {TaskReportInputSchema,TaskCompleteInputSchema,TaskReviewInputSchema,TaskHandoffInputSchema,TaskStatusInputSchema,TaskDeleteInputSchema,TaskStatusOutputSchema,TaskReportOutputSchema,TaskCompleteOutputSchema,TaskHandoffOutputSchema,TaskDeleteOutputSchema} from './taskLifecycle.js';
 import {BoardConfigurationInputSchema, BoardColumnSelectionSchema, TaskCompletionOverrideSchema, ProjectBoardColumnSchema, TASK_STATUSES} from './projectWork.js';
 import { IdSchema } from './common.js';
+import { COLLABORATION_OPERATION_SCHEMAS } from './roomCollaboration.js';
+export * from './roomCollaboration.js';
 import { z } from 'zod';
 import {TaskSpacePlacementInputSchema,TaskSpacePlacementOutputSchema} from './taskSpacePlacement.js';
 import {TaskCreateOperationInputSchema,TaskCreateOperationOutputSchema,TaskUpdateInputSchema,TaskUpdateOutputSchema,TaskEvaluationRecordInputSchema,TaskEvaluationRecordOutputSchema,TaskPlanRequestInputSchema,TaskRunCreateInputSchema,TaskRunReceiptSchema,BoardCreateInputSchema,BoardUpdateInputSchema,BoardReceiptSchema,PlanExecuteInputSchema,PlanExecuteOutputSchema,PlanReconcileInputSchema,PlanReconcileOutputSchema,JobCancelInputSchema,JobCancelOutputSchema} from './taskBoardPlanJob.js';
@@ -94,7 +99,7 @@ export const OperationActorSchema = z.object({
   space_id: z.string().min(1)
 }).strict();
 export type OperationActor = z.infer<typeof OperationActorSchema>;
-export const OPERATION_ERROR_CODES = ['authentication_required', 'operation_not_granted', 'operation_not_found', 'operation_version_unsupported', 'operation_invalid_input', 'idempotency_key_required', 'idempotency_key_reused', 'idempotency_in_progress', 'operation_approval_mapping_unavailable', 'operation_approval_state_inconsistent', 'operation_approval_rejected', 'operation_approval_expired', 'operation_approval_superseded', 'operation_result_unavailable', 'operation_invalid_output', 'operation_audit_unavailable', 'operation_temporarily_unavailable', 'operation_internal_error', 'operation_conflict', 'operation_limit_exceeded'] as const;
+export const OPERATION_ERROR_CODES = ['authentication_required', 'operation_not_granted', 'operation_not_found', 'operation_version_unsupported', 'operation_invalid_input', 'idempotency_key_required', 'idempotency_key_reused', 'idempotency_in_progress', 'operation_approval_mapping_unavailable', 'operation_approval_state_inconsistent', 'operation_approval_rejected', 'operation_approval_expired', 'operation_approval_superseded', 'operation_result_unavailable', 'operation_invalid_output', 'operation_audit_unavailable', 'operation_temporarily_unavailable', 'operation_internal_error', 'operation_conflict', 'operation_limit_exceeded', 'operation_consent_required'] as const;
 export type OperationErrorCode = typeof OPERATION_ERROR_CODES[number];
 export const OperationErrorSchema = z.object({
   error: z.object({
@@ -193,18 +198,6 @@ export const ProjectOperationCommandOutputSchema = z.object({
   kind: z.enum(['custom','source_setup','source_backfill','research']),
   status: z.enum(['draft','active','waiting_review','completed','failed','cancelled']),
   version: z.number().int().positive(),
-}).strict();
-const collaborationParticipants = z.array(IdSchema.max(36)).min(1)
-  .refine(ids => new Set(ids).size === ids.length, 'Participants must be distinct');
-export const CollaborationParticipantsInputSchema = z.object({
-  group_id: IdSchema.max(36),
-  expected_participant_agent_ids: collaborationParticipants,
-  participant_agent_ids: collaborationParticipants,
-  reason: z.string().trim().min(1).max(2000),
-}).strict();
-export const CollaborationParticipantsOutputSchema = z.object({
-  group_id: IdSchema.max(36), task_id: IdSchema.max(36), participant_agent_ids: collaborationParticipants,
-  max_delegations: z.number().int().positive(),
 }).strict();
 const BASE_OPERATION_SCHEMA_TABLE = {
   ...ACCOUNT_OPERATION_SCHEMAS,...DAEMON_WORKSPACE_OPERATION_SCHEMAS,
@@ -316,7 +309,6 @@ const BASE_OPERATION_SCHEMA_TABLE = {
   'source.backfill.resume':{input:SourceBackfillControlInputSchema,output:SourceBackfillReceiptSchema},
   'project.operation.create': {input:ProjectOperationCreateInputSchema, output:ProjectOperationCommandOutputSchema},
   'project.operation.cancel': {input:ProjectOperationCancelInputSchema, output:ProjectOperationCommandOutputSchema},
-  'room.collaboration.update_participants': {input: CollaborationParticipantsInputSchema, output: CollaborationParticipantsOutputSchema},
   'policy.action_grant.create':{input:ActionGrantCreateInputSchema,output:ActionGrantOutputSchema},
   'policy.action_grant.revoke':{input:ActionGrantRevokeInputSchema,output:ActionGrantOutputSchema},
   'system.actions.list': {
@@ -324,8 +316,8 @@ const BASE_OPERATION_SCHEMA_TABLE = {
     output: ActionCatalogOutputSchema
   }
 } as const;
-export const OPERATION_SCHEMA_TABLE:typeof CONTEXT_OPS_OPERATION_SCHEMAS & typeof CONTENT_RETRIEVAL_OPERATION_SCHEMAS & typeof RESEARCH_STRATEGY_OPERATION_SCHEMAS & typeof CROSS_SPACE_RETRIEVAL_OPERATION_SCHEMAS & typeof ATTENTION_OPERATION_SCHEMAS & typeof PERSONAL_MEMORY_GRANT_OPERATION_SCHEMAS & typeof CAPTURE_FILING_OPERATION_SCHEMAS & typeof CROSS_SPACE_SETTING_OPERATION_SCHEMAS & typeof LEARNING_OPERATION_SCHEMAS & typeof FOCUS_OPERATION_SCHEMAS & typeof GRAPH_OPERATION_SCHEMAS & typeof ACTIVITY_OPERATION_SCHEMAS & typeof DIGEST_OPERATION_SCHEMAS & typeof INTEREST_OPERATION_SCHEMAS & typeof READING_OPERATION_SCHEMAS & typeof BASE_OPERATION_SCHEMA_TABLE & typeof AUTOMATION_FIRE_OPERATION_SCHEMAS & typeof PROPOSAL_CONSENT_OPERATION_SCHEMAS & typeof PROPOSAL_REJECTION_OPERATION_SCHEMAS & typeof PROPOSAL_APPLY_OPERATION_SCHEMAS & typeof BUNDLE_DECISION_OPERATION_SCHEMAS = {
- ...CONTEXT_OPS_OPERATION_SCHEMAS,...CONTENT_RETRIEVAL_OPERATION_SCHEMAS,...RESEARCH_STRATEGY_OPERATION_SCHEMAS,...CROSS_SPACE_RETRIEVAL_OPERATION_SCHEMAS,...ATTENTION_OPERATION_SCHEMAS,...PERSONAL_MEMORY_GRANT_OPERATION_SCHEMAS,...CAPTURE_FILING_OPERATION_SCHEMAS,...CROSS_SPACE_SETTING_OPERATION_SCHEMAS,...LEARNING_OPERATION_SCHEMAS,...FOCUS_OPERATION_SCHEMAS,...GRAPH_OPERATION_SCHEMAS,...ACTIVITY_OPERATION_SCHEMAS,...DIGEST_OPERATION_SCHEMAS,...INTEREST_OPERATION_SCHEMAS,...READING_OPERATION_SCHEMAS,...BASE_OPERATION_SCHEMA_TABLE,...AUTOMATION_FIRE_OPERATION_SCHEMAS,...PROPOSAL_CONSENT_OPERATION_SCHEMAS,...PROPOSAL_REJECTION_OPERATION_SCHEMAS,...PROPOSAL_APPLY_OPERATION_SCHEMAS,...BUNDLE_DECISION_OPERATION_SCHEMAS};
+export const OPERATION_SCHEMA_TABLE:typeof CONTEXT_OPS_OPERATION_SCHEMAS & typeof CONTENT_RETRIEVAL_OPERATION_SCHEMAS & typeof RESEARCH_STRATEGY_OPERATION_SCHEMAS & typeof CROSS_SPACE_RETRIEVAL_OPERATION_SCHEMAS & typeof ATTENTION_OPERATION_SCHEMAS & typeof PERSONAL_MEMORY_GRANT_OPERATION_SCHEMAS & typeof PLUGIN_DATA_ACCESS_OPERATION_SCHEMAS & typeof PLUGIN_PROJECT_BINDING_OPERATION_SCHEMAS & typeof CAPTURE_FILING_OPERATION_SCHEMAS & typeof CROSS_SPACE_SETTING_OPERATION_SCHEMAS & typeof LEARNING_OPERATION_SCHEMAS & typeof FOCUS_OPERATION_SCHEMAS & typeof GRAPH_OPERATION_SCHEMAS & typeof ACTIVITY_OPERATION_SCHEMAS & typeof DIGEST_OPERATION_SCHEMAS & typeof INTEREST_OPERATION_SCHEMAS & typeof READING_OPERATION_SCHEMAS & typeof BASE_OPERATION_SCHEMA_TABLE & typeof AUTOMATION_FIRE_OPERATION_SCHEMAS & typeof PROPOSAL_CONSENT_OPERATION_SCHEMAS & typeof PROPOSAL_REJECTION_OPERATION_SCHEMAS & typeof PROPOSAL_APPLY_OPERATION_SCHEMAS & typeof BUNDLE_DECISION_OPERATION_SCHEMAS & typeof GMAIL_OPERATION_SCHEMAS & typeof COLLABORATION_OPERATION_SCHEMAS = {
+ ...CONTEXT_OPS_OPERATION_SCHEMAS,...CONTENT_RETRIEVAL_OPERATION_SCHEMAS,...RESEARCH_STRATEGY_OPERATION_SCHEMAS,...CROSS_SPACE_RETRIEVAL_OPERATION_SCHEMAS,...ATTENTION_OPERATION_SCHEMAS,...PERSONAL_MEMORY_GRANT_OPERATION_SCHEMAS,...PLUGIN_DATA_ACCESS_OPERATION_SCHEMAS,...PLUGIN_PROJECT_BINDING_OPERATION_SCHEMAS,...CAPTURE_FILING_OPERATION_SCHEMAS,...CROSS_SPACE_SETTING_OPERATION_SCHEMAS,...LEARNING_OPERATION_SCHEMAS,...FOCUS_OPERATION_SCHEMAS,...GRAPH_OPERATION_SCHEMAS,...ACTIVITY_OPERATION_SCHEMAS,...DIGEST_OPERATION_SCHEMAS,...INTEREST_OPERATION_SCHEMAS,...READING_OPERATION_SCHEMAS,...BASE_OPERATION_SCHEMA_TABLE,...AUTOMATION_FIRE_OPERATION_SCHEMAS,...PROPOSAL_CONSENT_OPERATION_SCHEMAS,...PROPOSAL_REJECTION_OPERATION_SCHEMAS,...PROPOSAL_APPLY_OPERATION_SCHEMAS,...BUNDLE_DECISION_OPERATION_SCHEMAS,...GMAIL_OPERATION_SCHEMAS,...COLLABORATION_OPERATION_SCHEMAS};
 export type OperationId = keyof typeof OPERATION_SCHEMA_TABLE;
 export type OperationInput<Id extends OperationId> = z.input<(typeof OPERATION_SCHEMA_TABLE)[Id]['input']>;
 export type OperationOutput<Id extends OperationId> = z.output<(typeof OPERATION_SCHEMA_TABLE)[Id]['output']>;

@@ -328,6 +328,37 @@ block every later update.
 - The instance must not be exposed directly to the public internet; TLS termination, rate
   limiting, and general CSRF-token hardening are prerequisites for reconsidering that rule.
 
+## Least-privilege database roles (ADR 0031)
+
+[ADR 0031](../decisions/0031-runtime-database-roles.md). Implemented, not
+activated on any instance. Activation needs the operator's explicit
+authorization per instance; run on the host with the mode's `--mode`:
+
+1. `ops/scripts/system/backup.sh` (verified backup first).
+2. `ops/scripts/db/runtime-roles.sh plan` — read-only role/URL inventory; each
+   existing role's `exceeds` lists effective privileges beyond its target.
+3. `ops/scripts/db/runtime-roles.sh apply --yes` — owner channel; creates
+   `rainver_app`/`rainver_backup` and their grants, stores generated passwords
+   in the instance `.env`, sends only SCRAM verifiers. An existing role with
+   any `exceeds` finding is refused, never trimmed or reassigned: repair it
+   explicitly (or choose new role names) and rerun. Safe with services running.
+4. Stop application services (keep PostgreSQL), then
+   `runtime-roles.sh activate --yes` — switches `SERVER_DATABASE_URL` and
+   `BACKUP_DATABASE_URL`, sets `RAINVER_DB_REQUIRE_RUNTIME_ROLE=1`, keeps the
+   owner URLs as `RAINVER_DB_OWNER_*` (never copied into `.server.env`).
+5. `ops/scripts/start.sh` and verify health, a Run and a scheduled backup.
+6. Rollback: stop services, `runtime-roles.sh rollback --yes`, start. Roles own
+   nothing and may stay; removing them (`DROP OWNED BY`, `DROP ROLE`) is a
+   separate manual step. No `REASSIGN` is ever needed.
+
+Migrations, plugin install/reconcile and both restore scripts keep the owner
+channel; restore re-grants with `migrateCli runtime-roles-reconcile
+--if-present`. `migrate up` re-protects the migration journal for an existing
+app role. The owner URL and role passwords reach these one-off containers by
+inherited variable name, never on the docker argv. Ordinary start never
+rewrites an activated URL, and an activated server refuses to start as a role
+that has drifted beyond the app target.
+
 ## Verification Not Covered By CI
 
 Compose resolves volume sources on the host daemon and reads env files, build contexts

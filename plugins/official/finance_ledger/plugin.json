@@ -1,10 +1,10 @@
 {
   "id": "finance_ledger",
   "name": "Finance Ledger",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "kind": "official_plugin",
   "server": {
-    "main": "server/index.js"
+    "main": "server/src/index.js"
   },
   "migrations": {
     "dir": "migrations"

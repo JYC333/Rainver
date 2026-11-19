@@ -57,6 +57,8 @@ export async function record(db: Queryable, scope: string[], version: number, ha
     if(!proposal || proposal.status!=='pending' || proposal.expired)throw new OperationError('operation_conflict',409);
     if(!frozen || typeof frozen!=='object' || !Object.hasOwn(frozen,'payload'))throw new OperationError('operation_approval_state_inconsistent',503);
     if(canonical(proposal.payload_json)!==canonical((frozen as {payload:unknown}).payload))throw new OperationError('operation_approval_state_inconsistent',503);
+    // Durable origin marker: outlives this request row's retention (see authorizeAcceptReplay).
+    await db.query('UPDATE proposals SET operation_request_linked=true WHERE id=$1 AND space_id=$2',[proposalId,scope[0]]);
   }
   const id = randomUUID();
   await db.query(`INSERT INTO operation_idempotency(id,space_id,principal_kind,principal_id,on_behalf,authority_scope_id,operation_id,idempotency_key,operation_version,fingerprint,state,result_json,http_status,proposal_id,frozen_json,created_at,terminal_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14,$15::jsonb,now(),CASE WHEN $11::varchar='pending_approval' THEN NULL ELSE now() END)`, [id, ...scope, version, hash, state, JSON.stringify(body), status, proposalId, JSON.stringify(frozen)]);

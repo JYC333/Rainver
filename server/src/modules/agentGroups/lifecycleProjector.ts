@@ -663,6 +663,11 @@ async function queueWaitingDependencyRunIfReady(input: {
   if (!groupId) return;
   const group = await input.groups.getGroup(input.waitingRun.space_id, groupId);
   if (!group || group.status !== "active") return;
+  // A completion subgroup is held by its container's pause or stop as well;
+  // resuming the container re-evaluates it (`AgentGroupService.reevaluateParkedRuns`).
+  const containerId = group.budget_json?.container_group_id;
+  if (typeof containerId === "string" && containerId !== group.id
+    && (await input.groups.getGroup(group.space_id, containerId))?.status !== "active") return;
 
   const parentMessageId = await input.groups.findTurnParentMessageIdForRun({
     space_id: group.space_id,

@@ -5,7 +5,7 @@ import {assertCurrentActor,sessionActor} from '../systemActions/operations/actor
 import {assertProposalTransaction,withCheckpointDecisionOwner,lockProposalTransitions} from '../systemActions/operations/proposalTransitions.js';
 import {OperationError} from '../systemActions/operations/errors.js';
 import {pluginProposalContributor} from '../plugins/proposalContributions.js';
-import {operationProposalService} from "../systemActions/operations/approvals.js";
+import {operationProposalService,durablyLinked} from "../systemActions/operations/approvals.js";
 import {pluginOperations} from "../plugins/operationRegistry.js";
 import { isPolicyAuditRecoveryActive, withPolicyAuditRecovery } from "../policy/auditWriter.js";
 import type {ProposalDecisionHooks} from "./decisionHooks.js";
@@ -45,6 +45,7 @@ import type {
 import { ActionApprovalGrantService } from "../policy/actionApprovalGrantService.js";
 import { EvolutionSignalEmitter } from "../evolution/signalEmitters.js";
 import { memoryProposalDecider, type MemoryProposalDecider } from "../memory/memoryProposalDecider.js";
+import { OWNER_ONLY_PROPOSAL_TYPES } from "../ontology/entities.js";
 
 /**
  * The accept response is a union discriminated on `result_type`, and the
@@ -144,6 +145,12 @@ interface ProposalAcceptOptions {
   confirmIncompletePatch?: boolean;
   /** Only the bundle coordinator may apply a proposal while it owns the member row. */
   allowBundleMemberDecision?: boolean;
+  /**
+   * The person deciding directly (`isPersonActingDirectly`: their own web or API call, no Agent, Run
+   * or continuation). Required for an owner-only card (`OWNER_ONLY_PROPOSAL_TYPES`); see
+   * `assertOwnerCardDecision`.
+   */
+  ownerCardDecision?: boolean;
 }
 
 type ProposalTransactionCallback = () => Promise<void>;
@@ -173,6 +180,8 @@ interface ApplyProposalRow {
   project_id: string | null;
   title: string | null;
   required_approver_role: string | null;
+  /** Derived expiry (pending past `expires_at`): no entry may decide it. */
+  expired: boolean;
 }
 
 interface GrantRow {
@@ -209,8 +218,9 @@ export class PgProposalApplyService {
     contributor?: ProposalApplierContributor,
   ): PgProposalApplyService {
     const registry=createDefaultProposalApplierRegistry(contributor??pluginProposalContributor(config));
-    const operations=pluginOperations(config);
-    return operations.length?operationProposalService(config,registry,new Map(operations.map(o=>[o.definition.id,o]))):new PgProposalApplyService(config,registry);
+    // The decision hooks stay installed with an empty Operation registry: an independent applier
+    // (a legacy host plugin) must not bypass the durable-origin replay gate of a pruned request.
+    return operationProposalService(config,registry,new Map(pluginOperations(config).map(o=>[o.definition.id,o])));
   }
 
   supportedProposalTypes(): ReadonlySet<string> {
@@ -268,6 +278,7 @@ export class PgProposalApplyService {
   async prepareBundleDecisionInTransaction(client:Queryable,proposalId:string,identity:{spaceId:string;userId:string},decision:'approve'|'reject'){
     const proposal=await authorizeProposalDecision(client,await this.getProposalForUpdate(client,proposalId),identity,decision==='approve'?'accept':'reject');
     if(!proposal||proposal.preview)throw new ProposalApplyHttpError(404,'Proposal not found');
+    if(proposal.expired)throw new ProposalApplyHttpError(409,'Proposal decision no longer available');
     if(decision==='reject'){
       if(!await canRejectProposal(client,proposal,identity.userId))throw new ProposalApplyHttpError(404,'Proposal not found');
     }else{
@@ -293,10 +304,11 @@ export class PgProposalApplyService {
     if(phase==='rollback'&&(await lockProposalTransitions(db,identity.spaceId,[id],true)).hasAnyLinked&&!this.decisionHooks)throw new OperationError('operation_approval_mapping_unavailable',503);
     const proposal=await authorizeProposalDecision(db,await this.getProposalForUpdate(db,id),identity,phase==='apply'?'accept':'rollback');
     if(!proposal||proposal.proposal_type!=='code_patch'||proposal.preview)throw new ProposalApplyHttpError(404,'Proposal not found');
+    if(phase==='apply'&&proposal.expired)throw new ProposalApplyHttpError(409,'Proposal decision no longer available');
     if(phase==='apply')await this.assertBundleMemberMayBeDecided(db,id,options.allowBundleMemberDecision===true);
     if(phase==='apply'){
       if((await db.query('SELECT id FROM operation_idempotency WHERE space_id=$1 AND proposal_id=$2',[identity.spaceId,id])).rows.length&&!this.decisionHooks)throw new OperationError('operation_approval_mapping_unavailable',503);
-      if(this.decisionHooks&&!await this.decisionHooks.beforeDecision(db,id,identity,'accept'))throw new ProposalApplyHttpError(409,'Proposal decision no longer available');
+      if(this.decisionHooks&&await this.decisionHooks.beforeDecision(db,id,identity,'accept')!==true)throw new ProposalApplyHttpError(409,'Proposal decision no longer available');
       assertIncompleteCodePatchConfirmation(proposal.proposal_type,proposal.payload_json,options.confirmIncompletePatch===true);
       await this.assertRequiredContextOwnerApprovals(db,proposal);
     }
@@ -361,6 +373,7 @@ export class PgProposalApplyService {
     let rollbackOnFailure: (() => Promise<void>) | null = null;
     try {
       if(!await this.visibleDecisionCandidate(client,proposalId,identity))return null;
+      await assertOwnerCardDecision(client,proposalId,identity.spaceId,options.ownerCardDecision===true);
       // A report-derived Proposal applies findings frozen from its report; it
       // is decided only while that report is releasable to the decider. The
       // report closure (Source rows first) is pinned before the Proposal row
@@ -371,11 +384,23 @@ export class PgProposalApplyService {
         throw new OperationError('operation_approval_mapping_unavailable',503);
       const transitions=await lockProposalTransitions(client,identity.spaceId,[proposalId],true,!isPolicyAuditRecoveryActive());
       if(transitions.hasAnyLinked && !isPolicyAuditRecoveryActive())throw new OperationError('operation_approval_mapping_unavailable',503);
-      if (this.decisionHooks && !await this.decisionHooks.beforeDecision(client,proposalId,identity,"accept")) return null;
+      const admitted = this.decisionHooks ? await this.decisionHooks.beforeDecision(client,proposalId,identity,"accept") : true;
+      if (admitted === false) return null;
       const proposal = await authorizeProposalDecision(
         client, await this.getProposalForUpdate(client, proposalId), identity, "accept",
       );
       if (!proposal || proposal.preview) return null;
+      if (admitted !== true) {
+        // Decided without applying: the Proposal keeps its status; the hook's state commits.
+        await transitions.finish();
+        const current = await new PgProposalRepository(client).getVisible(identity.spaceId, identity.userId, proposalId);
+        if (!current) return null;
+        return { outcome: await acceptOut(current, admitted) };
+      }
+      // Derived expiry: nothing applies and the Proposal stays pending. A linked request's hook has
+      // already committed its own `expired` receipt; an unlinked Proposal has no request to commit,
+      // and an `operation_failure` receipt would claim a link, so it is refused outright.
+      if (proposal.expired) throw new OperationError('operation_approval_expired', 409);
       if (reportDependencyKey(proposal.proposal_type, proposal.payload_json) !== reportDependencies) {
         throw new ProposalApplyHttpError(409, "The report this proposal derives from changed; review it again");
       }
@@ -389,7 +414,8 @@ export class PgProposalApplyService {
       await this.assertRequiredContextOwnerApprovals(client, proposal);
       if(isMemoryProposal(proposal.proposal_type))await assertCurrentActor(client,sessionActor(identity),true);
       await this.enforceApplyPolicy(client, proposal, identity.userId,true);
-      if(await this.decisionHooks?.beforeApply?.(client,proposalId)===false)return null;
+      const decided=await this.decisionHooks?.beforeApply?.(client,proposalId);
+      if(decided===false)return null;
       let result:ProposalApplyResult;
       const apply = (db:Queryable = client, requester?:protocol.OperationActor) => {
         const config={...this.config,auditTransaction:db};
@@ -413,8 +439,10 @@ export class PgProposalApplyService {
         },
         userId: identity.userId,
         requester,
+        ownerCardDecision: options.ownerCardDecision === true,
       });};
-      try { result = this.decisionHooks?.runApply ? await this.decisionHooks.runApply(client,proposalId,apply) : await apply(); } catch(error) {
+      if(decided&&typeof decided==='object')result=decided;
+      else try { result = this.decisionHooks?.runApply ? await this.decisionHooks.runApply(client,proposalId,apply) : await apply(); } catch(error) {
         if(!this.decisionHooks?.applyFailed)throw error;
         result=await this.decisionHooks.applyFailed(client,proposalId,error);
       }
@@ -487,13 +515,15 @@ export class PgProposalApplyService {
     await this.enforceApplyPolicy(db,proposal,identity.userId,true,'bundle_rollback_operation_authorize');
   }
 
-  async authorizeAcceptOperationInTransaction(db:Queryable,id:string,identity:{spaceId:string;userId:string},replay=false) {
+  async authorizeAcceptOperationInTransaction(db:Queryable,id:string,identity:{spaceId:string;userId:string},replay=false,stored:{resultType?:string}={}) {
     await assertProposalTransaction(db);
     const proposal=await this.getProposalForUpdate(db,id,false);
     if(!proposal || !await this.visibleDecisionCandidate(db,id,identity) || proposal.preview || !['pending','accepted','superseded','rolled_back'].includes(proposal.status))throw new ProposalApplyHttpError(404,'Proposal not found');
     await assertCurrentActor(db,sessionActor(identity),true);
     if(proposal.project_id)await db.query('SELECT id FROM projects WHERE id=$1 AND space_id=$2 FOR SHARE',[proposal.project_id,identity.spaceId]);
     await this.enforceApplyPolicy(db,proposal,identity.userId,true,'operation_accept_authorize');
+    // The stored accept body carries the linked operation's result: release it only through that result's live gate.
+    if(replay)await this.decisionHooks?.authorizeAcceptReplay?.(db,id,identity,stored);
   }
 
   async authorizeRollbackOperationInTransaction(db:Queryable,id:string,identity:{spaceId:string;userId:string},replay=false) {
@@ -516,9 +546,11 @@ export class PgProposalApplyService {
       const scope=(await client.query<{space_id:string}>('SELECT space_id FROM proposals WHERE id=$1',[proposalId])).rows[0];
       if(!scope){await client.query('ROLLBACK');return null;}
       const transitions=await lockProposalTransitions(client,scope.space_id,[proposalId],true);
-      if(transitions.hasAnyLinked)throw new OperationError('operation_approval_mapping_unavailable',503);
+      // A pruned request leaves only its durable marker; a grant never decides an operation approval.
+      if(transitions.hasAnyLinked||await durablyLinked(client,proposalId,scope.space_id))throw new OperationError('operation_approval_mapping_unavailable',503);
       const proposal = await this.getProposalForUpdate(client, proposalId);
-      if (!proposal || proposal.status !== "pending" || proposal.preview || !proposal.created_by_agent_id) {
+      // A standing action grant never decides an owner-only card (`assertOwnerCardDecision`).
+      if (!proposal || proposal.status !== "pending" || proposal.expired || proposal.preview || !proposal.created_by_agent_id || isOwnerOnlyProposal(proposal)) {
         await client.query("ROLLBACK");
         return null;
       }
@@ -609,8 +641,8 @@ export class PgProposalApplyService {
   }
 
   /** Formal public rejection preserves the canonical Bundle gate. */
-  async rejectOperationInTransaction(client:Queryable,proposalId:string,identity:{spaceId:string;userId:string}) {
-    return this.rejectTransaction(client,proposalId,identity);
+  async rejectOperationInTransaction(client:Queryable,proposalId:string,identity:{spaceId:string;userId:string},ownerCardDecision=false) {
+    return this.rejectTransaction(client,proposalId,identity,undefined,false,ownerCardDecision);
   }
 
   async authorizeRejectOperationInTransaction(client:Queryable,proposalId:string,identity:{spaceId:string;userId:string},replay=false) {
@@ -646,17 +678,21 @@ export class PgProposalApplyService {
     identity: { spaceId: string; userId: string },
     afterReject?: ProposalTransactionCallback,
     allowBundleMemberDecision = false,
+    ownerCardDecision = false,
   ): Promise<ProposalTransactionResult<ProposalOut> | null> {
     if(!await this.visibleDecisionCandidate(client,proposalId,identity))return null;
+    await assertOwnerCardDecision(client,proposalId,identity.spaceId,ownerCardDecision);
     if(!isPolicyAuditRecoveryActive() &&
       (await client.query('SELECT id FROM operation_idempotency WHERE proposal_id=$1 AND space_id=$2',[proposalId,identity.spaceId])).rowCount)
       throw new OperationError('operation_approval_mapping_unavailable',503);
     const transitions=await lockProposalTransitions(client,identity.spaceId,[proposalId],true,!isPolicyAuditRecoveryActive());
-    if(this.decisionHooks && !await this.decisionHooks.beforeDecision(client,proposalId,identity,"reject"))return null;
+    if(this.decisionHooks && await this.decisionHooks.beforeDecision(client,proposalId,identity,"reject")!==true)return null;
     const proposal = await authorizeProposalDecision(
       client, await this.getProposalForUpdate(client, proposalId), identity, "reject",
     );
     if (!proposal || !(await canRejectProposal(client, proposal, identity.userId))) return null;
+    // An expired Proposal is no longer decided (a linked one's hook has already refused it).
+    if (proposal.expired) throw new OperationError('operation_approval_expired', 409);
     await this.assertBundleMemberMayBeDecided(client, proposal.id, allowBundleMemberDecision);
     const updated = await client.query(
       `UPDATE proposals
@@ -732,6 +768,9 @@ export class PgProposalApplyService {
       client, await this.getProposalForUpdate(client, proposalId), identity, "egress_approval",
     );
     if (!proposal) throw new ProposalApplyHttpError(404, "Proposal not found");
+    // Consent toward an expired Proposal decides nothing and is refused like accept/reject,
+    // first use and keyed replay alike; no approval row is written.
+    if (proposal.expired) throw new OperationError('operation_approval_expired', 409);
     const taintOwnerApprovers = requiredTaintOwnerApprovers(proposal.payload_json);
     if (taintOwnerApprovers.length > 0) {
       if (!taintOwnerApprovers.includes(identity.userId)) {
@@ -854,7 +893,9 @@ export class PgProposalApplyService {
               proposal.created_by_user_id, proposal.owner_user_id, proposal.created_by_agent_id,
               proposal.created_by_run_id, proposal.visibility,
               proposal.project_id, proposal.title,
-              proposal.required_approver_role
+              proposal.required_approver_role,
+              (proposal.status = 'pending' AND proposal.expires_at IS NOT NULL
+                AND proposal.expires_at <= now()) AS expired
          FROM proposals proposal
         WHERE proposal.id = $1
         ${lock?"FOR UPDATE":""}`,
@@ -919,6 +960,7 @@ export class PgProposalApplyService {
         required_approver_role: proposal.required_approver_role,
         proposal_payload: proposal.payload_json,
         metadata_json: { server_apply: true,decision_phase:phase,...codePatchDecisionAudit() },
+        private_owner_decision: isOwnerOnlyProposal(proposal) && proposal.visibility === "private" && proposal.owner_user_id === userId,
       },
       role,
       this.registry.registeredTypes(),
@@ -1179,18 +1221,47 @@ function recordValue(value: unknown): Record<string, unknown> {
  * not apply either.
  */
 /** See `memoryProposalDecider`: derived from the row or applier fields, never a payload scope claim. */
+type DeciderShape = { space_id: string; proposal_type: string; payload_json: Record<string, unknown> | null; created_by_agent_id?: string | null; owner_user_id?: string | null };
+
+/**
+ * An owner-only private proposal (a Gmail monitor draft) names its decider by
+ * identity too: the person whose private turn drafted it. Nobody else — a
+ * Space owner, admin or oversight role included — decides it.
+ */
+function isOwnerOnlyProposal(proposal: { proposal_type: string }): boolean {
+  return OWNER_ONLY_PROPOSAL_TYPES.includes(proposal.proposal_type);
+}
+
+/**
+ * An owner-only card (a Gmail monitor, digest or private-check card) is decided only by its owner
+ * acting directly on it — never carried by an Agent (`proposal.decide`), a continuation, a bundle or
+ * an automatic acceptance. Any other path finds no such Proposal (404) and nothing is written; ordinary
+ * Proposals are unaffected. The card appliers that write a standing consent also refuse without it.
+ */
+async function assertOwnerCardDecision(client: Queryable, proposalId: string, spaceId: string, ownerCardDecision: boolean): Promise<void> {
+  if (ownerCardDecision) return;
+  const type = (await client.query<{ proposal_type: string }>(`SELECT proposal_type FROM proposals WHERE id=$1 AND space_id=$2`, [proposalId, spaceId])).rows[0]?.proposal_type;
+  if (type !== undefined && isOwnerOnlyProposal({ proposal_type: type })) throw new ProposalApplyHttpError(404, "Proposal not found");
+}
+
 function requiredOwnerUserId(
   client: Queryable,
-  proposal: { space_id: string; proposal_type: string; payload_json: Record<string, unknown> | null; created_by_agent_id?: string | null },
+  proposal: DeciderShape,
 ): Promise<MemoryProposalDecider> {
+  if (isOwnerOnlyProposal(proposal)) return Promise.resolve({ required: true, userId: proposal.owner_user_id ?? null });
   return memoryProposalDecider(client, proposal);
 }
 
 async function assertRequiredOwnerMayDecide(
   client: Queryable,
-  proposal: { space_id: string; proposal_type: string; payload_json: Record<string, unknown> | null; created_by_agent_id?: string | null },
+  proposal: DeciderShape,
   userId: string,
 ): Promise<void> {
+  if (isOwnerOnlyProposal(proposal)) {
+    // Hidden, not forbidden: the row is owner-only and its existence is not disclosed.
+    if (!proposal.owner_user_id || proposal.owner_user_id !== userId) throw new ProposalApplyHttpError(404, "Proposal not found");
+    return;
+  }
   const required = await requiredOwnerUserId(client, proposal);
   if (required.required && required.userId !== userId) {
     throw new HttpError(403, "Only this Agent's owner can decide what it has become");

@@ -18,6 +18,12 @@ interface ProviderProxyLeaseInput {
    * server could forward to its vendor's cloud.
    */
   pinned_model?: string | null;
+  /**
+   * `model_only`: the lease of a network-isolated Run's model channel. The
+   * proxy then admits only the inference requests `modelOnlyPolicy.ts`
+   * allows, on the lease's own model (ADR 0030 §4a). Null: an ordinary lease.
+   */
+  request_policy?: ProviderProxyRequestPolicy | null;
   runtime_key?: string | null;
   session_id?: string | null;
   parent_run_id?: string | null;
@@ -39,6 +45,7 @@ interface ProviderProxyLeaseInput {
 }
 
 export type ProviderProxyRoute = "anthropic" | "openai";
+export type ProviderProxyRequestPolicy = "model_only";
 
 interface ProviderProxyLease {
   id: string;
@@ -68,6 +75,7 @@ interface ProviderProxyLease {
 
 export interface ResolvedProviderProxyLease {
   pinned_model: string | null;
+  request_policy: ProviderProxyRequestPolicy | null;
   id: string;
   token_hash: Buffer;
   run_id: string;
@@ -149,6 +157,9 @@ export class ProviderProxyLeaseRegistry {
    * this Run on this provider.
    */
   create(authorization: CredentialSpendAuthorization, input: ProviderProxyLeaseInput): ProviderProxyLease {
+    if (input.request_policy === "model_only" && !input.model) {
+      throw new Error("A model-only lease is issued for one named model.");
+    }
     if (
       authorization.space_id !== input.space_id
       || authorization.run_id !== input.run_id
@@ -172,6 +183,7 @@ export class ProviderProxyLeaseRegistry {
       upstream_base_url: normalizeBaseUrl(input.upstream_base_url),
       model: input.model ?? null,
       pinned_model: input.pinned_model ?? null,
+      request_policy: input.request_policy ?? null,
       runtime_key: input.runtime_key ?? null,
       session_id: input.session_id ?? null,
       parent_run_id: input.parent_run_id ?? null,

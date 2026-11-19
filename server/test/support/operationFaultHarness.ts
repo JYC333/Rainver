@@ -49,3 +49,21 @@ export async function holdCommitAcknowledgement(databaseUrl:string) {
   const url=new URL(databaseUrl);url.hostname='127.0.0.1';url.port=String(address.port);
   return {url:url.toString(),committed,disconnect(){for(const socket of sockets)socket.destroy();},async close(){for(const socket of sockets)socket.destroy();await new Promise<void>(resolve=>server.close(()=>resolve()));}};
 }
+/** Real PostgreSQL wire relay that can go silent: after `stall()` no byte is forwarded either way
+ * (an unresponsive network); closing the driver's socket still closes the backend's.
+ */
+export async function stallableRelay(databaseUrl:string) {
+  const destination=new URL(databaseUrl),sockets=new Set<Socket>();
+  let stalled=false;
+  const server=createServer(front=>{
+    const back=createConnection({host:destination.hostname,port:Number(destination.port)});
+    for(const socket of [front,back]){sockets.add(socket);socket.on('error',()=>{});socket.on('close',()=>sockets.delete(socket));}
+    front.on('close',()=>back.destroy());back.on('close',()=>front.destroy());
+    front.on('data',data=>{if(!stalled)back.write(data);});
+    back.on('data',data=>{if(!stalled)front.write(data);});
+  });
+  server.listen(0,'127.0.0.1');await once(server,'listening');
+  const address=server.address();if(!address||typeof address==='string')throw new Error('No relay port');
+  const url=new URL(databaseUrl);url.hostname='127.0.0.1';url.port=String(address.port);
+  return {url:url.toString(),stall(){stalled=true;},resume(){stalled=false;},open:()=>sockets.size,async close(){for(const socket of sockets)socket.destroy();await new Promise<void>(resolve=>server.close(()=>resolve()));}};
+}

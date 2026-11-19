@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { GmailDigestProposalPayloadSchema, GmailMonitorProposalPayloadSchema, GmailPrivateCheckProposalPayloadSchema, GmailPrivateReadProposalPayloadSchema } from "@rainver/protocol";
 import {
   SOURCE_CAPTURE_POLICIES,
   SOURCE_RETENTION_POLICIES,
@@ -300,6 +301,8 @@ const projectSourceBind = z.object({
   source_channel_id: z.string().min(1),
   action_id: z.literal("project.source.propose_bind"),
 }).passthrough();
+// Owner-private Gmail monitor drafted by an Agent; the schema is the protocol's (criteria bounds included).
+const gmailMonitorCreate = GmailMonitorProposalPayloadSchema;
 const sourceBackfillStart = z.object({ proposal_type:z.literal("source_backfill_start"),action_id:z.literal("source.backfill.propose_start"),source_channel_id:z.string().min(1),source_backfill_plan_id:z.string().min(1),strategy_json:z.record(z.unknown()),quota_policy_json:z.record(z.unknown()) }).passthrough();
 
 /**
@@ -424,6 +427,10 @@ const ProposalPayloadSchema = z.discriminatedUnion("proposal_type", [
   sourceMaterialRetention,
   projectSourceBind,
   sourceBackfillStart,
+  gmailMonitorCreate,
+  GmailDigestProposalPayloadSchema,
+  GmailPrivateReadProposalPayloadSchema,
+  GmailPrivateCheckProposalPayloadSchema,
   projectBriefPublish,
   researchQueryStrategyActivation,
   sourceRecipeActivation,

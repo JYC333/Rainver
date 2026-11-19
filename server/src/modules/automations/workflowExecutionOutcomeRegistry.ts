@@ -5,7 +5,8 @@ export interface WorkflowExecutionOutcomeContext {
   spaceId: string;
   executionId: string;
   workflowId: string;
-  status: "completed" | "failed";
+  /** `cancelled`: its coordinator Run was cancelled outside the graph. */
+  status: "completed" | "failed" | "cancelled";
   researchOperationId: string | null;
 }
 

@@ -6,6 +6,7 @@ import { seedSpaceOwnerProject } from "./support/domainSeeds.js";
 import { resetTables } from "./support/resetTables.js";
 import { SourceBackfillExecutionService } from "../src/modules/sources/sourceBackfillExecutionService.js";
 import { consumeConnectionQuota } from "../src/modules/sources/sourceQuotaBucket.js";
+import { reconcileSourceBackfills } from "../src/modules/scheduler/sourceTasks.js";
 import { SourceExtractionWorker } from "../src/modules/sources/extractionWorker.js";
 import { __setArxivThrottleForTests } from "../src/modules/sources/connectors/arxivThrottle.js";
 import { loadConfig } from "../src/config.js";
@@ -346,6 +347,130 @@ describe("source connection quota bucket (real Postgres)", () => {
     for (let index = 0; index < 3; index += 1) {
       expect(await consumeConnectionQuota(db.pool, SPACE, CONNECTION, { window: "minute", limit_count: 5 })).toEqual({ allowed: true });
     }
+  });
+});
+
+describe("segment dispatch against the connection quota (real Postgres)", () => {
+  const WINDOW = { from: "2026-01-01T00:00:00.000Z", to: "2026-02-01T00:00:00.000Z", max_items: 10 };
+  const stored = async (planId: string) => (await db.pool.query<{
+    plan_status: string; plan_next: Date | null; segment_id: string; segment_status: string; segment_next: Date | null;
+    attempt_count: number; extraction_job_id: string | null;
+  }>(
+    `SELECT p.status AS plan_status, p.next_eligible_at AS plan_next, s.id AS segment_id, s.status AS segment_status,
+            s.next_eligible_at AS segment_next, s.attempt_count, s.extraction_job_id
+       FROM source_backfill_plans p JOIN source_backfill_segments s ON s.plan_id=p.id WHERE p.id=$1`,
+    [planId],
+  )).rows[0]!;
+  const bucket = async () => (await db.pool.query<{ used_count: number; limit_count: number; reset_at: Date }>(
+    `SELECT used_count, limit_count, reset_at FROM source_quota_buckets WHERE space_id=$1 AND scope_kind='source_connection' AND scope_key=$2`,
+    [SPACE, CONNECTION],
+  )).rows;
+  const jobsFor = async (planId: string) => (await db.pool.query<{ id: string }>(
+    `SELECT id FROM extraction_jobs WHERE metadata_json->>'source_backfill_plan_id'=$1`, [planId],
+  )).rows;
+
+  it("dispatches a segment by claiming one quota unit and recording its extraction job together", async () => {
+    if (!db.available) return;
+    await seedStandalonePlan(PLAN_A, CHANNEL_A, 10, 0, "approved");
+    const segmentId = randomUUID();
+    await seedSegment(segmentId, PLAN_A, "pending", WINDOW);
+
+    const dispatched = await new SourceBackfillExecutionService(db.pool).executeNext(SPACE, PLAN_A) as { job_id: string; segment_id: string };
+
+    expect(dispatched.segment_id).toBe(segmentId);
+    const job = await db.pool.query(`SELECT space_id, connection_id, job_type, status, metadata_json FROM extraction_jobs WHERE id=$1`, [dispatched.job_id]);
+    expect(job.rows[0]).toMatchObject({
+      space_id: SPACE, connection_id: CONNECTION, job_type: "connection_scan", status: "pending",
+      metadata_json: { source_channel_id: CHANNEL_A, source_backfill_plan_id: PLAN_A, source_backfill_segment_id: segmentId, window: { max_items: 10, page_size: 10 } },
+    });
+    expect(await stored(PLAN_A)).toMatchObject({ plan_status: "running", segment_status: "running", attempt_count: 1, extraction_job_id: dispatched.job_id, segment_next: null });
+    expect(await bucket()).toEqual([expect.objectContaining({ used_count: 1, limit_count: 10 })]);
+  });
+
+  it("leaves the quota unit, segment and plan untouched when the job cannot be recorded", async () => {
+    if (!db.available) return;
+    await seedStandalonePlan(PLAN_A, CHANNEL_A, 10, 0, "approved");
+    await seedSegment(randomUUID(), PLAN_A, "pending", WINDOW);
+    await db.pool.query("CREATE FUNCTION public.reject_backfill_job() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'job store unavailable'; END $$");
+    await db.pool.query("CREATE TRIGGER reject_backfill_job BEFORE INSERT ON extraction_jobs FOR EACH ROW EXECUTE FUNCTION public.reject_backfill_job()");
+    try {
+      await expect(new SourceBackfillExecutionService(db.pool).executeNext(SPACE, PLAN_A)).rejects.toThrow("job store unavailable");
+    } finally {
+      await db.pool.query("DROP TRIGGER reject_backfill_job ON extraction_jobs");
+      await db.pool.query("DROP FUNCTION public.reject_backfill_job()");
+    }
+    expect(await bucket()).toEqual([]);
+    expect(await stored(PLAN_A)).toMatchObject({ plan_status: "approved", segment_status: "pending", attempt_count: 0, extraction_job_id: null });
+  });
+
+  it("pauses at the quota's actual reset, refuses the segment until then and resumes after it", async () => {
+    if (!db.available) return;
+    await seedStandalonePlan(PLAN_A, CHANNEL_A, 10, 0, "approved");
+    await seedSegment(randomUUID(), PLAN_A, "pending", WINDOW);
+    // An earlier caller in this window spent the connection's whole allowance.
+    expect(await consumeConnectionQuota(db.pool, SPACE, CONNECTION, { window: "minute", limit_count: 1 })).toEqual({ allowed: true });
+    const reset = (await bucket())[0]!.reset_at;
+    expect(reset.getTime()).toBeGreaterThan(Date.now());
+
+    const service = new SourceBackfillExecutionService(db.pool);
+    const paused = await service.executeNext(SPACE, PLAN_A) as { paused: boolean; next_eligible_at: string | Date };
+
+    expect(paused.paused).toBe(true);
+    expect(new Date(paused.next_eligible_at).getTime()).toBe(reset.getTime());
+    const afterPause = await stored(PLAN_A);
+    expect(afterPause).toMatchObject({ plan_status: "paused", segment_status: "pending", attempt_count: 0, extraction_job_id: null });
+    expect(afterPause.plan_next!.getTime()).toBe(reset.getTime());
+    expect(afterPause.segment_next!.getTime()).toBe(reset.getTime());
+    expect(await bucket()).toEqual([expect.objectContaining({ used_count: 1, limit_count: 1 })]);
+
+    // Before the reset: neither the scheduler pass nor a direct dispatch runs the segment,
+    // even once the plan itself is approved again.
+    await reconcileSourceBackfills(db.pool);
+    expect(await stored(PLAN_A)).toMatchObject({ plan_status: "paused", segment_status: "pending", attempt_count: 0 });
+    expect(await service.executeNext(SPACE, PLAN_A)).toBeNull();
+    await db.pool.query(`UPDATE source_backfill_plans SET status='approved' WHERE id=$1`, [PLAN_A]);
+    expect(await service.executeNext(SPACE, PLAN_A)).toBeNull();
+    expect(await stored(PLAN_A)).toMatchObject({ plan_status: "approved", segment_status: "pending", attempt_count: 0, extraction_job_id: null });
+    expect(await jobsFor(PLAN_A)).toEqual([]);
+    await db.pool.query(`UPDATE source_backfill_plans SET status='paused' WHERE id=$1`, [PLAN_A]);
+
+    // The reset passes: move every stored instant back by the same amount rather than waiting.
+    const elapsed = `${Math.ceil((reset.getTime() - Date.now()) / 1000) + 1} seconds`;
+    await db.pool.query(`UPDATE source_backfill_plans SET next_eligible_at=next_eligible_at - $2::interval WHERE id=$1`, [PLAN_A, elapsed]);
+    await db.pool.query(`UPDATE source_backfill_segments SET next_eligible_at=next_eligible_at - $2::interval WHERE plan_id=$1`, [PLAN_A, elapsed]);
+    await db.pool.query(`UPDATE source_quota_buckets SET reset_at=reset_at - $2::interval, window_started_at=window_started_at - $2::interval WHERE scope_key=$1`, [CONNECTION, elapsed]);
+
+    await reconcileSourceBackfills(db.pool);
+
+    const resumed = await stored(PLAN_A);
+    expect(resumed).toMatchObject({ plan_status: "running", plan_next: null, segment_status: "running", segment_next: null, attempt_count: 1 });
+    expect(await jobsFor(PLAN_A)).toEqual([{ id: resumed.extraction_job_id }]);
+    expect(await bucket()).toEqual([expect.objectContaining({ used_count: 1, limit_count: 10 })]);
+  });
+
+  it("makes two plans on one connection share its quota", async () => {
+    if (!db.available) return;
+    await seedStandalonePlan(PLAN_A, CHANNEL_A, 10, 0, "approved");
+    await seedStandalonePlan(PLAN_B, CHANNEL_B, 10, 0, "approved");
+    await db.pool.query(`UPDATE source_backfill_plans SET quota_policy_json='{"window":"minute","limit_count":1}'::jsonb`);
+    await seedSegment(randomUUID(), PLAN_A, "pending", WINDOW);
+    await seedSegment(randomUUID(), PLAN_B, "pending", WINDOW);
+    const service = new SourceBackfillExecutionService(db.pool);
+
+    expect(await service.executeNext(SPACE, PLAN_A)).toMatchObject({ job_id: expect.any(String) });
+    expect(await service.executeNext(SPACE, PLAN_B)).toMatchObject({ paused: true });
+
+    const buckets = await bucket();
+    expect(buckets).toHaveLength(1);
+    const only = buckets[0]!;
+    expect(only.used_count).toBe(1);
+    expect((await db.pool.query(`SELECT count(*)::int AS n FROM source_quota_buckets`)).rows[0].n).toBe(1);
+    expect(await stored(PLAN_A)).toMatchObject({ plan_status: "running", segment_status: "running" });
+    const planB = await stored(PLAN_B);
+    expect(planB).toMatchObject({ plan_status: "paused", segment_status: "pending", attempt_count: 0 });
+    expect(planB.plan_next!.getTime()).toBe(only.reset_at.getTime());
+    expect(planB.segment_next!.getTime()).toBe(only.reset_at.getTime());
+    expect(await jobsFor(PLAN_B)).toEqual([]);
   });
 });
 

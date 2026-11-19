@@ -1,4 +1,5 @@
 import {isolatedWorkspaceContract} from '../projectFolders/executionWorkspaces.js';
+import { sensitiveThreadResumable } from "../runs/sensitiveRuntimeProfile.js";
 import { enqueueAgentGroupResumeWake } from "./resumeWakeJob.js";
 import { AgentGroupRefusal, HostDispatchRefusal } from "./hostDispatchErrors.js";
 import type {Queryable} from '../routeUtils/common.js';
@@ -17,6 +18,7 @@ import { enforce, type EnforceResult } from "../policy/service.js";
 import { HttpError, independentPool, independentPoolOrNull, withQueryableTransaction } from "../routeUtils/common.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
 import { PgRunRepository, type GroupedRunTrigger, type RunRecord } from "../runs/repository.js";
+import type { UnattendedTurn } from "../agents/chatOperations.js";
 import { visibleMessagePathSql } from "../sessions/messagePath.js";
 import { CONVERSATION_SERIALIZATION_WAIT_SCOPE } from "./waitScopes.js";
 import {
@@ -31,7 +33,7 @@ import { locationIsOnline } from "../sessions/executionContextService.js";
 import { PgHostThreadRepository, type HostThread } from "../hosts/threadRepository.js";
 import { renderRoomStandingContext, roomExecutionRules, standingContextRequired } from "./roomStandingContext.js";
 import { chargeContainer, containerGroupOf } from "../rooms/discussionService.js";
-import { roomBudgetLimits, warnRoomSoftBudget } from "../rooms/delegationBudget.js";
+import { noteRoomDelegationUsage, roomBudgetLimits } from "../rooms/delegationBudget.js";
 import { admitAgentOriginRun } from "../rooms/quotaGate.js";
 import { AgentGroupRunLifecycleProjector } from "./lifecycleProjector.js";
 import { liveQuotaSource } from "../rooms/subscriptionLogins.js";
@@ -110,6 +112,13 @@ export interface SendAgentGroupMessageInput {
    * its cause's rather than a fresh person's (`effectiveRunTrigger`).
    */
   trigger?: GroupedRunTrigger;
+  /**
+   * A turn the server starts in a Room conversation on a standing setup its owner confirmed there (a
+   * scheduled Gmail digest, ADR 0033 phase B): exactly one recipient, an `automation`-origin Run with only
+   * the listed tools, the frozen work input and the managed setup policy. The conversation's own backend,
+   * Host thread and audience are resolved as for any Room turn.
+   */
+  unattended?: UnattendedTurn | null;
   parent_message_id?: string | null;
   routing_mode?: "direct" | "agent_coordination" | null;
   recipient_segments?: AgentGroupMessageRecipientSegment[] | null;
@@ -408,7 +417,8 @@ export class AgentGroupRunService {
       if (!content && !(input.input_parts?.length || input.capability_input_parts?.length)) {
         throw new AgentGroupRefusal(422, "content or an input part is required");
       }
-      const trigger: GroupedRunTrigger = input.trigger ?? { origin: "manual" };
+      const unattended = input.unattended ?? null;
+      const trigger: GroupedRunTrigger = unattended ? { origin: "automation" } : input.trigger ?? { origin: "manual" };
       const routingMode = input.routing_mode ?? "direct";
       const routingSegments = messageRecipientSegmentsForInput(input, group.manager_agent_id, content);
       const managerAgentId = group.manager_agent_id;
@@ -428,6 +438,9 @@ export class AgentGroupRunService {
         (count, segment) => count + segment.recipient_agent_ids.length,
         0,
       );
+      if (unattended && (plannedRecipientRunCount !== 1 || group.root_run_id || input.summary_agent_id)) {
+        throw new AgentGroupRefusal(422, "A scheduled Room turn has exactly one recipient in a new group");
+      }
       for (const recipientAgentId of allRecipientAgentIds) {
         await assertActiveGroupMember(
           repos.groups,
@@ -518,7 +531,10 @@ export class AgentGroupRunService {
             capabilities_json: [...HANDOFF_TOOL_ALLOWANCE],
             scenario_tool_allowance: HANDOFF_TOOL_ALLOWANCE,
           }
-        : { ...defaults, ...conversationToolGrantInput };
+        : unattended
+          // A scheduled turn gets only its own tools, as in a private conversation (`queueUnattendedPrivateTurn`).
+          ? { ...defaults, capabilities_json: [...unattended.tools], scenario_tool_allowance: [...unattended.tools] }
+          : { ...defaults, ...conversationToolGrantInput };
       const roomRunGranteeUserIds = group.room_id
         ? await repos.groups.listActiveRoomUserIds(input.space_id, group.room_id)
         : [];
@@ -620,7 +636,7 @@ export class AgentGroupRunService {
             retryOfRunId: input.retry_of_run_id,
             coordinationTargets,
           }) }),
-              instruction: optionalTrimmedOrNull(group.goal),
+              instruction: unattended ? unattended.instruction : optionalTrimmedOrNull(group.goal),
               session_id: group.session_id,
               project_id: group.project_id,
           project_folder_id: preparedRootBackend?.host_project_folder_id ?? group.project_folder_id,
@@ -631,7 +647,8 @@ export class AgentGroupRunService {
               runtime_profile_selection_source: preparedRootBackend
                 ? "explicit"
                 : "default",
-              contract_snapshot: roomRunContract(group, preparedRootBackend),          visibility: roomRunVisibility,
+              contract_snapshot: unattendedRoomRunContract(roomRunContract(group, preparedRootBackend), unattended),
+          visibility: roomRunVisibility,
           grantee_user_ids: roomRunGranteeUserIds,
           allow_system_assistant: Boolean(group.room_id),
         });
@@ -979,10 +996,18 @@ export class AgentGroupRunService {
    */
   async reevaluateParkedRuns(spaceId: string, groupId: string): Promise<void> {
     const pool = independentPool(this.pool, "Group lifecycle projection");
+    // The group and the completion subgroups it contains (each coordinator
+    // completion turn of a task collaboration), confined to its own Room
+    // conversation and manager: a resume never reaches another container.
     const waiting = await pool.query<{ id: string }>(
-      `SELECT id FROM runs
-        WHERE space_id = $1 AND run_group_id = $2 AND status = 'waiting_for_dependency'
-        ORDER BY created_at, id`,
+      `SELECT r.id FROM runs r
+         JOIN agent_run_groups g ON g.space_id = r.space_id AND g.id = r.run_group_id
+         JOIN agent_run_groups c ON c.space_id = g.space_id AND c.id = $2
+        WHERE r.space_id = $1 AND r.status = 'waiting_for_dependency'
+          AND (g.id = c.id OR (g.budget_json->>'container_group_id' = c.id
+            AND g.room_id IS NOT DISTINCT FROM c.room_id AND g.session_id IS NOT DISTINCT FROM c.session_id
+            AND g.project_id IS NOT DISTINCT FROM c.project_id AND g.manager_user_id = c.manager_user_id))
+        ORDER BY r.created_at, r.id`,
       [spaceId, groupId],
     );
     const projector = new AgentGroupRunLifecycleProjector(pool, this.config);
@@ -1002,7 +1027,10 @@ export class AgentGroupRunService {
     return {
       db: client,
       groups: new PgAgentGroupRepository(client),
-      runs: new PgRunRepository(client),
+      // With the server config, so a Room turn's or a delegation's grants see the
+      // configured plugin operations its scenario allowance names (otherwise they
+      // are silently absent from the registry and never granted).
+      runs: new PgRunRepository(client, this.config),
       jobs: new PgJobQueueRepository(client),
     };
   }
@@ -1196,8 +1224,8 @@ export class AgentGroupRunService {
     // and one past a limit is judged anew, to a recorded refusal.
     if (preflightPolicy?.status === "allow") {
       const counts = await this.spawnCounts(repos.groups, group, input);
-      if (counts.fanout_count > counts.max_fanout || counts.concurrency_count > counts.max_concurrency
-        || counts.container_turns_count > counts.hard_max_turns) {
+      if (counts.fanout_limit_exceeded || counts.fanout_count > counts.max_fanout || counts.concurrency_count > counts.max_concurrency
+        || (counts.hard_max_turns !== null && counts.container_turns_count > counts.hard_max_turns)) {
         policy = await this.enforceSpawnPolicy(repos.groups, group, parentRun, input);
       }
     }
@@ -1522,8 +1550,9 @@ export class AgentGroupRunService {
     repo: PgAgentGroupRepository,
     group: AgentRunGroupRecord,
     input: SpawnChildRunInput,
-  ): Promise<{ fanout_count: number; max_fanout: number; soft_max_fanout: number; hard_max_fanout: number;
-    container_turns_count: number; soft_max_turns: number; hard_max_turns: number; concurrency_count: number; max_concurrency: number }> {
+  ): Promise<{ fanout_count: number; max_fanout: number; soft_max_fanout: number; hard_max_fanout: number; fanout_limit_exceeded: boolean;
+    collaboration_delegations_count: number | null; person_authorized: boolean;
+    container_turns_count: number; soft_max_turns: number | null; hard_max_turns: number | null; concurrency_count: number; max_concurrency: number }> {
     const fanoutCount = await repo.countDelegationsForParent({
       space_id: input.space_id,
       parent_run_id: input.parent_run_id,
@@ -1535,24 +1564,61 @@ export class AgentGroupRunService {
     const limits = delegationBudgetLimits(group.budget_json, Boolean(group.room_id));
     const collaboration = await repo.collaborationLimits(group, input);
     // A Room turn's delegations also draw on its container's Agent-triggered
-    // turns (the fan-out ceiling), which several recipients of one wave share:
-    // a parent's own `max_fanout` alone would let a wave spawn past it.
+    // turns, which several recipients of one wave share.
     const container = group.room_id ? await repo.roomBudgetContainer(group.space_id, group.id) : null;
     const containerLimits = roomBudgetLimits(container?.budget_json ?? group.budget_json);
     const containerCount = container ? await repo.countContainerDelegations(group.space_id, container.id) : fanoutCount;
     const turns = group.room_id ? await containerTurnsUsed(repo, group) : 0;
-    const hard = collaboration?.max_fanout ?? (group.room_id
+    // Work a person's own Room turn authorized — a task collaboration, or
+    // temporary delegation outside a discussion — has no total: it is
+    // counted and reminded. One turn's fan-out is bounded by its children
+    // still outstanding at once (a coordinator Run resumes after waiting, so
+    // its lifetime count is not one turn). `person_authorized` already
+    // excludes a discussion, as the usage notice does.
+    const personAuthorized = Boolean(collaboration || container?.person_authorized);
+    if (personAuthorized) {
+      const outstanding = await repo.countOutstandingDelegationsForParent({ space_id: input.space_id, parent_run_id: input.parent_run_id });
+      // A collaboration's completion subgroup reaches each declared
+      // participant at most once at a time; every other turn keeps its own
+      // group bound (zero when its continuation closed fan-out), never wider
+      // than its container's.
+      const perTurn = collaboration && typeof group.budget_json?.container_group_id === "string"
+        ? collaboration.participants : Math.min(limits.max_fanout, container ? containerLimits.hard : limits.max_fanout);
+      // Three children in a row without a result stop temporary delegation
+      // as they stop a collaboration (whose projection already judged them).
+      const stalled = !collaboration && container
+        ? await repo.containerConsecutiveFailures(group.space_id, container.id) >= 3 : false;
+      const max = (collaboration ? collaboration.permitted : !stalled) ? perTurn : 0;
+      return {
+        fanout_count: outstanding + 1,
+        max_fanout: max,
+        soft_max_fanout: max,
+        hard_max_fanout: max,
+        fanout_limit_exceeded: outstanding + 1 > max,
+        collaboration_delegations_count: collaboration ? collaboration.delegations : null,
+        person_authorized: true,
+        container_turns_count: turns + 1,
+        soft_max_turns: null,
+        hard_max_turns: null,
+        concurrency_count: concurrencyCount + 1,
+        max_concurrency: limits.max_concurrency,
+      };
+    }
+    const hard = group.room_id
       ? (container ? Math.min(containerLimits.hard, limits.max_fanout) : 0)
-      : limits.max_fanout);
-    const soft = collaboration?.max_fanout ?? (group.room_id ? containerLimits.soft : limits.max_fanout);
+      : limits.max_fanout;
+    const soft = group.room_id ? containerLimits.soft : limits.max_fanout;
     return {
-      fanout_count: collaboration?.fanout_count ?? containerCount + 1,
+      fanout_count: containerCount + 1,
       max_fanout: hard,
       soft_max_fanout: soft,
       hard_max_fanout: hard,
+      fanout_limit_exceeded: false,
+      collaboration_delegations_count: null,
+      person_authorized: false,
       container_turns_count: turns + 1,
-      soft_max_turns: collaboration?.max_turns ?? (group.room_id ? containerLimits.softTurns : Number.MAX_SAFE_INTEGER),
-      hard_max_turns: collaboration?.max_turns ?? (group.room_id ? containerLimits.hardTurns : Number.MAX_SAFE_INTEGER),
+      soft_max_turns: group.room_id ? containerLimits.softTurns : Number.MAX_SAFE_INTEGER,
+      hard_max_turns: group.room_id ? containerLimits.hardTurns : Number.MAX_SAFE_INTEGER,
       concurrency_count: concurrencyCount + 1,
       max_concurrency: limits.max_concurrency,
     };
@@ -1610,8 +1676,9 @@ export class AgentGroupRunService {
         target_member_status: targetMember?.status ?? "missing",
         // Every count is the prospective one — what the group holds if this
         // delegation is admitted — because the policy compares `count > max`.
-        // Fanout uses the shared container total for Room temporary budgets,
-        // or the current declared collaboration epoch; denied calls cost none.
+        // Person-authorized Room work compares one turn's outstanding
+        // children (no total); other Room containers use their shared
+        // container total; denied calls cost none.
         depth: depth + 1,
         max_depth: limits.max_depth,
         fanout_count: counts.fanout_count,
@@ -1621,6 +1688,9 @@ export class AgentGroupRunService {
         container_turns_count: counts.container_turns_count,
         soft_max_turns: counts.soft_max_turns,
         hard_max_turns: counts.hard_max_turns,
+        fanout_limit_exceeded: counts.fanout_limit_exceeded,
+        collaboration_delegations_count: counts.collaboration_delegations_count,
+        person_authorized: counts.person_authorized,
         concurrency_count: counts.concurrency_count,
         max_concurrency: counts.max_concurrency,
         group_budget_json: group.budget_json ?? {},
@@ -1789,13 +1859,15 @@ export async function prepareHostConversationDispatch(input: {
   db: Queryable;
   backend: ResolvedConversationBackend;
   /**
-   * `direct: true` marks a person's direct conversation placed in a Project.
-   * It runs in its own Conversation container (thread, managed cwd, runtime
-   * profile and archive keys are this Session's), so one Agent's chats in two
-   * Projects never share host state. The Room-only Location rules below
-   * (stale Location admission, isolated-workspace rebinding) stay Room-only.
+   * `direct: true` marks a person's direct conversation in its own
+   * Conversation container (thread, managed cwd, runtime profile and archive
+   * keys are this Session's): one placed in a Project, so one Agent's chats in
+   * two Projects never share host state, or (`sensitive: true`) a non-Project
+   * one that may read sensitive data (ADR 0032). The Room-only Location rules
+   * below (stale Location admission, isolated-workspace rebinding) stay
+   * Room-only.
    */
-  container: { kind: "conversation"; conversation_id: string; direct?: true } | { kind: "direct"; user_id: string };
+  container: { kind: "conversation"; conversation_id: string; direct?: true; sensitive?: true } | { kind: "direct"; user_id: string };
   sessionId: string;
   spaceId: string;
   projectId: string | null;
@@ -1822,7 +1894,8 @@ export async function prepareHostConversationDispatch(input: {
   // the managed cwd therefore belong to this Conversation, not to the Room.
   const conversationScoped = input.container.kind === "conversation";
   const projectDirect = input.container.kind === "conversation" && input.container.direct === true;
-  if (projectDirect && (input.sessionId !== (input.container as { conversation_id: string }).conversation_id || !input.projectId)) {
+  const sensitiveDirect = projectDirect && (input.container as { sensitive?: true }).sensitive === true;
+  if (projectDirect && (input.sessionId !== (input.container as { conversation_id: string }).conversation_id || (!input.projectId && !sensitiveDirect))) {
     throw new HostDispatchRefusal(422, "A Project direct conversation is its own Session's container");
   }
   const directUserId = input.container.kind === "direct" ? input.container.user_id : null;
@@ -1945,6 +2018,16 @@ export async function prepareHostConversationDispatch(input: {
   if (!claimed) {
     const detail = `Room agent '${input.agentId}' is already handling another Room turn; wait for it to finish before sending another message`;
     throw new HostDispatchRefusal(409, detail, { detail, code: "room_agent_turn_in_progress" });
+  }
+  // A conversation that may read sensitive data resumes only a vendor session whose pointer is
+  // bound to an isolated launch of this thread (ADR 0032); anything else is retired here, before the turn's
+  // context is assembled, so the turn replays as fresh. The launch re-checks the exact profile.
+  // The thread is re-read under the claim: a turn that settled between the read above and the claim
+  // may have moved the pointer, and only the current one is judged and handed to the launch.
+  if (sensitiveDirect) hostThread = await threads.getById(hostThread.id) ?? hostThread;
+  if (sensitiveDirect && hostThread.vendor_session_id
+    && !await sensitiveThreadResumable(input.db, hostThread.id, { vendorSessionId: hostThread.vendor_session_id })) {
+    hostThread = await threads.resetConversationAgent(hostThread.id, hostThread.vendor_session_id) ?? hostThread;
   }
   // A thread with no vendor session is fresh whatever its status says: a
   // first turn after a rotation or reset that failed before the runtime
@@ -2212,7 +2295,7 @@ async function chargeDelegatedChild(db: Queryable, group: AgentRunGroupRecord, c
   } else {
     await chargeContainer(db, group.space_id, containerGroupOf(group.id, group.budget_json));
   }
-  await warnRoomSoftBudget(db, group.space_id, group.id);
+  await noteRoomDelegationUsage(db, group.space_id, group.id);
   // Listed on the message a person can see: a continuation's own trigger is
   // a hidden instruction, so a wave's child goes on the discussion's origin
   // and a completion turn's on its container's message. Only in
@@ -2646,6 +2729,19 @@ function delegatedWorkspaceAccessFor(
     });
   }
   return access.data;
+}
+
+/** A scheduled Room turn's contract: the Room turn's own, plus the frozen work input, policy and bounds. */
+function unattendedRoomRunContract(contract: ReturnType<typeof roomRunContract>, unattended: UnattendedTurn | null) {
+  if (!unattended || !contract) return contract;
+  return {
+    ...contract,
+    workflow_input_json: unattended.workflowInput,
+    policy_context_json: unattended.policy,
+    max_attempts: 1,
+    max_duration_seconds: unattended.maxDurationSeconds,
+    risk_level: "low" as const,
+  };
 }
 
 function roomRunContract(

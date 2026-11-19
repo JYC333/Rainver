@@ -24,6 +24,8 @@ export type SyntheticAcpAnswer = { text: string } | { error: string };
  */
 export class SyntheticAcpHost {
   readonly prompts: SyntheticAcpPrompt[] = [];
+  /** Every `launch` frame, as sent (work surface, provider binding, isolation, model channel). */
+  readonly launchFrames = new Map<string, Record<string, unknown>>();
   private readonly launches = new Map<string, string>();
   private readonly sessionMethods = new Map<string, SyntheticAcpPrompt["sessionMethod"]>();
   private readonly sink: HostFrameSink;
@@ -76,6 +78,7 @@ export class SyntheticAcpHost {
     if (frame.type === "launch") {
       const launchId = String(frame.launch_id);
       this.launches.set(runId, launchId);
+      this.launchFrames.set(runId, frame);
       queueMicrotask(() => this.registry.receiveLaunched(this.hostId, runId, launchId));
       return;
     }

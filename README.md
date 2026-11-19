@@ -235,8 +235,8 @@ templates below are the public library:
 | `research_reader` | research | Reads selected sources only (no web search/crawl); summaries, questions, knowledge proposals |
 | `coding_reviewer` | workspace | Read-only review/report outputs; no file write, shell, or patch apply |
 
-Memory reflection is also exposed as an internal service (`MemoryReflector` via the
-`memory.reflect` capability, `POST /sessions/{id}/reflect`).
+Memory reflection of a conversation is also exposed as the `session.reflect`
+operation (`reflectSession`, `POST /api/v1/sessions/:sessionId/reflect`).
 
 ## Official Plugins
 

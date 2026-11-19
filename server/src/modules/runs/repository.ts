@@ -14,9 +14,11 @@ import {
 } from "./evidenceRedaction.js";
 import {PgConversationRuntimeSessionRepository} from '../sessions/conversationRuntimeSessionRepository.js';
 import { lockProjectAudience, assertProjectInSpace } from "../projects/access.js";
-import { artifactReadSql, contentAccessLevelSql, contentReadSql, projectReadAccessSql, proposalReadSql, roomRunReadAccessSql } from "../access/contentAccessSql.js";
+import { artifactReadSql, contentAccessLevelSql, contentReadSql, projectReadAccessSql, proposalReadSql, roomRunReadAccessSql, runReadSql } from "../access/contentAccessSql.js";
 import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 import { contentDecisionFromDb } from "../access/contentAccessQuery.js";
+import { RUN_TERMINAL_STATUS_VALUES } from "@rainver/protocol";
+import type { ContentAccessDecision, ContentAccessLevel } from "../access/contentAccessTypes.js";
 
 const RUN_ACCESS = contentResourceDefinition("run")!;
 import {
@@ -51,6 +53,7 @@ import {
   type RunStepInput,
   type RunStepRecord,
   type RunTerminalUpdate,
+  type RunExecutionClaim,
 } from "./runRepositoryTypes.js";
 import {
   taskChecklistFromRunEvaluation,
@@ -66,10 +69,26 @@ import {
 } from "./contractSnapshot.js";
 import { assertBudgetSourcesAvailable, checkRunBudget } from "./budgetEnforcement.js";
 import { withQueryableTransaction } from "../routeUtils/common.js";
+import { gmailDigestRunAdmits, gmailDigestRunContext } from "../sources/gmail/gmailDigests.js";
+import { inheritedReads, persistRunContextTaint, sensitiveConversationReads } from "./contextTaint.js";
+import { projectBoundConsentIds } from "../plugins/coreDataTools.js";
 import type { VerificationResultRecord } from "./verification/types.js";
 import { PgUsageRepository } from "../usage/repository.js";
 import { buildRunToolGrants } from "../systemActions/runToolGrants.js";
+import { pluginToolPins, runAudience, scenarioOrigin, type RunScenario } from "../plugins/dataAccess.js";
 import { isHardTerminalRunStatus } from "./orchestrationResults.js";
+
+/** What a launch frame stated about its isolation; recorded with the launch nonce (ADR 0030). */
+export interface LaunchIsolationRecord {
+  host_id: string;
+  host_kind: string;
+  egress_profile: "none" | "default" | "install";
+  sandbox_mode: "read_only" | "read_write";
+  /** Present when the frame carried the Run's model-only channel (ADR 0030 §4a). */
+  model_channel?: "provider_lease";
+  /** The CLI profile directory key the frame named, so a later resume can prove it is the same one. */
+  profile_key?: string;
+}
 
 export {
   RunCreateValidationError,
@@ -97,6 +116,7 @@ export {
   type RunStepInput,
   type RunStepRecord,
   type RunTerminalUpdate,
+  type RunExecutionClaim,
 } from "./runRepositoryTypes.js";
 
 export type { VerificationResultRecord } from "./verification/types.js";
@@ -125,6 +145,8 @@ interface RuntimeProfileForRun {
  */
 export type GroupedRunTrigger =
   | { origin: "manual" }
+  /** A scheduled turn the server starts on a setup its owner confirmed (a Room's Gmail digest). */
+  | { origin: "automation" }
   | { origin: "continuation"; cause_run_id: string | null };
 
 export class PgRunRepository {
@@ -815,21 +837,50 @@ export class PgRunRepository {
     // the allowance side of the intersection — the capability belongs to the
     // place the Run was opened in, not to whichever Agent is standing there.
     // The intersection and its fail-closed behaviour are untouched.
+    const runVisibility = input.visibility
+      ?? (agent.visibility === "space_shared" ? "space_shared" : "private");
+    // The same audience/origin predicates the call-time recheck uses (ADR 0030).
+    const scenario = async (): Promise<RunScenario> => ({
+      origin: scenarioOrigin({trigger_origin: input.trigger_origin, delegation_id: links.delegation_id ?? null, instructed_by_agent_id: links.instructed_by_agent_id ?? null}),
+      instructingUserId: input.user_id,
+      audience: await runAudience(this.db, {spaceId: input.space_id, visibility: runVisibility, ownerUserId: input.user_id, sessionId: input.session_id ?? null, granteeUserIds: input.grantee_user_ids}),
+    });
     const declaredToolGrants = await buildRunToolGrants(
       capabilitiesJson,
       input.scenario_tool_allowance
         ? { allowed_tools: [...input.scenario_tool_allowance] }
         : agentVersion.tool_permissions_json,
-      {db:this.db,spaceId:input.space_id,userId:input.user_id,config:this.config},
+      {db:this.db,spaceId:input.space_id,userId:input.user_id,config:this.config,scenario,sessionId:input.session_id??null},
     );
     const toolGrants = input.trigger_origin === "autonomous"
       ? declaredToolGrants.filter((grant) =>
           grant.action_id !== "authorization.request" && !grant.side_effecting
         )
+      // A scheduled Gmail digest Run reads its frozen window and nothing else; nobody is there to approve a request.
+      : (contractSnapshot.workflow_input_json as {gmail_digest?:unknown}|undefined)?.gmail_digest
+        ? declaredToolGrants.filter((grant) => grant.action_id === "source.gmail.digest.read")
+      // A withdrawn private Gmail check (ADR 0033 §6) never gets a tool; such a Run is refused before dispatch.
+      : (contractSnapshot.workflow_input_json as {gmail_private_check?:unknown}|undefined)?.gmail_private_check
+        ? []
       : ((contractSnapshot.workflow_input_json as {source_goal?:{purpose?:string};material_processing?:unknown}|undefined)?.source_goal?.purpose==='collect'||!!(contractSnapshot.workflow_input_json as {material_processing?:unknown}|undefined)?.material_processing)
         ? declaredToolGrants.filter(grant=>grant.action_id==='source.material.submit'||(!!(contractSnapshot.workflow_input_json as {material_processing?:{investigation?:boolean}}|undefined)?.material_processing?.investigation&&grant.action_id==='source.material.investigate')) : declaredToolGrants;
+    const pluginPins = pluginToolPins(this.config, toolGrants);
+    // A conversation that already holds sensitive data an earlier Run read (ADR 0030/0032) carries it
+    // into this Run's context: inherit the read taint (merge-only), and — for a plugin's sensitive data —
+    // stay owner-only and launch isolated or not at all. The two are decided separately (ADR 0033 §6):
+    // a Project-bound core read (Gmail) is inherited as taint by every later Run of the conversation, so
+    // its mail-derived history keeps the Project's source constraint (outward writes refused, nothing
+    // materialized, no Memory), but it is not carried as `sensitive_conversation`: that conversation
+    // keeps its own selected runtime, whatever Host it runs on.
+    // Each read keeps its real owner (never this Run's instructing person); a conversation whose reads cannot
+    // all be determined is inherited with an unknown-owner Gmail read, so outward writes stay refused.
+    const inheritedSensitiveReads = input.session_id ? inheritedReads(await sensitiveConversationReads(this.db, input.space_id, input.session_id)) : [];
+    const projectBound = new Set(projectBoundConsentIds());
+    const isolatingSensitiveReads = inheritedSensitiveReads.filter((read) => !projectBound.has(read.pluginId));
     const permissionSnapshotJson = JSON.stringify({
       tool_grants: toolGrants,
+      ...(Object.keys(pluginPins).length ? { plugin_tool_pins: pluginPins } : {}),
+      ...(isolatingSensitiveReads.length ? { sensitive_conversation: true } : {}),
       ...(input.scenario_tool_allowance
         ? { scenario_tool_allowance: [...input.scenario_tool_allowance] }
         : {}),
@@ -914,8 +965,7 @@ export class PgRunRepository {
         modelOverrideJson,
         runtimeProfileSnapshotJson,
         requiredSandboxLevel,
-        input.visibility
-          ?? (agent.visibility === "space_shared" ? "space_shared" : "private"),
+        runVisibility,
         agent.access_level,
         input.project_id ?? null,
         JSON.stringify(contractSnapshot),
@@ -931,6 +981,13 @@ export class PgRunRepository {
     );
     const row = result.rows[0];
     if (!row) throw new Error("Run insert returned no row");
+    if (inheritedSensitiveReads.length) {
+      await persistRunContextTaint(this.db, {
+        runId: row.id, spaceId: row.space_id, instructingUserId: input.user_id, runVisibility: runVisibility,
+        items: [...new Set(inheritedSensitiveReads.map((read) => read.ownerUserId))].map((ownerUserId) => ({ ownerUserId, visibility: "private" as const })),
+        pluginReads: inheritedSensitiveReads.map((read) => ({ plugin_id: read.pluginId, data_class: "sensitive" as const, owner_user_id: read.ownerUserId })),
+      });
+    }
     recordPreparedRunCreation(this.db,row.space_id,row.id);
     if (input.visibility === "selected_users") {
       const granteeUserIds = [...new Set(input.grantee_user_ids ?? [])];
@@ -1158,7 +1215,37 @@ export class PgRunRepository {
     if (decision === "deny") return null;
     const run = await this.getRun(spaceId, runId);
     if(run && !await domainRunReadable(this.db,run,userId))return null;
-    return run ? { ...run, effective_access_level: decision } : null;
+    return run ? { ...run, effective_access_level: domainRunAccessLevel(run, decision) } : null;
+  }
+
+  async listActiveRoomRunIds(spaceId: string, userId: string, roomId: string, sessionId: string): Promise<string[]> {
+    const result = await this.db.query<RunRecord>(
+      `SELECT r.*
+         FROM agent_run_groups g
+         JOIN runs r ON r.run_group_id = g.id AND r.space_id = g.space_id
+        WHERE g.space_id = $1 AND g.room_id = $2 AND g.session_id = $3
+          AND r.execution_kind = 'agent' AND r.status <> ALL($5::varchar[])
+          AND ${runReadSql("$4")}
+        ORDER BY r.created_at, r.id`,
+      [spaceId, roomId, sessionId, userId, RUN_TERMINAL_STATUS_VALUES],
+    );
+    const ids: string[] = [];
+    for (const run of result.rows) {
+      if (await domainRunReadable(this.db, run, userId)) ids.push(run.id);
+    }
+    return ids;
+  }
+
+  /**
+   * The body level a person holds on an already visible Run in their own
+   * right: oversight is excluded, and a Run oversight alone reveals is
+   * `deny`. A caller that copies or derives a Run's body into something it
+   * keeps (an evaluation case, a workflow) checks this, not the read level,
+   * because oversight is audit and must not become a route to copy out.
+   */
+  async ownRunBodyLevel(run: Pick<RunRecord, "id" | "space_id" | "contract_snapshot_json">, userId: string): Promise<ContentAccessDecision> {
+    const decision = await contentDecisionFromDb(this.db, { spaceId: run.space_id, userId }, "run", run.id, { includeOversight: false });
+    return decision === "deny" ? "deny" : domainRunAccessLevel(run, decision);
   }
 
   async readOnlyHostCapabilities(run:RunRecord):Promise<unknown>{
@@ -1221,7 +1308,7 @@ export class PgRunRepository {
       params,
     );
     const readable:VisibleRunRecord[]=[];
-    for(const run of result.rows)if(await domainRunReadable(this.db,run,filters.user_id))readable.push(run);
+    for(const run of result.rows)if(await domainRunReadable(this.db,run,filters.user_id))readable.push({...run,effective_access_level:domainRunAccessLevel(run,run.effective_access_level)});
     return this.withRunsUsage(readable);
   }
 
@@ -1379,16 +1466,22 @@ export class PgRunRepository {
     return result.rows;
   }
 
-  /** The children of a Run that this viewer can read; the rest are not listed. */
-  async listChildRuns(spaceId: string, runId: string, viewerUserId: string): Promise<AgentRunRecord[]> {
-    const result = await this.db.query<AgentRunRecord>(
+  /**
+   * The children of a Run that this viewer can read — the same content, Room
+   * and domain read gates as `getVisibleRun` — and the rest are not listed.
+   * Each carries the viewer's effective access level: a caller that reads a
+   * child's prompt checks it with `bodyWithheld`.
+   */
+  async listChildRuns(spaceId: string, runId: string, viewerUserId: string): Promise<Array<AgentRunRecord & { effective_access_level: ContentAccessLevel }>> {
+    const result = await this.db.query<AgentRunRecord & { effective_access_level: ContentAccessLevel }>(
       `SELECT r.id, r.space_id, r.agent_id, r.agent_version_id, r.execution_kind, r.parent_run_id,
               r.root_run_id, r.run_group_id, r.delegation_id, r.status,
               r.run_type, r.trigger_origin, r.mode, r.created_at, r.started_at, r.ended_at,
               r.prompt, r.instruction, r.project_folder_id, r.session_id, r.project_id,
               r.runtime_profile_id, r.runtime_profile_selection_source,
               r.runtime_key, r.model_provider_id, r.required_sandbox_level, r.contract_snapshot_json, r.workflow_version_id,
-              r.instructed_by_user_id, r.instructed_by_agent_id, r.error_message, r.visibility
+              r.instructed_by_user_id, r.instructed_by_agent_id, r.error_message, r.visibility, r.capability_id,
+              ${contentAccessLevelSql({ definition: RUN_ACCESS, alias: "r", userExpr: "$3" })} AS effective_access_level
          FROM runs r
         WHERE r.space_id = $1 AND r.parent_run_id = $2
           AND r.execution_kind = 'agent'
@@ -1397,7 +1490,15 @@ export class PgRunRepository {
         ORDER BY r.created_at ASC, r.id ASC`,
       [spaceId, runId, viewerUserId],
     );
-    return result.rows;
+    const readable: Array<AgentRunRecord & { effective_access_level: ContentAccessLevel }> = [];
+    for (const row of result.rows) {
+      if (domainRunGated(row)) {
+        const full = await this.getRun(spaceId, row.id);
+        if (!full || !await domainRunReadable(this.db, full, viewerUserId)) continue;
+      }
+      readable.push({ ...row, effective_access_level: domainRunAccessLevel(row, row.effective_access_level) });
+    }
+    return readable;
   }
 
   async getLatestRunEvaluation(
@@ -1819,13 +1920,52 @@ export class PgRunRepository {
       : resolveServiceActorId(this.db, run.space_id, "run_execution", "system");
   }
 
+  /** Start a queued Agent Run; `null` for every claim that did not start it. See claimRunExecution. */
   async markRunRunning(input: {
     run_id: string;
     space_id: string;
     started_at: string;
     required_sandbox_level?: string | null;
   }): Promise<(AgentRunRecord & { attempt_number: number }) | null> {
+    const claim = await this.claimRunExecution(input);
+    return claim.outcome === "started" ? claim.run : null;
+  }
+
+  /**
+   * Claim a queued Agent Run for execution and say why when it is not started.
+   * An authorization refusal is decided once, under the Project/Room/
+   * conversation locks, and returned as data: the caller settles the Run from
+   * it, never from a later unlocked recheck that a restored permission could
+   * answer differently (ADR 0033 §6).
+   */
+  async claimRunExecution(input: {
+    run_id: string;
+    space_id: string;
+    started_at: string;
+    required_sandbox_level?: string | null;
+  }): Promise<RunExecutionClaim<AgentRunRecord & { attempt_number: number }>> {
     return withQueryableTransaction(this.db,async db=>{
+      // Why a claim did not start the Run, read after its locks (the UPDATE's
+      // row lock, or the explicit one below) so the reason is current.
+      const unclaimed=async():Promise<RunExecutionClaim<AgentRunRecord & { attempt_number: number }>>=>{
+        const row=(await db.query<{status:RunRecord["status"];execution_kind:string;waiting_for_quota:boolean}>(
+          `SELECT status,execution_kind,COALESCE(output_json,'{}'::jsonb) ? 'waiting_for_quota' AS waiting_for_quota FROM runs WHERE space_id=$1 AND id=$2`,
+          [input.space_id,input.run_id])).rows[0];
+        if(!row)return {outcome:"not_claimed",reason:"status_changed",status:null};
+        if(row.status==="cancelling")return {outcome:"not_claimed",reason:"cancellation_pending",status:row.status};
+        if(row.status!=="queued"||row.execution_kind!=="agent")return {outcome:"not_claimed",reason:"status_changed",status:row.status};
+        return {outcome:"not_claimed",reason:row.waiting_for_quota?"waiting_for_quota":"not_participant",status:row.status};
+      };
+      // A refusal settles the Run only while it is still queued under these
+      // locks; one another claim already started keeps its own outcome.
+      const refused=async(authorization:{error_code?:string;error_message?:string}):Promise<RunExecutionClaim<AgentRunRecord & { attempt_number: number }>>=>{
+        await db.query(`SELECT id FROM runs WHERE space_id=$1 AND id=$2 FOR UPDATE`,[input.space_id,input.run_id]);
+        const current=await unclaimed();
+        if(current.outcome==="not_claimed"&&current.reason!=="status_changed"&&current.reason!=="cancellation_pending"){
+          return {outcome:"authorization_rejected",error_code:authorization.error_code,error_message:authorization.error_message};
+        }
+        return current;
+      };
       const candidate=(await db.query<AgentRunRecord & {room_id:string|null}>(`SELECT r.*,g.room_id FROM runs r LEFT JOIN agent_run_groups g ON g.space_id=r.space_id AND g.id=r.run_group_id WHERE r.space_id=$1 AND r.id=$2`,[input.space_id,input.run_id])).rows[0];
       if(candidate?.room_id){
         // Separate lock/read statements get a fresh READ COMMITTED snapshot after
@@ -1834,8 +1974,13 @@ export class PgRunRepository {
         if(candidate.project_id)await lockProjectAudience(db,input.space_id,candidate.project_id);
         await db.query('SELECT id FROM rooms WHERE space_id=$1 AND id=$2 FOR SHARE',[input.space_id,candidate.room_id]);
         if(candidate.session_id)await new PgConversationRuntimeSessionRepository(db).lockConversation(input.space_id,candidate.session_id);
-        if(!(await new PgRunRepository(db,this.config).checkRunExecutionAuthorization(candidate)).allowed)return null;
+        const authorization=await new PgRunRepository(db,this.config).checkRunExecutionAuthorization(candidate);
+        if(!authorization.allowed)return refused(authorization);
       }
+    if (candidate && (gmailDigestRunContext(candidate) || gmailPrivateCheckIdOf(candidate.contract_snapshot_json))) {
+      const authorization = await new PgRunRepository(db, this.config).checkRunExecutionAuthorization(candidate);
+      if (!authorization.allowed) return refused(authorization);
+    }
     const attemptId = randomUUID();
     const result = await db.query<AgentRunRecord & { attempt_number: number }>(
       `WITH updated AS (
@@ -1912,7 +2057,8 @@ export class PgRunRepository {
         attemptId,
       ],
     );
-    return result.rows[0] ?? null;
+    const started = result.rows[0];
+    return started ? { outcome: "started", run: started } : unclaimed();
     });
   }
 
@@ -1939,9 +2085,17 @@ export class PgRunRepository {
         trigger_origin: string;
         permission_snapshot_json: unknown;
         tool_permissions_json: unknown;
+        id: string;
+        visibility: string;
+        owner_user_id: string | null;
+        session_id: string | null;
+        delegation_id: string | null;
+        instructed_by_agent_id: string | null;
+        contract_snapshot_json: unknown;
       }>(
         `SELECT agent.current_version_id, run.space_id, run.instructed_by_user_id, run.capabilities_json, run.trigger_origin,
-                run.permission_snapshot_json,
+                run.permission_snapshot_json, run.id, run.visibility, run.owner_user_id, run.session_id,
+                run.delegation_id, run.instructed_by_agent_id, run.contract_snapshot_json,
                 version.tool_permissions_json
            FROM runs run
            JOIN agents agent
@@ -1965,6 +2119,8 @@ export class PgRunRepository {
       const row = selected.rows[0];
       if (!row) return null;
       const declared = Array.isArray(row.capabilities_json) ? row.capabilities_json : [];
+      // A Run of the withdrawn private Gmail check (ADR 0033 §6) is never rebound or dispatched.
+      if (gmailPrivateCheckIdOf(row.contract_snapshot_json)) return null;
       // Work Context binding may change the selected AgentVersion, but a
       // scenario allowance belongs to the place where the Run was opened.
       // Preserve the snapshotted allowance instead of silently replacing it
@@ -1977,22 +2133,29 @@ export class PgRunRepository {
         scenarioToolAllowance !== undefined
           ? { allowed_tools: scenarioToolAllowance }
           : row.tool_permissions_json,
-        {db,spaceId:row.space_id,userId:row.instructed_by_user_id??null,config:this.config},
+        {db,spaceId:row.space_id,userId:row.instructed_by_user_id??null,config:this.config,scenario:async()=>({
+          origin: scenarioOrigin(row),
+          instructingUserId: row.instructed_by_user_id,
+          audience: await runAudience(db, {spaceId: row.space_id, visibility: row.visibility, ownerUserId: row.owner_user_id, sessionId: row.session_id, runId: row.id}),
+        }),sessionId:row.session_id,runId:row.id},
       );
       const toolGrants = row.trigger_origin === "autonomous"
         ? grants.filter((grant) =>
             grant.action_id !== "authorization.request" && !grant.side_effecting
           )
-        : grants;
+        // A scheduled Gmail digest Run keeps only its frozen read across a rebind, as at creation.
+        : gmailDigestRunContext(row)
+          ? grants.filter((grant) => grant.action_id === "source.gmail.digest.read")
+          : grants;
       const updated = await db.query<{ id: string }>(
         `UPDATE runs
             SET agent_id=$3, agent_version_id=$4, project_id=$5,
                 project_folder_id=$6, requested_runtime_profile_id=$8,
                 runtime_profile_selection_source=CASE WHEN $8::varchar IS NULL THEN 'default' ELSE 'explicit' END,
-                permission_snapshot_json=jsonb_set(
+                permission_snapshot_json=jsonb_set(jsonb_set(
                   COALESCE(permission_snapshot_json, '{}'::jsonb),
                   '{tool_grants}', $7::jsonb, true
-                ),
+                ), '{plugin_tool_pins}', $9::jsonb, true),
                 updated_at=now()
           WHERE id=$1 AND space_id=$2 AND status='queued'
           RETURNING id`,
@@ -2005,6 +2168,7 @@ export class PgRunRepository {
           input.project_folder_id,
           JSON.stringify(toolGrants),
           input.runtime_profile_id,
+          JSON.stringify(pluginToolPins(this.config, toolGrants)),
         ],
       );
       if (!updated.rows[0]) return null;
@@ -2020,8 +2184,25 @@ export class PgRunRepository {
       | "project_id"
       | "project_folder_id"
       | "run_group_id"
-    > & Partial<Pick<RunRecord, "agent_id" | "session_id">>,
+    > & Partial<Pick<RunRecord, "agent_id" | "session_id" | "id" | "contract_snapshot_json" | "owner_user_id" | "visibility">>,
   ): Promise<{ allowed: boolean; error_code?: string; error_message?: string }> {
+    // A Run of the withdrawn private Gmail check (ADR 0033 §6) ends before dispatch: Gmail is read in the
+    // conversation itself now, and nothing delivers such a Run's answer any more.
+    if (gmailPrivateCheckIdOf(run.contract_snapshot_json)) {
+      return { allowed: false, error_code: "gmail_private_check_withdrawn", error_message: "This earlier private Gmail check was withdrawn; ask in the conversation instead." };
+    }
+    // A digest delivery starts only while its consent and its conversation's whole audience still admit it
+    // (the same rule as the scheduler, every Gmail send and settlement); a refusal settles the delivery.
+    if (gmailDigestRunContext(run)) {
+      const admitted = run.id && run.instructed_by_user_id
+        ? await gmailDigestRunAdmits(this.db, { spaceId: run.space_id, ownerUserId: run.instructed_by_user_id, runId: run.id })
+        : { ok: false as const, code: "gmail_digest_unavailable" as const };
+      if (!admitted.ok) {
+        return { allowed: false, error_code: admitted.code, error_message: admitted.code === "gmail_digest_audience_outside_project"
+          ? "Someone who reads this conversation does not work in its Project, so this Gmail digest was not run."
+          : "This Gmail digest no longer has permission to run." };
+      }
+    }
     if (!run.instructed_by_user_id) return { allowed: true };
     const result = await this.db.query<{ allowed: boolean }>(
       `SELECT (
@@ -2269,10 +2450,10 @@ export class PgRunRepository {
    * sending work whose outputs could never be attributed.
    */
   /** False when the Run has no open attempt — it was stopped or settled — so nothing may launch for it. */
-  async bindAttemptLaunch(input: { space_id: string; run_id: string; launch_id: string; expected_launch_id?: string | null; expected_attempt_id?: string }): Promise<boolean> {
+  async bindAttemptLaunch(input: { space_id: string; run_id: string; launch_id: string; expected_launch_id?: string | null; expected_attempt_id?: string; isolation?: LaunchIsolationRecord | null }): Promise<boolean> {
     const result = await this.db.query<{ id: string }>(
       `UPDATE run_attempts a
-          SET launch_id = $3, updated_at = now()
+          SET launch_id = $3, launch_isolation_json = $6::jsonb, updated_at = now()
         WHERE a.space_id = $1 AND a.run_id = $2
           AND a.status IN ('queued', 'running')
           AND (a.launch_id IS NULL OR a.launch_id = $3 OR a.launch_id = $4::varchar)
@@ -2283,7 +2464,8 @@ export class PgRunRepository {
              WHERE candidate.space_id = $1 AND candidate.run_id = $2
           )
         RETURNING a.id`,
-      [input.space_id, input.run_id, input.launch_id, input.expected_launch_id ?? null, input.expected_attempt_id ?? null],
+      [input.space_id, input.run_id, input.launch_id, input.expected_launch_id ?? null, input.expected_attempt_id ?? null,
+        input.isolation ? JSON.stringify({ ...input.isolation, launch_id: input.launch_id }) : null],
     );
     return result.rowCount === 1;
   }
@@ -3320,11 +3502,52 @@ function scenarioToolAllowanceFromSnapshot(value: unknown): string[] | undefined
 /** Only the new reading-owned contracts need the extra private-input read gate. */
 function isReadingMethodRun(run:{contract_snapshot_json?:unknown}):boolean{const input=(run.contract_snapshot_json as {workflow_input_json?:{reading_method?:unknown;reading_method_trial?:unknown;reading_method_generation?:unknown}}|null)?.workflow_input_json;return !!(input?.reading_method||input?.reading_method_trial||input?.reading_method_generation);}
 
+/**
+ * A monitoring comparison batch Run, focused (`project_research.stage_key`
+ * `monitor_compare`) or standing (`project_research_standing`). Its prompt
+ * carries the frozen baseline Note and the screened material, and its output is
+ * an internal staged result: the comparison's own publication path (the focused
+ * final merge, or the standing batch settlement) rechecks the frozen baseline
+ * and each Source item's policy before anything reaches a reader.
+ */
+export function isMonitoringComparisonRun(run: { contract_snapshot_json?: unknown }): boolean {
+  const workflow = recordValue(recordValue(run.contract_snapshot_json).workflow_input_json);
+  if (Object.hasOwn(workflow, "project_research_standing")) return true;
+  return recordValue(workflow.project_research).stage_key === "monitor_compare";
+}
+
+/**
+ * A generic Run read (detail, I/O, list, trace, turn stream, attempts,
+ * finalization) keeps a comparison batch Run's status, timing and usage but
+ * never its body, for every viewer and at every status: only the comparison's
+ * publication releases what it produced. Internal readers query `runs` directly.
+ */
+export function domainRunAccessLevel(run: { contract_snapshot_json?: unknown }, level: ContentAccessLevel): ContentAccessLevel {
+  return isMonitoringComparisonRun(run) ? "summary" : level;
+}
+
+/** Whether `domainRunReadable` has a gate beyond the Run/Room SQL for this Run. */
+function domainRunGated(run:{contract_snapshot_json?:unknown;capability_id?:string|null}):boolean{
+ const workflow=recordValue(recordValue(run.contract_snapshot_json).workflow_input_json);
+ return isReadingMethodRun(run)||!!workflow.project_reading_theme||Object.hasOwn(workflow,'plugin_note_draft')||run.capability_id==='plugin_note_draft';
+}
+
 /** Domain-derived private text keeps its current dependency gate on generic
  * Run reads as well; the ordinary Run/Room SQL gate remains the first layer. */
 async function domainRunReadable(db:Queryable,run:RunRecord,userId:string):Promise<boolean>{
  if(isReadingMethodRun(run)&&!await (await import('../prompts/reading/dispatch.js')).readingRunReadable(db,run,userId))return false;
  const workflow=recordValue(recordValue(run.contract_snapshot_json).workflow_input_json);
  if(workflow.project_reading_theme)return (await import('../informationDigest/index.js')).themeRunReadable(db,run,userId);
+ // A plugin Note draft: its starter alone, while they still read its Project and every pinned input.
+ if(Object.hasOwn(workflow,'plugin_note_draft')||run.capability_id==='plugin_note_draft')return (await import('../plugins/noteDraftPort.js')).draftRunReadable(db,run,userId);
  return true;
+}
+
+/** The private Gmail check a Run was started for (ADR 0033 §6), from its frozen contract snapshot. */
+function gmailPrivateCheckIdOf(contractSnapshot: unknown): string | null {
+  const input = contractSnapshot && typeof contractSnapshot === "object" && !Array.isArray(contractSnapshot)
+    ? (contractSnapshot as { workflow_input_json?: { gmail_private_check?: { check_id?: unknown } } }).workflow_input_json
+    : undefined;
+  const checkId = input?.gmail_private_check?.check_id;
+  return typeof checkId === "string" ? checkId : null;
 }

@@ -149,7 +149,7 @@ export class ProjectOperationRepository {
     if(progress.purpose==='information_monitoring') {
       return {...row,progress_json:{purpose:progress.purpose,phase:progress.phase,reason:progress.reason,used:progress.used,as_of:progress.as_of},steps:[],links:[]};
     }
-    return { ...row, steps: steps.rows, links: links.rows };
+    return { ...row, progress_json: withheldStagedComparisons(row.progress_json), steps: steps.rows, links: links.rows };
   }
 
   async cancel(identity: SpaceUserIdentity, projectId: string, operationId: string) {
@@ -397,4 +397,22 @@ export function isUniqueViolation(error: unknown, constraint: string): boolean {
   if (!error || typeof error !== "object") return false;
   const value = error as { code?: unknown; constraint?: unknown };
   return value.code === "23505" && value.constraint === constraint;
+}
+
+/**
+ * Focused comparison results staged before final publication are unpublished model text
+ * about Source items whose frozen baselines are only rechecked at that publication. The
+ * generic Operation read keeps progress (one id-only entry per staged result, so counts
+ * still render) but never their stance, detail, affected sections or Run mapping.
+ */
+function withheldStagedComparisons(progress: unknown): unknown {
+  const state = objectValue(progress);
+  if (!Array.isArray(state.comparison_results_json) && state.comparison_result_run_ids === undefined) return progress;
+  const { comparison_result_run_ids: _runs, ...rest } = state;
+  return {
+    ...rest,
+    ...(Array.isArray(state.comparison_results_json) ? {
+      comparison_results_json: state.comparison_results_json.map((entry) => ({ source_item_id: typeof objectValue(entry).source_item_id === "string" ? objectValue(entry).source_item_id : null })),
+    } : {}),
+  };
 }

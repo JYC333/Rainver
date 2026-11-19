@@ -139,6 +139,13 @@
       "version": "7",
       "when": 1794581683335,
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "tag": "0020_gmail_integration",
+      "version": "7",
+      "when": 1795063125256,
+      "breakpoints": true
     }
   ],
   "version": "7",

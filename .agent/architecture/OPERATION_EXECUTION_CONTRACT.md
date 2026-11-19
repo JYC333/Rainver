@@ -653,6 +653,14 @@ combine it with the already verified Run/attempt identity in its owning service,
 and retain any separate domain producer keys. Replay never calls the writer
 again. Registrations that do not need invocation identity ignore the argument.
 
+A formal REST route's owner step outside the transaction (`prepare`, such as a
+provider-billed imported-session summary, or `around`, such as plugin in-process
+effects) runs only after `OperationExecutor.preflight`: the same actor, surface,
+grant, input-schema and transport-key admission `execute` begins with, reads
+only. A request execute would refuse with 422/404 is refused with that same
+response before anything is spent; `execute` still repeats every check and
+authorizes under its locks.
+
 Outer transaction control remains host-only. Branded ports may translate domain
 SAVEPOINT/ROLLBACK TO/RELEASE labels into private host-owned savepoints, retaining
 PostgreSQL stack semantics without access to core/approval savepoints. SQL
@@ -699,10 +707,26 @@ revision, Plan, Run and Skills status owners and the Evolution outer transaction
 owner still need their complete lock/effect closure. Retry/cleanup reconciliation
 continues as a defensive backstop and is not their atomicity evidence.
 
+## Registration owners
+
+`registrationRules.ts` validates each registration at composition (pure): its
+execution shape, then exactly one transaction owner — direct, approval mapping,
+human placement, Proposal decision, Run terminal, or person/daemon admission.
+Two owners, an owner on a query, or domain-first authorization beside approval,
+placement or Run terminal preparation refuse composition. Placement and
+privileged admission stay closed business lists (`DURABLE_PLACEMENT_COMMANDS`,
+`PROPOSAL_PLACEMENT_COMMANDS`, `PERSON_OPERATIONS`,
+`DAEMON_WORKSPACE_OPERATIONS`); a plugin or unlisted command cannot claim them.
+
 ## Current P5-4 writer extension (not additional mapping authority)
 
 Proposal transition admission is owned by
-`systemActions/operations/proposalTransitions.ts`. A cascade or package review
+`systemActions/operations/proposalTransitions.ts`; it sorts, try-locks, rechecks
+the exact set and finishes. Which Proposals and Runs a decision reaches is read
+from the owning domains' read-only functions (`plans/checkpointRuns.ts`,
+`automations/checkpointRuns.ts`, `projectResearch/graphRuns.ts` including
+`researchGraphRunRefs`, `skills/importReviewProposals.ts`); no domain coordinates
+its own locks and Research reads its graph from its own module. A cascade or package review
 admits its complete sorted request scope set before Proposal/request/domain locks;
 Run recovery sorts that set globally across its candidate Spaces. Creation and
 replacement join the corresponding closure gates and recheck membership after
@@ -792,8 +816,8 @@ registration is `source.recipe.create`; Agent/Run/system/approval paths do not
 use this option.
 
 P5 group 2: `task.create` is the one named command shared by a person's REST
-create and the Agent Run tool (`PERSON_PLACEMENT_SHARED_COMMANDS` in the
-executor; it must be exactly user+Agent, `public_api`/`agent_tool` only, no
+create and the Agent Run tool (`PERSON_PLACEMENT_SHARED_COMMANDS` in
+`registrationRules.ts`; it must be exactly user+Agent, `public_api`/`agent_tool` only, no
 approval mapping). Placement applies only when the request principal is a
 user: the person's create is placed and receipted exactly like `board.create`
 (ADR 0013 decision 3: Project Space, or the Personal Space without a Project,

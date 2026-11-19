@@ -61,6 +61,17 @@ describe("deterministic route selector", () => {
     ])).resolves.toEqual(["runtime.custom_capability"]);
   });
 
+  it("does not ask a runtime to provide a plugin operation an Agent was allowed", async () => {
+    // Project conversations and Task Runs declare package operations (`plugin.<package>.<entity>.<operation>`);
+    // the dispatcher executes them, so no runtime is filtered out for them.
+    await expect(runtimeRequiredCapabilities([
+      "plugin.applications.application.create",
+      "plugin.applications.contact.list",
+      "task.create",
+      "runtime.custom_capability",
+    ])).resolves.toEqual(["runtime.custom_capability"]);
+  });
+
   it("hard-filters credentials, capabilities, sandbox, and trust before scoring", () => {
     const result = new DeterministicRouteSelector().select({
       required_sandbox_level: "worktree",

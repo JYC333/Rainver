@@ -1,4 +1,6 @@
+import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import type { Pool } from "pg";
 
 export interface DecimalValueForTest {
   decimal: string;
@@ -102,16 +104,6 @@ export interface FinanceLedgerRuntime {
     };
     rootTypeForAccountName(accountName: string): string;
   };
-  routes: {
-    registerFinanceLedgerRoutes(app: unknown, db: unknown, ctx: unknown): void;
-  };
-  proposalAppliers: {
-    PROPOSAL_TYPE_POST_DIRECTIVE: string;
-    PROPOSAL_TYPE_POST_IMPORT_BATCH: string;
-    applyPostDirective(ctx: ProposalContextForTest): Promise<void>;
-    applyPostImportBatch(ctx: ProposalContextForTest): Promise<void>;
-    registerFinanceLedgerProposalAppliers(ctx: unknown): void;
-  };
 }
 
 export interface LedgerErrorForTest {
@@ -157,30 +149,25 @@ export interface ExportResultForTest {
   errors: LedgerErrorForTest[];
 }
 
-export interface ProposalContextForTest {
-  proposal: {
-    id: string;
-    proposal_type: string;
-    space_id: string | null;
-    user_id: string | null;
-    payload: Record<string, unknown>;
-  };
-  db: unknown;
-  config: unknown;
-}
-
 export function loadFinanceLedgerRuntime(): FinanceLedgerRuntime {
   const requireRuntime = createRequire(import.meta.filename);
   return {
-    decimal: requireRuntime("../dist/official-plugins/finance_ledger/server/domain/decimal.js") as FinanceLedgerRuntime["decimal"],
-    amount: requireRuntime("../dist/official-plugins/finance_ledger/server/domain/amount.js") as FinanceLedgerRuntime["amount"],
-    booking: requireRuntime("../dist/official-plugins/finance_ledger/server/domain/booking.js") as FinanceLedgerRuntime["booking"],
-    position: requireRuntime("../dist/official-plugins/finance_ledger/server/domain/position.js") as FinanceLedgerRuntime["position"],
-    inventory: requireRuntime("../dist/official-plugins/finance_ledger/server/domain/inventory.js") as FinanceLedgerRuntime["inventory"],
-    engine: requireRuntime("../dist/official-plugins/finance_ledger/server/beancount/engine.js") as FinanceLedgerRuntime["engine"],
-    plugin: requireRuntime("../dist/official-plugins/finance_ledger/server/index.js") as FinanceLedgerRuntime["plugin"],
-    service: requireRuntime("../dist/official-plugins/finance_ledger/server/domain/service.js") as FinanceLedgerRuntime["service"],
-    routes: requireRuntime("../dist/official-plugins/finance_ledger/server/routes.js") as FinanceLedgerRuntime["routes"],
-    proposalAppliers: requireRuntime("../dist/official-plugins/finance_ledger/server/proposalAppliers.js") as FinanceLedgerRuntime["proposalAppliers"],
+    decimal: requireRuntime("../dist/official-plugins/finance_ledger/server/src/domain/decimal.js") as FinanceLedgerRuntime["decimal"],
+    amount: requireRuntime("../dist/official-plugins/finance_ledger/server/src/domain/amount.js") as FinanceLedgerRuntime["amount"],
+    booking: requireRuntime("../dist/official-plugins/finance_ledger/server/src/domain/booking.js") as FinanceLedgerRuntime["booking"],
+    position: requireRuntime("../dist/official-plugins/finance_ledger/server/src/domain/position.js") as FinanceLedgerRuntime["position"],
+    inventory: requireRuntime("../dist/official-plugins/finance_ledger/server/src/domain/inventory.js") as FinanceLedgerRuntime["inventory"],
+    engine: requireRuntime("../dist/official-plugins/finance_ledger/server/src/beancount/engine.js") as FinanceLedgerRuntime["engine"],
+    plugin: requireRuntime("../dist/official-plugins/finance_ledger/server/src/index.js") as FinanceLedgerRuntime["plugin"],
+    service: requireRuntime("../dist/official-plugins/finance_ledger/server/src/domain/service.js") as FinanceLedgerRuntime["service"],
   };
+}
+
+/** Installs the shipped schema in an empty database for direct domain tests. */
+export async function installFinanceLedgerTestSchema(pool: Pool): Promise<void> {
+  const sql = readFileSync(new URL("../../plugins/official/finance_ledger/migrations/0000_finance_records.sql", import.meta.url), "utf8");
+  await pool.query('CREATE SCHEMA "plugin_finance_ledger"');
+  for (const statement of sql.split("--> statement-breakpoint")) {
+    await pool.query(statement);
+  }
 }

@@ -252,7 +252,12 @@ Runtime Profile's model, then the Run's override, then the Provider default,
 then its first listed model, the order the binding uses — never the default
 alone. A proxy lease issued for a destination judged local carries that model
 (`pinned_model`), and the provider proxy refuses a request naming any other
-model (`403 provider_proxy_model_not_leased`).
+model, or a body-carrying request naming none (`403
+provider_proxy_model_not_leased`). The model-only lease of a network-isolated
+Run is stricter still: one named model, inference endpoints and an allowlisted
+request structure only — every model-input node, tool outputs included, carries
+inline content only, and Responses must send `store: false` (ADR 0030 §4a, `providers/proxy/modelOnlyPolicy.ts`,
+`403 provider_proxy_request_not_leased` with a reason).
 
 ## When Adding a New Provider
 

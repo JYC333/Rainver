@@ -144,11 +144,14 @@ describe("Slice F relation discovery (real Postgres)", () => {
       },
     });
 
+    expect(report.access_safety.deterministic_extraction).toBe(true);
     expect(report.candidates).toHaveLength(1);
+    expect(report.candidates[0]!.kind).toBe("object_relation_candidate");
     expect(report.candidates[0]!.proposed_action).toMatchObject({
       proposal_type: "object_relation_create",
       from_object_id: "item-a",
       to_object_id: "item-b",
+      link_type: "related_to",
     });
   });
 
@@ -178,6 +181,7 @@ describe("Slice F relation discovery (real Postgres)", () => {
       proposal_type: "object_relation_create",
       from_object_id: "note-a",
       to_object_id: "item-b",
+      link_type: "related_to",
     });
   });
 

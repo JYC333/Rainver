@@ -13,7 +13,7 @@
  * Runs.
  */
 
-type ManagedExecutionKind = "source_deep_reading" | "reading_method_generation" | "reading_method_trial" | "source_goal" | "source_post_processing" | "source_annotation" | "project_research" | "information_briefing";
+type ManagedExecutionKind = "source_deep_reading" | "reading_method_generation" | "reading_method_trial" | "source_goal" | "source_post_processing" | "source_annotation" | "project_research" | "information_briefing" | "gmail_digest";
 export type CredentialSetupKind =
   | "source_post_processing"
   | "daily_report"
@@ -24,13 +24,17 @@ export type CredentialSetupKind =
 type ManagedExecutionFailurePolicy = "fail_fast";
 
 /** The one trigger origin each kind's authorization covers. */
-const PRE_AUTHORIZED_ORIGIN: Readonly<Partial<Record<ManagedExecutionKind | CredentialSetupKind, "job" | "system">>> = {
+const PRE_AUTHORIZED_ORIGIN: Readonly<Partial<Record<ManagedExecutionKind | CredentialSetupKind, "job" | "system" | "automation">>> = {
   source_goal: "system",
   source_post_processing: "job",
   source_annotation: "job",
   project_research: "system",
   // A scheduled briefing a Project writer enabled for their own Agent.
   information_briefing: "job",
+  // A Gmail digest the mailbox owner confirmed (ADR 0033 phase B): its scheduled Run is
+  // `automation`-origin in the delivery conversation (owner-only in a private one, a Room turn for its
+  // audience); the confirmation card is the standing authorization.
+  gmail_digest: "automation",
   daily_report: "job",
   imported_session_extraction: "job",
   conversation_title: "job",
@@ -109,6 +113,8 @@ export function isManagedFailFastRun(input: ManagedRunPolicyInput): boolean {
     // A briefing owns its failure: requested now or scheduled, its version settles failed, never a review hold.
     || ((input.trigger_origin === "job" || input.trigger_origin === "manual") && policy.managed_execution === "information_briefing")
     || (input.trigger_origin === "system" && (policy.managed_execution === "project_research" || policy.managed_execution === "source_goal"))
+    // A digest delivery owns its failure: its ledger records it and retries the same window.
+    || (input.trigger_origin === "automation" && policy.managed_execution === "gmail_digest")
   );
 }
 
@@ -125,7 +131,7 @@ export function credentialPolicyMetadata(
 
 function isManagedExecutionKind(value: unknown): value is ManagedExecutionKind {
   return value === "source_deep_reading" || value === "reading_method_generation" || value === "reading_method_trial" || value === "source_goal" || value === "source_post_processing" || value === "source_annotation" || value === "project_research"
-    || value === "information_briefing";
+    || value === "information_briefing" || value === "gmail_digest";
 }
 
 function isPreAuthorizableKind(value: unknown): value is ManagedExecutionKind | CredentialSetupKind {

@@ -1,3 +1,6 @@
+import { pruneGmailReadAudit } from "../sources/gmail/gmailSelections.js";
+import { pruneGmailMonitorMatches } from "../sources/gmail/gmailMonitors.js";
+import { pruneGmailDigestItems } from "../sources/gmail/gmailDigests.js";
 import {configureWorkspaceRetention} from '../hosts/workspaceRetention.js';
 import {reconcileExecutionWorkspaces} from '../hosts/workspaceReconcile.js';
 import {pruneOperationRequests} from "../systemActions/operations/retention.js";
@@ -245,8 +248,11 @@ export function startBackgroundServices(
       intervalSeconds: 30,
       runOnStart: true,
       run: async () => {
-        const processed = await processAllUnclaimedDomainChangeEvents(getDbPool(config.databaseUrl!));
+        const { processed, failed } = await processAllUnclaimedDomainChangeEvents(getDbPool(config.databaseUrl!));
         if (processed > 0) log?.info(`[scheduler] knowledge promotion revalidation processed ${processed} domain change event(s)`);
+        // Failed events stay unprocessed and retry; failing the task raises the
+        // deduplicated scheduler alert instead of retrying out of sight.
+        if (failed > 0) throw new Error(`knowledge promotion revalidation: ${failed} domain change event(s) failed and will retry (see domain_change_outbox.last_error)`);
       },
     });
 
@@ -421,24 +427,41 @@ export function startBackgroundServices(
   return { worker, scheduler };
 }
 
-export async function reconcileProjectResearch(db: ReturnType<typeof getDbPool>, config: ServerConfig): Promise<void> {
+/**
+ * Where the next bounded research compensation pass resumes. A run that keeps
+ * failing rolls back its own mark and stays unreconciled, so a pass always
+ * starting from the oldest row would retry the same full batch of failures
+ * forever. Passes instead walk the backlog round-robin from this key, wrapping
+ * to the oldest; it is process-local, so a restart begins again at the oldest.
+ */
+let researchReconcileCursor: { at: string; id: string } | null = null;
+
+export async function reconcileProjectResearch(db: ReturnType<typeof getDbPool>, config: ServerConfig, limit = 100): Promise<void> {
   const orchestrator = new ProjectResearchPipelineService(db, config);
-  const unreconciledRuns = await db.query<{ id: string; space_id: string }>(
-    `SELECT id, space_id
+  const page = (after: { at: string; id: string } | null, size: number) => db.query<{ id: string; space_id: string; at: string }>(
+    `SELECT id, space_id, COALESCE(completed_at, created_at)::text AS at
        FROM source_post_processing_runs
       WHERE status='succeeded'
         AND project_id IS NOT NULL
         AND research_reconciled_at IS NULL
         AND jsonb_typeof(input_item_ids_json)='array'
         AND jsonb_array_length(input_item_ids_json)>0
+        AND ($1::timestamptz IS NULL OR (COALESCE(completed_at, created_at), id) > ($1::timestamptz, $2::varchar))
       ORDER BY COALESCE(completed_at, created_at) ASC, id ASC
-      LIMIT 100`,
+      LIMIT $3`,
+    [after?.at ?? null, after?.id ?? null, size],
   );
-  // One run or Space that keeps failing (its rollback also undoes its mark,
-  // so it stays first in line) must not stop the rest of the Instance; the
-  // pass still fails so the scheduler reports it.
+  const rows = (await page(researchReconcileCursor, limit)).rows;
+  if (researchReconcileCursor && rows.length < limit) {
+    const seen = new Set(rows.map((row) => row.id));
+    rows.push(...(await page(null, limit - rows.length)).rows.filter((row) => !seen.has(row.id)));
+  }
+  const last = rows.at(-1);
+  researchReconcileCursor = last ? { at: last.at, id: last.id } : null;
+  // One run or Space that keeps failing must not stop the rest of the
+  // Instance; the pass still fails so the scheduler reports it.
   const failures: unknown[] = [];
-  for (const run of unreconciledRuns.rows) {
+  for (const run of rows) {
     try {
       await orchestrator.reconcilePostProcessingRun(run.space_id, run.id);
     } catch (error) {
@@ -475,7 +498,13 @@ export async function pruneContentAccessLogs(
     `DELETE FROM content_access_logs WHERE accessed_at < $1`,
     [cutoff],
   );
-  return result.rowCount ?? 0;
+  // The Gmail owner-read audit follows the same retention setting (.agent/modules/sources.md, "Personal Gmail connections").
+  const gmail = await pruneGmailReadAudit(db, cutoff);
+  // The monitor dedup ledger keeps its own fixed window (ids only), longer than any sync overlap.
+  const matches = await pruneGmailMonitorMatches(db);
+  // Rule-digest dedupe rows refer to those matches and keep the same window.
+  const digestItems = await pruneGmailDigestItems(db);
+  return (result.rowCount ?? 0) + gmail + matches + digestItems;
 }
 
 // Re-export for tests that need queue without full worker.

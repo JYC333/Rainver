@@ -157,6 +157,18 @@ export function looksSecretLikePath(path: string | null | undefined): boolean {
     || forbiddenSequence(lowerParts) !== null;
 }
 
+/** Only a known env template filename is excused; credential directories are not. */
+export function isEnvTemplatePath(path: string): boolean {
+  const parts = path.split("/");
+  if (parts.some((part) => !part || part === "." || part === ".." || part.includes("\\"))) return false;
+  const lowerParts = parts.map((part) => part.toLowerCase());
+  if (!ALLOWED_ENV_TEMPLATE_NAMES.has(lowerParts[lowerParts.length - 1]!)) return false;
+  const directory = lowerParts.slice(0, -1);
+  return !looksSecretLikePath(directory.join("/"))
+    && !directory.some((part) => FORBIDDEN_DIR_NAMES.has(part))
+    && forbiddenSequence(directory) === null;
+}
+
 /**
  * The second implementation of one rule, and it has to stay a second one.
  *

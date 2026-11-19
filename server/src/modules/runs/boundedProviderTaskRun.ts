@@ -9,6 +9,10 @@ import {
 import { PgRunRepository } from "./repository.js";
 import type { RunContractSnapshotInput } from "./contractSnapshot.js";
 import { canonicalRunOutput } from "./orchestrationResults.js";
+import type { RetrievalEgressPolicy } from "../retrieval/egress/egressPolicy.js";
+import { JobEffectLeaseLost, hasJobEffectAuthority, jobEffectAuthorityLost, lockCurrentJobClaim } from "../jobs/effectAuthority.js";
+import type { JobEnvelopeForHandler } from "../jobs/handlerRegistry.js";
+import { withRunTerminalOwner } from "../systemActions/operations/proposalTransitions.js";
 
 /**
  * One bounded ProviderTask, one Run.
@@ -92,6 +96,12 @@ interface BoundedProviderTaskBase {
   /** Domain gate executed inside the canonical attempt/Delivery transaction. */
   authorizeAttempt?: (db: Queryable, refs: import('../providers/commands/types.js').ProviderTaskAttemptRefs) => Promise<void>;
   allowProviderFallback?: boolean;
+  /**
+   * The provider egress policy for content this task carries (the Space switch, each
+   * Source's consent, and a physical-send fence); the invocation refuses a denied
+   * destination before any request and runs `authorizeSend` right before each send.
+   */
+  egressPolicy?: RetrievalEgressPolicy | null;
   /** A durable owner decides recovery after this one physical send. */
   singleAttempt?: true;
   deadlineSeconds?: number;
@@ -101,6 +111,12 @@ interface BoundedProviderTaskBase {
    * retries left — the same rule `agent_run` applies.
    */
   failRunOnError?: boolean;
+  /**
+   * The Job a worker performs this task under. Its failure terminal is then written
+   * only under that Job's current claim, whether or not the task's sends are
+   * claim-bound: a worker whose Job was reclaimed or cancelled settles nothing.
+   */
+  failureClaim?: JobEnvelopeForHandler;
   finalize?: BoundedProviderTaskFinalize;
 }
 
@@ -135,6 +151,7 @@ export async function runBoundedProviderTask(
       messages: input.messages,
       task: input.task,
       allow_provider_fallback: input.allowProviderFallback,
+      egressPolicy: input.egressPolicy,
       single_attempt: input.singleAttempt,
       ...(input.completion === "structured" ? { output_format: input.outputFormat } : {}),
       metering: {
@@ -238,17 +255,20 @@ export async function runBoundedProviderTask(
       model: completion.model,
     }, runId);
     if (applied !== null) {
-      await new PgRunRepository(db).markRunTerminal({
+      const succeeded = {
         run_id: runId,
         space_id: input.spaceId,
-        status: "succeeded",
+        status: "succeeded" as const,
         output_json: canonicalRunOutput({
           success: true,
           outputText: applied?.outputText ?? "",
           outputJson: applied?.outputJson ?? output ?? {},
         }),
         completed_at: new Date().toISOString(),
-      });
+      };
+      // A claim-bound task publishes only under the Job's current claim.
+      if (hasJobEffectAuthority()) await underCurrentClaim(db, input.spaceId, runId, undefined, tx => new PgRunRepository(tx).markRunTerminal(succeeded));
+      else await new PgRunRepository(db).markRunTerminal(succeeded);
     }
     return { ok: true, runId, output: output ?? {}, text: completion.text };
   } catch (error) {
@@ -261,7 +281,18 @@ export async function runBoundedProviderTask(
     // state: settling it here would overwrite a cancellation with a failure of
     // a task that was never performed.
     if (code === "run_not_queued") return { ok: false, runId, errorCode: code, error: message };
-    return settleFailure(db, input, runId, failRun, { code, message });
+    // The Job's claim moved to another owner (a reclaim or cancel), which
+    // settles the Run; a worker without the claim writes nothing.
+    if (error instanceof JobEffectLeaseLost || jobEffectAuthorityLost()) {
+      return { ok: false, runId, errorCode: "job_claim_lost", error: message };
+    }
+    try {
+      return await settleFailure(db, input, runId, failRun, { code, message });
+    } catch (settlement) {
+      // The claim moved while this failure was being settled: its new owner settles.
+      if (settlement instanceof JobEffectLeaseLost) return { ok: false, runId, errorCode: "job_claim_lost", error: message };
+      throw settlement;
+    }
   }
 }
 
@@ -272,8 +303,44 @@ async function settleFailure(
   failRun: boolean,
   error: { code: string; message: string },
 ): Promise<BoundedProviderTaskResult> {
-  if (failRun) await failBoundedProviderTaskRun(db, input.spaceId, runId, error);
+  if (failRun) {
+    // A worker's task (the handler names its Job, or bound the Job's effect
+    // authority for a claim-bound task) fails its Run only under that Job's
+    // current claim, as a claim-bound task's sends and publication do.
+    if (input.failureClaim || hasJobEffectAuthority()) await failBoundedProviderTaskRunUnderClaim(db, input.spaceId, runId, error, input.failureClaim);
+    else await failBoundedProviderTaskRun(db, input.spaceId, runId, error);
+  }
   return { ok: false, runId, errorCode: error.code, error: error.message };
+}
+
+/**
+ * {@link failBoundedProviderTaskRun} for a worker: in one Run-terminal transaction
+ * that first locks the Job row under its CURRENT claim (`job`, or the invocation's
+ * bound effect authority). Reclaim and cancel update the same row, so they order
+ * before (and this writes nothing, throwing `JobEffectLeaseLost`) or after it. A
+ * worker that lost its Job never settles the Run its new owner holds.
+ */
+export async function failBoundedProviderTaskRunUnderClaim(
+  db: Queryable,
+  spaceId: string,
+  runId: string,
+  error: { code: string; message: string },
+  job?: JobEnvelopeForHandler,
+): Promise<void> {
+  await underCurrentClaim(db, spaceId, runId, job, tx => failBoundedProviderTaskRun(tx, spaceId, runId, error));
+}
+
+async function underCurrentClaim(
+  db: Queryable,
+  spaceId: string,
+  runId: string,
+  job: JobEnvelopeForHandler | undefined,
+  write: (tx: Queryable) => Promise<unknown>,
+): Promise<void> {
+  await withRunTerminalOwner(db, async () => [{ space_id: spaceId, id: runId }], async tx => {
+    await lockCurrentJobClaim(tx, job);
+    await write(tx);
+  });
 }
 
 /**

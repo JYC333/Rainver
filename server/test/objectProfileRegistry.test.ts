@@ -137,28 +137,6 @@ class ObjectProfileApplyFakeDb {
 }
 
 describe("object kind proposal applier", () => {
-  it("creates object kind registry rows without writing canonical space objects", async () => {
-    const db = new ObjectProfileApplyFakeDb();
-    const result = await apply(db, proposal("object_profile_create", {
-      operation: "object_profile_create",
-      key: "decision",
-      label: "Decision",
-      base_object_type: "knowledge_item",
-      field_schema: { fields: [{ key: "risk", type: "string" }] },
-    }));
-
-    expect(result.result_type).toBe("object_profile");
-    expect(result.result.registry_write_performed).toBe(true);
-    expect(result.result.canonical_domain_write_performed).toBe(false);
-    expect(db.writes).toEqual(["object_profile_create"]);
-    const objectProfile = result.result.object_profile as Record<string, unknown>;
-    expect(objectProfile).toMatchObject({
-      key: "decision",
-      base_object_type: "knowledge_item",
-      version: 1,
-    });
-  });
-
   it("rejects object kind registry keys outside the canonical subtype set", async () => {
     const db = new ObjectProfileApplyFakeDb();
 
@@ -422,7 +400,13 @@ describe("persisted object kind proposals", () => {
       proposalType: "object_profile_create",
       title: "Create object kind",
       riskLevel: "high",
-      payload: { operation: "object_profile_create", key: "decision", label: "Decision", base_object_type: "knowledge_item" },
+      payload: {
+        operation: "object_profile_create",
+        key: "decision",
+        label: "Decision",
+        base_object_type: "knowledge_item",
+        field_schema: { fields: [{ key: "risk", type: "string" }] },
+      },
       rationale: "Object kind creation requested.",
       createdByUserId: "user-1",
       visibility: "space_shared",
@@ -431,11 +415,23 @@ describe("persisted object kind proposals", () => {
     const registry = new ProposalApplierRegistry();
     registerKnowledgeProposalAppliers(registry);
     const service = new PgProposalApplyService(config(), registry);
+    const spaceObjects = async () => (await pool.query("SELECT id FROM space_objects WHERE space_id = 'space-1'")).rows;
+    const objectsBefore = await spaceObjects();
 
     const first = await service.accept(pending.id, { spaceId: "space-1", userId: "user-1" });
 
     expect(first?.proposal).toMatchObject({ id: pending.id, status: "accepted" });
     expect(first?.result_type).toBe("object_profile");
+    // A kind is registry config only: no canonical Space Object is written.
+    expect(first?.result).toMatchObject({
+      registry_write_performed: true,
+      canonical_domain_write_performed: false,
+      object_profile: { key: "decision", base_object_type: "knowledge_item", version: 1 },
+    });
+    expect(await spaceObjects()).toEqual(objectsBefore);
+    expect((await pool.query(
+      "SELECT base_object_type, version, field_schema_json FROM space_object_profiles WHERE space_id = 'space-1'",
+    )).rows).toEqual([{ base_object_type: "knowledge_item", version: 1, field_schema_json: { fields: [{ key: "risk", type: "string" }] } }]);
     expect((await pool.query("SELECT status, reviewed_by FROM proposals WHERE id = $1", [pending.id])).rows)
       .toEqual([{ status: "accepted", reviewed_by: "user-1" }]);
     const profiles = async () => (await pool.query("SELECT key, created_from_proposal_id FROM space_object_profiles WHERE space_id = 'space-1'")).rows;

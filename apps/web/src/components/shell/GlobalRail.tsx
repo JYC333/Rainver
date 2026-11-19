@@ -18,7 +18,7 @@ function pluginIcon(name: string): LucideIcon {
 export interface PluginNavItem {
   id: string
   label: string
-  /** Logical path, e.g. '/diary' or '/finance'. Space-scoped items are composed with the active Space. */
+  /** Logical path, e.g. '/today' or '/plugins/diary/journal'. Space-scoped items are composed with the active Space. */
   path: string
   icon: string
   /** Whether the destination lives inside a Space (`/spaces/:id/…`) or at the top level. */

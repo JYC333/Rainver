@@ -399,7 +399,7 @@ for (const [locale, theme, width] of [['en', 'dark', 1280], ['zh-CN', 'light', 1
 }
 
 for (const [locale, theme, width, count] of [['en', 'dark', 1280, 1], ['zh-CN', 'light', 390, 1], ['en', 'light', 390, 2], ['zh-CN', 'dark', 1280, 2]]) {
-  test(`Run settings use one closed entry (${locale} ${theme} ${width} ${count} Agents)`, async () => {
+  test(`Conversation settings use one closed entry (${locale} ${theme} ${width} ${count} Agents)`, async () => {
     const page = await browser.newPage({ viewport: { width, height: 1000 }, serviceWorkers: 'block' })
     try {
       await page.addInitScript(([locale, theme]) => {
@@ -408,7 +408,18 @@ for (const [locale, theme, width, count] of [['en', 'dark', 1280, 1], ['zh-CN', 
         localStorage.setItem('project.sidecar.project-collab.open', 'false')
       }, [locale, theme])
       await mockApi(page)
-      await page.route('**/api/v1/rooms/room-main', route => route.fulfill({ json: { ...detail, agent_members: detail.agent_members.slice(0, count) } }))
+      const agents = detail.agent_members.slice(0, count)
+      await page.route('**/api/v1/rooms/room-main', route => route.fulfill({ json: { ...detail, agent_members: agents } }))
+      // An initialized conversation reports its participants; N in the entry counts them.
+      const pins = agents.map(member => ({ agent_id: member.agent_id, runtime_profile_id: 'runtime-settings', runtime_key: 'codex_cli', runtime_installation: 'codex' }))
+      await page.route(`**/api/v1/sessions/${conversation.id}/execution-context`, route => route.fulfill({ json: {
+        summary: { session_id: conversation.id, state: 'initialized', participant_agent_ids: agents.map(member => member.agent_id), host: null, runtime: pins[0], runtimes: pins,
+          primary: null, attachments: [], dispatch_locked: false, queue_paused_at: null, can_send: true, blocked_reason: null },
+        available_hosts: [], available_runtime_profiles: [], available_primary_locations: [],
+      } }))
+      await page.route(`**/api/v1/runtime-context/room-conversations/${conversation.id}/retrieval`, route => route.fulfill({ json: {
+        work_context_scope_id: null, enabled: false, preferred_domains: [], setup_version: null,
+      } }))
       await page.route('**/api/v1/agents/*/conversation-backends?*', route => route.fulfill({ json: {
         options: [{ runtime_profile_id: 'runtime-settings', runtime_key: 'codex_cli', name: 'Codex CLI', usable: true, model_name: null,
           session_config_options: [
@@ -419,24 +430,167 @@ for (const [locale, theme, width, count] of [['en', 'dark', 1280, 1], ['zh-CN', 
           ] }], binding: { runtime_profile_id: 'runtime-settings', runtime_key: 'codex_cli' }, session_config: [],
       } }))
       await page.goto(`${baseUrl}${base}/rooms?room=room-main&conversation=${conversation.id}`)
-      const trigger = page.getByRole('button', { name: count === 1 ? (locale === 'en' ? '6.1 Sol · Run settings' : '6.1 Sol · 运行设置') : (locale === 'en' ? 'Run settings · 2 Agents' : '运行设置 · 2 个 Agent'), exact: true })
+      const trigger = page.getByRole('button', { name: locale === 'en' ? `Conversation settings · ${count}` : `对话设置 · ${count}`, exact: true })
       await trigger.waitFor()
       assert.equal(await page.getByRole('switch', { name: 'Fast mode' }).count(), 0)
       await trigger.scrollIntoViewIfNeeded()
       await page.screenshot({ path: `${shots}/run-settings-entry-${locale}-${theme}-${width}-${count}.png` })
       await trigger.click()
-      const dialog = page.getByRole('dialog', { name: locale === 'en' ? 'Run settings' : '运行设置', exact: true })
+      const dialog = page.getByRole('dialog', { name: locale === 'en' ? 'Conversation settings' : '对话设置', exact: true })
       await dialog.waitFor()
       await dialog.evaluate(el => Promise.all(el.getAnimations({ subtree: true }).map(animation => animation.finished.catch(() => {}))))
       assert.ok(await dialog.evaluate(el => { const r = el.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight }))
+      // Every participant keeps its model control mounted; a single participant opens with all parameters,
+      // several show other parameters one Agent at a time on request.
       assert.equal(await dialog.getByRole('button', { name: 'Model', exact: true }).count(), count)
-      assert.equal(await dialog.getByRole('switch', { name: 'Fast mode' }).count(), count)
+      assert.equal(await dialog.getByRole('switch', { name: 'Fast mode' }).count(), count === 1 ? 1 : 0)
+      if (count > 1) {
+        // The whole row is the pointer target; its labelled button is the keyboard control.
+        const more = dialog.getByRole('button', { name: new RegExp(`· ${agents[1].agent_name}$`) })
+        await more.focus(); await more.press('Enter')
+        assert.equal(await more.getAttribute('aria-expanded'), 'true')
+        await dialog.getByRole('switch', { name: 'Fast mode' }).waitFor()
+        assert.equal(await dialog.getByRole('switch', { name: 'Fast mode' }).count(), 1)
+      }
       assert.equal(await dialog.locator('details').count(), 0)
       assert.ok(await dialog.evaluate(el => el.scrollWidth <= el.clientWidth + 1))
       await page.screenshot({ path: `${shots}/run-settings-dialog-${locale}-${theme}-${width}-${count}.png` })
       await page.keyboard.press('Escape')
       await dialog.waitFor({ state: 'detached' })
       assert.ok(await trigger.isVisible())
+    } finally { await page.close() }
+  })
+}
+
+// The Shell's quick-capture control floats at the lower right of the Project's
+// middle content, outside the Project chat. The chat footer keeps no empty
+// reservation for it, and the control follows the content edge as the chat
+// opens, closes and is resized.
+for (const [locale, theme] of [['en', 'dark'], ['zh-CN', 'light']]) {
+  test(`Quick capture floats beside the Project chat, not inside it (${locale}, ${theme})`, async () => {
+    const box = locator => locator.evaluate(node => { const r = node.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height } })
+    const capture = locale === 'en' ? 'Quick capture' : '快速采集'
+    const closeCapture = locale === 'en' ? 'Close quick capture' : '关闭快速采集'
+    for (const width of [1024, 1440]) {
+      const page = await browser.newPage({ viewport: { width, height: 900 }, serviceWorkers: 'block' })
+      try {
+        await page.addInitScript(([locale, theme]) => {
+          localStorage.setItem('rainver:locale', locale)
+          localStorage.setItem('rainver:theme', theme)
+        }, [locale, theme])
+        await mockApi(page)
+        await page.route('**/api/v1/**/quota', route => route.fulfill({ json: { warn_pct: 80, reserve_pct: 90, holds: [], logins: [{ login_key: 'claude', account_label: 'Team Claude', agent_ids: ['assistant', 'agent-reviewer', 'agent-room-only'],
+          checked_at: new Date().toISOString(), window: null, windows: [{ kind: 'week', utilization: 64, resets_at: null, checked_at: new Date().toISOString() }] }] } }))
+        await page.goto(`${baseUrl}${base}/agents`)
+        await page.locator(surfaces[0].ready).first().waitFor({ timeout: 15_000 })
+        await page.evaluate(() => document.fonts.ready)
+        const sidecar = page.getByTestId('project-chat-sidecar')
+        const content = page.locator('[data-project-area-content]')
+        const fab = page.getByRole('button', { name: capture, exact: true })
+        const footer = sidecar.getByRole('link', { name: locale === 'en' ? 'Open in Room' : '在 Room 中打开' }).locator('..')
+        await footer.waitFor()
+        const viewport = await page.evaluate(() => document.documentElement.clientWidth)
+        // Its Tailwind offset: 1.25rem from the content edge and the bottom.
+        const gap = await page.evaluate(() => 1.25 * parseFloat(getComputedStyle(document.documentElement).fontSize))
+        await page.screenshot({ path: `${shots}/capture-open-chat-${locale}-${theme}-${width}.png` })
+        // The footer is the panel's last row: no reserved band below it.
+        const [panel, foot, area] = [await box(sidecar), await box(footer), await box(content)]
+        assert.ok(panel.bottom - foot.bottom <= 1.5, JSON.stringify({ panel, foot }))
+        assert.ok(foot.height <= 36, JSON.stringify(foot))
+        const placed = async (edge, label) => {
+          // The control moves after the layout observer reports the new edge.
+          let button
+          for (let attempt = 0; attempt < 50; attempt += 1) {
+            button = await box(fab)
+            if (Math.abs(edge - button.right - gap) <= 2) break
+            await page.waitForTimeout(100)
+          }
+          assert.ok(Math.abs(edge - button.right - gap) <= 2, JSON.stringify({ label, edge, button }))
+          assert.ok(Math.abs(900 - button.bottom - gap) <= 2, JSON.stringify({ label, button }))
+        }
+        await placed(area.right, 'open')
+        assert.ok(Math.abs(area.right - panel.left) <= 1, JSON.stringify({ area, panel }))
+        // Resizing the chat from the keyboard moves the content edge, and the control with it.
+        await sidecar.getByRole('separator').focus()
+        await page.keyboard.press('ArrowLeft')
+        await page.keyboard.press('ArrowLeft')
+        const resized = await box(sidecar)
+        assert.ok(resized.width > panel.width + 30, JSON.stringify({ panel, resized }))
+        await placed(resized.left, 'resized')
+        // The open capture box sits at the same corner, still outside the chat, and closes again.
+        await fab.click()
+        const dialog = page.getByRole('button', { name: closeCapture, exact: true }).locator('../..')
+        const opened = await box(dialog)
+        assert.ok(opened.left >= area.left + gap - 1, JSON.stringify({ opened, area }))
+        if (resized.left - area.left >= opened.width + 2 * gap) {
+          assert.ok(opened.right <= resized.left - gap + 1, JSON.stringify({ opened, resized }))
+        }
+        await page.screenshot({ path: `${shots}/capture-box-chat-${locale}-${theme}-${width}.png` })
+        await page.getByRole('button', { name: closeCapture, exact: true }).click()
+        if (width === 1024) {
+          const handle = await box(sidecar.getByRole('separator'))
+          const x = handle.left + handle.width / 2
+          const y = handle.top + handle.height / 2
+          await page.mouse.move(x, y)
+          await page.mouse.down()
+          await page.mouse.move(x - 300, y, { steps: 8 })
+          await page.mouse.up()
+          const widest = await box(sidecar)
+          assert.ok(widest.width > resized.width + 100, JSON.stringify({ widest, resized }))
+          await placed(widest.left, 'max-width')
+          await fab.click()
+          const fallback = await box(dialog)
+          assert.ok(fallback.left >= area.left + gap - 1, JSON.stringify({ fallback, area }))
+          assert.ok(fallback.right > widest.left && fallback.right <= viewport - gap + 1, JSON.stringify({ fallback, widest }))
+          await page.screenshot({ path: `${shots}/capture-max-chat-${locale}-${theme}.png` })
+          await page.getByRole('button', { name: closeCapture, exact: true }).click()
+        }
+        // Closing the chat returns the content edge, and the control, to the viewport edge.
+        await sidecar.getByRole('button', { name: locale === 'en' ? 'Close Project chat' : '关闭项目对话' }).click()
+        await sidecar.waitFor({ state: 'detached' })
+        await placed(viewport, 'closed')
+        await page.screenshot({ path: `${shots}/capture-closed-chat-${locale}-${theme}-${width}.png` })
+        await page.getByRole('button', { name: locale === 'en' ? 'Open Project chat' : '打开项目对话' }).click()
+        await sidecar.waitFor()
+        await placed((await box(sidecar)).left, 'reopened')
+        if (width === 1440) {
+          // The usage control in the same composer: its toggle names the next action in both states.
+          const usage = sidecar.getByRole('button', { name: locale === 'en' ? 'Usage: 64% used' : '用量: 已用 64%' })
+          await usage.click()
+          const hide = page.getByRole('button', { name: locale === 'en' ? 'Hide percentage on the button' : '在按钮上隐藏百分比', exact: true })
+          await hide.waitFor()
+          assert.equal(await hide.getAttribute('aria-pressed'), null)
+          assert.match(await usage.innerText(), /64%/)
+          await page.screenshot({ path: `${shots}/usage-shown-${locale}-${theme}.png` })
+          await hide.click()
+          const show = page.getByRole('button', { name: locale === 'en' ? 'Show percentage on the button' : '在按钮上显示百分比', exact: true })
+          await show.waitFor()
+          assert.doesNotMatch(await usage.innerText(), /64%/)
+          await page.screenshot({ path: `${shots}/usage-hidden-${locale}-${theme}.png` })
+        }
+      } finally { await page.close() }
+    }
+    // Phone: the control keeps its place above the tab bar, and the full-screen
+    // conversation still hides the Shell chrome that carries it.
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 }, serviceWorkers: 'block' })
+    try {
+      await page.addInitScript(([locale, theme]) => {
+        localStorage.setItem('rainver:locale', locale)
+        localStorage.setItem('rainver:theme', theme)
+        localStorage.setItem('project.sidecar.project-collab.open', 'false')
+      }, [locale, theme])
+      await mockApi(page)
+      await page.goto(`${baseUrl}${base}/agents`)
+      await page.locator(surfaces[0].ready).first().waitFor({ timeout: 15_000 })
+      const fab = page.getByRole('button', { name: capture, exact: true })
+      const gap = await page.evaluate(() => 1.25 * parseFloat(getComputedStyle(document.documentElement).fontSize))
+      const button = await box(fab)
+      assert.ok(Math.abs(390 - button.right - gap) <= 2 && Math.abs(844 - button.bottom - 4 * gap) <= 2, JSON.stringify(button))
+      await page.screenshot({ path: `${shots}/capture-phone-${locale}-${theme}.png` })
+      await page.getByRole('button', { name: locale === 'en' ? 'Open Project chat' : '打开项目对话' }).click()
+      await page.getByTestId('project-chat-sidecar').waitFor()
+      await fab.waitFor({ state: 'hidden' })
+      await page.screenshot({ path: `${shots}/capture-phone-chat-${locale}-${theme}.png` })
     } finally { await page.close() }
   })
 }

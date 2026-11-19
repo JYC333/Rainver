@@ -1,15 +1,16 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { ServerResponse } from "node:http";
-import type { RunTurn, TurnPart, TurnStreamFrame } from "@rainver/protocol";
+import type { RunTurn, TurnPart, TurnStreamError, TurnStreamFrame } from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
 import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
 import { resolveRequestId } from "../../gateway/requestContext.js";
 import { resolveIdentity } from "../routeUtils/common.js";
+import { introspectIdentity } from "../auth/identity.js";
 import { bodyWithheld } from "../access/contentAccessTypes.js";
 import { PgRunRepository } from "../runs/repository.js";
 import { loadRunTurn } from "../runs/turnReadModel.js";
-import { subscribeChatTextDeltas } from "./conversationDeltaBus.js";
+import { MAX_BUFFERED_CHARACTERS, subscribeChatTextDeltas } from "./conversationDeltaBus.js";
 import { sseResponseHeaders } from "../../gateway/sse.js";
 
 /**
@@ -41,6 +42,13 @@ const STREAM_ERROR_EVENT = "server.error";
  */
 const STREAMED_TEXT_INDEX = Number.MAX_SAFE_INTEGER;
 
+/**
+ * The most often live text is flushed between polls. Each flush re-checks the
+ * viewer, so this bounds those checks per connection regardless of how many
+ * deltas arrive; text received in between is sent whole at the next flush.
+ */
+const TEXT_FLUSH_INTERVAL_MS = 250;
+
 export async function streamRunTurn(
   config: ServerConfig,
   request: FastifyRequest,
@@ -64,14 +72,31 @@ export async function streamRunTurn(
     return sendErrorEnvelope(reply, 404, errorEnvelope("run_not_found", "Run not found", requestId));
   }
 
-  const snapshot = await loadRunTurn(db, { spaceId: identity.spaceId, runId });
+  const snapshot = await loadRunTurn(db, { spaceId: identity.spaceId, runId, viewerUserId: identity.userId });
   if (!snapshot) {
     return sendErrorEnvelope(reply, 404, errorEnvelope("run_not_found", "Run not found", requestId));
+  }
+  // The snapshot was read after the checks above, so a revocation can land
+  // while it was being read. Check again, then open the stream and send it
+  // with no await in between — the same read, check, write order as the loop.
+  let opening: TurnStreamAccess;
+  try {
+    opening = await currentTurnStreamAccess(config, request, repository, identity, runId);
+  } catch {
+    return sendErrorEnvelope(reply, 502, errorEnvelope("turn_stream_unavailable", "Run turn stream is unavailable", requestId));
+  }
+  if (!opening.ok) {
+    return opening.status === 401
+      ? sendErrorEnvelope(reply, 401, errorEnvelope("authentication_required", "Authentication required", requestId))
+      : sendErrorEnvelope(reply, 404, errorEnvelope("run_not_found", "Run not found", requestId));
   }
 
   let modelSelection = JSON.stringify(snapshot.model_selection);
   let closed = false;
-  request.raw.on("close", () => { closed = true; });
+  // Woken early by a delta or a disconnect; otherwise the loop sleeps until
+  // its next poll or text flush.
+  let wake: (() => void) | null = null;
+  reply.raw.on("close", () => { closed = true; wake?.(); });
 
   const raw = startSse(reply, requestId);
   send(raw, SNAPSHOT_EVENT, { type: "turn.snapshot", turn: snapshot } satisfies TurnStreamFrame);
@@ -94,43 +119,105 @@ export async function streamRunTurn(
   // the client would see the reply flicker in and out. A client keeps a
   // `streamed` part beside the list and drops it when the persisted reply
   // arrives.
-  let streamedText = "";
+  //
+  // The delta handler only accumulates. It never writes: every byte after the
+  // opening snapshot leaves from the loop below, right after that loop has
+  // re-checked the viewer (see `currentTurnStreamAccess`).
+  //
+  // The live copy is bounded by the bus's own limit. It is all-or-nothing:
+  // once this stream cannot show the prose from its first delta — it would
+  // pass the limit, or the bus's replay already dropped its head, or a delta
+  // went missing — the live copy is withdrawn (an empty `streamed` part, which
+  // a client drops) and this stream stops collecting it. Parts, state and the
+  // persisted reply keep arriving through the poll, so the person still gets
+  // the whole answer; what they never see is a cut copy shown as if it were
+  // the text so far.
+  let liveText = "";
+  let sentText = "";
+  let liveTextWithdrawn = false;
+  let nextDeltaIndex = 0;
   const unsubscribe = subscribeChatTextDeltas(runId, (event) => {
-    if (!event.delta || closed || raw.destroyed) return;
-    streamedText += event.delta;
-    send(raw, UPDATED_EVENT, {
-      type: "turn.part_updated",
-      run_id: runId,
-      cursor,
-      part: {
-        type: "text",
-        index: STREAMED_TEXT_INDEX,
-        text: streamedText,
-        streamed: true,
-      } satisfies TurnPart,
-    } satisfies TurnStreamFrame);
+    if (!event.delta || closed || liveTextWithdrawn) return;
+    if (event.delta_index !== nextDeltaIndex || liveText.length + event.delta.length > MAX_BUFFERED_CHARACTERS) {
+      liveTextWithdrawn = true;
+      liveText = "";
+    } else {
+      nextDeltaIndex = event.delta_index + 1;
+      liveText += event.delta;
+    }
+    wake?.();
   });
 
+  const pollMs = config.runEventStreamPollIntervalMs;
+  const flushMs = Math.min(TEXT_FLUSH_INTERVAL_MS, pollMs);
+  let nextPollAt = Date.now() + pollMs;
+  // The opening read above is the first check.
+  let lastCheckAt = Date.now();
+  const unavailable = () => send(raw, STREAM_ERROR_EVENT, {
+    error: "turn_stream_unavailable",
+    message: "Run turn stream is unavailable",
+  } satisfies TurnStreamError);
+
   try {
-    while (!closed) {
-      await sleep(config.runEventStreamPollIntervalMs);
-      if (closed) break;
+    while (!closed && !raw.destroyed) {
+      const until = liveText !== sentText ? Math.min(nextPollAt, lastCheckAt + flushMs) : nextPollAt;
+      const wait = until - Date.now();
+      if (wait > 0) {
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, wait);
+          wake = () => { clearTimeout(timer); resolve(); };
+        });
+        wake = null;
+        continue;
+      }
+
+      // Read first, then check, then write with no await in between. What a
+      // write carries was therefore read before a check that still let this
+      // viewer read the Run in full; a revocation committed before a check
+      // starts stops every later byte, including text already buffered.
+      const polling = Date.now() >= nextPollAt;
+      let turn: RunTurn | null = null;
+      if (polling) {
+        nextPollAt = Date.now() + pollMs;
+        try {
+          turn = await loadRunTurn(db, { spaceId: identity.spaceId, runId, viewerUserId: identity.userId });
+        } catch {
+          unavailable();
+          break;
+        }
+      }
+      // Deltas arriving while the check runs wait for the next one.
+      const text = liveText;
+      let access: TurnStreamAccess;
+      try {
+        access = await currentTurnStreamAccess(config, request, repository, identity, runId);
+      } catch {
+        unavailable();
+        break;
+      }
+      lastCheckAt = Date.now();
+      if (closed || raw.destroyed) break;
+      if (!access.ok) {
+        send(raw, STREAM_ERROR_EVENT, access.status === 401
+          ? { error: "authentication_required", message: "Authentication required", status: 401 }
+          : { error: "run_not_found", message: "Run not found", status: 404 } satisfies TurnStreamError);
+        break;
+      }
+
+      // The whole text goes out on each flush, so a reader that is not
+      // draining is skipped rather than queued behind: the next flush after it
+      // drains carries everything, and the server never holds more than the
+      // one frame it was already writing.
+      const textDue = text !== sentText && !raw.writableNeedDrain;
+      if (!polling) {
+        if (textDue) sendLiveText(raw, runId, cursor, sentText = text);
+        continue;
+      }
 
       // A long command or an approval wait can leave the turn unchanged for
       // minutes. SSE comments keep intermediaries from timing out an idle
       // response without inventing a turn update or changing its cursor.
-      if (!raw.destroyed) raw.write(": keepalive\n\n");
-
-      let turn;
-      try {
-        turn = await loadRunTurn(db, { spaceId: identity.spaceId, runId });
-      } catch {
-        send(raw, STREAM_ERROR_EVENT, {
-          error: "turn_stream_unavailable",
-          message: "Run turn stream is unavailable",
-        });
-        break;
-      }
+      raw.write(": keepalive\n\n");
       if (!turn) break;
       cursor = turn.cursor;
       const nextModel = JSON.stringify(turn.model_selection);
@@ -141,7 +228,6 @@ export async function streamRunTurn(
         } satisfies TurnStreamFrame);
       }
 
-
       for (const frame of turnDiffFrames(emitted, turn, runId, cursor)) {
         send(raw, frameEvent(frame), frame);
       }
@@ -151,14 +237,11 @@ export async function streamRunTurn(
       // of it. Stop sending it and tell the client to drop what it holds —
       // the client cannot work this out for itself, because after the opening
       // snapshot it only ever receives per-part frames.
-      if (streamedText && turn.parts.some((part) => part.type === "text")) {
-        streamedText = "";
-        send(raw, UPDATED_EVENT, {
-          type: "turn.part_updated",
-          run_id: runId,
-          cursor,
-          part: { type: "text", index: STREAMED_TEXT_INDEX, text: "", streamed: true } satisfies TurnPart,
-        } satisfies TurnStreamFrame);
+      if (turn.parts.some((part) => part.type === "text")) {
+        liveText = "";
+        if (sentText) sendLiveText(raw, runId, cursor, sentText = "");
+      } else if (textDue) {
+        sendLiveText(raw, runId, cursor, sentText = text);
       }
 
       const nextQueueWait = turn.queue_wait_reason ?? null;
@@ -178,13 +261,57 @@ export async function streamRunTurn(
       // A blocked turn is not finished — it is waiting on a person and
       // resumes where it stopped once they decide. Closing here would leave
       // the rest of the turn unstreamed and, on a chat surface, send the
-      // client to read a reply that does not exist yet.
+      // client to read a reply that does not exist yet. It stays open only
+      // while the check above keeps passing.
       if (state !== "working" && state !== "blocked") break;
     }
   } finally {
     unsubscribe();
     raw.end();
   }
+}
+
+type TurnStreamAccess = { ok: true } | { ok: false; status: 401 | 404 };
+
+/**
+ * Whether the person who opened this stream may still read this Run in full.
+ *
+ * The same two gates the stream was opened through — the session (pinned to
+ * the Space it resolved, so a changed default Space cannot move it) and the
+ * Run's current full read — asked again, because a stream outlives the
+ * request that authorized it: logout, session revocation, removal from the
+ * Space or Project, a Run made private or summary-only, all land while it is
+ * open. A different person behind the same request is a lost session (401).
+ * A failed lookup throws; the caller closes the stream rather than guess.
+ *
+ * One call per write cycle, never per delta: deltas are coalesced to at most
+ * one flush per `TEXT_FLUSH_INTERVAL_MS`, so the cost is bounded by time, not
+ * by how fast the model talks.
+ */
+async function currentTurnStreamAccess(
+  config: ServerConfig,
+  request: FastifyRequest,
+  repository: PgRunRepository,
+  identity: { spaceId: string; userId: string },
+  runId: string,
+): Promise<TurnStreamAccess> {
+  const current = await introspectIdentity(config, request, undefined, identity.spaceId);
+  if (!current.ok) {
+    if (current.reason !== "denied") throw new Error("Turn stream identity unavailable");
+    return { ok: false, status: current.statusCode === 401 ? 401 : 404 };
+  }
+  if (current.userId !== identity.userId) return { ok: false, status: 401 };
+  const run = await repository.getVisibleRun(identity.spaceId, identity.userId, runId);
+  return run && !bodyWithheld(run.effective_access_level) ? { ok: true } : { ok: false, status: 404 };
+}
+
+function sendLiveText(raw: ServerResponse, runId: string, cursor: number, text: string): void {
+  send(raw, UPDATED_EVENT, {
+    type: "turn.part_updated",
+    run_id: runId,
+    cursor,
+    part: { type: "text", index: STREAMED_TEXT_INDEX, text, streamed: true } satisfies TurnPart,
+  } satisfies TurnStreamFrame);
 }
 
 
@@ -269,8 +396,4 @@ function send(raw: ServerResponse, event: string, data: unknown): void {
   if (raw.destroyed) return;
   raw.write(`event: ${event}\n`);
   raw.write(`data: ${JSON.stringify(data)}\n\n`);
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }

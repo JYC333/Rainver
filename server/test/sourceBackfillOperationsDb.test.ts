@@ -43,10 +43,18 @@ it('previews through the formal query without a key or business mutation',async(
 it('shares create receipts across REST/generic and retains separate domain uniqueness',async()=>{
   const body=payload(),key=randomUUID(),first=await create(body,key);
   expect(first.statusCode,first.body).toBe(201);const id=first.json().data.plan_id;
+  // One create stores the draft plan and every planned window (30-day default, newest first).
+  expect((await db.pool.query('SELECT status,segments_total,source_channel_id,requested_by_user_id FROM source_backfill_plans WHERE id=$1',[id])).rows)
+    .toEqual([{status:'draft',segments_total:2,source_channel_id:channel,requested_by_user_id:owner}]);
+  expect((await db.pool.query('SELECT seq,status,plan_id,window_json FROM source_backfill_segments ORDER BY seq')).rows).toEqual([
+    {seq:0,status:'pending',plan_id:id,window_json:{from:'2026-01-30T00:00:00.000Z',to:'2026-03-01T00:00:00.000Z',max_items:5,monitoring_field:'submittedDate'}},
+    {seq:1,status:'pending',plan_id:id,window_json:{from:'2026-01-01T00:00:00.000Z',to:'2026-01-30T00:00:00.000Z',max_items:5,monitoring_field:'submittedDate'}},
+  ]);
   const saved=await rows();
   expect((await generic('source.backfill.create_plan',{...body,source_channel_id:channel,project_operation_id:null,project_source_binding_id:null},key)).json()).toEqual(first.json());
   expect(await rows()).toEqual(saved);
   expect((await generic('source.backfill.create_plan',{...body,strategy:{...body.strategy,max_items:7},source_channel_id:channel},key)).json().error.code).toBe('idempotency_key_reused');
+  // A fresh request key with the same domain key hits the plan insert conflict and returns the existing plan without adding segments.
   expect((await create({...body,strategy:{...body.strategy,max_items:9}})).json().data.plan_id).toBe(id);
   expect(await rows()).toEqual(saved);
   const conflict=await generic('source.backfill.create_plan',{...body,source_channel_id:otherChannel});

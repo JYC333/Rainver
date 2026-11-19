@@ -285,6 +285,9 @@ export const en = {
   },
   modules: {
     'plugin.operation_probe.records': 'Records',
+    'plugin.diary.journal': 'Diary',
+    'plugin.finance_ledger.ledger': 'Finance',
+    'plugin.applications.board': 'Applications', 'plugin.applications.summary': 'Applications',
     'agent-work': 'Agent Work',
     diary: 'Diary', finance: 'Finance', today: 'Today', capture: 'Capture',
     activity: 'Inbox', library: 'Library', daily_reports: 'Daily Report', sessions: 'Sessions',

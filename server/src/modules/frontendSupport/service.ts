@@ -1,7 +1,8 @@
 import type { ServerConfig } from "../../config.js";
 import { dbPool, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
-import { artifactReadSql, proposalReadSql, runReadSql } from "../access/contentAccessSql.js";
+import { artifactReadSql, contentOwnerOnlySql, proposalReadSql, runReadSql } from "../access/contentAccessSql.js";
 import { sourceItemReadableClause } from "../sources/sourceItemAccess.js";
+import { JOB_RETRY_DUE_SQL } from "../jobs/repository.js";
 import {
   ACTIVE_RUN_STATUSES,
   DONE_TASK_STATUSES,
@@ -76,7 +77,7 @@ export class PgFrontendSupportService {
       this.recentArtifacts(identity, 10),
       this.taskSummary(identity),
       this.activeTasks(identity, activeTasksLimit),
-      this.activitySummary(identity.spaceId),
+      this.activitySummary(identity),
       this.runStatsToday(identity.spaceId),
       this.jobQueueStatus(identity),
       this.runtimeStatus(identity.spaceId),
@@ -464,7 +465,7 @@ export class PgFrontendSupportService {
     }));
   }
 
-  private async activitySummary(spaceId: string): Promise<HomeSummaryOut["activity_summary"]> {
+  private async activitySummary(identity: { spaceId: string; userId: string }): Promise<HomeSummaryOut["activity_summary"]> {
     const result = await this.db.query<{
       recent_count: string | number;
       raw_count: string | number;
@@ -475,8 +476,10 @@ export class PgFrontendSupportService {
          count(*) FILTER (WHERE ar.status = 'raw')::text AS raw_count,
          count(*) FILTER (WHERE ar.created_at >= date_trunc('day', now()))::text AS today_count
        FROM activity_records ar
-       WHERE ar.space_id = $1 AND ar.status NOT IN ('archived', 'failed')`,
-      [spaceId],
+       WHERE ar.space_id = $1 AND ar.status NOT IN ('archived', 'failed')
+         -- Another person's owner-only row (a Gmail monitor reminder) is not even counted.
+         AND (ar.owner_user_id = $2 OR NOT ${contentOwnerOnlySql("activity", "ar")})`,
+      [identity.spaceId, identity.userId],
     );
     const row = result.rows[0];
     return {
@@ -537,7 +540,7 @@ export class PgFrontendSupportService {
          count(*) FILTER (WHERE status = 'pending')::text AS queued,
          count(*) FILTER (WHERE status IN ('claimed', 'running'))::text AS running,
          count(*) FILTER (WHERE status = 'failed')::text AS failed,
-         count(*) FILTER (WHERE status = 'failed' AND attempts < max_attempts)::text AS retryable,
+         count(*) FILTER (WHERE ${JOB_RETRY_DUE_SQL})::text AS retryable,
          (SELECT error
             FROM jobs
            WHERE space_id = $1 AND user_id = $2 AND status = 'failed' AND error IS NOT NULL

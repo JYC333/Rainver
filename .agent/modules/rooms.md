@@ -10,8 +10,8 @@ frontend-facing surface for dispatching work to agents from inside a
 conversation.
 
 Rooms are an explicit Project entry beside **Agents**
-([ADR 0018](../decisions/0018-room-as-visibility-boundary.md), amendment of
-2026-11-11). `/projects/:projectId/rooms` is the Rooms index; `?room=` is one
+([ADR 0018](../decisions/0018-room-as-visibility-boundary.md) decision 2).
+`/projects/:projectId/rooms` is the Rooms index; `?room=` is one
 Room's conversation list or, with `view=members`, its members; and
 `?room=&conversation=` (or `new=1`) is one conversation. There is no
 cross-Project Rooms index. The Project's Agent list is a separate relation
@@ -842,7 +842,15 @@ talks to an Agent: a Room message, a delegation the Room's Agent makes
 The Room allowance carries both halves of delegation (`agent.delegate` and
 `agent.wait_for_results`), the Project write surface, `task.plan.propose`
 (proposal-gated), the two Source proposals and the Project monitoring
-read/proposals.
+read/proposals. With a `project_id` it also carries
+`PROJECT_APPLICATIONS_TOOL_ALLOWANCE`, the application package's Agent tools,
+granted only where the package is enabled and usable only in a bound Project
+that is the Run's own (`architecture/SYSTEM_ACTIONS.md`). The Room turn and the
+delegated child are created through `AgentGroupRunService`, whose Run repository
+carries the server configuration so those plugin grants are actually written to
+the snapshot. Their output reaches the Room's live audience, so with more than
+one reader the package's reads return only what every reader reads themselves
+(`architecture/OFFICIAL_OPTIONAL_MODULES.md`).
 
 Room Agent tools also expose `agent.list_runs` and `agent.cancel_run`. The read
 returns at most 100 active Runs (identifiers, Agent, status, ancestry and creation
@@ -911,16 +919,19 @@ open a second Room is to exclude someone. Which agents take part in a given
 exchange is per-message recipient selection inside one Room, not a second
 Room.
 
-**The layer is invisible until a visibility decision has to be made.** The
-Project's Conversations page shows conversations, and a Project with only its
-mainline never says the word "Room". Conversations of a limited Room appear in
-the same list, in a section titled by its roster ("With Alice and Bob · 2
-agents") with the roster surface reached from that section. Creating a
-conversation offers two things — *in this Project*, or *with a limited group…*
-— and the second is a roster picker whose completion creates the Room. There
-is no Rooms entry in the top navigation and no cross-Project Rooms index;
-`/projects/:projectId/rooms` remains, as one Room's own surface, and a
-conversation's header there names the Room's audience when it is a limited one.
+**The layer is an explicit Project entry** (ADR 0018 decision 2). The Project
+navigation has a **Rooms** entry beside **Agents**, and
+`/projects/:projectId/rooms` is the Rooms index described under
+[Navigation And Ordering](#navigation-and-ordering). The Project's
+Conversations page (`/projects/:projectId/conversations`) is reached from that
+index and lists every conversation the viewer can see across their Rooms: the
+default Room's conversations lead with no heading, and those of a limited Room
+appear in a section titled by its roster ("With Alice and Bob · 2 agents")
+with the roster surface reached from that section. Creating a conversation
+there offers two things — *in this Project*, or *with a limited group…* — and
+the second is a roster picker whose completion creates the Room. There is no
+cross-Project Rooms index, and a conversation's header names the Room's
+audience when it is a limited one.
 
 A Room nobody has spoken in holds no conversation, so a query over
 conversations would hide it — and a Room is reached *through* a conversation.
@@ -1040,48 +1051,170 @@ memory and conversation actions, in
 `proposal.decide` and `agent.cancel_run`; and the directly-executed,
 idempotency-guarded `agent.delegate` / `agent.wait_for_results` and
 `research.start_acquisition` / `research.cancel_acquisition`. Delegation
-is bounded to one level. Temporary Room delegation shares a container soft
-limit of 10 × max(1, active delegatable roster Agents excluding the coordinator),
-and a hard limit twice that. Every delegation budgets two Agent turns. An explicit
-`delegation_budget` passed internally by the server overrides the default; the
-Room API exposes no user-facing budget parameter. New default containers use
-these limits; existing stored budgets and explicit task collaboration bounds are
-not rewritten by a default change. A subgroup's hard bound and
-the container's bound apply together, taking the smaller value (zero stops
-delegation). Crossing soft admits with one visible
-Room system notice per container; crossing hard is refused by the policy layer
-and audited. Refused calls do not consume budget. The service sends both limits
-and prospective counts to `decisionCore`; preflight is rechecked at execution.
+is bounded to one level. Every Room container stores a roster-scaled bound
+(10 × max(1, active delegatable roster Agents excluding the coordinator) as
+`max_fanout`/`soft_max_fanout`, twice that as `hard_max_fanout`); an explicit
+`delegation_budget` passed internally by the server overrides the default, the
+Room API exposes no user-facing budget parameter, and a subgroup's bound and
+the container's apply together, taking the smaller value (zero stops
+delegation). Refused calls do not consume anything. The service sends the
+limits and prospective counts to `decisionCore`; preflight is rechecked at
+execution under the container row lock.
+
+**Person-authorized work has no total.** When the container's root Run is a
+person's own Room turn (`trigger_origin = 'manual'`, no parent —
+`rooms/delegationBudget.ts` `personAuthorizedRoot`) and the turn is not part of
+a discussion, temporary delegation and task collaboration alike have no
+cumulative delegation or container-turn limit and need no second confirmation:
+the stored hard bound limits only one turn's children outstanding at once, and
+completions keep the person's cause (B70) however long the chain runs. Three
+admitted children in a row without a result (a degraded child that replied is
+a result for the coordinator to judge) close further fan-out and end that
+cause for the completion, which still reports. Counts are offered, not
+refused: under the container row lock each admission compares the cumulative
+count with protocol `COLLABORATION_REMINDER_THRESHOLDS` (25, 50, 100, 200,
+then each doubling) and the stored `reminder_notified_through`; one crossing,
+or a jump across several, posts exactly one non-blocking Room notice
+(`delegation_reminder`, stable `<container>:delegation:reminder:<n>` key; a
+collaboration's own `collaboration_reminder` below) with the count, charged
+turns, the latest finished child, the no-result streak and catalog-priced
+spend only when such usage exists (`agentGroups/collaborationReminder.ts`
+`postWorkReminder`). A key already written is never written again, a
+rolled-back admission rolls back its notice, and a replayed tool call admits
+and notifies nothing again. A container rooted anywhere else (a continuation
+that opened its own container, automation or schedule) is never upgraded: it
+keeps the cumulative soft/hard counts (turns twice those), one
+`delegation_soft_budget_exceeded` notice and a policy refusal above hard.
+Discussions keep their own round, participant, spend and turn bounds; a
+discussion group under a person's turn is not person-authorized for either
+admission or the usage notice (`roomBudgetContainer`'s one
+`person_authorized` classification), so it gets the soft-budget notice, never
+a "no total limit" reminder.
 
 For sustained implementation/review work explicitly requested by the person,
-`agent.delegate` can declare `budget.collaboration`: an open `task_id` in this
-Room's Project, one or more fixed `participant_agent_ids` selected from its other
-active members (no separate numeric participant cap), and a hard total
-`max_delegations` (1–128). Bind the Task covering the authorized workflow rather
-than a single intermediate stage. A declaration requires the original human
-manual container, its coordinator and Project writer authority. The original
-turn or a coordinator completion turn may make the first declaration, including
-after temporary delegations. Counting starts at declaration: earlier temporary
-delegations and their late completions do not consume the collaboration quota.
-An active declaration cannot change or widen
-(409). When its Task is `done`/`cancelled`, an explicit new declaration can
-select another open Task, participants and count on that same container, also
-from a completion. New delegation/turn offsets isolate each declaration's
-consumption and failure streak; old bounds remain in `collaboration_history`.
-Completion alone never renews it.
+`agent.delegate` can declare `budget.collaboration`: exactly an open `task_id`
+in this Room's Project and one or more fixed `participant_agent_ids` selected
+from its other active members (no separate numeric participant cap). Nothing
+else is accepted — a `mode`, `max_delegations`, `reminder_requested` or any
+other key is refused (422), never converted — and nothing is waiting for a
+person to enable. Bind the Task covering the authorized workflow rather than a
+single intermediate stage. A declaration requires the original human manual
+container, its coordinator and Project writer authority. The original turn or
+a coordinator completion turn may make the first declaration, including after
+temporary delegations. Counting starts at declaration: earlier temporary
+delegations and their late completions are not the collaboration's. Repeating
+the same Task and participants is the same declaration; an Agent cannot
+change an active one (409). When its Task is `done`/`cancelled`, an explicit
+new declaration can select another open Task and participants on that same
+container, also from a completion. New delegation/turn offsets, a
+`declared_at` stamp and its own `reminder_notified_through` isolate each
+declaration's consumption, reminders, failure streak and cancellations; old
+declarations remain in `collaboration_history`.
 
-Failed/cancelled children count; policy refusals do not. Three consecutive
-children with no result stop further admission. A degraded child that replied
-is a result for the coordinator to judge. Task holds/review waits, revoked
-Project access, explicit stop and paused/cancelled containers remain stopping
-conditions. Collaboration turn capacity is twice its declared delegation
-count, measured from its recorded offset. This changes no tool permissions,
-Project-write five-object ceiling, subscription gate or filesystem serialization.
+The stored declaration has one shape (`agentGroups/collaborationBudgetRepository.ts`):
+`task_id`, `participant_agent_ids`, `coordinator_agent_id`,
+`delegations_offset`, `turns_offset`, `declared_at`,
+`reminder_notified_through`, all required. Migration
+`0024_room_work_reminders_without_limits` (maintenance) converted every
+finite, reminder or pending-request record the earlier release accepted to it
+once, keeping Task, participants, coordinator, offsets and reminder progress
+(a record without `declared_at` took its container's creation time, its old
+whole-container cancellation rule) and leaving `collaboration_history`
+verbatim. It converts only what that release's strict union accepted — every
+key and value, e.g. a cap of 1..128, increasing positive thresholds, distinct
+non-empty participants, its datetime rule — in CASE-guarded SQL. A number is
+judged as that release read it: the double `JSON.parse` gives (±Infinity at
+2^1024 − 2^970 and above, ±0 at 2^-1075 and below, otherwise PostgreSQL's
+equally rounded `float8`), then its zod rule, so `1e308` is a valid offset,
+`0.99999999999999999` is the cap 1 and thresholds `2^53, 2^53+1` are not
+increasing. A converted record keeps each stored number verbatim. Any other
+record (`max_delegations: 0`, a reminder without thresholds, mixed shapes) is
+left as it is and fails closed. It removes `soft_budget_notified` only from a
+person-rooted container no discussion group charges. Nothing reads an earlier
+shape at run time.
+
+**Collaboration notices.** A Room notice is read by every Room member while
+the manager's reading the Task proves nothing about them, so no collaboration
+notice (`collaboration_reminder`, `collaboration_participants_changed`) carries
+Task content — title, status or description — in its text or metadata; only
+the Task id is kept as the existing audit association, and the Task's details
+stay behind each reader's own Task access in `room.collaboration.get`. Counts,
+the latest child's Agent name and outcome and priced spend are already visible
+to Room members (Room activity, discussion cost lines).
+
+**Stops and bounds.** Failed/cancelled children count; policy refusals do
+not. Three consecutive children with no result stop further admission. Task
+holds/review waits, a closed Task, revoked Project access, paused (resumable
+with `agent_group.status.set active`) or cancelled containers, and a
+coordinator Run cancelled since the current declaration (terminal for that
+declaration only) stop it. Per-turn fan-out is bounded by the coordinator
+turn's children still outstanding: its own group bound on the original turn,
+the declared participant count on a completion turn. No count is a stop.
+Stored collaboration JSON that does not parse refuses admission with
+`collaboration_budget_invalid` (409) and gives a continuation `within_budget:
+false` and no fan-out; it is never read as a budget. Only an absent
+`collaboration` key is "not configured": a present key of any value, `null`
+included, is invalid for admission, continuation, the temporary-delegation
+notices and `room.collaboration.get` alike. `collaborationStopReason` is the
+one admission projection (`paused`, `stopped`, `repeated_failures`,
+`project_access_lost`, `task_unavailable`, `task_closed`,
+`coordinator_cancelled`); admission, continuation and the read view call it.
+A completion turn (`collaborationContinuation`) is judged on the same facts as
+admission, the declaration's outcomes included: any stop gives
+`within_budget: false` and no fan-out (the completion still runs and reports,
+unattributed). The Task is visible to it only in the container's Project,
+under `contentReadSql("task")` for the manager and while that Project is
+active, so a moved or no-longer-readable Task is `task_unavailable` and its
+title is not shown in the read view. Pausing the container also holds its
+completion subgroups' parked coordinator turns; resume (`changeStatus` and the
+committed `agent_group_resume_wake` job) re-evaluates parked Runs in the
+container and its completion subgroups of the same Room conversation, Project
+and manager only. A stopped (`cancelled`) group cannot be resumed; the person's
+new message opens a new container whose coordinator may declare again. This
+changes no tool permissions, Project-write five-object ceiling, subscription
+gate, spend cap or filesystem serialization; discussions, autonomous and
+scheduled work keep their own bounds.
+
+**Human controls.** `room.collaboration.get` (query; the caller's own newest
+container in a Room conversation: handoff and turn counts, `next_reminder_at`,
+`active` and `stop_reason` from `collaborationStopReason` for the next handoff,
+and the Task title/status only under the rules above) and
+`room.collaboration.update_participants` (command, policy
+`room.collaboration.manage`, fail-closed audit) are user-only. There is no
+mode switch or limit to remove. Above the conversation composer
+(`ConversationCollaborationLine`, Room page and Project chat sidecar) the
+collaboration is presented by phase. While it admits handoffs it is one small
+entry ("Task collaboration · running"); opening it in place (an inline
+disclosure, not a dialog) shows the Task title, handoff and turn counts, the
+next reminder ("no total limit") and the person's pause and stop (confirmed)
+controls through `agent_group.status.set`. A paused group, or an active one
+that admits no new handoff (a non-null `stop_reason`), shows its status and
+translated reason with the actions that still apply (resume or pause, and
+stop) without being opened. A succeeded, failed, cancelled or archived group
+folds back to the entry ("finished"/"stopped") with its details only on
+demand and no controls; opened details close whenever the conversation,
+Space, collaboration or phase changes and are not reopened on return.
+The newest loaded `collaboration_reminder` is shown above the composer,
+outside the scrolling transcript. Its original message is available in
+expandable details. Dismissal is local to the user, Space and conversation
+in the current tab session. A later reminder is shown when it arrives. The
+server keeps the existing notice record, threshold and admission rules. A
+read-only transcript omits the composer and its collaboration entry. A viewer
+without `can_manage` in the composer sees details without controls, and narrow/coarse layouts reuse `reading-touch` targets. Closing
+the details withdraws a stop confirmation opened from them. An open stop confirmation
+belongs to the exact conversation, Space, collaboration (group and Task), phase and
+management right it was opened on: any change discards it, it is rendered and
+submitted only while it still applies, and a response arriving after the
+viewer moved scope or unmounted neither reloads nor toasts. A failed group
+shows as stopped.
 
 Reuse / Dependency Check: this extends the existing group budget JSON,
-container counter, PostgreSQL row locks and spawn-policy audit. Validation uses
-the installed Zod dependency. No new scheduler, agent loop, transport or
-dependency is introduced; the behavior is Rainver-owned authorization semantics.
+container counter, PostgreSQL row locks, spawn-policy audit, Room notice writer,
+Operation Core executor, group status command and the canonical Drizzle custom
+migration for the one-time record conversion; one reminder function serves
+temporary delegation and collaboration. Validation uses the installed
+Zod dependency. No new scheduler, agent loop, transport or dependency is
+introduced; the behavior is Rainver-owned authorization semantics.
 There is no concurrency budget on a Room group: because the Conversation
 shares one directory, a delegated writer (`workspace_access = write`) runs
 alone while read-only reviews (`read`) at the front of the FIFO run together
@@ -1220,6 +1353,51 @@ what lets vendor text arrive labelled as a colleague's word. The cost is that
 a purely internal message picked out of a once-tainted thread is over-labelled
 and fenced too; that is the safe direction, and it is the intended one.
 
+A conversation in which an Agent read a person's private source (their Gmail,
+ADR 0033 §6, or a plugin's sensitive data; `sensitiveConversationReads`) is
+treated the same way: everything picked from it is `external_untrusted` and
+fenced, because mail is data, never instruction. The provenance also records
+`source_project_id` and `sensitive_reads` (whose data, which read), and
+`sensitiveConversationReads` reads them back from `reference` messages, so
+every later Run of the conversation the copy lands in inherits the read as its
+own taint — no Memory (`memory.remember`/`revise` refuse), nothing
+materialized, no outward writes — and further hops keep it. Its audience
+follows the disclosure rule above only for the attacher's own data: the
+mailbox owner may confirm widening it inside the Project, as they may share
+their own excerpt; anyone else's attach that would reach beyond the source's
+audience is refused outright (409 `reference_sensitive_scope_mismatch`).
+Each read keeps its real owner: a Run that inherited it records the owner it
+came with (`plugin_reads[].owner_user_id`), never its own instructing person,
+and an unknown owner counts as somebody else's. A Run entry written before
+that field existed is its instructing person's only when provable: every
+sensitive read that Run logged was theirs and its conversation held nothing
+it could have inherited when it was created; otherwise its owner is unknown.
+Every Run and message of the source is aggregated however long the
+conversation is. A copy records its list with `sensitive_reads_version: 2`
+(`sensitive_reads: []` when it holds none), and only such a list is taken as
+written. An older conversation reference — no list, or a list without the
+version — is checked against its source conversation, transitively, and each
+entry its old list names must be found there with the same owner. When the
+reads cannot all be determined (more than 100 distinct, malformed read
+metadata of any kind — a non-list, an invalid entry or version, a malformed
+Run taint —, an old entry not found at its source, a gone source, older
+shared Gmail text, more than 50 conversations to follow) the attach is
+refused (409 `reference_sensitive_reads_unresolved`), reflection makes no
+Memory, and a new Run of that conversation inherits an unknown-owner Gmail
+read (and an unverifiable entry's plugin read with unknown owner).
+Malformed read metadata is never read as "no reads": `parseRunContextTaint`
+turns an invalid `plugin_reads` into an unknown-owner Gmail read, and a
+top-level `context_taint_json` that does not parse at all (JSON null, an
+array or scalar, a wrong schema or visibility) is read by the current Run's
+protections — outward writes, Memory, materialization and the merge when
+taint is persisted (`readRunContextTaint` / `protectiveRunContextTaint`) — as
+a private, unknown-owner Gmail read, the same Run the conversation aggregate
+marks incomplete; an earlier Run with such taint also leaves a later old entry
+unprovable. Only SQL NULL (no taint written) is untainted. Recorded fields are
+judged by presence (`?`), not by value: an explicit
+`sensitive_reads: null` or `sensitive_reads_version: null` is malformed,
+never "no list" or "no version".
+
 Neither label is user evidence. The checkpoint extractor derives `confirmed`
 from `role = 'user'` alone, and a reference is a system-role message, so it
 can never be read as the person having confirmed what it contains.
@@ -1293,7 +1471,7 @@ the person's message instead would put a discussion boundary before the
 Manager's own reply): round cap 2 (the
 person's round plus one the Agents opened) and the originating container's
 scaled hard Agent-turn ceiling, replacing the fixed five-turn limit. With two
-delegatable Agents this is 40 turns; the two-round limit and participant caps
+delegatable Agents the hard delegation bound is 40, so this is 80 turns; the two-round limit and participant caps
 are unchanged. Two replies of one wave addressing the same Agent give it one
 turn whose content is both addressed parts. A person opens an **explicit**
 discussion with `POST …/discussions` — topic, participants (explicit, or
@@ -1314,17 +1492,15 @@ bounded by rounds); otherwise it is one counter on the task group of the
 person's message, `budget_json.container_turns_used`, which every branch of
 the chain charges through its `budget_json.container_group_id` pointer. A
 completion turn inherits the same shared budget, never a fresh allowance.
-An explicitly declared task collaboration instead shares its declared total
-across those containers. A newly declared Task after the previous one closes
-starts a new accounting epoch without resetting old audit history; its
-continuation cause remains the original human Run, avoiding an ever-growing
-lineage chain. Its charged turns are capped at
-`collaborationTurnCeiling` — its turn offset plus two per declared delegation, one for the child
-and one for the completion turn it causes
-(`agentGroups/collaborationBudgetRepository.ts`), judged on the count after
-the turn's own charge — and a completion turn may delegate to at most as
-many children as there are declared participants. The task and bounds are checked
-again at admission, including after policy preflight.
+An explicitly declared task collaboration instead counts across those
+containers. A newly declared Task after the previous one closes starts a new
+accounting epoch without resetting old audit history; its continuation cause
+remains the original human Run, avoiding an ever-growing lineage chain. A
+container rooted in a person's own turn has no turn ceiling, declared
+collaboration or not ("Person-authorized work has no total" above); a
+completion turn of a collaboration may have at most as many children
+outstanding as there are declared participants. The task and bounds are
+checked again at admission, including after policy preflight.
 A research acquisition an Agent starts (`research.start_acquisition`) carries
 its turn's group (`origin_group_id`, through the pipeline job and the
 Operation's progress), so its result and status turns are charged to that
@@ -1731,7 +1907,10 @@ is slow to answer is decided on the cached reading.
   Room-not-found 404 unless they can already see the Room, in which case 403
 - `GET /api/v1/rooms/:roomId/conversations` — list conversations
 - `GET /api/v1/rooms/:roomId/conversations/:sessionId/messages` — paged history
-  (`message_id` reads one exact message, as a command receipt's read-back does)
+  (`message_id` reads one exact message, as a command receipt's read-back does).
+  The first history page includes `active_run_ids` for the conversation's
+  unfinished Room Agent Runs that the viewer can read, including Runs whose
+  dispatch or delegation is recorded on an older message.
 - `POST /api/v1/rooms/:roomId/conversations/:sessionId/messages` — send a
   message; supports direct `@agent` recipient segmentation or manager
   coordination with optional `coordination_target_agent_ids` (active Agent

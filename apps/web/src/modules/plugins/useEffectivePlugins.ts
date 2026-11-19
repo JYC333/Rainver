@@ -5,6 +5,7 @@ import type { OfficialPluginEffectiveMap } from '@rainver/protocol'
 import { pluginsApi } from '../../api/client'
 import i18n from '../../i18n'
 import { MODULE_REGISTRY, modulesWithEffectivePlugins, type Module } from '../registry'
+import { onPluginStateChanged } from './pluginStateEvents'
 
 type EffectivePluginMap = OfficialPluginEffectiveMap
 
@@ -61,8 +62,10 @@ export function useEffectivePlugins(): UseEffectivePluginsResult {
     fetch()
     const refresh=()=>fetch()
     window.addEventListener('focus',refresh)
+    // An enable/disable elsewhere in this tab (the Plugins page) reaches every reader at once.
+    const unsubscribe=onPluginStateChanged(refresh)
     const timer=window.setInterval(refresh,30000)
-    return()=>{++sequence.current;window.removeEventListener('focus',refresh);window.clearInterval(timer)}
+    return()=>{++sequence.current;window.removeEventListener('focus',refresh);unsubscribe();window.clearInterval(timer)}
   }, [fetch])
   useEffect(()=>registerInMemoryResidue(()=>{++sequence.current;setPlugins({});setLoadedScope('')}),[])
   const visiblePlugins=loadedScope===scope?plugins:{}

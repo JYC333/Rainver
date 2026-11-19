@@ -1,6 +1,6 @@
 # ADR 0003: Agent Memory Writes Are Bounded and Reviewable, Not Pre-Approved
 
-Date: 2026-05 (original) · revised 2026-09-06
+Date: 2026-05
 
 ## Status
 
@@ -318,28 +318,3 @@ did this Agent learn" is section 4, and it is the only one.
   than by pre-approval; a bad memory is found and reversed, not prevented by
   a queue nobody reads.
 - B10 is rewritten to state this decision.
-
-## Revision history
-
-- **2026-05** — original: gated versus bounded writes, the circuit breaker
-  instead of a write cap, and the observable/undoable counterpart.
-- **2026-09-06** — added the `agent` scope and its two entry types (§4), the
-  trigger-based persona rule (§5, and its gate in §1), the origin-Room
-  audience rule as a read gate with promotion to Project Memory as the only
-  widening path, and the statement that a CLI's own auto-memory is outside
-  Memory and never imported (§6).
-- **2026-09-11** — §5 gained its fourth row: an unattended Run applies a
-  persona write directly only when the person responsible for that unattended
-  work is the Agent's owner, and otherwise leaves a proposal pending for the
-  owner. The responsible person is the root Run's `instructed_by_user_id`, and
-  the section now states what each unattended writer must stamp there —
-  including that firing an Automation without supplying a prompt runs the
-  Automation owner's work, not the firing person's. Before this, any origin
-  but `manual` applied, so a member who could fire or schedule another member's
-  Agent could rewrite what every Room saw with nobody deciding it.
-- **2026-09-06 (later)** — the note audience is measured by the Room read gate
-  rather than the roster: measuring by roster understated a mainline, whose
-  members are enrolled on first open, and delivered a limited Room's note into
-  a mainline nobody but the owner had opened yet. Also: an agent-scope entry is
-  revisable only by the Agent it belongs to, on the direct and the proposal
-  route alike, even when the same person owns both Agents.

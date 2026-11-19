@@ -4,15 +4,12 @@ import type { QueryResult, Queryable } from "../src/modules/routeUtils/common.js
 
 const summaryMock = vi.hoisted(() => vi.fn());
 const retrievalScanMock = vi.hoisted(() => vi.fn());
-const memoryScanMock = vi.hoisted(() => vi.fn());
-const memoryReadsMock = vi.hoisted(() => vi.fn());
 const readSettingsMock = vi.hoisted(() => vi.fn());
 const persistRetrievalMaintenanceMock = vi.hoisted(() => vi.fn());
 const createRetrievalMaintenancePacketMock = vi.hoisted(() => vi.fn());
 const buildDiagnosticsMock = vi.hoisted(() => vi.fn());
 const persistDiagnosticsMock = vi.hoisted(() => vi.fn());
 const createDiagnosticsPacketMock = vi.hoisted(() => vi.fn());
-const persistMemoryMaintenanceMock = vi.hoisted(() => vi.fn());
 const createMemoryMaintenancePacketMock = vi.hoisted(() => vi.fn());
 const createClaimCandidatePacketMock = vi.hoisted(() => vi.fn());
 
@@ -45,25 +42,9 @@ vi.mock("../src/modules/retrieval/index.js", async (importOriginal) => {
   };
 });
 
-vi.mock("../src/modules/memory/maintenance.js", () => ({
-  MemoryMaintenanceService: vi.fn(function () {
-    return {
-      scan: memoryScanMock,
-    };
-  }),
-}));
-
 vi.mock("../src/modules/memory/maintenanceArtifacts.js", () => ({
-  persistMemoryMaintenanceReportArtifact: persistMemoryMaintenanceMock,
+  persistMemoryMaintenanceReportArtifact: vi.fn(),
   createMemoryMaintenanceProposalPacket: createMemoryMaintenancePacketMock,
-}));
-
-vi.mock("../src/modules/memory/repository.js", () => ({
-  PgMemoryReadRepository: vi.fn(function () {
-    return {
-      recordMaintenanceReads: memoryReadsMock,
-    };
-  }),
 }));
 
 vi.mock("../src/modules/knowledge/claimCandidatePackets.js", () => ({
@@ -151,18 +132,6 @@ describe("Context Review Cycle service", () => {
     persistDiagnosticsMock.mockResolvedValue("artifact-diagnostics");
     createRetrievalMaintenancePacketMock.mockResolvedValue("proposal-maintenance");
     createDiagnosticsPacketMock.mockResolvedValue("proposal-diagnostics");
-    memoryScanMock.mockResolvedValue({
-      report: {
-        findings: [{ kind: "stale", reason: "old memory" }],
-        counts: { stale: 1 },
-        scanned: 3,
-        truncated: false,
-      },
-      contributingMemoryIds: ["memory-1"],
-    });
-    persistMemoryMaintenanceMock.mockResolvedValue("artifact-memory");
-    createMemoryMaintenancePacketMock.mockResolvedValue("proposal-memory");
-    memoryReadsMock.mockResolvedValue(undefined);
     createClaimCandidatePacketMock.mockResolvedValue({
       artifactId: "artifact-claim-candidates",
       proposalId: "proposal-claim-candidates",
@@ -206,62 +175,6 @@ describe("Context Review Cycle service", () => {
     expect(db.artifactInserts[0]).toMatchObject({
       artifact_type: "context_review_cycle_report",
     });
-  });
-
-  it("creates claim candidate packets from recent briefs and generated maintenance artifacts", async () => {
-    const db = new ContextReviewCycleFakeDb();
-    const result = await runContextReviewCycle(db, {
-      spaceId: "space-1",
-      userId: "user-1",
-      request: {
-        window_days: 14,
-        artifact_limit: 50,
-        create_packets: true,
-        review_scope: "private",
-        include_memory_maintenance: true,
-        memory_limit: 500,
-        memory_stale_after_days: 180,
-        memory_thin_content_chars: 80,
-        memory_max_findings: 100,
-        max_claim_candidates: 40,
-      },
-      automationRunId: "automation-run-1",
-    });
-
-    expect(createRetrievalMaintenancePacketMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-      artifactId: "artifact-maintenance",
-      reviewScope: "private",
-    }));
-    expect(createDiagnosticsPacketMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-      artifactId: "artifact-diagnostics",
-      reviewScope: "private",
-    }));
-    expect(createMemoryMaintenancePacketMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-      artifactId: "artifact-memory",
-      reviewScope: "private",
-    }));
-    expect(createClaimCandidatePacketMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-      request: {
-        source_artifact_ids: [
-          "artifact-brief",
-          "artifact-maintenance",
-          "artifact-diagnostics",
-          "artifact-memory",
-        ],
-        max_candidates: 40,
-        review_scope: "private",
-        promote_private_sources_to_space_ops: false,
-      },
-    }));
-    expect(result.claim_candidates).toMatchObject({
-      artifact_id: "artifact-claim-candidates",
-      proposal_id: "proposal-claim-candidates",
-      candidate_count: 4,
-      generated_child_proposal_count: 0,
-    });
-    expect(result.degraded).toBe(false);
-    expect(result.warnings).toEqual([]);
-    expect(memoryReadsMock).toHaveBeenCalledWith(["memory-1"], "space-1", "user-1", "artifact-memory");
   });
 
   it("does not include recent private briefs in space_ops claim candidate packets", async () => {

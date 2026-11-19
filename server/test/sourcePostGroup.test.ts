@@ -442,6 +442,43 @@ describe("sourcePostProcessingRecoveryDb", () => {
       expect(byId.get(stuck)).toBeNull();
       expect(byId.get(next)).not.toBeNull();
     });
+
+    it("moves the next bounded pass past a full batch of runs that keep failing", async () => {
+      if (!db.available) return;
+      const insertRun = async (createdAt: string) => {
+        const runId = randomUUID();
+        await db.pool.query(
+          `INSERT INTO source_post_processing_runs (
+             id,space_id,source_channel_id,agent_id,project_id,rule_id,trigger_type,status,input_item_ids_json,created_at
+           ) VALUES ($1,$2,$3,$4,$5,$6,'manual','succeeded',$7::jsonb,$8)`,
+          [runId, SPACE, CHANNEL, AGENT, PROJECT, RULE, JSON.stringify([ITEM_3]), createdAt],
+        );
+        return runId;
+      };
+      // A batch of one: the failing oldest run fills it on every pass that
+      // starts from the oldest, so only resuming after it reaches the newer run.
+      const stuck = await insertRun("2025-01-01T00:00:00.000Z");
+      const next = await insertRun("2025-01-02T00:00:00.000Z");
+      const original = ProjectResearchPipelineService.prototype.reconcilePostProcessingRun;
+      const attempted: string[] = [];
+      const spy = vi.spyOn(ProjectResearchPipelineService.prototype, "reconcilePostProcessingRun")
+        .mockImplementation(async function (this: ProjectResearchPipelineService, spaceId, runId) {
+          attempted.push(runId);
+          if (runId === stuck) throw new Error("stuck run");
+          return original.call(this, spaceId, runId);
+        });
+      try {
+        for (let pass = 0; pass < 3 && !attempted.includes(next); pass++) {
+          await reconcileProjectResearch(db.pool, CONFIG, 1).catch(() => undefined);
+        }
+      } finally {
+        spy.mockRestore();
+      }
+      expect(attempted).toContain(next);
+      expect((await db.pool.query<{ research_reconciled_at: string | null }>(
+        `SELECT research_reconciled_at FROM source_post_processing_runs WHERE id=$1`, [next],
+      )).rows[0]?.research_reconciled_at).not.toBeNull();
+    });
   });
 });
 

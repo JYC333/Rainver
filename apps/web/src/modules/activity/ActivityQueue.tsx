@@ -111,6 +111,8 @@ function briefingChangesPath(record: ActivityInboxRecord): string | null {
     const projectId = stringValue(metadata?.project_id)
     return projectId ? `/projects/${encodeURIComponent(projectId)}/sources/goals/${encodeURIComponent(goalId)}` : `/library/reading/goals/${encodeURIComponent(goalId)}`
   }
+  // A Gmail monitor reminder: no subject or Project on it; the owner's Gmail page re-reads what matched.
+  if (kind === 'gmail_monitor_matches') return '/sources/access'
   if (kind !== 'briefing_changes') return null
   const projectId = stringValue(metadata?.project_id)
   return projectId ? `/projects/${encodeURIComponent(projectId)}/sources?tab=digest` : '/library/reading'

@@ -2,12 +2,16 @@ import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter.js";
 import { objectStatusScalarSql } from "../../db/objectStatusSql.js";
 import { randomUUID } from "node:crypto";
 import { countFromRow, HttpError, type Queryable } from "../routeUtils/common.js";
-import { contentOwnerFilterSql, contentReadSql } from "../access/contentAccessSql.js";
+import { contentAccessLevelSql, contentOwnerFilterSql, contentReadSql } from "../access/contentAccessSql.js";
+import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
+import type { ContentAccessLevel } from "../access/contentAccessTypes.js";
 import { contentOwnerFromDb } from "../access/contentAccessQuery.js";
 import { evidenceProvenanceReadableClause, sourceItemReadableClause } from "../sources/sourceItemAccess.js";
 
 export interface RelationPersonRow {
   object_id: string;
+  /** The viewer's level on the object root, computed with the row. */
+  effective_access_level: ContentAccessLevel;
   space_id: string;
   title: string;
   summary: string | null;
@@ -20,6 +24,8 @@ export interface RelationPersonRow {
 
 export interface RelationOrganizationRow {
   object_id: string;
+  /** The viewer's level on the object root, computed with the row. */
+  effective_access_level: ContentAccessLevel;
   space_id: string;
   title: string;
   summary: string | null;
@@ -46,6 +52,8 @@ export interface RelationIdentityRow {
 
 export interface RelationAffiliationRow {
   id: string;
+  person_access_level: ContentAccessLevel;
+  organization_access_level: ContentAccessLevel;
   space_id: string;
   person_object_id: string;
   organization_object_id: string;
@@ -87,15 +95,24 @@ export interface RelationSourceLinkRow {
   created_at: unknown;
 }
 
-const PERSON_COLUMNS = `
+/** The viewer's effective level on a relation object root (`so`); viewer-facing, oversight included. */
+function relationLevelSql(alias: string, userExpr: string): string {
+  const definition = contentResourceDefinition("space_object");
+  if (!definition) throw new Error("space_object content resource is not registered");
+  return contentAccessLevelSql({ definition, alias, userExpr });
+}
+
+const personColumns = (userExpr: string) => `
   so.id AS object_id, so.space_id, so.title, so.summary, rp.status,
-  rp.pronouns, rp.headline, rp.created_at, rp.updated_at
+  rp.pronouns, rp.headline, rp.created_at, rp.updated_at,
+  ${relationLevelSql("so", userExpr)} AS effective_access_level
 `;
 
-const ORGANIZATION_COLUMNS = `
+const organizationColumns = (userExpr: string) => `
   so.id AS object_id, so.space_id, so.title, so.summary, ro.status,
   ro.org_type, ro.homepage_url, ro.parent_organization_object_id,
-  ro.created_at, ro.updated_at
+  ro.created_at, ro.updated_at,
+  ${relationLevelSql("so", userExpr)} AS effective_access_level
 `;
 
 const IDENTITY_COLUMNS = `
@@ -154,7 +171,7 @@ export class RelationsRepository {
 
   async getPerson(db: Queryable, spaceId: string, objectId: string, userId: string): Promise<RelationPersonRow | null> {
     const result = await db.query<RelationPersonRow>(
-      `SELECT ${PERSON_COLUMNS}
+      `SELECT ${personColumns("$3")}
          FROM space_objects so
          JOIN relation_people rp ON rp.object_id = so.id AND rp.space_id = so.space_id
         WHERE so.id = $1 AND so.space_id = $2 AND rp.status <> 'deleted'
@@ -181,7 +198,7 @@ export class RelationsRepository {
     const offsetParamIndex = params.length + 2;
     const [rows, total] = await Promise.all([
       this.db.query<RelationPersonRow>(
-        `SELECT ${PERSON_COLUMNS}
+        `SELECT ${personColumns("$2")}
            FROM space_objects so
            JOIN relation_people rp ON rp.object_id = so.id AND rp.space_id = so.space_id
           WHERE ${where}
@@ -300,7 +317,7 @@ export class RelationsRepository {
 
   async getOrganization(db: Queryable, spaceId: string, objectId: string, userId: string): Promise<RelationOrganizationRow | null> {
     const result = await db.query<RelationOrganizationRow>(
-      `SELECT ${ORGANIZATION_COLUMNS}
+      `SELECT ${organizationColumns("$3")}
          FROM space_objects so
          JOIN relation_organizations ro ON ro.object_id = so.id AND ro.space_id = so.space_id
         WHERE so.id = $1 AND so.space_id = $2 AND ro.status <> 'deleted'
@@ -327,7 +344,7 @@ export class RelationsRepository {
     const offsetParamIndex = params.length + 2;
     const [rows, total] = await Promise.all([
       this.db.query<RelationOrganizationRow>(
-        `SELECT ${ORGANIZATION_COLUMNS}
+        `SELECT ${organizationColumns("$2")}
            FROM space_objects so
            JOIN relation_organizations ro ON ro.object_id = so.id AND ro.space_id = so.space_id
           WHERE ${where}
@@ -426,7 +443,9 @@ export class RelationsRepository {
               orl.confidence,
               COALESCE(orl.metadata_json->>'source', 'manual') AS source,
               orl.id AS object_relation_id,
-              orl.created_at, orl.updated_at
+              orl.created_at, orl.updated_at,
+              ${relationLevelSql("person_so", "$2")} AS person_access_level,
+              ${relationLevelSql("organization_so", "$2")} AS organization_access_level
          FROM object_relations orl
          JOIN space_objects person_so
            ON person_so.id = orl.from_object_id AND person_so.space_id = orl.space_id
@@ -603,16 +622,17 @@ export class RelationsRepository {
     return result.rows;
   }
 
-  async existsRelationObject(spaceId: string, objectId: string, userId: string): Promise<boolean> {
-    const result = await this.db.query(
-      `SELECT 1
+  /** The viewer's level on a readable person/organization, or null when they cannot read it. */
+  async relationObjectAccessLevel(spaceId: string, objectId: string, userId: string): Promise<ContentAccessLevel | null> {
+    const result = await this.db.query<{ effective_access_level: ContentAccessLevel }>(
+      `SELECT ${relationLevelSql("so", "$3")} AS effective_access_level
          FROM space_objects so
         WHERE so.id = $1 AND so.space_id = $2 AND so.object_type IN ('person', 'organization') AND ${objectStatusScalarSql("so")} <> 'deleted'
           AND ${contentReadSql("space_object", "so", "$3")}
         LIMIT 1`,
       [objectId, spaceId, userId],
     );
-    return result.rows.length > 0;
+    return result.rows[0]?.effective_access_level ?? null;
   }
 
   /**

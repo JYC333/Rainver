@@ -2,11 +2,13 @@ import { JobEffectLeaseLost, performJobEffect } from '../jobs/effectAuthority.js
 import { lockReaderWriteTarget } from './writeAuthority.js';
 import {assertResearchArtifactReadable,assertResearchReportCallReadable} from '../projectResearch/reportAccess.js';
 import {retrievalArtifactWithheld} from '../retrieval/artifactRelease.js';
+import { sourceLineageReadable } from "../retrieval/sourcePolicy.js";
 import {SourceMaterialContentUnavailableReasonSchema,type SourceMaterialContentUnavailableReason,SourceMaterialReadingInfoSchema,type SourceMaterialReadingInfo} from '@rainver/protocol';
 import { readingVersionCurrentSql } from '../sources/readingIdentity.js';
 import { randomUUID } from "node:crypto";
 import { createHash } from "node:crypto";
-import { stat, readFile } from "node:fs/promises";
+import { open } from "node:fs/promises";
+import { readHandleBounded } from "@rainver/folder-read";
 import { resolve } from "node:path";
 import type { ServerConfig } from "../../config.js";
 import { isOperationTransaction } from "../../db/operationTransaction.js";
@@ -199,9 +201,26 @@ async function safeReadTextFile(
   const candidate = resolve(root, storagePath);
   if (!candidate.startsWith(root + "/") && candidate !== root) return null;
   if (candidate.startsWith(sandboxRoot + "/") || candidate === sandboxRoot) return null;
-  const info = await performJobEffect(() => stat(candidate)).catch(error => { if(error instanceof JobEffectLeaseLost)throw error;return null; });
-  if (!info?.isFile()) return null;
-  return performJobEffect(() => readFile(candidate, "utf8")).catch(error => { if(error instanceof JobEffectLeaseLost)throw error;return null; });
+  return performJobEffect(() => readBoundedTextFile(candidate)).catch(error => { if(error instanceof JobEffectLeaseLost)throw error;return null; });
+}
+
+/**
+ * The most a Reader body file may hold. Above the largest structured content
+ * extraction writes (its downloads are capped at 100 MiB of source, and the
+ * stored JSON is text from that); a larger file is treated as unreadable
+ * rather than buffered whole.
+ */
+export const READER_BODY_FILE_MAX_BYTES = 64 * 1024 * 1024;
+
+/** One open handle, its type checked on that handle, and a bounded read of it. */
+async function readBoundedTextFile(path: string): Promise<string | null> {
+  const file = await open(path, "r");
+  try {
+    if (!(await file.stat()).isFile()) return null;
+    return (await readHandleBounded(file, READER_BODY_FILE_MAX_BYTES))?.toString("utf8") ?? null;
+  } finally {
+    await file.close();
+  }
 }
 
 /** A sealed preparation was asked for a body pointer it never captured: the
@@ -707,6 +726,9 @@ export class PgReaderRepository {
     );
     const note = result.rows[0];
     if (!note?.project_id || !(await canAccessProject(this.db, identity.spaceId, note.project_id, identity.userId))) return null;
+    // The Note's Source lineage answers for its body as in Knowledge's Note detail:
+    // text derived from a Source the reader no longer reads is not shown here either.
+    if (!(await sourceLineageReadable(this.db, identity.spaceId, "note", [noteId], { viewerUserId: identity.userId }))) return null;
     return { document_type: "research_notebook", document_id: noteId, space_id: identity.spaceId, project_id: note.project_id, title: `Research notebook · ${note.title}`,
       plain_text: note.plain_text ?? "", normalized_text: note.plain_text ?? "", content_hash: note.content_hash ?? "",
       structure_hash: sha256Hex(canonicalJson(note.content_json)), image_policy: null,
@@ -1005,6 +1027,9 @@ export async function assertDocumentReadable(
       [identity.spaceId, documentId],
     );
     if (!r.rows[0]?.project_id || !(await canAccessProject(db, identity.spaceId, r.rows[0].project_id, identity.userId))) throw new HttpError(404, "Document not found");
+    // The document resolver's Source-lineage gate: annotations (quote, anchor),
+    // comments and positions quote and point into the same Note body.
+    if (!(await sourceLineageReadable(db, identity.spaceId, "note", [documentId], { viewerUserId: identity.userId }))) throw new HttpError(404, "Document not found");
     return {
       projectId: r.rows[0].project_id,
       visibility: persistedVisibility(r.rows[0].visibility),

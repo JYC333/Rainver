@@ -2664,6 +2664,7 @@ describe('Rooms page', () => {
           created_at: '2026-09-24T10:00:05.000Z',
         },
       ],
+      active_run_ids: ['run-round-2'],
       task_group_ids: [], limit: 50, offset: 0,
     })
     vi.mocked(roomsApi.discussions).mockResolvedValue({ items: [roundTwo] })
@@ -2698,6 +2699,7 @@ describe('Rooms page', () => {
     expect(screen.getByText('Separate interjection')).toBeInTheDocument()
     expect(within(first).queryByText('Separate interjection')).not.toBeInTheDocument()
     expect(await within(later).findByText('round 2 started')).toBeInTheDocument()
+    expect(screen.getAllByTestId('turn-run-round-2')).toHaveLength(1)
     expect(within(first).queryByTestId('turn-run-round-2')).not.toBeInTheDocument()
     expect(within(later).getByTestId('turn-run-round-2')).toHaveTextContent('Critical Reviewer')
     expect(runsApi.streamTurn).toHaveBeenCalledWith('run-round-2', expect.anything())

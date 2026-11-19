@@ -1506,6 +1506,10 @@ describe('Room conversation participant snapshots (real PostgreSQL)',()=>{
       await holder.query('UPDATE session_conversation_backends SET participating=false,updated_at=clock_timestamp() WHERE session_id=$1 AND agent_id=$2',[SESSION,optional.agent_id]);
       await holder.query('COMMIT');expect(await pending).toBeNull();
       expect((await runs.getRun(SPACE,run.id))!.status).toBe('queued');
+      // The structured claim says why, so its executor settles the still-queued Run from the locked refusal.
+      expect(await runs.claimRunExecution({space_id:SPACE,run_id:run.id,started_at:new Date().toISOString()})).toEqual({outcome:'authorization_rejected',error_code:'run_execution_authorization_revoked',error_message:'Run execution authorization is no longer active.'});
+      await db.pool.query(`UPDATE runs SET status='running',started_at=now() WHERE id=$1`,[run.id]);
+      expect(await runs.claimRunExecution({space_id:SPACE,run_id:run.id,started_at:new Date().toISOString()})).toEqual({outcome:'not_claimed',reason:'status_changed',status:'running'});
     }finally{await holder.query('ROLLBACK');holder.release();await pending;}
   });
 

@@ -189,18 +189,22 @@ export async function runDueMemoryMaintenanceJobs(
       WHERE status IN ('pending', 'running')
         AND (run_after IS NULL OR run_after <= now())
       ORDER BY updated_at ASC, id ASC
-      LIMIT $1`,
+      LIMIT $1
+      -- A job another transaction is advancing (a manual run) is skipped,
+      -- not waited on at the head of the batch; this transaction keeps the rest locked.
+      FOR UPDATE SKIP LOCKED`,
     [limit],
   );
+  // Only a page that ran counts as advanced; a failed page is recorded on its job.
   let processed = 0;
   for (const job of due.rows) {
-    await runMemoryMaintenanceJobOnce(db, {
+    const result = await runMemoryMaintenanceJobOnce(db, {
       spaceId: job.space_id,
       userId: job.owner_user_id,
       jobId: job.id,
       includeSpaceOps: job.review_scope === "space_ops",
     });
-    processed += 1;
+    if (result?.report) processed += 1;
   }
   return processed;
 }

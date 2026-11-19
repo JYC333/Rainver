@@ -26,8 +26,6 @@ describe("object schema / object kind protocol contracts", () => {
     ]);
     expect(RetrievalObjectTypeSchema.parse("source_item")).toBe("source_item");
     expect(RetrievalObjectTypeSchema.parse("extracted_evidence")).toBe("extracted_evidence");
-    expect(RetrievalObjectTypeSchema.safeParse("object_profile").success).toBe(false);
-    expect(RetrievalObjectTypeSchema.safeParse("schema_pack").success).toBe(false);
   });
 
   it("parses object kind create proposals under a fixed base object type", () => {
@@ -169,7 +167,6 @@ describe("object schema / object kind protocol contracts", () => {
     });
 
     expect(ObjectSchemaImportRequestSchema.parse({ manifest }).manifest.format).toBe("rainver.object_schema.v1");
-    expect(manifest).not.toHaveProperty("schema_pack");
     expect(manifest.object_profiles[0]!.relation_hints[0]).toMatchObject({ direction: "from", confidence_default: 0.55 });
   });
 

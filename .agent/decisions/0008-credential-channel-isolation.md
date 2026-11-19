@@ -1,16 +1,15 @@
 # ADR 0008: Credential Channel Isolation
 
-Date: 2026-06-02 · revised 2026-09-08
+Date: 2026-06-02
 
 ## Status
 
 Accepted. Storage detail lives in
 [`architecture/CREDENTIAL_STORAGE.md`](../architecture/CREDENTIAL_STORAGE.md).
-Revised 2026-09-08: the invariant is unchanged, but the CLI channel it
-describes moved off the server. [ADR 0016](0016-control-plane-execution-hosts.md)
-retired the credential broker, the CLI credential profiles and the server-side
-subprocess allowlist; the enforcement point named below is the host daemon's
-environment filter now.
+The CLI channel it describes runs on the execution host, not the server:
+[ADR 0016](0016-control-plane-execution-hosts.md) retired the credential
+broker, the CLI credential profiles and the server-side subprocess allowlist,
+and the enforcement point named below is the host daemon's environment filter.
 
 ## Context
 
@@ -137,6 +136,15 @@ Run does (bounded by an explicitly set Run time limit, when there is one) plus
 at most one unrenewed TTL. A holder of a live token
 can spend the Space's provider credential against any model and endpoint at
 that upstream until the Run ends or the lease is revoked.
+
+On the built-in strict Host an egress-`none` Run (ADR 0030 §4a) reaches the
+proxy only through its model channel: the daemon relays requests under this
+lease's own path and nothing else, so the token there cannot be spent through
+another route, lease or destination. That lease is `model_only`: the proxy
+admits only the bound CLIs' inference requests on the lease's model, with no
+hosted tool, provider-side fetch or file/batch/stored-resource endpoint
+(ADR 0030 §4a, `providers/proxy/modelOnlyPolicy.ts`). An ordinary lease's
+scope above is unchanged.
 
 What stays true, and is the channel-isolation claim: no API key and no OAuth
 token ever becomes network-reachable. **B67** adds the host-side counterpart:

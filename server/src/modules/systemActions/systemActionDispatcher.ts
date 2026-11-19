@@ -36,6 +36,7 @@ import { enforceRetrievalToolCallPolicy, type RetrievalToolPolicyAction } from "
 import { loadActionRegistry } from "../policy/actionRegistry.js";
 import { enforce } from "../policy/service.js";
 import { assembleRunInputEnvelope } from "../runs/runInputEnvelope.js";
+import { sensitiveTaintEgressContext } from "../plugins/egress.js";
 import { ActionApprovalGrantService } from "../policy/actionApprovalGrantService.js";
 import { registerModuleSystemActionExecutors } from "./executorRegistry.js";
 import { memoryPolicyContext } from "../memory/memoryPolicyContext.js";
@@ -83,14 +84,19 @@ export class SystemActionDispatcher {
     ]);
     const loaded = await loadSystemActionRegistry(config);
     const registry=new Map(loaded);
-    for(const d of loaded.values())if(d.id.startsWith('plugin.')){
-      const enabled=config.databaseUrl&&run.instructed_by_user_id&&await operationPluginEnabled(getDbPool(config.databaseUrl),d.id.split('.')[1]!,run.space_id,run.instructed_by_user_id,config);
-      if(!enabled)registry.delete(d.id);
-    }
     const executors = new Map<SystemActionId, SystemActionExecutor>();
     const grantedActionIds = new Set(
       assembleRunInputEnvelope(run).tool_grants.map((grant) => grant.action_id),
     );
+    // Only this Run's granted plugin tools are offered, each plugin's enablement
+    // read once. Every call and release still rechecks it live.
+    const pluginEnabled=new Map<string,Promise<boolean>>();
+    for(const d of loaded.values())if(d.id.startsWith('plugin.')){
+      const pluginId=d.id.split('.')[1]!;
+      if(grantedActionIds.has(d.id)&&config.databaseUrl&&run.instructed_by_user_id&&!pluginEnabled.has(pluginId))
+        pluginEnabled.set(pluginId,operationPluginEnabled(getDbPool(config.databaseUrl),pluginId,run.space_id,run.instructed_by_user_id,config));
+      if(!grantedActionIds.has(d.id)||!await pluginEnabled.get(pluginId))registry.delete(d.id);
+    }
 
     const genericRegistryDefinitions = [...registry.values()]
       .filter(
@@ -478,6 +484,7 @@ export async function enforceDeclaredResourcePolicy(
       // the target row, not in the arguments.
       ...(await memoryPolicyContext(getDbPool(databaseUrl), definition.id, run.space_id, run.agent_id, input)),
       surface: "managed_run_system_action_gateway",
+      ...(await sensitiveTaintEgressContext(getDbPool(databaseUrl), run.space_id, run.id, definition)),
       ...(hasActionGrant !== undefined ? { has_action_approval_grant: hasActionGrant } : {}),
       source_goal_setup_request: goalSetupRequest,
     },

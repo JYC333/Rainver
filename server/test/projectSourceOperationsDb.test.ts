@@ -30,12 +30,14 @@ afterEach(async()=>{__setAuthIdentityForTests(null);await app?.close();});
 it('shares create receipts and preserves binding uniqueness/restore and Corpus writes',async()=>{
   const body={source_channel_id:channel,project_id:project,backfill_history:true},key=randomUUID(),first=await create(body,key);
   expect(first.statusCode,first.body).toBe(201);const binding=first.json().data;
-  expect(binding).toMatchObject({project_id:project,source_channel_id:channel,status:'active',delivery_scope:'source_subscribers',backfill_result:{created_links:1}});
+  expect(binding).toMatchObject({project_id:project,source_channel_id:channel,status:'active',delivery_scope:'source_subscribers',backfill_result:{binding_id:binding.id,project_id:project,created_links:1,evidence_links:0}});
   const before=await state();expect(before.links).toHaveLength(1);expect(before.corpus).toHaveLength(1);
+  expect(before.links[0]).toMatchObject({space_id:space,project_id:project,project_source_binding_id:binding.id,source_item_id:item});
   expect((await generic('project.source.bind',body,key)).json()).toEqual(first.json());expect(await state()).toEqual(before);
   expect((await create(body)).statusCode).toBe(409);expect((await create({...body,priority:9},key)).json().error.code).toBe('idempotency_key_reused');
   expect((await mutate(binding.id,'unbind')).statusCode).toBe(200);
-  const restored=await create(body);expect(restored.statusCode,restored.body).toBe(201);expect(restored.json().data.id).toBe(binding.id);
+  const restored=await create(body);expect(restored.statusCode,restored.body).toBe(201);expect(restored.json().data).toMatchObject({id:binding.id,status:'active'});
+  expect((await state()).bindings.map(row=>[row.id,row.status])).toEqual([[binding.id,'active']]);
 });
 it('updates, archives and routes retained material through the same atomic writer',async()=>{
   const first=await create({source_channel_id:channel,backfill_history:true});expect(first.statusCode,first.body).toBe(201);const id=first.json().data.id;

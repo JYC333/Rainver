@@ -144,7 +144,10 @@ A persisted effect receipt remains readable even if worker acknowledgement was
 lost. New reads still require current access.
 
 Scheduler sweeps commit this same intent and advance the exact due slot in one
-transaction, deduplicating concurrent sweeps. The saved slot reaches the worker
+transaction, deduplicating concurrent sweeps. Advancing (including after a
+failed fire) is compared under the Automation row lock with the slot the
+caller read; a slot another sweep or a reschedule already wrote is left as
+written (`PgAutomationRepository.advanceSchedule`). The saved slot reaches the worker
 so a delayed digest retains its original day. Scheduler and manual Jobs use the
 same worker/target engine. Internal target execution uses that same domain
 admission and effect owner. These adapters enable no approval mapping or B10

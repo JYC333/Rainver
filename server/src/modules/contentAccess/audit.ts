@@ -2,6 +2,7 @@ import type { Queryable } from "../routeUtils/common.js";
 import { HttpError, withQueryableTransaction } from "../routeUtils/common.js";
 import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 import type { RetrievalObjectType } from "@rainver/protocol";
+import { recordAgentDataRead } from "./agentReads.js";
 
 interface ContentAccessLogEntry {
   id: string;
@@ -50,6 +51,8 @@ export class ContentAccessAuditService {
     reason?: string | null;
     agentId?: string | null;
     runId?: string | null;
+    /** Executor-routed Agent reads also attribute same-owner rows (ADR 0030); B11 rows stay cross-person only. */
+    actionId?: string | null;
   }): Promise<number> {
     const definition = contentResourceDefinition(input.resourceType);
     if (!definition) throw new HttpError(404, "Content type not found");
@@ -85,6 +88,19 @@ export class ContentAccessAuditService {
           input.agentId ?? null, input.runId ?? null, input.accessType,
           input.reason ?? null],
       );
+      if (input.agentId && input.runId && input.actionId) {
+        const own = await db.query<{ id: string }>(
+          `SELECT ${alias}.id FROM ${definition.tableName} ${alias}
+            WHERE ${alias}.space_id = $1 AND ${alias}.id = ANY($2::varchar[]) AND ${active}
+              AND ${alias}.${definition.ownerColumn} = $3::varchar(36)`,
+          [input.spaceId, resourceIds, input.viewerUserId],
+        );
+        if (own.rows.length) await recordAgentDataRead(db, {
+          spaceId: input.spaceId, ownerUserId: input.viewerUserId, runId: input.runId, agentId: input.agentId,
+          actionId: input.actionId, resourceType: input.resourceType, resourceIds: own.rows.map((row) => row.id),
+          dataClass: "non_sensitive", grantId: null,
+        });
+      }
       return result.rowCount ?? 0;
     });
   }

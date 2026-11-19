@@ -1077,4 +1077,43 @@ describe('AssistantChatPage conversation backends', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Reset context' }))
     await waitFor(() => expect(agentsApi.resetContext).toHaveBeenCalledWith('a1', expect.objectContaining({ sessionId: 's-project' })))
   })
+  it('outside a Project, resets the open conversation by its Session so the server picks the Host thread its turns use', async () => {
+    backendsMock.mockResolvedValue({ options: [{
+      runtime_profile_id: 'runtime-host', name: 'Host runtime', runtime_key: 'claude_code', model_name: null, usable: true,
+      host_bound: true, host_id: 'host-1', workspace_mode: 'managed', host_name: 'Workstation', host_online: true, host_owner_is_me: true,
+    }], binding: null })
+    hostsMock.mockResolvedValue({ items: [{ id: 'host-1', owner_user_id: 'u1', name: 'Workstation', status: 'online', managed_workspaces_json: [] }] })
+    messagesMock.mockResolvedValue([])
+    vi.mocked(agentsApi.resetContext).mockResolvedValue({ agent_id: 'a1', session_reset: true, thread_id: 't-own', workspace_mode: 'managed' } as never)
+    getMock.mockResolvedValue(agent)
+    render(
+      <MemoryRouter future={routerFuture}>
+        <ChatPanel agent={agent as never} initialSessionId="s-direct" />
+      </MemoryRouter>,
+    )
+    expect(await screen.findByText(/Managed workspace on Workstation/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Reset context' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Reset context' }))
+    await waitFor(() => expect(agentsApi.resetContext).toHaveBeenCalledWith('a1', expect.objectContaining({ sessionId: 's-direct' })))
+  })
+  it('outside a Project with no conversation open yet, resets the person\'s direct Host thread', async () => {
+    backendsMock.mockResolvedValue({ options: [{
+      runtime_profile_id: 'runtime-host', name: 'Host runtime', runtime_key: 'claude_code', model_name: null, usable: true,
+      host_bound: true, host_id: 'host-1', workspace_mode: 'managed', host_name: 'Workstation', host_online: true, host_owner_is_me: true,
+    }], binding: null })
+    hostsMock.mockResolvedValue({ items: [{ id: 'host-1', owner_user_id: 'u1', name: 'Workstation', status: 'online', managed_workspaces_json: [] }] })
+    vi.mocked(agentsApi.resetContext).mockResolvedValue({ agent_id: 'a1', session_reset: true, thread_id: 't-direct', workspace_mode: 'managed' } as never)
+    getMock.mockResolvedValue(agent)
+    render(
+      <MemoryRouter future={routerFuture}>
+        <ChatPanel agent={agent as never} />
+      </MemoryRouter>,
+    )
+    expect(await screen.findByText(/Managed workspace on Workstation/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Reset context' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Reset context' }))
+    await waitFor(() => expect(agentsApi.resetContext).toHaveBeenCalled())
+    const calls = vi.mocked(agentsApi.resetContext).mock.calls
+    expect(calls[calls.length - 1]?.[1]).not.toHaveProperty('sessionId')
+  })
 })

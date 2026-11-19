@@ -34,6 +34,21 @@ describe('live delegation groups on the visible timeline', () => {
     const messages = [request('start', ['parent'], ['a']), reply('a-result', 'a'), request('next-wave', [], ['b'])]
     expect([...roomLiveRunAnchors(messages, runs)]).toEqual([['next-wave', ['parent', 'b']]])
   })
+  it('places live Runs from older pages and hands each turn off to its reply', () => {
+    const linked = {
+      ...runs,
+      a: { ...runs.a, delegation_id: 'del-a' },
+      b: { ...runs.b, delegation_id: 'del-b' },
+    }
+    const messages = [reply('a-result', 'a'), reply('unrelated-result', 'other')]
+    const active = ['parent', 'a', 'b', 'unanchored']
+    expect([...roomLiveRunAnchors(messages, linked, active)]).toEqual([
+      ['a-result', ['parent', 'b']], [null, ['unanchored']],
+    ])
+    expect([...roomLiveRunAnchors([...messages, reply('b-result', 'b')], linked, active)]).toEqual([
+      ['b-result', ['parent']], [null, ['unanchored']],
+    ])
+  })
   it('keeps separate delegation groups independent', () => {
     const messages = [request('one', ['parent'], ['a']), request('two', ['second'], ['d']), reply('a-result', 'a')]
     expect([...roomLiveRunAnchors(messages, { ...runs, d: { parent_run_id: 'second' } })])

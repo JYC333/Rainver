@@ -273,6 +273,120 @@ test(`All working delegation members stay after returned results (${viewport.wid
 }
 
 
+test('Room streams a new delegation beyond the loaded history', async () => {
+  const shots = '/tmp/rainver-room-live-delegation'
+  mkdirSync(shots, { recursive: true })
+  const manager = { agent_id: 'agent-manager', agent_name: 'Assistant', role: 'manager', status: 'active' }
+  const specialist = { agent_id: 'agent-claude', agent_name: 'Claude', role: 'member', status: 'active' }
+  const recent = { ...message, content: 'The previous review is complete.' }
+  for (const [surface, locale, theme, width] of [
+    ['Room', 'en', 'light', 1280],
+    ['Room', 'zh-CN', 'dark', 390],
+    ['Sidecar', 'en', 'dark', 390],
+    ['Sidecar', 'zh-CN', 'light', 1280],
+  ]) {
+    const page = await browser.newPage({ viewport: { width, height: 900 }, serviceWorkers: 'block' })
+    try {
+      await page.addInitScript(({ locale, theme, snapshot }) => {
+        localStorage.setItem('rainver:locale', locale)
+        localStorage.setItem('rainver:theme', theme)
+        localStorage.setItem('project.sidecar.project-layout.open', 'true')
+        const fetch = window.fetch.bind(window)
+        window.fetch = (url, options) => {
+          if (!String(url).endsWith('/runs/child-live/turn/stream')) return fetch(url, options)
+          const stream = new ReadableStream({
+            start(controller) {
+              const send = frame => controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(frame)}\n\n`))
+              const step = { type: 'tool_call', index: 0, call_id: 'inspect', name: 'Inspect changed files',
+                kind: null, status: 'running', input: '{"path":"src/app.ts"}', output: null }
+              send({ type: 'turn.snapshot', turn: snapshot })
+              send({ type: 'turn.part_appended', run_id: snapshot.run_id, cursor: 2, part: step })
+              window.addEventListener('fixture:finish-delegation', () => {
+                send({ type: 'turn.part_updated', run_id: snapshot.run_id, cursor: 3,
+                  part: { ...step, status: 'succeeded', output: 'Review files loaded.' } })
+                send({ type: 'turn.state_changed', run_id: snapshot.run_id, state: 'done', blocked_on: null })
+              }, { once: true, signal: options.signal })
+              options.signal.addEventListener('abort', () => controller.close(), { once: true })
+            },
+          })
+          return Promise.resolve(new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } }))
+        }
+      }, { locale, theme, snapshot: turn({ run_id: 'child-live', state: 'working', parts: [] }) })
+      await mockApi(page)
+      let child = 'absent'
+      const result = { ...message, id: 'child-result', run_id: 'child-live',
+        sender_agent_id: specialist.agent_id, content: 'The delegated review is complete.' }
+      await page.route('**/api/v1/**', async route => {
+        const path = new URL(route.request().url()).pathname
+        if (path.endsWith('/mainline-room')) return route.fulfill({ json: { room, viewer_can_write: true } })
+        if (path.endsWith('/retrieval')) return route.fulfill({ json: { enabled: false, preferred_domains: [] } })
+        // The viewer's own Gmail allows Agent reads; the composer still has no separate Gmail entry (ADR 0033 §6).
+        if (path.endsWith('/sources/gmail/connections')) return route.fulfill({ json: { configured: true, connections: [{ id: 'conn-1', mailbox_email: 'layout@example.test',
+          status: 'active', granted_scopes: [], last_error_class: null, connected_at: '2026-11-02T08:30:00.000Z', disconnected_at: null,
+          agent_read_enabled: true, agent_read_grants: [], updated_at: '2026-11-02T08:30:00.000Z' }] } })
+        if (path.endsWith(`/rooms/${room.id}`)) return route.fulfill({ json: {
+          room, viewer_can_write: true, other_member_names: [], agent_count: 2,
+          agent_members: [manager, specialist], user_members: [],
+        } })
+        if (path.endsWith('/messages')) return route.fulfill({ json: {
+          ...pageOf(child === 'succeeded' ? [recent, result] : [recent]), conversation: session, queued: [],
+          active_run_ids: child === 'running' ? ['parent-live', 'child-live'] : ['parent-live'],
+        } })
+        if (path.endsWith('/runs/parent-live')) return route.fulfill({ json: {
+          id: 'parent-live', agent_id: manager.agent_id, owner_user_id: 'user-layout', status: 'waiting_for_dependency',
+        } })
+        if (path.endsWith('/runs/child-live')) return route.fulfill({ json: {
+          id: 'child-live', agent_id: specialist.agent_id, owner_user_id: 'user-layout',
+          status: child === 'finalizing' ? 'succeeded' : child,
+          delegation_id: 'delegation-live', parent_run_id: 'parent-live',
+        } })
+        if (path.endsWith('/turn/stream')) return route.fulfill({ contentType: 'text/event-stream', body: '' })
+        if (path.endsWith('/runs/child-live/turn')) return route.fulfill({ json: turn({ run_id: 'child-live', parts: [] }) })
+        return route.fallback()
+      })
+
+      const projectUrl = `${baseUrl}/spaces/${room.space_id}/projects/${project.id}`
+      await page.goto(surface === 'Room' ? `${projectUrl}/rooms?room=${room.id}&conversation=${session.id}` : `${projectUrl}/files`)
+      if (surface === 'Sidecar' && width < 1024) await page.getByRole('button', { name: 'Open Project chat', exact: true }).click()
+      const activity = page.getByRole('status', { name: locale === 'en' ? 'Current activity' : '当前工作状态' })
+      const waiting = activity.getByText(locale === 'en' ? 'Assistant · Waiting for other Agents…' : 'Assistant · 等待其他 Agent 返回…')
+      const working = activity.getByText(locale === 'en' ? 'Claude · Working…' : 'Claude · 处理中…')
+      await waiting.waitFor()
+      assert.equal(await working.count(), 0)
+
+      child = 'running'
+      await working.waitFor()
+      await page.locator('[data-conversation-composer] [contenteditable="true"]').first().waitFor()
+      if (surface === 'Room') {
+        // A Gmail request is written in the ordinary composer; no dedicated query box or hand-off link exists.
+        assert.equal(await page.getByTestId('gmail-private-read-entry').count(), 0)
+      }
+      assert.equal(await activity.getByRole('button', { name: locale === 'en' ? 'Stop' : '停止' }).count(), 2)
+      const liveTurn = page.getByTestId('turn-child-live')
+      const tool = liveTurn.getByRole('button', { name: /Inspect changed files/ })
+      await tool.waitFor()
+      assert.equal(await liveTurn.count(), 1)
+      assert.ok(await liveTurn.getByText('Claude', { exact: true }).isVisible())
+      await tool.click()
+      await liveTurn.getByText(/src\/app\.ts/).waitFor()
+      const bounds = await activity.boundingBox()
+      assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= width + 1)
+      await page.screenshot({ path: `${shots}/${surface}-${locale}-${theme}-${width}.png`, animations: 'disabled' })
+
+      child = 'finalizing'
+      await working.waitFor({ state: 'hidden' })
+      assert.ok(await tool.isVisible())
+      child = 'succeeded'
+      await page.evaluate(() => window.dispatchEvent(new Event('fixture:finish-delegation')))
+      await liveTurn.waitFor({ state: 'detached' })
+      const disclosure = page.getByText(locale === 'en' ? 'Delegated result · expand to read' : '委派结果 · 点击展开', { exact: true })
+      await disclosure.click()
+      await page.getByText(result.content, { exact: true }).waitFor()
+      assert.ok(await waiting.isVisible())
+    } finally { await page.close() }
+  }
+})
+
 test('File tabs show complete names and leave room for italic overhang', async () => {
   const page = await browser.newPage({ viewport: { width: 1000, height: 800 }, serviceWorkers: 'block' })
   try {
@@ -576,15 +690,29 @@ test('Board borders enclose long card lists without moving Project navigation', 
     } }))
     await page.goto(`${baseUrl}/spaces/${room.space_id}/projects/${project.id}/board`)
     const last = page.getByTestId('board-card-board-long-19')
-    await last.waitFor()
-    const lane = await page.getByTestId('board-column-ready').boundingBox()
-    const lastBox = await last.boundingBox()
-    assert.ok(lastBox.y + lastBox.height <= lane.y + lane.height, 'column border encloses the last card')
+    await last.waitFor({ state: 'attached' })
+    // The Board fills the Area height; each lane scrolls its own card list inside its border.
+    const laneLocator = page.getByTestId('board-column-ready')
+    const lane = await laneLocator.boundingBox()
+    assert.ok(lane.y + lane.height <= 800 + 1, 'the lane stays within the viewport')
+    const list = await last.evaluate(card => {
+      let node = card.parentElement
+      while (node && !['auto', 'scroll'].includes(getComputedStyle(node).overflowY)) node = node.parentElement
+      if (!node) return null
+      node.dataset.layoutLaneList = 'true'
+      return { scrolls: node.scrollHeight > node.clientHeight + 1, insideLane: node.closest('[data-board-lane]') !== null }
+    })
+    assert.deepEqual(list, { scrolls: true, insideLane: true }, 'a long card list scrolls inside its lane')
+    const listBox = await page.locator('[data-layout-lane-list]').boundingBox()
+    assert.ok(listBox.y >= lane.y && listBox.y + listBox.height <= lane.y + lane.height + 1, 'column border encloses the card list')
     const sidebar = page.locator('[data-project-navigation]')
     const top = (await sidebar.boundingBox()).y
     await last.scrollIntoViewIfNeeded()
+    const lastBox = await last.boundingBox()
+    assert.ok(lastBox.y >= lane.y && lastBox.y + lastBox.height <= lane.y + lane.height + 1, 'column border encloses the last card')
+    assert.ok(await page.locator('[data-layout-lane-list]').evaluate(element => element.scrollTop > 0))
     assert.equal((await sidebar.boundingBox()).y, top)
-    assert.ok(await page.locator('[data-project-area-content]').evaluate(element => element.scrollTop > 0))
+    assert.deepEqual(await laneLocator.boundingBox(), lane, 'scrolling cards does not move the lane')
   } finally { await page.close() }
 })
 
@@ -663,9 +791,6 @@ test('Reply files open Files & Code and images preview in a closable dialog on d
       await page.locator('.cm-editor').waitFor()
       assert.equal(new URL(page.url()).searchParams.get('folder'), folder.id)
       assert.equal(errors.length, 0, errors.join('\n'))
-      await page.setViewportSize({ width: 390, height: 900 })
-      await page.locator('main[aria-label="Conversation"]').scrollIntoViewIfNeeded()
-      await page.screenshot({ path: `${shots}/${locale}-${theme}-390.png` })
     } finally { await page.close() }
   }
 })
@@ -712,10 +837,55 @@ test('Agent Work presents results before folded history across themes, languages
       await page.getByText('Earlier result', { exact: true }).waitFor()
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true)
       if (width === 390) await page.screenshot({ path: `/tmp/rainver-work-history-${locale}-${theme}.png` })
-      await page.setViewportSize({ width: 390, height: 900 })
-      await page.locator('main[aria-label="Conversation"]').scrollIntoViewIfNeeded()
-      await page.screenshot({ path: `${shots}/${locale}-${theme}-390.png` })
     } finally { await page.close() }
+  }
+})
+
+test('Host Antigravity own installation shows the update action', async () => {
+  const hostId = 'host-antigravity'
+  const runtime = 'acp_antigravity_acp'
+  const entry = { id: 'antigravity-acp', name: 'Google Antigravity', version: '1.5.11' }
+  mkdirSync('/tmp/host-antigravity-update', { recursive: true })
+  for (const [locale, theme, width] of [['en', 'dark', 390], ['zh-CN', 'light', 1280]]) {
+    const context = await browser.newContext({ viewport: { width, height: 1000 }, serviceWorkers: 'block' })
+    const page = await context.newPage()
+    try {
+      await page.addInitScript(({locale, theme}) => {
+        localStorage.setItem('rainver:locale', locale)
+        localStorage.setItem('rainver:theme', theme)
+      }, { locale, theme })
+      await mockApi(page)
+      await page.route('**/api/v1/**', async route => {
+        const path = new URL(route.request().url()).pathname.replace('/api/v1', '')
+        if (path === '/hosts') return route.fulfill({json:{items:[{
+          id: hostId, owner_user_id: 'user-layout', machine_id: 'machine-antigravity', name: 'Laptop', kind: 'remote',
+          status: 'online', platform: 'linux', last_heartbeat_at: now, capabilities_json: {
+            runtimes: [], antigravity_own_updates: true, installations: { [runtime]: [{ id: 'own', version: '1.5.2', logged_in: true, options: null }] },
+          },
+        }]}})
+        if (path === '/hosts/runtime-definitions') return route.fulfill({json:{items:[{
+          runtime_key: runtime, registry_id: entry.id, display_name: entry.name, command: 'agy', remote_eligible: true,
+          latest_managed_version: '1.5.10',
+        }]}})
+        if (path === '/acp-agents/registry') return route.fulfill({json:{items:[entry]}})
+        if (path === '/acp-agents' || path === `/hosts/${hostId}/usage` || path === `/hosts/${hostId}/tool-operations`) {
+          return route.fulfill({json:{items:[]}})
+        }
+        return route.fallback()
+      })
+      await page.goto(`${baseUrl}/spaces/${room.space_id}/command-center`)
+      const host = page.getByTestId(`host-agents-${hostId}`)
+      const row = host.getByTestId(`host-agent-${hostId}-${runtime}`)
+      const label = locale === 'en' ? 'Install managed' : '安装受管版'
+      await row.getByText(`${label} 1.5.10`, {exact:true}).waitFor()
+      await host.getByRole('button', {name:'Add agent…', exact:true}).click()
+      await row.getByText(`${label} 1.5.11`, {exact:true}).waitFor()
+      assert.equal(await row.getByRole('button', {name:'Update own Google Antigravity on Laptop'}).isEnabled(), true)
+      await host.getByRole('list', {name: locale === 'en' ? 'Agent catalog' : 'Agent 目录'}).getByText(entry.name).waitFor()
+      await page.evaluate(() => document.fonts.ready)
+      await host.screenshot({path:`/tmp/host-antigravity-update/${locale}-${theme}-${width}.png`,animations:'disabled'})
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false)
+    } finally { await context.close() }
   }
 })
 
@@ -772,6 +942,63 @@ test('Host Agent catalog keeps installed Agents first and upgrades the selected 
   }
 })
 
+
+// ADR 0033 §6: a card the withdrawn Gmail hand-off left on a Room reply, as the Room message read projects
+// it for its owner: history only — no decision, no link to another conversation, no continuation — while
+// another reader's copy never carries it, and the card fits a phone.
+test('Room shows a withdrawn Gmail check card to its owner only, as history without a decision or link', async () => {
+  const shots = process.env.ROOM_LAYOUT_SHOTS ?? '/tmp/rainver-room-gmail-card-shots'
+  mkdirSync(shots, { recursive: true })
+  const card = { action_id: 'source.gmail.private_read.request', proposal_id: 'card-gmail', proposal_type: 'gmail_private_read', status: 'failed',
+    title: 'Private Gmail check · layout@example.test · Layout project',
+    summary: 'Earlier private Gmail check of “Did the builder send the revised kitchen quote this week?” against layout@example.test in Layout project.',
+    decidable_by_user_id: 'user-layout', scope: { project_id: project.id } }
+  const reply = { ...message, id: 'message-gmail', sender_agent_id: 'agent-layout', content: 'An earlier reply that left a Gmail check card.' }
+  for (const [width, locale, theme, owner] of [[1280, 'en', 'light', true], [390, 'zh-CN', 'dark', true], [1280, 'en', 'dark', false]]) {
+    const page = await browser.newPage({ viewport: { width, height: 900 }, serviceWorkers: 'block' })
+    try {
+      await page.addInitScript(([locale, theme]) => {
+        localStorage.setItem('rainver:locale', locale)
+        localStorage.setItem('rainver:theme', theme)
+      }, [locale, theme])
+      await mockApi(page)
+      const posts = []
+      await page.route('**/api/v1/**', async route => {
+        const request = route.request(), path = new URL(request.url()).pathname.replace('/api/v1', '')
+        if (request.method() !== 'GET') posts.push(path)
+        // The server projects the card only into its owner's read of the Room message.
+        if (path.endsWith('/messages')) return route.fulfill({ json: { ...pageOf([{ ...reply, metadata_json: owner ? { action_previews: [card] } : {} }]), queued: [] } })
+        // Still pending in the database: the card itself never offers it.
+        if (path === '/proposals/card-gmail') return route.fulfill({ json: { id: 'card-gmail', status: 'pending', expired: false } })
+        return route.fallback()
+      })
+      await page.goto(`${baseUrl}/spaces/${room.space_id}/projects/${project.id}/rooms?room=${room.id}&conversation=${session.id}`)
+      await page.getByText('An earlier reply that left a Gmail check card.').waitFor()
+      const previews = page.getByTestId('previews-message-gmail')
+      if (!owner) {
+        assert.equal(await page.getByText(card.title).count(), 0)
+        assert.equal(await previews.count(), 0)
+        continue
+      }
+      await previews.getByText('Did the builder send the revised kitchen quote').waitFor()
+      await previews.getByText(locale === 'en' ? 'This earlier Gmail check card is no longer in use and cannot start anything.' : '这张早先的 Gmail 查信卡片已停用，不会再启动任何操作。', { exact: true }).waitFor()
+      const status = previews.getByText(locale === 'en' ? 'Expired · not applied' : '已过期 · 未生效', { exact: true })
+      await status.waitFor()
+      assert.equal(await previews.getByRole('button').count(), 0)
+      assert.equal(await previews.getByRole('link').count(), 0)
+      await page.evaluate(() => document.fonts.ready)
+      const fit = await previews.evaluate(el => ({ right: el.getBoundingClientRect().right, scroll: el.scrollWidth, client: el.clientWidth, viewport: innerWidth }))
+      assert.ok(fit.right <= fit.viewport + 1 && fit.scroll <= fit.client + 1, JSON.stringify(fit))
+      // The status label stays on one line beside a long title, even on a phone.
+      const statusBox = await status.evaluate(el => ({ height: el.getBoundingClientRect().height, line: parseFloat(getComputedStyle(el).lineHeight) }))
+      assert.ok(statusBox.height <= statusBox.line + 1, JSON.stringify(statusBox))
+      await previews.screenshot({ path: `${shots}/${locale}-${theme}-${width}-card.png` })
+      await page.screenshot({ path: `${shots}/${locale}-${theme}-${width}-room.png` })
+      // Nothing was decided and nothing continued or started (read receipts aside).
+      assert.deepEqual(posts.filter(path => path !== '/me/agent-attention/views'), [])
+    } finally { await page.close() }
+  }
+})
 
 test('Room fills the desktop area and scrolls long conversation lists internally', async () => {
   const shots = process.env.ROOM_LAYOUT_SHOTS ?? '/tmp/rainver-room-height-shots'
@@ -1870,5 +2097,237 @@ test('Viewport top schemes show version evidence and preserve only bounded verdi
       await page.locator('[data-probe-version-status="error"]').waitFor()
       assert.equal(apiCalls, 0)
     } finally { await page.close() }
+  }
+})
+
+test('Task collaboration line stays a small entry with the composer, opens on demand and surfaces pauses and stops, across themes, languages, widths and the Project sidecar', async () => {
+  const shots = '/tmp/rainver-collaboration-line'
+  mkdirSync(shots, { recursive: true })
+  // Past the old 128-handoff cap: counted and reminded, never a limit or a mode.
+  const base = { group_id: 'group-layout', group_status: 'active', task_id: 'task-layout',
+    task_title: 'Implement unlimited task handoffs with threshold reminders and dual review', task_status: 'in_progress',
+    delegations_used: 130, turns_used: 260, next_reminder_at: 200,
+    participant_agent_ids: ['agent-codex', 'agent-antigravity'], active: true, stop_reason: null, can_manage: true }
+  const t = (locale, en, zh) => locale === 'en' ? en : zh
+  const open = async (page, locale, theme, initial) => {
+    await page.addInitScript(({ locale, theme }) => {
+      localStorage.setItem('rainver:locale', locale)
+      localStorage.setItem('rainver:theme', theme)
+    }, { locale, theme })
+    await mockApi(page)
+    const state = { view: initial, calls: [] }
+    await page.route('**/api/v1/queries/room.collaboration.get**', route => route.fulfill({ json: { status: 'succeeded', data: state.view } }))
+    await page.route('**/api/v1/actions/agent_group.status.set', route => {
+      const body = route.request().postDataJSON()
+      state.calls.push(body)
+      // The server's own state after the command; the line must read it again.
+      state.view = { invalid: false, collaboration: { ...state.view.collaboration, group_status: body.status, active: false, stop_reason: body.status === 'paused' ? 'paused' : 'stopped' } }
+      return route.fulfill({ json: { status: 'succeeded', data: { group_id: base.group_id, status: body.status } } })
+    })
+    return state
+  }
+  const fits = async (line, label) => {
+    const fit = await line.evaluate(el => ({ right: el.getBoundingClientRect().right, viewport: document.documentElement.clientWidth,
+      overflow: el.scrollWidth - el.clientWidth, doc: document.documentElement.scrollWidth }))
+    assert.ok(fit.right <= fit.viewport + 1 && fit.overflow <= 1 && fit.doc <= fit.viewport + 1, JSON.stringify({ label, ...fit }))
+  }
+  const roomUrl = `${baseUrl}/spaces/${room.space_id}/projects/${project.id}/rooms?room=${room.id}&conversation=${session.id}`
+  for (const locale of ['en', 'zh-CN']) for (const theme of ['dark', 'light']) for (const width of [390, 1280]) {
+    const page = await browser.newPage({ viewport: { width, height: 900 }, serviceWorkers: 'block' })
+    const label = `${locale}-${theme}-${width}`
+    try {
+      const state = await open(page, locale, theme, { invalid: false, collaboration: base })
+      await page.goto(roomUrl)
+      const line = page.getByTestId('conversation-collaboration-line')
+      await line.waitFor()
+      await page.evaluate(() => document.fonts.ready)
+      await fits(line, label)
+      // Normal collaboration: one small entry, no counts or controls until opened.
+      const toggle = line.getByTestId('conversation-collaboration-toggle')
+      assert.equal(await toggle.getAttribute('aria-expanded'), 'false')
+      assert.equal(await line.getByRole('button').count(), 1)
+      assert.ok(!(await line.textContent()).includes(t(locale, '130 handoffs', '已交接 130 次')))
+      const collapsedHeight = (await line.boundingBox()).height
+      assert.ok(collapsedHeight <= (width === 390 ? 48 : 34), JSON.stringify({ label, collapsedHeight }))
+      await page.screenshot({ path: `${shots}/${label}-collapsed.png`, animations: 'disabled' })
+      await toggle.click()
+      await line.getByTestId('conversation-collaboration-details').waitFor()
+      await fits(line, `${label}-open`)
+      const text = await line.textContent()
+      assert.ok(text.includes(t(locale, '130 handoffs', '已交接 130 次')), text)
+      assert.ok(text.includes(t(locale, 'next reminder at 200, no total limit', '下次在第 200 次交接时提醒，不设总次数上限')), text)
+      // No mode, finite limit, pending request or enabling confirmation exists by default.
+      assert.ok(!/limit 128|上限 128|Remove limit|取消上限|reminder mode|提醒模式/.test(text), text)
+      assert.equal(await line.getByTestId('conversation-collaboration-request').count(), 0)
+      assert.deepEqual((await line.getByRole('button').allTextContents()).slice(1), [t(locale, 'Pause', '暂停'), t(locale, 'Stop', '停止')])
+      const stopButton = line.getByRole('button', { name: t(locale, 'Stop', '停止') })
+      // Narrow layouts reuse the shared coarse/narrow touch rule (reading-touch).
+      if (width === 390) assert.ok((await stopButton.boundingBox()).height >= 44, label)
+      await page.screenshot({ path: `${shots}/${label}-open.png`, animations: 'disabled' })
+      // Stop asks first and changes nothing until confirmed.
+      await stopButton.click()
+      await line.getByText(t(locale, 'Stop this task collaboration?', '停止此任务协作？'), { exact: false }).waitFor()
+      await fits(line, `${label}-stop`)
+      await line.screenshot({ path: `${shots}/${label}-stop-confirm.png`, animations: 'disabled' })
+      assert.equal(state.calls.length, 0)
+      await line.getByRole('button', { name: t(locale, 'Confirm', '确认') }).click()
+      await line.getByText(t(locale, 'stopped', '已停止'), { exact: false }).waitFor()
+      assert.deepEqual(state.calls, [{ group_id: base.group_id, status: 'cancelled' }])
+      // Ended: folded back to the entry, no resident old details or controls.
+      assert.equal(await line.getAttribute('data-phase'), 'ended')
+      assert.equal(await line.getByTestId('conversation-collaboration-details').count(), 0)
+      assert.equal(await line.getByRole('button').count(), 1)
+      await fits(line, `${label}-after`)
+    } finally {
+      await page.close()
+    }
+  }
+  // Paused, stopped, a named admission stop and an unreadable record, at the narrow width.
+  const states = {
+    paused: { invalid: false, collaboration: { ...base, group_status: 'paused', active: false, stop_reason: 'paused' } },
+    stopped: { invalid: false, collaboration: { ...base, group_status: 'cancelled', active: false, stop_reason: 'stopped' } },
+    finished: { invalid: false, collaboration: { ...base, group_status: 'succeeded' } },
+    failures: { invalid: false, collaboration: { ...base, active: false, stop_reason: 'repeated_failures' } },
+    unavailable: { invalid: false, collaboration: { ...base, task_title: null, task_status: null, active: false, stop_reason: 'task_unavailable' } },
+    invalid: { invalid: true, collaboration: null },
+  }
+  for (const locale of ['en', 'zh-CN']) for (const [name, view] of Object.entries(states)) {
+    const page = await browser.newPage({ viewport: { width: 390, height: 900 }, serviceWorkers: 'block' })
+    try {
+      await open(page, locale, 'dark', view)
+      await page.goto(roomUrl)
+      const line = page.getByTestId('conversation-collaboration-line')
+      await line.waitFor()
+      await fits(line, `${locale}-${name}`)
+      const text = await line.textContent()
+      if (name === 'paused') {
+        assert.ok(text.includes(t(locale, 'paused', '已暂停')))
+        assert.ok(await line.getByRole('button', { name: t(locale, 'Resume', '恢复') }).isVisible())
+        assert.ok(await line.getByRole('button', { name: t(locale, 'Stop', '停止') }).isVisible())
+      }
+      if (name === 'stopped' || name === 'finished') {
+        assert.ok(text.includes(name === 'stopped' ? t(locale, 'stopped', '已停止') : t(locale, 'finished', '已结束')), text)
+        assert.ok(!text.includes(t(locale, '130 handoffs', '已交接 130 次')), text)
+        assert.equal(await line.getByRole('button').count(), 1)
+        await line.getByTestId('conversation-collaboration-toggle').click()
+        await line.getByText(t(locale, '130 handoffs', '已交接 130 次')).waitFor()
+        assert.equal(await line.getByRole('button').count(), 1)
+        await fits(line, `${locale}-${name}-open`)
+      }
+      if (name === 'failures') {
+        assert.ok(text.includes(t(locale, 'three handoffs in a row without a result', '连续三次交接无结果')), text)
+        assert.ok(await line.getByRole('button', { name: t(locale, 'Pause', '暂停') }).isVisible())
+        assert.ok(await line.getByRole('button', { name: t(locale, 'Stop', '停止') }).isVisible())
+      }
+      if (name === 'unavailable') assert.ok(text.includes(t(locale, 'Task not available here', '此处无法查看该 Task')), text)
+      if (name === 'invalid') assert.ok(text.includes(t(locale, 'cannot be read', '无法读取')), text)
+      await line.screenshot({ path: `${shots}/state-${locale}-${name}.png`, animations: 'disabled' })
+    } finally {
+      await page.close()
+    }
+  }
+  // The Project chat sidecar shows the same line in its panel.
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, serviceWorkers: 'block' })
+  try {
+    await open(page, 'en', 'light', { invalid: false, collaboration: base })
+    await page.route('**/api/v1/projects/*/overview', route => route.fulfill({ json: { project, brief: null, attention: [] } }))
+    await page.route('**/api/v1/projects/*/mainline-room', route => route.fulfill({ json: { room, viewer_can_write: true } }))
+    await page.goto(`${baseUrl}/spaces/${room.space_id}/projects/${project.id}/files`)
+    // Desktop opens the Project chat panel by default.
+    const sidecar = page.getByTestId('project-chat-sidecar')
+    await sidecar.waitFor()
+    const line = sidecar.getByTestId('conversation-collaboration-line')
+    await line.waitFor()
+    const panel = await sidecar.boundingBox(), box = await line.boundingBox()
+    assert.ok(box.x >= panel.x - 1 && box.x + box.width <= panel.x + panel.width + 1, JSON.stringify({ panel, box }))
+    await fits(line, 'sidecar')
+    assert.equal(await line.getByRole('button').count(), 1)
+    await page.screenshot({ path: `${shots}/sidecar-en-light-1280.png`, animations: 'disabled' })
+    await line.getByTestId('conversation-collaboration-toggle').click()
+    await line.getByRole('button', { name: 'Pause' }).click()
+    // A pause is shown with Resume and Stop in the sidecar without reopening.
+    await line.getByRole('button', { name: 'Resume' }).waitFor()
+    assert.ok(await line.getByRole('button', { name: 'Stop' }).isVisible())
+    await fits(line, 'sidecar-paused')
+    await page.screenshot({ path: `${shots}/sidecar-paused-en-light-1280.png`, animations: 'disabled' })
+  } finally {
+    await page.close()
+  }
+
+  // Switching conversation in the Room page never carries an open stop confirmation along or back.
+  const switching = await browser.newPage({ viewport: { width: 1280, height: 900 }, serviceWorkers: 'block' })
+  try {
+    const other = { ...session, id: 'session-collab-other', title: 'Other collaboration' }
+    await switching.addInitScript(() => { localStorage.setItem('rainver:locale', 'en'); localStorage.setItem('rainver:theme', 'dark') })
+    await mockApi(switching, [{ ...session, title: 'First collaboration' }, other])
+    const calls = []
+    const views = { [session.id]: { ...base, delegations_used: 3, next_reminder_at: 25 }, [other.id]: { ...base, group_id: 'group-other', task_id: 'task-other', delegations_used: 1, next_reminder_at: 25 } }
+    await switching.route('**/api/v1/queries/room.collaboration.get**', route => route.fulfill({ json: { status: 'succeeded',
+      data: { invalid: false, collaboration: views[JSON.parse(new URL(route.request().url()).searchParams.get('input') ?? '{}').session_id] ?? null } } }))
+    await switching.route('**/api/v1/actions/agent_group.status.set', route => { calls.push(route.request().postDataJSON()); return route.fulfill({ status: 500, body: '' }) })
+    await switching.goto(roomUrl)
+    const line = switching.getByTestId('conversation-collaboration-line')
+    await line.getByTestId('conversation-collaboration-toggle').click()
+    await line.getByText('3 handoffs', { exact: false }).waitFor()
+    await line.getByRole('button', { name: 'Stop' }).click()
+    await line.getByRole('button', { name: 'Confirm' }).waitFor()
+    const list = switching.getByRole('navigation', { name: 'Conversations', exact: true })
+    await list.getByRole('button', { name: 'Other collaboration' }).first().click()
+    await switching.waitForFunction(() => document.querySelector('[data-testid="conversation-collaboration-toggle"]')?.getAttribute('aria-expanded') === 'false')
+    assert.equal(await line.getByRole('button', { name: 'Confirm' }).count(), 0)
+    await line.getByTestId('conversation-collaboration-toggle').click()
+    await line.getByText('1 handoffs', { exact: false }).waitFor()
+    assert.ok(await line.getByRole('button', { name: 'Stop' }).isEnabled())
+    await line.screenshot({ path: `${shots}/switched-conversation-en-dark-1280.png`, animations: 'disabled' })
+    await list.getByRole('button', { name: 'First collaboration' }).first().click()
+    await line.getByTestId('conversation-collaboration-toggle').click()
+    await line.getByText('3 handoffs', { exact: false }).waitFor()
+    assert.equal(await line.getByRole('button', { name: 'Confirm' }).count(), 0)
+    assert.equal(calls.length, 0)
+  } finally {
+    await switching.close()
+  }
+})
+
+test('Collaboration threshold reminder stays above the composer and dismisses only that notice', async () => {
+  const page = await browser.newPage({ viewport: { width: 390, height: 900 }, serviceWorkers: 'block' })
+  try {
+    await page.addInitScript(() => localStorage.setItem('rainver:locale', 'en'))
+    await mockApi(page)
+    const notices = []
+    const notice = count => ({ ...message, id: `reminder-${count}`, role: 'system',
+      content: `Reached ${count} handoffs. Latest result: finished.`,
+      metadata_json: { room_display: 'system_notice', execution_event: 'collaboration_reminder',
+        execution_details: { delegations_used: count } } })
+    await page.route('**/api/v1/**/messages*', route => route.fulfill({ json: { ...pageOf([message, ...notices]), queued: [] } }))
+    const url = `${baseUrl}/spaces/${room.space_id}/projects/${project.id}/rooms?room=${room.id}&conversation=${session.id}`
+    const banner = page.getByTestId('conversation-collaboration-reminder')
+    await page.goto(url)
+    await page.getByRole('log').getByText('UnbrokenHeading', { exact: false }).first().waitFor()
+    assert.equal(await banner.count(), 0)
+    notices.push(notice(25))
+    await banner.getByText('Task collaboration reached 25 handoffs. Work continues.').waitFor()
+    const composer = page.locator('[data-conversation-composer]')
+    assert.ok((await banner.boundingBox()).y < (await composer.boundingBox()).y)
+    assert.equal(await page.getByRole('log').getByText('Reached 25 handoffs.', { exact: false }).count(), 0)
+    await banner.getByText('Show task collaboration details', { exact: true }).click()
+    await banner.getByText('Latest result: finished.', { exact: false }).waitFor()
+    await page.screenshot({ path: '/tmp/rainver-threshold-reminder-mobile.png' })
+    await banner.getByRole('button', { name: 'Dismiss task collaboration reminder' }).click()
+    await banner.waitFor({ state: 'detached' })
+    await page.reload()
+    await page.getByRole('log').getByText('UnbrokenHeading', { exact: false }).first().waitFor()
+    assert.equal(await banner.count(), 0)
+    notices.push(notice(50))
+    await banner.getByText('Task collaboration reached 50 handoffs. Work continues.').waitFor()
+
+    await page.setViewportSize({ width: 1280, height: 900 })
+    await page.route('**/api/v1/projects/*/mainline-room', route => route.fulfill({ json: { room, viewer_can_write: true } }))
+    await page.goto(`${baseUrl}/spaces/${room.space_id}/projects/${project.id}/files`)
+    const sidecar = page.getByTestId('project-chat-sidecar')
+    await sidecar.getByTestId('conversation-collaboration-reminder').getByText('Task collaboration reached 50 handoffs. Work continues.').waitFor()
+    await page.screenshot({ path: '/tmp/rainver-threshold-reminder-sidecar.png' })
+  } finally {
+    await page.close()
   }
 })

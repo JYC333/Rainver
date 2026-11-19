@@ -1,7 +1,8 @@
+import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
 import type { ApplyProposal } from "../src/modules/memory/memoryApplyRepository.js";
-import { createDefaultProposalApplierRegistry } from "../src/modules/proposals/applierRegistry.js";
+import { UnknownProposalApplierError, createDefaultProposalApplierRegistry } from "../src/modules/proposals/applierRegistry.js";
 import { validateProposalPayload } from "../src/modules/proposals/payloadSchemas.js";
 
 function proposal(overrides: Partial<ApplyProposal> = {}): ApplyProposal {
@@ -127,10 +128,18 @@ describe("proposal applier registry", () => {
     );
   });
 
-  it("has no applier for a generic policy change, which nothing would enforce", () => {
-    // `policy_change` wrote `policies` rows no decision ever read. It is not a
-    // proposal type: accepting one is refused rather than recorded as applied.
-    expect(createDefaultProposalApplierRegistry().registeredTypes().has("policy_change")).toBe(false);
+  it("refuses a proposal type with no applier before touching the database", async () => {
+    // Accepting an unregistered type is refused, never recorded as applied.
+    const queries: string[] = [];
+    const db = { query: async (sql: string) => { queries.push(sql); return { rows: [], rowCount: 0 }; } };
+    const proposalType = `unknown_${randomUUID().replaceAll("-", "")}`;
+    await expect(createDefaultProposalApplierRegistry().apply({
+      config: loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver", SERVER_INTERNAL_TOKEN: "internal-token" }),
+      db: db as never,
+      proposal: proposal({ proposal_type: proposalType, payload_json: {} }),
+      userId: "user-1",
+    })).rejects.toBeInstanceOf(UnknownProposalApplierError);
+    expect(queries).toEqual([]);
   });
 
 });

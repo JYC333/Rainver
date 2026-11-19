@@ -711,7 +711,7 @@ LISTEN client per database pool, releases it when its last viewer leaves, and
 ends on listener failure. Initial ready/reconnect triggers a fresh read, so no
 historical event replay is needed.
 
-Migration `0019_project_live_invalidation` emits transaction-scoped PostgreSQL
+Migration `0018_workspace_operation_core` emits transaction-scoped PostgreSQL
 notifications for Tasks, workspace generations/batches/integrations, Run status,
 Project work events, Project metadata/membership and the built-in attention sources (proposals,
 Inquiry candidates, decisions, operational activity, Project memory and Folders).

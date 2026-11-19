@@ -44,14 +44,4 @@ describe('there is one note editor', () => {
     expect(matching(source => /from '\.\/NoteEditor'/.test(source)))
       .toEqual(['modules/knowledge/NotesPage.tsx'])
   })
-
-  it('reaches that page from both surfaces', () => {
-    // Global Knowledge and the Project both mount `NotesPage` with a scope.
-    // If a third surface appears it must do the same rather than grow its own.
-    expect(matching(source => /from '[^']*\/NotesPage'|from '\.\/NotesPage'/.test(source)))
-      .toEqual([
-        'modules/knowledge/KnowledgeModule.tsx',
-        'modules/projects/notes/ProjectNotesPage.tsx',
-      ])
-  })
 })

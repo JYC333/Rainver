@@ -33,6 +33,7 @@ import { PgRoomRepository } from "./repository.js";
 import { PgImportedSessionRepository } from "../importedSessions/repository.js";
 import { readImportedSessionForViewer } from "../importedSessions/read.js";
 import { currentImportedHistorySummary } from "../importedSessions/summary.js";
+import { SENSITIVE_READS_VERSION, sensitiveConversationReads } from "../runs/contextTaint.js";
 import type {
   ThreadReferencePick,
   ThreadReferenceProvenance,
@@ -51,6 +52,12 @@ export interface ResolvedThreadReference {
    * reaching anyone beyond the source's audience is refused outright.
    */
   disclosable?: boolean;
+  /**
+   * Set when no confirmation can widen this content's audience because it
+   * carries another person's private data (`sensitive_reads` whose owner is
+   * not the attacher): refused with this code instead of the briefing's.
+   */
+  nonDisclosableCode?: "reference_sensitive_scope_mismatch";
 }
 
 /**
@@ -287,10 +294,30 @@ async function resolveConversationPick(
   // the rows picked out of it: an Agent's reply quoting a transcript and a
   // summary condensing one both carry vendor content without its markers.
   // Decided once, above both grains, so the two cannot answer differently.
+  //
+  // A conversation in which an Agent read a person's private source — their
+  // Gmail (ADR 0033 §6) — holds that data in its replies, which carry no
+  // markers either. Mail is untrusted data, never instruction, so the copy is
+  // fenced as external; and the reads travel with it in its provenance, so the
+  // conversation it lands in keeps the source's constraints
+  // (`sensitiveConversationReads` reads them back for every later Run). A
+  // reference that itself carried such reads counts, so the constraint
+  // survives any number of hops inside the Project.
+  //
+  // Only a complete answer is copied: a conversation whose reads cannot all be
+  // determined (see `sensitiveConversationReads`) is refused, whoever attaches
+  // it and wherever to, so a copy never travels without the constraints its
+  // source needs.
+  const held = await sensitiveConversationReads(db, identity.spaceId, pick.id);
+  if (!held.complete) {
+    throw new RoomMutationError(409, "Whose private data this conversation holds cannot be fully determined, so it is not copied", { code: "reference_sensitive_reads_unresolved" });
+  }
+  const sensitiveReads = held.reads;
   const trust: ThreadReferenceProvenance["trust"] =
-    await conversationHoldsExternalContent(db, identity.spaceId, pick.id)
+    sensitiveReads.length > 0 || await conversationHoldsExternalContent(db, identity.spaceId, pick.id)
       ? "external_untrusted"
       : "domain_approved";
+  const carried = carriedSensitiveReads(sensitiveReads, source.project_id ?? null, identity.userId);
 
   if (pick.kind === "messages") {
     const ids = pick.item_ids ?? [];
@@ -313,8 +340,9 @@ async function resolveConversationPick(
     // opposite of the truth while the content travelled on unchanged.
     return {
       content: fenced(`From “${label}” — ${messages.rows.length} message${messages.rows.length === 1 ? "" : "s"}:`, fitted, trust),
-      provenance: provenance(pick.kind, source.id, source.room_id, label, messages.rows.map((m) => m.id), trust, fitted !== body.trim(), identity),
+      provenance: { ...provenance(pick.kind, source.id, source.room_id, label, messages.rows.map((m) => m.id), trust, fitted !== body.trim(), identity), ...carried.provenance },
       sourceAudienceUserIds,
+      ...carried.disclosure,
     };
   }
 
@@ -346,8 +374,9 @@ async function resolveConversationPick(
   // accordingly. Trust follows provenance however many hops back it is.
   return {
     content: fenced(`From “${label}” — summary of the conversation so far:`, fitted, trust),
-    provenance: provenance(pick.kind, source.id, source.room_id, label, [], trust, fitted !== text.trim(), identity),
+    provenance: { ...provenance(pick.kind, source.id, source.room_id, label, [], trust, fitted !== text.trim(), identity), ...carried.provenance },
     sourceAudienceUserIds,
+    ...carried.disclosure,
   };
 }
 
@@ -418,6 +447,40 @@ async function resolveImportedPick(
     // `external_untrusted`.
     provenance: provenance(pick.kind, read.session.id, null, label, records.map((r) => r.id), "external_untrusted", fitted !== body.trim(), identity),
     sourceAudienceUserIds: await importedSessionAudience(db, identity.spaceId, read.session.id),
+  };
+}
+
+/**
+ * What a copy from a conversation holding sensitive reads carries forward.
+ *
+ * Its provenance names the reads and the source Project, so every later Run
+ * where it lands inherits them (no Memory, nothing materialized, no outward
+ * writes). Its audience follows the existing disclosure rule only for data
+ * that is the attacher's own: they may confirm widening it inside the
+ * Project, as they may share their own mail (ADR 0033 C). Another person's
+ * mail reaches nobody beyond the source's audience, whoever attaches it.
+ */
+function carriedSensitiveReads(
+  reads: readonly { pluginId: string; ownerUserId: string | null }[],
+  sourceProjectId: string | null,
+  attacherUserId: string,
+): {
+  provenance: Pick<ThreadReferenceProvenance, "source_project_id" | "sensitive_reads" | "sensitive_reads_version">;
+  disclosure: Pick<ResolvedThreadReference, "disclosable" | "nonDisclosableCode">;
+} {
+  // An empty list is recorded too: it says the source held none when copied, so a later reader of this copy
+  // need not re-check the source. The version marks the list as complete with real owners; a copy without it
+  // predates that and is checked against its source (`sensitiveConversationReads`).
+  if (reads.length === 0) return { provenance: { sensitive_reads: [], sensitive_reads_version: SENSITIVE_READS_VERSION }, disclosure: {} };
+  // An unknown owner (null) is somebody else's.
+  const foreign = reads.some((read) => read.ownerUserId !== attacherUserId);
+  return {
+    provenance: {
+      ...(sourceProjectId ? { source_project_id: sourceProjectId } : {}),
+      sensitive_reads: reads.map((read) => ({ plugin_id: read.pluginId, owner_user_id: read.ownerUserId })),
+      sensitive_reads_version: SENSITIVE_READS_VERSION,
+    },
+    disclosure: foreign ? { disclosable: false, nonDisclosableCode: "reference_sensitive_scope_mismatch" } : {},
   };
 }
 

@@ -68,7 +68,22 @@ provenance, authority, sensitivity, freshness, and token estimates. The planner
 applies the ADR 0014 precedence model and deterministic window budgeting. A
 lower-authority item cannot displace locked system/delegated instructions, and
 duplicate canonical refs collapse before rendering. Retrieval remains a
-candidate source and does not become an instruction authority.
+candidate source and does not become an instruction authority. Its scope
+(isolated Project, excluded/allowed refs) is handed to search as a
+`candidateScope` and applied before ranking and result truncation: inside
+each arm's candidate query, to graph seeds, at every graph hop before its
+limit (an out-of-scope node is neither returned nor expanded from, like an
+unreadable one) and to the fused set. Allowed/excluded refs travel as the
+scope's `refs` and are SQL predicates ahead of each arm's and hop's LIMIT; a
+decision SQL cannot express (the isolated Project) is applied page by page,
+at most four pages per arm or hop, before that limit. A page ends the scan
+only when it is short in the SQL's own paging unit: objects for the deduped
+arms and hops, chunks for the vector arm's ANN window, so several near chunks
+of one document do not read as the last page. `admits` still decides
+every candidate; the same checks, plus egress authorization, run again on
+delivery. `RetrievalCoordinator` still asks for a bounded larger pool with a
+scope (4×, at most the search ceiling of 50) and trims to the requested count
+after every check.
 
 For native ACP, model selection is known but capacity is not: ACP exposes no
 standard window metadata. The plan records a null total and a runtime-managed

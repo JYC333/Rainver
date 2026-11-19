@@ -288,6 +288,9 @@ export const zhCN = {
   },
   modules: {
     'plugin.operation_probe.records': '记录',
+    'plugin.diary.journal': '日记',
+    'plugin.finance_ledger.ledger': '财务',
+    'plugin.applications.board': '申请', 'plugin.applications.summary': '申请',
     'agent-work': 'Agent 工作台',
     diary: '日记', finance: '财务', today: '今日', capture: '采集',
     activity: '收件箱', library: '资料库', daily_reports: '每日报告', sessions: '会话',

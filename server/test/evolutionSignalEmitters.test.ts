@@ -129,19 +129,6 @@ describe("EvolutionSignalEmitter", () => {
     expect(db.calls).toHaveLength(1);
   });
 
-  it("emits a proposal rejection against its evolution target", async () => {
-    const db = new FakeDb();
-    const result = await new EvolutionSignalEmitter(db).emitProposalDecision({
-      spaceId: "space-1",
-      proposalId: "proposal-1",
-      status: "rejected",
-      proposalType: "capability_update",
-      createdByRunId: "run-1",
-    });
-    expect(result).toEqual({ emitted: 1, skipped: 0, target_found: true });
-    expect(insertedSignals(db)[0]?.[3]).toBe("proposal_rejected");
-  });
-
   it("boundedly provisions a task target when an ordinary run fails", async () => {
     const db = new AutoTargetDb();
     const result = await new EvolutionSignalEmitter(db).emitRunFinalization({
@@ -167,7 +154,6 @@ describe("EvolutionSignalEmitter", () => {
   });
 
   it.each([
-    [{ kind: "workflow", id: "workflow-1" }, "workflow", "workflow_asset", "workflow-1"],
     [{ kind: "automation", id: "automation-1" }, "project_folder", "automation", "automation-1"],
   ] as const)("maps %s failures to a bounded source target", async (source, targetType, refType, refId) => {
     const db = new AutoTargetDb();

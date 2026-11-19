@@ -199,6 +199,7 @@ export function normalizeHostCapabilities(raw: unknown): HostCapabilities {
     runtimes, versions, installations,
     ...(source.native_workspace_integration===true?{native_workspace_integration:true}:{}),
     ...(source.native_workspace_rebase===true?{native_workspace_rebase:true}:{}),
+    ...(source.antigravity_own_updates === true ? { antigravity_own_updates: true } : {}),
     ...(source.managed_cli_updates === true ? { managed_cli_updates: true } : {}),
     ...(HostCapabilitiesSchema.shape.workspace_read_only.safeParse(source.workspace_read_only).success?{workspace_read_only:source.workspace_read_only}:{}),
     ...(workspaces ? { execution_workspaces: workspaces } : {}),
@@ -215,6 +216,7 @@ export function normalizeHostCapabilities(raw: unknown): HostCapabilities {
     ...(source.workspace_profile_operations === 1 ? { workspace_profile_operations: 1 as const } : {}),
     ...(source.legacy_archive_drain === 1 ? { legacy_archive_drain: 1 as const } : {}),
     ...(source.host_command_receipts === 1 ? { host_command_receipts: 1 as const } : {}),
+    ...(source.model_channel === 1 ? { model_channel: 1 as const } : {}),
   });
 }
 

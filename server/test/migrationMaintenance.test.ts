@@ -44,8 +44,9 @@ describe("maintenance-only migrations", () => {
     // 0017 retains former 0020, which drops the (host_id, commit) key the previous release's claim names in
     // ON CONFLICT, and its backfill must see no older server claiming meanwhile.
     // Consolidated 0019 retains the former 0020 standard-Agent cutover marker; old writers must stop.
+    // 0024 rewrites stored task collaborations into a shape the previous release refuses as invalid.
     expect(chain.map((migration) => requiresMaintenance(migration.sql)))
-      .toEqual(chain.map((migration) => ["0004","0009","0010","0017","0019"].includes(migration.version)));
+      .toEqual(chain.map((migration) => ["0004","0009","0010","0017","0019","0024"].includes(migration.version)));
     expect(chain[0]!.sql).not.toContain("cli_credential_profiles");
     expect(chain[0]!.sql).toContain('CREATE TABLE "auth_accounts"');
     expect(chain[0]!.sql).toContain('CREATE TABLE "registration_intents"');

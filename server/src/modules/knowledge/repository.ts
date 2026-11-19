@@ -113,6 +113,7 @@ import {
   loadViewerSpaceRole,
   sourcePolicyAllowsRead,
 } from "../retrieval/index.js";
+import { sourceLineageReadable } from "../retrieval/sourcePolicy.js";
 import { knowledgeRetrievalRegistry } from "./retrievalAdapter.js";
 import { isKnowledgeRetrievalObjectType } from "./retrievalObjectTypes.js";
 import { markdownToPm } from "./noteDocument.js";
@@ -2634,7 +2635,13 @@ export class PgKnowledgeRepository {
           AND ${contentReadSql("space_object", "so", "$3")}`,
       [noteId, identity.spaceId, identity.userId],
     );
-    return result.rows[0] ?? null;
+    const row = result.rows[0];
+    if (!row) return null;
+    // A Note's Source lineage (its own, or inherited from the Notes its text was
+    // derived from) answers for its body like retrieval's Source gate: a viewer
+    // the lineage Sources no longer admit sees neither the Note nor its history.
+    if (!(await sourceLineageReadable(this.db, identity.spaceId, "note", [noteId], { viewerUserId: identity.userId }))) return null;
+    return row;
   }
 
   /**

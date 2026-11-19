@@ -184,7 +184,7 @@ successful URLs are not fetched again. Detailed commands/raw logs/results are
 recorded with the implementation plan. Default suites skip OS tests explicitly.
 No live model/provider, goal/UI flow, instance migration or deployment is claimed.
 
-## Stage-two integration (2026-10-27)
+## Stage-two integration
 
 Goal orchestration reuses the existing Agent Run/Profile, dispatcher, scheduler/jobs
 and Source materializer. It binds exact approved network/credential scope, uses

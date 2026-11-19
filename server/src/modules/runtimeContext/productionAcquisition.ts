@@ -19,7 +19,9 @@ import {
   PgRuntimeContextAcquisitionRepository,
   type RunContextRecord,
 } from "./acquisitionRepository.js";
-import { RetrievalRegistry, RetrievalSearchService } from "../retrieval/index.js";
+import { RetrievalSearchService, type RetrievalCandidateScope } from "../retrieval/index.js";
+// Constructed at module load: the barrel may still be mid-evaluation in an import cycle.
+import { RetrievalRegistry } from "../retrieval/registry.js";
 import { knowledgeRetrievalAdapter } from "../knowledge/retrievalAdapter.js";
 import { memoryRetrievalAdapter } from "../memory/retrievalAdapter.js";
 import { projectRetrievalAdapter } from "../projects/retrievalAdapter.js";
@@ -292,7 +294,12 @@ class PgDirectProvider implements RuntimeContextChannelProvider {
         conflictKey: "run_group_agent_identity",
       }));
     }
-    if (run.system_prompt?.trim()) {
+    // A retained Project's Agent instruction stays out of another Project's
+    // execution, judged on the snapshot's Project exactly as the Delivery
+    // gate re-checks it (`authorizeAgentVersionInstruction`).
+    if (run.system_prompt?.trim() && !await usesIsolatedAgentContext(
+      this.db, request.identity.spaceId, authority.controlSnapshot.agent_id, authority.controlSnapshot.project_id,
+    )) {
       if (!run.agent_version_id) throw new Error("Agent instruction has no authoritative version");
       standing.push(normalizeOwned({
         authority, request,
@@ -787,7 +794,7 @@ function renderSemanticCheckpoint(checkpoint: SemanticCheckpoint): string {
 export class PgRetrievalIntentProvider implements RuntimeContextRetrievalIntentPort {
   constructor(private readonly db: Pool) {}
 
-  async resolve(request: RuntimeContextPlanningRequest, authority: RuntimeContextAuthoritySnapshot) {
+  async resolve(request: RuntimeContextPlanningRequest, authority: RuntimeContextAuthoritySnapshot, channelMode?: "preview" | "execution") {
     const setup = await loadSetup(this.db, request);
     const preferences = record(setup.retrieval_preferences_json);
     const scope = authority.controlSnapshot.readable_scope;
@@ -815,6 +822,7 @@ export class PgRetrievalIntentProvider implements RuntimeContextRetrievalIntentP
       spaceId: request.identity.spaceId,
       userId: request.identity.userId,
       agentId: authority.agentId,
+      runId: channelMode === "execution" ? (await loadInvocationRun(this.db, new PgRuntimeContextAcquisitionRepository(this.db), request))?.id ?? null : null,
       executionControlSnapshotId: authority.executionControlSnapshotId,
       ...(authority.controlSnapshot.project_id && await usesIsolatedAgentContext(this.db, request.identity.spaceId, authority.agentId, authority.controlSnapshot.project_id)
         ? { isolatedProjectId: authority.controlSnapshot.project_id } : {}),
@@ -934,12 +942,29 @@ class RuntimeContextRetrievalEngine {
   }
 
   async search(input: Parameters<RetrievalSearchService["search"]>[0] & { isolatedProjectId?: string }) {
-    const result = await this.searchService.search({ ...input, skipAudit: true });
-    if (!input.isolatedProjectId) return result;
-    const eligible = await Promise.all(result.items.map(async item => {
-      const projects = await retrievalItemProjects(this.db, input.spaceId, item.object_type, item.object_id);
-      return projects.length > 0 && projects.every(project => project === input.isolatedProjectId);
-    }));
+    const isolated = input.isolatedProjectId;
+    const inProject = async (objectType: RetrievalObjectType, objectId: string) => {
+      const projects = await retrievalItemProjects(this.db, input.spaceId, objectType, objectId);
+      return projects.length > 0 && projects.every(project => project === isolated);
+    };
+    // The isolated Project joins the caller's scope inside search (before
+    // ranking, truncation and each graph hop) and is checked again on delivery.
+    const callerScope = input.candidateScope;
+    const candidateScope: RetrievalCandidateScope | undefined = isolated ? {
+      // The caller's refs still narrow SQL; the Project is decided by `admits`.
+      ...(callerScope?.refs ? { refs: callerScope.refs } : {}),
+      async admits(candidates) {
+        const admitted = callerScope ? await callerScope.admits(candidates) : null;
+        const keys = await Promise.all(candidates.map(async (c) => {
+          const key = `${c.objectType}:${c.objectId}`;
+          return (!admitted || admitted.has(key)) && await inProject(c.objectType, c.objectId) ? key : null;
+        }));
+        return new Set(keys.filter((key): key is string => key !== null));
+      },
+    } : callerScope;
+    const result = await this.searchService.search({ ...input, candidateScope, skipAudit: true });
+    if (!isolated) return result;
+    const eligible = await Promise.all(result.items.map(item => inProject(item.object_type, item.object_id)));
     return { ...result, items: result.items.filter((_item, index) => eligible[index]), trace: undefined };
   }
 
@@ -947,6 +972,7 @@ class RuntimeContextRetrievalEngine {
     spaceId: string;
     userId: string;
     agentId: string;
+    runId: string | null;
     items: readonly { object_type: RetrievalObjectType; object_id: string }[];
   }): Promise<void> {
     const grouped = new Map<string, string[]>();
@@ -963,6 +989,9 @@ class RuntimeContextRetrievalEngine {
         resourceIds,
         viewerUserId: input.userId,
         agentId: input.agentId,
+        // Same-owner injected items are attributed to the executing Run (ADR 0030); B11 rows stay cross-person.
+        runId: input.runId,
+        actionId: input.runId ? "runtime_context.retrieval" : null,
         accessType: "context_injection",
         reason: "runtime context retrieval",
       });

@@ -836,11 +836,13 @@ describe('Active management for Agents and people',()=>{
    }
    const input={change_set_id:saved.change,expected_revision:revision,reason:'discard obsolete source',reclaim:true,review:{source_commit:source,user_request_quote:quote,findings:'Reviewed obsolete implementation, explicitly discard'}},key=randomUUID(),operationActor=await runActor(db.pool,currentRun);
    const concurrent=await Promise.all([engine.execute('workspace.change.abandon',input,operationActor,randomUUID(),key),engine.execute('workspace.change.abandon',input,operationActor,randomUUID(),key)]);
-   expect(concurrent.map(r=>r.http_status).sort()).toEqual([200,409]);
-   const busy=concurrent.find(r=>r.http_status===409)!;
-   expect(busy.body).toMatchObject({error:{code:'idempotency_in_progress'}});
+   const statuses=concurrent.map(r=>r.http_status).sort();
+   // The second request either overlaps the transaction or replays its committed receipt.
+   expect([[200,409],[200,200]]).toContainEqual(statuses);
+   const busy=concurrent.find(r=>r.http_status===409);
+   if(busy)expect(busy.body).toMatchObject({error:{code:'idempotency_in_progress'}});
    const receipt=await engine.execute('workspace.change.abandon',input,operationActor,randomUUID(),key);
-   expect(receipt.body).toEqual(concurrent.find(r=>r.http_status===200)!.body);
+   for(const reply of concurrent.filter(r=>r.http_status===200))expect(reply.body).toEqual(receipt.body);
    expect((await db.pool.query('SELECT revision FROM workspace_change_sets WHERE id=$1',[saved.change])).rows[0].revision).toBe(revision+1);
    expect(receipt.http_status,JSON.stringify(receipt.body)).toBe(200);expect(bridge).not.toHaveBeenCalled();
    expect(existsSync(prepared.root)).toBe(mode!=='already_removed');

@@ -1,5 +1,5 @@
 import {TurnWorkspaceSummary} from './TurnWorkspaceSummary'
-import { hasRunAuthorizationPause, useRunActions } from '../runs/useRunActions'
+import { canDecideAuthorization, hasRunAuthorizationPause, useRunActions } from '../runs/useRunActions'
 import { RunQuotaRecoveryControls, runQuotaRecovery } from '../runs/RunQuotaRecoveryControls'
 import { RuntimeFailureNotice } from '../runs/RuntimeFailureNotice'
 import { POLICY_APPROVER_MAX_RISK, POLICY_RISK_LEVEL_VALUES, PolicyRiskLevelEnum } from '@rainver/protocol'
@@ -148,10 +148,10 @@ function ConversationRunControlsContent({
       </div>
     )}
     {run?.status === 'waiting_for_review' && <div className="flex flex-wrap gap-2">
-      {authorizationRequests.filter(request => request.status === 'pending').map(request => <div key={request.id} className="space-y-1"><p className="text-xs">{request.reason}</p>{!scope.actionUserId || scope.actionRole === 'owner' ? <div className="flex gap-2">
-        <Button size="sm" disabled={Boolean(actions.busy)} onClick={() => void actions.perform({ kind: 'approve', requestId: request.id })}>{t('conversation_ui.run.approve')}</Button>
+      {authorizationRequests.filter(request => request.status === 'pending').map(request => { const gmail = request.action_id === 'source.gmail.mail.read' ? gmailConsentCard(request) : null; return <div key={request.id} className="space-y-1"><p className="text-xs">{request.reason}</p>{gmail && <GmailConsentScope card={gmail} />}{canDecideAuthorization(request, scope) ? <div className="flex gap-2">
+        {(gmail === null || gmail.approvable === true) && <Button size="sm" disabled={Boolean(actions.busy)} onClick={() => void actions.perform({ kind: 'approve', requestId: request.id })}>{t('conversation_ui.run.approve')}</Button>}
         <Button size="sm" variant="outline" disabled={Boolean(actions.busy)} onClick={() => void actions.perform({ kind: 'reject', requestId: request.id })}>{t('conversation_ui.run.reject')}</Button>
-      </div> : <p className="text-xs text-muted-foreground">{t('conversation_ui.run.no_authorization_authority')}</p>}</div>)}
+      </div> : <p className="text-xs text-muted-foreground">{t(request.approver === 'data_owner' ? 'conversation_ui.run.no_data_owner_authority' : 'conversation_ui.run.no_authorization_authority')}</p>}</div> })}
       {authorizationLoaded && canResume && !hasRunAuthorizationPause(run, authorizationRequests) && <Button size="sm" disabled={Boolean(actions.busy)} onClick={() => void actions.perform({ kind: 'resume' })}>{t(run.error_json?.supervisor_review === true ? 'conversation_ui.run.retry_execution' : 'conversation_ui.run.resume')}</Button>}
       {scope.actionUserId && authorizationLoaded && !canResume && run.error_json?.supervisor_review !== true && !hasRunAuthorizationPause(run, authorizationRequests) && <p className="text-xs text-muted-foreground">{risk.success
         ? t('conversation_ui.run.approval_required', { risk: t(`conversation_ui.run.risk.${risk.data}`) })
@@ -172,4 +172,31 @@ function ConversationRunControlsContent({
     )}
     {terminal && run && !reviewOnly && workspaceSummary && <TurnWorkspaceSummary runs={[run]} projectId={projectId} />}
   </div>
+}
+
+type GmailConsentCard = { approvable: true; mailbox: string; project: string } | { approvable: false; reason: 'superseded' | 'changed' } | { approvable: null }
+
+/**
+ * A Gmail consent card shows exactly what its approval writes (ADR 0033): the mailbox and Project frozen
+ * when the Agent asked. Whether it can still be approved is the server's projection (`consent_state`), sent
+ * to the owner alone; a card made under the earlier per-turn consent, or whose mailbox, Project or Run no
+ * longer holds, can only be rejected (the server refuses its approval too). Anyone else gets no state and
+ * decides nothing here.
+ */
+function gmailConsentCard(request: AuthorizationRequest): GmailConsentCard {
+  if (request.consent_state === 'superseded') return { approvable: false, reason: 'superseded' }
+  if (request.consent_state === 'ended') return { approvable: false, reason: 'changed' }
+  const target = request.consent_target
+  if (request.consent_state !== 'approvable' || !target) return { approvable: null }
+  if (!target.mailbox_email || !target.project_name) return { approvable: false, reason: 'changed' }
+  return { approvable: true, mailbox: target.mailbox_email, project: target.project_name }
+}
+
+function GmailConsentScope({ card }: { card: GmailConsentCard }) {
+  const { t } = useAppTranslation()
+  if (card.approvable === false) return <p className="text-xs text-muted-foreground">{t(card.reason === 'superseded' ? 'conversation_ui.run.gmail_read_superseded' : 'conversation_ui.run.gmail_read_changed')}</p>
+  return <>
+    {card.approvable && <p className="text-xs font-medium">{t('conversation_ui.run.gmail_read_target', { mailbox: card.mailbox, project: card.project })}</p>}
+    <p className="text-xs text-muted-foreground">{t('conversation_ui.run.gmail_read_scope')}</p>
+  </>
 }

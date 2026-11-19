@@ -172,8 +172,9 @@ Implemented fields:
   (`modules/ontology/entities.ts`) at the only root writer. The registered
   `space_objects` subtypes are `knowledge_item`, `note`, `source`, `person`,
   `organization`, `claim`, `inquiry_thread`, `decision_case`, `experiment`, and
-  `research_workflow`; `test/ontologyRegistry.test.ts` asserts the CHECK stays
-  open and every registered subtype is valid. `project` and `project_folder` are
+  `research_workflow`; `test/baselineSchema.test.ts` asserts on PostgreSQL that
+  the CHECK constrains format only, and `test/ontologyRegistry.test.ts` asserts
+  every registered subtype fits that format. `project` and `project_folder` are
   registered *entities* without being `space_objects` rows (B12G).
 - `title` (a projection of the domain's own label, truncated by the writer)
 - `summary` or `excerpt`

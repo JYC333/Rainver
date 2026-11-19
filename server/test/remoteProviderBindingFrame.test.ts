@@ -70,6 +70,7 @@ function bind(input: {
   model: string | null;
   provider: Record<string, unknown>;
   leaseRegistry: ProviderProxyLeaseRegistry;
+  modelChannel?: { loopback_port: number };
 }) {
   __setProvidersDbPortForTests({ async getProvider() { return input.provider; } } as never);
   return buildRemoteProviderBinding({
@@ -83,6 +84,7 @@ function bind(input: {
     leaseRegistry: input.leaseRegistry,
     db: hostRow,
     enforcer: allowCredentialSpend,
+    ...(input.modelChannel ? { modelChannel: input.modelChannel } : {}),
   });
 }
 
@@ -135,6 +137,61 @@ describe("remote provider binding frame", () => {
     } finally {
       binding.revoke();
     }
+  });
+
+  it("composed for a model channel, points Codex's own config at the namespace loopback and names the real lease URL only as the relay upstream", async () => {
+    setProviderProxyBaseUrlForProcess("http://server:8021", null);
+    const leases = new ProviderProxyLeaseRegistry();
+    const binding = await bind({
+      runtimeKey: "codex_cli",
+      model: "MiniMax-M3",
+      provider: { id: "prov-1", name: "MiniMax", provider_type: "openai", openai_compatible_base_url: "https://api.minimaxi.com/v1", available_models: ["MiniMax-M3"] },
+      leaseRegistry: leases,
+      modelChannel: { loopback_port: 18790 },
+    });
+    try {
+      const channel = binding.model_channel!;
+      expect(channel).toEqual({ version: 1, upstream_base_url: "http://192.168.1.5:8021", route: "openai", lease_id: expect.any(String), loopback_port: 18790 });
+      const toml = (binding.frame.files ?? []).find((file) => file.relative_path === ".codex/config.toml")!;
+      expect(toml.contents).toContain(`base_url = "http://127.0.0.1:18790/openai/${channel.lease_id}"`);
+      // The lease is model-only, held to the bound model, and Codex's hosted web search is off in its own config.
+      expect(leases.resolve(channel.lease_id, leaseTokenOf(toml.contents))).toMatchObject({ request_policy: "model_only", model: "MiniMax-M3" });
+      expect(toml.contents).toContain('web_search = "disabled"');
+      expect(JSON.stringify(binding.frame)).not.toContain("192.168.1.5");
+      expect(JSON.stringify(binding.frame)).not.toContain("api.minimaxi.com");
+      expect(leases.size()).toBe(1);
+    } finally {
+      binding.revoke();
+    }
+    expect(leases.size()).toBe(0);
+  });
+
+  it("keeps an ordinary binding's lease and Codex config as they were, and refuses a model-only channel without a model", async () => {
+    setProviderProxyBaseUrlForProcess("http://server:8021", null);
+    const leases = new ProviderProxyLeaseRegistry();
+    const ordinary = await bind({
+      runtimeKey: "codex_cli",
+      model: "MiniMax-M3",
+      provider: { id: "prov-1", name: "MiniMax", provider_type: "openai", openai_compatible_base_url: "https://api.minimaxi.com/v1", available_models: ["MiniMax-M3"] },
+      leaseRegistry: leases,
+    });
+    try {
+      const toml = (ordinary.frame.files ?? []).find((file) => file.relative_path === ".codex/config.toml")!;
+      expect(toml.contents).not.toContain("web_search");
+      const leaseId = /\/openai\/([^"]+)"/.exec(toml.contents)![1]!;
+      expect(leases.resolve(leaseId, leaseTokenOf(toml.contents))).toMatchObject({ request_policy: null });
+    } finally {
+      ordinary.revoke();
+    }
+    // Claude may bind without a model; an isolated Claude Run may not, and no lease is minted.
+    await expect(bind({
+      runtimeKey: "claude_code",
+      model: null,
+      provider: { id: "prov-1", name: "Synthetic", provider_type: "anthropic", claude_compatible_base_url: "https://api.example.invalid" },
+      leaseRegistry: leases,
+      modelChannel: { loopback_port: 18790 },
+    })).rejects.toMatchObject({ code: "model_channel_model_required" });
+    expect(leases.size()).toBe(0);
   });
 
   it("refuses a bound Codex or OpenCode Run with no model, before minting a lease", async () => {

@@ -61,16 +61,22 @@ export interface SourceReleaseScope {
  spaceId:string; userId:string; refs:readonly Ref[]; allowInactiveViewer?:true; additionalProjects?:readonly string[];
  beforeContent?:()=>Promise<void>; additionalFolders?:readonly string[];
  additionalPeople?:readonly string[]; exclusiveRefs?:readonly Ref[]; writtenProjects?:readonly string[];
+ /** The only Projects this release may reach (a caller already holding them). A closure that
+  * reaches any other refuses (409) at discovery, before this release takes any lock. */
+ confineProjects?:readonly string[];
 }
 /** One phase order across every contributing Space. The one-Space entry delegates
  * here too, so cross-Space release cannot fork Source authority or lock rules. */
 export async function lockSourceRetrievalReleaseBatch(db:Queryable,scopes:readonly SourceReleaseScope[]):Promise<void>{
  const plans=[];
  for(const scope of [...scopes].sort((a,b)=>a.spaceId.localeCompare(b.spaceId))){
-  const {spaceId,userId,refs,allowInactiveViewer,additionalProjects=[],beforeContent,additionalFolders=[],additionalPeople=[],exclusiveRefs=[],writtenProjects=[]}=scope;
+  const {spaceId,userId,refs,allowInactiveViewer,additionalProjects=[],beforeContent,additionalFolders=[],additionalPeople=[],exclusiveRefs=[],writtenProjects=[],confineProjects}=scope;
   const discover=()=>discoverSourceRelease(db,spaceId,refs,additionalFolders,[userId,...additionalPeople]);
   const before=await discover();
   const projects=releaseProjects(before,additionalProjects);
+  // Never wait on a Project outside the caller's held scope: the closure can change between a
+  // caller's own discovery and this one (an unplaced Task moved into another Project).
+  if(confineProjects&&projects.some(id=>!confineProjects.includes(id)))throw new HttpError(409,'Source release reaches another Project');
   if(writtenProjects.some(id=>!projects.includes(id)))throw new HttpError(409,'Source release write scope changed');
   plans.push({spaceId,userId,allowInactiveViewer,beforeContent,additionalPeople,writtenProjects,discover,before,projects,exclusive:new Set(exclusiveRefs.map(r=>r.object_type+':'+r.object_id))});
  }

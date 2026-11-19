@@ -1,5 +1,6 @@
 import type { Queryable } from "../routeUtils/common.js";
 import { contentReadSql } from "../access/contentAccessSql.js";
+import { SOURCE_LINEAGE_PROVENANCE_TYPES } from "../retrieval/sourcePolicy.js";
 import {
   NOTE_PROJECT_ROLE_DEFAULT_TITLES,
   type NoteProjectRole,
@@ -84,6 +85,48 @@ export async function resolveNotebookNote(
   );
   const note = result.rows[0];
   return note ? { present: true, note } : { present: false, role, reason: "no_note_in_role" };
+}
+
+/**
+ * Whether a Note may be a monitoring comparison baseline.
+ *
+ * The baseline is a system read (see `resolveNotebookNote`) whose body goes into the
+ * comparison prompt, and what the model writes from it lands in Project-shared outputs
+ * (scan summaries, evidence cards, Evidence Signals) that answer only to Project read.
+ * Those outputs cannot carry a Note's Source policy, so a Note with any Source lineage
+ * entry (`source_item`, `source_snapshot`, `extracted_evidence` provenance, however its
+ * connections resolve now) is never a baseline: whoever queues the comparison, nothing
+ * derived from a Source reaches a Project reader that Source does not admit. Lineage is
+ * append-only, so a Note admitted here was lineage-free when its body was frozen; a
+ * deleted Note is not admitted either.
+ */
+export async function notebookBaselineAdmissible(db: Queryable, spaceId: string, noteId: string): Promise<boolean> {
+  const result = await db.query<{ derived: boolean }>(
+    `SELECT EXISTS (SELECT 1 FROM provenance_links pl
+                     WHERE pl.space_id=so.space_id AND pl.target_type='note' AND pl.target_id=so.id
+                       AND pl.source_type=ANY($3::varchar[])) AS derived
+       FROM space_objects so WHERE so.space_id=$1 AND so.id=$2 AND so.deleted_at IS NULL`,
+    [spaceId, noteId, [...SOURCE_LINEAGE_PROVENANCE_TYPES]],
+  );
+  return result.rows[0]?.derived === false;
+}
+
+/**
+ * Whether a monitoring comparison Run's frozen baseline (`baseline_note_id` in its
+ * `project_research` or `project_research_standing` input) is admissible now, by
+ * `notebookBaselineAdmissible`. Applied before every provider attempt and again before
+ * a terminal result is merged into Project-shared outputs (the standing batch's evidence
+ * cards, the focused operation's comparison results): a Run queued before the id was
+ * frozen cannot prove which Note it copied and is refused at either point.
+ */
+export async function comparisonBaselineAdmission(
+  db: Queryable, spaceId: string, workflowInput: unknown,
+): Promise<"admitted" | "not_frozen" | "withheld"> {
+  const input = (workflowInput && typeof workflowInput === "object" ? workflowInput : {}) as Record<string, unknown>;
+  const frozen = (input.project_research_standing ?? input.project_research) as Record<string, unknown> | undefined;
+  const baseline = frozen && typeof frozen.baseline_note_id === "string" && frozen.baseline_note_id ? frozen.baseline_note_id : null;
+  if (!baseline) return "not_frozen";
+  return (await notebookBaselineAdmissible(db, spaceId, baseline)) ? "admitted" : "withheld";
 }
 
 /** Every role-carrying note of a project, keyed by role. */

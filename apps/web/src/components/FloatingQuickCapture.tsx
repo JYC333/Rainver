@@ -21,6 +21,10 @@ const URL_RE = /^https?:\/\/\S+$/i
  * The destination is chosen after the box is open, defaults are inferred from
  * where the text came from rather than what it says, and every default is one
  * click from being overridden.
+ *
+ * From `md` up it sits at the lower right of a Project's middle content, beside
+ * the docked Project chat rather than over it: the Project layout publishes
+ * that edge as `--project-content-right-inset` (unset, so zero, elsewhere).
  */
 export function FloatingQuickCapture() {
   const { t } = useAppTranslation()
@@ -156,7 +160,7 @@ export function FloatingQuickCapture() {
         onClick={() => setOpen(true)}
         aria-label={t('capture.quick')}
         title={t('capture.quick')}
-        className="fixed bottom-[calc(5rem+var(--app-safe-bottom))] right-5 md:bottom-5 z-40 flex items-center justify-center size-12 rounded-full shadow-lg transition-transform hover:scale-105 active:scale-95"
+        className="fixed bottom-[calc(5rem+var(--app-safe-bottom))] right-5 md:bottom-5 md:right-[calc(1.25rem+var(--project-content-right-inset,0px))] z-40 flex items-center justify-center size-12 rounded-full shadow-lg transition-transform hover:scale-105 active:scale-95"
         style={{ background: 'var(--primary)', color: 'var(--primary-foreground)', border: '1px solid var(--primary)' }}
       >
         <Plus className="size-5" />
@@ -166,7 +170,7 @@ export function FloatingQuickCapture() {
 
   return (
     <div
-      className="fixed bottom-[calc(5rem+var(--app-safe-bottom))] right-5 md:bottom-5 z-40 w-[min(360px,calc(100vw-2.5rem))] rounded-xl border border-border bg-card shadow-2xl"
+      className="fixed bottom-[calc(5rem+var(--app-safe-bottom))] right-5 md:bottom-5 md:right-[clamp(1.25rem,calc(1.25rem+var(--project-content-right-inset,0px)),calc(100vw-var(--project-content-left-edge,0px)-1.25rem-360px))] z-40 w-[min(360px,calc(100vw-2.5rem))] rounded-xl border border-border bg-card shadow-2xl"
       onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
       onDragLeave={() => setDragOver(false)}
       onDrop={onDrop}

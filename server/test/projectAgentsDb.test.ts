@@ -292,6 +292,43 @@ describe('Project Agents (real PostgreSQL)',()=>{
   expect((await reset(inA.session_id)).statusCode).toBe(404);
  });
 
+ it('resets a non-Project chat\'s own Host session when it has one, else the person\'s direct one, only for its owner',async()=>{
+  await managedHostBackend(shared,{personal:true});
+  const ordinary=await accepted(await chat({}));
+  await finishTurns();
+  const reading=await accepted(await chat({}));
+  await finishTurns();
+  const d=await threadOf(ordinary.run_id);
+  expect(d.container_kind).toBe('direct');
+  // An earlier Run of this chat pinned a sensitive tool (ADR 0032), so its turns now use its own container.
+  await db.pool.query(`UPDATE runs SET permission_snapshot_json=jsonb_build_object('plugin_tool_pins',jsonb_build_object('source.gmail.mail.read',jsonb_build_object('data_class','sensitive'))) WHERE id=$1`,[reading.run_id]);
+  const next=await accepted(await chat({session_id:reading.session_id}));
+  const own=await threadOf(next.run_id);
+  expect(own).toMatchObject({container_kind:'conversation',session_id:reading.session_id});
+  await db.pool.query("UPDATE host_threads SET vendor_session_id='vendor-'||id");
+  const reset=(sessionId?:string)=>call('POST','/api/v1/actions/agent.chat.reset_context',{agent_id:shared,...(sessionId?{session_id:sessionId}:{})});
+  const sessionOf=async(threadId:string)=>(await db.pool.query<{status:string;vendor_session_id:string|null}>('SELECT status,vendor_session_id FROM host_threads WHERE id=$1',[threadId])).rows[0];
+  expect((await reset(reading.session_id)).statusCode).toBe(409);
+  await finishTurns();
+  // The chat that may read: its own thread, the one its turns resume, never the shared direct one.
+  const done=await reset(reading.session_id);
+  expect(done.statusCode,done.body).toBe(200);
+  expect((done.json() as {data:{thread_id:string}}).data.thread_id).toBe(own.id);
+  expect(await sessionOf(own.id)).toEqual({status:'session_reset',vendor_session_id:null});
+  expect(await sessionOf(d.id)).toEqual({status:'active',vendor_session_id:`vendor-${d.id}`});
+  // An ordinary chat, addressed by its Session or not, resets the person's direct one it uses.
+  await db.pool.query("UPDATE host_threads SET status='active',vendor_session_id='vendor-'||id");
+  const plain=await reset(ordinary.session_id);
+  expect(plain.statusCode,plain.body).toBe(200);
+  expect((plain.json() as {data:{thread_id:string}}).data.thread_id).toBe(d.id);
+  expect(await sessionOf(d.id)).toEqual({status:'session_reset',vendor_session_id:null});
+  expect(await sessionOf(own.id)).toEqual({status:'active',vendor_session_id:`vendor-${own.id}`});
+  // Another person cannot address the owner's chat, which is answered like a missing one; nothing changes.
+  as(writer);
+  expect((await reset(reading.session_id)).statusCode).toBe(404);
+  expect(await sessionOf(own.id)).toEqual({status:'active',vendor_session_id:`vendor-${own.id}`});
+ });
+
  it('admits an Agent\'s first turn in a pre-created Project session only with a Project link, and keeps an admitted conversation going',async()=>{
   await managedHostBackend(shared);
   const created=await call('POST','/api/v1/sessions',{project_id:project,title:'Empty first'});

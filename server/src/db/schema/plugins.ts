@@ -1,5 +1,7 @@
-import { pgTable, index, uniqueIndex, unique, check, varchar, text, boolean, integer, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
+import { pgTable, index, uniqueIndex, unique, check, foreignKey, varchar, text, boolean, integer, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
+import { spaces } from "./spaces.js";
+import { projects } from "./projects.js";
 
 export const codePatchSnapshots = pgTable("code_patch_snapshots", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
@@ -157,4 +159,32 @@ export const pluginMigrations = pgTable("plugin_migrations", {
 	index("plugin_migrations_plugin_id_idx").using("btree", table.pluginId.asc().nullsLast()),
 	unique("plugin_migrations_unique").on(table.migrationId, table.pluginId),
 	check("plugin_migrations_status_valid", sql`(status)::text = ANY ((ARRAY['applied'::character varying, 'failed'::character varying])::text[])`),
+]);
+
+/**
+ * One Project-level operation package's binding to one Project
+ * (`plugins/projectBindings.ts`). Enablement stays the Space/user admission
+ * row; this row decides which Projects the package's entries and operations
+ * reach. Unbinding keeps the row (status `unbound`) and every plugin-owned
+ * row; a later bind reuses it. Owner-level Project authority writes it.
+ */
+export const officialPluginProjectBindings = pgTable("official_plugin_project_bindings", {
+	id: varchar({ length: 36 }).primaryKey().notNull(),
+	pluginId: varchar("plugin_id", { length: 128 }).notNull(),
+	spaceId: varchar("space_id", { length: 36 }).notNull(),
+	projectId: varchar("project_id", { length: 36 }).notNull(),
+	status: varchar({ length: 16 }).notNull(),
+	boundByUserId: varchar("bound_by_user_id", { length: 36 }),
+	boundAt: timestamp("bound_at", { withTimezone: true, mode: 'string' }),
+	unboundByUserId: varchar("unbound_by_user_id", { length: 36 }),
+	unboundAt: timestamp("unbound_at", { withTimezone: true, mode: 'string' }),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
+	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
+}, (table): PgTableExtraConfigValue[] => [
+	uniqueIndex("official_plugin_project_bindings_plugin_project").using("btree", table.pluginId.asc().nullsLast(), table.projectId.asc().nullsLast()),
+	index("official_plugin_project_bindings_space_project_idx").using("btree", table.spaceId.asc().nullsLast(), table.projectId.asc().nullsLast()),
+	foreignKey({ columns: [table.spaceId], foreignColumns: [spaces.id], name: "official_plugin_project_bindings_space_id_fkey" }).onDelete("cascade"),
+	foreignKey({ columns: [table.projectId], foreignColumns: [projects.id], name: "official_plugin_project_bindings_project_id_fkey" }).onDelete("cascade"),
+	check("official_plugin_project_bindings_status", sql`(status)::text = ANY (ARRAY['bound'::text, 'unbound'::text])`),
+	check("official_plugin_project_bindings_plugin_id_non_empty", sql`(plugin_id)::text <> ''::text`),
 ]);

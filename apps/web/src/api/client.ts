@@ -24,6 +24,7 @@ import type { Briefing, BriefingAdoptionPreview, BriefingFollowUpPreview, Briefi
 import type { RunFilePreview } from "@rainver/protocol"
 import type { ProjectMonitoringState,ProjectMonitoringConfig,MonitoringVersion } from "@rainver/protocol";
 import { mergeAbortSignals } from '../lib/mergeAbortSignals'
+import { sessionEpoch } from '../lib/sessionResidue'
 import type {
   AuthAccount,
   AuthConfiguration,
@@ -439,7 +440,7 @@ import type {
   WorkRetrievalSwitch,
   WorkRetrievalSwitchRequest,
 } from '@rainver/protocol'
-import { AgentAttentionStreamFrameSchema, ConversationInputMediaOutSchema, AgentAttentionQuerySchema, AgentAttentionReadRequestSchema, AgentAttentionViewRequestSchema } from '@rainver/protocol'
+import { TurnStreamErrorSchema, AgentAttentionStreamFrameSchema, ConversationInputMediaOutSchema, AgentAttentionQuerySchema, AgentAttentionReadRequestSchema, AgentAttentionViewRequestSchema } from '@rainver/protocol'
 import type { AgentAttentionQueryInput, AgentAttentionPage, AgentWorkIdentity, AgentWorkItem, AgentAttentionReadRequest, AgentAttentionReadState, AgentAttentionViewRequest, AgentAttentionViewResult } from '@rainver/protocol'
 
 const BASE = '/api/v1'
@@ -502,7 +503,37 @@ export class ApiRequestError extends Error {
   }
 }
 
+/**
+ * This browser's session ended: the one `auth:required` every control-plane
+ * 401 raises (AuthContext clears residue and tells the other tabs).
+ *
+ * `startedIn` is the session epoch the request began in. A 401 for a request
+ * begun before an already-handled sign-out says nothing new — and after a
+ * re-login it would sign the next person out — so it raises nothing. This is
+ * also what keeps several streams refused together from raising one sign-out
+ * each.
+ */
+function signalAuthRequired(startedIn: number): void {
+  if (sessionEpoch() !== startedIn) return
+  window.dispatchEvent(new CustomEvent('auth:required'))
+}
+
+/**
+ * A control-plane response that did not open (a stream, or a blob read
+ * whole). Its body is cancelled
+ * first so a refused stream does not hold the connection; a 401 is the
+ * session ending (unless the caller already left), anything else that
+ * endpoint's own refusal. Errors inside an opened stream are the stream's
+ * business events and are never treated as a sign-out here.
+ */
+async function streamRefusal(response: Response, message: string, startedIn: number, signal?: AbortSignal): Promise<ApiRequestError> {
+  await response.body?.cancel().catch(() => {})
+  if (response.status === 401 && !signal?.aborted) signalAuthRequired(startedIn)
+  return new ApiRequestError(`${message} (${response.status})`, response.status)
+}
+
 async function request<T = unknown>(method: string, path: string, body?: unknown, options: RequestOptions = {}): Promise<T> {
+  const startedIn = sessionEpoch()
   // FormData (file/voice upload) must keep the browser-set multipart boundary, so
   // we do not force a Content-Type for it and pass the body through unserialized.
   const isForm = typeof FormData !== 'undefined' && body instanceof FormData
@@ -541,9 +572,7 @@ async function request<T = unknown>(method: string, path: string, body?: unknown
     // A missing session signs the browser out. `operation_unavailable` is an
     // authentication step that failed (a mistyped password at
     // re-authentication) while the session stays valid.
-    if (r.status === 401 && code !== 'operation_unavailable') {
-      window.dispatchEvent(new CustomEvent('auth:required'))
-    }
+    if (r.status === 401 && code !== 'operation_unavailable') signalAuthRequired(startedIn)
     throw new ApiRequestError(msg, r.status, code, payload)
   }
 
@@ -553,7 +582,6 @@ async function request<T = unknown>(method: string, path: string, body?: unknown
 
 const get   = <T>(path: string, options?: RequestOptions)                => request<T>('GET',    path, undefined, options)
 const post  = <T>(path: string, body?: unknown, options?: RequestOptions) => request<T>('POST',   path, body, options)
-const put   = <T>(path: string, body?: unknown, options?: RequestOptions) => request<T>('PUT',    path, body, options)
 const del   = <T>(path: string, options?: RequestOptions)                => request<T>('DELETE', path, undefined, options)
 
 /** User-level aggregate: active Space never supplies authority or filters. */
@@ -562,13 +590,10 @@ export const agentAttentionApi = {
   stream: async (onFrame: (frame: import('@rainver/protocol').AgentAttentionStreamFrame) => void, options: RequestOptions = {}) => {
     const headers: Record<string, string> = { Accept: 'text/event-stream' }
     if (_apiKey) headers.Authorization = `Bearer ${_apiKey}`
+    const startedIn = sessionEpoch()
     const response = await fetch(`${BASE}/me/agent-attention/stream`, { headers, signal: options.signal })
     if (options.signal?.aborted) { await response.body?.cancel().catch(() => {}); return }
-    if (response.status === 401) window.dispatchEvent(new Event('auth:required'))
-    if (!response.ok) {
-      await response.body?.cancel().catch(() => {})
-      throw new ApiRequestError(`Attention stream failed (${response.status})`, response.status)
-    }
+    if (!response.ok || !response.body) throw await streamRefusal(response, 'Attention stream failed', startedIn, options.signal)
     for await (const event of readServerSentEvents(response)) {
       if (options.signal?.aborted) return
       onFrame(AgentAttentionStreamFrameSchema.parse(JSON.parse(event.data)))
@@ -601,6 +626,8 @@ export const conversationInputApi = {
     const form = new FormData()
     form.append('file', file, file.name)
     return new Promise((resolve, reject) => {
+      // Captured when the request is sent (below), never when it answers.
+      let startedIn: number
       const xhr = new XMLHttpRequest()
       xhr.open('POST', `${BASE}/conversation-inputs/media`)
       xhr.withCredentials = true
@@ -612,7 +639,7 @@ export const conversationInputApi = {
       xhr.onerror = () => reject(new ApiRequestError('Image upload failed', 0))
       xhr.onabort = () => reject(new ApiRequestError('Image upload cancelled', 0))
       xhr.onload = () => {
-        if (xhr.status === 401) window.dispatchEvent(new CustomEvent('auth:required'))
+        if (xhr.status === 401 && !options.signal?.aborted) signalAuthRequired(startedIn)
         let payload: unknown = null
         try { payload = xhr.responseText ? JSON.parse(xhr.responseText) : null } catch { /* use status text */ }
         if (xhr.status < 200 || xhr.status >= 300) {
@@ -633,6 +660,7 @@ export const conversationInputApi = {
       options.signal?.addEventListener('abort', abort, { once: true })
       xhr.addEventListener('loadend', () => options.signal?.removeEventListener('abort', abort), { once: true })
       if (options.signal?.aborted) { reject(new DOMException('Aborted', 'AbortError')); return }
+      startedIn = sessionEpoch()
       xhr.send(form)
     })
   },
@@ -640,9 +668,9 @@ export const conversationInputApi = {
   imageBlob: async (mediaId: string, options: RequestOptions = {}): Promise<Blob> => {
     const headers: Record<string, string> = { 'X-Rainver-Space-Id': options.spaceId ?? _spaceId }
     if (_apiKey) headers.Authorization = `Bearer ${_apiKey}`
+    const startedIn = sessionEpoch()
     const response = await fetch(`${BASE}/conversation-inputs/media/${encodeURIComponent(mediaId)}`, { headers, signal: options.signal })
-    if (response.status === 401) window.dispatchEvent(new CustomEvent('auth:required'))
-    if (!response.ok) throw new ApiRequestError(`Could not load image (${response.status})`, response.status)
+    if (!response.ok) throw await streamRefusal(response, 'Could not load image', startedIn, options.signal)
     return response.blob()
   },
   searchFiles: (sessionId: string, query: string, signal?: AbortSignal, options: RequestOptions = {}) =>
@@ -659,6 +687,8 @@ export const conversationInputApi = {
 async function* readServerSentEvents(
   response: Response,
 ): AsyncGenerator<{ event: string | undefined; data: string }> {
+  // Callers refuse an unopened response first (`streamRefusal`), so
+  // its 401 reaches the session; this is only the type narrowing.
   if (!response.ok || !response.body) {
     throw new ApiRequestError(`Run turn stream failed (${response.status})`, response.status)
   }
@@ -685,6 +715,19 @@ async function* readServerSentEvents(
     // leave the body undrained and the connection open.
     await reader.cancel().catch(() => {})
   }
+}
+
+/**
+ * A `server.error` frame, as the failure it reports. A 401 inside an opened
+ * turn stream is the server finding the session gone mid-stream (logout,
+ * revocation), so it signs out exactly like a refused response; a 404 is the
+ * Run no longer being readable in full and leaves the session alone.
+ */
+function turnStreamFailure(data: string, startedIn: number): ApiRequestError {
+  const parsed = TurnStreamErrorSchema.safeParse(JSON.parse(data))
+  const failure = parsed.success ? parsed.data : null
+  if (failure?.status === 401) signalAuthRequired(startedIn)
+  return new ApiRequestError(failure?.message ?? 'Run turn stream failed', failure?.status ?? 502, failure?.error)
 }
 
 function turnStreamUrl(runId: string): string {
@@ -768,17 +811,16 @@ export async function streamTurnParts(
     onTurn: (turn: RunTurn) => void
   },
 ): Promise<void> {
+  const startedIn = sessionEpoch()
   const response = await fetch(turnStreamUrl(runId), {
     headers: streamHeaders(options.spaceId),
     signal: options.signal,
   })
+  if (!response.ok || !response.body) throw await streamRefusal(response, 'Run turn stream failed', startedIn, options.signal)
   let turn: RunTurn | null = null
   for await (const { event, data } of readServerSentEvents(response)) {
+    if (event === 'server.error') throw turnStreamFailure(data, startedIn)
     const frame = JSON.parse(data) as TurnStreamFrame | { error?: string; message?: string }
-    if (event === 'server.error') {
-      const failure = frame as { error?: string; message?: string }
-      throw new ApiRequestError(failure.message ?? failure.error ?? 'Run turn stream failed', 502)
-    }
     if (!('type' in frame)) continue
     turn = applyTurnFrame(turn, frame)
     if (!options.signal?.aborted && turn) options.onTurn(turn)
@@ -813,15 +855,14 @@ async function postChatTurn(
   const { space_id: _space, ...accepted } = await commandReceipt('agent.chat.send', { ...body, agent_id: agentId }, options.idempotencyKey ?? crypto.randomUUID(), options)
   if (options.signal?.aborted) throw new DOMException('Request aborted', 'AbortError')
   options.onAccepted?.(accepted)
+  const startedIn = sessionEpoch()
   const response = await fetch(accepted.event_stream_url, { headers: streamHeaders(options.spaceId), signal: options.signal })
+  if (!response.ok || !response.body) throw await streamRefusal(response, 'Run turn stream failed', startedIn, options.signal)
 
   let turn: RunTurn | null = null
   for await (const { event, data } of readServerSentEvents(response)) {
+    if (event === 'server.error') throw turnStreamFailure(data, startedIn)
     const frame = JSON.parse(data) as TurnStreamFrame | { error?: string; message?: string }
-    if (event === 'server.error') {
-      const failure = frame as { error?: string; message?: string }
-      throw new ApiRequestError(failure.message ?? failure.error ?? 'Run turn stream failed', 502)
-    }
     if (!('type' in frame)) continue
     turn = applyTurnFrame(turn, frame)
     if (!turn) continue
@@ -875,6 +916,7 @@ async function postChatTurn(
         session_id: accepted.session_id,
         run_id: accepted.run_id,
         content: assistant.content,
+        ...(assistant.metadata_json?.gmail_result === true ? { gmail_result: true as const } : {}),
         artifact_refs: artifactRefs,
         tool_call_refs: actionPreviews?.flatMap(preview =>
           preview.tool_call_id ? [preview.tool_call_id] : []) ?? [],
@@ -1659,13 +1701,28 @@ async function operationAt<T>(method:'POST'|'PUT'|'PATCH'|'DELETE',path:string,b
   if(!('status' in result)||result.status!=='succeeded')throw new Error('Command did not complete')
   return result.data
 }
+/**
+ * The shared request and operation transport for purpose-specific API consumers
+ * kept in their own files (`api/gmail.ts`): same auth, Space header, error and
+ * idempotency handling as every call here.
+ */
+export const apiTransport = { request, operationAt }
 export const roomsApi = {
-  list: (params: { project_id?: string; limit?: number; offset?: number } = {}) => {
+  /** The viewer's own task collaboration in one conversation (`modules/rooms.md`). */
+  collaboration: async (roomId: string, sessionId: string, options: RequestOptions = {}): Promise<OperationOutput<'room.collaboration.get'>> => {
+    const result = await queryOperation('room.collaboration.get', { room_id: roomId, session_id: sessionId }, options)
+    if (!('status' in result) || result.status !== 'succeeded') throw new Error('Query did not complete')
+    return result.data
+  },
+  /** Pause, resume or stop the collaboration's task group through the existing group status command. */
+  setCollaborationStatus: (groupId: string, status: 'active' | 'paused' | 'cancelled', key: string = crypto.randomUUID(), options: RequestOptions = {}) =>
+    commandReceipt('agent_group.status.set', { group_id: groupId, status }, key, options),
+  list: (params: { project_id?: string; limit?: number; offset?: number } = {}, options: RequestOptions = {}) => {
     const q: Record<string, string> = {}
     if (params.project_id) q.project_id = params.project_id
     if (params.limit !== undefined) q.limit = String(params.limit)
     if (params.offset !== undefined) q.offset = String(params.offset)
-    return get<Page<Room>>('/rooms?' + new URLSearchParams(q))
+    return get<Page<Room>>('/rooms?' + new URLSearchParams(q), options)
   },
   pendingApprovals: (params: { limit?: number; offset?: number } = {}) => {
     const q = new URLSearchParams()
@@ -1756,6 +1813,8 @@ export const roomsApi = {
       items: RoomMessage[]
       /** What people said while the turn was taken, not yet posted. */
       queued?: QueuedRoomMessage[]
+      /** Visible active Room Runs across the conversation, on the first page. */
+      active_run_ids?: string[]
       conversation?: RoomConversation
       task_group_ids: string[]
       limit: number
@@ -1892,9 +1951,10 @@ async function downloadArtifactExport(
   if (params.project_folder_id !== undefined) query.set('project_folder_id', params.project_folder_id)
   const artifactParams = query.toString()
   const url = BASE + sep + (artifactParams ? `?${artifactParams}` : '')
+  const startedIn = sessionEpoch()
   const r = await fetch(url, { method: 'GET', headers, signal: options.signal })
   assertCurrent()
-  if (r.status === 401) window.dispatchEvent(new CustomEvent('auth:required'))
+  if (r.status === 401) signalAuthRequired(startedIn)
   if (r.status === 404) throw new ApiRequestError('Artifact not found or not exportable', 404)
   if (!r.ok) {
     let msg = `${r.status} ${r.statusText}`
@@ -2248,7 +2308,7 @@ export const agentsApi = {
     const { space_id: _space, ...retry } = await commandReceipt('agent.chat.retry', { agent_id: agentId, run_id: runId }, options.idempotencyKey ?? crypto.randomUUID(), options)
     return retry
   },
-  /** `sessionId`: a direct conversation placed in a Project, which has its own Host container. */
+  /** `sessionId`: the open direct conversation; the server resets the Host container its turns use (its own, or the person's direct one). */
   resetContext: async (agentId: string, options: RequestOptions & { sessionId?: string } = {}) => {
     const { sessionId, ...request } = options
     const receipt = await commandReceipt('agent.chat.reset_context', { agent_id: agentId, ...(sessionId ? { session_id: sessionId } : {}) }, request.idempotencyKey ?? crypto.randomUUID(), request)
@@ -2690,9 +2750,9 @@ export const hostsApi = {
     const headers: Record<string, string> = {}
     if (_apiKey) headers['Authorization'] = `Bearer ${_apiKey}`
     headers['X-Rainver-Space-Id'] = _spaceId
+    const startedIn = sessionEpoch()
     const response = await fetch(url, { headers, signal })
-    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`)
-    if (!response.body) throw new Error('No response body')
+    if (!response.ok || !response.body) throw await streamRefusal(response, 'Login stream failed', startedIn, signal)
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
@@ -2771,7 +2831,9 @@ export const ordinaryToolsApi = {
     const headers: Record<string, string> = {}
     if (_apiKey) headers['Authorization'] = `Bearer ${_apiKey}`
     headers['X-Rainver-Space-Id'] = _spaceId
+    const startedIn = sessionEpoch()
     const response = await fetch(url, { headers, signal })
+    if (response.status === 401) throw await streamRefusal(response, 'Account session stream failed', startedIn, signal)
     if (!response.ok) {
       let detail = `${response.status} ${response.statusText}`
       try {
@@ -3680,9 +3742,9 @@ export const projectsApi = {
   streamUpdates: async(id:string,onFrame:(frame:import('@rainver/protocol').ProjectUpdateFrame)=>void,options:RequestOptions={})=>{
     const headers:Record<string,string>={Accept:'text/event-stream','X-Rainver-Space-Id':options.spaceId??_spaceId}
     if(_apiKey)headers.Authorization=`Bearer ${_apiKey}`
+    const startedIn=sessionEpoch()
     const response=await fetch(`${BASE}/projects/${encodeURIComponent(id)}/updates/stream`,{headers,signal:options.signal})
-    if(response.status===401)window.dispatchEvent(new Event('auth:required'))
-    if(!response.ok){await response.body?.cancel().catch(()=>{});throw new ApiRequestError('Project stream unavailable',response.status)}
+    if(!response.ok||!response.body)throw await streamRefusal(response,'Project stream unavailable',startedIn,options.signal)
     for await(const frame of readServerSentEvents(response)){
       if(options.signal?.aborted)return
       onFrame(ProjectUpdateFrameSchema.parse(JSON.parse(frame.data)))
@@ -4088,6 +4150,8 @@ export interface DecisionCase {
   framing: string | null
   status: 'open' | 'decided' | 'archived'
   decided_option_id: string | null
+  /** `summary`: the server withheld framing, Options, Criteria, scores and Commitments. */
+  effective_access_level: 'full' | 'summary'
   source_thread_ids?: string[]
   options?: Array<{ id: string; title: string; description: string | null; status: string }>
   criteria?: Array<{ id: string; name: string; weight: number }>
@@ -4728,9 +4792,9 @@ export const providersApi = {
     const headers: Record<string, string> = {}
     if (_apiKey) headers['Authorization'] = `Bearer ${_apiKey}`
     headers['X-Rainver-Space-Id'] = _spaceId
+    const startedIn = sessionEpoch()
     const response = await fetch(url, { headers, signal })
-    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`)
-    if (!response.body) throw new Error('No response body')
+    if (!response.ok || !response.body) throw await streamRefusal(response, 'Subscription login stream failed', startedIn, signal)
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
@@ -4814,268 +4878,8 @@ export const dailyReportApi = {
     get<DailyReportArtifactItem[]>(`/daily-capture-report/reports?limit=${limit}`),
 }
 
-// ── diary ─────────────────────────────────────────────────────────────────
-export interface DiaryEntry {
-  id: string
-  user_id: string
-  entry_date: string
-  content: string
-  created_at: string
-  updated_at: string
-}
 
-export interface DiaryReflection {
-  id: string
-  entry_id: string
-  reflection_date: string
-  content: string
-  ai_model: string | null
-  created_at: string
-}
 
-// ── finance ledger ────────────────────────────────────────────────────────
-export interface FinanceBook {
-  id: string
-  space_id: string
-  name: string
-  base_currency: string
-  operating_currency: string
-  status: string
-  created_at: string
-  updated_at: string
-}
-
-export interface FinanceAccount {
-  id: string
-  name: string
-  display_name: string | null
-  root_type: string
-  parent_account_id: string | null
-  commodity_constraints: string[] | null
-  opened_at: string
-  closed_at: string | null
-  booking_method: string | null
-  default_commodity: string | null
-  owner_user_id: string | null
-  visibility: 'space' | 'private'
-}
-
-export type FinanceBalanceScope = 'all' | 'shared' | 'personal'
-
-export interface CreateFinanceAccountInput {
-  root_type: string
-  group: string
-  leaf: string
-  display_name?: string
-  opened_at: string
-  currencies?: string[]
-  default_currency?: string
-  owner?: 'shared' | 'personal'
-  visible_to_space?: boolean
-}
-
-export interface FinanceCommodity {
-  id: string
-  symbol: string
-  commodity_type: string
-  name: string | null
-}
-
-export interface FinanceDirective {
-  id: string
-  directive_type: string
-  date: string
-  sequence: number
-  status: string
-}
-
-export interface FinanceTransaction {
-  directive_id: string
-  flag: string
-  payee: string | null
-  narration: string | null
-  tags: string[]
-  links: string[]
-  directive: FinanceDirective
-}
-
-export interface FinancePosting {
-  id: string
-  transaction_directive_id: string
-  account_id: string
-  account_name: string
-  amount_text: string | null
-  commodity_symbol: string | null
-  price_number_text: string | null
-  price_commodity_symbol: string | null
-  price_is_total: boolean
-  flag: string | null
-  sort_order: number
-}
-
-export interface FinanceBalancePosition {
-  accountId: string
-  accountName: string
-  positions: string[]
-}
-
-export interface FinanceValidationError {
-  code: string
-  message: string
-  directiveId?: string
-}
-
-export interface FinanceLedgerError {
-  code: string
-  message: string
-  source?: { filename: string; lineno: number }
-}
-
-export interface FinanceTransactionInput {
-  date: string
-  payee?: string | null
-  narration?: string | null
-  post?: boolean
-  postings: Array<{
-    account_id: string
-    amount?: { number: string; commodity: string } | null
-  }>
-}
-
-export type FinanceImportEntryStatus =
-  | 'imported'
-  | 'pending_mapping'
-  | 'needs_review'
-  | 'duplicate'
-  | 'error'
-  | 'excluded'
-
-export interface FinanceImportSource {
-  id: string
-  source_type: string
-  source_name: string | null
-  content_hash: string | null
-  created_at: string
-}
-
-export interface FinanceImportEntry {
-  id: string
-  entry_key: string
-  identity_kind: 'external_id' | 'content_occurrence'
-  external_id: string | null
-  entry_type: string
-  entry_date: string | null
-  source_lineno: number
-  raw_text: string
-  status: FinanceImportEntryStatus
-  status_reason: string | null
-  directive_id: string | null
-  duplicate_of_entry_id: string | null
-  missing_accounts: string[]
-  missing_commodities: string[]
-  account_mapping: Record<string, string>
-  mapping_version: number
-  errors: FinanceLedgerError[]
-}
-
-export type FinanceImportSummary = Record<FinanceImportEntryStatus, number>
-
-export interface FinanceImportResult {
-  import_source: FinanceImportSource
-  batch_existed: boolean
-  created_directives: number
-  summary: FinanceImportSummary
-  entries: FinanceImportEntry[]
-  errors: FinanceLedgerError[]
-}
-
-export interface FinanceImportBatch extends FinanceImportSource {
-  summary: FinanceImportSummary
-}
-
-export interface FinanceExportResult {
-  export_id: string
-  content: string
-  content_hash: string
-  errors: FinanceLedgerError[]
-}
-
-export const financeApi = {
-  listBooks: () => get<{ books: FinanceBook[] }>('/finance/books'),
-  createBook: (input: { name: string; base_currency: string; operating_currency?: string }) =>
-    post<{ book: FinanceBook }>('/finance/books', input),
-  listAccounts: (bookId: string) =>
-    get<{ accounts: FinanceAccount[] }>(`/finance/books/${encodeURIComponent(bookId)}/accounts`),
-  createAccount: (bookId: string, input: CreateFinanceAccountInput) =>
-    post<{ account: FinanceAccount }>(`/finance/books/${encodeURIComponent(bookId)}/accounts`, input),
-  closeAccount: (bookId: string, accountId: string, date: string) =>
-    post<{ account: FinanceAccount }>(
-      `/finance/books/${encodeURIComponent(bookId)}/accounts/${encodeURIComponent(accountId)}/close`,
-      { date },
-    ),
-  setAccountVisibility: (bookId: string, accountId: string, visibility: 'space' | 'private') =>
-    post<{ account: FinanceAccount }>(
-      `/finance/books/${encodeURIComponent(bookId)}/accounts/${encodeURIComponent(accountId)}/visibility`,
-      { visibility },
-    ),
-  listCommodities: (bookId: string) =>
-    get<{ commodities: FinanceCommodity[] }>(`/finance/books/${encodeURIComponent(bookId)}/commodities`),
-  createCommodity: (bookId: string, input: { symbol: string; commodity_type?: string }) =>
-    post<{ commodity: FinanceCommodity }>(`/finance/books/${encodeURIComponent(bookId)}/commodities`, input),
-  listTransactions: (bookId: string) =>
-    get<{ transactions: FinanceTransaction[] }>(`/finance/books/${encodeURIComponent(bookId)}/transactions`),
-  createTransaction: (bookId: string, input: FinanceTransactionInput) =>
-    post<{ directive: FinanceDirective }>(`/finance/books/${encodeURIComponent(bookId)}/transactions`, input),
-  getAccountLedger: (bookId: string, accountId: string) =>
-    get<{ postings: FinancePosting[] }>(
-      `/finance/books/${encodeURIComponent(bookId)}/accounts/${encodeURIComponent(accountId)}/ledger`,
-    ),
-  getBalances: (bookId: string, scope: FinanceBalanceScope = 'all') =>
-    get<{ balances: FinanceBalancePosition[] }>(
-      `/finance/books/${encodeURIComponent(bookId)}/balances?scope=${scope}`,
-    ),
-  validateBook: (bookId: string) =>
-    post<{ errors: FinanceValidationError[] }>(`/finance/books/${encodeURIComponent(bookId)}/validate`),
-  importBeancount: (bookId: string, input: { text: string }) =>
-    post<FinanceImportResult>(`/finance/books/${encodeURIComponent(bookId)}/import/beancount`, input),
-  listImports: (bookId: string) =>
-    get<{ imports: FinanceImportBatch[] }>(`/finance/books/${encodeURIComponent(bookId)}/imports`),
-  getImport: (bookId: string, importSourceId: string) =>
-    get<FinanceImportResult>(`/finance/books/${encodeURIComponent(bookId)}/imports/${encodeURIComponent(importSourceId)}`),
-  retryImport: (bookId: string, importSourceId: string) =>
-    post<FinanceImportResult>(`/finance/books/${encodeURIComponent(bookId)}/imports/${encodeURIComponent(importSourceId)}/retry`),
-  mapImportEntry: (bookId: string, importSourceId: string, entryId: string, accountMapping: Record<string, string>) =>
-    post<FinanceImportResult>(
-      `/finance/books/${encodeURIComponent(bookId)}/imports/${encodeURIComponent(importSourceId)}/entries/${encodeURIComponent(entryId)}/mapping`,
-      { account_mapping: accountMapping },
-    ),
-  reviewImportEntries: (bookId: string, importSourceId: string, decision: 'import' | 'duplicate', entryIds?: string[]) =>
-    post<FinanceImportResult>(
-      `/finance/books/${encodeURIComponent(bookId)}/imports/${encodeURIComponent(importSourceId)}/review`,
-      entryIds ? { decision, entry_ids: entryIds } : { decision },
-    ),
-  exportBeancount: (bookId: string) =>
-    post<FinanceExportResult>(`/finance/books/${encodeURIComponent(bookId)}/export/beancount`),
-}
-
-export const diaryApi = {
-  saveContextKey: () => `${_authContextGeneration}:${_spaceId}`,
-  today: () => get<{ date: string; entry: DiaryEntry | null }>('/diary/today'),
-  listEntries: (params: { limit?: number; before?: string } = {}) => {
-    const q = new URLSearchParams()
-    if (params.limit) q.set('limit', String(params.limit))
-    if (params.before) q.set('before', params.before)
-    return get<{ entries: DiaryEntry[] }>(`/diary/entries${q.size ? '?' + q : ''}`)
-  },
-  saveEntry: (date: string, content: string) =>
-    put<{ entry: DiaryEntry }>(`/diary/entries/${encodeURIComponent(date)}`, { content }),
-  deleteEntry: (date: string) =>
-    del<{ deleted: boolean }>(`/diary/entries/${encodeURIComponent(date)}`),
-  onThisDay: (date: string) =>
-    get<{ date: string; entries: DiaryEntry[] }>(`/diary/on-this-day?date=${encodeURIComponent(date)}`),
-  reflections: (date: string) =>
-    get<{ entry_date: string; reflections: DiaryReflection[] }>(`/diary/entries/${encodeURIComponent(date)}/reflections`),
-}
 
 
 export const projectMonitoringApi = {

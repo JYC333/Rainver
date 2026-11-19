@@ -577,7 +577,7 @@ describe("AgentGroupRunService", () => {
       })
       .find((value): value is string[] =>
         Array.isArray(value) && value.includes("memory.remember"));
-    expect(declared, JSON.stringify(runInsert!.params)).toEqual(["memory.remember", "memory.revise", "conversation.search", "conversation.read"]);
+    expect(declared, JSON.stringify(runInsert!.params)).toEqual(["memory.remember", "memory.revise", "conversation.search", "conversation.read", "source.gmail.monitor.propose", "source.gmail.digest.propose", "source.gmail.mail.read"]);
     // The Project write surface stays with the Room: its roster is fixed at
     // creation, and advancing a Project is the Room's capability, not a
     // capability of talking to an Agent.

@@ -31,6 +31,8 @@ interface ResourcePolicyRow {
   project_folder_id: string | null;
   project_id: string | null;
   context_taint: unknown;
+  /** The row matches its type's `ownerOnlyPredicate`: only its owner manages it, and it stays private. */
+  owner_only: boolean;
 }
 
 interface GrantRow {
@@ -88,7 +90,7 @@ export class ContentAccessService {
     return policyOut(resourceType, resource, grants);
   }
 
-  /** Whether the person may currently manage this active resource's access (owner, or Space owner/admin). */
+  /** Whether the person may currently manage this active resource's access (owner, or Space owner/admin unless the row is owner-only). */
   async manages(identity: SpaceUserIdentity, resourceType: string, resourceId: string): Promise<boolean> {
     const definition = contentResourceDefinition(resourceType);
     if (!definition) return false;
@@ -147,6 +149,11 @@ export class ContentAccessService {
       const resource = await this.loadResource(client, definition, identity.spaceId, resourceId, true);
       if (!resource || !(await this.canManage(client, identity, resource))) {
         throw new HttpError(404, "Content not found");
+      }
+      // An owner-only row (a Gmail monitor draft, its reminder, the Run that drafted it) is readable by
+      // its owner alone whatever its visibility says; it is never shared, granted or published.
+      if (resource.owner_only && (update.visibility !== "private" || update.grants.length > 0)) {
+        throw new HttpError(409, "This content stays private to its owner", { code: "owner_only_content" });
       }
       const demoting = narrowsVisibility(resource.visibility, update.visibility);
       if (demoting) {
@@ -426,9 +433,12 @@ export class ContentAccessService {
     const taintSelect = definition.contextTaintColumn
       ? `${definition.contextTaintColumn}->'context_taint' AS context_taint`
       : "NULL::jsonb AS context_taint";
+    const ownerOnlySelect = definition.ownerOnlyPredicate
+      ? `COALESCE(${definition.ownerOnlyPredicate(definition.tableName)}, false) AS owner_only`
+      : "false AS owner_only";
     const result = await db.query<ResourcePolicyRow>(
       `SELECT id, space_id, ${definition.ownerColumn} AS owner_user_id,
-              visibility, access_level, ${projectFolderSelect}, ${projectSelect}, ${taintSelect}
+              visibility, access_level, ${projectFolderSelect}, ${projectSelect}, ${taintSelect}, ${ownerOnlySelect}
          FROM ${definition.tableName}
         WHERE space_id = $1 AND id = $2 AND ${activeSql(definition)}
         LIMIT 1${forUpdate ? " FOR UPDATE" : ""}`,
@@ -459,7 +469,8 @@ export class ContentAccessService {
     );
     const role = result.rows[0]?.role;
     if (!role) return false;
-    return resource.owner_user_id === identity.userId || isSpaceOwnerOrAdmin(role);
+    // A Space owner/admin manages others' content, but not an owner-only row: managing it reads it.
+    return resource.owner_user_id === identity.userId || (!resource.owner_only && isSpaceOwnerOrAdmin(role));
   }
 
   private async rejectManagedAssistant(

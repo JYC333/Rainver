@@ -644,11 +644,24 @@ export interface AuthorizationRequest {
   resource_kind: string | null
   resource_id: string | null
   reason: string
-  status: 'pending' | 'approved' | 'rejected'
+  /** `expired`: a core data tool request ended because what it would allow went away (ADR 0033); nobody decided it. */
+  status: 'pending' | 'approved' | 'rejected' | 'expired'
   resulting_action_grant_id: string | null
   decided_by_user_id: string | null
   requested_at: string
   decided_at: string | null
+  /** ADR 0030: a plugin-data request is decided by `approver`, which is the data owner for sensitive data. */
+  request_kind?: 'action_grant' | 'plugin_data'
+  approver?: 'data_owner' | 'space_owner'
+  resulting_plugin_data_grant_id?: string | null
+  /**
+   * ADR 0033, to the data owner only, for a pending core data tool request: whether the server would approve it
+   * now. `superseded`: made under the earlier per-turn consent; `ended`: its mailbox, Project or Run no longer
+   * holds. Either can only be rejected.
+   */
+  consent_state?: 'approvable' | 'ended' | 'superseded'
+  /** ADR 0033: the mailbox and Project the request was frozen to; present only while `consent_state` is `approvable`. */
+  consent_target?: { project_id: string; project_name: string | null; mailbox_email: string | null; purpose: string } | null
 }
 
 export type MessageRole      = 'user' | 'assistant' | 'system' | 'tool'
@@ -1752,6 +1765,7 @@ export interface ChatTurnOut {
   action_previews?: ChatActionPreview[]
   assistant_message?: {
     schema_version: 'assistant_message.v1'
+    gmail_result?: true
     id: string
     session_id: string
     run_id: string
@@ -3141,6 +3155,7 @@ export interface HostRuntimeDefinitionOption {
   registry_id?: string | null
   /** Available Agent package version; absent for repository bridges. */
   latest_managed_version?: string | null
+  server_supported_version?: string | null
   /** Latest stable vendor CLI release, independent of the ACP adapter. */
   latest_own_version?: string | null
   /** Whether a managed copy reports a distinct bundled vendor CLI version. */

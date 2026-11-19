@@ -14,9 +14,10 @@ import {
   ConversationMessageInputPartsSchema,
 } from "@rainver/protocol";
 import { projectReadAccessSql } from "../access/contentAccessSql.js";
+import { sensitiveConversationReads } from "../runs/contextTaint.js";
 import { ROOT_BRANCH_PATH, visibleRoomTranscriptSql } from "./messagePath.js";
 import {
-  actionPreviewsForViewer,
+  actionPreviewsForViewerChecked,
   loadChatActionPreviewsByRunIds,
 } from "../agents/projectChatActionPreviews.js";
 
@@ -350,12 +351,13 @@ export class PgSessionRepository {
     const runIds = messages.flatMap((message) =>
       message.role === "assistant" && message.run_id ? [message.run_id] : []);
     const previewsByRun = await loadChatActionPreviewsByRunIds(this.db, spaceId, runIds);
+    const visibleByRun = new Map<string, Awaited<ReturnType<typeof actionPreviewsForViewerChecked>>>();
+    for (const [runId, previews] of previewsByRun) {
+      visibleByRun.set(runId, await actionPreviewsForViewerChecked(this.db, spaceId, previews, userId));
+    }
     return messages.map((message) => {
       if (message.role !== "assistant" || !message.run_id) return message;
-      const visible = actionPreviewsForViewer(
-        previewsByRun.get(message.run_id) ?? [],
-        userId,
-      );
+      const visible = visibleByRun.get(message.run_id) ?? [];
       const metadata = { ...(message.metadata_json ?? {}) } as MessageMetadata;
       // Replace, do not merge. Owner-only previews must not remain on a
       // shared message.
@@ -1287,6 +1289,11 @@ export class PgSessionRepository {
   ): Promise<{ session_id: string; proposals_created: number } | null> {
     const session = await this.getSession(spaceId, userId, sessionId);
     if (!session) return null;
+    // A conversation holding data an Agent read from a private source (ADR 0030/0032, e.g. the
+    // person's mail) is not turned into a memory: Memory has readers and a lifetime of its own.
+    // Nor is one whose reads cannot all be determined.
+    const held = await sensitiveConversationReads(this.db, spaceId, sessionId);
+    if (held.reads.length || !held.complete) return { session_id: sessionId, proposals_created: 0 };
     const messages = await this.listMessages(spaceId, userId, sessionId, 200, 0);
     if (!messages) return null;
     const recent = messages

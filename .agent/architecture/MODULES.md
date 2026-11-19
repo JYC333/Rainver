@@ -14,7 +14,7 @@
 | `apps/web/` | Web client. It consumes APIs and shared protocol types; it is not a business-rule authority. |
 | `catalog/` | Built-in definitions, including agent templates and capabilities. |
 | `packages/protocol/` | Shared TypeScript protocol package only. No handlers, persistence, routing, or authority. |
-| `packages/reader-document/` | The Reader document tree shared by the server's canonical reading writer and the web Reader: the node/mark whitelist, `normalizeReaderDocument` (an unsupported or misplaced node degrades to its text instead of hiding the document) and the one markdown-it Markdown converter. Browser-safe; no product logic, no I/O. |
+| `packages/reader-document/` | The Reader document tree shared by the server's canonical reading writer and the web Reader: the node/mark whitelist, `normalizeReaderDocument` (an unsupported or misplaced node, or nesting deeper than `READER_MAX_NESTING_DEPTH`, degrades to its text instead of hiding the document or exhausting the stack; one normalization, degraded text included, visits at most `READER_MAX_NODES` input nodes and `normalizeReaderDocumentBounded` reports `truncated` past it) and the one markdown-it Markdown converter. Browser-safe; no product logic, no I/O. |
 | `packages/outbound-guard/` | The one outbound HTTP boundary. The control plane's Source fetches use all of it through `server/src/modules/sources/outboundUrlSafety.ts`: the private-address block list, the address a connection is pinned to, the redirect and credential rules, and the body ceiling. The host daemon's egress proxy uses the block list alone — it resolves and dials the address itself, so it has no pinning race to close. No product logic. |
 | `ops/` | Compose files, env templates, and scripts. |
 | `deployer/` | Host deployment subsystem behind the deployer boundary. |
@@ -65,7 +65,7 @@ The Module column is each entry's `ServerModule.name`; where it differs from the
 | `system` | infra | `/health`, `/server/health`, `/status`, `/server/features`, `/features`, `/system/instance-settings` | empty | Server health, component-level runtime status, feature descriptors, and instance-admin operational policy routes. `/health` is a container probe; `/status` reports database, per-scheduled-task liveness, jobs-worker presence, and queue depth, and requires a space owner/admin. |
 | `auth` | kernel | `/auth/*`, `/me`, `/me/spaces` | yes | Users, auth accounts, sessions, feature-gated API keys, Google auth. |
 | `spaces` | kernel | `/spaces`, `/invitations` | empty | Spaces, memberships, invitations, and the default seeds (`seedSpaceDefaults`) applied inside the Space-creation transaction. |
-| `catalog` | capability | `/server/catalog*` | yes | Read-only on-disk catalog of capability and template manifests. |
+| `catalog` | capability | `/server/catalog*` | yes | Read-only on-disk catalog of capability and template manifests: only regular (non-symlinked) manifests up to 256 KiB are parsed, each from one no-follow handle (`openFileBeneathRoot`) with a bounded read (`readHandleBounded`, shared from `@rainver/folder-read`), an oversized one lists as `parse_error`, a missing catalog is `catalog_available: false` while an unreadable one is an error, and the summary counts entries without parsing them. |
 | `skills` | capability | `/skill-sources*`, `/skill-packages*`, `/skills*` | yes | Skill library: original imported packages, review, scoped bindings, selection and overlays. No callable authority or capability registry. |
 | `streaming` | infra | `/runs/{runId}/turn/stream`, `/me/agent-attention/stream` | empty | Agent turn SSE stream, as ordered parts, and the authorized Agent Attention aggregate stream. |
 | `notifications` | infra | `/server/notifications/webhooks/*` | empty | Notification webhook egress policy plus durable operational-alert pointers delivered through Activity Inbox. |
@@ -139,8 +139,10 @@ These routes are not `ServerModule` entries. They are mounted by `PluginHost` af
 
 | Plugin | Kind | Routes | Main ownership / notes |
 |---|---|---|---|
-| `diary` | product (official_plugin) | `/diary*` | Personal diary editor, same-day history, reflection job, reminder scheduler. Routes use `ctx.http.pluginGuard()`. Diary entries are editor-owned user documents, not raw ActivityRecord input; memory/context extraction remains opt-in proposal/sources work. |
-| `finance_ledger` | product (official_plugin) | `/finance*` | Space-scoped double-entry finance ledger: books, accounts, commodities, directives, postings, prices, and Beancount import/export. Personal `private` accounts are omitted from other members' lists, ledgers, balances, transaction reads, and export. Routes use `ctx.http.pluginGuard()`. Proposal appliers are registered through PluginHost and plugin migrations own finance tables. |
+| `diary` | product (operation package) | none (`plugin.diary.*` P1 operations) | Personal, user-level diary: entries, same-day history, reflection Job; every operation `sensitive`, save/delete person-only, Agent writes only append Proposals. Entries are editor-owned user documents, not raw ActivityRecord input. See OFFICIAL_OPTIONAL_MODULES "Diary package". |
+| `finance_ledger` | product (operation package) | none (`plugin.finance_ledger.*` P1 operations) | Space-scoped double-entry finance ledger with owner-only private accounts and uploader-only import batches. Posting uses canonical Proposals. See [Finance ledger package](OFFICIAL_OPTIONAL_MODULES.md#finance-ledger-package). |
+
+The Project-level operation package `applications` (application management, PhD track) mounts no routes: it is reached only through `/api/v1/actions` and `/api/v1/queries` and the Agent tool entry; see [OFFICIAL_OPTIONAL_MODULES](OFFICIAL_OPTIONAL_MODULES.md#application-management-package).
 
 ## Code-Only Support Surfaces
 

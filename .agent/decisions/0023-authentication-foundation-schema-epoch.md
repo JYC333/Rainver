@@ -56,8 +56,3 @@ B59.
 - No running database is reset as part of the repository change.
 - Fresh-instance and schema-drift tests pin the single-file chain and the
   current epoch's baseline checksum.
-
-## Revision history
-
-- 2026-09-23 — accepted and implemented for the completed authentication
-  foundation.

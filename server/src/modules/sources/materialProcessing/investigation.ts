@@ -74,7 +74,7 @@ export async function investigateMaterial(config:ServerConfig,run:RunRecord,raw:
   let result:unknown;
   if(input.operation==='search'){
    if(state.searches>=3)throw new HttpError(429,'At most three history searches');
-   const found=await new RetrievalSearchService(tx,sourceRetrievalRegistry).search({spaceId:run.space_id,viewerUserId:run.instructed_by_user_id!,agentId:run.agent_id,query:input.query,objectTypes:['source_item'],mode:'lexical',maxResults:8});
+   const found=await new RetrievalSearchService(tx,sourceRetrievalRegistry).search({spaceId:run.space_id,viewerUserId:run.instructed_by_user_id!,agentId:run.agent_id,runId:run.id,query:input.query,objectTypes:['source_item'],mode:'lexical',maxResults:8});
    const items=[];
    for(const hit of found.items){
     if(hit.object_id===context.item_id)continue;

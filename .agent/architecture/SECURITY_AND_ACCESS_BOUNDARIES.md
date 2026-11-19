@@ -189,13 +189,37 @@ A summary viewer is withheld, on these surfaces:
     error text and metadata;
   - the free-text and JSON detail of attempts, supervisor decisions,
     evaluations, finalizations and verifications;
-  - a Task's run list.
+  - a Task's run list;
+  - every derived copy: an Evolution evaluation case created from the Run
+    (its baseline is the Run's `output_json`), an evaluation of a candidate
+    Run, a workflow previewed or saved from the Run (or any of its child Runs,
+    which `listChildRuns` returns with the viewer's level under the same
+    content, Room and domain read gates as `getVisibleRun`), and a Reading
+    method trial's output text. These callers check `bodyWithheld` on the
+    `getVisibleRun` level and refuse (422) or return no text. The Evolution
+    copies additionally require `ownRunBodyLevel` = `full` for the Run and
+    each listed child — the caller's own level with oversight excluded —
+    because oversight is audit and never a route to copy out. A child the
+    caller cannot discover is omitted, never named in a refusal. Internal
+    settlement, publication and the evaluation Job read `runs` directly.
 - **Agents:** `system_prompt` on the Agent row, version snapshots, and every
   write response, which is computed for the acting user.
+- **Decision Cases** (`decisions/caseService.ts`): `framing` and every
+  Option, Criterion, score and Commitment; title, status and decision
+  metadata stay, and the DTO carries `effective_access_level`. Every Case
+  mutation (admission/receipt replay, execution, `decide`) uses
+  `assertWritableSpaceObject`, so a `selected_users` grantee, a summary reader
+  and an oversight admin read a Case but never change it.
+- **Relations** (`relations/service.ts`): a person's `summary`, `pronouns`,
+  `headline`; an organization's `summary` and `homepage_url`; identity
+  values, note bodies, source-link `external_ref`/`note`, and affiliation
+  role/title unless both endpoints are full. Names, status, kinds and
+  structure stay; person/organization DTOs carry `effective_access_level`.
 
 Reader
 `research_notebook` uses the same `space_object` gate as Notes and requires
-`full` to return a body. Project Folder
+`full` to return a body; the Note's Source lineage must also admit the reader, for
+the document and for its annotations, comments and positions. Project Folder
 and project scope are independent from visibility. Space owner/admin roles may
 manage access policy but do not bypass read policy **by default**; the single
 exception is the creation-time, immutable Space oversight mode (below), scoped
@@ -217,7 +241,11 @@ in `content_access_logs` only when `viewer_user_id <> owner_user_id`; a database
 CHECK makes owner-read rows impossible. Retrieval audits only final,
 live-revalidated results, never filtered candidates. Ordinary detail reads audit
 through `recordDetailRead` (`access_type = 'detail_read'`) on Task, Activity,
-Artifact, and note/`space_object` fetches, so a demotion disclosure does not
+Artifact, and note/`space_object` fetches (Decision Cases and relation
+people/organizations and their sub-resources included; their lists record
+the full-level rows they serve in one batch as `list_read`, and a failed audit
+answers 503 instead of serving the body; write-path authorization reads are
+not recorded), so a demotion disclosure does not
 report an empty reader list for content that is read through a detail endpoint
 rather than through retrieval. The resource owner is the
 only default reader of these logs (`GET
@@ -355,6 +383,24 @@ lower oversight mode pierces it either (sharing `highly_restricted` content
 requires an explicit, auditable sensitivity downgrade by its owner, not an
 oversight escalation).
 
+Owner-only rows are the second exception. An entity's content-access
+declaration may carry an `ownerOnlyPredicate` (`ontology/entities.ts`); rows it
+matches are readable by their owner alone — the space-shared, grant and
+oversight branches of `contentAccessSql` do not apply, and the access level is
+`deny` for anyone else, in every oversight mode. Today it marks the Gmail
+monitor draft (`OWNER_ONLY_PROPOSAL_TYPES`), the Gmail match reminder
+(`OWNER_ONLY_ALERT_KINDS`), the Run that drafted such a proposal (its trace,
+turn, I/O and tool results name the draft), a Run that may read the owner's
+mail (`OWNER_ONLY_RUN_TOOLS`) and every later Run of a conversation holding
+sensitive reads (`sensitive_conversation`, ADR 0032): what a person is waiting for in
+their own mailbox, where an oversight read is itself the disclosure. Only the
+owner manages such a row's access, and it is never widened (409
+`owner_only_content`). Readers that do not use the
+predicate apply `contentOwnerOnlySql` themselves — among them a Run's
+authorization requests, which an owner-only Run lists and lets decide to its
+owner alone (`authorizationRequestService.ts`)
+([Sources → New-mail monitors](../modules/sources.md#new-mail-monitors-gmail-v2-first-version)).
+
 Oversight applies to **reads only**. It does not extend to publishing,
 visibility changes, grant management, proposal creation, or any other write
 path — those keep their current owner/role requirements. In particular,
@@ -376,7 +422,67 @@ Retrieval and per-run context injection do inherit oversight by design (an
 admin-initiated run may compile other members' otherwise-private content into
 that run's own context/output, scoped to that run), which is a deliberate
 consequence of the same canonical-predicate mechanism, not a separate
-feature.
+feature. Person-private derived Runs whose domain promises their starter alone — reading-method
+generations and trials, and plugin Note drafts — add a domain read gate on
+`getVisibleRun`/`listRuns` that admits only the instructing person, so oversight
+does not reach their output; such a domain must not claim privacy for anything
+oversight still reads (a plugin Note draft saves only into a Note no other member
+reads with oversight included, decided under the Note root, Space and audience
+locks in the save's transaction — a member who joins the Space meanwhile waits on
+the Space audience fence, see below — and the saved Note inherits the inputs' Source
+lineage, pinned to the Sources it was derived under, so later sends keep the
+Sources' egress consent and later body reads their reader consent).
+
+**Space audience fence.** A decision resting on a Space's whole current
+membership (who besides a person reads an object, Space oversight included) holds
+the Space row `FOR SHARE` before it enumerates the members, and every writer that
+adds an active Space membership — invitation acceptance (`acceptInvitation`) and
+invited registration (`RegistrationService.complete`) — first takes the same row
+`FOR NO KEY UPDATE` (`access/activePerson.ts` `lockSpaceAudienceForChange`). It is
+the Space-level counterpart of `lockProjectAudience` /
+`lockProjectAudienceForChange`: a new member, an oversight admin among them, joins
+before the decision reads the members or waits until it commits.
+
+**Source lineage of Note bodies.** A Note's Source lineage (its own
+`source_item`/`source_snapshot`/`extracted_evidence` provenance, including lineage
+inherited from the Notes its text was derived from, with any pinned connections)
+answers for its body on every read, as retrieval's Source gate does:
+Knowledge's single-Note entries (`getNoteRow`: detail, history, links, shares and
+the mutation gate), the plugin Note read/release gate (`referenceReadable`), the
+Reader `research_notebook` document with its annotations, comments and positions,
+the Project Research notebook (`getArea`; ask-AI and notebook-chat context, rechecked
+before each provider attempt of a queued Run, retries and corrections included) refuse
+a viewer (or an Agent acting for them) that a lineage Source no longer admits
+(`retrieval/sourcePolicy.ts` `sourceLineageReadable`; a missing or archived Source
+denies). Ask-AI and notebook chat also freeze the Sources their prompt was built
+under (each selected item's connection; the lineage connections of each Note whose
+body was copied, Ask-AI's target Note included) and check them beside the live
+lineage at every attempt and publication, so a rebind or detach after queueing never
+drops the original Source. Admission holds every lineage entry of the copied Notes
+`FOR SHARE` before reading their bodies, so a concurrent rebind or detach cannot
+separate the copied body from its frozen Sources. A Run that froze them incompletely
+is refused, and a notebook follow-up omits every earlier answer not tied by its
+message row to a Run with that evidence (metadata-only or unattributed answers
+included) rather than back-filling it from current bindings. Selected excerpts use full Source-item access
+(`sourceItemFullContentReadClause`) at every read, send and audience check.
+Automatic writes keep that policy or are refused: a notebook-chat
+write-back inherits its context Notes' lineage (`inheritNoteSourceLineage`; an
+in-place edit re-pins the target Note's own lineage too), a
+directly selected excerpt written by notebook chat or Ask-AI adds pinned
+`source_item` lineage (`recordNoteSourceItemLineage`), and the write is refused when
+a reader of the written Note does not read those Sources or the lineage cannot be
+kept. A monitoring comparison, whose outputs are Project-shared, never takes a Note
+with any Source lineage as its `understanding` baseline (at queueing, before each
+attempt, and again before a terminal result is merged by the standing or focused
+publication; a Run without a frozen baseline id is refused at each point). The
+focused publication rechecks every staged batch's Run, refusing a staged result
+whose Run is unknown; before it, the generic Project Operation read withholds the
+staged results' text and Run mapping, keeping only their count and item ids. The
+same boundary holds for the batch Runs, focused and standing alike:
+`PgRunRepository.getVisibleRun` and `listRuns` cap a comparison batch Run at
+`summary` for every viewer (`isMonitoringComparisonRun`), as do a Task's Run list and
+`runViewFor`, so Run detail, I/O, lists, trace and the turn stream keep its status and progress but never its body; only
+the comparison publication paths, reading `runs` directly, release its results.
 
 Oversight does not pierce project_folder/project scope gates, source consent
 gates, **the Room boundary**, or any other post-visibility deny gate besides
@@ -579,9 +685,11 @@ Tasks enforce visibility on all read, mutation, and sub-resource paths.
 - `GET /tasks` and `GET /tasks/{id}` use the canonical content predicate.
 - `PATCH /tasks/{id}`, `DELETE /tasks/{id}` (a soft delete), and `POST /tasks/{id}/runs`:
   visibility enforced before mutation.
-- Sub-resource endpoints (`GET /tasks/{id}/runs`, `/artifacts`, `/proposals`): `user_id`
-  is forwarded to `TaskService.get()` so task visibility runs before the
-  sub-resource query.
+- Sub-resource endpoints (`GET /tasks/{id}/runs`, `/artifacts`, `/proposals`): the
+  route resolves the caller with `resolveIdentity` and calls the identity-scoped
+  `PgTaskRepository` method (`listTaskRuns`, `listTaskArtifacts`,
+  `listTaskProposals`), which checks task visibility before the sub-resource
+  query.
 - `GET /boards/{board_id}/tasks`: task visibility is applied per-row to the
   result set before returning. Private tasks are filtered from the board view
   for non-owners.
@@ -766,6 +874,7 @@ Authority comes from the guard chain in `validateGrantApproval`:
 | Guard | Invariant |
 |---|---|
 | `proposal.space_id == request space_id` | Same-Space fail-closed 404, as for every proposal decision |
+| Proposal not expired (`pending` past `expires_at`) | 409 `operation_approval_expired`, also on keyed replay; no approval is written |
 | `grant.granting_user_id == approver_user_id` | Only the exact user who created the grant may approve |
 | `grant.status` not revoked/expired/failed; payload `grant_id` / `personal_memory_grant_ids` name this grant | Proposal and grant refer to each other and the grant is live |
 | `proposal.space_id == grant.target_space_id` (and payload `target_space_id`, when present) | Proposal must belong to the specific target space |
@@ -936,6 +1045,84 @@ authority afterwards.
 
 ---
 
+### 8g. Plugin Agent data access
+
+[ADR 0030](../decisions/0030-plugin-agent-data-access.md) adds no cross-Space
+path. Sensitive plugin data reaches an Agent only when the Run's audience is the
+person it acts for alone, the data owner consented (per Run, or read-only for
+their own scheduled Runs; expiring and revocable) **and** the Run's live launch
+is server-recorded as network-isolated (built-in strict Host, egress `none`);
+consent never substitutes for isolation. Personal data needs the Space owner's
+consent; a shared audience receives personal reads only as the rows every
+current reader's own query returns. Classification is read from the raw
+plugin output; every released result, including command replays, passes one
+release gate that rechecks consent, audience, origin, pins, dependency
+enablement and actor under a single lock order. Sensitive reads taint the Run
+(merge-only), block outward writes and force Memory into gated proposals. B11
+cross-person logging is unchanged; Agent reads on the owner's behalf
+(same-owner included, from plugins, typed references, executor queries,
+retrieval and runtime-context injection) are attributed in
+`agent_data_read_logs`, readable and revocable only by that owner.
+Implementation and tests:
+[OFFICIAL_OPTIONAL_MODULES](OFFICIAL_OPTIONAL_MODULES.md#agent-data-access-adr-0030).
+
+Core Sources tools take the same path ([ADR 0032](../decisions/0032-gmail-on-demand-agent-read.md),
+[ADR 0033](../decisions/0033-gmail-project-consent-and-private-delivery.md)):
+`source.gmail.mail.read` is a sensitive read and search offered in every
+ordinary conversation of a Project (the owner's private one, a Room, the
+mainline) in the mailbox owner's own turn after their opt-in, under the
+owner's one standing consent for that Project, connection generation and
+purpose (`plugin_data_grants.scope = 'project'`; no per-Run, background or
+Space-wide consent exists for a core tool). It is a **Project-bound** core
+tool (ADR 0033 §6): the Run keeps the conversation's own
+runtime (paired Host, native CLI login or ModelProvider) because the
+credential stays on the server and only the broker's bounded result reaches
+the runtime, and the result is released only while the conversation is in the
+consent's Project and every reader of the Run reads that Project. Its request
+exists only for the mailbox owner, freezes owner, Project, connection
+generation and purpose, and approval writes exactly that or nothing and
+continues the same Run; the server projects whether its card can still be
+approved and names the mailbox only then. The owner's current Project access
+is rechecked at admission, before each Gmail send and at release. Opt-out,
+disconnect, reconnect, revocation, forget, leaving the Project and account
+disable end it and any pending request for it (`expired`, never revived);
+another Project and nobody else's Run uses it. Ended consents and approved
+requests stay as evidence and never block forgetting the connection.
+A Run that read Gmail refuses outward writes and materializes nothing from its
+output, and a conversation with such a read is not reflected into Memory; the
+read does not mark the conversation for isolation. Every later Run of that
+conversation inherits the read's taint regardless of its Host or isolation, so
+it too refuses outward writes and materializes nothing, and `memory.remember` /
+`memory.revise` refuse outright: mail-derived history never leaves its Project
+through Memory or an outward action. Copies keep it too: a Room reference
+from such a conversation is fenced as untrusted and records the reads and the
+source Project in its provenance, the owner's shared excerpt records them on
+its message, and every later Run of the conversation they land in inherits
+the reads; another member cannot widen a reference to someone else's mail
+beyond its source audience (`reference_sensitive_scope_mismatch`), while the
+owner may under the ordinary disclosure confirmation. A conversation with a
+reader outside the Project is offered no Gmail card, and an approval rechecks
+that audience. A digest (daily or rule) may deliver into
+the owner's private conversation, a Room or the mainline of its Project, only
+while every reader of it reads the Project — its Project readers, every
+active Room roster row (including someone removed from the Project) and the
+delivery Run's own audience, rechecked by one rule at start, claim, every
+Gmail send, release and settlement — as a scheduled turn of that same
+conversation; migration `0040_gmail_project_scope_reconfirm` ended the consents
+and cards given before this scope and paused digests until their owner
+confirms them again. A conversation in which a
+Run read sensitive **plugin** data carries it forward: later Runs inherit the
+taint, are owner-only and launch isolated or fail before launch. A direct chat
+that may read is admitted into its own Session's host container (thread,
+managed cwd, CLI profile `agents/<agent>/conversation/<session_id>/…`) before
+its context is assembled; a launch that must be isolated is refused unless it
+is isolated on the built-in strict Host with egress `none`, in that Session's
+own profile and cwd, with nothing shared writable, and resumes only the vendor
+session it was handed when that is still the thread's current pointer, bound
+to an isolated launch of its thread in the same profile; its context reset
+resets that Session's own thread, for its owner only
+([Sources → On-demand Agent reads](../modules/sources.md#on-demand-agent-reads-adr-0032-adr-0033-6)).
+
 ## 9. Credential, Provider, and Runtime Secrecy
 
 - Provider API responses explicitly exclude `api_key`. Decrypted keys exist
@@ -990,7 +1177,7 @@ authority afterwards.
   path to it, and has no row that could leak it: there is nothing here to
   redact because nothing arrives. Logging a copy in is an interactive PTY the
   daemon runs on the host and relays over the host WebSocket
-  (`/api/v1/hosts/:hostId/installations/:adapterType/:installation/login/stream`);
+  (`/api/v1/hosts/:hostId/installations/:runtimeKey/:installation/login/stream`);
   the terminal bytes cross the control plane but are never persisted.
 - Runtime adapter versions are host state, not user or Space secrets, and
   there is no per-Space version selection: one version per adapter per host
@@ -1092,9 +1279,11 @@ Namespace preflight failure is fail-closed.
   refusal (`customSources/artifactStoragePath.ts`); a `../` `storage_path` cannot
   `require()` or unlink a file outside the artifact root.
 
-**Official plugin personal rows.** Diary routes and jobs key every read and
-write by `identity.userId`; the jobs API has no create surface, and a
-reflection job's `user_id` is stamped at enqueue from that identity. Finance
+**Official plugin personal rows.** The Diary operation package (Plan 7) keys
+every read and write by the host GUC `rainver.user_id` (the person the call
+acts for), its operations are `sensitive` under §8g, and its reflection Job runs
+in the enqueuing person's scope; save and delete are person-only and an Agent
+can only propose an append. Finance
 `visibility = private` personal accounts are hidden from other Space members
 on account list, ledger, balances, transaction list/directives, and Beancount
 export — not only on the account catalog. Production `INSERT INTO
@@ -1520,7 +1709,7 @@ Three profiles, stated by the dispatch and applied by the daemon:
 
 | Profile | What it means |
 | --- | --- |
-| `none` | No network. The namespace is unshared, so this is the only one that **confines**. |
+| `none` | No network. The namespace is unshared, so this is the only one that **confines**. A provider-bound Run pinning sensitive plugin tools (ADR 0030 §4a) keeps exactly one path: its model channel — a loopback forwarder inside the namespace, a read-only-bound Unix socket, and a daemon relay that forwards only `POST` under `/<route>/<lease_id>` of this Run's provider-proxy lease (no CONNECT, upgrade, absolute-form target, other path or destination). That lease is `model_only` at the proxy: inference requests on the leased model with an allowlisted structure, no hosted provider tool, URL/file-sourced content or file/batch/stored-resource endpoint, so the provider cannot egress for the Run either. Native sockets, the Host, other loopback ports and DNS stay unreachable. |
 | `default` | The general web, git and the vendor a subscription belongs to, through the host's egress proxy. Package registries are refused with a reason the runtime prints. |
 | `install` | `default` plus package registries. Comes only from the dispatch, which the server composes; a standing grant on the Agent runtime profile is refused, because writing one takes only read access to an ordinary Agent. No product surface grants it yet (deferred register). |
 

@@ -129,6 +129,17 @@ ACP tool lifecycles are correlated once at the adapter boundary by
 `runtimeAdapters/acpToolCallLifecycle.ts`, shared by the thread and semantic
 event normalizers. Every newly persisted tool event has a trace-local id, and
 an update whose provider start was absent is preceded by an inferred start.
+Before either normalizer sees a call, `runtimeAdapters/privateToolCalls.ts`
+reduces a call of a private action (currently `source.gmail.monitor.propose`)
+to its id, status, kind and the action id as title, so its arguments and
+result are never persisted or streamed. Its call-id tracking is bounded per
+session; once a private id has been dropped, an update for an id it cannot
+confirm as ordinary is reduced too (without a title), and a private call stays
+reduced for updates after its terminal status. Updates without a call id
+cannot be attributed: once a private call without an id has been seen, every
+later id-less update that does not itself name a private action is reduced to
+its status and kind (no title) until the session ends; an ordinary id-less
+start still passes through and does not end this.
 The projection retains read compatibility for older rows with missing starts
 or null ids, but incomplete trace metadata is never presented as a tool
 failure; only a provider-reported failed status is one.
@@ -592,20 +603,34 @@ the recipients' `run_ids`, and never offered a Retry, reads "delegated by
 the name (the Room's Manager until that Run is read). A recipient Run's
 technical `parent_run_id`, used to serialize a fan-out group in one workspace,
 does not by itself mean delegation and never produces that label.
-Live-turn placement is projected by `modules/conversation/roomTimeline.ts`.
-Explicitly delegated child edges form a group; every still-pending member,
-including parent and siblings, follows its latest visible group message.
+Live-turn placement is projected by `modules/conversation/roomTimeline.ts`
+over the loaded messages; discussion notices, Room reference messages
+(`room_display: reference`) and collaboration reminders never anchor a turn. Explicitly delegated child edges form a group; every
+member without a reply of its own, including parent and siblings, follows the
+latest anchoring message that names a member of its group.
 Unrelated recipients and separate delegation groups keep their own positions;
 technical serialization parent pointers alone never form a delegation group.
 Missing Run relations remain ungrouped until loaded. Persisted message order
 is unchanged; each Run's own reply replaces its live row without duplication.
+A Run that has settled while its live turn is still `working` keeps its row
+until the chat finalizer publishes the reply.
 The delegated-by label follows Run identity rather than the display anchor.
 
-The current-activity companion refreshes all known nonterminal Runs, including
-ones no longer referenced by the latest message page. Each authorized Run has
-its own Stop, so an older quota/dependency wait can be ended without stopping its
-replacement. Distinct active turns stay visible; repeated Agent names include
-creation time. A new message alone does not cancel earlier authorized work.
+The first message page includes the Room's visible active Run IDs for the whole
+conversation. The current-activity companion uses them to discover new Runs
+whose delegation or dispatch is anchored to older messages. Such an active
+Run (nonterminal or waiting for review, or settled with its live turn still
+`working`) that no loaded message names follows the latest loaded anchoring
+message in its delegation group, or appears at the end of the transcript when
+the group has none; while such a trailing turn exists the empty-conversation
+hint is hidden. A Run of a discussion wave started by a hidden trigger, when
+nothing else places it, renders after that discussion's last loaded segment;
+a discussion with no loaded segment leaves it to the rule above (its group's
+anchor, else the transcript end). The client also refreshes
+known nonterminal Runs as they finish. Each authorized Run has its own Stop, so
+an older quota/dependency wait can be ended without stopping its replacement.
+Distinct active turns stay visible and repeated Agent names include creation
+time. A new message alone does not cancel earlier authorized work.
 
 A message sent while a turn is running is not refused: the composer sends it
 with `queue: true` (unless it has attachments), and a 202 shows it at the end

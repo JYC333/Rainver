@@ -17,6 +17,7 @@ import { PreviewBadge, UrgencyBadge } from '../../components/PreviewBadge'
 import { ScopeBadge } from '../../components/ScopeBadge'
 import { EgressReviewNotice, isGrantDerivedProposal } from './EgressReviewNotice'
 import { codePatchAcceptOptions } from './codePatchConfirm'
+import { acceptRefusalKey, decisionOpenOutsideConversation } from './acceptOutcome'
 import {
   TYPE_FILTERS,
   apiTypesForFilter,
@@ -107,7 +108,9 @@ export default function ProposalsPage() {
         const options = codePatchAcceptOptions(proposal)
         if (options === null) return
         const out: ProposalAcceptOut = await proposalsApi.accept(id, options)
-        if(out.result_type==='code_patch_pending'){toast.info(t(`mixed_surfaces.code_patch_${out.result.status === 'pending' ? 'queued' : out.result.status}`));}
+        const refusal = acceptRefusalKey(out)
+        if (refusal) toast.error(t(refusal))
+        else if(out.result_type==='code_patch_pending'){toast.info(t(`mixed_surfaces.code_patch_${out.result.status === 'pending' ? 'queued' : out.result.status}`));}
         else if (out.result_type === 'memory_entry') {
           toast.success('Accepted — memory entry created.')
         } else if (out.result_type === 'code_patch_apply') {
@@ -147,6 +150,8 @@ export default function ProposalsPage() {
       } else {
         toast.error(message)
       }
+      // A refused decision (e.g. 404 after expiry) shows the live list rather than stale buttons.
+      await load()
     }
   }
 
@@ -164,7 +169,7 @@ export default function ProposalsPage() {
     }
   }
 
-  const canDecide = (p: Proposal) => p.status === 'pending'
+  const canDecide = (p: Proposal) => decisionOpenOutsideConversation(p)
   // A maintenance update the person has not revised yet is accepted only
   // after the revision, which is made on its own page.
   const awaitingRevision = (p: Proposal) => Boolean(p.operator_revision && !p.operator_revision.edited_by_user_id)

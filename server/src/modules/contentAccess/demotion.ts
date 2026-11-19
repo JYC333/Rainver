@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { RETRIEVAL_OBJECT_TYPE_VALUES } from "@rainver/protocol";
 import { isContentVisibility, type ContentVisibility } from "../access/contentAccessTypes.js";
 import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
-import { contentAccessLevelSql, runReadSql } from "../access/contentAccessSql.js";
+import { contentAccessLevelSql, contentOwnerOnlySql, runReadSql } from "../access/contentAccessSql.js";
 import { artifactTitleReleased } from "../artifacts/repository.js";
 import { proposalTitleReleased } from "../proposals/repository.js";
 import { HttpError, type Queryable, type SpaceUserIdentity, withQueryableTransaction } from "../routeUtils/common.js";
@@ -263,7 +263,8 @@ export class ContentDemotionService {
          UNION ALL
          SELECT 'proposal'::text AS resource_type, p.id, p.title, p.visibility
            FROM proposals p
-          WHERE p.space_id = $1 AND p.created_by_run_id = ANY($2::varchar[]) AND p.visibility <> 'private'`,
+          WHERE p.space_id = $1 AND p.created_by_run_id = ANY($2::varchar[]) AND p.visibility <> 'private'
+            AND NOT ${contentOwnerOnlySql("proposal", "p")}`,
         [spaceId, runIds],
       );
     const runTitle = (row: { run_id: string; title: string }) =>

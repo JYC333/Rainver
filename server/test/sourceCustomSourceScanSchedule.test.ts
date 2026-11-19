@@ -9,7 +9,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { loadConfig, type ServerConfig } from "../src/config.js";
-import { enqueueDueSourceChannelScans } from "../src/modules/sources/scanSchedule.js";
+import { enqueueChannelScanIfDue, enqueueDueSourceChannelScans } from "../src/modules/sources/scanSchedule.js";
+import { enqueueDueSourceRecipeScans } from "../src/modules/sources/sourceRecipes/recipeScanWorker.js";
 import {
   enqueueDueCustomSourceHandlerRuns,
   reclaimStuckCustomSourceHandlerRuns,
@@ -746,5 +747,92 @@ describe("due scan task batch", () => {
     expect(await enqueueDueSourceChannelScans(db.pool, 1)).toBe(1);
     const jobs = await db.pool.query(`SELECT connection_id FROM extraction_jobs`);
     expect(jobs.rows).toEqual([{ connection_id: runnable }]);
+  });
+});
+
+describe("locked Channel scan enqueue shared by built-in, Custom Source and recipe schedulers", () => {
+  const sum = (counts: number[]) => counts.reduce((total, count) => total + count, 0);
+
+  it("overlapping Custom Source ticks queue one scan, always with its handler run", async () => {
+    if (!db.available) return;
+    const connId = randomUUID();
+    await insertConnection({ id: connId, handlerKind: "generated_custom" });
+    await insertActiveHandlerVersion(connId);
+
+    const counts = await Promise.all(Array.from({ length: 4 }, () => enqueueDueCustomSourceHandlerRuns(db.pool, 25)));
+
+    expect(sum(counts)).toBe(1);
+    const jobs = await db.pool.query<{ id: string }>(`SELECT id FROM extraction_jobs WHERE connection_id = $1`, [connId]);
+    const runs = await db.pool.query<{ extraction_job_id: string }>(`SELECT extraction_job_id FROM source_handler_runs WHERE source_connection_id = $1`, [connId]);
+    expect(jobs.rows).toHaveLength(1);
+    expect(runs.rows).toEqual([{ extraction_job_id: jobs.rows[0]!.id }]);
+  });
+
+  it("overlapping recipe and built-in ticks queue one recipe scan", async () => {
+    if (!db.available) return;
+    const connId = randomUUID();
+    await insertConnection({ id: connId, handlerKind: "generated_custom" });
+    const recipeVersion = randomUUID();
+    await db.pool.query(
+      `INSERT INTO source_recipe_versions (id, space_id, source_connection_id, version_number, recipe_json, policy_envelope_json, status, created_at, activated_at)
+       VALUES ($1, $2, $3, 1, '{}'::jsonb, '{}'::jsonb, 'active', now(), now())`,
+      [recipeVersion, SPACE_A, connId],
+    );
+    await db.pool.query(
+      `UPDATE source_connections SET handler_kind = 'recipe', active_recipe_version_id = $2 WHERE id = $1`,
+      [connId, recipeVersion],
+    );
+
+    const counts = await Promise.all([
+      enqueueDueSourceRecipeScans(db.pool, 25), enqueueDueSourceRecipeScans(db.pool, 25),
+      enqueueDueSourceChannelScans(db.pool, 25), enqueueDueCustomSourceHandlerRuns(db.pool, 25),
+    ]);
+
+    expect(counts).toEqual([expect.any(Number), expect.any(Number), 0, 0]);
+    expect(sum(counts)).toBe(1);
+    const jobs = await db.pool.query<{ metadata_json: Record<string, unknown> }>(`SELECT metadata_json FROM extraction_jobs WHERE connection_id = $1`, [connId]);
+    expect(jobs.rows).toEqual([{ metadata_json: expect.objectContaining({ implementation: "recipe", recipe_version_id: recipeVersion, source_channel_id: connId }) }]);
+  });
+
+  it("re-checks a stale batch entry's due time and Goal ownership under the Channel lock", async () => {
+    if (!db.available) return;
+    const connId = randomUUID();
+    await insertConnection({ id: connId, handlerKind: "built_in" });
+    const task = { space_id: SPACE_A, task_key: connId };
+    const builtIn = {
+      conditions: `sc.handler_kind = 'built_in'`,
+      metadata: () => ({ created_by: "scheduler", source_channel_id: connId }),
+    };
+    const now = new Date().toISOString();
+
+    // Another tick already rescheduled the task after the batch was read.
+    await db.pool.query(`UPDATE scheduler_tasks SET next_run_at = now() + interval '1 hour' WHERE task_key = $1`, [connId]);
+    await expect(enqueueChannelScanIfDue(db.pool, task, now, builtIn)).resolves.toBe(false);
+
+    // Still due, but an active Source Goal took the Channel over.
+    await db.pool.query(`UPDATE scheduler_tasks SET next_run_at = $2 WHERE task_key = $1`, [connId, new Date(0).toISOString()]);
+    const goal = randomUUID();
+    const version = randomUUID();
+    await db.pool.query(
+      `INSERT INTO source_goals (id, space_id, owner_user_id, intent_json, budget_json, status, compatibility_json)
+       VALUES ($1, $2, 'user-1', '{"intent":"Watch"}', '{}', 'running', '{}')`,
+      [goal, SPACE_A],
+    );
+    await db.pool.query(
+      `INSERT INTO source_goal_bindings (id, space_id, goal_id, source_connection_id, spec_json) VALUES ($1, $2, $3, $4, $5::jsonb)`,
+      [randomUUID(), SPACE_A, goal, connId, JSON.stringify({ source_channel_id: connId })],
+    );
+    await db.pool.query(
+      `INSERT INTO source_goal_versions (id, space_id, goal_id, revision, plan_json, created_by_user_id) VALUES ($1, $2, $3, 1, '{}'::jsonb, 'user-1')`,
+      [version, SPACE_A, goal],
+    );
+    await db.pool.query(`UPDATE source_goals SET active_version_id = $2, current_version_id = $2 WHERE id = $1`, [goal, version]);
+    await expect(enqueueChannelScanIfDue(db.pool, task, now, builtIn)).resolves.toBe(false);
+
+    await db.pool.query(`UPDATE source_goals SET status = 'deleted' WHERE id = $1`, [goal]);
+    await expect(enqueueChannelScanIfDue(db.pool, task, now, builtIn)).resolves.toBe(true);
+    await expect(enqueueChannelScanIfDue(db.pool, task, now, builtIn)).resolves.toBe(false);
+    const jobs = await db.pool.query(`SELECT id FROM extraction_jobs WHERE connection_id = $1`, [connId]);
+    expect(jobs.rows).toHaveLength(1);
   });
 });

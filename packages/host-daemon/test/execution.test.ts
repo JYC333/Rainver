@@ -714,6 +714,52 @@ describe("handleLaunch with a provider binding", () => {
     }
   });
 
+  it("keeps a one-time Run's own profile inside its run directory and deletes it with the Run", async () => {
+    // ADR 0033 §6: a private Gmail check has no conversation. Its profile is
+    // the Run's alone, so the vendor session and anything the CLI remembered
+    // leave with the Run directory and no later Run can resume or read them.
+    const { frames, send, complete } = collectSend();
+    await handleLaunch(
+      {
+        run_id: "run-check-1",
+        launch_id: "launch-check-1",
+        argv: ["sh", "-c", "printf '%s\n' \"$CLAUDE_CONFIG_DIR\"; mkdir -p \"$CLAUDE_CONFIG_DIR/projects\"; echo remembered > \"$CLAUDE_CONFIG_DIR/projects/session.jsonl\""],
+        provider_binding: {
+          profile_key: "agents/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/run/run-check-1/claude_code/provider-1",
+          env: {}, profile_env: { CLAUDE_CONFIG_DIR: ".claude" }, files: [], credential_source: "provider_lease", login_link: null,
+        },
+      },
+      send,
+      () => {},
+    );
+    await complete();
+    const output = frames.filter((f) => f.type === "output").map((f) => f.chunk).join("");
+    expect(output.trim()).toBe(join(configDir, "runs", "run-check-1", "profile", "claude_code", "provider-1", ".claude"));
+    expect(existsSync(join(configDir, "runs", "run-check-1"))).toBe(false);
+    expect(existsSync(join(configDir, "agents", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "profiles", "run"))).toBe(false);
+  });
+
+  it("refuses a one-time Run profile that names another Run", async () => {
+    const { frames, send, complete } = collectSend();
+    await handleLaunch(
+      {
+        run_id: "run-check-2",
+        launch_id: "launch-check-2",
+        argv: ["true"],
+        provider_binding: {
+          profile_key: "agents/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/run/run-check-1/claude_code/provider-1",
+          env: {}, profile_env: { CLAUDE_CONFIG_DIR: ".claude" }, files: [], credential_source: "provider_lease", login_link: null,
+        },
+      },
+      send,
+      () => {},
+    );
+    await complete();
+    const done = frames.find((f) => f.type === "complete") as { exit_code?: number; error?: string } | undefined;
+    expect(done?.exit_code).toBe(1);
+    expect(done?.error).toContain("names another Run");
+  });
+
   it("moves an own-login run's state root into its profile without taking the machine away from it", async () => {
     // Two rules meet here. A run on the
     // machine's own login must not inherit the machine's `HOME`. Its CLI
@@ -1055,6 +1101,25 @@ describe("what a Run reports about its egress", () => {
       const auth = Buffer.from(`run:${token}`).toString("base64");
       socket.write(`CONNECT registry.npmjs.org:443 HTTP/1.1\r\nHost: registry.npmjs.org:443\r\nProxy-Authorization: Basic ${auth}\r\n\r\n`);
     });
+  });
+
+  it("refuses a model channel outside a strict, egress-none, provider-bound launch before spawning", async () => {
+    // This daemon runs as a trusted Host here: a paired machine must never be
+    // made to carry the sensitive-data launch, whatever the frame says.
+    for (const [index, egress_profile] of (["none", "default"] as const).entries()) {
+      const { send, complete } = collectSend();
+      await handleLaunch({
+        run_id: `run-channel-${index}`,
+        launch_id: `launch-channel-${index}`,
+        workspace_location_id: "folder-1",
+        isolation: { sandbox_mode: "read_write", egress_profile },
+        model_channel: { version: 1, upstream_base_url: "http://server:8790", route: "anthropic", lease_id: "11111111-1111-4111-8111-111111111111", loopback_port: 18790 },
+        argv: ["sh", "-c", "echo started"],
+      }, send, () => {});
+      const done = await complete();
+      expect(done.exit_code).toBe(1);
+      expect(done.error).toMatch(/model channel needs a strict, egress-none, provider-bound launch/);
+    }
   });
 
   it("carries the proxy's refusals on the completion frame", async () => {

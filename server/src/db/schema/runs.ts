@@ -347,10 +347,21 @@ export const runAttempts = pgTable("run_attempts", {
 	// diff/output upload names it, so the upload binds to this attempt and
 	// nothing an earlier or later attempt of the same Run sent.
 	launchId: varchar("launch_id", { length: 36 }),
+	// The isolation the control plane stated in that launch frame, written by
+	// the server in the same statement as `launch_id` and never by any API:
+	// `{launch_id, host_id, host_kind, egress_profile, sandbox_mode}`, plus
+	// `model_channel` and the CLI `profile_key` when the frame carried them.
+	// Sensitive plugin data is released only to a live attempt whose record
+	// proves a strict built-in Host launch with egress `none` (ADR 0030); a
+	// sensitive conversation resumes a vendor session only when the launch
+	// bound to its thread's current pointer was isolated in the same profile
+	// (`host_threads.vendor_session_launch_id`, ADR 0032).
+	launchIsolationJson: jsonb("launch_isolation_json"),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [
 	uniqueIndex("uq_run_attempts_launch_id").using("btree", table.launchId.asc().nullsLast()).where(sql`launch_id IS NOT NULL`),
+	check("ck_run_attempts_launch_isolation", sql`launch_isolation_json IS NULL OR (launch_id IS NOT NULL AND launch_isolation_json->>'launch_id' = launch_id)`),
 	index("ix_run_attempts_run_status").using("btree", table.spaceId.asc().nullsLast(), table.runId.asc().nullsLast(), table.status.asc().nullsLast()),
 	index("ix_run_attempts_activity").using("btree", table.status.asc().nullsLast(), table.lastActivityAt.asc().nullsLast()),
 	unique("uq_run_attempts_id_space").on(table.id, table.spaceId),

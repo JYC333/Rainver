@@ -40,6 +40,7 @@ describe("the launch frame across the wire", () => {
     isolation: { sandbox_mode: "read_only", egress_profile: "none" },
     egress_transport: { mode: "system_tun" },
     ordinary_tools: { accounts: [{ tool_id: "lark_cli", account_key: "a".repeat(40) }] },
+    model_channel: { version: 1, upstream_base_url: "http://control-plane:8021", route: "anthropic", lease_id: "11111111-1111-4111-8111-111111111111", loopback_port: 18790 },
   };
   const overWire = (frame: unknown) => JSON.parse(JSON.stringify(frame)) as unknown;
 
@@ -62,6 +63,7 @@ describe("the launch frame across the wire", () => {
       isolation: wire.isolation,
       egress_transport: wire.egress_transport,
       ordinary_tools: wire.ordinary_tools,
+      model_channel: wire.model_channel,
     };
     const parsed = parseServerFrame(overWire(wire));
     if (!parsed.ok || parsed.frame.type !== "launch") throw new Error("launch frame did not parse");

@@ -5,8 +5,6 @@ import { diaryMessages, formatDiaryDate, type DiaryMessages } from './messages'
 
 export type { DiaryApi, DiaryEntry, DiaryReflection, DiaryWebHost } from './host'
 
-const PLUGIN_ID = 'diary'
-
 // The person's own calendar day: a UTC date is yesterday or tomorrow for
 // hours of every day away from UTC, and the header shows the local date.
 function todayDate(): string {
@@ -219,8 +217,7 @@ function HistorySidebar({ api, selectedDate, onSelect, text, locale }: { api: Di
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
 function DiaryPage({ host }: { host: DiaryWebHost }) {
-  const { api, Link, usePluginState, useLocale } = host
-  const { enabled, loading: pluginLoading } = usePluginState(PLUGIN_ID)
+  const { api, useLocale } = host
   const locale = useLocale()
   const text = diaryMessages(locale)
   const [selectedDate, setSelectedDate] = useState(todayDate())
@@ -244,24 +241,6 @@ function DiaryPage({ host }: { host: DiaryWebHost }) {
   }, [api, selectedDate])
 
   const handleSelect = (date: string) => { setSelectedDate(date); setEntry(null) }
-
-  if (pluginLoading) return null
-
-  if (!enabled) {
-    return (
-      <div style={{ maxWidth: 520, margin: '80px auto', padding: '0 24px', textAlign: 'center' }}>
-        <div style={{ fontSize: 40, marginBottom: 16 }}>📖</div>
-        <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 8 }}>{text.title}</h1>
-        <p style={{ color: '#666', marginBottom: 24 }}>{text.description}</p>
-        <Link
-          to="/plugins"
-          style={{ display: 'inline-block', padding: '8px 20px', borderRadius: 8, background: '#1976d2', color: '#fff', textDecoration: 'none', fontSize: 14, fontWeight: 500 }}
-        >
-          {text.enable}
-        </Link>
-      </div>
-    )
-  }
 
   return (
     <div style={{ maxWidth: 900, margin: '0 auto', padding: '32px 24px', display: 'flex', gap: 24, alignItems: 'flex-start' }}>

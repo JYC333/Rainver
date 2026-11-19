@@ -228,11 +228,13 @@ export class FinanceLedgerService {
     userId: string,
     visibility: AccountVisibility,
   ): Promise<FinanceAccountRow> {
-    const account = await this.repository.findAccountForViewer(
-      db, spaceId, bookId, accountId, userId, { writable: true },
-    );
-    if (!account?.owner_user_id) throw new AccountNotFoundError();
-    return this.repository.updateAccountVisibility(db, spaceId, bookId, accountId, visibility);
+    return withLockedBook(db, spaceId, bookId, async tx => {
+      const account = await this.repository.findAccountForViewer(
+        tx, spaceId, bookId, accountId, userId, { writable: true },
+      );
+      if (!account?.owner_user_id) throw new AccountNotFoundError();
+      return this.repository.updateAccountVisibility(tx, spaceId, bookId, accountId, visibility);
+    });
   }
 
   async closeAccount(

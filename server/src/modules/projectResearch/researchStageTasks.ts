@@ -7,6 +7,8 @@ import { PgRunRepository } from "../runs/repository.js";
 import type { ProviderStructuredOutput } from "../providers/invocation/invocation.js";
 import type { ResolvedResearchProvider } from "./executionProfileService.js";
 import { RESEARCH_STAGES } from "./researchStages.js";
+import { HttpError } from "../routeUtils/common.js";
+import { comparisonBaselineAdmission } from "./notebookNotes.js";
 
 /**
  * The queued Project Research stages, keyed by their stage identifier, and
@@ -122,6 +124,18 @@ export function registerResearchStageProviderTaskRuns(): void {
         instruction: run.instruction ?? null,
         runType: run.run_type ?? "agent",
         triggerOrigin: run.trigger_origin ?? "system",
+        // A comparison's prompt carries the frozen `understanding` baseline body, and its
+        // outputs are Project-shared: before each provider attempt the frozen baseline must
+        // still be a live Note with no Source lineage (`comparisonBaselineAdmission`). A Run
+        // queued before `baseline_note_id` was frozen cannot prove which Note it copied, so
+        // it is refused rather than sent; requeueing it applies the admission rule. The
+        // standing and focused merges apply the same check to an already terminal result.
+        authorizeAttempt: async (attemptDb) => {
+          if (stage !== RESEARCH_STAGES.monitor_compare) return;
+          const admission = await comparisonBaselineAdmission(attemptDb, run.space_id, contract.workflow_input_json);
+          if (admission === "not_frozen") throw new HttpError(409, "Comparison baseline was not frozen; requeue the comparison");
+          if (admission === "withheld") throw new HttpError(404, "Comparison baseline is no longer admissible");
+        },
         // The stage is unattended: the Run spends for itself, on the
         // pre-authorization its managed `project_research` policy records.
         spend: { kind: "run", run },

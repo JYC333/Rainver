@@ -207,6 +207,17 @@ aggregate row lock. Each scan is a bounded page that continues where the
 previous one stopped and wraps after the last page, so a graph that is still
 waiting cannot hold its place at the front and starve the rest. Per-graph
 failures are isolated and emit deduplicated operational alerts.
+A Workflow Execution pass differs on purpose: a node it settles without a Run
+(integration, action, failed input binding) finishes or fails the execution
+on the next pass, because Project Research advances its operation stage after
+the pass returns and before its coordinator may finish. An execution whose coordinator Run
+already ended outside the graph (cancelled, failed, orphaned) is included in
+the scan and is closed (`cancelled` for a cancelled root, otherwise `failed`)
+without scheduling anything under that root; like every other close, the
+outcome is handed once to the workflow's registered outcome handler, so
+Project Research projects a cancelled or failed coordinator as a failed stage. A paused Automation only holds
+its in-flight execution: the pass schedules nothing, the scan keeps visiting
+it, and it continues once the Automation is active again.
 
 AgentRunGroup owns interactive, policy-gated dynamic delegation inside an
 Agent Room. Plan and Workflow Execution own persistent, reviewable DAG nodes.

@@ -433,6 +433,50 @@ describe('HostAgents', () => {
     expect(onChanged).toHaveBeenCalled()
   })
 
+  it('updates the own Antigravity installation when the catalog reports a newer release', async () => {
+    const runtime = 'acp_antigravity_acp'
+    const adapter = {
+      runtime_key: runtime, registry_id: 'antigravity-acp', display_name: 'Google Antigravity',
+      latest_managed_version: '1.5.10',
+    } as HostRuntimeDefinitionOption
+    const host = { ...HOST, capabilities_json: { ...HOST.capabilities_json,
+      antigravity_own_updates: true as const, installations: { [runtime]: [{ id: 'own', version: '1.5.2', logged_in: true, options: null }] },
+    } } as Host
+    vi.mocked(acpAgentsApi.registry).mockResolvedValueOnce({ items: [
+      { ...goose, id: 'antigravity-acp', name: adapter.display_name, version: '1.5.11' },
+    ] })
+    const update = vi.spyOn(hostsApi, 'updateOwnRuntime').mockResolvedValueOnce({ ok: true, installation: 'own' } as never)
+    render(<HostAgents host={host} adapters={[adapter]} isInstanceAdmin={false} manageable onChanged={vi.fn()} />)
+    const row = within(screen.getByTestId(`host-agent-h1-${runtime}`))
+    const install = () => row.getByRole('button', { name: 'Add a managed copy of Google Antigravity on Laptop' })
+    expect(install()).toHaveTextContent('Install managed 1.5.10')
+    await userEvent.click(screen.getByRole('button', { name: 'Add agent…' }))
+    await waitFor(() => expect(install()).toHaveTextContent('Install managed 1.5.11'))
+    await userEvent.click(row.getByRole('button', { name: 'Update own Google Antigravity on Laptop' }))
+    expect(update).toHaveBeenCalledWith('h1', runtime)
+    update.mockRestore()
+    expect(row.getByText(/own · 1.5.2/)).toBeVisible()
+  })
+
+  it.each([
+    { installed: ['1.2.3', '2.1.0'], latest: '2.0.0', update: false },
+    { installed: ['1.2.3', null], latest: '2.0.0', update: false },
+    { installed: ['1.2.3', '1.9.0'], latest: '2.0.0', update: true },
+  ])('agrees on registry upgrades for $installed against $latest', async ({installed, latest, update}) => {
+    const host = { ...HOST, capabilities_json: { ...HOST.capabilities_json,
+      installations: { acp_goose: installed.map((version, index) => ({
+        id: `managed:fixture-${index}`, version, logged_in: null, options: null,
+      })) },
+    } } as Host
+    vi.mocked(acpAgentsApi.registry).mockResolvedValueOnce({items:[{...goose, version:latest}]})
+    render(<HostAgents host={host} adapters={ADAPTERS} isInstanceAdmin manageable onChanged={vi.fn()}/>)
+    await userEvent.click(screen.getByRole('button',{name:'Add agent…'}))
+    const row = within(screen.getByTestId('host-agent-h1-acp_goose'))
+    const catalog = within(await screen.findByRole('list',{name:'Agent catalog'}))
+    expect(row.queryAllByRole('button',{name:'Upgrade goose on Laptop'})).toHaveLength(Number(update))
+    expect(catalog.queryAllByRole('button',{name:'Upgrade goose on Laptop'})).toHaveLength(Number(update))
+  })
+
   it('keeps installed agents first and upgrades the selected ACP release without re-enabling it', async () => {
     vi.mocked(acpAgentsApi.registry).mockResolvedValueOnce({items:[{...goose,id:'aaa',name:'A new agent'},{...goose,version:'2.0.0'}]})
     installRuntime.mockResolvedValueOnce({ok:true,installation:'managed:2.0.0'})

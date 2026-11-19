@@ -84,6 +84,9 @@ const markdownAnnotations = [
 
 async function mockApi(page, { annotations = 'ok', created, toolbar = false, readerDocument = doc, appearanceWidth } = {}) {
   let appearance = appearanceWidth ? { width: appearanceWidth } : {}
+  // Created highlights join the authorized list the client rereads after its keyed command.
+  const made = []
+  const receipt = (kind, extra = {}) => ({ status: 'succeeded', data: { id: extra.annotation_id ?? kind, space_id: spaceId, document_type: null, document_id: null, annotation_id: null, kind, ...extra } })
   await page.route('**/api/v1/**', async route => {
     const path = new URL(route.request().url()).pathname.replace('/api/v1', '')
     const method = route.request().method()
@@ -96,7 +99,7 @@ async function mockApi(page, { annotations = 'ok', created, toolbar = false, rea
     else if (toolbar && path.endsWith('/reading/items/item-1/favorite')) data = { item_id: 'item-1', favorite: false }
     else if (toolbar && path === '/reader/source-items/item-1/versions') data = { items: [], next_offset: null }
     else if (path === '/reader/preferences/appearance') {
-      if (method === 'PUT') appearance = route.request().postDataJSON()
+      if (method === 'PUT') { appearance = route.request().postDataJSON(); return route.fulfill({ json: receipt('appearance') }) }
       data = appearance
     }
     else if (path === '/reader/documents/source_item/item-1') data = readerDocument
@@ -105,13 +108,18 @@ async function mockApi(page, { annotations = 'ok', created, toolbar = false, rea
     else if (path === '/sources/items/item-md/processing') data = { status: 'idle' }
     else if (path === '/reader/documents/source_item/item-1/annotations') {
       if (annotations === 'fail') return route.fulfill({ status: 500, json: { detail: 'Annotation service unavailable' } })
-      data = { items: [annotation] }
+      data = { items: [annotation, ...made] }
     } else if (path === '/reader/annotations' && method === 'POST') {
-      created?.push(route.request().postDataJSON())
-      data = { ...annotation, id: `created-${created?.length ?? 0}` }
+      const input = route.request().postDataJSON()
+      created?.push(input)
+      const id = `created-${made.length + 1}`
+      made.push({ ...annotation, ...input, id })
+      return route.fulfill({ status: 201, json: receipt('annotation', { document_type: input.document_type, document_id: input.document_id, annotation_id: id }) })
     } else if (path === '/sources/items/item-1/processing') data = { status: 'idle' }
     else if (path === '/reader/annotations/ann-1/threads') data = { items: [] }
     else if (path === `/projects/${projectId}`) data = { id: projectId, space_id: spaceId, name: 'Reader project', status: 'active' }
+    // A readable Project answers its overview; a refused overview hides the Project's work.
+    else if (path === `/projects/${projectId}/overview`) data = { project: { id: projectId, space_id: spaceId, name: 'Reader project', status: 'active' }, brief: null, attention: [] }
     else if (path === '/projects') data = { items: [{ id: projectId, space_id: spaceId, name: 'Reader project', status: 'active' }], total: 1, limit: 100, offset: 0 }
     else if (path === `/projects/${projectId}/research/reports/report-1`) data = report
     else if (path === '/reader/documents/research_report/report-1') data = { ...doc, document_type: 'research_report', document_id: 'report-1', project_id: projectId, title: 'Research report', source_item_id: null, source_uri: null, content_state: null }
@@ -514,7 +522,12 @@ test('reading an Agent document again as a source page never fetches the Agent d
       : { ...doc, document_id: 'item-rp', source_item_id: 'item-rp', content_json: body('https://tracker.example/old-agent.jpg'), image_policy: 'none', content_hash: 'v1', structure_hash: 's1' } }))
     await page.route('**/api/v1/reader/documents/source_item/item-rp/annotations', route => route.fulfill({ json: { items: [] } }))
     await page.route('**/api/v1/sources/items/item-rp/processing', route => route.fulfill({ json: reprocessed ? { status: 'succeeded', run_id: 'run-rp' } : { status: 'idle' } }))
-    await page.route('**/api/v1/sources/items/item-rp/processing/start', route => { reprocessed = true; return route.fulfill({ json: { status: 'queued', run_id: 'run-rp' } }) })
+    // Reading again is one keyed material command; the processing state is then reread.
+    await page.route('**/api/v1/actions/source.material.start', route => {
+      if (route.request().postDataJSON().source_item_id !== 'item-rp') return route.fallback()
+      reprocessed = true
+      return route.fulfill({ json: { status: 'succeeded', data: { id: 'item-rp', space_id: spaceId, status: 'queued', run_id: 'run-rp' } } })
+    })
     // Real network interception: any request to either image host is recorded and answered locally.
     await page.route(/https:\/\/(tracker|news)\.example\//, route => { imageRequests.push(route.request().url()); return route.fulfill({ contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="160" height="80"><rect width="160" height="80" fill="gray"/></svg>' }) })
 

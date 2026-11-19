@@ -24,6 +24,9 @@ export function formatOperationForAgent(result:OperationResponse,tool:string):Sy
   if('error' in body && body.error.code==='operation_not_granted'){
     body={...body,error:{...body.error,message:'This action is not available to this Run. Read rainver list; do not guess another action or replay a write.'}};
   }
+  if('error' in body && body.error.code==='operation_consent_required'){
+    body={...body,error:{...body.error,retryable:false,message:"This data needs its owner's consent for this Run. Call authorization.request with this policy_decision_record_id and a one-line reason, then stop; do not retry until it is approved."}};
+  }
   if('error' in body && body.error.code==='operation_not_found'){
     body={...body,error:{...body.error,message:'Object unavailable. Check only the current Run action list and objects returned by authorized reads. Do not guess names or ids, replay writes, or promise an unverified repair.'}};
   }

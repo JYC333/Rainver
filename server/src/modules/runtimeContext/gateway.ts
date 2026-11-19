@@ -661,15 +661,22 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
         || (item.acquisition === "direct"
           && isExplicitReferenceType(item.source_ref.type))) {
         await this.authorizeExplicitSource(db, input, control, item);
-      } else if (mode === "preview" && item.acquisition === "direct" && item.source_ref.type === "agent_version") {
+      } else if (item.acquisition === "direct" && item.source_ref.type === "agent_version") {
         await this.authorizeAgentVersionInstruction(db, input, control, item);
-      } else if (mode === "preview") {
-        throw new HttpError(409, `Runtime Context preview source type '${item.source_ref.type}' is not reauthorizable`);
+      } else {
+        // Fail closed: an item no acquisition produces has no owner re-check.
+        throw new HttpError(409, mode === "preview"
+          ? `Runtime Context preview source type '${item.source_ref.type}' is not reauthorizable`
+          : `Invocation Delivery source type '${item.source_ref.type}' is not reauthorizable`);
       }
     }
   }
 
-  /** The Run's own AgentVersion, of the Agent authorized above, with its current instruction. */
+  /**
+   * The Run's own AgentVersion, of the Agent authorized above, with its
+   * current instruction. Isolation is judged on the snapshot's Project, the
+   * same one acquisition uses to decide whether the instruction is planned.
+   */
   private async authorizeAgentVersionInstruction(
     db: Queryable,
     input: InvocationAttemptInput,
@@ -687,8 +694,8 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
         FOR SHARE OF version`,
       [input.invocationId, input.spaceId, control.agent_id, item.source_ref.id],
     )).rows[0];
-    if (!version || contextItemText(item) !== (version.system_prompt ?? "")) {
-      throw new HttpError(409, "Runtime Context preview Agent instruction changed after planning");
+    if (!version || contextItemText(item) !== (version.system_prompt ?? "").trim()) {
+      throw new HttpError(409, "Runtime Context Agent instruction changed after planning");
     }
   }
 
@@ -856,7 +863,7 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
         WHERE id=$1 AND target_run_id=$2 AND target_space_id=$3
           AND granting_user_id=$4 AND grant_scope='run'
           AND access_mode='summary_only' AND target_agent_id IS NULL
-          AND (status='used' OR (status='active' AND read_expires_at > $5))
+          AND status IN ('active','used') AND read_expires_at > $5
         FOR UPDATE`,
       [item.source_ref.id, input.invocationId, input.spaceId, input.viewerUserId, new Date().toISOString()],
     );
@@ -1297,7 +1304,7 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
     return Boolean(member.rows[0]);
   }
 
-  private async lockContentAclDependencies(
+  async lockContentAclDependencies(
     db: Queryable,
     spaceId: string,
     resourceType: string,
@@ -1305,12 +1312,6 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
     viewerUserId: string,
   ): Promise<void> {
     await db.query(`SELECT id FROM spaces WHERE id=$1 FOR SHARE`, [spaceId]);
-    await db.query(
-      `SELECT id FROM content_access_grants
-        WHERE space_id=$1 AND resource_type=$2 AND resource_id=$3
-          AND grantee_user_id=$4 AND revoked_at IS NULL FOR SHARE`,
-      [spaceId, resourceType, resourceId, viewerUserId],
-    );
     const definition = contentResourceDefinition(resourceType);
     if (!definition) throw new HttpError(409, `Invocation Delivery content type '${resourceType}' is not lockable`);
     const projectSelection = definition.projectColumn
@@ -1330,6 +1331,16 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
     );
     const row = scope.rows[0];
     if (!row) throw new HttpError(409, "Invocation Delivery content authority no longer exists");
+    // The viewer's grant after the resource root, the order every audience writer
+    // (`content.access.update`, the egress-review applier) takes them: root
+    // `FOR UPDATE`, then the grant rows. Grant first would let a reader holding the
+    // grant and a writer holding the root wait on each other.
+    await db.query(
+      `SELECT id FROM content_access_grants
+        WHERE space_id=$1 AND resource_type=$2 AND resource_id=$3
+          AND grantee_user_id=$4 AND revoked_at IS NULL FOR SHARE`,
+      [spaceId, resourceType, resourceId, viewerUserId],
+    );
     // The read rule's Project scope is an OR: no Project, the object's own
     // Project, or any Project it is shared to. The share rows are locked
     // either way; one readable Project is enough.
@@ -1683,6 +1694,9 @@ import { selectedSkillInstruction } from "../skills/selectedSkills.js";
 
 /** Caller must hold a transaction through the Source writer/Delivery commit. */
 export async function lockSourceConnectionAuthority(db:Queryable,spaceId:string,connectionId:string,viewerUserId:string){await new PgInvocationDeliveryAuthorizer().lockSourceConnectionAuthority(db,spaceId,connectionId,viewerUserId);}
+
+/** One content object's read authority for a viewer, FOR SHARE and in Delivery order: the Space, the viewer's grant, the root, its Project scope, shares and Folder. Refuses (404/409) when the viewer no longer reads it. */
+export async function lockContentReadAuthority(db:Queryable,spaceId:string,resourceType:string,resourceId:string,viewerUserId:string){await new PgInvocationDeliveryAuthorizer().lockContentAclDependencies(db,spaceId,resourceType,resourceId,viewerUserId);}
 
 export async function lockReadingRunAuthority(db:Queryable,run:import('../runs/repository.js').RunRecord){await new PgInvocationDeliveryAuthorizer().lockReadingRunAuthority(db,run);}
 

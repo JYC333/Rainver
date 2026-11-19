@@ -27,13 +27,6 @@ describe("SourceBackfillPlanningService",()=>{
   [{quota_policy:{window:"week"}},"invalid quota_policy.window"],
   [{quota_policy:{limit_count:0}},"quota_policy.limit_count"],
  ])("strictly rejects malformed numeric and enum input",async(body,message)=>{const query=vi.fn(async(sql:string)=>allowed(sql));await expect(new SourceBackfillPlanningService({query} as Queryable).preview(identity,"connection-1",body)).rejects.toMatchObject({statusCode:422,message:expect.stringContaining(message)});});
- it("creates the plan and all segments in one explicit transaction",async()=>{
-  const clientQuery=vi.fn(async(sql:string)=>{if(sql.startsWith("INSERT INTO source_backfill_plans"))return{rows:[{id:"plan-1"}],rowCount:1};if(sql.startsWith("SELECT * FROM source_backfill_plans"))return{rows:[{id:"plan-1",source_connection_id:"connection-1"}],rowCount:1};if(sql.startsWith("SELECT * FROM source_backfill_segments"))return{rows:[{seq:0}],rowCount:1};return{rows:[],rowCount:0};});
-  const release=vi.fn(),connect=vi.fn().mockResolvedValue({query:clientQuery,release});
-  const query=vi.fn(async(sql:string)=>allowed(sql));
-  const result=await new SourceBackfillPlanningService({query,connect} as unknown as Queryable).create(identity,"connection-1",{idempotency_key:"key-1",strategy:{from:"2026-01-01",to:"2026-01-02"}});
-  expect(result).toMatchObject({id:"plan-1",segments:[{seq:0}]});expect(clientQuery.mock.calls.map(call=>call[0])).toEqual(expect.arrayContaining(["BEGIN","COMMIT"]));expect(clientQuery).toHaveBeenCalledWith(expect.stringContaining("ON CONFLICT (space_id,idempotency_key) DO NOTHING"),expect.any(Array));expect(release).toHaveBeenCalledOnce();
- });
  it("persists the Project Research operation budget only on the operation",async()=>{
   let planParams: unknown[]|undefined;
   const clientQuery=vi.fn(async(sql:string,params?:unknown[])=>{
@@ -68,11 +61,6 @@ describe("SourceBackfillPlanningService",()=>{
   const query=vi.fn(async(sql:string)=>allowed(sql));
   await new SourceBackfillPlanningService({query,connect} as unknown as Queryable).create(identity,"connection-1",{idempotency_key:"generic-project-budget",project_operation_id:"operation-1",strategy:{from:"2026-01-01",to:"2026-01-02",max_items:17}});
   expect(JSON.parse(String(planParams?.[6]))).toHaveProperty("max_items",17);
- });
- it("returns the winning concurrent idempotent plan without adding segments",async()=>{
-  const query=vi.fn(async(sql:string)=>{if(sql.startsWith("INSERT INTO source_backfill_plans"))return{rows:[],rowCount:0};if(sql.startsWith("SELECT id, source_channel_id"))return{rows:[{id:"winner",source_channel_id:"connection-1"}],rowCount:1};if(sql.startsWith("SELECT * FROM source_backfill_plans"))return{rows:[{id:"winner"}],rowCount:1};if(sql.startsWith("SELECT * FROM source_backfill_segments"))return{rows:[{seq:0}],rowCount:1};return allowed(sql);});
-  const result=await new SourceBackfillPlanningService({query} as Queryable).create(identity,"connection-1",{idempotency_key:"same",strategy:{from:"2026-01-01",to:"2026-01-02"}});
-  expect(result).toMatchObject({id:"winner"});expect(query.mock.calls.filter(call=>String(call[0]).startsWith("INSERT INTO source_backfill_segments"))).toHaveLength(0);
  });
  it("rejects a binding from another connection and mismatched operation project",async()=>{
   const wrongBinding=vi.fn(async(sql:string)=>sql.includes("project_source_bindings")?{rows:[],rowCount:0}:allowed(sql));

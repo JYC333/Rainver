@@ -120,13 +120,22 @@ echo "Restoring '$PGDB' from: $DUMP_FILE"
 # --no-owner    — restore without setting ownership (avoids role requirement)
 # --no-acl      — skip GRANT/REVOKE statements
 "${COMPOSE[@]}" exec -T postgres \
-  pg_restore -U "$PGUSER" --clean --if-exists --no-owner --no-acl -d "$PGDB" \
+  pg_restore -U "$PGUSER" --exit-on-error --clean --if-exists --no-owner --no-acl -d "$PGDB" \
   < "$DUMP_FILE"
 
 # pg_restore --no-owner --no-acl strips operation-package ownership and grants.
 # Explicit stopped-service host reconciliation; never run plugin migrations here.
-"${COMPOSE[@]}" run --rm -T --no-deps \
-  -e SERVER_DATABASE_URL="$(local_compose_server_owner_database_url)" \
+# The owner URL carries its password: inherited by name (`-e NAME`), never on argv.
+SERVER_DATABASE_URL="$(local_compose_server_owner_database_url)" "${COMPOSE[@]}" run --rm -T --no-deps \
+  -e SERVER_DATABASE_URL \
   server node dist/db/migrateCli.js plugin-reconcile
+
+# ADR 0031: --no-acl also drops the runtime/backup role grants. Re-grant them
+# only when those roles were provisioned; this never creates or activates them.
+SERVER_DATABASE_URL="$(local_compose_server_owner_database_url)" \
+RAINVER_DB_APP_ROLE="$(local_compose_setting_or_default RAINVER_DB_APP_ROLE rainver_app)" \
+RAINVER_DB_BACKUP_ROLE="$(local_compose_setting_or_default RAINVER_DB_BACKUP_ROLE rainver_backup)" \
+  "${COMPOSE[@]}" run --rm -T --no-deps -e SERVER_DATABASE_URL -e RAINVER_DB_APP_ROLE -e RAINVER_DB_BACKUP_ROLE \
+  server node dist/db/migrateCli.js runtime-roles-reconcile --if-present
 
 echo "Restore complete."

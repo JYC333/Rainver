@@ -20,7 +20,7 @@ export function registerEvaluationHarnessHandler(registry: JobHandlerRegistry, c
       assetId,
       candidateVersionId,
       candidateRunId,
-    });
+    }, job);
   });
 }
 

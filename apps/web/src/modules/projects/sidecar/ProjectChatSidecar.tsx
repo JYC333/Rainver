@@ -253,7 +253,9 @@ export default function ProjectChatSidecar({ attention = [] }: { attention?: Pro
       <Button
         size="sm"
         variant="outline"
-        className="fixed bottom-[calc(4.5rem+var(--app-safe-bottom))] left-4 z-40 shadow md:bottom-4 md:left-auto md:right-4"
+        // From md up the Shell's quick capture holds the content's lower-right
+        // corner (1.25rem in, 3rem wide); this sits beside it, centred on its row.
+        className="fixed bottom-[calc(4.5rem+var(--app-safe-bottom))] left-4 z-40 shadow md:bottom-[1.875rem] md:left-auto md:right-[5rem]"
         onClick={() => setOpen(true)}
         aria-label={t('collab_ui.sidecar.open_label')}
       >
@@ -271,8 +273,9 @@ export default function ProjectChatSidecar({ attention = [] }: { attention?: Pro
         // of the row would halve the page it is meant to sit beside. There it
         // overlays instead. At `lg` it sits beside the page, stuck to the top
         // of the scroll container at that container's height.
-        // Reserve the lower corner for the Shell's floating quick-capture control.
-        'project-chat-safe-overlay fixed right-0 z-40 flex min-h-0 pb-24 md:pb-16 w-[min(22rem,100vw)] flex-col overflow-hidden overscroll-none '
+        // The Shell's quick capture floats beside this panel (useProjectContentEdge),
+        // so the panel keeps no empty band for it under its footer.
+        'project-chat-safe-overlay fixed right-0 z-40 flex min-h-0 w-[min(22rem,100vw)] flex-col overflow-hidden overscroll-none '
         + 'border-l border-border bg-card shadow-xl '
         + 'lg:relative lg:sticky lg:top-0 lg:z-auto lg:self-start lg:w-[var(--sidecar-w)] lg:h-[var(--sidecar-h,100dvh)] lg:shadow-none'
       }
@@ -290,7 +293,7 @@ export default function ProjectChatSidecar({ attention = [] }: { attention?: Pro
         aria-valuemin={MIN_WIDTH}
         aria-valuemax={MAX_WIDTH}
         tabIndex={0}
-        className="absolute inset-y-0 left-0 hidden w-1.5 cursor-col-resize hover:bg-primary/30 focus-visible:bg-primary/40 lg:block"
+        className="absolute inset-y-0 left-0 z-10 hidden w-1.5 cursor-col-resize hover:bg-primary/30 focus-visible:bg-primary/40 lg:block"
         onPointerDown={startResize}
         onKeyDown={event => {
           // Left widens, matching the drag: the edge moves left.

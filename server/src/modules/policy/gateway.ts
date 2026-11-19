@@ -24,6 +24,7 @@ import {
 } from "./actionRegistry.js";
 import { checkHardInvariants, engineCheck } from "./decisionCore.js";
 import { sanitizePolicyMetadata } from "./sanitizer.js";
+import { OWNER_ONLY_PROPOSAL_TYPES } from "../ontology/entities.js";
 
 import type {
   PolicyAuditEnvelope,
@@ -299,6 +300,10 @@ const PROPOSAL_TYPE_RISK: Record<string, RiskLevel> = {
   custom_source_repair_activation: "medium",
   source_recipe_activation: "medium",
   evolution_bundle_rollback: "high",
+  gmail_monitor_create: "medium",
+  gmail_digest_create: "high",
+  gmail_private_read: "high",
+  gmail_private_check: "high",
 };
 
 export const SUPPORTED_PROPOSAL_TYPES: ReadonlySet<string> = new Set(
@@ -342,6 +347,13 @@ export interface ProposalApplyInput {
   required_approver_role?: string | null | undefined;
   proposal_payload: Record<string, unknown> | null | undefined;
   metadata_json?: Record<string, unknown> | null | undefined;
+  /**
+   * Set by the apply service only for an owner-only private proposal type
+   * (`OWNER_ONLY_PROPOSAL_TYPES`) whose `owner_user_id` is this actor: the
+   * person deciding their own private draft. Lets an active plain member
+   * accept it; it never raises any other proposal or any other person.
+   */
+  private_owner_decision?: boolean | undefined;
 }
 
 /**
@@ -435,6 +447,9 @@ export function checkProposalApplyPolicy(
     });
   }
 
+  if (input.private_owner_decision === true && !requiredApproverRole && OWNER_ONLY_PROPOSAL_TYPES.includes(input.proposal_type)) {
+    return approveProposal(input, risk, role, "approved_private_owner", "proposal_apply_private_owner_allow", meta, requiredApproverRole);
+  }
   if (role === "owner") {
     return approveProposal(input, risk, "owner", "approved_owner", "proposal_apply_owner_allow", meta, requiredApproverRole);
   }

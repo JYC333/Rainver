@@ -15,6 +15,9 @@
  * 0.4.8 journals managed-workspace archive/restore operations with generation fencing
  * (`managed_workspace_operations`), negotiated the same way: an older daemon gets
  * legacy archives and no restore.
+ * 0.4.9 serves the model-only channel of an egress-`none` strict Run (`model_channel`),
+ * negotiated the same way: without it no Run is launched that way, and sensitive plugin
+ * data stays unreleased to that Host's Runs (ADR 0030 §4a).
  *
  * 0.4.0 was the oldest daemon that merges a done Task's branch (ADR 0016 §11): `task_merge_prepare`,
  * `_continue`, `_abort` and `_finish`, and a conflict-resolution Run launched

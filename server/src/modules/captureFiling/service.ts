@@ -2,6 +2,7 @@ import {admitFiling} from './admission.js';
 import { resolveContentCreationContext } from "../access/creationContext.js";
 import { PgKnowledgeRepository } from "../knowledge/repository.js";
 import { HttpError, withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
+import { contentOwnerOnlySql } from "../access/contentAccessSql.js";
 import { getDbPool } from "../../db/pool.js";
 import type { ServerConfig } from "../../config.js";
 
@@ -13,6 +14,7 @@ interface ActivityRow {
   payload_json: Record<string, unknown> | null;
   status: string;
   space_type: string;
+  owner_only: boolean;
 }
 
 interface CaptureFilingResult {
@@ -105,7 +107,7 @@ export class CaptureFilingService {
   private async loadOwnedCapture(db: Queryable, userId: string, activityId: string): Promise<ActivityRow> {
     const result = await db.query<ActivityRow>(
       `SELECT ar.id, ar.space_id, ar.title, ar.content, ar.payload_json, ar.status,
-              space.type AS space_type
+              space.type AS space_type, ${contentOwnerOnlySql("activity", "ar")} AS owner_only
          FROM activity_records ar
          JOIN spaces space ON space.id = ar.space_id
          JOIN space_memberships membership
@@ -124,6 +126,8 @@ export class CaptureFilingService {
     if (row.space_type !== "personal") {
       throw new HttpError(422, "Only personal captures are filed; use the content-access API in a shared Space");
     }
+    // An owner-only reminder (a Gmail monitor match) points at private mail; it is not a capture.
+    if (row.owner_only) throw new HttpError(422, "This reminder stays private and cannot be filed");
     if (row.status === "archived") throw new HttpError(409, "Capture is archived");
     const filed = (row.payload_json as { filed_into?: unknown } | null)?.filed_into;
     if (filed) throw new HttpError(409, "Capture has already been filed");

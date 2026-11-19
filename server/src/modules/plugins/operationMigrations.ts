@@ -58,7 +58,7 @@ export async function migrateOperationPlugin(pool: Pool, plugin: RainverPlugin, 
         ddl,
         schema
       } = pluginRoleNames(plugin.id);
-      for (const migration of actual) {
+      for (const [index, migration] of actual.entries()) {
         phase = 'migration';
         current = migration.id;
         const checksum = digest(migration.sql),
@@ -68,6 +68,11 @@ export async function migrateOperationPlugin(pool: Pool, plugin: RainverPlugin, 
           continue;
         }
         if (existing?.status === 'failed' && !options.repairFailed) throw new HttpError(409, 'Plugin requires explicit offline repair');
+        // Pass only the preceding migration's timestamp for this package. A backfill can
+        // bound its legacy rows without giving the DDL role access to the core journal.
+        await client.query(`SELECT set_config('rainver.previous_migration_applied_at', coalesce((
+          SELECT applied_at::text FROM plugin_migrations WHERE plugin_id=$1 AND migration_id=$2 AND status='applied'
+        ), ''), true)`, [plugin.id, actual[index - 1]?.id ?? null]);
         await client.query(`SET LOCAL ROLE ${ddl}`);
         await client.query(`SET LOCAL search_path=${schema},pg_temp`);
         for (const statement of migration.sql.split('--> statement-breakpoint')) {

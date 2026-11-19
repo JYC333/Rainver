@@ -538,7 +538,7 @@ describe("Knowledge promotion and revalidation (real Postgres)", () => {
       }), now],
     );
 
-    await processUnclaimedDomainChangeEvents(db.pool, SPACE);
+    await expect(processUnclaimedDomainChangeEvents(db.pool, SPACE)).resolves.toMatchObject({ failed: 1 });
     const failed = await db.pool.query<{
       processed_at: string | null;
       attempt_count: number;
@@ -552,6 +552,134 @@ describe("Knowledge promotion and revalidation (real Postgres)", () => {
     expect(failed.rows[0]).toMatchObject({ processed_at: null, attempt_count: 1 });
     expect(failed.rows[0]!.last_error).toContain(missingRevisionId);
     expect(failed.rows[0]!.claim_expires_at).toBeTruthy();
+  });
+
+  it("keeps persistent failures from holding the batch, and backs each retry off further", async () => {
+    if (!db.available) return;
+    const noteId = await seedNote(["Pinned block."]);
+    const candidates = new KnowledgePromotionCandidateService(db.pool);
+    const candidate = await candidates.createFromNote(identity, PROJECT, {
+      note_id: noteId, block_anchors: [0], candidate_kind: "summary",
+      proposed_title: "Pinned block", proposed_content: "Pinned block.",
+    });
+    const promoted = await candidates.decideCandidate(identity, PROJECT, candidate.id as string, { decision: "promote" });
+    await proposalApplyService().accept(promoted.created_proposal_id as string, identity);
+
+    // 60 older events that already failed (their backoff over) and keep failing.
+    const insert = (id: string, sourceId: string, occurredAt: string, failedBefore: boolean) => db.pool.query(
+      `INSERT INTO domain_change_outbox (
+         id, space_id, source_kind, source_id, source_ref_json, change_kind,
+         change_significance, occurred_at, attempt_count, last_error, claimed_at
+       ) VALUES ($1,$2,'note',$3,$4::jsonb,'revision_created',NULL,$5,$6,$7,$8)`,
+      [id, SPACE, sourceId, JSON.stringify({
+        kind: "note_revision", note_id: sourceId, revision_id: randomUUID(),
+        version: 2, content_hash: "missing", block_anchors: [],
+      }), occurredAt, failedBefore ? 3 : 0, failedBefore ? "earlier failure" : null,
+        failedBefore ? new Date(Date.now() - 3_600_000).toISOString() : null],
+    );
+    const failing: string[] = [];
+    for (let i = 0; i < 60; i += 1) {
+      const id = randomUUID();
+      failing.push(id);
+      await insert(id, noteId, new Date(Date.UTC(2026, 0, 1, 0, i)).toISOString(), true);
+    }
+    // One newer event with nothing pinned to it: it settles as soon as it is picked.
+    const fresh = randomUUID();
+    await insert(fresh, randomUUID(), new Date().toISOString(), false);
+
+    const result = await processUnclaimedDomainChangeEvents(db.pool, SPACE, 50);
+    // The batch is full: every never-failed event (the promotion's own included) plus retries.
+    expect(result.processed + result.failed).toBe(50);
+    const rows = (await db.pool.query<{ id: string; processed_at: string | null; attempt_count: number; last_error: string | null; backoff_s: number | null }>(
+      `SELECT id, processed_at, attempt_count, last_error,
+              EXTRACT(EPOCH FROM claim_expires_at - claimed_at)::int AS backoff_s
+         FROM domain_change_outbox WHERE space_id=$1`, [SPACE],
+    )).rows;
+    expect(rows.find((row) => row.id === fresh)?.processed_at).toBeTruthy();
+    const retried = rows.filter((row) => failing.includes(row.id) && row.attempt_count === 4);
+    expect(retried).toHaveLength(result.failed);
+    expect(result.failed).toBeGreaterThanOrEqual(10);
+    // Failures stay visible and unprocessed; the fourth attempt waits 60s × 2³.
+    expect(retried.every((row) => row.processed_at === null && row.last_error && row.backoff_s === 480)).toBe(true);
+  });
+
+  it("gives fresh events every slot but the retry share while failures wait", async () => {
+    if (!db.available) return;
+    const insert = (id: string, occurredAt: string, failedBefore: boolean) => db.pool.query(
+      `INSERT INTO domain_change_outbox (
+         id, space_id, source_kind, source_id, source_ref_json, change_kind,
+         change_significance, occurred_at, attempt_count, last_error
+       ) VALUES ($1,$2,'note',$3,'{}'::jsonb,'revision_created',NULL,$4,$5,$6)`,
+      [id, SPACE, randomUUID(), occurredAt, failedBefore ? 1 : 0, failedBefore ? "earlier failure" : null],
+    );
+    const old: string[] = [];
+    for (let i = 0; i < 20; i += 1) {
+      const id = randomUUID();
+      old.push(id);
+      await insert(id, new Date(Date.UTC(2026, 0, 1, 0, i)).toISOString(), true);
+    }
+    const fresh: string[] = [];
+    for (let i = 0; i < 60; i += 1) {
+      const id = randomUUID();
+      fresh.push(id);
+      await insert(id, new Date(Date.UTC(2026, 5, 1, 0, i)).toISOString(), false);
+    }
+    // Nothing is pinned to any of them, so whatever is picked settles.
+    await expect(processUnclaimedDomainChangeEvents(db.pool, SPACE, 50)).resolves.toMatchObject({ processed: 50, failed: 0 });
+    const done = new Set((await db.pool.query<{ id: string }>(
+      `SELECT id FROM domain_change_outbox WHERE space_id=$1 AND processed_at IS NOT NULL`, [SPACE],
+    )).rows.map((row) => row.id));
+    expect(old.filter((id) => done.has(id))).toHaveLength(10);
+    expect(fresh.filter((id) => done.has(id))).toEqual(fresh.slice(0, 40));
+  });
+
+  it("keeps a small batch fair: new events are not starved by retries, nor retries by new events", async () => {
+    if (!db.available) return;
+    const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
+    // Nothing is pinned to any event, so whatever is picked settles.
+    const insert = async (occurredAt: string, retryEligibleAt?: string) => {
+      const id = randomUUID();
+      await db.pool.query(
+        `INSERT INTO domain_change_outbox (
+           id, space_id, source_kind, source_id, source_ref_json, change_kind,
+           change_significance, occurred_at, attempt_count, last_error, claimed_at, claim_expires_at
+         ) VALUES ($1,$2,'note',$3,'{}'::jsonb,'revision_created',NULL,$4,$5,$6,$7,$8)`,
+        [id, SPACE, randomUUID(), occurredAt, retryEligibleAt ? 2 : 0, retryEligibleAt ? "earlier failure" : null,
+          retryEligibleAt ? minutesAgo(120) : null, retryEligibleAt ?? null],
+      );
+      return id;
+    };
+    const processedIds = async () => new Set((await db.pool.query<{ id: string }>(
+      `SELECT id FROM domain_change_outbox WHERE space_id=$1 AND processed_at IS NOT NULL`, [SPACE],
+    )).rows.map((row) => row.id));
+    const sweep = () => processUnclaimedDomainChangeEvents(db.pool, SPACE, 1);
+
+    // Retries whose backoff just ended do not take the only slot from an
+    // event that was already waiting.
+    const retriesJustDue = [await insert(minutesAgo(600), minutesAgo(1)), await insert(minutesAgo(600), minutesAgo(1))];
+    const waitingEvent = await insert(minutesAgo(10));
+    await expect(sweep()).resolves.toMatchObject({ processed: 1, failed: 0 });
+    expect(await processedIds()).toEqual(new Set([waitingEvent]));
+
+    // Retries that became due before newer events arrived are not starved by them.
+    const newer = [await insert(minutesAgo(0.5)), await insert(minutesAgo(0.4))];
+    await sweep();
+    await sweep();
+    const afterRetries = await processedIds();
+    expect(retriesJustDue.every((id) => afterRetries.has(id))).toBe(true);
+    expect(newer.some((id) => afterRetries.has(id))).toBe(false);
+    await sweep();
+    await sweep();
+    const all = await processedIds();
+    expect(newer.every((id) => all.has(id))).toBe(true);
+
+    // With two slots, each kind keeps one even when the other waited longer.
+    const oldRetries = [await insert(minutesAgo(900), minutesAgo(300)), await insert(minutesAgo(900), minutesAgo(300))];
+    const lateEvent = await insert(minutesAgo(1));
+    await expect(processUnclaimedDomainChangeEvents(db.pool, SPACE, 2)).resolves.toMatchObject({ processed: 2 });
+    const pair = await processedIds();
+    expect(pair.has(lateEvent)).toBe(true);
+    expect(oldRetries.filter((id) => pair.has(id))).toHaveLength(1);
   });
 
   it("keeps the promotion Proposal of a private Note as private as the Note", async () => {

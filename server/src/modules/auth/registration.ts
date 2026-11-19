@@ -3,6 +3,7 @@ import type { Pool } from "../../db/pool.js";
 import type { ServerConfig } from "../../config.js";
 import { withTransaction } from "../../db/tx.js";
 import { seedSpaceDefaults } from "../spaces/spaceSeeds.js";
+import { lockSpaceAudienceForChange } from "../access/activePerson.js";
 import { hashOpaqueToken, normalizeAuthEmail } from "./securityPolicy.js";
 
 type RegistrationAuthority = "bootstrap" | "space_invitation" | "instance_invitation";
@@ -221,6 +222,9 @@ export class RegistrationService {
         const invitation = await client.query<{ space_id: string | null; role: string | null; status: string; reserved_by_intent_id: string | null; expires_at: Date | string }>("SELECT space_id, role, status, reserved_by_intent_id, expires_at FROM user_invitations WHERE id = $1 FOR UPDATE", [intent.invitation_id]);
         const row = invitation.rows[0];
         if (!row || row.status !== "reserved" || row.reserved_by_intent_id !== intent.id || new Date(row.expires_at).getTime() <= Date.now() || (row.space_id ? "space_invitation" : "instance_invitation") !== intent.authority) throw new Error("registration_invitation_invalid");
+        // The Space audience fence: a decision resting on the whole membership
+        // (Space oversight included) waits for, or precedes, this new member.
+        if (row.space_id) await lockSpaceAudienceForChange(client, row.space_id);
         if (row.space_id) await client.query(
           `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
            VALUES ($1, $2, $3, $4, 'active', now(), now())

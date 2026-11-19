@@ -24,6 +24,7 @@ import { PgRoomRepository, ROOM_AUDIENCE_SQL, conversationHasUnfinishedAgentsSql
 import { RoomReferenceService } from "./referenceService.js";
 import { ProjectOverviewService } from "../projects/overviewService.js";
 import { SpaceAssistantService, type ManagedAssistantPreparation } from "../agents/spaceAssistantService.js";
+import type { UnattendedTurn } from "../agents/chatOperations.js";
 import type { ConversationInputPart, RoomAgentPresetRequest, RoomDetail, RuntimeSessionConfigSelection, ThreadReferencePick } from "@rainver/protocol";
 import { contentReadSql } from "../access/contentAccessSql.js";
 import { RoomRosterService, lockConversationAgentThread } from "./rosterService.js";
@@ -561,6 +562,11 @@ export class RoomService {
       );
     return {
       items: messages ?? [],
+      ...(!input.message_id && input.offset === 0 && {
+        active_run_ids: await new PgRunRepository(this.pool).listActiveRoomRunIds(
+          identity.spaceId, identity.userId, roomId, sessionId,
+        ),
+      }),
       // What people said while the turn was taken, not yet posted.
       queued: await listQueuedRoomMessages(this.pool, identity.spaceId, sessionId, identity.userId),
       task_group_ids: await roomRepository.listConversationTaskGroupIds(
@@ -1092,6 +1098,38 @@ export class RoomService {
     });
   }
 
+  /**
+   * A turn the server starts in a Room conversation (a Room or the Project mainline) on a standing setup
+   * the person confirmed there — a scheduled Gmail digest (ADR 0033 phase B). It is admitted as the
+   * person's own Room message would be: they must still be in this Room, the Agent must take part in the
+   * conversation, its bound backend and the conversation's own Host thread are used, and the conversation
+   * takes one turn at a time. The instruction is an internal message (not shown as theirs); the Run is
+   * `automation`-origin with only the listed tools, and its reply is the Room's like any other. Joins the
+   * caller's transaction; refusals are `HttpError`s, a busy conversation carries
+   * `code: "conversation_turn_in_progress"`.
+   */
+  async queueUnattendedTurnInTransaction(
+    client: Queryable,
+    identity: RoomIdentity,
+    input: { roomId: string; sessionId: string; agentId: string; message: string; event: { kind: string; key: string }; unattended: UnattendedTurn },
+  ): Promise<{ run_id: string }> {
+    const rooms = new PgRoomRepository(client);
+    const room = await requireRoom(rooms, identity, input.roomId, true);
+    await requireConversation(rooms, identity, input.roomId, input.sessionId);
+    const dispatched = await this.dispatchRoomMessage(client, rooms, room, identity, input.sessionId, {
+      content: input.message,
+      routing_mode: "direct",
+      recipient_segments: [{ recipient_agent_ids: [input.agentId], content: input.message }],
+      backends: [],
+      kind: "unattended",
+      event: input.event,
+      unattended: input.unattended,
+    });
+    const runId = dispatched.run_ids[0];
+    if (!runId || dispatched.run_ids.length !== 1) throw new HttpError(409, "The scheduled Room turn did not start exactly one Run");
+    return { run_id: runId };
+  }
+
   private async dispatchRoomMessage(
     client: Queryable,
     rooms: PgRoomRepository,
@@ -1145,6 +1183,12 @@ export class RoomService {
           /** A person asked one Agent to summarize the conversation; the recipient run is a handoff-shaped turn. */
           kind: "agent_summary";
           summary_agent_id: string;
+        }
+      | {
+          /** A scheduled turn on a setup the person confirmed in this conversation (`queueUnattendedTurnInTransaction`). */
+          kind: "unattended";
+          event: { kind: string; key: string };
+          unattended: UnattendedTurn;
         }
     ),
   ) {
@@ -1269,7 +1313,9 @@ export class RoomService {
           : input.kind === "agent_summary"
             // The message metadata schema is strict: the Agent asked is the event's key.
             ? { continuation_event_kind: "conversation_summary", continuation_event_key: input.summary_agent_id }
-            : null;
+            : input.kind === "unattended"
+              ? { continuation_event_kind: input.event.kind, continuation_event_key: input.event.key }
+              : null;
       const roomMessage = input.kind === "proposal_continuation"
         ? input.existing_internal_message ?? await sessions.addRoomInternalInstruction(
             identity.spaceId,
@@ -1278,7 +1324,7 @@ export class RoomService {
             sessionId,
             { content, metadata: { room_id: roomId, ...continuationMetadata } },
           )
-        : input.kind === "domain_event_continuation" || input.kind === "agent_summary"
+        : input.kind === "domain_event_continuation" || input.kind === "agent_summary" || input.kind === "unattended"
           ? await sessions.addRoomInternalInstruction(
               identity.spaceId,
               identity.userId,
@@ -1394,6 +1440,8 @@ export class RoomService {
         trigger: input.kind === "domain_event_continuation"
           ? { origin: "continuation", cause_run_id: input.cause.within_budget ? input.cause.run_id : null }
           : { origin: "manual" },
+        // A scheduled turn's Run is `automation`-origin with only its own tools and frozen input.
+        unattended: input.kind === "unattended" ? input.unattended : null,
         // Retry capability parts are read-only metadata from the original
         // message. The persisted message already owns its frozen inputs; do
         // not feed the read-model shape back through the create-input path —
@@ -1757,8 +1805,9 @@ function requiredText(value: string, field: string): string {
  * list that shows it reads as if a person had typed it.
  */
 function continuationGroupTitle(
-  input: { kind: "proposal_continuation" } | { kind: "domain_event_continuation"; event: { kind: string; key: string } } | { kind: "agent_summary" },
+  input: { kind: "proposal_continuation" } | { kind: "domain_event_continuation" | "unattended"; event: { kind: string; key: string } } | { kind: "agent_summary" },
 ): string {
+  if (input.kind === "unattended") return `Scheduled: ${input.event.kind}`;
   return input.kind === "domain_event_continuation"
     ? `Continuation: ${input.event.kind}`
     : input.kind === "agent_summary"

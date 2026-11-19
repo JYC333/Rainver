@@ -1,6 +1,6 @@
 # Operation Core Program
 
-Date: 2026-11-05
+Date: 2026-11-05; remaining scope reorganized 2026-11-16
 Status: Plan 1 is complete within its documented scope. Its four stages and
 overall code/final documentation passed Claude/Antigravity dual review. Reviewed
 scope is `3e3af010` through `c3156a48` plus the documentation-only correction.
@@ -21,9 +21,19 @@ Unicode/$ temp-table boundaries; its [correction passed independent dual review]
 The historical P2 approvals/test results do not cover that patch.
 Plan 5 is complete within its documented migration scope; see the permanent
 [P5 closeout](../../architecture/OPERATION_CORE_ACCEPTANCE.md#p5-closeout).
-Plans 00/03/04/06 remain unfinished. No deployment or whole-program completion is
-implied. Plans remain forward-looking outside the explicit current
-implementation described in the architecture guides.
+The plugin Agent data-access platform with its typed core-object host ports
+([ADR 0030](../../decisions/0030-plugin-agent-data-access.md), current behaviour in
+[OFFICIAL_OPTIONAL_MODULES](../../architecture/OFFICIAL_OPTIONAL_MODULES.md#agent-data-access-adr-0030))
+and the runtime DB role procedure ([ADR 0031](../../decisions/0031-runtime-database-roles.md))
+are complete within their documented supported scope; Codex and Antigravity gave
+final focused approval on `e827b557` (2026-11-17). Their plans are retired. What
+they leave open — runtime DB role activation, which requires separate operational
+authorization, and the sensitive-read paths that remain unsupported (vendor-login
+CLI, paired Host, live provider, ACP adapter processes, OpenCode) — is in the
+[deferred register](../../tasks/deferred-register.md). P3 (application management
+package) has stages 1–3 and its four-area revision with the funding track
+implemented; P6 is conditional, and the Diary and Finance migration is tracked in P7.
+The implementation is privately saved, not published or deployed.
 
 ## Goal
 
@@ -54,46 +64,30 @@ the pilot for the plugin contract.
 5. **Plugins are first-party, same-process and fully trusted.** Third-party
    plugins are out of scope; ports stay serializable so that can change later.
 
-## Plans and order
+## Remaining work and order
 
-| # | Plan | Depends on | Can run in parallel with |
-|---|---|---|---|
-| 0 | [Audit defect fixes](00-audit-defect-fixes.md) | — | everything |
-| 1 | [Implemented core — Plan 1 reviewed and complete](../../architecture/OPERATION_CORE_ACCEPTANCE.md) | — | 0 |
-| 2 | [Plugin operation platform](02-plugin-operation-platform.md) | 1 | 0 |
-| 3 | [PhD application plugin (pilot)](03-phd-application-plugin.md) | 2 | 4 |
-| 4 | [Plugin Agent access and data sensitivity](04-plugin-agent-access-and-sensitivity.md) | 2 | 3 |
-| 5 | [Core module migration to the operation core](05-core-module-operation-migration.md) | 1 | 2, 3, 4 |
-| 6 | [Later extensions](06-later-extensions.md) | 2 | — |
+This index is the operation-core program's remaining-work entry. Existing user
+and Agent adapters, the operation executor and P2's basic plugin platform are
+implemented; do not reopen them to migrate unused plugins.
 
-Plan 1 implementation and overall dual-review approval are recorded in the
-permanent owner documents above. Plan 5's standing rule ("new core
-capabilities are operations first") still applies. Its completed temporary
-ledger is [retired](05-core-module-operation-migration.md); current evidence and
-limits are in the permanent [P5 closeout](../../architecture/OPERATION_CORE_ACCEPTANCE.md#p5-closeout).
+| Scope | Status / next work | Owner and dependency |
+| --- | --- | --- |
+| Runtime DB role activation | Implemented as an explicit procedure; not activated; activation needs separate authorization per instance | [ADR 0031](../../decisions/0031-runtime-database-roles.md); [enablement gate](../../tasks/deferred-register.md#enablement-gates) |
+| Application management plugin | Stages 1–3 (Project binding, `applications` package with PhD and funding tracks, Notes materials and generated drafts) and the four-area revision implemented; remaining follow-ups and open product decisions in P3. Separate new-product pilot, not a platform completion prerequisite | [P3](03-phd-application-plugin.md); P2 plus the ADR 0030 gates/ports |
+| Later platform extensions | Conditional only; not scheduled core blockers | [P6](06-later-extensions.md) |
+| Diary/Finance business and data migration | Started 2026-11-19: Diary rebuilt as an operation package (privately committed, awaiting review); Finance next | [P7](07-legacy-plugin-migration.md); no live data migration |
 
-Until plan 4 lands, sensitive plugin data (diary entries, private finance
-accounts) stays invisible to Agents — the fail-closed default, not a gap.
+The ADR 0030/0031 platform work reuses the existing executor, Proposal applier,
+audit and Job owners. Fixtures and real-PG tests cover consent, revocation, replay,
+Room intersections, typed ports, audit/taint rollback and role separation.
+Sensitive access is enabled only under the reviewed consent and isolation gates.
+Old-plugin migration, new-product delivery and live-instance activation remain
+independent follow-on work; none is implied by this platform completion.
 
-## Documents to rewrite when the program lands
+## Documentation ownership
 
-- [SYSTEM_ACTIONS](../../architecture/SYSTEM_ACTIONS.md) — the core becomes
-  actor-neutral with user, Agent and later MCP entries.
-- [OFFICIAL_OPTIONAL_MODULES](../../architecture/OFFICIAL_OPTIONAL_MODULES.md)
-  and [ADR 0006](../../decisions/0006-plugin-module-architecture.md) — the
-  plugin contract becomes manifest + operations + scoped database port.
-- [DATABASE_AND_TRANSACTIONS](../../architecture/DATABASE_AND_TRANSACTIONS.md)
-  — core-owned operation transactions, plugin schema and role isolation.
-- [SECURITY_AND_ACCESS_BOUNDARIES](../../architecture/SECURITY_AND_ACCESS_BOUNDARIES.md)
-  — plugin data classes, owner consent, Agent read audit.
-- [ADR 0028](../../decisions/0028-operation-execution-core.md) already records
-  the Plan 1 core decision; later plugin implementation needs its own updates.
-
-
-The original Plan 1 production scope was one research.cancel_acquisition pilot
-plus the metadata query. That historical approval did not enable approval-bearing business
-families. Their later migration and remaining approval-mapping limits are
-recorded in the P5 closeout; the original pilot is not the current inventory.
-Test-only mechanism evidence is not production migration closure.
-The permanent acceptance matrix records real faults, cutover limits and review
-status. Preserve the independent unfinished plans 00/03/04/06.
+Implemented behavior remains in the execution contract, SYSTEM_ACTIONS,
+OFFICIAL_OPTIONAL_MODULES, DATABASE_AND_TRANSACTIONS and security/content-access
+owner guides. Plans describe future work only. Update the affected owner guide
+when a change lands; do not copy temporary execution logs back into this index.
+The permanent acceptance matrix preserves completed-scope evidence and limits.

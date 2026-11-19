@@ -1,11 +1,9 @@
-/** Unknown and prerelease versions cannot establish a safe stable upgrade. */
-export function hasStableUpdate(current: string | null, latest: string | null | undefined): boolean {
-  const installed = current?.match(/\bv?(\d+)\.(\d+)\.(\d+)(?![\d.+-])/)
-  const available = latest?.match(/^(\d+)\.(\d+)\.(\d+)$/)
-  if (!installed || !available) return false
-  for (let index = 1; index <= 3; index++) {
-    const left = Number(available[index]), right = Number(installed[index])
-    if (left !== right) return left > right
-  }
-  return false
+import { hasStableUpdate } from '@rainver/protocol'
+
+export { hasStableUpdate }
+
+/** An update applies to the runtime as a whole. An unknown or newer copy
+ * prevents an older copy from offering an update that could downgrade it. */
+export function hasManagedUpdate(current: readonly (string | null)[], latest: string | null | undefined): boolean {
+  return current.length > 0 && current.every(version => hasStableUpdate(version, latest))
 }

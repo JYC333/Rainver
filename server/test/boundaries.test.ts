@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { listTsFiles } from "./support/sourceFiles.js";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join, sep } from "node:path";
 
 const srcDir = join(import.meta.dirname, "..", "src");
@@ -132,25 +132,6 @@ describe("server import boundaries", () => {
       }
     }
     expect(offenders, `unexpected imports:\n${offenders.join("\n")}`).toEqual([]);
-  });
-
-  it("contains no in-server autonomous Agent loop implementation", () => {
-    const retiredFiles = [
-      "modules/runs/piManagedAgentLoop.ts",
-      "modules/runs/managedAgentLoopBinding.ts",
-      "modules/runs/managedAgentLoopPort.ts",
-      "modules/runs/managedToolLoop.ts",
-      "modules/runs/managedApiAdapter.ts",
-      "modules/runtimeHost/service.ts",
-      "modules/systemActions/managedAgentToolSurface.ts",
-    ];
-    expect(retiredFiles.filter((path) => existsSync(join(srcDir, path)))).toEqual([]);
-    const offenders = listTsFiles(srcDir).filter((file) => {
-      const source = readFileSync(file, "utf8");
-      return importSpecifiers(source).some((specifier) => specifier.includes("pi-agent-core"))
-        || /executeManagedToolLoop|executeManagedApiNoToolAdapter|executeRuntimeHost/.test(source);
-    });
-    expect(offenders, `legacy Agent execution paths remain:\n${offenders.join("\n")}`).toEqual([]);
   });
 
   it("plugin files do not import from server modules", () => {

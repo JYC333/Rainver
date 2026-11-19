@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_MAX_REDIRECTS,
   DEFAULT_OUTBOUND_DEADLINE_MS,
+  MAX_GUARDED_REQUEST_BODY_BYTES,
   guardedFetch,
   undiciPinnedFetch,
   type PinnedFetch,
@@ -336,6 +337,54 @@ describe("guardedFetch", () => {
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+  });
+
+  it("carries a bounded request body to the wire on a single-hop request", async () => {
+    const received: { method?: string; type?: string; body: string }[] = [];
+    const server = await listenLoopback((request, response) => {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk) => { body += chunk; });
+      request.on("end", () => {
+        received.push({ method: request.method, type: request.headers["content-type"], body });
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end("{\"ok\":true}");
+      });
+    });
+    try {
+      const port = (server.address() as AddressInfo).port;
+      const pinnedLoopback: OutboundGuard = { pin: async () => [{ address: "127.0.0.1", family: 4 }] };
+      const result = await guardedFetch({
+        url: `http://never-resolves.invalid:${port}/token`, method: "POST", maxRedirects: 0, maxDownloadBytes: 1024,
+        headers: { "content-type": "application/x-www-form-urlencoded" }, body: "grant_type=refresh_token&refresh_token=r%2B1",
+      }, { guard: pinnedLoopback, fetch: undiciPinnedFetch });
+      expect(result.status).toBe(200);
+      expect(received).toEqual([{ method: "POST", type: "application/x-www-form-urlencoded", body: "grant_type=refresh_token&refresh_token=r%2B1" }]);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("passes the body through the pinned transport init and never replays it on a redirect", async () => {
+    const seen: { url: string; body?: string }[] = [];
+    const fetch: PinnedFetch = async (url, init) => {
+      seen.push({ url, body: init.body ? new TextDecoder().decode(init.body) : undefined });
+      return new Response(null, { status: 307, headers: { location: "https://example.test/elsewhere" } });
+    };
+    await expect(guardedFetch({ url: "https://example.test/token", method: "POST", maxRedirects: 0, maxDownloadBytes: 1024, body: "code=abc" },
+      { guard: publicGuard, fetch })).rejects.toMatchObject({ status: 502 });
+    expect(seen).toEqual([{ url: "https://example.test/token", body: "code=abc" }]);
+  });
+
+  it("refuses a body without maxRedirects: 0, on GET/HEAD, or over the ceiling, before any send", async () => {
+    const { hops, fetch } = recorder([new Response("ok")]);
+    const base = { url: "https://example.test/token", maxDownloadBytes: 1024 };
+    await expect(guardedFetch({ ...base, method: "POST", body: "x" }, { guard: publicGuard, fetch })).rejects.toMatchObject({ status: 422 });
+    await expect(guardedFetch({ ...base, method: "POST", maxRedirects: 1, body: "x" }, { guard: publicGuard, fetch })).rejects.toMatchObject({ status: 422 });
+    await expect(guardedFetch({ ...base, maxRedirects: 0, body: "x" }, { guard: publicGuard, fetch })).rejects.toMatchObject({ status: 422 });
+    await expect(guardedFetch({ ...base, method: "POST", maxRedirects: 0, body: new Uint8Array(MAX_GUARDED_REQUEST_BODY_BYTES + 1) }, { guard: publicGuard, fetch }))
+      .rejects.toMatchObject({ status: 422 });
+    expect(hops).toHaveLength(0);
   });
 
   /** The same transport refuses when the guard pinned nothing for that family. */

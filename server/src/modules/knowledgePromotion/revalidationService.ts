@@ -14,6 +14,10 @@ interface OutboxEventRow {
 
 const CLAIM_LEASE_MS = 5 * 60 * 1000;
 const FAILURE_RETRY_MS = 60 * 1000;
+/** A failing event backs off longer each attempt, up to an hour. */
+const FAILURE_RETRY_MAX_MS = 60 * 60 * 1000;
+/** Of one batch, the slots retries may take while fresh events wait. */
+const RETRY_SHARE = 10;
 
 interface PinnedKnowledgeItemRow {
   object_id: string;
@@ -38,37 +42,58 @@ interface PinnedKnowledgeItemRow {
  * (`block_anchors`), so this worker diffs exactly those blocks between the
  * item's pinned revision and the event's new revision.
  */
-/** Periodic sweep entry point (see backgroundServices.ts) — every Space with at least one unclaimed event, oldest first. */
-export async function processAllUnclaimedDomainChangeEvents(db: Queryable): Promise<number> {
+/**
+ * Periodic sweep entry point (see backgroundServices.ts) — every Space with at
+ * least one unclaimed event, oldest first. A failed event stays unprocessed
+ * with `last_error` and retries later; there is no dead-letter state, so the
+ * sweep reports how many failed for its caller to surface.
+ */
+export async function processAllUnclaimedDomainChangeEvents(db: Queryable): Promise<{ processed: number; failed: number }> {
   const spaces = await db.query<{ space_id: string }>(
     `SELECT DISTINCT space_id FROM domain_change_outbox
       WHERE processed_at IS NULL AND (claim_expires_at IS NULL OR claim_expires_at <= now())
       ORDER BY space_id`,
   );
   let processed = 0;
+  let failed = 0;
   for (const row of spaces.rows) {
     const result = await processUnclaimedDomainChangeEvents(db, row.space_id);
     processed += result.processed;
+    failed += result.failed;
   }
-  return processed;
+  return { processed, failed };
 }
 
 export async function processUnclaimedDomainChangeEvents(
   db: Queryable,
   spaceId: string,
   limit = 50,
-): Promise<{ processed: number; outcomes: Record<string, number> }> {
-  const pending = await db.query<{ id: string }>(
-    `SELECT id
+): Promise<{ processed: number; failed: number; outcomes: Record<string, number> }> {
+  // Fairness, for any limit (1 included). Fresh events (never failed) queue
+  // by when they occurred; failed ones by when their backoff ended, the
+  // moment each became eligible again. While fresh events wait, retries are
+  // guaranteed min(RETRY_SHARE, ⌊limit/2⌋) slots and take at most
+  // min(RETRY_SHARE, ⌈limit/2⌉); the slots between go to whichever waited
+  // longest. Unused slots go to the other kind. So a run of persistent
+  // failures cannot hold the batch, a stream of new events cannot starve a
+  // retry, and a retry that fails again rejoins the queue behind events that
+  // were already waiting.
+  const eligible = (failedOnly: boolean) => db.query<{ id: string; eligible_at: Date }>(
+    `SELECT id, ${failedOnly ? "COALESCE(claim_expires_at, claimed_at, occurred_at)" : "occurred_at"} AS eligible_at
        FROM domain_change_outbox
       WHERE space_id=$1 AND processed_at IS NULL
         AND (claim_expires_at IS NULL OR claim_expires_at <= now())
-      ORDER BY occurred_at ASC
+        AND (last_error IS NOT NULL) = $3
+      ORDER BY eligible_at ASC, id ASC
       LIMIT $2`,
-    [spaceId, limit],
+    [spaceId, limit, failedOnly],
   );
+  const fresh = (await eligible(false)).rows;
+  const retries = (await eligible(true)).rows;
+  const pending = { rows: fairBatch(fresh, retries, limit) };
   const outcomes: Record<string, number> = { no_impact: 0, candidate_created: 0, already_superseded: 0 };
   let processed = 0;
+  let failed = 0;
   for (const pendingEvent of pending.rows) {
     const claimToken = randomUUID();
     try {
@@ -99,20 +124,39 @@ export async function processUnclaimedDomainChangeEvents(
       processed += 1;
       for (const [outcome, count] of Object.entries(outcomeCounts)) outcomes[outcome] = (outcomes[outcome] ?? 0) + count;
     } catch (error) {
+      failed += 1;
       const message = error instanceof Error ? error.message : String(error);
       const failedAt = new Date();
       await db.query(
         `UPDATE domain_change_outbox
             SET claimed_at=$3, attempt_count=attempt_count+1,
-                last_error=$4, claim_expires_at=$5
+                last_error=$4,
+                claim_expires_at=$3::timestamptz + make_interval(secs => LEAST($5::bigint, $6::bigint * power(2, LEAST(attempt_count, 6))::bigint) / 1000.0)
           WHERE id=$1 AND space_id=$2 AND processed_at IS NULL
-            AND (claim_token IS NULL OR claim_token=$6)`,
+            AND (claim_token IS NULL OR claim_token=$7)`,
         [pendingEvent.id, spaceId, failedAt.toISOString(), message.slice(0, 4000),
-          new Date(failedAt.getTime() + FAILURE_RETRY_MS).toISOString(), claimToken],
+          FAILURE_RETRY_MAX_MS, FAILURE_RETRY_MS, claimToken],
       );
     }
   }
-  return { processed, outcomes };
+  return { processed, failed, outcomes };
+}
+
+/** One batch from the two eligibility-ordered queues; see the fairness rule above. */
+function fairBatch<T extends { eligible_at: Date }>(fresh: readonly T[], retries: readonly T[], limit: number): T[] {
+  const retryMin = Math.min(RETRY_SHARE, Math.floor(limit / 2));
+  const retryMax = Math.min(RETRY_SHARE, Math.ceil(limit / 2));
+  const batch: T[] = [];
+  let f = 0;
+  let r = 0;
+  while (r < Math.min(retryMin, retries.length) && batch.length < limit) batch.push(retries[r++]!);
+  while (batch.length < limit && (f < fresh.length || r < retries.length)) {
+    const retryOpen = r < retries.length && (f >= fresh.length || r < retryMax);
+    if (retryOpen && (f >= fresh.length || retries[r]!.eligible_at.getTime() <= fresh[f]!.eligible_at.getTime())) batch.push(retries[r++]!);
+    else if (f < fresh.length) batch.push(fresh[f++]!);
+    else break;
+  }
+  return batch;
 }
 
 async function processEvent(db: Queryable, event: OutboxEventRow): Promise<Record<string, number>> {

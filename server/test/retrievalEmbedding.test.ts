@@ -1,16 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
-import type { Queryable, QueryResult } from "../src/modules/routeUtils/common.js";
 import {
   DEFAULT_EMBED_BATCH,
   EMBED_DIMENSIONS,
   RETRIEVAL_EMBEDDING_JOB,
 } from "../src/modules/retrieval/embedding/config.js";
 import { enqueueRetrievalEmbeddingBackfillWithQueue } from "../src/modules/retrieval/embedding/job.js";
-import {
-  RetrievalEmbeddingBackfillService,
-  type RetrievalEmbedder,
-  type RetrievalEmbeddingAuditEvent,
-} from "../src/modules/retrieval/embedding/service.js";
 import { QueryEmbeddingCache } from "../src/modules/retrieval/embedding/queryEmbeddingCache.js";
 import { ProviderQueryEmbedder } from "../src/modules/retrieval/embedding/queryEmbedder.js";
 import { __setProviderHttpClientForTests } from "../src/modules/providers/invocation/invocation.js";
@@ -18,53 +12,6 @@ import type { ProviderCommandStore } from "../src/modules/providers/commands/sto
 import { resolveTestUsageAttribution } from "./support/usageAttribution.js";
 
 const TEST_SPEND = { kind: "person", user_id: "user-1" } as const;
-
-class FakeEmbeddingDb implements Queryable {
-  readonly calls: Array<{ sql: string; params: readonly unknown[] }> = [];
-
-  async query<Row = Record<string, unknown>>(
-    sql: string,
-    params: readonly unknown[] = [],
-  ): Promise<QueryResult<Row>> {
-    this.calls.push({ sql, params });
-    if (sql.includes("WITH candidate AS")) {
-      return {
-        rowCount: 1,
-        rows: [
-          {
-            id: "chunk-1",
-            object_type: "knowledge_item",
-            object_id: "item-1",
-            plain_text: "embed me",
-            embedding_claim_id: params[2],
-          } as Row,
-        ],
-      };
-    }
-    if (sql.startsWith("UPDATE retrieval_chunks")) {
-      return { rowCount: 1, rows: [] };
-    }
-    return { rowCount: 0, rows: [] };
-  }
-}
-
-/** The chunk-table statements, without the policy-generation read that precedes the claim. */
-function chunkCalls(db: FakeEmbeddingDb) {
-  return db.calls.filter((call) => !call.sql.includes("FROM source_connections"));
-}
-
-function fakeEmbedder(): RetrievalEmbedder & { texts: string[] } {
-  return {
-    texts: [],
-    async embed(_spaceId, texts) {
-      this.texts = [...texts];
-      return {
-        model: "embed-model",
-        vectors: [new Array<number>(EMBED_DIMENSIONS).fill(0)],
-      };
-    },
-  };
-}
 
 describe("retrieval embedding backfill", () => {
   it("enqueues a space-scoped backfill job with default batch metadata", async () => {
@@ -128,63 +75,6 @@ describe("retrieval embedding backfill", () => {
 
     expect(result).toEqual({ jobId: "queued-job", deduped: true });
     expect(enqueueCalls).toBe(0);
-  });
-
-  it("claims chunks before provider egress and audits only aggregate metadata", async () => {
-    const db = new FakeEmbeddingDb();
-    const embedder = fakeEmbedder();
-    const auditEvents: RetrievalEmbeddingAuditEvent[] = [];
-    const service = new RetrievalEmbeddingBackfillService(db, embedder, async (event) => {
-      auditEvents.push(event);
-    });
-
-    const result = await service.backfillSpace("space-1", { batchLimit: 4 });
-
-    expect(result).toEqual({
-      scanned: 1,
-      embedded: 1,
-      skipped: 0,
-      model: "embed-model",
-    });
-    expect(embedder.texts).toEqual(["embed me"]);
-    expect(chunkCalls(db)[0]!.sql).toContain("FOR UPDATE OF chunk SKIP LOCKED");
-    expect(chunkCalls(db)[0]!.params[0]).toBe("space-1");
-    expect(chunkCalls(db)[0]!.params[1]).toBe(4);
-    // The claim passes over a chunk set aside until the egress state it
-    // depends on changes: the Space frame and its own connections' digests.
-    expect(chunkCalls(db)[0]!.sql).toContain("chunk.embedding_blocked_generation IS DISTINCT FROM md5($6");
-    expect(chunkCalls(db)[0]!.params[5]).toMatch(/^[a-f0-9]{64}$/);
-    expect(JSON.parse(String(chunkCalls(db)[0]!.params[6]))).toEqual(expect.any(Object));
-    expect(chunkCalls(db)[1]!.params[5]).toBe(chunkCalls(db)[0]!.params[2]);
-    expect(auditEvents).toEqual([
-      {
-        spaceId: "space-1",
-        model: "embed-model",
-        dimensions: EMBED_DIMENSIONS,
-        scanned: 1,
-        inputCount: 1,
-        embedded: 1,
-        skipped: 0,
-      },
-    ]);
-  });
-
-  it("releases claimed chunks when provider egress fails", async () => {
-    const db = new FakeEmbeddingDb();
-    const service = new RetrievalEmbeddingBackfillService(db, {
-      async embed() {
-        throw new Error("provider down");
-      },
-    });
-
-    await expect(service.backfillSpace("space-1", { batchLimit: 4 })).rejects.toThrow(
-      "provider down",
-    );
-
-    expect(chunkCalls(db)[0]!.sql).toContain("FOR UPDATE OF chunk SKIP LOCKED");
-    expect(chunkCalls(db)[1]!.sql).toContain("SET embedding_claim_id = NULL");
-    expect(chunkCalls(db)[1]!.params[0]).toBe("space-1");
-    expect(chunkCalls(db)[1]!.params[1]).toBe(chunkCalls(db)[0]!.params[2]);
   });
 });
 

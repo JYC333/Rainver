@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Queryable } from "../../routeUtils/common.js";
 import { listDueSourceChannelScanTasks } from "../sourceConnectionScheduler.js";
+import { enqueueChannelScanIfDue, type DueChannelScanRow } from "../scanSchedule.js";
 
 const STUCK_RUN_AFTER_SECONDS = 600;
 
@@ -39,11 +40,14 @@ export async function reclaimStuckCustomSourceHandlerRuns(
 }
 
 /**
- * Mirrors `enqueueDueSourceConnectionScans` (scanSchedule.ts) for
- * `generated_custom` connections only. Inserts a paired `extraction_jobs`
- * row (reusing the existing `connection_scan` job_type — no CHECK-constraint
- * change) and a `source_handler_runs` row so product `source_runs` and the
- * Advanced handler-run history stay populated for Custom Source scans.
+ * The Custom Source (`generated_custom`) implementation of the shared locked
+ * Channel scan enqueue (`enqueueChannelScanIfDue`, scanSchedule.ts). Inserts a
+ * paired `extraction_jobs` row (reusing the existing `connection_scan`
+ * job_type — no CHECK-constraint change) and a `source_handler_runs` row in
+ * the same transaction, so product `source_runs` and the Advanced handler-run
+ * history stay populated for Custom Source scans and neither row exists
+ * without the other. Any extraction job already in flight for the Channel,
+ * not only a scan, keeps it from queueing.
  */
 export async function enqueueDueCustomSourceHandlerRuns(
   db: Queryable,
@@ -54,50 +58,29 @@ export async function enqueueDueCustomSourceHandlerRuns(
 
   let enqueued = 0;
   for (const task of tasks) {
-    if (!task.space_id) continue;
-    const due = await db.query<{
-      id: string;
-      channel_id: string;
-      space_id: string;
-      active_handler_version_id: string;
-    }>(
-      `SELECT sc.id, ch.id AS channel_id, sc.space_id, sc.active_handler_version_id
-         FROM source_channels ch
-         JOIN source_connections sc ON sc.id = ch.source_connection_id
-        WHERE ch.status = 'active' AND sc.status = 'active'
-          AND sc.deleted_at IS NULL
-          AND sc.space_id = $1
-          AND ch.id = $2
-          AND sc.handler_kind = 'generated_custom'
+    const queued = await enqueueChannelScanIfDue<DueChannelScanRow & { active_handler_version_id: string }>(db, task, now, {
+      columns: ["sc.active_handler_version_id"],
+      conditions: `sc.handler_kind = 'generated_custom'
           AND sc.active_handler_version_id IS NOT NULL
           AND sc.repair_status <> 'disabled'
-          AND ch.fetch_frequency <> 'manual'
           AND NOT EXISTS (
             SELECT 1
-              FROM extraction_jobs ej
-             WHERE ej.space_id = ch.space_id
-               AND ej.metadata_json->>'source_channel_id' = ch.id
-               AND ej.status IN ('pending', 'running')
-          )
-        LIMIT 1`,
-      [task.space_id, task.task_key],
-    );
-    const row = due.rows[0];
-    if (!row) continue;
-    const jobId = randomUUID();
-    await db.query(
-      `INSERT INTO extraction_jobs (
-         id, space_id, connection_id, job_type, status, metadata_json, created_at
-       ) VALUES ($1, $2, $3, 'connection_scan', 'pending', $4::jsonb, $5)`,
-      [jobId, row.space_id, row.id, JSON.stringify({ created_by: "custom_source_scheduler", source_channel_id: row.channel_id }), now],
-    );
-    await db.query(
-      `INSERT INTO source_handler_runs (
-         id, space_id, source_connection_id, handler_version_id, extraction_job_id, status, created_at
-       ) VALUES ($1, $2, $3, $4, $5, 'queued', $6)`,
-      [randomUUID(), row.space_id, row.id, row.active_handler_version_id, jobId, now],
-    );
-    enqueued += 1;
+              FROM extraction_jobs any_job
+             WHERE any_job.space_id = ch.space_id
+               AND any_job.metadata_json->>'source_channel_id' = ch.id
+               AND any_job.status IN ('pending', 'running')
+          )`,
+      metadata: (row) => ({ created_by: "custom_source_scheduler", source_channel_id: row.channel_id }),
+      afterInsert: async (tx, row, jobId) => {
+        await tx.query(
+          `INSERT INTO source_handler_runs (
+             id, space_id, source_connection_id, handler_version_id, extraction_job_id, status, created_at
+           ) VALUES ($1, $2, $3, $4, $5, 'queued', $6)`,
+          [randomUUID(), row.space_id, row.connection_id, row.active_handler_version_id, jobId, now],
+        );
+      },
+    });
+    if (queued) enqueued += 1;
   }
   return enqueued;
 }

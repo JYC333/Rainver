@@ -112,7 +112,7 @@ unavailable otherwise.
 A CLI Run is reachable from a Task or automation dispatch, a direct
 conversation, or a Room. On every execution host, all three prepare context
 through the Runtime Context Gateway
-([ADR 0014](0014-unified-runtime-context-engine.md); ADR 0016 §3 amendment).
+([ADR 0014](0014-unified-runtime-context-engine.md); ADR 0016 §3).
 Login and session state are host-owned (ADR 0016 sections 2 and 5).
 
 - **Conversation.** The backend is chosen per user per session and binds the

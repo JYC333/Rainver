@@ -54,6 +54,18 @@ artifact's production context remains unchanged.
   not-found/not-accessible state. A transient detail read failure has its own
   error state rather than claiming that the object is missing.
 
+## Plugin core port
+
+An operation plugin that declares `artifacts.create` can create one private
+inline Artifact (markdown or text, at most 64 KiB, `artifact_type =
+plugin_output`, `surface_role = user_output`) inside its command, through the
+shared `insertArtifactRow` writer. The person must write the active Project
+(the Task writer's gate); an Agent may only target its Run's Project from a
+person's own turn, the row records that Run as producer, and the
+`artifact.plugin_create` policy action applies the sensitive-read egress
+invariant. The Artifact commits or rolls back with the plugin command
+([ADR 0030](../decisions/0030-plugin-agent-data-access.md)).
+
 ## Sources
 
 - Content-backed artifacts come from `output_json.artifacts`.

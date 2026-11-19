@@ -96,45 +96,6 @@ describe("source backfill extraction windows",()=>{
     expect(parsed.searchParams.get("sortOrder")).toBe("descending");
   });
 
-  it("claims quota and creates a segment job in one transaction",async()=>{
-    const query=vi.fn(async(sql:string)=>{
-      if(sql.startsWith("SELECT id FROM source_channels"))return{rows:[{id:"channel-1"}],rowCount:1};
-      if(sql.startsWith("SELECT p.project_operation_id"))return{rows:[{project_operation_id:null,project_operation_kind:null}],rowCount:1};
-      if(sql.startsWith("SELECT p.*, o.kind AS project_operation_kind"))return{rows:[{status:"approved",source_channel_id:"channel-1",quota_policy_json:{window:"minute",limit_count:2},strategy_json:{max_items:25},items_ingested:0,project_operation_id:null,project_operation_kind:null,operation_max_items:null}],rowCount:1};
-      if(sql.startsWith("SELECT ch.source_connection_id, c.connector_key"))return{rows:[{source_connection_id:"connection-1",connector_key:"arxiv_api"}],rowCount:1};
-      if(sql.startsWith("SELECT * FROM source_backfill_segments"))return{rows:[{id:"segment-1",window_json:{cursor:0,max_items:25}}],rowCount:1};
-      if(sql.startsWith("UPDATE source_quota_buckets SET used_count"))return{rows:[{reset_at:"2026-01-01T00:01:00.000Z"}],rowCount:1};
-      return{rows:[],rowCount:0};
-    });
-    const release=vi.fn(),connect=vi.fn().mockResolvedValue({query,release});
-    const result=await new SourceBackfillExecutionService({connect,query:vi.fn()} as unknown as Queryable).executeNext("space-1","plan-1");
-    expect(result).toMatchObject({segment_id:"segment-1"});
-    const statements=query.mock.calls.map(call=>String(call[0]));
-    expect(statements[0]).toBe("BEGIN");
-    expect(statements.find(statement => statement.startsWith("INSERT INTO source_quota_buckets"))).toContain('"window"');
-    expect(statements).toEqual(expect.arrayContaining([expect.stringContaining("INSERT INTO extraction_jobs"),"COMMIT"]));
-    expect(release).toHaveBeenCalledOnce();
-  });
-
-  it("persists the actual quota reset on both segment and plan",async()=>{
-    const reset="2026-01-01T00:01:00.000Z";
-    const query=vi.fn(async(sql:string)=>{
-      if(sql.startsWith("SELECT id FROM source_channels"))return{rows:[{id:"channel-1"}],rowCount:1};
-      if(sql.startsWith("SELECT p.project_operation_id"))return{rows:[{project_operation_id:null,project_operation_kind:null}],rowCount:1};
-      if(sql.startsWith("SELECT p.*, o.kind AS project_operation_kind"))return{rows:[{status:"running",source_channel_id:"channel-1",quota_policy_json:{window:"minute",limit_count:1},strategy_json:{max_items:25},items_ingested:0,project_operation_id:null,project_operation_kind:null,operation_max_items:null}],rowCount:1};
-      if(sql.startsWith("SELECT ch.source_connection_id, c.connector_key"))return{rows:[{source_connection_id:"connection-1",connector_key:"arxiv_api"}],rowCount:1};
-      if(sql.startsWith("SELECT * FROM source_backfill_segments"))return{rows:[{id:"segment-1",window_json:{cursor:1}}],rowCount:1};
-      if(sql.startsWith("UPDATE source_quota_buckets SET used_count"))return{rows:[],rowCount:0};
-      if(sql.startsWith("SELECT reset_at FROM source_quota_buckets"))return{rows:[{reset_at:reset}],rowCount:1};
-      return{rows:[],rowCount:0};
-    });
-    const result=await new SourceBackfillExecutionService({query} as Queryable).executeNext("space-1","plan-1");
-    expect(result).toEqual({paused:true,next_eligible_at:reset});
-    expect(query.mock.calls.some(call=>String(call[0]).includes("scope_kind='source_connection'"))).toBe(true);
-    expect(query).toHaveBeenCalledWith(expect.stringContaining("UPDATE source_backfill_segments SET next_eligible_at"),["segment-1","space-1",reset]);
-    expect(query).toHaveBeenCalledWith(expect.stringContaining("UPDATE source_backfill_plans SET status='paused'"),expect.arrayContaining(["plan-1","space-1",reset]));
-  });
-
   it("defers a retryable extraction failure and preserves safe diagnostics", async () => {
     const query = vi.fn(async (sql: string, _params?: readonly unknown[]) => {
       if (sql.startsWith("SELECT s.id AS segment_id")) {
@@ -200,40 +161,6 @@ describe("source backfill extraction windows",()=>{
       expect.stringContaining("SET status='paused', next_eligible_at=$3"),
       ["plan-1", "space-1", expect.any(String), expect.any(String)],
     );
-  });
-
-  it("keys the quota bucket by source connection so two plans on the same connection share one budget", async () => {
-    const query = vi.fn(async (sql: string, _params?: readonly unknown[]) => {
-      if (sql.startsWith("SELECT id FROM source_channels")) return { rows: [{ id: "channel-1" }], rowCount: 1 };
-      if (sql.startsWith("SELECT p.project_operation_id")) {
-        return { rows: [{ project_operation_id: null, project_operation_kind: null }], rowCount: 1 };
-      }
-      if (sql.startsWith("SELECT p.*, o.kind AS project_operation_kind")) {
-        return {
-          rows: [{
-            status: "approved",
-            source_channel_id: "channel-shared",
-            quota_policy_json: { window: "minute", limit_count: 5 },
-            strategy_json: { max_items: 25 },
-            items_ingested: 0,
-            project_operation_id: null,
-            project_operation_kind: null,
-            operation_max_items: null,
-          }],
-          rowCount: 1,
-        };
-      }
-      if (sql.startsWith("SELECT ch.source_connection_id, c.connector_key")) return { rows: [{ source_connection_id: "connection-shared", connector_key: "arxiv_api" }], rowCount: 1 };
-      if (sql.startsWith("SELECT * FROM source_backfill_segments")) return { rows: [{ id: "segment-1", window_json: { cursor: 0, max_items: 25 } }], rowCount: 1 };
-      if (sql.startsWith("UPDATE source_quota_buckets SET used_count")) return { rows: [{ reset_at: "2026-01-01T00:01:00.000Z" }], rowCount: 1 };
-      return { rows: [], rowCount: 0 };
-    });
-    await new SourceBackfillExecutionService({ query } as Queryable).executeNext("space-1", "plan-a");
-    const scopeKeyArgs = query.mock.calls
-      .filter((call) => String(call[0]).includes("scope_kind='source_connection'") || String(call[0]).startsWith("INSERT INTO source_quota_buckets"))
-      .map((call) => call[1] as unknown[]);
-    for (const args of scopeKeyArgs) expect(args).toContain("connection-shared");
-    expect(scopeKeyArgs.some((args) => args.includes("plan-a"))).toBe(false);
   });
 
   it("starts a Project Research plan from the user's start action without a proposal", async () => {

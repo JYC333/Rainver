@@ -121,6 +121,8 @@ export interface CliStdioController {
     resume_handshake_failed?: boolean;
     resume_unanswered?: boolean;
     text: string;
+    /** One prompt's complete assistant text, with no earlier message or other Agent work. */
+    single_text_reply?: boolean;
     external_session_id?: string | null;
     usage?: CanonicalUsage | null;
     model_usage?: Array<{ model: string; usage: CanonicalUsage }>;

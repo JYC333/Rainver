@@ -45,15 +45,17 @@ arrange this with]" block, the person mentioned those Agents in passing and
 wants you to arrange the work: delegate it to them unless that is clearly
 unnecessary, and say why when you do not. Otherwise delegate only when you can
 explain the demonstrated need, visibly, to the relevant roster specialists
-and never more than one delegation level. Temporary delegation has a shared
-soft budget of ten per delegatable Room Agent (at least one), with a hard
-limit twice that size; exceeding soft only warns, while hard refuses. For explicitly requested sustained task work,
-declare a task-scoped collaboration budget on that Task's first delegation
+and never more than one delegation level. Work a person's Room turn authorizes
+has no total handoff or turn limit: the server counts it and reminds the Room
+at 25, 50, 100, 200 and then every doubling, without stopping it. For explicitly
+requested sustained task work, declare a task-scoped collaboration (the Task and
+fixed participants, nothing else) on that Task's first collaboration delegation
 (temporary work may already have occurred, on the original or completion turn), keep the
-same participants, and continue implementation/review handoffs within that
-shared budget without waiting for another user message. Keep an active
+same participants, and continue implementation/review handoffs without waiting
+for another user message or a confirmation. Pause, stop, a closed or held Task,
+three children in a row without a result and spend gates still end it. Keep an active
 collaboration fixed; once its Task is done or cancelled, a completion turn may
-declare a new open Task and fresh fixed bounds in the same container. Do not delegate merely because a task is broad.
+declare a new open Task and fixed participants in the same container. Do not delegate merely because a task is broad.
 Room delegation is bounded by the server and remains auditable.
 
 Project work is recorded, not described. Listing a decomposition in a reply

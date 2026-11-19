@@ -3,27 +3,20 @@ import { describe, expect, it } from 'vitest'
 import { MODULE_REGISTRY, modulesWithEffectivePlugins } from '../modules/registry'
 
 describe('module registry official plugin overlay', () => {
-  it('overlays official plugin enabled and visible state from the backend map', () => {
+  it('overlays an operation package entry (Diary) from the backend map; the legacy /diary route is gone', () => {
+    expect(MODULE_REGISTRY.find(module => module.id === 'diary')).toBeUndefined()
     const modules = modulesWithEffectivePlugins(MODULE_REGISTRY, {
       diary: { enabled: true, visible: false },
     })
-
-    const diary = modules.find(module => module.id === 'diary')
-    expect(diary?.enabled).toBe(true)
-    expect(diary?.visible).toBe(false)
+    const diary = modules.find(module => module.id === 'plugin.diary.journal')
+    expect(diary).toMatchObject({ path: '/plugins/diary/journal', pluginId: 'diary', perspectiveType: 'personal', enabled: true, visible: false })
   })
 
-  it('overlays finance_ledger effective state onto the finance module', () => {
-    const staticFinance = MODULE_REGISTRY.find(module => module.id === 'finance')
-    expect(staticFinance?.pluginId).toBe('finance_ledger')
-    expect(staticFinance?.enabled).toBe(false)
-
-    const modules = modulesWithEffectivePlugins(MODULE_REGISTRY, {
-      finance_ledger: { enabled: true, visible: true },
-    })
-    const finance = modules.find(module => module.id === 'finance')
-    expect(finance?.enabled).toBe(true)
-    expect(finance?.visible).toBe(true)
+  it('serves Finance from its operation package entry; the legacy /finance route is gone', () => {
+    expect(MODULE_REGISTRY.find(module => module.id === 'finance')).toBeUndefined()
+    const finance = modulesWithEffectivePlugins(MODULE_REGISTRY, { finance_ledger: { enabled: true, visible: true } })
+      .find(module => module.id === 'plugin.finance_ledger.ledger')
+    expect(finance).toMatchObject({ path: '/plugins/finance_ledger/ledger', pluginId: 'finance_ledger', perspectiveType: 'space-scoped', enabled: true })
   })
 
   it('leaves built-in modules on their static registration state', () => {
@@ -58,10 +51,5 @@ describe('module registry official plugin overlay', () => {
     // ADR 0018 decision 2 makes invisible. `/projects/:projectId/rooms` stays,
     // as one Room's roster surface, routed by the Projects module.
     expect(MODULE_REGISTRY.find(module => module.id === 'rooms')).toBeUndefined()
-  })
-
-  it('does not register a research_atlas route', () => {
-    expect(MODULE_REGISTRY.some(module => module.id === 'research_atlas')).toBe(false)
-    expect(MODULE_REGISTRY.some(module => module.path === '/atlas')).toBe(false)
   })
 })

@@ -11,6 +11,21 @@
 #   4. Restore non-credential file data (config/ storage/ artifacts/ workspaces/, and
 #      logs/ if present) into $RAINVER_ROOT/<mode>/.
 #
+# Failure safety: after confirmation and before the database is touched, every
+# file directory is first copied next to its target on the same filesystem; a
+# copy failure (disk full, interruption) stops the restore with the database
+# and every existing directory unchanged. pg_restore runs with --exit-on-error.
+# Each directory is then swapped in with one atomic exchange (atomic_ops.py
+# replace-directory: renameat2 RENAME_EXCHANGE / macOS renamex_np RENAME_SWAP;
+# where unavailable it stops with that directory unchanged), so a directory is
+# never missing and is either wholly old or wholly restored, even if killed.
+# The database and the set of directories are NOT one transaction: a failure
+# after the database drop leaves an incomplete database, and the message names
+# which directories were already replaced. Recover by re-running this restore
+# with the same (or an earlier) archive; the server's automatic backups live in
+# $RAINVER_ROOT/<mode>/backups. Restoring needs free space for one extra copy
+# of the restored file data until each swap completes.
+#
 # The live PostgreSQL data directory (db/postgres) is never overwritten — the
 # database is rebuilt logically with pg_restore. The script starts PostgreSQL if
 # needed and stops it afterward only when it started it.
@@ -116,7 +131,38 @@ echo "[restore] target:  $MODE_ROOT"
 
 # ── Safely extract to staging ──────────────────────────────────────────────────
 STAGING="$(mktemp -d -t rainver-system-restore-XXXXXX)"
-trap 'local_compose_stop_postgres_if_started "restore"; rm -rf "$STAGING"' EXIT
+PREPARED=()
+REPLACED=()
+RESTORE_STAGE="preflight"
+# Prepared copies live under $MODE_ROOT with a fixed prefix; only those are removed.
+cleanup_prepared() {
+  local prepared
+  for prepared in "${PREPARED[@]}"; do
+    [[ "$prepared" == "$MODE_ROOT"/.restore-new-* && -e "$prepared" ]] && rm -rf -- "$prepared"
+  done
+  return 0
+}
+report_failure() {
+  local status=$?
+  (( status == 0 )) && return 0
+  case "$RESTORE_STAGE" in
+    prepare)
+      echo "ERROR: could not copy file data onto the target filesystem (is the disk full?)." >&2
+      echo "       Nothing was changed: database '$PGDB' and every directory in $MODE_ROOT are as before." >&2
+      ;;
+    database)
+      echo "ERROR: database restore failed; database '$PGDB' is incomplete. File data was not changed." >&2
+      echo "       Re-run this restore with the same archive or an earlier one (automatic backups: $MODE_ROOT/backups)." >&2
+      ;;
+    files)
+      echo "ERROR: file restore stopped. Database '$PGDB' is restored; directories already replaced: ${REPLACED[*]:-none}." >&2
+      echo "       Every other directory is wholly previous or (the one being swapped when it stopped) wholly restored." >&2
+      echo "       Re-run this restore with --force to finish." >&2
+      ;;
+  esac
+  return 0
+}
+trap 'report_failure; cleanup_prepared; local_compose_stop_postgres_if_started "restore"; rm -rf "$STAGING"' EXIT
 if ! python3 "$SCRIPT_DIR/safe_extract.py" "$ARCHIVE" "$STAGING" \
   db storage artifacts config workspaces logs backup_manifest.json; then
   preflight_error "archive failed safe extraction: $ARCHIVE"
@@ -273,7 +319,16 @@ if [[ "$confirm" != "yes" ]]; then
   exit 1
 fi
 
+# ── Prepare file data beside its targets (same filesystem; nothing replaced) ───
+RESTORE_STAGE="prepare"
+for d in "${FILE_DIRS[@]}"; do
+  prepared="$(mktemp -d "$MODE_ROOT/.restore-new-$d-XXXXXX")"
+  PREPARED+=("$prepared")
+  cp -a "$STAGING/$d/." "$prepared/"
+done
+
 # ── Restore database (maintenance DB 'postgres' for terminate/drop/create) ─────
+RESTORE_STAGE="database"
 echo "[restore] terminating active connections to '$PGDB'..."
 "${COMPOSE[@]}" exec -T postgres \
   psql -U "$PGUSER" -d postgres -c \
@@ -287,23 +342,33 @@ echo "[restore] recreating database '$PGDB'..."
 
 echo "[restore] restoring database from $(basename "$DUMP_FILE")..."
 "${COMPOSE[@]}" exec -T postgres \
-  pg_restore -U "$PGUSER" --clean --if-exists --no-owner --no-acl -d "$PGDB" \
+  pg_restore -U "$PGUSER" --exit-on-error --clean --if-exists --no-owner --no-acl -d "$PGDB" \
   < "$DUMP_FILE"
 
 # pg_restore --no-owner --no-acl strips operation-package ownership and grants.
 # Explicit stopped-service host reconciliation; never run plugin migrations here.
-"${COMPOSE[@]}" run --rm -T --no-deps \
-  -e SERVER_DATABASE_URL="$(local_compose_server_owner_database_url)" \
+# The owner URL carries its password: inherited by name (`-e NAME`), never on argv.
+SERVER_DATABASE_URL="$(local_compose_server_owner_database_url)" "${COMPOSE[@]}" run --rm -T --no-deps \
+  -e SERVER_DATABASE_URL \
   server node dist/db/migrateCli.js plugin-reconcile
+
+# ADR 0031: --no-acl also drops the runtime/backup role grants. Re-grant them
+# only when those roles were provisioned; this never creates or activates them.
+SERVER_DATABASE_URL="$(local_compose_server_owner_database_url)" \
+RAINVER_DB_APP_ROLE="$(local_compose_setting_or_default RAINVER_DB_APP_ROLE rainver_app)" \
+RAINVER_DB_BACKUP_ROLE="$(local_compose_setting_or_default RAINVER_DB_BACKUP_ROLE rainver_backup)" \
+  "${COMPOSE[@]}" run --rm -T --no-deps -e SERVER_DATABASE_URL -e RAINVER_DB_APP_ROLE -e RAINVER_DB_BACKUP_ROLE \
+  server node dist/db/migrateCli.js runtime-roles-reconcile --if-present
 
 
 # ── Restore file data ──────────────────────────────────────────────────────────
-for d in "${FILE_DIRS[@]}"; do
-  if [[ -e "$MODE_ROOT/$d" ]]; then
-    rm -rf "${MODE_ROOT:?}/$d"
-  fi
-  cp -a "$STAGING/$d" "$MODE_ROOT/$d"
+RESTORE_STAGE="files"
+for i in "${!FILE_DIRS[@]}"; do
+  d="${FILE_DIRS[$i]}"
+  python3 "$SCRIPT_DIR/atomic_ops.py" replace-directory "${PREPARED[$i]}" "$MODE_ROOT/$d"
+  REPLACED+=("$d")
 done
+RESTORE_STAGE="done"
 
 for d in config; do
   [[ -d "$MODE_ROOT/$d" ]] && chmod 700 "$MODE_ROOT/$d"

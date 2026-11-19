@@ -2,8 +2,9 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from
 import { delimiter, join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
-import { ownToolUpdateCommand, runUpdater, updateOwnTool } from "../src/ownToolUpdate.js";
+import { ownToolUpdateCommand, runUpdater, updateOwnTool, updateOwnAntigravity } from "../src/ownToolUpdate.js";
 import { updateOwnNpmTool } from "../src/ownNpmToolUpdate.js";
+import { platformKey } from "../src/tools.js";
 import { probeVersion } from "../src/capabilities.js";
 
 const roots: string[] = [];
@@ -118,4 +119,29 @@ exit 3
     expect(failure?.message).not.toContain("noise 0\n");
     expect(failure!.message.length).toBeLessThan(4_200);
   });
+});
+
+it.each(["1.5.11", "1.5.10"])("only promotes the verified Antigravity candidate (reports %s)", async (reported) => {
+  const { root, env } = await fixture();
+  const bin = join(root, ".local/bin");
+  const agy = join(bin, "agy");
+  await mkdir(bin, { recursive: true });
+  await writeFile(agy, "#!/bin/sh\necho 'agy 1.5.2'\n", { mode: 0o755 });
+  const update = updateOwnAntigravity({
+    version: "1.5.11",
+    distribution: { kind: "binary", platforms: {
+      [platformKey()]: {
+        archive: "https://storage.googleapis.com/antigravity-public/antigravity-cli/1.5.11-test.zip",
+        cmd: "./antigravity", args: ["acp"], env: {}, sha256: null, sha512: "a".repeat(128),
+      },
+    } },
+  }, { ...env, PATH: bin }, async (_, dir) => {
+    const command = join(dir, "antigravity");
+    await writeFile(command, `#!/bin/sh\necho 'agy ${reported}'\n`, { mode: 0o755 });
+    return { command, args: [], entry_args: [], env: {} };
+  });
+  if (reported === "1.5.11") await expect(update).resolves.toEqual({ from_version: "1.5.2", to_version: "1.5.11" });
+  else await expect(update).rejects.toThrow("expected version");
+  expect(await probeVersion(agy, 4000)).toContain(reported === "1.5.11" ? reported : "1.5.2");
+  expect(await readdir(bin)).toEqual(["agy"]);
 });

@@ -6,23 +6,21 @@
     "lib": ["ES2022"],
     "types": ["node"],
     "typeRoots": ["../../../../server/node_modules/@types"],
-    "outDir": "../../../../server/dist/official-plugins/diary/server",
-    "rootDir": "src",
+    "outDir": "../../../../server/dist/official-plugins/diary",
+    "rootDir": "..",
     "strict": true,
     "skipLibCheck": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
-    "resolveJsonModule": true,
     "isolatedModules": true,
     "declaration": false,
     "sourceMap": true,
     "noUnusedLocals": true,
-    "noUnusedParameters": false,
     "noFallthroughCasesInSwitch": true,
     "paths": {
       "@rainver/protocol": ["../../../../packages/protocol/dist/index.d.ts"],
-      "fastify": ["../../../../server/node_modules/fastify/fastify.d.ts"]
+      "zod": ["../../../../server/node_modules/zod/index.d.cts"]
     }
   },
-  "include": ["src"]
+  "include": ["src", "../operationManifest.ts"]
 }

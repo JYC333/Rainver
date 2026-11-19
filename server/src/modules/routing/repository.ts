@@ -869,8 +869,12 @@ export async function runtimeRequiredCapabilities(value: unknown): Promise<strin
   // they are not capabilities that a runtime profile must duplicate. Do not
   // keep them in the runtime hard filter. A Room's own tool allowance would
   // reject every otherwise-valid candidate before the conversation can start.
-  return declared.filter((capability) => !systemActionIds.has(capability));
+  // A plugin operation (`plugin.<package>.<entity>.<operation>`, a namespace the
+  // manifest schema reserves for packages) is the same kind of declaration; this
+  // registry is loaded without a server config, so it is recognised by its id.
+  return declared.filter((capability) => !systemActionIds.has(capability) && !PLUGIN_OPERATION_ID.test(capability));
 }
+const PLUGIN_OPERATION_ID = /^plugin\.[^.]+\.[^.]+\.[^.]+$/;
 function stringArray(value: unknown): string[] { return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : []; }
 function unique(values: string[]): string[] { return [...new Set(values)]; }
 function numberOrNull(value: unknown): number | null { const number = typeof value === "string" ? Number(value) : value; return typeof number === "number" && Number.isFinite(number) ? number : null; }
@@ -894,7 +898,7 @@ function trustLevel(value: unknown): "low" | "medium" | "high" { return value ==
  * A paired Host reaches `medium` for a different reason and only for its own
  * owner: it is that owner's machine, and a Run they are responsible for
  * carries the trust they already extend to it by running an agent there
- * themselves (ADR 0016 section 3, owner-trust amendment).
+ * themselves (ADR 0016 section 3).
  * That is a statement about who bears the risk, not about containment — the
  * spawn is still native with no namespace (B62). A Run on that Host by anyone
  * else is not the owner's own and stays at the runtime's baseline, as does an

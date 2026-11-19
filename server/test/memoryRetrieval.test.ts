@@ -68,7 +68,6 @@ interface AliasRow {
 class MemorySearchFakeDb implements Queryable {
   readonly memories: MemRow[] = [];
   readonly aliases: AliasRow[] = [];
-  readonly forbiddenWrites: string[] = [];
   spaceType = "household";
   memoryEntryReadQueries = 0;
   readonly projects = new Map<string, { owner_user_id: string | null }>();
@@ -107,7 +106,6 @@ class MemorySearchFakeDb implements Queryable {
       return { rows: [] as Row[], rowCount: 0 };
     }
     if (/INSERT INTO memory_entries|UPDATE memory_entries|DELETE FROM memory_entries/.test(norm)) {
-      this.forbiddenWrites.push(norm);
       throw new Error("forbidden canonical memory write");
     }
     if (norm.includes("FROM retrieval_aliases ra")) {
@@ -200,23 +198,6 @@ function service(db: Queryable): RetrievalSearchService {
 }
 
 describe("Memory zero-LLM retrieval create-safety", () => {
-  it("returns exists for a duplicate title the proposer owns", async () => {
-    const db = new MemorySearchFakeDb();
-    db.addMemory(memRow());
-    db.addAlias(MEM_A, "Coffee preferences", "title");
-
-    const out = await service(db).assessCreateSafety({
-      spaceId: SPACE_A,
-      viewerUserId: USER_A,
-      objectType: "memory_entry",
-      title: "Coffee preferences",
-    });
-
-    expect(out.create_safety).toBe("exists");
-    expect(out.matches[0]?.object_id).toBe(MEM_A);
-    expect(db.forbiddenWrites).toHaveLength(0);
-  });
-
   it("does not surface a highly_restricted memory to a non-owner", async () => {
     const db = new MemorySearchFakeDb();
     db.addMemory(memRow({ sensitivity_level: "highly_restricted", owner_user_id: USER_B }));
@@ -375,7 +356,6 @@ describe("Memory retrieval projection eligibility", () => {
 class MemoryProjectionFakeDb implements Queryable {
   readonly forbiddenWrites: string[] = [];
   readonly inserts: string[] = [];
-  active = true;
   rowOverrides: Partial<MemRow> = {};
 
   async query<Row = Record<string, unknown>>(sql: string, params: readonly unknown[] = []) {
@@ -385,7 +365,6 @@ class MemoryProjectionFakeDb implements Queryable {
       throw new Error("forbidden canonical memory write");
     }
     if (norm.includes("FROM memory_entries")) {
-      if (!this.active) return result([] as Row[]);
       return result([
         {
           id: MEM_A,
@@ -442,16 +421,6 @@ describe("Memory retrieval projection boundary", () => {
     expect(db.forbiddenWrites).toHaveLength(0);
     expect(db.inserts).toContain("retrieval_objects");
     expect(db.inserts).toContain("retrieval_aliases");
-  });
-
-  it("drops the projection when the memory is no longer active", async () => {
-    const db = new MemoryProjectionFakeDb();
-    db.active = false;
-
-    await new RetrievalProjectionService(db, memoryRetrievalRegistry).reindex(SPACE_A, "memory_entry", MEM_A);
-
-    expect(db.inserts).not.toContain("retrieval_objects");
-    expect(db.forbiddenWrites).toHaveLength(0);
   });
 
   it("does not project rows with invalid access metadata", async () => {

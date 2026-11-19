@@ -74,7 +74,10 @@ checked against the Run, viewer, and planned summary, and moved
 Delivery is refused. An active grant past `read_expires_at` is marked
 `expired` on the owner's reads and writes (`expireLapsedGrants`). Do not
 leave it `active`. Consumers also require `read_expires_at > now()`.
-`failed` is allowed by the schema. No code path writes it, `failed_at`, or
+A `used` grant is re-delivered only to later attempts of the same Run
+(a planned Delivery that was deferred before dispatch, a retry) and only while
+`read_expires_at > now()`; after the window it is no longer planned or
+authorized, and the attempt proceeds without it. `failed` is allowed by the schema. No code path writes it, `failed_at`, or
 `failure_stage`.
 
 ---
@@ -224,7 +227,7 @@ grant test suite; test coverage is partial: cross-space read with and without a 
 3. **Publication does not replace grants.** A published copy does not authorize a shared-space run to read the source personal memory.
 4. **Highly restricted memories excluded.** `sensitivity_level = highly_restricted` memories are never readable through a grant.
 5. **Grant is run-scoped.** A grant for Run A cannot be reused by Run B.
-6. **One-time lifecycle.** `expired`, `revoked`, and `used` grants cannot be reused.
+6. **One-time lifecycle.** `expired`, `revoked`, and `used` grants cannot be reused by another Run; a `used` grant reaches only its own Run's attempts inside the read window.
 7. **No raw personal memory in shared targets.** Personal memory summaries used as runtime context are not written into team memory, shared artifacts, or publication snapshots without explicit approved content creation.
 8. **Space admin cannot substitute for granting user.** Only `granting_user_id` may record a grant-derived `egress_granting_user` approval, and only a required taint owner may record a context-taint one.
 9. **Payload flags are not proof of approval.** Approval metadata in proposal payloads is never treated as a valid approval gate.

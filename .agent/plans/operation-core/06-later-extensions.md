@@ -1,7 +1,9 @@
 # Plan 6 — Later Extensions
 
-Status: recorded so they are not lost; none is scheduled. Each starts only when
-its trigger appears. Depends on [plan 2](02-plugin-operation-platform.md).
+Status: conditional extensions, not the immediate core backlog; none is
+scheduled. Each starts only when its trigger appears. P2 is implemented;
+additional P4 permission gates apply where relevant. Reclassified 2026-11-16.
+This table owns extension details; the central deferred register routes here.
 
 | Extension | Trigger | Shape |
 |---|---|---|

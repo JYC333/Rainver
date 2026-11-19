@@ -1,7 +1,7 @@
 import { runModelSelection } from "./runModelSelection.js";
 import type { RunTurn } from "@rainver/protocol";
 import type { Queryable } from "../routeUtils/common.js";
-import { loadProjectChatActionPreviews } from "../agents/projectChatActionPreviews.js";
+import { actionPreviewsForViewerChecked, loadProjectChatActionPreviews, sharedActionPreviews } from "../agents/projectChatActionPreviews.js";
 import { sharedHostConnectionRegistry } from "../hosts/connectionRegistry.js";
 import { readDelegationQueueWait } from "../agentGroups/delegationScheduling.js";
 import {
@@ -25,7 +25,12 @@ import {
  */
 export async function loadRunTurn(
   db: Queryable,
-  input: { spaceId: string; runId: string },
+  /**
+   * `viewerUserId` is who reads the turn: a card only one person may decide
+   * (an owner-only draft, an Agent persona) is shown to that person alone,
+   * never to another reader of the Run. Without a viewer only shared cards remain.
+   */
+  input: { spaceId: string; runId: string; viewerUserId?: string | null },
   /** Whether a host has queued this Run's launch behind another writer of its directory. */
   waitingForWorkspace: (runId: string) => boolean = (runId) => sharedHostConnectionRegistry.isWaitingForWorkspace(runId),
 ): Promise<RunTurn | null> {
@@ -131,7 +136,8 @@ export async function loadRunTurn(
       }
     : projection;
 
-  const previews = await loadProjectChatActionPreviews(db, input.spaceId, input.runId);
+  const loaded = await loadProjectChatActionPreviews(db, input.spaceId, input.runId);
+  const previews = input.viewerUserId ? await actionPreviewsForViewerChecked(db, input.spaceId, loaded, input.viewerUserId) : sharedActionPreviews(loaded);
   const withPreviews = appendActionPreviewParts(withFailure, previews.map((preview) => ({
     action_id: preview.action_id,
     tool_call_id: preview.tool_call_id ?? null,

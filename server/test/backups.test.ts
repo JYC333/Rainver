@@ -212,3 +212,60 @@ async function pathExists(path: string): Promise<boolean> {
     return false;
   }
 }
+
+describe("pg_dump invocation", () => {
+  it("passes the whole connection through libpq variables, nothing secret on argv, no server secrets", async () => {
+    const { pgDump, pgDumpInvocation } = await import("../src/modules/backups/service.js");
+    const bin = await mkdtemp(join(tmpdir(), "rainver-fake-pgdump-"));
+    const record = join(bin, "record.json");
+    // A synthetic pg_dump: records exactly what it was given, writes a dump file.
+    await writeFile(
+      join(bin, "pg_dump"),
+      `#!${process.execPath}\nconst fs=require("node:fs");const a=process.argv.slice(2);fs.writeFileSync(${JSON.stringify(record)},JSON.stringify({argv:a,env:process.env}));fs.writeFileSync(a[a.indexOf("-f")+1],"dump");\n`,
+    );
+    await chmod(join(bin, "pg_dump"), 0o755);
+    const saved = { PATH: process.env.PATH, OPENAI_API_KEY: process.env.OPENAI_API_KEY, PGSSLMODE: process.env.PGSSLMODE };
+    process.env.PATH = `${bin}:${process.env.PATH ?? ""}`;
+    process.env.OPENAI_API_KEY = "sk-synthetic-provider-key";
+    delete process.env.PGSSLMODE;
+    try {
+      const url = "postgresql://backup%40ro:s3cr%2Ft@[::1]:6543/rain%20db?sslmode=verify-full&sslrootcert=%2Fcerts%2Froot.crt&application_name=backup";
+      await pgDump(url, join(bin, "out.dump"));
+      const seen = JSON.parse(await import("node:fs/promises").then((fs) => fs.readFile(record, "utf8"))) as { argv: string[]; env: Record<string, string> };
+      expect(seen.argv).toEqual(["--no-password", "-Fc", "--no-owner", "--no-acl", "-f", join(bin, "out.dump")]);
+      expect(seen.argv.join(" ")).not.toMatch(/s3cr|postgres/);
+      expect(seen.env).toMatchObject({
+        PGHOST: "::1", PGPORT: "6543", PGUSER: "backup@ro", PGPASSWORD: "s3cr/t", PGDATABASE: "rain db",
+        PGSSLMODE: "verify-full", PGSSLROOTCERT: "/certs/root.crt", PGAPPNAME: "backup",
+      });
+      expect(seen.env.OPENAI_API_KEY).toBeUndefined();
+      expect(Object.keys(seen.env).filter((key) => !/^(PG|PATH$|HOME$|LANG$|LC_|TZ$|TMPDIR$)/.test(key))).toEqual([]);
+
+      // A TLS setting libpq does not define is refused, not dropped.
+      for (const bad of ["postgresql://u@h/db?ssl=true", "postgresql://u@h/db?sslmode=verify-full&uselibpqcompat=true"]) {
+        expect(() => pgDumpInvocation(bad, "/x"), bad).toThrow(BackupError);
+      }
+      // A parameter libpq takes only as a connection-string keyword is refused too, its value never echoed.
+      expect(() => pgDumpInvocation("postgresql://u@h/db?sslpassword=k3y-secret", "/x")).toThrow(/sslpassword/);
+      expect(() => pgDumpInvocation("postgresql://u@h/db?sslpassword=k3y-secret", "/x")).not.toThrow(/k3y-secret/);
+      // Malformed escapes and multi-host lists fail as a BackupError without echoing the URL.
+      for (const bad of ["postgresql://u:%E0%A4%A@h/db", "postgresql://u:pw-secret@h1:5432,h2:5433/db"]) {
+        expect(() => pgDumpInvocation(bad, "/x"), bad).toThrow(BackupError);
+        expect(() => pgDumpInvocation(bad, "/x"), bad).not.toThrow(/secret|%E0/);
+      }
+      // libpq options and a URL-encoded value survive exactly, in the environment.
+      expect(pgDumpInvocation("postgresql://u@h/db?options=-c%20search_path%3Dapp&sslmode=require", "/x", {}).env).toMatchObject({ PGOPTIONS: "-c search_path=app", PGSSLMODE: "require" });
+      // Server-level libpq settings keep their meaning unless the URL overrides them.
+      expect(pgDumpInvocation("postgresql://u@h/db", "/x", { PGSSLMODE: "require", SECRET: "x" }).env).toEqual({ PGSSLMODE: "require", PGHOST: "h", PGUSER: "u", PGDATABASE: "db" });
+      expect(pgDumpInvocation("postgresql://u@h/db?sslmode=verify-ca", "/x", { PGSSLMODE: "disable" }).env.PGSSLMODE).toBe("verify-ca");
+      // Unix socket directory as a query host.
+      expect(pgDumpInvocation("postgresql:///db?host=%2Fvar%2Frun%2Fpostgresql", "/x", {}).env).toEqual({ PGDATABASE: "db", PGHOST: "/var/run/postgresql" });
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      await rm(bin, { recursive: true, force: true });
+    }
+  });
+});

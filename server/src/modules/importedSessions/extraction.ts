@@ -206,6 +206,7 @@ export class ImportedHistoryExtractionService {
         const transitions=await lockProposalTransitions(tx,identity.spaceId,candidates);
         await lockActiveProjectForMutation(tx,identity.spaceId,projectId);
         await assertProjectWriterForMutation(tx,identity.spaceId,projectId,identity.userId);
+        await this.lockClaimedInputs(tx, identity.spaceId, projectId, checkpointId, records);
         const briefProposalId = decisions.length + constraints.length === 0
           ? null
           : await this.proposeBrief(tx, identity, projectId, { goals: extraction.goals, decisions, constraints },transitions);
@@ -338,6 +339,42 @@ export class ImportedHistoryExtractionService {
       (left.vendor_updated_at ?? "").localeCompare(right.vendor_updated_at ?? "")
       || left.imported_session_id.localeCompare(right.imported_session_id)
       || left.sequence - right.sequence);
+  }
+
+  /**
+   * The input the model read must still be publishable when its result is.
+   *
+   * The model call sits between `claimedRecords` and the proposal transaction,
+   * and in that window the session's owner may make it *only me*, move or
+   * delete it, or a stale-claim release may hand the records to another batch.
+   * Proposing then would publish a now-private transcript through a Brief that
+   * has no visibility of its own. So, inside the proposal transaction, every
+   * record read must still be held by this claim, in a session of this Project
+   * that is still shared — and those sessions are share-locked, so a
+   * visibility change waits for this commit rather than slipping past it.
+   * Anything else discards the whole result (it cannot be split by source
+   * reliably); the caller releases the claim and still-shared records are read
+   * again later.
+   */
+  private async lockClaimedInputs(
+    tx: Queryable,
+    spaceId: string,
+    projectId: string,
+    checkpointId: string,
+    records: readonly PendingRecord[],
+  ): Promise<void> {
+    const current = await tx.query<{ id: string }>(
+      `SELECT r.id
+         FROM imported_session_records r
+         JOIN imported_sessions s ON s.id = r.imported_session_id
+        WHERE r.id = ANY($1::text[]) AND r.space_id = $2 AND r.extracted_in = $3
+          AND s.space_id = $2 AND s.project_id = $4 AND s.visibility = 'space_shared'
+        FOR UPDATE OF r FOR SHARE OF s`,
+      [records.map((record) => record.id), spaceId, `claim:${checkpointId}`, projectId],
+    );
+    if (current.rows.length !== new Set(records.map((record) => record.id)).size) {
+      throw new HttpError(409, "Imported history changed while it was being read; nothing was proposed");
+    }
   }
 
   private async releaseClaim(checkpointId: string): Promise<void> {

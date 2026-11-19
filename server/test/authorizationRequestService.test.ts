@@ -37,7 +37,7 @@ describe("authorization request denial classification", () => {
     await expect(classifyRequestableDecision(denied(
       "project.source.bind",
       { action_id: "project.source.propose_bind" },
-    ))).resolves.toEqual({ actionId: "project.source.propose_bind" });
+    ))).resolves.toEqual({ actionId: "project.source.propose_bind", kind: "action_grant" });
   });
 
   it.each([

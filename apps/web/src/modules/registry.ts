@@ -139,24 +139,6 @@ export const MODULE_REGISTRY: Module[] = [
   // are static defaults; runtime state is overlaid by useEffectivePlugins from
   // GET /api/v1/plugins/effective. The route stays registered. The plugin page
   // itself says it is off. Do not turn a disabled plugin route into a 404.
-  {
-    id: 'diary', label: 'Diary', path: '/diary',
-    section: 'capture', group: 'daily', icon: 'book',
-    description: 'Personal diary with same-day history across years. Supports AI reflection, daily reminders, and opt-in memory proposals after your review.',
-    source: 'official_plugin', pluginId: 'diary',
-    enabled: false, visible: true, planned: false,
-    perspectiveType: 'personal',
-    component: lazy(() => import('../plugins/diary/DiaryPageAdapter')),
-  },
-  {
-    id: 'finance', label: 'Finance', path: '/finance',
-    section: 'knowledge', group: 'work', icon: 'landmark',
-    description: 'Double-entry finance ledger for this space: books, accounts, commodities, and transactions with Beancount import/export.',
-    source: 'official_plugin', pluginId: 'finance_ledger',
-    enabled: false, visible: true, planned: false,
-    perspectiveType: 'space-scoped',
-    component: lazy(() => import('../plugins/finance_ledger/FinancePageAdapter')),
-  },
   // ── Daily ─────────────────────────────────────────────────────────────────
   {
     id: 'today', label: 'Today', path: '/today',

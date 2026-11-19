@@ -476,6 +476,11 @@ create/dry-run services). Production passes nothing and gets the instance's
 strict guard; tests pass one pinned at their own fixture server, because the
 production guard has no way to switch itself off.
 
+A guarded request may carry a bounded body (≤ 64 KiB) only with an explicit
+`maxRedirects: 0` and a non-GET/HEAD method, so a body is never replayed to a
+redirect target; the pinned undici transport sends it on the wire. Its only
+consumer is the Gmail OAuth transport below.
+
 ### Reading a decision item, a briefing and a screening list
 
 A review action that republishes a Source item's content — `extract_evidence`
@@ -1697,3 +1702,801 @@ Reading mutation closure pins current users/memberships after Project audiences;
 execution consumes that locked selection and rechecks discovery before writes.
 Operation replay locks retained result references before core actor locks.
 No deadlock exception is converted to success or an application retry.
+
+## Personal Gmail connections (connection lifecycle, new-mail monitors, legacy Project selections)
+
+Open acceptance items and known limits are in the
+[deferred register](../tasks/deferred-register.md#gmail--real-environment-acceptance-and-limits).
+Implemented: the OAuth connection
+lifecycle, owner-private new-mail monitors (below, "New-mail monitors"),
+reading a legacy selected thread with a mandatory owner-read audit, and the
+owner's browser UI. The manual thread search and adding selections were
+retired in V2. An Agent reads mail only through the on-demand read below
+("On-demand Agent reads", ADR 0032/0033 §6) — in any ordinary conversation of
+a Project (the owner's private one, a Room or the mainline), in the owner's own
+turn, after their opt-in and their one standing consent for that Project and
+mailbox, on the conversation's own runtime — and through the scheduled digest
+read of a confirmed digest. No delegated or system path reads mail, and an
+Agent otherwise only drafts a monitor as the owner's private proposal. Code: `server/src/modules/sources/gmail/`, schema
+`server/src/db/schema/gmail.ts` (migrations `0020_gmail_oauth_connections`;
+`0021_gmail_revocation_obligations` added an automatic-revocation table that
+`0022_gmail_drop_remote_revocation` drops again with
+`gmail_connections.revocation_status`; `0023_gmail_thread_selections_read_audit`;
+`0031_gmail_agent_read` adds the opt-in and the Agent read audit columns;
+`0033_gmail_project_agent_read_consent` adds the Project consent binding to
+`plugin_data_grants` and ends earlier per-Run Gmail consents;
+`0034_gmail_consent_binding_and_shape` freezes the consent on its request and
+closes the shape check's NULL holes),
+DTOs `packages/protocol/src/gmail.ts`.
+
+- **No automatic remote revocation.** Google revokes per grant (client +
+  account), so a revoke sent for one connection also cuts another Space's or
+  person's connection of the same Google account and tokens a newer attempt
+  already exchanged, and no local lock, lease or timer proves when Google
+  stopped processing a revoke. Rainver therefore never calls Google's revoke
+  endpoint: disconnect removes local authority only and reports
+  `remote_revocation: "not_requested"` with `manual_revocation_url`
+  (`GMAIL_MANUAL_REVOCATION_URL`, Google Account → Third-party apps &
+  services), where the person removes Rainver's access themselves. Refused
+  callback tokens are discarded, not revoked. The grant (and any access token
+  already issued, until it expires) stays valid at Google until the person
+  removes it. Disconnect deletes Rainver's stored copy; a request already past
+  its pre-send recheck (below) is not recalled.
+- **Rows.** `gmail_connections` (one per owner + Space + Google `sub`; not a
+  SourceConnection, no visibility column, no catalog connector) and
+  `gmail_oauth_attempts` (state SHA-256 only, 10 min expiry, single use). An
+  `active` row always has its `gmail_oauth` credential; other statuses have none
+  (CHECK). Generation +1 on connect, reconnect/credential replacement,
+  reauth transition and disconnect.
+- **Locks.** Every Gmail transaction that writes or admits a send — start,
+  callback consume, both pre-send rechecks, install, disconnect, forget and each
+  refresh step — takes: active person (`lockActivePerson`, or the operation
+  core's actor pin before `authorize`) → the owner + Space mutex
+  (`lockGmailOwnerSpace`, `pg_advisory_xact_lock` on
+  `gmail-owner:<space>:<user>`, which exists even with no attempt or connection
+  row) → attempts → connection → credential. Disconnect/forget take the mutex and
+  the connection row `FOR UPDATE` in `authorize`, so no `SHARE` lock is upgraded
+  later and two commands with different idempotency keys serialize instead of
+  deadlocking.
+- **Configuration.** Optional `GMAIL_OAUTH_CLIENT_ID/SECRET/REDIRECT_URI`
+  (all or none; the redirect URI must be the instance origin plus exactly
+  `/api/v1/sources/gmail/oauth/callback`; https in prod unless loopback). Server process only.
+  A dedicated Web OAuth client is recommended. The Google sign-in client ID
+  and secret can also be reused by registering the Gmail callback alongside the
+  sign-in callback. Unset → start
+  answers `503 gmail_not_configured` and the list reports `configured:false`.
+- **Start.** `POST /api/v1/sources/gmail/oauth/start` (exact transport exemption
+  in the route inventory: it issues a one-time state) supersedes the person's
+  unconsumed attempts and returns Google's URL with `openid gmail.readonly`,
+  `access_type=offline`, `prompt=consent`, `include_granted_scopes=false`, S256
+  PKCE (verifier = HMAC(HKDF(master key, "gmail-pkce-v1"), state), never stored).
+  Its cleanup is limited to the caller in this Space: unconsumed attempts and
+  consumed ones older than the 10 min install window; other people's and other
+  Spaces' attempts, and a consumed attempt still inside its window, stay.
+  `reconnect_connection_id` must be the caller's own connection; the attempt
+  records its generation.
+- **Callback.** `GET /api/v1/sources/gmail/oauth/callback` consumes the attempt
+  (`consumed_at IS NULL AND user_id = session user`, row locked after the
+  owner + Space mutex, then `expires_at >` the database's actual time read once
+  after those locks — `gmailLockedNow`'s `clock_timestamp()`, not the
+  transaction-start `now()` — which is also stored as `consumed_at`) in a
+  transaction that, before the code is spent, requires the person to be active
+  and an active member of the attempt's Space (`lockActivePerson`, else
+  `gmail_connection_unavailable`) and a reconnect target to still be theirs at
+  the recorded generation (else `gmail_connection_unavailable` /
+  `gmail_oauth_superseded`); a refusal still consumes the attempt, and the code
+  is spent at most once. After DNS, immediately before the token POST (and
+  before each profile-read send), `admitAttemptSend` rechecks in a short locked
+  transaction that the person is still an active member, the consumed attempt
+  still exists inside its window and a reconnect target is unchanged; otherwise
+  nothing is sent and the callback ends with that code. It validates the ID token from the direct token
+  response (`iss`, `aud`, `exp`, `sub`), refuses missing/excess scopes
+  (`evaluateGrantedGmailScopes`), reads the mailbox address with
+  `users.getProfile` through the Sources broker with `gmailSourceRequestPolicy`
+  (whose authorize step is `admitAttemptSend`) and the stable-subject
+  quota, and installs the credential and connection in one transaction after
+  `lockActivePerson`. The install requires its consumed attempt row to still
+  exist (≤ 10 min old) and a reconnect target still at the recorded generation,
+  else `gmail_oauth_superseded`: a disconnect deletes the owner's attempts in the
+  Space and a successful install deletes the others, so a paused or older
+  callback (first connect included) cannot reinstall. Same subject → same row
+  (new credential row replaces the old; a missing refresh token keeps the stored
+  one only for that proven account); a reconnect that signs in as another
+  account is `gmail_account_mismatch`. It redirects (303, `no-store`,
+  `no-referrer`) to `/sources?gmail=<fixed code>`; request logs already drop the
+  query. Every refusal after the exchange discards the fresh tokens unstored.
+- **Refresh.** `resolveGmailAccessToken` (`gmailTokenRefresh.ts`) follows the
+  once-only protocol (row locks, `in_flight` lease with keyed fingerprint, POST
+  outside transactions, settle only for the same attempt, generation and
+  credential). Each of its transactions first requires the owner's current
+  authority (`lockActivePerson` on the snapshot's Space), so a disabled user or
+  removed member gets no cached token, sends no refresh POST, and a result
+  arriving after removal is discarded (`gmail_authority_revoked`).
+  The POST's `beforeSend` (after DNS) reruns the same locked check plus "this
+  `in_flight` attempt and credential are still current"; a disconnect or
+  membership removal during name resolution therefore sends nothing.
+  `invalid_grant` → `reauth_required` (credential deleted);
+  429/5xx/other refusal/not sent → `transient` with backoff; sent without an
+  answer → `uncertain`, retried after the lease. Mail reads resolve the token
+  through it on every hop.
+- **Disconnect / forget.** Core commands `source.gmail.connection.disconnect`
+  (`POST …/connections/:id/disconnect`) and `source.gmail.connection.forget`
+  (`DELETE …/connections/:id`), user principal, `public_api` only, policy
+  `source.gmail.connection.manage`, owner-only hidden 404. Disconnect sets
+  `disconnected`, deletes the credential (refresh and access token), bumps the
+  generation and deletes the owner's attempts in the Space in the operation
+  transaction — the same for the REST adapter and `/api/v1/actions`. It sends
+  nothing to Google and enqueues no Job; the receipt is
+  `{…, remote_revocation: "not_requested", manual_revocation_url}` and a
+  same-key replay returns it. Forget deletes a row that holds no credential
+  (an active row is `409`); it first ends that connection's active Agent-read
+  consents and pending consent requests, and the deletion cascades its
+  attempts, thread selections, monitors, matches and sync cursor. Ended
+  consents and approved requests stay as evidence: a consent names its
+  connection only as a snapshot (no foreign key since migration
+  `0035_gmail_consent_history_and_request_end`), so history never blocks
+  Forget and never admits again.
+- **Transport.** `gmailOAuthTransport.ts` sends the token exchange and refresh
+  POSTs through `fetchGuarded`: HTTPS, exactly the fixed
+  `oauth2.googleapis.com/token` URL (there is no revoke POST),
+  `maxRedirects: 0` with a bounded form body, 64 KiB response cap, 10 s
+  deadline. Outcomes carry only a class and Google's OAuth error code.
+  Each POST requires an `admit` step run in `beforeSend` as the last await
+  before dispatch; a refusal is `not_sent`. A writer committing after `admit`
+  returns and before the bytes leave still sees that one POST; settlement
+  discards its result.
+- **Quota.** Durable keys from `gmailQuotaGroups` (stable `sub` per account,
+  per-owner group); forget/reconnect and credential replacement cannot reset a
+  Google cooldown (`server/test/gmailConnectionDb.test.ts`).
+- **Project selection (legacy).** `gmail_project_thread_selections` holds
+  references only (connection, Project, Google thread id, optional
+  `read_after`/`read_before`; no subject, snippet, address or body). V2 retired
+  adding them (`source.gmail.selection.add`, `POST /api/v1/sources/gmail/selections`
+  and the search route are gone); existing rows are kept. Core command
+  `source.gmail.selection.remove` (`DELETE …/selections/:selectionId`), policy
+  `source.gmail.selection.manage`, user-only, `public_api` only, ungrantable:
+  a hard delete of the caller's own row under the mutex, without Project access
+  (cleanup after losing it); once the row is gone even a same-key replay is the
+  hidden 404. Forget cascades a connection's selections.
+  `GET /api/v1/sources/gmail/selections` lists only the caller's rows
+  (`project_readable` false when they lost access). Nobody else — Project
+  owner, Space admin or member — can list, read or remove them.
+- **Reads.** `POST /api/v1/sources/gmail/selections/:selectionId/read`
+  (`cursor`) is an exact transport exemption: synchronous, owner-only, POST so
+  cursors never sit in a URL; a core query cannot do external IO or write the
+  audit, and a command result would retain mail. Sequence (`gmailMailReads.ts`):
+  admission transaction → outside every transaction, a broker from
+  `gmailSourceRequestPolicy` (exact URL per hop — profile, thread metadata, one
+  full message; `threads.list` is no longer admitted — no redirects, 21
+  physical sends per page, 2 MiB / 15 s per response, stable-subject quota,
+  the page signal) → in-memory normalization → release transaction (recheck +
+  audit row) → serialization after commit with `private, no-store`, `no-referrer`.
+- **Read authority.** One predicate (`gmailReadAuthority.ts`) at admission, as
+  the broker's `authorize` before every hop's credential and every physical send,
+  and in the release transaction: Project + Space + the caller's Project
+  membership `FOR SHARE` (`assertProjectReadableLocked`) → `lockActivePerson` →
+  the owner + Space mutex → the caller's connection `FOR SHARE` (`active`) → the
+  caller's selection `FOR SHARE`; after admission also the same generation and
+  selection window.
+- **Page deadline and bounded transactions** (`gmailReadDeadline.ts`). Each
+  search or read page has one signal: the client's disconnect plus
+  `GMAIL_READ_LIMITS.pageDeadlineMs` (60 s, the whole page — not 21 × 15 s; the
+  broker's 15 s per send sits inside it). Every database step of the page runs
+  in `withGmailReadTransaction` under that signal: the selection route lookup,
+  admission, each per-send authority check (with the broker's narrower per-send
+  signal), token refresh (all three steps; its lease wait also stops on abort),
+  quota admission and cooldown (the broker receives the page's runner instead
+  of the pool) and the final release. Pool acquisition gives up on abort and
+  releases a client that arrives later unused (the pool's own 5 s connect
+  timeout is `503 gmail_authority_busy`); each transaction keeps `lock_timeout`
+  3 s / `statement_timeout` 5 s cut to the time left (a full-length timeout is
+  `503 gmail_authority_busy`, one cut by the deadline `504
+  gmail_upstream_timeout`). On abort `pg_cancel_backend` (pid +
+  `backend_start`) goes through the separate `getGmailReadControlPool` (max 2,
+  1 s connect/query/statement timeouts, 2 s overall) so it works while the main
+  pool is exhausted; the target client stays checked out until that request
+  answered, then ROLLBACK and release — so a late cancel cannot reach a
+  transaction that reuses the backend. A failed or timed-out cancel destroys
+  the target client at once. From acquisition on every client-side wait is
+  bounded: BEGIN, the pid/timeout marker query, the work and COMMIT follow the
+  signal (before the marker no cancel is possible, so an abort there destroys
+  the client); the cleanup after an abort (cancel answer, work settling,
+  ROLLBACK) has one `cleanupMs` (2 s) budget, and a ROLLBACK after an ordinary
+  error is bounded by the signal and that budget. A wait a bound ends destroys
+  the client (closing the connection ends its transaction in PostgreSQL);
+  only an answered cancel + settled work + successful ROLLBACK returns it to
+  the pool. So an unresponsive database ends a call at most 2 s after its
+  abort (a page at most 60 s + 2 s). Abort is `499 gmail_cancelled`, the page
+  deadline `504 gmail_upstream_timeout`. No transaction is held across Google
+  IO. A `GmailReadError` from the page runner (quota admission/cooldown, token
+  refresh) keeps its class instead of the broker's wrapped `502`.
+  The selection and read-audit lists (`listGmailSelectionsBounded`,
+  `listGmailReadAuditBounded`) run in one such transaction under the client's
+  disconnect and the page deadline — including the Project readability lookup
+  after the selection query — because plain SELECTs still wait behind an
+  `ACCESS EXCLUSIVE` table lock; owner filtering is unchanged.
+  Foreign/vanished/no access → `404 gmail_not_found`; the
+  owner's own change → `409 gmail_connection_inactive | gmail_reauth_required |
+  gmail_connection_changed | gmail_selection_changed`. A disconnect, membership
+  removal, user disable, selection removal or window change between the last
+  fetch and release therefore releases nothing and writes no audit row.
+- **Pages and limits.** Read: `threads.get` returns the whole thread (no message
+  paging), so the server filters by the window (the reply's thread `subject` is
+  the oldest *in-window* message's, `null` for an empty window), keeps the newest 500
+  (`thread_message_limit`), pages newest first by 20 and fetches each with
+  `messages.get format=full`. Per page: raw bytes ≤ 8 MiB (no send that could
+  pass it: `page_raw_bytes`), normalized ≤ 1 MiB (`page_text_bytes`), text ≤
+  256 KiB per message (`text_truncated`); a response over 2 MiB is an
+  `omitted: too_large` entry and a Google 404 `omitted: unavailable`, each
+  with its Gmail link. Truncation reasons are always listed; nothing is cut
+  silently. Text is plain only (`gmailMessageText.ts`): text/plain preferred per
+  alternative, HTML through `stripHtml` with block breaks, declared charsets via
+  `TextDecoder`, attachments (a filename or `Content-Disposition: attachment`,
+  checked before walking any multipart) counted once, never walked or fetched, no markup, images or
+  links. `gmail_url` (`https://mail.google.com/mail/u/?authuser=<email>#all/<id>`)
+  carries no token.
+- **Cursors.** `gmailCursor.ts`: `base64url(payload).HMAC` (HKDF(master key,
+  "gmail-cursor-v1")), binding owner, Space, connection, generation, Project,
+  the selection, its thread, its window and the last released message's
+  (internal date, id) boundary — the next page is the messages strictly after it
+  in the newest-first order, so mail added or deleted between pages neither
+  repeats nor skips; expiry 15 min issued and
+  judged on `clock_timestamp()` after the admission locks. A cursor reused with
+  another window, Project, selection or generation, tampered or expired,
+  is refused before any Google request (`409 gmail_cursor_invalid |
+  gmail_cursor_expired | gmail_connection_changed`).
+- **Owner-read audit.** `gmail_read_audit_events` (not `content_access_logs`,
+  whose B11 CHECK forbids owner = viewer): owner, actor (CHECK `= owner`),
+  connection/Project/selection (SET NULL), `thread_read` (older rows may say
+  `thread_search` from the retired search),
+  thread id, item count, truncated, request id, time — never query text,
+  headers, snippets or bodies. Inserted in the release transaction; any failure
+  there is `503 gmail_audit_unavailable` with no content. Owner-only list:
+  `GET /api/v1/sources/gmail/read-audit`. Pruned with `content_access_logs` by
+  the same retention task and setting (`pruneContentAccessLogs`).
+- **Nothing at rest.** No Job, operation result, event, SourceItem, cache table,
+  file or shared push holds mail; selection/audit rows hold ids only; errors and
+  logs carry fixed `gmail_*` codes only (`server/test/gmailMailReadDb.test.ts`).
+- **Web UI** (owner only; typed consumer `apps/web/src/api/gmail.ts`, which
+  parses every reply with the protocol schemas and names the Space and an
+  AbortSignal on each call; calls go through `apiTransport` in
+  `api/client.ts`). *Connections*: `modules/sources/gmail/GmailConnectionsCard.tsx`
+  on `/sources/access` below the unchanged administrator credential form,
+  entered from the Sources page header ("Access and Gmail"). It lists the
+  person's connections, starts OAuth (connect / reconnect for a non-active row)
+  and shows Google's URL as a "Continue to Google" link the person clicks —
+  never an automatic redirect, and only when `gmailConsentUrl` (`api/gmail.ts`)
+  accepts it: exactly `https://accounts.google.com/o/oauth2/v2/auth`, no
+  credentials or written port (even `:443`/`:0443`, checked on the raw
+  authority before URL normalization); anything else shows `consent_invalid` and no link; `configured:false` explains that an instance
+  administrator configures the server and offers no secret field. Disconnect
+  confirms that it is local only and then links `GMAIL_MANUAL_REVOCATION_URL`;
+  forget is offered for non-active rows. The callback's `/sources?gmail=<code>`
+  lands on `GmailCallbackLanding` (route in `App.tsx`), which forwards only a
+  known result code to the preferred Space's Access page; the card shows it
+  once and removes it from the URL. *Monitoring*:
+  `modules/sources/gmail/GmailMonitorsCard.tsx` below the connections card:
+  pending drafts (Accept / Decline through the ordinary proposal decision,
+  `api/gmail.ts` `monitorDrafts` lists only well-formed `gmail_monitor_create`
+  payloads), the person's monitors per mailbox with criteria, status, match
+  count, Pause/Resume and Delete (confirmed), a content-free check line (push
+  or scheduled, last/next check, `baseline`/`recovering`, partial recovery,
+  last error code) and recent matches as "Open in Gmail" links only. *Project*:
+  `modules/projects/sourcesArea/gmail/ProjectGmailThreads.tsx` in the Project
+  Sources settings tab (`?tab=settings`, after "Manage linked sources"): a
+  pointer to Gmail monitoring, own connection choice and the person's earlier
+    selections with Read / Remove (no search box and no Select). `GmailThreadReader.tsx` is a dialog: 20 newest-first messages per
+  page (Older / Newest by server cursor), manual Refresh, timestamps, per-message
+  and thread Gmail links, explicit truncation/omission/attachment notes; text is
+  rendered as React text only (no HTML, images or links from mail). *Scope and
+  stale replies*: `modules/sources/gmail/useGmailScope.ts` aborts every call of
+  a scope when it changes or on `invalidate()` and resolves late replies to
+  nothing; list reads run on a named channel where only the newest
+  call can land, so a refresh after a write is never overwritten by an older
+  read. Every clearing refusal from selections, remove, monitor commands or
+  the reader goes through one path per surface (Project connection `clear`,
+  card `clear`): it invalidates all earlier calls and removes selections,
+  monitors, the open reader, the consent link and receipt together (a hidden
+  404 or `changed` then re-reads the list in the new generation); the Project
+  panel remounts per person + Space + Project and per connection, the reader
+  per selection, and the card tags its content with person + Space, so old mail
+  disappears in the same render. 401/403/404 and the owner's own withdrawal
+  (`reauth`, `inactive`, `changed`) clear shown content (`GMAIL_CLEARING_FAILURES`);
+  rate limit, deadline and busy keep the same-scope page with a retry. Writes
+  keep one idempotency key per intent until success, so a retry after a lost
+  reply replays the receipt; a second click on an in-flight intent does nothing.
+  Nothing is put in localStorage, a query cache or Cache Storage (Workbox keeps
+  `/api/v1/` `NetworkOnly`, pinned in `src/__tests__/api-entrypoint.test.ts`).
+  The Inbox opens a `gmail_monitor_matches` pointer at `/sources/access`
+  (`modules/activity/ActivityQueue.tsx`).
+  Tests: `src/__tests__/gmail-api.test.ts`,
+  `modules/sources/__tests__/GmailConnectionsCard.test.tsx`,
+  `modules/sources/__tests__/GmailMonitorsCard.test.tsx`,
+  `modules/projects/__tests__/ProjectGmailThreads.test.tsx`; built-app fixture
+  `src/__tests__/gmail-sources.browser.mjs` (synthetic APIs, both themes and
+  locales, 390/1280 px, screenshots to `GMAIL_SHOTS`).
+
+### New-mail monitors (Gmail V2 first version)
+
+Code: `sources/gmail/gmailMonitors.ts` (rows, applier, owner commands,
+wake-up, retention), `gmailMonitorProposal.ts` (Agent tool),
+`gmailMailboxSync.ts` (sync), `gmailSyncRequests.ts` (wake-ups, retry floor,
+reconnect resume), `gmailSyncContract.ts` (sync allowlist),
+`gmailMonitorCriteria.ts` (matching), `gmailWatch.ts` (`users.watch`),
+`gmailPush.ts` (push intake), `gmailSyncJob.ts` (Job); schema in
+`db/schema/gmail.ts` (migrations `0027_gmail_new_mail_monitoring`,
+`0028_gmail_sync_progress_and_retry`).
+
+- **Rows.** `gmail_monitor_rules`: owner, Space, connection (FK cascade),
+  optional `project_id` (SET NULL; a context label, never an audience), purpose
+  (≤ 280), fixed-field `criteria` (`from_any` address/`@domain`, `subject_any`
+  phrases, `label_any` label ids; each non-empty field must match, any value
+  within it; ≥ 1 criterion), `active|paused`, `active_since`, `proposal_id`
+  (unique), match count. At most 20 per connection. `gmail_mailbox_sync_states`:
+  one history cursor per connection (`baseline|ok|recovering`, `history_id`,
+  `recovery_after`/`recovery_partial`, lease, `sync_requested_at`,
+  `next_poll_at`, failures, last error code, durable retry floor
+  `retry_not_before`, in-record progress `record_history_id`/`record_offset`,
+  watch expiry and the watch renewal's own `watch_error_code`/`watch_retry_at`/
+  `watch_failure_count`, last push).
+  `gmail_monitor_matches`: (monitor, Gmail message id) dedup ledger, ids only,
+  pruned after 30 days with the content-access retention task.
+- **Drafting.** `source.gmail.monitor.propose` (Agent tool, conversation
+  allowance) turns the person's words into criteria and inserts a private
+  `gmail_monitor_create` proposal (visibility `private`, owner = instructing
+  person, `project_id` NULL; the Run's Project is only `target_project_id` in
+  the payload, kept only if the owner can read it). Refused
+  (`gmail_monitor_private_turn_required`) unless the stored Run is the owner's
+  own `manual` turn (`effectiveRunTrigger` + `scenarioOrigin`; not delegated,
+  continuation or unattended) and `runAudience` is that person alone — the
+  ADR 0030 personal-write scenario. No Gmail request, no criteria in the tool
+  result, and no proposal id in the summary the dispatcher persists as Run
+  evidence; replay by Run + idempotency key returns the same draft. The tool
+  call itself is reduced at the ACP boundary (`runtimeAdapters/privateToolCalls.ts`,
+  applied in both the host-thread and Run-event normalizers before anything is
+  persisted, so also before the live turn stream polls it): its arguments,
+  command line, output and error never reach `host_thread_events` or Run
+  events — only the call id, status, kind and the action id as title — before
+  the draft exists, on a refusal, and after. The person's own message keeps
+  its Room read rules. The scenario
+  check, the replay lookup and the insert run in one transaction after the
+  owner's person lock and owner + Space mutex, so concurrent same-key calls
+  produce one draft and the check sees any audience change committed first.
+- **Confirmation.** The owner's own accept/reject (`/api/v1/proposals/:id/accept`)
+  only. Like every owner-only Gmail card (`OWNER_ONLY_PROPOSAL_TYPES`: monitor,
+  digest, private check), it is never listed or decided by the Agent's
+  `proposal.list_pending`/`proposal.decide` and never auto-accepted by an
+  action grant; the apply service refuses it (hidden 404, nothing written)
+  unless the person decides directly (`isPersonActingDirectly` →
+  `ownerCardDecision`, `assertOwnerCardDecision`), and the monitor, digest and
+  check appliers refuse without that flag too. The applier refuses
+  anyone but the proposal owner (hidden 404; private visibility already hides
+  it from others), requires the owner's active connection, sets `active_since`
+  to the database time, creates the cursor row and queues a sync. With no
+  other active monitor on the connection the cursor (re)starts at `baseline`.
+  Decision authority is by identity: `gmail_monitor_create` is in
+  `OWNER_ONLY_PROPOSAL_TYPES` (`ontology/entities.ts`), so the apply service
+  names the proposal owner as its only decider (anyone else: hidden 404 on
+  accept, reject and replay) and passes `private_owner_decision` to the
+  `proposal.apply` gate, whose `proposal_apply_private_owner_allow` branch lets
+  that owner decide as any active member (audit code `approved_private_owner`).
+  The branch is reachable only for owner-only types, an active membership and
+  no explicit `required_approver_role`; no other proposal or role changes.
+- **Owner-only reads.** The content-access registry's `ownerOnlyPredicate`
+  marks these proposals and the `gmail_monitor_matches` operational alerts as
+  readable by their owner alone: `contentAccessSql` drops the space-shared,
+  grant and Space-oversight branches for them, so generic proposal and activity
+  lists, details, Home, decision candidates and every reader built on the
+  content predicate hide them from Space owners and admins in any oversight
+  mode. The Run that drafted such a proposal is owner-only too (the `run`
+  declaration's predicate: a proposal of an owner-only type created by it), so
+  its list entry, detail, trace, turn and turn stream, I/O and tool results
+  deny oversight. Readers that bypass the predicate exclude them explicitly
+  (`contentOwnerOnlySql`): the Home activity counts, the demotion-impact
+  output list, internal activity evidence, capture filing (a match reminder
+  is refused, 422). `ContentAccessService` lets only the owner manage an
+  owner-only row and refuses any widening — visibility other than `private`
+  or grants — with 409 `owner_only_content`. Chat action previews mark the
+  draft card as decidable only by its owner: the turn read and turn stream
+  show it only to that viewer (`actionPreviewsForViewer`; with no viewer only
+  shared cards), and it is never snapshotted into shared messages.
+- **Sync** (`syncGmailMailbox`, Job `gmail_mailbox_sync`, payload = connection
+  id). Claim → fetch → settle, lock order person → owner + Space mutex →
+  connection → cursor. Claim takes a 3 min lease only for an active owner,
+  active connection and ≥ 1 active monitor (else records
+  `gmail_authority_revoked | gmail_connection_inactive | gmail_reauth_required`
+  and parks without any Google call, cursor kept). Fetch outside transactions
+  through a Sources broker built from `gmailSyncRequestPolicy`: `history.list`
+  (`historyTypes=messageAdded`, pages ≤ 5) or, for `baseline`/`recovering`,
+  `users.getProfile` first and then one `messages.list q=after:<epoch>` page
+  (40); then `messages.get format=metadata` (Subject/From/To) for ≤ 40 new
+  messages, matched in memory and dropped. Every send rechecks person,
+  connection, generation and lease. Quota: the account/owner groups plus a
+  sync-only group (50/min, 1500/day). Settle (same locks, lease and generation
+  unchanged): ledger insert `ON CONFLICT DO NOTHING` only for monitors still
+  active *in the version the sync checked* (id + exact `active_since`; a pause
+  and resume during the sync is a new version, so the old batch cannot remind
+  about paused-period mail),
+  match counts, one private content-free Inbox pointer per monitor
+  (`OperationalAlertService`, kind `gmail_monitor_matches`, `project_id` NULL,
+  payload monitor/connection ids and the new count), and the cursor (numeric,
+  forward only) in one transaction — committed before any watch renewal. If any active monitor's id + version
+  differs from the claim (accepted, or paused and resumed meanwhile), the
+  cursor and record progress stay where they were and a follow-up reads the
+  range again with the current versions. A sync that reaches the message
+  bound stops at the last fully processed history record and requests a
+  follow-up; when the bound falls inside one record (a record can hold more
+  new mail than one sync reads), the record's messages are taken in sorted-id
+  order, the position reached is persisted as in-record progress beside the
+  unchanged cursor, and the follow-up resumes from it — the cursor passes the
+  record only once all of it is checked; a failed retry keeps both and the
+  ledger absorbs any overlap. Google
+  404 for the cursor → `recovering` from the last success minus 10 min (never
+  before the oldest active `active_since`, ≤ 7 days); a further page or older
+  gap is `recovery_partial`. Failures keep the cursor and set the durable
+  retry floor `retry_not_before` (exponential, or the quota/cooldown retry
+  time if later) and put back the request mark their claim consumed — unless
+  a reconnect superseded the sync (connection generation changed): then only
+  its lease is dropped.
+- **Retry floor.** Every wake-up honours `retry_not_before`: a push or monitor
+  change before it only marks `sync_requested_at` and queues nothing; the
+  heartbeat skips the row; a Job queued earlier finds the claim refusing
+  (`waiting`, no Google call, mark kept). Once it passes, the heartbeat queues
+  the pending request. A successful settle clears it.
+- **Reconnect.** Reinstalling the same account on an existing row (inside the
+  install transaction) clears authority error codes and their floor, keeps a
+  Google rate-limit/quota floor, drops a lease still held by the old
+  generation's sync, sets the next check to now and queues a sync when the
+  connection has an active monitor; the cursor is kept. The superseded sync
+  then can neither settle nor write its failure code or retry floor back.
+- **Schedule and push.** The Sources heartbeat (`gmail_mailbox_sync_scheduler`)
+  queues one Job per due cursor (`next_poll_at` passed or a request pending;
+  never a second while one is pending/running). Next check: 15 min, or 6 h
+  (never past the watch's expiry) while a `users.watch` is current and its
+  last renewal did not fail. With `GMAIL_PUBSUB_*` configured the sync renews
+  `users.watch` (fixed POST through the outbound guard, topic only) when under
+  24 h remain or after a failed renewal once `watch_retry_at` passes; Rainver
+  never calls `users.stop`. The renewal runs only after the increment is
+  committed: that settle keeps (refreshes) the sync's lease, the renewal gets
+  its own page deadline rather than what the increment left, and its outcome
+  is settled in its own bounded transaction under that lease, which it then
+  releases. Renewal outcomes are recorded on the watch fields only: a refusal,
+  Google failure, uncertain send, quota wait, the renewal's own deadline or
+  the single request's own 15 s deadline (`startGmailWatch` holds that signal
+  and reports `timeout` whether or not the POST was dispatched, never
+  `uncertain`) sets `watch_error_code` (`gmail_watch_refused|unavailable|uncertain|
+  not_sent|quota_exhausted|timeout`), backs off `watch_retry_at` (at least
+  Google's `Retry-After` on a 429, or a 503 that carries one, which also cools
+  the account/owner/sync quota groups as the broker does for GETs), shows push
+  as `inactive`. Loss of authority in the renewal's recheck (person,
+  connection, generation, lease, token) is rethrown, never reported as a
+  watch outcome: the already committed increment stays, the sync reports
+  `failed` and the row records the authority code. `POST
+  /api/v1/sources/gmail/push` (body ≤ 8 KiB) accepts only an RS256 OIDC token
+  from Google's JWKS with the configured `aud`, verified service-account
+  `email`, valid `exp`/`iat`, and the configured subscription; it uses only the
+  notification's `emailAddress` to mark that mailbox's monitored connections
+  and queue a sync — `historyId` is never trusted or stored. 401 on any
+  authentication failure, 204 otherwise, 404 when push is not configured.
+- **Push configuration: what is checked where.** Static configuration
+  (`loadGmailPushConfig`, at start-up) can check only what the four strings
+  say: all four `GMAIL_PUBSUB_*` set together with a `GMAIL_OAUTH_CLIENT_ID`;
+  full Pub/Sub resource names; topic and subscription naming the *same*
+  project id; the push audience is exactly this instance's push path (https
+  outside local dev); the service account has a service-account address form.
+  It cannot check which Google Cloud project the OAuth client belongs to (a
+  client id carries a project *number*, not the id), that the topic exists,
+  that `gmail-api-push@system.gserviceaccount.com` may publish to it, or that
+  the subscription pushes to this audience as that account. Only a real
+  `users.watch` success for a connected mailbox in that project — recorded as
+  `watch_expires_at` with no `watch_error_code` — and a verified push arriving
+  afterwards show the same-project setup works. That acceptance needs an
+  authorized real Google project and mailbox; the repository's tests use a
+  Google stub, and this batch did not perform it.
+- **Owner surface.** `GET /api/v1/sources/gmail/monitors` (monitors, sync
+  status, 50 recent match ids with Gmail links); `source.gmail.monitor.set_status`
+  (resume restarts `active_since` at now, so mail received while paused never
+  reminds) and `source.gmail.monitor.delete` (ledger cascades). Forget of the
+  connection cascades monitors, cursor and ledger.
+- **Nothing at rest.** No subject, sender, snippet or body is stored or
+  logged; Job results carry status, counts and fixed codes only
+  (`server/test/gmailMonitorSyncDb.test.ts` scans the tables).
+
+### On-demand Agent reads (ADR 0032, ADR 0033 §6)
+
+Decision: [ADR 0032](../decisions/0032-gmail-on-demand-agent-read.md) as
+amended by [ADR 0033](../decisions/0033-gmail-project-consent-and-private-delivery.md)
+(§1–4, §6), on [ADR 0030](../decisions/0030-plugin-agent-data-access.md)'s
+sensitive-data path with the Project-bound exceptions below. Private digests and
+owner-sent sharing are under "Private Gmail summaries".
+
+- **Opt-in.** `source.gmail.connection.set_agent_read` (owner, `public_api`,
+  person → mutex → connection `FOR UPDATE`) sets
+  `gmail_connections.agent_read_enabled`; off by default, cleared by
+  disconnect, shown and toggled on the Access page card. It reads nothing.
+  Turning it off ends every Project consent on that connection.
+- **Project-bound core tool** (`plugins/coreDataTools.ts`, `projectBound`).
+  Gmail's tools keep ADR 0030's pin, scenario table, consent row, release
+  gate, taint and Agent-read log, but (1) need no isolation proof: the Run
+  keeps the conversation's own selected runtime — CLI, Host (built-in or
+  paired), native CLI login or ModelProvider, model — and is never selected
+  for the model-only channel (`runPinsSensitivePluginTool`,
+  `runPinsCoreDataTool` and `pluginDataFacts` skip Project-bound pins); and
+  (2) admit a shared audience (`pluginDataEligibility`: the owner's own
+  `manual` turn, or a digest's `scheduled` Run), but only while every reader
+  of the Run reads the consent's Project (`audienceWithinProject`, at call
+  time and in the release gate). The Gmail credential never leaves the server:
+  the runtime receives only the bounded result of the broker's read.
+- **Offered** (`gmailAgentReadAvailability.ts`, snapshot and every call): an
+  active Session of a Project that is the person's own private conversation
+  or a Room conversation (a Room or the mainline;
+  `GMAIL_PROJECT_CONVERSATION_SQL`), and an active opted-in connection of the
+  person. A chat outside every Project, another person's private
+  conversation, and delegated, scheduled or system turns are not offered it.
+  A private Project chat that may read gets `private` Runs
+  (`directTurnVisibility`); its own Conversation container already isolates
+  host state per Session, so no Project shares host state with another.
+- **Tool** `source.gmail.mail.read` (`gmailAgentReadOperation.ts`,
+  operation-core query): `{query?, max_messages? ≤ 5, mailbox_email?}` →
+  `{mailbox_email, source: recent_inbox|search, items[], truncated}`; each
+  item is the message id, date, Subject/From/To/Cc/Date headers and plain-text
+  body (32 KiB, `normalizeMessageBody`). No query lists `labelIds=INBOX`; a
+  query is sent as Gmail `q` with `-in:drafts -in:chats -in:spam -in:trash`,
+  and any listed message labelled DRAFT/CHAT/SPAM/TRASH is dropped. Requests:
+  `gmailAgentReadContract.ts` allowlist (`messages.list` with exactly those
+  parameters, `messages.get format=full`), no redirects, six sends, the
+  existing broker, quota groups, token refresh and authority recheck per send
+  (`pageTransport` in `gmailMailReads.ts`), plus a per-send check that the
+  consent is active, the owner is an active person who still reads its
+  Project, and the Run is still running. Ten released reads per Run → 429
+  `gmail_agent_read_limit`.
+- **Consent** (`gmailAgentReadGrants.ts`). The call first checks the
+  conversation's audience against the Project (below), then picks its mailbox
+  (several opted-in → 409 `gmail_agent_read_mailbox_ambiguous`, listing the
+  addresses only when the owner alone reads the conversation; a Room or the
+  mainline gets the code alone, as does `gmail_digest_mailbox_ambiguous`) and
+  names it as the policy decision's resource. A Run that still carries a withdrawn
+  private-read card's binding (`gmailPrivateReadBinding.ts`) is refused every
+  call. Missing consent is `operation_consent_required`; the Agent calls
+  `authorization.request` and the turn waits (`waiting_for_review`). The
+  request freezes owner, the conversation's Project, that connection, its
+  generation and the purpose (`authorization_requests.consent_*`, migration
+  `0034_gmail_consent_binding_and_shape`). A core data tool's request exists
+  only for the mailbox owner, in any conversation: listed
+  (`GET /api/v1/runs/:id/authorization-requests`) and decidable by them alone;
+  anyone else — other Room members, a Space owner with oversight — gets no row
+  and a 404. The list projects each pending card for its owner
+  (`consent_state`): `approvable` only while the Run waits for that request,
+  the tool is offered in its conversation, the owner reads the frozen Project
+  and the frozen connection is active, opted in and at the frozen generation;
+  otherwise `ended`, or `superseded` for a card without a frozen binding.
+  Approval rechecks each part live under the Project lock and writes exactly
+  the frozen binding or nothing; the `authorization_request_reconcile` job
+  then requeues **the same Run**, which continues the original request in the
+  same conversation (no new conversation, message copy or navigation).
+  Opt-out, disconnect, reconnect, re-authorization, forget, leaving the
+  Project and account disable end a pending card in the same writer
+  transaction (`policy/consentRequestLifecycle.ts`). Approval writes one
+  `plugin_data_grants` row: `core:gmail`, scope `project`, read, sensitive,
+  the conversation's Project, that connection and its generation, purpose
+  `on_demand_read`, no expiry. Every later turn of the owner in any
+  conversation of that Project reads under it without asking; another
+  Project's conversation never matches (`liveGmailAgentReadConsents` requires
+  the Run's Session and Project to be the consent's) and asks again; another
+  person's Run never matches. It stops admitting when the connection is
+  inactive, opted out or at another generation, and is ended (`revoked`) by
+  the owner's revoke (Gmail card or Run panel), opt-out, disconnect,
+  reconnect and re-authorization; removing the owner from the Project or
+  disabling the account ends it in that writer's transaction. A conversation
+  whose audience reaches beyond the consent's Project — or, with no consent
+  yet, beyond the conversation's own Project, the owner included — refuses
+  with 409 `gmail_agent_read_audience_outside_project` and is never offered a
+  card (`pluginDataFacts`). The same audience rule is part of
+  `gmailAgentReadConsentTarget`, so `authorization.request` writes no card for
+  such a Run, a pending card stops being approvable (`consent_state: ended`)
+  when a reader outside the Project joins, and confirming it then writes
+  nothing (409).
+- **Release gate** (audit transaction; the consent's Project `FOR SHARE` with
+  the owner's member row → person → Run `FOR UPDATE` → Gmail mutex →
+  connection → consent `FOR SHARE`): rechecks the owner's Project access,
+  actor, that the owner is a reader and every reader reads the consent's
+  Project, connection generation and opt-in, the conversation and the consent
+  bound to that connection, then writes the Run's taint (`plugin_reads:
+  core:gmail sensitive`: that Run's outward writes are refused — mail is
+  untrusted input — and it materializes no artifact, proposal or activity),
+  an `agent_data_read_logs` row (`gmail_message` ids) and a
+  `gmail_read_audit_events` row (`agent_read`, Run, Agent and the consent's
+  Project, count only). A failure withholds the result.
+- **Output and later turns.** The reply is the conversation's: a Room or
+  mainline reply is a Room message for its audience; a private Run of the
+  owner's private conversation is owner-only for every oversight mode
+  (`OWNER_ONLY_RUN_TOOLS` applies to `private` Runs only). The read does not
+  mark the conversation `sensitive_conversation` (only a plugin's sensitive
+  read does): later turns keep the conversation's runtime. Independently of
+  that, every later Run of the conversation inherits the read's taint at
+  creation (`runs/repository.ts`, `sensitiveConversationReads`), so the
+  mail-derived history keeps its Project constraint on any Host: outward writes
+  are refused, nothing is materialized, and `memory.remember` /
+  `memory.revise` refuse outright (`hasProjectBoundRead`; Memory is recalled
+  in other Projects). Session reflection still creates no Memory proposal for
+  a conversation an Agent read mail in. Mail-derived content copied out of
+  the conversation keeps the constraint: a Room reference from it is fenced as
+  `external_untrusted` and carries `source_project_id` and `sensitive_reads`
+  in its provenance, and the owner's shared excerpt (C) carries the same
+  fields on its message; `sensitiveConversationReads` reads both back, so
+  every later Run of the conversation they land in inherits the read with its
+  real owner, and an incomplete answer is refused or inherited conservatively
+  ([rooms.md](rooms.md) §Thread References). The owner's excerpt records its
+  list with `sensitive_reads_version: 2` and is refused
+  (409 `gmail_summary_share_foreign_data`) when its source Run holds anybody
+  else's data, a read whose owner is unknown or cannot be proven (an entry
+  from before owners were recorded, judged as for references), or malformed
+  read metadata (`runSensitiveReads`, the same rule references, inheritance
+  and reflection use). Shared text without the version predates it and
+  cannot be verified: the conversation holding it is incomplete. The Run page's data panel labels a Project consent "Only in
+  this Project (its private conversations, Rooms and mainline)". The
+  call's arguments and result never enter the Run's event logs
+  (`PRIVATE_TOOL_CALL_ACTIONS`).
+- **Management.** The connection list carries `agent_read_grants` (Project,
+  name while the owner reads it, created, last use); the Access page card
+  lists them with a confirmed revoke (`plugin_data_grant.revoke`). A
+  digest's consent (`core:gmail_digest`, purpose `daily_digest` /
+  `rule_digest`) is listed and revoked through the same
+  `plugin_data_grant.list` / `.revoke`: the grant DTO's `purpose` admits
+  every purpose the `ck_plugin_data_grants_shape` check stores, and the
+  revoke answers with the revoked consent. The digest then reads as ended
+  (`gmail_digest_consent_ended`) and the scheduler's next due pass (daily
+  slot or a monitor hit) persists `ended` without a Gmail call
+  (`gmailRoomReadAcceptanceDb.test.ts`). The Settings consent panel
+  (`PluginDataConsentPanel`) lists these core consents as Gmail / Gmail
+  digest with their Project (named via `projectsApi.get` only when it
+  returns `current_user_can_read: true`; a limited answer or a 404 shows
+  the fallback) and purpose (on demand, daily, monitor hits); ordinary
+  plugin consents keep their Space / scheduled-Run scope.
+- **Withdrawn hand-off and private check** (ADR 0033 §6). The earlier
+  `source.gmail.private_read.request` (a new private conversation) and
+  `source.gmail.private_check.request` / `.get` (a Session-less isolated Run
+  answering on an owner-only card) are removed: no system action, policy
+  entry or conversation allowance names them. Their owner-only cards
+  (`gmail_private_read`, `gmail_private_check`; `OWNER_ONLY_PROPOSAL_TYPES`)
+  are history: the preview projection never offers one for a decision, the
+  web card shows it without decision, link, answer or continuation, Proposal
+  lists and details offer no Accept/Reject (`memory/acceptOutcome.ts`), and
+  the appliers refuse acceptance (409, writes nothing;
+  `gmailPrivateReadHandoff.ts`, `gmailPrivateCheck.ts`). Migrations
+  `0038_gmail_private_checks` and `0039_gmail_private_check_withdrawn` closed
+  pending cards (`superseded`) and ended unfinished checks (`failed`,
+  `gmail_private_check_withdrawn`); delivered rows are kept but no route reads
+  them. A Run a check started is refused before dispatch
+  (`checkRunExecutionAuthorization`, Work Context rebind) and at launch
+  (`sensitiveLaunchRefusal`). A model that still names either tool is reduced
+  at the ACP boundary.
+- **Web.** The in-conversation consent card (`ConversationRunControls.tsx`)
+  shows the frozen mailbox and Project to its owner and states the scope
+  (every conversation of that Project, answers visible to the conversation's
+  readers). Owner-only Gmail cards (`source.gmail.*`) never show the generic
+  "continue to next step" (`ActionPreviewCard.tsx`).
+- **Limits.** Whether the Agent recognizes a Gmail need is the model's
+  judgment. The conversation's CLI and its model provider process what the
+  Agent reads; that is the owner's stated choice on the card, separate from
+  Rainver's Project boundary.
+- Tests: `server/test/gmailAgentReadDb.test.ts` (real PostgreSQL, stub
+  Google: offering in private/Room conversations, consent freeze and
+  approval, reuse, every ending, release gate, and the acceptance on a paired
+  remote Host's `codex_cli` with its own login: newest five bodies, a
+  `superlinear` search and its body, another Project refused, an audience
+  outside the Project refused, revocation),
+  `server/test/gmailRoomReadAcceptanceDb.test.ts` (Room message → queue →
+  launch on the conversation's own runtime → consent card in place → the same
+  Run requeued → reads → Room reply; owner-only card; reuse; revocation; and
+  the generic claim-refusal regression; audience before mailbox choice and no
+  mailbox list in a Room; a reference's second hop keeps the real owner),
+  `sensitiveConversationReadsDb.test.ts` (multi-owner, long conversation, old
+  references, incomplete answers, ordinary sharing),
+  `gmailPrivateReadHandoffDb.test.ts`,
+  `sensitiveRuntimeProfileDb.test.ts`, `GmailConnectionsCard.test.tsx`,
+  `gmailPrivateReadCard.test.tsx`, `memory/__tests__/conversationCardOnly.test.ts`,
+  built-app fixtures `gmail-sources.browser.mjs` and
+  `conversation-layout.browser.mjs` (withdrawn card on a Room reply).
+
+
+### Gmail summaries (digests)
+
+In the owner’s own `manual` turn of an ordinary conversation of a Project — their
+private Agent conversation, a Room or the mainline — `source.gmail.digest.propose`
+creates an owner-only proposal (`payload.shared_conversation` for a Room). In a
+Room or the mainline the owner must be a reader and every reader must read the
+Project (`gmailDigestConversationAdmits`; otherwise
+`gmail_digest_audience_outside_project`). The confirmation card, shown to and
+decided by the owner alone, shows the mailbox, trigger, window and the
+delivery conversation (a Room's digest is read by all its members). Daily digests run at the selected
+local time and cover the interval from the previous covered boundary through
+the scheduled slot. The catch-up bound is 24 hours or the duration of a longer
+daily slot interval when local clocks roll back. After a missed slot the
+scheduler can catch up through the current time and reports any earlier gap.
+Their Gmail request uses only INBOX and server-set time bounds. Rule digests
+take no schedule. The sync worker starts delivery after it commits new matches,
+and the Sources heartbeat recovers pending deliveries. Rule reads are restricted
+to the frozen matched IDs and deduplicate delivered items.
+
+Confirmation writes a standing grant and the digest together. Runtime admission,
+each Gmail send, model release and private reply delivery recheck authority.
+Only the delivery’s automation-origin Run can read; it runs on the
+conversation's own selected runtime (its CLI, Host and login; acceptance in
+`gmailMonitorSyncDb.test.ts` on a paired Host's `codex_cli` with its own login).
+In a private conversation it is an owner-only turn (`queueUnattendedPrivateTurn`);
+in a Room or the mainline it is one scheduled Room turn of that same conversation
+(`RoomService.queueUnattendedTurnInTransaction` → `AgentGroupRunService` with
+`unattended`: one recipient, `automation` origin, only `source.gmail.digest.read`,
+also across a Work Context rebind), and the reply is that conversation's Room
+message (`chatTurnFinalizer.ts`). No conversation is created. Drafting,
+confirmation, start, the Run's claim (`checkRunExecutionAuthorization` →
+`gmailDigestRunAdmits`), every Gmail send, read release and settlement use one
+audience rule, `gmailDigestConversationAdmits`. A private conversation's reader
+is its owner, and the Run must be owner-only. In a Room or the mainline the
+owner must read the conversation through its own gate (`roomAudience`: an
+active roster row plus Project readability, or a mainline's Project readers);
+the rule never adds them as a reader. A Room's or the mainline's
+readers are its Project readers (`roomAudience`), every active
+`room_user_members` row, and, once the Run exists, the Run's own audience
+(`runAudience`). The roster rows count because removing someone from a Project
+keeps their Room row, and a Room Run's grantees come from that roster. All of
+them must read the Project (`audienceWithinProject`). A Room that does not
+qualify records `gmail_digest_audience_outside_project`. At start nothing is
+queued. At claim the Run fails before launch. Before a send the read stops
+before contacting Google. In every case the delivery settles as failed with
+that code, stores no reply, keeps the frozen daily window for the retry, and
+the digest stays active with a visible retry. Gmail text is untrusted and the read is the Run’s only tool. The reply
+and the delivery ledger are committed together only after all pages release in
+order and the Run succeeds. Partial replies are withheld. Daily retries restart
+the same frozen window and preserve the coverage boundary. A window that exceeds
+the Run’s read cap pauses immediately with a visible failure. Other delivery
+failures pause after three consecutive failures. Explicit resume resets coverage
+to the time of resume. The next daily window starts no earlier than that time
+and never reuses the earlier failed window. Rule summaries include only hits
+recorded at or after resume. Earlier failed delivery records remain available
+as history.
+Sources → Access and Gmail lists the same mailbox’s
+on-demand consents and digests, including the next scheduled run, last delivery
+and retry state, with pause and resume (`source.gmail.digest.set_status`) and
+revoke (`source.gmail.digest.end`, which ends the digest and revokes its
+consent). Daily summary time can be edited
+in the existing time zone without renewed consent using the owner-only
+`source.gmail.digest.set_time` action. Ending or pausing a digest invalidates
+its in-flight delivery, including a fully read delivery awaiting settlement. Migration
+`0037_gmail_match_triggered_digests` ends any previously scheduled rule digests and expires their pending drafts. Immediate delivery needs fresh consent.
+
+**Upgrade (scope reconfirmation in migration `0020_gmail_integration`).** Consents and
+cards given under the earlier private, isolated scope are not widened: active
+Gmail consents are revoked, pending consent cards expire (their Runs cancelled
+by the reconcile job), pending digest cards are superseded, unfinished
+deliveries fail, and live digests pause with `gmail_digest_reconfirm_required`
+while keeping their schedule, conversation and history. Such a digest cannot be
+resumed or retimed (409) and is listed as paused, not ended; a new card accepted
+in its conversation reactivates the same digest in place with the new consent
+(coverage from the confirmation). Another conversation cannot take it over:
+drafting there is refused with `gmail_digest_reconfirm_elsewhere`, and a card
+from there conflicts (409) without ending the paused digest or its history.
+Only a digest carrying that code is protected: an ordinarily paused digest
+(`last_error_code` NULL) whose consent has ended is closed when a new card of
+the same mailbox, Project and kind is accepted. Tests: `gmailMonitorSyncDb.test.ts` (upgrade
+and re-confirmation), `gmailRoomReadAcceptanceDb.test.ts` (mainline digest from
+draft to scheduled Room reply, and the later turn's refused Memory and Task;
+daily and monitor-hit digests in a mainline and a limited Room; a member removed
+from the Project but left on the roster refused at start, claim and before a
+send; ordinary roster removal, where a removed member no longer counts and an
+owner removed from the Room is refused at start and claim; an ordinarily paused
+digest whose consent ended replaced by a new card; a Work Context rebind keeping only the digest read; 0040 with a pending
+consent card and an in-flight Room delivery, and re-confirmation in the original
+versus another conversation),
+`GmailConnectionsCard.test.tsx`.
+
+From a private Gmail reply the
+owner can edit an excerpt, select a conversation in the same Project (including
+its mainline when available) and post it under their own name. The user-only
+`source.gmail.summary.preview` query returns the effective readers of the
+selected destination and an audience version. The Project mainline includes
+all Project readers. The share action requires that version, rechecks the
+current audience within the posting transaction, and records provenance.
+If the audience changed, the owner reviews the refreshed list and clicks Post
+again. Sharing starts no Agent work.

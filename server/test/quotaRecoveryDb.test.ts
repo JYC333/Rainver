@@ -7,7 +7,9 @@ import { resetTables } from "./support/resetTables.js";
 import { seedConversationMessages, seedRun, seedServerHost, seedSpaceMember, seedSpaceOwnerProject } from "./support/domainSeeds.js";
 import { PgRunRepository, type AgentRunRecord } from "../src/modules/runs/repository.js";
 import { executeRemoteHostCliAdapter, NO_PROVIDER_BINDINGS } from "../src/modules/runs/remoteHostCliAdapter.js";
-import { semanticFailureErrorJson } from "../src/modules/runs/orchestrationResults.js";
+import { semanticFailureErrorJson, terminalStatusFromAdapter } from "../src/modules/runs/orchestrationResults.js";
+import { acpAgentRuntimeAdapterSpec } from "../src/modules/acpAgents/service.js";
+import { setDynamicRuntimeAdapterSpecs } from "../src/modules/runtimeAdapters/dynamicSpecs.js";
 import { PgRunSupervisor } from "../src/modules/runs/supervisor.js";
 import { SUBSCRIPTION_QUOTA_EXHAUSTED } from "../src/modules/runs/retryPolicy.js";
 import { admitAgentOriginRun, continueHeldRuns, enqueueWhenTurnFree, releaseHeldRuns } from "../src/modules/rooms/quotaGate.js";
@@ -75,7 +77,10 @@ async function jobs() {
 }
 
 /** Fake only the external ACP process; failure persistence and recovery use real PostgreSQL. */
-async function persistAcpRefusal(runtime: "codex_cli" | "claude_code", data: unknown, timeZone?: string) {
+async function persistAcpResult(runtime: string, promptFrames: Record<string, unknown>[], options: {
+  timeZone?: string;
+  beforeResume?: Record<string, unknown>[];
+} = {}) {
   await db.pool.query(`UPDATE agent_runtime_profiles SET runtime_key = $2 WHERE agent_id = $1`, [AGENT, runtime]);
   await db.pool.query(`UPDATE host_threads SET runtime_key = $2 WHERE id = $1`, [THREAD, runtime]);
   await db.pool.query(`UPDATE runs SET runtime_key = $2::text,
@@ -84,22 +89,29 @@ async function persistAcpRefusal(runtime: "codex_cli" | "claude_code", data: unk
   await db.pool.query(`UPDATE run_attempts SET status='running', ended_at=NULL WHERE run_id=$1`, [RUN]);
   const repository = new PgRunRepository(db.pool);
   const run = (await repository.getRun(SPACE, RUN)) as AgentRunRecord;
-  const result = await executeRemoteHostCliAdapter({ run, prompt: "continue", model: null, resume_session_id: null }, HOST, null, {
+  const result = await executeRemoteHostCliAdapter({
+    run, prompt: "continue", model: null, resume_session_id: options.beforeResume ? "native-session" : null,
+  }, HOST, null, {
     bindings: NO_PROVIDER_BINDINGS,
     executor: { async runCommand(input) {
       const controller = input.stdio_controller!;
       const send = () => {};
       controller.start(send);
       await controller.receive({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } }, send, send);
+      for (const frame of options.beforeResume ?? []) await controller.receive({ jsonrpc: "2.0", ...frame }, send, send);
       await controller.receive({ jsonrpc: "2.0", id: 2, result: { sessionId: "native-session", configOptions: [] } }, send, send);
-      await controller.receive({ jsonrpc: "2.0", id: 4, error: { code: -32603, message: "Internal error", data } }, send, send);
-      return { returncode: 0, stdout: "", stderr: "", timed_out: false, time_zone: timeZone };
+      for (const frame of promptFrames) await controller.receive({ jsonrpc: "2.0", ...frame }, send, send);
+      return { returncode: 0, stdout: "", stderr: "", timed_out: false, time_zone: options.timeZone };
     } },
   });
-  expect(await repository.publishRunTerminal({ run_id: RUN, space_id: SPACE, status: "failed",
+  expect(await repository.publishRunTerminal({ run_id: RUN, space_id: SPACE, status: terminalStatusFromAdapter(result),
     error_json: semanticFailureErrorJson(result, null), completed_at: new Date().toISOString(), exit_code: result.exit_code,
   })).not.toBeNull();
   return result;
+}
+
+function persistAcpRefusal(runtime: string, data: unknown, timeZone?: string) {
+  return persistAcpResult(runtime, [{ id: 4, error: { code: -32603, message: "Internal error", data } }], { timeZone });
 }
 
 describe("interrupted quota recovery", () => {
@@ -158,6 +170,9 @@ describe("interrupted quota recovery", () => {
     expect(await supervise()).toBeNull();
     expect(await loadRunTurn(db.pool, { spaceId: SPACE, runId: RUN })).toMatchObject({ state: "blocked", blocked_on: "quota" });
     expect(await new PgRunRepository(db.pool).markRunRunning({ space_id: SPACE, run_id: RUN, started_at: new Date().toISOString() })).toBeNull();
+    // Held for quota, not refused: its executor skips it and leaves it queued.
+    expect(await new PgRunRepository(db.pool).claimRunExecution({ space_id: SPACE, run_id: RUN, started_at: new Date().toISOString() }))
+      .toEqual({ outcome: "not_claimed", reason: "waiting_for_quota", status: "queued" });
   });
 
   it("waits for the reset and admits exactly one successor under concurrent scheduler passes", async ctx => {
@@ -385,14 +400,95 @@ describe("interrupted quota recovery", () => {
 });
 
 describe("explicit native model switching", () => {
-  async function advertise() {
+  async function advertise(runtime = "claude_code", models = ["opus", "sonnet"]) {
     await db.pool.query(`UPDATE hosts SET capabilities_json = $2::jsonb WHERE id = $1`, [HOST, JSON.stringify({
-      installations: { claude_code: [{ id: "managed:1.0.0", version: "1.0.0", logged_in: true,
-        options: { config_options: [{ id: "model", name: "Model", category: "model", type: "select", current_value: "opus",
-          options: ["opus", "sonnet"].map(value => ({ value, name: value, description: null })) }] } }] },
+      installations: { [runtime]: [{ id: "managed:1.0.0", version: "1.0.0", logged_in: true,
+        options: { config_options: [{ id: "model", name: "Model", category: "model", type: "select", current_value: models[0],
+          options: models.map(value => ({ value, name: value, description: null })) }] } }] },
     })]);
-    await db.pool.query(`UPDATE runs SET model_override_json = '{"runtime_reported_model":"opus","acp_session_config":[{"id":"mode","type":"select","category":"mode","value":"safe"}]}'::jsonb WHERE id = $1`, [RUN]);
+    await db.pool.query(`UPDATE runs SET model_override_json = $2::jsonb WHERE id = $1`, [RUN, JSON.stringify({
+      runtime_reported_model: models[0],
+      acp_session_config: [{ id: "mode", type: "select", category: "mode", value: "safe" }],
+    })]);
   }
+
+  describe("Antigravity's terminal quota reply", () => {
+    const runtime = "acp_antigravity_acp";
+    const notice = "⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 2h31m12s.";
+    const update = (content: Record<string, unknown>) => ({ method: "session/update", params: {
+      sessionId: "native-session", update: content,
+    } });
+    const chunk = (text: string, messageId?: string) => update({
+      sessionUpdate: "agent_message_chunk", content: { type: "text", text }, ...(messageId ? { messageId } : {}),
+    });
+    const end = { id: 4, result: { stopReason: "end_turn" } };
+
+    beforeEach(() => {
+      setDynamicRuntimeAdapterSpecs([acpAgentRuntimeAdapterSpec({
+        id: "antigravity-acp", name: "Antigravity", description: "",
+        version: "1.0.0", license: null, icon: null, repository: null,
+        distribution: { kind: "npx", package: "antigravity-acp-test", args: [], env: {} },
+        enabled_at: new Date(0).toISOString(), enabled_by_user_id: null,
+      })]);
+    });
+    afterEach(() => { setDynamicRuntimeAdapterSpecs([]); });
+
+    it("keeps the real zero exit and admits one authorized model switch without inferring an account-wide hold", async ctx => {
+      if (!db.available) return ctx.skip();
+      const result = await persistAcpResult(runtime, [chunk(`\n${notice.slice(0, 40)}`), chunk(`${notice.slice(40)}\n`), end], {
+        beforeResume: [update({ sessionUpdate: "tool_call", toolCallId: "previous-tool", title: "Previous turn's work" })],
+      });
+      expect(result).toMatchObject({
+        success: false, exit_code: 0, error_code: SUBSCRIPTION_QUOTA_EXHAUSTED, error_message: notice, output_text: "",
+        metadata_json: { runtime_failure: { category: "quota", phase: "prompt", rpc_code: null } },
+      });
+      const resetsAt = new Date(Date.parse(result.completed_at!) + (2 * 3600 + 31 * 60 + 12) * 1000).toISOString();
+      await advertise(runtime, ["model-a", "model-b"]);
+      const run = (await new PgRunRepository(db.pool).getRun(SPACE, RUN))!;
+      await saveConversationModelSwitch(db.pool, SPACE, SESSION, AGENT, USER, run.runtime_profile_id!, runtime, true);
+      await supervise();
+      expect(await marker()).toMatchObject({ resets_at: resetsAt, recovery: { auto_continue: true, switched_model: "model-b" } });
+      const source = liveQuotaSource(null);
+      await expect(source.read(db.pool, { host_id: HOST, host_name: "Server", runtime_key: runtime, installation: "managed:1.0.0" }))
+        .resolves.toMatchObject({ window: null });
+      const admitted = await Promise.all(Array.from({ length: 2 }, () => releaseHeldRuns(db.pool, { source })));
+      expect(admitted).toEqual(expect.arrayContaining([0, 1]));
+      expect(await jobs()).toHaveLength(1);
+      expect((await jobs())[0]!.payload_json.supervisor_attempt).toBe(2);
+    });
+
+    it("keeps a structured authentication error even if the text looks like a quota notice", async ctx => {
+      if (!db.available) return ctx.skip();
+      const result = await persistAcpResult(runtime, [chunk(notice), {
+        id: 4, error: { code: -32603, message: "Sign in again", data: { status: 401 } },
+      }]);
+      expect(result).toMatchObject({ success: false, error_code: "runtime_auth_required" });
+    });
+
+    it("leaves a matching reply alone when ACP reports generated output tokens", async ctx => {
+      if (!db.available) return ctx.skip();
+      const result = await persistAcpResult(runtime, [chunk(notice), {
+        id: 4, result: { stopReason: "end_turn", usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30 } },
+      }]);
+      expect(result).toMatchObject({ success: true, error_code: null, output_text: notice });
+    });
+
+    it.for([
+      { label: "a quotation in a normal reply", frames: [chunk(`The log says: ${notice}`)] },
+      { label: "a Markdown quotation", frames: [chunk(`> ${notice}`)] },
+      { label: "an unfamiliar or partial notice", frames: [chunk("Individual quota reached")] },
+      { label: "an earlier assistant message before the final text", frames: [chunk("I inspected the issue.", "first"), chunk(notice, "last")] },
+      { label: "a reply after a tool call", frames: [update({ sessionUpdate: "tool_call", toolCallId: "tool-1", title: "Read a file" }), chunk(notice)] },
+      { label: "a different CLI", frames: [chunk(notice)], runtime: "codex_cli" },
+    ])("does not switch models for $label", async ({ frames, runtime: cli }, ctx) => {
+      if (!db.available) return ctx.skip();
+      const result = await persistAcpResult(cli ?? runtime, [...frames, end]);
+      expect(result).toMatchObject({ success: true, exit_code: 0, error_code: null });
+      expect(result.output_text).not.toBe("");
+      expect(await marker()).toBeNull();
+    });
+  });
+
   it("uses saved conversation consent without another confirmation and permits revocation", async ctx => {
     if (!db.available) return ctx.skip();
     await advertise();

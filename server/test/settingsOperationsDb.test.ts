@@ -1,4 +1,3 @@
-import {waitForBlockedBy} from './support/lockWait.js';
 import { randomUUID } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { rm } from "node:fs/promises";
@@ -293,87 +292,17 @@ describe("network profiles", () => {
 });
 
 describe("plugin installation", () => {
-  it("runs the plugin's migrations in the worker's own transaction and settles the intent with them", async (ctx) => {
+  // Plan 7 moved the last legacy packages (Diary, Finance) to operation packages, which only the
+  // offline installer installs. The HTTP install command therefore admits no bundled package; its
+  // worker, authority holds and legacy installer remain without an in-repository subject.
+  it("admits no bundled package: every one installs offline, and nothing is written", async (ctx) => {
     if (!db.available || !app) return ctx.skip();
-    as(MEMBER);
-    expect(refused(await keyed(app, { method: "POST", url: "/api/v1/plugins/diary/install", payload: {} }), 404)).toBe("operation_not_found");
     as(OWNER);
-    const { status } = await commands.run(app, { method: "POST", url: "/api/v1/plugins/diary/install", payload: {} });
-    expect(status).toMatchObject({ status: "succeeded", error: null, result: { install: { plugin_id: "diary" }, item: { descriptor: { id: "diary" } } } });
-    expect((await db.pool.query(`SELECT status FROM plugin_installs WHERE plugin_id='diary'`)).rows).toEqual([{ status: "active" }]);
-  });
-});
-
-/** Waits until a backend running a statement matching `pattern` is blocked on a lock. */
-async function waitForLockWait(pattern: string): Promise<void> {
-  for (let i = 0; i < 200; i++) {
-    const rows = (await db.pool.query(`SELECT 1 FROM pg_stat_activity WHERE wait_event_type='Lock' AND query ILIKE $1`, [pattern])).rows;
-    if (rows.length) return;
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
-  throw new Error(`no backend waiting on a lock for ${pattern}`);
-}
-
-describe("plugin installation keeps its authority until the install commits", () => {
-  const revocations = [
-    ["instance administration", `UPDATE users SET email='former-admin@example.test' WHERE id=$1`],
-    ["the user", `UPDATE users SET status='disabled' WHERE id=$1`],
-    ["the membership", `UPDATE space_memberships SET status='removed' WHERE user_id=$1 AND space_id='${SPACE}'`],
-  ] as const;
-
-  it.for(revocations)("a revocation of %s waits for an authorized, paused install to commit, and releases nothing after", async ([, revoke], ctx) => {
-    if (!db.available || !app) return ctx.skip();
-    const accepted = succeeded<{ id: string }>(await keyed(app, { method: "POST", url: "/api/v1/plugins/diary/install", payload: {} }, "install-race"), 202);
-    // Hold the install's own write so the worker pauses inside its DDL/settlement transaction, after its authority check.
-    const blocker = await db.pool.connect();
-    const revoker = await db.pool.connect();
-    try {
-      await blocker.query("BEGIN");
-      await blocker.query("LOCK TABLE plugin_installs IN ACCESS EXCLUSIVE MODE");
-      const work = commands.process();
-      await waitForLockWait("%plugin_installs%");
-      await revoker.query("BEGIN");
-      const revoking = revoker.query(revoke, [OWNER]).then(async () => {
-        // Read in the revoking transaction once its write is through: the install has already committed.
-        const seen = (await revoker.query(`SELECT status FROM system_command_intents WHERE id=$1`, [accepted.id])).rows[0];
-        await revoker.query("COMMIT");
-        return seen;
-      });
-      await waitForLockWait(revoke.startsWith("UPDATE users") ? "UPDATE users%" : "UPDATE space_memberships%");
-      await blocker.query("ROLLBACK");
-      await work;
-      expect(await revoking).toEqual({ status: "succeeded" });
-    } finally {
-      await blocker.query("ROLLBACK");
-      await revoker.query("ROLLBACK");
-      blocker.release();
-      revoker.release();
+    for (const id of ["finance_ledger", "diary", "applications"]) {
+      expect(refused(await keyed(app, { method: "POST", url: `/api/v1/plugins/${id}/install`, payload: {} }), 404)).toBe("operation_not_found");
     }
-    // Once withdrawn, neither the status read nor a replay of the receipt releases anything.
-    expect((await commands.status(app, accepted.id)).statusCode).toBe(404);
-    expect(refused(await keyed(app, { method: "POST", url: "/api/v1/plugins/diary/install", payload: {} }, "install-race"), 404)).toBe("operation_not_found");
-  });
-
-  it("an install whose authority was revoked first, while the worker waited, is refused and installs nothing", async (ctx) => {
-    if (!db.available || !app) return ctx.skip();
-    const accepted = succeeded<{ id: string }>(await keyed(app, { method: "POST", url: "/api/v1/plugins/diary/install", payload: {} }), 202);
-    const before = (await db.pool.query(`SELECT row_to_json(p)::text AS row FROM plugin_installs p WHERE plugin_id='diary'`)).rows;
-    const revoker = await db.pool.connect();
-    try {
-      await revoker.query("BEGIN");
-      await revoker.query(`UPDATE users SET email='former-admin@example.test' WHERE id=$1`, [OWNER]);
-      const work = commands.process();
-      const pid=Number((await revoker.query('SELECT pg_backend_pid() AS pid')).rows[0].pid);
-      await waitForBlockedBy(db.pool,pid);
-      await revoker.query("COMMIT");
-      await work;
-    } finally {
-      await revoker.query("ROLLBACK");
-      revoker.release();
-    }
-    expect((await db.pool.query(`SELECT status,error_code FROM system_command_intents WHERE id=$1`, [accepted.id])).rows)
-      .toEqual([{ status: "failed", error_code: "system_command_authority_withdrawn" }]);
-    expect((await db.pool.query(`SELECT row_to_json(p)::text AS row FROM plugin_installs p WHERE plugin_id='diary'`)).rows).toEqual(before);
+    expect((await db.pool.query(`SELECT count(*)::int AS n FROM system_command_intents WHERE kind='plugin_install'`)).rows[0].n).toBe(0);
+    expect((await db.pool.query(`SELECT count(*)::int AS n FROM plugin_installs`)).rows[0].n).toBe(0);
   });
 });
 

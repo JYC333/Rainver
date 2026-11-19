@@ -4,11 +4,18 @@ export function renderCodexProviderToml(input: {
   leaseToken: string;
   model: string;
   catalogPath: string;
+  /**
+   * False on a model-only lease (ADR 0030 §4a): Codex otherwise sends its
+   * hosted `web_search` tool with every turn, which the provider runs on the
+   * Run's behalf and the lease refuses. Codex's own switch turns it off.
+   */
+  hostedWebSearch?: boolean;
 }): string {
   return [
     `model = ${tomlString(input.model)}`,
     `model_provider = "rainver_provider"`,
     `model_catalog_json = ${tomlString(input.catalogPath)}`,
+    ...(input.hostedWebSearch === false ? [`web_search = "disabled"`] : []),
     "",
     `[model_providers.rainver_provider]`,
     `name = ${tomlString(input.providerName)}`,

@@ -1,6 +1,7 @@
-import {assertDaemonWorkspaceActor,DAEMON_WORKSPACE_OPERATIONS} from '../../hosts/workspaceActor.js';
+import {assertDaemonWorkspaceActor} from '../../hosts/workspaceActor.js';
 import {safeInputErrors} from '../inputErrors.js';
-import {assertCurrentPerson,personalReceiptSpace,PERSON_OPERATIONS} from './personAdmission.js';
+import {assertCurrentPerson,personalReceiptSpace} from './personAdmission.js';
+import {validateRegistration} from './registrationRules.js';
 import { resolveUserCreationActor } from './userContentCreation.js';
 import {withOperationProposalDecisionOwner,prepareOperationRunTerminalOwner} from './proposalTransitions.js';
 import {withPolicyAuditRecovery} from '../../policy/auditWriter.js';
@@ -18,17 +19,8 @@ import { assertCurrentActor, assertOperationGrant } from './actor.js';
 import { OperationError, OperationInputError, OperationBusinessError, hidden } from './errors.js';
 import { reserve, record, reconcile, requestScope, fingerprint } from './repository.js';
 import type { OperationRegistration } from './types.js';
+import { classifyRegisteredError, executeRegistered, registeredPolicyRequest, resolveRegisteredInput } from './registrationSteps.js';
 
-/** Durable new-content commands whose Personal/Project placement the access owner chooses
- * exactly as their retained REST adapters always did. Never an arbitrary Space resolver. */
-const DURABLE_PLACEMENT_COMMANDS = new Set(['activity.upload','activity.create','capture.create','source.channel.create', 'source.item.save_url', 'source.evidence.create', 'source.custom.draft.create', 'source.goal.setup.begin', 'source.goal.create', 'agent.create', 'agent.template.instantiate', 'agent.run.create', 'agent.chat.send', 'session.create', 'board.create', 'task.create']);
-/** One create shared by a person's REST call and an Agent Run tool: placement applies to the person
- * principal only; an Agent keeps its Run's Space and Project. */
-const PERSON_PLACEMENT_SHARED_COMMANDS = new Set(['task.create']);
-// Proposal submission retains the access-owned placement of the old REST create
-// entry, without enabling an approval execution mapping. No other proposal may
-// resolve a caller into another Space.
-const PROPOSAL_PLACEMENT_COMMANDS = new Map<string,{proposalType:string;gateClass:string}>([['knowledge.item.propose_create',{proposalType:'knowledge_create',gateClass:'exposure'}],['knowledge.claim.propose_create',{proposalType:'claim_create',gateClass:'exposure'}],['memory.propose_create',{proposalType:'memory_create',gateClass:'belief_reach'}]]);
 /** Stateless per invocation; registry/executors are composed once and retain no caller. */
 export class OperationExecutor {
   readonly registrations: ReadonlyMap<string, OperationRegistration>;
@@ -36,24 +28,53 @@ export class OperationExecutor {
     const map = new Map<string, OperationRegistration>();
     for (const item of registrations) {
       const d = item.definition;
-      if (map.has(d.id) || !d.execution || d.execution.tx !== 'core_owned' || d.execution.kind === 'query' && (d.side_effects !== 'none' || d.idempotency_required || d.gate_class !== null || d.proposal_type !== null || !item.readKind || item.readKind === 'content' && !item.readAudit || !!item.afterCommit) || item.approval?.gate.kind === 'hard_gate' && item.approval.gate.gate_class !== d.gate_class) throw new Error('Invalid migrated operation registration');
-      if (item.approval && (d.execution.kind !== 'command' || item.approval.atomicStatusWritersVerified !== true || !item.approval.proposalType || item.approval.mode === 'blocked_command' && !item.approval.gate.policy_rule_id)) throw new Error('Approval mapping has not passed canonical transition enablement');
-      const placement = PROPOSAL_PLACEMENT_COMMANDS.get(d.id), proposalPlacement = d.side_effects==='proposal' && !!placement && d.gate_class===placement.gateClass && d.proposal_type===placement.proposalType;
-      const directPlacement = d.gate_class===null && d.proposal_type===null && (d.side_effects==='draft' || DURABLE_PLACEMENT_COMMANDS.has(d.id) && d.side_effects==='durable');
-      const shared = PERSON_PLACEMENT_SHARED_COMMANDS.has(d.id) && d.allowed_actor_types.length===2 && d.allowed_actor_types.includes('user') && d.allowed_actor_types.includes('agent') && [...d.visibility].every(surface=>surface==='public_api'||surface==='agent_tool');
-      if (item.userContentCreation && (d.execution.kind!=='command' || !proposalPlacement && !directPlacement || !shared && (d.allowed_actor_types.length!==1 || d.allowed_actor_types[0]!=='user' || d.grantable || [...d.visibility].some(surface=>surface!=='public_api')) || item.approval)) throw new Error('Human content placement requires an explicitly admitted user-only creation command');
-      if(item.proposalDecisionOwner&&(d.execution.kind!=='command'||item.approval||item.userContentCreation||item.runTerminalOwner))throw new Error('Proposal decision preparation requires a direct command transaction owner');
-      if(item.runTerminalOwner&&(d.execution.kind!=='command'||item.approval||item.userContentCreation))throw new Error('Run terminal preparation requires a direct command transaction owner');
-      if(item.admission && ((item.admission.kind==='person'?!PERSON_OPERATIONS.has(d.id):!DAEMON_WORKSPACE_OPERATIONS.has(d.id))||d.execution.kind!=='command'||d.allowed_actor_types.length!==1||d.allowed_actor_types[0]!==(item.admission.kind==='person'?'user':'system')||d.grantable||[...d.visibility].some(s=>s!=='public_api')||item.approval||item.userContentCreation||item.proposalDecisionOwner||item.runTerminalOwner||!item.domainAuthorizationFirst||!item.authorizeResult))throw new Error('Invalid person admission registration');
+      if (map.has(d.id)) throw new Error('Invalid migrated operation registration');
+      validateRegistration(item);
       map.set(d.id, item);
     }
     this.registrations = map;
+  }
+  /** The pre-transaction admission every execution begins with: actor shape,
+   * surface, current actor and grant, the operation's own input schema and its
+   * transport-key rule. Reads only; nothing is reserved, audited or written. */
+  private async admit(id: string, raw: unknown, actor: OperationActor, key?: string) {
+    if (!OperationActorSchema.safeParse(actor).success) throw hidden();
+    const item = this.registrations.get(id);
+    if (!item) throw hidden();
+    const d = item.definition;
+    if (!d.allowed_actor_types.includes(actor.principal.kind) || !d.visibility.has(actor.surface === 'web' ? 'public_api' : actor.surface)) throw hidden();
+    const personScoped=item.admission?.kind==='person';
+    if(personScoped)await assertCurrentPerson(this.pool,actor);
+    else if(item.admission?.kind==='daemon_workspace')await assertDaemonWorkspaceActor(this.pool,actor);
+    else await assertCurrentActor(this.pool,actor);
+    await assertOperationGrant(this.pool, actor, id);
+    const parsed = d.input_schema.safeParse(raw);
+    if (!parsed.success) throw new OperationInputError(safeInputErrors(d,parsed.error));
+    const command = d.execution!.kind === 'command';
+    if (command && (!key || key.length > 256 || !/^[\x21-\x7e]+$/.test(key))) throw new OperationError('idempotency_key_required', 422);
+    return {item, input: parsed.data as unknown, command};
+  }
+  /**
+   * `execute`'s own admission, run alone by an entry before an owner step that
+   * spends or has local effects outside the transaction (a route's `prepare` /
+   * `around`). A request execute would refuse for its actor, input or key is
+   * refused here with the same response, before anything is spent; `execute`
+   * still repeats every check and authorizes under its locks.
+   */
+  async preflight(id: string, raw: unknown, actor: OperationActor, requestId: string, key?: string): Promise<{ok: true; input: unknown} | {ok: false; response: OperationResponse}> {
+    try {
+      return {ok: true, input: (await this.admit(id, raw, actor, key)).input};
+    } catch (error) {
+      const e = operationFailure(error, false);
+      return {ok: false, response: {http_status: e.httpStatus, request_id: requestId, replayed: false, policy_decision_record_id: null, body: e.body(requestId)}};
+    }
   }
   async execute(id: string, raw: unknown, actor: OperationActor, requestId: string, key?: string, version?: number): Promise<OperationResponse> {
     let decisionId: string | null = null;
     let failureAudit: PolicyCheckRequest | undefined;
     let notification: (() => Promise<void>) | undefined;
     let readyToCommit = false;
+    let release: {data: unknown; facts: unknown; replayed: boolean} | undefined;
     const finish = (result: OperationResponse): OperationResponse => {
       readyToCommit = true;
       return result;
@@ -66,20 +87,12 @@ export class OperationExecutor {
       body
     });
     try {
-      if (!OperationActorSchema.safeParse(actor).success) throw hidden();
-      const item = this.registrations.get(id);
-      if (!item) throw hidden();
+      const admitted = await this.admit(id, raw, actor, key);
+      const {item, command} = admitted;
       const d = item.definition;
-      if (!d.allowed_actor_types.includes(actor.principal.kind) || !d.visibility.has(actor.surface === 'web' ? 'public_api' : actor.surface)) throw hidden();
       const personScoped=item.admission?.kind==='person';
       const assertActor=(db:Parameters<typeof assertCurrentActor>[0],lock=false)=>personScoped?assertCurrentPerson(db,actor,lock):item.admission?.kind==='daemon_workspace'?assertDaemonWorkspaceActor(db,actor,lock):assertCurrentActor(db,actor,lock);
-      await assertActor(this.pool);
-      await assertOperationGrant(this.pool, actor, id);
-      const parsed = d.input_schema.safeParse(raw);
-      if (!parsed.success) throw new OperationInputError(safeInputErrors(d,parsed.error));
-      let input = parsed.data;
-      const command = d.execution!.kind === 'command';
-      if (command && (!key || key.length > 256 || !/^[\x21-\x7e]+$/.test(key))) throw new OperationError('idempotency_key_required', 422);
+      let input = admitted.input;
       const requestActor = actor;
       const transaction = () => withTransaction(this.pool, async client => {
         if (!command) await client.query('SET TRANSACTION READ ONLY');
@@ -90,12 +103,9 @@ export class OperationExecutor {
           if (placing) actor = await resolveUserCreationActor(tx.db, input, requestActor,id);
           const storageSpace=personScoped?await personalReceiptSpace(tx.db,actor.principal.id):actor.space_id;
           const receiptActor={...actor,space_id:storageSpace};
-          const scope = await runOperationWork(()=>item.resolve(tx.db, input, actor, {requestId,idempotencyKey:key??null}));
-          if (item.normalizeInput) {
-            const normalized = d.input_schema.safeParse(item.normalizeInput(input, scope));
-            if (!normalized.success) throw new OperationError('operation_internal_error',500);
-            input = normalized.data;
-          }
+          const resolved = await resolveRegisteredInput(item, tx.db, input, actor, {requestId,idempotencyKey:key??null});
+          const scope = resolved.scope;
+          input = resolved.input;
           const identity = command ? requestScope(receiptActor, scope.authority, id, key!) : null;
           const work = async () => {
           let previous = identity ? await reserve(client, identity) : null;
@@ -122,33 +132,18 @@ export class OperationExecutor {
               db=>item.runTerminalOwner!.discover(db,input,actor)));
           }
           if(!item.domainAuthorizationFirst)await runOperationWork(()=>item.authorize(tx.db, input, actor, scope));
-          const policyRequest: PolicyCheckRequest = {
-            action: d.policy_action,
-            force_record: true,
-            actor_type: actor.principal.kind,
-            actor_id: actor.principal.id,
-            space_id: storageSpace,
-            resource_space_id: storageSpace,
-            resource_type: scope.resourceType,
-            resource_id: scope.resourceId,
-            run_id: actor.run_id,
-            context: {
-              ...item.policyContext?.(input, actor, scope),
-              action_id: id,
-              trigger_origin: actor.effective_origin,
-              instructed_by_user_id: actor.on_behalf_of_user_id
-            },
-            metadata_json: {
-              operation_request_id: requestId,
-              ...(placing ? {request_space_id:requestActor.space_id} : {})
-            }
-          };
+          const policyRequest = await registeredPolicyRequest(tx.db, item, input, actor, scope, {space: storageSpace, metadata: {
+            operation_request_id: requestId,
+            ...(placing ? {request_space_id:requestActor.space_id} : {})
+          }});
           if (command) failureAudit = policyRequest;
           const policy = await enforce({
             ...this.config,
             auditTransaction: command ? tx.db : getOperationAuditPool(this.config.databaseUrl!)
           }, await loadActionRegistry(this.config), policyRequest);
           decisionId = policy.policy_decision_record_id ?? null;
+          // A missing data-owner consent is requestable through authorization.request (ADR 0030).
+          if (policy.decision?.decision === 'deny' && policy.decision.policy_rule_id === 'plugin_data_consent_required') throw new OperationError('operation_consent_required', 403);
           if (policy.decision?.decision === 'deny') throw hidden();
           if (policy.status === 'error' || !decisionId) throw new OperationError('operation_audit_unavailable', 503, true);
           const hash = fingerprint(version ?? d.version, item.fingerprintInput ? await runOperationWork(async()=>item.fingerprintInput!(input)) : input, scope.targets);
@@ -166,6 +161,7 @@ export class OperationExecutor {
             if ('data' in body) {
               if (!d.output_schema.safeParse(body.data).success) throw new OperationError('operation_result_unavailable', 410);
               await runOperationWork(async()=>item.authorizeResult?.(tx.db, body.data, actor));
+              if (item.releaseGate) release = {data: body.data, facts: (previous.frozen_json as {release?: unknown} | null)?.release ?? null, replayed: true};
             }
             if ('error' in body) body.error.request_id = requestId;
             return finish(response(body, previous.http_status!, true));
@@ -173,7 +169,7 @@ export class OperationExecutor {
           if (version !== undefined && version !== d.version) throw new OperationError('operation_version_unsupported', 409);
           if (policy.decision?.decision === 'require_approval' || item.approval?.mode === 'proposal_submission') {
             if (!identity || !item.approval || policy.decision?.decision === 'require_approval' && policy.decision.policy_rule_id !== item.approval.gate.policy_rule_id) throw new OperationError('operation_approval_mapping_unavailable', 503);
-            const preconditions = await runOperationWork(()=>item.approval!.preconditions(tx.db, input, actor));
+            const preconditions = await runOperationWork(()=>item.approval!.preconditions(tx.db, input, actor, 'propose'));
             const proposalId = await runOperationWork(()=>item.approval!.create(tx.db, input, actor));
             const proposal = (await tx.db.query<{
               proposal_type: string;
@@ -197,12 +193,10 @@ export class OperationExecutor {
           }
           if (command) await client.query('SAVEPOINT operation_work');
           try {
-            const output = await runOperationWork(() => item.execute(tx.db, input, actor,
-              Object.freeze({requestId,idempotencyKey:key??null})));
-            const validated = d.output_schema.safeParse(output);
-            if (!validated.success) throw new OperationError('operation_invalid_output', 500);
-            await runOperationWork(async()=>item.authorizeResult?.(tx.db, validated.data, actor));
+            const {output, data} = await executeRegistered(item, tx.db, input, actor, Object.freeze({requestId,idempotencyKey:key??null}));
+            const releaseFacts = item.releaseGate ? item.releaseFacts?.(output) ?? null : undefined;
             if (!command && item.readAudit) await withTransaction(getOperationAuditPool(this.config.databaseUrl!), audit => item.readAudit!({
+              hostTransaction: audit,
               recordReads: (resourceType, resourceIds) => new ContentAccessAuditService(audit).recordReads({
                 spaceId: actor.space_id,
                 resourceType,
@@ -210,23 +204,25 @@ export class OperationExecutor {
                 viewerUserId: actor.on_behalf_of_user_id!,
                 agentId: actor.agent_id,
                 runId: actor.run_id,
+                actionId: actor.principal.kind === 'agent' ? id : null,
                 accessType: 'operation_query'
               })
-            }, input, validated.data, actor, output)).catch(() => {
+            }, input, data, actor, output)).catch(() => {
               throw new OperationError('operation_audit_unavailable', 503, true);
             });
             const body: OperationOutcome = {
               status: 'succeeded',
-              data: validated.data
+              data: data
             };
-            const successStatus=typeof item.successStatus==='function'?item.successStatus(validated.data):item.successStatus??200;
-            if (identity) await record(client, identity, d.version, hash, 'succeeded', body, successStatus);
+            const successStatus=typeof item.successStatus==='function'?item.successStatus(data):item.successStatus??200;
+            if (identity) await record(client, identity, d.version, hash, 'succeeded', body, successStatus, null, item.releaseGate ? {release: releaseFacts} : null);
+            if (item.releaseGate) release = {data: data, facts: releaseFacts, replayed: false};
             await terminalOwner?.finish();
-            if (command && item.afterCommit) notification = () => item.afterCommit!(validated.data, actor);
+            if (command && item.afterCommit) notification = () => item.afterCommit!(data, actor);
             return finish(response(body, successStatus));
           } catch (caught) {
             // Domain adapters explicitly classify deterministic, safe failures. Unknown errors stay internal.
-            const error = caught instanceof OperationError ? caught : item.classifyError?.(caught) ?? caught;
+            const error = classifyRegisteredError(item, caught);
             if (identity && error instanceof OperationBusinessError) {
               await client.query('ROLLBACK TO SAVEPOINT operation_work');
               const body = error.body(requestId);
@@ -242,7 +238,7 @@ export class OperationExecutor {
           } catch(error) {
             // Preparation runs before Proposal row locks and the work savepoint;
             // preserve explicitly classified refusals on first use and replay.
-            throw error instanceof OperationError ? error : item.classifyError?.(error) ?? error;
+            throw classifyRegisteredError(item, error);
           }
         } finally {
           terminalOwner?.close();
@@ -250,18 +246,22 @@ export class OperationExecutor {
         }
       });
       const committed=await(item.runTerminalOwner||item.policyAuditRecovery?withPolicyAuditRecovery(this.config.databaseUrl,transaction):transaction());
+      if (release) {
+        // Nothing leaves the server before its release gate commits; a command's committed
+        // receipt stays and a retry with the same key is released through this same gate.
+        const pending = release;
+        try {
+          await withTransaction(getOperationAuditPool(this.config.databaseUrl!), audit => item.releaseGate!(audit, {input, data: pending.data, facts: pending.facts, actor, replayed: pending.replayed}));
+        } catch {
+          return response(new OperationError('operation_audit_unavailable', 503, true).body(requestId), 503);
+        }
+      }
       try {
         await notification?.();
       } catch {/* Notifications are rebuildable; never turn committed business work into failure. */}
       return committed;
     } catch (error) {
-      const code = (error as {
-        code?: string;
-      })?.code;
-      const transient = readyToCommit || !!code && (/^(08|ECONN|ETIMEDOUT)/.test(code) || ['40001', '40P01', '55P03', '57P01'].includes(code));
-      const e = error instanceof OperationError ? error : [403, 404].includes((error as {
-        statusCode?: number;
-      })?.statusCode ?? 0) ? hidden() : new OperationError(transient ? 'operation_temporarily_unavailable' : 'operation_internal_error', transient ? 503 : 500, transient);
+      const e = operationFailure(error, readyToCommit);
       if (failureAudit) {
         // Only append failure audit after resolving COMMIT uncertainty. A committed admission audit is never duplicated.
         try {
@@ -282,4 +282,11 @@ export class OperationExecutor {
       return response(e.body(requestId), e.httpStatus);
     }
   }
+}
+
+/** One mapping from a thrown failure to its safe operation error. */
+function operationFailure(error: unknown, readyToCommit: boolean): OperationError {
+  const code = (error as {code?: string})?.code;
+  const transient = readyToCommit || !!code && (/^(08|ECONN|ETIMEDOUT)/.test(code) || ['40001', '40P01', '55P03', '57P01'].includes(code));
+  return error instanceof OperationError ? error : [403, 404].includes((error as {statusCode?: number})?.statusCode ?? 0) ? hidden() : new OperationError(transient ? 'operation_temporarily_unavailable' : 'operation_internal_error', transient ? 503 : 500, transient);
 }

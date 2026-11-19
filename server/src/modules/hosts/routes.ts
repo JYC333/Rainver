@@ -300,9 +300,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const user = await auth.getCurrentUser(sessionTokenFromRequest(request), sessionRefreshSink(reply));
     if (isFailure(user)) return reply.code(user.statusCode).send({ detail: user.detail });
     const latestManagedVersions = new Map(acpRuntimeProbes().map((probe) => [probe.runtime_key, probe.version]));
-    const items = listRuntimeAdapterSpecs()
+    const items = await Promise.all(listRuntimeAdapterSpecs()
       .filter((spec) => spec.runtime_kind === "local_cli" && spec.executable?.command)
-      .map((spec) => {
+      .map(async (spec) => {
         const definition = getAgentRuntimeDefinition(spec.runtime_key);
         return {
           runtime_key: spec.runtime_key,
@@ -317,8 +317,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           registry_id: repositoryAcpAdapter(spec.runtime_key)?.registry_id ?? (spec.distribution && "registry_id" in spec.distribution ? spec.distribution.registry_id : null),
           /** Available Registry Agent package version. */
           latest_managed_version: repositoryAcpAdapter(spec.runtime_key) ? null : latestManagedVersions.get(spec.runtime_key) ?? null,
-          // Never awaited: answered from memory, refreshed in the background.
-          latest_own_version: ownCliReleases.peek(spec.runtime_key),
+          latest_own_version: await ownCliReleases.initial(spec.runtime_key),
           /** Current bootstrap/upgrade target for the built-in Server Host. */
           server_supported_version: spec.runtime_key === "opencode" ? acpRuntimeProbe("opencode", "server")?.version ?? null : null,
           /** Whether this runtime bundles a distinct CLI whose version the host reports. */
@@ -331,7 +330,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           supports_model_provider: definition?.supports_model_provider ?? false,
           provider_api: spec.model.provider_api ?? null,
         };
-      });
+      }));
     return reply.send({ items });
   });
 

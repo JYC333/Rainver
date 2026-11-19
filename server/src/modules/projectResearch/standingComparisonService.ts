@@ -5,7 +5,7 @@ import type { ServerConfig } from "../../config.js";
 import { contentReadSql } from "../access/contentAccessSql.js";
 import { InquiryThreadService } from "../inquiry/threadService.js";
 import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
-import { HttpError, dateIso, withQueryableTransaction } from "../routeUtils/common.js";
+import { HttpError, dateIso, objectValue, withQueryableTransaction } from "../routeUtils/common.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
 import { assertProjectReadable, assertProjectWriter, lockActiveProjectForMutation } from "../projects/access.js";
 import { ProjectResearchExecutionProfileService } from "./executionProfileService.js";
@@ -16,7 +16,7 @@ import {
   parseMonitorComparisons,
   type MonitorComparison,
 } from "./monitorComparisonService.js";
-import { resolveNotebookNote } from "./notebookNotes.js";
+import { comparisonBaselineAdmission, resolveNotebookNote } from "./notebookNotes.js";
 
 export const STANDING_COMPARISON_DAILY_RUN_LIMIT = 20;
 const STANDING_COMPARISON_WINDOW_MINUTES = 15;
@@ -214,14 +214,21 @@ export class ProjectResearchStandingComparisonService {
 
   /** The running batch's Run is terminal: the batch follows it, within the caller's transaction and locks. */
   private async settleRunningBatch(db: Queryable, batch: StandingBatchRow, runId: string, now: Date): Promise<Record<string, unknown>> {
-    const run = await db.query<{ status: string; output_json: unknown }>(
-      `SELECT status,output_json FROM runs WHERE id=$1 AND space_id=$2`,
+    const run = await db.query<{ status: string; output_json: unknown; contract_snapshot_json: unknown }>(
+      `SELECT status,output_json,contract_snapshot_json FROM runs WHERE id=$1 AND space_id=$2`,
       [runId, batch.space_id],
     );
     const terminal = run.rows[0];
     if (!terminal) throw new Error("Standing comparison run not found");
     if (!['succeeded', 'degraded'].includes(terminal.status)) {
       await markBatch(db, batch, "failed", now, { error: `Standing comparison run ${terminal.status}` });
+      return { batch_id: batch.id, status: "failed" };
+    }
+    // Its evidence cards are Project-shared: a result whose frozen baseline is not admissible
+    // now (none frozen, or Source-derived) is not merged, however the Run came to finish.
+    const admission = await comparisonBaselineAdmission(db, batch.space_id, objectValue(terminal.contract_snapshot_json).workflow_input_json);
+    if (admission !== "admitted") {
+      await markBatch(db, batch, "failed", now, { error: `Standing comparison baseline ${admission === "not_frozen" ? "was not frozen" : "is no longer admissible"}` });
       return { batch_id: batch.id, status: "failed" };
     }
     const expected = stringIds(batch.source_item_ids_json);

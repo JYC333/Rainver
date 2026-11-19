@@ -125,6 +125,16 @@ describe("runtimeEventNormalization", () => {
       expect(toolName).toContain("[REDACTED_SECRET]");
     });
 
+    it("persists only the action id as the tool name of a private Gmail monitor draft call", () => {
+      const update = (u: Record<string, unknown>) => ({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "session-1", update: u } });
+      const events = normalizeVendorEvents("claude_code", [
+        update({ sessionUpdate: "tool_call", toolCallId: "call-g", title: `rainver call source.gmail.monitor.propose '{"from_any":["dean@uni.example"],"purpose":"interview reply"}'` }),
+        update({ sessionUpdate: "tool_call_update", toolCallId: "call-g", status: "completed", title: "Interview reply from dean@uni.example" }),
+      ], "2026-11-18T00:00:00.000Z");
+      expect(events.map((event) => (event.metadata_json as Record<string, unknown>).tool_name)).toEqual(["source.gmail.monitor.propose", "source.gmail.monitor.propose"]);
+      expect(JSON.stringify(events)).not.toMatch(/dean@|interview/i);
+    });
+
     it("truncates an oversized tool_call title instead of persisting it unbounded", () => {
       const longTitle = `echo ${"a".repeat(5_000)}`;
       const events = normalizeVendorEvents("codex_cli", [{

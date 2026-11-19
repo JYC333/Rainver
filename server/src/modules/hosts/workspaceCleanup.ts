@@ -241,7 +241,7 @@ async function advanceWorkspaceCleanupAttempt(db:Queryable,workspaceId:string,ke
    const archived=await hosts.requestTaskBranch(w.execution_host_id,'execution_workspace_command',{workspace:await workspaceProfileFrame(db,w,r.workspace,userId),action:'archive_profiles',operation_id:r.operation_id,profile_agents:r.profile_agents,retain_branch:true,...(identity?{archive_identity:identity}:{})});
    if(!archived.ok&&archived.error_code!=='stale_generation')throw hostFailure(archived.error??'workspace_profiles_archive_failed');
    next.profiles_archived=true;
-   await db.query(`UPDATE host_threads SET status='closed',vendor_session_id=NULL,pending_archive_at=NULL,updated_at=now() WHERE execution_host_id=$3 AND id IN (SELECT run.host_task_thread_id FROM runs run WHERE run.space_id=$4 AND (run.id=ANY($5::varchar[]) OR EXISTS(SELECT 1 FROM task_merges m WHERE m.workspace_id=$1 AND m.attempt_id=$2 AND m.resolution_run_id=run.id)))`,[w.id,r.workspace.integration_id,w.execution_host_id,w.space_id,r.profile_thread_run_ids??r.profile_run_ids??[]]);
+   await db.query(`UPDATE host_threads SET status='closed',vendor_session_id=NULL,vendor_session_launch_id=NULL,pending_archive_at=NULL,updated_at=now() WHERE execution_host_id=$3 AND id IN (SELECT run.host_task_thread_id FROM runs run WHERE run.space_id=$4 AND (run.id=ANY($5::varchar[]) OR EXISTS(SELECT 1 FROM task_merges m WHERE m.workspace_id=$1 AND m.attempt_id=$2 AND m.resolution_run_id=run.id)))`,[w.id,r.workspace.integration_id,w.execution_host_id,w.space_id,r.profile_thread_run_ids??r.profile_run_ids??[]]);
    await save(next);
   }
   if(next.capture){

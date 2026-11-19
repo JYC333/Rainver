@@ -655,7 +655,6 @@ describe("hosts routes", () => {
       space: "upload-space",
       runtimeKey: "claude_code",
       executionHostId: hostA.hostId,
-      executionHostKind: "remote",
       workspaceLocationId: locationId,
       workspaceMode: "location",
       runtimeInstallation: "managed:1.0.0",
@@ -1278,7 +1277,9 @@ it("answers vendor releases from memory, refreshing in the background and keepin
     expect(releases.peek("claude_code")).toBeNull();
     expect(releases.peek("claude_code")).toBeNull();
     expect(fetchMetadata).toHaveBeenCalledTimes(1);
+    const initial = releases.initial("claude_code");
     release(answer("1.10.0"));
+    await expect(initial).resolves.toBe("1.10.0");
     await vi.waitFor(() => expect(releases.peek("claude_code")).toBe("1.10.0"));
     expect(fetchMetadata).toHaveBeenCalledTimes(1);
     // Stale: answered at once from memory while one lookup runs; an offline

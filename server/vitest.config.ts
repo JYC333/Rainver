@@ -26,8 +26,14 @@ const testFiles = listTestFiles("test");
 // Unreviewed files conservatively retain integration setup.
 const pureFiles = [
   "test/agentGuides.test.ts", "test/composeConfig.test.ts", "test/config.test.ts", "test/testHygiene.test.ts",
-  "test/boundaries.test.ts", "test/frontendProxy.test.ts", "test/legacyRuntimeContextAbsence.test.ts",
-  "test/personStartedTriggerOrigin.test.ts", "test/projectReadingQualityFixture.test.ts",
+  "test/boundaries.test.ts", "test/frontendProxy.test.ts",
+  "test/projectReadingQualityFixture.test.ts",
+  // Imports only the type of the Sources broker route; no runtime dependency.
+  // Gmail text normalization: Node Buffer/TextDecoder and the Sources stripHtml helper only.
+  "test/gmailMessageText.test.ts",
+  "test/gmailReadContract.test.ts",
+  // Gmail sync allowlist and monitor matching: pure rules plus the protocol's zod schema.
+  "test/gmailSyncContract.test.ts",
   // Shell-only archive fixtures provide their own fake docker executable.
   "test/backupHardeningOps.test.ts",
 ];

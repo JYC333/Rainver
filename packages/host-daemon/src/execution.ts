@@ -34,6 +34,7 @@ import { prepareAntigravityProfile } from "./antigravity.js";
 import { ownLaunchFor } from "./ownCopies.js";
 import { probeVersion } from "./capabilities.js";
 import { egressProxyEnv, proxyBypassHosts, type EgressProfile, type EgressProxyHandle } from "./egressProxy.js";
+import { startModelChannel, type ModelChannelHandle } from "./modelChannel.js";
 import { ensureCodexStrictSandboxConfig } from "./codexStrictSandbox.js";
 import { startLocalToolBridge, type LocalToolBridge } from "@rainver/agent-cli/local-bridge";
 import { toolHttpRequest } from "@rainver/agent-cli/tool-http";
@@ -784,19 +785,27 @@ function rainverCliPath(): string {
  * unsandboxed on a machine the user owns, so the control plane is not trusted
  * to have sent a key that stays inside the config directory.
  */
-function providerProfileDir(profileKey: string): string {
+function providerProfileDir(profileKey: string, runId: string): string {
   const segments = profileKey.split("/");
   const [agents, agentId, containerKind, containerId, runtimeKey, providerId] = segments;
   if (segments.length !== 6 || agents !== "agents") {
     throw new Error(`runtime profile key has an unusable shape: ${profileKey}`);
   }
-  if (containerKind !== "direct" && containerKind !== "conversation" && containerKind !== "location" && containerKind !== "agent" && containerKind !== "workspace") {
+  if (containerKind !== "direct" && containerKind !== "conversation" && containerKind !== "location" && containerKind !== "agent" && containerKind !== "workspace" && containerKind !== "run") {
     throw new Error(`runtime profile key has an unusable container kind: ${profileKey}`);
   }
   for (const segment of [agentId, containerId, runtimeKey, providerId]) {
     if (!segment || !/^[A-Za-z0-9._-]+$/.test(segment) || segment.startsWith(".")) {
       throw new Error(`runtime profile key has an unusable segment: ${profileKey}`);
     }
+  }
+  // A one-time Run's own profile (a private Gmail check, ADR 0033 §6): only
+  // this Run's, kept inside its run directory, so the vendor session and
+  // anything the CLI remembers are deleted with the Run directory and no later
+  // Run can resume or read them.
+  if (containerKind === "run") {
+    if (containerId !== runId) throw new Error(`runtime profile key names another Run: ${profileKey}`);
+    return join(runDir(runId), "profile", runtimeKey!, providerId!);
   }
   // Derived from the container path rather than rebuilt. Archive, restore and
   // reset all move the container level. Do not construct the same five
@@ -1004,6 +1013,10 @@ export function planStrictLaunch(input: {
   loginFiles?:string[];
   /** Ordinary tools and the instructing person's account directories (`ordinaryToolRunAccess.ts`). */
   ordinaryToolBinds?: StrictBind[];
+  /** An egress-`none` Run's model channel relay (`modelChannel.ts`), already listening. */
+  modelChannel?: Pick<ModelChannelHandle, "directory" | "socketPath" | "loopbackPort">;
+  /** The Node binary the in-namespace forwarder runs on; this daemon's own by default. */
+  nodeBinary?: string;
 }): StrictLaunch {
   // **The container contributes nothing.** A trusted host keeps the machine's
   // environment because it is the owner's machine; a strict host is not
@@ -1061,6 +1074,12 @@ export function planStrictLaunch(input: {
     })],
     isolation,
     env,
+    ...(input.modelChannel ? { modelChannel: {
+      node: input.nodeBinary ?? process.execPath,
+      directory: input.modelChannel.directory,
+      socketPath: input.modelChannel.socketPath,
+      port: input.modelChannel.loopbackPort,
+    } } : {}),
   });
   return { command:namespace.command, args:namespace.args, home, env:namespace.env };
 }
@@ -1123,7 +1142,7 @@ export async function handleLaunch(
     // that did leaves that to its child's close handler. A Task worktree
     // stays either way: it is the Task's, and settle removes it.
     if (!hold.spawned) {
-      try { await hold.toolBridge?.close(); }
+      try { await hold.modelChannel?.close(); await hold.toolBridge?.close(); }
       finally {
         releaseHeldLeases(frame, hold);
         hold.ordinaryTools?.release();
@@ -1147,6 +1166,8 @@ interface LaunchHold {
   resolution: { root: string; gitCommonDir: string } | null;
   spawned: boolean;
   toolBridge: LocalToolBridge | null;
+  /** An egress-`none` Run's model channel relay; closed with the tool bridge. */
+  modelChannel?: ModelChannelHandle | null;
   /** Ordinary tool lease and account use, held until the Run's process exits. */
   ordinaryTools: RunOrdinaryTools | null;
 }
@@ -1277,7 +1298,7 @@ async function launchRun(
   const reached=await launchRepositoryDirectories(config.workspaces,workspacesRoot(),frame.workspace_access);
   if('refused' in reached){send({type:'complete',run_id:frame.run_id,launch_id:frame.launch_id,exit_code:1,timed_out:false,error:reached.refused});return;}
   if(personalRead){
-    try{assertReadOnlyBinds([cwd,...attachmentRoots.map(a=>a.path),...(commonGit?[commonGit]:[]),...attachedGit],[{path:runDir(frame.run_id),access:'read_write'},...(frame.provider_binding?[{path:providerProfileDir(frame.provider_binding.profile_key),access:'read_write' as const}]:[])]);}
+    try{assertReadOnlyBinds([cwd,...attachmentRoots.map(a=>a.path),...(commonGit?[commonGit]:[]),...attachedGit],[{path:runDir(frame.run_id),access:'read_write'},...(frame.provider_binding?[{path:providerProfileDir(frame.provider_binding.profile_key,frame.run_id),access:'read_write' as const}]:[])]);}
     catch(error){send({type:'complete',run_id:frame.run_id,launch_id:frame.launch_id,exit_code:1,timed_out:false,error:'Read-only workspace preparation failed; inspect local Host log.'});log(String(error));return;}
   }
   // Who else may be writing this directory (hosts.md, "Location lease"). An
@@ -1586,7 +1607,7 @@ async function launchRun(
         || binding.files.length > 0 || binding.login_link !== null;
       if(personalNamespace&&binding.credential_source==='host_login'&&!relocatesState)throw new Error('This runtime requires a declared login/state boundary for read-only execution; update its runtime definition, not its login.');
       if (relocatesState) {
-        profileDir = providerProfileDir(binding.profile_key);
+        profileDir = providerProfileDir(binding.profile_key, frame.run_id);
         loginHome = loginHomeFor(runtimeKey, frame.installation ?? OWN_INSTALLATION);
       }
       bindingEnv = relocatesState
@@ -1670,6 +1691,22 @@ async function launchRun(
   let spawnCommandArgs = spawnArgs;
   let spawnEnv: Record<string, string> = { ...baseEnv, ...derivedEnv };
   const strict = config.trust === "strict"||personalNamespace;
+  if (frame.model_channel) {
+    // Served only where it is the Run's sole network: a strict namespace with
+    // egress `none`, for a Run whose model backend is the control plane's
+    // lease. Anything else is a frame this daemon will not half-honour.
+    const consistent = config.trust === "strict" && !personalNamespace
+      && frame.isolation?.egress_profile === "none"
+      && frame.provider_binding?.credential_source === "provider_lease";
+    try {
+      if (!consistent) throw new Error("a model channel needs a strict, egress-none, provider-bound launch");
+      hold.modelChannel = await startModelChannel(runDir(frame.run_id), frame.model_channel, (line) => log(`run ${frame.run_id}: ${line}`));
+    } catch (error) {
+      send({ type: "complete", run_id: frame.run_id, launch_id: frame.launch_id, exit_code: 1, timed_out: false,
+        error: `Could not prepare this Run's model channel: ${error instanceof Error ? error.message : String(error)}` });
+      return;
+    }
+  }
   // Ordinary tools and the instructing person's own account, only when the
   // control plane sent the field. Held on `hold` until the process exits.
   try {
@@ -1738,6 +1775,7 @@ async function launchRun(
         // A worktree's history lives in the repository's own git directory,
         // outside the worktree; without it git inside the namespace fails.
         ordinaryToolBinds: hold.ordinaryTools?.binds,
+        modelChannel: hold.modelChannel ?? undefined,
         workspaceBinds: hold.worktree ?? hold.resolution
           ? [{path:ownedMetadata!.root,access_mode:frame.isolation?.sandbox_mode==='read_only'?'read' as const:'write' as const},...attachedWorkspaceBinds, { path: (hold.worktree ?? hold.resolution)!.gitCommonDir, access_mode: executionRef ? "read" as const : "write" as const },...(workspaceGitEntry?[{path:workspaceGitEntry,access_mode:frame.isolation?.sandbox_mode==='read_only'?"read" as const:"write" as const}]:[]),...await attachmentGitBinds(hold.attachedWorktrees??[],frame.isolation?.sandbox_mode==='read_only')]
           : [...attachedWorkspaceBinds,...await attachmentGitBinds(hold.attachedWorktrees??[],frame.isolation?.sandbox_mode==='read_only'),...(personalRead?[...(commonGit?[commonGit]:[]),...attachedGit].map(path=>({path,access_mode:"read" as const})):[])],
@@ -1890,6 +1928,12 @@ async function launchRun(
     // is not gone: the Locations, the tool and the account stay held.
     let groupSettled = !hold.ordinaryTools;
     void (async () => {
+      // The runtime has exited: its model channel closes now, whether or not
+      // the rest of its process group is confirmed gone, so nothing left
+      // behind keeps the Run's one network path.
+      await hold.modelChannel?.close().catch((error: unknown) => {
+        log(`run ${frame.run_id}: model channel cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
       if (hold.ordinaryTools) {
         groupSettled = await settleProcessGroup(child.pid, log).then(() => true, (error: unknown) => {
           log(`run ${frame.run_id}: could not confirm its remaining processes stopped; keeping its Locations, tool and account held: ${error instanceof Error ? error.message : String(error)}`);

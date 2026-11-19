@@ -58,8 +58,8 @@ land unseen.
 Remote trusted-host Runs are no exception: every Agent Run, whatever its Host
 kind, is authorized, planned, and snapshotted by the Gateway before ACP
 dispatch, and the Delivery's semantic sections are projected into ACP's single
-user-prompt channel ([ADR 0016](0016-control-plane-execution-hosts.md) §3
-amendment, [ADR 0022](0022-acp-runtime-authority-and-schema-epoch.md)). Host
+user-prompt channel ([ADR 0016](0016-control-plane-execution-hosts.md) §3,
+[ADR 0022](0022-acp-runtime-authority-and-schema-epoch.md)). Host
 trust, path ownership, and tool authorization still follow ADR 0016, and
 nothing authorizes reading repository guides as runtime context.
 

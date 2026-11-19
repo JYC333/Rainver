@@ -253,6 +253,19 @@ PRE_MIGRATION_BACKUP=1 ./ops/scripts/db/migrate.sh --mode dev
 # them against production without explicit operational authorization. Both restore
 # scripts call plugin-reconcile after --no-owner --no-acl restore. Legacy plugin
 # public migrations are excluded from the operation-package installer/reconcile.
+# The bundled `applications` package is such a change: an existing database
+# reports it pending until that maintenance path installs `plugin_applications`.
+# The rebuilt `diary` package (Plan 7) is one too; on a database that had the
+# legacy Diary, that install also adopts `public.diary_*` rows once (kept in place).
+
+# Operation-package schema (developer step, from server/): author the package's
+# schema.ts, then generate its migration. NODE_PATH lets the package-local
+# config resolve drizzle from server/node_modules; generated SQL must not create
+# the schema (the offline installer provisions it). Example:
+NODE_PATH=node_modules node node_modules/drizzle-kit/bin.cjs generate \
+  --config ../plugins/official/applications/drizzle.config.ts --name <name>
+# List the new id in the manifest's `migrations`, then rebuild packages:
+node scripts/build-official-plugins.mjs
 
 # Dump database to $RAINVER_ROOT/<mode>/db/dumps/
 ./ops/scripts/db/dump.sh
@@ -275,6 +288,23 @@ PRE_MIGRATION_BACKUP=1 ./ops/scripts/db/migrate.sh --mode dev
 
 # Open a psql shell
 ./ops/scripts/db/shell.sh [--mode dev|test|prod]
+```
+
+Least-privilege runtime/backup database roles ([ADR 0031](decisions/0031-runtime-database-roles.md)).
+Explicit operator commands; activation needs per-instance authorization and the
+procedure in [deployment](modules/deployment.md#least-privilege-database-roles-adr-0031):
+
+```bash
+./ops/scripts/db/runtime-roles.sh plan     [--mode dev|test|prod]   # read-only
+./ops/scripts/db/runtime-roles.sh apply    [--mode ...] --yes       # owner channel
+./ops/scripts/db/runtime-roles.sh activate [--mode ...] --yes       # services stopped
+./ops/scripts/db/runtime-roles.sh rollback [--mode ...] --yes       # services stopped
+# Isolated verification (test container only; the dump/restore case needs the
+# docker CLI to reach the test container and fails rather than rehearsing ACLs):
+cd server && pnpm exec vitest run test/runtimeRolesDb.test.ts
+cd ops/scripts && python3 -m unittest test_runtime_roles
+# `plan` lists each role's effective privileges beyond its target (`exceeds`);
+# `apply` refuses such a role until an operator repairs it explicitly.
 ```
 
 ## Backup and restore (run from repo root)
@@ -414,7 +444,12 @@ and installation.
 The public rolling releases are built by
 `.github/workflows/host-daemon-release.yml`: `master` publishes `stable`, each
 relevant `dev` push publishes `edge`, and the nightly schedule publishes
-`nightly` from `dev`. Generate a pairing code in the Hosts panel, install the
+`nightly` from `dev`. The workflow pins the channel branch's commit once
+(exact `refs/heads/` checkout), typechecks and tests the daemon and its
+workspace packages at that commit before building, and one publish step owns
+the immutable `host-build-<sha>` release and the channel tag. Its release logic
+is checked locally, without GitHub, by
+`cd ops/scripts && python3 -m unittest test_host_release_workflow`. Generate a pairing code in the Hosts panel, install the
 self-contained stable build on the target host, then register through the CLI:
 
 ```bash
@@ -769,7 +804,9 @@ test/acpCleanup.test.ts test/adapterInstallation.test.ts` (arguments on one line
 The actual resolved wrappers use isolated fake native processes, no live login
 or inference. Workspace postinstall prepares Claude cleanup; to repeat use
 `node tools/acp/prepare-adapters.mjs packages/host-adapters packages/host-daemon`
-from the root. Scheduled/manual CI resolves latest stable candidates while
+from the root. Preparation patches each wrapper file independently, so a rerun
+completes one interrupted halfway, and `--resolve-candidates` writes the
+catalog only after every root matched. Scheduled/manual CI resolves latest stable candidates while
 ordinary frozen installs preserve the lockfile snapshot.
 The repository ACP catalog lives in `packages/protocol/src/acpAdapters.json`;
 preparation verifies it against the installed distributions. Native CLI updates
@@ -795,6 +832,35 @@ modules, drives actual operations/Proposal/Jobs/restore and emits screenshots
 outside the repo. Authentication bootstrap/seams select seeded real people; domain data is
 real isolated PG (not cookie/SSO acceptance). Normal frontend builds do not activate the demonstration plugin.
 See [the permanent matrix](architecture/OFFICIAL_OPTIONAL_MODULES.md#operation-platform-acceptance).
+
+Plugin Agent data access and core ports ([ADR 0030](decisions/0030-plugin-agent-data-access.md);
+Node 24, shared real PG, isolated fixture plugins only):
+
+```bash
+cd server && pnpm exec vitest run test/pluginDataAccessDb.test.ts test/pluginCorePortsDb.test.ts
+cd apps/web && pnpm exec vitest run src/modules/runs/__tests__/RunPluginDataPanel.test.tsx src/modules/conversation/ConversationRunControls.test.tsx
+# Built app + synthetic APIs (build web first); screenshots to /tmp.
+cd apps/web && node --test src/__tests__/plugin-data-access.browser.mjs
+```
+
+Sensitive-read isolated launch (ADR 0030 §4a; Linux with `/usr/bin/bwrap`; build
+`packages/protocol`, `packages/agent-cli` and `packages/host-daemon` first; only
+local synthetic listeners; never skips):
+
+```bash
+cd packages/host-daemon && pnpm exec vitest run test/modelChannel.test.ts test/strictNamespace.test.ts test/execution.test.ts
+cd packages/host-daemon && node test/modelChannel.acceptance.mjs && node test/networkNamespace.acceptance.mjs
+cd server && pnpm exec vitest run test/pluginDataAccessDb.test.ts test/remoteProviderBindingFrame.test.ts test/providerProxyServer.test.ts
+```
+
+The installed vendor CLIs on that model-only lease (explicit smoke, skipped
+otherwise; Linux with unprivileged user and network namespaces and `ip`;
+needs `claude` and `codex` on PATH, fails if either is missing; only a local
+synthetic provider, no live credential):
+
+```bash
+cd server && MODEL_ONLY_CLI_SMOKE=1 pnpm exec vitest run test/modelOnlyLeaseVendorCliSmoke.test.ts
+```
 
 Idle reclamation focused regressions (same runtime; shared real PG required):
 from `packages/host-daemon`, run `pnpm exec vitest run test/workspaceRetention.test.ts
@@ -991,3 +1057,44 @@ no product database or real retained workspace is touched. A missing container
 runtime or denied child-process Git prevents acceptance and must be reported.
 Run the Host retention, barriers and durability files listed above as well;
 retained receipts and epoch/CAS guards remain part of the same contract.
+
+## Gmail acceptance (read-only MVP and V2 monitoring)
+
+Node 24 (for example `PATH=$HOME/.nvm/versions/node/v24.22.2/bin:$PATH`),
+`pnpm install --frozen-lockfile --offline`, Docker for the shared real-PG test
+container; Google is stubbed at `fetch`, no instance data or real mailbox is
+used. In a colon-containing worktree path use the package-local tools below
+(`node_modules/.bin` is not on PATH). Current behaviour and its tests are in
+[Sources → Personal Gmail connections](modules/sources.md#personal-gmail-connections-connection-lifecycle-new-mail-monitors-legacy-project-selections);
+open acceptance items are in the [deferred register](tasks/deferred-register.md#gmail--real-environment-acceptance-and-limits).
+
+```bash
+# Workspace deps, then protocol and outbound-guard (each package directory).
+for p in protocol outbound-guard folder-read reader-document agent-cli; do
+  (cd packages/$p && node ../../tools/typescript/prepareIncremental.mjs && node node_modules/typescript/bin/tsc -p tsconfig.build.json)
+done
+(cd packages/protocol && node node_modules/vitest/vitest.mjs run)
+(cd packages/outbound-guard && node node_modules/typescript/bin/tsc -p tsconfig.json --noEmit && node node_modules/vitest/vitest.mjs run)
+
+cd server
+node node_modules/typescript/bin/tsc -p tsconfig.typecheck.json
+# Production build (`pnpm build`: emits the ignored server/dist).
+node node_modules/typescript/bin/tsc -p tsconfig.json
+node scripts/db/schema-migrations.mjs check && node node_modules/drizzle-kit/bin.cjs check --config=drizzle.config.ts
+REQUIRE_TEST_POSTGRES=true node node_modules/vitest/vitest.mjs run test/gmailAgentReadDb.test.ts test/gmailRoomReadAcceptanceDb.test.ts test/gmailPrivateReadHandoffDb.test.ts test/sensitiveRuntimeProfileDb.test.ts test/pluginDataAccessDb.test.ts test/memoryDirectWritesDb.test.ts test/contextTaint.test.ts test/privateToolCalls.test.ts test/gmailMonitorSyncDb.test.ts test/proposalPrivateOwnerGate.test.ts test/policyEnforcementPoints.test.ts test/gmailSyncContract.test.ts test/agentGroupsService.test.ts test/gmailBrokerDb.test.ts test/gmailConnectionDb.test.ts test/gmailMailReadDb.test.ts test/gmailMessageText.test.ts test/gmailOAuthTransport.test.ts test/gmailReadContract.test.ts test/sourceRequestBrokerDb.test.ts test/sourceRequestQuotaDb.test.ts test/sourceRequestReviewDb.test.ts test/sourceCustomSourceCredential.test.ts test/managedSubscriptionOAuth.test.ts test/managedSubscriptionOAuthDb.test.ts test/providersCredentialsAuthority.test.ts test/credentialSpendDb.test.ts test/operationRoutes.test.ts test/operationExecutorDb.test.ts test/projectSourceOperationsDb.test.ts test/agentGuides.test.ts test/config.test.ts test/baselineSchema.test.ts test/leafDomainRepositoryBehavior.test.ts test/jobsSchedulers.test.ts test/hostsRoutes.test.ts test/boundaries.test.ts test/testHygiene.test.ts
+
+cd ../apps/web
+node node_modules/typescript/bin/tsc --noEmit
+node node_modules/vitest/vitest.mjs run src/__tests__/gmail-api.test.ts src/__tests__/api-entrypoint.test.ts src/modules/sources/__tests__/GmailConnectionsCard.test.tsx src/modules/sources/__tests__/GmailMonitorsCard.test.tsx src/modules/projects/__tests__/ProjectGmailThreads.test.tsx src/modules/sources/__tests__/SourceAccessPage.test.tsx src/modules/projects/__tests__/SourcesAreaPage.test.tsx src/modules/sources/__tests__/SourceChannelsPage.test.tsx src/modules/conversation/__tests__/gmailPrivateReadCard.test.tsx
+node node_modules/vite/bin/vite.js build
+# Visual check after a presentation change (built app, synthetic APIs; part of
+# test:layout; screenshots in GMAIL_SHOTS, default /tmp/rainver-gmail-shots):
+node --test src/__tests__/gmail-sources.browser.mjs
+```
+
+Pre-commit full suites, once each, bounded so a hang ends as **incomplete**:
+`REQUIRE_TEST_POSTGRES=true timeout --signal=INT --kill-after=60 2700 node node_modules/vitest/vitest.mjs run`
+from `server` (needs the web build and Playwright Chromium for its two browser
+cases) and `timeout --signal=INT --kill-after=60 1800 node node_modules/vitest/vitest.mjs run`
+from `apps/web`. A real Google client, consent or mailbox is outside these
+commands and needs explicit configuration and authorization.

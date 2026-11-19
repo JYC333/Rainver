@@ -82,7 +82,7 @@ export const runtimeContextModule: ServerModule = {
   registerRoutes,
 };
 
-export {lockReadingRunAuthority,lockSourceConnectionAuthority} from './gateway.js';
+export {lockContentReadAuthority,lockReadingRunAuthority,lockSourceConnectionAuthority} from './gateway.js';
 
 export {lockSourceReadingReferences} from './gateway.js';
 

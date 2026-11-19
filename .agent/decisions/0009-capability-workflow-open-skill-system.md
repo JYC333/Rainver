@@ -73,7 +73,7 @@ evolvable asset and executed by the Workflow execution engine
 ([ADR 0011](0011-inquiry-domain-model.md) decision 4). It is not a capability
 grouping.
 
-### 5. Capability-layer removal (2026-10-23)
+### 5. Capability-layer removal
 
 The Skill library now resolves reviewed original packages through one Runtime
 Context path. Definitions, packs, conversion, legacy runtime renderers and the

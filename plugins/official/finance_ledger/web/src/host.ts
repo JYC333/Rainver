@@ -1,5 +1,3 @@
-import type { CSSProperties, ElementType, ReactNode } from 'react'
-
 export interface FinanceBook {
   id: string
   space_id: string
@@ -89,10 +87,10 @@ export interface FinanceBalancePosition {
   positions: string[]
 }
 
+/** A validation problem: its code and entry only (the text would name accounts and amounts). */
 export interface FinanceValidationError {
   code: string
-  message: string
-  directiveId?: string
+  directive_id: string | null
 }
 
 export interface FinanceLedgerError {
@@ -196,19 +194,7 @@ export interface FinanceApi {
   exportBeancount(bookId: string): Promise<FinanceExportResult>
 }
 
-export interface FinancePluginState {
-  loading: boolean
-  enabled: boolean
-}
-
-export interface FinanceHostLinkProps {
-  to: string
-  style?: CSSProperties
-  children?: ReactNode
-}
-
+/** What the page needs from its host; the plugin slot owns loading, disabled and withheld states. */
 export interface FinanceWebHost {
   api: FinanceApi
-  Link: ElementType<FinanceHostLinkProps>
-  usePluginState(pluginId: string): FinancePluginState
 }

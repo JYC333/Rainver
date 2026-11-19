@@ -3,6 +3,7 @@ import type { Queryable } from "../routeUtils/common.js";
 import { resolveProvidersDbPort } from "../providers/dbReader.js";
 import { runtimeProviderEgressDestination } from "../retrieval/egress/egressPolicy.js";
 import {
+  providerProxyLeaseUrl,
   providerProxyLeases,
   type ProviderProxyLeaseRegistry,
   type ProviderProxyRoute,
@@ -17,7 +18,7 @@ import {
   type CredentialSpendAuthorization,
   type CredentialSpendDeps,
 } from "../policy/credentialSpend.js";
-import type { HostLaunchProviderBinding, RuntimeSessionConfigDroppedSelection } from "@rainver/protocol";
+import type { HostLaunchModelChannel, HostLaunchProviderBinding, RuntimeSessionConfigDroppedSelection } from "@rainver/protocol";
 import { getRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
 import type { AgentRunRecord } from "./repository.js";
 import type { VendorCliRuntimeKey } from "../runtimeAdapters/specs.js";
@@ -58,7 +59,7 @@ export type RemoteProviderBindingFrame = HostLaunchProviderBinding;
  */
 export interface RuntimeProfileScope {
   agent_id: string;
-  container_kind: "conversation" | "direct" | "location" | "agent" | "workspace";
+  container_kind: "conversation" | "direct" | "location" | "agent" | "workspace" | "run";
   container_id: string;
 }
 
@@ -83,7 +84,7 @@ export const PROFILE_ROOT_PLACEHOLDER = "{{RAINVER_RUN_PROFILE}}";
  */
 export async function resolveRuntimeProfileScope(
   db: Queryable,
-  run: { agent_id: string; host_task_thread_id?: string | null },
+  run: { id?: string; agent_id: string; host_task_thread_id?: string | null; session_id?: string | null; contract_snapshot_json?: unknown },
   workspaceLocationId: string | null,
 ): Promise<RuntimeProfileScope> {
   if (run.host_task_thread_id) {
@@ -331,6 +332,12 @@ export interface RemoteProviderBinding {
   frame: RemoteProviderBindingFrame;
   /** The model the lease was actually issued for, after every fallback. */
   used_model: string | null;
+  /**
+   * Set when the binding was composed for an egress-`none` launch: the frame's
+   * URL names the namespace's loopback forwarder and this is what the daemon
+   * relays it to — this lease's path on the proxy, and nothing else.
+   */
+  model_channel?: HostLaunchModelChannel;
   revoke: () => void;
 }
 
@@ -411,6 +418,12 @@ export async function buildRemoteProviderBinding(input: {
   db: Queryable;
   /** The Run executor's policy seam; unset in production, where the policy service decides. */
   enforcer?: CredentialSpendDeps["enforcer"];
+  /**
+   * Compose for an egress-`none` launch (ADR 0030 §4a): the runtime is pointed
+   * at this loopback port inside its namespace, and the result carries the
+   * model channel the daemon relays to the real lease URL.
+   */
+  modelChannel?: { loopback_port: number };
 }): Promise<RemoteProviderBinding> {
   if (!adapterProviderApi(input.runtimeKey)) {
     throw new RemoteProviderBindingError(
@@ -459,6 +472,14 @@ export async function buildRemoteProviderBinding(input: {
     ?? stringValue(record.default_model)
     ?? availableModels[0]
     ?? null;
+  // A model-only channel's lease is held to one named model (ADR 0030 §4a):
+  // without one, any model the upstream serves would do. Refused before a lease.
+  if (input.modelChannel && !model) {
+    throw new RemoteProviderBindingError(
+      "model_channel_model_required",
+      `ModelProvider '${providerName}' must name a model for a network-isolated Run.`,
+    );
+  }
   // Codex and OpenCode name a model in their config. Refuse without one.
   // Do not let the runtime fall back to a built-in default the bound
   // provider does not serve.
@@ -514,6 +535,7 @@ export async function buildRemoteProviderBinding(input: {
     upstream_base_url: upstreamBaseUrl,
     model,
     pinned_model: localDestination ? model : null,
+    request_policy: input.modelChannel ? "model_only" : null,
     runtime_key: input.runtimeKey,
     session_id: input.run.session_id,
     parent_run_id: input.run.parent_run_id ?? null,
@@ -545,20 +567,31 @@ export async function buildRemoteProviderBinding(input: {
     );
   }
 
+  // The proxy address this Host reaches, without the lease path the channel pins.
+  const leasePath = new URL(providerProxyLeaseUrl("http://lease.invalid", requirement.route, lease.id)).pathname;
+  const channel: HostLaunchModelChannel | undefined = input.modelChannel && leaseUrl.endsWith(leasePath)
+    ? { version: 1, upstream_base_url: leaseUrl.slice(0, -leasePath.length), route: requirement.route, lease_id: lease.id, loopback_port: input.modelChannel.loopback_port }
+    : undefined;
+  if (input.modelChannel && !channel) {
+    registry.revoke(lease.id);
+    throw new RemoteProviderBindingError("model_channel_unavailable", "The provider proxy address for this Host cannot carry a model-only channel.");
+  }
   const renewal = setInterval(() => registry.renew(lease.id, input.ttlSeconds * 1000), 60_000);
   renewal.unref?.();
   try {
     return {
+      ...(channel ? { model_channel: channel } : {}),
       frame: bindingFrame({
         runtimeKey: input.runtimeKey,
         providerId: input.binding.provider_id,
         scope: input.scope,
-        leaseUrl,
+        leaseUrl: channel ? providerProxyLeaseUrl(`http://127.0.0.1:${channel.loopback_port}`, channel.route, channel.lease_id) : leaseUrl,
         leaseToken: lease.token,
         model,
         providerName,
         availableModels,
         route: requirement.route,
+        modelOnly: Boolean(channel),
       }),
       used_model: model,
       revoke: () => { clearInterval(renewal); registry.revoke(lease.id); },
@@ -618,6 +651,8 @@ function bindingFrame(input: {
   providerName: string;
   availableModels: string[];
   route: ProviderProxyRoute;
+  /** The lease is `model_only`: the runtime's own hosted provider tools are switched off where it has a switch. */
+  modelOnly: boolean;
 }): RemoteProviderBindingFrame {
   // Every segment is already constrained — the adapter type comes from the
   // runtime-adapter catalog, the ids are generated identifiers — and the
@@ -672,6 +707,7 @@ function bindingFrame(input: {
             leaseToken: input.leaseToken,
             model,
             catalogPath: `${PROFILE_ROOT_PLACEHOLDER}/${catalogRelative}`,
+            hostedWebSearch: !input.modelOnly,
           }),
           escape: "toml_basic_string",
         },

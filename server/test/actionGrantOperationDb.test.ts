@@ -1,5 +1,6 @@
 import {CliAgentToolTransport} from '../src/modules/runs/cliToolTransport.js';
 import type {AgentRunRecord} from '../src/modules/runs/repository.js';
+import type {Queryable} from '../src/modules/routeUtils/common.js';
 import {waitForLockWaiter} from './support/lockWait.js';
 import {randomUUID} from 'node:crypto';
 import {beforeEach,afterEach,expect,it} from 'vitest';
@@ -10,12 +11,13 @@ import {loadConfig} from '../src/config.js';
 import {policyModule} from '../src/modules/policy/index.js';
 import {systemActionsModule} from '../src/modules/systemActions/index.js';
 import {__setAuthIdentityForTests} from '../src/modules/auth/identity.js';
+import {ActionApprovalGrantService} from '../src/modules/policy/actionApprovalGrantService.js';
 const db=useTestDatabase(import.meta.filename);
-let space:string,owner:string,agent:string,app:ReturnType<typeof buildModuleServer>;
+let space:string,owner:string,agent:string,project:string,app:ReturnType<typeof buildModuleServer>;
 beforeEach(async()=>{
   if(!db.available)return;
-  space=randomUUID();owner=randomUUID();agent=randomUUID();
-  await seedSpaceOwnerProject(db.pool,{space,owner,project:randomUUID()});
+  space=randomUUID();owner=randomUUID();agent=randomUUID();project=randomUUID();
+  await seedSpaceOwnerProject(db.pool,{space,owner,project});
   await seedAgentWithVersion(db.pool,{space,owner,agent,version:randomUUID()});
   app=buildModuleServer(loadConfig({SERVER_DATABASE_URL:db.connectionUri}),[policyModule,systemActionsModule]);
   __setAuthIdentityForTests({spaceId:space,userId:owner});
@@ -188,4 +190,71 @@ it('rolls back revocation when its mandatory policy audit is unavailable', async
     await db.pool.query('DROP TRIGGER reject_grant_revoke_audit ON policy_decision_records');
     await db.pool.query('DROP FUNCTION public.reject_grant_revoke_audit()');
   }
+});
+
+// Agent-side consumption of a standing grant, on stored rows (applyService consumes inside its proposal transaction).
+const grantConfig=()=>loadConfig({SERVER_DATABASE_URL:db.connectionUri});
+async function insertGrant(input:{actionId?:string;projectId?:string|null;resourceKind?:string|null;resourceId?:string|null;maxUses?:number|null;useCount?:number;status?:string;expiresAt?:string|null}={}){
+  const id=randomUUID();
+  await db.pool.query(
+    `INSERT INTO action_approval_grants (id,space_id,agent_id,action_id,project_id,resource_kind,resource_id,granted_by_user_id,status,expires_at,max_uses,use_count,created_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,now())`,
+    [id,space,agent,input.actionId??'project.source.propose_bind',input.projectId??null,input.resourceKind??null,input.resourceId??null,owner,input.status??'active',input.expiresAt??null,input.maxUses===undefined?1:input.maxUses,input.useCount??0]);
+  return id;
+}
+const storedGrant=async(id:string)=>(await db.pool.query<{use_count:number;max_uses:number|null;status:string;last_used_at:string|null}>('SELECT use_count,max_uses,status,last_used_at FROM action_approval_grants WHERE id=$1',[id])).rows[0]!;
+const consume=(input:Partial<Parameters<ActionApprovalGrantService['consumeMatching']>[0]>={},on:Queryable=db.pool)=>
+  new ActionApprovalGrantService(on,grantConfig()).consumeMatching({spaceId:space,agentId:agent,actionId:'project.source.propose_bind',projectId:project,...input});
+it('consumes a matching grant once per use and refuses it once max_uses is reached', async()=>{
+  const id=await insertGrant({projectId:project,maxUses:2});
+  expect(await consume()).toMatchObject({id,granted_by_user_id:owner});
+  expect(await storedGrant(id)).toMatchObject({use_count:1,status:'active',last_used_at:expect.anything()});
+  expect(await consume()).toMatchObject({id});
+  expect(await storedGrant(id)).toMatchObject({use_count:2,max_uses:2});
+  expect(await consume()).toBeNull();
+  expect(await storedGrant(id)).toMatchObject({use_count:2,max_uses:2});
+});
+it('does not consume a grant outside its scope, expired or revoked', async()=>{
+  const scoped=await insertGrant({projectId:project,resourceKind:'source_channel',resourceId:'channel-1',maxUses:null});
+  for(const outside of [
+    {actionId:'project.propose_definition',resourceKind:'source_channel',resourceId:'channel-1'},
+    {agentId:randomUUID(),resourceKind:'source_channel',resourceId:'channel-1'},
+    {spaceId:randomUUID(),resourceKind:'source_channel',resourceId:'channel-1'},
+    {projectId:randomUUID(),resourceKind:'source_channel',resourceId:'channel-1'},
+    {resourceKind:'source_channel',resourceId:'channel-2'},
+    {resourceKind:'source_connection',resourceId:'channel-1'},
+  ]) expect(await consume(outside),JSON.stringify(outside)).toBeNull();
+  expect((await storedGrant(scoped)).use_count).toBe(0);
+  const expired=await insertGrant({actionId:'project.propose_definition',expiresAt:new Date(Date.now()-60_000).toISOString()});
+  const revoked=await insertGrant({actionId:'source.channel.propose_activation',status:'revoked'});
+  expect(await consume({actionId:'project.propose_definition'})).toBeNull();
+  expect(await consume({actionId:'source.channel.propose_activation'})).toBeNull();
+  expect((await storedGrant(expired)).use_count).toBe(0);
+  expect(await storedGrant(revoked)).toMatchObject({use_count:0,status:'revoked'});
+  // Expiry and revocation were the only reasons: the same rows match once those states are lifted.
+  await db.pool.query("UPDATE action_approval_grants SET expires_at=now()+interval '1 hour' WHERE id=$1",[expired]);
+  await db.pool.query("UPDATE action_approval_grants SET status='active',revoked_at=NULL WHERE id=$1",[revoked]);
+  expect(await consume({actionId:'project.propose_definition'})).toMatchObject({id:expired});
+  expect(await consume({actionId:'source.channel.propose_activation'})).toMatchObject({id:revoked});
+  expect(await consume({resourceKind:'source_channel',resourceId:'channel-1'})).toMatchObject({id:scoped});
+});
+it('lets only one of two concurrent consumers take the last use of a grant', async()=>{
+  const id=await insertGrant({projectId:project,maxUses:3,useCount:2});
+  const first=await db.pool.connect(),second=await db.pool.connect();
+  try {
+    await first.query('BEGIN');await second.query('BEGIN');
+    // The first transaction holds the row; the second must neither wait nor take a use beyond the limit.
+    expect(await consume({},first)).toMatchObject({id});
+    expect(await consume({},second)).toBeNull();
+    await first.query('COMMIT');await second.query('COMMIT');
+  } finally {
+    await first.query('ROLLBACK').catch(()=>{});await second.query('ROLLBACK').catch(()=>{});
+    first.release();second.release();
+  }
+  expect(await storedGrant(id)).toMatchObject({use_count:3,max_uses:3});
+  // Unordered race on separate connections: still exactly one winner.
+  const raced=await insertGrant({actionId:'project.propose_definition',projectId:project,maxUses:1});
+  const results=await Promise.all([consume({actionId:'project.propose_definition'}),consume({actionId:'project.propose_definition'})]);
+  expect(results.filter(Boolean)).toHaveLength(1);
+  expect(await storedGrant(raced)).toMatchObject({use_count:1,max_uses:1});
 });

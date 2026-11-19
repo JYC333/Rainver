@@ -1,4 +1,5 @@
 import {ProjectPluginSlots} from '../plugins/PluginSlot'
+import {ProjectPluginBindingsCard} from '../plugins/ProjectPluginBindingsCard'
 import ProjectMembersDialog from './ProjectMembersDialog'
 import { useState, useEffect, useCallback, useRef, type MouseEvent } from 'react'
 import { useParams, useSearchParams, useOutletContext } from 'react-router-dom'
@@ -129,6 +130,7 @@ function EditProjectDialog({ project, overview, open, onOpenChange, onSaved }: E
         <div className="space-y-4 py-2">
           <Button variant="outline" asChild><Link to={sourcesPath} onClick={openSources} aria-disabled={saving || undefined} className="aria-disabled:opacity-40">{t('reading.monitoringSettings')}</Link></Button>
           <ProjectConversationBackendCard projectId={project.id} />
+          <ProjectPluginBindingsCard projectId={project.id} />
           <div className="space-y-1.5">
             <Label>Name <span className="text-destructive">*</span></Label>
             <Input value={name} onChange={e => setName(e.target.value)} />

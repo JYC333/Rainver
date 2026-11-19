@@ -148,7 +148,7 @@ export async function reconcileExecutionWorkspaces(db:Queryable,workspaceRoot:st
     if(replaceableSourceCleanup(current)&&(!current||current.state==='cleaned'||current.expected_commit!==inspection.commit))await enqueueWorkspaceCleanup(tx,w,{id:w.id,generation:w.generation},inspection.commit,true,user);
    }
    if(w.closed_owner&&!owed&&!inventory.active&&!inventory.worktree&&!inventory.registration&&!inventory.run_record&&inventory.quarantined_whole===0){
-    await tx.query(`UPDATE host_threads SET status='closed',vendor_session_id=NULL,pending_archive_at=COALESCE(pending_archive_at,now()),updated_at=now() WHERE execution_workspace_json->>'id'=$1 AND status<>'closed'`,[w.id]);
+    await tx.query(`UPDATE host_threads SET status='closed',vendor_session_id=NULL,vendor_session_launch_id=NULL,pending_archive_at=COALESCE(pending_archive_at,now()),updated_at=now() WHERE execution_workspace_json->>'id'=$1 AND status<>'closed'`,[w.id]);
     // The branch is intentionally retained. Retiring the logical owner closes caches.
     await tx.query("UPDATE execution_workspaces SET state='retired',updated_at=now() WHERE id=$1",[w.id]);
    }

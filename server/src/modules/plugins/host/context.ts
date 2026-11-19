@@ -185,13 +185,19 @@ export class PluginHostContextImpl implements PluginHostContext {
       const dbUrl = this._dbUrl;
 
       const wrapped: ProposalApplier = async (ctx: ProposalApplyContext): Promise<ProposalApplyResult> => {
+        // ctx.userId is the approver. The business subject is the person the
+        // proposal acts for. Only space-scoped legacy packages remain
+        // (Diary, the user-scoped one, is an operation package: Plan 7), so
+        // there is no user-scoped legacy proposal to restrict to its owner.
+        const subject = ctx.requester?.on_behalf_of_user_id ?? ctx.proposal.owner_user_id ?? ctx.proposal.created_by_user_id ?? null;
+        const businessUserId = subject ?? ctx.userId;
         if (dbUrl) {
           const db = getDbPool(dbUrl);
           const { enabled } = await pluginServiceFor(this.config).isEnabled(
             db,
             pluginId,
             ctx.proposal.space_id,
-            ctx.userId,
+            businessUserId,
           );
           if (!enabled) {
             throw new Error(
@@ -204,7 +210,7 @@ export class PluginHostContextImpl implements PluginHostContext {
             id: ctx.proposal.id,
             proposal_type: ctx.proposal.proposal_type,
             space_id: ctx.proposal.space_id,
-            user_id: ctx.userId,
+            user_id: businessUserId,
             payload: ctx.proposal.payload_json ?? {},
           },
           db: ctx.db,

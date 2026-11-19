@@ -6,7 +6,30 @@ import {
 import type { Queryable } from "../routeUtils/common.js";
 import { computeNextCheckAt } from "./sourceScanCadence.js";
 
-const SOURCE_CHANNEL_SCAN_TASK_TYPE = "source_channel_scan";
+export const SOURCE_CHANNEL_SCAN_TASK_TYPE = "source_channel_scan";
+
+/**
+ * What keeps a Channel's due scan task runnable by a scan scheduler, over the
+ * aliases `st` (scheduler task), `ch` (channel) and `sc` (connection): an
+ * active task, active non-manual channel on a live connection, no active
+ * Source Goal owning the channel, and no scan of it already in flight. The
+ * due-batch read and each scheduler's locked re-check share it, so the
+ * re-check can never admit what the batch would have left out.
+ */
+export const CHANNEL_SCAN_RUNNABLE_SQL = `st.status = 'active'
+        AND ch.status = 'active'
+        AND ch.fetch_frequency <> 'manual'
+        AND NOT EXISTS(SELECT 1 FROM source_goals g JOIN source_goal_bindings b ON b.goal_id=g.id WHERE g.space_id=ch.space_id AND b.spec_json->>'source_channel_id'=ch.id AND g.active_version_id IS NOT NULL AND g.status<>'deleted')
+        AND sc.status = 'active'
+        AND sc.deleted_at IS NULL
+        AND NOT EXISTS (
+          SELECT 1
+            FROM extraction_jobs ej
+           WHERE ej.space_id = ch.space_id
+             AND ej.job_type = 'connection_scan'
+             AND ej.metadata_json->>'source_channel_id' = ch.id
+             AND ej.status IN ('pending', 'running')
+        )`;
 
 interface SourceChannelScheduleTarget {
   id: string;
@@ -47,22 +70,9 @@ export async function listDueSourceChannelScanTasks(
        JOIN source_channels ch ON ch.id = st.task_key AND ch.space_id = st.space_id
        JOIN source_connections sc ON sc.id = ch.source_connection_id AND sc.space_id = ch.space_id
       WHERE st.task_type = $1
-        AND st.status = 'active'
         AND st.next_run_at IS NOT NULL
         AND st.next_run_at <= $2
-        AND ch.status = 'active'
-        AND ch.fetch_frequency <> 'manual'
-        AND NOT EXISTS(SELECT 1 FROM source_goals g JOIN source_goal_bindings b ON b.goal_id=g.id WHERE g.space_id=ch.space_id AND b.spec_json->>'source_channel_id'=ch.id AND g.active_version_id IS NOT NULL AND g.status<>'deleted')
-        AND sc.status = 'active'
-        AND sc.deleted_at IS NULL
-        AND NOT EXISTS (
-          SELECT 1
-            FROM extraction_jobs ej
-           WHERE ej.space_id = ch.space_id
-             AND ej.job_type = 'connection_scan'
-             AND ej.metadata_json->>'source_channel_id' = ch.id
-             AND ej.status IN ('pending', 'running')
-        )
+        AND ${CHANNEL_SCAN_RUNNABLE_SQL}
       ORDER BY st.next_run_at ASC
       LIMIT $3`,
     [SOURCE_CHANNEL_SCAN_TASK_TYPE, nowIso, limit],

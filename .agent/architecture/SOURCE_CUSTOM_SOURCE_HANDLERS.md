@@ -210,7 +210,9 @@ version in `pending_approval` until the proposal is accepted or rejected.
 Accepting activates the version; rejecting releases it back to `draft`.
 
 `customSourceScanSchedule.ts` enqueues generated Custom Source connections into
-paired `extraction_jobs` and `source_handler_runs` rows, excludes built-in
+paired `extraction_jobs` and `source_handler_runs` rows written in one
+transaction through the shared locked Channel enqueue (`enqueueChannelScanIfDue`,
+`scanSchedule.ts`; the recipe scheduler uses it too), excludes built-in
 connections, deduplicates queued/running handler runs, and reclaims stale
 `running` runs so a crashed process cannot block a connection forever.
 

@@ -1,10 +1,10 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import type { ReactNode } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import type { Proposal } from '../../../types/api'
 
-const mocked = vi.hoisted(() => ({ list: vi.fn() }))
+const mocked = vi.hoisted(() => ({ list: vi.fn(), accept: vi.fn() }))
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 vi.mock('../../../contexts/SpaceContext', () => ({
@@ -14,10 +14,11 @@ vi.mock('../../../core/spaceNav', () => ({
   SpaceLink: ({ to, children }: { to: string; children: ReactNode }) => <a href={to}>{children}</a>,
 }))
 vi.mock('../../../api/client', () => ({
-  proposalsApi: { list: mocked.list, get: vi.fn(), accept: vi.fn(), reject: vi.fn(), approveEgressGrantingUserProposal: vi.fn() },
+  proposalsApi: { list: mocked.list, get: vi.fn(), accept: mocked.accept, reject: vi.fn(), approveEgressGrantingUserProposal: vi.fn() },
 }))
 
 import ProposalsPage from '../ProposalsPage'
+import { toast } from 'sonner'
 
 function proposal(id: string, overrides: Partial<Proposal>): Proposal {
   return {
@@ -45,5 +46,22 @@ describe('ProposalsPage', () => {
 
     expect(await screen.findByRole('link', { name: 'Revise' })).toHaveAttribute('href', '/proposals/unrevised')
     expect(screen.getAllByRole('button', { name: 'Accept' })).toHaveLength(1)
+  })
+
+  it('offers no decision on an expired proposal, which stays pending', async () => {
+    mocked.list.mockResolvedValue({ items: [proposal('expired', { proposal_type: 'plugin_proposal', expired: true }), proposal('open', { proposal_type: 'plugin_proposal' })], next_cursor: null })
+    render(<MemoryRouter><ProposalsPage /></MemoryRouter>)
+    expect(await screen.findByText('EXPIRED')).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: 'Accept' })).toHaveLength(1)
+    expect(screen.getAllByRole('button', { name: 'Reject' })).toHaveLength(1)
+  })
+
+  it('reports a superseded accept (HTTP 200, operation_failure) as not applied, never accepted', async () => {
+    mocked.list.mockResolvedValue({ items: [proposal('stale', { proposal_type: 'plugin_proposal' })], next_cursor: null })
+    mocked.accept.mockResolvedValue({ proposal: proposal('stale', { status: 'superseded' }), result_type: 'operation_failure', result: { error: { code: 'operation_approval_superseded', request_id: 'r' } } })
+    render(<MemoryRouter><ProposalsPage /></MemoryRouter>)
+    fireEvent.click(await screen.findByRole('button', { name: 'Accept' }))
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Not applied: this request changed after the proposal was made, so the old approval no longer applies. Review the current proposal instead.'))
+    expect(toast.success).not.toHaveBeenCalled()
   })
 })

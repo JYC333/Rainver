@@ -12,18 +12,21 @@ import {delegatedReviewInstruction,sharedDelegationInstruction} from "../project
 import {recordReviewRefusal} from "../projectFolders/delegatedWorkspaceReview.js";
 import { randomUUID } from "node:crypto";
 import { ordinaryToolsForLaunch } from "./ordinaryToolLaunch.js";
-import { REMOTE_CWD_PLACEHOLDER, WORK_SKILL_PATH_PLACEHOLDER, type HostEgressTransport, type HostLaunchIsolation, type HostLaunchOrdinaryTools, type InvocationDelivery, type LaunchWorkspace, type RunAdapterResultEnvelope, type RuntimeSemanticEvent, type RuntimeSessionConfigDroppedSelection as DroppedSessionConfigSelection } from "@rainver/protocol";
+import { REMOTE_CWD_PLACEHOLDER, WORK_SKILL_PATH_PLACEHOLDER, type HostEgressTransport, type HostLaunchIsolation, type HostLaunchModelChannel, type HostLaunchOrdinaryTools, type InvocationDelivery, type LaunchWorkspace, type RunAdapterResultEnvelope, type RuntimeSemanticEvent, type RuntimeSessionConfigDroppedSelection as DroppedSessionConfigSelection } from "@rainver/protocol";
+import { selectModelChannelLaunch } from "./modelChannelLaunch.js";
+import { runRequiresIsolatedLaunch, sensitiveLaunchRefusal, sensitiveThreadResumable } from "./sensitiveRuntimeProfile.js";
+import { PgHostThreadRepository } from "../hosts/threadRepository.js";
 import type { ContentBlock } from "./cliConversationProtocol.js";
 import type { CredentialSpendDeps } from "../policy/credentialSpend.js";
 import { getLocalCliRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
 import { AcpRuntimeAdapter } from "../runtimeAdapters/acpRuntimeAdapter.js";
 import { PgRunRepository, type AgentRunRecord } from "./repository.js";
 import { buildRunWorkSurface, type RunWorkSurface, type RunWorkSurfaceFrame } from "./runWorkSurface.js";
-import { acpRuntimeContextPromptBlocks } from "./acpRuntimeContextPrompt.js";
+import { acpRuntimeContextPromptBlocks, type RunControlInstruction, type RunControlSource } from "./acpRuntimeContextPrompt.js";
 import { RUN_QUIET_STATUS, stallTimeoutSeconds } from "./stallTimeout.js";
 import { RUN_TIMED_OUT_ERROR_CODE } from "./runTimeLimit.js";
 import { classifyRuntimeFailure } from "./retryPolicy.js";
-import { acpFailureRunCode, withAcpFailureTimezone } from "../runtimeAdapters/acpFailure.js";
+import { acpFailureRunCode, quotaFailureFromCompletedAcpReply, withAcpFailureTimezone } from "../runtimeAdapters/acpFailure.js";
 import { workSkillPromptPointer } from "../skills/workSkill.js";
 import { PgRunToolIdentityRepository } from "./runToolIdentityRepository.js";
 import { assembleRunInputEnvelope } from "./runInputEnvelope.js";
@@ -411,7 +414,8 @@ async function runRemoteHostCliAdapter(
   // there. A structured channel for information meant for Rainver, distinct
   // from workspace file changes, is open in `tasks/deferred-register.md`.
   let prompt = input.prompt ?? input.run.prompt ?? "";
-  const supplementalInstructions: string[] = [];
+  const runControl: RunControlInstruction[] = [];
+  const addRunControl = (source: RunControlSource, text: string): void => { runControl.push({ source, text }); };
   // Preparation awaits the database and the provider lease. The Run's time
   // limit can pass, or a person can stop it, during any of it, and the stop
   // then finds no process to reach. So each step checks both signals itself,
@@ -565,17 +569,17 @@ async function runRemoteHostCliAdapter(
         if(previous?.id!==isolated.workspace.id||previous.generation!==isolated.workspace.generation)input.resume_session_id=null;
       }
       if(input.run.host_task_thread_id)await (deps.db??getDbPool(deps.config.databaseUrl)).query("UPDATE host_threads SET execution_workspace_json=$2::jsonb WHERE id=$1 AND execution_host_id=$3",[input.run.host_task_thread_id,JSON.stringify({id:isolated.workspace.id,generation:isolated.workspace.generation,profile_container_id:isolated.ref.integration_id??isolated.workspace.id}),hostId]);
-      if(review)supplementalInstructions.push(delegatedReviewInstruction(review.commit));
-      else if(sharedChild)supplementalInstructions.push(sharedDelegationInstruction(isolated.changeSetId!,isolated.changeRevision!));
-      else if(!isolated.ref.integration_id)supplementalInstructions.push(`Work in this conversation's isolated worktree. You can edit files, inspect Git and use normal Git operations on your own working branch; shared target publication uses workspace.change.complete. Your change set is ${isolated.changeSetId}, revision ${isolated.changeRevision}. For a private save without merging, use normal Git or action=checkpoint alone; do not prepare/publish. For an authorized merge, call workspace.change.complete with action=prepare and a summary. Read workspace.change.get for the actual result and current revision. Preparation rebases by default: your uncommitted edits are saved as one commit, then only this batch's own commits are replayed onto the target in your CURRENT worktree, one at a time, retaining your original session and dependencies; the target is later fast-forwarded to them. If prepare reports a conflict, it has stopped at one commit: resolve the listed files here (including any necessary related fixes; do not run git rebase yourself) and call prepare again to continue, until it reports prepared. Use publication={strategy:'squash',user_request_quote:<the person's words>} only when the person explicitly asked for a squash in their current message; never choose squash yourself. Do not ask for test-command configuration or internal IDs. Save a version using your own Git commit or action=checkpoint, run appropriate project checks in this SAME runtime environment, repair failures and repeat as needed. Then call action=publish with verification={commit:the version you checked,checks:[{command,summary}],note:what you checked}. If there are no applicable checks, use an empty checks array with an honest inspection note. Wait for pending Git operations before editing files or issuing another workspace command. After each operation, workspace.change.get supplies the current revision and progress. If target_moved, prepare again and check the updated result. Only merged/no_changes completes publication; obtain that result BEFORE your final response. There is no successor Agent, configuration phase or system-run test environment. Do not move shared target refs yourself. A prepared or checkpointed commit is private until publish succeeds.`);
+      if(review)addRunControl("execution_workspace",delegatedReviewInstruction(review.commit));
+      else if(sharedChild)addRunControl("execution_workspace",sharedDelegationInstruction(isolated.changeSetId!,isolated.changeRevision!));
+      else if(!isolated.ref.integration_id)addRunControl("execution_workspace",`Work in this conversation's isolated worktree. You can edit files, inspect Git and use normal Git operations on your own working branch; shared target publication uses workspace.change.complete. Your change set is ${isolated.changeSetId}, revision ${isolated.changeRevision}. For a private save without merging, use normal Git or action=checkpoint alone; do not prepare/publish. For an authorized merge, call workspace.change.complete with action=prepare and a summary. Read workspace.change.get for the actual result and current revision. Preparation rebases by default: your uncommitted edits are saved as one commit, then only this batch's own commits are replayed onto the target in your CURRENT worktree, one at a time, retaining your original session and dependencies; the target is later fast-forwarded to them. If prepare reports a conflict, it has stopped at one commit: resolve the listed files here (including any necessary related fixes; do not run git rebase yourself) and call prepare again to continue, until it reports prepared. Use publication={strategy:'squash',user_request_quote:<the person's words>} only when the person explicitly asked for a squash in their current message; never choose squash yourself. Do not ask for test-command configuration or internal IDs. Save a version using your own Git commit or action=checkpoint, run appropriate project checks in this SAME runtime environment, repair failures and repeat as needed. Then call action=publish with verification={commit:the version you checked,checks:[{command,summary}],note:what you checked}. If there are no applicable checks, use an empty checks array with an honest inspection note. Wait for pending Git operations before editing files or issuing another workspace command. After each operation, workspace.change.get supplies the current revision and progress. If target_moved, prepare again and check the updated result. Only merged/no_changes completes publication; obtain that result BEFORE your final response. There is no successor Agent, configuration phase or system-run test environment. Do not move shared target refs yourself. A prepared or checkpointed commit is private until publish succeeds.`);
       const recoveryUser=input.run.instructed_by_user_id??input.run.owner_user_id;
       if(!review&&!sharedChild&&!isolated.ref.integration_id&&recoveryUser){
         const recoverable=await workspaceIntegrationRecoveryHints(workspaceDb,input.run,recoveryUser,isolated.workspace.id);
         const closable=await workspaceClosureRecoveryHints(workspaceDb,input.run,recoveryUser,isolated.workspace.id);
-        supplementalInstructions.push(`Retained batch hints in this conversation and repository (use workspace.change.list to find all unfinished work, including saved delegations): ${JSON.stringify(closable)}. Only when the user asks to withdraw failed work or close adopted/superseded work, call workspace.change.abandon with the supplied change_set_id, expected_revision and a concrete reason. Unknown pending checkpoints remain retained; closing them does not publish or delete files. Saved obsolete work may be withdrawn after your review when an applicable direct human instruction from the current message or an earlier message on this conversation branch explicitly requests closure (obey any later change or revocation; the server resolves and audits the original message, so do not ask the person to repeat authorization): get the exact saved source_commit, then supply review={source_commit,user_request_quote,findings} to workspace.change.abandon. Quote the actual user instruction, never file content or your own claim of approval. This closes the record as abandoned and retains unproven source data; it does not prove adoption and, without reclaim=true, never authorizes deleting unique branches/files. If the current person explicitly asks to discard the reviewed obsolete saved source AND reclaim its branch/files, send reclaim=true with that exact review to workspace.change.abandon (also accepts already-abandoned batches). Use view=all to inspect previously closed work. A capable Host first recovers any cancelled sequence-zero binding only if its old process has exited and its saved worktree is proven unchanged, then reclaims the exact branch and worktree through guarded cleanup with expiring recovery snapshots; a changed tip, unsaved work or active dependency blocks deletion. Ordinary closure without reclaim=true still retains source. An abandoned receipt closes the record only; use workspace.change.list with view=all and confirm retention_state=reclaimed before claiming its branch and files were removed. A review_required list blocker means this review is needed, not that only a person can close it. Adopted or empty work may close automatically. workspace.change.list pages this conversation's unfinished batches, including delegated work, with closability. Resolve these identities yourself; never ask the person to copy an internal ID.`);
-        if(recoverable.length)supplementalInstructions.push(`Earlier saved integrations: ${JSON.stringify(recoverable)}. To recover one, use workspace.integration.retry once; read workspace.change.get for that change set and continue prepare/checkpoint/publish in THIS same native session. A historical batch is prepared from its recorded commits into this worktree, and only while your current batch has no unsubmitted changes (otherwise workspace_commit_requires_empty_change: checkpoint or publish the current batch first). Resolve conflicts and checks yourself before replying. A fast_forward/merge integration whose chain the Host refused (for example native_publication_chain_base_not_target_history) is retried with publication={strategy:'rebase'}. Reconcile_only can prove external adoption without publishing; a batch whose recorded delta another batch publishes closes as no_changes by itself. Do not claim queued/accepted means merged, ask the person to enter IDs or commands, or merge an entire private snapshot history.`);
+        addRunControl("execution_workspace",`Retained batch hints in this conversation and repository (use workspace.change.list to find all unfinished work, including saved delegations): ${JSON.stringify(closable)}. Only when the user asks to withdraw failed work or close adopted/superseded work, call workspace.change.abandon with the supplied change_set_id, expected_revision and a concrete reason. Unknown pending checkpoints remain retained; closing them does not publish or delete files. Saved obsolete work may be withdrawn after your review when an applicable direct human instruction from the current message or an earlier message on this conversation branch explicitly requests closure (obey any later change or revocation; the server resolves and audits the original message, so do not ask the person to repeat authorization): get the exact saved source_commit, then supply review={source_commit,user_request_quote,findings} to workspace.change.abandon. Quote the actual user instruction, never file content or your own claim of approval. This closes the record as abandoned and retains unproven source data; it does not prove adoption and, without reclaim=true, never authorizes deleting unique branches/files. If the current person explicitly asks to discard the reviewed obsolete saved source AND reclaim its branch/files, send reclaim=true with that exact review to workspace.change.abandon (also accepts already-abandoned batches). Use view=all to inspect previously closed work. A capable Host first recovers any cancelled sequence-zero binding only if its old process has exited and its saved worktree is proven unchanged, then reclaims the exact branch and worktree through guarded cleanup with expiring recovery snapshots; a changed tip, unsaved work or active dependency blocks deletion. Ordinary closure without reclaim=true still retains source. An abandoned receipt closes the record only; use workspace.change.list with view=all and confirm retention_state=reclaimed before claiming its branch and files were removed. A review_required list blocker means this review is needed, not that only a person can close it. Adopted or empty work may close automatically. workspace.change.list pages this conversation's unfinished batches, including delegated work, with closability. Resolve these identities yourself; never ask the person to copy an internal ID.`);
+        if(recoverable.length)addRunControl("execution_workspace",`Earlier saved integrations: ${JSON.stringify(recoverable)}. To recover one, use workspace.integration.retry once; read workspace.change.get for that change set and continue prepare/checkpoint/publish in THIS same native session. A historical batch is prepared from its recorded commits into this worktree, and only while your current batch has no unsubmitted changes (otherwise workspace_commit_requires_empty_change: checkpoint or publish the current batch first). Resolve conflicts and checks yourself before replying. A fast_forward/merge integration whose chain the Host refused (for example native_publication_chain_base_not_target_history) is retried with publication={strategy:'rebase'}. Reconcile_only can prove external adoption without publishing; a batch whose recorded delta another batch publishes closes as no_changes by itself. Do not claim queued/accepted means merged, ask the person to enter IDs or commands, or merge an entire private snapshot history.`);
       }
-      if(isolated.retainedWorkspaceId)supplementalInstructions.push(`This turn continues in a fresh workspace because an earlier workspace could not safely continue. Earlier changes remain preserved in workspace ${isolated.retainedWorkspaceId} and are not included here. Tell the user this when relevant; do not claim those changes were discarded, adopted or published.`);
+      if(isolated.retainedWorkspaceId)addRunControl("execution_workspace",`This turn continues in a fresh workspace because an earlier workspace could not safely continue. Earlier changes remain preserved in workspace ${isolated.retainedWorkspaceId} and are not included here. Tell the user this when relevant; do not claim those changes were discarded, adopted or published.`);
     }catch(error){if(error instanceof JobDeferredError)throw error;return remoteFailureWithEvent(input,spec.runtime_key,"execution_workspace_unavailable",error instanceof Error?error.message:String(error),startedAt);}
   }
   if(isolatedWorkspaceContract(input.run.contract_snapshot_json)&&input.workspace_access?.length){
@@ -590,16 +594,16 @@ async function runRemoteHostCliAdapter(
           const attached=await ensureExecutionWorkspace(deps.db??getDbPool(deps.config.databaseUrl),input.run,hostId,scope?.locationId??attachment.workspace_location_id,grant);
           if(attached.retainedWorkspaceId){
             if(attached.workspace.state==='requested')input.resume_session_id=null;
-            supplementalInstructions.push(`Attachment ${attachment.workspace_location_id} uses a fresh workspace. Earlier changes remain preserved separately in workspace ${attached.retainedWorkspaceId} and are not included here.`);
+            addRunControl("execution_workspace",`Attachment ${attachment.workspace_location_id} uses a fresh workspace. Earlier changes remain preserved separately in workspace ${attached.retainedWorkspaceId} and are not included here.`);
           }
           const attachedRef=executionWorkspaceMountRef(attached.ref,scope?.subpath);
           const mounted=await workspaceLocationFrame(deps.db??getDbPool(deps.config.databaseUrl),attached.workspace,attachedRef,deps.config.workspaceRoot);
           references.push({...attachment,...mounted,mount_location_id:attachment.workspace_location_id,access_mode:grant,execution_workspace:attachedRef});
-          supplementalInstructions.push(`Attached isolated workspace ${attachment.workspace_location_id}: change set ${attached.changeSetId}, revision ${attached.changeRevision}, permission ${grant}. Complete each modified writable change set explicitly; multi-repository publication is independent and may partially succeed.`);
+          addRunControl("execution_workspace",`Attached isolated workspace ${attachment.workspace_location_id}: change set ${attached.changeSetId}, revision ${attached.changeRevision}, permission ${grant}. Complete each modified writable change set explicitly; multi-repository publication is independent and may partially succeed.`);
           const recoveryUser=input.run.instructed_by_user_id??input.run.owner_user_id;
           if(grant==='write'&&recoveryUser){
             const recoverable=await workspaceIntegrationRecoveryHints(deps.db??getDbPool(deps.config.databaseUrl),input.run,recoveryUser,attached.workspace.id);
-            if(recoverable.length)supplementalInstructions.push(`Earlier saved attachment integrations: ${JSON.stringify(recoverable)}. Recover through workspace.integration.retry and workspace.change.get, then perform preparation, conflict repair, checks and publication in this same Agent session for the authorized attachment. Never ask the person for command configuration or IDs.`);
+            if(recoverable.length)addRunControl("execution_workspace",`Earlier saved attachment integrations: ${JSON.stringify(recoverable)}. Recover through workspace.integration.retry and workspace.change.get, then perform preparation, conflict repair, checks and publication in this same Agent session for the authorized attachment. Never ask the person for command configuration or IDs.`);
           }
         }
         input.workspace_access=references;
@@ -624,6 +628,8 @@ async function runRemoteHostCliAdapter(
   // so it reads its own login and its own vendor auto-memory rather than the
   // machine's `~/.claude`.
   let profileFrame: RemoteProviderBindingFrame | null = null;
+  let isolatedModelChannel: Awaited<ReturnType<typeof selectModelChannelLaunch>> = null;
+  let profileScope: RuntimeProfileScope | null = null;
   const config = deps.config;
   const bindings = deps.bindings ?? (config ? databaseBindingPort(config) : null);
   {
@@ -636,6 +642,7 @@ async function runRemoteHostCliAdapter(
       }
       const bound = await bindings.resolve(input.run);
       const scope = isolated?{agent_id:input.run.agent_id,container_kind:"workspace" as const,container_id:isolated.ref.integration_id??isolated.workspace.id}:await bindings.profileScope(input.run, workspaceLocationId);
+      profileScope = scope;
       // The profile directory this runtime is about to use: an archive still owed for it — this Agent left
       // and came back without a restore, in any workspace mode — lands now, never after the Run began in it.
       const profileDb = deps.db ?? (config?.databaseUrl ? getDbPool(config.databaseUrl) : null);
@@ -659,7 +666,12 @@ async function runRemoteHostCliAdapter(
             "This run is bound to a ModelProvider, but no server configuration was available to reach it.",
           );
         }
+        const bindingDb = deps.db ?? getDbPool(config.databaseUrl!);
+        isolatedModelChannel = await selectModelChannelLaunch(bindingDb, hostId, input.run, true);
         providerBinding = await buildRemoteProviderBinding({
+            // A Run pinning sensitive plugin tools on the built-in strict Host
+            // launches with egress `none` and only its model lease reachable.
+            modelChannel: isolatedModelChannel ?? undefined,
             config,
             run: input.run,
             hostId,
@@ -703,6 +715,39 @@ async function runRemoteHostCliAdapter(
         error instanceof Error ? error.message : "Could not prepare the selected model backend.",
         startedAt,
       );
+    }
+  }
+
+  // A Run that may hold sensitive data (ADR 0030/0032) — it pins a core data tool such as Gmail, even
+  // on its conversation's first turn, or continues a conversation that read some, or was selected for
+  // the isolated launch — is refused here, before any work surface or prompt is prepared, unless it
+  // will launch isolated in its own Session's profile and cwd with nothing shared writable. The frame
+  // is checked again right before launch, on what it actually states.
+  const sensitiveRun = runRequiresIsolatedLaunch(input.run) || isolatedModelChannel !== null;
+  if (sensitiveRun) {
+    const refusal = sensitiveLaunchRefusal({
+      run: input.run, scope: profileScope!, workspace: input.workspace, workspaceLocationId,
+      workspaceAccess: input.workspace_access ?? [],
+      isolation: isolatedModelChannel ? { ...dispatchIsolation(input.run), egress_profile: "none" } : dispatchIsolation(input.run),
+      strictHost: isolatedModelChannel !== null, modelChannel: isolatedModelChannel !== null,
+    });
+    if (refusal) return remoteFailureWithEvent(input, spec.runtime_key, refusal.code, refusal.message, startedAt);
+    // The vendor session this frame hands the CLI (`resume_session_id`, frozen at admission) is resumed
+    // only when it is still the thread's current pointer and the launch bound to that pointer was
+    // isolated in exactly this profile. Otherwise this Run, whose context was assembled for a resume,
+    // does not start, and only that session is retired: a newer pointer recorded since is kept for
+    // the next turn to judge. While this Run holds the thread's dispatch claim the pointer can only
+    // be cleared, not replaced, so the check holds up to launch.
+    if (input.resume_session_id) {
+      const threadId = input.run.host_task_thread_id ?? null;
+      const threadDb = deps.db ?? (config?.databaseUrl ? getDbPool(config.databaseUrl) : null);
+      if (!threadId || !threadDb || !await sensitiveThreadResumable(threadDb, threadId,
+        { vendorSessionId: input.resume_session_id, profileKey: profileFrame!.profile_key })) {
+        if (threadId && threadDb) await new PgHostThreadRepository(threadDb).resetConversationAgent(threadId, input.resume_session_id);
+        return remoteFailureWithEvent(input, spec.runtime_key, "sensitive_resume_unconfirmed",
+          "This conversation's earlier CLI session was not started in its current isolated profile, so it is not continued. Send the message again to continue in a new session.",
+          startedAt);
+      }
     }
   }
 
@@ -751,7 +796,7 @@ async function runRemoteHostCliAdapter(
     // is a path a read_file tool cannot open.
     if (prompt && !input.resume_session_id) {
       const pointer = workSkillPromptPointer(WORK_SKILL_PATH_PLACEHOLDER, workSurface.options);
-      if (input.invocation_delivery) supplementalInstructions.push(pointer);
+      if (input.invocation_delivery) addRunControl("work_surface", pointer);
       else prompt = `${prompt}\n\n${pointer}`;
     }
   } else if (assembleRunInputEnvelope(input.run).tool_grants.length > 0) {
@@ -844,13 +889,13 @@ async function runRemoteHostCliAdapter(
       startedAt,
     );
   }
-  if (ordinaryTools.instruction) supplementalInstructions.push(ordinaryTools.instruction);
+  if (ordinaryTools.instruction) addRunControl("ordinary_tools", ordinaryTools.instruction);
 
   if (input.invocation_delivery) {
     promptBlocks = [acpRuntimeContextPromptBlocks(
       input.invocation_delivery,
       hydratedBlocks,
-      supplementalInstructions,
+      runControl,
     )];
   }
 
@@ -890,6 +935,24 @@ async function runRemoteHostCliAdapter(
     ? managedHostEgressTransport(await readInstanceOperationsPolicy(deps.config))
     : { mode: "direct" } satisfies HostEgressTransport;
   if (stopRequested()) return stoppedBeforeLaunch();
+  // One statement of isolation for both the frame and its record. A model
+  // channel exists only on a binding composed for it, and only a strict Host
+  // is sent one; there it narrows egress to `none`.
+  const modelChannel = strictHost ? providerBinding?.model_channel ?? null : null;
+  if (providerBinding?.model_channel && !modelChannel) {
+    return remoteFailureWithEvent(input, spec.runtime_key, "model_channel_unavailable",
+      "This Run's model-only channel needs the built-in strict Host.", startedAt);
+  }
+  const launchIsolation: HostLaunchIsolation = modelChannel
+    ? { ...dispatchIsolation(input.run), egress_profile: "none" }
+    : dispatchIsolation(input.run);
+  if (sensitiveRun) {
+    const refusal = sensitiveLaunchRefusal({
+      run: input.run, scope: profileScope!, workspace: input.workspace, workspaceLocationId,
+      workspaceAccess: input.workspace_access ?? [], isolation: launchIsolation, strictHost, modelChannel: modelChannel !== null,
+    });
+    if (refusal) return remoteFailureWithEvent(input, spec.runtime_key, refusal.code, refusal.message, startedAt);
+  }
   const launchId = randomUUID();
   const executor = deps.executor ?? new RemoteWsCliCommandExecutor(
     hostId,
@@ -906,11 +969,12 @@ async function runRemoteHostCliAdapter(
     ),
     input.workspace_access ?? [],
     inputResources,
-    dispatchIsolation(input.run),
+    launchIsolation,
     egressTransport,
     input.max_concurrent_runs ?? null,
     launchId,
     ordinaryTools.field ?? null,
+    modelChannel,
   );
   let stdoutText = "";
   // Provider binding is authoritative for a bound run. User-selected generic
@@ -937,7 +1001,11 @@ async function runRemoteHostCliAdapter(
   // no database runs the protocol alone.
   if (deps.config?.databaseUrl) {
     const bound = await bindHostAttemptLaunch(new PgRunRepository(deps.db ?? getDbPool(deps.config.databaseUrl),deps.config), registry,
-      { space_id: input.run.space_id, run_id: input.run.id, host_id: hostId, launch_id: launchId });
+      { space_id: input.run.space_id, run_id: input.run.id, host_id: hostId, launch_id: launchId,
+        // The isolation this very frame states, recorded with its nonce for the sensitive-data release proof.
+        isolation: { host_id: hostId, host_kind: strictHost ? "server" : "remote", ...launchIsolation,
+          ...(modelChannel ? { model_channel: "provider_lease" as const } : {}),
+          ...(profileFrame ? { profile_key: profileFrame.profile_key } : {}) } });
     if (bound === 'previous_launch_unconfirmed') {
       return remoteFailureWithEvent(input, spec.runtime_key, 'runtime_previous_launch_unconfirmed', 'The previous execution has not confirmed exit. Its workspace changes are preserved; a second execution was not started.', startedAt);
     }
@@ -1076,9 +1144,16 @@ async function runRemoteHostCliAdapter(
   // dispatch reaches this with a controller and a completed protocol result;
   // `stdoutText` stays only as that edge case's last-resort fallback.
   const protocolResult = stdioController?.result() ?? null;
+  const completedNormally = result.returncode === 0 && (!protocolResult || (protocolResult.completed && !protocolResult.error));
+  const reportedOutputTokens = (protocolResult?.usage?.output_tokens ?? 0) > 0
+    || protocolResult?.model_usage?.some(row => (row.usage.output_tokens ?? 0) > 0);
+  const replyQuotaFailure = completedNormally && protocolResult?.single_text_reply && !protocolResult.failure
+    && !reportedOutputTokens && !providerBinding && !result.timed_out && !result.failure_code && !stopRequested()
+    ? quotaFailureFromCompletedAcpReply(spec.runtime_key, protocolResult.text, new Date(completedAt))
+    : undefined;
   const failure = protocolResult?.failure
     ? withAcpFailureTimezone(spec.runtime_key, protocolResult.failure, result.time_zone)
-    : undefined;
+    : replyQuotaFailure;
   const resumedSessionInvalid = Boolean(
     input.resume_session_id
     && protocolResult
@@ -1208,13 +1283,13 @@ async function runRemoteHostCliAdapter(
       completedAt,
     );
   }
-  const success = result.returncode === 0 && (!protocolResult || (protocolResult.completed && !protocolResult.error));
+  const success = completedNormally && !replyQuotaFailure;
   await input.thread_event_sink?.([{ event_type: "status", status: dependencyYieldRequested ? "waiting_for_dependency" : success ? "run_succeeded" : "run_failed" }]);
   return {
     runtime_key: spec.runtime_key,
     adapter_kind: "local_cli",
     success,
-    output_text: protocolResult?.text ?? stdoutText,
+    output_text: replyQuotaFailure ? "" : protocolResult?.text ?? stdoutText,
     output_json: {
       runtime_key: spec.runtime_key,
       external_session_id: measurement.external_session_id,
@@ -1234,9 +1309,8 @@ async function runRemoteHostCliAdapter(
       : resumedSessionInvalid
         ? "runtime_session_invalid"
         : result.failure_code === "sandbox_runner_unavailable" ? "sandbox_runner_unavailable"
-        // A refusal for an exhausted subscription is its own, non-retryable
-        // code — read from the error the turn ended on, or, with none, the
-        // end of stderr, never from a notice logged earlier in the run.
+        // The failure carries structured ACP evidence or a validated terminal
+        // reply. The legacy CLI fallback reads the ending error or stderr tail.
         : acpFailureRunCode(failure, Boolean(providerBinding))
         ?? classifyRuntimeFailure(spec.runtime_key, protocolResult?.error ?? stderrTail(result.stderr), {
           providerBound: Boolean(providerBinding),
@@ -1244,6 +1318,7 @@ async function runRemoteHostCliAdapter(
     error_message: success
       ? null
       : protocolResult?.error
+        ?? replyQuotaFailure?.message
         ?? `Process exited with code ${result.returncode}${result.stderr ? `: ${result.stderr}` : ""}`,
     started_at: startedAt,
     completed_at: completedAt,
@@ -1452,6 +1527,8 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
     private readonly launchId: string = randomUUID(),
     /** Ordinary tools and the instructing person's account; null for a daemon without the capability. */
     private readonly ordinaryTools: HostLaunchOrdinaryTools | null = null,
+    /** An egress-`none` Run's model-only channel (ADR 0030 §4a); null otherwise. */
+    private readonly modelChannel: HostLaunchModelChannel | null = null,
   ) {}
 
   async runCommand(input: Parameters<CliCommandExecutor["runCommand"]>[0]): Promise<CliExecutionResult> {
@@ -1543,6 +1620,7 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
         isolation: this.isolation,
         egress_transport: this.egressTransport,
         ...(this.ordinaryTools ? { ordinary_tools: this.ordinaryTools } : {}),
+        ...(this.modelChannel ? { model_channel: this.modelChannel } : {}),
       },
       onOutput,
       (chunk) => { lastOutputAt = Date.now(); input.on_stderr_chunk?.(chunk); },

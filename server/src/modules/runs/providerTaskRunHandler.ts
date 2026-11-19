@@ -8,6 +8,7 @@ import {
   type JobHandlerResult,
 } from "../jobs/handlerRegistry.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
+import { JobEffectLeaseLost, withJobEffectAuthority } from "../jobs/effectAuthority.js";
 import {
   DRAINED_TRIGGER_ORIGINS,
   INSTANCE_UPDATE_PENDING,
@@ -16,7 +17,7 @@ import {
 import { effectiveRunTrigger } from "../systemActions/effectiveRunTrigger.js";
 import { PgRunRepository, type RunRecord } from "./repository.js";
 import {
-  failBoundedProviderTaskRun,
+  failBoundedProviderTaskRunUnderClaim,
   runBoundedProviderTask,
   type BoundedProviderTaskInput,
 } from "./boundedProviderTaskRun.js";
@@ -53,7 +54,17 @@ interface ProviderTaskRunContext {
  */
 type ProviderTaskRunPreparer = (
   context: ProviderTaskRunContext,
-) => Promise<Omit<BoundedProviderTaskInput, "runId" | "failRunOnError">>;
+) => Promise<Omit<BoundedProviderTaskInput, "runId" | "failRunOnError"> & {
+  /**
+   * The task may send and settle only while this worker still holds the Job's
+   * claim. The handler records the Job's one-attempt start fence (reclaim then
+   * fails the Job as outcome-unknown instead of repeating it) and binds the
+   * Job's effect authority around the task, so the domain's send fence and
+   * settlement lock the current claim: a worker that lost it sends nothing
+   * and writes nothing, and the Run is left to the claim's current owner.
+   */
+  claimBound?: true;
+}>;
 
 class ProviderTaskRunRegistry {
   private readonly preparers = new Map<string, ProviderTaskRunPreparer>();
@@ -152,10 +163,11 @@ async function handleProviderTaskRun(
   if (!preparer) {
     // Nothing can perform this Run, and no number of retries will change
     // that — settle it rather than leaving a queued Run in the list forever.
-    await failBoundedProviderTaskRun(db, job.space_id, runId, {
+    // Only under this worker's current claim: a reclaimed Job's owner settles.
+    await failBoundedProviderTaskRunUnderClaim(db, job.space_id, runId, {
       code: "provider_task_kind_unregistered",
       message: `No bounded ProviderTask is registered for capability '${run.capability_id ?? "(none)"}'.`,
-    });
+    }, job);
     return { run_id: runId, status: "failed", error_code: "provider_task_kind_unregistered" };
   }
 
@@ -167,15 +179,25 @@ async function handleProviderTaskRun(
   // would stay `queued` after the last attempt and keep spending its domain's
   // daily budget.
   try {
-    const request = await preparer({ db, config, run, job });
-    const result = await runBoundedProviderTask(db, config, {
+    const { claimBound, ...request } = await preparer({ db, config, run, job });
+    const perform = () => runBoundedProviderTask(db, config, {
       ...request,
       runId,
       // The job's own retries come first, exactly as `agent_run` does it: a Run
       // is only settled failed once nothing is left to try, so a transient
       // provider or database failure does not burn the bounded task.
       failRunOnError: job.attempts >= job.max_attempts,
+      // Every worker failure terminal, claim-bound or not, is written under this
+      // Job's current claim; a reclaimed or cancelled Job's new owner settles.
+      failureClaim: job,
     } as BoundedProviderTaskInput);
+    let result: Awaited<ReturnType<typeof perform>>;
+    if (claimBound) {
+      await startClaimBoundEffect(db, job);
+      result = await withJobEffectAuthority(db, job, perform);
+    } else {
+      result = await perform();
+    }
 
     const terminal = await repository.getRun(job.space_id, runId);
     if (terminal && isTerminalRun(terminal.status)) {
@@ -193,6 +215,9 @@ async function handleProviderTaskRun(
     }
     return { run_id: runId, status: terminal?.status ?? "succeeded" };
   } catch (error) {
+    // Another owner holds (or ended) this Job: its reclaim or cancel settles
+    // the Run, never this worker.
+    if (error instanceof JobEffectLeaseLost) throw error;
     if (job.attempts >= job.max_attempts) {
       const current = await repository.getRun(job.space_id, runId);
       if (current && !isTerminalRun(current.status)) {
@@ -201,18 +226,44 @@ async function handleProviderTaskRun(
         // running when the server lost its execution registry — which a Run
         // the worker never dispatched was not. The error code is the same
         // `job_exhausted` `agent_run` records, so both read alike.
-        await failBoundedProviderTaskRun(db, job.space_id, runId, {
-          code: "job_exhausted",
-          message: error instanceof Error
-            ? error.message
-            : "The provider_task_run job exhausted its retry budget.",
-        });
+        // Under this worker's current claim, whatever threw (the preparer
+        // included, before any claim-bound work started): a worker whose Job
+        // was reclaimed or cancelled meanwhile writes nothing.
+        try {
+          await failBoundedProviderTaskRunUnderClaim(db, job.space_id, runId, {
+            code: "job_exhausted",
+            message: error instanceof Error
+              ? error.message
+              : "The provider_task_run job exhausted its retry budget.",
+          }, job);
+        } catch (settlement) {
+          // The claim is no longer this worker's: it writes nothing, and the
+          // task's own failure is still what this attempt reports.
+          if (settlement instanceof JobEffectLeaseLost) throw error;
+          throw settlement;
+        }
         const terminal=await repository.getRun(job.space_id,runId);
         if(terminal&&isTerminalRun(terminal.status))await enqueueRunTerminalReconcilers(db,{space_id:job.space_id,user_id:job.user_id,run_id:runId,workflow_input_json:workflowInput(terminal)});
       }
     }
     throw error;
   }
+}
+
+/**
+ * The claim-conditioned start fence of a claim-bound task, written before any
+ * provider attempt. Absent claim, or a fence an earlier attempt already left
+ * (its send outcome is unknown), refuses: nothing is sent again.
+ */
+async function startClaimBoundEffect(db: Queryable, job: JobEnvelopeForHandler): Promise<void> {
+  const started = await db.query(
+    `UPDATE jobs SET result_json=COALESCE(result_json,'{}'::jsonb)||'{"source_dispatch":"started"}'::jsonb
+      WHERE id=$1 AND space_id=$2 AND status='running' AND claimed_by=$3 AND attempts=$4
+        AND COALESCE(result_json,'{}'::jsonb)->>'source_dispatch' IS DISTINCT FROM 'started'
+      RETURNING id`,
+    [job.job_id, job.space_id, job.worker_id, job.attempts],
+  );
+  if (!started.rows.length) throw new JobEffectLeaseLost("provider_task_run Job does not hold a fresh claim; its task is not sent again");
 }
 
 function workflowInput(run: RunRecord): Record<string, unknown> {

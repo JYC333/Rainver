@@ -7,6 +7,7 @@ import { persistRetrievalBriefArtifact } from "../src/modules/retrieval/artifact
 import { RetrievalProjectionService } from "../src/modules/retrieval/projectionService.js";
 import { knowledgeRetrievalRegistry } from "../src/modules/knowledge/retrievalAdapter.js";
 import { insertKnowledgeItem } from "./support/knowledgeFixtures.js";
+import { insertMemoryEntry } from "./support/memoryFixtures.js";
 import { createClaimCandidatePacketFromArtifacts } from "../src/modules/knowledge/claimCandidatePackets.js";
 import {
   createRetrievalMaintenanceProposalPacket,
@@ -21,6 +22,9 @@ const ALPHA_2 = "00000000-0000-4000-8000-000000000102";
 const THIN = "00000000-0000-4000-8000-000000000103";
 const LINKER = "00000000-0000-4000-8000-000000000104";
 const TARGET = "00000000-0000-4000-8000-000000000105";
+const MEMORY_1 = "00000000-0000-4000-8000-000000000201";
+const MEMORY_2 = "00000000-0000-4000-8000-000000000202";
+const MEMORY_OWNER = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 
 const LONG = "This object has enough searchable operational content to avoid being classified as thin.";
 
@@ -240,6 +244,97 @@ describe("Context Review Cycle (real Postgres)", () => {
     const relationRows = await db.pool.query<{ n: string }>(`SELECT count(*) AS n FROM object_relations WHERE space_id = $1`, [SPACE]);
     expect(claimRows.rows[0]!.n).toBe("0");
     expect(relationRows.rows[0]!.n).toBe("0");
+  });
+
+  it("with memory maintenance, packets the memory report as a claim source and records the scan's reads", async () => {
+    if (!db.available) return;
+    await seedKnowledge();
+    const briefArtifactId = await seedRecentBrief();
+    // Shared memories owned by someone else, so the scan's reads leave a
+    // cross-person access trace.
+    await db.pool.query(
+      `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source)
+       VALUES ($1, 'Memory owner', 'active', now(), now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system')`,
+      [MEMORY_OWNER],
+    );
+    for (const id of [MEMORY_1, MEMORY_2]) {
+      await insertMemoryEntry(db.pool, SPACE, {
+        id, owner_user_id: MEMORY_OWNER, visibility: "space_shared", title: "Coffee preferences", content: `Prefers oat milk. ${LONG}`,
+      });
+    }
+
+    const result = await runContextReviewCycle(db.pool, {
+      spaceId: SPACE,
+      userId: USER,
+      request: {
+        window_days: 14,
+        artifact_limit: 50,
+        create_packets: true,
+        review_scope: "private",
+        include_memory_maintenance: true,
+        memory_limit: 500,
+        memory_stale_after_days: 180,
+        memory_thin_content_chars: 80,
+        memory_max_findings: 100,
+        max_claim_candidates: 40,
+      },
+      automationRunId: null,
+    });
+
+    expect(result.degraded).toBe(false);
+    expect(result.warnings).toEqual([]);
+    expect(result.memory_maintenance.artifact_id).toBeTruthy();
+    expect(result.memory_maintenance.proposal_id).toBeTruthy();
+    expect(result.memory_maintenance.finding_count).toBeGreaterThan(0);
+    expect(result.claim_candidates.proposal_id).toBeTruthy();
+
+    const reportOwner = await db.pool.query<{ artifact_type: string; owner_user_id: string }>(
+      `SELECT artifact_type, owner_user_id FROM artifacts WHERE id = $1 AND space_id = $2`,
+      [result.memory_maintenance.artifact_id, SPACE],
+    );
+    expect(reportOwner.rows[0]).toEqual({ artifact_type: "memory_maintenance_report", owner_user_id: USER });
+    const memoryPacket = await db.pool.query<{ proposal_type: string; visibility: string }>(
+      `SELECT proposal_type, visibility FROM proposals WHERE id = $1 AND space_id = $2`,
+      [result.memory_maintenance.proposal_id, SPACE],
+    );
+    expect(memoryPacket.rows[0]).toEqual({ proposal_type: "memory_maintenance_packet", visibility: "private" });
+    // A private cycle keeps every packet it creates private, not only the memory one.
+    const packets = await db.pool.query<{ proposal_type: string; visibility: string }>(
+      `SELECT proposal_type, visibility FROM proposals WHERE space_id = $1`,
+      [SPACE],
+    );
+    expect(packets.rows.map((row) => row.proposal_type)).toEqual(expect.arrayContaining([
+      "retrieval_maintenance_packet", "retrieval_diagnostics_packet", "claim_candidate_packet",
+    ]));
+    expect(packets.rows.filter((row) => row.visibility !== "private")).toEqual([]);
+
+    const packet = await db.pool.query<{ metadata_json: Record<string, unknown> }>(
+      `SELECT metadata_json FROM artifacts WHERE id = $1 AND space_id = $2 AND artifact_type = 'claim_candidate_packet'`,
+      [result.claim_candidates.artifact_id, SPACE],
+    );
+    const sources = packet.rows[0]!.metadata_json.source_artifacts;
+    const sourceArtifactIds = Array.isArray(sources)
+      ? sources.map((item) => String((item as { artifact_id?: unknown }).artifact_id))
+      : [];
+    expect(sourceArtifactIds).toEqual(expect.arrayContaining([
+      briefArtifactId,
+      result.retrieval_maintenance.artifact_id,
+      result.diagnostics.artifact_id,
+      result.memory_maintenance.artifact_id,
+    ]));
+
+    // The scan's contributing memories carry a read attributed to the report.
+    const reads = await db.pool.query<{ resource_id: string; viewer_user_id: string; reason: string }>(
+      `SELECT resource_id, viewer_user_id, reason FROM content_access_logs
+        WHERE space_id = $1 AND resource_type = 'memory' AND access_type = 'maintenance_scan'
+        ORDER BY resource_id`,
+      [SPACE],
+    );
+    const reason = `memory maintenance report ${result.memory_maintenance.artifact_id}`;
+    expect(reads.rows).toEqual([
+      { resource_id: MEMORY_1, viewer_user_id: USER, reason },
+      { resource_id: MEMORY_2, viewer_user_id: USER, reason },
+    ]);
   });
 
   it("answers a repeated Claim Candidate Packet request with the pending packet and its own artifact", async () => {

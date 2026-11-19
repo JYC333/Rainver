@@ -284,6 +284,8 @@ than a missing button.
 
 ## Owns
 - `Note` model (working-knowledge layer; direct CRUD through `knowledge/noteWriter.ts` `withNoteWrites`)
+- Derived-Note Source lineage: `knowledge/noteSourceLineage.ts` `inheritNoteSourceLineage` copies other Notes' Source provenance (`source_item`/`source_snapshot`/`extracted_evidence`) onto a Note written from them, through the canonical `writeProvenanceLinks`, in the caller's write transaction (used by the plugin `notes.draft` save). Each inherited entry pins the Source connections the text was derived under (`evidence_json.source_connection_ids`, unioned with the live lineage by `loadSourceConnectionIdsForTargets`), so `source.item.update` rebinding or clearing an item's connection does not drop the original Source's policy
+- Note body reads answer to Source lineage: `getNoteRow` (detail, revisions, links, shares and the single-Note mutation gate) returns nothing to a viewer a lineage Source no longer admits (`sourceLineageReadable`); the Reader `research_notebook` resolver and annotation/comment/position gate, Project Research notebook reads and prompt context (`discoverNotebookChat`, rechecked at every provider attempt of a queued Run) apply the same rule (`sourceLineageReadableTargets` per Note); a notebook-chat write-back inherits its context Notes' lineage (`inheritNoteSourceLineage`; an in-place notebook-chat or Ask-AI edit re-pins the target Note's own lineage with `includeTarget`), notebook-chat and Ask-AI edits from directly selected excerpts add pinned `source_item` lineage (`recordNoteSourceItemLineage`; not written when it cannot be kept), and a monitoring comparison excludes any Note with Source lineage as its baseline, also when merging an already terminal result; list summaries are not gated by lineage
 - `NoteCollection` / `NoteCollectionItem` models (space-scoped Notes folder tree)
 - `KnowledgeItem` model (canonical wiki layer)
 - `Source` model (independent provenance/evidence layer)
@@ -512,7 +514,18 @@ interpretation is immutable and never revalidated) and records
 one idempotent `knowledge_revalidation_outcomes` row per item and event
 (`no_impact`, `candidate_created`, or `already_superseded`). A material change
 creates a pending revalidation Knowledge Candidate for review; the worker never edits
-the Wiki item, which still changes only through an accepted proposal.
+the Wiki item, which still changes only through an accepted proposal. An event
+whose processing fails stays unprocessed with `attempt_count`/`last_error` and is
+retried after a backoff that doubles per attempt (one minute, at most an hour);
+there is no dead-letter state. Each batch queues never-failed events by when
+they occurred and failed ones by when their backoff ended. While fresh events
+wait, retries are guaranteed min(10, ⌊limit/2⌋) slots and take at most
+min(10, ⌈limit/2⌉) (10 of the default 50); slots between go to whichever waited
+longest, unused slots to the other kind. So at any limit, including 1,
+persistent failures cannot hold the batch and new events cannot starve a
+retry. The sweep returns the
+failed count and the `knowledge_promotion_revalidation` scheduler task then fails,
+which raises its deduplicated `scheduler_task_failed` alert.
 
 ## Policy Actions
 
@@ -737,8 +750,8 @@ not replaced by Source.
   every later statement in it, which is what the savepoint prevents.
 - `object_relations.from_object_id` / `to_object_id` are FK-backed
   `space_objects` endpoints in the same space, and an object cannot link to itself.
-- **Cards tables exist in schema only.** `cards.source_id` is polymorphic (no FK;
-  covered by `server/test/baselineSchema.test.ts`). `card_review_states`
+- **Cards tables exist in schema only.** `cards.source_id` is polymorphic (no FK).
+  `card_review_states`
   scheduling columns are nullable. There is no cards module and no runtime
   visibility or FSRS writer.
 - Durable Knowledge writes go through proposals.

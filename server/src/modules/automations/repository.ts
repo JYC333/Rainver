@@ -578,6 +578,15 @@ export class PgAutomationRepository implements AutomationRepositoryPort {
       );
       const current = locked.rows[0];
       if (!current || current.status !== "active") return;
+      // Only the slot the caller fired (or failed to fire) moves. A sweep that
+      // already consumed it, or a reschedule, wrote a different slot under
+      // this same lock; advancing again would skip or overwrite that slot.
+      const repository = new PgAutomationRepository(db);
+      const task = await repository.schedulerTaskStore.get(
+        AUTOMATION_SCHEDULER_TASK_TYPE,
+        automationSchedulerTaskKey(automation.id),
+      );
+      if (dateString(task?.next_run_at) !== automation.next_run_at) return;
       const now = new Date().toISOString();
       let nextRunAt: string | null = null;
       try {
@@ -585,7 +594,7 @@ export class PgAutomationRepository implements AutomationRepositoryPort {
       } catch {
         nextRunAt = null;
       }
-      await new PgAutomationRepository(db).upsertSchedulerTask({
+      await repository.upsertSchedulerTask({
         automation,
         nextRunAt,
         lastRunAt: now,

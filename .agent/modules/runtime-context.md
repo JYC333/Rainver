@@ -120,7 +120,7 @@ resolves it (`policy/executionControlSnapshots.ts`) or explicitly configures
 its scope, and authorized through the
 recipient's Room membership in `workContextService.ts`. Its ledger, checkpoints
 and Setup belong to that Conversation alone; another
-Conversation's transcript never enters its history (ADR 0014 §11 amendment).
+Conversation's transcript never enters its history (ADR 0014 §11).
 
 Room Runs from before per-Conversation scopes have control snapshots naming
 the whole-Room recipient scope. The upgrade split (in `0002_skill_library_and_upgrade_repairs`)
@@ -190,7 +190,16 @@ Provider-backed continuity is gated the same way for any briefing reference
 it replays. The remote Host adapter sends the Work Skill pointer into a fresh
 session only; a resumed session already holds it. A resumed turn that
 carries only the person's message is sent as that message, verbatim
-(`runs/acpRuntimeContextPrompt.ts`).
+(`runs/acpRuntimeContextPrompt.ts`). After the Delivery the order is fixed:
+Run control, then the person's attachments, then accepted Skill links. Run
+control is not a Delivery item: the remote Host adapter composes it from
+server-held Run state after the Gateway accepted the Delivery, each entry
+tagged with its source (`execution_workspace`, `work_surface`,
+`ordinary_tools`), under its own `## Rainver Run control` heading that says it
+is not the person's text and grants nothing. Attachments get their own
+`## Current user attachments` heading. Every Rainver heading carries a marker
+drawn fresh per prompt (`[rainver:<hex>]`), so a message or attached file
+cannot imitate a Rainver section; a verbatim message stays the first block.
 
 A Run that parks mid-turn (`waiting_for_dependency` or `waiting_for_review`)
 writes the session the runtime reported back to its
@@ -335,6 +344,11 @@ references and `input_resource` descriptors reach the turn either way.
   the target Room lock before Delivery; generic content reads retain their ACL.
 - All acquisition is Space- and instructing-user-scoped and revalidated in the
   Delivery transaction.
+- Retrieval injection is audited before the items are returned: cross-person
+  rows go to B11's `content_access_logs`; in execution mode the executing Run is
+  passed so the person's own injected rows are attributed in the owner's
+  `agent_data_read_logs` (`runtime_context.retrieval`, ADR 0030). A failed audit
+  injects nothing; a preview attributes nothing to an Agent.
 - Delivery revalidates the latest Setup version and its effective bindings:
   an unset Project or Project Folder inherits the persisted Run's binding,
   matching execution-control snapshot resolution. The transaction locks the

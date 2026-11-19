@@ -1,3 +1,4 @@
+import type { ServerConfig } from "../../config.js";
 import {TaskControlError} from './controlErrors.js';
 import { selectBoardColumn, taskColumnPlacement } from "./boardColumns.js";
 import { TASK_STATUSES as PROTOCOL_TASK_STATUSES } from "@rainver/protocol";
@@ -16,7 +17,7 @@ import {
   withQueryableTransaction,
   type SpaceUserIdentity,
   type Queryable, dateIso } from "../routeUtils/common.js";
-import { PgRunRepository } from "../runs/repository.js";
+import { PgRunRepository, domainRunAccessLevel } from "../runs/repository.js";
 import { PERSON_STARTED_TRIGGER_ORIGIN, assertPersonStartedRunRequest } from "../runs/runRepositoryHelpers.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
 import { assertBudgetSourcesAvailable } from "../runs/budgetEnforcement.js";
@@ -196,7 +197,12 @@ export class ProjectTaskPlacementRequiresCore extends HttpError {
 }
 
 export class PgTaskRepository {
-  constructor(private readonly pool: Queryable) {}
+  /**
+   * `config` is the server's own: a dispatched Task Run's grants are built against
+   * the registry it configures, so the plugin operations the dispatch allowance names
+   * are known there. Without it they are absent and never granted.
+   */
+  constructor(private readonly pool: Queryable, private readonly config?: ServerConfig) {}
 
   async listBoards(identity: SpaceUserIdentity, filters: { projectFolderId: string | null; projectId: string | null; status: string | null; limit: number; offset: number }) {
     const params: unknown[] = [identity.spaceId];
@@ -901,9 +907,11 @@ export class PgTaskRepository {
       // A built-in Host Location: the same dispatch allowance a paired Host's
       // Task Run carries (`prepareRemoteTaskRun`). Without it the Run has no
       // grants, so no work surface, and cannot report or declare its output.
-      // A Task with no Location keeps the Agent's own permissions.
+      // A Task with no Location gets no dispatch allowance: it declares no
+      // capabilities, so its Run is granted no Rainver tools at all (only the
+      // runtime itself); nothing here widens that.
       const allowance = target ? dispatchToolAllowance() : null;
-      const run = await new PgRunRepository(client).createQueuedRun({
+      const run = await new PgRunRepository(client, this.config).createQueuedRun({
         execution_kind: "agent",
         agent_id: agentId,
         space_id: identity.spaceId,
@@ -1164,7 +1172,7 @@ export class PgTaskRepository {
     // way to say what it did.
     const allowance = dispatchToolAllowance();
 
-    const run = await new PgRunRepository(client).createQueuedRun({
+    const run = await new PgRunRepository(client, this.config).createQueuedRun({
       execution_kind: "agent",
       agent_id: agentId,
       space_id: identity.spaceId,
@@ -1276,7 +1284,7 @@ export class PgTaskRepository {
         max_duration_seconds: typeof task.max_duration_seconds === "number" ? task.max_duration_seconds : null,
       }];
       await assertBudgetSourcesAvailable(client, identity.spaceId, budgetSources);
-      const run = await new PgRunRepository(client).createQueuedRun({
+      const run = await new PgRunRepository(client, this.config).createQueuedRun({
         execution_kind: "agent",
         agent_id: agentId,
         space_id: identity.spaceId,
@@ -1369,7 +1377,7 @@ export class PgTaskRepository {
     return page(
       rows.rows.map((row) => ({
         link: taskRunOutFromList(row),
-        run: runToOut({ ...row, usage: usageByRun.get(row.id) ?? null }, null, {
+        run: runToOut({ ...row, effective_access_level: domainRunAccessLevel(row, row.effective_access_level), usage: usageByRun.get(row.id) ?? null }, null, {
           executes_remotely: remoteRuns.has(row.id),
         }),
       })),

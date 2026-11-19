@@ -7,6 +7,8 @@ import { HttpError } from "../../routeUtils/common.js";
 import { syncProjectCorpusDecisionForSourceItem } from "../../projects/corpusRepository.js";
 import { ResearchMonitoringCoordinator } from "../../research/queryPlanning/monitoringCoordinator.js";
 import { runOutputResult } from "../../runs/orchestrationResults.js";
+import { comparisonBaselineAdmission } from "../notebookNotes.js";
+import { researchStageRunIsCurrent } from "./synthesisCoordinator.js";
 import { resolveResearchStageProvider, type ResolvedResearchProvider } from "../executionProfileService.js";
 import {
   COMPARISON_BATCH_SIZE,
@@ -84,6 +86,13 @@ interface ProjectResearchMonitoringPorts {
   }): Promise<MonitoringOperationRow>;
   operation(spaceId: string, operationId: string): Promise<MonitoringOperationRow | null>;
   failOperation(operation: MonitoringOperationRow, message: string): Promise<void>;
+  /** Fails the operation only while it is non-terminal and `isCurrent` holds under its row lock. */
+  failOperationIfCurrent(
+    operation: MonitoringOperationRow,
+    isCurrent: (state: ResearchOperationState, row: { current_execution_id?: string | null }) => boolean,
+    message: string,
+    details?: { prepareState?: (state: ResearchOperationState) => void },
+  ): Promise<boolean>;
   setWorkflowMonitoring(spaceId: string, projectId: string, workflowId: string, state: ResearchOperationState): Promise<void>;
   reconcileCompletedRun(spaceId: string, runId: string): Promise<void>;
   enqueueIntegrityMonitor(
@@ -99,6 +108,7 @@ interface MonitoringOperationRow extends MonitoringOperation {
   status: string;
   progress_json: unknown;
   created_at?: string;
+  current_execution_id?: string | null;
 }
 
 interface SourceScanCompletedInput {
@@ -592,6 +602,38 @@ export class ProjectResearchMonitoringCoordinator {
     if (!row) return;
     const state = researchState(row.progress_json);
     const comparisons = state.comparison_results_json ?? [];
+    // Every staged batch is published together here, so every batch's frozen baseline is
+    // rechecked now, not only the one that just finished. A result whose Run is unknown or
+    // whose baseline is no longer admissible is refused: it is put back in the pending pool
+    // (a retry compares it again under a fresh baseline) and the operation fails unpublished.
+    const refused = await this.inadmissibleStagedComparisons(spaceId, operationId, state);
+    if (refused.length > 0) {
+      // The re-pend and the failure are one write under the Project then
+      // operation lock, and only while the operation is still the finalize
+      // this pass observed: in comparison, no comparison Run queued and no
+      // batch left. A newer Run or attempt keeps its own queue and status.
+      const drop = new Set(refused);
+      await this.ports.failOperationIfCurrent(
+        row,
+        (current) => current.current_stage === "comparison"
+          && !current.comparison_run_id
+          && (current.comparison_pending_source_item_ids?.length ?? 0) === 0
+          && (current.comparison_failed_source_item_ids?.length ?? 0) === 0,
+        "Staged monitoring comparison results could not be re-verified against their frozen baselines",
+        {
+          prepareState: (current) => {
+            const staged = new Set((current.comparison_results_json ?? []).map((item) => item.source_item_id));
+            current.comparison_results_json = (current.comparison_results_json ?? []).filter((item) => !drop.has(item.source_item_id));
+            current.comparison_result_run_ids = Object.fromEntries(Object.entries(current.comparison_result_run_ids ?? {}).filter(([id]) => !drop.has(id)));
+            current.comparison_pending_source_item_ids = [...new Set([
+              ...(current.comparison_pending_source_item_ids ?? []),
+              ...refused.filter((id) => staged.has(id)),
+            ])];
+          },
+        },
+      );
+      return;
+    }
     const runId = finalizingRunId ?? state.comparison_run_id ?? "";
     const signalIds = comparisons.length > 0 && runId
       ? (await new ProjectResearchMonitorComparisonService(this.db).persistComparisons({
@@ -624,6 +666,29 @@ export class ProjectResearchMonitoringCoordinator {
         await this.ports.enqueueIntegrityMonitor(spaceId, instructedByUserId, projectId, workflowId, "comparison_complete");
       }
     }
+  }
+
+  /** Source items whose staged comparison has no recorded Run of this operation, or whose Run's frozen baseline is not admissible now. */
+  private async inadmissibleStagedComparisons(spaceId: string, operationId: string, state: ResearchOperationState): Promise<string[]> {
+    const runs = state.comparison_result_run_ids ?? {};
+    const refused: string[] = [];
+    const verdicts = new Map<string, boolean>();
+    for (const { source_item_id: itemId } of state.comparison_results_json ?? []) {
+      const runId = runs[itemId];
+      if (!runId) { refused.push(itemId); continue; }
+      let admitted = verdicts.get(runId);
+      if (admitted === undefined) {
+        const run = (await this.db.query<{ contract_snapshot_json: unknown }>(
+          `SELECT contract_snapshot_json FROM runs WHERE id=$1 AND space_id=$2`, [runId, spaceId],
+        )).rows[0];
+        const input = objectValue(objectValue(run?.contract_snapshot_json).workflow_input_json);
+        admitted = !!run && objectValue(input.project_research).operation_id === operationId
+          && await comparisonBaselineAdmission(this.db, spaceId, input) === "admitted";
+        verdicts.set(runId, admitted);
+      }
+      if (!admitted) refused.push(itemId);
+    }
+    return refused;
   }
 
   async reconcileComparisonStage(
@@ -668,6 +733,9 @@ export class ProjectResearchMonitoringCoordinator {
     output: unknown;
     expectedSourceItemIds: string[];
   }): Promise<void> {
+    // Set once this Run's batch was staged: the finalize that follows is then
+    // this callback's own, so its failure still belongs to the operation.
+    let staged = false;
     try {
       // parseMonitorComparisons never throws for content problems — it
       // returns whatever subset of expectedSourceItemIds actually got a
@@ -679,12 +747,14 @@ export class ProjectResearchMonitoringCoordinator {
       const matchedIds = new Set(matched.map((item) => item.source_item_id));
       const unmatched = input.expectedSourceItemIds.filter((id) => !matchedIds.has(id));
       const wasBatch = input.expectedSourceItemIds.length > 1;
-      const updated = await refreshOperation(this.db, input.spaceId, input.operation.id, ({ state }) => {
-        if (state.comparison_run_id !== input.runId) return false;
+      const updated = await refreshOperation(this.db, input.spaceId, input.operation.id, ({ row, state }) => {
+        if (["completed", "failed", "cancelled"].includes(row.status)) return false;
+        if (!researchStageRunIsCurrent(state, "monitor_compare", input.runId)) return false;
         const existing = state.comparison_results_json ?? [];
         const bySourceItemId = new Map(existing.map((item) => [item.source_item_id, item]));
         for (const item of matched) bySourceItemId.set(item.source_item_id, item);
         state.comparison_results_json = [...bySourceItemId.values()];
+        state.comparison_result_run_ids = { ...(state.comparison_result_run_ids ?? {}), ...Object.fromEntries(matched.map((item) => [item.source_item_id, input.runId])) };
         state.comparison_run_id = null;
         state.heartbeat_at = new Date().toISOString();
         if (wasBatch) {
@@ -706,6 +776,7 @@ export class ProjectResearchMonitoringCoordinator {
         // persistently uncooperative item can never loop forever.
       });
       if (!updated.applied) return;
+      staged = true;
       const nothingLeft = (updated.state?.comparison_pending_source_item_ids?.length ?? 0) === 0
         && (updated.state?.comparison_failed_source_item_ids?.length ?? 0) === 0;
       if (nothingLeft) {
@@ -714,8 +785,17 @@ export class ProjectResearchMonitoringCoordinator {
         );
       }
     } catch (error) {
-      await this.ports.failOperation(
+      // A superseded or re-delivered Run's error must not fail the operation.
+      // After staging the Run is no longer bound, so its finalize error is
+      // attributed to the pass execution that staged it: a later execution
+      // (a retry) or a newly queued comparison Run is not overwritten.
+      const stagingExecutionId = input.operation.current_execution_id;
+      await this.ports.failOperationIfCurrent(
         input.operation,
+        (state, row) => staged
+          ? (stagingExecutionId === undefined || row.current_execution_id === stagingExecutionId)
+            && state.current_stage === "comparison" && !state.comparison_run_id
+          : researchStageRunIsCurrent(state, "monitor_compare", input.runId),
         error instanceof Error ? error.message : "Monitoring comparison output is invalid",
       );
     }

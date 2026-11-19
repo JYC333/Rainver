@@ -14,6 +14,17 @@ import {
 import { PgRunRepository } from "../runs/repository.js";
 import { wakeJobWorkers } from "./wakeSignal.js";
 
+
+/**
+ * A Job waiting on its next automatic attempt, due now: one that `failJob` or
+ * stuck-Job reclaim put back to `pending` after a spent attempt (`attempts > 0`)
+ * and that `claimNext` may take now. Not a first `pending` (no attempt yet), a
+ * deferral still in the future, a `failed` Job (exhausted — nothing retries
+ * it), or a source dispatch whose external outcome is unknown, which is never
+ * repeated. A `jobs`-row predicate, for read models.
+ */
+export const JOB_RETRY_DUE_SQL = `status = 'pending' AND attempts > 0 AND attempts < max_attempts AND scheduled_at <= now() AND result_json->>'source_dispatch' IS DISTINCT FROM 'started'`;
+
 export type JobStatus =
   | "pending"
   | "claimed"
@@ -61,6 +72,8 @@ export interface JobReclaimResult {
     JobRecord,
     "id" | "space_id" | "user_id" | "job_type" | "attempts" | "max_attempts"
   >>;
+  /** Candidates (or the orphan lock sweep, `job_id: null`) whose reclaim failed; the rest still ran. */
+  failures?: Array<{ job_id: string | null; error: string }>;
 }
 
 export interface EnqueueJobInput {
@@ -93,6 +106,13 @@ const RUN_NOT_ENDED_BY_JOB = new Set([
   "orphaned",
   "waiting_for_review",
 ]);
+
+/** The job's agent Run is running/cancelling on a launched latest attempt (correlated on `jobs`). */
+const LAUNCHED_AGENT_RUN_ACTIVE = `EXISTS(SELECT 1 FROM runs r WHERE r.id=jobs.payload_json->>'run_id' AND r.space_id=jobs.space_id
+  AND r.status IN ('running','cancelling') AND EXISTS(SELECT 1 FROM run_attempts a WHERE a.run_id=r.id AND a.space_id=r.space_id AND a.launch_id IS NOT NULL
+    AND a.attempt_number=(SELECT max(latest.attempt_number) FROM run_attempts latest WHERE latest.run_id=r.id AND latest.space_id=r.space_id)))`;
+/** An exhausted agent_run job whose launched attempt still runs keeps a reserved stop-reconciliation claim. */
+const STOP_CLAIM_RESERVED = `(attempts >= max_attempts AND job_type='agent_run' AND ${LAUNCHED_AGENT_RUN_ACTIVE})`;
 
 /**
  * Ends the Run a job was going to perform, through the Run repository's one
@@ -443,24 +463,53 @@ export class PgJobQueueRepository {
     workerId: string | null,
     now: Date = new Date(),
   ): Promise<JobStatus | null> {
-    const result = await this.db.query<{ status: JobStatus }>(
-      `UPDATE jobs
-          SET status = CASE WHEN attempts < max_attempts THEN 'pending' ELSE 'failed' END,
-              payload_json = CASE WHEN job_type='activity_upload' AND attempts>=max_attempts THEN payload_json-'input' ELSE payload_json END,
-              error = $2,
-              heartbeat_at = NULL,
-              claimed_by = CASE WHEN attempts < max_attempts THEN NULL ELSE claimed_by END,
-              claimed_at = CASE WHEN attempts < max_attempts THEN NULL ELSE claimed_at END,
-              started_at = CASE WHEN attempts < max_attempts THEN NULL ELSE started_at END,
-              completed_at = CASE WHEN attempts < max_attempts THEN NULL ELSE $3::timestamptz END,
-              updated_at = $3::timestamptz
-        WHERE id = $1
-          AND status IN ('claimed', 'running')
-          AND (CAST($4 AS text) IS NULL OR claimed_by = $4)
-        RETURNING status`,
-      [jobId, redactEvidenceText(error), now.toISOString(), workerId],
-    );
-    return result.rows[0]?.status ?? null;
+    // The final failure of a Run-backed job ends its Run too, under the same
+    // Run-terminal owner as cancel and reclaim; otherwise the Run stays queued
+    // with nothing left to perform it. A launched agent_run attempt still
+    // running owes its process a stop: like reclaim, the job keeps one
+    // reserved claim (pending, attempts below the budget) so the handler's
+    // stop reconciliation can confirm the Host exit and settle the Run; that
+    // claim cannot dispatch a new physical attempt.
+    return withRunTerminalOwner(this.db,async db=>(await db.query<{id:string;space_id:string}>(
+      `SELECT payload_json->>'run_id' AS id,space_id FROM jobs WHERE id=$1
+        AND job_type=ANY($2::text[]) AND payload_json->>'run_id' IS NOT NULL
+        AND status IN ('claimed','running') AND attempts>=max_attempts AND ($3::text IS NULL OR claimed_by=$3)
+        AND NOT(job_type='agent_run' AND ${LAUNCHED_AGENT_RUN_ACTIVE})`,[jobId,[...RUN_BACKED_JOB_TYPES],workerId])).rows,async db=>{
+      const result = await db.query<{ status: JobStatus; job_type: string; space_id: string; run_id: string | null; stop_claim: boolean }>(
+        `WITH target AS (
+           SELECT id, ${STOP_CLAIM_RESERVED} AS stop_claim FROM jobs
+            WHERE id = $1 AND status IN ('claimed', 'running')
+              AND (CAST($4 AS text) IS NULL OR claimed_by = $4)
+         )
+         UPDATE jobs
+            SET status = CASE WHEN attempts < max_attempts OR target.stop_claim THEN 'pending' ELSE 'failed' END,
+                attempts = CASE WHEN target.stop_claim THEN max_attempts - 1 ELSE attempts END,
+                payload_json = CASE WHEN job_type='activity_upload' AND attempts>=max_attempts THEN payload_json-'input' ELSE payload_json END,
+                error = $2,
+                heartbeat_at = NULL,
+                claimed_by = CASE WHEN attempts < max_attempts OR target.stop_claim THEN NULL ELSE claimed_by END,
+                claimed_at = CASE WHEN attempts < max_attempts OR target.stop_claim THEN NULL ELSE claimed_at END,
+                started_at = CASE WHEN attempts < max_attempts OR target.stop_claim THEN NULL ELSE started_at END,
+                completed_at = CASE WHEN attempts < max_attempts OR target.stop_claim THEN NULL ELSE $3::timestamptz END,
+                updated_at = $3::timestamptz
+           FROM target
+          WHERE jobs.id = target.id AND jobs.status IN ('claimed', 'running')
+            AND (CAST($4 AS text) IS NULL OR jobs.claimed_by = $4)
+          RETURNING jobs.status, jobs.job_type, jobs.space_id, jobs.payload_json->>'run_id' AS run_id,
+            target.stop_claim`,
+        [jobId, redactEvidenceText(error), now.toISOString(), workerId],
+      );
+      const job = result.rows[0];
+      if (job?.status === "failed" && job.run_id && RUN_BACKED_JOB_TYPES.has(job.job_type) && !job.stop_claim) {
+        await endRunBehindJob(db, job.space_id, job.run_id, {
+          status: "failed",
+          error_code: "run_abandoned",
+          error_text: "run abandoned: backing job failed and retry attempts exhausted",
+          completed_at: now.toISOString(),
+        });
+      }
+      return job?.status ?? null;
+    });
   }
 
   async deferJob(
@@ -597,10 +646,12 @@ export class PgJobQueueRepository {
 
     // Maintenance candidates are independent. A busy Run never aborts another
     // Job/Space, and orphan lock cleanup does not depend on request admission.
-    await this.deleteOrphanRunExecutionLocks(cutoff);
+    // A failed candidate is reported, never allowed to stop the rest of the sweep.
+    const total:JobReclaimResult={reclaimed_count:0,exhausted_jobs:[],failures:[]};
+    const failed=(jobId:string|null,error:unknown)=>total.failures!.push({job_id:jobId,error:error instanceof Error?error.message:String(error)});
+    await this.deleteOrphanRunExecutionLocks(cutoff).catch(error=>failed(null,error));
     const candidates=(await this.db.query<{id:string}>(`SELECT id FROM jobs WHERE status IN ('claimed','running')
       AND COALESCE(heartbeat_at,updated_at)<$1 ORDER BY id`,[cutoff])).rows;
-    const total:JobReclaimResult={reclaimed_count:0,exhausted_jobs:[]};
     for(const candidate of candidates){
       try{
         const result=await this.reclaimStuckJob(candidate.id,cutoff,now);
@@ -608,7 +659,7 @@ export class PgJobQueueRepository {
       }catch(error){
         const code=(error as {code?:string}).code;
         if(code==='55P03'||code==='idempotency_in_progress'||code==='operation_conflict')continue;
-        throw error;
+        failed(candidate.id,error);
       }
     }
     return total;

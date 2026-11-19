@@ -18,6 +18,7 @@ import {
 } from "../routeUtils/common.js";
 import { getDbPool } from "../../db/pool.js";
 import { RetrievalProjectionService } from "../retrieval/index.js";
+import { endProjectDataConsents } from "../plugins/dataGrantRepository.js";
 import { assertProjectOwnerLevelForMutation, assertProjectWriter, canWriteProject, isProjectOwnerLevel, lockProjectAudienceForChange } from "./access.js";
 import { accessibleProjectIds, canReadProject, assertProjectReadable } from "./access.js";
 import { projectRetrievalRegistry } from "./retrievalAdapter.js";
@@ -729,6 +730,8 @@ export class PgProjectRepository {
       await lockProjectAudienceForChange(tx, identity.spaceId, projectId);
       await new PgProjectRepository(tx).authorizeMemberChange(identity, projectId, userId);
       await new PgRoomRosterRepository(tx).revokeIssuedGrantsForProject(identity.spaceId, projectId, userId, identity.userId);
+      // A standing data consent bound to this Project ends with the access it rests on (ADR 0033).
+      await endProjectDataConsents(tx, { spaceId: identity.spaceId, projectId, userId, endedByUserId: identity.userId });
       await tx.query(
         `DELETE FROM project_members WHERE space_id = $1 AND project_id = $2 AND user_id = $3`,
         [identity.spaceId, projectId, userId],

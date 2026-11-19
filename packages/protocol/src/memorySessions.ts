@@ -16,6 +16,7 @@ import {
 } from "./conversationInput.js";
 import { ConversationInputResourceMessagePartSchema } from "./conversationInputResources.js";
 import { RoomDiscussionNoticeSchema } from "./roomDiscussions.js";
+import { SensitiveReadProvenanceSchema } from "./threadReferences.js";
 
 const JsonObjectSchema = z.record(z.unknown());
 const TraceSafeObjectSchema = TraceSafeJsonSchema.refine(
@@ -124,6 +125,16 @@ const CommonMessageMetadata = {
 
 /** A person speaking, or an Agent replying. The default. */
 export const ConversationMessageMetadataSchema = z.object({
+  gmail_result: z.literal(true).optional(),
+  gmail_digest: z.object({ digest_id: IdSchema, delivery_id: IdSchema, kind: z.enum(["daily", "rule"]) }).strict().optional(),
+  shared_from: z.literal("private_gmail_summary").optional(),
+  /** Shared Gmail text: the source Project and the source Run's sensitive reads, which this conversation's later Runs inherit. */
+  source_project_id: IdSchema.optional(),
+  sensitive_reads: SensitiveReadProvenanceSchema.optional(),
+  /** `2`: `sensitive_reads` lists every read with its real owner; shared text without it cannot be verified. */
+  sensitive_reads_version: z.literal(2).optional(),
+  /** The person's own request, carried from another conversation into this private one by their Gmail check card. */
+  gmail_private_read: z.object({ proposal_id: IdSchema }).strict().optional(),
   source_goal_message_key:z.string().max(128).nullish(),
   source_goal_dispatch_pending:z.boolean().nullish(),
   source_goal_paused_request:z.boolean().nullish(),
@@ -373,6 +384,7 @@ export const AssistantMessageSchema = z
     content: z.string(),
     artifact_refs: z.array(IdSchema).default([]),
     tool_call_refs: z.array(z.string().min(1)).default([]),
+    gmail_result: z.literal(true).optional(),
     created_at: ISODateTimeSchema,
     ...SecretResponseGuards,
   })

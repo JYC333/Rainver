@@ -5,6 +5,8 @@ import {researchEvaluationRegistrations} from '../../research/evaluationOperatio
 import {researchStrategyRegistrations} from '../../research/strategyOperations.js';
 import {attentionRegistrations} from '../../agentAttention/operations.js';
 import {personalMemoryGrantRegistrations} from '../../personalMemoryGrants/operations.js';
+import {pluginDataAccessRegistrations} from '../../plugins/dataGrantOperations.js';
+import {pluginProjectBindingRegistrations} from '../../plugins/projectBindingOperations.js';
 import {captureFilingRegistration} from '../../captureFiling/operations.js';
 import {personalRetrievalRegistrations,egressNotificationRegistration} from '../../crossSpaceRetrieval/operations.js';
 import {learningRegistrations} from '../../learning/operations.js';
@@ -108,6 +110,10 @@ import {customSourceRegistrations} from '../../sources/customSources/operations.
 import {sourceGoalRegistrations} from '../../sources/goals/operations.js';
 import {noteTrashPurgeRegistration} from '../../knowledge/noteTrashPurgeOperation.js';
 import {sourceMonitorRegistrations} from '../../sources/sourceMonitorOperations.js';
+import {gmailAgentReadSettingRegistration,gmailConnectionRegistrations,gmailDigestRegistrations,gmailMonitorRegistrations,gmailSelectionRegistrations} from '../../sources/gmail/gmailOperations.js';
+import {gmailAgentReadRegistration} from '../../sources/gmail/gmailAgentReadOperation.js';
+import {gmailSummaryShareRegistration,gmailSummaryPreviewRegistration} from '../../sources/gmail/gmailSummaryShare.js';
+import {gmailDigestReadRegistration} from '../../sources/gmail/gmailDigestReadOperation.js';
 import {sourceRecipeCreateRegistration} from '../../sources/sourceRecipeCreateOperation.js';
 import {sourceSubscriptionRegistrations} from '../../sources/sourceSubscriptionOperations.js';
 import {projectSourceRegistrations} from '../../projects/projectSourceOperations.js';
@@ -121,6 +127,7 @@ import {sourceBackfillRegistrations} from '../../sources/sourceBackfillOperation
 import { boardOperationRegistrations } from '../../projectWork/boardOperations.js';
 import { projectOperationRegistrations } from '../../projects/projectOperationOperations.js';
 import { collaborationParticipantsRegistration } from '../../agentGroups/collaborationParticipantsOperation.js';
+import { collaborationReadRegistration } from '../../agentGroups/collaborationReadOperation.js';
 import { actionGrantRegistrations } from '../../policy/actionGrantOperations.js';
 import { pluginOperations } from "../../plugins/operationRegistry.js";
 import { researchCancelRegistration } from '../../projectResearch/researchCancelOperation.js';
@@ -134,7 +141,154 @@ const runtimes = new WeakMap<ServerConfig, Promise<OperationExecutor>>();
 export function operationRuntime(config: ServerConfig): Promise<OperationExecutor> {
   let runtime = runtimes.get(config);
   if (!runtime) {
-    runtime = loadSystemActionRegistry(config).then(definitions => new OperationExecutor(dbPool(config), config, [...accountOperationRegistrations(definitions,config),...daemonWorkspaceRegistrations(definitions,config),...contextOpsRegistrations(definitions),...researchEvaluationRegistrations(config,definitions),...researchStrategyRegistrations(config,definitions),...personalRetrievalRegistrations(definitions),...attentionRegistrations(definitions),...personalMemoryGrantRegistrations(definitions),captureFilingRegistration(definitions),egressNotificationRegistration(definitions),...learningRegistrations(definitions),...focusAreaRegistrations(definitions),graphViewStateRegistration(definitions),dailyReportRunRegistration(definitions),...dailyCaptureSettingsRegistrations(definitions),captureRelocationRegistration(definitions),activitySummaryRegistration(definitions),activityCreateRegistration(definitions),activityUploadRegistration(definitions),captureCreateRegistration(definitions),...activityStatusRegistrations(definitions),...briefingHighlightRegistrations(definitions),...digestBackfillRegistrations(definitions),personalBriefingRequestRegistration(config,definitions),projectBriefingRequestRegistration(definitions),...briefingCancelRegistrations(config,definitions),...briefingSettingsRegistrations(definitions),serendipityFeedbackRegistration(definitions),...interestRegistrations(config,definitions),compositionRetryRegistration(definitions),annotationRetryRegistration(config,definitions),deepReadingCancelRegistration(config,definitions),deepReadingStartRegistration(config,definitions),readingPreferenceRegistration(definitions),...readingItemRegistrations(definitions),...bundleDecisionRegistrations(config,definitions),...proposalApplyRegistrations(config,definitions),proposalRejectionRegistration(config,definitions),proposalConsentRegistration(config,definitions),...workspaceOperationRegistrations(definitions,config),collaborationParticipantsRegistration(definitions),catalogRegistration(config,definitions),...threadCreationRegistrations(definitions),...noteControlRegistrations(definitions),...noteLinkRegistrations(definitions),...sourceObjectRegistrations(config,definitions),...materialProcessingRegistrations(config,definitions),...sourcePostProcessingRegistrations(config,definitions),...sourceRetrievalRegistrations(config,definitions),...sourceRecipeRegistrations(config,definitions),...customSourceRegistrations(config,definitions),...sourceGoalRegistrations(config,definitions),noteTrashPurgeRegistration(definitions),...noteObjectRegistrations(definitions),...knowledgeObjectRegistrations(definitions),...knowledgeProposalRegistrations(definitions),...objectSchemaRegistrations(definitions),...retrievalFeedbackReindexRegistrations(definitions),...memoryHumanRegistrations(definitions,config),...relationRegistrations(definitions),...publicationRegistrations(definitions),...automationConfigurationRegistrations(config,definitions),automationFireRegistration(config,definitions),...skillLocalRegistrations(definitions),...authorizationRequestRegistrations(definitions,config),...skillSourceRegistrations(definitions,config),...evolutionOperationRegistrations(definitions),...runtimeContextOperationRegistrations(definitions),runtimeContextPolicyOperationRegistration(definitions),runtimeContextPolicyResolveRegistration(definitions),runtimeContextPreviewRegistration(definitions),...evolutionAssetOperationRegistrations(definitions),...promptOperationRegistrations(definitions),...readingMethodOperationRegistrations(definitions,config),...spaceOperationRegistrations(definitions,config),...contentAccessRegistrations(definitions),...readerRegistrations(definitions,config),...academicRegistrations(definitions),...contentRetrievalRegistrations(definitions),...knowledgeReviewRegistrations(definitions),knowledgeExtractionRegistration(definitions),...researchWorkspaceRegistrations(definitions,config),...researchExecutionRegistrations(definitions,config),...researchControlRegistrations(definitions,config),...researchAgentRegistrations(definitions),...agentOperationRegistrations(definitions,config),...agentChatRegistrations(definitions,config),...roomOperationRegistrations(definitions,config),...agentGroupOperationRegistrations(definitions,config),...runOperationRegistrations(definitions,config),...sessionOperationRegistrations(definitions,config),...hostCommandRegistrations(definitions,config),...hostDirectRegistrations(definitions,config),...providerOperationRegistrations(definitions,config),...networkProfileOperationRegistrations(definitions,config),...acpAgentOperationRegistrations(definitions,config),...pluginSettingsOperationRegistrations(definitions,config),...systemSettingsOperationRegistrations(definitions,config),...sourceCatalogOperationRegistrations(definitions,config),...deploymentOperationRegistrations(definitions,config),...notificationOperationRegistrations(definitions,config),...importedSessionRegistrations(definitions,config),researchAdhocRegistration(definitions,config),...projectSourceProposalRegistrations(definitions,config),...projectCorpusRegistrations(definitions),...projectFolderRegistrations(definitions,config),...projectFolderIoRegistrations(definitions,config),...inquiryOperationRegistrations(definitions),...inquiryAgentOperationRegistrations(definitions),...projectIngressRegistrations(definitions,config),...projectIngressCommandRegistrations(definitions,config),publicSummaryDraftRegistration(definitions,config),importedHistoryExtractionRegistration(definitions,config),projectSummaryBriefRegistration(definitions),...projectManagementRegistrations(definitions,config),...projectAgentRegistrations(definitions),...experimentRegistrations(definitions), researchCancelRegistration(definitions),...actionGrantRegistrations(config,definitions),...projectOperationRegistrations(definitions),...projectSourceRegistrations(definitions),...boardOperationRegistrations(config,definitions),...taskLifecycleRegistrations(config,definitions),taskSpacePlacementRegistration(config,definitions),...taskOperationRegistrations(config,definitions),...planOperationRegistrations(config,definitions),...jobOperationRegistrations(config,definitions),...sourceBackfillRegistrations(definitions),...sourceSubscriptionRegistrations(config,definitions),...sourceMonitorRegistrations(config,definitions),sourceRecipeCreateRegistration(config,definitions),sourceChannelCreateRegistration(config,definitions),...sourceProcessingRegistrations(config,definitions),...pluginOperations(config)]));
+    runtime = loadSystemActionRegistry(config).then(definitions => new OperationExecutor(dbPool(config), config, [
+      ...accountOperationRegistrations(definitions,config),
+      ...daemonWorkspaceRegistrations(definitions,config),
+      ...contextOpsRegistrations(definitions),
+      ...researchEvaluationRegistrations(config,definitions),
+      ...researchStrategyRegistrations(config,definitions),
+      ...personalRetrievalRegistrations(definitions),
+      ...attentionRegistrations(definitions),
+      ...personalMemoryGrantRegistrations(definitions),
+      ...pluginDataAccessRegistrations(definitions,config),
+      ...pluginProjectBindingRegistrations(definitions,config),
+      captureFilingRegistration(definitions),
+      egressNotificationRegistration(definitions),
+      ...learningRegistrations(definitions),
+      ...focusAreaRegistrations(definitions),
+      graphViewStateRegistration(definitions),
+      dailyReportRunRegistration(definitions),
+      ...dailyCaptureSettingsRegistrations(definitions),
+      captureRelocationRegistration(definitions),
+      activitySummaryRegistration(definitions),
+      activityCreateRegistration(definitions),
+      activityUploadRegistration(definitions),
+      captureCreateRegistration(definitions),
+      ...activityStatusRegistrations(definitions),
+      ...briefingHighlightRegistrations(definitions),
+      ...digestBackfillRegistrations(definitions),
+      personalBriefingRequestRegistration(config,definitions),
+      projectBriefingRequestRegistration(definitions),
+      ...briefingCancelRegistrations(config,definitions),
+      ...briefingSettingsRegistrations(definitions),
+      serendipityFeedbackRegistration(definitions),
+      ...interestRegistrations(config,definitions),
+      compositionRetryRegistration(definitions),
+      annotationRetryRegistration(config,definitions),
+      deepReadingCancelRegistration(config,definitions),
+      deepReadingStartRegistration(config,definitions),
+      readingPreferenceRegistration(definitions),
+      ...readingItemRegistrations(definitions),
+      ...bundleDecisionRegistrations(config,definitions),
+      ...proposalApplyRegistrations(config,definitions),
+      proposalRejectionRegistration(config,definitions),
+      proposalConsentRegistration(config,definitions),
+      ...workspaceOperationRegistrations(definitions,config),
+      collaborationParticipantsRegistration(definitions),
+      collaborationReadRegistration(definitions),
+      catalogRegistration(config,definitions),
+      ...threadCreationRegistrations(definitions),
+      ...noteControlRegistrations(definitions),
+      ...noteLinkRegistrations(definitions),
+      ...sourceObjectRegistrations(config,definitions),
+      ...materialProcessingRegistrations(config,definitions),
+      ...sourcePostProcessingRegistrations(config,definitions),
+      ...sourceRetrievalRegistrations(config,definitions),
+      ...sourceRecipeRegistrations(config,definitions),
+      ...customSourceRegistrations(config,definitions),
+      ...sourceGoalRegistrations(config,definitions),
+      noteTrashPurgeRegistration(definitions),
+      ...noteObjectRegistrations(definitions),
+      ...knowledgeObjectRegistrations(definitions),
+      ...knowledgeProposalRegistrations(definitions),
+      ...objectSchemaRegistrations(definitions),
+      ...retrievalFeedbackReindexRegistrations(definitions),
+      ...memoryHumanRegistrations(definitions,config),
+      ...relationRegistrations(definitions),
+      ...publicationRegistrations(definitions),
+      ...automationConfigurationRegistrations(config,definitions),
+      automationFireRegistration(config,definitions),
+      ...skillLocalRegistrations(definitions),
+      ...authorizationRequestRegistrations(definitions,config),
+      ...skillSourceRegistrations(definitions,config),
+      ...evolutionOperationRegistrations(definitions),
+      ...runtimeContextOperationRegistrations(definitions),
+      runtimeContextPolicyOperationRegistration(definitions),
+      runtimeContextPolicyResolveRegistration(definitions),
+      runtimeContextPreviewRegistration(definitions),
+      ...evolutionAssetOperationRegistrations(definitions),
+      ...promptOperationRegistrations(definitions),
+      ...readingMethodOperationRegistrations(definitions,config),
+      ...spaceOperationRegistrations(definitions,config),
+      ...contentAccessRegistrations(definitions),
+      ...readerRegistrations(definitions,config),
+      ...academicRegistrations(definitions),
+      ...contentRetrievalRegistrations(definitions),
+      ...knowledgeReviewRegistrations(definitions),
+      knowledgeExtractionRegistration(definitions),
+      ...researchWorkspaceRegistrations(definitions,config),
+      ...researchExecutionRegistrations(definitions,config),
+      ...researchControlRegistrations(definitions,config),
+      ...researchAgentRegistrations(definitions),
+      ...agentOperationRegistrations(definitions,config),
+      ...agentChatRegistrations(definitions,config),
+      ...roomOperationRegistrations(definitions,config),
+      ...agentGroupOperationRegistrations(definitions,config),
+      ...runOperationRegistrations(definitions,config),
+      ...sessionOperationRegistrations(definitions,config),
+      ...hostCommandRegistrations(definitions,config),
+      ...hostDirectRegistrations(definitions,config),
+      ...providerOperationRegistrations(definitions,config),
+      ...networkProfileOperationRegistrations(definitions,config),
+      ...acpAgentOperationRegistrations(definitions,config),
+      ...pluginSettingsOperationRegistrations(definitions,config),
+      ...systemSettingsOperationRegistrations(definitions,config),
+      ...sourceCatalogOperationRegistrations(definitions,config),
+      ...deploymentOperationRegistrations(definitions,config),
+      ...notificationOperationRegistrations(definitions,config),
+      ...importedSessionRegistrations(definitions,config),
+      researchAdhocRegistration(definitions,config),
+      ...projectSourceProposalRegistrations(definitions,config),
+      ...projectCorpusRegistrations(definitions),
+      ...projectFolderRegistrations(definitions,config),
+      ...projectFolderIoRegistrations(definitions,config),
+      ...inquiryOperationRegistrations(definitions),
+      ...inquiryAgentOperationRegistrations(definitions),
+      ...projectIngressRegistrations(definitions,config),
+      ...projectIngressCommandRegistrations(definitions,config),
+      publicSummaryDraftRegistration(definitions,config),
+      importedHistoryExtractionRegistration(definitions,config),
+      projectSummaryBriefRegistration(definitions),
+      ...projectManagementRegistrations(definitions,config),
+      ...projectAgentRegistrations(definitions),
+      ...experimentRegistrations(definitions),
+      researchCancelRegistration(definitions),
+      ...actionGrantRegistrations(config,definitions),
+      ...projectOperationRegistrations(definitions),
+      ...projectSourceRegistrations(definitions),
+      ...boardOperationRegistrations(config,definitions),
+      ...taskLifecycleRegistrations(config,definitions),
+      taskSpacePlacementRegistration(config,definitions),
+      ...taskOperationRegistrations(config,definitions),
+      ...planOperationRegistrations(config,definitions),
+      ...jobOperationRegistrations(config,definitions),
+      ...sourceBackfillRegistrations(definitions),
+      ...sourceSubscriptionRegistrations(config,definitions),
+      ...sourceMonitorRegistrations(config,definitions),
+      ...gmailConnectionRegistrations(definitions),
+      ...gmailSelectionRegistrations(definitions),
+      ...gmailMonitorRegistrations(definitions),
+      ...gmailDigestRegistrations(definitions),
+      gmailAgentReadSettingRegistration(definitions),
+      gmailAgentReadRegistration(definitions,config),
+      gmailDigestReadRegistration(definitions,config),
+      gmailSummaryShareRegistration(definitions),
+      gmailSummaryPreviewRegistration(definitions),
+      sourceRecipeCreateRegistration(config,definitions),
+      sourceChannelCreateRegistration(config,definitions),
+      ...sourceProcessingRegistrations(config,definitions),
+      ...pluginOperations(config),
+    ]));
     runtimes.set(config, runtime);
   }
   return runtime;

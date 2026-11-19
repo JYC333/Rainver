@@ -58,6 +58,15 @@ it('returns from an exact report to its supplied original, not a later author ve
  const {ProjectReaderTools}=await import('./ProjectReaderTools');const report={snapshot_id:'report',artifact_id:'d',captured_at:'2026-01-01T00:00:00Z',role:'analysis',original_snapshot_id:'used-v1'};const data={original:{snapshot_id:'later-v2',artifact_id:'a2'},items:[report],next_offset:null};vi.mocked(projectReadingApi.records).mockResolvedValue(data as never);vi.mocked(projectReadingApi.record).mockResolvedValue(data as never);vi.mocked(projectReadingApi.favoriteStatus).mockResolvedValue({item_id:'m',favorite:false});const choose=vi.fn();render(<MemoryRouter><ProjectReaderTools space="space" user="reader" project="p" item="m" version="report" currentArtifact="d" onChoose={choose} onDenied={vi.fn()}/></MemoryRouter>);fireEvent.click(await screen.findByRole('button',{name:'Read original used for this report'}));expect(choose).toHaveBeenCalledWith('used-v1');expect(choose).not.toHaveBeenCalledWith('later-v2');
 });
 
+it('reports completion only for a composition this view watched while it was queued',async()=>{
+ const done={...composition,composition_status:'complete',rounds:[{id:'r',goal_id:'g',status:'complete',error_code:null,coverage:{}}]}
+ vi.mocked(projectReadingApi.composition).mockResolvedValue(done as never)
+ const opened=page();await screen.findByText(/Version 2/);expect(screen.queryByText('Composition check complete.')).toBeNull();opened.unmount()
+ vi.mocked(projectReadingApi.composition).mockResolvedValueOnce({...done,composition_status:'queued'} as never)
+ page();await screen.findByText('Composition is queued.')
+ fireEvent.click(screen.getByRole('button',{name:'Refresh'}))
+ expect(await screen.findByText('Composition check complete.')).toBeVisible();expect(screen.queryByText('Composition is queued.')).toBeNull()
+})
 it('viewer and unknown capability keep a real composition without a retry control; history is read-only',async()=>{
  const value={...composition,rounds:[{id:'r',goal_id:'g',status:'complete',error_code:null,coverage:{}}]};vi.mocked(projectReadingApi.composition).mockResolvedValue(value as never);const p=page();await screen.findByText(/Version 2/);expect(screen.queryByRole('button',{name:'Retry composition only'})).toBeNull();p.unmount();vi.mocked(projectsApi.get).mockResolvedValue({current_user_can_write:true} as never);page('?composition=old');await screen.findByText(/Historical · read only/);expect(screen.queryByRole('button',{name:'Retry composition only'})).toBeNull();
 });

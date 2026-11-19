@@ -4,12 +4,17 @@ import type { Queryable } from '../../routeUtils/common.js';
 import type { PolicyCheckRequest } from '@rainver/protocol';
 export interface OperationReadAuditPort {
   recordReads(resourceType: string, resourceIds: readonly string[]): Promise<number>;
+  /** The separate audit transaction itself, for host-owned registrations only
+   * (plugin Agent-read finalization, ADR 0030). Plugin executors never see it. */
+  readonly hostTransaction: Queryable;
 }
 export interface ResolvedOperation {
   authority: string;
   targets: unknown;
   resourceType: string;
   resourceId: string|null;
+  /** Facts a host `authorize` establishes under its locks for `policyContext`; never fingerprinted. */
+  policyFacts?: Record<string, unknown>;
 }
 /** Host-authored invocation identity; never read from a business input. */
 export interface OperationInvocation {
@@ -53,6 +58,11 @@ export interface OperationRegistration {
   normalizeInput?(input: unknown, scope: ResolvedOperation): unknown;
   authorize(db: Queryable, input: unknown, actor: OperationActor, scope: ResolvedOperation): Promise<void>;
   authorizeResult?(db: Queryable, output: unknown, actor: OperationActor): Promise<void>;
+  /** For an approval-mapped request: the reviewer who accepts it, and every replay of that
+   * `proposal.accept` receipt, whose stored body carries this operation's result. On a fresh
+   * decision the requester is rechecked by `authorize` before apply, so only the reviewer is
+   * checked (without locks); on `replay` the frozen requester's target is rechecked live too. */
+  authorizeApprovedResult?(db: Queryable, frozen: {input: unknown; actor: OperationActor}, reviewer: {spaceId: string; userId: string}, replay: boolean): Promise<void>;
   execute(db: Queryable, input: unknown, actor: OperationActor, invocation?: Readonly<OperationInvocation>): Promise<unknown>;
   /** Explicit safe allowlist only: never reflect arbitrary HttpError messages/bodies.
    * Deterministic 409/422/429 errors are rolled back to the domain savepoint and cached.
@@ -64,6 +74,12 @@ export interface OperationRegistration {
   /** Separate host audit port, invoked before releasing query content; never a writable data transaction.
    * rawOutput preserves owner-private non-wire audit annotations after DTO validation. */
   readAudit?(audit: OperationReadAuditPort, input: unknown, output: unknown, actor: OperationActor, rawOutput?:unknown): Promise<void>;
+  /** Host-private facts of one execution, read from the raw output before DTO validation and stored
+   * with a command receipt so a replay is released against the same closure. */
+  releaseFacts?(rawOutput: unknown): unknown;
+  /** Release gate for every successful result body: fresh query, fresh command after its commit and
+   * idempotent command replay. Runs in a separate audit transaction; a failure withholds the result. */
+  releaseGate?(audit: Queryable, release: {input: unknown; data: unknown; facts: unknown; actor: OperationActor; replayed: boolean}): Promise<void>;
   approval?: {
     proposalType: string;
     gate: {
@@ -82,6 +98,6 @@ export interface OperationRegistration {
     /** Must be earned by a reviewed complete effect/status-writer inventory before production enablement. */
     atomicStatusWritersVerified: true;
     create(db: Queryable, input: unknown, actor: OperationActor): Promise<string>;
-    preconditions(db: Queryable, input: unknown, actor: OperationActor): Promise<unknown>;
+    preconditions(db: Queryable, input: unknown, actor: OperationActor, phase: 'propose' | 'approve'): Promise<unknown>;
   };
 }

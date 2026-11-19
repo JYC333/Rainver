@@ -17,6 +17,10 @@ export const proposals = pgTable("proposals", {
 	// A person's repeated request for the same operation on the same subject
 	// while one is still pending returns that proposal instead of a second.
 	pendingOperationKey: varchar("pending_operation_key", { length: 256 }),
+	// Durable origin marker: this Proposal was created by an approval-mapped operation
+	// request. It outlives that request's retention, so an accept receipt's replay can stay
+	// fail-closed after the frozen requester is gone (the result_type alone is not origin).
+	operationRequestLinked: boolean("operation_request_linked").default(false).notNull(),
 	proposalType: varchar("proposal_type", { length: 64 }).notNull(),
 	status: varchar({ length: 32 }).notNull(),
 	riskLevel: varchar("risk_level", { length: 32 }).notNull(),

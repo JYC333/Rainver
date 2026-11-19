@@ -13,6 +13,7 @@ import type {
   RunStepDetailRecord,
   VisibleRunRecord,
 } from "./repository.js";
+import { domainRunAccessLevel } from "./repository.js";
 import { bodyWithheld, type ContentAccessLevel } from "../access/contentAccessTypes.js";
 import type { VerificationResultRecord } from "./verification/index.js";
 
@@ -22,7 +23,7 @@ import type { VerificationResultRecord } from "./verification/index.js";
  * but the owner, like `bodyWithheld`.
  */
 export function runViewFor(run: RunRecord, viewerUserId: string): VisibleRunRecord {
-  return { ...run, effective_access_level: run.owner_user_id === viewerUserId ? "full" : "summary" };
+  return { ...run, effective_access_level: domainRunAccessLevel(run, run.owner_user_id === viewerUserId ? "full" : "summary") };
 }
 
 export function runToOut(

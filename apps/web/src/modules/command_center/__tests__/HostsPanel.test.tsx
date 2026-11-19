@@ -288,7 +288,7 @@ describe('HostsPanel', () => {
     authState.currentUser = { is_instance_admin: true }
     const OPENCODE_ADAPTER = {
       runtime_key: 'opencode', display_name: 'OpenCode', command: 'opencode', capability_probe: 'opencode',
-      remote_eligible: true, latest_managed_version: '9.9.9', supports_runtime_native: true, supports_model_provider: true,
+      remote_eligible: true, latest_managed_version: null, server_supported_version: '9.9.9', supports_runtime_native: true, supports_model_provider: true,
     }
     const CURSOR_ADAPTER = {
       runtime_key: 'acp_cursor', display_name: 'Cursor', command: 'acp_cursor', capability_probe: 'acp_cursor',

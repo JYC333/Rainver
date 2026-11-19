@@ -259,7 +259,16 @@ It is then re-verified against the destination the Delivery is authorized for
 (`informationDigest/briefing/referenceDelivery.ts`). Project membership writers
 take `lockProjectAudienceForChange` (`FOR NO KEY UPDATE` on the Project row),
 which conflicts with the Delivery's Project share lock, so a newly inserted
-member cannot slip past a Delivery that rests on the whole audience. A
+member cannot slip past a Delivery that rests on the whole audience. The Space
+level has the same fence: writers that add an active Space membership take the
+Space row `FOR NO KEY UPDATE` (`lockSpaceAudienceForChange`) before inserting it,
+conflicting with the Space share lock a whole-membership decision holds before it
+enumerates members (taken directly, never upgraded from a share lock). Within one
+content resource the Delivery read lock (`lockContentAclDependencies`, exported as
+`lockContentReadAuthority`) takes the resource root `FOR SHARE` before the viewer's
+grant rows, the order every audience writer takes them (`content.access.update` and
+the egress-review applier: root `FOR UPDATE`, then the grants); a grant-first reader
+and a root-first writer would otherwise each wait on the other. A
 briefing generation Run's request Delivery takes the same closure locks for
 its whole version before it re-authorizes the version on its authorized
 destination. It writes the immutable
@@ -637,7 +646,16 @@ cursor/state metadata used to decide when to enqueue or fire work.
 Current recurring scheduler cursors include daily capture reports
 (`daily_capture_report`), automation schedules (`automation`), source
 channel scans (`source_channel_scan`), and source post-processing rules
-(`source_post_processing_rule`).
+(`source_post_processing_rule`). Every scheduled Channel scan enqueue —
+built-in, Custom Source and recipe — goes through `enqueueChannelScanIfDue`
+(`sources/scanSchedule.ts`): it locks the connection FOR SHARE and then the
+Channel FOR UPDATE (the parent-before-Channel order Channel edits and Goal
+reconfirmation take), re-checks in a new statement that the task is still due
+and runnable (active, not manual, no active Source Goal owning the Channel,
+no scan in flight — the predicate the due batch shares) plus the
+implementation's own conditions, and inserts the job and any paired row (a
+Custom Source `source_handler_runs` row) in that one transaction. Overlapping
+ticks or schedulers enqueue at most one pending scheduled scan per Channel.
 Do not move execution-queue timestamps such as `jobs.scheduled_at` or
 domain work-item due timestamps such as `memory_maintenance_jobs.run_after`
 into `scheduler_tasks`; those rows are the work being processed, not the

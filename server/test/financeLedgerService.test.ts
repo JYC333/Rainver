@@ -1,11 +1,10 @@
 import { describe, expect, it, beforeAll, beforeEach } from "vitest";
 import { resetTables } from "./support/resetTables.js";
-import { loadFinanceLedgerRuntime } from "./financeLedgerRuntime.js";
+import { installFinanceLedgerTestSchema, loadFinanceLedgerRuntime } from "./financeLedgerRuntime.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { waitForLockWaiter } from "./support/lockWait.js";
 
 const {
-  plugin: { financeLedgerPlugin },
   service: { financeLedgerService, rootTypeForAccountName },
 } = loadFinanceLedgerRuntime();
 
@@ -14,13 +13,11 @@ const SPACE_A = "space-finance-a";
 const SPACE_B = "space-finance-b";
 const USER_1 = "user-finance-1";
 
-const db = useTestDatabase(import.meta.filename, { max: 10, empty: true });
+const db = useTestDatabase(import.meta.filename, { max: 10, empty: true, searchPath: "plugin_finance_ledger" });
 
 beforeAll(async () => {
   if (!db.available) return;
-  for (const migration of financeLedgerPlugin.migrations!) {
-  await db.pool.query(migration.sql);
-  }
+  await installFinanceLedgerTestSchema(db.pool);
 });
 
 beforeEach(async () => {

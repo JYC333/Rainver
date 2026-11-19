@@ -1,5 +1,5 @@
 import {mkdtemp,mkdir,writeFile,rm,realpath} from 'node:fs/promises';
-import {join} from 'node:path';
+import {join,dirname} from 'node:path';
 import {tmpdir} from 'node:os';
 import {execFileSync} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
@@ -124,4 +124,25 @@ it('publishes to an explicitly selected existing branch and refuses managed or m
  expect(await call('native_prepare',{publication_strategy:'fast_forward',target_ref:'refs/heads/release'})).toMatchObject({ok:true});
  expect(await call('native_publish',{publication_strategy:'fast_forward',publication_chain_tip:commits[8],target_ref:'refs/heads/release',verified_commit:commits[8]})).toMatchObject({ok:true,outcome:'merged'});
  expect(git('rev-parse','release')).toBe(commits[8]);expect(git('rev-parse','dev')).toBe(base);
+});
+
+it('publishes a chain that adds ordinary env templates',async()=>{
+ await init();await mkdir(join(cwd,'ops/env'),{recursive:true});
+ for(const name of ['.env.dev.example','.env.test.example','.env.prod.example'])await writeFile(join(cwd,'ops/env',name),'# Gmail (optional)\nGMAIL_CLIENT_ID=\n');
+ workGit('add','.');workGit('commit','-qm','templates');const tip=workGit('rev-parse','HEAD');
+ const prepared=await call('native_prepare',{publication_strategy:'fast_forward'});
+ expect(prepared,JSON.stringify(prepared)).toMatchObject({ok:true,publication:{strategy:'fast_forward',chain_tip:tip,chain_length:1}});
+ expect(await call('native_publish',{publication_strategy:'fast_forward',publication_chain_tip:tip,verified_commit:tip})).toMatchObject({ok:true,outcome:'merged'});
+ expect(git('show','dev:ops/env/.env.dev.example')).toContain('GMAIL_CLIENT_ID=');
+});
+
+it.each(['.env','.env.production','ops/env/.env.local','.aws/credentials','.aws/.env.example','config/secrets/.env.example'])(
+ 'refuses %s even when a later chain commit deletes it',async(path)=>{
+ await init();await mkdir(join(cwd,dirname(path)),{recursive:true});
+ await writeFile(join(cwd,'ops-template.txt'),'ordinary\n');await writeFile(join(cwd,path),'[REDACTED_SECRET]');
+ workGit('add','-f','.');workGit('commit','-qm','add');
+ workGit('rm','-q',path);workGit('commit','-qm','remove');
+ const target=git('rev-parse','dev');
+ expect(await call('native_prepare',{publication_strategy:'fast_forward'})).toMatchObject({ok:false,error:'native_publication_chain_path_not_allowed'});
+ expect(git('rev-parse','dev')).toBe(target);
 });

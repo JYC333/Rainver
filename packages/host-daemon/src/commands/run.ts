@@ -47,7 +47,7 @@ import {
 import { ReconnectableFrameSink } from "../reconnectableFrameSink.js";
 import { OWN_INSTALLATION, installTool, managedInstallationId, rollbackTool, uninstallTool } from "../tools.js";
 import { manageCli } from "../managedCli.js";
-import { updateOwnTool } from "../ownToolUpdate.js";
+import { updateOwnAntigravity, updateOwnTool } from "../ownToolUpdate.js";
 import { handleOrdinaryToolAction } from "../ordinaryTools.js";
 import { closeAllOrdinaryAccountSessions, closeOrdinaryAccountSession, handleOrdinaryAccountRequest, openOrdinaryAccountSession } from "../ordinaryToolAccounts.js";
 import { loginSession, openLoginSession } from "../login.js";
@@ -826,6 +826,10 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
           void withRuntimeKeyDrained(frame.runtime_key, TOOL_DRAIN_TIMEOUT_MS, async () => {
             const config = await loadConfig();
             if (config?.trust !== "trusted") throw new Error("Own CLI updates require a trusted paired Host");
+            if (frame.runtime_key === "acp_antigravity_acp") {
+              if (!frame.release) throw new Error("Missing verified Antigravity release");
+              return updateOwnAntigravity(frame.release);
+            }
             return updateOwnTool(frame.runtime_key);
           }).then((outcome) => {
             clearRuntimeOptionsCache(frame.runtime_key, OWN_INSTALLATION);

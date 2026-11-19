@@ -201,7 +201,7 @@ Recorded 2026-09-21. No execution target reaches `high` effective trust
 (`routing/repository.ts` `effectiveTrustLevel`), so an Agent whose risk is
 `high` or `critical` has no candidate anywhere; the creation form disables
 those levels. Owner-triggered Runs on a paired Host are `medium`
-(ADR 0016 amendment of 2026-09-21).
+(ADR 0016 §3).
 
 Decision recorded with the product owner: do not gate `high` behind a
 per-Run confirmation dialog. A confirmation nobody reads is not a control,

@@ -558,7 +558,40 @@ duplicate Notebook tab:
   focused monitoring comparison stops its stage and records
   `comparison_missing_baseline_role`; a standing batch records
   `blocked_baseline` and the missing role. Neither compares new material
-  against an absent understanding.
+  against an absent understanding. The baseline is a system read whose
+  model-restated content lands in Project-shared outputs (scan summaries, evidence
+  cards, Evidence Signals) that answer only to Project read and cannot carry a Note's
+  Source policy. A Note with any Source lineage entry is therefore never a baseline,
+  whoever queues (`notebookBaselineAdmissible`); it is reported the same way
+  (`reason: "source_lineage_withheld"`). The queued Run freezes `baseline_note_id`,
+  and the stage preparer's `authorizeAttempt` requires before every provider attempt
+  that it is still a live, lineage-free Note (lineage is append-only). A Run queued
+  before the id was frozen cannot show which Note it copied and is refused unsent;
+  requeueing applies the admission rule. The same check
+  (`comparisonBaselineAdmission`) runs again before an already terminal result is
+  merged, at each publication entry: the standing batch settle (worker redelivery's
+  `project_research_standing_reconcile` → evidence cards and advice) marks the batch
+  `failed`, and the focused merge (`project_research_execution_nudge` → the completed
+  Run's comparison results, then scan summary, evidence cards and Evidence Signals)
+  fails the operation. A result without a frozen id, or whose baseline is no longer
+  admissible, is never accumulated or published. Focused results are staged in
+  `comparison_results_json` batch by batch and published together, so each staged
+  result records the Run it came from (`comparison_result_run_ids`) and the final
+  publication (`finalizeComparisonStage`) rechecks every one of those Runs' frozen
+  baselines, not only the last batch's. A staged result with no recorded Run (staged
+  before this was kept) or an inadmissible baseline is refused: it is moved back to
+  the pending pool, nothing is published and the operation fails, so a retry compares
+  it again under a fresh frozen baseline. Until then the staged entries are unpublished model text
+  about Source items: the generic Project Operation read (`getContent`, behind
+  `projects` operation get/list and the orchestrator's operation responses) returns
+  one id-only entry per staged result, so progress counts still render, and never
+  their stance, detail, affected sections or `comparison_result_run_ids`. The batch
+  Runs themselves (focused `project_research.stage_key = monitor_compare` and standing
+  `project_research_standing`) are read by every viewer, at every status, at summary
+  level through the generic Run reads (detail, status, I/O, list, trace, turn stream,
+  attempts, finalization/evaluation/verification): status, timing and usage stay,
+  prompt input, output and error text do not. Only the focused final publication and
+  the standing batch settlement, which read `runs` directly, release what a batch produced.
 - the Reading List is a Project Corpus read model joined to
   `research_evidence_cards`. A deep-analysis run resolves
   `project_research.evidence_card`, creates the initial WHY/HOW/WHAT card directly,
@@ -617,16 +650,56 @@ resolved provider/model, and enqueues one `provider_task_run` Job. Notebook chat
 also persists its personal Session and user message in that transaction, returning
 a safe keyed receipt with Session/Run/Job IDs and budget counters. Its browser
 helper waits through read-only `GET .../notebook-chat/:runId` requests; it never
-retries the write. The Run is private and linked to that Session. The provider
-attempt revalidates current Project writer authority, the frozen readable Notes
+retries the write. The Run is private and linked to that Session. Every provider
+attempt of either entry — including a credential retry and a structured-output
+correction round-trip — revalidates in its own admission (`authorizeAttempt`) current
+Project writer authority, the frozen readable Notes (their Source lineage included)
 and selected Source material, destination-specific Source egress and provider
-eligibility. Notebook publication additionally checks that the edited Note's
-readers can read every frozen context Note and selected excerpt; a refused edit
-leaves the private answer available. Canonical Note changes, the assistant message
+eligibility. The queued Run also freezes the Sources its prompt was built under:
+each selected item's connection (`source_item_connections`) and the lineage
+connections of every Note whose body it copied (`note_source_connection_ids`: the
+context Notes for notebook chat, the target Note for Ask-AI), both entries.
+Admission (`authorizeNotebookChat`, and Ask-AI's own transaction) holds every
+lineage entry of those Notes `FOR SHARE` — provenance links and each referenced
+item, snapshot and evidence row (`lockSourceLineageEntries`) — before their bodies
+are read, so the body copied and the connections frozen come from one locked
+snapshot: a concurrent `source.item.update` rebind or detach waits for the Run to
+commit instead of leaving an empty freeze.
+Every attempt and publication holds those frozen connections with the live closure
+and requires the person to read each one and its egress consent to admit the
+destination, beside the live lineage (`frozenResearchSourcePins`), so an item
+rebound or detached after queueing never drops its original Source's read or
+consent. A Run that froze either incompletely cannot show which Sources it copied
+and is refused (409) rather than sent or written back. Released builds queue Ask-AI
+without these fields (notebook chat was not queued there): such a Run still pending
+at upgrade is refused and is asked again. Selected excerpts are read, sent and
+checked against the written Note's audience only at full Source-item access
+(`sourceItemFullContentReadClause`): a summary-level reader is served no excerpt, so
+it never enters a prompt, passes a send recheck or reaches a Note. Notebook publication additionally
+checks that the edited Note's readers can read every frozen context Note, its whole
+Source lineage, every selected excerpt and every frozen Source; a refused edit
+leaves the private answer available. A written-back Note (an edited one or a new
+one) inherits the frozen context Notes' Source lineage through
+`inheritNoteSourceLineage`, pinning `note_source_connection_ids`; an in-place edit
+(notebook chat's edited Note, Ask-AI's target) re-pins the target Note's own lineage
+too (`includeTarget`), since its body was in the prompt; and it gets a
+`source_item` lineage entry for each directly selected excerpt
+(`recordNoteSourceItemLineage`), pinned to the item's frozen and current
+connections (`sourceItemLineagePins`); Ask-AI's edit gets the same item entries. If
+that lineage cannot be kept (an item is gone, or its connection was not frozen) the
+edit is not written. So the copy is withheld from whoever a lineage Source no longer
+admits, like the text it came from, and a Note carrying it is never a monitoring
+baseline. Canonical Note changes, the assistant message
 and terminal success commit together through the Run terminal owner. Terminal Job
 redelivery repairs only a missing message/nudge and never calls the model again.
 Follow-up history carries the earlier answers' frozen Source/Note provenance, so
 withdrawn context cannot be resent through an otherwise unannotated chat message.
+Only the person's own messages and an earlier answer whose message row names
+(`run_id`) a Run of this session that froze complete Source evidence (each item's
+connections and the context Notes' lineage connections) are carried forward. Any
+other prior answer — from another Run, without that evidence, or an older one that
+kept its Run only in message metadata or not at all — is left out of the prompt
+entirely, never back-filled from current bindings.
 The worker rebuilds the request from that contract — never from the job payload,
 so a re-resolved space default cannot change what a queued Run runs on — and
 applies the block ops before the Run goes terminal. Do not apply them on the
@@ -853,6 +926,32 @@ result, is retained in report limitations with an unresolved marker. Only the
 post-critique report is materialized into `project_research_reports` and moved
 to `idea_review`. The periodic reconciler can recover an unqueued critique or
 revision from operation state, preserving the level-triggered lifecycle.
+Only the draft Run the operation is bound to (`synthesis_run_id`) may become
+its candidate: a superseded attempt that completes late neither fails the
+operation nor replaces or archives the current candidate (checked again under
+the operation lock in `stageCandidate`). Every Run-driven failure — a failed
+or cancelled comparison, draft, revision or critique Run, invalid or
+unvalidated output, a missing writer or a follow-up queue error — fails the
+operation only through `failOperationIfCurrent`, which locks the Project and
+then the operation and writes the failure only while that Run is still the
+one the current stage waits for; a stale callback changes nothing (and a
+stale invalid draft is not marked degraded). A critique Run is current only
+while `synthesis_critique.status` is `queued` with its `run_id`: under the
+Project then operation lock, before writing the Archive, the critique result
+also requires a non-terminal operation, so a re-delivered critique that already
+asked for a revision (`revision_needed`) never publishes the superseded draft.
+A comparison result merges only into a non-terminal operation still in
+`comparison` bound to that Run, and its processing error fails the operation
+only through the same current-Run check. A draft Run writes its Archive in
+`stageCandidate` only after the same lock shows a non-terminal operation in
+`synthesis` bound to that Run; the staged candidate re-entering resumes only
+while its critique is still `needs_queue`. When the final comparison
+publication refuses a staged result's frozen baseline, the requeue and the
+failure are one write under that lock, applied only while the operation is
+still in `comparison` with no Run queued and no batch left. After a draft or
+comparison batch is staged its Run is no longer bound, so a later error fails
+the operation only while the pass execution that staged it is still
+`current_execution_id`; a retry or newer comparison Run is left alone.
 It uses a success-only result envelope for every non-empty approved corpus.
 The model must synthesize the evidence that exists and state weak coverage,
 conflicts, and unsupported aspects in the report limitations; corpus size alone
@@ -1720,8 +1819,8 @@ promoted destinations are always visible — **Pulse** (the index route),
 **Board**, **Agents**, **Rooms**, **Updates**. Agents and Rooms are parallel
 because they are separate relations: the Agents this Project works with (each
 usable on its own, see "Project Agents"), and the Rooms that decide who can
-see which conversations ([ADR 0018](../decisions/0018-room-as-visibility-boundary.md),
-amended). The Rooms index lists the viewer's Rooms and links the cross-Room
+see which conversations ([ADR 0018](../decisions/0018-room-as-visibility-boundary.md)
+decision 2). The Rooms index lists the viewer's Rooms and links the cross-Room
 conversation list (`GET /projects/{id}/conversations`: every conversation the
 viewer can see across the Project's Rooms, mainline first, each opening in its
 Room; reading it, like the Rooms index, enrols the viewer in the mainline).

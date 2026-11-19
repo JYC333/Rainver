@@ -22,6 +22,7 @@ export { decodeTruncatedUtf8 } from "./body.js";
 export {
   DEFAULT_MAX_REDIRECTS,
   DEFAULT_OUTBOUND_DEADLINE_MS,
+  MAX_GUARDED_REQUEST_BODY_BYTES,
   guardedFetch,
   createUndiciProxyFetch,
   undiciPinnedFetch,

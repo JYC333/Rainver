@@ -33,7 +33,21 @@ RBAC/ABAC platform — it is a lightweight, code-owned permission layer that rou
 - Durable policy decision tracing/audit (`server/src/modules/policy/auditWriter.ts`).
 - Bounded post-denial authorization requests
   (`authorization_requests` and
-  `server/src/modules/policy/authorizationRequestService.ts`).
+  `server/src/modules/policy/authorizationRequestService.ts`). A request on an
+  owner-only Run (`contentOwnerOnlySql('run', …)`) is listed and decidable by
+  its owner alone. A pending core data tool consent request ends as `expired`
+  (no decider, Run cancelled) when what it would allow goes away
+  (`consentRequestLifecycle.ts`, ADR 0033). An approval writes only while,
+  under the Run lock it holds, the Run still waits for exactly that request
+  (`waiting_for_review` with that `authorization_request_id`, the resume's own
+  predicate); otherwise it is a 409 `authorization_request_run_not_waiting`
+  and the request can only be rejected. Approval lock order: Project audiences
+  (the frozen consent Project included) → people → Agent → Run `FOR SHARE` →
+  a core data tool's bound resource `FOR SHARE` (`CoreDataTool.lockBinding`)
+  → request `FOR UPDATE` → consent rows. Every writer that ends a pending
+  request keeps that order from where it starts: Project membership (Project →
+  request), review timeout (Run → request), Gmail connection writers
+  (connection `FOR UPDATE` → consents → request).
 
 ## Does Not Own
 

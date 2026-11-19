@@ -99,6 +99,22 @@ describe('direct Agent turns (real PostgreSQL)',()=>{
 
 
 describe('reusable Project Agent turns (real PostgreSQL)', () => {
+ it('makes a Project chat turn owner-only once the person allows Gmail reads there, and Space-shared otherwise', async () => {
+  await seedMainlineRoomsForAllProjects(db.pool);
+  await new PgProjectAgentRepository(db.pool).upsertActive({spaceId: space, projectId: project, agentId: agent, userId: owner});
+  const visibility = async (res: Awaited<ReturnType<typeof send>>) => {
+   expect(res.statusCode, res.body).toBe(202);
+   return (await db.pool.query("SELECT visibility FROM runs WHERE id=$1", [res.json().data.run_id])).rows[0].visibility;
+  };
+  expect(await visibility(await send({message:'Plan', project_id: project}))).toBe('space_shared');
+  // ADR 0033: with an active, opted-in Gmail connection the Agent may read mail here, so the Run is the owner's alone.
+  const credential = randomUUID();
+  await db.pool.query("INSERT INTO credentials(id,space_id,owner_user_id,name,credential_type,secret_ref,scopes_json,metadata_json,created_at,updated_at) VALUES($1,$2,$3,'Gmail','gmail_oauth','enc:x','[]'::jsonb,'{}'::jsonb,now(),now())", [credential, space, owner]);
+  await db.pool.query(`INSERT INTO gmail_connections(id,space_id,owner_user_id,google_subject,mailbox_email,credential_id,status,generation,granted_scopes,connected_at,agent_read_enabled,created_at,updated_at)
+   VALUES($1,$2,$3,'sub-1','me@example.test',$4,'active',1,'[]'::jsonb,now(),true,now(),now())`, [randomUUID(), space, owner, credential]);
+  expect(await visibility(await send({message:'Summarize my mail', project_id: project}))).toBe('private');
+ });
+
  it('dispatches and retries in the selected Project, then refuses both after original Agent access is revoked', async () => {
   const projectOwner = randomUUID(), projectB = randomUUID();
   await seedSpaceMember(db.pool, {space, user: projectOwner});

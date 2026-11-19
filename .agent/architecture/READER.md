@@ -9,7 +9,10 @@ The server entry points are `/api/v1/reader/*`. Document resolvers are supplied
 by Sources for `source_item` and `source_snapshot`, and by Project Research for
 `research_report`. `research_notebook` is an ordinary Note: it uses the
 `space_object` content-access gate and requires `full` access, the same as
-Notes detail. Every resolver applies its domain permission checks before
+Notes detail, and like it answers to the Note's Source lineage
+(`sourceLineageReadable`) — in the document resolver and in `assertDocumentReadable`,
+so its annotations (quote, anchor, label), comment threads, positions and document
+notes are withheld by the same rule. Every resolver applies its domain permission checks before
 returning content. Research reference resolution additionally applies source
 consent and returns only `unavailable` for inaccessible references.
 
@@ -637,6 +640,10 @@ proposal kinds:
   closure is pinned once; any other change is a conflict. Report reads keep
   per-reference `unavailable`; the closure never denies a whole report for a
   cited reference.
+- A file-backed Reader body is read from one open handle, checked to be a
+  regular file there, and read at most `READER_BODY_FILE_MAX_BYTES` (64 MiB)
+  plus one byte (`readHandleBounded`); a larger body is unreadable (`null`),
+  never buffered whole.
 - Body-reading writers (position, range) never read a file inside a
   transaction. The operation queues one `reader_document_write` Job
   (`max_attempts=1`) and returns 202. The handler uses the Source dispatch start

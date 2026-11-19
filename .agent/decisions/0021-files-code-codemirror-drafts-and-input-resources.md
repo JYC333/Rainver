@@ -154,8 +154,3 @@ Agent-authored edits, three-way merge, draft revision history, IndexedDB
 offline-first sync, encoding guessing, LSP/IDE features, Git diff conversion to
 CodeMirror MergeView, and migration of Notes/Library/Sources/Artifacts to the
 generic provider are outside this decision.
-
-## Revision history
-
-- 2026-09-17 — accepted after grilling and repository review; the implementation
-  plan fixes the phase order and migration boundary.

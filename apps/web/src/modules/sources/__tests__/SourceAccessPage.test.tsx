@@ -5,6 +5,8 @@ import SourceAccessPage from '../SourceAccessPage'
 import {sourceGoalsApi} from '../../../api/client'
 const state=vi.hoisted(()=>({role:'owner'}))
 vi.mock('../../../contexts/SpaceContext',()=>({useSpace:()=>({activeSpaceId:'s',spaces:[{id:'s',role:state.role}]})}))
+vi.mock('../gmail/GmailConnectionsCard',()=>({GmailConnectionsCard:()=><section>Personal Gmail card</section>}))
+vi.mock('../gmail/GmailMonitorsCard',()=>({GmailMonitorsCard:()=><section>Gmail monitoring card</section>}))
 vi.mock('../../../api/client',()=>({sourceGoalsApi:{storeCredential:vi.fn(),message:vi.fn(),begin:vi.fn()}}))
 beforeEach(()=>{vi.clearAllMocks();state.role='owner';vi.mocked(sourceGoalsApi.storeCredential).mockResolvedValue({id:'credential',space_id:'s',name:'Fixture access',header_name:'Authorization',header_value_prefix:'Bearer ',created_at:'2026-10-27T00:00:00Z',updated_at:'2026-10-27T00:00:00Z'});sessionStorage.clear();localStorage.clear()})
 it('sends the secret only through the dedicated credential channel and clears it after success',async()=>{
@@ -12,3 +14,4 @@ it('sends the secret only through the dedicated credential channel and clears it
 })
 it('offers no credential editor to a nonadministrator',()=>{state.role='member';render(<MemoryRouter><SourceAccessPage/></MemoryRouter>);expect(screen.getByRole('alert')).toHaveTextContent('Ask a Space administrator');expect(screen.queryByLabelText('Secret')).not.toBeInTheDocument()})
 it('shows a safe error without persisting or echoing the rejected credential',async()=>{vi.mocked(sourceGoalsApi.storeCredential).mockRejectedValue(new Error('fixture-secret-value'));render(<MemoryRouter><SourceAccessPage/></MemoryRouter>);fireEvent.change(screen.getByLabelText('Access name'),{target:{value:'Access'}});fireEvent.change(screen.getByLabelText('Secret'),{target:{value:'fixture-secret-value'}});fireEvent.click(screen.getByRole('button',{name:'Save securely'}));await waitFor(()=>expect(screen.getByRole('alert')).not.toHaveTextContent('fixture-secret-value'));expect(screen.queryByRole('status')).not.toBeInTheDocument()})
+it('keeps the administrator form and adds the personal Gmail card for every member',()=>{for(const role of ['owner','member']){state.role=role;const {unmount}=render(<MemoryRouter><SourceAccessPage/></MemoryRouter>);expect(screen.getByText('Personal Gmail card')).toBeInTheDocument();expect(screen.getByText('Gmail monitoring card')).toBeInTheDocument();expect(screen.queryAllByLabelText('Secret').length).toBe(role==='owner'?1:0);unmount()}})

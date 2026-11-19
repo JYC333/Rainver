@@ -13,7 +13,7 @@ export const spaces = pgTable("spaces", {
 	egressNotificationsEnabled: boolean("egress_notifications_enabled").notNull().default(false),
 	/**
 	 * Whether a member may copy content out of this Space into their personal
-	 * one (ADR 0013 amendments 6a/6b). Default off, matching this ADR's threat
+	 * one (ADR 0013 decision 9). Default off, matching this ADR's threat
 	 * model: the failure guarded against is accidental disclosure, so defaults
 	 * collapse inward and widening is a deliberate act by an owner or admin.
 	 *

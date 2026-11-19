@@ -97,6 +97,8 @@ export interface OfficialPluginDescriptor {
    */
   default_visible: boolean;
   scope: OfficialPluginScope;
+  /** Present for a Project-level operation package: its entries need an active Project binding. */
+  project_binding?: 'required';
   lifecycle_status: OfficialPluginLifecycleStatus;
   /** Frontend module entries this plugin contributes. */
   frontend_entries: OfficialPluginFrontendEntry[];

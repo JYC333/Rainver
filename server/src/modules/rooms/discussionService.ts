@@ -21,8 +21,8 @@ import { PgSessionRepository } from "../sessions/repository.js";
 import { discussionOut, PgRoomDiscussionRepository, type DiscussionRecord } from "./discussionRepository.js";
 import { PgRoomRepository, roomConversationOut, type RoomAgentMemberRecord } from "./repository.js";
 import { PgAgentGroupRepository } from "../agentGroups/repository.js";
-import { collaborationActive, collaborationContainer } from "../agentGroups/collaborationBudgetRepository.js";
-import { roomBudgetContainer, roomBudgetLimits, warnRoomSoftBudget } from "./delegationBudget.js";
+import { collaborationContainer, collaborationContinuation } from "../agentGroups/collaborationBudgetRepository.js";
+import { noteRoomDelegationUsage, roomBudgetBounds, roomBudgetContainer, roomBudgetLimits } from "./delegationBudget.js";
 import { RoomService, type ContinuationCause, type RoomDelegationBudget, type RoomDispatchDiscussion, type RoomIdentity } from "./service.js";
 import { hasQueuedRoomMessage, isTransientDatabaseError, lockRoomConversationQueue, RoomMessageQueue } from "./messageQueue.js";
 import { admitTurnParkedRuns, discussionQuotaHold } from "./quotaGate.js";
@@ -998,34 +998,51 @@ export async function agentOriginContinuation(
   const group = await new PgAgentGroupRepository(client).getGroup(spaceId, sourceGroupId);
   const collaboration = group ? await collaborationContainer(client, group) : null;
   const turns = await chargeContainer(client, spaceId, containerGroupId);
+  if (collaboration?.collaboration_invalid) {
+    // Unreadable collaboration bounds are never read as the ad-hoc Room budget.
+    return { discussion: null, delegation_budget: { max_depth: 1, max_fanout: 0, container_group_id: containerGroupId },
+      cause: { run_id: collaboration.root_run_id, within_budget: false } };
+  }
   if (collaboration?.collaboration && sourceDelegationId) {
     const sourceTask = (await client.query<{ task_id: string | null }>(`SELECT d.budget_json->>'collaboration_task_id' AS task_id
       FROM run_delegations d JOIN agent_run_groups g ON g.space_id=d.space_id AND g.id=d.group_id
       WHERE d.space_id=$1 AND d.id=$2 AND (g.id=$3 OR g.budget_json->>'container_group_id'=$3)`,
     [spaceId, sourceDelegationId, containerGroupId])).rows[0];
     if (sourceTask && sourceTask.task_id !== collaboration.collaboration.task_id
-      && (sourceTask.task_id !== null || (collaboration.collaboration.delegations_offset ?? 0) > 0)) {
+      && (sourceTask.task_id !== null || collaboration.collaboration.delegations_offset > 0)) {
       // A late result from an older declaration still charges the container,
-      // but must not spend the current Task's finite turn allowance.
-      const offset = (collaboration.collaboration.turns_offset ?? 0) + 1;
+      // but is not counted as the current Task's turn.
+      const offset = collaboration.collaboration.turns_offset + 1;
       await client.query(`UPDATE agent_run_groups SET budget_json=jsonb_set(budget_json,
         '{collaboration,turns_offset}',to_jsonb($3::int)) WHERE space_id=$1 AND id=$2`, [spaceId, containerGroupId, offset]);
       collaboration.collaboration.turns_offset = offset;
     }
   }
   const container = await roomBudgetContainer(client, spaceId, sourceGroupId);
-  const budget: RoomDelegationBudget = { max_depth: 1, max_fanout: 5, ...container?.budget_json };
+  const budget: RoomDelegationBudget = { max_depth: 1, max_fanout: 5, ...roomBudgetBounds(container?.budget_json) };
   if (collaboration?.collaboration) {
-    // The container row was read before this turn's charge; judge the
-    // collaboration on the charged count. Keep the original human cause
-    // instead of building an unbounded cause chain.
-    const active = await collaborationActive(client, collaboration, turns);
+    // Keep the original human cause instead of building an unbounded cause
+    // chain. There is no count ceiling, so a long chain stays within its
+    // manual cause; pauses, stops, lost authority, a closed Task and three
+    // children in a row without a result still end it.
+    const stop = await collaborationContinuation(client, collaboration);
     // One completion turn may reach each declared participant at most once.
     const fanout = collaboration.collaboration.participant_agent_ids.length;
     return {
       discussion: null,
-      delegation_budget: { max_depth: 1, max_fanout: active ? fanout : 0, container_group_id: containerGroupId },
-      cause: { run_id: collaboration.root_run_id, within_budget: active },
+      delegation_budget: { max_depth: 1, max_fanout: stop ? 0 : fanout, container_group_id: containerGroupId },
+      cause: { run_id: collaboration.root_run_id, within_budget: stop === null },
+    };
+  }
+  if (container?.person_authorized) {
+    // Temporary delegation a person's own Room turn started has no total
+    // either: the completion keeps the person's cause and its group bound,
+    // until three children in a row end without a result.
+    const stalled = await new PgAgentGroupRepository(client).containerConsecutiveFailures(spaceId, container.id) >= 3;
+    return {
+      discussion: null,
+      delegation_budget: { ...budget, ...(stalled ? { max_fanout: 0 } : {}), max_depth: 1, container_group_id: containerGroupId },
+      cause: { run_id: source?.root_run_id ?? null, within_budget: !stalled },
     };
   }
   return {
@@ -1069,7 +1086,7 @@ export async function chargeContainer(client: Queryable, spaceId: string, contai
       RETURNING (budget_json->>'container_turns_used')::int AS turns`,
     [spaceId, containerGroupId],
   );
-  await warnRoomSoftBudget(client, spaceId, containerGroupId);
+  await noteRoomDelegationUsage(client, spaceId, containerGroupId);
   return result.rows[0]?.turns ?? Number.MAX_SAFE_INTEGER;
 }
 

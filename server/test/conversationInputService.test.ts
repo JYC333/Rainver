@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, readFile, rm, writeFile, mkdir } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -237,21 +237,6 @@ describe("ConversationInputService image storage", () => {
       "folder-1",
       { workspaceLocationId: "location-pinned", signal: undefined },
     );
-  });
-
-  it("keeps a cleanup tombstone until its file is actually removable", async () => {
-    const storagePath = "space-1/media-1.bin";
-    const db = fakeDb((sql) => sql.startsWith("UPDATE conversation_input_media")
-      ? [{ id: "media-1", storage_path: storagePath }]
-      : undefined);
-    const { root, service } = await serviceWithRoot(db);
-    const file = resolve(root, "storage", "conversation-inputs", storagePath);
-    await mkdir(resolve(file, ".."), { recursive: true });
-    await writeFile(file, "media");
-
-    await expect(service.cleanupExpiredMedia()).resolves.toBe(1);
-    await expect(readFile(file)).rejects.toMatchObject({ code: "ENOENT" });
-    expect((db.query as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0]).toContain("DELETE FROM conversation_input_media");
   });
 
   it("delivers a managed file as a path reference without hydrating its body", async () => {

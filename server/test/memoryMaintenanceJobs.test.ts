@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   createMemoryMaintenanceJob,
+  runDueMemoryMaintenanceJobs,
   runMemoryMaintenanceJobOnce,
 } from "../src/modules/memory/maintenanceJobs.js";
 import type { MemoryRow, Queryable } from "../src/modules/memory/repository.js";
@@ -275,5 +276,34 @@ describe("Memory maintenance jobs (real PostgreSQL)", () => {
     // The owner's own reads are counted on the Memory rows; no other viewer is audited.
     expect((await pool.query("SELECT id, access_count FROM memory_entries WHERE space_id = 'space-1' ORDER BY id")).rows)
       .toEqual([{ id: "memory-1", access_count: 1 }, { id: "memory-2", access_count: 1 }]);
+  });
+
+  it("skips a due job another transaction holds and counts only pages that ran", async () => {
+    const pool = packetDatabase.database.pool;
+    const request = { ...job().scan_options_json, project_id: null, persist_report: false, create_packet: false } as never;
+    const held = await createMemoryMaintenanceJob(pool, { spaceId: "space-1", ownerUserId: "user-1", request });
+    const free = await createMemoryMaintenanceJob(pool, { spaceId: "space-1", ownerUserId: "user-1", request });
+    // The held job is first in line; a manual run is advancing it.
+    await pool.query("UPDATE memory_maintenance_jobs SET updated_at = now() - interval '1 hour' WHERE id = $1", [held.id]);
+    const holder = await pool.connect();
+    try {
+      await holder.query("BEGIN");
+      await holder.query("SELECT id FROM memory_maintenance_jobs WHERE id = $1 FOR UPDATE", [held.id]);
+      const processed = await withDbTransaction(pool, async (client) => {
+        await client.query("SET LOCAL lock_timeout = '2s'");
+        return runDueMemoryMaintenanceJobs(client, 5);
+      });
+      expect(processed).toBe(1);
+    } finally {
+      await holder.query("ROLLBACK");
+      holder.release();
+    }
+    const states = (await pool.query<{ id: string; status: string }>(
+      "SELECT id, status FROM memory_maintenance_jobs WHERE id = ANY($1::varchar[])", [[held.id, free.id]],
+    )).rows;
+    expect(Object.fromEntries(states.map((row) => [row.id, row.status]))).toEqual({ [held.id]: "pending", [free.id]: "completed" });
+    // A completed job is no longer due; nothing is counted as advanced.
+    await pool.query("UPDATE memory_maintenance_jobs SET status = 'completed' WHERE id = $1", [held.id]);
+    expect(await withDbTransaction(pool, (client) => runDueMemoryMaintenanceJobs(client, 5))).toBe(0);
   });
 });

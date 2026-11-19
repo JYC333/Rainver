@@ -1,7 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { isWireRelativePath, looksSecretLikePath, redactLocalPaths, redactSecretLikeDiff, validatePath } from "../src/pathPolicy.js";
+import { isEnvTemplatePath, isWireRelativePath, looksSecretLikePath, redactLocalPaths, redactSecretLikeDiff, validatePath } from "../src/pathPolicy.js";
 
 describe("folder-read path policy", () => {
+  it("excuses only env template names, never credential directories", () => {
+    for (const path of [".env.example", "ops/env/.env.dev.example", "ops/env/.env.test.example", "ops/env/.env.prod.example"]) {
+      expect(isEnvTemplatePath(path), path).toBe(true);
+      expect(looksSecretLikePath(path), path).toBe(true);
+    }
+    for (const path of [".env", ".env.production", "ops/env/.env.local", ".env.example.bak", ".aws/credentials", ".aws/.env.example", ".ssh/.env.example", "config/secrets/.env.example", "secrets.d/.env.example", "../.env.example", "ops/../.env.example", "./.env.example", "ops//.env.example", "ops\\env/.env.example"])
+      expect(isEnvTemplatePath(path), path).toBe(false);
+  });
   it("keeps absolute paths off the server-daemon wire while leaving traversal to root policy", () => {
     expect(isWireRelativePath("src/../README.md")).toBe(true);
     expect(isWireRelativePath(".")).toBe(true);

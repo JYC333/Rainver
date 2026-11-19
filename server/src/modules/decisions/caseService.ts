@@ -1,5 +1,9 @@
 import {DecisionMutationError} from './mutationError.js';
-import { contentReadSql } from "../access/contentAccessSql.js";
+import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql.js";
+import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
+import { bodyWithheld, type ContentAccessLevel } from "../access/contentAccessTypes.js";
+import { ContentAccessAuditService } from "../contentAccess/audit.js";
+import { assertWritableSpaceObject } from "../knowledge/knowledgeWriteAccess.js";
 import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter.js";
 import { assertLinkTypeAllowed } from "../ontology/validation.js";
 import { randomUUID } from "node:crypto";
@@ -26,10 +30,18 @@ const CASE_COLUMNS = `c.object_id AS id, c.space_id, c.project_id, so.title, c.f
     c.decided_option_id, c.decided_at, c.decided_by_user_id,
     so.created_by_user_id, so.created_at, so.updated_at`;
 
+/** The viewer's effective level on the Case root; viewer-facing reads may include oversight. */
+function caseLevelSql(userExpr: string): string {
+  const definition = contentResourceDefinition("space_object");
+  if (!definition) throw new Error("space_object content resource is not registered");
+  return `${contentAccessLevelSql({ definition, alias: "so", userExpr })} AS effective_access_level`;
+}
+
 interface CaseRow {
   id: string; space_id: string; project_id: string; title: string; framing: string | null; status: string;
   decided_option_id: string | null; decided_at: unknown; decided_by_user_id: string | null;
   created_by_user_id: string | null; created_at: unknown; updated_at: unknown;
+  effective_access_level: ContentAccessLevel;
 }
 
 interface OptionRow {
@@ -51,15 +63,25 @@ interface CommitmentRow {
   committed_at: unknown; created_delivery_task_id: string | null; created_at: unknown; updated_at: unknown;
 }
 
+/**
+ * A summary-level reader is told the Case exists — title, status, who decided
+ * and when — and never its framing or its Options, Criteria, scores and
+ * Commitments, which are the Case's content.
+ */
 function caseToOut(row: CaseRow): Record<string, unknown> {
+  const withheld = bodyWithheld(row.effective_access_level);
   return {
-    id: row.id, project_id: row.project_id, title: row.title, framing: row.framing, status: row.status,
+    id: row.id, project_id: row.project_id, title: row.title, framing: withheld ? null : row.framing, status: row.status,
     decided_option_id: row.decided_option_id, decided_at: dateIso(row.decided_at), decided_by_user_id: row.decided_by_user_id,
     created_by_user_id: row.created_by_user_id,
     created_at: dateIso(row.created_at) ?? new Date(0).toISOString(),
     updated_at: dateIso(row.updated_at) ?? new Date(0).toISOString(),
+    effective_access_level: withheld ? "summary" : "full",
   };
 }
+
+/** What a writer is served after a mutation: writability already required `full`. */
+const WRITER_LEVEL_SQL = `'full'::text AS effective_access_level`;
 
 function optionToOut(row: OptionRow): Record<string, unknown> {
   return {
@@ -110,7 +132,7 @@ export class DecisionCaseService {
     }
     for (const thread of targets.sourceThreadIds ?? []) await assertThreadReadable(this.pool,identity,projectId,thread,'change');
     if (targets.caseId) {
-      await this.requireCase(this.pool,identity.spaceId,projectId,targets.caseId,identity.userId);
+      await this.requireWritableCase(this.pool,identity,projectId,targets.caseId);
       await this.pool.query('SELECT object_id FROM decision_cases WHERE object_id=$1 AND space_id=$2 AND project_id=$3 FOR UPDATE', [targets.caseId,identity.spaceId,projectId]);
     }
   }
@@ -162,7 +184,7 @@ export class DecisionCaseService {
           [randomUUID(), identity.spaceId, id, threadId, identity.userId, now],
         );
       }
-      const row = await db.query<CaseRow>(`SELECT ${CASE_COLUMNS} FROM ${CASE_FROM} WHERE c.object_id=$1 AND c.space_id=$2`, [id, identity.spaceId]);
+      const row = await db.query<CaseRow>(`SELECT ${CASE_COLUMNS}, ${WRITER_LEVEL_SQL} FROM ${CASE_FROM} WHERE c.object_id=$1 AND c.space_id=$2`, [id, identity.spaceId]);
       return caseToOut(row.rows[0]!);
     });
   }
@@ -180,19 +202,23 @@ export class DecisionCaseService {
     // ontology object: the root's visibility decides who sees it, and a
     // `visibility` column nothing enforces is worse than none.
     params.push(identity.userId);
+    const userParam = `$${params.length}`;
     const rows = await this.pool.query<CaseRow>(
-      `SELECT ${CASE_COLUMNS} FROM ${CASE_FROM}
+      `SELECT ${CASE_COLUMNS}, ${caseLevelSql(userParam)} FROM ${CASE_FROM}
         WHERE c.space_id=$1 AND c.project_id=$2${clause}
-          AND ${contentReadSql("space_object", "so", `$${params.length}`)}
+          AND ${contentReadSql("space_object", "so", userParam)}
         ORDER BY so.created_at DESC`,
       params,
     );
+    // The list serves each full-level Case's framing; those are the reads B11 records.
+    await auditCaseReads(this.pool, identity, rows.rows.filter((row) => !bodyWithheld(row.effective_access_level)).map((row) => row.id), "list_read");
     return rows.rows.map(caseToOut);
   }
 
   async getCase(identity: SpaceUserIdentity, projectId: string, caseId: string): Promise<Record<string, unknown>> {
     await assertProjectReadable(this.pool, identity.spaceId, projectId, identity.userId);
     const row = await this.requireCase(this.pool, identity.spaceId, projectId, caseId, identity.userId);
+    const withheld = bodyWithheld(row.effective_access_level);
     const [sources, options, criteria, scores, commitments] = await Promise.all([
       // Only the source Threads this reader can reach: a Thread made private
       // or deleted after the Case referenced it stays out of the Case's view.
@@ -207,11 +233,12 @@ export class DecisionCaseService {
           ORDER BY r.created_at ASC`,
         [caseId, identity.spaceId, projectId, identity.userId],
       ),
-      this.pool.query<OptionRow>(`SELECT * FROM decision_options WHERE decision_case_id=$1 AND space_id=$2 ORDER BY created_at ASC`, [caseId, identity.spaceId]),
-      this.pool.query<CriterionRow>(`SELECT * FROM decision_criteria WHERE decision_case_id=$1 AND space_id=$2 ORDER BY created_at ASC`, [caseId, identity.spaceId]),
-      this.pool.query<ScoreRow>(`SELECT * FROM decision_option_scores WHERE decision_case_id=$1 AND space_id=$2`, [caseId, identity.spaceId]),
-      this.pool.query<CommitmentRow>(`SELECT * FROM decision_commitments WHERE decision_case_id=$1 AND space_id=$2 ORDER BY created_at ASC`, [caseId, identity.spaceId]),
+      withheld ? { rows: [] as OptionRow[] } : this.pool.query<OptionRow>(`SELECT * FROM decision_options WHERE decision_case_id=$1 AND space_id=$2 ORDER BY created_at ASC`, [caseId, identity.spaceId]),
+      withheld ? { rows: [] as CriterionRow[] } : this.pool.query<CriterionRow>(`SELECT * FROM decision_criteria WHERE decision_case_id=$1 AND space_id=$2 ORDER BY created_at ASC`, [caseId, identity.spaceId]),
+      withheld ? { rows: [] as ScoreRow[] } : this.pool.query<ScoreRow>(`SELECT * FROM decision_option_scores WHERE decision_case_id=$1 AND space_id=$2`, [caseId, identity.spaceId]),
+      withheld ? { rows: [] as CommitmentRow[] } : this.pool.query<CommitmentRow>(`SELECT * FROM decision_commitments WHERE decision_case_id=$1 AND space_id=$2 ORDER BY created_at ASC`, [caseId, identity.spaceId]),
     ]);
+    if (!withheld) await auditCaseReads(this.pool, identity, [caseId], "detail_read");
     return {
       ...caseToOut(row),
       source_thread_ids: sources.rows.map((r) => r.thread_id),
@@ -229,7 +256,7 @@ export class DecisionCaseService {
     const now = new Date().toISOString();
     return withQueryableTransaction(this.pool, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
-      const decisionCase = await this.requireCase(db, identity.spaceId, projectId, caseId, identity.userId);
+      const decisionCase = await this.requireWritableCase(db, identity, projectId, caseId);
       if (decisionCase.status !== "open") throw new DecisionMutationError(409, "Options can only be added to an open Decision Case");
       const id = randomUUID();
       await db.query(
@@ -250,7 +277,7 @@ export class DecisionCaseService {
     const now = new Date().toISOString();
     return withQueryableTransaction(this.pool, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
-      const decisionCase = await this.requireCase(db, identity.spaceId, projectId, caseId, identity.userId);
+      const decisionCase = await this.requireWritableCase(db, identity, projectId, caseId);
       if (decisionCase.status !== "open") throw new DecisionMutationError(409, "Criteria can only be added to an open Decision Case");
       const id = randomUUID();
       await db.query(
@@ -275,7 +302,7 @@ export class DecisionCaseService {
     const now = new Date().toISOString();
     return withQueryableTransaction(this.pool, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
-      await this.requireCase(db, identity.spaceId, projectId, caseId, identity.userId);
+      await this.requireWritableCase(db, identity, projectId, caseId);
       const option = await db.query(`SELECT id FROM decision_options WHERE id=$1 AND decision_case_id=$2 AND space_id=$3`, [optionId, caseId, identity.spaceId]);
       if (!option.rows[0]) throw new HttpError(404, "Option not found in this Decision Case");
       const criterion = await db.query(`SELECT id FROM decision_criteria WHERE id=$1 AND decision_case_id=$2 AND space_id=$3`, [criterionId, caseId, identity.spaceId]);
@@ -298,10 +325,10 @@ export class DecisionCaseService {
     const now = new Date().toISOString();
     return withQueryableTransaction(this.pool, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
-      // The same read gate as requireCase: deciding is a mutation, and the
-      // response carries the Case's content.
+      // Deciding is a mutation and the response carries the Case's content:
+      // the read gate finds it, the write rule below decides who may change it.
       const lockedCase = await db.query<CaseRow>(
-        `SELECT ${CASE_COLUMNS} FROM ${CASE_FROM}
+        `SELECT ${CASE_COLUMNS}, ${WRITER_LEVEL_SQL} FROM ${CASE_FROM}
           WHERE c.object_id=$1 AND c.space_id=$2 AND c.project_id=$3
             AND ${contentReadSql("space_object", "so", "$4")}
           FOR UPDATE OF c`,
@@ -309,6 +336,7 @@ export class DecisionCaseService {
       );
       const decisionCase = lockedCase.rows[0];
       if (!decisionCase) throw new HttpError(404, "Decision Case not found");
+      await assertWritableSpaceObject(db, identity, caseId, "Decision Case not found");
       if (decisionCase.status !== "open") throw new DecisionMutationError(409, `Decision Case already ${decisionCase.status}`);
       const option = await db.query<{ status: string }>(`SELECT status FROM decision_options WHERE id=$1 AND decision_case_id=$2 AND space_id=$3`, [optionId, caseId, identity.spaceId]);
       if (!option.rows[0]) throw new HttpError(404, "Option not found in this Decision Case");
@@ -324,7 +352,7 @@ export class DecisionCaseService {
         `UPDATE space_objects SET updated_at=$1 WHERE id=$2 AND space_id=$3`,
         [now, caseId, identity.spaceId],
       );
-      const row = await db.query<CaseRow>(`SELECT ${CASE_COLUMNS} FROM ${CASE_FROM} WHERE c.object_id=$1 AND c.space_id=$2`, [caseId, identity.spaceId]);
+      const row = await db.query<CaseRow>(`SELECT ${CASE_COLUMNS}, ${WRITER_LEVEL_SQL} FROM ${CASE_FROM} WHERE c.object_id=$1 AND c.space_id=$2`, [caseId, identity.spaceId]);
       return caseToOut(row.rows[0]!);
     });
   }
@@ -335,7 +363,7 @@ export class DecisionCaseService {
     const now = new Date().toISOString();
     return withQueryableTransaction(this.pool, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
-      const decisionCase = await this.requireCase(db, identity.spaceId, projectId, caseId, identity.userId);
+      const decisionCase = await this.requireWritableCase(db, identity, projectId, caseId);
       if (decisionCase.status !== "decided") throw new DecisionMutationError(409, "A Commitment requires a decided Decision Case");
       const id = randomUUID();
       await db.query(
@@ -359,7 +387,7 @@ export class DecisionCaseService {
     await assertProjectWriter(this.pool, identity.spaceId, projectId, identity.userId);
     return withQueryableTransaction(this.pool, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
-      await this.requireCase(db, identity.spaceId, projectId, caseId, identity.userId);
+      await this.requireWritableCase(db, identity, projectId, caseId);
       const commitment = await db.query<CommitmentRow>(
         `SELECT * FROM decision_commitments
           WHERE id=$1 AND decision_case_id=$2 AND project_id=$3 AND space_id=$4
@@ -404,12 +432,39 @@ export class DecisionCaseService {
     viewerUserId: string,
   ): Promise<CaseRow> {
     const row = await db.query<CaseRow>(
-      `SELECT ${CASE_COLUMNS} FROM ${CASE_FROM}
+      `SELECT ${CASE_COLUMNS}, ${caseLevelSql("$4")} FROM ${CASE_FROM}
         WHERE c.object_id=$1 AND c.space_id=$2 AND c.project_id=$3
           AND ${contentReadSql("space_object", "so", "$4")}`,
       [caseId, spaceId, projectId, viewerUserId],
     );
     if (!row.rows[0]) throw new HttpError(404, "Decision Case not found");
     return row.rows[0];
+  }
+
+  /**
+   * Readable is not writable. Every Case mutation — execution, its admission
+   * and historical receipt replay — goes through the one Knowledge write rule:
+   * Project writer, the Case's owner unless it is `space_shared`, and `full`
+   * access without oversight. A `selected_users` grantee, a summary-level
+   * reader and an oversight admin read the Case; none of them change it.
+   */
+  private async requireWritableCase(db: Queryable, identity: SpaceUserIdentity, projectId: string, caseId: string): Promise<CaseRow> {
+    const row = await this.requireCase(db, identity.spaceId, projectId, caseId, identity.userId);
+    await assertWritableSpaceObject(db, identity, caseId, "Decision Case not found");
+    return { ...row, effective_access_level: "full" };
+  }
+}
+
+/**
+ * B11: a Case body served to someone other than its owner is recorded before it
+ * is released; owner reads are dropped by the audit itself. A failed audit
+ * withholds the response rather than serving unrecorded content.
+ */
+async function auditCaseReads(db: Queryable, identity: SpaceUserIdentity, caseIds: string[], accessType: "detail_read" | "list_read"): Promise<void> {
+  if (caseIds.length === 0) return;
+  try {
+    await new ContentAccessAuditService(db).recordReads({ spaceId: identity.spaceId, resourceType: "space_object", resourceIds: caseIds, viewerUserId: identity.userId, accessType });
+  } catch {
+    throw new HttpError(503, "Content audit unavailable");
   }
 }

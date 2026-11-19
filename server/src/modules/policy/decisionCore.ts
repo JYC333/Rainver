@@ -24,6 +24,7 @@ import {
   type PolicyActionDefinition,
 } from "./actionRegistry.js";
 import { allowsManagedCredentialUse } from "./managedExecutionPolicy.js";
+import { CANONICAL_ROLES } from "../access/roles.js";
 
 type Ctx = Record<string, unknown>;
 
@@ -43,13 +44,7 @@ function num(value: unknown): number | null {
 // Canonical roles
 // ---------------------------------------------------------------------------
 
-export const CANONICAL_ROLES = [
-  "guest",
-  "member",
-  "reviewer",
-  "admin",
-  "owner",
-] as const;
+export { CANONICAL_ROLES };
 const ROLE_RANK = new Map<string, number>(
   CANONICAL_ROLES.map((r, i) => [r, i]),
 );
@@ -183,6 +178,29 @@ const rawPrivateMemoryBlocksEgress: Invariant = (ctx) => {
   return null;
 };
 
+/**
+ * Beside `rawPrivateMemoryBlocksEgress`: once a Run has read sensitive plugin
+ * data (merge-only Run taint, ADR 0030) every outward Agent write is refused.
+ * The context flags are host-computed from the stored taint, never call input.
+ */
+const sensitivePluginReadBlocksOutward: Invariant = (ctx) => {
+  const context = asRecord(ctx.context);
+  if (context?.sensitive_plugin_read_taint !== true) return null;
+  const action = str(ctx.action);
+  if (context.outward_action !== true && !EGRESS_SENSITIVE_ACTIONS.has(action)) return null;
+  return makeDecision({
+    decision: "deny",
+    message: "This Run has read sensitive plugin data; outward writes are refused for the rest of the Run.",
+    risk_level: "critical",
+    reason_code: "hard_invariant_sensitive_plugin_read_egress",
+    policy_rule_id: "hard_invariant_sensitive_plugin_read_egress",
+    policy_source: "hard_invariant",
+    audit_code: "sensitive_plugin_read_egress_blocked",
+    action,
+    space_id: (ctx.space_id as string | undefined) ?? null,
+  });
+};
+
 const publicTargetBlocksGrantDerived: Invariant = (ctx) => {
   const action = str(ctx.action);
   if (!EGRESS_SENSITIVE_ACTIONS.has(action)) return null;
@@ -257,6 +275,7 @@ const HARD_INVARIANTS: readonly Invariant[] = [
   crossSpaceMemoryRead,
   personalContextBlockNotPersisted,
   rawPrivateMemoryBlocksEgress,
+  sensitivePluginReadBlocksOutward,
   publicTargetBlocksGrantDerived,
   payloadFlagsNotApprovalProof,
   unknownTargetSpaceEgressFailsClosed,
@@ -953,7 +972,33 @@ const ruleUnattendedProjectWrite: Rule = (ctx) => {
   });
 };
 
+/**
+ * Personal/sensitive plugin data for an Agent (ADR 0030). The host's
+ * `authorize` recheck establishes the facts under lock; a missing consent the
+ * data owner (sensitive) or Space owner (personal) can give is a requestable
+ * denial, an ineligible scenario (shared audience, delegation, unattended) is
+ * not.
+ */
+const rulePluginDataConsent: Rule = (ctx) => {
+  if (ctx.actor_type !== "agent") return null;
+  const dataClass = ctx.plugin_data_class;
+  if (dataClass !== "personal" && dataClass !== "sensitive") return null;
+  if (ctx.plugin_data_consent === true) return null;
+  const requestable = ctx.plugin_data_requestable === true;
+  return makeDecision({
+    decision: "deny",
+    message: requestable
+      ? `This ${dataClass} plugin data needs the ${dataClass === "sensitive" ? "data owner's" : "Space owner's"} consent for this Run.`
+      : `This ${dataClass} plugin data is not available to an Agent in this scenario.`,
+    risk_level: dataClass === "sensitive" ? "high" : "medium",
+    reason_code: requestable ? "plugin_data_consent_required" : "plugin_data_scenario_refused",
+    policy_rule_id: requestable ? "plugin_data_consent_required" : "plugin_data_scenario_refused",
+    audit_code: requestable ? "plugin_data_consent_required" : "plugin_data_scenario_refused",
+  });
+};
+
 const BUILTIN_RULES: readonly Rule[] = [
+  rulePluginDataConsent,
   ruleSpaceBoundary,
   ruleAgentStatus,
   ruleMemoryScope,

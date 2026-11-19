@@ -249,9 +249,11 @@ export function liveQuotaSource(pool: Pool | null, options: { probeDeadlineMs?: 
           reading = quotaReading(cached);
         }
       }
-      // Refusals after a readable reading overrule it; with nothing readable, any within the week counts.
-      const refusedAt = await latestRefusalAt(db, login, reading.window ? reading.checked_at : null);
-      const refused = refusedAt && !reading.model_scoped ? refusedWindow(reading, refusedAt, now) : null;
+      // Antigravity refusals can concern one quota bucket even when its probe
+      // was unavailable. They stay with the interrupted Run.
+      const refusedAt = login.runtime_key === "acp_antigravity_acp" || reading.model_scoped
+        ? null : await latestRefusalAt(db, login, reading.window ? reading.checked_at : null);
+      const refused = refusedAt ? refusedWindow(reading, refusedAt, now) : null;
       // The refusal is the evidence behind this window. Keeping the older
       // probe's timestamp would make recovery ignore a later refusal when
       // deciding whether a previously reported reset is still trustworthy.

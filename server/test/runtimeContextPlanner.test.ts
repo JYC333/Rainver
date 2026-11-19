@@ -175,6 +175,67 @@ describe("Runtime Context common planner", () => {
     }));
   });
 
+  it("attributes injected retrieval to the executing Run and injects nothing when that audit fails", async () => {
+    const item = {
+      object_type: "memory_entry" as const, object_id: "00000000-0000-4000-8000-000000000007", title: "Episode", snippet: "Relevant prior event",
+      score: 0.9, evidence: { kind: "lexical_match" as const, source: "projection" }, matched_fields: ["text"],
+    };
+    const audited: { runId: string | null }[] = [];
+    let fail = false;
+    const coordinator = new RetrievalCoordinator({
+      async search() { return { items: [item], total: 1, trace: {} }; },
+      async recordReads(input) { if (fail) throw new Error("audit unavailable"); audited.push(input); },
+    }, {
+      async authorize() {
+        return { sensitivity: "normal", visibility: "private", ownerUserId: null, egressEligible: true, revalidation: { status: "live", checked_at: "2026-08-09T00:00:00.000Z" } };
+      },
+    });
+    const request = {
+      spaceId: SPACE_ID, userId: "00000000-0000-4000-8000-000000000008", agentId: "00000000-0000-4000-8000-000000000010",
+      runId: "00000000-0000-4000-8000-000000000011", executionControlSnapshotId: CONTROL_ID, query: "prior event",
+      objectTypes: ["memory_entry" as const], maxResults: 5, mode: "hybrid" as const,
+    };
+    expect((await coordinator.retrieve(request)).items).toHaveLength(1);
+    expect(audited[0]).toMatchObject({ runId: "00000000-0000-4000-8000-000000000011" });
+    fail = true;
+    await expect(coordinator.retrieve(request)).rejects.toThrow("audit unavailable");
+  });
+
+  it("keeps legitimate hits when higher-ranked out-of-scope hits are excluded, still trimming to maxResults", async () => {
+    const hit = (n: number) => ({
+      object_type: "memory_entry" as const,
+      object_id: `00000000-0000-4000-8000-0000000001${String(n).padStart(2, "0")}`,
+      title: `Hit ${n}`, snippet: "prior event", score: 1 - n / 100,
+      evidence: { kind: "lexical_match" as const, source: "projection" as const }, matched_fields: ["text"],
+    });
+    const ranked = Array.from({ length: 12 }, (_value, n) => hit(n));
+    const requested: number[] = [];
+    const coordinator = new RetrievalCoordinator({
+      async search(input) {
+        requested.push(input.maxResults ?? 10);
+        const items = ranked.slice(0, input.maxResults ?? 10);
+        return { items, total: items.length, trace: {} };
+      },
+    }, {
+      async authorize() {
+        return { sensitivity: "normal", visibility: "private", ownerUserId: null, egressEligible: true, revalidation: { status: "live", checked_at: "2026-08-09T00:00:00.000Z" } };
+      },
+    });
+    const request = {
+      spaceId: SPACE_ID, userId: "00000000-0000-4000-8000-000000000008", agentId: "00000000-0000-4000-8000-000000000010",
+      executionControlSnapshotId: CONTROL_ID, query: "prior event",
+      objectTypes: ["memory_entry" as const], maxResults: 3, mode: "hybrid" as const,
+    };
+    // The three best hits are already in the window and excluded.
+    const excludedRefs = ranked.slice(0, 3).map((entry) => ({ type: "memory_entry", id: entry.object_id }));
+    const scoped = await coordinator.retrieve({ ...request, excludedRefs });
+    expect(scoped.items.map((entry) => entry.source_ref.id)).toEqual(ranked.slice(3, 6).map((entry) => entry.object_id));
+
+    const unscoped = await coordinator.retrieve(request);
+    expect(unscoped.items).toHaveLength(3);
+    expect(requested).toEqual([12, 3]);
+  });
+
   it("delegates relevance selection to Retrieval and normalizes results as ranked reference data", async () => {
     const calls: unknown[] = [];
     const audited: unknown[] = [];

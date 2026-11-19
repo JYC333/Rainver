@@ -184,19 +184,13 @@ async function query(input: Record<string, unknown> = {}) {
   });
 }
 describe('manifest plugin through real P1 HTTP and Agent consumers', () => {
-  it('fails startup for declaration mismatch, duplicate registration and legacy namespace collisions', async () => {
+  it('fails startup for declaration mismatch, duplicate registration and package namespace collisions', async () => {
     for (const variant of ['missing', 'extra', 'duplicate', 'collision'] as const) {
       const cfg = loadConfig({
         SERVER_DATABASE_URL: db.connectionUri
       });
-      const candidate = variant === 'collision' ? {
-        ...manifest,
-        id: 'diary',
-        operations: manifest.operations.map(o => ({
-          ...o,
-          id: o.id.replace(pid, 'diary')
-        }))
-      } : manifest;
+      // No legacy descriptor is left (Plan 7): a namespace collision is now two packages claiming one id.
+      const candidate = manifest;
       const bad: RainverPlugin = {
         ...plugin,
         id: candidate.id,
@@ -216,7 +210,7 @@ describe('manifest plugin through real P1 HTTP and Agent consumers', () => {
         }
       };
       const target = buildModuleServer(cfg, [systemActionsModule]);
-      expect(() => new PluginHost([bad]).activate(target, cfg)).toThrow();
+      expect(() => new PluginHost(variant === 'collision' ? [bad, {...plugin}] : [bad]).activate(target, cfg)).toThrow();
       await target.close();
     }
   });

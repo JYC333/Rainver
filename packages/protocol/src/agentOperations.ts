@@ -35,7 +35,8 @@ export const AGENT_OPERATION_SCHEMAS={
  'conversation.session_config.save':{input:ConversationSessionConfigSaveSchema.extend(agent).strict(),output:z.object({id,space_id:id,agent_id:id,session_id:id}).strict()},
  'agent.run.create':{input:z.object({...agent,...runCreate}).strict(),output:z.object({id,space_id:id,agent_id:id,run_id:id}).strict()},
  'agent.chat.reset_context':{input:z.object({...agent,
-  // A direct conversation placed in a Project has its own Host container; without it, the person's own direct one is reset.
+  // The person's own direct conversation (Project or not): the Host container its turns use is reset — its own
+  // for a Project conversation or one that may read private data (ADR 0032), else the person's direct one, which is also reset without it.
   session_id:id.optional()}).strict(),output:z.object({id,space_id:id,agent_id:id,session_reset:z.literal(true),thread_id:id,workspace_mode:z.enum(['location','managed'])}).strict()},
 } as const;
 export const AGENT_OPERATION_TITLES:Record<keyof typeof AGENT_OPERATION_SCHEMAS,string>={

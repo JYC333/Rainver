@@ -346,6 +346,36 @@ export const HostLaunchIsolationSchema = z.object({
 });
 export type HostLaunchIsolation = z.infer<typeof HostLaunchIsolationSchema>;
 
+/** The loopback port the model channel listens on inside a Run's own network namespace. */
+export const MODEL_CHANNEL_LOOPBACK_PORT = 18790;
+
+/**
+ * The one network path a strict Run with egress `none` keeps (ADR 0030 §4a):
+ * its own provider-proxy lease, and nothing else.
+ *
+ * The control plane composes it with the Run's lease; the daemon serves it.
+ * Inside the namespace a forwarder listens on `127.0.0.1:loopback_port` and
+ * passes bytes to a Unix socket bound read-only into the namespace; outside,
+ * the daemon relays only origin-form requests whose path is under
+ * `/<route>/<lease_id>` to `upstream_base_url` — never CONNECT, an upgrade,
+ * an absolute-form target or any other path. The provider binding's own URL
+ * already names the loopback address, so the CLI's configuration needs no
+ * change on the Host. The upstream key never leaves the server; the lease is
+ * revoked when the Run ends, which closes the channel's only destination.
+ *
+ * Valid only together with `isolation.egress_profile: "none"` on a strict
+ * Host; a daemon refuses the launch otherwise.
+ */
+export const HostLaunchModelChannelSchema = z.object({
+  version: z.literal(1),
+  /** The provider proxy as this Host reaches it (no path; the lease path is below). */
+  upstream_base_url: z.string().url(),
+  route: z.enum(["anthropic", "openai"]),
+  lease_id: z.string().uuid(),
+  loopback_port: z.number().int().min(1024).max(65535),
+});
+export type HostLaunchModelChannel = z.infer<typeof HostLaunchModelChannelSchema>;
+
 /** Admin-selected public route for built-in Host Runs and verified runtime downloads. */
 export const HostEgressTransportSchema = z.discriminatedUnion("mode", [
   z.object({ mode: z.literal("direct") }),
@@ -430,6 +460,8 @@ export const HostLaunchFrameSchema = z.object({
   isolation: HostLaunchIsolationSchema.optional(),
   /** Instance-admin-selected public route for a strict host; ignored by a trusted one. */
   egress_transport: HostEgressTransportSchema.optional(),
+  /** Model-only channel for an egress-`none` strict Run; sent only to a daemon reporting `model_channel`. */
+  model_channel: HostLaunchModelChannelSchema.optional(),
   /**
    * Ordinary CLI tools for this Run and the instructing person's own account
    * (`ordinaryToolAccounts.ts`). Sent only to a daemon reporting
@@ -812,10 +844,13 @@ export const OwnCliUpdateRuntimeKeySchema = z.enum(
   Object.keys(OWN_CLI_UPDATE_PACKAGES) as [OwnCliUpdateRuntimeKey, ...OwnCliUpdateRuntimeKey[]],
 );
 
+export const ANTIGRAVITY_OWN_UPDATE_RUNTIME = "acp_antigravity_acp";
+
 export const HostUpdateOwnToolFrameSchema = z.object({
   type: z.literal("update_own_tool"),
   request_id: IdSchema,
-  runtime_key: OwnCliUpdateRuntimeKeySchema,
+  runtime_key: z.union([OwnCliUpdateRuntimeKeySchema, z.literal(ANTIGRAVITY_OWN_UPDATE_RUNTIME)]),
+  release: z.object({ version: z.string().regex(/^\d+\.\d+\.\d+$/), distribution: RuntimeDistributionSchema }).optional(),
 });
 
 export const HostManagedCliFrameSchema = z.object({

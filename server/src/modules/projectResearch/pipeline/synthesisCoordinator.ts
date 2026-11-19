@@ -38,6 +38,7 @@ interface SynthesisOperationRow {
   project_id: string;
   status: string;
   progress_json: unknown;
+  current_execution_id?: string | null;
 }
 
 export interface QueueSynthesisInput {
@@ -73,6 +74,13 @@ interface ProjectResearchSynthesisPorts {
     message: string,
     details?: { code?: string; diagnostics?: Record<string, unknown> },
   ): Promise<void>;
+  /** Fails the operation only while `isCurrent` holds under its row lock. */
+  failOperationIfCurrent(
+    operation: SynthesisOperationRow,
+    isCurrent: (state: ResearchOperationState, row: { current_execution_id?: string | null }) => boolean,
+    message: string,
+    details?: { code?: string; diagnostics?: Record<string, unknown> },
+  ): Promise<boolean>;
   projectWriterActor(spaceId: string, projectId: string): Promise<string | null>;
   reconcileCompletedRun(spaceId: string, runId: string): Promise<void>;
   createCheckpoint(
@@ -84,6 +92,25 @@ interface ProjectResearchSynthesisPorts {
     type: string,
     result: Record<string, unknown>,
   ): Promise<string>;
+}
+
+/**
+ * Whether `runId` is still the Run the operation waits on for `stageKey`:
+ * the bound comparison batch, the bound draft or revision, or the queued
+ * critique of the current candidate. Anything else is a superseded attempt
+ * whose late result or failure must not touch the operation.
+ */
+export function researchStageRunIsCurrent(state: ResearchOperationState, stageKey: string, runId: string): boolean {
+  if (stageKey === "monitor_compare") return state.current_stage === "comparison" && state.comparison_run_id === runId;
+  if (state.current_stage !== "synthesis") return false;
+  if (stageKey === "synthesis_critique") {
+    // Only a queued critique awaits its Run. Once that Run's verdict moved the
+    // candidate to `revision_needed` or `completed`, a re-delivered result or
+    // late failure of the same Run is no longer the operation's to apply.
+    const critique = state.synthesis_critique;
+    return critique?.run_id === runId && critique.status === "queued";
+  }
+  return (stageKey === "synthesis" || stageKey === "synthesis_revision") && state.synthesis_run_id === runId;
 }
 
 /** Owns the atomic approved-corpus -> synthesis-run/empty-result transition. */
@@ -402,8 +429,8 @@ export class ProjectResearchSynthesisCoordinator {
   async stageCandidate(input: {
     spaceId: string; projectId: string; workflowId: string; operationId: string; runId: string;
     report: Record<string, unknown>; archiveArtifactId: string;
-  }): Promise<void> {
-    await withQueryableTransaction(this.db, async (db) => {
+  }): Promise<boolean> {
+    return withQueryableTransaction(this.db, async (db) => {
       await lockActiveProjectForMutation(db, input.spaceId, input.projectId);
       const locked = await db.query<SynthesisOperationRow>(
         `SELECT id,space_id,project_id,status,progress_json FROM project_operations
@@ -412,8 +439,21 @@ export class ProjectResearchSynthesisCoordinator {
       );
       const operation = locked.rows[0];
       if (!operation) throw new HttpError(404, "Research operation not found");
+      // Checked under the Project then operation lock before the Archive
+      // write: a terminal operation, one that left synthesis, or one now
+      // waiting on another draft Run is not this Run's to stage.
+      if (["completed", "failed", "cancelled"].includes(operation.status)) return false;
       const state = researchState(operation.progress_json);
-      if (state.synthesis_critique?.report_run_id === input.runId) return;
+      if (state.current_stage !== "synthesis") return false;
+      // A re-entry of the staged candidate retries only its unqueued critique;
+      // once that critique is queued or decided, there is nothing to resume.
+      if (state.synthesis_critique?.report_run_id === input.runId) {
+        return state.synthesis_critique.status === "needs_queue";
+      }
+      // Only the draft Run the operation is waiting for may become its
+      // candidate. A superseded attempt that finishes late must not replace
+      // the current candidate or archive it.
+      if (!researchStageRunIsCurrent(state, "synthesis", input.runId)) return false;
       const previous = state.synthesis_critique;
       const numberedReport = await assignReportReferenceIds(db, input.spaceId, input.report);
       await db.query(
@@ -449,6 +489,7 @@ export class ProjectResearchSynthesisCoordinator {
         message: "The report draft is complete and queued for an adversarial critique pass.",
       };
       await setResearchOperationState(db, operation, state, deriveStepStates(state));
+      return true;
     });
   }
 
@@ -508,9 +549,14 @@ export class ProjectResearchSynthesisCoordinator {
     runId: string;
     output: unknown;
   }): Promise<void> {
+    // A superseded draft attempt neither fails nor feeds the operation;
+    // `stageCandidate` repeats this check under the operation lock.
+    const current = researchState(input.operation.progress_json);
+    if (current.synthesis_run_id !== input.runId && current.synthesis_critique?.report_run_id !== input.runId) return;
+    const draftIsCurrent = (state: ResearchOperationState) => researchStageRunIsCurrent(state, "synthesis", input.runId);
     const synthesisResult = inspectSynthesisResult(input.output);
     if (synthesisResult?.kind === "invalid") {
-      await this.ports.failOperation(input.operation, synthesisResult.message, { code: "synthesis_output_invalid" });
+      await this.ports.failOperationIfCurrent(input.operation, draftIsCurrent, synthesisResult.message, { code: "synthesis_output_invalid" });
       return;
     }
     // input.output is the full canonical run-output envelope (schema_version:
@@ -529,14 +575,15 @@ export class ProjectResearchSynthesisCoordinator {
     }
     const validation = await validateResearchArtifacts(artifacts);
     if (!validation.ok) {
-      await this.recordValidationFailure(input.spaceId, input.runId, validation.failure);
-      await this.ports.failOperation(input.operation, validation.failure.message, {
+      const failed = await this.ports.failOperationIfCurrent(input.operation, draftIsCurrent, validation.failure.message, {
         code: validation.failure.code,
         diagnostics: validation.failure.diagnostics,
       });
+      // Only the attempt that actually failed the operation is marked degraded.
+      if (failed) await this.recordValidationFailure(input.spaceId, input.runId, validation.failure);
       return;
     }
-    await this.stageCandidate({
+    const staged = await this.stageCandidate({
       spaceId: input.spaceId,
       projectId: input.projectId,
       workflowId: input.workflowId,
@@ -545,12 +592,23 @@ export class ProjectResearchSynthesisCoordinator {
       report: validation.report,
       archiveArtifactId: validation.archive.id,
     });
-    const actor = await this.ports.projectWriterActor(input.spaceId, input.projectId);
-    if (!actor) {
-      await this.ports.failOperation(input.operation, "Research synthesis critique requires a project writer");
-      return;
-    }
+    if (!staged) return;
+    // After staging, this Run is the candidate awaiting its critique, within
+    // the pass execution that staged it. A concurrent pass that already queued
+    // or finished that critique, or a later execution (a retry re-arming the
+    // same candidate), wins: this pass's errors are no longer its failures.
+    const stagingExecutionId = input.operation.current_execution_id;
+    const candidateAwaitsCritique = (state: ResearchOperationState, row: { current_execution_id?: string | null }) =>
+      (stagingExecutionId === undefined || row.current_execution_id === stagingExecutionId)
+      && state.current_stage === "synthesis"
+      && state.synthesis_critique?.report_run_id === input.runId
+      && state.synthesis_critique.status === "needs_queue";
     try {
+      const actor = await this.ports.projectWriterActor(input.spaceId, input.projectId);
+      if (!actor) {
+        await this.ports.failOperationIfCurrent(input.operation, candidateAwaitsCritique, "Research synthesis critique requires a project writer");
+        return;
+      }
       await this.queueCritique({
         spaceId: input.spaceId,
         userId: actor,
@@ -559,7 +617,11 @@ export class ProjectResearchSynthesisCoordinator {
         workflowId: input.workflowId,
       });
     } catch (error) {
-      await this.ports.failOperation(input.operation, error instanceof Error ? error.message : "Failed to queue synthesis critique");
+      await this.ports.failOperationIfCurrent(
+        input.operation,
+        candidateAwaitsCritique,
+        error instanceof Error ? error.message : "Failed to queue synthesis critique",
+      );
     }
   }
 
@@ -572,15 +634,17 @@ export class ProjectResearchSynthesisCoordinator {
     userId: string | null;
     output: unknown;
   }): Promise<void> {
+    const critiqueIsCurrent = (state: ResearchOperationState) =>
+      researchStageRunIsCurrent(state, "synthesis_critique", input.runId);
     if (!input.userId) {
-      await this.ports.failOperation(input.operation, "Synthesis critique could not resolve a project writer");
+      await this.ports.failOperationIfCurrent(input.operation, critiqueIsCurrent, "Synthesis critique could not resolve a project writer");
       return;
     }
     // input.output is the full canonical run-output envelope; verdict/issues
     // live under `.result`, not at the envelope's top level.
     const result = critiqueResult(runOutputResult(input.output));
     if (!result) {
-      await this.ports.failOperation(input.operation, "Synthesis critique output is invalid", {
+      await this.ports.failOperationIfCurrent(input.operation, critiqueIsCurrent, "Synthesis critique output is invalid", {
         code: "synthesis_critique_output_invalid",
       });
       return;
@@ -595,9 +659,13 @@ export class ProjectResearchSynthesisCoordinator {
       );
       const operation = locked.rows[0];
       if (!operation) throw new HttpError(404, "Research operation not found");
+      if (["completed", "failed", "cancelled"].includes(operation.status)) return;
       const state = researchState(operation.progress_json);
       const critique = state.synthesis_critique;
-      if (!critique || critique.run_id !== input.runId || critique.status === "completed") return;
+      // Re-checked under the operation lock before any Archive write: a
+      // re-entry of this Run after it asked for a revision must not publish
+      // the superseded draft.
+      if (!critique || !researchStageRunIsCurrent(state, "synthesis_critique", input.runId)) return;
       const critiqueArtifactId = await ensureCritiqueArtifact(db, {
         ...input,
         userId: input.userId!,
@@ -668,13 +736,15 @@ export class ProjectResearchSynthesisCoordinator {
         workflowId: input.workflowId,
       });
     } catch (error) {
-      const operation = await this.ports.operation(input.spaceId, input.operation.id);
-      if (operation) {
-        await this.ports.failOperation(
-          operation,
-          error instanceof Error ? error.message : "Failed to queue synthesis revision",
-        );
-      }
+      // Still the revision this critique asked for, not yet queued by another pass.
+      await this.ports.failOperationIfCurrent(
+        input.operation,
+        (state) => state.current_stage === "synthesis"
+          && state.synthesis_critique?.run_id === input.runId
+          && state.synthesis_critique.status === "revision_needed"
+          && !state.synthesis_run_id,
+        error instanceof Error ? error.message : "Failed to queue synthesis revision",
+      );
     }
   }
 

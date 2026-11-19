@@ -9,6 +9,8 @@ import { JobHandlerRegistry, type JobEnvelopeForHandler } from "../src/modules/j
 import { registerResearchOperationCancelHandler } from "../src/modules/projectResearch/pipeline/researchOperationCancelJob.js";
 import { insertResearchWorkflowFixture } from "./support/researchWorkflow.js";
 import { RESEARCH_OPERATION_CANCEL_JOB } from "../src/modules/projectResearch/researchOperationCancel.js";
+import { workflowExecutionOutcomeHandlerRegistry } from "../src/modules/automations/workflowExecutionOutcomeRegistry.js";
+import { registerResearchPassExecutionHandlers } from "../src/modules/projectResearch/researchPassExecution.js";
 
 // Real-Postgres coverage for the process half of the research cancel. The
 // service half only writes "cancelled" and enqueues; this handler is what
@@ -325,5 +327,28 @@ describe("research_operation_cancel job (real Postgres)", () => {
     expect(await runStatus(foreignRun)).toBe("running");
     expect(await jobStatus(foreignBatch)).toBe("pending");
     expect(await executionStatus(foreignExecution)).toBe("running");
+  });
+
+  it("projects a pass execution closed with a cancelled coordinator as a failed stage", async () => {
+    if (!db.available) return;
+    const now = new Date().toISOString();
+    await db.pool.query(
+      `INSERT INTO project_operations (id, space_id, project_id, kind, title, status, created_by_user_id, progress_json, created_at, updated_at)
+       VALUES ($1,$2,$3,'research','Pass under a cancelled coordinator','active',$4,$5::jsonb,$6,$6)`,
+      [OTHER_OPERATION, SPACE, PROJECT, OWNER, JSON.stringify({ current_stage: "screening", stage_state: "running" }), now],
+    );
+    const execution = await seedExecution(OTHER_OPERATION, "cancelled");
+    await db.pool.query(`UPDATE project_operations SET current_execution_id=$2 WHERE id=$1`, [OTHER_OPERATION, execution]);
+    registerResearchPassExecutionHandlers();
+    const handler = workflowExecutionOutcomeHandlerRegistry.get("project_research.reconcile_pass");
+    expect(handler).not.toBeNull();
+
+    await handler!({ db: db.pool, spaceId: SPACE, executionId: execution, workflowId: "project_research.reconcile_pass", status: "cancelled", researchOperationId: OTHER_OPERATION });
+
+    const operation = (await db.pool.query<{ status: string; progress_json: { current_stage?: string; failed_stage?: string; error?: { code?: string } } }>(
+      `SELECT status, progress_json FROM project_operations WHERE id=$1`, [OTHER_OPERATION],
+    )).rows[0]!;
+    expect(operation.status).toBe("failed");
+    expect(operation.progress_json).toMatchObject({ current_stage: "failed", failed_stage: "screening", error: { code: "workflow_execution_cancelled" } });
   });
 });

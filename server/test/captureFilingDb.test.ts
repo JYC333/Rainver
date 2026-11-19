@@ -142,6 +142,17 @@ describe("filing a personal capture into a Project (real Postgres)", () => {
     })).rejects.toMatchObject({ statusCode: 404 });
   });
 
+  it("refuses to file an owner-only Gmail match reminder: it points at private mail, not a capture", async () => {
+    if (!db.available) return;
+    await db.pool.query(
+      `UPDATE activity_records SET activity_type='operational_alert', payload_json='{"alert_kind":"gmail_monitor_matches"}'::jsonb WHERE id=$1`,
+      [CAPTURE],
+    );
+    await expect(filing().file({ userId: OWNER, activityId: CAPTURE, targetProjectId: PROJECT }))
+      .rejects.toMatchObject({ statusCode: 422 });
+    expect((await db.pool.query(`SELECT count(*)::int AS n FROM notes`)).rows[0].n).toBe(0);
+  });
+
   it("refuses to file the same capture twice", async () => {
     if (!db.available) return;
     await filing().file({ userId: OWNER, activityId: CAPTURE, targetProjectId: PROJECT });

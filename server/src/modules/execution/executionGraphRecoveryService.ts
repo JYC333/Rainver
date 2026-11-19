@@ -4,6 +4,7 @@ import { PlanExecutionService } from "../plans/executionService.js";
 import { WorkflowExecutionService } from "../automations/workflowExecutionService.js";
 import type { OperationalAlertPort } from "../notifications/operationalAlerts.js";
 import { safelyEmitOperationalAlert } from "../notifications/operationalAlerts.js";
+import { HARD_TERMINAL_RUN_STATUSES } from "../runs/orchestrationResults.js";
 
 export class ExecutionGraphRecoveryService {
   constructor(
@@ -40,10 +41,11 @@ export class ExecutionGraphRecoveryService {
          JOIN automations automation ON automation.id = execution.automation_id AND automation.space_id = execution.space_id
          LEFT JOIN runs root ON root.id = execution.root_run_id AND root.space_id = execution.space_id
         WHERE execution.status IN ('queued', 'running')
-          AND (root.id IS NULL OR root.status = 'waiting_for_dependency')
+          -- A root that already ended is included so reconcile closes its execution.
+          AND (root.id IS NULL OR root.status = 'waiting_for_dependency' OR root.status = ANY($4::text[]))
           AND ($2::timestamptz IS NULL OR (execution.updated_at, execution.id) > ($2::timestamptz, $3::varchar))
         ORDER BY execution.updated_at ASC, execution.id ASC LIMIT $1`,
-      [limit, this.workflowCursor?.sortAt ?? null, this.workflowCursor?.id ?? null],
+      [limit, this.workflowCursor?.sortAt ?? null, this.workflowCursor?.id ?? null, [...HARD_TERMINAL_RUN_STATUSES]],
     );
     this.workflowCursor = nextCursor(workflows.rows, limit);
     let recoveredPlans = 0;

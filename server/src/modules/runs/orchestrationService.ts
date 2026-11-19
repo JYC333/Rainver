@@ -40,6 +40,7 @@ import type {
   RunStepRecord,
   RunTerminalUpdate,
   RunAttemptRecord,
+  RunExecutionClaim,
 } from "./repository.js";
 import {
   EPHEMERAL_CLEANUP_KIND,
@@ -131,6 +132,13 @@ export interface RunExecutionRepositoryPort {
     started_at: string;
     required_sandbox_level?: string | null;
   }): Promise<(AgentRunRecord & { attempt_number?: number }) | null>;
+  /** The structured claim executeRun dispatches on; markRunRunning is its nullable form. */
+  claimRunExecution(input: {
+    run_id: string;
+    space_id: string;
+    started_at: string;
+    required_sandbox_level?: string | null;
+  }): Promise<RunExecutionClaim>;
   checkRunExecutionAuthorization?(run: Pick<
     RunRecord,
     | "space_id"
@@ -706,6 +714,58 @@ export class RunOrchestrationService {
       await this.repository.releaseExecutionLock(run.id, input.worker_id);
       executionLockHeld = false;
     };
+    // An Agent Run whose execution authorization no longer holds ends failed
+    // before dispatch: at the first check, and when the final recheck under
+    // claimRunExecution's locks refuses a Run still queued (ADR 0033 §6).
+    const rejectUnauthorizedExecution = async (
+      authorization: { error_code?: string; error_message?: string },
+    ): Promise<RunJobResult> => {
+      const rejected = await this.repository.publishRunTerminal({
+        run_id: run.id,
+        space_id: run.space_id,
+        status: "failed",
+        output_text: "",
+        output_json: canonicalRunOutput({
+          success: false,
+          outputText: "",
+          outputJson: {
+            error_code:
+              authorization.error_code
+              ?? "run_execution_authorization_revoked",
+          },
+        }),
+        error_json: {
+          error_code:
+            authorization.error_code
+            ?? "run_execution_authorization_revoked",
+          error_text:
+            authorization.error_message
+            ?? "Run execution authorization is no longer active.",
+        },
+        exit_code: 1,
+        completed_at: startedAt,
+      });
+      // A failure cannot be published over a cancellation that arrived
+      // first; the execution owner publishes that cancellation instead.
+      const cancelled = rejected ? null : await this.publishPendingCancellation(run, startedAt);
+      if (cancelled) executionLockHeld = false;
+      await releaseExecutionAuthority();
+      if (cancelled) {
+        return { run_id: run.id, status: "cancelled", error_code: "run_cancelled" };
+      }
+      return {
+        run_id: run.id,
+        status: protocolRunStatus(rejected?.status ?? "failed"),
+        skipped: true,
+        skip_reason: "execution_authorization_revoked",
+        error_code:
+          authorization.error_code
+          ?? "run_execution_authorization_revoked",
+        error:
+          authorization.error_message
+          ?? "Run execution authorization is no longer active.",
+      };
+    };
     try {
       if (run.status === "running" || run.status === "cancelling") {
         // Taking this lock means the old worker's lease was reclaimed. Its ACP
@@ -748,53 +808,7 @@ export class RunOrchestrationService {
       const currentAuthorization =
         await this.repository.checkRunExecutionAuthorization?.(proposedContextBoundRun)
         ?? { allowed: true };
-      if (!currentAuthorization.allowed) {
-        const rejected = await this.repository.publishRunTerminal({
-          run_id: run.id,
-          space_id: run.space_id,
-          status: "failed",
-          output_text: "",
-          output_json: canonicalRunOutput({
-            success: false,
-            outputText: "",
-            outputJson: {
-              error_code:
-                currentAuthorization.error_code
-                ?? "run_execution_authorization_revoked",
-            },
-          }),
-          error_json: {
-            error_code:
-              currentAuthorization.error_code
-              ?? "run_execution_authorization_revoked",
-            error_text:
-              currentAuthorization.error_message
-              ?? "Run execution authorization is no longer active.",
-          },
-          exit_code: 1,
-          completed_at: startedAt,
-        });
-        // A failure cannot be published over a cancellation that arrived
-        // first; the execution owner publishes that cancellation instead.
-        const cancelled = rejected ? null : await this.publishPendingCancellation(run, startedAt);
-        if (cancelled) executionLockHeld = false;
-        await releaseExecutionAuthority();
-        if (cancelled) {
-          return { run_id: run.id, status: "cancelled", error_code: "run_cancelled" };
-        }
-        return {
-          run_id: run.id,
-          status: protocolRunStatus(rejected?.status ?? "failed"),
-          skipped: true,
-          skip_reason: "execution_authorization_revoked",
-          error_code:
-            currentAuthorization.error_code
-            ?? "run_execution_authorization_revoked",
-          error:
-            currentAuthorization.error_message
-            ?? "Run execution authorization is no longer active.",
-        };
-      }
+      if (!currentAuthorization.allowed) return rejectUnauthorizedExecution(currentAuthorization);
       if (effectiveBindings?.workContextSetupRef && !effectiveBindings.agentId) {
         throw new RunPreparationError(
           "work_context_agent_required",
@@ -898,13 +912,18 @@ export class RunOrchestrationService {
       const executionPort = await this.resolveExecutionPort(routedRun);
       const resolved = await this.enforceRuntimePolicy(routedRun, input, executionPort.hostKind);
       if(this.config.databaseUrl)await admitDelegatedExecutionWorkspace(getDbPool(this.config.databaseUrl),routedRun,executionPort,this.config,this.adapters.hostCli?.connectionRegistry);
-      const running = await this.repository.markRunRunning({
+      const claim = await this.repository.claimRunExecution({
         run_id: run.id,
         space_id: run.space_id,
         started_at: startedAt,
         required_sandbox_level: run.required_sandbox_level,
       });
-      if (!running) {
+      // The claim's locked recheck refused a still-queued Run: settle it from
+      // that decision, as the first check does. Rechecking here, after the
+      // locks, could see a permission restored meanwhile and leave the Run
+      // queued behind a completed job (ADR 0033 §6).
+      if (claim.outcome === "authorization_rejected") return rejectUnauthorizedExecution(claim);
+      if (claim.outcome !== "started") {
         // Stopped after this worker took the lock: the public cancel could not
         // publish under it, so the Run is `cancelling`, never ran, and only
         // its execution owner can end it.
@@ -913,14 +932,16 @@ export class RunOrchestrationService {
           executionLockHeld = false;
           return { run_id: run.id, status: "cancelled", error_code: "run_cancelled" };
         }
-        const current = await this.repository.getRun(run.space_id, run.id);
+        // Started elsewhere, ended, held for quota or no longer a participant:
+        // nothing for this worker to settle.
         return {
           run_id: run.id,
-          status: protocolRunStatus(current?.status ?? run.status),
+          status: protocolRunStatus(claim.status ?? run.status),
           skipped: true,
-          skip_reason: "run_not_queued",
+          skip_reason: claim.reason === "waiting_for_quota" ? "run_waiting_for_quota" : "run_not_queued",
         };
       }
+      const running = claim.run;
       const contextBoundRunning = applyEffectiveWorkContextBindings(running, effectiveBindings);
       await this.markDelegatedRunRunningBestEffort(contextBoundRunning);
 

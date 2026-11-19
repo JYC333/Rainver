@@ -17,6 +17,7 @@ import { REVIEW_ATTENTION_CHANGED_EVENT } from '../../core/reviewAttention'
 import { useDeclareProjectCaptureProject } from '../../contexts/CaptureContext'
 import { inProjectHref } from './taskHref'
 import { ProjectFolderConversationProvider } from './ProjectFolderConversationContext'
+import { useProjectContentEdge } from './useProjectContentEdge'
 
 /**
  * What a person switches between while running a Project.
@@ -129,6 +130,10 @@ export default function ProjectAreaLayout() {
 
   useDeclareProjectCaptureProject(loadedScope === scope && project?.current_user_can_read !== false ? projectId : null)
 
+  // The Shell's quick capture follows this content's right edge, beside the chat.
+  const [content, setContent] = useState<HTMLElement | null>(null)
+  useProjectContentEdge(content)
+
   const visibleProject=loadedScope===scope?project:null,visibleOverview=loadedScope===scope?overview:null
   if (loadedScope !== scope) return <div className="p-6 text-sm text-muted-foreground">{t('management_ui.project_members.loading_project')}</div>
   if (!visibleProject || visibleProject.current_user_can_read === false) return <ProjectDetailPage key={scope} onAccessChanged={() => setCleared(n => n + 1)} />
@@ -222,7 +227,7 @@ export default function ProjectAreaLayout() {
           at never means leaving it. It renders the Room's own conversation, not
           a private one. */}
       <div className={cn('flex min-w-0',boardArea?'min-h-0 flex-1 overflow-hidden':'lg:min-h-0 lg:overflow-hidden')}>
-        <main data-project-area-content className={cn('min-w-0 flex-1',boardArea?'min-h-0 overflow-hidden':'lg:min-h-0 lg:overflow-y-auto lg:overscroll-y-contain')}><Outlet context={{ onAccessChanged: () => setCleared(n => n + 1) }} /></main>
+        <main ref={setContent} data-project-area-content className={cn('min-w-0 flex-1',boardArea?'min-h-0 overflow-hidden':'lg:min-h-0 lg:overflow-y-auto lg:overscroll-y-contain')}><Outlet context={{ onAccessChanged: () => setCleared(n => n + 1) }} /></main>
         <div data-shell-chrome className="contents"><ProjectChatSidecar attention={visibleOverview?.attention} /></div>
       </div>
       </div>

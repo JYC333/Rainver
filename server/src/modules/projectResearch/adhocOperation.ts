@@ -11,7 +11,7 @@ import {NotebookChatBudgetError} from './notebookChatErrors.js';
 import {ResearchContentReadAuditError} from './workspaceErrors.js';
 import {discoverNotebookChat,authorizeNotebookChat} from './notebookChatAdmission.js';
 import {assertWritableSpaceObject} from '../knowledge/knowledgeWriteAccess.js';
-import {assertResearchProviderSourceEgress,assertResearchNoteSourceAudience} from './providerSourceAccess.js';
+import {assertFrozenSourcesReadable,assertResearchProviderSourceEgress,assertResearchNoteSourceAudience,frozenResearchSourcePins} from './providerSourceAccess.js';
 type Input={project_id:string;section_key:string;source_item_ids:string[]};
 const person=(actor:OperationActor)=>({spaceId:actor.space_id,userId:actor.on_behalf_of_user_id!});
 async function discover(db:Queryable,input:Input,identity:SpaceUserIdentity,config:ServerConfig){
@@ -44,11 +44,16 @@ export async function authorizeResearchAdhocAttempt(db:Queryable,config:ServerCo
   if(!note||!provider)throw new HttpError(409,'Research ProviderTask context is incomplete');
   if(!(await tx.query("SELECT 1 FROM users person JOIN space_memberships member ON member.user_id=person.id WHERE person.id=$1 AND person.status='active' AND member.space_id=$2 AND member.status='active'",[who,run.space_id])).rows.length)throw new HttpError(404,'Research requester is no longer active');
   const sources=Array.isArray(frozen.source_item_ids)?frozen.source_item_ids.filter((id):id is string=>typeof id==='string'):[];
+  // The selected items' connections and the target Note's lineage connections as the prompt
+  // was frozen answer beside their live binding; a Run that froze either incompletely is refused.
+  const pins=frozenResearchSourcePins(frozen,sources,{noteConnections:true});
+  if(!pins)throw new HttpError(409,'Research material Sources were not frozen; ask again');
   const before=await discoverNotebookChat(tx,identity,run.project_id,sources,[note]);
-  await authorizeNotebookChat(tx,identity,run.project_id,sources,before,undefined,[note]);
+  await authorizeNotebookChat(tx,identity,run.project_id,sources,before,undefined,[note],pins.pins);
+  await assertFrozenSourcesReadable(tx,identity,pins.pins,'Research source material is no longer readable');
   await lockProjectAudience(tx,identity.spaceId,run.project_id);
   await assertWritableSpaceObject(tx,identity,note,'Note not found');
-  await assertResearchProviderSourceEgress(tx,config,identity,{providerId:provider,modelName:typeof hints.model==='string'?hints.model:null},sources,[note]);
-  await assertResearchNoteSourceAudience(tx,identity,note,sources);
+  await assertResearchProviderSourceEgress(tx,config,identity,{providerId:provider,modelName:typeof hints.model==='string'?hints.model:null},sources,[note],pins.pins);
+  await assertResearchNoteSourceAudience(tx,identity,note,sources,[],pins.pins);
  });
 }

@@ -94,6 +94,7 @@ describe("projectResearchMonitoringCoordinator", () => {
           createIncrementalOperation: vi.fn(),
           operation: vi.fn(),
           failOperation: vi.fn(),
+          failOperationIfCurrent: vi.fn(),
           setWorkflowMonitoring: vi.fn(),
           reconcileCompletedRun: vi.fn(),
           enqueueIntegrityMonitor: vi.fn(),

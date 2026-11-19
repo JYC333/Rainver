@@ -10,11 +10,14 @@
  *
  * Read-only. A missing catalog directory is reported as
  * `catalog_available: false` with empty items, never an error — the control
- * plane must not fail because a deployment chose not to ship the catalog.
+ * plane must not fail because a deployment chose not to ship the catalog. An
+ * unreadable directory is an error; an oversized or non-regular manifest is
+ * listed with `parse_error`.
  */
 
-import { readdir, readFile, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { lstat, readdir } from "node:fs/promises";
+import { openFileBeneathRoot, readHandleBounded } from "@rainver/folder-read";
+import { basename, dirname, join } from "node:path";
 import { parse } from "yaml";
 
 export interface CatalogCapabilitySummary {
@@ -61,10 +64,15 @@ interface ManifestDir {
   manifestPath: string;
 }
 
+/** Real manifests are a few KiB; anything far larger is not read or parsed. */
+export const CATALOG_MANIFEST_MAX_BYTES = 256 * 1024;
+
 /**
- * Directories under `root` that contain `manifestName`. Plain files and noise
- * directories without a manifest (e.g. `__pycache__`) are skipped. A missing
- * `root` yields `available: false`.
+ * Directories under `root` that contain `manifestName` as a regular file (a
+ * symlinked directory or manifest is not followed out of the catalog). Plain
+ * files and noise directories without a manifest (e.g. `__pycache__`) are
+ * skipped. A missing `root` yields `available: false`; any other read error
+ * is an error, not an absent catalog.
  */
 async function listManifestDirs(
   root: string,
@@ -73,15 +81,17 @@ async function listManifestDirs(
   let entries;
   try {
     entries = await readdir(root, { withFileTypes: true });
-  } catch {
-    return { available: false, dirs: [] };
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return { available: false, dirs: [] };
+    throw error;
   }
   const dirs: ManifestDir[] = [];
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const manifestPath = join(root, entry.name, manifestName);
     try {
-      const info = await stat(manifestPath);
+      const info = await lstat(manifestPath);
       if (info.isFile()) dirs.push({ dirName: entry.name, manifestPath });
     } catch {
       // No manifest in this directory — not a catalog entry.
@@ -92,7 +102,19 @@ async function listManifestDirs(
 }
 
 async function parseManifest(manifestPath: string): Promise<Record<string, unknown> | null> {
-  const text = await readFile(manifestPath, "utf8");
+  // The one read is bounded on the handle it opened, which follows no link
+  // below the catalog entry's directory; type and size are checked there too.
+  const file = await openFileBeneathRoot(dirname(manifestPath), [basename(manifestPath)]);
+  let text: string;
+  try {
+    const info = await file.stat();
+    if (!info.isFile() || info.size > CATALOG_MANIFEST_MAX_BYTES) throw new Error("manifest is not a bounded regular file");
+    const bytes = await readHandleBounded(file, CATALOG_MANIFEST_MAX_BYTES);
+    if (!bytes) throw new Error("manifest grew past its bound");
+    text = bytes.toString("utf8");
+  } finally {
+    await file.close();
+  }
   const doc: unknown = parse(text);
   if (doc === null || typeof doc !== "object" || Array.isArray(doc)) return null;
   return doc as Record<string, unknown>;
@@ -164,14 +186,15 @@ export async function listAgentTemplates(
   return { catalog_available: available, items };
 }
 
+/** Counts entries exactly as the lists do (a parse error still lists), without parsing them. */
 export async function catalogSummary(catalogRoot: string): Promise<CatalogSummaryBody> {
   const [capabilities, templates] = await Promise.all([
-    listCapabilities(catalogRoot),
-    listAgentTemplates(catalogRoot),
+    listManifestDirs(join(catalogRoot, "capabilities"), "capability.yaml"),
+    listManifestDirs(join(catalogRoot, "agent_templates"), "template.yaml"),
   ]);
   return {
-    catalog_available: capabilities.catalog_available || templates.catalog_available,
-    capabilities_count: capabilities.items.length,
-    agent_templates_count: templates.items.length,
+    catalog_available: capabilities.available || templates.available,
+    capabilities_count: capabilities.dirs.length,
+    agent_templates_count: templates.dirs.length,
   };
 }

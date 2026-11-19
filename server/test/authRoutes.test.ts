@@ -208,7 +208,6 @@ describe("native server auth routes", () => {
       password_min_length: 15,
       password_max_length: 128,
     });
-    expect((await app.inject({ method: "GET", url: "/api/v1/auth/google-configured" })).statusCode).toBe(404);
 
     const notConfigured = await app.inject({ method: "GET", url: "/api/v1/auth/google" });
     expect(notConfigured.statusCode).toBe(501);

@@ -1,7 +1,5 @@
 import {getPluginControlPool,getOperationAuditPool} from '../src/db/pool.js';
 import { pluginsModule } from '../src/modules/plugins/index.js';
-import { BUILT_IN_PLUGINS } from '../src/modules/plugins/builtInPlugins.js';
-import { installOfficialPlugin } from '../src/modules/plugins/installer.js';
 import { proposalsModule, __setProposalIdentityForTests } from '../src/modules/proposals/index.js';
 import { randomUUID } from 'node:crypto';
 import { Client } from 'pg';
@@ -136,6 +134,8 @@ async function artifactRoot() {
       main: 'runtime.mjs'
     }
   }));
+  // Stands in for the build index that admits operation packages compiled from plugins/official.
+  await writeFile(join(root, 'packages.json'), JSON.stringify({ packages: [plugin.id], operation_packages: [plugin.id] }));
   return root;
 }
 async function offlineCli(root: string, command: string) {
@@ -1754,54 +1754,6 @@ describe('operation package lifecycle through canonical consumers', () => {
     expect((await write()).statusCode).toBe(200);
     await setOperationPluginEnabled(cfg, depId, space, user, false);
     expect((await write()).statusCode).toBe(404);
-  });
-  it('uses an installed legacy dependency without treating it as an operation contract or rewriting its migrations', async () => {
-    const legacy = BUILT_IN_PLUGINS.find(p => p.id === 'diary')!;
-    await withTransaction(db.pool, tx => installOfficialPlugin(tx, legacy.id, [legacy], {
-      actorUserId: user
-    }));
-    const checksums = (await db.pool.query('SELECT migration_id,checksum FROM plugin_migrations WHERE plugin_id=$1 ORDER BY migration_id', [legacy.id])).rows;
-    const dependent = {
-      ...plugin,
-      version: '1.1.0',
-      operationManifest: {
-        ...plugin.operationManifest!,
-        version: '1.1.0',
-        requires: [legacy.id]
-      }
-    };
-    await migrateOperationPlugins(db.pool, [dependent, legacy]);
-    const cfg = loadConfig({
-        SERVER_DATABASE_URL: db.connectionUri
-      }),
-      target = buildModuleServer(cfg, [systemActionsModule]);
-    new PluginHost([dependent, legacy]).activate(target, cfg);
-    await target.ready();
-    extraApps.push(target);
-    await setOperationPluginEnabled(cfg, legacy.id, space, user, true);
-    await setOperationPluginEnabled(cfg, dependent.id, space, user, true);
-    const write = () => target.inject({
-      method: 'POST',
-      url: '/api/v1/actions/plugin.operation_probe.record.write',
-      headers: {
-        'idempotency-key': randomUUID()
-      },
-      payload: {
-        value: 'legacy-dependent'
-      }
-    });
-    expect((await write()).statusCode).toBe(200);
-    await setOperationPluginEnabled(cfg, legacy.id, space, user, false);
-    expect((await write()).statusCode).toBe(404);
-    expect((await db.pool.query('SELECT migration_id,checksum FROM plugin_migrations WHERE plugin_id=$1 ORDER BY migration_id', [legacy.id])).rows).toEqual(checksums);
-    await expect(migrateOperationPlugin(db.pool, {
-      ...dependent,
-      id: legacy.id,
-      operationManifest: {
-        ...dependent.operationManifest!,
-        id: legacy.id
-      }
-    })).rejects.toThrow('Legacy plugin ids');
   });
   it('recovers isolated role flags/permissions and prevents unsafe runtime admission', async () => {
     const id = `role_probe_${randomUUID().replaceAll('-', '').slice(0, 8)}`,

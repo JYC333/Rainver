@@ -217,8 +217,7 @@ Use the smallest layer that proves the change:
 - renderer import boundary: grep-style web test that only graph internals import
   G6 packages;
 - bundle boundary: source-level web test that Inquiry uses a dynamic graph
-  import and the PWA configuration excludes stable graph chunks from its shell
-  precache while registering their runtime cache;
+  import;
 - backend projection and view state: real-DB server tests, because visibility,
   CTE traversal, aggregation, truncation, and upsert behavior depend on SQL;
 - domain graph producers: route tests that parse responses with

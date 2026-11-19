@@ -1,4 +1,4 @@
-import type { RainverPlugin, PluginLifecyclePort, PluginScope, PluginOperationExecutor, PluginDb } from '@rainver/protocol';
+import type { RainverPlugin, PluginLifecyclePort, PluginScope, PluginOperationExecutor, PluginProposalOptions, PluginDb } from '@rainver/protocol';
 import type { ServerConfig } from '../../config.js';
 import type { JobHandler } from '../jobs/handlerRegistry.js';
 import { pluginSchedule } from "./schedules.js";
@@ -21,6 +21,7 @@ export class PluginBackground {
   readonly jobs = new Map<string, JobHandler>();
   readonly tasks: ScheduledTask[] = [];
   readonly proposalExecutors = new Map<string, PluginOperationExecutor>();
+  readonly proposalPreconditions = new Map<string, NonNullable<PluginProposalOptions['preconditions']>>();
   private readonly disposers: (() => void)[] = [];
   constructor(readonly config: ServerConfig, readonly plugin: RainverPlugin) {}
   private get pool() {
@@ -202,11 +203,13 @@ export class PluginBackground {
       }
     },
     proposals: {
-      register: (id, apply) => {
+      register: (id, apply, options) => {
         if (!this.plugin.operationManifest!.proposalTypes?.some(t => t.id === id) || this.proposalExecutors.has(id)) throw new Error('Undeclared/duplicate plugin proposal');
         this.proposalExecutors.set(id, apply);
+        if (options?.preconditions) this.proposalPreconditions.set(id, options.preconditions);
         const dispose = () => {
           this.proposalExecutors.delete(id);
+          this.proposalPreconditions.delete(id);
         };
         this.disposers.push(dispose);
         return dispose;

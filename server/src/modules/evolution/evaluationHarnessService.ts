@@ -1,4 +1,5 @@
 import { EvolutionAssetRefusal } from "./assetRefusal.js";
+import { bodyWithheld } from "../access/contentAccessTypes.js";
 import { randomUUID } from "node:crypto";
 import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
 import {
@@ -8,6 +9,8 @@ import {
   withQueryableTransaction,
 } from "../routeUtils/common.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
+import type { JobEnvelopeForHandler } from "../jobs/handlerRegistry.js";
+import { JobEffectLeaseLost, lockCurrentJobClaim } from "../jobs/effectAuthority.js";
 import { PgRunRepository } from "../runs/repository.js";
 import { sanitizeEvidenceJson } from "../runs/evidenceRedaction.js";
 import { verifyEvaluationOutput, VERIFICATION_ENGINE_VERSION } from "../runs/verification/index.js";
@@ -21,6 +24,7 @@ import {
 import { EvolvableAssetEvaluationRepository } from "./assetEvaluationRepository.js";
 
 export const EVOLVABLE_ASSET_EVALUATION_JOB = "evolvable_asset_evaluation";
+const TERMINAL_EVALUATION_STATUSES = ["passed", "failed", "blocked", "cancelled"];
 const EVALUATION_CASE_EVALUATOR_VERSION = VERIFICATION_ENGINE_VERSION;
 const MAX_FIXTURE_BYTES = 128_000;
 
@@ -136,8 +140,15 @@ export class EvaluationHarnessService {
     assetId: string,
     input: CreateEvaluationCaseInput & { source_run_id: string },
   ): Promise<Record<string, unknown>> {
-    const run = await new PgRunRepository(this.db).getVisibleRun(identity.spaceId, identity.userId, input.source_run_id);
+    const runs = new PgRunRepository(this.db);
+    const run = await runs.getVisibleRun(identity.spaceId, identity.userId, input.source_run_id);
     if (!run) throw new HttpError(404, "Source run not found");
+    // The case stores the Run's output as its baseline: copying it needs the
+    // body in the caller's own right. Summary-level visibility does not release
+    // it, and oversight is audit, not a route to copy out.
+    if (bodyWithheld(run.effective_access_level) || await runs.ownRunBodyLevel(run, identity.userId) !== "full") {
+      throw new EvolutionAssetRefusal(422, "Creating an evaluation case copies the source Run's output, which needs full read access to that Run");
+    }
     if (run.status !== "succeeded" && run.status !== "degraded") {
       throw new EvolutionAssetRefusal(422, "Only a successful or degraded terminal run can create an evaluation case");
     }
@@ -165,8 +176,14 @@ export class EvaluationHarnessService {
     const evaluationCase = await this.caseRow(identity, assetId, caseId);
     const candidateRunId = optionalString(input.candidate_run_id);
     if (!candidateRunId) throw new EvolutionAssetRefusal(422, "candidate_run_id is required");
-    const candidateRun = await new PgRunRepository(this.db).getVisibleRun(identity.spaceId, identity.userId, candidateRunId);
+    const runs = new PgRunRepository(this.db);
+    const candidateRun = await runs.getVisibleRun(identity.spaceId, identity.userId, candidateRunId);
     if (!candidateRun) throw new HttpError(404, "Candidate run not found");
+    // The evaluation checks the candidate Run's output against the case and
+    // keeps the result, so it needs the body in the caller's own right.
+    if (bodyWithheld(candidateRun.effective_access_level) || await runs.ownRunBodyLevel(candidateRun, identity.userId) !== "full") {
+      throw new EvolutionAssetRefusal(422, "Evaluating a candidate Run reads its output, which needs full read access to that Run");
+    }
     if (candidateRun.status !== "succeeded" && candidateRun.status !== "degraded") {
       throw new EvolutionAssetRefusal(422, "Candidate run must be successful or degraded before evaluation");
     }
@@ -219,13 +236,25 @@ export class EvaluationHarnessService {
     });
   }
 
+  /**
+   * One attempt of the evaluation Job. The verification is pure, so a retry
+   * re-runs it in full at no outside cost.
+   *
+   * Every write is settled under the Job's current claim
+   * (`lockCurrentJobClaim`), in the Job's Space: a reclaimed, cancelled or
+   * superseded attempt writes nothing. The result and the candidate's
+   * `eval_summary_json` commit in one transaction, so neither lands without
+   * the other. A failure is recorded on the evaluation run only on the final
+   * attempt; an earlier one rethrows, the Job goes back to pending, and the
+   * next attempt evaluates again rather than finding a terminal row.
+   */
   async executeEvaluation(input: {
     evaluationRunId: string;
     evaluationCaseId: string;
     assetId: string;
     candidateVersionId: string;
     candidateRunId: string;
-  }): Promise<Record<string, unknown>> {
+  }, job: JobEnvelopeForHandler): Promise<Record<string, unknown>> {
     const loaded = await this.db.query<{
       evaluation_run_id: string;
       evaluation_case_id: string;
@@ -251,19 +280,31 @@ export class EvaluationHarnessService {
            ON v.id = r.candidate_version_id AND v.asset_id = r.asset_id
          JOIN runs cr
            ON cr.id = r.run_id AND cr.space_id = r.space_id AND cr.id = $5
-        WHERE r.id = $1 AND r.asset_id = $3 AND r.candidate_version_id = $4
+        WHERE r.id = $1 AND r.asset_id = $3 AND r.candidate_version_id = $4 AND r.space_id = $6
         LIMIT 1`,
-      [input.evaluationRunId, input.evaluationCaseId, input.assetId, input.candidateVersionId, input.candidateRunId],
+      [input.evaluationRunId, input.evaluationCaseId, input.assetId, input.candidateVersionId, input.candidateRunId, job.space_id],
     );
     const row = loaded.rows[0];
     if (!row) throw new Error("Evaluation run or case no longer exists");
-    if (["passed", "failed", "blocked", "cancelled"].includes(row.status)) {
+    if (TERMINAL_EVALUATION_STATUSES.includes(row.status)) {
       return this.evaluationOut(input.evaluationRunId);
     }
-    await this.db.query(
-      `UPDATE evolvable_asset_evaluation_runs SET status = 'running', updated_at = now() WHERE id = $1`,
-      [input.evaluationRunId],
-    );
+    // Under the claim, and only while not terminal: a stale attempt must not
+    // turn a settled run back to running.
+    const settle = (write: (tx: Queryable) => Promise<unknown>) => withQueryableTransaction(this.db, async (tx) => {
+      await lockCurrentJobClaim(tx, job);
+      const current = await tx.query<{ status: string }>(
+        `SELECT status FROM evolvable_asset_evaluation_runs WHERE id = $1 AND space_id = $2 FOR UPDATE`,
+        [input.evaluationRunId, job.space_id],
+      );
+      const status = current.rows[0]?.status;
+      if (!status) throw new Error("Evaluation run or case no longer exists");
+      if (!TERMINAL_EVALUATION_STATUSES.includes(status)) await write(tx);
+    });
+    await settle((tx) => tx.query(
+      `UPDATE evolvable_asset_evaluation_runs SET status = 'running', updated_at = now() WHERE id = $1 AND space_id = $2`,
+      [input.evaluationRunId, job.space_id],
+    ));
 
     try {
       const recipe = objectValue(row.verification_recipe_json);
@@ -295,25 +336,29 @@ export class EvaluationHarnessService {
         connector_mode: "mock_read_only",
         candidate_content_present: row.candidate_content_json !== null,
       };
-      await this.db.query(
-        `UPDATE evolvable_asset_evaluation_runs
-            SET status = $2, metrics_json = $3::jsonb, blockers_json = $4::jsonb, updated_at = now()
-          WHERE id = $1`,
-        [input.evaluationRunId, status, JSON.stringify(metrics), JSON.stringify(blockers)],
-      );
-      await this.db.query(
-        `UPDATE evolvable_asset_versions
-            SET eval_summary_json = $2::jsonb, updated_at = now()
-          WHERE id = $1`,
-        [input.candidateVersionId, JSON.stringify({ evaluator_version: EVALUATION_CASE_EVALUATOR_VERSION, status, metrics, blockers })],
-      );
+      await settle(async (tx) => {
+        await tx.query(
+          `UPDATE evolvable_asset_evaluation_runs
+              SET status = $2, metrics_json = $3::jsonb, blockers_json = $4::jsonb, updated_at = now()
+            WHERE id = $1 AND space_id = $5`,
+          [input.evaluationRunId, status, JSON.stringify(metrics), JSON.stringify(blockers), job.space_id],
+        );
+        const summary = await tx.query(
+          `UPDATE evolvable_asset_versions
+              SET eval_summary_json = $2::jsonb, updated_at = now()
+            WHERE id = $1 AND asset_id = $3`,
+          [input.candidateVersionId, JSON.stringify({ evaluator_version: EVALUATION_CASE_EVALUATOR_VERSION, status, metrics, blockers }), input.assetId],
+        );
+        if (!summary.rowCount) throw new Error("Evaluation candidate version no longer exists");
+      });
     } catch (error) {
-      await this.db.query(
+      if (error instanceof JobEffectLeaseLost || job.attempts < job.max_attempts) throw error;
+      await settle((tx) => tx.query(
         `UPDATE evolvable_asset_evaluation_runs
             SET status = 'failed', blockers_json = $2::jsonb, updated_at = now()
-          WHERE id = $1`,
-        [input.evaluationRunId, JSON.stringify([{ code: "evaluation_executor_error", message: error instanceof Error ? error.message : String(error) }])],
-      );
+          WHERE id = $1 AND space_id = $3`,
+        [input.evaluationRunId, JSON.stringify([{ code: "evaluation_executor_error", message: error instanceof Error ? error.message : String(error) }]), job.space_id],
+      )).catch(() => undefined);
       throw error;
     }
     return this.evaluationOut(input.evaluationRunId);

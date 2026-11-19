@@ -353,6 +353,8 @@ describe("PgJobQueueRepository", () => {
     const db: Queryable = {
       async query<Row = Record<string, unknown>>(sql: string, params: readonly unknown[] = []): Promise<QueryResult<Row>> {
         calls.push({ sql, params });
+        // failJob runs under the Run-terminal owner, which first proves one transaction.
+        if (sql.includes("txid_current")) return { rows: [{ id: "1" } as Row], rowCount: 1 };
         return { rows: [{ status: "failed" } as Row], rowCount: 1 };
       },
     };
@@ -365,8 +367,9 @@ describe("PgJobQueueRepository", () => {
     );
 
     expect(status).toBe("failed");
-    expect(calls[0]?.sql).toContain("completed_at = CASE WHEN attempts < max_attempts THEN NULL ELSE $3::timestamptz END");
-    expect(calls[0]?.sql).toContain("updated_at = $3::timestamptz");
+    const update = calls.find((call) => call.sql.includes("UPDATE jobs"))?.sql;
+    expect(update).toContain("completed_at = CASE WHEN attempts < max_attempts OR target.stop_claim THEN NULL ELSE $3::timestamptz END");
+    expect(update).toContain("updated_at = $3::timestamptz");
   });
 
   it("moves deferred jobs back to pending at a future scheduled time", async () => {
@@ -979,45 +982,6 @@ describe("AutomationService policy preflight", () => {
     expect(repo.createAutomationRunCalls).toBe(0);
   });
 
-  it("records last_fired_at for a successful manual agent-run fire", async () => {
-    vi.mocked(enforce).mockResolvedValue({ status: "allow" });
-    const fakePool = new AgentAutomationFireFakePool();
-    dbPoolMock.current = fakePool;
-    const repo = new FakeAutomationRepository(
-      sampleAutomation({ project_folder_id: "project-folder-1" }),
-      "owner",
-      [],
-      { status: "active", current_version_id: "agent-version-1", version_id: "agent-version-1" },
-      true,
-    );
-    // This test isolates target execution; real authority/transaction closure
-    // is covered by automationsProjectDb, not by an SQL-interpreting test fake.
-    const admission = new AutomationService(config, repo);
-    vi.spyOn(AutomationService, "forFireAdmissionTransaction").mockReturnValue({
-      prepareFire: admission.prepareFire.bind(admission),
-    });
-    const service = new AutomationService(config, repo);
-
-    const result = await service.fire({
-      spaceId: "space-1",
-      automationId: "auto-1",
-      actorUserId: "owner-1",
-      prompt: "Run now",
-    });
-
-    // The person supplied their own prompt, so this is them asking, not the
-    // automation running (ADR 0003 §5 / D1).
-    expect(result).toMatchObject({
-      trigger_origin: "manual",
-      preflight_executable: true,
-    });
-    expect(result.run_id).toEqual(expect.any(String));
-    expect(result.automation_run_id).toEqual(expect.any(String));
-    expect(fakePool.recordFireCalls).toBe(1);
-    expect(repo.recordFireCalls).toBe(0);
-    expect(fakePool.runPrompts).toEqual(["Run now"]);
-  });
-
   it("preflights the fire under the origin the Run will actually carry", async () => {
     // The preflight and the Run row are two authorities over one fire. A
     // person firing with their own prompt is a `manual` Run they could have
@@ -1061,43 +1025,6 @@ describe("AutomationService policy preflight", () => {
       statusCode: 422,
       message: expect.stringContaining("credential_automation_grant_missing"),
     });
-  });
-
-  it("uses the configured prompt for unattended agent-run fires", async () => {
-    vi.mocked(enforce).mockResolvedValue({ status: "allow" });
-    const fakePool = new AgentAutomationFireFakePool();
-    dbPoolMock.current = fakePool;
-    const automation = sampleAutomation({
-      trigger_type: "schedule",
-      project_folder_id: "project-folder-1",
-      config_json: {
-        target_type: "agent_run",
-        prompt: "Analyze the newly collected papers.",
-      },
-    });
-    const repo = new FakeAutomationRepository(
-      automation,
-      "owner",
-      [],
-      { status: "active", current_version_id: "agent-version-1", version_id: "agent-version-1" },
-      true,
-    );
-    // This test isolates target execution; real authority/transaction closure
-    // is covered by automationsProjectDb, not by an SQL-interpreting test fake.
-    const admission = new AutomationService(config, repo);
-    vi.spyOn(AutomationService, "forFireAdmissionTransaction").mockReturnValue({
-      prepareFire: admission.prepareFire.bind(admission),
-    });
-    const service = new AutomationService(config, repo);
-
-    await service.fire({
-      spaceId: "space-1",
-      automationId: "auto-1",
-      actorUserId: "owner-1",
-      triggerType: "schedule",
-    });
-
-    expect(fakePool.runPrompts).toEqual(["Analyze the newly collected papers."]);
   });
 
   it("does not fall back to AgentVersion when every Runtime Profile is disabled", async () => {
@@ -1194,7 +1121,6 @@ class FakeAutomationRepository {
   createAutomationRunCalls = 0;
   createInputs: Array<{ preflightSnapshot: Record<string, unknown> }> = [];
   advanceScheduleCalls = 0;
-  recordFireCalls = 0;
 
   constructor(
     private readonly automation: AutomationRow,
@@ -1296,9 +1222,7 @@ class FakeAutomationRepository {
     this.advanceScheduleCalls += 1;
   }
 
-  async recordFire(): Promise<void> {
-    this.recordFireCalls += 1;
-  }
+  async recordFire(): Promise<void> {}
 }
 
 class MaintenanceAutomationFakePool implements Queryable {
@@ -1387,7 +1311,6 @@ class MaintenanceAutomationFakePool implements Queryable {
 
 class AgentAutomationFireFakePool implements Queryable {
   private readonly schedules = new MaintenanceAutomationFakePool();
-  get recordFireCalls() { return this.schedules.advanceScheduleCalls; }
   runPrompts: Array<unknown> = [];
   runInstructions: Array<unknown> = [];
   automationRunTriggerContexts: Array<unknown> = [];

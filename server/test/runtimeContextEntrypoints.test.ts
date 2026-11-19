@@ -231,19 +231,6 @@ describe("Runtime Context invocation entrypoint inventory", () => {
         targetBoundary: "runtime_context_gateway",
       }),
     ]);
-    for (const entry of MANAGED_CONVERSATION_ENTRYPOINT_INVENTORY) {
-      const source = readFileSync(join(modulesRoot, entry.source), "utf8");
-      expect(source).toContain(entry.executionMode);
-      expect(entry.targetBoundary).toBe("runtime_context_gateway");
-    }
-    const orchestration = readFileSync(
-      join(modulesRoot, "runs", "orchestrationService.ts"),
-      "utf8",
-    );
-    expect(orchestration).toMatch(/if \(this\.runtimeContextGateway\) \{/);
-    expect(orchestration).not.toMatch(
-      /if \(this\.runtimeContextGateway\s*&&[^)]*(?:chat|conversation|room)/i,
-    );
   });
 
   it("registers every direct Provider invocation callsite", () => {
@@ -334,10 +321,6 @@ describe("Runtime Context invocation entrypoint inventory", () => {
         targetBoundary: "provider_task",
       }),
     ]));
-    const source = readFileSync(join(modulesRoot, "providers", "commands", "routes.ts"), "utf8");
-    expect(source).toContain('url: "/api/v1/providers/:configId/test", operation: "provider.test"');
-    expect(source).not.toContain('app.post("/api/v1/providers/chat"');
-    expect(source).not.toContain("/internal/providers-credentials/providers/complete-text");
   });
 
   it("registers every concrete Provider transport", () => {

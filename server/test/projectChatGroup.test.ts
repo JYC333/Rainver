@@ -1,7 +1,7 @@
 import { SYSTEM_ACTION_REGISTRY, systemActionInputJsonSchema } from "@rainver/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { loadProjectChatActionPreviews } from "../src/modules/agents/projectChatActionPreviews.js";
-import { CONVERSATION_TOOL_ALLOWANCE, ROOM_CONVERSATION_TOOL_ALLOWANCE, conversationToolGrantInput } from "../src/modules/systemActions/scenarioToolAllowance.js";
+import { CONVERSATION_TOOL_ALLOWANCE, PROJECT_APPLICATIONS_TOOL_ALLOWANCE, ROOM_CONVERSATION_TOOL_ALLOWANCE, conversationToolGrantInput } from "../src/modules/systemActions/scenarioToolAllowance.js";
 import type { Queryable } from "../src/modules/routeUtils/common.js";
 
 describe("projectChatActionPreviews", () => {
@@ -68,10 +68,12 @@ describe("projectChatToolPermissions", () => {
     // Room message, a delegation, a direct chat. Direct chat does not keep a
     // shorter list.
     it("gives a direct chat in a Project the same allowance a Room message gets",()=>{
+      const inProject = [...ROOM_CONVERSATION_TOOL_ALLOWANCE, ...PROJECT_APPLICATIONS_TOOL_ALLOWANCE];
       expect(conversationToolGrantInput({ project_id: "project-1" })).toEqual({
-        capabilities_json: [...ROOM_CONVERSATION_TOOL_ALLOWANCE],
-        scenario_tool_allowance: ROOM_CONVERSATION_TOOL_ALLOWANCE,
+        capabilities_json: inProject,
+        scenario_tool_allowance: inProject,
       });
+      expect(conversationToolGrantInput({ room_id: "room-1", project_id: "project-1" })).toEqual(conversationToolGrantInput({ project_id: "project-1" }));
       expect(ROOM_CONVERSATION_TOOL_ALLOWANCE).toContain("project.source.propose_bind");
       expect(ROOM_CONVERSATION_TOOL_ALLOWANCE).toContain("source.backfill.propose_start");
     });
@@ -85,6 +87,7 @@ describe("projectChatToolPermissions", () => {
       expect(clean.scenario_tool_allowance).not.toContain("input_resource.read");
       expect(withResource.scenario_tool_allowance).toEqual([
         ...ROOM_CONVERSATION_TOOL_ALLOWANCE,
+        ...PROJECT_APPLICATIONS_TOOL_ALLOWANCE,
         "input_resource.read",
         "input_resource.search",
       ]);

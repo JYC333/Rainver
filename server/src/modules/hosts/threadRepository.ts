@@ -337,6 +337,7 @@ export class PgHostThreadRepository {
           SET status = 'closed',
               retired_vendor_session_ids = CASE WHEN vendor_session_id IS NULL THEN retired_vendor_session_ids ELSE retired_vendor_session_ids || to_jsonb(vendor_session_id) END,
               vendor_session_id = NULL,
+              vendor_session_launch_id = NULL,
               pending_archive_at = COALESCE(thread.pending_archive_at, now()),
               archive_generation = CASE WHEN thread.pending_archive_at IS NULL OR thread.archive_generation IS NULL
                                         THEN nextval('managed_workspace_generation_seq') ELSE thread.archive_generation END,
@@ -396,6 +397,7 @@ export class PgHostThreadRepository {
           SET status = 'closed',
               retired_vendor_session_ids = CASE WHEN vendor_session_id IS NULL THEN retired_vendor_session_ids ELSE retired_vendor_session_ids || to_jsonb(vendor_session_id) END,
               vendor_session_id = NULL,
+              vendor_session_launch_id = NULL,
               pending_archive_at = COALESCE(thread.pending_archive_at, now()),
               archive_generation = CASE WHEN thread.pending_archive_at IS NULL OR thread.archive_generation IS NULL
                                         THEN nextval('managed_workspace_generation_seq') ELSE thread.archive_generation END,
@@ -412,25 +414,33 @@ export class PgHostThreadRepository {
     return result.rows.map((row) => ({ ...normalizeReturnedThread(row), include_workspace: row.include_workspace }));
   }
 
-  /** The active Conversation thread of one Agent in one Project direct conversation, locked for a reset. */
-  async lockDirectConversationAgent(spaceId: string, sessionId: string, agentId: string): Promise<{ id: string; dispatch_lock_id: string | null; host_owner_user_id: string | null } | null> {
+  /**
+   * The active Conversation thread of one Agent in one person's own direct
+   * conversation (Project or not, never a Room's), locked for a reset.
+   */
+  async lockDirectConversationAgent(spaceId: string, sessionId: string, agentId: string, userId: string): Promise<{ id: string; dispatch_lock_id: string | null; host_owner_user_id: string | null } | null> {
     const result = await this.db.query<{ id: string; dispatch_lock_id: string | null; host_owner_user_id: string | null }>(
       `SELECT thread.id, thread.dispatch_lock_id, host.owner_user_id AS host_owner_user_id
          FROM host_threads thread
          JOIN sessions conversation ON conversation.id = thread.session_id AND conversation.space_id = thread.space_id
          LEFT JOIN hosts host ON host.id = thread.execution_host_id
         WHERE thread.space_id = $1 AND thread.session_id = $2 AND thread.agent_id = $3
-          AND conversation.room_id IS NULL AND conversation.project_id IS NOT NULL
+          AND conversation.room_id IS NULL AND conversation.user_id = $4
           AND thread.container_kind = 'conversation' AND thread.delegation_id IS NULL
           AND thread.status IN ('active', 'session_reset')
         LIMIT 1
         FOR UPDATE OF thread`,
-      [spaceId, sessionId, agentId],
+      [spaceId, sessionId, agentId, userId],
     );
     return result.rows[0] ?? null;
   }
 
-  async resetConversationAgent(threadId: string): Promise<HostThread | null> {
+  /**
+   * `onlyVendorSessionId`: retire only that session — a check that refused to
+   * resume a session it was handed must not clear a newer pointer recorded
+   * since; null when the thread no longer points at it.
+   */
+  async resetConversationAgent(threadId: string, onlyVendorSessionId?: string): Promise<HostThread | null> {
     // A person's reset starts the Agent clean: the last handoff is not
     // carried into the new session either.
     const result = await this.db.query<HostThread>(
@@ -438,6 +448,7 @@ export class PgHostThreadRepository {
           SET status = 'session_reset',
               retired_vendor_session_ids = CASE WHEN vendor_session_id IS NULL THEN retired_vendor_session_ids ELSE retired_vendor_session_ids || to_jsonb(vendor_session_id) END,
               vendor_session_id = NULL,
+              vendor_session_launch_id = NULL,
               identity_digest = NULL,
               identity_digest_run_id = NULL,
               context_tokens = NULL,
@@ -447,8 +458,9 @@ export class PgHostThreadRepository {
         WHERE id = $1 AND session_id IS NOT NULL AND agent_id IS NOT NULL
           AND container_kind = 'conversation' AND delegation_id IS NULL
           AND status IN ('active', 'session_reset')
+          AND ($2::text IS NULL OR vendor_session_id = $2::text)
         RETURNING ${COLUMNS}`,
-      [threadId],
+      [threadId, onlyVendorSessionId ?? null],
     );
     return result.rows[0] ?? null;
   }
@@ -458,7 +470,7 @@ export class PgHostThreadRepository {
       `UPDATE host_threads
           SET status = 'session_reset',
               retired_vendor_session_ids = CASE WHEN vendor_session_id IS NULL THEN retired_vendor_session_ids ELSE retired_vendor_session_ids || to_jsonb(vendor_session_id) END,
-              vendor_session_id = NULL, updated_at = now()
+              vendor_session_id = NULL, vendor_session_launch_id = NULL, updated_at = now()
         WHERE agent_id = $1 AND container_kind = 'direct'
           AND container_user_id = $2 AND status IN ('active', 'session_reset')
         RETURNING ${COLUMNS}`,
@@ -479,6 +491,7 @@ export class PgHostThreadRepository {
           SET status = 'closed',
               retired_vendor_session_ids = CASE WHEN vendor_session_id IS NULL THEN retired_vendor_session_ids ELSE retired_vendor_session_ids || to_jsonb(vendor_session_id) END,
               vendor_session_id = NULL,
+              vendor_session_launch_id = NULL,
               pending_archive_at = CASE WHEN $3::boolean THEN COALESCE(pending_archive_at, now()) ELSE pending_archive_at END,
               archive_generation = CASE WHEN $3::boolean AND (pending_archive_at IS NULL OR archive_generation IS NULL)
                                         THEN nextval('managed_workspace_generation_seq') ELSE archive_generation END,
@@ -522,6 +535,7 @@ export class PgHostThreadRepository {
           SET status = 'session_reset',
               retired_vendor_session_ids = CASE WHEN vendor_session_id IS NULL THEN retired_vendor_session_ids ELSE retired_vendor_session_ids || to_jsonb(vendor_session_id) END,
               vendor_session_id = NULL,
+              vendor_session_launch_id = NULL,
               updated_at = now()
         WHERE COALESCE(thread.execution_host_id, (
                 SELECT wl.execution_host_id FROM workspace_locations wl WHERE wl.id = thread.workspace_location_id
@@ -551,6 +565,7 @@ export class PgHostThreadRepository {
           SET status = 'session_reset',
               retired_vendor_session_ids = CASE WHEN vendor_session_id IS NULL THEN retired_vendor_session_ids ELSE retired_vendor_session_ids || to_jsonb(vendor_session_id) END,
               vendor_session_id = NULL,
+              vendor_session_launch_id = NULL,
               updated_at = now()
         WHERE id = $1 AND agent_id IS NULL AND container_kind IS DISTINCT FROM 'direct'
           AND container_kind IS DISTINCT FROM 'conversation'
@@ -748,6 +763,19 @@ export class PgHostThreadRepository {
                 WHEN $3::varchar IS NOT NULL AND vendor_session_id IS DISTINCT FROM $3::varchar THEN NULL
                 ELSE context_window_tokens END,
               vendor_session_id = CASE WHEN $4::boolean THEN NULL ELSE COALESCE($3::varchar, vendor_session_id) END,
+              -- The launch that reported the session the pointer now names: the reporting
+              -- Run's latest launched attempt on this thread, or none (a session no
+              -- recorded launch of this thread vouches for). Bound in this statement, so
+              -- pointer and binding never disagree; kept while the pointer is kept.
+              vendor_session_launch_id = CASE
+                WHEN $4::boolean THEN NULL
+                WHEN $3::varchar IS NOT NULL THEN (
+                  SELECT attempt.launch_id FROM run_attempts attempt
+                    JOIN runs reporting ON reporting.id = attempt.run_id AND reporting.space_id = attempt.space_id
+                   WHERE attempt.run_id = $2::varchar AND attempt.launch_id IS NOT NULL
+                     AND reporting.host_task_thread_id = host_threads.id
+                   ORDER BY attempt.attempt_number DESC LIMIT 1)
+                ELSE vendor_session_launch_id END,
               status = CASE WHEN $4::boolean THEN 'session_reset' ELSE 'active' END,
               updated_at = now()
         WHERE id = $1 AND status <> 'closed'
@@ -844,6 +872,7 @@ export class PgHostThreadRepository {
           SET status = 'session_reset',
               retired_vendor_session_ids = CASE WHEN vendor_session_id IS NULL THEN retired_vendor_session_ids ELSE retired_vendor_session_ids || to_jsonb(vendor_session_id) END,
               vendor_session_id = NULL,
+              vendor_session_launch_id = NULL,
               identity_digest = NULL,
               identity_digest_run_id = NULL,
               context_tokens = NULL,

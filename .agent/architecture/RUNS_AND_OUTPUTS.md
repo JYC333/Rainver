@@ -158,6 +158,27 @@ not expose prompt/output after Source retention, egress or Project access is
 withdrawn. Historical permission checks use the actual frozen Run destination,
 not current Profile configuration equality. Existing reading-method private Run
 gates remain conjunctive; ordinary Runs, old briefings and Research are unchanged.
+Plugin Note draft Runs (`plugin_note_draft`, `plugins/noteDraftPort.ts`
+`draftRunReadable`) take the same place in that gate: only the person who started
+the Run reads it (no Space oversight), and only while they still read its Project
+and every pinned input Note, so a revoked source withholds the derived draft from
+Run detail, status, I/O and lists.
+Monitoring comparison batch Runs (focused `monitor_compare` and standing) are held
+at `summary` for every viewer on those reads (`domainRunAccessLevel`), and on the
+projections built outside `getVisibleRun` — a Task's Run list and the owner-side
+response view `runViewFor`: their output is internal staging that only the
+comparison's own publication releases.
+A visible Run is not a licence to copy its body: an external caller that copies
+or derives from `prompt` / `output_json` (Evolution case-from-Run, candidate
+evaluation, workflow from Run, Reading trial text) requires the `getVisibleRun`
+level to be `full` (`bodyWithheld`), so a summary-level Run — including a
+comparison batch Run — yields a refusal rather than its body. The Evolution
+callers, which keep what they copy, also require `ownRunBodyLevel(run, user)`
+to be `full`: the caller's own level with oversight excluded, so an owner/admin
+who reads a Run only through Space oversight is refused. `listChildRuns`
+applies the same content, Room and domain read gates as `getVisibleRun`
+(a Reading method, Reading theme or plugin Note draft child is listed only
+while its domain gate admits the viewer).
 
 `GET /api/v1/agent-groups/{group_id}/trace` is the grouped-run companion read
 model. It returns the group, members, task messages, delegations, root run id,
@@ -291,8 +312,13 @@ the attempt's own transaction, so the Run cannot be `running` while pointing at
 a ledger record that was rolled back, and it refuses to start a Run that has
 left `queued` (`run_not_queued`) rather than spending the provider on work
 already called off. Cancellation and job exhaustion treat a queued ProviderTask
-Run as ordinary queued work: `cancelJob` and `reclaimStuckJobs` end the Run
-behind a `provider_task_run` job exactly as they end an `agent_run`'s —
+Run as ordinary queued work: `cancelJob`, `reclaimStuckJobs` and a final
+`failJob` (the last attempt failed, including no handler) end the Run behind
+a `provider_task_run` job exactly as they end an `agent_run`'s, under the same
+Run-terminal owner (a launched `agent_run` attempt still running is left to
+stop reconciliation, as reclaim does: its job returns to `pending` with one
+reserved claim, `attempts = max_attempts - 1`, so the handler can stop the
+Host attempt and settle the Run without a new physical attempt) —
 through the Run repository's one terminal write, never by writing `runs`
 themselves; its Task is then settled from finalization
 (`PROJECT_WORK.md`, "Trigger"). A Run ended this way (`run_abandoned`,
@@ -312,6 +338,23 @@ job carrying only `run_id`; the handler reloads the Run, rebuilds the request
 from its frozen contract, applies the same instance-update drain admission
 `agent_run` applies, and settles the Run failed only once the job has no
 retries left. Nothing about what the task does comes from the job payload.
+A preparer may declare its task claim-bound (`claimBound`; the plugin Note draft
+does): the handler then writes the Job's one-attempt `source_dispatch` start fence
+under the current claim and runs the task inside `withJobEffectAuthority`, so the
+domain's send fence (`lockCurrentJobClaim`/`authorizeJobEffect`) and settlement
+refuse once the claim moved. A worker that lost it neither sends, nor publishes,
+nor fails the Run (`runBoundedProviderTask` returns `job_claim_lost` without
+settling); the reclaim or cancel that took the Job ends the Run, and the start
+fence makes reclaim fail the Job as outcome-unknown instead of repeating it.
+Every failure terminal the worker writes is settled under the Job's current
+claim, claim-bound or not: `failBoundedProviderTaskRunUnderClaim` fails the Run
+in a Run-terminal transaction that first locks the Job row under that claim
+(`lockCurrentJobClaim`), for a provider or contract failure of any task the handler
+performs (it passes its Job as `failureClaim`; Reading and Research tasks included),
+an unregistered task kind and the exhaustion path — a preparer that
+throws before any claim-bound work started included. A worker whose Job was
+reclaimed or cancelled meanwhile writes nothing and still reports the task's
+own failure; the Job's current owner settles the Run.
 
 Artifact INSERTs run the `artifact.persist` policy gate first. Proposal INSERTs
 run the `proposal.create` policy gate first.

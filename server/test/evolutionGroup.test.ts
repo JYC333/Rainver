@@ -219,11 +219,28 @@ describe("evolutionBundlesDb", () => {
         [created.id],
       );
       expect(rollbackActivity.rows).toHaveLength(1);
-      const rejectedSignals = await db.pool.query<{ signal_type: string }>(
-        `SELECT signal_type FROM evolution_signals WHERE source_type = 'proposal' AND source_id = $1`,
+      // The rejection is recorded once, against the proposal's own evolution target.
+      const rejectedSignals = await db.pool.query(
+        `SELECT space_id, target_id, signal_type, severity, payload_json
+           FROM evolution_signals WHERE source_type = 'proposal' AND source_id = $1`,
         [secondEval.proposal_id],
       );
-      expect(rejectedSignals.rows).toEqual([{ signal_type: "proposal_rejected" }]);
+      const rejectedProposal = await db.pool.query<{ proposal_type: string }>(
+        `SELECT proposal_type FROM proposals WHERE id = $1`,
+        [secondEval.proposal_id],
+      );
+      expect(rejectedSignals.rows).toEqual([{
+        space_id: SPACE,
+        target_id: proposalTargetId,
+        signal_type: "proposal_rejected",
+        severity: "warning",
+        payload_json: {
+          proposal_id: secondEval.proposal_id,
+          proposal_type: rejectedProposal.rows[0]?.proposal_type,
+          status: "rejected",
+          dedup_key: `proposal_rejected:proposal:${secondEval.proposal_id}`,
+        },
+      }]);
 
       const unsupportedProposalId = randomUUID();
       await db.pool.query(
@@ -891,6 +908,8 @@ describe("evolutionSignalEmitterDb", () => {
       trigger_origin: "http",
       started_at: null,
       ended_at: null,
+      // A source kind decides the target; the capability does not.
+      capability_id: "capability-ignored-for-source-kind",
       contract_snapshot_json: { source: { kind: "workflow", id: "workflow-1" }, risk_level: "low" },
     } as AgentRunRecord;
   }
@@ -924,11 +943,18 @@ describe("evolutionSignalEmitterDb", () => {
       a.release();
       b.release();
     }
-    const targets = await db.pool.query<{ count: string }>(
-      `SELECT count(*)::text AS count FROM evolution_targets WHERE space_id = $1 AND status = 'active'`,
+    // One bounded target for the workflow source itself.
+    const targets = await db.pool.query(
+      `SELECT target_type, target_ref_type, target_ref_id, capability_key
+         FROM evolution_targets WHERE space_id = $1 AND status = 'active'`,
       [SPACE],
     );
-    expect(targets.rows[0]?.count).toBe("1");
+    expect(targets.rows).toEqual([{
+      target_type: "workflow",
+      target_ref_type: "workflow_asset",
+      target_ref_id: "workflow-1",
+      capability_key: null,
+    }]);
     const signals = await db.pool.query<{ source_id: string }>(
       `SELECT source_id FROM evolution_signals WHERE space_id = $1 AND signal_type = 'run_finalization_failed' ORDER BY source_id`,
       [SPACE],

@@ -29,7 +29,9 @@ export interface OperationAdapterRoute {
   readonly spaceParam?:string;
   /** An explicit owner-provided step that must run before, never inside, the
    * operation transaction (for example provider-funded summary preparation).
-   * It changes no state the operation authorizes; the operation rechecks everything. */
+   * It runs only after the operation's side-effect-free preflight admits the
+   * request; it changes no state the operation authorizes and the operation
+   * rechecks everything. */
   readonly prepare?:(identity:{spaceId:string;userId:string},input:Record<string,unknown>)=>Promise<void>;
   /**
    * An owner's local step around the operation, outside its transaction (an
@@ -63,8 +65,21 @@ export function registerOperationAdapters(app:FastifyInstance,config:ServerConfi
       for(const [name,field] of Object.entries(route.query??{})){const value=query[name];if(typeof value==='string'&&value.trim())target[field]=value.trim();}
       Object.assign(target,route.fixed??{});
       if(Object.keys(target).some(k=>Object.hasOwn(body,k)&&!(route.restated?.includes(k)&&body[k]===target[k])))return fail(new OperationError('operation_invalid_input',422));
+      const key=request.headers['idempotency-key'];
+      const transportKey=typeof key==='string'?key:undefined;
+      const input={...body,...target};
+      const actor=sessionActor({spaceId:identity.spaceId,userId:identity.userId});
+      // An owner step outside the transaction may spend (a provider-funded summary)
+      // or touch local effects; it runs only for a request the operation's own
+      // admission (actor, grant, input schema, key rule) already accepts.
+      let admittedInput:Record<string,unknown>=input;
+      if(route.prepare||route.around){
+        const admitted=await (await operationRuntime(config)).preflight(route.operation,input,actor,requestId,transportKey);
+        if(!admitted.ok)return reply.code(admitted.response.http_status).send(admitted.response.body);
+        admittedInput=admitted.input as Record<string,unknown>;
+      }
       if(route.prepare){
-        try{await route.prepare({spaceId:identity.spaceId,userId:identity.userId},{...body,...target});}
+        try{await route.prepare({spaceId:identity.spaceId,userId:identity.userId},admittedInput);}
         catch(error){
           const status=(error as {statusCode?:number}).statusCode;
           const refusal=(error as {name?:string}).name==='RoomMutationError'?markedRefusal(error as Error&{statusCode:number;responseBody?:unknown},'rooms'):undefined;
@@ -72,9 +87,7 @@ export function registerOperationAdapters(app:FastifyInstance,config:ServerConfi
           return fail(status===403||status===404?new OperationError('operation_not_found',404):new OperationError('operation_temporarily_unavailable',503,true));
         }
       }
-      const key=request.headers['idempotency-key'];
-      const input={...body,...target};
-      const run=async()=>(await operationRuntime(config)).execute(route.operation,input,sessionActor({spaceId:identity.spaceId,userId:identity.userId}),requestId,typeof key==='string'?key:undefined);
+      const run=async()=>(await operationRuntime(config)).execute(route.operation,input,actor,requestId,transportKey);
       let out:OperationResponse;
       if(route.around){
         try{out=await route.around({spaceId:identity.spaceId,userId:identity.userId},input,run);}

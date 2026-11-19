@@ -19,6 +19,22 @@
  */
 
 /**
+ * Owner-only rows (see `ownerOnlyPredicate`). Literal identifiers only: the
+ * registry composes them into SQL. A Gmail monitor draft, its match reminder
+ * and the Run that drafted it name what one person waits for in their own
+ * mailbox, so no Space-shared visibility, grant or oversight role may read them.
+ */
+export const OWNER_ONLY_PROPOSAL_TYPES: readonly string[] = Object.freeze(["gmail_monitor_create", "gmail_digest_create", "gmail_private_read", "gmail_private_check"]);
+export const OWNER_ONLY_ALERT_KINDS: readonly string[] = Object.freeze(["gmail_monitor_matches"]);
+/** Agent tools whose pin makes a Run owner-only: they hand the owner's mail to the model (ADR 0032). */
+/**
+ * Pinned tools that make a **private** Run owner-only (no oversight reads it): a Run of the mailbox owner's
+ * private conversation that may read their mail. A Room or mainline Run that may read keeps its
+ * conversation's audience (ADR 0033 §6): its reply is for that audience.
+ */
+export const OWNER_ONLY_RUN_TOOLS: readonly string[] = Object.freeze(["source.gmail.mail.read", "source.gmail.digest.read"]);
+
+/**
  * Where a resource's *additional* Project scopes live.
  *
  * `projectColumn` is governance ownership and single-valued; this names a table
@@ -64,6 +80,14 @@ export interface ContentAccessibleDeclaration {
   projectShare?: ContentProjectShareDeclaration;
   /** Predicate that excludes rows the gate should treat as gone. */
   activePredicate?: (alias: string) => string;
+  /**
+   * Rows matching this predicate are readable by their owner alone: no
+   * Space-shared visibility, grant or Space oversight widens them. For rows
+   * that say what one person is waiting for in their own private mail
+   * (Gmail monitor drafts and match reminders), where an oversight read is
+   * itself the leak.
+   */
+  ownerOnlyPredicate?: (alias: string) => string;
   /** Whether this entity may be published into another Space. */
   publishable: boolean;
 }
@@ -420,6 +444,17 @@ function registerCoreEntities(): void {
         ownerColumn: "owner_user_id",
         projectColumn: "project_id",
         projectFolderColumn: "project_folder_id",
+        // A Run that drafted an owner-only proposal is owner-only too: its trace, turn, I/O and tool
+        // results name the draft (and what the person waits for), so oversight reads none of them.
+        // So is a private Run that may read the owner's mail (its snapshot pins a Gmail tool) and every
+        // later Run of a conversation that already holds sensitive plugin data (`sensitive_conversation`):
+        // their prompts, traces and replies carry that content. A Room or mainline Run that may read Gmail
+        // keeps its conversation's audience (ADR 0033 §6).
+        ownerOnlyPredicate: (alias) => `(EXISTS (SELECT 1 FROM proposals owner_only_draft
+          WHERE owner_only_draft.space_id = ${alias}.space_id AND owner_only_draft.created_by_run_id = ${alias}.id
+            AND owner_only_draft.proposal_type IN (${OWNER_ONLY_PROPOSAL_TYPES.map((type) => `'${type}'`).join(",")}))
+          OR (${alias}.visibility = 'private' AND COALESCE(${alias}.permission_snapshot_json->'plugin_tool_pins' ?| ARRAY[${OWNER_ONLY_RUN_TOOLS.map((tool) => `'${tool}'`).join(",")}]::text[], false))
+          OR COALESCE(jsonb_typeof(${alias}.permission_snapshot_json) = 'object' AND ${alias}.permission_snapshot_json ? 'sensitive_conversation', false))`,
         publishable: false,
       },
     },
@@ -433,6 +468,7 @@ function registerCoreEntities(): void {
         projectFolderColumn: "project_folder_id",
         // A Run-derived proposal carries its Run's taint in the payload.
         contextTaintColumn: "payload_json",
+        ownerOnlyPredicate: (alias) => `${alias}.proposal_type IN (${OWNER_ONLY_PROPOSAL_TYPES.map((type) => `'${type}'`).join(",")})`,
         publishable: false,
       },
     },
@@ -444,6 +480,7 @@ function registerCoreEntities(): void {
         ownerColumn: "owner_user_id",
         projectColumn: "project_id",
         projectFolderColumn: "project_folder_id",
+        ownerOnlyPredicate: (alias) => `(${alias}.activity_type = 'operational_alert' AND ${alias}.payload_json->>'alert_kind' IN (${OWNER_ONLY_ALERT_KINDS.map((kind) => `'${kind}'`).join(",")}))`,
         publishable: false,
       },
     },

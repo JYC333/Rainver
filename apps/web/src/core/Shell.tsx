@@ -162,14 +162,8 @@ function ShellContent() {
   const { currentUser } = useAuth()
   const { activeSpaceId, preferredSpaceId, spaces } = useSpace()
   const location = useLocation()
-  const { modules: effectiveModules, refresh: refreshPlugins } = useEffectiveModules()
-
-  // Re-fetch plugin state whenever PluginsPage enables or disables a module.
-  useEffect(() => {
-    const handler = () => refreshPlugins()
-    window.addEventListener('rainver:plugin-state-changed', handler)
-    return () => window.removeEventListener('rainver:plugin-state-changed', handler)
-  }, [refreshPlugins])
+  // Follows PluginsPage enable/disable through the hook's own plugin-state subscription.
+  const { modules: effectiveModules } = useEffectiveModules()
 
   const scope = routeScopeForPath(location.pathname)
   const scene = scope === 'home' ? null : sceneForPath(location.pathname)

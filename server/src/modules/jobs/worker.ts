@@ -129,6 +129,12 @@ export class JobWorker {
     for (const job of result.exhausted_jobs ?? []) {
       await this.alertExhausted(job, "job stuck and retry attempts exhausted");
     }
+    const failures = result.failures ?? [];
+    if (failures.length) {
+      // Reported through the recovery loop's error log; every other candidate was still reclaimed.
+      throw new Error(`reclaimed ${result.reclaimed_count} stuck job(s); ${failures.length} failed: ${
+        failures.slice(0, 5).map((failure) => `${failure.job_id ?? "orphan run locks"}: ${failure.error}`).join("; ")}`);
+    }
     return result.reclaimed_count;
   }
 

@@ -36,7 +36,7 @@ import {
 } from "../agentGroups/runtimeDelegationMaterializer.js";
 import { inheritContentAccessGrants } from "../access/contentAccessInheritance.js";
 import { runOutputResult } from "./orchestrationResults.js";
-import { outputVisibilityForTaint, parseRunContextTaint } from "./contextTaint.js";
+import { hasSensitivePluginRead, outputVisibilityForTaint, parseRunContextTaint, readRunContextTaint } from "./contextTaint.js";
 import type { ContentVisibility } from "../access/contentAccessTypes.js";
 
 interface RunMaterializationResult {
@@ -120,6 +120,16 @@ export class RunMaterializationService {
     // This consumer only creates its validated method draft at domain settlement.
     // Model output is data, never authority to materialize files/proposals/delegation.
     const privateDeepReading=!!(input.run.contract_snapshot_json as {workflow_input_json?:{deep_read?:unknown}}|null)?.workflow_input_json?.deep_read;
+    // A Run that read sensitive data (ADR 0030/0032: the owner's mail, a sensitive plugin read, or a
+    // conversation already holding one) keeps it in its owner-only reply: no artifact, proposal or
+    // activity is derived from its output, since those have readers and lifetimes of their own.
+    // A malformed stored taint is read conservatively (readRunContextTaint), never as no read.
+    const sensitiveRead = hasSensitivePluginRead(await readRunContextTaint(this.db, input.run.space_id, input.run.id));
+    if (sensitiveRead) {
+      const output=recordValue(input.adapterResult.output_json);
+      const attempted=[input.adapterResult.produced_artifact_paths,input.adapterResult.exchange_artifact_paths,output.artifacts,output.proposed_changes,output.activities].some(value=>arrayValue(value).length>0);
+      return {items:[],errors:attempted?['A Run that read sensitive data materializes no artifacts, proposals or activities; its reply stays in the owner\'s conversation']:[]};
+    }
     if(generationOf(input.run)||privateDeepReading){
       const output=recordValue(input.adapterResult.output_json);
       const attempted=[input.adapterResult.produced_artifact_paths,input.adapterResult.exchange_artifact_paths,output.artifacts,output.proposed_changes,output.activities].some(value=>arrayValue(value).length>0);

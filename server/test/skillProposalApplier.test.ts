@@ -3,13 +3,10 @@ import { registerSkillProposalAppliers } from "../src/modules/skills/proposalApp
 import { ProposalApplierRegistry } from "../src/modules/proposals/applierRegistry.js";
 
 describe("Skill proposal authority", () => {
-  it("registers review and original-package binding without legacy capability mutation appliers", () => {
+  it("registers review and original-package binding appliers", () => {
     const registry = new ProposalApplierRegistry();
     registerSkillProposalAppliers(registry);
     expect(registry.get("skill_import_approve")).not.toBeNull();
     expect(registry.get("runtime_skill_binding_update")).not.toBeNull();
-    for (const retired of ["capability_install", "capability_update", "capability_enable", "capability_disable"]) {
-      expect(registry.get(retired)).toBeNull();
-    }
   });
 });

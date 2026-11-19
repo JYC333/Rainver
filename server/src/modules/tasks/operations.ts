@@ -69,7 +69,7 @@ function classify(e:unknown){
 
 export function taskOperationRegistrations(config:ServerConfig,definitions:ReadonlyMap<string,RegisteredSystemActionDefinition>):OperationRegistration[]{
   const pool=dbPool(config);
-  const repo=()=>new PgTaskRepository(pool);
+  const repo=()=>new PgTaskRepository(pool,config);
   const taskScope=(id:string):ResolvedOperation=>({authority:`task:${id}`,targets:{task_id:id},resourceType:'task',resourceId:id});
   const registrations:Record<Id,Omit<OperationRegistration,'definition'>>={
     'task.create':{

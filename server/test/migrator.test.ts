@@ -5,6 +5,10 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { migrate, status, loadMigrations } from "../src/db/migrator.js";
 import { withTransaction } from "../src/db/tx.js";
+import { randomBytes, randomUUID } from "node:crypto";
+import pg from "pg";
+import { assertLeastPrivilegeRuntimeRole, reconcileRuntimeRoles, runtimeRoleSuperset } from "../src/db/runtimeRoles.js";
+import { migrateUp } from "../src/db/migrateUp.js";
 
 // Real-Postgres tests for the server migration runner. The suite skips when
 // that database is unreachable. CI sets REQUIRE_TEST_POSTGRES, which fails
@@ -32,6 +36,35 @@ function writeMigration(version: string, name: string, sql: string): void {
 }
 
 describe("server migration runner", () => {
+  it("re-protects the journal in the up sequence when runtime roles were reconciled on the empty database first (ADR 0031)", async () => {
+    if (!db.available) return;
+    const suffix = randomBytes(4).toString("hex"), app = `mo_app_${suffix}`, backup = `mo_backup_${suffix}`;
+    const appPassword = randomBytes(18).toString("base64url");
+    const real = join(import.meta.dirname, "..", "migrations");
+    const runtime = new pg.Client({ connectionString: (() => { const u = new URL(db.connectionUri); u.username = app; u.password = appPassword; return u.toString(); })() });
+    runtime.on("error", () => {});
+    try {
+      await withTransaction(db.pool, (tx) => reconcileRuntimeRoles(tx, { appRole: app, backupRole: backup, appPassword }));
+      // Parent negative control: the runner alone, after reconcile, leaves the journal writable through default privileges.
+      expect((await migrate(db.pool, real)).applied.length).toBeGreaterThan(0);
+      await runtime.connect();
+      expect((await runtime.query(`SELECT has_table_privilege(current_user,'public.server_schema_migrations','INSERT') AS can`)).rows[0].can).toBe(true);
+      await expect(assertLeastPrivilegeRuntimeRole(runtime)).rejects.toThrow(/INSERT on the migration journal/);
+      // The CLI's real `up` sequence re-protects it; the app still writes data tables.
+      expect((await migrateUp(db.pool, real, app)).applied).toEqual([]);
+      await assertLeastPrivilegeRuntimeRole(runtime);
+      await expect(runtime.query(`INSERT INTO server_schema_migrations (version,name,checksum,applied_at) VALUES ('9999','x','x',now())`)).rejects.toThrow(/permission denied/);
+      await runtime.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'After up','team',now(),now())`, [randomUUID()]);
+      expect(await runtimeRoleSuperset(db.pool, backup, "backup")).toEqual([]);
+    } finally {
+      await runtime.end().catch(() => {});
+      await db.pool.query("DROP SCHEMA public CASCADE; CREATE SCHEMA public; RESET search_path;");
+      for (const role of [app, backup]) if ((await db.pool.query("SELECT 1 FROM pg_roles WHERE rolname=$1", [role])).rows.length) {
+        await db.pool.query(`DROP OWNED BY ${role}`); await db.pool.query(`DROP ROLE ${role}`);
+      }
+    }
+  });
+
   it("applies pending migrations, records versions, and is idempotent", async () => {
     if (!db.available) return;
     writeMigration("0001", "alpha", "CREATE TABLE alpha (id int PRIMARY KEY);");

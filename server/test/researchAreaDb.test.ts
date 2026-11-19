@@ -15,9 +15,8 @@ import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { insertResearchWorkflowFixture } from "./support/researchWorkflow.js";
 import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
-import { buildJobHandlerRegistry } from "../src/modules/jobs/workerRuntime.js";
-import { PROVIDER_TASK_RUN_JOB_TYPE } from "../src/modules/runs/providerTaskRunHandler.js";
 import { PgRunRepository } from "../src/modules/runs/repository.js";
+import { performQueuedProviderTask } from "./support/providerTaskFixture.js";
 import { runBoundedProviderTask } from "../src/modules/runs/boundedProviderTaskRun.js";
 
 async function performNotebookChat(service:ProjectResearchAreaService,identity:{spaceId:string;userId:string},body:Record<string,unknown>){
@@ -65,17 +64,7 @@ beforeEach(async () => { if (!db.available) return; await resetTables(
  * path production takes rather than a second one built for it.
  */
 async function runQueuedProviderTask(runId: string, attempts = 1, maxAttempts = attempts): Promise<unknown> {
-  const registry = buildJobHandlerRegistry(config!);
-  return registry.dispatch({
-    job_id: randomUUID(),
-    space_id: SPACE,
-    user_id: USER,
-    job_type: PROVIDER_TASK_RUN_JOB_TYPE,
-    attempts,
-    max_attempts: maxAttempts,
-    worker_id: "test-worker",
-    payload: { run_id: runId },
-  });
+  return performQueuedProviderTask(config!, { spaceId: SPACE, userId: USER, runId, attempts, maxAttempts });
 }
 
 async function seedCorpusSourceProvenance(corpusItemId: string, sourceItemId: string, now: string): Promise<void> {
@@ -558,6 +547,28 @@ describe("Research Area (real Postgres)", () => {
       [SPACE],
     )).rows[0];
     expect(run).toMatchObject({ execution_kind: "provider_task", status: "failed", agent_id: null });
+  });
+
+  it("a worker that lost its Job's claim does not fail an ordinary (not claim-bound) task's Run", async () => {
+    if (!db.available || !config) return;
+    const identity = { spaceId: SPACE, userId: USER };
+    const service = new ProjectResearchAreaService(db.pool, config);
+    await service.initializeArea(identity, PROJECT);
+    const queued = await service.askAi(identity, PROJECT, {
+      prompt: "Rewrite the current understanding.",
+      section_key: "understanding",
+      execution: { model_provider_id: PROVIDER },
+    });
+    // On the last attempt the Job is reclaimed while the provider answers, and
+    // the provider then fails: the failure belongs to the Job's new owner.
+    __setProviderHttpClientForTests({ fetch: async () => {
+      await db.pool.query(`UPDATE jobs SET claimed_by='another-worker' WHERE payload_json->>'run_id'=$1`, [queued.run_id]);
+      return new Response("{}", { status: 500 });
+    } });
+    await expect(runQueuedProviderTask(queued.run_id as string, 3, 3)).rejects.toThrow();
+    const run = (await db.pool.query<{ status: string; error_json: unknown }>(`SELECT status,error_json FROM runs WHERE id=$1`, [queued.run_id])).rows[0];
+    expect(run?.status).not.toBe("failed");
+    expect(run?.error_json ?? null).toBeNull();
   });
 
   it("keeps one Run for one bounded task however many provider attempts its key pool makes", async () => {

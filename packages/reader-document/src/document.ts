@@ -36,12 +36,100 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** Visible text of any node, used when an unsupported node is degraded to text. */
-export function readerNodeText(node: unknown): string {
-  if (!isRecord(node)) return "";
+/**
+ * Nesting deeper than any real document is degraded to its text, read without
+ * recursion, so a hostile or corrupt tree cannot exhaust the call stack.
+ */
+export const READER_MAX_NESTING_DEPTH = 64;
+
+/**
+ * Input nodes one normalization (or one text read) visits, degraded subtrees
+ * included. Far above any real document; past it the rest of the input is
+ * not read and the bounded result says so (`truncated`).
+ */
+export const READER_MAX_NODES = 500_000;
+
+// One synchronous traversal at a time, so a module-level budget is exact.
+let remainingNodes = 0;
+let budgetActive = false;
+let budgetExhausted = false;
+
+function budgetLeft(): boolean {
+  if (remainingNodes <= 0) { budgetExhausted = true; return false; }
+  return true;
+}
+
+function takeNode(): boolean {
+  if (remainingNodes <= 0) { budgetExhausted = true; return false; }
+  remainingNodes--;
+  return true;
+}
+
+/** Charges up to `count` nodes at once; returns how many were granted. */
+function takeNodes(count: number): number {
+  const granted = Math.max(0, Math.min(count, remainingNodes));
+  remainingNodes -= granted;
+  if (granted < count) budgetExhausted = true;
+  return granted;
+}
+
+function withNodeBudget<T>(run: () => T): { value: T; truncated: boolean } {
+  if (budgetActive) return { value: run(), truncated: false };
+  budgetActive = true;
+  remainingNodes = READER_MAX_NODES;
+  budgetExhausted = false;
+  try {
+    const value = run();
+    return { value, truncated: budgetExhausted };
+  } finally {
+    budgetActive = false;
+  }
+}
+
+/**
+ * Text of a subtree in document order, iteratively (no separators between
+ * blocks). The stack holds one cursor per open level, never a copy of a
+ * child array, so a wide degraded node costs only the nodes actually read.
+ */
+function flatText(content: unknown): string {
+  const parts: string[] = [];
+  const stack: { nodes: readonly unknown[]; next: number }[] = [{ nodes: Array.isArray(content) ? content : [content], next: 0 }];
+  while (stack.length) {
+    const frame = stack[stack.length - 1]!;
+    if (frame.next >= frame.nodes.length) { stack.pop(); continue; }
+    const node = frame.nodes[frame.next++];
+    if (!takeNode()) break;
+    if (!isRecord(node)) continue;
+    if (typeof node.text === "string") parts.push(node.text);
+    else if (node.type === "hardBreak") parts.push("\n");
+    else if (Array.isArray(node.content) && node.content.length) stack.push({ nodes: node.content, next: 0 });
+  }
+  return parts.join("");
+}
+
+/** `map` over an input array that stops at the first item once the node budget is spent. */
+function mapWithinBudget<T>(items: unknown, map: (item: unknown) => T): T[] {
+  const out: T[] = [];
+  if (!Array.isArray(items)) return out;
+  for (const item of items) {
+    if (!budgetLeft()) break;
+    out.push(map(item));
+  }
+  return out;
+}
+
+function nodeText(node: unknown, depth: number): string {
+  if (!takeNode() || !isRecord(node)) return "";
   if (typeof node.text === "string") return node.text;
   if (node.type === "hardBreak") return "\n";
-  return Array.isArray(node.content) ? node.content.map(readerNodeText).join(node.type === "doc" ? "\n\n" : "") : "";
+  if (!Array.isArray(node.content)) return "";
+  if (depth >= READER_MAX_NESTING_DEPTH) return flatText(node.content);
+  return mapWithinBudget(node.content, child => nodeText(child, depth + 1)).join(node.type === "doc" ? "\n\n" : "");
+}
+
+/** Visible text of any node, used when an unsupported node is degraded to text. */
+export function readerNodeText(node: unknown): string {
+  return withNodeBudget(() => nodeText(node, 0)).value;
 }
 
 function cleanMarks(value: unknown, code: boolean): ReaderMark[] | undefined {
@@ -64,20 +152,23 @@ function cleanMarks(value: unknown, code: boolean): ReaderMark[] | undefined {
 
 function inline(value: unknown): ReaderNode[] {
   if (!isRecord(value)) return [];
+  if (value.type !== "text" && value.type !== "hardBreak") {
+    // Anything else inside text keeps its words, not its structure.
+    const text = nodeText(value, 0);
+    return text ? [{ type: "text", text }] : [];
+  }
+  if (!takeNode()) return [];
   if (value.type === "text") {
     if (typeof value.text !== "string" || value.text === "") return [];
     const code = Array.isArray(value.marks) && value.marks.some(mark => isRecord(mark) && mark.type === "code");
     const marks = cleanMarks(value.marks, code);
     return [{ type: "text", text: value.text, ...(marks ? { marks } : {}) }];
   }
-  if (value.type === "hardBreak") return [{ type: "hardBreak" }];
-  // Anything else inside text keeps its words, not its structure.
-  const text = readerNodeText(value);
-  return text ? [{ type: "text", text }] : [];
+  return [{ type: "hardBreak" }];
 }
 
 function inlines(content: unknown): ReaderNode[] {
-  return Array.isArray(content) ? content.flatMap(inline) : [];
+  return mapWithinBudget(content, inline).flat();
 }
 
 function textBlock(type: "paragraph" | "heading", content: ReaderNode[], attrs?: Record<string, unknown>): ReaderNode {
@@ -93,21 +184,27 @@ function stringAttr(value: unknown): string | null {
 }
 
 /** Block children; stray inline content is wrapped into paragraphs, nothing is dropped silently. */
-function blocks(content: unknown): ReaderNode[] {
+function blocks(content: unknown, depth = 0): ReaderNode[] {
+  if (depth >= READER_MAX_NESTING_DEPTH) {
+    const text = flatText(content);
+    return text.trim() ? [textBlock("paragraph", [{ type: "text", text }])] : [];
+  }
   const out: ReaderNode[] = [];
   let pending: ReaderNode[] = [];
   const flush = () => { if (pending.length) out.push(textBlock("paragraph", pending)); pending = [] };
   for (const child of Array.isArray(content) ? content : []) {
+    if (!budgetLeft()) break;
     if (isRecord(child) && typeof child.type === "string" && BLOCKS.has(child.type)) {
       flush();
-      const node = block(child);
+      if (!takeNode()) break;
+      const node = block(child, depth);
       if (node) out.push(node);
     } else if (isRecord(child) && (INLINES.has(String(child.type)))) {
       pending.push(...inline(child));
     } else {
       // Unsupported or misplaced structure becomes a paragraph of its text.
       flush();
-      const text = readerNodeText(child);
+      const text = nodeText(child, 0);
       if (text.trim()) out.push(textBlock("paragraph", [{ type: "text", text }]));
     }
   }
@@ -128,7 +225,18 @@ function paragraphFirst(content: ReaderNode[]): ReaderNode[] {
   return [{ type: "paragraph" }, ...content];
 }
 
-function block(node: Record<string, unknown>): ReaderNode | null {
+function tableCell(cell: unknown, depth: number): ReaderNode {
+  const type = isRecord(cell) && cell.type === "tableHeader" ? "tableHeader" : "tableCell";
+  const isCell = isRecord(cell) && (cell.type === "tableCell" || cell.type === "tableHeader");
+  const content = isCell ? blocks(cell.content, depth + 3) : blocks([cell], depth + 2);
+  const cellAttrs = isCell && isRecord(cell.attrs) ? cell.attrs : {};
+  const colspan = intAttr(cellAttrs.colspan, 1, 20, 1);
+  const rowspan = intAttr(cellAttrs.rowspan, 1, 20, 1);
+  const spans = { ...(colspan > 1 ? { colspan } : {}), ...(rowspan > 1 ? { rowspan } : {}) };
+  return { type, ...(Object.keys(spans).length ? { attrs: spans } : {}), content: content.length ? content : [{ type: "paragraph" }] };
+}
+
+function block(node: Record<string, unknown>, depth: number): ReaderNode | null {
   const attrs = isRecord(node.attrs) ? node.attrs : {};
   switch (node.type) {
     case "paragraph":
@@ -137,20 +245,22 @@ function block(node: Record<string, unknown>): ReaderNode | null {
       return textBlock("heading", inlines(node.content), { level: intAttr(attrs.level, 1, 6, 1) });
     case "codeBlock": {
       // Code is kept character for character: one plain text node, no marks.
-      const text = Array.isArray(node.content) ? node.content.map(readerNodeText).join("") : "";
+      const text = mapWithinBudget(node.content, child => nodeText(child, depth + 1)).join("");
       const language = stringAttr(attrs.language);
       return { type: "codeBlock", ...(language ? { attrs: { language } } : {}), ...(text ? { content: [{ type: "text", text }] } : {}) };
     }
     case "blockquote": {
-      const content = blocks(node.content);
+      const content = blocks(node.content, depth + 1);
       return { type: "blockquote", content: content.length ? content : [{ type: "paragraph" }] };
     }
     case "bulletList":
     case "orderedList": {
-      const items = (Array.isArray(node.content) ? node.content : []).map(child => {
-        const content = isRecord(child) && child.type === "listItem" ? blocks(child.content) : blocks([child]);
-        return { type: "listItem", content: paragraphFirst(content) };
-      });
+      const items: ReaderNode[] = [];
+      for (const child of Array.isArray(node.content) ? node.content : []) {
+        if (!takeNode()) break;
+        const content = isRecord(child) && child.type === "listItem" ? blocks(child.content, depth + 2) : blocks([child], depth + 1);
+        items.push({ type: "listItem", content: paragraphFirst(content) });
+      }
       if (!items.length) return null;
       const start = node.type === "orderedList" ? intAttr(attrs.start, 0, 1_000_000, 1) : 1;
       return { type: node.type, ...(node.type === "orderedList" && start !== 1 ? { attrs: { start } } : {}), content: items };
@@ -167,22 +277,16 @@ function block(node: Record<string, unknown>): ReaderNode | null {
       return { type: "image", attrs: { src, alt: stringAttr(attrs.alt) ?? "", title: stringAttr(attrs.title), ...dimensions } };
     }
     case "table": {
-      const rows = (Array.isArray(node.content) ? node.content : []).map(row => {
-        const cells = isRecord(row) && row.type === "tableRow" && Array.isArray(row.content) ? row.content : [row];
-        return {
-          type: "tableRow",
-          content: cells.map(cell => {
-            const type = isRecord(cell) && cell.type === "tableHeader" ? "tableHeader" : "tableCell";
-            const isCell = isRecord(cell) && (cell.type === "tableCell" || cell.type === "tableHeader");
-            const content = isCell ? blocks(cell.content) : blocks([cell]);
-            const cellAttrs = isCell && isRecord(cell.attrs) ? cell.attrs : {};
-            const colspan = intAttr(cellAttrs.colspan, 1, 20, 1);
-            const rowspan = intAttr(cellAttrs.rowspan, 1, 20, 1);
-            const spans = { ...(colspan > 1 ? { colspan } : {}), ...(rowspan > 1 ? { rowspan } : {}) };
-            return { type, ...(Object.keys(spans).length ? { attrs: spans } : {}), content: content.length ? content : [{ type: "paragraph" }] };
-          }),
-        };
-      }).filter(row => row.content.length);
+      const rows: ReaderNode[] = [];
+      for (const row of Array.isArray(node.content) ? node.content : []) {
+        if (!takeNode()) break;
+        const cells: unknown[] = isRecord(row) && row.type === "tableRow" && Array.isArray(row.content) ? row.content : [row];
+        // A row's cells are all charged before any is read, as before: a row
+        // that runs out keeps the cells it was charged for.
+        const charged = takeNodes(cells.length);
+        const content = cells.slice(0, charged).map(cell => tableCell(cell, depth));
+        if (content.length) rows.push({ type: "tableRow", content });
+      }
       return rows.length ? { type: "table", content: rows } : null;
     }
     default:
@@ -197,6 +301,16 @@ function block(node: Record<string, unknown>): ReaderNode | null {
  * marks are dropped. A single bad node therefore never blanks a document.
  */
 export function normalizeReaderDocument(value: unknown): ReaderDocument {
-  const content = isRecord(value) && value.type === "doc" ? blocks(value.content) : blocks([value]);
-  return { type: "doc", content: content.length ? content : [{ type: "paragraph" }] };
+  return normalizeReaderDocumentBounded(value).document;
+}
+
+/**
+ * `normalizeReaderDocument` with its bound made visible: `truncated` is true
+ * when the input had more than `READER_MAX_NODES` nodes and the rest was not
+ * read.
+ */
+export function normalizeReaderDocumentBounded(value: unknown): { document: ReaderDocument; truncated: boolean } {
+  const { value: content, truncated } = withNodeBudget(() =>
+    isRecord(value) && value.type === "doc" ? blocks(value.content) : blocks([value]));
+  return { document: { type: "doc", content: content.length ? content : [{ type: "paragraph" }] }, truncated };
 }

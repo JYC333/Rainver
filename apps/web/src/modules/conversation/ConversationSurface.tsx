@@ -71,6 +71,8 @@ import {
 } from './DiscussionGroup'
 import { OpenDiscussionDialog } from './OpenDiscussionDialog'
 import { ConversationQuotaLine } from './ConversationQuotaLine'
+import { ConversationCollaborationReminder, isCollaborationReminder } from './ConversationCollaborationReminder'
+import { ConversationCollaborationLine } from './ConversationCollaborationLine'
 import { useConversationQuota } from './useConversationQuota'
 import { KnowledgeRetrievalToggle } from './KnowledgeRetrievalToggle'
 import { useConversationScroll } from './mobile/useConversationScroll'
@@ -475,7 +477,11 @@ function ConversationSurfaceContent({
     setHasOlderMessages(page.items.length === MESSAGE_PAGE_SIZE)
     setQueued(page.queued ?? [])
     refreshDiscussions(page.items)
-    const runIds = uniqueIds([...page.items.flatMap(message => messageRunIds(message)), ...Object.keys(runsRef.current)])
+    const runIds = uniqueIds([
+      ...page.items.flatMap(message => messageRunIds(message)),
+      ...(page.active_run_ids ?? []),
+      ...Object.keys(runsRef.current),
+    ])
     await refreshRuns(runIds, () => sequence === requestSequence.current)
     if (scope.signal?.aborted || sequence !== requestSequence.current) return
     // Whether a turn still belongs on screen is decided in one place, where
@@ -604,10 +610,6 @@ function ConversationSurfaceContent({
   // Runs whose reply is already a message here. Their turn has been said.
   const repliedRunIds = new Set(messages.flatMap(message =>
     message.role === 'assistant' && message.run_id ? [message.run_id] : []))
-  // Visible messages anchor ordinary recipients and real delegated children.
-  // A later discussion wave is started by a hidden internal message, so its
-  // live turn is rendered from the discussion detail until its reply lands.
-  const anchoredRunIds = new Set(messages.flatMap(message => messageRunIds(message)))
   const allDelegatedRunIds = delegatedChildren(messages, runs)
 
   useEffect(() => {
@@ -1024,15 +1026,45 @@ function ConversationSurfaceContent({
   )
 
   const compact = variant === 'panel'
-  const liveRunAnchors = roomLiveRunAnchors(messages, runs)
+  const activeRuns = Object.values(runs).filter(run => !isTerminalRunStatus(run.status) || run.status === 'waiting_for_review')
+  const pendingTurnIds = new Set(activeRuns.map(run => run.id))
+  // A Run can settle before the chat finalizer publishes its reply.
+  for (const turn of Object.values(liveTurns)) {
+    if (turn.state === 'working' && runs[turn.run_id]) pendingTurnIds.add(turn.run_id)
+  }
   // One workspace summary per request group, under its main Agent's final
   // reply, once every Run in it has settled; each batch once (see
   // planTurnSummaries). Pending work leaves out only what a summary displays.
   const summaryByAnchor = planTurnSummaries(roomTurnGroups(messages, runs), runs)
   const { presented: presentedChangeSetIds, report: reportPresented } = usePresentedChanges()
-  const timelineItems = groupDiscussionMessages(messages, discussions)
+  const collaborationReminder = messagesReady ? messages.filter(isCollaborationReminder).pop() : undefined
+  const reminderDismissalKey = `rainver:collaboration-reminder:${JSON.stringify([userId, quotaSpaceId, roomId, conversationId])}`
+  const timelineMessages = messages.filter(message => !isCollaborationReminder(message))
+  const timelineItems = groupDiscussionMessages(timelineMessages, discussions)
   const lastSegment = new Map(timelineItems.flatMap(item =>
     item.kind === 'discussion' ? [[item.discussionId, item.segment] as const] : []))
+  // A discussion can place Runs started by a hidden trigger inside its own rail.
+  const discussionRunIds = new Set([...lastSegment.keys()].flatMap(id =>
+    discussionDetails[id]?.waves.flatMap(wave => wave.run_ids) ?? []))
+  const liveRunAnchors = roomLiveRunAnchors(
+    timelineMessages.filter(message => !discussionNoticeOf(message) && !messageReference(message.metadata_json)),
+    runs,
+    [...pendingTurnIds].filter(runId => !discussionRunIds.has(runId)),
+  )
+  const placedRunIds = new Set([...liveRunAnchors.values()].flat())
+
+  const renderAgentTurn = (runId: string) => (
+    <RoomAgentTurn
+      key={runId}
+      runId={runId}
+      turn={liveTurns[runId]}
+      agentName={agentNameForRun(runId)}
+      delegatedBy={allDelegatedRunIds.has(runId) ? delegatorNameForRun(runId) : undefined}
+      run={runs[runId]}
+      projectId={detail?.room.project_id ?? null}
+      onRetry={readOnly || allDelegatedRunIds.has(runId) ? undefined : retryRun}
+    />
+  )
 
   /** One message as the transcript shows it, inside a discussion or not. */
   const renderMessage = (message: RoomMessage) => {
@@ -1098,25 +1130,7 @@ function ConversationSurfaceContent({
           visible group message, independent of Agent role.
           A turn with its own reply is rendered through that message instead.
         */}
-        {(liveRunAnchors.get(message.id) ?? [])
-          // A turn is shown until its reply is a message of its own —
-          // and then it is shown *as* that message (see `RoomMessageView`,
-          // which renders an Agent reply through the same component when
-          // a turn for it is held), so the steps fold above the reply
-          // instead of disappearing with it.
-          .filter(runId => !repliedRunIds.has(runId))
-          .map(runId => (
-            <RoomAgentTurn
-              key={runId}
-              runId={runId}
-              turn={liveTurns[runId]}
-              agentName={agentNameForRun(runId)}
-              delegatedBy={allDelegatedRunIds.has(runId) ? delegatorNameForRun(runId) : undefined}
-              run={runs[runId]}
-              projectId={detail?.room.project_id ?? null}
-              onRetry={readOnly || allDelegatedRunIds.has(runId) ? undefined : retryRun}
-            />
-          ))}
+        {liveRunAnchors.get(message.id)?.map(renderAgentTurn)}
         {/* A turn that wrote no main reply (it failed) keeps its summary after its own turn. */}
         {summary && message.role !== 'assistant' && <div className="flex w-full justify-start pr-6">{summary}</div>}
       </Fragment>
@@ -1201,7 +1215,7 @@ function ConversationSurfaceContent({
             <Button variant="outline" size="sm" onClick={() => void loadOlderMessages()}>{t('conversation_ui.surface.load_older')}</Button>
           </div>
         )}
-        {!messagesLoading && messages.length === 0 && (
+        {!messagesLoading && messages.length === 0 && !liveRunAnchors.has(null) && (
           <p className="py-12 text-center text-sm text-muted-foreground">{emptyHint ?? t('conversation_ui.surface.no_messages')}</p>
         )}
         {timelineItems.map(item => item.kind === 'message'
@@ -1224,21 +1238,11 @@ function ConversationSurfaceContent({
               {item.messages.map(renderMessage)}
               {lastSegment.get(item.discussionId) === item.segment && uniqueIds((discussionDetails[item.discussionId]?.waves ?? [])
                 .flatMap(wave => wave.run_ids))
-                .filter(runId => !repliedRunIds.has(runId)
-                  && !anchoredRunIds.has(runId))
-                .map(runId => (
-                  <RoomAgentTurn
-                    key={runId}
-                    runId={runId}
-                    turn={liveTurns[runId]}
-                    agentName={agentNameForRun(runId)}
-                    run={runs[runId]}
-                    projectId={detail?.room.project_id ?? null}
-                    onRetry={readOnly || allDelegatedRunIds.has(runId) ? undefined : retryRun}
-                  />
-                ))}
+                .filter(runId => !repliedRunIds.has(runId) && !placedRunIds.has(runId))
+                .map(renderAgentTurn)}
             </DiscussionGroup>
           ))}
+        {liveRunAnchors.get(null)?.map(renderAgentTurn)}
         {conversationId && detail?.room.project_id && !messagesLoading && (
           <ConversationPendingWork
             conversationId={conversationId}
@@ -1279,14 +1283,14 @@ function ConversationSurfaceContent({
         <ConversationScrollButton className="absolute bottom-3 left-1/2 -translate-x-1/2" />
       </Conversation>
       <ConversationActivity
-        runs={Object.values(runs).filter(run =>
-          (!isTerminalRunStatus(run.status) || run.status === 'waiting_for_review')
-          && liveTurns[run.id]?.state !== 'done' && liveTurns[run.id]?.state !== 'failed')}
+        runs={activeRuns.filter(run => liveTurns[run.id]?.state !== 'done' && liveTurns[run.id]?.state !== 'failed')}
         turns={liveTurns}
         agentName={agentNameForRun}
         allowCommands={!readOnly}
         onChanged={run => setRuns(current => ({ ...current, [run.id]: run }))}
       />
+      {collaborationReminder && <ConversationCollaborationReminder key={reminderDismissalKey}
+        message={collaborationReminder} dismissalKey={reminderDismissalKey} />}
       {!readOnly && <div data-conversation-composer className={compact ? 'min-h-0 max-h-[45dvh] shrink-0 overflow-y-auto overscroll-contain space-y-2 border-t border-border p-3' : 'space-y-3 border-t border-border bg-card px-5 py-3'}>
         {/* A draft has to be visible to be a draft. Name the pick and give it
             a way to drop. On the same condition the send uses, not merely
@@ -1318,6 +1322,8 @@ function ConversationSurfaceContent({
           onContinueAnyway={!readOnly && detail?.viewer_can_write ? continuePastQuota : undefined}
           dismissalScope={userId && quotaSpaceId ? { userId, spaceId: quotaSpaceId } : null}
         />
+        <ConversationCollaborationLine roomId={roomId} conversationId={conversationId} scope={scope}
+          changeSignals={[messages.length, settledRunCount]} readOnly={readOnly} />
         <ConversationComposer
           renderInputReferences={false}
           editor={<RoomMessageComposer

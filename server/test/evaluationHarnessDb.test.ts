@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
+import { JobEffectLeaseLost } from "../src/modules/jobs/effectAuthority.js";
 import { resetTables } from "./support/resetTables.js";
 import type { ServerConfig } from "../src/config.js";
 import { EvolvableAssetRepository } from "../src/modules/evolution/assetRepository.js";
@@ -29,6 +30,7 @@ const db = useTestDatabase(import.meta.filename, { max: 4 });
 
 beforeEach(async () => {
   if (!db.available) return;
+  await db.pool.query("DROP TRIGGER IF EXISTS eval_summary_fault ON evolvable_asset_versions");
   await resetTables(
     db.pool,
     ["evaluation_cases", "evolvable_asset_evaluation_runs", "evolvable_asset_pins", "evolvable_asset_versions", "evolvable_assets", "evolution_experiences", "proposals", "jobs", "job_events", "agent_runtime_profiles", "space_memberships", "hosts", "machines", "users", "spaces"],
@@ -272,5 +274,123 @@ describe("evaluation harness (real Postgres and job worker)", () => {
       evaluation_summary: { total: 0, passed: 0 },
     });
     await expect(applyProposal(proposal.proposal_id as string)).rejects.toThrow(/hard gate/i);
+  });
+});
+
+/**
+ * Makes the next `failures` writes of a candidate's `eval_summary_json` fail
+ * inside PostgreSQL. A sequence counts them because it is not rolled back with
+ * the failed transaction.
+ */
+async function failSummaryWrites(failures: number): Promise<void> {
+  await db.pool.query("DROP SEQUENCE IF EXISTS eval_summary_fault_seq");
+  await db.pool.query("CREATE SEQUENCE eval_summary_fault_seq");
+  await db.pool.query(`CREATE OR REPLACE FUNCTION eval_summary_fault() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      IF nextval('eval_summary_fault_seq') <= ${failures} THEN RAISE EXCEPTION 'injected summary write failure'; END IF;
+      RETURN NEW;
+    END $$`);
+  await db.pool.query(`CREATE TRIGGER eval_summary_fault BEFORE UPDATE OF eval_summary_json ON evolvable_asset_versions
+    FOR EACH ROW EXECUTE FUNCTION eval_summary_fault()`);
+}
+
+async function queuedEvaluation(): Promise<{ evaluationRunId: string; jobId: string; candidateId: string; worker: JobWorker }> {
+  const { assetId, baselineId, candidateId } = await createApprovedBaseline();
+  const service = new EvaluationHarnessService(db.pool);
+  const sourceRunId = await createSuccessfulSourceRun();
+  const evaluationCase = await service.createCaseFromRun(identity, assetId, {
+    name: "Result has an ok field",
+    baseline_version_id: baselineId,
+    source_run_id: sourceRunId,
+    verification_recipe_json: { checks: [{ type: "output_schema", schema: { type: "object", required: ["ok"] } }] },
+  });
+  const candidateRunId = await createSuccessfulSourceRun(candidateId, { ok: true });
+  const started = await service.startEvaluation(identity, assetId, candidateId, String(evaluationCase.id), { candidate_run_id: candidateRunId });
+  const registry = new JobHandlerRegistry();
+  registerEvaluationHarnessHandler(registry, { databaseUrl: db.connectionUri } as ServerConfig);
+  const worker = new JobWorker(new PgJobQueueRepository(db.pool), registry, "evaluation-retry-worker", ["evolvable_asset_evaluation"], 0);
+  return { evaluationRunId: String((started.evaluation_run as Record<string, unknown>).id), jobId: String(started.job_id), candidateId, worker };
+}
+
+async function evaluationState(evaluationRunId: string, jobId: string, candidateId: string) {
+  const run = await db.pool.query<{ status: string; metrics_json: Record<string, unknown>; blockers_json: Array<{ code?: string }> }>(
+    "SELECT status, metrics_json, blockers_json FROM evolvable_asset_evaluation_runs WHERE id = $1", [evaluationRunId]);
+  const job = await db.pool.query<{ status: string; attempts: number }>("SELECT status, attempts FROM jobs WHERE id = $1", [jobId]);
+  const version = await db.pool.query<{ eval_summary_json: Record<string, unknown> | null }>(
+    "SELECT eval_summary_json FROM evolvable_asset_versions WHERE id = $1", [candidateId]);
+  return { run: run.rows[0]!, job: job.rows[0]!, summary: version.rows[0]?.eval_summary_json ?? null };
+}
+
+describe("evaluation Job attempts (real Postgres and job worker)", () => {
+  it("re-executes after a failed first attempt and settles result and summary together", async () => {
+    if (!db.available) return;
+    const evaluation = await queuedEvaluation();
+    await failSummaryWrites(1);
+    expect((await evaluation.worker.processOne()).status).toBe("failed");
+    const afterFirst = await evaluationState(evaluation.evaluationRunId, evaluation.jobId, evaluation.candidateId);
+    // Not terminal: the Job is pending its second attempt and the result did
+    // not commit without its summary.
+    expect(afterFirst.job).toMatchObject({ status: "pending", attempts: 1 });
+    expect(afterFirst.run.status).toBe("running");
+    expect(afterFirst.run.metrics_json).toEqual({});
+    expect(afterFirst.summary?.status).toBeUndefined();
+
+    expect((await evaluation.worker.processOne()).status).toBe("completed");
+    const afterRetry = await evaluationState(evaluation.evaluationRunId, evaluation.jobId, evaluation.candidateId);
+    expect(afterRetry.job).toMatchObject({ status: "completed", attempts: 2 });
+    expect(afterRetry.run.status).toBe("passed");
+    expect(afterRetry.run.metrics_json).toMatchObject({ candidate_status: "passed" });
+    expect(afterRetry.summary).toMatchObject({ status: "passed" });
+  });
+
+  it("records the failure only when attempts are exhausted, and never a result without its summary", async () => {
+    if (!db.available) return;
+    const evaluation = await queuedEvaluation();
+    await failSummaryWrites(10);
+    expect((await evaluation.worker.processOne()).status).toBe("failed");
+    expect((await evaluationState(evaluation.evaluationRunId, evaluation.jobId, evaluation.candidateId)).run.status).toBe("running");
+    expect((await evaluation.worker.processOne()).status).toBe("failed");
+    const exhausted = await evaluationState(evaluation.evaluationRunId, evaluation.jobId, evaluation.candidateId);
+    expect(exhausted.job).toMatchObject({ status: "failed", attempts: 2 });
+    expect(exhausted.run.status).toBe("failed");
+    expect(exhausted.run.blockers_json).toEqual([expect.objectContaining({ code: "evaluation_executor_error" })]);
+    expect(exhausted.run.metrics_json).toEqual({});
+    expect(exhausted.summary?.status).toBeUndefined();
+  });
+
+  it("writes nothing for an attempt that lost its claim or names another Space", async () => {
+    if (!db.available) return;
+    const evaluation = await queuedEvaluation();
+    const queue = new PgJobQueueRepository(db.pool);
+    const claimed = await queue.claimNext("stale-worker", ["evolvable_asset_evaluation"]);
+    expect(claimed?.id).toBe(evaluation.jobId);
+    await queue.startJob(evaluation.jobId, "stale-worker");
+    const job = await db.pool.query<{ payload_json: Record<string, unknown>; attempts: number; max_attempts: number }>(
+      "SELECT payload_json, attempts, max_attempts FROM jobs WHERE id = $1", [evaluation.jobId]);
+    const payload = job.rows[0]!.payload_json;
+    const input = {
+      evaluationRunId: String(payload.evaluation_run_id), evaluationCaseId: String(payload.evaluation_case_id),
+      assetId: String(payload.asset_id), candidateVersionId: String(payload.candidate_version_id), candidateRunId: String(payload.candidate_run_id),
+    };
+    // Final-attempt envelope, so a failure here would be written if allowed.
+    const envelope = {
+      job_id: evaluation.jobId, space_id: SPACE, user_id: OWNER, job_type: "evolvable_asset_evaluation",
+      attempts: job.rows[0]!.max_attempts, max_attempts: job.rows[0]!.max_attempts, worker_id: "stale-worker", payload,
+    };
+    await db.pool.query("UPDATE jobs SET attempts = max_attempts WHERE id = $1", [evaluation.jobId]);
+    const service = new EvaluationHarnessService(db.pool);
+    // Another Space: the run is not found there, nothing is written.
+    await expect(service.executeEvaluation(input, { ...envelope, space_id: "99999999-9999-4999-8999-999999999999" })).rejects.toThrow(/no longer exists/);
+    // The claim moved to another worker (reclaim): the stale attempt writes nothing.
+    await db.pool.query("UPDATE jobs SET claimed_by = 'new-worker' WHERE id = $1", [evaluation.jobId]);
+    await expect(service.executeEvaluation(input, envelope)).rejects.toBeInstanceOf(JobEffectLeaseLost);
+    const state = await evaluationState(evaluation.evaluationRunId, evaluation.jobId, evaluation.candidateId);
+    expect(state.run.status).toBe("queued");
+    expect(state.run.metrics_json).toEqual({});
+    expect(state.summary?.status).toBeUndefined();
+    // Still holding it, the same attempt settles normally.
+    await db.pool.query("UPDATE jobs SET claimed_by = 'stale-worker' WHERE id = $1", [evaluation.jobId]);
+    await expect(service.executeEvaluation(input, envelope)).resolves.toBeDefined();
+    expect((await evaluationState(evaluation.evaluationRunId, evaluation.jobId, evaluation.candidateId)).summary).toMatchObject({ status: "passed" });
   });
 });

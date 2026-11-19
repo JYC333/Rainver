@@ -1,5 +1,6 @@
 import {insertProposalRow} from '../proposals/reviewPackets.js';
-import {researchGraphRunRefs,withRunTerminalOwner} from '../systemActions/operations/proposalTransitions.js';
+import {withRunTerminalOwner} from '../systemActions/operations/proposalTransitions.js';
+import {researchGraphRunRefs} from '../projectResearch/graphRuns.js';
 import { randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
 import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
@@ -7,7 +8,7 @@ import { lockActiveProjectForMutation } from "../projects/access.js";
 import { HttpError } from "../routeUtils/common.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
 import { PgRunRepository } from "../runs/repository.js";
-import { canonicalRunOutput } from "../runs/orchestrationResults.js";
+import { canonicalRunOutput, isHardTerminalRunStatus } from "../runs/orchestrationResults.js";
 import { assertBudgetSourcesAvailable } from "../runs/budgetEnforcement.js";
 import type { RunBudgetSource } from "../runs/contractSnapshot.js";
 import { materializePlanGraph, type MaterializedPlanGraph } from "../plans/graph.js";
@@ -15,7 +16,7 @@ import type { AutomationRow } from "./repository.js";
 import { ExecutionGraphScheduler } from "../execution/executionGraphScheduler.js";
 import { InputBindingResolutionError, resolveNodeInputs, type ResolvedNodeInputs } from "../execution/nodeInputResolver.js";
 import { executeActionNode } from "../execution/actionNodeExecution.js";
-import { workflowExecutionOutcomeHandlerRegistry } from "./workflowExecutionOutcomeRegistry.js";
+import { workflowExecutionOutcomeHandlerRegistry, type WorkflowExecutionOutcomeContext } from "./workflowExecutionOutcomeRegistry.js";
 import type { WorkflowNodeInputBinding } from "@rainver/protocol";
 
 interface ResolvedWorkflowExecutionTarget {
@@ -106,46 +107,48 @@ export class WorkflowExecutionService {
     await input.beforeSchedule?.(executionId);
     const nodeIds = await insertWorkflowNodes(input.db, input.identity.spaceId, executionId, graph, now);
     const scheduledNodeIds = await this.scheduleReadyNodes(input, { executionId, rootRunId: root.id, nodeIds });
-    await this.finishIfSettled(
-      input.db,
-      input.identity.spaceId,
-      executionId,
-      root.id,
-      input.target.contentJson,
-      input.researchOperationId ?? null,
-    );
+    await this.finishIfSettled(input.db, input.identity.spaceId, executionId, {
+      root_run_id: root.id,
+      definition_json: input.target.contentJson,
+      research_operation_id: input.researchOperationId ?? null,
+    });
     return { workflowExecutionId: executionId, rootRunId: root.id, scheduledNodeIds };
   }
 
+  /** Finishes the execution when its graph has a failed node or is complete; returns the outcome. */
   private async finishIfSettled(
-    db: Queryable,
+    client: Queryable,
     spaceId: string,
     executionId: string,
-    rootRunId: string,
-    definitionJson: unknown,
-    researchOperationId: string | null,
-  ): Promise<void> {
-    const nodes = await db.query<{ status: string }>(
-      `SELECT status FROM workflow_execution_nodes
-        WHERE space_id=$1 AND execution_id=$2`,
+    execution: { root_run_id: string | null; definition_json: unknown; research_operation_id: string | null },
+  ): Promise<"failed" | "completed" | null> {
+    const nodes = await client.query<{ id: string; status: string; depends_on: string[] }>(
+      `SELECT n.id, n.status,
+              COALESCE(array_agg(d.depends_on_node_id) FILTER (WHERE d.depends_on_node_id IS NOT NULL), ARRAY[]::varchar[]) AS depends_on
+         FROM workflow_execution_nodes n
+         LEFT JOIN workflow_execution_dependencies d
+           ON d.node_id = n.id AND d.space_id = n.space_id AND d.execution_id = n.execution_id
+        WHERE n.space_id = $1 AND n.execution_id = $2
+        GROUP BY n.id
+        ORDER BY n.created_at ASC, n.id ASC`,
       [spaceId, executionId],
     );
-    const graphNodes = nodes.rows.map((node) => ({
-      id: "",
-      status: node.status,
-      dependsOn: [] as string[],
-    }));
+    const graphNodes = nodes.rows.map((node) => ({ id: node.id, status: node.status, dependsOn: node.depends_on }));
     if (this.scheduler.hasFailedNode(graphNodes)) {
       await finishWorkflowExecution(
-        db, spaceId, executionId, rootRunId, "failed",
-        "A workflow execution node failed", definitionJson, researchOperationId,
+        client, spaceId, executionId, execution.root_run_id, "failed",
+        "A workflow execution node failed", execution.definition_json, execution.research_operation_id,
       );
-    } else if (this.scheduler.isComplete(graphNodes)) {
-      await finishWorkflowExecution(
-        db, spaceId, executionId, rootRunId, "succeeded",
-        "All workflow execution nodes completed", definitionJson, researchOperationId,
-      );
+      return "failed";
     }
+    if (this.scheduler.isComplete(graphNodes)) {
+      await finishWorkflowExecution(
+        client, spaceId, executionId, execution.root_run_id, "succeeded",
+        "All workflow execution nodes completed", execution.definition_json, execution.research_operation_id,
+      );
+      return "completed";
+    }
+    return null;
   }
 
   /**
@@ -200,48 +203,34 @@ export class WorkflowExecutionService {
     );
     const execution = result.rows[0];
     if (!execution) throw new HttpError(404, "Workflow Execution not found");
-    if (!['queued', 'running'].includes(execution.status) || execution.automation_status !== "active") {
+    if (!['queued', 'running'].includes(execution.status)) {
+      return { workflow_execution_id: executionId, status: execution.status, scheduled_node_ids: [] };
+    }
+    // A coordinator Run ended outside the graph (cancelled, failed, orphaned)
+    // ends its execution: no child may be scheduled under a terminal root.
+    const rootStatus = execution.root_run_id
+      ? (await client.query<{ status: string }>(`SELECT status FROM runs WHERE space_id=$1 AND id=$2`, [spaceId, execution.root_run_id])).rows[0]?.status
+      : undefined;
+    if (rootStatus && isHardTerminalRunStatus(rootStatus)) {
+      const status = rootStatus === "cancelled" ? "cancelled" : "failed";
+      const now = new Date().toISOString();
+      await client.query(
+        `UPDATE workflow_executions SET status=$3, ended_at=$4, updated_at=$4 WHERE space_id=$1 AND id=$2`,
+        [spaceId, executionId, status, now],
+      );
+      // The owning domain still hears the outcome, as on any other close;
+      // the coordinator Run is already terminal and nothing is rescheduled.
+      await projectWorkflowOutcome(client, spaceId, executionId, status, execution.definition_json, execution.research_operation_id);
+      return { workflow_execution_id: executionId, status, scheduled_node_ids: [] };
+    }
+    // Pausing holds an execution, it does not end it: the recovery scan keeps
+    // revisiting it and it resumes once the Automation is active again.
+    if (execution.automation_status !== "active") {
       return { workflow_execution_id: executionId, status: execution.status, scheduled_node_ids: [] };
     }
     await projectLatestWorkflowNodeRuns(client, spaceId, executionId);
-    const nodes = await client.query<{ id: string; status: string; depends_on: string[] }>(
-      `SELECT n.id, n.status,
-              COALESCE(array_agg(d.depends_on_node_id) FILTER (WHERE d.depends_on_node_id IS NOT NULL), ARRAY[]::varchar[]) AS depends_on
-         FROM workflow_execution_nodes n
-         LEFT JOIN workflow_execution_dependencies d
-           ON d.node_id = n.id AND d.space_id = n.space_id AND d.execution_id = n.execution_id
-        WHERE n.space_id = $1 AND n.execution_id = $2
-        GROUP BY n.id
-        ORDER BY n.created_at ASC, n.id ASC`,
-      [spaceId, executionId],
-    );
-    const graphNodes = nodes.rows.map((node) => ({ id: node.id, status: node.status, dependsOn: node.depends_on }));
-    if (this.scheduler.hasFailedNode(graphNodes)) {
-      await finishWorkflowExecution(
-        client,
-        spaceId,
-        executionId,
-        execution.root_run_id,
-        "failed",
-        "A workflow execution node failed",
-        execution.definition_json,
-        execution.research_operation_id,
-      );
-      return { workflow_execution_id: executionId, status: "failed", scheduled_node_ids: [] };
-    }
-    if (this.scheduler.isComplete(graphNodes)) {
-      await finishWorkflowExecution(
-        client,
-        spaceId,
-        executionId,
-        execution.root_run_id,
-        "succeeded",
-        "All workflow execution nodes completed",
-        execution.definition_json,
-        execution.research_operation_id,
-      );
-      return { workflow_execution_id: executionId, status: "completed", scheduled_node_ids: [] };
-    }
+    const settled = await this.finishIfSettled(client, spaceId, executionId, execution);
+    if (settled) return { workflow_execution_id: executionId, status: settled, scheduled_node_ids: [] };
     if (!execution.root_run_id) throw new HttpError(409, "Workflow Execution coordinator run is missing");
     // The recorded principal, never whoever triggered this pass.
     const userId = execution.responsible_user_id;
@@ -278,6 +267,10 @@ export class WorkflowExecutionService {
       budgetSources: budgetSourcesFromSnapshot(execution.budget_snapshot_json),
       ...(executionRunVisibility(execution.contract_snapshot_json)?{runVisibility:executionRunVisibility(execution.contract_snapshot_json)}:{}),
     }, { executionId, rootRunId: execution.root_run_id, nodeIds });
+    // Nodes this pass settled without a Run (integration, action, failed
+    // input binding) finish the execution on the next pass, not this one:
+    // Project Research advances its operation stage after this pass returns
+    // and before its coordinator may finish.
     return { workflow_execution_id: executionId, status: "running", scheduled_node_ids: scheduledNodeIds };
   }
 
@@ -567,19 +560,24 @@ async function finishWorkflowExecution(
       completed_at: now,
     });
   }
+  await projectWorkflowOutcome(client, spaceId, executionId, executionStatus, definitionJson, researchOperationId);
+}
+
+/** Hands a closed execution's outcome to the domain registered for its workflow. */
+async function projectWorkflowOutcome(
+  client: Queryable,
+  spaceId: string,
+  executionId: string,
+  status: WorkflowExecutionOutcomeContext["status"],
+  definitionJson: unknown,
+  researchOperationId: string | null,
+): Promise<void> {
   const workflowId = stringValue(recordValue(definitionJson).workflow_id);
   const handler = workflowId
     ? workflowExecutionOutcomeHandlerRegistry.get(workflowId)
     : null;
   if (workflowId && handler) {
-    await handler({
-      db: client,
-      spaceId,
-      executionId,
-      workflowId,
-      status: executionStatus,
-      researchOperationId,
-    });
+    await handler({ db: client, spaceId, executionId, workflowId, status, researchOperationId });
   }
 }
 

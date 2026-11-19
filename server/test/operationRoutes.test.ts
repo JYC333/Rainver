@@ -46,6 +46,24 @@ const HOST_TRANSPORT_EXEMPTIONS: ReadonlyArray<{ method: string; path: string; r
 const SETTINGS_TRANSPORT_EXEMPTIONS: ReadonlyArray<{ method: string; path: string; reason: string }> = [
   { method: 'POST', path: '/api/v1/providers/subscriptions/login/input', reason: 'Instance-admin interactive relay into an in-process managed subscription OAuth login; the one-time code is never persisted or replayed (credential channel, ADR 0008)' },
 ];
+/**
+ * Sources block exemptions, exact: starting the owner's Gmail OAuth (`.agent/modules/sources.md`, "Personal Gmail connections").
+ * It issues a single-use, expiring authorization state bound to the session;
+ * the state is hashed at rest and the PKCE verifier is derived from it, so a
+ * replayable result would have to keep the plaintext state. The callback is a
+ * GET authentication step, not a command; disconnect/forget, legacy selection
+ * removal and monitor pause/resume/delete are core entries. The legacy thread
+ * read is POST so cursors stay out of URLs; it writes only the owner-read
+ * audit row and cannot be a core command without retaining mail in the result.
+ * (Manual search and selection add were retired with Gmail V2.) The Pub/Sub
+ * push intake has no person actor: a Google-signed OIDC token authenticates it
+ * and it only marks the named mailbox's monitored connections for a sync.
+ */
+const SOURCES_TRANSPORT_EXEMPTIONS: ReadonlyArray<{ method: string; path: string; reason: string }> = [
+  { method: 'POST', path: '/api/v1/sources/gmail/oauth/start', reason: 'Owner-only Gmail OAuth start: single-use expiring authorization state (hashed at rest, PKCE verifier derived from it) shown once; a replayable result would have to keep the plaintext state' },
+  { method: 'POST', path: '/api/v1/sources/gmail/push', reason: "Pub/Sub push intake: authenticated by a Google-signed OIDC token instead of a session, only marks the named mailbox's monitored connections for a background sync and must acknowledge every authenticated delivery; no person actor, body or replayable result" },
+  { method: 'POST', path: '/api/v1/sources/gmail/selections/:selectionId/read', reason: 'Owner-only synchronous Gmail thread page: external reads plus a mandatory owner-read audit row before release; a retained command result would store mail bodies' },
+];
 // Baseline transport entries are enumerated by exact method/path. A new route
 // needs its own owner review; matching a namespace or containing media/upload
 // cannot authorize an exemption. Pending media deletion only discards unclaimed
@@ -98,6 +116,8 @@ function classification(method: string, path: string): InventoryRow {
   if (hostTransport) return { method, path, classification: 'transport_exempt', reason: hostTransport.reason };
   const settingsTransport = SETTINGS_TRANSPORT_EXEMPTIONS.find(row => row.method === method && row.path === path);
   if (settingsTransport) return { method, path, classification: 'transport_exempt', reason: settingsTransport.reason };
+  const sourcesTransport = SOURCES_TRANSPORT_EXEMPTIONS.find(row => row.method === method && row.path === path);
+  if (sourcesTransport) return { method, path, classification: 'transport_exempt', reason: sourcesTransport.reason };
   const baselineTransport = BASELINE_TRANSPORT_EXEMPTIONS.find(row => row.method === method && row.path === path);
   if (baselineTransport) return { method, path, classification: 'transport_exempt', reason: baselineTransport.reason };
   return {
@@ -166,31 +186,8 @@ describe('operation route migration contract', () => {
   });
 });
 
-
-/** Former connection-level URLs, removed in favour of Source Channels; not a live manifest. */
-const REMOVED_SOURCE_CONNECTION_URLS = [
-  ['GET', '/api/v1/sources/connections'],
-  ['POST', '/api/v1/sources/connections'],
-  ['POST', '/api/v1/sources/connections/drafts'],
-  ['POST', '/api/v1/sources/connections/proposals'],
-  ['GET', '/api/v1/sources/connections/known-or-absent'],
-  ['PATCH', '/api/v1/sources/connections/known-or-absent'],
-  ['DELETE', '/api/v1/sources/connections/known-or-absent'],
-  ['POST', '/api/v1/sources/connections/known-or-absent/recommendations'],
-  ['POST', '/api/v1/sources/connections/known-or-absent/subscription'],
-  ['POST', '/api/v1/sources/connections/known-or-absent/scan'],
-] as const;
-describe('removed Source connection URLs', () => {
-  it.each(REMOVED_SOURCE_CONNECTION_URLS)('%s %s is not registered', async (method, url) => {
-    const app = buildModuleServer(loadConfig({}), [sourcesModule]);
-    try {
-      await app.ready();
-      expect(app.hasRoute({ method, url: url.replace('known-or-absent', ':connectionId') })).toBe(false);
-      const response = await app.inject({ method, url, ...(method === 'GET' ? {} : { payload: { status: 'active' } }) });
-      expect(response.statusCode, response.body).toBe(404);
-    } finally { await app.close(); }
-  });
-  it('keeps nearby live Channel and connection-scoped Recipe / custom Source routes registered', async () => {
+describe('live Source Channel and connection-scoped routes', () => {
+  it('registers live Channel and connection-scoped Recipe / custom Source routes', async () => {
     const app = buildModuleServer(loadConfig({}), [sourcesModule]);
     try {
       await app.ready();

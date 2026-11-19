@@ -21,6 +21,14 @@ interface ContentAccessSqlOptions {
   includeOversight?: boolean;
 }
 
+/** The resource's owner-only row predicate (see `ownerOnlyPredicate`), or `false` when it declares none. */
+export function contentOwnerOnlySql(resourceType: string, alias: string): string {
+  assertSqlIdentifier(alias, "alias");
+  const definition = contentResourceDefinition(resourceType);
+  if (!definition) throw new Error(`Unknown content resource type: ${resourceType}`);
+  return definition.ownerOnlyPredicate ? `COALESCE(${definition.ownerOnlyPredicate(alias)}, false)` : "false";
+}
+
 export function contentReadSql(
   resourceType: string,
   alias: string,
@@ -80,6 +88,8 @@ export function contentAccessSql(input: {
   const oversightEligibleSql = input.includeOversight === false
     ? "false"
     : contentOversightEligibleSql(spaceExpr, userExpr);
+  // Owner-only rows: no shared visibility, grant or oversight branch applies.
+  const notOwnerOnlySql = definition.ownerOnlyPredicate ? `NOT COALESCE(${definition.ownerOnlyPredicate(alias)}, false)` : "true";
 
   return `(
     EXISTS (
@@ -95,20 +105,22 @@ export function contentAccessSql(input: {
     AND ${alias}.access_level IN ('full', 'summary')
     AND (
       ${ownerExpr} = ${userExpr}
-      OR ${alias}.visibility = 'space_shared'
-      OR (
-        ${alias}.visibility = 'selected_users'
-        AND EXISTS (
-          SELECT 1
-            FROM content_access_grants content_grant
-           WHERE content_grant.space_id = ${spaceExpr}
-             AND content_grant.resource_type = '${definition.resourceType}'
-             AND content_grant.resource_id = ${idExpr}
-             AND content_grant.grantee_user_id = ${userExpr}
-             AND content_grant.revoked_at IS NULL
+      OR (${notOwnerOnlySql} AND (
+        ${alias}.visibility = 'space_shared'
+        OR (
+          ${alias}.visibility = 'selected_users'
+          AND EXISTS (
+            SELECT 1
+              FROM content_access_grants content_grant
+             WHERE content_grant.space_id = ${spaceExpr}
+               AND content_grant.resource_type = '${definition.resourceType}'
+               AND content_grant.resource_id = ${idExpr}
+               AND content_grant.grantee_user_id = ${userExpr}
+               AND content_grant.revoked_at IS NULL
+          )
         )
-      )
-      OR ${oversightEligibleSql}
+        OR ${oversightEligibleSql}
+      ))
     )
   )`;
 }
@@ -128,9 +140,12 @@ export function contentAccessLevelSql(input: {
   const oversightEligibleSql = input.includeOversight === false
     ? "false"
     : contentOversightEligibleSql(spaceExpr, userExpr);
+  const ownerOnlyLevelSql = definition.ownerOnlyPredicate
+    ? `WHEN COALESCE(${definition.ownerOnlyPredicate(alias)}, false) THEN 'deny'
+    ` : "";
   return `(CASE
     WHEN ${alias}.${definition.ownerColumn} = ${userExpr} THEN 'full'
-    WHEN ${alias}.visibility = 'space_shared' THEN
+    ${ownerOnlyLevelSql}WHEN ${alias}.visibility = 'space_shared' THEN
       CASE WHEN ${alias}.access_level = 'full' OR EXISTS (
         SELECT 1 FROM content_access_grants content_level_grant
          WHERE content_level_grant.space_id = ${spaceExpr}

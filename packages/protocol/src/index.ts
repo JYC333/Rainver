@@ -1,7 +1,9 @@
+export * from './cliVersions.js';
 export * from './spaceOperations.js';
 export * from './contextReportOperations.js';
 export * from './noteControlOperations.js';
 export * from './sourceMonitorOperations.js';
+export * from './gmail.js';
 export * from './sourceRecipeOperations.js';
 /**
  * @rainver/protocol — shared, framework-free wire contracts.
@@ -301,5 +303,7 @@ export * from './focusOperations.js';
 export * from './learningOperations.js';
 
 export * from './personalMemoryGrantOperations.js';
+export * from './pluginDataAccessOperations.js';
+export * from './pluginProjectBindings.js';
 
 export * from './accountWorkspaceOperations.js';

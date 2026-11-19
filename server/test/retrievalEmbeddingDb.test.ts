@@ -6,6 +6,7 @@ import { knowledgeRetrievalRegistry } from "../src/modules/knowledge/retrievalAd
 import {
   RetrievalEmbeddingBackfillService,
   type RetrievalEmbedder,
+  type RetrievalEmbeddingAuditEvent,
 } from "../src/modules/retrieval/embedding/service.js";
 import { EMBED_DIMENSIONS, EMBED_MAX_ATTEMPTS } from "../src/modules/retrieval/embedding/config.js";
 import { insertKnowledgeItem } from "./support/knowledgeFixtures.js";
@@ -15,6 +16,7 @@ import { insertKnowledgeItem } from "./support/knowledgeFixtures.js";
 // column, async backfill, staleness, and the dim-mismatch guard.
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
+const OTHER_SPACE = "22222222-2222-4222-8222-222222222222";
 
 /** Deterministic embedder: a distinct unit-ish vector per input text. */
 function fakeEmbedder(dim: number, model = "fake-embed-v1"): RetrievalEmbedder {
@@ -54,9 +56,10 @@ beforeEach(async () => {
   await new RetrievalProjectionService(db.pool, knowledgeRetrievalRegistry).reindexAll(SPACE);
 });
 
-async function pendingCount(): Promise<number> {
+async function pendingCount(spaceId?: string): Promise<number> {
   const r = await db.pool.query<{ n: number }>(
-    "SELECT count(*)::int AS n FROM retrieval_chunks WHERE embedding IS NULL",
+    "SELECT count(*)::int AS n FROM retrieval_chunks WHERE embedding IS NULL AND ($1::text IS NULL OR space_id = $1)",
+    [spaceId ?? null],
   );
   return r.rows[0].n;
 }
@@ -64,22 +67,106 @@ async function pendingCount(): Promise<number> {
 describe("Retrieval embedding backfill (real Postgres + pgvector)", () => {
   it("embeds pending chunks, records the model, and is idempotent", async () => {
     if (!db.available) return;
-    expect(await pendingCount()).toBeGreaterThan(0);
+    // Another Space's chunks are never claimed or sent with this Space's batch.
+    await db.pool.query(
+      `INSERT INTO spaces (id, name, type, created_at, updated_at)
+       VALUES ($1, 'Other', 'personal', now(), now())`,
+      [OTHER_SPACE],
+    );
+    await insertKnowledgeItem(db.pool, { id: "other-1", spaceId: OTHER_SPACE, title: "Other", content: "Belongs elsewhere.", slug: "other-1" });
+    await new RetrievalProjectionService(db.pool, knowledgeRetrievalRegistry).reindexAll(OTHER_SPACE);
+    const chunks = await db.pool.query<{ plain_text: string }>(
+      "SELECT plain_text FROM retrieval_chunks WHERE space_id = $1 AND embedding IS NULL",
+      [SPACE],
+    );
+    const total = chunks.rows.length;
+    expect(total).toBeGreaterThan(0);
 
-    const service = new RetrievalEmbeddingBackfillService(db.pool, fakeEmbedder(EMBED_DIMENSIONS));
+    const base = fakeEmbedder(EMBED_DIMENSIONS);
+    const sentTexts: string[] = [];
+    let claimedAtEgress: number | null = null;
+    const embedder: RetrievalEmbedder = {
+      async embed(spaceId, texts, opts) {
+        sentTexts.push(...texts);
+        // The batch is claimed in the database before any text leaves.
+        const claimed = await db.pool.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM retrieval_chunks
+            WHERE space_id = $1 AND embedding IS NULL AND embedding_claim_id IS NOT NULL`,
+          [SPACE],
+        );
+        claimedAtEgress = claimed.rows[0].n;
+        return base.embed(spaceId, texts, opts);
+      },
+    };
+    const auditEvents: RetrievalEmbeddingAuditEvent[] = [];
+    const service = new RetrievalEmbeddingBackfillService(db.pool, embedder, async (event) => {
+      auditEvents.push(event);
+    });
     const first = await service.backfillSpace(SPACE, { batchLimit: 100 });
-    expect(first.embedded).toBeGreaterThan(0);
-    expect(first.embedded).toBe(first.scanned);
-    expect(await pendingCount()).toBe(0);
+    expect(first).toEqual({ scanned: total, embedded: total, skipped: 0, model: "fake-embed-v1" });
+    expect(claimedAtEgress).toBe(total);
+    expect([...sentTexts].sort()).toEqual(chunks.rows.map((row) => row.plain_text).sort());
+    // The audit carries aggregate metadata only: no chunk text or ids.
+    expect(auditEvents).toEqual([{
+      spaceId: SPACE,
+      model: "fake-embed-v1",
+      dimensions: EMBED_DIMENSIONS,
+      scanned: total,
+      inputCount: total,
+      embedded: total,
+      skipped: 0,
+    }]);
+    expect(await pendingCount(SPACE)).toBe(0);
+    const other = await db.pool.query<{ pending: boolean; claimed: boolean }>(
+      `SELECT bool_and(embedding IS NULL) AS pending, bool_or(embedding_claim_id IS NOT NULL) AS claimed
+         FROM retrieval_chunks WHERE space_id = $1`,
+      [OTHER_SPACE],
+    );
+    expect(other.rows[0]).toEqual({ pending: true, claimed: false });
 
     const row = await db.pool.query(
-      "SELECT embedding_model, (embedding IS NOT NULL) AS has_vec FROM retrieval_chunks LIMIT 1",
+      "SELECT embedding_model, (embedding IS NOT NULL) AS has_vec FROM retrieval_chunks WHERE space_id = $1 LIMIT 1",
+      [SPACE],
     );
     expect(row.rows[0]).toMatchObject({ embedding_model: "fake-embed-v1", has_vec: true });
 
-    // Second run finds nothing pending.
+    // Second run finds nothing pending, sends nothing, and audits nothing.
     const second = await service.backfillSpace(SPACE, { batchLimit: 100 });
     expect(second.embedded).toBe(0);
+    expect(sentTexts).toHaveLength(total);
+    expect(auditEvents).toHaveLength(1);
+  });
+
+  it("claims at most batchLimit chunks per backfill", async () => {
+    if (!db.available) return;
+    const before = await pendingCount();
+    expect(before).toBeGreaterThan(1);
+    const result = await new RetrievalEmbeddingBackfillService(db.pool, fakeEmbedder(EMBED_DIMENSIONS))
+      .backfillSpace(SPACE, { batchLimit: 1 });
+    expect(result).toMatchObject({ scanned: 1, embedded: 1 });
+    expect(await pendingCount()).toBe(before - 1);
+  });
+
+  it("releases claimed chunks when provider egress fails, so they stay retryable", async () => {
+    if (!db.available) return;
+    const before = await pendingCount();
+    await expect(new RetrievalEmbeddingBackfillService(db.pool, {
+      async embed() {
+        throw new Error("provider down");
+      },
+    }).backfillSpace(SPACE, { batchLimit: 100 })).rejects.toThrow("provider down");
+    const released = await db.pool.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM retrieval_chunks
+        WHERE space_id = $1 AND embedding IS NULL
+          AND embedding_claim_id IS NULL AND embedding_claimed_at IS NULL`,
+      [SPACE],
+    );
+    expect(released.rows[0].n).toBe(before);
+    // Released at once, not left to the claim TTL: the next backfill embeds them.
+    const retry = await new RetrievalEmbeddingBackfillService(db.pool, fakeEmbedder(EMBED_DIMENSIONS))
+      .backfillSpace(SPACE, { batchLimit: 100 });
+    expect(retry).toMatchObject({ scanned: before, embedded: before });
+    expect(await pendingCount()).toBe(0);
   });
 
   it("withholds only the chunk whose source may not leave, not the rest of its batch", async () => {

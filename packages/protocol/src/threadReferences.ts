@@ -99,6 +99,16 @@ export type ThreadReferenceDisclosureRequired = z.infer<typeof ThreadReferenceDi
  * reference its own would mean splitting that item — a change to the
  * acquisition path, not to what a reference is.
  */
+/**
+ * Sensitive reads (ADR 0030/0033 §6, e.g. a person's Gmail) that content
+ * copied into a conversation carries: whose data and which read. The
+ * conversation it lands in holds that data, so its later Runs inherit them.
+ */
+export const SensitiveReadProvenanceSchema = z.array(z.object({
+  plugin_id: z.string().min(1).max(200),
+  owner_user_id: IdSchema.nullable(),
+}).strict()).max(100);
+
 export const ThreadReferenceProvenanceSchema = z.object({
   kind: ThreadReferenceSourceKindSchema,
   source_id: IdSchema,
@@ -122,6 +132,27 @@ export const ThreadReferenceProvenanceSchema = z.object({
   trust: z.enum(["domain_approved", "external_untrusted"]),
   /** Set when the copy was fitted to the context budget. */
   clipped: z.boolean(),
+  /**
+   * The source conversation's Project, recorded when the copy carries data an
+   * Agent read from a person's private source there (`sensitive_reads`). A
+   * reference never leaves its Project; this names the constraint the copy
+   * keeps.
+   */
+  source_project_id: IdSchema.optional(),
+  /**
+   * Sensitive reads the source conversation held (ADR 0030/0033 §6, e.g. the
+   * person's Gmail): whose data it is and which read. Every later Run of the
+   * conversation this copy lands in inherits them as its own read taint, so
+   * the copy keeps the source's constraints there — no Memory, nothing
+   * materialized, no outward writes.
+   */
+  sensitive_reads: SensitiveReadProvenanceSchema.optional(),
+  /**
+   * `2`: `sensitive_reads` lists every read with its real owner. A copy
+   * without it predates that; its list is not taken at its word but checked
+   * against the source conversation.
+   */
+  sensitive_reads_version: z.literal(2).optional(),
   attached_by_user_id: IdSchema,
   attached_at: z.string().min(1),
 }).strict();

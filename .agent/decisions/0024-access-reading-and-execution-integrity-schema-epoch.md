@@ -53,7 +53,3 @@ the folded migration, compared object by object on scratch databases.
   be recreated; restore preflight rejects its migration checksum.
 - Later schema changes append numbered migrations under B59 again.
 - `baselineSchema.test.ts` pins the new baseline checksum.
-
-## Revision history
-
-- 2026-10-15 — accepted and implemented.

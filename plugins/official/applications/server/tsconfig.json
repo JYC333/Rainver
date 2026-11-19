@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "lib": ["ES2022"],
+    "types": ["node"],
+    "typeRoots": ["../../../../server/node_modules/@types"],
+    "outDir": "../../../../server/dist/official-plugins/applications",
+    "rootDir": "..",
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": true,
+    "declaration": false,
+    "sourceMap": true,
+    "noUnusedLocals": true,
+    "noFallthroughCasesInSwitch": true,
+    "paths": {
+      "@rainver/protocol": ["../../../../packages/protocol/dist/index.d.ts"],
+      "zod": ["../../../../server/node_modules/zod/index.d.cts"]
+    }
+  },
+  "include": ["src", "../operationManifest.ts", "../domain.ts"]
+}

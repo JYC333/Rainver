@@ -45,8 +45,28 @@ describe('linked Run backing Job transaction owners',()=>{
   if(kind==='exhaust')await db.pool.query("UPDATE jobs SET status='running',attempts=max_attempts,updated_at=now()-interval '2 hours' WHERE id=$1",[f.job]);
   const before=await state(f);
   await db.pool.query("CREATE FUNCTION reject_owner_request() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'owner request refused'; END $$");await db.pool.query('CREATE TRIGGER reject_owner_request BEFORE UPDATE ON operation_idempotency FOR EACH ROW EXECUTE FUNCTION reject_owner_request()');
-  try{const q=new PgJobQueueRepository(db.pool);await expect(kind==='cancel'?q.cancelJob(f.job,null):q.reclaimStuckJobs()).rejects.toThrow('owner request refused');expect(await state(f)).toEqual(before);}
+  try{
+   const q=new PgJobQueueRepository(db.pool);
+   // A reclaim sweep reports the failed candidate instead of rejecting the whole sweep.
+   if(kind==='cancel')await expect(q.cancelJob(f.job,null)).rejects.toThrow('owner request refused');
+   else expect((await q.reclaimStuckJobs()).failures).toEqual(expect.arrayContaining([{job_id:f.job,error:expect.stringContaining('owner request refused')}]));
+   expect(await state(f)).toEqual(before);
+  }
   finally{await db.pool.query('DROP TRIGGER reject_owner_request ON operation_idempotency');await db.pool.query('DROP FUNCTION reject_owner_request()');}
+ });
+ it('reclaims every other stuck Job when one candidate fails, and reports that one',async()=>{
+  if(!db.available)return;const a=await fixture(),b=await fixture();
+  await db.pool.query("UPDATE jobs SET status='running',attempts=max_attempts,updated_at=now()-interval '2 hours' WHERE id=ANY($1::varchar[])",[[a.job,b.job]]);
+  const before=await state(a);
+  await db.pool.query(`CREATE FUNCTION reject_one_owner_request() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.id='${a.request}' THEN RAISE EXCEPTION 'owner request refused'; END IF; RETURN NEW; END $$`);
+  await db.pool.query('CREATE TRIGGER reject_one_owner_request BEFORE UPDATE ON operation_idempotency FOR EACH ROW EXECUTE FUNCTION reject_one_owner_request()');
+  try{
+   const result=await new PgJobQueueRepository(db.pool).reclaimStuckJobs();
+   expect(result.failures).toEqual([{job_id:a.job,error:expect.stringContaining('owner request refused')}]);
+   expect(result.exhausted_jobs.map(j=>j.id)).toContain(b.job);
+   expect(await state(a)).toEqual(before);
+   expect(await state(b)).toEqual({run:'failed',proposal:'rejected',request:'rejected',job:'failed'});
+  }finally{await db.pool.query('DROP TRIGGER reject_one_owner_request ON operation_idempotency');await db.pool.query('DROP FUNCTION reject_one_owner_request()');}
  });
  it('keeps existing pending review semantics when cancelling its linked Run',async()=>{
   if(!db.available)return;const f=await fixture(false);expect(await new PgJobQueueRepository(db.pool).cancelJob(f.job,null)).toBe(true);

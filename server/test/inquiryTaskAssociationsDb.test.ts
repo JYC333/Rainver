@@ -131,7 +131,7 @@ describe('Inquiry and canonical Task associations (real PostgreSQL)',()=>{
   const independent=await tasks().createTask(identity(),{title:'Movable independent Task',project_id:project});
   expect((await tasks().updateTask(identity(),independent.id,{project_id:otherProject})).project_id).toBe(otherProject);
  });
- it('serves both HTTP directions, retains old history, and returns authorized 410 without moving Board status',async()=>{
+ it('serves both HTTP directions and Task work history without moving Board status',async()=>{
   app=buildModuleServer(config(),[inquiryModule,tasksModule,projectWorkModule]);
   const base=`/api/v1/projects/${project}/inquiry/threads/${thread}/tasks`;
   const response=await app.inject({method:'POST',url:base,headers:{'idempotency-key':randomUUID()},payload:{task:{title:'HTTP repair'},role:'executes',reason:'Fix it',idempotency_key:'http'}});expect(response.statusCode).toBe(201);const task=INQUIRY_OPERATION_SCHEMAS['inquiry.task.link'].output.parse(response.json().data).task_id;
@@ -139,12 +139,9 @@ describe('Inquiry and canonical Task associations (real PostgreSQL)',()=>{
   expect(TaskInquiryThreadsPageSchema.parse((await app.inject({method:'GET',url:`/api/v1/tasks/${task}/inquiry-threads`})).json()).items[0]!.id).toBe(thread);
   expect(ProblemTaskResultSchema.parse((await app.inject({method:'GET',url:`${base}/${task}/result`})).json()).task_id).toBe(task);
   await appendProjectWorkEvent(db.pool,{spaceId:space,projectId:project,subjectType:'task',subjectId:task,actorId:await resolveUserActorId(db.pool,space,owner),eventKind:'task.reported',data:{summary:'Recorded review'}});
-  expect((await app.inject({method:'POST',url:`/api/v1/tasks/${task}/stage`,payload:{to_stage:'conclude',reason:'Old client'}})).statusCode).toBe(404);
   TaskWorkHistoryPageSchema.parse((await app.inject({method:'GET',url:`/api/v1/tasks/${task}/work-history`})).json());
-  const work=(await app.inject({method:'GET',url:`/api/v1/tasks/${task}/work`})).json();expect(work).not.toHaveProperty('loop');expect(work.events.some((e:any)=>e.event_kind==='task.reported')).toBe(true);
+  const work=(await app.inject({method:'GET',url:`/api/v1/tasks/${task}/work`})).json();expect(work.events.some((e:any)=>e.event_kind==='task.reported')).toBe(true);
   expect((await tasks().getTask(identity(),task))?.status).toBe('inbox');
-  const peer=randomUUID();await seedSpaceMember(db.pool,{space,user:peer});__setAuthIdentityForTests({spaceId:space,userId:peer});
-  expect((await app.inject({method:'POST',url:`/api/v1/tasks/${task}/stage`,payload:{to_stage:'act'}})).statusCode).toBe(404);
  });
  it('keeps required outputs, ignores an HTTP Run claim and scopes Agent receipts to the Run attempt',async()=>{
   const created=await link({task:{title:'Collect logs',required_outputs:['log_bundle']}});
@@ -168,10 +165,11 @@ describe('Inquiry and canonical Task associations (real PostgreSQL)',()=>{
   await db.pool.query(`INSERT INTO run_attempts(id,space_id,run_id,attempt_number,status,created_at,updated_at) VALUES($1,$2,$3,2,'running',now(),now())`,[randomUUID(),space,runId]);
   expect(await call('Attempt two')).not.toBe(first);
  });
- it('records Agent/Run provenance and rejects retired stage calls unless an old grant and Task authority exist',async()=>{
+ it('records Agent/Run provenance and never dispatches a frozen grant naming an action that does not exist',async()=>{
+  const missingAction=`unknown_${randomUUID().replaceAll('-','')}.run`;
   const runId=randomUUID(),agent=randomUUID();await seedRun(db.pool,{id:runId,space,owner,agent,version:randomUUID()});
   await db.pool.query(`UPDATE runs SET project_id=$2,instructed_by_user_id=$3,status='running',permission_snapshot_json=$4::jsonb WHERE id=$1`,[runId,project,owner,JSON.stringify({tool_grants:[{action_id:'inquiry.link_task'}]})]);
-  const row=(await db.pool.query(`SELECT * FROM runs WHERE id=$1`,[runId])).rows[0];const run={...row,project_id:project,instructed_by_user_id:owner,permission_snapshot_json:{tool_grants:[{action_id:'task.advance_stage'},{action_id:'inquiry.link_task'}]}} as AgentRunRecord;
+  const row=(await db.pool.query(`SELECT * FROM runs WHERE id=$1`,[runId])).rows[0];const run={...row,project_id:project,instructed_by_user_id:owner,permission_snapshot_json:{tool_grants:[{action_id:missingAction},{action_id:'inquiry.link_task'}]}} as AgentRunRecord;
   const map=new Map<SystemActionId,SystemActionExecutor>();registerInquirySystemActionExecutors(map,config(),run);
   expect(map.has('inquiry.link_task')).toBe(false);const linked=await new CliAgentToolTransport(config()).call(run,{id:'call-1',name:'inquiry.link_task',arguments:{thread_id:thread,task:{title:'Agent repair'},reason:'Investigate',role:'investigates'}}) as any;expect(linked.httpStatus,JSON.stringify(linked.body)).toBe(200);const task=String(linked.body.data.task_id);
   const event=(await db.pool.query(`SELECT e.data_json,a.agent_id FROM project_work_events e JOIN actors a ON a.id=e.actor_id WHERE e.subject_id=$1 AND e.event_kind='thread.work_recorded' ORDER BY occurred_at DESC LIMIT 1`,[thread])).rows[0];expect(event.agent_id).toBe(agent);expect(event.data_json.run_id).toBe(runId);
@@ -179,9 +177,9 @@ describe('Inquiry and canonical Task associations (real PostgreSQL)',()=>{
   await expect(service().link(identity(),project,thread,{task:{title:'Sixth ordinary create'},reason:'Extra',role:'prepares',idempotency_key:'sixth'},{runId,agentId:agent})).rejects.toMatchObject({statusCode:429});
   await expect(service().link(identity(),project,thread,{task:{title:'Forged source'},reason:'No Run',role:'prepares',idempotency_key:'bad-run'},{runId:randomUUID(),agentId:agent})).rejects.toMatchObject({statusCode:404});
   const dispatcher=await SystemActionDispatcher.create(config(),run,{actionEventSink:async()=>{}});
-  expect(dispatcher.listGrantedDefinitions().some(d=>d.name==='task.advance_stage')).toBe(false);
-  expect((await dispatcher.dispatch({id:'old',name:'task.advance_stage',arguments_json:JSON.stringify({task_id:task,to_stage:'act',reason:'Old action'})})).modelResult).toMatchObject({error_code:'system_action_not_granted'});
+  expect(dispatcher.listGrantedDefinitions().some(d=>d.name===missingAction)).toBe(false);
+  expect((await dispatcher.dispatch({id:'old',name:missingAction,arguments_json:JSON.stringify({task_id:task})})).modelResult).toMatchObject({error_code:'system_action_not_granted'});
   const denied=await SystemActionDispatcher.create(config(),{...run,permission_snapshot_json:{tool_grants:[]}} as AgentRunRecord,{actionEventSink:async()=>{}});
-  expect((await denied.dispatch({id:'old-denied',name:'task.advance_stage',arguments_json:JSON.stringify({task_id:task})})).modelResult).toMatchObject({error_code:'system_action_not_granted'});
+  expect((await denied.dispatch({id:'old-denied',name:missingAction,arguments_json:JSON.stringify({task_id:task})})).modelResult).toMatchObject({error_code:'system_action_not_granted'});
  });
 });

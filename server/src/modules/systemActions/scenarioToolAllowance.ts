@@ -1,4 +1,7 @@
-import type { SystemActionId } from "@rainver/protocol";
+import type { PluginOperationId, SystemActionId } from "@rainver/protocol";
+
+/** A scenario allowance entry: a core action, or a plugin operation named one by one. */
+export type ScenarioToolId = SystemActionId | PluginOperationId;
 
 /**
  * Scenario tool allowances.
@@ -75,6 +78,20 @@ export const CONVERSATION_TOOL_ALLOWANCE: readonly SystemActionId[] = [
   // than replayed into the prompt.
   "conversation.search",
   "conversation.read",
+  // Drafting a private Gmail monitor is, like a memory about the speaker, a
+  // property of talking with the mailbox owner, not of a Project. It writes
+  // only a proposal the owner decides and reads no mail; the executor refuses
+  // it unless this is the owner's own turn with an owner-only audience.
+  "source.gmail.monitor.propose",
+  // Drafting the owner's scheduled Gmail digest (ADR 0033 phase B): a proposal only the owner
+  // accepts, only in their own turn of a conversation of a Project (private, a Room or the mainline,
+  // every reader inside the Project) that it then delivers into; it reads no mail.
+  "source.gmail.digest.propose",
+  // On-demand reading and searching of the owner's own mail (ADR 0032, ADR 0033 §6). Listing it here only
+  // makes it a candidate: the snapshot admits it in an ordinary conversation of a Project after the owner's
+  // opt-in, on the conversation's own runtime; every read needs the owner's own turn, their standing
+  // consent for that Project (confirmed once in place) and an audience inside that Project.
+  "source.gmail.mail.read",
 ];
 
 /** Added only for a turn whose persisted message owns text resources. */
@@ -150,6 +167,57 @@ const ROOM_PROJECT_TOOL_ALLOWANCE: readonly SystemActionId[] = [
 ];
 
 /**
+ * The application management package's Agent tools (`plugins/official/applications`),
+ * named one by one: a Run opened in a Project — a direct chat, a Room message, a
+ * delegation from one, or a dispatched Task — may call them there. This is not a
+ * plugin wildcard; another package's operations stay out until they are listed the
+ * same way, and the list does not widen anything a listed tool is checked against:
+ *
+ * - the package must still be enabled for the instructing person and its tools
+ *   reach a Project only through that Project's `bound` binding, the Run's own
+ *   Project and the Agent's access Project (`assertPluginProjectTarget`, B53), so a
+ *   Run never reaches another Project's records;
+ * - the person-only operations (recording a reviewed version, generating, previewing
+ *   and saving a material draft) are absent here and declared `actors: ['user']`;
+ * - contacts are personal data (ADR 0030): they are candidates only, admitted per
+ *   Run by `admitPluginDataTools` with the Space owner's consent and an owner-only
+ *   audience, and a decision is still only a proposal.
+ *
+ * `applicationsAgentToolsDb.test.ts` keeps this list equal to the package manifest's
+ * Agent-eligible operations.
+ */
+export const PROJECT_APPLICATIONS_TOOL_ALLOWANCE: readonly PluginOperationId[] = [
+  "plugin.applications.application.list",
+  "plugin.applications.application.get",
+  "plugin.applications.application.summary",
+  "plugin.applications.application.create",
+  "plugin.applications.application.update",
+  "plugin.applications.application.update_status",
+  "plugin.applications.application.propose_status",
+  "plugin.applications.funding.link",
+  "plugin.applications.funding.unlink",
+  "plugin.applications.deadline.add",
+  "plugin.applications.deadline.update",
+  "plugin.applications.deadline.remove",
+  "plugin.applications.material.add",
+  "plugin.applications.material.update",
+  "plugin.applications.material.remove",
+  "plugin.applications.material.link_note",
+  "plugin.applications.material.add_source",
+  "plugin.applications.material.remove_source",
+  "plugin.applications.material.read_note",
+  "plugin.applications.library.list",
+  "plugin.applications.library.add",
+  "plugin.applications.library.update",
+  "plugin.applications.library.remove",
+  "plugin.applications.contact.list",
+  "plugin.applications.contact.list_events",
+  "plugin.applications.contact.create",
+  "plugin.applications.contact.update",
+  "plugin.applications.contact.log_event",
+];
+
+/**
  * What an Agent may do because Rainver dispatched it to work on a Task.
  *
  * A dispatched Run is not a conversation, which is what decides the shape of
@@ -212,8 +280,9 @@ const DISPATCH_BASE_TOOL_ALLOWANCE: readonly SystemActionId[] = [
  * holds it read-write — and `recordOutputArtifacts` applies the declared type
  * and Task link whatever the trust mode.
  */
-export function dispatchToolAllowance(): readonly SystemActionId[] {
-  return [...DISPATCH_BASE_TOOL_ALLOWANCE, "artifact.submit"];
+export function dispatchToolAllowance(): readonly ScenarioToolId[] {
+  // A dispatched Run always works on a Project's Task.
+  return [...DISPATCH_BASE_TOOL_ALLOWANCE, "artifact.submit", ...PROJECT_APPLICATIONS_TOOL_ALLOWANCE];
 }
 
 export const ROOM_CONVERSATION_TOOL_ALLOWANCE: readonly SystemActionId[] = [
@@ -244,8 +313,8 @@ export function conversationToolGrantInput(scope: {
   has_input_resources?: boolean;
   delegated?: boolean;
 }): {
-  capabilities_json: SystemActionId[];
-  scenario_tool_allowance: readonly SystemActionId[];
+  capabilities_json: ScenarioToolId[];
+  scenario_tool_allowance: readonly ScenarioToolId[];
 } {
   // A Room is the Project's conversation surface; a direct chat opened in a
   // Project is the same conversation with one audience. Either way the
@@ -254,8 +323,12 @@ export function conversationToolGrantInput(scope: {
     ? ROOM_CONVERSATION_TOOL_ALLOWANCE
     : CONVERSATION_TOOL_ALLOWANCE;
   const scopedAllowance = scope.delegated ? baseAllowance.filter(id=>!["room.defaults.save","conversation.execution.initialize","conversation.session_config.save"].includes(id)) : baseAllowance;
-  const allowance = scope.has_input_resources
-    ? [...scopedAllowance, ...INPUT_RESOURCE_TOOL_ALLOWANCE]
+  // Project-bound package tools only where the Run has a Project to reach them in.
+  const projectAllowance: readonly ScenarioToolId[] = scope.project_id
+    ? [...scopedAllowance, ...PROJECT_APPLICATIONS_TOOL_ALLOWANCE]
     : scopedAllowance;
+  const allowance = scope.has_input_resources
+    ? [...projectAllowance, ...INPUT_RESOURCE_TOOL_ALLOWANCE]
+    : projectAllowance;
   return { capabilities_json: [...allowance], scenario_tool_allowance: allowance };
 }

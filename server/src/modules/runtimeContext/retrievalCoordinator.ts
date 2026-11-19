@@ -5,11 +5,14 @@ import type {
 } from "@rainver/protocol";
 import { normalizeContextItem } from "./itemNormalizer.js";
 import type { RetrievalEgressDestination } from "../retrieval/egress/egressPolicy.js";
+import type { RetrievalCandidateScope } from "../retrieval/index.js";
 
 export interface RuntimeContextRetrievalRequest {
   spaceId: string;
   userId: string;
   agentId: string;
+  /** The executing Run; null for a preview, which releases nothing to an Agent. */
+  runId?: string | null;
   executionControlSnapshotId: string;
   isolatedProjectId?: string;
   query: string;
@@ -34,11 +37,14 @@ export interface RetrievalEnginePort {
     includeTrace: true;
     auditAccessType: "context_injection";
     auditReason: string;
+    /** The excluded/allowed refs, applied by search before ranking and truncation. */
+    candidateScope?: RetrievalCandidateScope;
   }): Promise<RetrievalSearchResponse>;
   recordReads?(input: {
     spaceId: string;
     userId: string;
     agentId: string;
+    runId: string | null;
     items: readonly RetrievalSearchResponse["items"][number][];
   }): Promise<void>;
 }
@@ -56,6 +62,11 @@ export interface RetrievalContextAuthorizationPort {
   }>;
 }
 
+/** The search service's own default and ceiling for one query. */
+const DEFAULT_RETRIEVAL_RESULTS = 10;
+const MAX_SCOPED_CANDIDATES = 50;
+const SCOPED_OVERFETCH = 4;
+
 /** The only relevance-driven acquisition seam owned by Runtime Context. */
 export class RetrievalCoordinator {
   constructor(
@@ -70,19 +81,13 @@ export class RetrievalCoordinator {
     if (input.maxResults === 0 || input.objectTypes?.length === 0) {
       return { items: [], trace: { skipped: "explicit_empty_retrieval_scope" } };
     }
-    const result = await this.retrieval.search({
-      spaceId: input.spaceId,
-      viewerUserId: input.userId,
-      agentId: input.agentId,
-      isolatedProjectId: input.isolatedProjectId,
-      query: input.query,
-      objectTypes: input.objectTypes,
-      maxResults: input.maxResults,
-      mode: input.mode === "broad" ? (input.isolatedProjectId ? "hybrid" : "hybrid_rerank") : input.mode,
-      includeTrace: true,
-      auditAccessType: "context_injection",
-      auditReason: "runtime context retrieval",
-    });
+    // Search applies the scope (isolated Project, excluded/allowed refs) to
+    // its candidates before ranking and truncation and at every graph hop, so
+    // out-of-scope hits never take legitimate ones' slots. The same checks
+    // run again below as the delivery check. A bounded larger pool still
+    // widens the arms' own fetch limits, which are cut before scope.
+    const wanted = input.maxResults ?? DEFAULT_RETRIEVAL_RESULTS;
+    const scoped = !!input.isolatedProjectId || !!input.excludedRefs?.length || !!input.allowedRefs?.length;
     const keysFor = (ref: { type: string; id: string }): string[] => {
       const keys = [`${ref.type}:${ref.id}`];
       if (ref.type === "memory") keys.push(`memory_entry:${ref.id}`);
@@ -90,10 +95,27 @@ export class RetrievalCoordinator {
     };
     const excluded = new Set((input.excludedRefs ?? []).flatMap(keysFor));
     const allowed = new Set((input.allowedRefs ?? []).flatMap(keysFor));
-    const visible = result.items.filter((item) => {
-      const key = `${item.object_type}:${item.object_id}`;
-      return !excluded.has(key) && (allowed.size === 0 || allowed.has(key));
+    const inRefScope = (key: string) => !excluded.has(key) && (allowed.size === 0 || allowed.has(key));
+    const result = await this.retrieval.search({
+      spaceId: input.spaceId,
+      viewerUserId: input.userId,
+      agentId: input.agentId,
+      isolatedProjectId: input.isolatedProjectId,
+      query: input.query,
+      objectTypes: input.objectTypes,
+      maxResults: scoped ? Math.min(MAX_SCOPED_CANDIDATES, Math.max(wanted, wanted * SCOPED_OVERFETCH)) : input.maxResults,
+      mode: input.mode === "broad" ? (input.isolatedProjectId ? "hybrid" : "hybrid_rerank") : input.mode,
+      includeTrace: true,
+      auditAccessType: "context_injection",
+      auditReason: "runtime context retrieval",
+      ...(excluded.size || allowed.size ? { candidateScope: {
+        refs: { allowed: [...allowed], excluded: [...excluded] },
+        async admits(candidates) {
+          return new Set(candidates.map((c) => `${c.objectType}:${c.objectId}`).filter(inRefScope));
+        },
+      } satisfies RetrievalCandidateScope } : {}),
     });
+    const visible = result.items.filter((item) => inRefScope(`${item.object_type}:${item.object_id}`));
     const authorized = await Promise.all(visible.map(async (item, index) => {
       const authorization = await this.authorization.authorize({ request: input, result: item });
       if (!authorization.egressEligible) return null;
@@ -115,12 +137,13 @@ export class RetrievalCoordinator {
         score: item.score ?? null,
       }) };
     }));
-    const accepted = authorized.filter((item): item is NonNullable<typeof item> => item !== null);
+    const accepted = authorized.filter((item): item is NonNullable<typeof item> => item !== null).slice(0, wanted);
     if (accepted.length > 0) {
       await this.retrieval.recordReads?.({
         spaceId: input.spaceId,
         userId: input.userId,
         agentId: input.agentId,
+        runId: input.runId ?? null,
         items: accepted.map((item) => item.source),
       });
     }

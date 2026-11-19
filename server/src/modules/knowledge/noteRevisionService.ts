@@ -213,6 +213,35 @@ export async function listNoteRevisions(db: Queryable, input: {
   return rows.rows;
 }
 
+export interface NoteRevisionRead {
+  title: string | null;
+  current_version: number;
+  version: number;
+  normalized_text: string;
+  content_hash: string;
+  created_at: string;
+}
+
+/**
+ * One revision of an active Note — the current one unless `version` is given —
+ * with the Note's title and current version. Authority-free: the caller has
+ * already decided the reader may see this Note's body (revisions are whole
+ * bodies, like the detail read). A trashed or archived Note, a missing
+ * version, or another object type is null.
+ */
+export async function readNoteRevision(db: Queryable, input: { spaceId: string; noteId: string; version?: number }): Promise<NoteRevisionRead | null> {
+  const row = (await db.query<{ title: string | null; current_version: number; version: number; normalized_text: string; content_hash: string; created_at: string | Date }>(
+    `SELECT o.title, n.version AS current_version, r.version, r.normalized_text, r.content_hash, r.created_at
+       FROM space_objects o
+       JOIN notes n ON n.object_id=o.id AND n.space_id=o.space_id
+       JOIN note_revisions r ON r.note_id=n.object_id AND r.space_id=n.space_id AND r.version=COALESCE($3::int, n.version)
+      WHERE o.space_id=$1 AND o.id=$2 AND o.object_type='note' AND n.status='active' AND o.deleted_at IS NULL`,
+    [input.spaceId, input.noteId, input.version ?? null],
+  )).rows[0];
+  if (!row) return null;
+  return { ...row, created_at: row.created_at instanceof Date ? row.created_at.toISOString() : new Date(row.created_at).toISOString() };
+}
+
 export async function insertInitialNoteRevision(db: Queryable, input: {
   spaceId: string;
   noteId: string;

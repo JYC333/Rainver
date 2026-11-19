@@ -145,6 +145,22 @@ describe("RunMaterializationService (real PG)", () => {
     expect(result.errors[0]).toContain("has_context_taint without a valid context_taint_json summary");
   });
 
+  it("materializes nothing when the Run's stored taint is unparsable, as for a sensitive read", async () => {
+    await shared.pool.query("UPDATE runs SET has_context_taint=false, context_taint_json='[]'::jsonb WHERE id='run-1'");
+    const db = new ObservedDb();
+    const service = new RunMaterializationService(loadConfig({ SERVER_DATABASE_URL: shared.connectionUri }), db, undefined, async () => ({ status: "allow" }));
+    const result = await service.materializeAdapterResult({
+      run: run(),
+      adapterResult: {
+        runtime_key: "opencode", adapter_kind: "managed_api", success: true, output_text: "",
+        output_json: { artifacts: [{ title: "Must not persist", content: "blocked" }] }, exit_code: 0,
+      },
+    });
+    expect(db.artifacts).toHaveLength(0);
+    expect(result.items).toEqual([]);
+    expect(result.errors[0]).toContain("A Run that read sensitive data materializes no artifacts");
+  });
+
   it("stages proposals and reconciles delegation only from terminal output", async () => {
     const db = new ObservedDb();
     const delegationCalls: unknown[] = [];

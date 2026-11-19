@@ -4,6 +4,7 @@ import type {
 import { isAcpRuntimeAdapter } from "../runtimeAdapters/specs.js";
 import { createAcpToolCallLifecycle } from "../runtimeAdapters/acpToolCallLifecycle.js";
 import { normalizeToolName } from "../runtimeAdapters/toolName.js";
+import { createPrivateToolCallFilter } from "../runtimeAdapters/privateToolCalls.js";
 
 export function normalizeVendorEvents(
   runtimeKey: string,
@@ -28,6 +29,7 @@ export function createVendorEventNormalizer(runtimeKey: string): {
   const startedCalls = new Set<string>();
   const terminalStates = new Map<string, string>();
   const compacted = new Set<string>();
+  const withholdPrivateCall = createPrivateToolCallFilter();
 
   function startEvents(at: string, callId: string, toolName: string | null): RuntimeSemanticEvent[] {
     if (startedCalls.has(callId) || terminalStates.has(callId)) return [];
@@ -41,7 +43,9 @@ export function createVendorEventNormalizer(runtimeKey: string): {
     return [toolTerminalEvent(runtimeKey, at, callId, toolName, status)];
   }
 
-  const push = (event: Record<string, unknown>, occurredAt: string): RuntimeSemanticEvent[] => {
+  const push = (received: Record<string, unknown>, occurredAt: string): RuntimeSemanticEvent[] => {
+    // The tool name persisted on Run events must not carry a private action's command line.
+    const event = withholdPrivateCall(received);
     // All conversation runtimes speak the same
     // session/update vocabulary. This branch is protocol-shaped, not
     // vendor-specific.

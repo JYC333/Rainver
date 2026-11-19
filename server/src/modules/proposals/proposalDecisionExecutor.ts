@@ -4,6 +4,7 @@ import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
 import { HttpError } from "../routeUtils/common.js";
 import { proposalReadSql } from "../access/contentAccessSql.js";
+import { OWNER_ONLY_PROPOSAL_TYPES } from "../ontology/entities.js";
 import type { RunRecord } from "../runs/repository.js";
 import type { SystemActionExecutor } from "../systemActions/gateway.js";
 import { PgProposalApplyService } from "./applyService.js";
@@ -24,6 +25,11 @@ import { PgProposalApplyService } from "./applyService.js";
  * - **Reach.** Only a proposal created by a Run of this same conversation can
  *   be decided from it. The person is looking at the thing they are deciding;
  *   a proposal from elsewhere is decided where it was made.
+ * - **Never an owner-only card.** A Gmail card (`OWNER_ONLY_PROPOSAL_TYPES`:
+ *   a monitor, a digest, a private check) is decided by its owner directly on
+ *   it. Neither action lists, names or decides one — not even its id or title
+ *   (which names the mailbox) reaches the Run — and the apply service refuses
+ *   one carried here anyway (`assertOwnerCardDecision`).
  */
 export function registerProposalDecisionExecutor(
   executors: Map<SystemActionId, SystemActionExecutor>,
@@ -46,9 +52,11 @@ export function registerProposalDecisionExecutor(
          FROM proposals p
          JOIN runs r ON r.id = p.created_by_run_id AND r.space_id = p.space_id
         WHERE p.space_id = $1 AND r.session_id = $2 AND p.status = 'pending'
+          AND (p.expires_at IS NULL OR p.expires_at > now())
+          AND p.proposal_type <> ALL($4::text[])
           AND ${proposalReadSql("$3")}
         ORDER BY p.created_at`,
-      [run.space_id, run.session_id, userId],
+      [run.space_id, run.session_id, userId, OWNER_ONLY_PROPOSAL_TYPES],
     );
     return rows.rows.map((row) => ({ proposal_id: row.id, proposal_type: row.proposal_type, title: row.title }));
   };
@@ -68,12 +76,13 @@ export function registerProposalDecisionExecutor(
     if (!run.session_id) throw new HttpError(422, "Only a conversation can decide its own proposals");
     const pool = getDbPool(config.databaseUrl!);
 
-    const origin = await pool.query<{ session_id: string | null; status: string; project_id: string | null }>(
-      `SELECT r.session_id, p.status, p.project_id
+    const origin = await pool.query<{ session_id: string | null; status: string; project_id: string | null; expired: boolean }>(
+      `SELECT r.session_id, p.status, p.project_id,
+              (p.status = 'pending' AND p.expires_at IS NOT NULL AND p.expires_at <= now()) AS expired
          FROM proposals p
          LEFT JOIN runs r ON r.id = p.created_by_run_id AND r.space_id = p.space_id
-        WHERE p.space_id = $1 AND p.id = $2 AND ${proposalReadSql("$3")}`,
-      [run.space_id, body.proposal_id, userId],
+        WHERE p.space_id = $1 AND p.id = $2 AND p.proposal_type <> ALL($4::text[]) AND ${proposalReadSql("$3")}`,
+      [run.space_id, body.proposal_id, userId, OWNER_ONLY_PROPOSAL_TYPES],
     );
     const row = origin.rows[0];
     if (!row || row.session_id !== run.session_id) {
@@ -87,6 +96,11 @@ export function registerProposalDecisionExecutor(
     if (row.status !== "pending") {
       throw new HttpError(409, `That proposal is already ${row.status}`);
     }
+    // The same rule as every decision button: an expired Proposal is still `pending`, but nothing
+    // can accept or reject it any more. Nothing is decided; the person asks for the change again.
+    if (row.expired) {
+      throw new HttpError(409, "That proposal has expired; nothing was decided or applied. Ask the person whether to propose it again.");
+    }
 
     const apply = PgProposalApplyService.fromConfig(config);
     const identity = { spaceId: run.space_id, userId };
@@ -94,20 +108,34 @@ export function registerProposalDecisionExecutor(
       ? await apply.accept(body.proposal_id, identity)
       : await apply.reject(body.proposal_id, identity);
     if (!result) throw new HttpError(409, "That proposal was decided by someone else first");
-    const status = body.decision === "accept" ? "accepted" : "rejected";
+    // HTTP-level success is not effect: an accept may commit a decision that applied nothing
+    // (`operation_failure`: superseded by a newer change, or found expired). Report that, never
+    // `accepted`, and hand back no continuation.
+    if ("result_type" in result && result.result_type === "operation_failure") {
+      const code = (result.result as { error?: { code?: unknown } } | undefined)?.error?.code;
+      throw new HttpError(409, code === "operation_approval_superseded"
+        ? "Not applied: the request changed after this proposal was made, so it was closed as superseded. Read the current state before proposing again."
+        : code === "operation_approval_expired"
+          ? "Not applied: this proposal had expired. Ask the person whether to propose it again."
+          : "Not applied: the approved request could not be carried out.");
+    }
     // The same continuation the Accept button dispatches as a follow-up turn
     // (`RoomService.continueAfterProposal`), handed back in-turn: a decision
     // typed into the conversation must unblock the same work a click does.
     const decided = await pool.query<{
       id: string; space_id: string; project_id: string | null; proposal_type: string;
-      status: "accepted" | "rejected"; proposed_title: string; payload_json: unknown; created_by_run_id: string | null;
+      status: string; proposed_title: string; payload_json: unknown; created_by_run_id: string | null;
     }>(
       `SELECT id, space_id, project_id, proposal_type, status, title AS proposed_title, payload_json, created_by_run_id
          FROM proposals WHERE space_id = $1 AND id = $2`,
       [run.space_id, body.proposal_id],
     );
-    const continuation = decided.rows[0]
-      ? await createDefaultConversationContinuationRegistry().resolve(pool, decided.rows[0])
+    // Continue only on the decision that actually took effect (a queued code patch is not yet).
+    const actual = decided.rows[0];
+    const status = actual?.status ?? "pending";
+    const effective = actual && actual.status === (body.decision === "accept" ? "accepted" : "rejected");
+    const continuation = effective
+      ? await createDefaultConversationContinuationRegistry().resolve(pool, { ...actual, status: actual.status as "accepted" | "rejected" })
       : null;
     const outcome = { proposal_id: body.proposal_id, status, decided_by: userId, via: "room_instruction" };
     return {

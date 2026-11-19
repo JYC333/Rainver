@@ -6,6 +6,8 @@ import {sourceGoalsApi} from '../../api/client'
 import {Button} from '../../components/ui/button'
 import {Card} from '../../components/ui/card'
 import {Input} from '../../components/ui/input'
+import {GmailConnectionsCard} from './gmail/GmailConnectionsCard'
+import {GmailMonitorsCard} from './gmail/GmailMonitorsCard'
 
 /** Dedicated existing encrypted credential channel; never a conversation input. */
 export default function SourceAccessPage() {
@@ -19,7 +21,7 @@ export default function SourceAccessPage() {
   const scope=useRef(activeSpaceId);scope.current=activeSpaceId
   useEffect(()=>{setName('');setSecret('');setSaved(false);setError(false)},[activeSpaceId])
   const admin=spaces.some(s=>s.id===activeSpaceId&&['owner','admin'].includes(s.role))
-  return <Card className="m-4 max-w-xl space-y-4 p-6">
+  return <><Card className="m-4 max-w-xl space-y-4 p-6">
     <h1 className="text-xl font-semibold">{t('sourceGoals.credentials')}</h1>
     <p>{t('sourceGoals.secureHint')}</p>
     {!admin ? <p role="alert">{t('sourceGoals.adminHelp')}</p> :
@@ -40,4 +42,9 @@ export default function SourceAccessPage() {
     {error&&<p role="alert">{t('sourceGoals.errorHint')}</p>}
     <Button variant="outline" asChild><SpaceLink to="/library/reading/goals">{t('sourceGoals.goals')}</SpaceLink></Button>
   </Card>
+  {/* The person's own read-only Gmail; independent of the administrator form above. */}
+  <GmailConnectionsCard/>
+  {/* Private new-mail monitors on those connections: drafts to confirm, monitors, content-free status. */}
+  <GmailMonitorsCard/>
+  </>
 }

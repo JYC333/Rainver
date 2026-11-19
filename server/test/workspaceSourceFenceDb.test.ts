@@ -19,10 +19,11 @@ import {reconcileExecutionWorkspaces} from '../src/modules/hosts/workspaceReconc
 import {enqueueRefRelease} from '../src/modules/hosts/workspaceRefRelease.js';
 import {freezeSubmittedWorkspaceCommit,pinRegisteredSource} from '../src/modules/projectFolders/workspaceCommitSubmission.js';
 import {HostCommandRunFrameSchema} from '@rainver/protocol';
+import {requiresMaintenance} from '../src/db/migrator.js';
 
 /**
  * The shared-source deletion fence (hosts/workspaceSourceFence, migration
- * 0019) against real PostgreSQL: a dependent of a commit can never take effect
+ * 0017) against real PostgreSQL: a dependent of a commit can never take effect
  * between the claim of that commit's shared-ref deletion and the proven end of
  * that Host operation, whatever happens to the request; protection that did
  * not complete never reads as finished; old-protocol Hosts are paused, not
@@ -389,7 +390,7 @@ async function legacyClaim(workspaceId:string,key:string,commit:string,operation
   inflight:{operation_id:operationId,refs:[{ref:`refs/rainver/sources/${commit}`,expected_commit:commit}],sources:[commit],owned_after:null,shared_retained:0}})]);
  return operationId;
 }
-/** 0020's backfill statement, exactly as the migration runs it. */
+/** Migration 0017's backfill statement, exactly as the migration runs it. */
 async function backfill(){
  const sql=(await readFile(join(import.meta.dirname,'..','migrations','0017_isolated_workspaces_and_retention.sql'),'utf8')).split('--> statement-breakpoint').find(x=>x.includes('One intent per unended operation'))!;
  await db.pool.query(sql);
@@ -458,7 +459,7 @@ describe('pre-fence deletions, native commits, Run start and recovery',()=>{
   const second=await other();
   await db.pool.query("UPDATE workspace_change_sets SET source_commit=$2 WHERE id=$1",[second.changeSetId,t.frozen]);
   const op1=await legacyClaim(w1.workspace.id,k1,t.frozen),op2=await legacyClaim(w2.workspace.id,k2,t.frozen);
-  // What 0019 left: one intent for the commit (DISTINCT ON). 0020 restores one per operation.
+  // The earlier shape: one intent for the commit (DISTINCT ON). The backfill restores one per operation.
   await db.pool.query('INSERT INTO workspace_source_releases(host_id,commit,workspace_id,generation,operation_id) VALUES($1,$2,$3,1,$4)',[HOST,t.frozen,w1.workspace.id,op1]);
   await backfill();await backfill(); // idempotent
   expect((await intents()).map(i=>i.operation_id).sort()).toEqual([op1,op2].sort());
@@ -502,15 +503,15 @@ describe('pre-fence deletions, native commits, Run start and recovery',()=>{
   await write(c=>c.query("UPDATE workspace_change_sets SET verification_json=jsonb_set(verification_json,'{native_request}',$2::jsonb) WHERE id=$1",[second.changeSetId,JSON.stringify({id:randomUUID(),submitted_commit:t.frozen})]));
  });
 
- it('is why 0020 is a maintenance migration: the previous release\'s claim statement fails against its key',async ctx=>{
+ it('is why 0017 is a maintenance migration: the previous release\'s claim statement fails against its key',async ctx=>{
   if(!db.available)return ctx.skip();
   const w=await releasing();
-  // The claim of the release before 0020, verbatim: it names the dropped (host_id, commit) key.
+  // The claim of the release before 0017, verbatim: it names the dropped (host_id, commit) key.
   await expect(db.pool.query(`INSERT INTO workspace_source_releases(host_id,commit,workspace_id,generation,operation_id)
    SELECT $1,c,$2,$3,$4 FROM unnest($5::text[]) c ON CONFLICT (host_id,commit) DO UPDATE SET operation_id=EXCLUDED.operation_id
    WHERE workspace_source_releases.operation_id=EXCLUDED.operation_id RETURNING commit`,[HOST,w.workspace.id,1,randomUUID(),[C]])).rejects.toMatchObject({code:'42P10'});
   const sql=await readFile(join(import.meta.dirname,'..','migrations','0017_isolated_workspaces_and_retention.sql'),'utf8');
-  expect(sql.split('\n',20)).toContain('-- rainver:maintenance');
+  expect(requiresMaintenance(sql)).toBe(true);
  });
 
  it('blocks visibly, never cleaned, when a dependent commit was already pruned before the settle first reached it',async ctx=>{

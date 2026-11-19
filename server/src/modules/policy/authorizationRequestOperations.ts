@@ -15,7 +15,7 @@ export function authorizationRequestRegistrations(defs:ReadonlyMap<string,Regist
    async authorize(db,raw,a){await service(db).authorizeDecision(db,person(a),(raw as {request_id:string}).request_id,decision);},
    async authorizeResult(db,raw,a){await service(db).authorizeDecision(db,person(a),(raw as {request_id:string}).request_id,decision);},
    async execute(db,raw,a){const row=await service(db).decideInTransaction(db,person(a),(raw as {request_id:string}).request_id,decision);
-    return {request_id:row.id,space_id:row.space_id,run_id:row.run_id,status:row.status,resulting_action_grant_id:row.resulting_action_grant_id};
+    return {request_id:row.id,space_id:row.space_id,run_id:row.run_id,status:row.status,resulting_action_grant_id:row.resulting_action_grant_id,resulting_plugin_data_grant_id:row.resulting_plugin_data_grant_id};
    },
    classifyError(e){return e instanceof HttpError?markedRefusal(e,'policy'):undefined;},
   };

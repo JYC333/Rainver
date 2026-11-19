@@ -473,7 +473,7 @@ describe('delegated workspace placement',()=>{
    await db.pool.query("INSERT INTO room_agent_members(id,space_id,room_id,agent_id,role,status,created_at,updated_at) VALUES($1,$2,$3,$4,'member','active',now(),now())",[randomUUID(),SPACE,roomId,agent]);
   }
   const task=randomUUID();
-  await db.pool.query("UPDATE agent_run_groups SET budget_json=jsonb_build_object('collaboration',jsonb_build_object('task_id',$2::text,'coordinator_agent_id',$3::text,'participant_agent_ids',$4::jsonb,'max_delegations',12)) WHERE id=$1",[groupId,task,AGENT,JSON.stringify(participants)]);
+  await db.pool.query("UPDATE agent_run_groups SET budget_json=jsonb_build_object('collaboration',jsonb_build_object('task_id',$2::text,'coordinator_agent_id',$3::text,'participant_agent_ids',$4::jsonb,'delegations_offset',0,'turns_offset',0,'declared_at',to_json(now())#>>'{}','reminder_notified_through',0)) WHERE id=$1",[groupId,task,AGENT,JSON.stringify(participants)]);
   await child(c.parent);
   const scoped=async()=>{const id=await child(c.parent);await db.pool.query("UPDATE run_delegations SET budget_json=jsonb_build_object('collaboration_task_id',$2::text) WHERE child_run_id=$1",[id,task]);return load(id);};
   for(let i=0;i<2;i++)await ensurePrimaryExecutionWorkspace(db.pool,await scoped(),HOST,LOCATION);
@@ -522,7 +522,7 @@ describe('delegated workspace placement',()=>{
    const extras=[randomUUID(),randomUUID()];for(const extra of extras)await seedAgentWithVersion(db.pool,{agent:extra,version:randomUUID(),space:SPACE,owner:OWNER,now:new Date().toISOString()});
    for(const agent of [AGENT,...extras])await db.pool.query("INSERT INTO room_agent_members(id,space_id,room_id,agent_id,role,status,created_at,updated_at) VALUES($1,$2,$3,$4,'member','active',now(),now())",[randomUUID(),SPACE,roomId,agent]);
    const c=await coordinator();collaborationTask=randomUUID();
-   await db.pool.query("UPDATE agent_run_groups SET budget_json=jsonb_build_object('collaboration',jsonb_build_object('task_id',$2::text,'coordinator_agent_id',$3::text,'participant_agent_ids',$4::jsonb,'max_delegations',12)) WHERE id=$1",[groupId,collaborationTask,AGENT,JSON.stringify(extras)]);
+   await db.pool.query("UPDATE agent_run_groups SET budget_json=jsonb_build_object('collaboration',jsonb_build_object('task_id',$2::text,'coordinator_agent_id',$3::text,'participant_agent_ids',$4::jsonb,'delegations_offset',0,'turns_offset',0,'declared_at',to_json(now())#>>'{}','reminder_notified_through',0)) WHERE id=$1",[groupId,collaborationTask,AGENT,JSON.stringify(extras)]);
    await db.pool.query("UPDATE runs SET status='running',run_group_id=$2 WHERE id=$1",[c.parent,groupId]);
    await db.pool.query('UPDATE execution_workspaces SET base_commit=$2,head_commit=$2,head_sequence=0 WHERE id=$1',[c.workspace,base]);
    await db.pool.query('UPDATE execution_workspace_runs SET start_commit=$2,checkpoint_commit=$2 WHERE run_id=$1',[c.parent,base]);

@@ -177,6 +177,14 @@ class RunCreateSqlShapeDb implements Queryable {
     if (sql.includes("INSERT INTO run_attempts")) {
       return { rows: [], rowCount: 1 };
     }
+    // A Run created in a conversation inherits that conversation's sensitive reads. This fake holds no
+    // conversation history, so there are no records to read and the inherited taint write is accepted.
+    if (sql.includes("FROM messages m") && sql.includes("sensitive_reads")) {
+      return { rows: [], rowCount: 0 };
+    }
+    if (sql.includes("UPDATE runs") && sql.includes("context_taint_json")) {
+      return { rows: [], rowCount: 1 };
+    }
     throw new Error(`Unexpected SQL: ${sql}`);
   }
 }

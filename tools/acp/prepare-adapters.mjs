@@ -7,7 +7,8 @@ import { prepareClaudeAcp } from "../../packages/host-daemon/src/acpAdapterCompa
 const catalogFile = fileURLToPath(new URL("../../packages/protocol/src/acpAdapters.json", import.meta.url));
 const catalog = JSON.parse(readFileSync(catalogFile, "utf8"));
 const args = process.argv.slice(2);
-if (args[0] === "--resolve-candidates") {
+const resolveCandidates = args[0] === "--resolve-candidates";
+if (resolveCandidates) {
   args.shift();
   const require = createRequire(resolve("packages/host-adapters/package.json"));
   for (const adapter of Object.values(catalog)) {
@@ -15,7 +16,6 @@ if (args[0] === "--resolve-candidates") {
     const manifest = JSON.parse(readFileSync(resolve(dirname(entry), "../package.json"), "utf8"));
     adapter.version = manifest.version;
   }
-  writeFileSync(catalogFile, `${JSON.stringify(catalog, null, 2)}\n`);
 }
 for (const root of args.length ? args : ["packages/host-adapters", "packages/host-daemon"]) {
   const require = createRequire(resolve(root, "package.json"));
@@ -34,3 +34,5 @@ for (const root of args.length ? args : ["packages/host-adapters", "packages/hos
     if (adapter.package === "@agentclientprotocol/claude-agent-acp") prepareClaudeAcp(packageRoot);
   }
 }
+// The resolved candidate versions are recorded only after every root matched them.
+if (resolveCandidates) writeFileSync(catalogFile, `${JSON.stringify(catalog, null, 2)}\n`);

@@ -13,6 +13,7 @@ import {
   folderGitDiff,
   MAX_FILE_BYTES,
   openFileBeneathRoot,
+  readHandleBounded,
   readFolderFile,
   resolveRelativePath,
   restoreFolderFile,
@@ -483,5 +484,26 @@ describe("folder-read filesystem operations", () => {
       restoreEncoding: "utf16le",
     });
     await expect(readFile(path)).resolves.toEqual(original);
+  });
+});
+
+describe("readHandleBounded", () => {
+  it("returns the bytes up to the bound and null one byte past it, buffering no more", async () => {
+    const root = await mkdtemp(join(tmpdir(), "folder-read-bounded-"));
+    try {
+      await writeFile(join(root, "at.txt"), "x".repeat(3 * 1024 * 1024));
+      await writeFile(join(root, "over.txt"), "x".repeat(3 * 1024 * 1024 + 1));
+      for (const [name, expected] of [["at.txt", 3 * 1024 * 1024], ["over.txt", null]] as const) {
+        const file = await openFileBeneathRoot(root, [name]);
+        try {
+          const bytes = await readHandleBounded(file, 3 * 1024 * 1024);
+          expect(bytes?.byteLength ?? null).toBe(expected);
+        } finally {
+          await file.close();
+        }
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

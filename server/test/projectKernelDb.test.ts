@@ -65,13 +65,10 @@ const outsiderIdentity = { spaceId: SPACE, userId: OUTSIDER };
 const viewerIdentity = { spaceId: SPACE, userId: VIEWER };
 
 describe("Project Kernel (real Postgres)", () => {
-  it("creates a Project with Research as the default Primary Mode and an initial Mode Transition", async () => {
+  it("creates a Project that opens its first Brief version", async () => {
     if (!db.available) return;
     const repo = new PgProjectRepository(db.pool);
     const project = await repo.create(ownerIdentity, { name: "Fresh Project" });
-    // Creation presets nothing about the Project's shape (ADR 0019); it
-    // only opens the first Brief version.
-    expect(project).not.toHaveProperty("primary_mode");
     expect(project.active_brief_version_id).toBeTruthy();
   });
 
@@ -849,17 +846,9 @@ describe("Project Kernel (real Postgres)", () => {
       basis: "published_brief_goal",
       goal_or_problem: "Ship the Project Kernel",
     });
-    // No Project type field, no mode list (ADR 0019).
-    expect(result).not.toHaveProperty("available_modes");
     // A fresh Project has no Folder; the front page says so until one is connected.
     expect(result.has_project_folder).toBe(false);
-    expect(result).not.toHaveProperty("mode_projection");
-    expect(result).not.toHaveProperty("entity_summaries");
     expect(result.attention).toEqual([]);
-    // No readiness checklist: a Project needs nothing configured before it can
-    // be talked to or have work put on it. The one Project-level readiness
-    // fact is whether its goal is defined, and that is `definition_status`.
-    expect(result).not.toHaveProperty("setup_checklist");
   });
 
   it("refuses an adapter that cannot say why its item needs a person", async () => {

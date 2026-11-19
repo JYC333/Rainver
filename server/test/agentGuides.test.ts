@@ -93,38 +93,12 @@ describe("repository agent guide invariants", () => {
   it("keeps the Codex and Claude adapters on the same canonical core", () => {
     const codex = readFileSync(join(repoRoot, "AGENTS.md"), "utf8");
     const claude = readFileSync(join(repoRoot, "CLAUDE.md"), "utf8");
-    const index = readFileSync(join(agentRoot, "INDEX.md"), "utf8");
 
     // Only the vendor-facing title differs. Compare the entire body so new
     // sections cannot silently give one coding agent different instructions.
     expect(claude.split("\n").slice(1).join("\n")).toBe(
       codex.split("\n").slice(1).join("\n"),
     );
-
-    for (const requiredPath of [
-      ".agent/INDEX.md",
-      ".agent/context-bundles.yaml",
-      ".agent/BOUNDARIES.md",
-      ".agent/architecture/REUSE_AND_DEPENDENCY_POLICY.md",
-      ".agent/architecture/TESTING_STRATEGY.md",
-      ".agent/COMMANDS.md",
-    ]) {
-      expect(codex).toContain(requiredPath);
-      expect(claude).toContain(requiredPath);
-    }
-
-    const authorityOrder = [
-      "`server/src/db/schema/`",
-      "`server/migrations/`",
-      "`server/src/`",
-      "`packages/protocol/src/`",
-      "`apps/web/src/modules/registry.ts`",
-    ];
-    for (const guide of [codex, claude, index]) {
-      const positions = authorityOrder.map((marker) => guide.indexOf(marker));
-      expect(positions.every((position) => position >= 0)).toBe(true);
-      expect(positions).toEqual([...positions].sort((left, right) => left - right));
-    }
   });
 
   it("records every server runtime dependency in the canonical mechanism index", () => {

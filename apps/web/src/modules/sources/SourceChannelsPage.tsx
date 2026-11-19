@@ -3,7 +3,7 @@ import {readingGoalPath} from './sourceGoalNavigation'
 import { SpaceLink as ReadingLink } from '../../core/spaceNav'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { BookOpen, Globe2, Pause, Play, Plus, RefreshCw, Rss, Search, SlidersHorizontal, Sparkles } from 'lucide-react'
+import { BookOpen, Globe2, KeyRound, Pause, Play, Plus, RefreshCw, Rss, Search, SlidersHorizontal, Sparkles } from 'lucide-react'
 import { toast } from 'sonner'
 import { ApiRequestError, sourcesApi } from '../../api/client'
 import { useSpace } from '../../contexts/SpaceContext'
@@ -239,8 +239,9 @@ function ScopedSourceChannels() {
           <p className="text-sm text-muted-foreground">Manage external origins and the monitors that collect content from them.</p>
           <SourceDispatchNotice />
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button variant="outline" onClick={() => void load()} disabled={loading}><RefreshCw className="size-4 mr-2" />Refresh</Button>
+          <Button variant="outline" asChild><ReadingLink to="/sources/access"><KeyRound className="size-4 mr-2" aria-hidden="true" />{t('gmail_ui.entry')}</ReadingLink></Button>
           <Button onClick={() => navigate(readingGoalPath(null,'new'))}><Plus className="size-4 mr-2" />{t('sourceGoals.begin')}</Button>
         </div>
       </div>

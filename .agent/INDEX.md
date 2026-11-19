@@ -268,7 +268,7 @@ when shortening a decision; do not delete an ADR merely because it is old.
 | [0015](decisions/0015-focus-area-classification.md) | Focus area is a user-created classification, not a second access scope: it aggregates Projects/Notes/Knowledge, participates in no access decision, and is told apart from a module by whether the thing needs code. Internal identifier `focus_area`; `domain` is reserved for this codebase's DDD vocabulary |
 | [0016](decisions/0016-control-plane-execution-hosts.md) | An instance is one control plane plus N execution hosts (Machine → ExecutionHost → WorkspaceLocation → logical ProjectFolder; one Folder may have Locations on several hosts); two-tier trust — server host keeps strict sandbox isolation unchanged, a paired personal host runs a thin daemon in trusted-host mode (native execution, no sandbox, own login state); paths are host-owned, never control-plane authority; an execution host's Agent lands changes without per-change review — in place for a turn, on Task completion for a Task Run, gated by the Task's verification (§11) |
 | [0017](decisions/0017-authorization-by-cost-not-authorship.md) | Authorization follows cost, reversibility, exposure and trigger origin — not authorship: an exhaustive hard-gate list (self-modification, reach-widening memory, real checkout, exposure, money above bounded defaults, credentials/deployment, Project direction) is pre-approved per instance; every other Project-internal write executes from a `manual` origin under bounds — the single exception being an Agent writing its own persona on an `agent`-scope entry, a first one as much as a revision, governed by ADR 0003 §5 — (fan-out safety ceiling ≤ 5/turn, narrower conversation pacing under ADR 0019, spend at the pipeline default with the remainder offered once) and is reviewed after via Updates with undo; a default flips from proposal to direct only once that review exists |
-| [0018](decisions/0018-room-as-visibility-boundary.md) | A Room is a visibility boundary, not a topic: its roster answers who may see, per-message recipients answer who is asked. The layer is invisible in the product until a visibility decision has to be made, and a limited Room gives non-members no existence signal. The mainline Room is created with the Project like its Brief v1; Assistant provisioning and Conversation execution setup happen through an explicit draft action before the first message |
+| [0018](decisions/0018-room-as-visibility-boundary.md) | A Room is a visibility boundary, not a topic: its roster answers who may see, per-message recipients answer who is asked. Rooms are an explicit Project entry beside Agents, a separate relation whose Project link grants no Room membership, and a limited Room gives non-members no existence signal. The mainline Room is created with the Project like its Brief v1; Assistant provisioning and Conversation execution setup happen through an explicit draft action before the first message |
 | [0019](decisions/0019-project-has-no-type-field.md) | A Project has no type field; its kind is derived from the goal and what it holds, and the conversation advances one step at a time |
 | [0020](decisions/0020-instance-update-through-deployer-pull.md) | Instance update runs through a deployer pull loop: the server keeps a job table and never gains Docker authority; the instance administrator's request is the ADR 0017 approval (no Proposal, no second confirmation); update = latest on the configured channel; soft drain of automation Runs; a failed stage stops the job with no automatic rollback; the deployer never recreates itself |
 | [0021](decisions/0021-files-code-codemirror-drafts-and-input-resources.md) | Files & Code uses CodeMirror for complete text files; PostgreSQL recovery drafts remain private pending state while the Project Folder stays canonical; sent file state freezes as an immutable message resource read lazily through Run-scoped governed tools |
@@ -280,6 +280,10 @@ when shortening a decision; do not delete an ADR merely because it is old.
 | [0027](decisions/0027-problem-engine-research-separation.md) | Inquiry owns the generic problem method and round close-out; Task Board status is the only Task progress; Research is a bound capability; no runtime compatibility; one-time cutover and retirement of old-model archives |
 | [0029](decisions/0029-isolated-execution-workspaces.md) | Isolated conversation/delegation workspaces, frozen change sets, verified integration and durable cleanup; staged implementation |
 | [0028](decisions/0028-operation-execution-core.md) | Proposed operation executor decision and frozen Plan 1 contracts; runtime not enabled |
+| [0030](decisions/0030-plugin-agent-data-access.md) | Plugin data classes (normal/personal/sensitive), data-owner and Space-owner consent, scenario/audience gates, pinned toolsets with live recheck, taint/egress/Memory inheritance, same-owner Agent read attribution and typed core-object ports |
+| [0031](decisions/0031-runtime-database-roles.md) | Least-privilege runtime and read-only backup database roles beside the offline owner channel; explicit activation/rollback, restore re-grant |
+| [0032](decisions/0032-gmail-on-demand-agent-read.md) | On-demand Agent reads of the owner's Gmail through ADR 0030's sensitive path: core tool registry, owner opt-in, request bounds, release gate, taint and conversation carry-forward, per-Session host state for sensitive plugin data (consent, offering and isolated launch superseded by 0033) |
+| [0033](decisions/0033-gmail-project-consent-and-private-delivery.md) | Gmail Agent reads: one standing owner consent per Project, mailbox (generation) and purpose replacing per-Run consent; ends on revoke/opt-out/disconnect/reconnect; one management card; in-place reads in every ordinary Project conversation (private, Room, mainline) on the conversation's own runtime, the hand-off and private check withdrawn (old cards history only); later turns keep the Project constraint; daily and monitor-match digests in that conversation, upgrade reconfirmation and explicit owner sharing |
 
 ---
 
@@ -372,17 +376,3 @@ vendor files as implicit runtime authority. See
 [ADR 0004](decisions/0004-context-wrapper.md). Runtime-only vendor control files
 or Skill artifacts are owned by their product subsystems, not by this
 development index. Repository guides are maintained independently of runtime delivery artifacts.
-
-Conversation request cancellation uses
-`apps/web/src/lib/mergeAbortSignals.ts`; Room file-reference input is owned by
-`apps/web/src/modules/agent_groups/RoomMessageComposer.tsx`, under the conversation bundle.
-
-Agent Work frontend and API/display tests live in
-`apps/web/src/modules/agent_work/` (`AgentWorkPage.test.tsx`,
-`SharedConversation.test.tsx`, `agentAttentionApi.test.ts`,
-`AgentAttentionProvider.test.tsx`, `attentionDelivery.test.ts`); Shell integration
-is covered by `apps/web/src/__tests__/shell.test.tsx`. Server aggregate stream and
-real-PG snapshot coverage live in `server/test/agentAttentionStream.test.ts` and
-`server/test/agentAttentionSnapshotDb.test.ts`; navigation registration
-is protected by `apps/web/src/__tests__/navigation.test.ts`. Route through the
-agents and conversation bundles and [Agent Attention](modules/agent-attention.md).

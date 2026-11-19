@@ -14,5 +14,5 @@
     "noUnusedLocals": true,
     "noUnusedParameters": false
   },
-  "include": ["vite.config.ts", "buildInputs.ts"]
+  "include": ["vite.config.ts", "buildInputs.ts", "bundledPluginDeps.ts"]
 }

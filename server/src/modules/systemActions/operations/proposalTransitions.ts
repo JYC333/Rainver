@@ -1,3 +1,7 @@
+import {planCheckpointRootRunIds} from '../../plans/checkpointRuns.js';
+import {workflowCheckpointRootRunIds} from '../../automations/checkpointRuns.js';
+import {researchDecisionRunIds,researchHistoryProjectIds} from '../../projectResearch/graphRuns.js';
+import {pendingSkillImportSiblings,skillImportPackages} from '../../skills/importReviewProposals.js';
 import {assertProjectWriter} from '../../projects/access.js';
 import {withPolicyAuditRecovery} from '../../policy/auditWriter.js';
 import {withQueryableTransaction} from '../../routeUtils/common.js';
@@ -53,8 +57,7 @@ async function admitTransitions(db:Queryable,discover:()=>Promise<ProposalRef[]>
   for(const key of ordered)await lockRequestKey(db,key);
   // No domain/Proposal row lock may precede the complete sorted key set.
   await gate?.();
-  const packages=(await db.query<{space_id:string;id:string}>("SELECT DISTINCT space_id,payload_json->>'skill_package_id' AS id FROM proposals WHERE id=ANY($1::varchar[]) AND proposal_type='skill_import_approve' AND payload_json->>'skill_package_id' IS NOT NULL ORDER BY space_id,id",[ids])).rows;
-  for(const pkg of packages)await lockSkillReviewProposals(db,pkg.space_id,[pkg.id]);
+  for(const pkg of await skillImportPackages(db,ids))await lockSkillReviewProposals(db,pkg.space_id,[pkg.id]);
   for(const spaceId of [...new Set(refs.map(row=>row.space_id))].sort())await lockProposalDependencies(db,spaceId,refs.filter(row=>row.space_id===spaceId).map(row=>row.id));
   const verifyClosure=async()=>{if(canonical(identities(await discover()))!==canonical(identities(refs)))throw conflict();};
   await verifyClosure();
@@ -92,6 +95,21 @@ async function admitTransitions(db:Queryable,discover:()=>Promise<ProposalRef[]>
     },
   };
 }
+/**
+ * A decision's Proposal closure, sorted: the roots, the open output of the
+ * admitted Runs, and transitively every Proposal that depends on one, plus the
+ * pending reviews of the same Skill package (the Skills owner's rule).
+ */
+async function proposalClosure(db:Queryable,spaceId:string,roots:readonly string[],runIds:readonly string[]):Promise<ProposalRef[]>{
+ const seen=new Set((await db.query<{id:string}>(`SELECT id FROM proposals WHERE space_id=$1 AND (id=ANY($2::varchar[]) OR (created_by_run_id=ANY($3::varchar[]) AND status IN ('pending','staged')))`,[spaceId,[...roots],[...runIds]])).rows.map(r=>r.id));
+ let frontier=[...seen];
+ while(frontier.length){
+  const dependents=(await db.query<{id:string}>(`SELECT id FROM proposals WHERE space_id=$1 AND payload_json->>'depends_on_proposal_id'=ANY($2::varchar[])`,[spaceId,frontier])).rows.map(r=>r.id);
+  frontier=[...new Set([...dependents,...await pendingSkillImportSiblings(db,spaceId,frontier)])].filter(id=>!seen.has(id));
+  for(const id of frontier)seen.add(id);
+ }
+ return [...seen].sort().map(id=>({id,space_id:spaceId}));
+}
 /** Purpose-bound transition port. Caller owns BEGIN/COMMIT; no pool escape. */
 export async function lockProposalTransitions(db:Queryable,spaceId:string,roots:readonly string[],includeDependents=false,requireUnlinked=false){
   const prepared=proposalOwner(db);
@@ -102,17 +120,9 @@ export async function lockProposalTransitions(db:Queryable,spaceId:string,roots:
     return {hasAnyLinked:prepared.hasAnyLinked,hasLinked:prepared.hasLinked,assertCovered:prepared.assertCovered,finish:async()=>{}};
   }
   const rootIds=[...new Set(roots)].sort();
-  const discover=async()=> (await db.query<ProposalRef>(includeDependents
-    ? `WITH RECURSIVE affected AS (
-        SELECT id FROM proposals WHERE space_id=$1 AND id=ANY($2::varchar[])
-        UNION
-        SELECT p.id FROM affected a JOIN proposals parent ON parent.id=a.id AND parent.space_id=$1
-          JOIN proposals p ON p.space_id=$1 AND (
-            p.payload_json->>'depends_on_proposal_id'=a.id OR
-            (parent.proposal_type='skill_import_approve' AND p.proposal_type='skill_import_approve'
-              AND p.status='pending' AND p.payload_json->>'skill_package_id'=parent.payload_json->>'skill_package_id'))
-      ) SELECT id,$1::varchar AS space_id FROM affected ORDER BY id`
-    : 'SELECT id,space_id FROM proposals WHERE space_id=$1 AND id=ANY($2::varchar[]) ORDER BY id',[spaceId,rootIds])).rows;
+  const discover=async()=>includeDependents
+    ? proposalClosure(db,spaceId,rootIds,[])
+    : (await db.query<ProposalRef>('SELECT id,space_id FROM proposals WHERE space_id=$1 AND id=ANY($2::varchar[]) ORDER BY id',[spaceId,rootIds])).rows;
   return admitTransitions(db,discover,undefined,requireUnlinked);
 }
 /** Attachment excludes all lifecycle admissions. Never waits behind a domain owner. */
@@ -264,28 +274,15 @@ async function withProposalSetOwner<T>(db:Queryable,spaceId:string,roots:readonl
  await assertProposalTransaction(db);
  const existing=proposalOwner(db);
  if(existing){existing.assertCovered(roots);return work();}
- const history=(await db.query<{project_id:string|null}>(`SELECT COALESCE(project_id,payload_json->>'project_id') AS project_id FROM proposals WHERE space_id=$1 AND id=ANY($2::varchar[]) AND proposal_type='research_history_extend'`,[spaceId,[...roots]])).rows;
- for(const proposal of history)if(proposal.project_id)await assertProjectWriter(db,spaceId,proposal.project_id,userId);
- const runRefs=async()=> (await db.query<RunRef>(`SELECT DISTINCT r.id,r.space_id FROM proposals p
- JOIN runs r ON r.space_id=p.space_id AND r.id IN (
-   SELECT root_run_id FROM plans WHERE space_id=p.space_id AND id=p.payload_json->>'plan_id' AND p.proposal_type='plan_checkpoint' AND EXISTS(SELECT 1 FROM plan_nodes n WHERE n.id=p.payload_json->>'node_id' AND n.plan_version_id=p.payload_json->>'plan_version_id' AND n.space_id=p.space_id AND n.approval_proposal_id=p.id)
-   UNION SELECT root_run_id FROM workflow_executions WHERE space_id=p.space_id AND id=p.payload_json->>'workflow_execution_id' AND p.proposal_type='workflow_execution_checkpoint' AND EXISTS(SELECT 1 FROM workflow_execution_nodes n WHERE n.id=p.payload_json->>'node_id' AND n.execution_id=p.payload_json->>'workflow_execution_id' AND n.space_id=p.space_id AND n.approval_proposal_id=p.id)
-   UNION SELECT e.root_run_id FROM workflow_executions e JOIN project_operations o ON o.id=e.research_operation_id AND o.space_id=e.space_id WHERE e.space_id=p.space_id AND o.project_id=COALESCE(p.project_id,p.payload_json->>'project_id') AND p.proposal_type='research_history_extend' AND EXISTS(SELECT 1 FROM runs candidate WHERE candidate.id=e.root_run_id AND candidate.space_id=e.space_id AND (candidate.status NOT IN ('succeeded','degraded','failed','cancelled','orphaned') OR EXISTS(SELECT 1 FROM proposals output WHERE output.created_by_run_id=candidate.id AND output.space_id=candidate.space_id AND output.status='staged')))
-   UNION SELECT related.root_run_id FROM workflow_executions anchor
-    JOIN project_operations owner ON owner.id=anchor.research_operation_id AND owner.space_id=anchor.space_id
-    JOIN project_operations other ON other.space_id=owner.space_id AND other.project_id=owner.project_id
-    JOIN workflow_executions related ON related.research_operation_id=other.id AND related.space_id=other.space_id
-    WHERE EXISTS(SELECT 1 FROM runs candidate WHERE candidate.id=related.root_run_id AND candidate.space_id=related.space_id AND (candidate.status NOT IN ('succeeded','degraded','failed','cancelled','orphaned') OR EXISTS(SELECT 1 FROM proposals output WHERE output.created_by_run_id=candidate.id AND output.space_id=candidate.space_id AND output.status='staged'))) AND anchor.space_id=p.space_id AND anchor.id=p.payload_json->>'workflow_execution_id' AND p.proposal_type='workflow_execution_checkpoint' AND EXISTS(SELECT 1 FROM workflow_execution_nodes n WHERE n.id=p.payload_json->>'node_id' AND n.execution_id=anchor.id AND n.space_id=p.space_id AND n.approval_proposal_id=p.id))
- WHERE p.space_id=$1 AND p.id=ANY($2::varchar[]) ORDER BY r.id`,[spaceId,[...roots]])).rows;
+ for(const projectId of await researchHistoryProjectIds(db,spaceId,roots))await assertProjectWriter(db,spaceId,projectId,userId);
+ // Domain owners name the Runs a decision touches; this owner sorts, try-locks and rechecks the exact set.
+ const runRefs=async()=>{
+  const ids=[...new Set([...await planCheckpointRootRunIds(db,spaceId,roots),...await workflowCheckpointRootRunIds(db,spaceId,roots),...await researchDecisionRunIds(db,spaceId,roots)])];
+  return ids.length?(await db.query<RunRef>('SELECT id,space_id FROM runs WHERE space_id=$1 AND id=ANY($2::varchar[]) ORDER BY id',[spaceId,ids])).rows:[];
+ };
  const runs=await runRefs();
  if(!requestKeys.length && !runs.length && purpose==='checkpoint' && !(await db.query("SELECT id FROM proposals WHERE space_id=$1 AND id=ANY($2::varchar[]) AND proposal_type IN ('plan_checkpoint','workflow_execution_checkpoint','research_history_extend')",[spaceId,[...roots]])).rows.length)return work();
- const discover=async()=> (await db.query<ProposalRef>(`WITH RECURSIVE affected AS (
-   SELECT id FROM proposals WHERE space_id=$1 AND (id=ANY($2::varchar[]) OR (created_by_run_id=ANY($3::varchar[]) AND status IN ('pending','staged')))
-   UNION SELECT p.id FROM affected a JOIN proposals parent ON parent.id=a.id AND parent.space_id=$1
-   JOIN proposals p ON p.space_id=$1 AND (p.payload_json->>'depends_on_proposal_id'=a.id OR
-    (parent.proposal_type='skill_import_approve' AND p.proposal_type='skill_import_approve' AND p.status='pending'
-      AND p.payload_json->>'skill_package_id'=parent.payload_json->>'skill_package_id'))
- ) SELECT id,$1::varchar AS space_id FROM affected ORDER BY id`,[spaceId,[...roots],runs.map(r=>r.id)])).rows;
+ const discover=()=>proposalClosure(db,spaceId,[...roots],runs.map(r=>r.id));
  const transitions=await admitTransitions(db,discover,async()=>{
   for(const run of runs){
    const gate=await db.query<{locked:boolean}>('SELECT pg_try_advisory_xact_lock(hashtextextended($1,0)) AS locked',[`proposal-run:${run.space_id}:${run.id}`]);
@@ -309,12 +306,4 @@ async function withProposalSetOwner<T>(db:Queryable,spaceId:string,roots:readonl
  }
  finally{if(previousRuns)runTerminalOwners.set(db,previousRuns);else runTerminalOwners.delete(db);
   if(previousProposals)proposalDecisionOwners.set(db,previousProposals);else proposalDecisionOwners.delete(db);}
-}
-
-/** Research aggregate snapshot before its Project/operation/graph locks. */
-export async function researchGraphRunRefs(db:Queryable,spaceId:string,projectId:string){
- return (await db.query<RunRef>(`SELECT DISTINCT e.root_run_id AS id,e.space_id FROM workflow_executions e
- JOIN project_operations o ON o.id=e.research_operation_id AND o.space_id=e.space_id
- JOIN runs r ON r.id=e.root_run_id AND r.space_id=e.space_id
- WHERE (r.status NOT IN ('succeeded','degraded','failed','cancelled','orphaned') OR EXISTS(SELECT 1 FROM proposals staged WHERE staged.space_id=r.space_id AND staged.created_by_run_id=r.id AND staged.status='staged')) AND e.space_id=$1 AND o.project_id=$2 AND e.root_run_id IS NOT NULL ORDER BY e.root_run_id`,[spaceId,projectId])).rows;
 }

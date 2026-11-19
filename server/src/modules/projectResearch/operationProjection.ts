@@ -148,6 +148,10 @@ export interface ResearchOperationState {
     detail: string;
     affected_sections: Array<"understanding" | "questions" | "ideas" | "experiments">;
   }>;
+  // The comparison Run each staged result came from, by source item. The final
+  // publication rechecks every one of those Runs' frozen baselines; a staged result
+  // with no Run recorded here (staged before this was kept) is refused, not published.
+  comparison_result_run_ids?: Record<string, string>;
   synthesis_critique?: {
     status: "needs_queue" | "queued" | "revision_needed" | "completed";
     run_id: string | null;

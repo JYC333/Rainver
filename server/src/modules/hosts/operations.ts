@@ -1,6 +1,6 @@
 import {
   HOST_COMMAND_OPERATION_KIND,HOST_COMMAND_OPERATION_SCHEMAS,HOST_DIRECT_OPERATION_SCHEMAS,ORDINARY_TOOL_CATALOG,
-  isOwnCliUpdateRuntimeKey,repositoryAcpAdapter,type OperationActor,type RegisteredSystemActionDefinition,
+  ANTIGRAVITY_OWN_UPDATE_RUNTIME,isOwnCliUpdateRuntimeKey,repositoryAcpAdapter,type OperationActor,type RegisteredSystemActionDefinition,
 } from '@rainver/protocol';
 import type {ServerConfig} from '../../config.js';
 import {getDbPool} from '../../db/pool.js';
@@ -80,7 +80,16 @@ async function admission(db:Queryable,config:ServerConfig,id:CommandId,input:Inp
     }
     case 'host.runtime.own_update':{
       const host=await lockManagedHost(db,config,input.host_id,u);
-      if(!isOwnCliUpdateRuntimeKey(String(input.runtime_key)))throw refuse(422,'Updating this own CLI is not supported yet');
+      const runtimeKey=String(input.runtime_key);
+      if(runtimeKey===ANTIGRAVITY_OWN_UPDATE_RUNTIME){
+        const caps=normalizeHostCapabilities(host.capabilities_json);
+        if(!caps.antigravity_own_updates)throw refuse(409,'Update this Host before updating Antigravity','host_update_required');
+        if(!caps.installations[runtimeKey]?.some(copy=>copy.id==='own'))throw refuse(409,'No own Antigravity installation is reported');
+        const probe=acpRuntimeProbe(runtimeKey);
+        if(probe?.distribution?.kind!=='binary'||!probe.version)throw refuse(409,'The Antigravity release is not available. Refresh and retry.');
+        return {host,scope:{runtime:runtimeKey},frozen:{runtime_key:runtimeKey,release:{version:probe.version,distribution:probe.distribution}}};
+      }
+      if(!isOwnCliUpdateRuntimeKey(runtimeKey))throw refuse(422,'Updating this own CLI is not supported yet');
       return {host,scope:{runtime:input.runtime_key},frozen:{runtime_key:input.runtime_key}};
     }
     case 'host.runtime.managed_update':

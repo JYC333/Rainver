@@ -184,32 +184,6 @@ contacts the registry.
   can publish. Recording pulled digests on the job keeps an immutable record
   of what ran even though `stable` moves.
 
-## Revision history
-
-- 2026-09-08 — §5 gained the one release shape this path cannot install: a
-  migration marked `-- rainver:maintenance` removes something the running build
-  still reads, so the `pull` stage refuses the job and names the offline
-  maintenance command (ADR 0016 §10). The decision — the deployer pulls
-  and the server never gains Docker authority — is unchanged.
-- 2026-09-07 — a review of the shipped implementation added three things this
-  document had left implicit and one it had stated too strongly. §2 now says a
-  job is refused when no deployer is reporting, because a queued update pauses
-  unattended work; §5 states the release constraint that migrating before
-  recreating implies (also written into B59); §6 says that `ops/` moves with the
-  deployer rather than with the images, that this makes a compose, ops-script or
-  wire-contract change a host-step release, and that `deployer_behind` — a content
-  digest of `deployer/` and `ops/` stamped on every image, not the commit — is
-  how the instance says so. The claim that the deployer never touches the database
-  was removed from `modules/deployment.md`: the `migrate` stage dumps and
-  migrates it through Compose. No decision changed.
-- 2026-09-07 — corrected §7: this document originally named
-  `docker manifest inspect` as the remote check. That command reports a tag's
-  *child* platform manifests, and every image the build publishes is an index
-  (its provenance attestation is a second manifest), so its answer could never
-  equal the index digest a pull records. The deployer hashes the manifest bytes
-  the registry serves instead. The decision — the deployer reads the remote
-  digest and the server never contacts the registry — is unchanged.
-
 ## Non-goals
 
 Channel selection or rollback from the UI; automatic rollback; a breaking-

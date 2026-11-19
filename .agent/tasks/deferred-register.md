@@ -14,8 +14,7 @@ with no trigger belongs in [../plans/backlog.md](../plans/backlog.md).
 
 ## Project and Inquiry — usage-triggered
 
-Audited 2026-08-08 and re-checked against the code on 2026-08-13; none is
-implemented, as expected for trigger-gated items.
+None is implemented except where a row names the part that already exists.
 
 | Item | Trigger | Owner |
 |---|---|---|
@@ -23,7 +22,7 @@ implemented, as expected for trigger-gated items.
 | Review cursor/chunking | Measured pending volume makes bounded complete-pool selection too slow/noisy | Inquiry / Knowledge Promotion |
 | Thread labels/tags | Navigation or search use demonstrates the need | Inquiry |
 | Adaptive Learning scheduling | Real review behavior supplies scheduling requirements | Learning |
-| Retrieval Project scope in every recall arm | Large multi-Project results make endpoint post-filtering lossy | Retrieval |
+| Retrieval Project scope for the search endpoints. `RetrievalSearchService.search` already applies a caller's `candidateScope` inside every recall arm and graph hop, before ranking and truncation (`retrieval/searchService.ts`), but only runtime context passes one (`runtimeContext/retrievalCoordinator.ts`, and `productionAcquisition.ts` for an isolated Project). The person-facing search entries (Knowledge/Memory search, Source search, Inquiry) pass no Project scope, so a Project view still post-filters their results | Large multi-Project results make endpoint post-filtering lossy | Retrieval |
 | Shared graph composer/tier tags | A second non-`space_objects` producer or a behavior consumer exists | Graph |
 | Additional typed Thread links | A concrete named relationship requires its own lifecycle | Inquiry / Experiments |
 | Incident/Runbook aggregates | Demonstrated lifecycle is not owned by Tasks, Runs, Automations, or Activity | Operations |
@@ -51,7 +50,8 @@ and each needs a real second member before its shape is knowable.
 |---|---|
 | **Orphaned `private` rows after a member leaves a Space.** Their owner can no longer read them and no one else ever could, so they are unreachable but still counted, indexed, and backed up. Deleting them destroys content the person may return for; reassigning them hands their private material to someone else. | A member actually leaves a real shared Space |
 | **Explicit consent to `oversight_mode` when joining an existing Space.** The mode is immutable and visible to members, but nothing makes a joiner acknowledge it before their content lands under it. | Someone joins a Space they did not create |
-| **Detail-read auditing beyond the four wired types.** `recordDetailRead` covers Task, Activity, Artifact, and note/`space_object`; Run, Proposal, Agent, Reader annotation, and the Source types record nothing on a detail read, so a demotion disclosure for those reports no readers even when there were some. Mechanical to extend, but each addition is a write on a read path — extend on evidence. | A demotion disclosure for one of those types is actually consulted |
+| **Detail-read auditing beyond the four wired types.** `recordDetailRead` covers Task, Activity, Artifact, and note/`space_object`, and records `source_item` reads made through another domain (the Project Research Area in `projectResearch/areaService.ts`, activity summaries in `activity/summaryOperation.ts`). Run, Proposal, Agent and Reader annotation record nothing on a detail read, nor does the Sources item detail endpoint (`GET /api/v1/sources/items/:itemId`), so a demotion disclosure for those reports no readers even when there were some. Mechanical to extend, but each addition is a write on a read path — extend on evidence. | A demotion disclosure for one of those types is actually consulted |
+| **Home activity counts include other members' private rows.** The Home summary's activity counts (`frontendSupport/service.ts`) exclude only another person's owner-only rows (a Gmail monitor reminder); every other `private` activity row of another member is still counted, though never listed. | A second member's private activity is visible as a count to someone it is not shared with |
 
 ## Runtime and operations
 
@@ -70,7 +70,7 @@ and each needs a real second member before its shape is knowable.
 | **Neither daemon hot-reloads from the server's source mount.** The built-in Host's daemon ships inside the `sandbox-runner` image and changes only when that image is rebuilt; a paired Host uses an installed release. Local development can now build and install a paired Host from the checkout with `ops/scripts/host/build-local-release.sh --install`. The built-in runner still has a `read_only` rootfs and image-bundled `dist`, with no dev source mount/watch. On 2026-09-09 both were stale during acceptance, making version skew look like a product bug. The remaining dev improvement is a source mount plus watch for the built-in runner, which would trade away `read_only` in dev. | The next time local work touches daemon code, or a verification result cannot be explained |
 | **Retention and pruning design.** Append-only Run/Event/Evolution/usage data and Artifact storage need explicit retention semantics that preserve audit obligations, Proposal/Artifact provenance, and per-type policy. It cannot be a generic age-based delete job. | The database reaches a few GB, backups exceed 15 minutes, or real Run logs make growth materially visible |
 | **Operations runbook consolidation.** One operator page covering service placement and health, backup/restore and host-loss recovery, runtime-tool and credential recovery, retry/alert/scheduler diagnosis, and safe stop and escalation boundaries. | Unattended hardening completes |
-| **`executeRun`'s outer catch has no thread-event awareness.** Found 2026-08-22 during the control-center phase-2 P3 closure review (retired plan, git history), sweeping for siblings of a just-fixed gap (four early returns in `remoteHostCliAdapter.ts` that produced a terminal Run with zero `host_thread_events` rows — fixed via `remoteFailureWithEvent`). `orchestrationService.ts`'s `executeRun` generic `catch` (~line 1490) finalizes a Run as failed with no knowledge of `thread_event_sink` at all — it's constructed only locally inside `invokeAdapterUnbounded`'s remote-CLI branch, never threaded up. If `executor.runCommand` in `remoteHostCliAdapter.ts` ever throws instead of resolving (traced one plausible path: a synchronous `ws.send()` throw from `dispatchLaunch` if the registered connection were ever not truly `OPEN`, an anomalous state this registry's own invariants should prevent — not a routine failure like the four just-fixed branches), the Conversation UI's poll-based completion detection (`apps/web/src/modules/conversation/ConversationSurface.tsx`) has nothing to observe and reproduces the original "stuck Cancel / no diagnostics / no diff" symptom. Broader than P3's scope — this catch has never had thread-event awareness for *any* exception type, predating P1 through P3; not fixed here (review budget exhausted at 3/3 reviewers for this phase, and the fix requires restructuring how far up the call stack `thread_event_sink` is threaded, materially larger than a P3-scoped repair). | A real remote-host Run reaches `executeRun`'s outer catch by a path other than `remoteHostCliAdapter.ts`'s own now-complete status-event coverage |
+| **`executeRun`'s outer catch has no thread-event awareness.** Found 2026-08-22 during the control-center phase-2 P3 closure review (retired plan, git history), sweeping for siblings of a just-fixed gap (four early returns in `remoteHostCliAdapter.ts` that produced a terminal Run with zero `host_thread_events` rows — fixed via `remoteFailureWithEvent`). `orchestrationService.ts`'s `executeRun` generic `catch` finalizes a Run as failed with no knowledge of `thread_event_sink` at all — it's constructed only locally inside `invokeAdapterUnbounded`'s remote-CLI branch and handed to `executeRemoteHostCliAdapter` (`RemoteHostCliAdapterInput.thread_event_sink`, wrapped by `executeWorkspaceRunReply` in `workspaceRunReply.ts`), never threaded up. If `executor.runCommand` in `remoteHostCliAdapter.ts` ever throws instead of resolving (traced one plausible path: a synchronous `ws.send()` throw from `dispatchLaunch` if the registered connection were ever not truly `OPEN`, an anomalous state this registry's own invariants should prevent — not a routine failure like the four just-fixed branches), the Conversation UI's poll-based completion detection (`apps/web/src/modules/conversation/ConversationSurface.tsx`) has nothing to observe and reproduces the original "stuck Cancel / no diagnostics / no diff" symptom. Broader than P3's scope — this catch has never had thread-event awareness for *any* exception type, predating P1 through P3; not fixed here (review budget exhausted at 3/3 reviewers for this phase, and the fix requires restructuring how far up the call stack `thread_event_sink` is threaded, materially larger than a P3-scoped repair). | A real remote-host Run reaches `executeRun`'s outer catch by a path other than `remoteHostCliAdapter.ts`'s own now-complete status-event coverage |
 
 **Codex internal delegation is not required to be disabled** (decided
 2026-08-13). Runtime-internal delegation does not create a separate Rainver
@@ -82,6 +82,25 @@ derives from the execution Host and responsible owner, as recorded in
 Bubblewrap namespace; a paired trusted Host runs natively. Attribution and
 cancellation quality still need real-Run evidence, so the cancellation row
 above retains its trigger.
+
+## Operation-core plugin follow-ons
+
+Legacy Diary/Finance migration was started by the user on 2026-11-19. The owning scope, trigger and
+acceptance boundaries are in [operation-core P7](../plans/operation-core/07-legacy-plugin-migration.md).
+Conditional context/Skills/MCP/RLS/third-party extensions retain their individual
+triggers in [P6](../plans/operation-core/06-later-extensions.md); they are not an
+active implementation queue. The [program index](../plans/operation-core/README.md)
+is the remaining-work entry; do not duplicate its work items here.
+
+The plugin Agent data-access platform is implemented within the supported
+scope recorded in [ADR 0030](../decisions/0030-plugin-agent-data-access.md) and
+[OFFICIAL_OPTIONAL_MODULES](../architecture/OFFICIAL_OPTIONAL_MODULES.md#agent-data-access-adr-0030).
+What it does not cover:
+
+| Item | Trigger |
+|---|---|
+| **Sensitive Agent reads have one isolated launch path.** Only a provider-bound Run on the built-in strict Host (daemon 0.4.9+, `model_channel`) gets the egress-`none` launch with a model-only channel. A CLI on its own vendor login (host-login) and every paired Host have no isolated path, so sensitive reads refuse there. | A sensitive plugin read is needed from a vendor-login CLI Run or on a paired Host |
+| **The isolated launch has not run against a live provider or every runtime.** The installed Claude Code and Codex passed the network-namespace smoke through the real relay and proxy against a synthetic provider only. No live provider has been exercised, and neither the ACP adapter processes nor OpenCode have run under the isolated launch. | The first authorized sensitive read with a live provider, or one through OpenCode or an ACP adapter process |
 
 ## Runtime composition and generated code
 
@@ -115,32 +134,28 @@ scope is not a Space, Project, or Domain scope. Runtime composition answers
 "which code is loaded"; Space answers "who may read this". If the trigger ever
 fires, the two must not be allowed to become one enum, one id, or one predicate.
 
-**Amended 2026-08-22 — re-evaluated in light of DeepSeek Harness; verdict
-unchanged.** Cordis turns out to be DeepSeek-published (its docs live under
-the deepseek-harness repo), and DSH — "everything is a plugin", agent loop
-included — is its flagship reference implementation. Re-verified the
-empirical basis against today's code before re-affirming: `PluginHost`
-(`server/src/modules/plugins/host/index.ts`) is still boot-time-only,
-synchronous, activate-once, with no deactivate/dispose anywhere; plugin
-enablement is request-time DB-flag gating over always-loaded code; the
-register/unregister lifecycles the hosts work added since the original audit
-(`HostConnectionRegistry`, `CliProcessRegistry`) are data-plane state (live
-connections, live processes), not code composition — the exact class the
-original entry already excluded via its `scheduler/registry.ts` example.
-Neither trigger half has moved. Three context updates, none changing the
-verdict:
+**DeepSeek Harness does not move the trigger.** Cordis is DeepSeek-published
+(its docs live under the deepseek-harness repo), and DSH — "everything is a
+plugin", agent loop included — is its flagship reference implementation. The
+empirical basis holds in the code: `PluginHost`
+(`server/src/modules/plugins/host/index.ts`) is boot-time-only, synchronous,
+activate-once, with no deactivate/dispose anywhere; plugin enablement is
+request-time DB-flag gating over always-loaded code; the register/unregister
+lifecycles in the hosts and runs modules (`HostConnectionRegistry`,
+`CliProcessRegistry`) are data-plane state (live connections, live
+processes), not code composition — the same class as the
+`scheduler/registry.ts` example above. Neither trigger half has moved, and
+three considerations bear on the entry without changing it:
 
-1. If the trigger ever fires, Cordis is now a *stronger candidate* than at
-   the original evaluation (major-vendor maintenance, a serious reference
-   implementation, real docs) — this changes post-trigger selection weight,
-   not whether the trigger has fired. Counterweight: it currently moves at
-   DSH's developer-preview breaking-change pace.
+1. If the trigger ever fires, Cordis is a *strong candidate* (major-vendor
+   maintenance, a serious reference implementation, real docs) — this is
+   post-trigger selection weight, not evidence that the trigger has fired.
+   Counterweight: it moves at DSH's developer-preview breaking-change pace.
 2. DSH-as-runtime-endpoint (see the multi-host section's endpoint row)
    provides an **out-of-process path to consume the Cordis plugin/skill
    ecosystem**: ecosystem plugins run inside a DSH endpoint, and the control
-   plane speaks only the SDK protocol. This removes the strongest
-   previously-conceivable future reason to adopt Cordis in-process — wanting
-   the ecosystem no longer implies importing the programming model.
+   plane speaks only the SDK protocol. Wanting the ecosystem therefore does
+   not imply adopting Cordis in-process or importing its programming model.
 3. "External plugin-ecosystem compatibility" (third parties writing Agent
    Space extensions against Cordis instead of `PluginHost`) is explicitly
    **not** an additional trigger: it presupposes real third-party developers
@@ -150,10 +165,9 @@ verdict:
    around this entry by claiming the trigger list never considered the
    ecosystem argument.
 
-The scope warning above stands unchanged and is *reinforced* by DSH's
-existence: in a Cordis world everything becomes a `ctx.*` service, and the
-most natural migration mistake would be hanging authorization predicates off
-runtime scope.
+DSH's design reinforces the scope warning above: in a Cordis world everything
+becomes a `ctx.*` service, and the most natural migration mistake would be
+hanging authorization predicates off runtime scope.
 
 ### Generated executable lifecycle
 
@@ -187,6 +201,7 @@ currently holds.
 | Enabling retry or Always-on once cost is non-null | The Run retry cost cap (`runs/supervisor.ts`) and the autonomy daily cost limit were calibrated before catalog cost reached `estimated_cost_usd`. Re-check both against observed spend before enabling either feature, rather than discovering the thresholds by a run being refused. |
 | Controlled product acceptance | Follow [../architecture/PRODUCT_ACCEPTANCE.md](../architecture/PRODUCT_ACCEPTANCE.md). Its OpenCode smoke section depends on the CLI gate above; the managed-API and Source sections do not. |
 | Unattended dogfooding | [../plans/unattended-execution-hardening-plan.md](../plans/unattended-execution-hardening-plan.md) must pass its completion gate first. |
+| Activating least-privilege runtime database roles | Implemented as an explicit operator procedure ([ADR 0031](../decisions/0031-runtime-database-roles.md)), not activated on any instance. Activation is a separately authorized operation per instance: recheck that instance's actual roles first, then follow [deployment.md](../modules/deployment.md#least-privilege-database-roles-adr-0031) (verified backup, read-only `plan`, `apply`, `activate`). |
 
 ## Funding-aware routing — design
 
@@ -281,13 +296,14 @@ differ, which is what the trigger provides.
   `runToOut()` (`server/src/modules/runs/runReadModel.ts`) unconditionally
   nulls both fields by design ("canonical input remains in its owning
   Message/Run records... never the raw task or rendered context body"), so
-  the `(r.instruction || r.prompt) && <p>...</p>` display line present in
-  `RunsPage.tsx` and `RunDetailPage.tsx` can never actually render for a real
-  Run. Not a regression — found during P4's discovery review, deferred as
+  the `(r.instruction || r.prompt) && <p>...</p>` display line in
+  `RunsPage.tsx` can never actually render for a real Run, and the
+  `RunDetailPage.tsx` heading always falls back to `` `${r.run_type} Run` ``.
+  Not a regression — found during P4's discovery review, deferred as
   pre-existing and out of that phase's scope. (A third copy lived in
   `command_center/ThreadDetailPage.tsx`; that page was deleted by the
   conversation-UI plan's P3, which removes the Command Center's thread
-  surface entirely.) Revisit only as a fix across both remaining call sites
+  surface entirely.) Revisit only as a fix across both call sites
   together, tied to whatever the intended non-redacted read path for a Run's
   task description turns out to be.
 
@@ -358,6 +374,39 @@ were deliberately left, each with the reason it is safe to leave.
 | `item_ids` is capped at 200 by the schema with no client-side cap or warning | Somebody hits the raw 422, or a picker gains select-all | Nothing is lost when it happens: the send is refused before anything is written, and the pick survives for the person to narrow. Reachable today — the imported-session page lists up to 2,000 records, each with a checkbox — so this is a rough edge, not an unreachable one |
 | `picked` and `disclosure` are not reset by `RoomConversation` itself | A consumer keeps the component mounted across a conversation switch | Both current consumers remount via `key`, so the state cannot outlive its conversation |
 | A whole-thread pick of a thread holding external content is labelled `external_untrusted`, but the *summarizer* is not told its input is untrusted | Prompt injection is observed surviving summarization | The label and fence are applied to the carried copy; this is about the summary's own production, which is the Agent summary turn's contract (`agent.conversation_summary`), not a reference's |
+
+## Gmail — real-environment acceptance and limits
+
+Current behaviour is in [Sources → Personal Gmail connections](../modules/sources.md#personal-gmail-connections-connection-lifecycle-new-mail-monitors-legacy-project-selections),
+[ADR 0032](../decisions/0032-gmail-on-demand-agent-read.md) and
+[ADR 0033](../decisions/0033-gmail-project-consent-and-private-delivery.md).
+
+| Item | Trigger | Owner |
+|---|---|---|
+| **No real-environment acceptance.** Every Gmail path is tested against a Google stub; no real Google Cloud project, OAuth client, Pub/Sub topic or subscription, push OIDC token or mailbox has been used. Unverified: restricted-scope verification and testing-user limits for `gmail.readonly` on the actual deployment; quota-unit costs and `list`/`get`/`history.list` semantics (404 on an expired history cursor, `after:` second granularity) against current Google behaviour; `users.watch` renewal; and the same-project push setup, which only a real `users.watch` success followed by a verified push can show. | An authorized real Google project and mailbox for an instance | Sources |
+| **Google-side state Rainver cannot see.** Rainver never revokes a grant remotely, so after a disconnect the grant (and an access token already issued, until it expires) stays valid at Google until the person removes it on their Google Account page; that removal also ends every other Rainver connection of the same account, which reaches `reauth_required` through `invalid_grant` on its next refresh. A Workspace-admin mailbox rename changes the address Google reports but not `google_subject`, and the stored `mailbox_email` is refreshed only on reconnect. If Google ever rotated a refresh token on an uncertain refresh, the connection would fall to `reauth_required`. | One of these is observed in real use, or Google changes refresh-token rotation for web clients | Sources |
+| **One request can leave after a concurrent revocation.** A writer that commits after a send's authority check and before its dispatch still sees that one Gmail GET go out; its answer is never released, because the release recheck refuses. | Gmail access gains any scope beyond `gmail.readonly` | Sources |
+| **The ID token is checked by claims only.** `googleSubjectFromIdToken` validates `iss`, `aud`, `exp` and `sub` without a JWKS signature check, which Google's OpenID guidance allows only because the token arrives in the direct TLS response from the fixed token endpoint. | The ID token is taken from any other channel | Sources |
+| **The new-mail monitor drafting turn's own words.** The `source.gmail.monitor.propose` call's arguments and result are withheld from both event logs for everyone (`privateToolCalls.ts`), but the person's message, and assistant prose that restates it, keep the conversation's ordinary read rules; an argument file the Agent writes in a separate tool call first is an ordinary tool call. Agent guidance relies on the tool description; no prompt-policy sentence was added. | Monitor criteria are seen leaking to another reader through the conversation | Sources + Rooms |
+| **Monitor-draft audience is checked at call time only.** A Room whose audience widens after the draft does not withdraw the private proposal (it never contained mail). The mainline-Room audience path is tested through `runAudience` with Run visibility, not a seeded Room. | Next change to `gmailMonitorProposal.ts` or `runAudience` | Sources |
+| **Monitors cannot be edited.** Changing criteria means deleting the monitor and asking for a new draft (`source.gmail.monitor.set_status` / `delete` only). | Owners are seen deleting and redrafting monitors to change them | Sources |
+| **The legacy selection table is kept.** Manual thread search and adding selections were retired, but `gmail_project_thread_selections` and its data stay; dropping it needs a generated Drizzle migration. The retention task also returns one total for the content-access log and the Gmail tables it prunes (`scheduler/backgroundServices.ts`). | Legacy selection reads are retired, or the next Gmail schema migration | Sources |
+
+## Testing — durable behaviour asserted only against a fake database
+
+Each test below checks SQL text or bound parameters against a fake database, and
+no real-PostgreSQL test covers the behaviour it names, so a change that keeps
+the statement shape but breaks the stored result would pass. Durable behaviour
+tests use the shared real PostgreSQL ([TESTING_STRATEGY](../architecture/TESTING_STRATEGY.md)).
+
+| Item | Trigger |
+|---|---|
+| `server/test/sourceBackfillService.test.ts` ("persists the Project Research operation budget only on the operation", "keeps a generic Project Source operation budget in the plan"): at plan creation, a Research operation's budget lands on the operation and a generic one on the plan | Next change to `SourceBackfillPlanningService.create` or to backfill budget accounting |
+| `server/test/memoryMaintenance.test.ts` ("scans only active entries, so a version chain is not reported as drift"): only the `active` parameter is asserted | Next change to the Memory maintenance scan |
+| `server/test/evolutionSignalEmitters.test.ts` ("boundedly provisions a task target when an ordinary run fails" and the automation row of its `it.each`): auto-creation of task and automation evolution targets is asserted by INSERT parameters only; real PG covers the workflow case only | Next change to evolution target provisioning |
+| `server/test/retrievalEvalGroup.test.ts` ("persists eval reports as private artifacts"): parameters only | Next change to retrieval eval report persistence |
+| `server/test/claimGroup.test.ts` ("applies Claim supersession only with a successor pointer"): the fake database echoes the row back | Next change to the Claim proposal applier |
+| Database constraints with no behaviour test: status CHECKs `ck_knowledge_items_status`, `ck_notes_status`, `ck_sources_status`, `ck_claims_status`, `ck_relation_people_status`, `ck_relation_organizations_status`; `ck_claim_sources_source_ref_connection`, `ck_memory_entries_memory_layer`, `ck_agent_run_group_members_role`, `ck_run_delegations_status`; the evolution tables' CHECKs and unique indexes (`server/src/db/schema/evolution*.ts`) | Next migration touching one of these constraints or the values it admits |
 
 ## Parked ideas
 

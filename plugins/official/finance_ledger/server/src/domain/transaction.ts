@@ -14,6 +14,16 @@ function isPool(db: Queryable): db is PoolLike {
   return typeof candidate.connect === "function" && typeof candidate.release !== "function";
 }
 
+/**
+ * An operation's PluginDb already runs inside the host's transaction. Marked
+ * as such, `withTransaction` runs on it as it is and `attempt` takes a
+ * savepoint (the host turns the label into a private savepoint).
+ */
+export function joinOperationTransaction(db: Queryable): Queryable {
+  const tx: TransactionQueryable = { query: (sql, params) => db.query(sql, params), [IN_TRANSACTION]: true };
+  return tx;
+}
+
 export function inTransaction(db: Queryable): boolean {
   return (db as Partial<TransactionQueryable>)[IN_TRANSACTION] === true;
 }

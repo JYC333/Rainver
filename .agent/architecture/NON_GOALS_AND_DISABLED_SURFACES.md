@@ -70,7 +70,8 @@ These are refused product scope, not a backlog:
 - Direct app-container self-deployment.
 - Cloud/multi-device sync.
 - Domain-specific integrations (health, finance, home automation) in the
-  kernel. Official plugins (`diary`, `finance_ledger`) are the opt-in path.
+  kernel. Official plugins (`diary`, `finance_ledger`, the Project-level
+  `applications`) are the opt-in path.
 - Publishing connectors or external CMS integrations.
 - Full Cards as a complete product surface.
 - Complex enterprise admin console or billing.

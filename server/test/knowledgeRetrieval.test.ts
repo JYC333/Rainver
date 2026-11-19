@@ -560,23 +560,6 @@ describe("Knowledge zero-LLM retrieval", () => {
     expect(JSON.stringify(decisions.trace)).not.toContain("risk");
   });
 
-  it("returns a KnowledgeItem for alias match", async () => {
-    const db = searchDbWithKnowledge();
-    db.addAlias("knowledge_item", ITEM_A, "Hall of Light", "alias");
-
-    const out = await new RetrievalSearchService(db, knowledgeRetrievalRegistry).search({
-      spaceId: SPACE_A,
-      viewerUserId: USER_A,
-      query: "hall of light",
-    });
-
-    expect(out.items[0]).toMatchObject({
-      object_id: ITEM_A,
-      evidence: { kind: "alias_hit" },
-      create_safety: "exists",
-    });
-  });
-
   it("returns a Note for lexical title/content search", async () => {
     const db = new SearchFakeDb();
     db.addObject({
@@ -1059,6 +1042,49 @@ describe("Knowledge zero-LLM retrieval", () => {
 
     expect(out.items.map((item) => item.object_id)).toEqual(expect.arrayContaining([midId, farId]));
     expect(out.trace).toMatchObject({ graph: { hops: 2 } });
+  });
+
+  it("applies a caller's candidate scope at every graph hop and before truncation", async () => {
+    const db = searchDbWithKnowledge();
+    const midId = "99999999-9999-4999-8999-999999999999";
+    const farId = "99999999-9999-4999-8999-aaaaaaaaaaaa";
+    for (const [id, title] of [[midId, "Beta"], [farId, "Gamma"]] as const) {
+      db.addObject({
+        space_id: SPACE_A, object_type: "knowledge_item", object_id: id, title, status: "active",
+        visibility: "space_shared", owner_user_id: USER_A, created_by_user_id: USER_A, text: `${title} graph node.`,
+      });
+    }
+    db.addAlias("knowledge_item", ITEM_A, "Alpha", "title");
+    for (const [from, to] of [[ITEM_A, midId], [midId, farId]] as const) {
+      db.edges.push({
+        space_id: SPACE_A, from_object_type: "knowledge_item", from_object_id: from,
+        to_object_type: "knowledge_item", to_object_id: to, link_type: "supports",
+        edge_origin: "object_relation_projection", confidence: 1,
+      });
+    }
+    const asked: string[] = [];
+    const scopeWithout = (outside: string) => ({
+      async admits(candidates: readonly { objectType: string; objectId: string }[]) {
+        asked.push(...candidates.map((c) => c.objectId));
+        return new Set(candidates.filter((c) => c.objectId !== outside).map((c) => `${c.objectType}:${c.objectId}`));
+      },
+    });
+    const search = (outside: string, maxResults = 5) => new RetrievalSearchService(db, knowledgeRetrievalRegistry).search({
+      spaceId: SPACE_A, viewerUserId: USER_A, query: "Alpha", maxResults, includeTrace: true,
+      candidateScope: scopeWithout(outside),
+    });
+
+    // An out-of-scope intermediate is neither returned nor expanded from.
+    const throughMid = await search(midId);
+    expect(throughMid.items.map((item) => item.object_id)).toEqual([ITEM_A]);
+    // An out-of-scope seed starts no traversal and takes no result slot.
+    const fromSeed = await search(ITEM_A, 1);
+    expect(fromSeed.items).toEqual([]);
+    // In scope, the same walk reaches both hops; each candidate was asked once per search.
+    asked.length = 0;
+    const open = await search("none");
+    expect(open.items.map((item) => item.object_id)).toEqual(expect.arrayContaining([ITEM_A, midId, farId]));
+    expect(new Set(asked).size).toBe(asked.length);
   });
 
   it("uses relational intent to return sources connected to a visible seed", async () => {

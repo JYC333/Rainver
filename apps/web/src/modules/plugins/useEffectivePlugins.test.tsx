@@ -2,6 +2,7 @@ import {act,renderHook,waitFor} from '@testing-library/react'
 import {afterEach,it,expect,vi} from 'vitest'
 import {useEffectivePlugins} from './useEffectivePlugins'
 import {pluginsApi} from '../../api/client'
+import {announcePluginStateChanged} from './pluginStateEvents'
 const context=vi.hoisted(()=>({userId:'one',activeSpaceId:'a',preferredSpaceId:'a'}))
 vi.mock('../../contexts/SpaceContext',()=>({useSpace:()=>context}))
 vi.mock('../../api/client',()=>({pluginsApi:{effective:vi.fn()}}))
@@ -20,4 +21,9 @@ it('clears enabled navigation on a failed refresh and account switch',async()=>{
  const {result,rerender}=renderHook(()=>useEffectivePlugins());await waitFor(()=>expect(result.current.isEnabled('probe')).toBe(true))
  act(()=>result.current.refresh());await waitFor(()=>expect(result.current.error).toBe('revoked'));expect(result.current.plugins).toEqual({})
  context.userId='two';rerender();expect(result.current.isEnabled('probe')).toBe(false);await waitFor(()=>expect(result.current.loading).toBe(false))
+})
+it('reads again at once when the Plugins page announces an enable or disable in this tab',async()=>{
+ vi.mocked(pluginsApi.effective).mockResolvedValueOnce({plugins:{probe:{enabled:true}}} as never).mockResolvedValue({plugins:{probe:{enabled:false}}} as never)
+ const {result}=renderHook(()=>useEffectivePlugins());await waitFor(()=>expect(result.current.isEnabled('probe')).toBe(true))
+ act(()=>announcePluginStateChanged());await waitFor(()=>expect(result.current.isEnabled('probe')).toBe(false))
 })

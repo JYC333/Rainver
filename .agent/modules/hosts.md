@@ -18,13 +18,18 @@ select or default that binding. **This document describes the current system.**
 
 ## Purpose
 
-Paired-Host owners can explicitly update an `own` Claude Code or Codex CLI
-through `POST /hosts/:hostId/installations/:runtimeKey/own/update`. Which
-runtimes qualify, and the npm package naming each one's release, is one list:
+Paired-Host owners can explicitly update an `own` Claude Code or Codex CLI, or
+an own Antigravity installation, through
+`POST /hosts/:hostId/installations/:runtimeKey/own/update`. The npm-released
+CLIs that qualify, and the package naming each one's release, are one list:
 `OWN_CLI_UPDATE_PACKAGES` in `packages/protocol/src/hostWire.ts`, read by the
 wire frame, the daemon's recipes, the release lookup, the route and the host
-card. The route has no daemon-version check of its own: every daemon the
-control plane accepts (`MIN_HOST_DAEMON_VERSION`) answers `update_own_tool`.
+card. For those the route has no daemon-version check of its own: every daemon
+the control plane accepts (`MIN_HOST_DAEMON_VERSION`) answers `update_own_tool`.
+Antigravity is not in that list and takes its own branch: the Host must
+advertise capability `antigravity_own_updates` (otherwise 409
+`host_update_required`), report an `own` Antigravity installation, and the
+registry binary release must be known (described below).
 The daemon drains the runtime before replacement and
 selects fixed recipes from its own PATH: original-prefix npm globals, Claude
 native installs, or Codex standalone installs. Other installation methods are
@@ -52,13 +57,16 @@ versions; an updater that found the CLI already current answers
 recorded as before, with unknown versions.
 The own-update button appears only when the known vendor CLI version is below
 the stable release reported by npm (separate from ACP package versions). Release
-lookups use guarded HTTPS with a three-second deadline and are never awaited by
-`runtime-definitions`: `ownCliReleases.peek` answers from memory and starts at
-most one background lookup when the answer is missing or older than 15 minutes
-(one minute after a failure). A failed lookup keeps the last good version, so
-an offline control plane adds no network wait to the request; the first read
-after start-up reports `null` until the lookup lands. Unknown or prerelease installed
-versions do not offer an update; failed lookups never imply an available update.
+lookups use guarded HTTPS with a three-second deadline.
+Runtime definitions await the shared lookup on a cold cache, so the first visit
+can show the upgrade on the built-in Server too. Cached values return immediately
+while refreshing in the background, and failed lookups keep the last good value.
+Antigravity uses Google's existing registry binary release on Linux and macOS.
+A trusted paired Host advertising Antigravity own updates can replace the
+official user-owned `~/.local/bin/agy` in place, within the runtime drain.
+The daemon stages the SHA-512 checked release alongside the original, verifies
+its version and checks that the original did not change before atomic promotion.
+Other Antigravity installation methods retain their original updater.
 
 The local release builder (`ops/scripts/host/build-local-release.sh`) selects
 Node 24 from PATH or the installed Host's shared runtime, and uses that selection
@@ -201,9 +209,10 @@ root and checked lexically and by canonical `realpath`; a paired Host uses only
 its registered local path map.
 
 Managed workspaces are daemon-owned directories, not Workspace Locations. A
-launch names an Agent and either a Conversation id (a Room conversation, or a
-direct conversation placed in a Project) or the direct owner's user id (a
-direct chat outside any Project); the daemon derives the directory under its
+launch names an Agent and either a Conversation id (a Room conversation, a
+direct conversation placed in a Project, or one outside a Project that may
+read sensitive data, ADR 0032) or the direct owner's user id (any other
+direct chat outside a Project); the daemon derives the directory under its
 private config root. The server can
 request archive/restore actions and records a pending archive when the daemon
 is offline, but it never receives or stores the derived path.
@@ -1608,9 +1617,25 @@ is its adapter type and whose only copies are managed ones
 reloads the enabled set at startup and every 60s. Disabling is refused (409)
 while any host still reports a copy (`GET /api/v1/acp-agents` lists
 `installed_on`), so nothing is orphaned on a machine and no pinned thread
-stalls silently. ADR 0016 is amended in place for managed copies; the
+stalls silently. Managed copies follow ADR 0016 §7; the
 machine's own installs are never installed or reconfigured, and are upgraded
 only by the owner's explicit `update_own_tool` request.
+
+The installed list and registry catalog apply the same stable-version check
+to managed upgrades. An unknown, current or newer reported copy prevents a
+runtime-wide upgrade from being offered because it could replace that copy.
+Ordinary managed tools apply the same stable comparison to both the initial
+Host report and the refreshed row, so an older pinned catalog never offers
+a downgrade as an update.
+The built-in Server uses its OpenCode bootstrap release when the registry
+has no release. Repository ACP bridges continue to compare the native CLI
+version and use the separate managed CLI operation.
+
+An installed registry Agent's row shows the available managed release on the
+install action when the Host only reports an own copy. The row uses the same
+release as the Agent catalog once loaded, and submits the displayed version
+as the expected install version. Machine-owned registry binaries such as
+Antigravity remain separate from this managed copy.
 
 **Command Center layout** (`command_center/HostsPanel.tsx`, `HostSummaryList.tsx`,
 `HostDetail.tsx`). The page is a list of the Hosts the person can see and the
@@ -2055,7 +2080,7 @@ beyond the Run's existing authority.
   no account.
 - The key is the P2 derivation, and the frame never carries the user id.
 
-**What the Agent is told.** One supplemental instruction in the existing ACP
+**What the Agent is told.** One Run-control entry (source `ordinary_tools`) in the existing ACP
 context names the tools the Host reported and their versions, and points to
 `printenv RAINVER_ORDINARY_TOOLS`. When lark-cli is available, it also says:
 - lark-cli acts as the person who asked for the work (`--as user`);
@@ -2378,9 +2403,20 @@ continuity.
 Agent thread is claimed before its Run exists, bound to that Run before commit,
 and released only by the terminal outcome hook. This prevents two turns from
 concurrently sharing or overwriting one vendor session; explicit context reset
-waits until that claim is released.
+waits until that claim is released. `agent.chat.reset_context` with a
+`session_id` (Project or not; the Session must be the caller's own, never a
+Room's) resets the thread that conversation's turns use, chosen as admission
+chooses its container: the Session's own Conversation thread for a Project
+conversation or a non-Project one that may read sensitive data (ADR 0032),
+otherwise the person's direct thread, which is also what a reset without a
+`session_id` addresses. `resetConversationAgent(thread, vendorSessionId)`
+retires only that session (compare-and-retire), for a check that refused to
+resume a session it was handed.
 
-`recordRunOutcome` clears `vendor_session_id` outright (not
+`recordRunOutcome` binds each reported session to the reporting Run's launch
+(`vendor_session_launch_id`, which every path clearing the pointer clears too;
+a conversation that may hold sensitive data resumes only a pointer bound to an
+isolated launch in its profile, ADR 0032). It clears `vendor_session_id` outright (not
 COALESCE) whenever a resume degrades (`session_reset`) — which
 `recordHostThreadOutcome` concludes only when the runtime proved it: the Run
 failed with `runtime_session_invalid`, or finished a turn without a session id.
@@ -3515,12 +3551,33 @@ URL; it validates the selected channel's installer before executing it, with
 `stable` as the default. The installer keeps immutable build directories below
 `~/.local/share/rainver-host/releases/` (each placed by a same-filesystem
 rename from a staging directory beside it, and replaced when an existing one
-is not a complete release), atomically moves `current`, installs a
+is not a complete release). Installs into one root — timer or manual update,
+a daemon's adapter request — serialize on `$INSTALL_ROOT/.install.lock`
+(`flock`, never unlinked, required): completeness is re-checked under it, so
+a concurrent install of the same build keeps the placed directory unchanged,
+and retained-release pruning never removes another holder's staging
+directory. Downloads stay outside the lock. An adapter request compares the
+pack with its pinned build before the lock and with the active `current`
+build only under it, so an update that switched `current` while the request
+waited is refused rather than placed; it still never writes
+`adapters/current` or prunes. It atomically moves `current`, installs a
 systemd user unit, and captures the installing user's PATH for CLI discovery.
 The daemon launcher loads the owner-only `service.env` itself before Node
 starts; the unit does not rely on systemd `EnvironmentFile` parsing, whose
 quoted-path handling can silently discard the captured PATH and reduce
-discovery to system directories.
+discovery to system directories. An update detects vendor CLIs for the adapter
+pack on that captured PATH as well as its own (a timer-driven update has only
+systemd's default PATH); it does not rewrite `service.env`. A daemon's
+`--ensure-adapters` request names its own build (its adapter root); while that
+build is no longer `current` (a restart into the new build is pending) the
+installer refuses before downloading, and the restarted daemon installs its pack.
+That build is pinned for the whole request: it chooses the release, the
+downloaded pack must be that build's and still `current`. The request only adds
+its own `adapters/releases/<build>`, which the daemon resolves through its
+launcher-named adapter root; it never writes `adapters/current` or prunes, so an
+update that switches `current` concurrently is the sole writer of both. Update
+pruning keeps the new pack, the one `adapters/current` named, and the pack of the
+build it replaced, which a request may have added without naming it there.
 The one-time installer needs no pairing arguments: the installed
 `rainver-host register` command exchanges the code and then enables and
 restarts the service. Restarting is required even when the unit is already
@@ -3830,6 +3887,33 @@ checking write-to-read profile reuse, source write/create/delete/rename/index
 refusal, and report/cache/tmp writes. This is process/OS acceptance, not a real
 vendor login or model invocation; portable unit tests still validate launch
 planning independently.
+
+`node test/networkNamespace.acceptance.mjs` (same package, same prerequisites,
+never skips) proves egress `none` is a real boundary: a namespace launched with
+`default` reaches a listener this script opens on the Host's own addresses, one
+with `none` reaches neither the Host address nor its loopback. No outside
+network is contacted. ADR 0030 releases sensitive plugin data only to a Run
+whose server-recorded launch used this profile on the built-in Host.
+
+`node test/modelChannel.acceptance.mjs` (same package, same prerequisites, also
+needs `packages/agent-cli` built; never skips) proves the egress-`none` model
+channel (`src/modelChannel.ts`, `model_channel` capability, daemon 0.4.9): a
+synthetic CLI in a real namespace completes a streamed model call, a bridged
+sensitive tool read and a second model call through its lease; CONNECT,
+absolute-form, other-lease/route, dot-segment, encoded, upgrade and non-`POST`
+requests are refused by the relay (8 refusals); native sockets to the Host and its loopback, the real
+proxy address, a replaced base URL and DNS fail; a revoked lease answers 401
+and a closed channel cuts the Run off; `default` without the channel reaches a
+Host decoy (negative control). Only listeners the script opens are contacted.
+The daemon refuses a `model_channel` frame unless it is strict, egress `none`
+and `provider_lease`; the channel closes when the runtime exits. The relay
+forwards `POST` only; what a request may carry is the `model_only` lease's
+capability, judged by the provider proxy (ADR 0030 §4a). The installed vendor
+CLIs against that real chain are covered by the server smoke
+`MODEL_ONLY_CLI_SMOKE=1 pnpm exec vitest run test/modelOnlyLeaseVendorCliSmoke.test.ts`
+(Claude Code 2.1.318, Codex 0.167.1 verified 2026-11-17; OpenCode not
+installed there, so its Chat Completions/Messages shapes are allowlisted from
+its documented SDK paths only).
 
 Room 只读委派在创建子 Run 前检查会话固定的目标 backend/Host
 （`readOnlyWorkspaceHostRefusal`）：server Host 与报告
@@ -4527,16 +4611,26 @@ Operation Core. No dependency, scheduler or Git implementation was added.
 
 **Assessment (server facts).** `assessWorkspaceRetention` reads one snapshot of
 durable facts for a workspace generation and returns a visible state and stable
-reason, persisted in `execution_workspaces.retention_json`:
+reason, persisted in `execution_workspaces.retention_json`. The first matching
+check wins, in this order: missing workspace row (`workspace_missing`), safety
+review, active Run, closed checkpoint history (`kept_without_merging`, decided
+before any checkpoint or integration fact), pending checkpoint, pending
+integration, dependent cleanup, branch missing with unfinished work, child
+dependency, blocked changes, unpublished changes, unproven child adoption (not
+for an exact reviewed discard), workspace dependencies, exact reviewed discard
+(held while a hold runs, else `discarded`; never while quarantined), abandoned
+batches kept without merging, primary conversation workspace, snapshot baseline,
+quarantine, a remembered Host proof refusal of the same tip, hold, and finally
+`merged`/`no_changes`:
 
 | State | Reasons | Effect |
 |---|---|---|
-| `active` | `run_active`, `checkpoint_pending`, `integration_pending`, `dependent_cleanup` | Nothing released; existing guards apply. |
-| `retained` | `safety_review`, `child_workspace_dependency`, `blocked_changes`, `unpublished_changes`, `kept_without_merging`, `private_baseline`, `quarantined`, `unmerged_source`, `host_upgrade_required` | Branch and refs kept with **no automatic expiry**; only the physical tree follows the 24-hour idle rule. |
-
+| `active` | `run_active`, `checkpoint_pending`, `integration_pending`, `dependent_cleanup`, `workspace_dependencies` | Nothing released; existing guards apply. |
+| `retained` | `workspace_missing`, `safety_review`, `kept_without_merging`, `child_workspace_dependency`, `blocked_changes`, `unpublished_changes`, `child_adoption_unproven`, `primary_conversation`, `private_baseline`, `quarantined`, `unmerged_source` or another remembered proof refusal; the cleanup Job also records `host_upgrade_required` | Branch and refs kept with **no automatic expiry**; only the physical tree follows the 24-hour idle rule. `primary_conversation` is the conversation's ready top-level workspace whose generation landed a lifecycle publication and has no newer generation. |
+| `missing` | `branch_missing`, `missing_acknowledged` | The Host found neither branch nor worktree of a never-released generation that still has unfinished work without adoption proof. Never treated as merged and never expired; `acknowledge_missing` closes the records explicitly (see *Adoption and record reconciliation*). |
 | `held` | `held_by_user` | Kept until `hold_until`. A hold never masks a stronger `active`/`retained` reason; it is stored and applies once the source is otherwise eligible. |
 | `grace` | legacy stored assessment | Reassessment removes the legacy delay; closed sources release immediately after the last using Run exits. |
-| `reclaimable` → `reclaiming` → `reclaimed` | `merged`, `no_changes`; `releasing_refs` while further ref pages run | Branch, owned refs and receipts released. |
+| `reclaimable` → `reclaiming` → `reclaimed` | `merged`, `no_changes`, `discarded` (exact reviewed discard); `releasing_refs` while further ref pages run | Branch, owned refs and receipts released. |
 
 For delegated work adopted through native or controlled Git, reconciliation
 checks up to 50 exact parent publications/checkpoints in the same Space,
@@ -5069,13 +5163,17 @@ Releasing a ref only makes objects unreachable; Git's own `gc --auto` /
 default), so an in-flight rebuild can still read a just-released tip. Physical
 space for those objects is therefore recovered by ordinary Git maintenance.
 
-**Controls.** `workspace.retention.update` (user-only Operation Core command,
-policy action of the same name) accepts a visible change-set id and `action`:
-`reclaim_now` (skips the grace and a remembered proof refusal of an otherwise
+**Controls.** `workspace.retention.update` (Operation Core command, policy
+action of the same name) accepts a visible change-set id and `action`:
+`reclaim_now` (clears a hold and a remembered proof refusal of an otherwise
 reclaimable source and schedules immediately; refuses otherwise, including while
 a release is in flight), `hold` with `hold_days` (1–90; the visible state stays
-the re-assessed one), `release_hold`, or `retry` (re-delivers blocked cleanup
-with a fresh operation id and budget, keeping a release's epoch and plan). It rechecks full origin Run
+the re-assessed one), `release_hold`, `retry` (re-delivers blocked cleanup
+with a fresh operation id and budget, keeping a release's epoch and plan),
+`recover` (reoffers existing cleanup and terminal unlaunched checkpoint
+obligations) or `acknowledge_missing`. Agents may call only `recover` and
+`retry`; the other actions are person-only (see
+[project-files.md](project-files.md#recovery-of-retained-lifecycle-obligations)). It rechecks full origin Run
 visibility, remote-Host ownership and Project write authority, writes only intent
 and a Job in the core transaction, and never touches Git directly. Reconciliation
 also offers reclaimable owners, including retired ones, for release while their
@@ -5166,7 +5264,10 @@ native integration): a clean committed worktree (`native_publication_chain_uncom
 a base that is already target history (so a private snapshot baseline or
 earlier private history can never travel: `native_publication_chain_base_not_target_history`),
 no merge inside the chain, at most 200 commits/2000 changed paths and no
-credential-like or `.git`/`..` path in any commit. Fast-forward is re-frozen on
+credential-like or `.git`/`..` path in any commit. Known env template filenames
+use the existing `ALLOWED_ENV_TEMPLATE_NAMES` via `isEnvTemplatePath`; their
+directories must still be clean. Read and audit secret-path hints are unchanged.
+Fast-forward is re-frozen on
 each prepare and refused once the target moved (`native_publication_fast_forward_target_moved`;
 prepare a `merge` plan in a new batch instead). Publish re-checks the frozen
 chain (`native_publication_chain_changed`), the checked tree, `diff --check`

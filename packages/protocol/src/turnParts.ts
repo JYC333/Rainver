@@ -255,3 +255,20 @@ export const TurnStreamFrameSchema = z.discriminatedUnion("type", [
   }).strict(),
 ]);
 export type TurnStreamFrame = z.infer<typeof TurnStreamFrameSchema>;
+
+/**
+ * The `server.error` event: the stream ended before the turn settled.
+ *
+ * `status` is the HTTP status the same request would now receive. 401 means
+ * the session that opened the stream ended (logout, revocation, a disabled
+ * account); 404 means the Run is no longer readable in full by this viewer
+ * (Space/Project removal, private, summary-only). Absent for a server-side
+ * read failure. The response itself was already 200, so this is the only
+ * place a client learns which of those happened.
+ */
+export const TurnStreamErrorSchema = z.object({
+  error: z.string(),
+  message: z.string(),
+  status: z.union([z.literal(401), z.literal(404)]).optional(),
+});
+export type TurnStreamError = z.infer<typeof TurnStreamErrorSchema>;

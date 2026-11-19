@@ -290,13 +290,7 @@ describe("ontology registry", () => {
   // B12F: subtype vocabulary belongs to the registry. The root table only
   // guards the token shape so adding an extension does not require teaching
   // the ontology root about that domain's type list.
-  it("keeps the object_type CHECK open and every registered subtype valid", () => {
-    const schema = readFileSync(
-      join(import.meta.dirname, "..", "src", "db", "schema", "knowledge.ts"),
-      "utf8",
-    );
-    expect(schema).toContain('check("ck_space_objects_object_type_format"');
-    expect(schema).not.toContain('check("ck_space_objects_object_type"');
+  it("keeps every registered object subtype within the open object_type token shape", () => {
     const ontologyObjects = registeredEntities()
       .filter((entity) => entity.rootEntity === "space_object")
       .map((entity) => entity.entityType);

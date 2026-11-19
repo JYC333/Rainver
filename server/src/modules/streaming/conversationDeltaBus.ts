@@ -17,7 +17,12 @@ const buffers = new Map<string, {
   expiresAt: number;
 }>();
 const BUFFER_TTL_MS = 5 * 60_000;
-const MAX_BUFFERED_CHARACTERS = 256 * 1024;
+/**
+ * The most live text, in UTF-16 code units, kept for one Run — here for late
+ * subscribers, and by each turn stream for what it shows. Past it the live
+ * copy is abandoned rather than cut; the persisted reply is the full text.
+ */
+export const MAX_BUFFERED_CHARACTERS = 256 * 1024;
 const MAX_BUFFERED_RUNS = 1_000;
 
 export function publishChatTextDelta(runId: string, delta: string): void {
@@ -73,4 +78,9 @@ function pruneOldestBuffers(): void {
     if (!oldestRunId) return;
     buffers.delete(oldestRunId);
   }
+}
+
+/** Live subscribers for a Run; lets tests prove a closed stream released its subscription. */
+export function chatTextDeltaSubscriberCount(runId: string): number {
+  return bus.listenerCount(runId);
 }

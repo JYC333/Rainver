@@ -255,9 +255,11 @@ export function registerSynthesisOnlyHandlers(): void {
   workflowExecutionOutcomeHandlerRegistry.register(
     SYNTHESIS_ONLY_WORKFLOW_ID,
     async ({ db, spaceId, executionId, researchOperationId, status }) => {
-      if (!researchOperationId || status !== "failed") return;
+      if (!researchOperationId || status === "completed") return;
       await applyExecutionOutcomeToOperation(db, spaceId, researchOperationId, executionId, "failed", {
-        failure_reason: "Workflow Execution failed after exhausting its node attempts",
+        failure_reason: status === "cancelled"
+          ? "Workflow Execution was cancelled with its coordinator Run"
+          : "Workflow Execution failed after exhausting its node attempts",
       }, true);
     },
     "project_research",

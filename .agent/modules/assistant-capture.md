@@ -51,7 +51,7 @@ URL and `user_capture` otherwise.
 
 One floating composer serves every page and posts to `POST /api/v1/captures`.
 Outside a Project the only destination is the personal inbox; inside one there
-are three, plus `object_marginalia` when the composer has a target object. Ownership and pipeline are separate axes (ADR 0013 amendment 3b):
+are three, plus `object_marginalia` when the composer has a target object. Ownership and pipeline are separate axes (ADR 0013 decision 4):
 
 | Destination | Scope | Visibility | Pipeline |
 |---|---|---|---|
@@ -123,7 +123,7 @@ Anchoring is by `notes.attrs.blockId`, recorded on the capture's
 `activity_record` at write time. An index would not survive the user inserting a
 line above the block.
 
-Authority follows ADR 0013 amendments 6a and 6b. **Move** needs the content's
+Authority follows ADR 0013 decision 9. **Move** needs the content's
 owner, or — for a Project-scoped capture — the Project's owner or a Space
 owner/admin; a capture with no Project is movable by its owner alone. Taking
 *another member's* content out of the Space needs

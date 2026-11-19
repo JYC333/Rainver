@@ -2,6 +2,7 @@ import {
   check,
   foreignKey,
   index,
+  integer,
   pgTable,
   timestamp,
   unique,
@@ -16,6 +17,7 @@ import { projects } from "./projects.js";
 import { runs } from "./runs.js";
 import { spaces } from "./spaces.js";
 import { users } from "./auth.js";
+import { pluginDataGrants } from "./pluginDataGrants.js";
 
 export const authorizationRequests = pgTable("authorization_requests", {
   id: varchar({ length: 36 }).primaryKey().notNull(),
@@ -30,8 +32,27 @@ export const authorizationRequests = pgTable("authorization_requests", {
   resourceKind: varchar("resource_kind", { length: 64 }),
   resourceId: varchar("resource_id", { length: 256 }),
   reason: varchar({ length: 1000 }).notNull(),
+  /**
+   * `expired`: a pending core data tool request ended because what it would allow went away (opt-out,
+   * disconnect, reconnect, forget, leaving the Project, account disable). Nobody decided it and it is
+   * never approved later; its Run is cancelled.
+   */
   status: varchar({ length: 16 }).default("pending").notNull(),
   resultingActionGrantId: varchar("resulting_action_grant_id", { length: 36 }),
+  /** `plugin_data` requests are decided by the data owner (ADR 0030) and approve into a plugin data grant. */
+  requestKind: varchar("request_kind", { length: 16 }).default("action_grant").notNull(),
+  resultingPluginDataGrantId: varchar("resulting_plugin_data_grant_id", { length: 36 }),
+  /**
+   * A core data tool's request (ADR 0033): the consent the owner is asked for, frozen when the request is
+   * made — owner, Project, connection, its generation and purpose. Approval writes exactly this binding
+   * after rechecking each part live; a request without one (made under the earlier per-Run consent) is
+   * never approved. Snapshots, not references: the live rows are rechecked at approval.
+   */
+  consentOwnerUserId: varchar("consent_owner_user_id", { length: 36 }),
+  consentProjectId: varchar("consent_project_id", { length: 36 }),
+  consentConnectionId: varchar("consent_connection_id", { length: 36 }),
+  consentConnectionGeneration: integer("consent_connection_generation"),
+  consentPurpose: varchar("consent_purpose", { length: 32 }),
   decidedByUserId: varchar("decided_by_user_id", { length: 36 }),
   requestedAt: timestamp("requested_at", { withTimezone: true, mode: "string" }).notNull(),
   decidedAt: timestamp("decided_at", { withTimezone: true, mode: "string" }),
@@ -63,6 +84,12 @@ export const authorizationRequests = pgTable("authorization_requests", {
     ],
     name: "authorization_requests_resulting_action_grant_binding_fkey",
   }),
-  check("ck_authorization_requests_status", sql`${table.status} IN ('pending', 'approved', 'rejected')`),
-  check("ck_authorization_requests_decision", sql`(${table.status} = 'pending' AND ${table.decidedByUserId} IS NULL AND ${table.decidedAt} IS NULL AND ${table.resultingActionGrantId} IS NULL) OR (${table.status} = 'rejected' AND ${table.decidedByUserId} IS NOT NULL AND ${table.decidedAt} IS NOT NULL AND ${table.resultingActionGrantId} IS NULL) OR (${table.status} = 'approved' AND ${table.decidedByUserId} IS NOT NULL AND ${table.decidedAt} IS NOT NULL AND ${table.resultingActionGrantId} IS NOT NULL)`),
+  check("ck_authorization_requests_status", sql`${table.status} IN ('pending', 'approved', 'rejected', 'expired')`),
+  foreignKey({ columns: [table.resultingPluginDataGrantId], foreignColumns: [pluginDataGrants.id], name: "authorization_requests_resulting_plugin_data_grant_fkey" }),
+  check("ck_authorization_requests_consent_binding", sql`(${table.consentOwnerUserId} IS NULL AND ${table.consentProjectId} IS NULL AND ${table.consentConnectionId} IS NULL AND ${table.consentConnectionGeneration} IS NULL AND ${table.consentPurpose} IS NULL)
+    OR (${table.requestKind} = 'plugin_data' AND ${table.consentOwnerUserId} IS NOT NULL AND ${table.consentOwnerUserId} = ${table.instructedByUserId}
+      AND ${table.consentProjectId} IS NOT NULL AND ${table.consentConnectionId} IS NOT NULL AND ${table.consentConnectionGeneration} IS NOT NULL
+      AND ${table.consentConnectionGeneration} >= 1 AND ${table.consentPurpose} IS NOT NULL AND ${table.consentPurpose} = 'on_demand_read')`),
+  check("ck_authorization_requests_kind", sql`${table.requestKind} IN ('action_grant', 'plugin_data')`),
+  check("ck_authorization_requests_decision", sql`(${table.status} = 'pending' AND ${table.decidedByUserId} IS NULL AND ${table.decidedAt} IS NULL AND ${table.resultingActionGrantId} IS NULL AND ${table.resultingPluginDataGrantId} IS NULL) OR (${table.status} = 'rejected' AND ${table.decidedByUserId} IS NOT NULL AND ${table.decidedAt} IS NOT NULL AND ${table.resultingActionGrantId} IS NULL AND ${table.resultingPluginDataGrantId} IS NULL) OR (${table.status} = 'expired' AND ${table.decidedByUserId} IS NULL AND ${table.decidedAt} IS NOT NULL AND ${table.resultingActionGrantId} IS NULL AND ${table.resultingPluginDataGrantId} IS NULL) OR (${table.status} = 'approved' AND ${table.decidedByUserId} IS NOT NULL AND ${table.decidedAt} IS NOT NULL AND ((${table.requestKind} = 'action_grant' AND ${table.resultingActionGrantId} IS NOT NULL AND ${table.resultingPluginDataGrantId} IS NULL) OR (${table.requestKind} = 'plugin_data' AND ${table.resultingActionGrantId} IS NULL AND ${table.resultingPluginDataGrantId} IS NOT NULL)))`),
 ]);

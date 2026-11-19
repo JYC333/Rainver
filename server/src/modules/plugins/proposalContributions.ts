@@ -16,7 +16,7 @@ export function registerPluginProposalContributor(config: ServerConfig, contribu
 export function pluginProposalContributor(config: ServerConfig) {
   return contributors.get(config);
 }
-export function proposalApproval(manifest: PluginOperationManifest, operation: string): OperationRegistration['approval'] {
+export function proposalApproval(manifest: PluginOperationManifest, operation: string, background?: PluginBackground): OperationRegistration['approval'] {
   const spec = manifest.proposalTypes?.find(t => t.operation === operation);
   if (!spec) return undefined;
   const op = manifest.operations.find(o => o.id === operation)!;
@@ -28,10 +28,14 @@ export function proposalApproval(manifest: PluginOperationManifest, operation: s
     },
     mode: 'proposal_submission',
     atomicStatusWritersVerified: true,
-    async preconditions() {
-      return {
-        manifest_version: manifest.version
-      };
+    // Frozen at submission and re-read on approval: the package version and, when the package
+    // declares it, the requester's current state the decision is about (for example a record's
+    // revision), so an approval made after that state changed supersedes instead of applying.
+    async preconditions(db, input, actor, phase) {
+      const read = background?.proposalPreconditions.get(spec.id);
+      if (!read) return {manifest_version: manifest.version};
+      const state = await withPluginDb(db, manifest.id, actor, pdb => read(spec.payload_schema.parse(input), {db: pdb, actor}, phase));
+      return {manifest_version: manifest.version, state: state ?? null};
     },
     async create(db, input, actor) {
       spec.payload_schema.parse(input);

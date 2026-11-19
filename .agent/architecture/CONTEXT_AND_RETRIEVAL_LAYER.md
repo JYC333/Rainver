@@ -30,7 +30,7 @@ Per-module current-state lives in `.agent/modules/knowledge-base.md` and
 | Maintenance scan (duplicate/orphan/thin/stale/relation, read-only) | solid; manual route plus Context Review Cycle route/Automation target produces report artifacts and optional packet proposals |
 | Egress governance (per-space external-egress switch) | solid; backend + Space Settings UI implemented; external/local/internal destination vocabulary implemented; DB-backed chat candidates use the conservative external-provider egress gate because the collector does not receive the final provider destination |
 | Source / connector consent | implemented across the retrieval read plane; source connections normalize versioned consent/policy JSON and enforce connected retention/proposal-target checks; the reader/agent/admin read gate + source-egress gate are consumed by search, Context Brief, graph/relational traversal, managed-run tools, rerank/synthesis/embedding egress, maintenance scans, relation discovery, Context Ops drill-down, claim evidence rendering, non-creator artifact attachment, and DB-backed chat candidates with explicit source ids; the connector→projection linkage is covered by a real-DB test. There are no chat-turn artifact attachments or Evidence Packs |
-| Agent retrieval tool surface (viewer-scoped, audited) | implemented through the shared Agent Tool Gateway for ACP Agent Runs: Knowledge `retrieval.search` / `retrieval.brief` plus explicitly enabled Memory, Project public-summary, and Sources domain tools; manual/preflight modes; UI exposes the domain-tool opt-in |
+| Agent retrieval tool surface (viewer-scoped, audited) | implemented through the shared Agent Tool Gateway for ACP Agent Runs: Knowledge `retrieval.search` / `retrieval.brief` plus explicitly enabled Memory, Project public-summary, and Sources domain tools; `off` / `manual_tool_only` modes; UI exposes the domain-tool opt-in |
 | Runtime Context acquisition | retrieval results remain access-safe candidates; managed/CLI invocations acquire them only through Runtime Context typed acquisition, deterministic planning, live Delivery authorization, and safe Invocation Snapshot audit. There is no manual artifact-attachment bypass or `/context/build` surface |
 | Context Ops read model + Context Health page | operator console; `GET /api/v1/context-ops/summary` and the web `Context Health` page aggregate whole-space index/embedding/source health plus the current operator's private maintenance, diagnostics, explain, brief, feedback, and Memory provenance loop; `GET /api/v1/context-ops/drilldown` turns the index-freshness, embedding-backlog, source-warning, maintenance-report, diagnostics-report, explain-report, and recent-brief aggregates into bounded, access-safe detail lists/summaries (object lists pass the same adapter read gate **and** source read policy as search; source-warning details are owner-scoped unless owner/admin; artifact sections reuse owner-scoped/`space_ops`-gated summary queries); the page also exposes maintenance-scan, diagnostics-report, targeted explain, explain preset/comparison, Context Review Cycle scan triggers, and artifact-level or batched Claim Candidate Packet actions for supported recent briefs/reports (with optional packet creation and a Memory maintenance toggle) gated by `context_ops_scan_mode`; `POST /api/v1/context-ops/review-cycle/run` and Automation target `context_ops_review_cycle` run the broader read-only/proposal-first cycle and return `degraded`/`warnings` when optional packet stages fail after reports are saved; the `retrieval.space.settings` scoped setting's `context_ops_review_mode` can additionally expose shared `space_ops` reports/packets to owners/admins or all members without weakening private packet creator-only review |
 | Context observation reports | implemented lightweight Context Ops entry; `POST /api/v1/context-ops/context-observations/scan` summarizes the current Context Ops window into red/yellow/green observations, daily observation text, periodic distillation suggestions via `suggested_target`, and source refs; it can persist a private `context_observation_report` artifact with `canonical_format = context_observation_report.v1`; response and artifact payload always include `canonical_write_performed = false` and do not write Memory, Knowledge, Capability, or Assistant preference rows |
@@ -109,6 +109,18 @@ B33/B34). Projections carry
 `source_updated_at` (the canonical object's last-edit time, distinct from the
 projection's own reindex time) so freshness signals are real.
 
+Adapters are registered into their registries when a module loads
+(`new RetrievalRegistry()` followed by `register(adapter)` at the top of
+`runtimeContext/productionAcquisition.ts`, `runtimeContext/gateway.ts` and
+`crossSpaceRetrieval/service.ts`). A value used at module load must already be
+evaluated, which an import cycle does not guarantee, so each
+`<domain>/retrievalAdapter.ts` stays outside the server's import cycle: its
+runtime imports name their own leaf files (`retrieval/registry.js`,
+`retrieval/sourcePolicy.js`, the `access/` SQL helpers), never the
+`retrieval/index.js` barrel, which belongs to the cycle. For the same reason
+the Space role ladder is defined in `access/roles.ts` and the policy core
+imports it from there, not the other way round.
+
 Source post-processing can use retrieval context as optional judging
 background before LLM screening. Project, Knowledge, Memory, and Sources context
 domains are explicit rule options; Project context requires a `project_id`.
@@ -163,7 +175,16 @@ second-stage post-processing pass over those candidate items only.
   (2560) `db/schema/retrieval.ts` (generated into `0000_baseline`) defines `ix_retrieval_chunks_embedding_hnsw_2560`, a partial HNSW
   index over `embedding::halfvec(2560)`, and the vector arm emits a matching
   constant-dimension halfvec query for dims in `ANN_HALFVEC_DIMENSIONS` (kept in
-  sync with the migration); other dims keep the exact scan.
+  sync with the migration); other dims keep the exact scan. Each ANN page runs
+  pgvector's `hnsw.iterative_scan = strict_order` (pgvector ≥ 0.8, the images'
+  `pgvector/pgvector:pg18`) capped by `hnsw.max_scan_tuples` =
+  `ANN_ITERATIVE_SCAN_MAX_TUPLES`, so the Space/scope filters do not cut a page
+  short at `hnsw.ef_search`. Both settings are transaction-local: a pool gets its
+  own short transaction, an idle client a BEGIN/COMMIT, and a caller's
+  transaction a savepoint rolled back after the read-only page; nothing is set
+  for the session or database. Rewrite variants' arms run in parallel only on a
+  pool; on a caller's client or transaction port they run one after another, so
+  no two pages' transactions or savepoints interleave on that connection.
 - **Adaptive return** (opt-in, `SearchInput.adaptiveReturn`, default off) trims the
   visible tail at a sharp score cliff so a precise answer is not padded with weak
   results. Trim-only — it never grows the set, reads only the visible candidates'
@@ -609,17 +630,22 @@ proposal authoring UI.
   are returned, never auto-injected. ACP Agent Runs expose
   `retrieval.search` and `retrieval.brief` as server-authorized tools only when
   there is an instructing user and either the space-level
-  `retrieval.space.settings` `retrieval_tool_mode` field or the run/runtime config opts
-  in (for example `manual_tool_only`, `preflight_search`, `preflight_brief`, or
-  `retrieval_tools.enabled = true`). Knowledge tools stay named
+  `retrieval.space.settings` `retrieval_tool_mode` field (`off`, the default, or
+  `manual_tool_only`) or the run/runtime config opts in (`retrieval_tool_mode` /
+  `retrieval_tools.mode` = `manual_tool_only`, `retrieval_tools.enabled = true`,
+  `retrieval_tools_enabled = true`, or a `retrieval.tools` /
+  `knowledge.retrieval_tools` / `retrieval.manual_tool_only` capability); a Run's
+  own `off` wins over the space setting. Knowledge tools stay named
   `retrieval.search` / `retrieval.brief`; Memory, Project, and Sources are never silently
   merged into those tools. They are exposed only by explicit run/runtime
   configuration or capabilities, as `memory.retrieval.search`,
   `memory.retrieval.brief`, `project.summary.search`, and
   `project.summary.brief`, `source.retrieval.search`, and
-  `source.retrieval.brief`. Preflight modes remain Knowledge-only and run
-  one governed retrieval call before a no-tool model turn, appending the compact
-  result as explicit evidence. Each tool invocation passes through a
+  `source.retrieval.brief`, each switched on per domain (`retrieval_tools.domains`,
+  `retrieval_tools.<domain>.enabled`, `memory_retrieval_tools_enabled`,
+  `project_public_summary_retrieval_tools_enabled`,
+  `source_retrieval_tools_enabled`, or the matching domain capability). There
+  is no preflight mode: the model calls the tools itself. Each tool invocation passes through a
   policy-gateway action before search/brief execution:
   `retrieval.search`, `retrieval.brief`, `memory.retrieval.search`,
   `memory.retrieval.brief`, `project.summary.search`, or

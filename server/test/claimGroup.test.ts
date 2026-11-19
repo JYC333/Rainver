@@ -527,6 +527,8 @@ describe("claimReviewLoopDb", () => {
       await insertClaim({ id: "c2", claimText: "Plan ships in Q2.", status: "active", confidence: 0.9, createdAt: "2026-02-01T00:00:00.000Z" });
 
       const result = await buildClaimTrajectory(db.pool, { spaceId: SPACE, userId: VIEWER, subjectObjectId: SUBJECT, limit: 100 });
+      expect(result.canonical_write_performed).toBe(false);
+      expect(result.access_safety.advisory_only).toBe(true);
       expect(result.points.map((p) => p.claim_id)).toEqual(["c1", "c2"]);
       const kinds = result.signals.map((s) => s.kind);
       expect(kinds).toContain("supersession");
@@ -579,10 +581,14 @@ describe("claimReviewLoopDb", () => {
       await insertClaim({ id: "hidden", claimText: "The backup job never runs.", visibility: "private", ownerUserId: OTHER });
 
       const report = await scanClaimContradictions(db.pool, { spaceId: SPACE, userId: VIEWER, limit: 200, maxFindings: 40 });
+      expect(report.access_safety.only_visible_claims).toBe(true);
       expect(report.candidates_examined).toBe(2);
       expect(report.findings).toHaveLength(1);
       expect(report.findings[0]!.signal).toBe("negation");
-      expect(report.findings[0]!.proposed_action).toMatchObject({ link_type: "contradicts" });
+      const action = report.findings[0]!.proposed_action!;
+      expect(action).toMatchObject({ proposal_type: "object_relation_create", link_type: "contradicts" });
+      // The proposed relation joins exactly the two visible claims; direction follows scan order.
+      expect([action.from_object_id, action.to_object_id].sort()).toEqual(["a", "b"]);
     });
   });
 });

@@ -83,6 +83,28 @@ export type ProviderTaskRunRecord = RunRecordBase & {
 export type RunRecord = AgentRunRecord | ProviderTaskRunRecord;
 
 /**
+ * What one queued-to-running claim decided, under the claim's own locks.
+ * `authorization_rejected` carries the refusal the locked recheck made on a
+ * still-queued Run, so its caller settles it from this result rather than
+ * re-checking authorization after the locks are gone.
+ */
+export type RunExecutionClaim<Started extends AgentRunRecord = AgentRunRecord & { attempt_number?: number }> =
+  | { outcome: "started"; run: Started }
+  | { outcome: "authorization_rejected"; error_code?: string; error_message?: string }
+  | {
+      outcome: "not_claimed";
+      /**
+       * `status_changed`: left `queued` (another claim started it, it ended, or
+       * it is not an Agent Run). `cancellation_pending`: stopped while this
+       * claim was being prepared. `waiting_for_quota`: still queued, held for
+       * quota. `not_participant`: still queued, its Agent no longer takes part
+       * in the conversation.
+       */
+      reason: "status_changed" | "cancellation_pending" | "waiting_for_quota" | "not_participant";
+      status: RunRecord["status"] | null;
+    };
+
+/**
  * A Run as one viewer may read it. Only visible reads produce one, and the
  * read model takes nothing else, so a path that forgot to compute the level
  * does not compile rather than serving the body to whoever asked.

@@ -1,4 +1,4 @@
-import {useEffect} from 'react'
+import {useEffect,useState} from 'react'
 import {useSearchParams} from 'react-router-dom'
 import type {SourceGoalDetail} from '@rainver/protocol'
 import {projectReadingApi,projectsApi} from '../../../api/client'
@@ -27,6 +27,13 @@ export function ProjectComposition({space,project,goals}:{space:string;project:s
  const focus=useAnalysisFocus(selected)
  const read=useReadingResource(`${space}:${project}:${version}:${date??'today'}`,signal=>projectReadingApi.composition(space,project,version||undefined,{signal,date}),{pollWhile:data=>!version&&!archive&&(data.rounds.some(r=>['collecting','generating'].includes(r.status))||['queued','running'].includes(data.composition_status??''))})
  const action=useReadingAction(),data=read.data,composition=data?.latest
+ // A composition this view watched while queued or running reports its completion once;
+ // a day that was already complete when opened shows no status line.
+ const scopeKey=`${space}:${project}:${version}:${date??'today'}`
+ const [followed,setFollowed]=useState<string|null>(null)
+ const status=data?.composition_status
+ useEffect(()=>{if(status==='queued'||status==='running')setFollowed(scopeKey)},[status,scopeKey])
+ const shownStatus=status&&(['queued','running','failed'].includes(status)||status==='complete'&&followed===scopeKey)?status:null
  const capability=useReadingResource(`${space}:${project}:write`,signal=>projectsApi.get(project,{spaceId:space,signal}))
  const refresh=()=>{action.clearError();read.reload();capability.reload()}
  useEffect(()=>{if(action.denied){read.reload();capability.reload()}},[action.error])
@@ -56,8 +63,8 @@ export function ProjectComposition({space,project,goals}:{space:string;project:s
    <ReadingFeedback error={read.error} loading={read.loading} retry={refresh}/>
    {action.error!=null&&<div className="space-y-2"><p className="text-sm font-medium">{t('projectReading.retryFailed')}</p><ReadingFeedback error={action.error} retry={refresh}/></div>}
    {!archiveMode&&composition&&historical&&<p className="text-xs text-muted-foreground">{t('projectReading.historical')} · {formatDateTime(composition.created_at)}</p>}
-   {!historical&&data?.composition_status&&['queued','running','failed'].includes(data.composition_status)&&<div className="space-y-2 text-xs text-muted-foreground">
-    <p role="status">{t(`projectReading.compositionStatus.${data.composition_status}`)}</p>
+   {!historical&&shownStatus&&<div className="space-y-2 text-xs text-muted-foreground">
+    <p role="status">{t(`projectReading.compositionStatus.${shownStatus}`)}</p>
     {compositionFailed&&!capability.loading&&!capability.error&&capability.data?.current_user_can_write===true&&<Button size="sm" variant="outline" disabled={action.busy} onClick={()=>void action.run(()=>projectReadingApi.retryComposition(space,project),refresh)}>{t(action.busy?'projectReading.retryingComposition':'projectReading.retryComposition')}</Button>}
    </div>}
    {!archiveMode&&!read.loading&&!read.error&&!composition&&!ids.length&&<Card className="space-y-3 p-5"><h2 className="font-semibold">{t(historical?'projectReading.missingEdition':goals.length?'projectReading.noComposition':'projectReading.noFollowing')}</h2><p className="text-sm text-muted-foreground">{t('projectReading.noCompositionHint')}</p><Button variant="outline" asChild><SpaceLink to={`/projects/${project}/sources?tab=following`}>{t('projectReading.following')}</SpaceLink></Button></Card>}

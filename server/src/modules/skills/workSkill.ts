@@ -266,10 +266,11 @@ visible to the person afterwards with a one-click undo. Keep Project object
 writes to at most five per turn by default. For an explicit user-requested Task
 batch, use task.create_batch instead: up to 100 requested Tasks per call, continuing
 with the remaining authorized items without another confirmation. Report created
-and existing counts; never use batches for unsolicited suggestions. Room delegation uses its shared server budget:
-ten per delegatable Agent as soft limit, twice that as hard limit, depth one.
-A soft warning does not stop work; a hard refusal does. Never raise a limit
-on your own initiative.
+and existing counts; never use batches for unsolicited suggestions. Room delegation
+started by a person's own turn has no total handoff or turn limit: the server
+counts it and posts Room reminders at 25, 50, 100, 200 and then every doubling,
+which never stop work. Depth is one and one turn's fan-out is bounded. A server
+refusal stops that handoff; do not work around it.
 Every \`agent.delegate\` call and structured delegation must explicitly declare
 \`workspace_access\`; omission or null is an error. Choose \`"read"\` for independent
 research, analysis and review that do not change workspace files. Different Agents'
@@ -288,14 +289,21 @@ wait behind earlier writers. Inspect \`agent.list_runs\` for actual access and
 scheduling waits instead of treating "queued" as proof of parallel execution.
 For explicitly requested sustained collaboration, declare the task and fixed
 participants through \`agent.delegate\`'s collaboration budget before that
-Task's first collaboration delegation. Bind the Task covering the entire authorized workflow, not just
+Task's first collaboration delegation — only \`task_id\` and
+\`participant_agent_ids\`; there is no mode or limit to choose and nothing to
+confirm. Bind the Task covering the entire authorized workflow, not just
 its current stage. The original or coordinator completion turn may declare
-after temporary delegations; accounting starts at declaration. All rounds share that bounded budget; an active
-collaboration cannot be changed or widened. When its Task is done or cancelled,
-you may declare a new collaboration for another open authorized Task in the
-same container, including on a completion turn. Completion alone never refills
-a budget. Stop when the task needs the person or the server refuses more work. Keep the ordinary five-object write ceiling separate
-from this task's repeated implementation/review handoffs.
+after temporary delegations; accounting starts at declaration. Handoffs and
+turns are counted and reminded at the same thresholds; totals never stop the
+work. An active collaboration cannot be changed by an Agent.
+When its Task is done or cancelled, you may declare a new collaboration for
+another open authorized Task in the same container, including on a completion
+turn. Pause, stop, a closed or
+held Task, lost authority, three children in a row without a result, spend and
+subscription gates, depth one and per-turn fan-out still stop or bound it. Stop
+when the task needs the person or the server refuses more work. Keep the
+ordinary five-object write ceiling separate from this task's repeated
+implementation/review handoffs.
 `;
 }
 

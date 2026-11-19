@@ -1,16 +1,16 @@
 # ADR 0016: Control Plane And Execution Hosts, Two Trust Modes
 
-Date: 2026-08-21 · revised 2026-09-21
+Date: 2026-08-21
 
 ## Status
 
 Accepted. Defines the execution topology, the two trust modes one host daemon
 runs in, and the remote trusted-host exception to ADR 0014's host-local
-filesystem and isolation requirements. Two 2026-09-21 amendments sit in §3: the
-first restores the server-owned Runtime Context Gateway on every Agent path and
-does not grant the control plane remote filesystem access; the second makes an
-owner-triggered Run on that owner's paired Host `medium` effective trust for
-routing, and grants no containment. Current implementation lives in
+filesystem and isolation requirements. §3 also keeps the server-owned Runtime
+Context Gateway on every Agent path without granting the control plane remote
+filesystem access, makes an owner-triggered Run on that owner's paired Host
+`medium` effective trust for routing without granting containment, and admits
+an explicit read-only workspace review on a personal Host. Current implementation lives in
 [modules/hosts.md](../modules/hosts.md); pending Project-kernel work and
 real-host acceptance gates remain in
 [tasks/deferred-register.md](../tasks/deferred-register.md).
@@ -170,28 +170,27 @@ that is an explicit model-input transfer, not permission to inspect additional
 Host files. Credentials, physical paths, and unselected context do not cross
 the boundary.
 
-### Amendment (2026-09-21): Runtime Context Delivery on every Agent Host
+#### Runtime Context Delivery on every Agent Host
 
-The earlier remote-host exception skipped the Runtime Context Gateway for a
-Run dispatched to a daemon. [ADR 0022](0022-acp-runtime-authority-and-schema-epoch.md)
-supersedes that omission: every Agent Run is authorized, planned and snapshotted
-by the server Runtime Context Gateway before ACP dispatch, regardless of Host
-kind. The Delivery's semantic sections are projected into ACP's single
+The remote-host exception does not skip the Runtime Context Gateway
+([ADR 0022](0022-acp-runtime-authority-and-schema-epoch.md)): every Agent Run
+is authorized, planned and snapshotted by the server Runtime Context Gateway
+before ACP dispatch, regardless of Host kind. The Delivery's semantic sections are projected into ACP's single
 user-prompt channel; ACP does not define a separate system-message role. This
 does not change Host trust, workspace/path ownership, native-account ownership,
 or server-side tool authorization. Persistent HostThread context cursors are
 bound to the same opaque ACP session; mismatches or authority rotations start a
 new ACP session.
 
-### Amendment (2026-09-21): Owner-triggered Runs on a paired Host are medium trust for routing
+#### Owner-triggered Runs on a paired Host are medium trust for routing
 
-Routing derived a paired Host's effective trust from containment alone, so it
-sat at the runtime baseline (`low`) and the product-default `medium`-risk
-Agent — what `POST /api/v1/agents` publishes — could not route to the owner's
-own machine at all. That read the trust question as "what does the Host
-confine" when this section already answers it as "whose trust makes this Run
-safe": a paired Host is safe because its owner extends that machine the trust
-a native process has.
+Routing does not derive a paired Host's effective trust from containment
+alone: that would leave it at the runtime baseline (`low`), and the
+product-default `medium`-risk Agent — what `POST /api/v1/agents` publishes —
+could not route to the owner's own machine at all. It would read the trust
+question as "what does the Host confine" when this section answers it as
+"whose trust makes this Run safe": a paired Host is safe because its owner
+extends that machine the trust a native process has.
 
 A Run whose responsible user **is** that Host's `owner_user_id` therefore
 counts as at least `medium` effective trust. The owner extends to their own
@@ -209,6 +208,23 @@ not a containment guarantee. A paired Host still spawns natively under the
 owner's own OS permissions with no per-Run namespace; B62's "no namespace
 containment" for a trusted host is unchanged, and no isolation claim may be
 derived from this trust level.
+
+#### Explicit read-only workspace review on a personal Host
+
+The owner-only trusted-Host authority is unchanged by this. A personal Linux
+Host on a daemon that supports it may opt into an explicit
+`workspace_access: read` Run using the existing rootless bubblewrap mount/PID
+namespace and readiness protocol. This narrows workspace writes; it does not
+turn the Host into the shared strict trust mode, add mandatory network
+isolation or grant another user access to the machine. Declared login files
+replace whole-HOME exposure for this mode. A local seccomp filter blocks named
+Unix clients and io_uring, but network/authorized external services remain a
+separate side-effect boundary; reader leases do not coordinate those external
+writers. Ordinary trusted writes remain native. Both server and daemon must
+fail closed without the locally verified mechanism. The current
+implementation, lease boundaries and prerequisites are recorded in
+modules/hosts.md. Installation or restart of a running personal daemon remains
+a separate operator action.
 
 ### 4. Paths are host-owned
 
@@ -536,65 +552,3 @@ way: it would be another strict daemon registered from another machine.
   `ARCHITECTURE.md`, `modules/mobile-client.md`,
   `modules/sync-and-conflicts.md`, and ADRs 0005, 0008, 0014 — are scoped to
   the strict host and point here.
-
-## Revision history
-
-- **2026-08-21** — original: control plane plus N execution hosts, the
-  Machine → Host → Location → Folder topology, two-tier trust with the server
-  host's existing sandbox unchanged and a paired host in trusted mode,
-  host-owned paths, the outbound-only WebSocket, and the owner-only hard rule.
-- **2026-08-24** — the ModelProvider binding for a remote Run: what a binding
-  materializes on the host, and B67's remote enforcement point.
-- **2026-09-08** — the daemon gained its own egress proxy: `egress_profile`
-  became `none` / `default` / `install`, package registries are refused unless
-  a Run was granted them (ADR 0017's exposure row), this instance's own network
-  is refused under every profile, and what a Run reached comes back on the
-  `complete` frame as an `egress_refused` Run event. Recorded with its limit:
-  outside `none` this directs a cooperating runtime rather than confining any
-  runtime.
-- **2026-09-08** — the server-side CLI credential and runtime-tool mechanisms
-  were retired: no broker, no profiles, no per-Space version policy, no
-  server-installed copies. Subscription quota moved to a `usage_probe` frame
-  the host answers (§7's consequence); upgrade gained drain-then-replace with
-  a kept previous version and a rollback action (§9); B45–B49 were rewritten
-  around a login that lives with its copy; the destructive migration became an
-  offline maintenance upgrade (ADR 0016 §10).
-- **2026-09-08** — dispatch, verification and conformance moved onto the daemon
-  protocol and the sandbox line was deleted; §3's two safety models and §4's
-  managed-workspaces-only rule became the implemented gates.
-- **2026-09-07** — one daemon, two trust modes. The server host became a
-  built-in host running the same daemon in strict mode, and isolation moved
-  into the daemon; retiring the private Runner protocol beside it follows with
-  the dispatch switch. The
-  owner-only rule became one of **two** safety models (§3) rather than a rule
-  with an exception: a trusted host serves its owner, a strict host serves
-  every Space and is made safe by the per-Run namespace, with management of
-  the built-in host instance-admin gated. Added: built-in registration with no
-  pairing and no revocation, credentials living with the copy on every host
-  (§7), managed workspaces only on the built-in host (§4), instance-wide
-  versions (§9), and the concurrency cap (§8).
-- **2026-09-21** — a Run whose responsible user owns the paired Host it is
-  bound to counts as `medium` effective trust for routing, so the
-  product-default `medium`-risk Agent reaches the owner's own machine (§3
-  amendment). Another member's Run there keeps the baseline and the owner-only
-  dispatch rule is unchanged; this states who bears the risk, not containment.
-- **2026-09-21** — the ACP Runtime Authority Reset plan restored the canonical
-  Runtime Context Gateway for Agent Runs on both built-in and paired Hosts.
-  Delivery is sent through ACP; the Host still owns physical paths and the
-  opaque vendor session, and a mismatch starts a fresh session.
-
-## 2026-10-31 amendment: explicit personal read-only workspace review
-
-The owner-only trusted-Host authority remains unchanged. Updated personal Linux
-Hosts may opt into an explicit `workspace_access: read` Run using the existing
-rootless bubblewrap mount/PID namespace and readiness protocol. This narrows
-workspace writes; it does not turn the Host into the shared strict trust mode,
-add mandatory network isolation or grant another user access to the machine.
-Declared login files replace whole-HOME exposure for this mode. A local seccomp
-filter blocks named Unix clients and io_uring, but network/authorized external
-services remain a separate side-effect boundary; reader leases do not coordinate
-those external writers.
-Ordinary trusted writes remain native. Both server and daemon must fail closed
-without the locally verified mechanism. The current implementation, lease
-boundaries and prerequisites are recorded in modules/hosts.md. Installation or
-restart of a running personal daemon remains a separate operator action.

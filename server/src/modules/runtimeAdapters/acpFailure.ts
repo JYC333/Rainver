@@ -7,6 +7,7 @@ import { runtimeQuotaResetAt, validQuotaResetAt } from "./quotaReset.js";
 export type AcpRuntimeFailure = RuntimeFailureEvidence;
 
 const HUMAN_FIELDS = ["message", "details", "detail", "error", "additionalDetails", "additional_details"];
+const ANTIGRAVITY_QUOTA_REPLY = /^⚠\uFE0F? Individual quota reached\. Please upgrade your subscription to increase your limits\. Resets in (\d{1,3})h([0-5]?\d)m([0-5]?\d)s\.$/u;
 const CODEX_CATEGORIES: Record<string, AcpRuntimeFailure["category"]> = {
   usageLimitExceeded: "quota", usage_limit_reached: "quota",
   unauthorized: "auth", rateLimitExceeded: "rate_limit",
@@ -98,6 +99,25 @@ export function normalizeAcpFailure(runtimeKey: string, value: unknown, now = ne
       ? resets.map(value => validQuotaResetAt(value, now)).find(value => value !== null)
         ?? runtimeQuotaResetAt(runtimeKey, message, now)
       : null,
+  };
+}
+
+/** A complete, otherwise successful ACP reply can itself be a vendor refusal. */
+export function quotaFailureFromCompletedAcpReply(runtimeKey: string, text: string, now: Date): AcpRuntimeFailure | undefined {
+  if (runtimeKey !== "acp_antigravity_acp") return;
+  const message = text.trim();
+  const refusal = ANTIGRAVITY_QUOTA_REPLY.exec(message);
+  if (!refusal) return;
+  const [, hours, minutes, seconds] = refusal;
+  const delaySeconds = Number(hours) * 3600 + Number(minutes) * 60 + Number(seconds);
+  return {
+    rpc_code: null,
+    vendor_code: null,
+    category: "quota",
+    phase: "prompt",
+    message,
+    occurred_at: now.toISOString(),
+    resets_at: validQuotaResetAt(now.getTime() + delaySeconds * 1000, now),
   };
 }
 

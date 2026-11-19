@@ -368,6 +368,12 @@ local_compose_ensure_server_database_env() {
   local_compose_ensure_env_secret BETTER_AUTH_SECRET 32
 
   local current_url desired_url
+  # ADR 0031: once the separate runtime role is activated (explicitly, by
+  # ops/scripts/db/runtime-roles.sh, never here) the server URL
+  # is the operator's explicit choice; never rewrite it back to the owner.
+  if [[ "$(local_compose_setting RAINVER_DB_REQUIRE_RUNTIME_ROLE || true)" == "1" ]]; then
+    return 0
+  fi
   desired_url="$(local_compose_server_owner_database_url)"
   current_url="$(local_compose_setting SERVER_DATABASE_URL || true)"
   if local_compose_is_placeholder_value "$current_url" || [[ "$current_url" == postgresql://*@postgres:* && "$current_url" != "$desired_url" ]]; then
@@ -388,7 +394,9 @@ local_compose_generate_server_env() {
 
   local server_env="$MODE_ROOT/.server.env"
   local deployer_env="$MODE_ROOT/.deployer.env"
-  grep -vE '^[[:space:]]*(POSTGRES_(MAJOR|DB|USER|PASSWORD)|DATABASE_URL)[[:space:]]*=' \
+  # ADR 0031: the owner URL kept for rollback and the role passwords are
+  # operator inputs; the server only receives its own SERVER/BACKUP URLs.
+  grep -vE '^[[:space:]]*(POSTGRES_(MAJOR|DB|USER|PASSWORD)|DATABASE_URL|RAINVER_DB_(APP_PASSWORD|BACKUP_PASSWORD|OWNER_[A-Z_]+))[[:space:]]*=' \
     "$ENV_FILE" > "$server_env"
   # The deployer pull loop authenticates to the server with the internal token
   # (ADR 0020 §1). The execution host is deliberately not given it: it holds a

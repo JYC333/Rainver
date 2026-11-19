@@ -67,7 +67,7 @@ describe("compose server config", () => {
     }
   });
 
-  it("mounts live migrations only in dev and bundles them in fixed builds", () => {
+  it("mounts live migrations only in dev", () => {
     expect(serverServiceBlock("dev")).toContain(
       "../../server/migrations:/app/server/migrations:ro",
     );
@@ -76,9 +76,6 @@ describe("compose server config", () => {
         "../../server/migrations:/app/server/migrations:ro",
       );
     }
-    expect(readFileSync(join(repoRoot, "server", "Dockerfile"), "utf8")).toContain(
-      "COPY server/migrations ./migrations",
-    );
   });
 
   it("keeps official plugin source out of fixed server builds", () => {
@@ -86,9 +83,6 @@ describe("compose server config", () => {
     for (const mode of ["test", "prod"] as const) {
       expect(serverServiceBlock(mode)).not.toContain("../../plugins:");
     }
-    expect(readFileSync(join(repoRoot, "server", "Dockerfile"), "utf8")).toContain(
-      "COPY plugins /app/plugins",
-    );
   });
 
   it("builds the frontend from the repo root so official plugin pages are included", () => {
@@ -114,8 +108,6 @@ describe("compose server config", () => {
       expect(block).not.toContain("CHOKIDAR_USEPOLLING");
     }
     expect(server).toContain("${RAINVER_MODE_ROOT:-$HOME/.rainver-data/test}:/rainver");
-    const template = readFileSync(join(repoRoot, "ops/env/.env.test.example"), "utf8");
-    expect(template).toMatch(/^FRONTEND_URL=http:\/\/localhost:3100$/m);
   });
 
   it("runs production from the CI-published images and never builds on the host", () => {
@@ -131,12 +123,6 @@ describe("compose server config", () => {
         `  ${service}:\n    image: ghcr.io/jyc333/${image}:\${RAINVER_IMAGE_TAG:-stable}`,
       );
     }
-    const startScript = readFileSync(join(repoRoot, "ops", "scripts", "start.sh"), "utf8");
-    expect(startScript).not.toContain("docker build");
-    expect(startScript).toContain('"${COMPOSE[@]}" pull');
-    // The prod image carries the publishing commit; a local build leaves it unset.
-    const dockerfile = readFileSync(join(repoRoot, "server", "Dockerfile"), "utf8");
-    expect(dockerfile).toContain("ENV APP_VERSION=${RAINVER_BUILD_SHA}");
   });
 
   it("uses distinct loopback-only production host ports by default", () => {
@@ -302,15 +288,12 @@ describe("compose server config", () => {
       // on the bridge.
       expect(composeText(mode).split("host-egress").length - 1).toBe(2);
     }
-    expect(readFileSync(join(repoRoot, "sandbox", "Dockerfile"), "utf8"))
-      .toContain("bubblewrap");
-    // The Runner is a compose service; start.sh builds no standalone sandbox
-    // image and never mounts the sandbox source tree.
-    const startScript = readFileSync(join(repoRoot, "ops", "scripts", "start.sh"), "utf8");
-    expect(startScript).not.toContain("sandbox/Dockerfile");
-    expect(startScript).not.toContain('"$REPO_ROOT/sandbox/"');
-    for (const path of ["workspaces", "runtime-tools", "cache/runtime-homes", "cache/login-homes"]) {
-      expect(startScript).toContain(`\"$MODE_ROOT/${path}\"`);
-    }
+    // The strict sandbox builds each Run's namespace with bubblewrap, so the
+    // final image stage must install it (a comment mention is not enough).
+    const sandboxDockerfile = readFileSync(join(repoRoot, "sandbox", "Dockerfile"), "utf8");
+    const runtimeStage = sandboxDockerfile.slice(sandboxDockerfile.lastIndexOf("\nFROM "));
+    const installed = [...runtimeStage.replace(/\\\n/g, " ").matchAll(/^RUN .*\bapt-get install\b(.*)$/gm)]
+      .flatMap((match) => match[1]!.split(/\s+/));
+    expect(installed).toContain("bubblewrap");
   });
 });

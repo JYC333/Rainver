@@ -90,6 +90,18 @@ export async function processNativeWorkspaceRequest(pool:Pool,config:ServerConfi
     }
    });
   }
+  /** The Host's own publication journal (`native_inspect`, read-only): a publication
+   * whose receipt was lost or anomalous is recognised as landed, never replayed. */
+  async function landedPublication(){
+   const target=merge?.target_ref??w?.target_ref;
+   if(!w||!run||!merge||!target)return false;
+   const sourceFrame=await workspaceLocationFrame(pool,w,{id:w.id,generation:w.generation},config.workspaceRoot,request!.user_id);
+   const evidence=await hosts.requestTaskBranch(w.execution_host_id,'workspace_integration',{workspace:{...sourceFrame,execution_workspace:{id:w.id,generation:w.generation,integration_id:merge.id}},action:'native_inspect',run_id:run.id,operation_id:requestId,source_commit:merge.source_commit,base_commit:merge.base_commit,target_ref:target,author:agentGitIdentity(run.agent_id,null),message:c!.summary});
+   if(evidence.ok&&(evidence.outcome==='merged'||evidence.outcome==='no_changes')){await save(evidence.outcome==='merged'?'merged':'no_changes',evidence.candidate_commit,evidence.onto_commit,[],null);return true;}
+   if(!evidence.ok&&workspaceHostFailureIsTemporary(evidence.error))throw new JobDeferredError(evidence.error!,1000);
+   return false;
+  }
+  let dispatched=false;
   try{
    if(!w||!run||bodyWithheld(run.effective_access_level))throw new Error('integration_current_run_ended');
    if(['blocked','retired'].includes(w.state))throw new Error('execution_workspace_unavailable');
@@ -106,11 +118,7 @@ export async function processNativeWorkspaceRequest(pool:Pool,config:ServerConfi
    if(!origin||bodyWithheld(origin.effective_access_level))throw new Error('integration_origin_no_longer_visible');
    const sourceFrame=await workspaceLocationFrame(pool,w,{id:w.id,generation:w.generation},config.workspaceRoot,request.user_id);
    if(run.status!=='running'){
-    if(request.action==='publish'&&merge&&(merge.target_ref??w.target_ref)){
-     const evidence=await hosts.requestTaskBranch(w.execution_host_id,'workspace_integration',{workspace:{...sourceFrame,execution_workspace:{id:w.id,generation:w.generation,integration_id:merge.id}},action:'native_inspect',run_id:run.id,operation_id:requestId,source_commit:merge.source_commit,base_commit:merge.base_commit,target_ref:(merge.target_ref??w.target_ref)!,author:agentGitIdentity(run.agent_id,null),message:c.summary});
-     if(evidence.ok&&(evidence.outcome==='merged'||evidence.outcome==='no_changes')){await save(evidence.outcome==='merged'?'merged':'no_changes',evidence.candidate_commit,evidence.onto_commit,[],null);return;}
-     if(!evidence.ok&&workspaceHostFailureIsTemporary(evidence.error))throw new JobDeferredError(evidence.error!,1000);
-    }
+    if(request.action==='publish'&&await landedPublication())return;
     throw new Error('integration_current_run_ended');
    }
    await assertOperationGrant(pool,await runActor(pool,run),request.action_id??'workspace.change.complete');
@@ -171,6 +179,7 @@ export async function processNativeWorkspaceRequest(pool:Pool,config:ServerConfi
     await assertOperationGrant(pool,await runActor(pool,live),request.action_id??'workspace.change.complete');
     await assertWorkspaceContributorsReadable(pool,spaceId,request.user_id,changeId);
    if(await workspacePublicationNeedsReview(pool,{spaceId,changeSetId:changeId,requesterId:request.user_id,repairRunId:null,instructionRunId:run.id}))throw new Error('workspace_egress_review_required');
+    dispatched=true;
     return hosts.requestTaskBranch(w.execution_host_id,'workspace_integration',frame);
    };
    let reply;
@@ -182,6 +191,8 @@ export async function processNativeWorkspaceRequest(pool:Pool,config:ServerConfi
     reply=gate.value;
    }else reply=await effect();
    if(!reply.ok&&workspaceHostFailureIsTemporary(reply.error))throw new JobDeferredError(reply.error!,1000);
+   // A refused or anomalous publish receipt is checked against the Host journal before it is failed.
+   if(!reply.ok&&request.action==='publish'&&await landedPublication())return;
    // A completed rebase reports its replayed chain (target..tip); the delta it replaced is kept once as
    // `replayed_from`, so a blocked batch recording that same delta is still adopted on publication.
    const replayedNow=plan?.strategy==='rebase'&&reply.ok&&reply.outcome==='rebased';
@@ -198,7 +209,13 @@ export async function processNativeWorkspaceRequest(pool:Pool,config:ServerConfi
    }
    const status=!reply.ok?'failed':reply.outcome==='merged'?'merged':reply.outcome==='no_changes'?'no_changes':reply.outcome==='main_moved'?'target_moved':reply.outcome==='conflict'||reply.outcome==='unresolved'?'conflict':reply.outcome==='sealed'?'checkpointed':reply.outcome==='waiting_local_changes'?'failed':'prepared';
    await save(status,reply.candidate_commit,reply.onto_commit,reply.conflicted_files,reply.error??(reply.outcome==='waiting_local_changes'?'integration_waiting_local_changes':null));
-  }catch(error){if(error instanceof JobDeferredError)throw error;deferIfSourceReleasePending(error);await save('failed',null,null,[],error instanceof Error?error.message:'native_integration_failed');}
+  }catch(error){
+   if(error instanceof JobDeferredError)throw error;
+   deferIfSourceReleasePending(error);
+   // Recording a dispatched publish failed: it may have landed before its receipt was recorded.
+   if(dispatched&&request.action==='publish'&&await landedPublication())return;
+   await save('failed',null,null,[],error instanceof Error?error.message:'native_integration_failed');
+  }
  });
  if(!lock.acquired)throw new JobDeferredError('integration_already_advancing',1000);
 }

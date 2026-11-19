@@ -53,6 +53,11 @@ import { registerWorkflowExecutionProposalAppliers } from "../src/modules/automa
 import type { ProposalApplierRegistry, ProposalApplyContext } from "../src/modules/proposals/applierRegistry.js";
 import { withTransaction } from "../src/db/tx.js";
 import { operationTransaction } from "../src/db/operationTransaction.js";
+import { AUTOMATION_FIRE_JOB } from "@rainver/protocol";
+import { registerAutomationFireJob } from "../src/modules/automations/fireRequests.js";
+import { JobHandlerRegistry } from "../src/modules/jobs/handlerRegistry.js";
+import { PgJobQueueRepository } from "../src/modules/jobs/repository.js";
+import { JobWorker } from "../src/modules/jobs/worker.js";
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OTHER_SPACE = "22222222-2222-4222-8222-222222222222";
@@ -579,6 +584,7 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
         config_json: { target_type: "agent_run" },
       },
     });
+    expect((await new PgAutomationRepository(db.pool).get(SPACE, created.id))?.last_fired_at).toBeNull();
     // A manual fire carrying the person's own prompt is that person asking,
     // not the automation running (ADR 0003 §5 / D1). The Run is theirs.
     const result = await service().fire({
@@ -587,14 +593,29 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
       actorUserId: OWNER,
       prompt: "Analyze new papers",
     });
-    expect(result.trigger_origin).toBe("manual");
-    const run = await db.pool.query<{ project_id: string | null; trigger_origin: string; instructed_by_user_id: string }>(
-      `SELECT project_id, trigger_origin, instructed_by_user_id FROM runs WHERE id = $1`,
+    expect(result).toMatchObject({ trigger_origin: "manual", preflight_executable: true });
+    const run = await db.pool.query<{ project_id: string | null; trigger_origin: string; instructed_by_user_id: string; prompt: string | null }>(
+      `SELECT project_id, trigger_origin, instructed_by_user_id, prompt FROM runs WHERE id = $1`,
       [String(result.run_id)],
     );
     expect(run.rows[0]?.project_id).toBe(PROJECT);
     expect(run.rows[0]?.trigger_origin).toBe("manual");
     expect(run.rows[0]?.instructed_by_user_id).toBe(OWNER);
+    expect(run.rows[0]?.prompt).toBe("Analyze new papers");
+    const fire = await db.pool.query<{ run_id: string | null }>(
+      `SELECT run_id FROM automation_runs WHERE id = $1 AND automation_id = $2`,
+      [String(result.automation_run_id), created.id],
+    );
+    expect(fire.rows).toEqual([{ run_id: String(result.run_id) }]);
+    // A successful manual fire records when it fired, exactly once.
+    const task = await db.pool.query<{ last_run_at: Date | null }>(
+      `SELECT last_run_at FROM scheduler_tasks WHERE task_type = 'automation' AND task_key = $1`,
+      [created.id],
+    );
+    expect(task.rows).toHaveLength(1);
+    expect(task.rows[0]?.last_run_at).toBeInstanceOf(Date);
+    expect((await new PgAutomationRepository(db.pool).get(SPACE, created.id))?.last_fired_at)
+      .toBe(task.rows[0]!.last_run_at!.toISOString());
   });
 
   it("does not fire, or re-arm, a scheduled Automation paused after the scan read it", async () => {
@@ -636,6 +657,41 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
       [created.id],
     );
     expect(task.rows[0]).toEqual({ status: "paused", next_run_at: null });
+  });
+
+  it("advances only the slot the caller fired, never one another sweep or a reschedule already wrote", async () => {
+    if (!db.available) return;
+    const created = await createAutomation({
+      spaceId: SPACE,
+      ownerUserId: OWNER,
+      body: {
+        name: "Hourly check",
+        agent_id: AGENT,
+        project_id: PROJECT,
+        trigger_type: "schedule",
+        config_json: { target_type: "agent_run", prompt: "Check", cron: "0 * * * *", timezone: "UTC" },
+      },
+    });
+    const repo = new PgAutomationRepository(db.pool);
+    const stale = (await repo.get(SPACE, created.id))!;
+    // Another sweep consumed that slot (or the owner rescheduled) meanwhile.
+    const written = new Date(Date.now() + 7 * 86_400_000).toISOString();
+    await db.pool.query(
+      `UPDATE scheduler_tasks SET next_run_at = $2, last_run_at = NULL WHERE task_type = 'automation' AND task_key = $1`,
+      [created.id, written],
+    );
+    await repo.advanceSchedule(stale);
+    const task = async () => (await db.pool.query<{ next_run_at: Date | null; last_run_at: Date | null }>(
+      `SELECT next_run_at, last_run_at FROM scheduler_tasks WHERE task_type = 'automation' AND task_key = $1`,
+      [created.id],
+    )).rows[0]!;
+    expect(await task()).toEqual({ next_run_at: new Date(written), last_run_at: null });
+
+    // The current slot still advances normally.
+    await repo.advanceSchedule((await repo.get(SPACE, created.id))!);
+    const advanced = await task();
+    expect(advanced.last_run_at).not.toBeNull();
+    expect(advanced.next_run_at!.getTime()).toBeLessThan(new Date(written).getTime());
   });
 
   it("runs the configured prompt as the automation's own work, whoever pressed fire", async () => {
@@ -691,6 +747,47 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
       triggerOrigin: run.rows[0]!.trigger_origin,
       instructedByUserId: run.rows[0]!.instructed_by_user_id,
     })).toBe("apply");
+  });
+
+  it("a scheduled fire runs the configured prompt as unattended automation work", async () => {
+    if (!db.available) return;
+    const created = await createAutomation({
+      spaceId: SPACE,
+      ownerUserId: OWNER,
+      body: {
+        name: "Paper sweep",
+        agent_id: AGENT,
+        project_id: PROJECT,
+        trigger_type: "schedule",
+        config_json: { target_type: "agent_run", prompt: "Analyze the newly collected papers.", cron: "0 9 * * *", timezone: "UTC" },
+      },
+    });
+    await db.pool.query(
+      `UPDATE scheduler_tasks SET next_run_at = now() - interval '1 minute'
+        WHERE task_type = 'automation' AND task_key = $1`,
+      [created.id],
+    );
+    // The production path: the scheduler sweep queues the fire, the job
+    // worker executes it with the schedule trigger.
+    await expect(service().scanAndFire()).resolves.toBe(1);
+    const registry = new JobHandlerRegistry();
+    registerAutomationFireJob(registry, config);
+    const worked = await new JobWorker(new PgJobQueueRepository(db.pool), registry, "schedule-test", [AUTOMATION_FIRE_JOB]).processOne();
+    expect(worked.status).toBe("completed");
+
+    const fired = await db.pool.query<{ trigger_type: string; triggered_by_user_id: string; prompt: string | null; trigger_origin: string; instructed_by_user_id: string }>(
+      `SELECT ar.trigger_type, ar.triggered_by_user_id, r.prompt, r.trigger_origin, r.instructed_by_user_id
+         FROM automation_runs ar JOIN runs r ON r.id = ar.run_id
+        WHERE ar.automation_id = $1`,
+      [created.id],
+    );
+    expect(fired.rows).toEqual([{
+      trigger_type: "schedule",
+      triggered_by_user_id: OWNER,
+      prompt: "Analyze the newly collected papers.",
+      trigger_origin: "automation",
+      instructed_by_user_id: OWNER,
+    }]);
   });
 
   it("enforces an automation max_runs cap across direct fires", async () => {

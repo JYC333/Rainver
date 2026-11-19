@@ -17,6 +17,7 @@ import {
   type ProviderProxyRoute,
 } from "./lease.js";
 import { subscriptionEgressLeases } from "./subscriptionEgress.js";
+import { modelOnlyRequestRefusal, parseRequestJson } from "./modelOnlyPolicy.js";
 import {
   fetchWithNetworkProfile,
   resolveNetworkProfileRepository,
@@ -193,9 +194,29 @@ async function handleProviderProxyRequest(
   }
 
   const body = await readBody(request);
-  if (lease.pinned_model) {
-    const requested = stringValue(parseJsonObject(body)?.model);
-    if (requested && requested !== lease.pinned_model) {
+  const upstreamPath = `/${parts.slice(2).join("/")}`;
+  // Parsed once, only for a lease that judges the body; an ordinary lease forwards it untouched.
+  const json = lease.request_policy === "model_only" || lease.pinned_model ? parseRequestJson(body) : null;
+  if (lease.request_policy === "model_only") {
+    // Judged on the lease, so the same token is held to it on every path.
+    const refusal = modelOnlyRequestRefusal({
+      route,
+      method: request.method,
+      path: upstreamPath,
+      search: parsed.search,
+      contentType: firstHeader(request.headers["content-type"]) ?? undefined,
+      json,
+      model: lease.model,
+    });
+    if (refusal) {
+      sendJson(response, 403, { error: "provider_proxy_request_not_leased", reason: refusal });
+      return;
+    }
+  }
+  if (lease.pinned_model && methodMayHaveBody(request.method)) {
+    // A request that names no model would let the local server pick one —
+    // possibly a cloud-forwarded one — so the pin needs the model named.
+    if (stringValue(recordValue(json?.value).model) !== lease.pinned_model) {
       sendJson(response, 403, { error: "provider_proxy_model_not_leased" });
       return;
     }
@@ -204,11 +225,7 @@ async function handleProviderProxyRequest(
   const attribution = deps.resolveUsageAttribution
     ? await deps.resolveUsageAttribution(attributionObservation)
     : await resolveUsageAttribution(config, attributionObservation);
-  const upstreamUrl = upstreamRequestUrl(
-    lease.upstream_base_url,
-    `/${parts.slice(2).join("/")}`,
-    parsed.search,
-  );
+  const upstreamUrl = upstreamRequestUrl(lease.upstream_base_url, upstreamPath, parsed.search);
   const fetchImpl = await fetchForLease(config, lease, deps.fetch);
   const upstream = await fetchImpl(upstreamUrl, {
     method: request.method ?? "GET",

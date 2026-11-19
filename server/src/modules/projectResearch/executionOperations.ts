@@ -5,7 +5,7 @@ import {ContentAccessAuditService} from '../contentAccess/audit.js';
 import type {OperationRegistration} from '../systemActions/operations/types.js';
 import {OperationBusinessError,OperationError,hidden} from '../systemActions/operations/errors.js';
 import {canonical} from '../systemActions/operations/repository.js';
-import {researchGraphRunRefs} from '../systemActions/operations/proposalTransitions.js';
+import {researchGraphRunRefs} from './graphRuns.js';
 import {discoverCorpusScope,authorizeCorpusScope} from '../projects/corpusOperationAdmission.js';
 import {assertProjectWriterForMutation} from '../projects/access.js';
 import {assertThreadReadable} from '../inquiry/threadAccess.js';

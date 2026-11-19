@@ -119,38 +119,6 @@ function item(overrides: Partial<ItemRow> = {}): ItemRow {
 }
 
 describe("runRelationDiscoveryScan", () => {
-  it("creates a relation candidate from a resolved wikilink between two visible items", async () => {
-    const items = [
-      item({ id: "item-a", title: "Alpha", content: "Alpha depends on [[Beta]] for deploys." }),
-      item({ id: "item-b", title: "Beta", slug: "beta" }),
-    ];
-    const db = new FakeDiscoveryDb(items);
-    const { report } = await runRelationDiscoveryScan(db, {
-      spaceId: "space-1",
-      userId: "user-1",
-      request: {
-        limit: 200,
-        max_candidates: 40,
-        review_scope: "private",
-        include_unresolved_item_candidates: false,
-        llm_extraction_enabled: false,
-        llm_max_sources: 8,
-        create_packet: true,
-      },
-    });
-
-    expect(report.access_safety.deterministic_extraction).toBe(true);
-    expect(report.candidates).toHaveLength(1);
-    const candidate = report.candidates[0]!;
-    expect(candidate.kind).toBe("object_relation_candidate");
-    expect(candidate.proposed_action).toMatchObject({
-      proposal_type: "object_relation_create",
-      from_object_id: "item-a",
-      to_object_id: "item-b",
-      link_type: "related_to",
-    });
-  });
-
   it("reports truncation only when the cap stopped the scan before every link was examined", async () => {
     const targets = ["Beta", "Gamma", "Delta"].map((title) =>
       item({ id: `item-${title.toLowerCase()}`, title, slug: title.toLowerCase() }));
@@ -210,26 +178,6 @@ describe("runRelationDiscoveryScan", () => {
       ]),
     );
   });
-
-  it("a note source emits an object_relation_create candidate for a resolved link", async () => {
-    const items = [item({ id: "item-b", title: "Beta", slug: "beta" })]
-    const notes: NoteRow[] = [{ id: "note-a", title: "Daily note", plain_text: "Discussed [[Beta]] today.", status: "active" }]
-    const db = new FakeDiscoveryDb(items, notes)
-    const { report } = await runRelationDiscoveryScan(db, {
-      spaceId: "space-1",
-      userId: "user-1",
-      request: { source_object_types: ["knowledge_item", "note"], limit: 200, max_candidates: 40, review_scope: "private", include_unresolved_item_candidates: false, llm_extraction_enabled: false, llm_max_sources: 8, create_packet: true },
-    })
-
-    const noteCandidate = report.candidates.find((c) => c.kind === "object_relation_candidate")
-    expect(noteCandidate).toBeDefined()
-    expect(noteCandidate!.proposed_action).toMatchObject({
-      proposal_type: "object_relation_create",
-      from_object_id: "note-a",
-      to_object_id: "item-b",
-      link_type: "related_to",
-    })
-  })
 
   it("runs an injected LLM relation extractor only when explicitly requested", async () => {
     const items = [

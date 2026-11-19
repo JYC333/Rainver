@@ -58,7 +58,7 @@ export function relocationCandidates(
 
 /**
  * Whether this caller may take the content out of the Space, as opposed to
- * copying it (ADR 0013 amendments 6a/6b).
+ * copying it (ADR 0013 decision 9).
  *
  * Move takes the original out of the Project. One member must not remove
  * another member's contribution from the team's Space, so move needs authority

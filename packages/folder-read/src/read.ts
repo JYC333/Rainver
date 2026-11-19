@@ -149,16 +149,29 @@ export async function readFolderFile(
  * extra byte proves it is now over the limit.
  */
 async function readBounded(file: FileHandle, signal: AbortSignal | undefined): Promise<Buffer> {
-  const buffer = Buffer.allocUnsafe(MAX_FILE_BYTES + 1);
-  let length = 0;
-  while (length < buffer.length) {
+  const bytes = await readHandleBounded(file, MAX_FILE_BYTES, signal);
+  if (!bytes) throw new FolderReadError("too_large", "File too large to display (max 1 MiB)");
+  return bytes;
+}
+
+/**
+ * The bytes of an open file if it holds at most `maxBytes`, else `null`.
+ * Reads in bounded chunks from offset 0 and never more than `maxBytes + 1`,
+ * so nothing past the bound is buffered and growth during the read is caught.
+ */
+export async function readHandleBounded(file: FileHandle, maxBytes: number, signal?: AbortSignal): Promise<Buffer | null> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for (;;) {
     throwIfAborted(signal);
-    const { bytesRead } = await file.read(buffer, length, buffer.length - length, length);
+    const chunk = Buffer.allocUnsafe(Math.min(1024 * 1024, maxBytes + 1 - total));
+    const { bytesRead } = await file.read(chunk, 0, chunk.length, total);
     if (bytesRead === 0) break;
-    length += bytesRead;
+    chunks.push(chunk.subarray(0, bytesRead));
+    total += bytesRead;
+    if (total > maxBytes) return null;
   }
-  if (length > MAX_FILE_BYTES) throw new FolderReadError("too_large", "File too large to display (max 1 MiB)");
-  return buffer.subarray(0, length);
+  return Buffer.concat(chunks, total);
 }
 
 function folderReadErrorFromSafeOpen(error: SafeOpenError): FolderReadError {

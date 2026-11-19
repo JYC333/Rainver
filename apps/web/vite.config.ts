@@ -6,6 +6,7 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { VitePWA } from 'vite-plugin-pwa'
 import { BUILD_INPUTS_FILE, collectBuildInputs } from './buildInputs.ts'
+import { bundledPluginAliases } from './bundledPluginDeps.ts'
 
 // Browser code calls same-origin /api/v1/*; in dev the Vite proxy forwards
 // those requests to the server service inside the compose network. API_URL is
@@ -59,6 +60,7 @@ export default defineConfig(({ mode }) => ({
       // Those imports resolve through this alias. Everything hand-written here stays on
       // relative paths.
       { find: /^@\//, replacement: `${resolve(projectRoot, 'src')}/` },
+      ...bundledPluginAliases(projectRoot),
       { find: /^react$/, replacement: resolve(projectRoot, 'node_modules/react/index.js') },
       { find: /^react\/jsx-runtime$/, replacement: resolve(projectRoot, 'node_modules/react/jsx-runtime.js') },
       { find: /^react\/jsx-dev-runtime$/, replacement: resolve(projectRoot, 'node_modules/react/jsx-dev-runtime.js') },

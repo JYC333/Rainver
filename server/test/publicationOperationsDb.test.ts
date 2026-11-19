@@ -85,8 +85,14 @@ describe('Publication operations on PostgreSQL',()=>{
   expect(published.statusCode,published.body).toBe(201);as(owner,target);
   const imported=await send(`/api/v1/publications/${published.json().data.id}/import`);
   expect(imported.statusCode,imported.body).toBe(201);
+  expect(imported.json().data.imported_resource_type).toBe('memory');
   const copy=imported.json().data.imported_resource_id;
-  expect((await db.pool.query('SELECT scope_type,owner_user_id,visibility,subject_user_id FROM memory_entries WHERE id=$1',[copy])).rows[0]).toEqual({scope_type:'user',owner_user_id:owner,subject_user_id:owner,visibility:'private'});
+  const memoryRow=(await db.pool.query('SELECT * FROM memory_entries WHERE id=$1',[copy])).rows[0];
+  expect(memoryRow).toMatchObject({scope_type:'user',owner_user_id:owner,subject_user_id:owner,visibility:'private',space_id:target});
+  // The importer's confirmation is provenance only; the publisher's trust is not upgraded.
+  expect(memoryRow.source_trust).toBe('agent_inferred');
+  // Import provenance lives on the provenance link, not on the Memory row.
+  expect(JSON.stringify(memoryRow)).not.toContain('publication_import');
   const provenance=(await db.pool.query('SELECT * FROM provenance_links WHERE target_id=$1',[copy])).rows;
   expect(JSON.stringify(provenance)).toContain('user_confirmation');expect(JSON.stringify(provenance)).toContain('publication_import');
   as(owner);const agent=randomUUID();

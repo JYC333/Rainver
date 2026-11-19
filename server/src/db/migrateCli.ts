@@ -9,7 +9,12 @@
 import { resolve } from "node:path";
 import { loadConfig } from "../config.js";
 import { getDbPool } from "./pool.js";
-import { migrate, status } from "./migrator.js";
+import { status } from "./migrator.js";
+import { migrateUp } from "./migrateUp.js";
+import { DEFAULT_APP_ROLE, DEFAULT_BACKUP_ROLE, grantPluginRuntimeMemberships, inspectRuntimeRoles, reconcileRuntimeRoles } from "./runtimeRoles.js";
+
+const appRole = () => process.env.RAINVER_DB_APP_ROLE?.trim() || DEFAULT_APP_ROLE;
+const backupRole = () => process.env.RAINVER_DB_BACKUP_ROLE?.trim() || DEFAULT_BACKUP_ROLE;
 
 function migrationsDir(): string {
   const override = process.env.SERVER_MIGRATIONS_DIR?.trim();
@@ -74,13 +79,39 @@ async function main(): Promise<void> {
     if(command === "plugin-reconcile"||command === "plugin-install"){
       const {offlineOperationPlugins}=await import("../modules/plugins/offline.js");
       await offlineOperationPlugins(pool,command==="plugin-install"?"migrate":"reconcile",process.argv.includes("--repair-failed"));
+      await grantPluginRuntimeMemberships(pool, appRole());
+      return;
+    }
+    // ADR 0031 owner-channel role commands; never run by server start.
+    if (command === "runtime-roles-plan") {
+      console.log(JSON.stringify(await inspectRuntimeRoles(pool, { appRole: appRole(), backupRole: backupRole() }), null, 2));
+      return;
+    }
+    if (command === "runtime-roles-reconcile") {
+      if (process.argv.includes("--if-present") && !(await inspectRuntimeRoles(pool, { appRole: appRole(), backupRole: backupRole() })).app.exists) {
+        console.log("runtime roles not provisioned; nothing to reconcile");
+        return;
+      }
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const result = await reconcileRuntimeRoles(client, {
+          appRole: appRole(), backupRole: backupRole(),
+          appPassword: process.env.RAINVER_DB_APP_PASSWORD || undefined,
+          backupPassword: process.env.RAINVER_DB_BACKUP_PASSWORD || undefined,
+        });
+        await client.query("COMMIT");
+        console.log(JSON.stringify(result, null, 2));
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => {});
+        throw error;
+      } finally {
+        client.release();
+      }
       return;
     }
     if (command === "up") {
-      const result = await migrate(pool, dir, { log: (m) => console.log(m) });
-      const {offlineOperationPlugins,operationPluginsPending}=await import("../modules/plugins/offline.js");
-      // No role/owner DDL on an ordinary restart with no package changes.
-      if((await operationPluginsPending(pool)).length)await offlineOperationPlugins(pool,"migrate");
+      const result = await migrateUp(pool, dir, appRole(), (m) => console.log(m));
       console.log(
         result.applied.length === 0
           ? "schema is up to date (no migrations applied)"
@@ -88,7 +119,7 @@ async function main(): Promise<void> {
       );
       return;
     }
-    console.error(`unknown command: ${command} (expected "up", "status", "pending", "maintenance-pending", "plugin-install" or "plugin-reconcile")`);
+    console.error(`unknown command: ${command} (expected "up", "status", "pending", "maintenance-pending", "plugin-install", "plugin-reconcile", "runtime-roles-plan" or "runtime-roles-reconcile")`);
     process.exitCode = 2;
   } finally {
     await pool.end();

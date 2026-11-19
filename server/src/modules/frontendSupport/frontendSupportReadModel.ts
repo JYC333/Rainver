@@ -56,9 +56,9 @@ export function suggestedActions(input: {
   if (input.retryableJobs > 0) {
     actions.push({
       id: "retry_failed_jobs",
-      label: "Review failed jobs",
-      reason: `${input.retryableJobs} failed job(s) can be retried.`,
-      target_path: "/jobs?status=failed",
+      label: "Review jobs awaiting retry",
+      reason: `${input.retryableJobs} job(s) failed an attempt and will be retried automatically.`,
+      target_path: "/jobs",
       priority: "normal",
     });
   }

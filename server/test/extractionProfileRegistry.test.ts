@@ -1,5 +1,3 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   ExtractionProfileRegistry,
@@ -52,36 +50,5 @@ describe("ExtractionProfileRegistry", () => {
       }),
     ).rejects.toThrow("requires projectId");
     expect(materializer).toHaveBeenCalledTimes(1);
-  });
-
-  it("resolves every profile referenced by the project-source binding fixture", () => {
-    const fixture = readFileSync(
-      resolve(process.cwd(), "test/academicPaperMaterializerDb.test.ts"),
-      "utf8",
-    );
-    const referencedKeys = [...fixture.matchAll(/seedBinding\("([^"]+)"\)/g)]
-      .map((match) => match[1])
-      .filter((key): key is string => Boolean(key));
-    expect(referencedKeys.length).toBeGreaterThan(0);
-
-    const registry = createDefaultExtractionProfileRegistry();
-    for (const key of referencedKeys) {
-      expect(
-        registry.get(key),
-        `unregistered fixture extraction profile: ${key}`,
-      ).not.toBeNull();
-    }
-  });
-
-  it("keeps concrete profile knowledge out of project routing", () => {
-    const routingSource = readFileSync(
-      resolve(
-        process.cwd(),
-        "src/modules/projects/projectSourceRoutingService.ts",
-      ),
-      "utf8",
-    );
-    expect(routingSource).not.toContain("../academic/");
-    expect(routingSource).not.toContain("academic_paper_v1");
   });
 });

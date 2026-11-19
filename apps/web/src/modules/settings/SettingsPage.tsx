@@ -1,4 +1,5 @@
 import { AppVersionPanel } from './AppVersionPanel'
+import { PluginDataConsentPanel } from '../plugins/PluginDataConsentPanel'
 import { useState, useId } from 'react'
 import { useSpaceNavigate as useNavigate, SpaceLink as Link } from '../../core/spaceNav'
 import { Settings, Sun, Moon, Plus, KeyRound, BarChart3, Globe } from 'lucide-react'
@@ -26,7 +27,8 @@ const OVERSIGHT_MODE_OPTIONS: SpaceOversightMode[] = ['none', 'summary', 'conten
 export default function SettingsPage() {
   const { t, locale, setLocale } = useAppTranslation()
   const { currentUser } = useAuth()
-  const { reloadSpaces } = useSpace()
+  const { reloadSpaces, spaces, activeSpaceId, preferredSpaceId } = useSpace()
+  const consentSpaceId = activeSpaceId ?? preferredSpaceId
   const navigate = useNavigate()
   const { theme, setTheme } = useTheme()
 
@@ -163,6 +165,10 @@ export default function SettingsPage() {
           ))}
         </div>
       </Card>
+
+      {currentUser && consentSpaceId && (
+        <PluginDataConsentPanel key={consentSpaceId} spaceId={consentSpaceId} spaceName={spaces.find(space => space.id === consentSpaceId)?.name ?? null} />
+      )}
 
       {/* ── Space management (authenticated users only) ── */}
       {currentUser ? (

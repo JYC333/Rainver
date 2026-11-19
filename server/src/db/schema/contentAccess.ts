@@ -124,3 +124,32 @@ export const contentDemotionDisclosures = pgTable("content_demotion_disclosures"
 	check("ck_content_demotion_disclosures_target_visibility", sql`target_visibility IN ('private', 'selected_users')`),
 	check("ck_content_demotion_disclosures_resource_type", sql`resource_type ~ '^[a-z][a-z0-9_]{0,63}$'`),
 ]);
+
+/**
+ * Content-free record of a read an Agent Run made on its instructing person's
+ * behalf, including same-owner reads that B11's cross-person
+ * `content_access_logs` deliberately excludes (ADR 0030). Owned by
+ * contentAccess; the owner is its only default reader. It never stores read
+ * content, only bounded resource identifiers and the data class.
+ */
+export const agentDataReadLogs = pgTable("agent_data_read_logs", {
+	id: varchar({ length: 36 }).primaryKey().notNull(),
+	spaceId: varchar("space_id", { length: 36 }).notNull(),
+	ownerUserId: varchar("owner_user_id", { length: 36 }).notNull(),
+	runId: varchar("run_id", { length: 36 }).notNull(),
+	agentId: varchar("agent_id", { length: 36 }),
+	actionId: varchar("action_id", { length: 128 }).notNull(),
+	resourceType: varchar("resource_type", { length: 64 }).notNull(),
+	resourceIdsJson: jsonb("resource_ids_json").notNull(),
+	dataClass: varchar("data_class", { length: 16 }).notNull(),
+	grantId: varchar("grant_id", { length: 36 }),
+	accessedAt: timestamp("accessed_at", { withTimezone: true, mode: "string" }).notNull(),
+}, (table): PgTableExtraConfigValue[] => [
+	index("ix_agent_data_read_logs_owner").on(table.spaceId, table.ownerUserId, table.accessedAt),
+	index("ix_agent_data_read_logs_run").on(table.spaceId, table.runId, table.accessedAt),
+	foreignKey({ columns: [table.spaceId], foreignColumns: [spaces.id], name: "agent_data_read_logs_space_id_fkey" }).onDelete("cascade"),
+	foreignKey({ columns: [table.ownerUserId], foreignColumns: [users.id], name: "agent_data_read_logs_owner_user_id_fkey" }).onDelete("cascade"),
+	foreignKey({ columns: [table.agentId], foreignColumns: [agents.id], name: "agent_data_read_logs_agent_id_fkey" }).onDelete("set null"),
+	check("ck_agent_data_read_logs_class", sql`data_class IN ('non_sensitive', 'personal', 'sensitive')`),
+	check("ck_agent_data_read_logs_ids", sql`jsonb_typeof(resource_ids_json) = 'array' AND jsonb_array_length(resource_ids_json) <= 100`),
+]);

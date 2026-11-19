@@ -4,6 +4,7 @@ import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
 import { importedSessionsModule } from "../src/modules/importedSessions/index.js";
 import { buildModuleServer } from "./support/moduleServer.js";
 import { hostsModule } from "../src/modules/hosts/index.js";
+import { roomsModule } from "../src/modules/rooms/index.js";
 import { sharedHostConnectionRegistry } from "../src/modules/hosts/connectionRegistry.js";
 import { wakeHostCommandsForHost } from "../src/modules/hosts/hostCommandWorker.js";
 import { hostCommandHarness } from "./support/hostCommandHarness.js";
@@ -29,6 +30,7 @@ import {
 } from "../src/modules/importedSessions/summary.js";
 import * as invocation from "../src/modules/providers/invocation/invocation.js";
 import { RoomService } from "../src/modules/rooms/service.js";
+import { PgSessionRepository } from "../src/modules/sessions/repository.js";
 import { importedSessionAudienceForTest as audienceForTest } from "../src/modules/rooms/threadReferences.js";
 import type { AmbientRecord } from "@rainver/protocol";
 
@@ -591,6 +593,62 @@ expect((await repository.records(SPACE, first.session.id)).records).toHaveLength
       expect(readSpy).toHaveBeenCalledWith(SPACE, imported.session.id, 4_000, "tail");
       expect(await currentImportedHistorySummary(db.pool, SPACE, imported.session.id))
         .toMatchObject({ summary_text: "A short account.", covered_record_count: transcript.length });
+    });
+
+    it("refuses an attach its operation would reject before preparing a billed summary", async () => {
+      // The summary preparation runs before the operation's transaction and
+      // bills the session's owner. A request the operation's own schema or
+      // transport-key rule refuses must be refused before that call, not after.
+      const imported = await new PgImportedSessionRepository(db.pool).reconcile(reconcileInput());
+      const provider = vi.spyOn(invocation, "completeProviderText").mockResolvedValue(
+        { text: "A short account.", provider: "test", provider_id: null, model: "test" } as never,
+      );
+      const roomId = (await db.pool.query<{ id: string }>(
+        `SELECT id FROM rooms WHERE project_id = $1 AND is_mainline`, [PROJECT])).rows[0]!.id;
+      const conversation = await new PgSessionRepository(db.pool).createRoomConversation({
+        space_id: SPACE, room_id: roomId, project_id: PROJECT, title: "Attach",
+      });
+      __setAuthIdentityForTests({ spaceId: SPACE, userId: OWNER });
+      const app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: db.connectionUri }), [roomsModule]);
+      const url = `/api/v1/rooms/${roomId}/conversations/${conversation.id}/references`;
+      const pick = { kind: "imported_session", id: imported.session.id };
+      const post = (payload: object, key?: string, at = url) => app.inject({
+        method: "POST", url: at, payload, headers: key === undefined ? {} : { "idempotency-key": key },
+      });
+      try {
+        for (const [payload, key, code] of [
+          [{ references: [pick] }, undefined, "idempotency_key_required"],
+          [{ references: [pick] }, "two words", "idempotency_key_required"],
+          [{ references: [pick], surprise: true }, "unknown-field", "operation_invalid_input"],
+          [{ references: Array.from({ length: 21 }, () => pick) }, "too-many", "operation_invalid_input"],
+        ] as const) {
+          const refused = await post(payload, key);
+          expect(refused.statusCode, refused.body).toBe(422);
+          expect(refused.json().error.code).toBe(code);
+        }
+        // A Room the caller cannot reach keeps its hidden mapping, still unbilled.
+        const hidden = await post({ references: [pick] }, "elsewhere", `/api/v1/rooms/${randomUUID()}/conversations/${conversation.id}/references`);
+        expect(hidden.statusCode, hidden.body).toBe(404);
+        expect(hidden.json().error.code).toBe("operation_not_found");
+        expect(provider).not.toHaveBeenCalled();
+        await expect(currentImportedHistorySummary(db.pool, SPACE, imported.session.id)).resolves.toBeNull();
+
+        // An admitted attach prepares once; its replay neither re-bills nor re-attaches.
+        const body = { references: [pick], confirm_disclosure: true };
+        const first = await post(body, "attach-once");
+        expect(first.statusCode, first.body).toBe(201);
+        expect(first.json().data).toMatchObject({ session_id: conversation.id, attached: 1 });
+        expect(provider).toHaveBeenCalledTimes(1);
+        const replay = await post(body, "attach-once");
+        expect(replay.statusCode, replay.body).toBe(201);
+        expect(replay.json().data).toEqual(first.json().data);
+        expect(provider).toHaveBeenCalledTimes(1);
+        const references = await db.pool.query(
+          `SELECT count(*)::int AS n FROM messages WHERE session_id = $1 AND metadata_json->>'room_display' = 'reference'`, [conversation.id]);
+        expect(references.rows[0].n).toBe(1);
+      } finally {
+        await app.close();
+      }
     });
 
     it("does not spend the owner's budget for a Room the asker cannot reach", async () => {

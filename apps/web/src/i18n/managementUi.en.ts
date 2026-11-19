@@ -64,6 +64,7 @@ export const managementUiEn = {
       "install": "Install",
       "enable_install": "Enable & install",
       "upgrade_label": "Upgrade {{name}} on {{host}}",
+      "managed_copy_version": "Install managed {{version}}",
       "managed_copy_label": "Install managed copy of {{name}} on {{host}}",
       "install_label": "Install {{name}} on {{host}}",
       "enable_install_label": "Enable and install {{name}} on {{host}}",

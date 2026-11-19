@@ -13,7 +13,7 @@ describe("SYSTEM_ACTION_REGISTRY", () => {
       expect(policyById.has(definition.policy_action)).toBe(true);
       expect(SystemActionDefinitionSchema.safeParse(definition).success).toBe(true);
       // Migrated operations declare concrete required inputs; only legacy placeholder schemas accept an empty object.
-      if(!definition.execution && !["project.reading.records","project.reading.read","source.material.submit","source.material.investigate","source.goal.read","source.goal.sources","source.goal.inspect","source.goal.write_version","source.goal.repair_candidate","authorization.request","input_resource.read","input_resource.search","conversation.search","source.channel.propose_activation","project.source.propose_bind","project.monitoring.propose","project.monitoring.propose_details","project.propose_definition","source.backfill.propose_start","task.plan.propose","inquiry.create_thread","inquiry.record_conclusion","inquiry.record_work","inquiry.link_task","inquiry.list_tasks","inquiry.reference_task_result","inquiry.close_round","inquiry.read_problem","inquiry.promote_knowledge","research.read_result","research.adopt_result","research.start_acquisition","research.cancel_acquisition","agent.delegate","agent.cancel_run","task.create","task.create_batch","task.report","task.handoff","task.set_status","task.delete","board.configure","task.move_to_column","task.complete","task.request_review","proposal.decide","memory.remember","memory.revise","artifact.submit","handoff.write"].includes(definition.id))expect(definition.input_schema.safeParse({}).success).toBe(true);
+      if(!definition.execution && !["project.reading.records","project.reading.read","source.material.submit","source.material.investigate","source.goal.read","source.goal.sources","source.goal.inspect","source.goal.write_version","source.goal.repair_candidate","authorization.request","input_resource.read","input_resource.search","conversation.search","source.channel.propose_activation","project.source.propose_bind","project.monitoring.propose","project.monitoring.propose_details","project.propose_definition","source.backfill.propose_start","task.plan.propose","inquiry.create_thread","inquiry.record_conclusion","inquiry.record_work","inquiry.link_task","inquiry.list_tasks","inquiry.reference_task_result","inquiry.close_round","inquiry.read_problem","inquiry.promote_knowledge","research.read_result","research.adopt_result","research.start_acquisition","research.cancel_acquisition","agent.delegate","agent.cancel_run","task.create","task.create_batch","task.report","task.handoff","task.set_status","task.delete","board.configure","task.move_to_column","task.complete","task.request_review","proposal.decide","memory.remember","memory.revise","artifact.submit","handoff.write","source.gmail.monitor.propose","source.gmail.digest.propose"].includes(definition.id))expect(definition.input_schema.safeParse({}).success).toBe(true);
     }
   });
 
@@ -297,8 +297,7 @@ it("bounds explicit Task batches and retains single-Task validation", () => {
   expect(schema.safeParse({ ...input, tasks: [{ title: "" }] }).success).toBe(false);
 });
 
-it("exposes Board status changes instead of the retired Task Loop", () => {
-  expect(SYSTEM_ACTION_REGISTRY.some(action => String(action.id) === "task.advance_stage")).toBe(false);
+it("validates task.set_status against Board statuses", () => {
   const action = SYSTEM_ACTION_REGISTRY.find(action => action.id === "task.set_status")!;
   expect(action.input_schema.safeParse({ task_id: "task-1", status: "in_progress", reason: "Working on it" }).success).toBe(true);
   expect(action.input_schema.safeParse({ task_id: "task-1", status: "act", reason: "Old inner stage" }).success).toBe(false);

@@ -315,7 +315,11 @@ profiles and have no ambient history.
 
 ## Frozen Brief revision transaction
 
-After extraction IO, the writer rechecks Project authority, pre-admits every
+After extraction IO, the writer rechecks Project authority and, inside the
+proposal transaction, that every record read is still held by this claim in a
+session of this Project that is still shared; those sessions are share-locked so
+a concurrent *only me* waits for the commit. Otherwise nothing is proposed (409)
+and the claim is released. It then pre-admits every
 pending Brief request key, then locks the Project and definition mutex. A waiting
 unlinked Brief still merges in place. A linked Brief retains its frozen payload
 and is superseded with its request while a fresh pending review carries the

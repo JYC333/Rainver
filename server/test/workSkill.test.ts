@@ -23,7 +23,8 @@ describe("the Skill a Run is given", () => {
     const options = workSkillOptionsForRun(run({ session_id: "session-1", permission_snapshot_json: grants("task.create") }));
     expect(options).toEqual({ conversation: true, deliverOutputs: false });
     const skill = renderWorkSkill(options);
-    expect(skill).toContain('ten per delegatable Agent as soft limit');
+    expect(skill).toContain("no total handoff or turn limit");
+    expect(skill).not.toMatch(/soft limit|hard limit|max_delegations|mode: "reminder"|128 handoffs/);
     expect(skill).toContain("Your reply is the message they read");
     expect(skill).toContain("project.propose_definition");
     expect(skill).toContain("Artifact type labels");

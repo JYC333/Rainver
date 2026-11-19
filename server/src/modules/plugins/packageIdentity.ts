@@ -13,6 +13,10 @@ export function operationPackageIdentity(plugin: RainverPlugin): string {
     permissions: m.permissions,
     data_access: m.data_access,
     requires: m.requires,
+    // Present only when declared, so earlier packages keep their admitted contract hash.
+    ...(m.project_binding ? {project_binding: m.project_binding} : {}),
+    ...(m.core_ports?.length ? {core_ports: [...m.core_ports].sort()} : {}),
+    ...(m.entities.some(e => e.data_class) ? {entity_classes: m.entities.map(e => [e.name, e.data_class ?? null])} : {}),
     migrations: plugin.migrations?.map(x => ({
       id: x.id,
       sql: x.sql
@@ -25,6 +29,7 @@ export function operationPackageIdentity(plugin: RainverPlugin): string {
       data_class: o.data_class,
       gate_class: o.gate_class,
       proposal_type: o.proposal_type,
+      ...(o.actors ? {actors: o.actors} : {}),
       input: systemActionInputJsonSchema({
         input_schema: o.input_schema
       }),

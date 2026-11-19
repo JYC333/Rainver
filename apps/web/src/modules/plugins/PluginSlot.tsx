@@ -1,8 +1,7 @@
-import { useEffectivePlugins } from './useEffectivePlugins';
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { pluginFrontendEntries, type OfficialPluginListItem } from '@rainver/protocol';
-import { pluginsApi, projectsApi, queryPluginOperation, callPluginOperation } from '../../api/client';
+import { pluginsApi, projectsApi, queryPluginOperation, callPluginOperation, queryOperation } from '../../api/client';
 import { useSpace } from '../../contexts/SpaceContext';
 import { useAppTranslation } from '../../i18n';
 import { registerInMemoryResidue, sessionEpoch } from '../../lib/sessionResidue';
@@ -10,9 +9,17 @@ import { spacePath } from '../../core/navigation';
 import ErrorBoundary from '../../core/ErrorBoundary';
 import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
+import { Textarea } from '../../components/ui/textarea';
+import { Select } from '../../components/ui/select';
+import { Badge } from '../../components/ui/badge';
+import { formatDate } from '../../i18n/format';
 import { Card, CardHeader, CardTitle, CardContent } from '../../components/ui/card';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '../../components/ui/tabs';
 import { bundledPlugin, bundledOperationPlugins } from './manifestCatalog';
 import type { PluginOps, PluginSlotComponent, PluginSlotContext } from './slotTypes';
+import { useProjectPluginReach } from './ProjectPluginNavigation';
+import { onProjectPluginBindingsChanged } from './useProjectPluginBindings';
+import { onPluginStateChanged } from './pluginStateEvents';
 type Placement = 'navigation' | 'project.area' | 'project.overview.card';
 export function PluginSlot({
   pluginId,
@@ -60,7 +67,7 @@ function ScopedSlot({
   pluginId: string;
   entryId: string;
   scope: string;
-  t: (key: string) => string;
+  t: (key: string, options?: Record<string, unknown>) => string;
   placement: Placement;
 }) {
   const bundle = bundledPlugin(pluginId),
@@ -101,18 +108,27 @@ function ScopedSlot({
       const current = ++sequence;
       try {
         if (!bundle || !entry || !entry.placements.includes(placement) || !spaceId) throw new Error('Unavailable bundled view');
+        // A Project-level package renders only inside a Project whose binding is effective for this person.
+        const projectBound = bundle.manifest.project_binding === 'required';
+        if (projectBound && !projectId) throw new Error('Project-bound view outside a Project');
         const [{
           items
-        }, project] = await Promise.all([pluginsApi.list({
+        }, project, binding] = await Promise.all([pluginsApi.list({
           spaceId,
           signal: controller.signal
         }), projectId ? projectsApi.get(projectId, {
           spaceId,
           signal: controller.signal
+        }) : Promise.resolve(null), projectBound ? queryOperation('official_plugin.project_binding.list', {
+          project_id: projectId!
+        }, {
+          spaceId,
+          signal: controller.signal
         }) : Promise.resolve(null)]);
         if (!live || epoch !== sessionEpoch() || current !== sequence) return;
         const item = items.find(i => i.descriptor.id === pluginId);
-        if (project?.current_user_can_read === false || !item?.effective.enabled) {
+        const bound = !projectBound || !!binding && 'status' in binding && binding.status === 'succeeded' && binding.data.items.some(i => i.plugin_id === pluginId && i.effective);
+        if (project?.current_user_can_read === false || !item?.effective.enabled || !bound) {
           denied();
           return;
         }
@@ -140,12 +156,18 @@ function ScopedSlot({
     void refresh();
     const focus = () => void refresh();
     window.addEventListener('focus', focus);
+    // A slot mounted on its own (a Project plugin route) follows a binding change in this tab at once, not on the next poll.
+    const unsubscribeBinding = projectId && bundle?.manifest.project_binding === 'required' ? onProjectPluginBindingsChanged(projectId, focus) : () => {};
+    // An enable/disable on the Plugins page in this tab is followed at once too.
+    const unsubscribeState = onPluginStateChanged(focus);
+    const unsubscribe = () => { unsubscribeBinding(); unsubscribeState(); };
     const timer = window.setInterval(focus, 30000);
     return () => {
       live = false;
       controller.abort();
       window.clearInterval(timer);
       window.removeEventListener('focus', focus);
+      unsubscribe();
     };
   }, [scope, version, bundle, entry, spaceId, projectId, pluginId, entryId, denied]);
   const ctx = useMemo<PluginSlotContext>(() => {
@@ -199,17 +221,34 @@ function ScopedSlot({
       ui: {
         Button,
         Input,
+        Textarea,
+        Select,
+        Badge,
         Card,
         CardHeader,
         CardTitle,
         CardContent,
+        Tabs,
+        TabsList,
+        TabsTrigger,
+        TabsContent,
         t,
+        // A stored calendar day stays that day in every time zone.
+        formatDay: day => formatDate(`${day}T00:00:00Z`, { timeZone: 'UTC' }),
         ProposalLink: ({
           id
-        }) => <Button className="max-md:min-h-[44px]" asChild variant="outline" size="sm"><Link to={spacePath(spaceId, `/proposals/${encodeURIComponent(id)}`)}>{t('plugin_ui.review')}</Link></Button>
+        }) => <Button className="max-md:min-h-[44px]" asChild variant="outline" size="sm"><Link to={spacePath(spaceId, `/proposals/${encodeURIComponent(id)}`)}>{t('plugin_ui.review')}</Link></Button>,
+        NoteLink: ({
+          noteId,
+          children
+        }) => <Button className="max-md:min-h-[44px]" asChild variant="outline" size="sm"><Link to={spacePath(spaceId, `/knowledge/notes/${encodeURIComponent(noteId)}`)}>{children}</Link></Button>,
+        EntryLink: ({
+          entry: target,
+          children
+        }) => projectId && bundle?.manifest.web?.entries.some(e => e.id === target && e.placements.includes('project.area')) ? <Button className="max-md:min-h-[44px]" asChild variant="outline" size="sm"><Link to={spacePath(spaceId, `/projects/${encodeURIComponent(projectId)}/plugins/${encodeURIComponent(pluginId)}/${encodeURIComponent(target)}`)}>{children}</Link></Button> : null
       }
     };
-  }, [bundle, state, catalog, spaceId, projectId, t, denied]);
+  }, [bundle, state, catalog, spaceId, projectId, pluginId, t, denied]);
   const { t: translate } = useAppTranslation();
   const title = entry ? translate(`modules.plugin.${pluginId}.${entry.id}`, { defaultValue: entry.title }) : t('plugin_ui.title');
   return <section className={placement === 'project.overview.card' ? 'space-y-3' : 'p-4 space-y-3'} aria-label={title}>
@@ -236,9 +275,10 @@ function EnabledProjectPluginSlots({
   placement: 'project.area' | 'project.overview.card';
 }) {
   const {
-    isEnabled
-  } = useEffectivePlugins();
-  return <>{bundledOperationPlugins.filter(p => isEnabled(p.manifest.id)).flatMap(p => p.manifest.web?.entries.filter(e => e.placements.includes(placement)).map(e => <PluginSlot key={`${p.manifest.id}:${e.id}`} pluginId={p.manifest.id} entryId={e.id} placement={placement} />) ?? [])}</>;
+    projectId = null
+  } = useParams();
+  const reaches = useProjectPluginReach(projectId);
+  return <>{bundledOperationPlugins.filter(p => reaches(p.manifest)).flatMap(p => p.manifest.web?.entries.filter(e => e.placements.includes(placement)).map(e => <PluginSlot key={`${p.manifest.id}:${e.id}`} pluginId={p.manifest.id} entryId={e.id} placement={placement} />) ?? [])}</>;
 }
 export function ProjectPluginSlots({
   placement
@@ -246,5 +286,6 @@ export function ProjectPluginSlots({
   placement: 'project.area' | 'project.overview.card';
 }) {
   if (!bundledOperationPlugins.some(p => p.manifest.web?.entries.some(e => e.placements.includes(placement)))) return null;
-  return <EnabledProjectPluginSlots placement={placement} />;
+  // A failing plugin contribution never takes the core Project surface down with it.
+  return <ErrorBoundary fallback={() => null}><EnabledProjectPluginSlots placement={placement} /></ErrorBoundary>;
 }

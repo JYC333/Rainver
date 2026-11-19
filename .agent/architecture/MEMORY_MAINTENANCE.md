@@ -452,7 +452,6 @@ Focused coverage:
 - `server/test/memoryMaintenance.test.ts`
 - `server/test/memoryMaintenanceArtifacts.test.ts`
 - `server/test/memoryMaintenanceJobs.test.ts`
-- `server/test/memoryMaintenanceRoutes.test.ts`
 - `server/test/memoryMaintenanceDb.test.ts`
 - `server/test/memoryMaintenanceRevisionDb.test.ts`
 - `server/test/proposalApplierRegistry.test.ts`

@@ -11,7 +11,7 @@ import {
 } from "../access/contentAccessSql.js";
 import { canReadProject } from "../projects/access.js";
 import { collaborationLimits } from "./collaborationBudgetRepository.js";
-import { roomBudgetContainer, countContainerDelegations } from "../rooms/delegationBudget.js";
+import { consecutiveFailures, containerResults, roomBudgetContainer, countContainerDelegations } from "../rooms/delegationBudget.js";
 
 export interface AgentRunGroupRecord {
   id: string;
@@ -211,6 +211,11 @@ export class PgAgentGroupRepository {
 
   async countContainerDelegations(spaceId: string, containerId: string): Promise<number> {
     return countContainerDelegations(this.db, spaceId, containerId);
+  }
+
+  /** A container's admitted children in a row, newest first, that ended without a result. */
+  async containerConsecutiveFailures(spaceId: string, containerId: string): Promise<number> {
+    return consecutiveFailures(await containerResults(this.db, spaceId, containerId));
   }
 
   /** The Agent-triggered turns charged to a container group, or to the discussion it is a wave of. */
@@ -1074,6 +1079,16 @@ export class PgAgentGroupRepository {
       [input.space_id, input.parent_run_id],
     );
     return result.rows;
+  }
+
+  /** Children of one parent Run that are not finished yet; a resumed coordinator turn's in-flight fan-out. */
+  async countOutstandingDelegationsForParent(input: { space_id: string; parent_run_id: string }): Promise<number> {
+    const result = await this.db.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM run_delegations
+        WHERE space_id = $1 AND parent_run_id = $2 AND status IN ('requested', 'queued', 'running')`,
+      [input.space_id, input.parent_run_id],
+    );
+    return Number(result.rows[0]?.count ?? 0);
   }
 
   async countDelegationsForParent(input: {

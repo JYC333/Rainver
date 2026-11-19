@@ -1,6 +1,7 @@
 import { lstatSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import type { HostLaunchIsolation } from "@rainver/protocol";
+import { MODEL_CHANNEL_FORWARDER_SOURCE } from "./modelChannel.js";
 
 /**
  * The strict-mode namespace: one rootless bubblewrap mount/PID namespace per
@@ -32,7 +33,17 @@ export interface StrictNamespaceRequest {
   binds: StrictBind[];
   isolation: HostLaunchIsolation;
   env: Record<string, string>;
+  /**
+   * The model channel of an egress-`none` Run (`modelChannel.ts`): the relay
+   * socket's directory, bound read-only, and the loopback port the in-namespace
+   * forwarder listens on before the runtime starts. Refused with any other
+   * egress profile.
+   */
+  modelChannel?: { node: string; directory: string; socketPath: string; port: number };
 }
+
+/** Inside the namespace's private `/tmp`; the forwarder creates it once it listens. */
+const MODEL_CHANNEL_READY = "/tmp/.rainver-model-channel-ready";
 
 export const BWRAP_PATH = "/usr/bin/bwrap";
 
@@ -186,8 +197,21 @@ export function buildStrictNamespaceCommand(request: StrictNamespaceRequest): { 
   // boundary against one that opens its own socket (`egressProxy.ts`).
   if (request.isolation.egress_profile === "none") args.push("--unshare-net");
 
+  const channel = request.modelChannel;
+  if (channel && request.isolation.egress_profile !== "none") throw new Error("A model channel is only valid in a namespace with egress none");
+  const channelBinds: StrictBind[] = channel
+    ? [{ path: assertAbsolute("model channel", channel.directory), access: "read_only" }, { path: assertAbsolute("node", channel.node), access: "read_only" }]
+    : [];
+
   const workspaceAccess = request.isolation.sandbox_mode === "read_only" ? "read_only" : "read_write";
   const merged = mergeBinds([{ path: cwd, access: workspaceAccess }, { path: home, access: "read_write" }, ...request.binds]);
+  // After the merge, never widened by it: the socket directory sits inside the
+  // read-write run directory and must stay read-only on top of it.
+  for (const bind of channelBinds) {
+    const index = merged.findIndex((entry) => entry.path === bind.path);
+    if (index >= 0) merged.splice(index, 1);
+    merged.push(bind);
+  }
   const visible = [...SYSTEM_ROOTS.filter(exists), ...merged.map((bind) => bind.path)];
   const links: Array<{ path: string; target: string }> = [];
   for (const bind of merged) {
@@ -205,6 +229,31 @@ export function buildStrictNamespaceCommand(request: StrictNamespaceRequest): { 
   // After every bind, so none can shadow a link or the directory it is made in.
   for (const link of links) args.push("--symlink", link.target, link.path);
 
+  if (channel) {
+    // The forwarder gets no stdin, stdout or readiness fd: those belong to the
+    // runtime's protocol stream and the daemon's handshake. Readiness is
+    // reported only once it listens, so the runtime never starts before its
+    // model is reachable, and a forwarder that cannot start fails the launch
+    // as a namespace failure.
+    args.push(
+      "--chdir",
+      cwd,
+      "--",
+      "/bin/sh",
+      "-c",
+      'n="$1"; s="$2"; k="$3"; p="$4"; shift 4; "$n" -e "$s" "$k" "$p" ' + MODEL_CHANNEL_READY + ' </dev/null >/dev/null 3>&- &'
+        + ' i=0; while [ ! -e ' + MODEL_CHANNEL_READY + ' ]; do i=$((i+1)); if [ "$i" -gt 500 ]; then echo "model channel did not start" >&2; exit 125; fi; sleep 0.01; done;'
+        + ' printf \'ready\\n\' >&3; exec "$@"',
+      "strict-launch",
+      channel.node,
+      MODEL_CHANNEL_FORWARDER_SOURCE,
+      channel.socketPath,
+      String(channel.port),
+      request.command,
+      ...request.args,
+    );
+    return { command: BWRAP_PATH, args, env:{HOME:home,...request.env,...STRICT_SANDBOX_ENV} };
+  }
   args.push(
     "--chdir",
     cwd,

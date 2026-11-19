@@ -178,6 +178,7 @@ export class AcpController implements CliStdioController {
   private advertisedConfigOptions: Record<string, unknown>[] = [];
   private sessionId: string | null = null;
   private text = "";
+  private singleTextReply = true;
   private answerMessageId: string | null = null;
   private answerInterrupted = false;
   private usage: CanonicalUsage | null = null;
@@ -534,6 +535,10 @@ export class AcpController implements CliStdioController {
         this.fail(`${this.label()} ACP returned an out-of-scope session update`, closeStdin);
         return;
       }
+      if (this.phase === "prompt" && (
+        updateSession !== this.sessionId || update.sessionUpdate === "subagent_update"
+        || update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update" || update.sessionUpdate === "plan"
+      )) this.singleTextReply = false;
       if (update.sessionUpdate === "subagent_update") {
         const childId = stringField(update, "sessionId");
         if (!childId || childId.length > 256 || childId === this.sessionId || childId === updateSession
@@ -589,12 +594,14 @@ export class AcpController implements CliStdioController {
           // turn's answer, and it feeds output_text and the measurement
           // fallback.
           if (thought) {
+            if (delta.trim()) this.singleTextReply = false;
             this.input.on_thought_delta?.(delta);
           } else {
             // ACP chunks belong to a message, not one concatenated turn.
             // Anonymous messages can only be separated at actual tool work.
             const messageId = stringField(update, "messageId");
             if (delta.trim() && (this.answerInterrupted || (messageId !== null && this.text.trim().length > 0 && messageId !== this.answerMessageId))) {
+              if (this.text.trim()) this.singleTextReply = false;
               this.text = "";
             }
             if (delta.trim()) {
@@ -656,6 +663,7 @@ export class AcpController implements CliStdioController {
       // for silence or its budget here, the stored session is what hung.
       ...(this.input.runtime_session_id && this.phase === "session_new" && !this.error ? { resume_unanswered: true } : {}),
       text: this.text,
+      single_text_reply: this.singleTextReply && this.sentPromptCount === 1 && !this.askedUser && !this.yieldRequested,
       // A prompted session is durable. An account failure cannot disprove
       // the durability of an existing session, even before initialize replies.
       external_session_id: this.prompted ? this.sessionId : this.input.runtime_session_id && this.failure

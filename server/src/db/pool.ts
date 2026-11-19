@@ -12,6 +12,7 @@ import { Pool } from "pg";
 const pools = new Map<string, Pool>();
 const auditPools = new Map<string, Pool>();
 const pluginControlPools = new Map<string, Pool>();
+const gmailReadControlPools = new Map<string, Pool>();
 
 export type { Pool, PoolClient } from "pg";
 
@@ -75,15 +76,33 @@ export function getPluginControlPool(databaseUrl:string):Pool {
 }
 
 /**
+ * Gmail read cancellation only: `pg_cancel_backend` of a held read transaction
+ * must still be sendable when the main pool is exhausted. Every wait is bounded
+ * (queue/connect, client-side query and server statement timeouts).
+ */
+export function getGmailReadControlPool(databaseUrl: string): Pool {
+  if (inOperationWork()) throw new Error("Gmail read control pool refused during operation work");
+  let pool = gmailReadControlPools.get(databaseUrl);
+  if (!pool) {
+    pool = new Pool({ connectionString: databaseUrl, max: 2, connectionTimeoutMillis: 1_000, query_timeout: 1_000, options: "-c jit=off -c statement_timeout=1000" });
+    pool.on("connect", client => client.on("error", () => {}));
+    pool.on("error", () => {});
+    gmailReadControlPools.set(databaseUrl, pool);
+  }
+  return pool;
+}
+
+/**
  * Ends and forgets the cached pool for `databaseUrl`, if any. Tests drop
  * their per-file database in teardown, and `DROP DATABASE` waits on any
  * connection a service opened through `getDbPool` — forever, when files
  * share a worker.
  */
 export async function closeDbPool(databaseUrl: string): Promise<void> {
-  const closing = [pools.get(databaseUrl), auditPools.get(databaseUrl),pluginControlPools.get(databaseUrl)];
+  const closing = [pools.get(databaseUrl), auditPools.get(databaseUrl),pluginControlPools.get(databaseUrl), gmailReadControlPools.get(databaseUrl)];
   pools.delete(databaseUrl);
   auditPools.delete(databaseUrl);
   pluginControlPools.delete(databaseUrl);
+  gmailReadControlPools.delete(databaseUrl);
   await Promise.all(closing.map(pool => pool?.end()));
 }

@@ -6,6 +6,7 @@ import type {ServerConfig} from '../../config.js';
 import type {OperationRegistration} from '../systemActions/operations/types.js';
 import {OperationBusinessError,hidden,markedRefusal} from '../systemActions/operations/errors.js';
 import {PgProposalApplyService,ProposalApplyHttpError} from './applyService.js';
+import {isPersonActingDirectly} from '../systemActions/operations/personAdmission.js';
 export function proposalApplyRefusal(error:ProposalApplyHttpError){
  const detail=error.detail;
  const message=detail&&typeof detail==='object'&&'message' in detail&&typeof detail.message==='string'?detail.message:error.message;
@@ -47,7 +48,7 @@ export function proposalRejectionRegistration(config:ServerConfig,definitions:Re
   async resolve(_db,raw,a){const i=raw as OperationInput<'proposal.reject'>;return {authority:`space:${a.space_id}`,targets:i,resourceType:'proposal',resourceId:i.proposal_id};},
   async authorize(db,raw,a){await proposalAuthority(()=>service.authorizeRejectOperationInTransaction(db,(raw as OperationInput<'proposal.reject'>).proposal_id,{spaceId:a.space_id,userId:a.on_behalf_of_user_id!}));},
   async authorizeResult(db,raw,a){await proposalAuthority(()=>service.authorizeRejectOperationInTransaction(db,(raw as OperationOutput<'proposal.reject'>).id,{spaceId:a.space_id,userId:a.on_behalf_of_user_id!},true));},
-  async execute(db,raw,a){const result=await service.rejectOperationInTransaction(db,(raw as OperationInput<'proposal.reject'>).proposal_id,{spaceId:a.space_id,userId:a.on_behalf_of_user_id!});if(!result)throw hidden();return result.outcome;},
+  async execute(db,raw,a){const result=await service.rejectOperationInTransaction(db,(raw as OperationInput<'proposal.reject'>).proposal_id,{spaceId:a.space_id,userId:a.on_behalf_of_user_id!},isPersonActingDirectly(a));if(!result)throw hidden();return result.outcome;},
   async afterCommit(raw){await service.afterRejectOperationCommit(raw as OperationOutput<'proposal.reject'>);},
   classifyError(e){return e instanceof ProposalApplyHttpError?proposalApplyRefusal(e):undefined;},
  };
@@ -59,8 +60,8 @@ export function proposalApplyRegistrations(config:ServerConfig,definitions:Reado
   proposalDecisionOwner:{roots:async (_db,raw)=>[(raw as {proposal_id:string}).proposal_id],prepare:(db,roots,a)=>service.prepareReportDependenciesInTransaction(db,roots,{spaceId:a.space_id,userId:a.on_behalf_of_user_id!})},
   async resolve(_db,raw,a){const i=raw as {proposal_id:string};return {authority:`space:${a.space_id}`,targets:i,resourceType:'proposal',resourceId:i.proposal_id};},
   async authorize(db,raw,a){const i=raw as {proposal_id:string};const identity={spaceId:a.space_id,userId:a.on_behalf_of_user_id!};await proposalAuthority(()=>id==='proposal.accept'?service.authorizeAcceptOperationInTransaction(db,i.proposal_id,identity):service.authorizeRollbackOperationInTransaction(db,i.proposal_id,identity));},
-  async authorizeResult(db,raw,a){const identity={spaceId:a.space_id,userId:a.on_behalf_of_user_id!};if(id==='proposal.accept')await proposalAuthority(()=>service.authorizeAcceptOperationInTransaction(db,(raw as OperationOutput<'proposal.accept'>).proposal.id,identity,true));else await proposalAuthority(()=>service.authorizeRollbackOperationInTransaction(db,(raw as OperationOutput<'proposal.rollback'>).proposal_id,identity,true));},
-  async execute(db,raw,a){const i=raw as OperationInput<'proposal.accept'>;const identity={spaceId:a.space_id,userId:a.on_behalf_of_user_id!};const result=id==='proposal.accept'?await service.acceptOperationInTransaction(db,i.proposal_id,identity,{confirmIncompletePatch:i.confirm_incomplete_patch===true||i.confirm_incomplete_patch==='true'}):await service.rollbackInTransaction(db,i.proposal_id,identity);if(!result)throw hidden();return result;},
+  async authorizeResult(db,raw,a){const identity={spaceId:a.space_id,userId:a.on_behalf_of_user_id!};if(id==='proposal.accept')await proposalAuthority(()=>service.authorizeAcceptOperationInTransaction(db,(raw as OperationOutput<'proposal.accept'>).proposal.id,identity,true,{resultType:(raw as OperationOutput<'proposal.accept'>).result_type}));else await proposalAuthority(()=>service.authorizeRollbackOperationInTransaction(db,(raw as OperationOutput<'proposal.rollback'>).proposal_id,identity,true));},
+  async execute(db,raw,a){const i=raw as OperationInput<'proposal.accept'>;const identity={spaceId:a.space_id,userId:a.on_behalf_of_user_id!};const result=id==='proposal.accept'?await service.acceptOperationInTransaction(db,i.proposal_id,identity,{confirmIncompletePatch:i.confirm_incomplete_patch===true||i.confirm_incomplete_patch==='true',ownerCardDecision:isPersonActingDirectly(a)}):await service.rollbackInTransaction(db,i.proposal_id,identity);if(!result)throw hidden();return result;},
   successStatus:out=>id==='proposal.accept'?(out as OperationOutput<'proposal.accept'>).result_type==='code_patch_pending'?202:200:['pending','applying','compensating'].includes((out as OperationOutput<'proposal.rollback'>).status)?202:200,
   classifyError(e){
    if(e instanceof ProposalApplyHttpError)return proposalApplyRefusal(e);

@@ -23,6 +23,7 @@ import { PluginHost } from "./modules/plugins/host/index.js";
 import { BUILT_IN_PLUGINS } from "./modules/plugins/builtInPlugins.js";
 import { runBuiltInSeeds } from "./db/seeds.js";
 import { getDbPool } from "./db/pool.js";
+import { assertLeastPrivilegeRuntimeRole } from "./db/runtimeRoles.js";
 import { PgWorkspaceLocationRepository } from "./modules/projectFolders/workspaceLocations.js";
 import { publishBuiltinHostCredential } from "./modules/hosts/builtinRegistration.js";
 
@@ -53,6 +54,16 @@ async function main(): Promise<void> {
       process.exit(1);
     }
     throw err;
+  }
+
+  // ADR 0031: an activated instance refuses to serve as its bootstrap owner.
+  if (process.env.RAINVER_DB_REQUIRE_RUNTIME_ROLE === "1" && config.databaseUrl) {
+    try {
+      await assertLeastPrivilegeRuntimeRole(getDbPool(config.databaseUrl));
+    } catch (err) {
+      process.stderr.write(`[server] database role: ${err instanceof Error ? err.message : String(err)}\n`);
+      process.exit(1);
+    }
   }
 
   const pluginHost = new PluginHost(BUILT_IN_PLUGINS);

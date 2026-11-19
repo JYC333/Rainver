@@ -9,7 +9,9 @@ import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSq
 import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 import { assertProjectReadable, assertProjectWriter, canWriteProject, lockActiveProjectForMutation, lockProjectAudience } from "../projects/access.js";
 import { ProjectCorpusRepository } from "../projects/corpusRepository.js";
-import { sourceItemReadableClause } from "../sources/sourceItemAccess.js";
+import { sourceItemFullContentReadClause, sourceItemReadableClause } from "../sources/sourceItemAccess.js";
+import { loadSourceConnectionIdsForTargets, lockSourceLineageEntries, sourceLineageReadable, sourceLineageReadableTargets } from "../retrieval/sourcePolicy.js";
+import { inheritNoteSourceLineage, recordNoteSourceItemLineage, sourceItemLineagePins } from "../knowledge/noteSourceLineage.js";
 import type { ServerConfig } from "../../config.js";
 import { ProjectResearchExecutionProfileService } from "./executionProfileService.js";
 import {withRunTerminalOwner} from '../systemActions/operations/proposalTransitions.js';
@@ -17,7 +19,7 @@ import {canonicalRunOutput} from '../runs/orchestrationResults.js';
 import {NotebookChatMutationError,NotebookChatBudgetError} from './notebookChatErrors.js';
 import {authorizeNotebookChatAttempt} from './notebookChatAdmission.js';
 import {authorizeResearchAdhocAttempt} from './adhocOperation.js';
-import {assertResearchProviderSourceEgress,assertResearchNoteSourceAudience,assertResearchProjectSourceAudience} from './providerSourceAccess.js';
+import {assertResearchProviderSourceEgress,assertResearchNoteSourceAudience,assertResearchProjectSourceAudience,freezeSourceItemConnections,frozenResearchSourcePins,parseSourceItemConnections} from './providerSourceAccess.js';
 import { enqueueProviderTaskRunJob, providerTaskRunPreparers } from "../runs/providerTaskRunHandler.js";
 import { PgRunRepository } from "../runs/repository.js";
 import { withQueryableTransaction } from "../routeUtils/common.js";
@@ -288,6 +290,14 @@ export class ProjectResearchAreaService {
     }
     const { folderId } = await withNoteWrites(this.db, (scope) =>
       new ProjectResearchAreaService(scope.db, this.config).ensureArea(scope, identity.spaceId, projectId));
+    // The target's lineage entries and root are held before its body is read, so the body copied
+    // into the prompt and the lineage connections frozen beside it come from one locked snapshot:
+    // a concurrent source.item.update cannot detach the Source in between and leave an empty freeze.
+    const lockedTarget = await this.resolveAdhocNoteId(identity, projectId, requested);
+    if (lockedTarget) {
+      await lockSourceLineageEntries(this.db, identity.spaceId, "note", [lockedTarget]);
+      await this.db.query("SELECT id FROM space_objects WHERE space_id=$1 AND id=$2 FOR SHARE", [identity.spaceId, lockedTarget]);
+    }
     let note: NotebookNoteRow | null = null;
     if (role) {
       const resolution = await resolveNotebookNote(this.db, identity.spaceId, projectId, role, identity.userId);
@@ -302,8 +312,13 @@ export class ProjectResearchAreaService {
       note = await this.resolveProjectNoteByExactTitle(identity, projectId, title);
     }
     // The Run will rewrite this note, and its body goes into the prompt:
-    // reading a note is not permission for either, as in notebookChat.
+    // reading a note is not permission for either, as in notebookChat. Nor is
+    // its ACL alone: its Source lineage must still admit this person, as for
+    // Knowledge's Note detail.
     if (note) await assertWritableSpaceObject(this.db, identity, note.id, "Note not found");
+    if (note && !(await sourceLineageReadable(this.db, identity.spaceId, "note", [note.id], { viewerUserId: identity.userId }))) {
+      throw new HttpError(404, "Note not found");
+    }
     if (!note) {
       const now = new Date().toISOString();
       const created = await withNoteWrites(this.db, (scope) =>
@@ -313,8 +328,10 @@ export class ProjectResearchAreaService {
         }));
       note = { id: created.id, version: created.version, content_json: markdownToPm(""), plain_text: "" };
     }
+    if (lockedTarget && note.id !== lockedTarget) throw new HttpError(409, "The target Note changed; ask again");
     const baseVersion = note.version;
     const blocks = pmBlocksText(note.content_json ?? { type: "doc", content: [] });
+    const noteSourceConnectionIds = [...new Set([...(await loadSourceConnectionIdsForTargets(this.db, identity.spaceId, "note", [note.id])).values()].flat())].sort();
     const materialIds = (Array.isArray(body.source_item_ids) ? body.source_item_ids : []).filter((v): v is string => typeof v === "string").slice(0, 20);
     const material = materialIds.length ? await this.db.query<{ id:string; title: string; excerpt: string | null; why_md: string | null; how_md: string | null; what_md: string | null }>(
       `SELECT si.id,si.title,si.excerpt,pc.why_md,pc.how_md,pc.what_md
@@ -323,7 +340,7 @@ export class ProjectResearchAreaService {
          JOIN source_items si ON si.id=pcis.source_item_id AND si.space_id=pcis.space_id AND si.deleted_at IS NULL
          LEFT JOIN research_evidence_cards pc ON pc.project_id=pci.project_id AND pc.source_item_id=pcis.source_item_id
         WHERE pci.space_id=$1 AND pci.project_id=$2 AND pcis.source_item_id=ANY($3::text[])
-          AND pci.status='active' AND ${sourceItemReadableClause("si", "$4", false)}`,
+          AND pci.status='active' AND ${sourceItemFullContentReadClause("si", "$4")}`,
       [identity.spaceId, projectId, materialIds, identity.userId],
     ) : { rows: [] };
     const execution = objectValue(body.execution);
@@ -360,7 +377,10 @@ export class ProjectResearchAreaService {
         contract_snapshot: {
           source: { kind: "direct", id: note.id }, project_id: projectId,
           policy_context_json: createManagedExecutionPolicy("project_research", true),
-          workflow_input_json: { research_adhoc: { note_id: note.id, base_version: baseVersion, source_item_ids: copiedMaterialIds } },
+          // The prompt copies the target Note's body too: its lineage connections, read under the
+          // same locks as that body, are frozen beside the items', so a later rebind never drops
+          // the Source that body was read under.
+          workflow_input_json: { research_adhoc: { note_id: note.id, base_version: baseVersion, source_item_ids: copiedMaterialIds, source_item_connections: await freezeSourceItemConnections(db, identity.spaceId, copiedMaterialIds), note_source_connection_ids: noteSourceConnectionIds } },
           structured_output_json: ADHOC_OUTPUT_CONTRACT,
           route_hints_json: {
             owner_domain: "projectResearch",
@@ -424,11 +444,21 @@ export class ProjectResearchAreaService {
     // Prior answers retain the context that produced them. A follow-up must
     // not resend those words after their Source/Note authority was withdrawn.
     const historyRuns=[...new Set(history.flatMap(message=>message.run_id?[message.run_id]:[]))];
-    const priorContexts=(await this.db.query<{contract_snapshot_json:unknown}>("SELECT contract_snapshot_json FROM runs WHERE id=ANY($1::varchar[]) AND space_id=$2 AND project_id=$3 AND session_id=$4 AND instructed_by_user_id=$5 AND capability_id=$6 ORDER BY id",[historyRuns,identity.spaceId,projectId,session.id,identity.userId,RESEARCH_STAGES.ask])).rows.map(run=>objectValue(objectValue(objectValue(run.contract_snapshot_json).workflow_input_json).notebook_chat));
+    // Only a turn whose Run froze every Source it copied (each item's connections and the
+    // context Notes' lineage connections) is carried forward. An earlier turn without that
+    // evidence is left out of the prompt entirely: its Sources are never back-filled from
+    // today's bindings, which could name a different Source than the one its words came from.
+    const priorRuns=(await this.db.query<{id:string;contract_snapshot_json:unknown}>("SELECT id,contract_snapshot_json FROM runs WHERE id=ANY($1::varchar[]) AND space_id=$2 AND project_id=$3 AND session_id=$4 AND instructed_by_user_id=$5 AND capability_id=$6 ORDER BY id",[historyRuns,identity.spaceId,projectId,session.id,identity.userId,RESEARCH_STAGES.ask])).rows.map(run=>({id:run.id,context:objectValue(objectValue(objectValue(run.contract_snapshot_json).workflow_input_json).notebook_chat)}))
+      .filter(run=>frozenResearchSourcePins(run.context,Array.isArray(run.context.source_item_ids)?run.context.source_item_ids.filter((id):id is string=>typeof id==='string'):[],{noteConnections:true})!==null);
+    const provenRuns=new Set(priorRuns.map(run=>run.id)),priorContexts=priorRuns.map(run=>run.context);
+    // Only the person's own messages and answers whose run_id column names a proven Run carry
+    // forward. Any other prior answer — including older ones that kept their Run only in
+    // message metadata, or none at all — has no reliable frozen evidence and is dropped.
+    const priorTurns=history.slice(0,-1).filter(message=>message.role==='user'||(message.role==='assistant'&&!!message.run_id&&provenRuns.has(message.run_id)));
     const priorSourceIds=new Set(priorContexts.flatMap(context=>Array.isArray(context.source_item_ids)?context.source_item_ids.filter((id):id is string=>typeof id==='string'):[]));
     const priorNoteRefs=priorContexts.flatMap(context=>Array.isArray(context.note_refs)?context.note_refs.flatMap(ref=>ref&&typeof ref==='object'&&typeof ref.id==='string'&&Number.isInteger(ref.version)?[{id:ref.id as string,version:ref.version as number}]:[]):[]);
-    const historyBlock = history.length > 1
-      ? `Conversation so far:\n${history.slice(0, -1).map((m) => `${m.role}: ${m.content}`).join("\n")}`
+    const historyBlock = priorTurns.length
+      ? `Conversation so far:\n${priorTurns.map((m) => `${m.role}: ${m.content}`).join("\n")}`
       : "";
 
     const materialIds = (Array.isArray(body.source_item_ids) ? body.source_item_ids : []).filter((v): v is string => typeof v === "string").slice(0, 20);
@@ -439,7 +469,7 @@ export class ProjectResearchAreaService {
          JOIN source_items si ON si.id=pcis.source_item_id AND si.space_id=pcis.space_id AND si.deleted_at IS NULL
          LEFT JOIN research_evidence_cards pc ON pc.project_id=pci.project_id AND pc.source_item_id=pcis.source_item_id
         WHERE pci.space_id=$1 AND pci.project_id=$2 AND pcis.source_item_id=ANY($3::text[])
-          AND pci.status='active' AND ${sourceItemReadableClause("si", "$4", false)}`,
+          AND pci.status='active' AND ${sourceItemFullContentReadClause("si", "$4")}`,
       [identity.spaceId, projectId, materialIds, identity.userId],
     ) : { rows: [] };
     const execution = objectValue(body.execution);
@@ -470,6 +500,14 @@ export class ProjectResearchAreaService {
     const frozenNotes=new Map(notes.map(note=>[note.id,{id:note.id,version:note.version}]));
     for(const ref of priorNoteRefs)if(!frozenNotes.has(ref.id))frozenNotes.set(ref.id,ref);
     const frozenSourceIds=[...new Set([...material.rows.map(item=>item.id),...priorSourceIds])];
+    // The context Notes' Source connections as the prompt was built: a written-back Note pins
+    // them with its inherited lineage, so a later item rebind cannot drop an original Source.
+    const frozenNoteConnections=[...new Set([...[...(await loadSourceConnectionIdsForTargets(this.db,identity.spaceId,'note',[...frozenNotes.keys()])).values()].flat(),...priorContexts.flatMap(context=>Array.isArray(context.note_source_connection_ids)?context.note_source_connection_ids.filter((id):id is string=>typeof id==='string'):[])])].sort();
+    // Each item's connection as the prompt is built (earlier turns' as their prompts were): sends
+    // and write-backs check these with the live binding, and a written Note's lineage pins them.
+    const priorItemConnections:Record<string,string[]>={};
+    for(const context of priorContexts)for(const [id,connections] of Object.entries(parseSourceItemConnections(context.source_item_connections)))priorItemConnections[id]=[...(priorItemConnections[id]??[]),...connections];
+    const frozenItemConnections=await freezeSourceItemConnections(this.db,identity.spaceId,frozenSourceIds,priorItemConnections);
     const queued = await withQueryableTransaction(this.db, async db => {
       const run = await new PgRunRepository(db).createQueuedProviderTaskRun({
         space_id:identity.spaceId,user_id:identity.userId,project_id:projectId,session_id:session.id,
@@ -477,7 +515,7 @@ export class ProjectResearchAreaService {
         capability_id:RESEARCH_STAGES.ask,visibility:'private',prompt:message,instruction,
         contract_snapshot:{source:{kind:'direct',id:folderId},project_id:projectId,
           policy_context_json:createManagedExecutionPolicy('project_research',true),
-          workflow_input_json:{notebook_chat:{folder_id:folderId,session_id:session.id,note_refs:[...frozenNotes.values()],source_item_ids:frozenSourceIds,provider_id:resolved.modelProviderId,model_name:resolved.modelName,daily_used:used+1}},
+          workflow_input_json:{notebook_chat:{folder_id:folderId,session_id:session.id,note_refs:[...frozenNotes.values()],note_source_connection_ids:frozenNoteConnections,source_item_ids:frozenSourceIds,source_item_connections:frozenItemConnections,provider_id:resolved.modelProviderId,model_name:resolved.modelName,daily_used:used+1}},
           structured_output_json:NOTEBOOK_CHAT_OUTPUT_CONTRACT,
           route_hints_json:{owner_domain:'projectResearch',stage:'research_notebook_chat',provider_id:resolved.modelProviderId,model:resolved.modelName}},
       });
@@ -509,12 +547,18 @@ export class ProjectResearchAreaService {
     if((await this.db.query("SELECT id FROM messages WHERE session_id=$1 AND space_id=$2 AND run_id=$3 AND role='assistant'",[sessionId,identity.spaceId,runId])).rows.length)return;
     const notes=Array.isArray(contract.note_refs)?contract.note_refs as Array<{id:string;version:number}>:[];
     const materialIds=Array.isArray(contract.source_item_ids)?contract.source_item_ids.filter((id):id is string=>typeof id==='string'):[];
+    const notePins=Array.isArray(contract.note_source_connection_ids)?contract.note_source_connection_ids.filter((id):id is string=>typeof id==='string'):[];
+    // Every Source the prompt was frozen under answers for the written Note's audience, and the
+    // copied items' own lineage is pinned onto it; a Note that cannot keep that policy is not written.
+    const frozenPins=frozenResearchSourcePins(contract,materialIds,{noteConnections:true});
+    const itemPins=await sourceItemLineagePins(this.db,identity.spaceId,materialIds,frozenPins?.items??null);
+    const sourcePins=frozenPins?.pins??[];
     await lockProjectAudience(this.db,identity.spaceId,projectId);
     const answer = text(output.answer, 8000) || "(no answer returned)";
     const notebookUpdate = objectValue(output.notebook_update);
     let notebookEdit: { note_id: string; version: number; conflict: boolean } | null = null;
     const rawOps: unknown[] = Array.isArray(notebookUpdate.ops) ? notebookUpdate.ops : [];
-    if (rawOps.length) {
+    if (rawOps.length && itemPins) {
       const refs = Array.isArray(notebookUpdate.refs) ? notebookUpdate.refs.filter((v): v is string => typeof v === "string").slice(0, 50) : [];
       const requestedNoteId = optionalString(notebookUpdate.note_id);
       const targetNote = requestedNoteId ? notes.find((n) => n.id === requestedNoteId) : undefined;
@@ -525,7 +569,7 @@ export class ProjectResearchAreaService {
         // Run is already spent, and a 404 here would lose the reply with it.
         const writable = await (async()=>{
           await assertWritableSpaceObject(this.db, identity, targetNote.id, "Note not found");
-          await assertResearchNoteSourceAudience(this.db,identity,targetNote.id,materialIds,notes.map(note=>note.id));
+          await assertResearchNoteSourceAudience(this.db,identity,targetNote.id,materialIds,notes.map(note=>note.id),sourcePins);
         })().then(() => true, (error: unknown) => {
             if (error instanceof HttpError && (error.statusCode === 404 || error.statusCode === 403)) return false;
             throw error;
@@ -534,9 +578,14 @@ export class ProjectResearchAreaService {
           const applied = await withNoteWrites(this.db, (scope) => scope.applyOps({
             spaceId: identity.spaceId, noteId: targetNote.id, baseVersion: targetNote.version, rawOps, source: "ai_adhoc", runId, refs,
           }));
-          if (applied) notebookEdit = { note_id: targetNote.id, version: applied.note.version, conflict: applied.conflict };
+          if (applied) {
+            // The target's own body was in the prompt as well: its lineage is re-pinned with the rest.
+            await inheritNoteSourceLineage(this.db, { spaceId: identity.spaceId, noteId: targetNote.id, fromNoteIds: notes.map((note) => note.id), pinConnectionIds: notePins, includeTarget: true });
+            await recordNoteSourceItemLineage(this.db, { spaceId: identity.spaceId, noteId: targetNote.id, pins: itemPins });
+            notebookEdit = { note_id: targetNote.id, version: applied.note.version, conflict: applied.conflict };
+          }
         }
-      } else if(await assertResearchProjectSourceAudience(this.db,identity,projectId,materialIds,notes.map(note=>note.id)).then(()=>true,(error:unknown)=>{if(error instanceof HttpError&&(error.statusCode===403||error.statusCode===404))return false;throw error;})) {
+      } else if(await assertResearchProjectSourceAudience(this.db,identity,projectId,materialIds,notes.map(note=>note.id),sourcePins).then(()=>true,(error:unknown)=>{if(error instanceof HttpError&&(error.statusCode===403||error.statusCode===404))return false;throw error;})) {
         const newTitle = text(notebookUpdate.new_note_title, 200) || "Untitled";
         const now = new Date().toISOString();
         // One scope: a note created for an edit that then fails to apply is a
@@ -549,7 +598,11 @@ export class ProjectResearchAreaService {
           const result = await scope.applyOps({
             spaceId: identity.spaceId, noteId: created.id, baseVersion: created.version, rawOps, source: "ai_adhoc", runId, refs,
           });
-          return result ? { noteId: created.id, ...result } : null;
+          if (!result) return null;
+          // The new Note is written from the context Notes and the selected items: it keeps their Source policy.
+          await inheritNoteSourceLineage(scope.db, { spaceId: identity.spaceId, noteId: created.id, fromNoteIds: notes.map((note) => note.id), pinConnectionIds: notePins });
+          await recordNoteSourceItemLineage(scope.db, { spaceId: identity.spaceId, noteId: created.id, pins: itemPins });
+          return { noteId: created.id, ...result };
         });
         if (applied) notebookEdit = { note_id: applied.noteId, version: applied.note.version, conflict: applied.conflict };
       }
@@ -649,9 +702,24 @@ export class ProjectResearchAreaService {
     const refs = Array.isArray(input.update.refs)
       ? input.update.refs.filter((v): v is string => typeof v === "string").slice(0, 50)
       : [];
-    await withNoteWrites(this.db, (scope) => scope.applyOps({
-      spaceId: input.spaceId, noteId, baseVersion, rawOps, source: "ai_adhoc", runId: input.runId, refs,
-    }));
+    // The copied excerpts keep their Source policy on the Note (lineage pinned to the
+    // connections frozen with the prompt); an edit whose policy cannot be kept is not written.
+    const materialIds = Array.isArray(input.contract.source_item_ids) ? input.contract.source_item_ids.filter((id): id is string => typeof id === "string") : [];
+    const frozen = frozenResearchSourcePins(input.contract, materialIds, { noteConnections: true });
+    const pins = await sourceItemLineagePins(this.db, input.spaceId, materialIds, frozen?.items ?? null);
+    if (!frozen || !pins) throw new HttpError(409, "Selected research material can no longer carry its Source policy");
+    const notePins = Array.isArray(input.contract.note_source_connection_ids) ? input.contract.note_source_connection_ids.filter((id): id is string => typeof id === "string") : [];
+    await withNoteWrites(this.db, async (scope) => {
+      const applied = await scope.applyOps({
+        spaceId: input.spaceId, noteId, baseVersion, rawOps, source: "ai_adhoc", runId: input.runId, refs,
+      });
+      if (applied) {
+        // The edit was written from the Note's own frozen body: its lineage keeps the frozen Sources.
+        await inheritNoteSourceLineage(scope.db, { spaceId: input.spaceId, noteId, fromNoteIds: [noteId], pinConnectionIds: notePins, includeTarget: true });
+        await recordNoteSourceItemLineage(scope.db, { spaceId: input.spaceId, noteId, pins });
+      }
+      return applied;
+    });
   }
 
   async seedFromReport(input: { spaceId: string; projectId: string; runId: string; report: Record<string, unknown> }) {
@@ -857,9 +925,13 @@ export class ProjectResearchAreaService {
         ORDER BY so.created_at ASC`,
       [identity.spaceId, projectId, identity.userId],
     );
+    // A Note's Source lineage answers for its body as in Knowledge's Note detail:
+    // text derived from a Source this person no longer reads is withheld.
+    const lineageReadable = await sourceLineageReadableTargets(this.db, identity.spaceId, "note",
+      rows.rows.filter((note) => note.effective_access_level === "full").map((note) => note.id), { viewerUserId: identity.userId });
     // A summary-level reader sees that a note exists and its title, as every
     // other Knowledge read gives them, and never its body.
-    return rows.rows.map(({ effective_access_level, ...note }) => effective_access_level === "full"
+    return rows.rows.map(({ effective_access_level, ...note }) => effective_access_level === "full" && lineageReadable.has(note.id)
       ? { ...note, body_withheld: false }
       : { ...note, content_json: { type: "doc", content: [] }, body_withheld: true });
   }
@@ -993,6 +1065,9 @@ export function registerResearchProviderTaskRuns(): void {
       runType: run.run_type ?? "agent",
       triggerOrigin: run.trigger_origin ?? "manual",
       spend: { kind: "person", user_id: userId },
+      // The frozen Note and material go into every provider attempt, including a credential
+      // retry and a structured-output correction: each one rechecks them in its own admission.
+      authorizeAttempt: async (attemptDb) => authorizeResearchAdhocAttempt(attemptDb, config, run.id),
       // Applied before the Run goes terminal, so a terminal ad-hoc Run always
       // has its edit on the note. The reconciler's replay covers a Run that
       // reached terminal before this finalize ran.

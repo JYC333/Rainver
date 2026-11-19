@@ -12,6 +12,7 @@ import LoginPage from './pages/LoginPage'
 import AcceptInvitationPage from './pages/AcceptInvitationPage'
 import RegistrationPage from './pages/RegistrationPage'
 import SecurityPage from './pages/SecurityPage'
+import GmailCallbackLanding from './modules/sources/gmail/GmailCallbackLanding'
 import ResetPasswordPage from './pages/ResetPasswordPage'
 import { useAuth } from './contexts/AuthContext'
 import { RequireInstanceAdmin, RequireSpaceAdmin } from './core/RequireRole'
@@ -93,6 +94,8 @@ export default function App() {
                 {/* Neutral, user-level system surfaces — never carry a Space in the URL. */}
                 {TOP_LEVEL_MODULES.map(moduleRoute)}
                 <Route path="settings/security" element={<SecurityPage />} />
+                {/* The Gmail OAuth callback's fixed landing; forwards to the Space's Access page. */}
+                <Route path="sources" element={<GmailCallbackLanding />} />
 
                 {/* Space-scoped workspace — every module here operates on the URL's Space. */}
                 <Route path="spaces/:spaceId">

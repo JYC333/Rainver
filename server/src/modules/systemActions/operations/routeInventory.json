@@ -468,18 +468,6 @@
     "reason": "Migrated adapter for deployment.job.cancel"
   },
   {
-    "method": "DELETE",
-    "path": "/api/v1/diary/entries/:date",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
-  },
-  {
-    "method": "PUT",
-    "path": "/api/v1/diary/entries/:date",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
-  },
-  {
     "method": "POST",
     "path": "/api/v1/evolution/assets",
     "classification": "core_entry",
@@ -628,84 +616,6 @@
     "path": "/api/v1/evolution/workflows/from-run/save",
     "classification": "core_entry",
     "reason": "Migrated adapter for evolution.workflow.save"
-  },
-  {
-    "method": "POST",
-    "path": "/api/v1/finance/books",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
-  },
-  {
-    "method": "POST",
-    "path": "/api/v1/finance/books/:bookId/accounts",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
-  },
-  {
-    "method": "POST",
-    "path": "/api/v1/finance/books/:bookId/accounts/:accountId/close",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
-  },
-  {
-    "method": "POST",
-    "path": "/api/v1/finance/books/:bookId/accounts/:accountId/visibility",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
-  },
-  {
-    "method": "POST",
-    "path": "/api/v1/finance/books/:bookId/commodities",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
-  },
-  {
-    "method": "POST",
-    "path": "/api/v1/finance/books/:bookId/export/beancount",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
-  },
-  {
-    "method": "POST",
-    "path": "/api/v1/finance/books/:bookId/import/beancount",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
-  },
-  {
-    "method": "POST",
-    "path": "/api/v1/finance/books/:bookId/imports/:importSourceId/entries/:entryId/mapping",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
-  },
-  {
-    "method": "POST",
-    "path": "/api/v1/finance/books/:bookId/imports/:importSourceId/retry",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
-  },
-  {
-    "method": "POST",
-    "path": "/api/v1/finance/books/:bookId/imports/:importSourceId/review",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
-  },
-  {
-    "method": "PUT",
-    "path": "/api/v1/finance/books/:bookId/options/:name",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
-  },
-  {
-    "method": "POST",
-    "path": "/api/v1/finance/books/:bookId/transactions",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
-  },
-  {
-    "method": "POST",
-    "path": "/api/v1/finance/books/:bookId/validate",
-    "classification": "legacy_business",
-    "reason": "Unmigrated owning-module/plugin route; no generic entry authority"
   },
   {
     "method": "POST",
@@ -3172,6 +3082,66 @@
     "path": "/api/v1/sources/evidence/:evidenceId",
     "classification": "core_entry",
     "reason": "Migrated adapter for source.evidence.update"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/sources/gmail/connections/:connectionId",
+    "classification": "core_entry",
+    "reason": "Migrated adapter for source.gmail.connection.forget"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/sources/gmail/connections/:connectionId/disconnect",
+    "classification": "core_entry",
+    "reason": "Migrated adapter for source.gmail.connection.disconnect"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/sources/gmail/digests/:digestId/end",
+    "classification": "core_entry",
+    "reason": "Migrated adapter for source.gmail.digest.end"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/sources/gmail/digests/:digestId/status",
+    "classification": "core_entry",
+    "reason": "Migrated adapter for source.gmail.digest.set_status"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/sources/gmail/monitors/:monitorId",
+    "classification": "core_entry",
+    "reason": "Migrated adapter for source.gmail.monitor.delete"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/sources/gmail/monitors/:monitorId/status",
+    "classification": "core_entry",
+    "reason": "Migrated adapter for source.gmail.monitor.set_status"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/sources/gmail/oauth/start",
+    "classification": "transport_exempt",
+    "reason": "Owner-only Gmail OAuth start: single-use expiring authorization state (hashed at rest, PKCE verifier derived from it) shown once; a replayable result would have to keep the plaintext state"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/sources/gmail/push",
+    "classification": "transport_exempt",
+    "reason": "Pub/Sub push intake: authenticated by a Google-signed OIDC token instead of a session, only marks the named mailbox's monitored connections for a background sync and must acknowledge every authenticated delivery; no person actor, body or replayable result"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/sources/gmail/selections/:selectionId",
+    "classification": "core_entry",
+    "reason": "Migrated adapter for source.gmail.selection.remove"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/sources/gmail/selections/:selectionId/read",
+    "classification": "transport_exempt",
+    "reason": "Owner-only synchronous Gmail thread page: external reads plus a mandatory owner-read audit row before release; a retained command result would store mail bodies"
   },
   {
     "method": "POST",

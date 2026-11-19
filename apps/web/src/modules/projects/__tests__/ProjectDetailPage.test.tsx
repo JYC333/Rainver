@@ -23,6 +23,10 @@ vi.mock('../../../api/client', () => ({
   },
   focusAreasApi: { list: vi.fn().mockResolvedValue([]), setForProject: vi.fn().mockResolvedValue(undefined) },
   spacesApi: { members: vi.fn() },
+  // The bundled Project-level plugin's binding card and Pulse slot read plugin state; nothing is bound here.
+  pluginsApi: { effective: vi.fn().mockResolvedValue([]), list: vi.fn().mockResolvedValue({ items: [] }) },
+  queryOperation: vi.fn().mockResolvedValue({ status: 'succeeded', data: { project_id: 'project-1', can_manage: false, items: [] } }),
+  callOperation: vi.fn(),
   projectsApi: {
     members: vi.fn(), addMember: vi.fn(), removeMember: vi.fn(),
     get: vi.fn(),

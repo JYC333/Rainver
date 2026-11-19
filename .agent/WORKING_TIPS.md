@@ -10,8 +10,10 @@ These are facts the codebase doesn't make obvious at a glance.
 **Creating a managed Project Folder creates and initializes a Git repository on disk — but only if the Docker volume is writable and Git is available.**
 
 `POST /api/v1/projects/{projectId}/folders` with neither `repo_url` nor
-`root_path` (the "create managed Folder" flow) calls `mkdir()` and `git init`
-under `WORKSPACE_ROOT/<spaceId>/` via `createManagedDir()`. This only works if
+`root_path` (the "create managed Folder" flow) runs through the Folder IO
+intent: `applyFolderImport()` (`registeredFrom: 'managed'`) calls `mkdir()`
+under `WORKSPACE_ROOT/<spaceId>/` and then `ensureGitRepository()`
+(`server/src/modules/projectFolders/ioDomain.ts`). This only works if
 the container can write to that mount and has Git available. In the
 `ops/compose/docker-compose.<mode>.yml` files this mount must not be `:ro`
 (read-only), which would block creation or initialization. PathPolicy still

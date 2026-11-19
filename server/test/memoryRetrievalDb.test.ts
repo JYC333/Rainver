@@ -175,6 +175,10 @@ describe("Memory create-safety retrieval (real Postgres)", () => {
     if (!db.available) return;
     await insertMemory({ visibility: "private", owner_user_id: OWNER });
     await reindex();
+    // Create-safety is read-only for canonical memory: only the access-audit
+    // counter columns may change.
+    const canonicalRow = "SELECT to_jsonb(m) - 'access_count' - 'last_accessed_at' AS row FROM memory_entries m WHERE id = $1";
+    const before = (await db.pool.query(canonicalRow, [MEM_A])).rows[0].row;
 
     const out = await searchService().assessCreateSafety({
       spaceId: SPACE,
@@ -187,6 +191,7 @@ describe("Memory create-safety retrieval (real Postgres)", () => {
     expect(out.matches[0]?.object_id).toBe(MEM_A);
     // The owner sees the content snippet.
     expect(out.matches[0]?.snippet).toContain("oat milk");
+    expect((await db.pool.query(canonicalRow, [MEM_A])).rows[0].row).toEqual(before);
   });
 
   it("drops another user's private memory during revalidation", async () => {
@@ -243,7 +248,11 @@ describe("Memory create-safety retrieval (real Postgres)", () => {
     await reindex();
     // Archive it, then reindex: loadCanonical returns null and the projection is dropped.
     await db.pool.query("UPDATE memory_entries SET status = 'archived' WHERE id = $1", [MEM_A]);
+    const canonicalRow = "SELECT to_jsonb(m) AS row FROM memory_entries m WHERE id = $1";
+    const archived = (await db.pool.query(canonicalRow, [MEM_A])).rows[0].row;
     await reindex();
+    // Dropping the projection never writes the canonical memory row.
+    expect((await db.pool.query(canonicalRow, [MEM_A])).rows[0].row).toEqual(archived);
 
     const out = await searchService().assessCreateSafety({
       spaceId: SPACE,

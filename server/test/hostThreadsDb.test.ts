@@ -2646,7 +2646,7 @@ describe('durable workspace integration',()=>{
   expect(results).toHaveLength(1);expect(results[0]).toMatchObject({verifier_type:'output_schema',status:'failed'});
  });
 
- it.for(['normal','conflict','target_moved','cancelled','tainted','old_retry','historical_retry','historical_superseded','ended_prepared','private_checkpoint','frozen_chain'] as const)('finishes native integration through unified operations in the active session: %s',async(mode,ctx)=>{
+ it.for(['normal','conflict','target_moved','cancelled','tainted','old_retry','historical_retry','historical_superseded','ended_prepared','private_checkpoint','frozen_chain','lost_receipt'] as const)('finishes native integration through unified operations in the active session: %s',async(mode,ctx)=>{
   if(!db.available)return ctx.skip();
   const {run,w,mergeId}=await integration(),config=loadConfig({SERVER_DATABASE_URL:db.connectionUri});
   await db.pool.query(`UPDATE hosts SET capabilities_json=capabilities_json || '{"execution_workspaces":{"version":2},"native_workspace_integration":true,"native_workspace_rebase":true}'::jsonb WHERE id=$1`,[HOST]);
@@ -2690,6 +2690,9 @@ describe('durable workspace integration',()=>{
    const strategy=mode==='frozen_chain'?'fast_forward':mode==='old_retry'?undefined:'rebase';
    if(['native_prepare','native_publish'].includes(f.action))expect(f.publication_strategy).toBe(strategy);
    const publication=strategy&&outcome!=='conflict'?{publication:{strategy,chain_tip:'c'.repeat(40),chain_length:strategy==='rebase'?1:9}}:{};
+   // The publish lands, but its receipt is a non-temporary failure; only the Host journal knows.
+   if(mode==='lost_receipt'&&f.action==='native_publish')return {ok:false,outcome:null,main_branch:'dev',candidate_commit:null,onto_commit:null,conflicted_files:[],error:'native_publish_receipt_lost'};
+   if(mode==='lost_receipt'&&f.action==='native_inspect')return {ok:true,outcome:'merged',main_branch:'dev',candidate_commit:'c'.repeat(40),onto_commit:'a'.repeat(40),conflicted_files:[],error:null};
    return {ok:true,outcome,candidate_commit:'c'.repeat(40),onto_commit:'a'.repeat(40),conflicted_files:outcome==='conflict'?['README.md']:[],error:null,...(outcome==='rebased'&&strategy==='rebase'?{source_commit:'c'.repeat(40),base_commit:'a'.repeat(40)}:{}),...publication};
   };
   // Only the pin of an explicit commit runs as a Host command (before the Host uses it); checks never do.
@@ -2740,7 +2743,7 @@ describe('durable workspace integration',()=>{
     expect(await closeEndedNativeWorkspaceRequests(db.pool,w.workspace.id)).toBe(1);expect(await closeEndedNativeWorkspaceRequests(db.pool,w.workspace.id)).toBe(0);
     expect((await db.pool.query('SELECT state FROM workspace_change_sets WHERE id=$1',[w.changeSetId])).rows[0].state).toBe('blocked');return;
    }
-   await complete('publish');if(mode==='target_moved'){expect(current.progress.status).toBe('target_moved');await complete('prepare');await complete('checkpoint');await complete('publish');}
+   await complete('publish');if(mode==='lost_receipt')expect(actions.filter(action=>action==='native_publish')).toHaveLength(1);if(mode==='target_moved'){expect(current.progress.status).toBe('target_moved');await complete('prepare');await complete('checkpoint');await complete('publish');}
    expect(current).toMatchObject({state:'integrated',progress:{status:'merged'},lifecycle:{operation_id:expect.any(String),phase:'complete',source_retained:true}});expect((await db.pool.query('SELECT count(*)::int AS n FROM runs')).rows[0].n).toBe(1);
    if(historical){
     // The same recorded delta published by the bound batch adopts the historical one; a different one stays a reported failure.

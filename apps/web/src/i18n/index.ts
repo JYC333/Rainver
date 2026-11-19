@@ -1,7 +1,11 @@
 import { collabUiEn } from './collabUi.en'
 import { collabUiZhCN } from './collabUi.zh-CN'
+import { gmailUiEn } from './gmailUi.en'
+import { gmailUiZhCN } from './gmailUi.zh-CN'
 import {pluginUiEn} from './pluginUi.en'
 import {pluginUiZhCN} from './pluginUi.zh-CN'
+import {applicationsUiEn} from './applicationsUi.en'
+import {applicationsUiZhCN} from './applicationsUi.zh-CN'
 import { boardUiEn } from './boardUi.en'
 import { cliToolsUiEn } from './cliToolsUi.en'
 import { cliToolsUiZhCN } from './cliToolsUi.zh-CN'
@@ -84,8 +88,8 @@ void i18n.use(initReactI18next).init({
   fallbackLng: 'en',
   supportedLngs: ['en', 'zh-CN'],
   resources: {
-    en: { translation: { ...en, ...projectReadingEn, ...sourceGoalsEn, ...sourceTopicsEn, ...readingEn, ...readingMethodEn, ...researchReportEn, ...monitoringEn, home: homeEn, evolution: evolutionEn, digest_reports: digestReportsEn, briefing: briefingEn, ...mixedSurfacesEn, ...publicAuthEn, ...conversationRetrievalEn, ...skillPackagesEn, ...conversationUiEn, ...sessionsUiEn, ...managementUiEn, ...activityUiEn, ...knowledgeUiEn, ...coreUiEn, ...sourcesUiEn, ...workspaceUiEn, ...agentWorkspacesUiEn, ...boardUiEn, ...cliToolsUiEn, ...commandCenterUiEn, ...runtimeFailureUiEn, ...pluginUiEn, ...collabUiEn } },
-    'zh-CN': { translation: { ...zhCN, ...projectReadingZhCN, ...sourceGoalsZhCN, ...sourceTopicsZhCN, ...readingZhCN, ...readingMethodZhCN, ...researchReportZhCN, ...monitoringZhCN, home: homeZhCN, evolution: evolutionZhCN, digest_reports: digestReportsZhCN, briefing: briefingZhCN, ...mixedSurfacesZhCN, ...publicAuthZhCN, ...conversationRetrievalZhCN, ...skillPackagesZhCN, ...conversationUiZhCN, ...sessionsUiZhCN, ...managementUiZhCN, ...activityUiZhCN, ...knowledgeUiZhCN, ...coreUiZhCN, ...sourcesUiZhCN, ...workspaceUiZhCN, ...agentWorkspacesUiZhCN, ...boardUiZhCN, ...cliToolsUiZhCN, ...commandCenterUiZhCN, ...runtimeFailureUiZhCN, ...pluginUiZhCN, ...collabUiZhCN } },
+    en: { translation: { ...en, ...projectReadingEn, ...sourceGoalsEn, ...sourceTopicsEn, ...readingEn, ...readingMethodEn, ...researchReportEn, ...monitoringEn, home: homeEn, evolution: evolutionEn, digest_reports: digestReportsEn, briefing: briefingEn, ...mixedSurfacesEn, ...publicAuthEn, ...conversationRetrievalEn, ...skillPackagesEn, ...conversationUiEn, ...sessionsUiEn, ...managementUiEn, ...activityUiEn, ...knowledgeUiEn, ...coreUiEn, ...sourcesUiEn, ...workspaceUiEn, ...agentWorkspacesUiEn, ...boardUiEn, ...cliToolsUiEn, ...commandCenterUiEn, ...runtimeFailureUiEn, ...pluginUiEn, ...applicationsUiEn, ...collabUiEn, ...gmailUiEn } },
+    'zh-CN': { translation: { ...zhCN, ...projectReadingZhCN, ...sourceGoalsZhCN, ...sourceTopicsZhCN, ...readingZhCN, ...readingMethodZhCN, ...researchReportZhCN, ...monitoringZhCN, home: homeZhCN, evolution: evolutionZhCN, digest_reports: digestReportsZhCN, briefing: briefingZhCN, ...mixedSurfacesZhCN, ...publicAuthZhCN, ...conversationRetrievalZhCN, ...skillPackagesZhCN, ...conversationUiZhCN, ...sessionsUiZhCN, ...managementUiZhCN, ...activityUiZhCN, ...knowledgeUiZhCN, ...coreUiZhCN, ...sourcesUiZhCN, ...workspaceUiZhCN, ...agentWorkspacesUiZhCN, ...boardUiZhCN, ...cliToolsUiZhCN, ...commandCenterUiZhCN, ...runtimeFailureUiZhCN, ...pluginUiZhCN, ...applicationsUiZhCN, ...collabUiZhCN, ...gmailUiZhCN } },
   },
   interpolation: { escapeValue: false }, // React escapes text when it renders.
   initAsync: false,

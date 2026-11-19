@@ -5,6 +5,7 @@ import {OperationError} from '../systemActions/operations/errors.js';
 import {operationRuntime} from '../systemActions/operations/runtime.js';
 import {sessionActor} from '../systemActions/operations/actor.js';
 import {registerSourceMonitorOperationRoutes} from './sourceMonitorOperationRoutes.js';
+import {registerGmailRoutes} from './gmail/gmailRoutes.js';
 import {registerSourceObjectOperationRoutes} from './sourceObjectOperationRoutes.js';
 import {registerSourceRetrievalRoutes} from './retrievalOperations.js';
 import {registerSourceSubscriptionOperationRoutes} from './sourceSubscriptionOperationRoutes.js';
@@ -39,6 +40,7 @@ import { SourceProviderCatalogService } from "./catalog/sourceProviderCatalogSer
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   registerSourceMonitorOperationRoutes(app,context);
+  registerGmailRoutes(app,context);
   registerSourceObjectOperationRoutes(app,context);
   registerSourceRetrievalRoutes(app,context);
   registerBackfillOperationRoutes(app,context);

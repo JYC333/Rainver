@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
 import { objectValue, optionalString, withQueryableTransaction } from "../routeUtils/common.js";
 import { createManagedExecutionPolicy } from "../policy/managedExecutionPolicy.js";
-import { resolveNotebookNote } from "./notebookNotes.js";
+import { notebookBaselineAdmissible, resolveNotebookNote } from "./notebookNotes.js";
 import type { NoteProjectRole } from "../knowledge/noteProjectRoles.js";
 import type { ResearchOperationState } from "./operationProjection.js";
 import { InquirySignalService } from "../inquiry/signalService.js";
@@ -71,7 +71,16 @@ export const COMPARISON_BATCH_SIZE = 6;
 type MonitorComparisonQueueResult =
   | { readonly outcome: "queued"; readonly runId: string; readonly jobId: string; readonly sourceItemIds: string[] }
   | { readonly outcome: "no_eligible_material" }
-  | { readonly outcome: "no_baseline"; readonly role: NoteProjectRole };
+  | {
+      readonly outcome: "no_baseline";
+      readonly role: NoteProjectRole;
+      /**
+       * `source_lineage_withheld`: the role's Note exists but its body is derived from a
+       * Source (any Source lineage entry), so it cannot be the baseline: the comparison's
+       * outputs are Project-shared and cannot keep that Source's read policy.
+       */
+      readonly reason: "no_note_in_role" | "source_lineage_withheld";
+    };
 
 export class ProjectResearchMonitorComparisonService {
   constructor(private readonly db: Queryable) {}
@@ -97,7 +106,13 @@ export class ProjectResearchMonitorComparisonService {
     const understanding = await resolveNotebookNote(this.db, input.spaceId, input.projectId, "understanding", null);
     // A comparison against an absent baseline is not a cheaper comparison, it
     // is a different question. Report it and let the caller surface it.
-    if (!understanding.present) return { outcome: "no_baseline", role: understanding.role };
+    if (!understanding.present) return { outcome: "no_baseline", role: understanding.role, reason: understanding.reason };
+    // Its body reaches the prompt and, through the model, Project-shared outputs: a Note
+    // derived from any Source is excluded, whoever queues. The worker rechecks the frozen
+    // `baseline_note_id` before each send and refuses a Run that froze none.
+    if (!(await notebookBaselineAdmissible(this.db, input.spaceId, understanding.note.id))) {
+      return { outcome: "no_baseline", role: "understanding", reason: "source_lineage_withheld" };
+    }
     const resolved = await resolveProjectResearchMonitorComparePrompt(this.db, {
       spaceId: input.spaceId,
       userId: input.userId,
@@ -127,6 +142,7 @@ export class ProjectResearchMonitorComparisonService {
           ? {
               project_research_standing: {
                 batch_id: input.standingBatchId,
+                baseline_note_id: understanding.note.id,
                 source_item_ids: material.map((item) => item.source_item_id),
                 prompt_asset_key: PROJECT_RESEARCH_MONITOR_COMPARE_PROMPT_KEY,
                 prompt_version_id: resolved.resolveResult.version_id,
@@ -138,6 +154,7 @@ export class ProjectResearchMonitorComparisonService {
                 workflow_id: input.workflowId,
                 operation_id: input.operationId,
                 stage_key: "monitor_compare",
+                baseline_note_id: understanding.note.id,
                 source_item_ids: material.map((item) => item.source_item_id),
                 prompt_asset_key: PROJECT_RESEARCH_MONITOR_COMPARE_PROMPT_KEY,
                 prompt_version_id: resolved.resolveResult.version_id,

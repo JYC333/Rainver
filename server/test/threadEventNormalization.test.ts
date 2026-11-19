@@ -15,6 +15,30 @@ describe("createThreadEventNormalizer", () => {
     expect(normalizer.pushAcpProtocolEvent({ method: "session/update", params: { update: { sessionUpdate: "subagent_update", sessionId: "child", title: "Review", state: { state: "running" } } } }))
       .toEqual([{ event_type: "status", status: "runtime_subagent_running", text: "Review" }]);
   });
+  it("keeps a private Gmail monitor draft call's arguments and result out of the persisted thread, before and after a refusal", () => {
+    const normalizer = createThreadEventNormalizer();
+    const update = (u: Record<string, unknown>) => ({ method: "session/update", params: { sessionId: "s", update: u } });
+    const command = `$RAINVER_CLI call source.gmail.monitor.propose '{"from_any":["dean@uni.example"],"subject_any":["Interview"],"purpose":"admissions reply"}'`;
+    const rows = [
+      // Draft not yet stored: the start carries the command line.
+      ...normalizer.pushAcpProtocolEvent(update({ sessionUpdate: "tool_call", toolCallId: "g1", kind: "execute", status: "pending", title: command, rawInput: { command } })),
+      ...normalizer.pushAcpProtocolEvent(update({ sessionUpdate: "tool_call_update", toolCallId: "g1", status: "in_progress", _meta: { terminal_output: { data: "admissions reply" } } })),
+      // Refused: the result names the owner's mailboxes; later updates carry no action id.
+      ...normalizer.pushAcpProtocolEvent(update({ sessionUpdate: "tool_call_update", toolCallId: "g1", status: "failed", rawOutput: { ok: false, error: "gmail_monitor_mailbox_ambiguous", mailboxes: ["owner@gmail.example"] }, content: [{ type: "content", content: { type: "text", text: "owner@gmail.example" } }] })),
+      // An MCP-style tool name is recognised too.
+      ...normalizer.pushAcpProtocolEvent(update({ sessionUpdate: "tool_call", toolCallId: "g2", status: "completed", title: "mcp__rainver__source_gmail_monitor_propose", rawInput: { label_any: ["Admissions"] }, rawOutput: { ok: true, proposal_id: "p-1" } })),
+      ...normalizer.finish(),
+    ];
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      expect(row).toMatchObject({ tool_name: "source.gmail.monitor.propose", tool_input_summary: null, tool_result_summary: null });
+    }
+    expect(rows.map((row) => [row.tool_call_id, row.status])).toEqual(expect.arrayContaining([["g1", "pending"], ["g1", "failed"], ["g2", "succeeded"]]));
+    expect(JSON.stringify(rows)).not.toMatch(/dean@|Interview|admissions|owner@|Admissions|p-1/);
+    // Other tool calls keep their input.
+    expect(normalizer.pushAcpProtocolEvent(update({ sessionUpdate: "tool_call", toolCallId: "ls", title: "ls", rawInput: { command: "ls" } }))[0]).toMatchObject({ tool_input_summary: '{"command":"ls"}' });
+  });
+
   it("redacts a child title before truncating across a credential boundary", () => {
     const normalizer = createThreadEventNormalizer();
     const title = "x ".repeat(77) + "sk-" + "p".repeat(30);

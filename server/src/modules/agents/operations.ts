@@ -12,6 +12,7 @@ import {PgRunRepository,RunCreateValidationError} from '../runs/repository.js';
 import {RunBudgetExceededError,RunBudgetSourceReferenceError} from '../runs/budgetEnforcement.js';
 import {assertPersonStartedRunRequest,PERSON_STARTED_TRIGGER_ORIGIN} from '../runs/runRepositoryHelpers.js';
 import {PgSessionRepository} from '../sessions/repository.js';
+import {directChatMayReadSensitive} from '../runs/sensitiveRuntimeProfile.js';
 import {PgConversationBackendRepository,ConversationBackendError} from '../sessions/conversationBackendRepository.js';
 import {PgConversationRuntimeSessionRepository} from '../sessions/conversationRuntimeSessionRepository.js';
 import {ConversationSessionConfigError,validateSessionConfig} from '../sessions/sessionConfig.js';
@@ -194,10 +195,15 @@ export function agentOperationRegistrations(definitions:ReadonlyMap<string,Regis
      return {id:run.id,space_id:a.space_id,agent_id:agentId,run_id:run.id};
     }
     case 'agent.chat.reset_context':{
-     if(i.session_id){
-      // A Project direct conversation: only that Session's own thread, never the person's general direct one.
+     // The container this conversation's turns use, decided as admission decides it: a Project conversation,
+     // or a non-Project one that may read private data (ADR 0032), has its Session's own thread; only that one
+     // is reset, never the person's general direct one. Any other non-Project chat uses the person's direct one.
+     const sessionId=i.session_id?String(i.session_id):null;
+     const session=sessionId?await new PgSessionRepository(db).getSession(a.space_id,p.userId,sessionId):null;
+     if(sessionId&&!session)throw hidden();
+     if(session&&(session.project_id||await directChatMayReadSensitive(db,{spaceId:a.space_id,userId:p.userId,sessionId:session.id}))){
       const threads=new PgHostThreadRepository(db);
-      const thread=await threads.lockDirectConversationAgent(a.space_id,String(i.session_id),agentId);
+      const thread=await threads.lockDirectConversationAgent(a.space_id,session.id,agentId,p.userId);
       if(!thread)throw hidden();
       if(thread.host_owner_user_id&&thread.host_owner_user_id!==p.userId)throw hidden();
       if(thread.dispatch_lock_id)throw new ResetContextConflict();

@@ -147,9 +147,3 @@ in place.
 This ADR does not add a private runtime driver, expose credentials, move
 bounded calls out of the Server, automate paired-Host installation, preserve
 pre-epoch rows, or authorize deployment/database deletion.
-
-## Revision history
-
-- 2026-09-20 — accepted for the ACP runtime authority reset implementation.
-- 2026-09-21 — recorded what this decision supersedes in ADR 0002 and ADR 0010.
-- 2026-09-22 — implementation complete; execution plan retired; open consequences moved to `plans/backlog.md`.

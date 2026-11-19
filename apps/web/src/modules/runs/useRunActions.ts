@@ -14,6 +14,17 @@ export function hasRunAuthorizationPause(run: Run, requests: readonly Authorizat
   return Boolean((typeof id === 'string' && id.trim()) || requests.some(request => request.status === 'pending'))
 }
 
+/**
+ * Who may decide a request in this view. A sensitive plugin-data request is the
+ * data owner's alone (ADR 0030); every other request stays a Space owner's.
+ * Without an acting person the server decides and refuses as needed.
+ */
+export function canDecideAuthorization(request: AuthorizationRequest, scope: { actionUserId?: string | null; actionRole?: string | null }): boolean {
+  if (!scope.actionUserId) return true
+  if (request.approver === 'data_owner') return scope.actionUserId === request.instructed_by_user_id
+  return scope.actionRole === 'owner'
+}
+
 /** Run commands shared by the detail page and conversation controls. */
 export function useRunActions(runId: string, scope: RequestOptions, onChanged: (run: Run) => void | Promise<void>) {
   const [busy, setBusy] = useState<RunAction | null>(null)

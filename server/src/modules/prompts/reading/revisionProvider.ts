@@ -14,14 +14,19 @@ export interface RevisionProvider {
   fingerprint: string;
   name: string;
 }
-export async function revisionProvider(db: Queryable, identity: SpaceUserIdentity, requested?: string, model?: string, lock = false): Promise<RevisionProvider> {
+/**
+ * The chat API provider a person may spend on for one bounded generation task: the requested
+ * one, else the task's provider policy, else the Space default. `task` selects the policy
+ * (reading-method revisions by default; plugin Note drafts pass their own).
+ */
+export async function revisionProvider(db: Queryable, identity: SpaceUserIdentity, requested?: string, model?: string, lock = false, task = REVISION_TASK): Promise<RevisionProvider> {
   if (!requested) {
     const chain = (await db.query<{
       chain_json: Array<{
         provider_id: string;
         model?: string;
       }>;
-    }>(`SELECT chain_json FROM provider_task_policies WHERE space_id=$1 AND task=$2 AND enabled=true`, [identity.spaceId, REVISION_TASK])).rows[0]?.chain_json;
+    }>(`SELECT chain_json FROM provider_task_policies WHERE space_id=$1 AND task=$2 AND enabled=true`, [identity.spaceId, task])).rows[0]?.chain_json;
     if (chain?.length) {
       requested = chain[0]!.provider_id;
       model = model ?? chain[0]!.model;

@@ -30,6 +30,15 @@ bar is Home · Agent Work · Projects · More. Command Center remains on the des
 Home is user-scoped (`/home`). Space routes are
 `/spaces/:spaceId/<module>`. Admin-only modules are wrapped at the route.
 
+From `md` up, floating capture sits 1.25rem inside the lower right of a
+Project's middle content, outside the docked Project chat. `ProjectAreaLayout`
+publishes that content's right edge as `--project-content-right-inset`
+(`useProjectContentEdge`), so the control follows the chat opening, closing and
+resizing. When the middle column is too narrow for the open capture form,
+the form can extend over the chat to keep the left navigation clear. The chat keeps no empty band under its "Open in Room" footer, and its
+reopen button sits on the same row, left of the control. Phone placement is
+unchanged, and the full-screen mobile conversation still hides it.
+
 There is no app-level right inspector, bottom log panel, or shared
 `EntityCard` / `ReviewCard` primitive set. Per-page inspectors (Run
 detail, Room sidecar) are owned by those pages.
@@ -88,7 +97,9 @@ the scroll clips. Mobile Project navigation has its own bounded expansion.
 
 Personal topics live at `/library/reading/goals[/new|/:goalId]` and Project
 topics at `/projects/:projectId/sources/goals[/new|/:goalId]` inside the Project
-layout; `/sources/access` remains the dedicated credential route. Source
+layout; `/sources/access` remains the dedicated credential route (it also holds
+the person's own Gmail connections; the unscoped `/sources` route only forwards
+the Gmail OAuth result there, see [Sources](sources.md)). Source
 list/detail and Project Sources/settings links carry scope into the same page.
 The create page is a single centered form (topic, frequency, effort, folded
 Advanced). Each topic detail is a single-column management page at every width:

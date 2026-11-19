@@ -21,6 +21,7 @@ import {
   type SessionConfigSelection,
 } from '../conversation/ConversationSessionConfig'
 import { readBackTurnState, settledTurn } from '../conversation/settledTurn'
+import { GmailSummaryShare } from '../sources/gmail/GmailSummaryShare'
 import { ActionPreviewCards } from '../conversation/ActionPreviewCard'
 import { errMsg } from '../../lib/utils'
 import { useAppTranslation } from '../../i18n'
@@ -65,6 +66,7 @@ interface ChatMessage {
   runId?: string
   runIds?: string[]
   inputParts?: ConversationInputPart[]
+  gmailResult?: boolean
   systemMessage?:RoomMessage
 }
 
@@ -231,6 +233,7 @@ function ChatPanelContent({
           content: m.content,
           systemMessage:m.role==='system'?m as RoomMessage:undefined,
           inputParts: m.input_parts,
+          gmailResult: m.metadata_json?.gmail_result === true,
           actionPreviews: Array.isArray(m.metadata_json?.action_previews) ? m.metadata_json.action_previews as ChatActionPreview[] : undefined,
           artifactRefs: Array.isArray(m.metadata_json?.artifact_refs) ? m.metadata_json.artifact_refs.filter((value): value is string => typeof value === 'string') : undefined,
           runId: m.run_id ?? undefined,
@@ -431,6 +434,7 @@ function ChatPanelContent({
             turn: settledTurn(streamed?.turn, 'done', res.reply ?? ''),
             actionPreviews: res.action_previews,
             artifactRefs: res.assistant_message?.artifact_refs,
+            gmailResult: res.assistant_message?.gmail_result,
             runId: res.run_id,
             runIds: [res.run_id],
           }
@@ -573,7 +577,9 @@ function ChatPanelContent({
   async function resetContext() {
     if (!selectedBackendOption?.host_bound || !selectedBackendOption.host_owner_is_me || !selectedBackendOption.host_online || (projectId && !sessionId)) return
     try {
-      await agentsApi.resetContext(agent.id, { ...scope, ...(projectId && sessionId ? { sessionId } : {}) })
+      // The open conversation, Project or not: the server resets the Host thread its turns actually use —
+      // its own for a Project conversation or one that may read private data, else the person's direct one.
+      await agentsApi.resetContext(agent.id, { ...scope, ...(sessionId ? { sessionId } : {}) })
       setRestoreWorkspace(false)
       toast.success(t('conversation_ui.chat.context_reset'))
     } catch (error) {
@@ -674,6 +680,9 @@ function ChatPanelContent({
             extra: (
               <>
                 <ActionPreviewCards previews={m.actionPreviews ?? []} viewerUserId={userId} />
+                {m.gmailResult && m.id && projectId && (
+                  <GmailSummaryShare spaceId={agent.space_id} projectId={projectId} messageId={m.id} content={m.content} />
+                )}
                 {m.artifactRefs?.length ? <div className="mt-2 flex flex-wrap gap-3 text-[11px]">
                   {m.artifactRefs?.map((artifactId, index) => <Link key={artifactId} className="text-accent-foreground hover:underline" to={`/artifacts/${artifactId}`}>{t('conversation_ui.chat.produced_artifact', { index: index + 1 })}</Link>)}
                 </div> : null}

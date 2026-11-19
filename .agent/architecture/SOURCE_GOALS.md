@@ -790,11 +790,13 @@ preview:
   different limits is `source_goal_follow_key_changed`. Concurrent confirmations
   and replays serialize on the goal row. A paused follow uses resume; a
   manual-save goal may follow.
-- Post-commit cleanup (`cancelSupersededCollections`) acts only while the
-  caller's version is still the authoritative active version and re-checks each
-  victim's version against the current active version immediately before
-  cancelling, so a delayed older activation never cancels a newer version's
-  queued or running collection.
+- Superseded collections are marked cancelling (`markSupersededCollectionsIn`)
+  inside the activating transaction under the goal lock, and only while the
+  caller's version is still the authoritative active version: only collections
+  of other versions are selected, so a delayed older activation marks nothing
+  and never cancels a newer version's queued or running collection. The process
+  stop follows the commit (`stopCancellingGoalRuns`); the Run sweep finishes a
+  lost one.
 
 There is no preview-gated `start` action. Manual save (`POST .../save`, Agent-search plans
 only) keeps requiring a fresh exact-version preview because it stores that

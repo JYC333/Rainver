@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { loadConfig, type ServerConfig } from "../../src/config.js";
+import { getDbPool } from "../../src/db/pool.js";
 import { buildJobHandlerRegistry } from "../../src/modules/jobs/workerRuntime.js";
+import { JobWorker } from "../../src/modules/jobs/worker.js";
+import { PgJobQueueRepository } from "../../src/modules/jobs/repository.js";
 import { resolveProviderCommandStore } from "../../src/modules/providers/commands/store.js";
 import { __setProviderHttpClientForTests } from "../../src/modules/providers/invocation/invocation.js";
 import { PROVIDER_TASK_RUN_JOB_TYPE } from "../../src/modules/runs/providerTaskRunHandler.js";
@@ -69,13 +72,19 @@ export function resetProviderReplies(): void {
   __setProviderHttpClientForTests(null);
 }
 
-/** Dispatches one attempt of the Run's `provider_task_run` job. */
+/**
+ * Dispatches one attempt of the Run's `provider_task_run` job through the
+ * handler registry, at the given attempt count. The handler settles a Run only
+ * under its Job's current claim, so the envelope is backed by a real `jobs`
+ * row this test worker holds (`running`, claimed, at that attempt), as the
+ * queue worker's claim leaves it.
+ */
 export async function performQueuedProviderTask(
   config: ServerConfig,
   input: { spaceId: string; userId: string; runId: string; attempts?: number; maxAttempts?: number },
 ): Promise<unknown> {
   const attempts = input.attempts ?? 1;
-  return buildJobHandlerRegistry(config).dispatch({
+  const envelope = {
     job_id: randomUUID(),
     space_id: input.spaceId,
     user_id: input.userId,
@@ -84,5 +93,38 @@ export async function performQueuedProviderTask(
     max_attempts: input.maxAttempts ?? attempts,
     worker_id: "test-worker",
     payload: { run_id: input.runId },
-  });
+  };
+  await getDbPool(config.databaseUrl!).query(
+    `INSERT INTO jobs (id,space_id,user_id,job_type,status,priority,payload_json,attempts,max_attempts,claimed_by,claimed_at,started_at,created_at,updated_at)
+     VALUES ($1,$2,$3,$4,'running',0,$5::jsonb,$6,$7,$8,now(),now(),now(),now())`,
+    [envelope.job_id, envelope.space_id, envelope.user_id, envelope.job_type, JSON.stringify(envelope.payload), envelope.attempts, envelope.max_attempts, envelope.worker_id],
+  );
+  return buildJobHandlerRegistry(config).dispatch(envelope);
+}
+
+/**
+ * Performs the Run's own queued `provider_task_run` job through the production
+ * queue worker — claim, start, handler under that claim, and completion — for
+ * tasks whose sends and settlement are bound to the Job's current claim.
+ * Earlier files' leftover jobs of the same type are performed too, as a live
+ * worker would; the result is the one for this Run's job.
+ */
+export async function performQueuedProviderTaskJob(
+  pool: Pool,
+  config: ServerConfig,
+  runId: string,
+  workerId = `test-worker-${randomUUID()}`,
+): Promise<Awaited<ReturnType<JobWorker["processOne"]>>> {
+  const job = (await pool.query<{ id: string }>(
+    `SELECT id FROM jobs WHERE job_type=$1 AND payload_json->>'run_id'=$2`,
+    [PROVIDER_TASK_RUN_JOB_TYPE, runId],
+  )).rows[0];
+  if (!job) throw new Error(`No provider_task_run job for Run ${runId}`);
+  const worker = new JobWorker(new PgJobQueueRepository(pool), buildJobHandlerRegistry(config), workerId, [PROVIDER_TASK_RUN_JOB_TYPE]);
+  for (let i = 0; i < 50; i += 1) {
+    const result = await worker.processOne();
+    if (result.status === "idle") break;
+    if ("job_id" in result && result.job_id === job.id) return result;
+  }
+  throw new Error(`The worker never claimed the job of Run ${runId}`);
 }

@@ -40,7 +40,11 @@ interface RetrievalToolActor {
   instructedByUserId: string;
   /** Agent id, for audit attribution. */
   agentId?: string | null;
-  /** Run id, for audit attribution. */
+  /**
+   * Run id. With `agentId` it attributes the person's own returned content to
+   * this Run in the Agent read log (ADR 0030); the managed dispatcher passes
+   * the Run it is executing, never a value the model supplied.
+   */
   runId?: string | null;
 }
 
@@ -59,6 +63,8 @@ export class RetrievalToolService {
   async toolSearch(
     actor: RetrievalToolActor,
     params: RetrievalToolSearchParams,
+    /** The policy action this call was admitted as; recorded with the Run's read. */
+    actionId = "retrieval.search",
   ): Promise<RetrievalSearchResponse> {
     const response = await this.search.search({
       spaceId: actor.spaceId,
@@ -70,6 +76,8 @@ export class RetrievalToolService {
       mode: params.mode,
       includeTrace: params.includeTrace,
       agentId: actor.agentId,
+      runId: actor.runId,
+      actionId,
       // No feedbackSurface: a tool call is not a human click signal.
     });
     return response;
@@ -78,6 +86,8 @@ export class RetrievalToolService {
   async toolBrief(
     actor: RetrievalToolActor,
     params: RetrievalToolSearchParams,
+    /** The policy action this call was admitted as; recorded with the Run's read. */
+    actionId = "retrieval.brief",
   ): Promise<RetrievalBriefResponse> {
     const response = await this.search.buildBrief({
       spaceId: actor.spaceId,
@@ -89,6 +99,8 @@ export class RetrievalToolService {
       mode: params.mode,
       includeTrace: params.includeTrace,
       agentId: actor.agentId,
+      runId: actor.runId,
+      actionId,
     });
     return response;
   }

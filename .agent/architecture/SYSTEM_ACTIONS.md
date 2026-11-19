@@ -309,11 +309,34 @@ dispatched to work on a Task may call (the Task write surface including
 `retrieval.brief`/`retrieval.search`, and `artifact.submit`; one set for a
 paired and a built-in Host, because host kind decides how the tool surface is
 delivered, not what a Task Run may do — as for `conversationToolGrantInput`).
+`PROJECT_APPLICATIONS_TOOL_ALLOWANCE` names the application management
+package's Agent-eligible operations one by one (no `plugin.*` wildcard; a test
+keeps it equal to the manifest's operations without `actors: ['user']`). It is
+added to `conversationToolGrantInput` only when the conversation has a
+`project_id` (direct chat, Room message, delegated child) and to every
+`dispatchToolAllowance()`. Naming a tool there only makes it a candidate:
+`buildRunToolGrants` still requires the package enabled for the instructing
+person and `admitPluginDataTools` the personal-data consent (contacts), and
+each call still needs the Project's `bound` binding, the Run's own Project and
+the Agent's access Project (`assertPluginProjectTarget`). Routing ignores
+declared plugin operation ids (`plugin.<package>.<entity>.<operation>`) as it
+ignores core System Actions (`runtimeRequiredCapabilities`): they execute
+through the dispatcher, not the runtime. Plugin operations exist only in the
+registry the server configuration loads, so every entry builds its snapshot
+with that configuration: the direct chat (`agents/chatOperations`), the Room
+turn and the delegated child (`AgentGroupRunService` passes its config to
+`PgRunRepository`) and Task dispatch (`PgTaskRepository` is constructed with the
+server config by `task.run.create`, the Task routes and merge resolution). A
+repository built without it silently drops every plugin operation from the
+grants, which `server/test/applicationsAgentToolsDb.test.ts` guards through the
+real entries.
 `RunCreateInput.scenario_tool_allowance` supplies the
 applicable one in place of the AgentVersion's for every conversation Run (via
 `conversationToolGrantInput`) and every Task Run dispatched to a Workspace
 Location, paired or built-in (`tasks/repository.ts`). A Task with no Location
-keeps the AgentVersion's permissions; the conversation-summary turn carries
+gets no scenario allowance and declares no capabilities, so its Run is granted
+no Rainver tool whatever the AgentVersion allows (no application tools either);
+this default is kept, not widened. The conversation-summary turn carries
 `HANDOFF_TOOL_ALLOWANCE` (`agentGroups/sessionHandoff.ts`). A
 delegated child spawned inside a group carries the same conversation allowance
 as its Room's turns — `createDelegatedChildRun` expands
@@ -633,6 +656,31 @@ approval requeues the same Run exactly once; rejection uses canonical Run
 cancellation and its chat, materialization, Room, and AgentGroup finalizers.
 The generic Run resume endpoint cannot resume an authorization-request pause.
 
+A plugin data-consent denial (`plugin_data_consent_required`, Agent error
+`operation_consent_required`; [ADR 0030](../decisions/0030-plugin-agent-data-access.md))
+is also requestable. Its request has `request_kind = plugin_data` and approves
+into a `plugin_data_grants` row instead of an ActionApprovalGrant (for a core
+data tool such as `source.gmail.mail.read`, the owner's standing `project`
+consent bound to the conversation's Project and the request's resource, ADR
+0033; otherwise a Run or Space consent). A sensitive
+request is decided only by the data owner (the instructing person); a Space
+owner cannot decide it for them, and a core data tool's request is listed for
+nobody else either, in any conversation. Approving it requeues the same Run,
+which continues its turn. Personal requests stay with a Space owner. The
+Run-request list reports `approver: data_owner | space_owner`. Person-only
+`plugin_data_grant.create|revoke|revoke_run|list` and `agent_data_read.list`
+manage consent and read the content-free attribution log.
+
+Person-only `official_plugin.project_binding.list|bind|unbind` (policy actions
+`official_plugin.project_binding.view` / `.manage`) bind a Project-level
+operation package to one Project. Every operation of such a package resolves
+its input `project_id` and passes the host Project gate in `authorize`, so
+replay and proposal apply recheck it; a replayed `proposal.accept` receipt
+rechecks it through the linked registration's `authorizeApprovedResult`, and is
+refused (410) once retention has pruned that linked request (origin from the
+durable `proposals.operation_request_linked` marker, not `result_type`); see
+[Project binding](OFFICIAL_OPTIONAL_MODULES.md#project-binding).
+
 ## Current source and Project actions
 
 The registry covers recipe planning/creation/dry-run/activation, the gated
@@ -720,7 +768,9 @@ All four are `none`-side-effect reads scoped to the Run's own Project (and, for
 proposals, its own conversation filtered by `proposalReadSql` for the
 instructing person — the same predicate `proposal.decide` resolves its id
 with, so a proposal that person cannot read is neither listed, suggested in a
-404, nor decided), carry
+404, nor decided; an owner-only Gmail card, `OWNER_ONLY_PROPOSAL_TYPES`, is
+excluded the same way, and the apply service refuses one carried by an Agent,
+`assertOwnerCardDecision`), carry
 low-risk allow policy actions (`inquiry.thread.list`, `task.list`,
 `proposal.list`, `research.operation.list`), and read under the instructing
 person's identity — so a helpful failure can never name an object that person
@@ -738,7 +788,9 @@ Three layers keep a composed id out of an action:
    and use the matching explicit authorized read. A revoked action grant returns
    403 and directs the Agent to its current action catalogue. The legacy
    conversation-only `proposal.decide` still uses its own authorized pending-list
-   hint; it has not migrated to the core Agent result adapter.
+   hint; it has not migrated to the core Agent result adapter, so its refusals
+   (unknown id, expired, already decided, not applied) are HTTP 200 receipts with
+   `ok: false` and `error_code: system_action_failed`, the reason in `error`.
 
 The Room focus sentence carries `task_id:` alongside the title, so the Task a
 person is looking at is addressable without a `task.list` round trip.
@@ -1146,9 +1198,11 @@ binary transport exemptions and the generic command adapter. `operationRoutes`
 captures onRoute registrations from real modules and activated bundled plugins and fails on additions or drift;
 an annotation or `/internal*` prefix cannot add an unlisted route. P5 migration is complete; its temporary
 [plan ledger](../plans/operation-core/05-core-module-operation-migration.md) is retired.
-Current inventory has **630 method/path pairs: 575 core adapters, 15 P4 legacy
-business entries and 40 exact protocol-owner exemptions**. Remaining legacy
-entries are Diary/Finance in P4, not a P5 queue. Exemptions do not waive owning
+Current inventory (recounted 2026-11-19 from `routeInventory.json`) has **638
+method/path pairs: 582 core adapters, 13 legacy business entries and 43 exact
+protocol-owner exemptions**. The remaining legacy
+entries are Finance (Plan 7; Diary's two routes were retired with its operation
+package), not a P5 queue. Exemptions do not waive owning
 protocol authorization, audit or replay safety; see the permanent
 [P5 acceptance and limits](OPERATION_CORE_ACCEPTANCE.md#p5-closeout).
 Plugin activation grants no exemption for bypasses.
@@ -1254,8 +1308,8 @@ remain unchanged; only plugin names use `PluginOperationId`. Dynamic consumers
 (including advance-approval lookup) use the loader; the legacy Plan repository's
 literal task.plan.propose lookup remains intentionally core-only. Plugins remain non-advance-grantable. Stage-2 declared proposal types now use
 config-local schemas plus canonical ProposalApplyService/P1 atomic hooks; an
-unmapped proposal action stays 503. No legacy production mapping is enabled. Built-in legacy diary/finance
-remain unchanged; the manifest path currently has a real-PG integration fixture.
+unmapped proposal action stays 503. No legacy production mapping is enabled. Built-in legacy finance
+remains unchanged (Diary is an operation package since Plan 7); the manifest path currently has a real-PG integration fixture.
 
 Run grant construction additionally requires enabled installed plugin scope and
 matching runtime version, without extending the declared/allowed exact-id
@@ -1291,10 +1345,23 @@ return 422; inaccessible groups are hidden. No Agent-tool exposure or
 `user_confirmed` flag exists. Policy action `room.collaboration.manage` is audited
 fail closed; the Room also records the old/new sets, reason and person.
 
-Only the participant leaf changes. Task, coordinator, hard cap, offsets, charged
-turns, prior failures and delegation history retain their values. A replay
+Only the participant leaf changes. Task, coordinator, offsets, reminder
+progress, charged turns, prior failures and delegation history retain their values. A replay
 reauthorizes the person and does not append another notice. This endpoint does
 not activate code in a running instance or itself authorize deployment.
+
+There is no command to switch a collaboration's mode or remove a limit: a
+collaboration has neither (the former `room.collaboration.set_mode` is gone,
+not hidden). Pause, resume and stop use `agent_group.status.set`.
+`GET /api/v1/queries/room.collaboration.get`
+(`room_id`, `session_id`; policy `room.collaboration.read`) returns the
+caller's own newest collaboration in that conversation (handoff and turn
+counts, `next_reminder_at`, `active` and `stop_reason` from the server's admission
+projection — no mode, limit or request field; Task title/status only when the caller can read that Task in the
+container's active Project), or `invalid: true` when its stored JSON — `null`
+included — cannot be read. Neither action has Agent-tool exposure. The Room notices
+the participant command and admission post carry no Task title, status or content
+(only the Task id as audit association), since every Room member reads them.
 
 Reuse / Dependency Check: reuse the operation executor, session authentication,
 Project access checks, container row lock, pinned membership tables and Room
@@ -1464,6 +1531,67 @@ The browser uses the same typed command. Planning/dry-run/activation/bridge
 retain their existing owners and are not enabled as generic commands here.
 
 
+## Personal Gmail connection commands
+
+`source.gmail.connection.disconnect` (POST `/api/v1/sources/gmail/connections/:connectionId/disconnect`)
+and `source.gmail.connection.forget` (DELETE `/api/v1/sources/gmail/connections/:connectionId`)
+are user-only, ungrantable core commands under `source.gmail.connection.manage`.
+Authority is ownership of the row in the actor's Space; another person,
+including a Space owner/admin, gets the hidden 404. Disconnect is local and
+transactional (status, generation, credential deletion and the owner's OAuth
+attempts in the Space commit with the audit and receipt); it sends nothing to
+Google and enqueues no Job. Its receipt carries `remote_revocation:
+"not_requested"` and `manual_revocation_url` (the person's Google Account
+third-party access page). Both the REST adapter and
+`POST /api/v1/actions/source.gmail.connection.disconnect` are plain entries to
+that one operation. Both operations take the owner + Space advisory mutex
+(`lockGmailOwnerSpace`) in `authorize` before the connection row. A same-key replay of a disconnect is
+admitted while the row exists; a fresh disconnect of a disconnected row is
+`409`. Forget refuses an active row (`409`) and, once the row is gone, its
+replay is the hidden 404. OAuth start/callback
+are not operations (see [Sources](../modules/sources.md)).
+
+`source.gmail.selection.remove` (DELETE `/api/v1/sources/gmail/selections/:selectionId`)
+is a user-only, ungrantable core command under `source.gmail.selection.manage`
+for the caller's own legacy Project thread references: it locks the mutex and
+the caller's own row. `source.gmail.selection.add` and the manual search were
+retired with Gmail V2 (no route, no operation); existing selections stay
+readable and removable by their owner. The thread page read is an exact
+transport exemption, not an operation: it performs external reads and must
+write the owner-read audit before release, which neither a read-only core query
+nor a retained command result can do (see [Sources](../modules/sources.md)).
+
+`source.gmail.monitor.set_status` (POST `/api/v1/sources/gmail/monitors/:monitorId/status`)
+and `source.gmail.monitor.delete` (DELETE `/api/v1/sources/gmail/monitors/:monitorId`)
+are user-only, ungrantable core commands under `source.gmail.monitor.manage`:
+`authorize` takes the person, the owner + Space mutex and the caller's own
+monitor `FOR UPDATE`; outputs are ids and status only. A deleted monitor's
+fresh result is released; a later replay is the hidden 404 when another
+person's row holds the id. `source.gmail.monitor.propose` is an Agent-only
+proposal tool (`agent_tool` only, `grantable: false`, gate class
+`credential_or_deployment`, proposal type `gmail_monitor_create`), in
+`CONVERSATION_TOOL_ALLOWANCE` because it is person-scoped like a memory, not a
+Project write; the executor refuses it outside the owner's own turn with an
+owner-only audience. The Pub/Sub push intake `POST /api/v1/sources/gmail/push`
+is an exact transport exemption with no person actor (Google-signed OIDC token).
+
+`source.gmail.digest.set_status` (POST `/api/v1/sources/gmail/digests/:digestId/status`),
+`source.gmail.digest.set_time` (only through `POST /api/v1/actions/source.gmail.digest.set_time`)
+and `source.gmail.digest.end` (POST `/api/v1/sources/gmail/digests/:digestId/end`)
+are user-only, ungrantable core commands under `source.gmail.digest.manage`:
+`authorize` takes the person, the owner + Space mutex, the connection
+(`FOR SHARE`) and the caller's own digest `FOR UPDATE`; another person gets the
+hidden 404. Set-time changes only a daily digest that has not ended and whose
+consent is live (`409` otherwise), in its existing time zone.
+Ending revokes the digest's consent and keeps the row as history; a replay
+returns the same receipt. `source.gmail.digest.propose` is an Agent-only
+proposal tool (`agent_tool` only, `grantable: false`, gate class
+`credential_or_deployment`, proposal type `gmail_digest_create`), in
+`CONVERSATION_TOOL_ALLOWANCE`; the executor admits it only in the mailbox
+owner's own turn of an ordinary conversation of a Project the digest then
+delivers into, and it reads no mail
+([ADR 0033](../decisions/0033-gmail-project-consent-and-private-delivery.md)).
+
 ## Monitor management and manual scan enqueue
 
 `source.channel.update` and `source.channel.scan` are user-only, ungrantable
@@ -1540,9 +1668,11 @@ Project writer and personal Host ownership checks; agent calls additionally
 require a live grant and matching Run/workspace binding. They save intents and
 Jobs in the core transaction. Git, verification and cleanup run after it.
 
-`workspace.retention.update` is the user-only retention control (`reclaim_now`,
-`hold`, `release_hold`, `retry`) owned by
-`projectFolders/workspaceRetentionOperations.ts`. It takes a visible change-set
+`workspace.retention.update` is the retention control (`reclaim_now`, `hold`,
+`release_hold`, `retry`, `recover`, `acknowledge_missing`) owned by
+`projectFolders/workspaceRetentionOperations.ts`. Agents may call only `recover`
+and `retry`; the other actions are person-only (see
+[project-files.md](../modules/project-files.md#recovery-of-retained-lifecycle-obligations)). It takes a visible change-set
 id, applies the same visibility, Host-owner and Project-writer checks, and records
 retention intent plus a cleanup Job; it cannot release unmerged work.
 `reclaim_now` schedules that Job immediately; a hold does not mask a retained

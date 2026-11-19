@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import {
   ORDINARY_TOOL_CATALOG,
   ORDINARY_TOOL_IDS,
+  hasStableUpdate,
   type HostOrdinaryTool,
   type HostOrdinaryToolsResponse,
   type OrdinaryToolReport,
@@ -72,7 +73,7 @@ export function ordinaryToolsView(hostId: string, capabilities: unknown, canMana
         installed_version: seen?.managed_version ?? null,
         // Both ends must carry this version: the daemon installs only from its own catalog.
         installable: Boolean(seen?.managed_installable && catalogVersion && seen.managed_catalog_version === catalogVersion),
-        update_available: Boolean(seen?.managed_version && catalogVersion && seen.managed_version !== catalogVersion),
+        update_available: hasStableUpdate(seen?.managed_version ?? null, catalogVersion),
       },
       sandbox_status: "not_verified",
       account_status: entry.requires_account ? "not_verified" : "not_applicable",

@@ -8,7 +8,7 @@ import type {
   RetrievalSearchResponse,
   RetrievalSearchResult,
 } from "@rainver/protocol";
-import { escapeLikePattern, type Queryable } from "../routeUtils/common.js";
+import { escapeLikePattern, independentPoolOrNull, withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
 import { normalizeAlias, tokenizeSimple } from "./normalize.js";
 import { normalizeTextForSearch } from "./normalize.js";
 import { toVectorLiteral } from "./embeddingStore.js";
@@ -101,6 +101,10 @@ interface SearchInput {
   useCache?: boolean;
   /** Managed-run agent id. Source connection consent may restrict agent access. */
   agentId?: string | null;
+  /** The Agent's Run: with `agentId`, returned reads of the person's own content are attributed to it (ADR 0030). */
+  runId?: string | null;
+  /** The policy action the Agent's read was admitted as (with `agentId` and `runId`). */
+  actionId?: string | null;
   /**
    * Opt in to conservative adaptive return: trim the visible tail at a
    * sharp score cliff so a precise answer is not padded with weak results. Never
@@ -114,6 +118,153 @@ interface SearchInput {
   auditReason?: string;
   /** Internal: caller will audit a stricter post-filtered subset. */
   skipAudit?: boolean;
+  /**
+   * Internal: a caller's candidate scope (an isolated Project, allowed or
+   * excluded refs). Applied before ranking and result truncation and at every
+   * graph hop; the caller still re-checks what it delivers.
+   */
+  candidateScope?: RetrievalCandidateScope;
+}
+
+/** Which candidates a caller's scope admits, as `type:id` keys. */
+export interface RetrievalCandidateScope {
+  admits(candidates: readonly { objectType: RetrievalObjectType; objectId: string }[]): Promise<ReadonlySet<string>>;
+  /**
+   * The part of the same decision SQL can apply, as `type:id` keys: every
+   * arm's candidate query and every graph hop filters on it before its LIMIT.
+   * It may only narrow what `admits` would admit; `admits` still decides each
+   * candidate. An absent or empty list applies no SQL restriction.
+   */
+  refs?: { allowed?: readonly string[]; excluded?: readonly string[] };
+}
+
+/**
+ * Pages one arm or one graph hop reads under an opaque scope, so that
+ * out-of-scope rows cannot fill the whole LIMIT; bounded so a scope that
+ * admits little cannot turn one search into an unbounded scan.
+ */
+const SCOPED_FETCH_MAX_PAGES = 4;
+
+/**
+ * A filtered HNSW scan otherwise stops after `hnsw.ef_search` (default 40)
+ * candidates, fewer than the arm's window, so a filtered page looks like the
+ * last one. Each ANN page instead scans iteratively in exact distance order
+ * (pgvector >= 0.8), set transaction-locally and bounded by this explicit tuple
+ * budget per page; nothing is tuned for the session or the database.
+ */
+const ANN_ITERATIVE_SCAN_MAX_TUPLES = 20_000;
+
+async function withIterativeAnnScan<T>(db: Queryable, run: (db: Queryable) => Promise<T>): Promise<T> {
+  const configure = (tx: Queryable) => tx.query(
+    `SELECT set_config('hnsw.iterative_scan', 'strict_order', true), set_config('hnsw.max_scan_tuples', $1, true)`,
+    [String(ANN_ITERATIVE_SCAN_MAX_TUPLES)],
+  );
+  // A pool gets its own short transaction; the settings end with it.
+  if (independentPoolOrNull(db)) {
+    return withQueryableTransaction(db, async (tx) => { await configure(tx); return run(tx); });
+  }
+  // A checked-out client may be idle in autocommit, where a transaction-local
+  // setting would not reach the next statement: open a transaction only then.
+  try {
+    await db.query("SAVEPOINT retrieval_ann_scan");
+  } catch (error) {
+    if ((error as { code?: string }).code !== "25P01") throw error;
+    await db.query("BEGIN");
+    try {
+      await configure(db);
+      const result = await run(db);
+      await db.query("COMMIT");
+      return result;
+    } catch (inner) {
+      await db.query("ROLLBACK").catch(() => undefined);
+      throw inner;
+    }
+  }
+  // Inside a caller's transaction the page is read-only: rolling back to the
+  // savepoint discards its settings so they never outlive this page.
+  try {
+    await configure(db);
+    return await run(db);
+  } finally {
+    await db.query("ROLLBACK TO SAVEPOINT retrieval_ann_scan");
+    await db.query("RELEASE SAVEPOINT retrieval_ann_scan");
+  }
+}
+
+/** One request's scope decisions, asked once per candidate. */
+class CandidateScopeGate {
+  private readonly decided = new Map<string, boolean>();
+  constructor(private readonly scope: RetrievalCandidateScope) {}
+
+  /** `[allowed, excluded]` SQL parameters: `type:id` arrays, or null for no restriction. */
+  sqlRefParams(): [string[] | null, string[] | null] {
+    const { allowed, excluded } = this.scope.refs ?? {};
+    return [allowed?.length ? [...allowed] : null, excluded?.length ? [...excluded] : null];
+  }
+
+  async filter<T extends Pick<SearchCandidate, "objectType" | "objectId">>(candidates: readonly T[]): Promise<T[]> {
+    const pending = new Map<string, T>();
+    for (const candidate of candidates) {
+      const key = candidateKey(candidate);
+      if (!this.decided.has(key)) pending.set(key, candidate);
+    }
+    if (pending.size > 0) {
+      const admitted = await this.scope.admits([...pending.values()].map(({ objectType, objectId }) => ({ objectType, objectId })));
+      for (const key of pending.keys()) this.decided.set(key, admitted.has(key));
+    }
+    return candidates.filter((candidate) => this.decided.get(candidateKey(candidate)) === true);
+  }
+}
+
+/** No SQL ref restriction: the parameters an unscoped query binds. */
+const NO_SCOPE_REFS: [null, null] = [null, null];
+
+/** SQL narrowing for a scope's refs; `key` is the row's `type:id` expression. */
+function scopeRefsPredicate(key: string, allowedParam: string, excludedParam: string): string {
+  return `AND (${allowedParam}::text[] IS NULL OR ${key} = ANY(${allowedParam}::text[]))
+            AND (${excludedParam}::text[] IS NULL OR NOT (${key} = ANY(${excludedParam}::text[])))`;
+}
+
+/**
+ * One page of an arm's SQL. `hasMore` is judged in the SQL's own paging unit
+ * (objects for the deduped arms, chunks for the vector arm's ANN window), not
+ * by how many distinct objects the page yielded.
+ */
+interface ScopedPage {
+  candidates: SearchCandidate[];
+  hasMore: boolean;
+}
+
+/** A page whose SQL LIMIT counts the returned rows themselves. */
+function rowPage(candidates: SearchCandidate[], limit: number): ScopedPage {
+  return { candidates, hasMore: candidates.length >= limit };
+}
+
+/**
+ * One arm's candidates under a scope: SQL already applied the scope's refs;
+ * an opaque scope is applied page by page before the arm's limit, and ranks
+ * are renumbered among the admitted candidates in the SQL order. Without a
+ * scope this is exactly one query.
+ */
+async function fetchWithinScope(
+  limit: number,
+  scope: CandidateScopeGate | undefined,
+  page: (offset: number) => Promise<ScopedPage>,
+): Promise<SearchCandidate[]> {
+  if (!scope) return (await page(0)).candidates;
+  const out: SearchCandidate[] = [];
+  const seen = new Set<string>();
+  for (let index = 0; index < SCOPED_FETCH_MAX_PAGES && out.length < limit; index += 1) {
+    const { candidates, hasMore } = await page(index * limit);
+    for (const candidate of await scope.filter(candidates)) {
+      const key = candidateKey(candidate);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(candidate);
+    }
+    if (!hasMore) break;
+  }
+  return out.slice(0, limit).map((candidate, index) => ({ ...candidate, rank: index + 1 }));
 }
 
 /** Per-request control flags derived from the input + the query intent. */
@@ -192,6 +343,8 @@ interface VectorCandidateRow {
   updated_at: string | null;
   source_connection_ids_json: unknown;
   rank: number | string;
+  /** Chunks the paged ANN window held, the vector page's real size. */
+  window_chunks: number;
 }
 
 interface GraphWalkResult {
@@ -213,6 +366,8 @@ interface GraphWalkOptions {
   matchedFields: string[];
   returnRefs?: Set<string>;
   agentId?: string | null;
+  /** Out-of-scope nodes are neither returned nor expanded from, seeds included. */
+  scope?: CandidateScopeGate;
 }
 
 /**
@@ -544,12 +699,17 @@ export class RetrievalSearchService {
   ): Promise<{ visible: ScoredCandidate[]; revalidationCache: Map<string, RevalidatedObject | null> }> {
     const { objectTypes, objectProfiles, maxResults, query, normalized, runLexical, runVector, runRerankStage, useCache, rankingCfg } = controls;
 
+    // A caller's scope applies before anything is ranked or cut: inside each
+    // arm's candidate query, to the seeds, to every graph hop, and to the
+    // fused set below.
+    const scope = input.candidateScope ? new CandidateScopeGate(input.candidateScope) : undefined;
+
     const exact = normalized
-      ? await this.exactAliasArm(input.spaceId, objectTypes, objectProfiles, normalized, maxResults)
+      ? await this.exactAliasArm(input.spaceId, objectTypes, objectProfiles, normalized, maxResults, undefined, scope)
       : [];
 
     const lexical = runLexical
-      ? await this.lexicalArm(input.spaceId, objectTypes, objectProfiles, query, maxResults)
+      ? await this.lexicalArm(input.spaceId, objectTypes, objectProfiles, query, maxResults, scope)
       : [];
 
     // Vector recall (hybrid tiers only, and only when an embedder is injected). It
@@ -557,7 +717,7 @@ export class RetrievalSearchService {
     // gate below, so an embedded-but-unreadable object can never be returned. Run
     // it before the graph arm so a semantic match can also seed graph traversal.
     const vector = runVector
-      ? await this.vectorArm(input.spaceId, input.viewerUserId, objectTypes, objectProfiles, query, maxResults, useCache)
+      ? await this.vectorArm(input.spaceId, input.viewerUserId, objectTypes, objectProfiles, query, maxResults, useCache, scope)
       : [];
 
     // Graph recall seeds from every DIRECT match the viewer can actually read
@@ -574,7 +734,8 @@ export class RetrievalSearchService {
       input.agentId,
       trace,
     );
-    const visibleSeeds = pickGraphSeeds([...exact, ...lexical, ...vector], revalidationCache);
+    const readableSeeds = pickGraphSeeds([...exact, ...lexical, ...vector], revalidationCache);
+    const visibleSeeds = scope ? await scope.filter(readableSeeds) : readableSeeds;
     const graph = runLexical && visibleSeeds.length
       ? await this.graphArm(
           input.spaceId,
@@ -586,6 +747,7 @@ export class RetrievalSearchService {
           revalidationCache,
           input.agentId,
           trace,
+          scope,
       )
       : [];
 
@@ -597,6 +759,7 @@ export class RetrievalSearchService {
           relationalIntent,
           revalidationCache,
           trace,
+          scope,
       )
       : [];
 
@@ -606,13 +769,14 @@ export class RetrievalSearchService {
     // ranking signals that depend on the visible-set top score, so a hidden
     // high-score candidate cannot calibrate floor-ratio boosts.
     const rankingTelemetry = newRankingTelemetry();
-    const fused = fuseCandidates([
+    const allFused = fuseCandidates([
       ...maxPoolPerObject(exact),
       ...maxPoolPerObject(lexical),
       ...maxPoolPerObject(graph),
       ...maxPoolPerObject(relational),
       ...maxPoolPerObject(vector),
     ]);
+    const fused = scope ? await scope.filter(allFused) : allFused;
     await this.revalidateCandidates(fused, input.viewerUserId, input.spaceId, revalidationCache, input.agentId, trace);
     let visible = applyRankingSignals(
       collectVisibleCandidates(fused, revalidationCache, trace),
@@ -848,7 +1012,7 @@ export class RetrievalSearchService {
   }
 
   private async recordReturnedReads(
-    input: Pick<SearchInput, "spaceId" | "viewerUserId" | "agentId">,
+    input: Pick<SearchInput, "spaceId" | "viewerUserId" | "agentId" | "runId" | "actionId">,
     items: readonly Pick<RetrievalSearchResult, "object_type" | "object_id">[],
     accessType: string,
     reason: string,
@@ -867,6 +1031,8 @@ export class RetrievalSearchService {
         resourceIds,
         viewerUserId: input.viewerUserId,
         agentId: input.agentId ?? null,
+        runId: input.runId ?? null,
+        actionId: input.agentId && input.runId ? input.actionId ?? "retrieval.search" : null,
         accessType,
         reason,
       });
@@ -880,10 +1046,13 @@ export class RetrievalSearchService {
     normalized: string,
     maxResults: number,
     normalizedMany?: string[],
+    scope?: CandidateScopeGate,
   ): Promise<SearchCandidate[]> {
     const aliases = normalizedMany?.length ? [...new Set(normalizedMany)] : [normalized];
     const objectProfileParam = objectProfileFilterParam(objectProfiles);
-    const result = await this.db.query<RetrievalCandidateRow>(
+    const limit = armFetchLimit(maxResults);
+    const refs = scope?.sqlRefParams() ?? NO_SCOPE_REFS;
+    return fetchWithinScope(limit, scope, async (offset) => rowPage((await this.db.query<RetrievalCandidateRow>(
       `WITH matches AS (
          SELECT ro.object_type, ro.object_id,
                 CASE WHEN sok.id IS NULL THEN NULL ELSE ro.object_profile END AS object_profile,
@@ -915,6 +1084,7 @@ export class RetrievalSearchService {
             AND ro.object_type = ANY($2::retrieval_object_type[])
             AND ra.normalized_alias = ANY($3::text[])
             AND ($4::varchar[] IS NULL OR (ro.object_profile = ANY($4::varchar[]) AND sok.id IS NOT NULL))
+            ${scopeRefsPredicate("(ro.object_type || ':' || ro.object_id)", "$6", "$7")}
        ),
        best AS (
          SELECT DISTINCT ON (object_type, object_id)
@@ -928,10 +1098,9 @@ export class RetrievalSearchService {
               ) AS rank
          FROM best
         ORDER BY rank
-        LIMIT $5`,
-      [spaceId, objectTypes, aliases, objectProfileParam, armFetchLimit(maxResults)],
-    );
-    return result.rows.map((row) => ({
+        LIMIT $5 OFFSET $8`,
+      [spaceId, objectTypes, aliases, objectProfileParam, limit, ...refs, offset],
+    )).rows.map((row) => ({
       objectType: row.object_type,
       objectId: row.object_id,
       objectProfile: row.object_profile ?? null,
@@ -944,7 +1113,7 @@ export class RetrievalSearchService {
       arm: "exact",
       updatedAt: row.updated_at ?? null,
       sourceConnectionIds: sourceConnectionIdsFromJson(row.source_connection_ids_json),
-    }));
+    })), limit));
   }
 
   private async lexicalArm(
@@ -953,6 +1122,7 @@ export class RetrievalSearchService {
     objectProfiles: string[],
     query: string,
     maxResults: number,
+    scope?: CandidateScopeGate,
   ): Promise<SearchCandidate[]> {
     const trimmed = query.trim();
     if (!trimmed) return [];
@@ -966,7 +1136,9 @@ export class RetrievalSearchService {
     // length): a BM25-style length penalty so a long page that merely mentions
     // the terms does not outrank a focused page. It composes with the
     // per-arm max-pool and the title-phrase boost.
-    const result = await this.db.query<RetrievalCandidateRow>(
+    const limit = armFetchLimit(maxResults);
+    const refs = scope?.sqlRefParams() ?? NO_SCOPE_REFS;
+    return fetchWithinScope(limit, scope, async (offset) => rowPage((await this.db.query<RetrievalCandidateRow>(
       `WITH matches AS (
          SELECT ro.object_type, ro.object_id,
                 CASE WHEN sok.id IS NULL THEN NULL ELSE ro.object_profile END AS object_profile,
@@ -989,6 +1161,7 @@ export class RetrievalSearchService {
           WHERE rc.space_id = $1
             AND ro.object_type = ANY($2::retrieval_object_type[])
             AND ($5::varchar[] IS NULL OR (ro.object_profile = ANY($5::varchar[]) AND sok.id IS NOT NULL))
+            ${scopeRefsPredicate("(ro.object_type || ':' || ro.object_id)", "$7", "$8")}
             AND (
               rc.tsv @@ plainto_tsquery('simple', $4)
               OR rc.plain_text ILIKE $3 ESCAPE '\\'
@@ -1006,10 +1179,9 @@ export class RetrievalSearchService {
               ) AS rank
          FROM best
         ORDER BY rank
-        LIMIT $6`,
-      [spaceId, objectTypes, like, tokens.join(" "), objectProfileParam, armFetchLimit(maxResults)],
-    );
-    return result.rows.map((row) => ({
+        LIMIT $6 OFFSET $9`,
+      [spaceId, objectTypes, like, tokens.join(" "), objectProfileParam, limit, ...refs, offset],
+    )).rows.map((row) => ({
       objectType: row.object_type,
       objectId: row.object_id,
       objectProfile: row.object_profile ?? null,
@@ -1028,7 +1200,7 @@ export class RetrievalSearchService {
       arm: "lexical",
       updatedAt: row.updated_at ?? null,
       sourceConnectionIds: sourceConnectionIdsFromJson(row.source_connection_ids_json),
-    }));
+    })), limit));
   }
 
   /**
@@ -1053,8 +1225,10 @@ export class RetrievalSearchService {
     cache: Map<string, RevalidatedObject | null>,
     agentId: string | null | undefined,
     trace: RetrievalTrace,
+    scope?: CandidateScopeGate,
   ): Promise<SearchCandidate[]> {
     const walked = await this.walkGraph({
+      scope,
       spaceId,
       expandObjectTypes: objectTypes,
       returnObjectTypes: objectTypes,
@@ -1084,6 +1258,7 @@ export class RetrievalSearchService {
     intent: RelationalIntent,
     cache: Map<string, RevalidatedObject | null>,
     trace: RetrievalTrace,
+    scope?: CandidateScopeGate,
   ): Promise<SearchCandidate[]> {
     const registeredTypes = this.registry.objectTypes();
     const returnObjectTypes = this.relationalReturnTypes(intent, controls.objectTypes, registeredTypes);
@@ -1108,6 +1283,7 @@ export class RetrievalSearchService {
       intent.seedPhrases,
       controls.maxResults,
       cache,
+      scope,
     );
     if (seeds.length === 0) {
       trace.relational = {
@@ -1158,6 +1334,7 @@ export class RetrievalSearchService {
           intent.focusPhrases,
           controls.maxResults,
           cache,
+          scope,
         )
       : [];
     if (requiresFocus && focus.length === 0) {
@@ -1185,6 +1362,7 @@ export class RetrievalSearchService {
       matchedFields: ["retrieval_edge", "relational_intent", `relational:${intent.kind}`],
       returnRefs: focusRefs,
       agentId: input.agentId,
+      scope,
     });
     trace.relational = {
       intent: intent.kind,
@@ -1235,14 +1413,15 @@ export class RetrievalSearchService {
     phrases: string[],
     maxResults: number,
     cache: Map<string, RevalidatedObject | null>,
+    scope?: CandidateScopeGate,
   ): Promise<SearchCandidate[]> {
     const candidates: SearchCandidate[] = [];
     for (const phrase of phrases) {
       const normalized = normalizeAlias(phrase);
       if (normalized) {
-        candidates.push(...await this.exactAliasArm(spaceId, objectTypes, objectProfiles, normalized, maxResults));
+        candidates.push(...await this.exactAliasArm(spaceId, objectTypes, objectProfiles, normalized, maxResults, undefined, scope));
       }
-      candidates.push(...await this.lexicalArm(spaceId, objectTypes, objectProfiles, phrase, maxResults));
+      candidates.push(...await this.lexicalArm(spaceId, objectTypes, objectProfiles, phrase, maxResults, scope));
     }
     await this.revalidateCandidates(candidates, viewerUserId, spaceId, cache, agentId);
     return pickGraphSeeds(candidates, cache);
@@ -1252,34 +1431,22 @@ export class RetrievalSearchService {
     const fetchLimit = armFetchLimit(options.maxResults);
     const returnTypes = new Set(options.returnObjectTypes);
     const visited = new Set<string>(options.initialVisitedRefs);
-    let frontier = options.seeds.map(candidateKey);
+    const seeds = options.scope ? await options.scope.filter(options.seeds) : options.seeds;
+    let frontier = seeds.map(candidateKey);
     const out: SearchCandidate[] = [];
     let rank = 0;
     let hopsWalked = 0;
 
     for (let hop = 1; hop <= GRAPH_MAX_HOPS && frontier.length > 0 && out.length < fetchLimit; hop += 1) {
-      const neighbors = await this.graphNeighborsOneHop(
-        options.spaceId,
-        options.expandObjectTypes,
-        frontier,
-        [...visited],
-        fetchLimit,
-      );
+      const { neighbors, inScope } = await this.graphHopWithinScope(options, frontier, [...visited], fetchLimit);
       if (neighbors.length === 0) break;
-      // Revalidate before a neighbor can be returned OR expanded from (invariant 4).
-      await this.revalidateCandidates(
-        neighbors,
-        options.viewerUserId,
-        options.spaceId,
-        options.cache,
-        options.agentId,
-      );
       const nextFrontier: string[] = [];
       for (const neighbor of neighbors) {
         const key = candidateKey(neighbor);
         if (visited.has(key)) continue;
         visited.add(key);
         if (!options.cache.get(key)) continue; // not readable ⇒ not returned, not expanded
+        if (inScope && !inScope.has(key)) continue; // out of scope ⇒ not returned, not expanded
 
         const canReturn =
           returnTypes.has(neighbor.objectType) &&
@@ -1309,6 +1476,39 @@ export class RetrievalSearchService {
     return { candidates: out, hopsWalked };
   }
 
+  /**
+   * One hop's neighbors, each revalidated before it can be returned OR
+   * expanded from (invariant 4). Scope, like readability, is decided per hop
+   * before a neighbor is used, and before the hop's limit: SQL applies the
+   * scope's refs, and an opaque scope reads further pages (bounded) until the
+   * hop has `limit` readable in-scope neighbors. Every row read is returned so
+   * the caller marks it visited.
+   */
+  private async graphHopWithinScope(
+    options: GraphWalkOptions,
+    frontier: string[],
+    excludeRefs: string[],
+    limit: number,
+  ): Promise<{ neighbors: SearchCandidate[]; inScope: Set<string> | null }> {
+    const scopeRefs = options.scope?.sqlRefParams() ?? NO_SCOPE_REFS;
+    const neighbors: SearchCandidate[] = [];
+    const inScope = options.scope ? new Set<string>() : null;
+    const pages = options.scope ? SCOPED_FETCH_MAX_PAGES : 1;
+    for (let index = 0; index < pages; index += 1) {
+      const rows = await this.graphNeighborsOneHop(
+        options.spaceId, options.expandObjectTypes, frontier, excludeRefs, limit, scopeRefs, index * limit,
+      );
+      await this.revalidateCandidates(rows, options.viewerUserId, options.spaceId, options.cache, options.agentId);
+      neighbors.push(...rows);
+      if (options.scope && inScope) {
+        const readable = rows.filter((neighbor) => options.cache.get(candidateKey(neighbor)));
+        for (const neighbor of await options.scope.filter(readable)) inScope.add(candidateKey(neighbor));
+      }
+      if (rows.length < limit || (inScope && inScope.size >= limit)) break;
+    }
+    return { neighbors, inScope };
+  }
+
   /** One hop of graph expansion: neighbors of `frontierRefs`, excluding `excludeRefs`. */
   private async graphNeighborsOneHop(
     spaceId: string,
@@ -1316,6 +1516,8 @@ export class RetrievalSearchService {
     frontierRefs: string[],
     excludeRefs: string[],
     limit: number,
+    scopeRefs: [string[] | null, string[] | null] = NO_SCOPE_REFS,
+    offset = 0,
   ): Promise<SearchCandidate[]> {
     const result = await this.db.query<GraphCandidateRow>(
       `WITH neighbors AS (
@@ -1355,6 +1557,7 @@ export class RetrievalSearchService {
               OR (e.to_object_type || ':' || e.to_object_id) = ANY($3::text[])
             )
             AND NOT ((ro.object_type || ':' || ro.object_id) = ANY($4::text[]))
+            ${scopeRefsPredicate("(ro.object_type || ':' || ro.object_id)", "$6", "$7")}
        ),
        best AS (
          SELECT DISTINCT ON (object_type, object_id)
@@ -1368,8 +1571,8 @@ export class RetrievalSearchService {
               ) AS rank
          FROM best
         ORDER BY rank
-        LIMIT $5`,
-      [spaceId, objectTypes, frontierRefs, excludeRefs, limit],
+        LIMIT $5 OFFSET $8`,
+      [spaceId, objectTypes, frontierRefs, excludeRefs, limit, ...scopeRefs, offset],
     );
     return result.rows.map((row) => ({
       objectType: row.object_type,
@@ -1392,6 +1595,19 @@ export class RetrievalSearchService {
     }));
   }
 
+  /**
+   * One arm per rewrite variant: in parallel on a pool (each query checks out
+   * its own connection), one after another on a caller's client or transaction
+   * port, where an ANN page's transaction or savepoint must not interleave
+   * with another variant's statements on the same connection.
+   */
+  private async eachVariant<T>(variants: string[], arm: (query: string) => Promise<T>): Promise<T[]> {
+    if (independentPoolOrNull(this.db)) return Promise.all(variants.map(arm));
+    const out: T[] = [];
+    for (const variant of variants) out.push(await arm(variant));
+    return out;
+  }
+
   private async vectorArm(
     spaceId: string,
     viewerUserId: string,
@@ -1400,6 +1616,7 @@ export class RetrievalSearchService {
     query: string,
     maxResults: number,
     useCache: boolean,
+    scope?: CandidateScopeGate,
   ): Promise<SearchCandidate[]> {
     if (!this.queryEmbedder || !query) return [];
     let queryVector: number[] | null = null;
@@ -1430,11 +1647,14 @@ export class RetrievalSearchService {
     const dimPredicate = useAnn ? `rc.embedding_dimensions = ${queryDimensions}` : `rc.embedding_dimensions = $4`;
     const objectProfileParamIndex = useAnn ? "$4" : "$5";
     const limitParam = useAnn ? "$5" : "$6";
+    const [allowedParam, excludedParam, offsetParam] = useAnn ? ["$6", "$7", "$8"] : ["$7", "$8", "$9"];
     const objectProfileParam = objectProfileFilterParam(objectProfiles);
-    const params = useAnn
-      ? [spaceId, objectTypes, toVectorLiteral(queryVector), objectProfileParam, fetchLimit]
-      : [spaceId, objectTypes, toVectorLiteral(queryVector), queryDimensions, objectProfileParam, fetchLimit];
-    const result = await this.db.query<VectorCandidateRow>(
+    const refs = scope?.sqlRefParams() ?? NO_SCOPE_REFS;
+    const params = (offset: number) => useAnn
+      ? [spaceId, objectTypes, toVectorLiteral(queryVector), objectProfileParam, fetchLimit, ...refs, offset]
+      : [spaceId, objectTypes, toVectorLiteral(queryVector), queryDimensions, objectProfileParam, fetchLimit, ...refs, offset];
+    return fetchWithinScope(fetchLimit, scope, async (offset) => {
+      const query = (db: Queryable) => db.query<VectorCandidateRow>(
        `WITH nearest AS (
          SELECT rc.retrieval_object_id, rc.object_type, rc.object_id, rc.plain_text,
                 ${distanceExpr} AS distance
@@ -1452,8 +1672,9 @@ export class RetrievalSearchService {
             AND rc.embedding IS NOT NULL
             AND ${dimPredicate}
             AND (${objectProfileParamIndex}::varchar[] IS NULL OR (ro_filter.object_profile = ANY(${objectProfileParamIndex}::varchar[]) AND sok_filter.id IS NOT NULL))
+            ${scopeRefsPredicate("(ro_filter.object_type || ':' || ro_filter.object_id)", allowedParam, excludedParam)}
           ORDER BY ${distanceExpr}
-          LIMIT ${limitParam}
+          LIMIT ${limitParam} OFFSET ${offsetParam}
        ),
        best AS (
          SELECT DISTINCT ON (object_type, object_id)
@@ -1466,7 +1687,8 @@ export class RetrievalSearchService {
               sok.label AS object_profile_label,
               ro.title, ro.source_connection_ids_json, b.plain_text AS snippet, b.distance,
               COALESCE(ro.source_updated_at, ro.updated_at) AS updated_at,
-              row_number() OVER (ORDER BY b.distance ASC, b.object_id ASC) AS rank
+              row_number() OVER (ORDER BY b.distance ASC, b.object_id ASC) AS rank,
+              (SELECT count(*) FROM nearest)::int AS window_chunks
          FROM best b
          JOIN retrieval_objects ro
            ON ro.id = b.retrieval_object_id AND ro.space_id = $1
@@ -1477,9 +1699,14 @@ export class RetrievalSearchService {
           AND sok.status = 'active'
         WHERE (${objectProfileParamIndex}::varchar[] IS NULL OR (ro.object_profile = ANY(${objectProfileParamIndex}::varchar[]) AND sok.id IS NOT NULL))
         ORDER BY rank`,
-      params,
+      params(offset),
     );
-    return result.rows.map((row) => ({
+      const rows = (useAnn ? await withIterativeAnnScan(this.db, query) : await query(this.db)).rows;
+      // The window pages by chunk; an object with several near chunks makes the
+      // page yield fewer objects than the window held, which is not the end.
+      return {
+        hasMore: (rows[0]?.window_chunks ?? 0) >= fetchLimit,
+        candidates: rows.map((row) => ({
       objectType: row.object_type,
       objectId: row.object_id,
       objectProfile: row.object_profile ?? null,
@@ -1500,7 +1727,9 @@ export class RetrievalSearchService {
       // Carried separately from evidence.confidence for the post-RRF cosine blend
       // since fusion may overwrite this candidate's evidence.
       vectorSimilarity: similarityFromDistance(Number(row.distance)),
-    }));
+        })),
+      };
+    });
   }
 
   private async loadProjectedTarget(
@@ -1589,15 +1818,14 @@ export class RetrievalSearchService {
     trace.rewrite = { variants: variantQueries.length, applied: variantQueries.length > 0 };
     if (variantQueries.length === 0) return [];
 
+    // The caller's scope binds the variants exactly as it binds the primary list.
+    const scope = input.candidateScope ? new CandidateScopeGate(input.candidateScope) : undefined;
     const lexical = (
-      await Promise.all(
-        variantQueries.map((q) => this.lexicalArm(input.spaceId, objectTypes, objectProfiles, q, maxResults)),
-      )
+      await this.eachVariant(variantQueries, (q) => this.lexicalArm(input.spaceId, objectTypes, objectProfiles, q, maxResults, scope))
     ).flat();
     const vector = runVector
       ? (
-          await Promise.all(
-            variantQueries.map((q) => this.vectorArm(
+          await this.eachVariant(variantQueries, (q) => this.vectorArm(
               input.spaceId,
               input.viewerUserId,
               objectTypes,
@@ -1605,11 +1833,12 @@ export class RetrievalSearchService {
               q,
               maxResults,
               useCache,
-            )),
-          )
+              scope,
+            ))
         ).flat()
       : [];
-    const fused = fuseCandidates([...maxPoolPerObject(lexical), ...maxPoolPerObject(vector)]);
+    const allFused = fuseCandidates([...maxPoolPerObject(lexical), ...maxPoolPerObject(vector)]);
+    const fused = scope ? await scope.filter(allFused) : allFused;
     const cache = await this.revalidateCandidates(fused, input.viewerUserId, input.spaceId, undefined, input.agentId, trace);
     const visible = applyRankingSignals(
       collectVisibleCandidates(fused, cache, trace),

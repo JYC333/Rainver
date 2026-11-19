@@ -165,6 +165,17 @@ Proposals are the product review and application boundary for durable mutations.
   immutable `AgentVersion`. No route creates `agent_config_update` proposals,
   and there is no direct `POST /agents/{agent_id}/versions`.
 - Rejected, accepted, expired, or superseded proposals cannot be applied again.
+- Expiry is derived (`pending` past `expires_at`), not a stored status, and the
+  canonical apply service refuses to decide it on every entry. An operation-linked
+  Proposal's first accept commits its request `expired` and returns the
+  `operation_failure` receipt; an unlinked one has no request to commit, so HTTP
+  accept and reject (`/api/v1/proposals/:id/accept|reject`, `proposal.accept|reject`)
+  return 409 `operation_approval_expired` and write nothing. Code-patch and Bundle
+  decisions, and action-grant auto-accept, refuse it too, and so does consent:
+  `proposal.egress.approve` (`/api/v1/proposals/:id/approvals/egress-granting-user`)
+  answers a reader 409 `operation_approval_expired` on first use and keyed replay
+  and writes no approval. The Web hides its buttons and the Room's
+  `proposal.decide` neither lists nor decides it.
 - Cross-space or unauthorized access must not reveal proposal details.
 
 ## Audit Rules
@@ -190,3 +201,11 @@ Proposals are the product review and application boundary for durable mutations.
   (`uq_proposals_pending_operation`), so asking again while that proposal is
   pending returns it, and a decided proposal frees the key for a new request.
   Skill package Review/Convert use it (`modules/skills.md`).
+- `operation_request_linked` is the durable origin marker of a Proposal created
+  by an approval-mapped operation request (set when that request is recorded).
+  It outlives the request's retention, so a replayed `proposal.accept` receipt
+  stays fail-closed (410) after the request is pruned, and a new accept or
+  reject of the Proposal is refused (404) by the decision hook, never reaching
+  the applier; a result type such as
+  `plugin_proposal` is not origin evidence (see `OFFICIAL_OPTIONAL_MODULES.md`
+  Project binding).

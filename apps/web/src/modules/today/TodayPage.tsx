@@ -14,6 +14,7 @@ import { PreviewBadge, UrgencyBadge } from '../../components/PreviewBadge'
 import { ScopeBadge } from '../../components/ScopeBadge'
 import { EmptyState } from '../../components/ui/empty-state'
 import { codePatchAcceptOptions } from '../memory/codePatchConfirm'
+import { acceptRefusalKey, decisionOpen } from '../memory/acceptOutcome'
 import { notifyReviewAttentionChanged } from '../../core/reviewAttention'
 import { formatDateParts, formatDateTime, formatNumber } from '../../i18n/format'
 import { useAppTranslation } from '../../i18n'
@@ -132,7 +133,7 @@ function ProposalStatusCard({ proposals, onDecide }: { proposals: HomePendingPro
   // A maintenance update waiting for its revision is decided on its own page,
   // where it can be revised; a quick accept here would only be refused.
   const { t } = useAppTranslation()
-  const canQuick = (p: HomePendingProposalItem) => (p.proposal_type === 'memory_update' || p.proposal_type === 'code_patch') && p.status === 'pending' && !p.awaiting_revision
+  const canQuick = (p: HomePendingProposalItem) => (p.proposal_type === 'memory_update' || p.proposal_type === 'code_patch') && decisionOpen(p) && !p.awaiting_revision
   return (
     <div className="bg-card border border-border rounded-lg p-4 flex flex-col gap-3">
       <div className="flex items-baseline justify-between">
@@ -359,7 +360,7 @@ export default function TodayPage() {
           : null
         const options = detail ? codePatchAcceptOptions(detail) : {}
         if (options === null) return
-        const out=await proposalsApi.accept(proposal.id,options);if(out.result_type==='code_patch_pending'){notifyReviewAttentionChanged();toast.info(t(`mixed_surfaces.code_patch_${out.result.status === 'pending' ? 'queued' : out.result.status}`));await loadSummary();return;}
+        const out=await proposalsApi.accept(proposal.id,options);const refusal=acceptRefusalKey(out);if(refusal){notifyReviewAttentionChanged();toast.error(t(refusal));await loadSummary();return;}if(out.result_type==='code_patch_pending'){notifyReviewAttentionChanged();toast.info(t(`mixed_surfaces.code_patch_${out.result.status === 'pending' ? 'queued' : out.result.status}`));await loadSummary();return;}
       } else {
         await proposalsApi.reject(proposal.id)
       }
@@ -368,6 +369,7 @@ export default function TodayPage() {
       await loadSummary()
     } catch (e) {
       toast.error(errMsg(e))
+      await loadSummary()
     }
   }
 

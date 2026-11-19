@@ -12,7 +12,7 @@ import { resetTables } from "./support/resetTables.js";
 import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 /**
- * Relocation and promotion (ADR 0013 amendment D7).
+ * Relocation and promotion (ADR 0013 decisions 7–9).
  *
  * Two rules carry the privacy weight and are asserted from both sides: a member
  * may not take a colleague's contribution out of the team's Space, and copying

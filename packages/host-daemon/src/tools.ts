@@ -19,7 +19,7 @@ import { prepareClaudeAcp } from "./acpAdapterCompatibility.js";
  * the server; the daemon reports what it has and installs what it is told.
  *
  * This is the one exception to "the daemon runs what the machine already
- * has" (ADR 0016, amended): the machine's own claude/codex/opencode logins
+ * has" (ADR 0016 section 7): the machine's own claude/codex/opencode logins
  * stay untouched, and a registry agent is only ever the control plane's
  * choice, at the control plane's version, in a directory it can remove.
  */

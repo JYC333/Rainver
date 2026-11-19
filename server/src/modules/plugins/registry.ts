@@ -1,7 +1,5 @@
 import type { ServerConfig } from "../../config.js";
 import type { OfficialPluginDescriptor } from "@rainver/protocol";
-import { diaryDescriptor } from "./official/diary.js";
-import { financeLedgerDescriptor } from "./official/financeLedger.js";
 
 /**
  * Static in-memory registry of official optional modules bundled with this
@@ -15,10 +13,7 @@ import { financeLedgerDescriptor } from "./official/financeLedger.js";
  *   4. Add a frontend entry in the web module registry (apps/web modules/registry.ts).
  *   5. Add installer-managed plugin migrations for any plugin-owned domain tables.
  */
-const OFFICIAL_PLUGINS: readonly OfficialPluginDescriptor[] = [
-  diaryDescriptor,
-  financeLedgerDescriptor,
-];
+const OFFICIAL_PLUGINS: readonly OfficialPluginDescriptor[] = [];
 
 /** All registered official plugin descriptors, indexed by id for O(1) lookup. */
 const PLUGIN_MAP = new Map<string, OfficialPluginDescriptor>(

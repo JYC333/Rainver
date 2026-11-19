@@ -201,7 +201,7 @@ package tsconfig; do not copy the legacy src-only root when importing a shared
 root declaration. Existing legacy configurations are not rewritten. The protocol PluginViewContext
 lets plugin UI define its own structural UI port without importing app internals.
 
-Legacy steps (existing diary/finance contract):
+Legacy steps (historical registration path):
 1. Add an `OfficialPluginDescriptor` under `server/src/modules/plugins/official/<pluginId>.ts`.
 2. Register the descriptor in `server/src/modules/plugins/registry.ts`.
 3. If the plugin contributes runtime behavior, create `plugins/official/<plugin-id>/`.

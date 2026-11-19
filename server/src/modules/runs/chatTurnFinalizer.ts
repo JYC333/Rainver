@@ -10,6 +10,7 @@ import {
   loadProjectChatActionPreviews,
   sharedActionPreviews,
 } from "../agents/projectChatActionPreviews.js";
+import { gmailDigestRunContext, settleGmailDigestRun } from "../sources/gmail/gmailDigests.js";
 import { PgSessionRepository } from "../sessions/repository.js";
 import { RuntimeContextContinuityService } from "../runtimeContext/index.js";
 import { runOutputResult } from "./orchestrationResults.js";
@@ -104,7 +105,8 @@ export async function finalizeChatTurn(
   );
   if (existingCompletion.items.length > 0) return null;
 
-  const outcome = chatOutcome(run);
+  const digest = gmailDigestRunContext(run);
+  let outcome = chatOutcome(run);
   // Proposals belong to Runs, not Projects. Direct chat deliberately has no
   // Project and still needs the same decision card as a Room turn.
   const allActionPreviews = await (deps.loadActionPreviews ?? loadProjectChatActionPreviews)(
@@ -125,7 +127,26 @@ export async function finalizeChatTurn(
   // it produced is the handoff Artifact, and its reply is never posted.
   const handoffTurn = recordValue(recordValue(run.model_override_json).chat_turn).kind === "handoff";
 
-  if (handoffTurn) {
+  if (digest) {
+    const reply = outcome.ok && !outcome.awaitingAnswer && outcome.reply.trim() ? outcome.reply : null;
+    // The reply belongs to the conversation the digest was set up in: the owner's private one, or a Room or
+    // the mainline, where it is the Room's message for its audience (ADR 0033 phase B).
+    const message = await settleGmailDigestRun(getDbPool(config.databaseUrl!), run, reply, (db, content) => isRoomConversationRun(run)
+      ? new PgSessionRepository(db).addRoomAgentMessageForRun({
+        space_id: run.space_id, session_id: metadata.session_id, sender_agent_id: metadata.agent_id, run_id: run.id, content,
+        metadata: { ...(run.run_group_id ? { task_group_id: run.run_group_id } : {}), status: run.status },
+      })
+      : new PgSessionRepository(db).addAssistantMessageForRun(run.space_id, metadata.user_id, metadata.session_id, run.id, { content, metadata: { gmail_result: true } }));
+    if (message) {
+      assistantMessage = {
+        schema_version: "assistant_message.v1", id: message.id, session_id: metadata.session_id, run_id: run.id,
+        content: message.content, artifact_refs: [], tool_call_refs: [], ...(isRoomConversationRun(run) ? {} : { gmail_result: true as const }), created_at: message.created_at,
+      };
+      terminalMessageId = message.id;
+    } else {
+      outcome = { ok: false, errorCode: "gmail_digest_not_delivered", error: "The Gmail digest could not be delivered. See Sources → Access and Gmail." };
+    }
+  } else if (handoffTurn) {
     // Completed below like any turn, so nothing waits on it. A summary the
     // person asked for is the one handoff turn that is announced: its
     // document is for them, and the Room is where they asked.
@@ -145,6 +166,11 @@ export async function finalizeChatTurn(
     }
   } else if (outcome.ok || outcome.reply) {
     const artifactRefs = artifactReferences(run.output_json);
+    const gmailResult = run.visibility === "private" && !isRoomConversationRun(run)
+      && Boolean((run.permission_snapshot_json as { plugin_tool_pins?: Record<string, unknown> } | null)?.plugin_tool_pins?.["source.gmail.mail.read"])
+      && (await getDbPool(config.databaseUrl!).query(
+        `SELECT 1 FROM agent_data_read_logs WHERE space_id=$1 AND run_id=$2 AND owner_user_id=$3
+          AND action_id='source.gmail.mail.read' LIMIT 1`, [run.space_id, run.id, metadata.user_id])).rows.length > 0;
     // The runtime's own question ended this turn: the reply is the
     // question, marked so the person sees it is waiting on them.
     const awaitingAnswer = outcome.ok && outcome.awaitingAnswer ? { awaiting_answer: true } : {};
@@ -176,6 +202,7 @@ export async function finalizeChatTurn(
             metadata: {
               ...failure,
               ...awaitingAnswer,
+              ...(gmailResult ? { gmail_result: true } : {}),
               ...(artifactRefs.length > 0 ? { artifact_refs: artifactRefs } : {}),
               ...(persistedActionPreviews.length > 0 ? { action_previews: persistedActionPreviews } : {}),
             },
@@ -192,6 +219,7 @@ export async function finalizeChatTurn(
       session_id: metadata.session_id,
       run_id: run.id,
       content: outcome.reply!,
+      ...(gmailResult ? { gmail_result: true as const } : {}),
       artifact_refs: artifactRefs,
       tool_call_refs: actionPreviews.flatMap((preview) =>
         preview.tool_call_id ? [preview.tool_call_id] : []),
@@ -305,7 +333,9 @@ export async function recordChatTurnFinalizationFailure(
   if (run.execution_kind !== "agent" || !TERMINAL_STATUSES.has(run.status)) return { attempts: 0, completed: false };
   const metadata = chatTurnMetadata(run.model_override_json);
   if (!metadata) return { attempts: 0, completed: false };
-  const reason = (error instanceof Error ? error.message : String(error)).slice(0, 1_000);
+  const digest = gmailDigestRunContext(run);
+  const reason = digest ? "The private Gmail digest could not be stored."
+    : (error instanceof Error ? error.message : String(error)).slice(0, 1_000);
   const warnings = await repository.listRunEventsPage(run.space_id, run.id, {
     from_event_index: 0,
     limit: 1_000,
@@ -325,6 +355,9 @@ export async function recordChatTurnFinalizationFailure(
       metadata_json: { session_id: metadata.session_id, attempt: attempts },
     });
     return { attempts, completed: false };
+  }
+  if (digest && config.databaseUrl) {
+    await settleGmailDigestRun(getDbPool(config.databaseUrl), run, null, async () => null);
   }
   const resolveActor = deps.resolveAgentActorId
     ?? ((spaceId: string, agentId: string) => resolveAgentActorId(getDbPool(config.databaseUrl!), spaceId, agentId));
@@ -412,6 +445,11 @@ function chatTurnMetadata(value: unknown): ChatTurnMetadata | null {
     project_id: stringValue(chatTurn.project_id),
     room_id: stringValue(chatTurn.room_id),
   };
+}
+
+/** The reply (or failure) a finished agent Run produced, as a chat turn reads it. */
+export function runReplyOutcome(run: AgentRunRecord): ReturnType<typeof chatOutcome> {
+  return chatOutcome(run);
 }
 
 function chatOutcome(

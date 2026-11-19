@@ -43,29 +43,91 @@ jobs:
   resolve:
     runs-on: ubuntu-24.04
     outputs:
-      channel: ${{ steps.release.outputs.channel }}
+      channel: ${{ steps.channel.outputs.channel }}
       ref: ${{ steps.release.outputs.ref }}
     steps:
-      - id: release
-        name: Resolve branch and channel
+      - id: channel
+        name: Resolve channel and source branch
         shell: bash
+        env:
+          INPUT_CHANNEL: ${{ inputs.channel }}
         run: |
           set -euo pipefail
           if [[ "$GITHUB_EVENT_NAME" == "schedule" ]]; then
             channel="nightly"
           elif [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
-            channel="${{ inputs.channel }}"
+            channel="$INPUT_CHANNEL"
           elif [[ "$GITHUB_REF_NAME" == "master" ]]; then
             channel="stable"
           else
             channel="edge"
           fi
-          if [[ "$channel" == "stable" ]]; then ref="master"; else ref="dev"; fi
+          case "$channel" in
+            stable) branch="master" ;;
+            edge|nightly) branch="dev" ;;
+            *) echo "Unknown release channel: $channel" >&2; exit 1 ;;
+          esac
           echo "channel=$channel" >> "$GITHUB_OUTPUT"
-          echo "ref=$(git rev-parse "origin/$ref")" >> "$GITHUB_OUTPUT"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+
+      # The channel's branch tip, fetched as an exact branch ref (never a tag
+      # or a same-named path), is pinned once here; every later job builds
+      # and publishes that one commit even if the branch moves meanwhile.
+      - name: Check out the channel branch
+        uses: actions/checkout@v4
+        with:
+          ref: refs/heads/${{ steps.channel.outputs.branch }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - id: release
+        name: Pin the release commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          ref="$(git rev-parse --verify 'HEAD^{commit}')"
+          [[ "$ref" =~ ^[0-9a-f]{40}$ ]] || { echo "Unexpected commit id: $ref" >&2; exit 1; }
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+
+  # The packages the daemon ships are tested at the pinned commit before
+  # anything is built from it or published.
+  verify:
+    needs: resolve
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.ref }}
+          persist-credentials: false
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck and test daemon packages
+        run: |
+          pnpm --filter @rainver/protocol build
+          pnpm --filter @rainver/agent-cli typecheck
+          pnpm --filter @rainver/agent-cli test
+          pnpm --filter @rainver/folder-read typecheck
+          pnpm --filter @rainver/folder-read test
+          pnpm --filter @rainver/outbound-guard typecheck
+          pnpm --filter @rainver/outbound-guard test
+          pnpm --filter @rainver/host-daemon typecheck
+          pnpm --filter @rainver/host-daemon test
 
   build:
-    needs: resolve
+    needs: [resolve, verify]
     strategy:
       matrix:
         include:
@@ -158,16 +220,26 @@ jobs:
           merge-multiple: true
 
       - name: Prepare rolling release assets
+        shell: bash
         run: |
+          set -euo pipefail
           git rev-parse HEAD > release/BUILD_ID
           cp ops/scripts/host/install-host.sh release/install-host.sh
           (cd release && sha256sum BUILD_ID install-host.sh rainver-host-*.tar.gz > SHA256SUMS)
 
-      - name: Move the rolling channel tag
+      # The one owner of release creation and channel tags: the immutable
+      # per-commit release first, then the channel tag and its rolling release.
+      - name: Publish the build and move the rolling channel
         env:
+          GH_TOKEN: ${{ github.token }}
           RELEASE_CHANNEL: ${{ needs.resolve.outputs.channel }}
+          RELEASE_REF: ${{ needs.resolve.outputs.ref }}
+        shell: bash
         run: |
+          set -euo pipefail
           build_sha="$(git rev-parse HEAD)"
+          [[ "$build_sha" == "$RELEASE_REF" ]] || { echo "Checked out $build_sha, expected $RELEASE_REF" >&2; exit 1; }
+          short_sha="${build_sha:0:12}"
           immutable_tag="host-build-${build_sha}"
           if ! gh release view "$immutable_tag" >/dev/null 2>&1; then
             gh release create "$immutable_tag" release/* --target "$build_sha" --title "Rainver Host ${short_sha}" --notes "Verified Host and adapter assets for ${build_sha}." --prerelease --latest=false
@@ -175,25 +247,6 @@ jobs:
           release_tag="host-${RELEASE_CHANNEL}"
           git tag --force "$release_tag" "$build_sha"
           git push origin "+refs/tags/${release_tag}"
-          if [[ "$RELEASE_CHANNEL" == "stable" ]]; then
-            git tag --force host-installer "$build_sha"
-            git push origin "+refs/tags/host-installer"
-          fi
-
-      - name: Publish or replace latest assets
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_CHANNEL: ${{ needs.resolve.outputs.channel }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          build_sha="$(git rev-parse HEAD)"
-          short_sha="${build_sha:0:12}"
-          immutable_tag="host-build-${build_sha}"
-          if ! gh release view "$immutable_tag" >/dev/null 2>&1; then
-            gh release create "$immutable_tag" release/* --target "$build_sha" --title "Rainver Host ${short_sha}" --notes "Verified Host and adapter assets for ${build_sha}." --prerelease --latest=false
-          fi
-          release_tag="host-${RELEASE_CHANNEL}"
           title="Rainver Host ${RELEASE_CHANNEL} (${short_sha})"
           notes="Rolling Linux ${RELEASE_CHANNEL} release built from ${build_sha}. The ${release_tag} tag and assets are replaced in place."
           if gh release view "$release_tag" >/dev/null 2>&1; then
@@ -205,9 +258,9 @@ jobs:
             fi
           else
             if [[ "$RELEASE_CHANNEL" == "stable" ]]; then
-              gh release create "$release_tag" release/* --title "$title" --notes "$notes" --latest
+              gh release create "$release_tag" release/* --target "$build_sha" --title "$title" --notes "$notes" --latest
             else
-              gh release create "$release_tag" release/* --title "$title" --notes "$notes" --prerelease
+              gh release create "$release_tag" release/* --target "$build_sha" --title "$title" --notes "$notes" --prerelease
             fi
           fi
 
@@ -218,6 +271,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          build_sha="$(git rev-parse HEAD)"
+          git tag --force host-installer "$build_sha"
+          git push origin "+refs/tags/host-installer"
           mkdir -p installer-release
           cp ops/scripts/host/bootstrap-host.sh installer-release/install-host.sh
           title="Rainver Host installer"

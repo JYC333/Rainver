@@ -7,6 +7,7 @@ import MonitoringPanel from './sourcesArea/MonitoringPanel'
 import ProjectSourcesPage from './ProjectSourcesPage'
 import {Navigate} from 'react-router-dom'
 import ProjectReadingPage from './reading/ProjectReadingPage'
+import { ProjectGmailThreads } from './sourcesArea/gmail/ProjectGmailThreads'
 
 /** Existing Sources deep links remain valid; reading is a consumer of the unified projection. */
 export default function SourcesAreaPage() {
@@ -31,7 +32,7 @@ export default function SourcesAreaPage() {
     <>
       <h1 className="text-xl font-semibold tracking-tight">{t('reading.sources')}</h1>
       <nav className="flex flex-wrap gap-2"><Button size="sm" variant={tab === 'settings' ? 'secondary' : 'ghost'} aria-current={tab === 'settings' ? 'page' : undefined} onClick={() => change('settings')}>{t('monitoring.followingSettings')}</Button><Button size="sm" variant={tab === 'candidates' ? 'secondary' : 'ghost'} aria-current={tab === 'candidates' ? 'page' : undefined} onClick={() => change('candidates')}>{t('monitoring.allCandidates')}</Button><Button variant="ghost" asChild><SpaceLink to={`/proposals?project_id=${projectId}`}>{t('reading.review')}</SpaceLink></Button></nav>
-      {tab === 'candidates' ? <MonitoringPanel /> : tab === 'review' ? <SpaceLink className="underline" to={`/proposals?project_id=${projectId}`}>{t('reading.review')}</SpaceLink> : <div className="space-y-5"><Button size="sm" variant="outline" asChild><SpaceLink to={`/projects/${projectId}/sources?tab=following`}>{t('projectReading.following')}</SpaceLink></Button><details className="rounded-lg border border-border bg-card"><summary className="cursor-pointer p-4 font-medium">{t('monitoring.manageLinkedSources')}</summary><ProjectSourcesPage view="manage" /></details></div>}
+      {tab === 'candidates' ? <MonitoringPanel /> : tab === 'review' ? <SpaceLink className="underline" to={`/proposals?project_id=${projectId}`}>{t('reading.review')}</SpaceLink> : <div className="space-y-5"><Button size="sm" variant="outline" asChild><SpaceLink to={`/projects/${projectId}/sources?tab=following`}>{t('projectReading.following')}</SpaceLink></Button><details className="rounded-lg border border-border bg-card"><summary className="cursor-pointer p-4 font-medium">{t('monitoring.manageLinkedSources')}</summary><ProjectSourcesPage view="manage" /></details><ProjectGmailThreads projectId={projectId} /></div>}
     </>
   </div>
 }

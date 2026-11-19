@@ -27,9 +27,18 @@ class DueScanDb implements Queryable {
         rowCount: 1,
       };
     }
-    if (sql.includes("SELECT ch.id, ch.space_id")) {
+    if (sql.includes("SELECT source_connection_id FROM source_channels")) {
+      return { rows: [{ source_connection_id: "conn-1" }] as Row[], rowCount: 1 };
+    }
+    if (sql.includes("FROM source_connections WHERE space_id = $1 AND id = $2 FOR SHARE")) {
+      return { rows: [{ id: "conn-1" }] as Row[], rowCount: 1 };
+    }
+    if (sql.includes("FROM source_channels WHERE space_id = $1 AND id = $2 AND source_connection_id = $3 FOR UPDATE")) {
+      return { rows: [{ id: "channel-1" }] as Row[], rowCount: 1 };
+    }
+    if (sql.includes("SELECT ch.id AS channel_id")) {
       return {
-        rows: [{ id: "channel-1", space_id: "space-1", source_connection_id: "conn-1" }] as Row[],
+        rows: [{ channel_id: "channel-1", space_id: "space-1", connection_id: "conn-1" }] as Row[],
         rowCount: 1,
       };
     }
@@ -52,6 +61,20 @@ describe("source due channel scheduler", () => {
     expect(JSON.parse(String(insert?.params[3]))).toEqual({ created_by: "scheduler", source_channel_id: "channel-1" });
   });
 
+  it("locks the connection, then the Channel, and re-checks before inserting its scan", async () => {
+    const db = new DueScanDb();
+
+    await enqueueDueSourceChannelScans(db, 10);
+
+    const at = (needle: string) => db.calls.findIndex(call => call.sql.includes(needle));
+    const parentLock = at("FOR SHARE");
+    const channelLock = at("FOR UPDATE");
+    expect(parentLock).toBeGreaterThan(at("FROM scheduler_tasks"));
+    expect(parentLock).toBeLessThan(channelLock);
+    expect(channelLock).toBeLessThan(at("SELECT ch.id AS channel_id"));
+    expect(at("SELECT ch.id AS channel_id")).toBeLessThan(at("INSERT INTO extraction_jobs"));
+  });
+
   it("skips manual, inactive, not-due, and already pending-running scan rows in the due query", async () => {
     const db = new DueScanDb();
 
@@ -62,7 +85,10 @@ describe("source due channel scheduler", () => {
     expect(taskSelect).toContain("next_run_at <= $2");
     expect(taskSelect).toContain("LIMIT $3");
 
-    const sourceSelect = db.calls.find(call => call.sql.includes("SELECT ch.id, ch.space_id"))!.sql.replace(/\s+/g, " ");
+    const sourceSelect = db.calls.find(call => call.sql.includes("SELECT ch.id AS channel_id"))!.sql.replace(/\s+/g, " ");
+    expect(sourceSelect).toContain("st.status = 'active'");
+    expect(sourceSelect).toContain("st.next_run_at <= $4");
+    expect(sourceSelect).toContain("b.spec_json->>'source_channel_id'=ch.id AND g.active_version_id IS NOT NULL");
     expect(sourceSelect).toContain("ch.status = 'active'");
     expect(sourceSelect).toContain("ch.fetch_frequency <> 'manual'");
     expect(sourceSelect).toContain("sc.handler_kind = 'built_in'");

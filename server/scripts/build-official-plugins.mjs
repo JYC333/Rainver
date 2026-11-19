@@ -1,6 +1,6 @@
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { execFileSync, spawn } from "node:child_process";
 
 const serverRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -36,23 +36,40 @@ if (!watch) {
 mkdirSync(artifactRoot, { recursive: true });
 
 const children = [];
+const builtIds = [];
 for (const packageRoot of packages) {
   const manifest = readManifest(packageRoot);
+  builtIds.push(manifest.id);
   copyPackageAssets(packageRoot, manifest);
   const tsconfig = resolve(packageRoot, "server", "tsconfig.json");
   if (!existsSync(tsconfig)) {
     throw new Error(`Missing server tsconfig for official plugin ${manifest.id}`);
   }
 
+  // Watch mode also compiles once first, so the index below can record what
+  // each compiled package is before the watchers take over.
+  execFileSync(tscBin, ["-p", tsconfig], { cwd: repoRoot, stdio: "inherit" });
   if (watch) {
     children.push(spawn(tscBin, ["-p", tsconfig, "--watch", "--preserveWatchOutput"], {
       cwd: repoRoot,
       stdio: "inherit",
     }));
-  } else {
-    execFileSync(tscBin, ["-p", tsconfig], { cwd: repoRoot, stdio: "inherit" });
   }
 }
+
+// The loader imports only packages this build compiled from in-repo source
+// (plus registry descriptors); a package cannot admit itself by its manifest.
+// `operation_packages` records, from this trusted build, which compiled
+// packages are operation packages, so the server admits an index-only package
+// by category before it imports anything.
+const operationIds = [];
+for (const id of builtIds) {
+  if (await isOperationPackage(id)) operationIds.push(id);
+}
+writeFileSync(resolve(artifactRoot, "packages.json"), `${JSON.stringify({
+  packages: builtIds.sort(),
+  operation_packages: operationIds.sort(),
+}, null, 2)}\n`);
 
 if (watch && children.length > 0) {
   await new Promise((resolveExit, rejectExit) => {
@@ -66,9 +83,20 @@ if (watch && children.length > 0) {
   });
 }
 
+/** Mirrors the server loader's export resolution for the package this build just compiled. */
+async function isOperationPackage(id) {
+  const manifest = JSON.parse(readFileSync(resolve(artifactRoot, id, "plugin.json"), "utf8"));
+  const mod = await import(pathToFileURL(resolve(artifactRoot, id, manifest.server.main)).href);
+  const exportName = `${id.replace(/[_-]([a-z0-9])/g, (_, ch) => ch.toUpperCase())}Plugin`;
+  const plugin = [mod.default, mod.plugin, mod[exportName]].find((candidate) =>
+    candidate && typeof candidate === "object" && typeof candidate.id === "string"
+    && typeof candidate.version === "string" && typeof candidate.activate === "function");
+  return Boolean(plugin?.operationManifest);
+}
+
 function readManifest(packageRoot) {
   const manifest = JSON.parse(readFileSync(resolve(packageRoot, "plugin.json"), "utf8"));
-  if (!manifest || typeof manifest.id !== "string" || manifest.id.trim() === "") {
+  if (!manifest || typeof manifest.id !== "string" || !/^[a-z][a-z0-9_]*$/.test(manifest.id)) {
     throw new Error(`Invalid official plugin manifest at ${packageRoot}`);
   }
   if (!manifest.server || typeof manifest.server.main !== "string") {

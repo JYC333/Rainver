@@ -70,7 +70,8 @@ pause evidence; a dispatch that finds no reusable attempt backfills one marked
 4. Retries only add Attempts; a terminal Attempt's error/exit evidence is never
    cleared or rewritten, and usage remains append-only in the token ledger.
    Events an execution produces (runtime semantic events, host thread events)
-   carry the attempt that dispatch started (`markRunRunning` returns it); a
+   carry the attempt that dispatch started (`claimRunExecution` returns it in
+   its `started` outcome; `markRunRunning` is its nullable form); a
    write from an attempt a retry has superseded is dropped, so an adapter
    still unwinding cannot put its events into the newer attempt's turn.
 5. A Run returns from a terminal status to `queued` only through a persisted
@@ -558,7 +559,9 @@ Existing Run and Proposal rows use separate nullable `*_user_id` and `*_agent_id
   daemon, and consumes ACP events. The built-in Server Host and paired Hosts
   share this boundary. The Runtime Context Gateway Delivery is projected into
   ACP's single user-prompt channel: a follow-up that is only the person's new
-  message goes through verbatim, and section labels are added only when the
+  message goes through verbatim (adapter Run control and attachments follow
+  under their own marked headings, `modules/runtime-context.md`), and
+  section labels are added only when the
   Delivery also carries instructions or reference material; tool grants
   remain independently enforced by the Server gateway. Persistent Host-thread
   cursor state follows the same opaque ACP session id. `runtime_native` login
@@ -602,76 +605,96 @@ static declaration the Host path does not apply.
 
 ### Containers and Agent-triggered budgets
 
-In a Room conversation, turns Agents set going are bounded by the person turn
-that started them, so spend never grows without a person's say (ADR 0017's
-fan-out ceiling and bounded defaults). The implementation is
-`rooms/delegationBudget.ts` (`defaultRoomDelegationBudget`, the soft-limit
-notice), `rooms/discussionService.ts` (`delegationBudget`,
+In a Room conversation, every turn Agents set going is charged to the person
+turn that started it. Work a person's own Room turn authorized has no total
+handoff or turn limit: it is counted and reminded, and bounded per turn and by
+the protections below. The implementation is `rooms/delegationBudget.ts`
+(`defaultRoomDelegationBudget`, `personAuthorizedRoot`,
+`noteRoomDelegationUsage`), `agentGroups/collaborationReminder.ts`
+(`postWorkReminder`), `rooms/discussionService.ts` (`delegationBudget`,
 `agentOriginContinuation`, `chargeContainer`, `containerTurns`) and
-`agentGroups/service.ts` (`chargeDelegatedChild`).
+`agentGroups/service.ts` (`spawnCounts`, `chargeDelegatedChild`).
 
 - **One container per person-originated turn.** The person's message opens a
   group, which is the shared container for its delegation and continuation
   chain. The default depth is one. With N active delegatable Room Agents
-  excluding the coordinator (at least one), its temporary soft limit is 10 × N
-  delegations and hard limit 20 × N. Turn limits are twice those counts: one
-  child turn and one completion turn per delegation. Explicit
-  `delegation_budget` passed internally by the server takes precedence (there
-  is no user-facing Room budget parameter); an explicit `max_fanout` remains a
-  hard bound. Each subgroup may narrow but never widen the container bound.
-  The Conversation shares one directory: ordinary turns and delegated writers
-  run exclusively, while explicitly declared read-only children use shared
-  admission (`lifecycleProjector.ts`).
-- **Shared accounting and policy.** Every admitted child and Agent-origin
-  completion charges the same container, named by `container_group_id`.
-  Temporary fanout counts all admitted delegations across its branches, not
-  each parent's separate allowance. Both soft and hard limits reach
-  `decisionCore` in the `run.spawn_child` context. Prospective counts at the
-  hard limit are admitted; requests above it are denied and audited without
-  consuming capacity. The first crossing of soft continues and records one
-  visible Room system notice plus a flag on the container. It uses the
-  existing conversation notice/read mechanism, not a notification channel.
+  excluding the coordinator (at least one), its stored budget is
+  `max_fanout`/`soft_max_fanout` 10 × N and `hard_max_fanout` 20 × N.
+  Explicit `delegation_budget` passed internally by the server takes
+  precedence (there is no user-facing Room budget parameter); each subgroup
+  may narrow but never widen the container bound. The Conversation shares one
+  directory: ordinary turns and delegated writers run exclusively, while
+  explicitly declared read-only children use shared admission
+  (`lifecycleProjector.ts`).
+- **Person-authorized work: counted, reminded, never stopped on a total.** A
+  container whose root Run is a person's own Room turn (`trigger_origin =
+  'manual'`, no parent; `personAuthorizedRoot`) — outside a discussion —
+  admits temporary delegations and task-collaboration handoffs with no
+  cumulative delegation or Agent-turn limit, and its completions keep the
+  person's cause however long the chain runs. Its stored hard bound limits one
+  turn's children outstanding at once (a coordinator Run resumes after
+  waiting, so its lifetime count is not one turn). Three admitted children in a
+  row without a result (a degraded child that replied is a result) close
+  further fan-out and end the person's cause for the completion, which still
+  reports. Under the container row lock, each admission compares the
+  cumulative count with protocol `COLLABORATION_REMINDER_THRESHOLDS` (25, 50,
+  100, 200, then each doubling) and the stored `reminder_notified_through`; a
+  crossing — or a jump across several — posts exactly one non-blocking Room
+  notice under a stable `<container>:delegation:reminder:<n>` (or
+  `…:collaboration:<epoch>:reminder:<n>`) key that is never written twice.
+  Continuation, automation and scheduled roots are never upgraded to this; a
+  continuation never becomes `manual`.
+- **Bounded containers.** A container not rooted in a person's own turn keeps
+  the cumulative bounds: temporary fanout counts all admitted delegations
+  across its branches, its turn limits are twice the soft/hard counts (one
+  child turn and one completion turn per delegation), both reach
+  `decisionCore` in the `run.spawn_child` context, requests above hard are
+  denied and audited without consuming capacity, and the first crossing of
+  soft records one visible Room notice plus a flag on the container.
   Preflight and execution recheck under the container row lock; replaying an
   already admitted tool call charges nothing again.
 - **Discussions and continuations.** Completion turns inherit the original
-  container's remaining bounds, never a fresh allowance. Emergent discussion
-  waves use its scaled hard turn limit; explicit discussion round, participant
-  and spend caps still apply. Agent-started research results carry their
-  `origin_group_id` and charge this same chain. Human-started work opens a new
-  container.
-- **Explicit task collaboration.** A coordinator can declare one open Project
-  Task, one or more fixed participants from the other active Room members and
-  a hard `max_delegations` (1–128). There is no separate numeric participant cap.
-  Agent declarations cannot change active bounds (409 on changing Task,
-  participants or cap). An authenticated human manager can explicitly change
-  participants through `room.collaboration.update_participants`; this never
-  changes the Task, cap, coordinator, offsets or already charged usage. The
-  command compares the expected old participant set under the container lock,
-  validates both pinned group membership and the current Room roster, and
-  refuses removal while that member has an unfinished delegation. It requires
+  container's bound fields, never a fresh allowance. Emergent discussion
+  waves use the scaled hard turn limit; explicit discussion round, participant
+  and spend caps still apply — person-authorized accounting does not widen a
+  discussion. Agent-started research results carry their `origin_group_id`
+  and charge this same chain. Human-started work opens a new container.
+- **Explicit task collaboration.** A coordinator can declare exactly one open
+  Project Task and one or more fixed participants from the other active Room
+  members — nothing else: a mode, cap or reminder request is refused (422),
+  never converted. There is no separate numeric participant cap and nothing
+  for a person to confirm. Agent declarations cannot change an active
+  collaboration (409). Handoffs and charged turns are counted and reminded as
+  above, never a stop. An authenticated human manager can explicitly change
+  participants through `room.collaboration.update_participants`; it does not
+  change the Task, coordinator, offsets, history or already charged usage, it
+  compares the expected participants under the container lock, requires
   active Room membership and Project writer authority, records a mandatory
-  policy decision and visible before/after Room notice in the same transaction,
-  and is unavailable to Agent tools. Code deployment and a real authenticated
-  human request are required; conversational confirmation alone cannot mutate
-  the running collaboration.
-  Once that Task is `done` or `cancelled`, the coordinator may explicitly
-  declare another open Task and bounds in the same container, including on a
+  policy decision and a visible Room notice in the same transaction, and is
+  unavailable to Agent tools. It validates pinned group membership and the
+  current Room roster and refuses removal while that member has an unfinished
+  delegation. Once that Task is `done` or `cancelled`, the coordinator may
+  explicitly declare another open Task in the same container, including on a
   completion turn. Either the original turn or its coordinator completion can
   first declare after temporary delegations, rooted in the person's original
-  manual Room turn; accounting begins at declaration. Completing a Run alone
-  never refills a budget. Each declaration records delegation/turn offsets;
-  prior consumption and failure streaks cannot consume the new Task's quota,
-  and previous declarations remain in `collaboration_history` for audit.
-  The declared hard count and twice as many charged turns govern that epoch.
-  Delegations retain their collaboration Task id; a prior Task's late result
-  remains charged to the container without consuming the new Task's turn quota.
-  Task holds, three consecutive children without a result, stop, lost access
-  and exhaustion still prevent admission. See [rooms.md](../modules/rooms.md).
+  manual Room turn; accounting begins at declaration. Each declaration
+  records delegation/turn offsets, `declared_at` and its reminder progress;
+  prior consumption, failure streaks and cancellations cannot consume or stop
+  the new Task's declaration, and previous declarations remain in
+  `collaboration_history` for audit. Delegations retain their collaboration
+  Task id; a prior Task's late result remains charged to the container
+  without being counted as the new Task's turn. Task holds, three consecutive
+  children without a result, pause (resumable), stop or coordinator
+  cancellation (terminal for the declaration), lost access, depth one and
+  per-turn outstanding fan-out prevent admission. Only one stored shape is
+  read; anything else fails closed (`collaboration_budget_invalid`).
+  Migration `0024` converted once only the earlier records that release's
+  strict schema accepted; one it refused stays as it was and fails closed. See [rooms.md](../modules/rooms.md).
 - **An explicit discussion's caps.** A discussion a person opens is bounded by
   its round cap (default 3 open, 2 debate; one turn per Agent per round, at
   most 5 participants), and on priced Runs by a spend cap (default USD 2);
   its `turns_used` counts only what Agents started on their own (delegations
-  and their results), which draw on the container's scaled hard turn ceiling. The
+  and their results), which draw on the scaled hard turn ceiling. The
   Manager's closing turn is outside the round cap and inside the spend cap.
   Subscription Runs are bounded by rounds and by the account's window, with
   Agent-triggered admissions held at the Space's reserve line
@@ -1039,7 +1062,14 @@ It then evaluates candidate and baseline outputs with
 `verification_engine.v1`'s output-checking core, stores structured scores,
 check evidence, and regression blockers in
 `evolvable_asset_evaluation_runs`, and updates the candidate's latest
-evaluation summary. The job does not execute a candidate from `input_json`
+evaluation summary. Every write is settled under the Job's current claim
+(`lockCurrentJobClaim`) and the Job's Space, so a reclaimed or superseded
+attempt writes nothing; the result and the candidate's `eval_summary_json`
+commit in one transaction. The Job has two attempts and the verification is
+pure (no outside I/O or spend), so a failed first attempt leaves the run
+non-terminal and the retry evaluates again; `failed` with an
+`evaluation_executor_error` blocker is recorded only on the final attempt.
+The job does not execute a candidate from `input_json`
 inside the evaluation job; the candidate run must already have been produced
 by the normal run authority. The evaluation job is read-only and has no shell,
 network, or write-capable connector authority. Unsupported checks produce an

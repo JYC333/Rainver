@@ -23,6 +23,8 @@ import {
   type RelationSourceLinkRow,
 } from "./repository.js";
 import { PgKnowledgeRepository } from "../knowledge/repository.js";
+import { bodyWithheld, type ContentAccessLevel } from "../access/contentAccessTypes.js";
+import { ContentAccessAuditService } from "../contentAccess/audit.js";
 
 const IDENTITY_TYPES = new Set(["email", "url", "phone", "orcid", "github", "twitter", "linkedin", "other"]);
 // Shared vocabulary for identity and affiliation proposal provenance.
@@ -49,6 +51,7 @@ interface PersonOut {
   headline: string | null;
   created_at: string;
   updated_at: string;
+  effective_access_level: "full" | "summary";
 }
 
 interface OrganizationOut {
@@ -61,45 +64,56 @@ interface OrganizationOut {
   parent_organization_object_id: string | null;
   created_at: string;
   updated_at: string;
+  effective_access_level: "full" | "summary";
 }
 
 function requiredDateIso(value: unknown): string {
   return dateIso(value) ?? new Date(0).toISOString();
 }
 
+/**
+ * A summary-level reader learns that the person or organization exists — its
+ * name, status, kind and structure — and none of what its owner wrote about
+ * it: summary, pronouns, headline, homepage, identities, notes, the notes and
+ * external references on source links, or affiliation roles.
+ */
 function personOut(row: RelationPersonRow): PersonOut {
+  const withheld = bodyWithheld(row.effective_access_level);
   return {
     object_id: row.object_id,
     title: row.title,
-    summary: row.summary,
+    summary: withheld ? null : row.summary,
     status: row.status,
-    pronouns: row.pronouns,
-    headline: row.headline,
+    pronouns: withheld ? null : row.pronouns,
+    headline: withheld ? null : row.headline,
     created_at: requiredDateIso(row.created_at),
     updated_at: requiredDateIso(row.updated_at),
+    effective_access_level: withheld ? "summary" : "full",
   };
 }
 
 function organizationOut(row: RelationOrganizationRow): OrganizationOut {
+  const withheld = bodyWithheld(row.effective_access_level);
   return {
     object_id: row.object_id,
     title: row.title,
-    summary: row.summary,
+    summary: withheld ? null : row.summary,
     status: row.status,
     org_type: row.org_type,
-    homepage_url: row.homepage_url,
+    homepage_url: withheld ? null : row.homepage_url,
     parent_organization_object_id: row.parent_organization_object_id,
     created_at: requiredDateIso(row.created_at),
     updated_at: requiredDateIso(row.updated_at),
+    effective_access_level: withheld ? "summary" : "full",
   };
 }
 
-function identityOut(row: RelationIdentityRow) {
+function identityOut(row: RelationIdentityRow, withheld = false) {
   return {
     id: row.id,
     object_id: row.object_id,
     id_type: row.id_type,
-    id_value: row.id_value,
+    id_value: withheld ? null : row.id_value,
     is_primary: row.is_primary,
     confidence: row.confidence,
     source: row.source,
@@ -109,12 +123,15 @@ function identityOut(row: RelationIdentityRow) {
 }
 
 function affiliationOut(row: RelationAffiliationRow) {
+  // The role and title are what the person's owner recorded about this tie;
+  // both endpoints must be readable at full for them to be served.
+  const withheld = bodyWithheld(row.person_access_level) || bodyWithheld(row.organization_access_level);
   return {
     id: row.id,
     person_object_id: row.person_object_id,
     organization_object_id: row.organization_object_id,
-    role: row.role,
-    title: row.title,
+    role: withheld ? null : row.role,
+    title: withheld ? null : row.title,
     status: row.status,
     start_date: dateIso(row.start_date),
     end_date: dateIso(row.end_date),
@@ -125,17 +142,17 @@ function affiliationOut(row: RelationAffiliationRow) {
   };
 }
 
-function noteOut(row: RelationNoteRow) {
+function noteOut(row: RelationNoteRow, withheld = false) {
   return {
     id: row.id,
     object_id: row.object_id,
-    body: row.body,
+    body: withheld ? null : row.body,
     created_at: requiredDateIso(row.created_at),
     updated_at: requiredDateIso(row.updated_at),
   };
 }
 
-function sourceLinkOut(row: RelationSourceLinkRow) {
+function sourceLinkOut(row: RelationSourceLinkRow, withheld = false) {
   return {
     id: row.id,
     object_id: row.object_id,
@@ -143,10 +160,14 @@ function sourceLinkOut(row: RelationSourceLinkRow) {
     activity_id: row.activity_id,
     source_item_id: row.source_item_id,
     evidence_id: row.evidence_id,
-    external_ref: row.external_ref,
-    note: row.note,
+    external_ref: withheld ? null : row.external_ref,
+    note: withheld ? null : row.note,
     created_at: requiredDateIso(row.created_at),
   };
+}
+
+function fullIds(rows: Array<{ object_id: string; effective_access_level: ContentAccessLevel }>): string[] {
+  return rows.filter((row) => !bodyWithheld(row.effective_access_level)).map((row) => row.object_id);
 }
 
 function assertConfidence(value: number | null): void {
@@ -186,6 +207,7 @@ export class RelationsService {
   async getPerson(identity: SpaceUserIdentity, objectId: string): Promise<PersonOut> {
     const row = await this.repository.getPerson(this.pool, identity.spaceId, objectId, identity.userId);
     if (!row) throw new HttpError(404, "Relation person not found");
+    await this.auditReads(identity, fullIds([row]), "detail_read");
     return personOut(row);
   }
 
@@ -194,6 +216,7 @@ export class RelationsService {
     filters: { q: string | null; limit: number; offset: number },
   ): Promise<{ items: PersonOut[]; total: number; limit: number; offset: number }> {
     const { rows, total } = await this.repository.listPeople(identity.spaceId, identity.userId, filters);
+    await this.auditReads(identity, fullIds(rows), "list_read");
     return page(rows.map(personOut), total, filters.limit, filters.offset);
   }
 
@@ -253,6 +276,7 @@ export class RelationsService {
   async getOrganization(identity: SpaceUserIdentity, objectId: string): Promise<OrganizationOut> {
     const row = await this.repository.getOrganization(this.pool, identity.spaceId, objectId, identity.userId);
     if (!row) throw new HttpError(404, "Relation organization not found");
+    await this.auditReads(identity, fullIds([row]), "detail_read");
     return organizationOut(row);
   }
 
@@ -261,6 +285,7 @@ export class RelationsService {
     filters: { q: string | null; limit: number; offset: number },
   ): Promise<{ items: OrganizationOut[]; total: number; limit: number; offset: number }> {
     const { rows, total } = await this.repository.listOrganizations(identity.spaceId, identity.userId, filters);
+    await this.auditReads(identity, fullIds(rows), "list_read");
     return page(rows.map(organizationOut), total, filters.limit, filters.offset);
   }
 
@@ -293,9 +318,9 @@ export class RelationsService {
   }
 
   async listIdentities(identity: SpaceUserIdentity, objectId: string) {
-    await this.requireRelationObject(identity, objectId);
+    const withheld = await this.readRelationObject(identity, objectId);
     const rows = await this.repository.listIdentities(identity.spaceId, objectId);
-    return rows.map(identityOut);
+    return rows.map((row) => identityOut(row, withheld));
   }
 
   async deleteIdentity(identity: SpaceUserIdentity, identityId: string): Promise<void> {
@@ -336,6 +361,8 @@ export class RelationsService {
     filters: { personObjectId: string | null; organizationObjectId: string | null },
   ) {
     const rows = await this.repository.listAffiliations(identity.spaceId, identity.userId, filters);
+    const served = rows.filter((row) => !bodyWithheld(row.person_access_level) && !bodyWithheld(row.organization_access_level));
+    await this.auditReads(identity, served.flatMap((row) => [row.person_object_id, row.organization_object_id]), "list_read");
     return rows.map(affiliationOut);
   }
 
@@ -361,9 +388,9 @@ export class RelationsService {
   }
 
   async listNotes(identity: SpaceUserIdentity, objectId: string) {
-    await this.requireRelationObject(identity, objectId);
+    const withheld = await this.readRelationObject(identity, objectId);
     const rows = await this.repository.listNotes(identity.spaceId, objectId);
-    return rows.map(noteOut);
+    return rows.map((row) => noteOut(row, withheld));
   }
 
   async createSourceLink(identity: SpaceUserIdentity, objectId: string, body: Record<string, unknown>) {
@@ -399,18 +426,36 @@ export class RelationsService {
   }
 
   async listSourceLinks(identity: SpaceUserIdentity, objectId: string) {
-    await this.requireRelationObject(identity, objectId);
+    const withheld = await this.readRelationObject(identity, objectId);
     const rows = await this.repository.listSourceLinks(identity.spaceId, objectId, identity.userId);
-    return rows.map(sourceLinkOut);
+    return rows.map((row) => sourceLinkOut(row, withheld));
   }
 
   async search(identity: SpaceUserIdentity, q: string, limit: number) {
     return this.repository.search(identity.spaceId, identity.userId, q, Math.max(1, Math.min(50, limit)));
   }
 
-  private async requireRelationObject(identity: SpaceUserIdentity, objectId: string): Promise<void> {
-    const exists = await this.repository.existsRelationObject(identity.spaceId, objectId, identity.userId);
-    if (!exists) throw new HttpError(404, "Relation object not found");
+  /**
+   * The read gate for a relation object's sub-resources. Returns whether its
+   * content is withheld from this reader (summary level); a full-level read
+   * by someone other than the owner is recorded (B11) before it is served.
+   */
+  private async readRelationObject(identity: SpaceUserIdentity, objectId: string): Promise<boolean> {
+    const level = await this.repository.relationObjectAccessLevel(identity.spaceId, objectId, identity.userId);
+    if (!level) throw new HttpError(404, "Relation object not found");
+    const withheld = bodyWithheld(level);
+    if (!withheld) await this.auditReads(identity, [objectId], "detail_read");
+    return withheld;
+  }
+
+  /** B11 before release; owner reads are dropped by the audit. A failed audit serves nothing. */
+  private async auditReads(identity: SpaceUserIdentity, objectIds: string[], accessType: "detail_read" | "list_read"): Promise<void> {
+    if (objectIds.length === 0) return;
+    try {
+      await new ContentAccessAuditService(this.pool).recordReads({ spaceId: identity.spaceId, resourceType: "space_object", resourceIds: objectIds, viewerUserId: identity.userId, accessType });
+    } catch {
+      throw new HttpError(503, "Content audit unavailable");
+    }
   }
 
   private async requireOwnedRelationObject(identity: SpaceUserIdentity, objectId: string): Promise<void> {

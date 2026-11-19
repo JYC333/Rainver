@@ -1,12 +1,14 @@
 import {
-  RetrievalRegistry,
   type CanonicalObject,
   type RetrievalDomainAdapter,
   type RetrievalObjectRef,
   type RetrievalObjectType,
   type RevalidatedObject,
-  loadSourceConnectionIdsForTargets,
 } from "../retrieval/index.js";
+// Runtime imports name their own files, not the retrieval barrel: registries register this adapter at
+// module load, so this module must stay outside the import cycle the barrel belongs to.
+import { RetrievalRegistry } from "../retrieval/registry.js";
+import { loadSourceConnectionIdsForTargets } from "../retrieval/sourcePolicy.js";
 import {
   shouldRedactMemoryContent,
   type MemoryAuthFields,

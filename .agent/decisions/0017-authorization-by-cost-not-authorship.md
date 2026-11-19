@@ -1,6 +1,6 @@
 # ADR 0017: Authorization Follows Cost, Reversibility, Exposure and Origin — Not Authorship
 
-Date: 2026-08-28 · revised 2026-09-06
+Date: 2026-08-28
 
 ## Status
 
@@ -132,6 +132,20 @@ proposal. Two mechanisms replace it:
   user requests an Inquiry decomposition, then at most three Threads. Explicit
   Task lists follow the requested scope through the batch action. That narrower pacing
   does not replace execution bounds with prompt text.
+- **Person-authorized Room work.** Work a person's own Room turn started —
+  temporary delegation or an explicitly requested task collaboration — has no
+  cumulative handoff or turn count as a stop, and needs no mode, cap or second
+  confirmation. Its bounds are the ones that limit work at any moment rather
+  than in total: one delegation level, per-turn fan-out (outstanding children
+  per coordinator turn, a completion turn reaching each declared participant
+  at most once at a time), fixed participants for a collaboration, the shared
+  workspace lease/FIFO, spend and subscription gates, three children in a row
+  without a result, and the person's pause or stop. Totals are counted and
+  offered to the person as de-duplicated, non-blocking Room reminders at
+  server thresholds (25, 50, 100, 200, then each doubling), the "offered
+  rather than refused" form of a count. Work not rooted in a person's own turn
+  (continuations, automations, schedules) and discussions keep their own
+  bounds.
 
 A `follow_up_task` may still be drafted as a proposal envelope to carry Run
 context taint and egress requirements. After a successful user-requested Run,
@@ -208,18 +222,3 @@ their class.
 
 A default may switch to direct application only after its review-after,
 undo, bounds, and origin checks exist. This condition applies to each write path.
-
-## Revision history
-
-- **2026-08-28** — original: the exhaustive hard-gate list, origin-and-bounds
-  governance for everything else, bounded spend, review-after with undo, and
-  `gatedProposalAction`.
-- **2026-09-06** — named the one exception to §1's self-modification row and
-  §2's origin gate: an Agent's persona entry, governed by ADR 0003 §5, with
-  the reasoning for the inversion and the requirement that the policy layer
-  scope the exemption to persona rather than to `memory.write`.
-- **2026-09-11** — narrowed that exception to its reason: the origin test runs
-  the other way round only for unattended work the Agent's **own owner** set
-  going. Work anybody else scheduled is gated like their turn, per ADR 0003 §5's
-  fourth row. Read as "any unattended origin applies", the exception had handed
-  the reach it exists to protect to whoever could schedule the Agent.

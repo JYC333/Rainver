@@ -15,7 +15,7 @@ import {__setAuthIdentityForTests} from '../src/modules/auth/identity.js';
 import {resolveProviderCommandStore} from '../src/modules/providers/commands/store.js';
 import {__setProviderHttpClientForTests} from '../src/modules/providers/invocation/invocation.js';
 import {openAiChatResponse} from './support/piAiHttp.js';
-import {buildJobHandlerRegistry} from '../src/modules/jobs/workerRuntime.js';
+import {performQueuedProviderTask} from './support/providerTaskFixture.js';
 import {ProjectResearchAreaService} from '../src/modules/projectResearch/areaService.js';
 import {waitForLockWaiter} from './support/lockWait.js';
 import {PgRunRepository} from '../src/modules/runs/repository.js';
@@ -33,7 +33,8 @@ beforeEach(async()=>{
 afterEach(async()=>{__setAuthIdentityForTests(null);__setProviderHttpClientForTests(null);await app?.close();});
 const body=()=>({project_id:project,prompt:'PRIVATE request',section_key:'understanding',execution:{model_provider_id:provider}});
 const call=(input:object=body(),key=randomUUID())=>app.inject({method:'POST',url:'/api/v1/actions/research.ask_ai',payload:input,headers:{'idempotency-key':key}});
-const perform=(run:string)=>buildJobHandlerRegistry(config).dispatch({job_id:randomUUID(),space_id:space,user_id:user,job_type:'provider_task_run',attempts:1,max_attempts:1,worker_id:'test-worker',payload:{run_id:run}});
+// One attempt under a real claimed Job row, as the queue worker leaves it.
+const perform=(run:string)=>performQueuedProviderTask(config,{spaceId:space,userId:user,runId:run});
 function answer(){return openAiChatResponse({choices:[{message:{content:JSON.stringify({notebook_update:{ops:[{op:'append',index:null,count:null,markdown:'Completed analysis'}],refs:[]}})}}],model:'test-model',usage:{}});}
 it('queues one private ProviderTask/Job atomically across formal and generic calls, then the real worker publishes once',async()=>{
  let invocations=0;__setProviderHttpClientForTests({fetch:async()=>{invocations++;return answer();}});const key=randomUUID(),input=body(),{project_id:_,...formalBody}=input;void _;

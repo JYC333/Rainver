@@ -71,6 +71,14 @@ Relations does not own:
 - Plugin install/enablement. Academic research is exposed through a Project
   Profile, not through an official plugin.
 
+Reads follow the shared content levels: writes stay owner-only, a
+summary-level reader of a person or organization gets its name, status, kind
+and structure but not what its owner wrote (summary, pronouns, headline,
+homepage, identity values, note bodies, source-link reference and note,
+affiliation role/title), and every full-level cross-person read is recorded in
+`content_access_logs` before it is served (see
+[SECURITY_AND_ACCESS_BOUNDARIES](../architecture/SECURITY_AND_ACCESS_BOUNDARIES.md)).
+
 ## Project And Academic Workflow
 
 The `academic_paper_v1` extraction profile reuses:
@@ -127,6 +135,7 @@ Current Academic routes include:
 Use real-Postgres tests for schema/FK/constraint behavior:
 
 - `server/test/relationsDb.test.ts`
+- `server/test/decisionRelationContentAccessDb.test.ts` (summary projection, B11 audit)
 - `server/test/academicDb.test.ts`
 - `server/test/projectCorpusGraph.test.ts`
 

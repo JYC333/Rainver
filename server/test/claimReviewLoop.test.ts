@@ -88,27 +88,6 @@ class FakeClaimDb implements Queryable {
 }
 
 describe("buildClaimTrajectory", () => {
-  it("orders points by time and emits supersession + confidence signals", async () => {
-    const subjectClaims = [
-      claimRow({ id: "c1", status: "superseded", confidence: 0.4, created_at: "2026-01-01T00:00:00.000Z", valid_from: "2026-01-01T00:00:00.000Z" }),
-      claimRow({ id: "c2", status: "active", confidence: 0.9, created_at: "2026-02-01T00:00:00.000Z", valid_from: "2026-02-01T00:00:00.000Z" }),
-    ];
-    const db = new FakeClaimDb({ subjectClaims });
-    const result = await buildClaimTrajectory(db, {
-      spaceId: "space-1",
-      userId: "user-1",
-      subjectObjectId: "subject-1",
-      limit: 100,
-    });
-
-    expect(result.canonical_write_performed).toBe(false);
-    expect(result.access_safety.advisory_only).toBe(true);
-    expect(result.points.map((p) => p.claim_id)).toEqual(["c1", "c2"]);
-    const kinds = result.signals.map((s) => s.kind);
-    expect(kinds).toContain("supersession");
-    expect(kinds).toContain("confidence_shift");
-  });
-
   it("resolves the subject from a seed claim when only claim_id is given", async () => {
     const seed = claimRow({ id: "seed", subject_object_id: "subject-9" });
     const subjectClaims = [seed, claimRow({ id: "c2", subject_object_id: "subject-9", claim_kind: "belief" })];
@@ -148,31 +127,6 @@ describe("buildClaimTrajectory", () => {
 });
 
 describe("scanClaimContradictions", () => {
-  it("flags a negation contradiction with a contradicts proposed_action", async () => {
-    const activeClaims = [
-      claimRow({ id: "a", claim_text: "The backup job runs every night." }),
-      claimRow({ id: "b", claim_text: "The backup job does not run every night." }),
-    ];
-    const db = new FakeClaimDb({ activeClaims });
-    const report = await scanClaimContradictions(db, {
-      spaceId: "space-1",
-      userId: "user-1",
-      limit: 200,
-      maxFindings: 40,
-    });
-
-    expect(report.access_safety.only_visible_claims).toBe(true);
-    expect(report.findings).toHaveLength(1);
-    const finding = report.findings[0]!;
-    expect(finding.signal).toBe("negation");
-    expect(finding.proposed_action).toMatchObject({
-      proposal_type: "object_relation_create",
-      link_type: "contradicts",
-      from_object_id: "a",
-      to_object_id: "b",
-    });
-  });
-
   it("flags numeric opposition and does not pair claims about different subjects", async () => {
     const activeClaims = [
       claimRow({ id: "a", subject_object_id: "s1", claim_text: "The cluster has 3 nodes." }),

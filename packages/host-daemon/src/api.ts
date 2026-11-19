@@ -3,6 +3,8 @@ import {DAEMON_WORKSPACE_OPERATION_SCHEMAS,type OperationOutcome,type OperationO
 import {sourceExecutionOffer} from "./sourceCapability.js";
 import type { HostHelloInfo, HostRunDiffUpload, HostRunOutputsUpload, RuntimeProbe } from "@rainver/protocol";
 import { mkdtemp, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { BWRAP_PATH } from "./strictNamespace.js";
 import { arch, homedir, platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import { detectCapabilities, type AskRuntimeOptions } from "./capabilities.js";
@@ -151,7 +153,7 @@ async function helloInfo(
     daemon_version: daemonVersion(),
     environment_kind,
     // The control plane offers the file tool bridge only where this daemon can pin it.
-    capabilities_json: { ...capabilities, ...(currentPlatform !== "win32" ? { managed_cli_updates: true } : {}), sources_execution:await sourceExecutionOffer(), tool_bridge_protocols: localToolBridgeSupported(currentPlatform) ? ["file-v1"] : [],
+    capabilities_json: { ...capabilities, ...(currentPlatform !== "win32" ? { managed_cli_updates: true, antigravity_own_updates: true } : {}), sources_execution:await sourceExecutionOffer(), tool_bridge_protocols: localToolBridgeSupported(currentPlatform) ? ["file-v1"] : [],
       // Separate from `installations`: ordinary CLIs are not ACP Runtimes.
       ordinary_tools: await ordinaryToolsReport(log),
       ordinary_tool_accounts: ordinaryToolAccountsCapability(),
@@ -163,7 +165,9 @@ async function helloInfo(
       // Identity-less archives can be drained and closed for good (legacyArchiveDrain.ts).
       legacy_archive_drain: 1,
       // Journaled Host commands with durable receipts (hostCommandJournal.ts).
-      host_command_receipts: 1 },
+      host_command_receipts: 1,
+      // Egress-none strict Runs with a model-only channel (modelChannel.ts); needs the namespace.
+      ...(currentPlatform === "linux" && existsSync(BWRAP_PATH) ? { model_channel: 1 as const } : {}) },
     workspace_reports: await collectWorkspaceStatus(workspaces),
     managed_workspaces: await listManagedWorkspaces(),
     ambient_sessions: ambientSessionCounts(),

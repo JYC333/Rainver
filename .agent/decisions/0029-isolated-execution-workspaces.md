@@ -202,7 +202,7 @@ retains the old source. Reconciliation cannot waive verification for a new write
 Details and current controls live in the Project Files and Hosts module guides.
 
 
-### Source retention (2026-11-08)
+### Source retention
 
 Physical-tree reclamation alone let finished worktrees, branches and recovery
 refs accumulate. A source generation whose batches all closed as integrated or
@@ -246,7 +246,7 @@ and only when Git cleanly reports the version missing, never on a read fault. De
 in the Hosts and Project Files guides.
 
 
-### Delegated workspace placement (2026-11-10)
+### Delegated workspace placement
 
 Forking every delegation produced a workspace, batch, checkpoint and
 "unmerged" record per review or follow-up, even for strictly serial work. The
@@ -312,7 +312,7 @@ fencing, retention and approval rules, per-repository publication and the
 cleanup contract. Completed, proven-adopted forks with no dependents continue
 through the existing retention sweep; unproven work is never released by age.
 
-### Grouped Agent workspaces overview (2026-11-10)
+### Grouped Agent workspaces overview
 
 The default overview aggregates on the server one entry per conversation ×
 repository (`projectFolders/workspaceOverviewGroups.ts`): current state,
@@ -333,7 +333,7 @@ group's current workspace is the session's conversation workspace with the
 highest generation; activity only orders groups and picks the latest result,
 so a late update to an older generation never replaces it.
 
-### Exact adoption and independent resource release (2026-11-12)
+### Exact adoption and independent resource release
 
 An adoption proof binds generation, base, source and the exact adopting version.
 Later target edits do not invalidate historical adoption; deletion still requires
@@ -393,7 +393,7 @@ large roots moved without copying. Mixed roots retain unknown siblings. Linux
 service, foreground daemon and owner mutations share a kernel flock; systemd
 status is not a lock. Cross-generation deduplication remains unimplemented.
 
-### Immediate post-publication reclamation (2026-11-12)
+### Immediate post-publication reclamation
 
 Closed, proven merged/no-change sources have no automatic grace period. Completion
 enqueues cleanup immediately in its transaction; the final using Run must settle
@@ -404,7 +404,7 @@ recovery/history refs keep their declared retention. An offline Host or failed
 cleanup remains visibly pending and retries; enqueueing alone is not reclamation.
 
 
-### Amendment (2026-11-13): bounded reclamation and post-release admission
+### Bounded reclamation and post-release admission
 
 Reclamation retains one permanent owner epoch and full release-request digest,
 not one permanent tombstone per terminal physical operation. A cleanup whose
@@ -425,7 +425,7 @@ cursors are disposable and carry no authority. Git reachability, CAS, source
 fences, leases, read-only enforcement and unknown-asset preservation are unchanged.
 
 
-### Amendment (2026-11-13): fair progress and separate candidate ownership
+### Fair progress and separate candidate ownership
 
 A source-fence refusal does not supersede an extant integration candidate.
 Candidate cleanup may renew its operation at the current source epoch only after
@@ -445,7 +445,7 @@ slot with visible governance. Refusal receipts converge only on exact resolved
 owner facts with no new source, never on age. Unknown legacy evidence stays.
 
 
-Successful candidate disposal now atomically records its own E+1 fence and exact
+Successful candidate disposal atomically records its own E+1 fence and exact
 cleanup result, retaining immutable admission. This never advances the source;
 old prepares cannot rebuild the candidate and exact cleanup replay still confirms
 completion after journal expiry. A missing legacy attempt epoch may reuse only
@@ -454,7 +454,7 @@ cleanup owner recovery follows at most 64 previous-detail links, backfills the
 exact merge owner after settlement/dependency checks, and visibly blocks unknown
 owners instead of retrying forever. No new dependency or storage authority.
 
-### Exact native child receipts and empty inherited work (2026-11-13)
+### Exact native child receipts and empty inherited work
 
 The native publisher records the parent identity/generation before its Host
 request and writes exact child adoption in its publication transaction through
@@ -628,7 +628,7 @@ lifecycle refresh and cleanup evidence. PostgreSQL owns the persistent clock;
 Git and existing Host leases/journals own physical proof. No new dependency,
 schema column, scheduler, cleanup engine or UI control is introduced.
 
-### Queued workspace admission correction (2026-11-13)
+### Queued workspace admission
 
 Slot admission must finish before Run/attempt/delegation running transitions.
 A deferred Job never rolls back an already-started Run. The existing execution

@@ -10,6 +10,9 @@ class FakeDb {
   ): Promise<{ rows: Row[]; rowCount: number | null }> {
     this.queries.push({ sql, params });
     const norm = sql.replace(/\s+/g, " ").trim();
+    // Route on the statement's own table: access predicates embed subqueries
+    // over other tables (a Run-inherited gate reads `proposals`, for one).
+    const primaryTable = /^SELECT .*? FROM (\w+)/.exec(norm)?.[1];
     if (/FROM retrieval_objects/.test(norm)) {
       return {
         rows: [
@@ -83,11 +86,11 @@ class FakeDb {
         rowCount: 1,
       };
     }
-    if (/count\(\*\) FILTER \(WHERE status = 'pending'\)/.test(norm) && /FROM proposals/.test(norm)) {
+    if (/count\(\*\) FILTER \(WHERE status = 'pending'\)/.test(norm) && primaryTable === "proposals") {
       // Three pending in the window; the recent-packet page below holds one.
       return { rows: [{ pending_total: "3" }] as Row[], rowCount: 1 };
     }
-    if (/FROM proposals/.test(norm)) {
+    if (primaryTable === "proposals") {
       return {
         rows: [
           {

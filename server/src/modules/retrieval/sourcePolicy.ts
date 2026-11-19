@@ -20,6 +20,7 @@ interface SourceConnectionPolicyRow {
 interface SourceConnectionIdRow {
   target_id: string;
   source_connection_id: string | null;
+  pinned_connection_ids: unknown;
 }
 
 interface SpaceMembershipRoleRow {
@@ -70,6 +71,17 @@ export function sourceConnectionIdsFromSourceRefs(value: unknown): string[] {
   return uniqueStrings(out);
 }
 
+/** The provenance entries that carry an object's Source lineage (and so its Source policy). */
+export const SOURCE_LINEAGE_PROVENANCE_TYPES = ["source_item", "source_snapshot", "extracted_evidence"] as const;
+
+/**
+ * `evidence_json` key of a lineage entry that pins the Source connections it was
+ * derived under. The connection of a lineage entry is otherwise resolved live from
+ * its Source item or snapshot, which `source.item.update` may rebind or clear; a
+ * pinned connection keeps answering for the entry either way (the union applies).
+ */
+export const SOURCE_LINEAGE_PINNED_CONNECTIONS_KEY = "source_connection_ids";
+
 export async function loadSourceConnectionIdsForTargets(
   db: Queryable,
   spaceId: string,
@@ -81,7 +93,8 @@ export async function loadSourceConnectionIdsForTargets(
   if (ids.length === 0) return out;
   const result = await db.query<SourceConnectionIdRow>(
     `SELECT pl.target_id,
-            COALESCE(ii.connection_id, ss.connection_id, ii_ev.connection_id, ss_ev.connection_id) AS source_connection_id
+            COALESCE(ii.connection_id, ss.connection_id, ii_ev.connection_id, ss_ev.connection_id) AS source_connection_id,
+            pl.evidence_json->'${SOURCE_LINEAGE_PINNED_CONNECTIONS_KEY}' AS pinned_connection_ids
        FROM provenance_links pl
        LEFT JOIN source_items ii
          ON pl.source_type = 'source_item'
@@ -108,16 +121,116 @@ export async function loadSourceConnectionIdsForTargets(
         AND pl.target_type = $2
         AND pl.target_id = ANY($3::varchar[])
         AND pl.source_type = ANY($4::varchar[])`,
-    [spaceId, targetType, ids, ["source_item", "source_snapshot", "extracted_evidence"]],
+    [spaceId, targetType, ids, [...SOURCE_LINEAGE_PROVENANCE_TYPES]],
   );
   for (const row of result.rows) {
-    const sourceId = stringValue(row.source_connection_id);
-    if (!sourceId) continue;
     const current = out.get(row.target_id) ?? [];
-    if (!current.includes(sourceId)) current.push(sourceId);
+    for (const sourceId of uniqueStrings([row.source_connection_id, ...sourceConnectionIdsFromJson(row.pinned_connection_ids)])) {
+      if (!current.includes(sourceId)) current.push(sourceId);
+    }
     out.set(row.target_id, current);
   }
   return out;
+}
+
+/**
+ * Holds every Source lineage entry of the targets `FOR SHARE` for the rest of the
+ * transaction — the provenance links, each referenced item (direct, behind a snapshot
+ * or behind evidence), snapshot and evidence row — so the connections
+ * {@link loadSourceConnectionIdsForTargets} resolves cannot change before commit: a
+ * concurrent rebind or detach (`source.item.update` updates the item row first) waits.
+ * Locks follow item → snapshot → evidence order, as that writer does.
+ */
+export async function lockSourceLineageEntries(
+  db: Queryable,
+  spaceId: string,
+  targetType: string,
+  targetIds: readonly string[],
+): Promise<void> {
+  const ids = uniqueStrings(targetIds).sort();
+  if (ids.length === 0) return;
+  const links = (await db.query<{ source_type: string; source_id: string }>(
+    `SELECT id, source_type, source_id FROM provenance_links
+      WHERE space_id = $1 AND target_type = $2 AND target_id = ANY($3::varchar[]) AND source_type = ANY($4::varchar[])
+      ORDER BY id FOR SHARE`,
+    [spaceId, targetType, ids, [...SOURCE_LINEAGE_PROVENANCE_TYPES]],
+  )).rows;
+  const of = (type: string) => links.filter((link) => link.source_type === type).map((link) => link.source_id);
+  const evidenceIds = uniqueStrings(of("extracted_evidence")).sort();
+  const evidence = evidenceIds.length ? (await db.query<{ item_id: string | null; snapshot_id: string | null }>(
+    "SELECT COALESCE(source_item_id, origin_source_item_id) AS item_id, source_snapshot_id AS snapshot_id FROM extracted_evidence WHERE space_id = $1 AND id = ANY($2::varchar[])",
+    [spaceId, evidenceIds],
+  )).rows : [];
+  const snapshotIds = uniqueStrings([...of("source_snapshot"), ...evidence.map((row) => row.snapshot_id)]).sort();
+  const snapshotItems = snapshotIds.length ? (await db.query<{ source_item_id: string | null }>(
+    "SELECT source_item_id FROM source_snapshots WHERE space_id = $1 AND id = ANY($2::varchar[])",
+    [spaceId, snapshotIds],
+  )).rows.map((row) => row.source_item_id) : [];
+  const itemIds = uniqueStrings([...of("source_item"), ...evidence.map((row) => row.item_id), ...snapshotItems]).sort();
+  if (itemIds.length) await db.query("SELECT id FROM source_items WHERE space_id = $1 AND id = ANY($2::varchar[]) ORDER BY id FOR SHARE", [spaceId, itemIds]);
+  if (snapshotIds.length) await db.query("SELECT id FROM source_snapshots WHERE space_id = $1 AND id = ANY($2::varchar[]) ORDER BY id FOR SHARE", [spaceId, snapshotIds]);
+  if (evidenceIds.length) await db.query("SELECT id FROM extracted_evidence WHERE space_id = $1 AND id = ANY($2::varchar[]) ORDER BY id FOR SHARE", [spaceId, evidenceIds]);
+}
+
+/**
+ * Whether a viewer (and the Agent acting for them, if any) reads every Source in the
+ * lineage of each target, by the same rule retrieval applies: a lineage Source without
+ * a readable policy snapshot (archived, deleted, unparseable) denies. A target with no
+ * Source lineage answers true. Content-ACL reads of derived text (a Note detail, its
+ * history, a plugin's Note read, the Reader's research notebook, a Project notebook
+ * and the prompts built from it) call this beside their own content gate.
+ */
+export async function sourceLineageReadable(
+  db: Queryable,
+  spaceId: string,
+  targetType: string,
+  targetIds: readonly string[],
+  context: SourceReadContext,
+): Promise<boolean> {
+  const ids = uniqueStrings(targetIds);
+  return (await sourceLineageReadableTargets(db, spaceId, targetType, ids, context)).size === ids.length;
+}
+
+/**
+ * {@link sourceLineageReadable} per target: the ids of `targetIds` whose whole Source
+ * lineage the viewer reads. A list of bodies (a Project notebook, a prompt's Notes)
+ * withholds each other target's body by this one rule.
+ */
+export async function sourceLineageReadableTargets(
+  db: Queryable,
+  spaceId: string,
+  targetType: string,
+  targetIds: readonly string[],
+  context: SourceReadContext,
+): Promise<Set<string>> {
+  const ids = uniqueStrings(targetIds);
+  const lineage = await loadSourceConnectionIdsForTargets(db, spaceId, targetType, ids);
+  const sourceIds = uniqueStrings([...lineage.values()].flat());
+  if (!sourceIds.length) return new Set(ids);
+  const readable = await readableSourceConnectionIds(db, spaceId, sourceIds, context);
+  return new Set(ids.filter((id) => (lineage.get(id) ?? []).every((sourceId) => readable.has(sourceId))));
+}
+
+/**
+ * The connections of `connectionIds` the viewer reads, by the lineage rule above: a
+ * connection without a readable policy snapshot (archived, deleted, unparseable) is not
+ * read. Connections pinned when a derivation started (a frozen prompt's Sources, a
+ * pinned lineage entry) are judged by this same rule, beside the live lineage.
+ */
+export async function readableSourceConnectionIds(
+  db: Queryable,
+  spaceId: string,
+  connectionIds: readonly string[],
+  context: SourceReadContext,
+): Promise<Set<string>> {
+  const ids = uniqueStrings(connectionIds);
+  if (!ids.length) return new Set();
+  const snapshots = await loadSourcePolicySnapshots(db, spaceId, ids);
+  const role = context.viewerSpaceRole !== undefined ? context.viewerSpaceRole : await loadViewerSpaceRole(db, spaceId, context.viewerUserId);
+  return new Set(ids.filter((id) => {
+    const snapshot = snapshots.get(id);
+    return !!snapshot && sourcePolicyAllowsRead(snapshot, { ...context, viewerSpaceRole: role });
+  }));
 }
 
 export async function loadSourcePolicySnapshots(

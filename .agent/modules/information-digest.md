@@ -906,7 +906,10 @@ Routes (same Space identity and canonical Project ACL):
   through its original scope and full permission closure, without generation consent.
 - POST `.../reading-compositions/retry` is writer-gated and only retries failed
   publication of today's completed analysis bodies; it neither creates a version
-  for a collection-only check nor starts another model Run.
+  for a collection-only check nor starts another model Run. The overview shows
+  queued, running and failed composition status; it reports `complete` only for a
+  composition that same view watched while queued or running, so a retry ends
+  with a visible outcome and an already-complete day shows no status line.
 
 Every section is resolved through `projectBriefing` and its full current audience,
 Source retention/capture, actual destination, original/context/comparison closure.

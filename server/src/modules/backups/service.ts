@@ -438,16 +438,73 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
-async function pgDump(databaseUrl: string, dest: string): Promise<void> {
-  const parsed = new URL(databaseUrl);
-  const env = { ...process.env };
-  if (parsed.password) env.PGPASSWORD = decodeURIComponent(parsed.password);
-  const args = ["--no-password", "-Fc", "--no-owner", "--no-acl"];
-  if (parsed.hostname) args.push("--host", parsed.hostname);
-  if (parsed.port) args.push("--port", parsed.port);
-  if (parsed.username) args.push("--username", decodeURIComponent(parsed.username));
-  const dbName = parsed.pathname.replace(/^\//, "");
-  args.push("-f", dest, dbName);
+/**
+ * libpq's own connection-parameter environment variables (PostgreSQL docs,
+ * "Environment Variables"). A URI query parameter maps onto one of these, so
+ * pg_dump gets the URL's whole meaning — TLS mode and roots included — without
+ * the URL, its password, or any of it on the command line.
+ */
+const LIBPQ_PARAMETER_ENV: Readonly<Record<string, string>> = {
+  host: "PGHOST", hostaddr: "PGHOSTADDR", port: "PGPORT", dbname: "PGDATABASE", user: "PGUSER",
+  password: "PGPASSWORD", passfile: "PGPASSFILE", channel_binding: "PGCHANNELBINDING", service: "PGSERVICE",
+  options: "PGOPTIONS", application_name: "PGAPPNAME", sslmode: "PGSSLMODE", sslnegotiation: "PGSSLNEGOTIATION",
+  sslcompression: "PGSSLCOMPRESSION", sslcert: "PGSSLCERT", sslkey: "PGSSLKEY", sslcertmode: "PGSSLCERTMODE",
+  sslrootcert: "PGSSLROOTCERT", sslcrl: "PGSSLCRL", sslcrldir: "PGSSLCRLDIR", sslsni: "PGSSLSNI",
+  requirepeer: "PGREQUIREPEER", require_auth: "PGREQUIREAUTH", ssl_min_protocol_version: "PGSSLMINPROTOCOLVERSION",
+  ssl_max_protocol_version: "PGSSLMAXPROTOCOLVERSION", gssencmode: "PGGSSENCMODE", krbsrvname: "PGKRBSRVNAME",
+  gsslib: "PGGSSLIB", gssdelegation: "PGGSSDELEGATION", connect_timeout: "PGCONNECT_TIMEOUT",
+  client_encoding: "PGCLIENTENCODING", target_session_attrs: "PGTARGETSESSIONATTRS", load_balance_hosts: "PGLOADBALANCEHOSTS",
+};
+const LIBPQ_ENV_NAMES = new Set([...Object.values(LIBPQ_PARAMETER_ENV), "PGSYSCONFDIR", "PGSERVICEFILE", "PGTZ", "PGDATESTYLE"]);
+/** What pg_dump itself needs from the parent beyond libpq: lookup, locale, and `~/.postgresql` defaults. */
+const PG_DUMP_PROCESS_ENV = ["PATH", "HOME", "LANG", "LC_ALL", "LC_MESSAGES", "TZ", "TMPDIR"];
+
+/**
+ * pg_dump's argv and a minimal environment for `databaseUrl`. The child gets
+ * no provider keys or other server secrets; libpq variables already set for
+ * the server keep their meaning and the URL's own parameters override them.
+ * A parameter libpq does not define (node-postgres' `ssl=true` or
+ * `sslmode=no-verify`) is refused rather than silently dropped, since dropping
+ * a TLS setting downgrades the connection.
+ */
+export function pgDumpInvocation(databaseUrl: string, dest: string, parentEnv: NodeJS.ProcessEnv = process.env): { args: string[]; env: Record<string, string> } {
+  let parsed: URL;
+  try {
+    parsed = new URL(databaseUrl.replace(/^postgresql\+psycopg:/, "postgresql:"));
+  } catch {
+    throw new BackupError("The backup database URL is not a valid PostgreSQL connection URI.");
+  }
+  if (parsed.protocol !== "postgresql:" && parsed.protocol !== "postgres:") {
+    throw new BackupError("The backup database URL must use the postgresql: scheme.");
+  }
+  const decode = (value: string) => {
+    try {
+      return decodeURIComponent(value);
+    } catch {
+      throw new BackupError("The backup database URL is not a valid PostgreSQL connection URI.");
+    }
+  };
+  const env: Record<string, string> = {};
+  for (const name of PG_DUMP_PROCESS_ENV) if (parentEnv[name] !== undefined) env[name] = parentEnv[name]!;
+  for (const name of LIBPQ_ENV_NAMES) if (parentEnv[name] !== undefined) env[name] = parentEnv[name]!;
+  const hostname = decode(parsed.hostname).replace(/^\[(.*)\]$/, "$1");
+  if (hostname) env.PGHOST = hostname;
+  if (parsed.port) env.PGPORT = parsed.port;
+  if (parsed.username) env.PGUSER = decode(parsed.username);
+  if (parsed.password) env.PGPASSWORD = decode(parsed.password);
+  const dbName = decode(parsed.pathname.replace(/^\//, ""));
+  if (dbName) env.PGDATABASE = dbName;
+  for (const [key, value] of parsed.searchParams) {
+    const name = LIBPQ_PARAMETER_ENV[key];
+    // Unknown to libpq (`ssl=true`) or argv-only (`sslpassword`, `keepalives`): never dropped, never put on argv.
+    if (!name) throw new BackupError(`The backup database URL parameter "${key}" has no libpq environment variable; pg_dump cannot honor it without putting it on the command line.`);
+    env[name] = value;
+  }
+  return { args: ["--no-password", "-Fc", "--no-owner", "--no-acl", "-f", dest], env };
+}
+
+export async function pgDump(databaseUrl: string, dest: string): Promise<void> {
+  const { args, env } = pgDumpInvocation(databaseUrl, dest);
   await execFileAsync("pg_dump", args, { env, timeout: 300_000 });
 }
 

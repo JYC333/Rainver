@@ -471,6 +471,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const turn = await loadRunTurn(dbPool(context.config), {
       spaceId: result.run.space_id,
       runId: result.run.id,
+      viewerUserId: result.identity.userId,
     });
     if (!turn) return reply.code(404).send({ detail: "Run not found" });
     return reply.send(turn);

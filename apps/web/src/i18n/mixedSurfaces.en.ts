@@ -10,6 +10,9 @@ export const mixedSurfacesEn = {
     code_patch_refresh: 'Refresh decision',
     code_patch_jobs: 'Open Job Queue',
     code_patch_queued: 'Code patch decision recorded. File execution is queued; inspect Job Queue before continuing.',
+    proposal_accept_superseded: 'Not applied: this request changed after the proposal was made, so the old approval no longer applies. Review the current proposal instead.',
+    proposal_accept_expired: 'Not applied: this proposal expired before it was approved. Ask for the change again if it is still needed.',
+    proposal_accept_failed: 'Not applied: the approved request could not be carried out.',
     security: {
       load_failed: 'Security information is temporarily unavailable.',
       verification_expired: 'Verification expired. Verify your identity again to continue.',
@@ -76,6 +79,8 @@ export const mixedSurfacesEn = {
       status_failed: 'Failed',
       status_rejected: 'Rejected',
       status_superseded: 'Duplicate · merged',
+      status_expired: 'Expired · not applied',
+      expired_description: 'This proposal expired before it was decided. Nothing was applied; ask for the change again if it is still needed.',
       risk_low: 'Low risk',
       risk_medium: 'Medium risk',
       risk_high: 'High risk',

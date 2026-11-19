@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { connect } from "node:net";
 import { join } from "node:path";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
@@ -26,9 +26,11 @@ function buildOfficialPlugins(): void {
         .filter((id) => existsSync(join(officialPluginsRoot, id, "plugin.json")))
     : [];
 
-  const missingRuntime = pluginIds.some((id) =>
-    !existsSync(join(serverRoot, "dist", "official-plugins", id, "server", "index.js")),
-  );
+  // Each package declares its compiled runtime entry (`server.main`) relative to its artifact directory.
+  const missingRuntime = pluginIds.some((id) => {
+    const main = (JSON.parse(readFileSync(join(officialPluginsRoot, id, "plugin.json"), "utf8")) as { server?: { main?: string } }).server?.main ?? "server/index.js";
+    return !existsSync(join(serverRoot, "dist", "official-plugins", id, main));
+  });
   if (!missingRuntime) return;
 
   execFileSync(process.execPath, ["scripts/build-official-plugins.mjs"], {

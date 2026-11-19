@@ -19,6 +19,10 @@ import { registerCustomSourceProposalAppliers } from "../sources/customSources/c
 import { registerSourceRecipeProposalAppliers } from "../sources/sourceRecipes/recipeProposalApplier.js";
 import { registerSourceChannelProposalAppliers } from "../sources/sourceChannelProposalApplier.js";
 import { registerSourceBackfillProposalAppliers } from "../sources/sourceBackfillProposalApplier.js";
+import { registerGmailMonitorProposalApplier } from "../sources/gmail/gmailMonitors.js";
+import { registerGmailPrivateReadProposalApplier } from "../sources/gmail/gmailPrivateReadHandoff.js";
+import { registerGmailDigestProposalApplier } from "../sources/gmail/gmailDigests.js";
+import { registerGmailPrivateCheckProposalApplier } from "../sources/gmail/gmailPrivateCheck.js";
 import { registerProjectSourceProposalAppliers } from "../projects/projectSourceProposalApplier.js";
 import { registerEvolvableAssetPromotionProposalApplier } from "../evolution/assetPromotionProposalApplier.js";
 import { registerWorkflowSaveProposalApplier } from "../evolution/workflowSaveProposalApplier.js";
@@ -52,6 +56,8 @@ export interface ProposalApplyContext {
   userId: string;
   /** Host-verified original requester for a linked operation; never the reviewer. */
   requester?: OperationActor;
+  /** The approver decided directly, on their own (`ProposalAcceptOptions.ownerCardDecision`). */
+  ownerCardDecision?: boolean;
 }
 
 export interface ProposalApplyResult {
@@ -131,6 +137,10 @@ export function createDefaultProposalApplierRegistry(
   registerSourceRecipeProposalAppliers(registry);
   registerSourceChannelProposalAppliers(registry);
   registerSourceBackfillProposalAppliers(registry);
+  registerGmailMonitorProposalApplier(registry);
+  registerGmailDigestProposalApplier(registry);
+  registerGmailPrivateReadProposalApplier(registry);
+  registerGmailPrivateCheckProposalApplier(registry);
   registerProjectSourceProposalAppliers(registry);
   registerEvolvableAssetPromotionProposalApplier(registry);
   registerWorkflowSaveProposalApplier(registry);

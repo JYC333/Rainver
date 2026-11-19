@@ -25,6 +25,7 @@ import { useRun, RUN_TERMINAL_STATUSES } from '../../hooks/useRun'
 import { ScopeBadge } from '../../components/ScopeBadge'
 import { useSpace } from '../../contexts/SpaceContext'
 import { PersonalContextPanel } from './PersonalContextPanel'
+import { RunPluginDataPanel } from './RunPluginDataPanel'
 import { ProviderTaskBadge, runActorLabel } from './runActor'
 import { isGrantDerivedProposal } from '../memory/EgressReviewNotice'
 import { promptLibraryPath } from '../prompts/paths'
@@ -558,6 +559,7 @@ function RunDetailPageContent() {
           personalSpaceId={personalSpaceId}
           spaces={spaces}
         />
+        <RunPluginDataPanel run={r} currentUserId={userId} />
         {authorizationRequests.length > 0 && (
           <Card className="p-4 space-y-3">
             <div>

@@ -299,15 +299,19 @@ sharing, no cross-instance federation, and no `PersonalView` /
 ## 15. Ingestion, crawlers, connectors
 
 **Current fact:** Sources connections, recipes, extraction, Library, and
-imported CLI sessions exist. Internal Knowledge/Memory vector recall uses
-pgvector. There is no connector marketplace, no web crawler, and no
-vector index over an external corpus.
+imported CLI sessions exist. A person's own Gmail account can be connected
+read-only, with owner-private new-mail monitors, Gmail summaries and on-demand
+Agent reads (`server/src/modules/sources/gmail/`;
+[sources.md](../modules/sources.md), ADR 0032/0033). Internal Knowledge/Memory
+vector recall uses pgvector. There is no connector marketplace, no web
+crawler, no IM or chat-channel adapter, no mail provider other than Gmail,
+no mail send/modify path, and no vector index over an external corpus.
 
 **Extracted design:** marketplace / integration lifecycle; broad
 autonomous discovery and crawling; external-corpus vector index;
-IM/email/channel adapters (former P8); always-on trigger budgets as a
-general vocabulary (former P9 — Sources already has cooldown/backlog
-caps).
+IM/channel adapters and email beyond read-only Gmail (former P8);
+always-on trigger budgets as a general vocabulary (former P9 — Sources
+already has cooldown/backlog caps).
 
 ---
 
@@ -327,7 +331,6 @@ not start a container. The host daemon is the CLI path. Verification Engine
   automation is the only fire path we keep.
 - Self-hosted TS agent loop, tool scheduler, MCP client (former P6/P7).
 - Provider privacy/compliance policy rules (former H3).
-- Per-session chat concurrency guard (former P2).
 - Full desktop app beyond the Tauri scaffold.
 
 ---
@@ -433,7 +436,6 @@ Policy rows are domain-specific. Deployment jobs do not use the reserved
   `runtime_skill.execute`, `evidence.export`).
 - Per-user / per-project approval capabilities.
 - Space-level policy row overrides.
-- `RunDelegation.status` following child-run terminal states.
 
 ---
 

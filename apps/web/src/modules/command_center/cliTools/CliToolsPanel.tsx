@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Loader2 } from 'lucide-react'
-import type { HostOrdinaryTool, HostOrdinaryToolsResponse, OrdinaryToolReport } from '@rainver/protocol'
+import { hasStableUpdate, type HostOrdinaryTool, type HostOrdinaryToolsResponse, type OrdinaryToolReport } from '@rainver/protocol'
 import { ApiRequestError, ordinaryToolsApi } from '../../../api/client'
 import { useAppTranslation } from '../../../i18n'
 import { Button } from '../../../components/ui/button'
@@ -35,7 +35,7 @@ export function withReport(tool: HostOrdinaryTool, report: OrdinaryToolReport): 
     managed: {
       ...tool.managed,
       installed_version: report.managed_version,
-      update_available: Boolean(report.managed_version && catalog && report.managed_version !== catalog),
+      update_available: hasStableUpdate(report.managed_version, catalog),
     },
   }
 }

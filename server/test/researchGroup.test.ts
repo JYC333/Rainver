@@ -100,30 +100,6 @@ describe("researchGeneralizationGuard", () => {
   }
 
   describe("Project Research generalization boundaries", () => {
-    it("does not restore label-only research workflow presets or academic execution ids", () => {
-      // The research pack is gone; the stage ids live with the pipeline. There
-      // is no preset field for a label-only workflow to be declared in.
-      const pack = source("server/src/modules/projectResearch/researchStages.ts");
-      const execution = [
-        source("server/src/modules/projectResearch/researchPassExecution.ts"),
-        source("server/src/modules/projectResearch/synthesisOnlyExecution.ts"),
-      ].join("\n");
-
-      expect(pack).not.toContain("workflow_template_ids");
-      for (const retired of [
-        "research.academic_literature_review",
-        "research.news_scan",
-        "research.market_research",
-        "research.technical_survey",
-        "academic_literature_review",
-        "academic_research_workflow_execution",
-      ]) {
-        expect(`${pack}\n${execution}`).not.toContain(retired);
-      }
-      expect(execution).toContain('"project_research.reconcile_pass"');
-      expect(execution).toContain('"project_research.synthesis_only"');
-    });
-
     it("keeps generic Research surfaces free of paper/literature-only wording", () => {
       const genericSurfaces = [
         "apps/web/src/modules/projects/FocusResearchWorkbench.tsx",

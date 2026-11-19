@@ -5,6 +5,7 @@ import {isInstanceAdminIn} from '../routeUtils/access.js';
 import {PgRoomRosterRepository} from '../rooms/rosterRepository.js';
 import {OperationError,hidden} from '../systemActions/operations/errors.js';
 import type {OperationRegistration} from '../systemActions/operations/types.js';
+import {endProjectDataConsents} from '../plugins/dataGrantRepository.js';
 
 /** Discover actual retained-Project and destination references before user locks.
  * Include terminal grants/invitations, so revocation does not shrink the set. */
@@ -42,6 +43,8 @@ export function accountOperationRegistrations(definitions:ReadonlyMap<string,Reg
    await db.query('UPDATE users SET status=$2,updated_at=now() WHERE id=$1',[user_id,disable?'disabled':'active']);
    if(disable){
     await new PgRoomRosterRepository(db).revokeCrossProjectGrantsForDisabledOwner(user_id,a.principal.id);
+    // Standing Project data consents (ADR 0033) do not survive the account; re-enabling restores none.
+    await endProjectDataConsents(db,{userId:user_id,endedByUserId:a.principal.id});
     await db.query('DELETE FROM user_sessions WHERE user_id=$1',[user_id]);
    }
    return {user_id,ok:true};

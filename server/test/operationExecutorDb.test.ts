@@ -48,7 +48,7 @@ import type { OperationRegistration } from '../src/modules/systemActions/operati
 import { buildModuleServer } from './support/moduleServer.js';
 import { systemActionsModule } from '../src/modules/systemActions/index.js';
 import { __setAuthIdentityForTests } from '../src/modules/auth/identity.js';
-const ENABLED_USER_OPERATIONS = ["activity.upload","auth.user.disable", "auth.user.enable","context_ops.observations.scan", "context_ops.review_cycle.run", "research.strategy.activate", "research.strategy.evaluate", "research.strategy.materialize", "research.strategy.retry", "board.configure", "board.create", "board.update", "inquiry.thread.create", "job.cancel", "knowledge.note.delete", "knowledge.note.rollback", "note.raise_as_question", "plan.execute", "plan.reconcile", "policy.action_grant.create", "policy.action_grant.revoke", "project.operation.cancel", "project.operation.create", "project.source.backfill", "project.source.bind", "project.source.unbind", "project.source.update", "research.cancel_acquisition", "room.collaboration.update_participants", "source.backfill.create_plan", "source.backfill.pause", "source.backfill.preview", "source.backfill.resume", "source.channel.create", "source.channel.scan", "source.channel.set_subscription", "source.channel.update", "source.extraction.dispatch", "source.processing.rule.create", "source.processing.rule.dispatch", "source.processing.rule.update", "source.recipe.create", "source.recommendation.decide", "system.actions.list", "task.create", "task.delete", "task.evaluation.record", "task.move_to_column", "task.place_in_space_board", "task.plan.request", "task.run.create", "task.set_status", "task.update"];
+const ENABLED_USER_OPERATIONS = ["activity.upload","auth.user.disable", "auth.user.enable","context_ops.observations.scan", "context_ops.review_cycle.run", "research.strategy.activate", "research.strategy.evaluate", "research.strategy.materialize", "research.strategy.retry", "board.configure", "board.create", "board.update", "inquiry.thread.create", "job.cancel", "knowledge.note.delete", "knowledge.note.rollback", "note.raise_as_question", "plan.execute", "plan.reconcile", "policy.action_grant.create", "policy.action_grant.revoke", "project.operation.cancel", "project.operation.create", "project.source.backfill", "project.source.bind", "project.source.unbind", "project.source.update", "research.cancel_acquisition", "room.collaboration.get",  "room.collaboration.update_participants", "source.backfill.create_plan", "source.backfill.pause", "source.backfill.preview", "source.backfill.resume", "source.channel.create", "source.channel.scan", "source.channel.set_subscription", "source.channel.update", "source.extraction.dispatch", "source.processing.rule.create", "source.processing.rule.dispatch", "source.processing.rule.update", "source.recipe.create", "source.recommendation.decide", "system.actions.list", "task.create", "task.delete", "task.evaluation.record", "task.move_to_column", "task.place_in_space_board", "task.plan.request", "task.run.create", "task.set_status", "task.update"];
 ENABLED_USER_OPERATIONS.push('knowledge.candidate.extract','research.ask_ai',...Object.keys(PROJECT_SOURCE_PROPOSAL_SCHEMAS),...Object.keys(RESEARCH_EXECUTION_SCHEMAS),...Object.keys(NOTE_OBJECT_SCHEMAS),
   ...Object.keys(KNOWLEDGE_OBJECT_SCHEMAS),...Object.keys(KNOWLEDGE_REVIEW_SCHEMAS),
   ...Object.keys(RESEARCH_WORKSPACE_SCHEMAS),...Object.keys(INQUIRY_OPERATION_SCHEMAS),
@@ -68,6 +68,10 @@ ENABLED_USER_OPERATIONS.push('knowledge.note.jot','knowledge.note.link.create','
 // Note/Source block continuation: material processing, post-processing, retrieval/preview, backfill start, recipes,
 // Custom Sources and Note trash purge (human-only, never grantable; listed explicitly, not registry-derived).
 ENABLED_USER_OPERATIONS.push('knowledge.note.trash.purge','source.backfill.start.propose','source.custom.credential.create','source.custom.draft.create','source.custom.handler.activate','source.custom.handler.generate','source.custom.handler.test.request','source.custom.pipeline_bridge','source.custom.repair.request','source.custom.rollback','source.custom.settings.instance.update','source.custom.settings.space.update','source.material.cancel','source.material.request_storage','source.material.show_markdown','source.material.start','source.processing.decision.queue','source.processing.decision.review','source.processing.run_once','source.query.preview','source.recipe.activate','source.recipe.dry_run.request','source.recipe.plan.request','source.retrieval.brief.request','source.retrieval.reindex','source.retrieval.search.request');
+// Note/Source block, Gmail: the owner's own connection disconnect/forget and thread selection add/remove (human-only, never grantable; explicit).
+// The owner's opt-in for on-demand Agent reads (ADR 0032) is a human command too; the Agent read itself is not a user operation.
+ENABLED_USER_OPERATIONS.push('source.gmail.connection.disconnect','source.gmail.connection.forget','source.gmail.connection.set_agent_read','source.gmail.selection.remove','source.gmail.monitor.set_status','source.gmail.monitor.delete',
+  'source.gmail.digest.set_status','source.gmail.digest.set_time','source.gmail.digest.end','source.gmail.summary.preview','source.gmail.summary.share');
 // Note/Source block, Goals family: goal setup, controls, preview request and theme analysis (human-only, never grantable; explicit).
 ENABLED_USER_OPERATIONS.push('source.goal.binding.confirm_source','source.goal.binding.rollback','source.goal.check','source.goal.create','source.goal.delete','source.goal.edit','source.goal.explore','source.goal.feedback','source.goal.follow','source.goal.pause','source.goal.preview.request','source.goal.repair.publish','source.goal.resume','source.goal.save','source.goal.setup.begin','source.goal.setup.compatibility_rollback','source.goal.setup.legacy','source.goal.setup.message','source.goal.theme.cancel','source.goal.theme.configure','source.goal.theme.retry');
 // Knowledge/Relations/Memory block: Relations, Knowledge item/Claim/relation and object-kind proposals, Knowledge
@@ -113,6 +117,10 @@ ENABLED_USER_OPERATIONS.push(
  'personal.retrieval.search','personal.retrieval.resolve','personal.retrieval.summary.store',
  'personal.retrieval.egress.disclose','personal.retrieval.fused.store',
  'personal_memory_grant.preview','personal_memory_grant.create','personal_memory_grant.revoke',
+ // ADR 0030 data-owner consent and content-free Agent read attribution (explicit, not derived from the registry).
+ 'plugin_data_grant.create','plugin_data_grant.revoke','plugin_data_grant.revoke_run','plugin_data_grant.list','agent_data_read.list',
+ // Project-level plugin bindings: Project reader list, Project owner-level bind/unbind (explicit, not derived from the registry).
+ 'official_plugin.project_binding.list','official_plugin.project_binding.bind','official_plugin.project_binding.unbind',
  'attention.views.record','attention.read_state.change',
 );
 ENABLED_USER_OPERATIONS.sort();
@@ -530,10 +538,12 @@ describe('canonical Proposal integration', () => {
         proposal_id: string;
       }).proposal_id;
     await db.pool.query('UPDATE project_operations SET version=version+1 WHERE id=$1', [operation]);
+    // A decided outcome, not a missing Proposal: committed as superseded with the request's refusal.
     expect(await service.accept(id, {
       spaceId: space,
       userId: owner
-    })).toBeNull();
+    })).toMatchObject({proposal: {id, status: 'superseded'}, result_type: 'operation_failure', result: {error: {code: 'operation_approval_superseded'}}});
+    expect((await db.pool.query('SELECT status FROM proposals WHERE id=$1', [id])).rows[0].status).toBe('superseded');
     expect((await engine.execute(r.definition.id, {
       name: 'never'
     }, actor(), 'retry', key)).body).toMatchObject({
@@ -891,7 +901,7 @@ describe('recovered operation contract boundaries',()=>{
   const registry=new ProposalApplierRegistry();
   registry.register('project_brief_publish',async()=>{throw new Error('must not apply');});
   const service=operationProposalService(loadConfig({SERVER_DATABASE_URL:db.connectionUri}),registry,new Map([[r.definition.id,changed]]));
-  expect(await service.accept(id,{spaceId:space,userId:owner})).toBeNull();
+  expect(await service.accept(id,{spaceId:space,userId:owner})).toMatchObject({proposal:{id,status:'superseded'},result_type:'operation_failure',result:{error:{code:'operation_approval_superseded'}}});
   expect((await db.pool.query('SELECT state FROM operation_idempotency WHERE proposal_id=$1',[id])).rows[0].state).toBe('superseded');
  });
 });

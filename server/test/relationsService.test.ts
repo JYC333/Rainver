@@ -24,8 +24,8 @@ class FakeRelationsRepository {
     } = {},
   ) {}
 
-  async existsRelationObject(_spaceId: string, objectId: string): Promise<boolean> {
-    return (this.refs.relationObjects ?? new Set(["person-1"])).has(objectId);
+  async relationObjectAccessLevel(_spaceId: string, objectId: string): Promise<"full" | null> {
+    return (this.refs.relationObjects ?? new Set(["person-1"])).has(objectId) ? "full" : null;
   }
 
   async isOwnedRelationObject(_spaceId: string, objectId: string): Promise<boolean> {

@@ -444,6 +444,49 @@ describe("imported history extraction", () => {
     expect(await service().pending(identity, PROJECT)).toEqual({ records: 1, sessions: 1 });
   });
 
+  it("proposes nothing from a session made private while the model was reading it", async () => {
+    const sessionId = await seedSession("space_shared", [record("m1", "PRIVATE-AFTER-ALL decision")]);
+    const sessions = new PgImportedSessionRepository(db.pool);
+    vi.spyOn(invocation, "completeProviderText").mockImplementation(async (_store, _space, body) => {
+      // The owner's *only me* commits during the model window.
+      await sessions.setVisibility(SPACE, sessionId, "private");
+      const ids = (JSON.parse((body as { user: string }).user) as { selected_event_delta: Array<{ canonical_ref: { id: string } }> })
+        .selected_event_delta.map((entry) => entry.canonical_ref.id);
+      return { text: JSON.stringify({ ...extraction(),
+        decisions: [{ id: randomUUID(), text: "PRIVATE-AFTER-ALL", confirmation_state: "candidate", source_refs: [{ type: "imported_session_record", id: ids[0] }] }],
+        facts: [{ id: randomUUID(), text: "PRIVATE-AFTER-ALL fact", confirmation_state: "candidate", fact_status: "asserted", source_refs: [{ type: "imported_session_record", id: ids[0] }] }],
+      }), provider: "test", model: "test" } as never;
+    });
+    await expect(service().extract(identity, PROJECT, attended)).rejects.toMatchObject({ statusCode: 409 });
+    const proposals = await db.pool.query(`SELECT payload_json::text AS payload FROM proposals WHERE space_id = $1`, [SPACE]);
+    expect(proposals.rows).toEqual([]);
+    // Released rather than marked read, and not claimable while private.
+    expect((await db.pool.query(`SELECT extracted_in FROM imported_session_records WHERE imported_session_id = $1`, [sessionId])).rows).toEqual([{ extracted_in: null }]);
+    expect(await service().pending(identity, PROJECT)).toEqual({ records: 0, sessions: 0 });
+    // Shared again, it is read on the next extraction as usual.
+    await sessions.setVisibility(SPACE, sessionId, "space_shared");
+    stubExtractor(() => extraction());
+    expect((await service().extract(identity, PROJECT, attended)).records_covered).toBe(1);
+  });
+
+  it("proposes nothing when the claimed batch was handed to another extraction meanwhile", async () => {
+    const sessionId = await seedSession("space_shared", [record("m1", "material")]);
+    stubExtractor((ids) => ({
+      ...extraction(),
+      constraints: [{ id: randomUUID(), text: "Keep it", confirmation_state: "candidate", source_refs: [{ type: "imported_session_record", id: ids[0] }] }],
+    }));
+    const stubbed = vi.mocked(invocation.completeProviderText).getMockImplementation()!;
+    vi.mocked(invocation.completeProviderText).mockImplementation(async (...args) => {
+      // A stale-claim release followed by another batch's claim.
+      await db.pool.query(`UPDATE imported_session_records SET extracted_in = 'claim:other' WHERE imported_session_id = $1`, [sessionId]);
+      return stubbed(...args);
+    });
+    await expect(service().extract(identity, PROJECT, attended)).rejects.toMatchObject({ statusCode: 409 });
+    expect((await db.pool.query(`SELECT count(*)::int AS n FROM proposals WHERE space_id = $1`, [SPACE])).rows[0]!.n).toBe(0);
+    // The other claim is not disturbed by this one's release.
+    expect((await db.pool.query(`SELECT extracted_in FROM imported_session_records WHERE imported_session_id = $1`, [sessionId])).rows).toEqual([{ extracted_in: "claim:other" }]);
+  });
+
   it("turns an accepted packet into memory proposals that actually apply", async () => {
     await seedSession("space_shared", [record("m1", "this project uses pnpm, never npm")]);
     stubExtractor((ids) => ({

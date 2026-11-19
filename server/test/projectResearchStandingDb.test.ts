@@ -20,6 +20,12 @@ import { insertResearchWorkflowFixture } from "./support/researchWorkflow.js";
 import { ensureDefaultRuntimeProfile, seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 import { canonicalRunOutput } from "../src/modules/runs/orchestrationResults.js";
 import { syncBuiltinPrompts } from "../src/modules/prompts/builtins.js";
+import { runsModule } from "../src/modules/runs/index.js";
+import { __setRunsIdentityForTests } from "../src/modules/runs/routes.js";
+import { buildModuleServer } from "./support/moduleServer.js";
+import { PgTaskRepository } from "../src/modules/tasks/repository.js";
+import { PgRunRepository } from "../src/modules/runs/repository.js";
+import { runToOut, runViewFor } from "../src/modules/runs/runReadModel.js";
 import {
   performQueuedProviderTask,
   providerTaskTestConfig,
@@ -44,7 +50,7 @@ const identity = { spaceId: SPACE, userId: USER };
 
 const db = useTestDatabase(import.meta.filename);
 
-afterEach(() => { resetProviderReplies(); });
+afterEach(() => { resetProviderReplies(); __setRunsIdentityForTests(null); });
 
 beforeEach(async () => {
   if (!db.available) return;
@@ -140,10 +146,15 @@ async function seedSourceInCorpus(): Promise<string> {
 async function seedRun(input: { status: string; output?: unknown; createdAt?: Date }): Promise<string> {
   const id = randomUUID();
   const now = (input.createdAt ?? new Date()).toISOString();
+  // A comparison Run freezes the Project's `understanding` baseline it was sent with.
+  const baseline = (await db.pool.query<{ id: string }>(
+    `SELECT object_id AS id FROM notes WHERE space_id=$1 AND role_project_id=$2 AND project_role='understanding' AND status='active' LIMIT 1`,
+    [SPACE, PROJECT],
+  )).rows[0]?.id;
   await db.pool.query(
     `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, instructed_by_user_id, owner_user_id, project_id, capability_id, contract_snapshot_json, output_json, created_at, updated_at, started_at, ended_at, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json) VALUES ($1, $2, $3, $4, 'agent', 'system', $5, 'live', $6, $6, $7, 'research.monitor_compare', $8::jsonb, $9::jsonb, $10, $10, $10, $10, 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
     [id, SPACE, AGENT, VERSION, input.status, USER, PROJECT,
-      JSON.stringify({ workflow_input_json: { project_research_standing: { test: true } } }),
+      JSON.stringify({ workflow_input_json: { project_research_standing: { test: true, ...(baseline ? { baseline_note_id: baseline } : {}) } } }),
       // Every terminal Run stores the canonical envelope; the comparisons are its result.
       JSON.stringify(input.output === undefined
         ? null
@@ -511,8 +522,76 @@ describe("project research standing comparison (real Postgres)", () => {
       .toEqual({ created_by_run_id: dispatched.run_id });
   });
 
+  it("serves a standing comparison Run's status but never its batch text through the generic Run reads; only settlement publishes it", async () => {
+    if (!db.available) return;
+    const config = providerTaskTestConfig(db.connectionUri, "/tmp/rainver-standing-provider-task-test");
+    await seedTestModelProvider(db.pool, { space: SPACE, owner: USER, config });
+    await syncBuiltinPrompts(db.pool, join(process.cwd(), "..", "catalog"));
+    await seedBaseline();
+    const sourceItemId = await seedSourceInCorpus();
+    const service = new ProjectResearchStandingComparisonService(db.pool, config);
+    const batchId = await service.collect({ spaceId: SPACE, projectId: PROJECT, sourceItemId });
+    const dispatched = await service.dispatchBatch(SPACE, batchId) as { run_id: string };
+    const detail = "STANDING_BATCH_DETAIL before settlement";
+    replyWithStructuredOutput({ comparisons: [{ source_item_id: sourceItemId, stance: "contradicts", detail, affected_sections: ["understanding"] }] });
+    await performQueuedProviderTask(config, { spaceId: SPACE, userId: USER, runId: dispatched.run_id });
+    // A non-comparison Run in the same Project keeps its ordinary full read.
+    const ordinary = await seedRun({ status: "succeeded", output: { ordinary: "ORDINARY_RUN_OUTPUT" } });
+    await db.pool.query(`UPDATE runs SET contract_snapshot_json='{}'::jsonb, capability_id=NULL WHERE id=$1`, [ordinary]);
+
+    const app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: db.connectionUri }), [runsModule]);
+    try {
+      // The instructing owner and a Project viewer: neither reads the batch body before settlement.
+      for (const userId of [USER, VIEWER]) {
+        __setRunsIdentityForTests({ spaceId: SPACE, userId });
+        const detailRead = await app.inject({ method: "GET", url: `/api/v1/runs/${dispatched.run_id}` });
+        expect(detailRead.statusCode, userId).toBe(200);
+        expect(detailRead.json()).toMatchObject({ status: "succeeded", output_json: null, error_json: null });
+        const io = await app.inject({ method: "GET", url: `/api/v1/runs/${dispatched.run_id}/io` });
+        expect(io.json()).toMatchObject({ input: null, output: null, events: [] });
+        const list = await app.inject({ method: "GET", url: `/api/v1/runs?project_id=${PROJECT}` });
+        expect(list.json().find((run: { id: string }) => run.id === dispatched.run_id)).toMatchObject({ status: "succeeded", output_json: null });
+        const surfaces = await Promise.all(["", "/io", "/trace", "/attempts", "/finalizations", "/evaluations"].map(
+          (suffix) => app.inject({ method: "GET", url: `/api/v1/runs/${dispatched.run_id}${suffix}` }),
+        ));
+        for (const surface of [...surfaces, list]) expect(surface.body).not.toContain("STANDING_BATCH_DETAIL");
+        expect((await app.inject({ method: "GET", url: `/api/v1/runs/${dispatched.run_id}/turn` })).statusCode).toBe(404);
+      }
+      __setRunsIdentityForTests({ spaceId: SPACE, userId: USER });
+      expect((await app.inject({ method: "GET", url: `/api/v1/runs/${ordinary}` })).body).toContain("ORDINARY_RUN_OUTPUT");
+      expect((await app.inject({ method: "GET", url: `/api/v1/runs/${ordinary}/io` })).json().output).not.toBeNull();
+    } finally {
+      await app.close();
+    }
+    // Adjacent projections that do not go through getVisibleRun: a Task's Run
+    // list and the owner-side response view keep the same summary cap.
+    const task = randomUUID();
+    const now = new Date().toISOString();
+    await db.pool.query(
+      `INSERT INTO tasks (id, space_id, title, owner_user_id, visibility, access_level, created_at, updated_at) VALUES ($1,$2,'Linked task',$3,'space_shared','full',$4,$4)`,
+      [task, SPACE, USER, now],
+    );
+    for (const runId of [dispatched.run_id, ordinary]) {
+      await db.pool.query(`INSERT INTO task_runs (id, space_id, task_id, run_id, role, created_at) VALUES ($1,$2,$3,$4,'primary',$5)`, [randomUUID(), SPACE, task, runId, now]);
+    }
+    const taskRuns = await new PgTaskRepository(db.pool).listTaskRuns(identity, task, 10, 0);
+    const taskRun = (id: string) => taskRuns.items.find((item) => item.run.id === id)?.run;
+    expect(taskRun(dispatched.run_id)).toMatchObject({ status: "succeeded", output_json: null });
+    expect(JSON.stringify(taskRun(dispatched.run_id))).not.toContain("STANDING_BATCH_DETAIL");
+    expect(JSON.stringify(taskRun(ordinary))).toContain("ORDINARY_RUN_OUTPUT");
+    const stored = (await new PgRunRepository(db.pool).getRun(SPACE, dispatched.run_id))!;
+    expect(runToOut(runViewFor(stored, USER))).toMatchObject({ status: "succeeded", output_json: null });
+    const storedOrdinary = (await new PgRunRepository(db.pool).getRun(SPACE, ordinary))!;
+    expect(JSON.stringify(runToOut(runViewFor(storedOrdinary, USER)))).toContain("ORDINARY_RUN_OUTPUT");
+    // The stored output is unchanged and the standing settlement still merges it.
+    await expect(service.reconcileRun(SPACE, dispatched.run_id)).resolves.toMatchObject({ status: "completed", comparison_count: 1 });
+    expect((await db.pool.query(`SELECT comparison_detail FROM research_evidence_cards WHERE source_item_id=$1`, [sourceItemId])).rows[0])
+      .toEqual({ comparison_detail: detail });
+  });
+
   it("turns a new direction into advice that creates one Thread when actioned repeatedly", async () => {
     if (!db.available) return;
+    await seedBaseline();
     const sourceItemId = await seedSourceInCorpus();
     const detail = "Investigate whether the effect reverses in a new setting.";
     const runId = await seedRun({
@@ -556,6 +635,7 @@ describe("project research standing comparison (real Postgres)", () => {
 
   it("does not disclose standing advice for a SourceItem the Project viewer cannot read", async () => {
     if (!db.available) return;
+    await seedBaseline();
     const sourceItemId = await seedSourceInCorpus();
     const detail = "Private direction from the source owner.";
     const runId = await seedRun({

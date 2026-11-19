@@ -60,6 +60,9 @@ and remain subject to the Project ACL on every read.
 `content_access_logs` only when the viewer differs from the resource owner.
 The resource owner is the only default reader of that log. Audit records can
 feed health experiences, but never bypass domain read/write governance.
+Agent reads on a person's own behalf are attributed separately in
+`agent_data_read_logs` ([ADR 0030](decisions/0030-plugin-agent-data-access.md));
+that store never relaxes this cross-person rule and never holds content.
 
 **B12** — External chat capture (e.g. conversation imports) must create activity records first, not active memory.
 
@@ -547,7 +550,7 @@ Workflow is a server-enforced process. Research stage tags are pipeline-owned
 identifiers, not Skills or callable registrations. The required Work Skill is
 a code contract, not an optional library package.
 
-**B53** — Plugin settings and enablement state must be scoped exactly as declared in the descriptor's `scope` field: `space` uses `(plugin_id, space_id)` and requires space owner/admin for writes; `user` uses `(plugin_id, user_id)` and follows the user across spaces. Space-scoped plugin state for space A must never be readable or writable in the context of space B, and user-scoped plugin state must never be readable or writable by another user. The plugin guard must check both plugin existence and descriptor scope.
+**B53** — Plugin settings and enablement state must be scoped exactly as declared in the descriptor's `scope` field: `space` uses `(plugin_id, space_id)` and requires space owner/admin for writes; `user` uses `(plugin_id, user_id)` and follows the user across spaces. Space-scoped plugin state for space A must never be readable or writable in the context of space B, and user-scoped plugin state must never be readable or writable by another user. The plugin guard must check both plugin existence and descriptor scope. A Project-level operation package (`project_binding: 'required'`) additionally reaches a Project only through that Project's `bound` binding, checked by the host for every entry (fresh call, replay, proposal apply, `proposal.accept` receipt replay and result release, including every reader of a shared result) together with the Project's own read/write gate and, for an Agent, its Run's Project; enablement never stands in for a binding, and unbinding or disabling never deletes plugin data.
 
 ---
 
@@ -723,20 +726,43 @@ code.
 
 **B70** — (ADR 0017) A write is gated behind per-instance human approval only when it is self-modification, a long-term belief that widens reach, a real-checkout change, an exposure change, money above a bounded default, a credential or deployment change, or the Project's direction — and the action's registration names which. Every other Project-internal write is governed by trigger origin — the Run's verified root origin through delegation, graph and continuation hops (`effectiveRunTrigger`; a continuation inherits only within its cause's budget, an unverifiable chain is never `manual`) — (`manual` executes; anything unattended is `require_approval`), with one exception — an Agent writing its own persona on an `agent`-scope entry, a first one as much as a revision, which is governed instead by ADR 0003 §5 and named in B10 — and by bounds set before the work runs (Project-write fan-out ≤ 5 per turn, follow-up Tasks applied for the turn included, with the narrower conversational pacing of ADR 0019; spend at the pipeline's bounded default, the remainder offered once), with review-after: every such write is in Updates with undo, and attention carries only what a person must decide. A default may flip from proposal to direct only after the review it displaces exists.
 
-For explicitly requested sustained task collaboration, repeated handoffs to
-the same fixed specialists use the finite task-scoped budget declared by the
-original manual Room turn, rather than the temporary Room budget. Active
-collaboration bounds cannot change or widen. After its Task is done/cancelled,
-the coordinator may declare a new open Task and bounds in the same container,
-including on a completion turn. Holds, stop, lost authority, repeated child
-failure and exhaustion still stop the active collaboration. Temporary Room
-delegation shares a soft ceiling of 5 × max(1, delegatable roster Agents),
-excluding the coordinator, and a hard ceiling twice that; each delegation
-budgets two Agent turns, depth one. An explicit budget passed internally by the
-server overrides the default; Rooms expose no user-facing budget parameter.
-Each subgroup's hard bound can narrow, never widen, the container bound. Crossing
-soft admits and records one visible Room notice; crossing hard is policy-denied
-and audited. This does
-not raise the five-object Project-write ceiling (ADR 0017).
+Work a person's own Room turn authorized — temporary delegation or an
+explicitly requested task collaboration (one open Task and fixed participants,
+declared by the original manual Room turn or its coordinator completion) — has
+no cumulative handoff or container-turn limit and needs no further
+confirmation: it is counted, the Room receives one de-duplicated non-blocking
+reminder per crossed server threshold (25, 50, 100, 200, then doubling), and a
+continuation inside it keeps its manual cause regardless of count. There is no
+mode, cap or reminder request to declare or enable; an Agent declaration
+carrying one is refused, and no Agent, tool or conversational confirmation can
+change an active collaboration. After its Task is done/cancelled, the
+coordinator may declare a new open Task in the same container, including on a
+completion turn. Holds and review waits, pause (resumable) and stop or
+coordinator cancellation (terminal for that declaration), lost authority,
+three children in a row without a result, depth one, per-turn fan-out, the
+workspace lease/FIFO, participant authorization, content access, spend and
+subscription gates still stop or bound it. A container not rooted in a
+person's own turn (continuation, automation, schedule) and every discussion
+keep their own cumulative, round and spend bounds; none is upgraded to
+`manual`. Unreadable collaboration JSON — including an earlier mode/cap record
+the earlier release itself refused, which migration 0024 leaves unconverted —
+fails closed with `collaboration_budget_invalid`; it is never read as a budget.
+A completion is judged on the same facts as admission (three children in a
+row without a result end its manual cause and fan-out). Room collaboration
+notices are read by every Room member and never carry Task content.
+Every Room container shares a bound of 10 × max(1, delegatable roster Agents),
+excluding the coordinator, and twice that as its hard bound; depth is one. For
+temporary delegation a person's own turn authorized outside a discussion, the
+hard bound limits only one turn's fan-out (its children outstanding at once):
+there is no soft or hard total, and its notices are the threshold reminders
+above. For a container not rooted in a person's own turn and for every
+discussion (explicit or emergent, even under a person's turn) soft and hard
+are cumulative delegation bounds and each delegation budgets two Agent turns;
+crossing soft admits and records one visible Room notice, crossing hard is
+policy-denied and audited. Admission and the usage notice share this one
+classification. An explicit budget passed internally by the server overrides
+the default; Rooms expose no user-facing budget parameter. Each subgroup's hard
+bound can narrow, never widen, the container bound. This does not raise the
+five-object Project-write ceiling (ADR 0017).
 
 **B22** — The project is open source. Do not put private data, real user memory, or non-shareable credentials into the source repository; see B1/B2.

@@ -32,7 +32,7 @@ resources and keep their explicitly declared scope.
 - Agent templates — read-only file specs in `catalog/agent_templates/<key>/template.yaml`
   (NOT runtime objects), served by `server/src/modules/agentTemplates/routes.ts` with
   copy-on-create `POST /api/v1/agent-templates/{id}/agents`
-- `Run` rows created through `RunService` (queued work, lifecycle, delegation links)
+- `Run` rows persisted through `PgRunRepository` (`server/src/modules/runs/repository.ts`: queued work, lifecycle, delegation links)
 - Built-in template catalog (factories; concrete system agents are provisioned on demand)
 - Agent seeding and product-level agent configuration
 

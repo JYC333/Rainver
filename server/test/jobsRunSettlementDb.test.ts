@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
-import { seedSpaceOwnerProject } from "./support/domainSeeds.js";
+import { seedRun, seedSpaceOwnerProject } from "./support/domainSeeds.js";
 import { PgJobQueueRepository } from "../src/modules/jobs/repository.js";
 import { PgRunRepository } from "../src/modules/runs/repository.js";
 import { buildModuleServer } from "./support/moduleServer.js";
@@ -29,7 +29,7 @@ const db = useTestDatabase(import.meta.filename, { max: 2 });
 
 beforeEach(async () => {
   if (!db.available) return;
-  await resetTables(db.pool, ["jobs", "runs", "projects", "space_memberships", "users", "spaces"], { cascade: true });
+  await resetTables(db.pool, ["jobs", "run_attempts", "runs", "agent_runtime_profiles", "agent_versions", "agents", "projects", "space_memberships", "users", "spaces"], { cascade: true });
   await seedSpaceOwnerProject(db.pool, { space: SPACE, owner: OWNER, project: PROJECT });
 });
 
@@ -110,6 +110,66 @@ describe("job settlement of the Run behind a job (real Postgres)", () => {
     expect((await db.pool.query<{ started_at: string | null; model_provider_id: string | null }>(
       `SELECT started_at, model_provider_id FROM runs WHERE id = $1`, [runId],
     )).rows[0]).toEqual({ started_at: null, model_provider_id: null });
+  });
+
+  it("ends the queued Run when its provider_task_run job fails its final attempt, not before", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const jobs = new PgJobQueueRepository(db.pool);
+    const runId = await queueProviderTaskRun();
+    const job = await jobs.enqueue({
+      job_type: "provider_task_run",
+      space_id: SPACE,
+      user_id: OWNER,
+      payload: { run_id: runId },
+      max_attempts: 2,
+    });
+    const claimAttempt = (attempts: number) => db.pool!.query(
+      `UPDATE jobs SET status = 'running', attempts = $2, claimed_by = 'worker-a' WHERE id = $1`,
+      [job.id, attempts],
+    );
+
+    await claimAttempt(1);
+    await expect(jobs.failJob(job.id, "precondition failed", "worker-a")).resolves.toBe("pending");
+    expect(await runStatus(runId)).toEqual({ status: "queued", error_code: null });
+
+    await claimAttempt(2);
+    // Another worker's stale claim neither fails the job nor ends its Run.
+    await expect(jobs.failJob(job.id, "precondition failed", "worker-b")).resolves.toBeNull();
+    expect(await runStatus(runId)).toEqual({ status: "queued", error_code: null });
+
+    await expect(jobs.failJob(job.id, "precondition failed", "worker-a")).resolves.toBe("failed");
+    expect(await runStatus(runId)).toEqual({ status: "failed", error_code: "run_abandoned" });
+  });
+
+  it("keeps a reserved stop claim when a launched agent_run job fails its final attempt", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const jobs = new PgJobQueueRepository(db.pool);
+    const runId = randomUUID();
+    await seedRun(db.pool, { id: runId, space: SPACE, owner: OWNER, agent: randomUUID(), version: randomUUID() });
+    await db.pool.query(`UPDATE runs SET status = 'running', started_at = now() WHERE id = $1`, [runId]);
+    await db.pool.query(
+      `INSERT INTO run_attempts (id, space_id, run_id, attempt_number, status, launch_id, created_at, updated_at)
+       VALUES ($1, $2, $3, 1, 'running', $4, now(), now())`,
+      [randomUUID(), SPACE, runId, randomUUID()],
+    );
+    const job = await jobs.enqueue({
+      job_type: "agent_run", space_id: SPACE, user_id: OWNER, payload: { run_id: runId }, max_attempts: 2,
+    });
+    await db.pool.query(
+      `UPDATE jobs SET status = 'running', attempts = 2, claimed_by = 'worker-a' WHERE id = $1`,
+      [job.id],
+    );
+
+    // The Host has not confirmed exit: the Run is not ended here and the job
+    // stays claimable for stop reconciliation, without a new attempt budget.
+    await expect(jobs.failJob(job.id, "controller lost", "worker-a")).resolves.toBe("pending");
+    expect(await runStatus(runId)).toEqual({ status: "running", error_code: null });
+    expect((await db.pool.query(
+      `SELECT status, attempts, max_attempts, claimed_by, error FROM jobs WHERE id = $1`, [job.id],
+    )).rows[0]).toEqual({ status: "pending", attempts: 1, max_attempts: 2, claimed_by: null, error: "controller lost" });
+    const reclaimed = await jobs.claimNextAgentRun("worker-b");
+    expect(reclaimed?.id).toBe(job.id);
+    expect(reclaimed?.attempts).toBe(2);
   });
 
   it("leaves a stuck provider_task_run job's Run alone while it still has attempts", async (ctx) => {

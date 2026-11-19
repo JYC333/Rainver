@@ -20,6 +20,8 @@ import {
   type DirectWriteTarget,
 } from "./memoryApplyRepository.js";
 import { PgMemoryProposalRepository } from "./proposalRepository.js";
+import { hasProjectBoundRead, hasSensitivePluginRead, readRunContextTaint } from "../runs/contextTaint.js";
+import { projectBoundConsentIds } from "../plugins/coreDataTools.js";
 
 /**
  * Memory's Agent tool surface — `memory.remember` and `memory.revise`
@@ -73,6 +75,27 @@ export function registerMemoryDirectWriteExecutors(
     ).then((r) => r.rows[0]?.requires === true);
     return proposalOnly;
   };
+
+  // ADR 0030: what a Run writes after reading sensitive plugin data carries at
+  // least that sensitivity, which B10 never applies directly — it becomes a
+  // gated proposal for the person. Read from the merge-only Run taint; a malformed one is read conservatively.
+  const runTaint = (tx: Queryable) => readRunContextTaint(tx, run.space_id, run.id);
+  const readSensitivePluginData = async (tx: Queryable) => hasSensitivePluginRead(await runTaint(tx));
+  // ADR 0033 §6: what a conversation learned from the owner's mail stays in that Project's
+  // conversations. Memory is recalled in the owner's or the Agent's other Projects, so a Run that read
+  // Gmail — itself or as an inherited conversation taint — remembers nothing, not even by proposal.
+  const assertNoProjectBoundRead = async (tx: Queryable) => {
+    if (hasProjectBoundRead(await runTaint(tx), projectBoundConsentIds())) throw new HttpError(422, PROJECT_BOUND_REASON);
+  };
+  const inheritedSensitivity = (value: unknown) => {
+    const rank = ["normal", "sensitive", "restricted", "highly_restricted"];
+    const current = typeof value === "string" && rank.includes(value) ? value : "normal";
+    return rank.indexOf(current) >= 1 ? current : "sensitive";
+  };
+  const PERSONA_TAINT_REASON = "This Run read sensitive plugin data; what you have become cannot be changed from it.";
+  const PROJECT_BOUND_REASON = "This conversation holds content from the person's Gmail, which stays in this Project's conversations. "
+    + "Nothing from it is remembered; say it in your reply instead.";
+  const INHERITED_REASON = "This Run read sensitive plugin data, so this memory carries that sensitivity and needs the person.";
 
   const proposeCreate = async (tx: Queryable, command: Record<string, unknown>, reason: string) => {
     const memoryType = typeof command.memory_type === "string" ? command.memory_type : "semantic";
@@ -333,6 +356,12 @@ export function registerMemoryDirectWriteExecutors(
           + "Say what else you would change and leave it there; do not retry.",
         );
       }
+      await assertNoProjectBoundRead(tx);
+      if (await readSensitivePluginData(tx)) {
+        // A persona is delivered everywhere; it never carries sensitive plugin data.
+        if (requestedType === PERSONA_MEMORY_TYPE) throw new HttpError(422, PERSONA_TAINT_REASON);
+        return proposeCreate(tx, { ...command, visibility: "private", sensitivity_level: inheritedSensitivity(command.sensitivity_level) }, INHERITED_REASON);
+      }
       if (await isProposalOnly()) {
         return proposeCreate(tx, command, "This Agent writes memory only by proposal.");
       }
@@ -356,7 +385,7 @@ export function registerMemoryDirectWriteExecutors(
     const memoryId = String(command.memory_id);
     return withQueryableTransaction(db, async (tx) => {
       const repository = new PgMemoryApplyRepository(tx);
-      const proposeRevision = async (reason: string, target: DirectWriteTarget | null) => {
+      const proposeRevision = async (reason: string, target: DirectWriteTarget | null, sensitivity?: string) => {
         // Who the proposal is for. A revision of the Agent's own memory is the
         // Agent's owner's to decide — the person in the turn may be anyone in
         // the Room, and an unattended Run has none at all. Everything else is
@@ -372,6 +401,7 @@ export function registerMemoryDirectWriteExecutors(
             operation: "update",
             target_memory_id: memoryId,
             content: String(command.content ?? ""),
+            ...(sensitivity ? { sensitivity_level: sensitivity } : {}),
           }),
           // The rationale is the Agent's, so the proposal records it and the
           // Agent rather than a user confirmation the person never gave.
@@ -406,6 +436,11 @@ export function registerMemoryDirectWriteExecutors(
           "You have already changed what you have become once in this run. "
           + "Say what else you would change and leave it there; do not retry.",
         );
+      }
+      await assertNoProjectBoundRead(tx);
+      if (await readSensitivePluginData(tx)) {
+        if (target?.memory_type === PERSONA_MEMORY_TYPE) throw new HttpError(422, PERSONA_TAINT_REASON);
+        return proposeRevision(INHERITED_REASON, target, inheritedSensitivity((target as { sensitivity_level?: unknown } | null)?.sensitivity_level));
       }
       if (await isProposalOnly()) {
         return proposeRevision("This Agent revises memory only by proposal.", target);

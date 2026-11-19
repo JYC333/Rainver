@@ -1,7 +1,9 @@
 import { ProjectResearchQuestionRefineService, QUESTION_REFINE_JOB_TYPE } from "./questionRefineService.js";
 import {ResearchWorkspaceMutationError} from './workspaceErrors.js';
-import {withRunTerminalOwner,researchGraphRunRefs} from '../systemActions/operations/proposalTransitions.js';
+import {withRunTerminalOwner} from '../systemActions/operations/proposalTransitions.js';
+import {researchGraphRunRefs} from './graphRuns.js';
 import { assertResearchOperationChange } from "./researchCallAccess.js";
+import { comparisonBaselineAdmission } from "./notebookNotes.js";
 import {sourceItemFullContentReadClause} from '../sources/sourceItemAccess.js';
 import { ResearchCallOptionsSchema } from "@rainver/protocol";
 import { createBoundResearchOperation, retryResearchPreparation, resumeResearchSetup, reconcileResearchCall } from "./researchProblemCalls.js";
@@ -70,6 +72,7 @@ import { upsertPendingResearchCheckpoint } from "./checkpointWriter.js";
 import { ProjectResearchScreeningCoordinator } from "./pipeline/screeningCoordinator.js";
 import {
   ProjectResearchSynthesisCoordinator,
+  researchStageRunIsCurrent,
   type QueueSynthesisInput,
 } from "./pipeline/synthesisCoordinator.js";
 import { startSynthesisOnlyExecution } from "./synthesisOnlyExecution.js";
@@ -1375,11 +1378,28 @@ export class ProjectResearchOrchestrator {
         ?? optionalString(runError.agent_run_error_code)
         ?? optionalString(runError.error_code);
       const runLabel = stageKey === "monitor_compare" ? "Monitoring comparison run" : "Synthesis run";
-      await this.failOperation(operation, `${runLabel} ${row.status}${detail ? `: ${detail}` : " with no recorded error detail"}`);
+      // A superseded attempt's late terminal state is not the operation's failure.
+      await this.failOperationIfCurrent(
+        operation,
+        (state) => researchStageRunIsCurrent(state, stageKey!, runId),
+        `${runLabel} ${row.status}${detail ? `: ${detail}` : " with no recorded error detail"}`,
+      );
       return;
     }
 
     if (stageKey === "monitor_compare") {
+      // Comparison results become the scan summary, evidence cards and Evidence Signals, all
+      // Project-shared: a result whose frozen baseline is not admissible now (none frozen, or
+      // Source-derived) is never accumulated, however the Run came to finish.
+      const admission = await comparisonBaselineAdmission(this.db, spaceId, objectValue(row.contract_snapshot_json).workflow_input_json);
+      if (admission !== "admitted") {
+        await this.failOperationIfCurrent(
+          operation,
+          (state) => researchStageRunIsCurrent(state, "monitor_compare", runId),
+          `Monitoring comparison baseline ${admission === "not_frozen" ? "was not frozen" : "is no longer admissible"}`,
+        );
+        return;
+      }
       const expected = Array.isArray(researchContract.source_item_ids)
         ? researchContract.source_item_ids.filter((item): item is string => typeof item === "string")
         : [];
@@ -2178,6 +2198,8 @@ export class ProjectResearchOrchestrator {
       setWorkflowMonitoring: (spaceId, projectId, workflowId, state) =>
         this.setWorkflowMonitoring(spaceId, projectId, workflowId, state),
       failOperation: (operation, message, details) => this.failOperation(operation, message, details),
+      failOperationIfCurrent: (operation, isCurrent, message, details) =>
+        this.failOperationIfCurrent(operation, isCurrent, message, details),
       projectWriterActor: (spaceId, projectId) => this.projectWriterActor(spaceId, projectId),
       reconcileCompletedRun: (spaceId, runId) => this.reconcileCompletedRun(spaceId, runId),
       createCheckpoint: (db, spaceId, projectId, workflowId, operationId, type, result) =>
@@ -2286,6 +2308,8 @@ export class ProjectResearchOrchestrator {
         }),
       operation: (spaceId, operationId) => this.operation(spaceId, operationId),
       failOperation: (operation, message) => this.failOperation(operation, message),
+      failOperationIfCurrent: (operation, isCurrent, message, details) =>
+        this.failOperationIfCurrent(operation, isCurrent, message, details),
       setWorkflowMonitoring: (spaceId, projectId, workflowId, state) =>
         this.setWorkflowMonitoring(spaceId, projectId, workflowId, state),
       reconcileCompletedRun: (spaceId, runId) => this.reconcileCompletedRun(spaceId, runId),
@@ -2665,16 +2689,55 @@ export class ProjectResearchOrchestrator {
     await reconcileResearchCall(this.db,operation.space_id,operation.id);
   }
 
+  /**
+   * Fails the operation only while `isCurrent` still holds for its state read
+   * under the Project and operation row locks (the order `stageCandidate` and
+   * critique reconciliation take). A Run callback the operation no longer
+   * waits for — a superseded attempt, a later stage, a terminal operation —
+   * changes nothing. Returns whether the failure was written.
+   */
+  private async failOperationIfCurrent(
+    operation: Pick<OperationRow, "id" | "space_id" | "project_id">,
+    isCurrent: (state: ResearchOperationState, row: Pick<OperationRow, "current_execution_id">) => boolean,
+    message: string,
+    details: {
+      code?: string;
+      diagnostics?: Record<string, unknown>;
+      /** Applied to the locked state just before the failure is written, in the same transaction. */
+      prepareState?: (state: ResearchOperationState) => void;
+    } = {},
+  ): Promise<boolean> {
+    return withQueryableTransaction(this.db, async (db) => {
+      await db.query(
+        `SELECT id FROM projects WHERE id=$1 AND space_id=$2 FOR UPDATE`,
+        [operation.project_id, operation.space_id],
+      );
+      const locked = await db.query<OperationRow>(
+        `SELECT id,space_id,project_id,status,progress_json,created_at,current_execution_id
+           FROM project_operations WHERE id=$1 AND space_id=$2 AND project_id=$3 FOR UPDATE`,
+        [operation.id, operation.space_id, operation.project_id],
+      );
+      const current = locked.rows[0];
+      if (!current || ["completed", "failed", "cancelled"].includes(current.status)) return false;
+      if (!isCurrent(researchState(current.progress_json), current)) return false;
+      await new ProjectResearchOrchestrator(db, this.config).failOperation(current, message, details);
+      return true;
+    });
+  }
+
   private async failOperation(
     operation: OperationRow,
     message: string,
     details: {
       code?: string;
       diagnostics?: Record<string, unknown>;
+      /** Patched into the state written with the failure (one write, relative to `operation`). */
+      prepareState?: (state: ResearchOperationState) => void;
     } = {},
   ): Promise<void> {
     if (["completed", "failed", "cancelled"].includes(operation.status)) return;
     const state = researchState(operation.progress_json);
+    details.prepareState?.(state);
     const failedStage = state.current_stage;
     state.stage_state = "failed";
     state.current_stage = "failed";

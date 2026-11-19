@@ -3,6 +3,7 @@ import {storeSourceReaderArtifact,saveSourceReadingDocument} from './materialPro
 import { observePage } from './monitoring/pageObservation.js';
 import { MonitoringAdmissionError } from '../projects/monitoringControl.js';
 import { monitoringChannelControlClause } from '../projects/monitoringControl.js';
+import { contentOwnerOnlySql } from '../access/contentAccessSql.js';
 import { consumeMonitoringBudgets } from "../projects/monitoringControl.js";
 import { createHash, randomUUID } from "node:crypto";
 import { writeFile, mkdir } from "node:fs/promises";
@@ -1258,7 +1259,9 @@ export class SourceExtractionWorker {
     if (sourceType === "activity_record") {
       const row = await this.db.query<{ title: string | null; content: string | null; project_id: string | null; owner_user_id: string | null; visibility: string; access_level: string }>(
         `SELECT title, content, project_id, owner_user_id, visibility, access_level FROM activity_records
-          WHERE space_id = $1 AND id = $2 AND status NOT IN ('archived', 'failed')`,
+          WHERE space_id = $1 AND id = $2 AND status NOT IN ('archived', 'failed')
+            -- Owner-only rows never become evidence: evidence does not carry the owner-only rule.
+            AND NOT ${contentOwnerOnlySql("activity", "activity_records")}`,
         [spaceId, sourceId],
       );
       const activity = row.rows[0];

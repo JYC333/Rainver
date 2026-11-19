@@ -1,5 +1,7 @@
 import {enqueueDueSourceGoals} from '../sources/goals/worker.js';
 import { enqueueDueMonitoring } from '../sources/monitoring/heartbeat.js';
+import { enqueueDueGmailMailboxSyncs } from '../sources/gmail/gmailMonitors.js';
+import { startDueGmailDigests } from '../sources/gmail/gmailDigests.js';
 /**
  * Source-domain scheduled tasks.
  *
@@ -48,6 +50,10 @@ export function buildSourceSchedulerTasks(
 
   const tasks: ScheduledTask[] = [
     {name:"source_goal_scheduler",intervalSeconds,runOnStart:true,run:async()=>{await enqueueDueSourceGoals(db(),config);}},
+    // Gmail monitors: due cursors (schedule elapsed or a push/follow-up pending) get one sync Job each.
+    {name:"gmail_mailbox_sync_scheduler",intervalSeconds,runOnStart:true,run:async()=>{if(config.gmailOAuth)await enqueueDueGmailMailboxSyncs(db());}},
+    // Gmail digests (ADR 0033 phase B): each due digest starts one owner-only delivery turn in its private conversation.
+    {name:"gmail_digest_scheduler",intervalSeconds,runOnStart:true,run:async()=>{if(config.gmailOAuth)await startDueGmailDigests(db(),config);}},
     {
       name: "project_information_monitoring_scheduler",
       intervalSeconds,

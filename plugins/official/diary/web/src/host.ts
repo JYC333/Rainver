@@ -1,5 +1,3 @@
-import type { CSSProperties, ElementType, ReactNode } from 'react'
-
 export interface DiaryEntry {
   id: string
   user_id: string
@@ -21,7 +19,6 @@ export interface DiaryReflection {
 export interface DiaryApi {
   /** Opaque identity for queued writes; changes when authentication or Space changes. */
   saveContextKey?(): string
-  today(): Promise<{ date: string; entry: DiaryEntry | null }>
   listEntries(params?: { limit?: number; before?: string }): Promise<{ entries: DiaryEntry[] }>
   saveEntry(date: string, content: string): Promise<{ entry: DiaryEntry }>
   deleteEntry(date: string): Promise<{ deleted: boolean }>
@@ -29,21 +26,9 @@ export interface DiaryApi {
   reflections(date: string): Promise<{ entry_date: string; reflections: DiaryReflection[] }>
 }
 
-export interface DiaryPluginState {
-  loading: boolean
-  enabled: boolean
-}
-
-export interface DiaryHostLinkProps {
-  to: string
-  style?: CSSProperties
-  children?: ReactNode
-}
-
+/** What the page needs from its host; the plugin slot owns loading, disabled and withheld states. */
 export interface DiaryWebHost {
   api: DiaryApi
-  Link: ElementType<DiaryHostLinkProps>
-  usePluginState(pluginId: string): DiaryPluginState
-  /** The UI locale the person reads (e.g. `en`, `zh-CN`), from the host's i18n. */
+  /** The UI locale the person reads (e.g. `en`, `zh-CN`). */
   useLocale(): string
 }

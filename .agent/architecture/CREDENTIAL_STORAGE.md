@@ -1,12 +1,13 @@
 # Credential Storage
 
-The system stores secrets in **three distinct channels**, and deliberately does
+The system stores secrets in **four distinct channels**, and deliberately does
 not store a fourth. Do not conflate them.
 
 | Channel | What | Where stored | Doc |
 |---|---|---|---|
 | **ModelProvider API key** | API keys for in-process LLM calls (OpenAI, Anthropic, …) | AES-256-GCM ciphertext in a DB `Credential` row | this doc |
 | **Managed subscription OAuth** | Instance-admin Claude Pro/Max and OpenAI Codex subscription credentials for in-process calls | AES-256-GCM OAuth envelope in a DB `Credential` row | this doc |
+| **Gmail OAuth (personal, read-only)** | A person's Gmail `gmail.readonly` refresh/access token pair for their own connection | AES-256-GCM in the same `credentials` table, `credential_type="gmail_oauth"`, `secret_ref` prefix `gmail_oauth:v1:`, AAD bound to credential and connection id; deleted on disconnect, never sent to Google's revoke endpoint | [modules/sources.md](../modules/sources.md) "Personal Gmail connections" |
 | **Custom Source fetch credential** | Header-based credential (API key / bearer token) for an Sources Custom Source's outbound fetches | AES-256-GCM ciphertext in the same DB `credentials` table, distinct `credential_type` and `secret_ref` prefix | [modules/sources.md](../modules/sources.md), [architecture/SOURCE_CUSTOM_SOURCE_HANDLERS.md](SOURCE_CUSTOM_SOURCE_HANDLERS.md) |
 
 A vendor CLI's login is the one Rainver does **not** hold. A CLI runs only on
@@ -43,6 +44,28 @@ The **Custom Source fetch credential** channel reuses this channel's DB table an
 resolves to a request header injected only by the trusted Custom Source fetch layer
 (`customSourceEndpointFetch.ts`, `customSourcePipelineInterpreter.ts`), never by generated or
 interpreted handler code, and it is never pooled/rotated the way ModelProvider keys are.
+
+The **Gmail OAuth** channel (`server/src/modules/sources/gmail/gmailCredentialCrypto.ts`,
+`gmailConnections.ts`, `gmailTokenRefresh.ts`) also reuses the table and master
+key with its own envelope. Its AAD (`gmail_oauth:v1|credential_id|connection_id`)
+stops a ciphertext moving to another row. Gmail page cursors are signed (not
+encrypted) with a separate HKDF(master key, "gmail-cursor-v1") key and carry no
+token. The credential resolves only for the connection
+owner in the same Space while the connection is `active` and links to it; an
+owner-deleted credential never resolves. Disconnect, forget and reauth delete
+the row instead of relying on `ON DELETE SET NULL`. Tokens stay in the server
+process: they are not pooled, not put in any environment, Job, receipt or log,
+and not returned by any route. Disconnect, forget and reauth remove the
+persistent copy (the credential row) only. A request already holding a token in
+memory is not recalled: a refresh or code exchange rechecks current authority
+immediately before its POST (after DNS) and sends nothing once that check fails,
+but a writer committing between that check and the dispatch still sees that one
+request go out, and its result is discarded at settlement; access tokens already
+issued stay valid at Google until they expire. Rainver does not revoke Gmail
+grants at Google (a grant is per client + account and can back other
+connections), so the person removes the grant in their Google Account.
+Refresh uses its own once-only protocol, keyed by connection generation, and
+requires the owner's current active Space membership.
 
 ## At-rest encryption
 

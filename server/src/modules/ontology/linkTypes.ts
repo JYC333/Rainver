@@ -41,7 +41,7 @@ interface LinkTypeDefinition {
 // different things in different domains: `supports` between two Threads is
 // working structure a user drags into place, while `supports` between two
 // Claims is a reviewed assertion. Keying governance on the word alone would
-// force one of them to change behaviour (ADR 0012 decision 3, amended).
+// force one of them to change behaviour (ADR 0012 decision 3).
 const registry = new Map<LinkType, LinkTypeDefinition[]>();
 
 function endpointsOverlap(a: LinkTypeDefinition, b: LinkTypeDefinition): boolean {

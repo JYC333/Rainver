@@ -53,6 +53,13 @@ export const hostThreads = pgTable("host_threads", {
 	// live bindings; each Run still records its exact installation version.
 	runtimeInstallation: varchar("runtime_installation", { length: 64 }).default('own').notNull(),
 	vendorSessionId: varchar("vendor_session_id", { length: 256 }),
+	// The `run_attempts.launch_id` of the launch that reported the current
+	// `vendor_session_id`, set in the same statement as the pointer and cleared
+	// with it. A conversation that may hold sensitive data (ADR 0032) resumes
+	// the pointer only when this launch was isolated in its current profile;
+	// null (no recorded launch, or a pointer from before this column) never
+	// resumes there.
+	vendorSessionLaunchId: varchar("vendor_session_launch_id", { length: 36 }),
 	lastRunId: varchar("last_run_id", { length: 36 }),
 	lastSessionId: varchar("last_session_id", { length: 36 }),
 	// This token is claimed before a Run exists and replaced with that Run's id

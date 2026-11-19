@@ -17,6 +17,8 @@ import { Agent, ProxyAgent } from "undici";
  */
 export const DEFAULT_OUTBOUND_DEADLINE_MS = 120_000;
 export const DEFAULT_MAX_REDIRECTS = 5;
+/** Largest request body a guarded request may carry (form-encoded OAuth exchanges are far smaller). */
+export const MAX_GUARDED_REQUEST_BODY_BYTES = 64 * 1024;
 
 /**
  * Request headers that are credentials whatever a caller calls them. They are
@@ -31,6 +33,8 @@ export interface PinnedFetchInit {
   headers: Record<string, string>;
   signal: AbortSignal;
   redirect: "manual";
+  /** Present only on a single-hop request (`maxRedirects: 0`); never replayed on a redirect. */
+  body?: Uint8Array;
 }
 
 /**
@@ -67,6 +71,7 @@ export const undiciPinnedFetch: PinnedFetch = (url, init, pinned) => {
     headers: init.headers,
     signal: init.signal,
     redirect: init.redirect,
+    ...(init.body ? { body: init.body } : {}),
     dispatcher: new Agent({ connect: { lookup: pinnedAddressLookup(pinned) }, pipelining: 0 }),
   };
   return globalThis.fetch(url, request);
@@ -92,6 +97,7 @@ export function createUndiciProxyFetch(proxyUrl: string): { fetch: PinnedFetch; 
         headers: init.headers,
         signal: init.signal,
         redirect: init.redirect,
+        ...(init.body ? { body: init.body } : {}),
         dispatcher: agent,
       };
       return globalThis.fetch(url, request);
@@ -127,6 +133,12 @@ export interface GuardedRequest {
   headersForHop?: (url: URL, signal: AbortSignal) => Promise<{ headers?: Record<string,string>; credentialHeaders?: Record<string,string> }>;
   /** Opt-in bounded error bodies for Sources API diagnostics. */
   readErrorBody?: boolean;
+  /**
+   * Request body, at most {@link MAX_GUARDED_REQUEST_BODY_BYTES}. Accepted only
+   * with an explicit `maxRedirects: 0`: a body (an OAuth code, a refresh token)
+   * is never replayed to a redirect target, so a 3xx answers without a second send.
+   */
+  body?: Uint8Array | string;
 }
 
 export interface GuardedResponse {
@@ -181,6 +193,15 @@ export async function guardedFetch(
   const carriesCredentials = Object.keys(credentialHeaders).length > 0
     || Object.keys(safeHeaders).some((name) => ALWAYS_CREDENTIAL_HEADERS.has(name));
   const maxRedirects = request.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
+  const body = request.body === undefined ? undefined
+    : typeof request.body === "string" ? new TextEncoder().encode(request.body) : request.body;
+  if (body !== undefined) {
+    if (request.maxRedirects !== 0) throw new OutboundGuardError(422, "Outbound request body requires maxRedirects: 0");
+    if (body.byteLength > MAX_GUARDED_REQUEST_BODY_BYTES) throw new OutboundGuardError(422, "Outbound request body is too large");
+    if (["GET", "HEAD"].includes((request.method ?? "GET").toUpperCase())) {
+      throw new OutboundGuardError(422, "Outbound GET/HEAD request cannot carry a body");
+    }
+  }
 
   const deadline = AbortSignal.timeout(request.deadlineMs ?? DEFAULT_OUTBOUND_DEADLINE_MS);
   const signal = request.signal ? AbortSignal.any([request.signal, deadline]) : deadline;
@@ -209,7 +230,7 @@ export async function guardedFetch(
     signal.throwIfAborted();
     const response = await deps.fetch(
       current.toString(),
-      { method: request.method ?? "GET", headers, signal, redirect: "manual" },
+      { method: request.method ?? "GET", headers, signal, redirect: "manual", ...(body ? { body } : {}) },
       pinned,
     );
 

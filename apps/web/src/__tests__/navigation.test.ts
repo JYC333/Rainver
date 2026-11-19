@@ -38,12 +38,9 @@ describe('navigation model', () => {
     expect(routeScopeForPath('/spaces/team-1/today')).toBe('space')
   })
 
-  it('puts Home first in the Global Rail and lists no aggregate/PersonalView entry', () => {
+  it('puts Home first in the Global Rail and lists the primary destinations', () => {
     expect(RAIL_ITEMS[0].id).toBe('home')
     const labels = RAIL_ITEMS.map(i => i.label.toLowerCase())
-    expect(labels).not.toContain('personal')
-    expect(labels).not.toContain('my view')
-    expect(labels).not.toContain('personalview')
     expect(labels).toEqual(expect.arrayContaining([
       'home', 'inbox', 'sources', 'review', 'knowledge', 'tasks', 'projects', 'agents', 'evolution', 'instance settings', 'settings',
     ]))
@@ -95,8 +92,6 @@ describe('navigation model', () => {
     expect(sceneForPath('/spaces/x/plans')?.id).toBe('agents')
     expect(sceneForPath('/spaces/x/skills')?.id).toBe('agents')
     expect(MODULE_REGISTRY.find(item => item.path === '/skills')).toBeDefined()
-    expect(MODULE_REGISTRY.some(item => item.path === '/capabilities')).toBe(false)
-    expect(sceneForPath('/spaces/x/capabilities')).toBeNull()
     expect(sceneForPath('/spaces/x/artifacts')?.id).toBe('artifacts')
     // Knowledge intentionally has no scene sidebar — it uses an in-header breadcrumb switcher.
     expect(sceneForPath('/spaces/x/knowledge')).toBeNull()

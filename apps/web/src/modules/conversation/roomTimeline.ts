@@ -80,9 +80,14 @@ function unionDelegations(children: ReadonlySet<string>, runs: Record<string, Ru
  * Project live turns onto the persisted timeline. Only explicitly delegated
  * edges form a group: parent_run_id alone can mean serial workspace scheduling.
  * Every unfinished member follows the latest visible message in its group;
- * replies own their completed turn and never get moved or duplicated.
+ * replies own their completed turn. Live Runs discovered outside the message
+ * page use the transcript tail when the whole group is outside the page.
  */
-export function roomLiveRunAnchors(messages: readonly RoomMessage[], runs: Record<string, RunLinks | undefined>): Map<string, string[]> {
+export function roomLiveRunAnchors(
+  messages: readonly RoomMessage[],
+  runs: Record<string, RunLinks | undefined>,
+  liveRunIds: readonly string[] = [],
+): Map<string | null, string[]> {
   const { group, union } = runGroups()
   // Build the relation before projecting messages, so partial polling order
   // does not affect grouping.
@@ -96,9 +101,12 @@ export function roomLiveRunAnchors(messages: readonly RoomMessage[], runs: Recor
       if (!replied.has(runId)) pending.add(runId)
     }
   }
-  const byMessage = new Map<string, string[]>()
+  for (const runId of liveRunIds) {
+    if (!replied.has(runId)) pending.add(runId)
+  }
+  const byMessage = new Map<string | null, string[]>()
   for (const runId of pending) {
-    const messageId = latest.get(group(runId))!
+    const messageId = latest.get(group(runId)) ?? null
     const ids = byMessage.get(messageId) ?? []
     ids.push(runId)
     byMessage.set(messageId, ids)

@@ -23,6 +23,7 @@ import {AgentGroupRefusal,HostDispatchRefusal} from '../agentGroups/hostDispatch
 import {conversationToolGrantInput} from '../systemActions/scenarioToolAllowance.js';
 import {PgAgentChatRepository} from './repository.js';
 import {PgProjectAgentRepository} from '../projects/projectAgents.js';
+import {directChatMayReadSensitive} from '../runs/sensitiveRuntimeProfile.js';
 
 type Id=keyof typeof AGENT_CHAT_OPERATION_SCHEMAS;
 type PreparedHostConversationDispatch=NonNullable<Awaited<ReturnType<typeof prepareHostConversationDispatch>>>;
@@ -49,22 +50,28 @@ async function prepareChatRun(db:Queryable,config:ServerConfig,input:{
  restoreManagedWorkspace?:{include_workspace:boolean}|null;
  /** A retry's: the original turn's restore operation, repeated rather than asked again. */
  restoreIdentity?:DirectRestoreIdentity|null;
+ /** A turn the server starts in the person's own conversation on their standing setup (`queueUnattendedPrivateTurn`). */
+ unattended?:UnattendedTurn|null;
 }):Promise<string>{
  // The restore is one Host operation from this turn on, ordered after every archive intent already committed.
  const restore=input.restoreManagedWorkspace?{...input.restoreManagedWorkspace,...(input.restoreIdentity??await newDirectRestoreIdentity(db))}:null;
  const lightweight=isLocalCliRuntimeAdapter(input.backend.runtime_key)&&!input.projectId;
+ const unattended=input.unattended??null;
  const created=await new PgRunRepository(db,config).createQueuedRun({
-  execution_kind:'agent',agent_id:input.agentId,space_id:input.spaceId,user_id:input.userId,mode:'live',run_type:'agent',trigger_origin:'manual',
+  execution_kind:'agent',agent_id:input.agentId,space_id:input.spaceId,user_id:input.userId,mode:'live',run_type:'agent',trigger_origin:unattended?'automation':'manual',
   runtime_profile_id:input.backend.runtime_profile_id,runtime_profile_selection_source:'explicit',session_id:input.sessionId,
   project_folder_id:input.hostDispatch?.project_folder_id??null,workspace_location_id:input.hostDispatch?.host_thread.workspace_location_id??null,
   host_task_thread_id:input.hostDispatch?.host_thread.id??null,project_id:input.projectId??null,visibility:input.visibility,
   contract_snapshot:{
    ...(input.projectId&&input.hostDispatch?.host_thread.workspace_location_id?{execution_workspace_version:1 as const}:{}),
    source:{kind:'direct',id:input.sessionId},project_id:input.projectId??null,git_snapshot:input.hostDispatch?.git_snapshot??unavailableGitSnapshot(),
+   ...(unattended?{workflow_input_json:unattended.workflowInput,policy_context_json:unattended.policy,max_attempts:1,max_duration_seconds:unattended.maxDurationSeconds,risk_level:'low' as const}:{}),
   },
-  // The same allowance a Room message or a delegation gets in this Project.
-  ...conversationToolGrantInput({project_id:input.projectId??null,has_input_resources:input.hasInputResources}),
+  // The same allowance a Room message or a delegation gets in this Project; an unattended turn gets only its own tools.
+  ...(unattended?{capabilities_json:[...unattended.tools],scenario_tool_allowance:[...unattended.tools]}
+   :conversationToolGrantInput({project_id:input.projectId??null,has_input_resources:input.hasInputResources})),
   prompt:input.message,
+  ...(unattended?{instruction:unattended.instruction}:{}),
   model_override_json:{
    conversation_backend:{schema_version:'conversation_backend.v1',...publicConversationBackend(input.backend)},
    ...(lightweight?{execution_mode:'conversation_lightweight.v1'}:{}),
@@ -85,6 +92,63 @@ async function prepareChatRun(db:Queryable,config:ServerConfig,input:{
   },
  });
  return created.id;
+}
+
+/**
+ * What makes a server-started turn different from the person's own: its Run is
+ * `automation`-origin (ADR 0030's scheduled scenario), owner-only, carries only
+ * the listed tools and its product's frozen work input, and spends under the
+ * managed setup authorization the person gave when they set it up.
+ */
+export interface UnattendedTurn {
+ tools:readonly string[];
+ /** What the Agent is asked to do, apart from the message shown in the conversation. */
+ instruction:string;
+ workflowInput:Record<string,unknown>;
+ policy:Record<string,unknown>;
+ maxDurationSeconds:number;
+}
+
+/**
+ * A turn the server starts in the person's own private conversation of a
+ * Project, on a standing setup they confirmed there (a scheduled Gmail digest):
+ * the same admission as their own message — their Agent and its bound backend,
+ * the Project's Agent list, the conversation's own Host container, one turn at
+ * a time — with a server-composed message in their name and an owner-only Run.
+ * Joins the caller's transaction; refusals are `ChatTurnError` and the
+ * conversation's busy turn is `ConversationTurnInProgressError`.
+ */
+export async function queueUnattendedPrivateTurn(db:Queryable,config:ServerConfig,input:{
+ spaceId:string;userId:string;sessionId:string;agentId:string;message:string;messageMetadata:Record<string,unknown>;turn:UnattendedTurn;
+}):Promise<{run_id:string;user_message_id:string}>{
+ const queued=await queuePrivateProjectTurn(db,config,input);
+ return {run_id:queued.run_id,user_message_id:queued.user_message_id};
+}
+
+async function queuePrivateProjectTurn(db:Queryable,config:ServerConfig,input:{
+ spaceId:string;userId:string;sessionId:string;agentId:string;message:string;messageMetadata:Record<string,unknown>;turn:UnattendedTurn;
+}):Promise<{run_id:string;user_message_id:string;session_id:string}>{
+ const sessions=new PgSessionRepository(db as never),backends=new PgConversationBackendRepository(db as never);
+ await new PgConversationRuntimeSessionRepository(db as never).lockConversation(input.spaceId,input.sessionId);
+ const session=await sessions.getSession(input.spaceId,input.userId,input.sessionId);
+ if(!session||!session.project_id||session.room_id)throw new ChatTurnError(409,'This is no longer your private conversation of a Project');
+ const agent=await new PgAgentChatRepository(db).getAgentForChat(input.spaceId,input.userId,input.agentId);
+ if(!agent?.current_version_id)throw new ChatTurnError(409,'The Agent of this conversation is not available');
+ await assertProjectAdmission(db,{spaceId:input.spaceId,projectId:session.project_id,agentId:agent.id,sessionId:session.id});
+ const container=await directContainer(db,session,input.userId);
+ const backend=await backends.resolveBinding({space_id:input.spaceId,user_id:input.userId,session_id:session.id,agent_id:agent.id,requested:null});
+ const sessionConfig=await resolveSessionConfig(undefined,async()=>backends.sessionConfig(input.spaceId,session.id,agent.id),backend.session_config_options??[]);
+ const hostDispatch=backend.execution_host_id?await prepareHostConversationDispatch({db,backend,container,sessionId:session.id,spaceId:input.spaceId,projectId:session.project_id,agentId:agent.id,userId:input.userId}):null;
+ if(hostDispatch)await ensureDirectHostGitContext(db,{spaceId:input.spaceId,userId:input.userId,session:{id:session.id,space_id:session.space_id,project_id:session.project_id??null,room_id:session.room_id??null,project_folder_id:session.project_folder_id??null},backend,hostDispatch});
+ await new PgConversationRuntimeSessionRepository(db as never).claimTurn({space_id:input.spaceId,session_id:session.id,user_id:input.userId});
+ const userMessage=await sessions.addMessage(input.spaceId,input.userId,session.id,{role:'user',content:input.message,metadata:input.messageMetadata});
+ if(!userMessage)throw new ChatTurnError(409,'This is no longer your private conversation of a Project');
+ const runId=await prepareChatRun(db,config,{agentId:agent.id,agentVersionId:agent.current_version_id,spaceId:input.spaceId,userId:input.userId,sessionId:session.id,message:input.message,currentMessage:userMessage,
+  hasInputResources:false,projectId:session.project_id,visibility:'private',backend,sessionConfig,hostDispatch,restoreManagedWorkspace:null,unattended:input.turn});
+ if(!await sessions.attachRunToUserMessage({space_id:input.spaceId,user_id:input.userId,session_id:session.id,message_id:userMessage.id,run_id:runId}))throw new ChatTurnError(500,'The turn could not retain its Run recovery reference');
+ if(hostDispatch)await recordHostDispatch(new PgHostThreadRepository(db),hostDispatch.host_thread,{lastRunId:runId,sessionId:session.id,dispatchLockId:hostDispatch.dispatch_lock_id});
+ await enqueueTurn(db,{run_id:runId,space_id:input.spaceId,user_id:input.userId,agent_id:agent.id});
+ return {run_id:runId,user_message_id:userMessage.id,session_id:session.id};
 }
 
 function unavailableGitSnapshot():RunGitSnapshot{
@@ -126,14 +190,34 @@ async function lockPlacement(db:Queryable,a:OperationActor,projectId:string|null
 /**
  * The Host container of a direct conversation. Outside a Project it is the
  * person's own (Agent × person, shared by their direct chats with that Agent,
- * which is what restore and reset address). Placed in a Project it is the
+ * which is what restore addresses, and reset unless the chat has its own). Placed in a Project it is the
  * Session's own Conversation container: thread, managed cwd, runtime profile
  * and archive keys are never the person's general direct ones, so the same
  * Agent used directly in two Projects shares no host state with either the
- * other Project or the person's non-Project chats.
+ * other Project or the person's non-Project chats. A non-Project chat that
+ * may read sensitive data (ADR 0032: Gmail offered here, or an earlier Run of
+ * it pinned a sensitive tool) gets its Session's own container too, decided
+ * here before the Run and its context exist.
  */
-function directContainer(session:{id:string;project_id?:string|null},userId:string){
- return session.project_id?{kind:'conversation' as const,conversation_id:session.id,direct:true as const}:{kind:'direct' as const,user_id:userId};
+/**
+ * A Project direct turn's Run is shared with the Space as before, except in a
+ * private conversation that may read sensitive data (ADR 0033: Gmail offered
+ * there, or an earlier Run pinned a sensitive tool): that Run is the owner's
+ * alone, so the tool can be admitted and nothing it reads reaches another reader.
+ * A conversation that a withdrawn private Gmail check card created (its Runs
+ * carry `owner_only_conversation`) stays owner-only for every later turn.
+ */
+async function directTurnVisibility(db:Queryable,input:{spaceId:string;userId:string;sessionId:string;projectId:string|null}):Promise<'private'|'space_shared'>{
+ if(!input.projectId)return 'private';
+ if((await db.query(`SELECT 1 FROM runs WHERE session_id=$1 AND space_id=$2 AND owner_user_id=$3
+    AND model_override_json->>'owner_only_conversation'='true' LIMIT 1`,[input.sessionId,input.spaceId,input.userId])).rows.length)return 'private';
+ return await directChatMayReadSensitive(db,{spaceId:input.spaceId,userId:input.userId,sessionId:input.sessionId})?'private':'space_shared';
+}
+async function directContainer(db:Queryable,session:{id:string;space_id:string;project_id?:string|null},userId:string){
+ if(session.project_id)return {kind:'conversation' as const,conversation_id:session.id,direct:true as const};
+ if(await directChatMayReadSensitive(db,{spaceId:session.space_id,userId,sessionId:session.id}))
+  return {kind:'conversation' as const,conversation_id:session.id,direct:true as const,sensitive:true as const};
+ return {kind:'direct' as const,user_id:userId};
 }
 /**
  * Project admission of one Agent into one direct conversation. Its first turn
@@ -170,13 +254,16 @@ async function sendTurn(db:Queryable,config:ServerConfig,a:OperationActor,req:Se
  if(req.session_id)await assertProjectAdmission(db,{spaceId:a.space_id,projectId:session.project_id,agentId:agent.id,sessionId:session.id});
  // A Project conversation's container is its own Session, so there is no earlier one to bring back.
  if(req.restore_workspace&&session.project_id)throw new ChatTurnError(422,'A Project conversation has its own workspace; there is no earlier managed workspace to restore');
+ const container=await directContainer(db,session,p.userId);
+ // Neither is there for a conversation that may read private data: the shared one is never brought into it.
+ if(req.restore_workspace&&container.kind==='conversation')throw new ChatTurnError(422,'This conversation has its own workspace; there is no earlier managed workspace to restore');
  const backend=await backends.resolveBinding({space_id:a.space_id,user_id:p.userId,session_id:session.id,agent_id:agent.id,requested:req.backend??null});
  // A selection sent with this turn is strict; a saved or inherited one the runtime withdrew falls back with a notice.
  const sessionConfig=await resolveSessionConfig(req.session_config,async()=>backends.sessionConfig(a.space_id,session.id,agent.id),backend.session_config_options??[]);
  if(!req.session_id&&req.session_config)await backends.saveSessionConfig(a.space_id,session.id,agent.id,sessionConfig.selections);
  try{assertConversationInputCapabilities(req.input_parts,backend.prompt_capabilities);assertConversationInputResourceTools(req.input_parts,backend.runtime_key);}
  catch(error){capabilityRefusal(error,`Agent '${agent.name}' cannot accept this conversation input: `);}
- const hostDispatch=backend.execution_host_id?await prepareHostConversationDispatch({db,backend,container:directContainer(session,p.userId),sessionId:session.id,spaceId:a.space_id,projectId:req.project_id??null,agentId:agent.id,userId:p.userId}):null;
+ const hostDispatch=backend.execution_host_id?await prepareHostConversationDispatch({db,backend,container,sessionId:session.id,spaceId:a.space_id,projectId:req.project_id??null,agentId:agent.id,userId:p.userId}):null;
  if(hostDispatch)await ensureDirectHostGitContext(db,{spaceId:a.space_id,userId:p.userId,session:{id:session.id,space_id:session.space_id,project_id:session.project_id??null,room_id:session.room_id??null,project_folder_id:session.project_folder_id??null},backend,hostDispatch});
  await new PgConversationRuntimeSessionRepository(db as never).claimTurn({space_id:a.space_id,session_id:session.id,user_id:p.userId});
  const inputs=new ConversationInputService(db as never,config);
@@ -190,7 +277,7 @@ async function sendTurn(db:Queryable,config:ServerConfig,a:OperationActor,req:Se
  if(!userMessage)throw hidden();
  if(prepared)await inputs.attachMessageParts({spaceId:a.space_id,userId:p.userId,sessionId:session.id,messageId:userMessage.id,parts:prepared});
  const runId=await prepareChatRun(db,config,{agentId:agent.id,agentVersionId:agent.current_version_id,spaceId:a.space_id,userId:p.userId,sessionId:session.id,message:req.message,currentMessage:userMessage,
-  hasInputResources:prepared?.some(part=>part.kind==='input_resource')===true,projectId:req.project_id,visibility:req.project_id?'space_shared':'private',backend,sessionConfig,hostDispatch,
+  hasInputResources:prepared?.some(part=>part.kind==='input_resource')===true,projectId:req.project_id,visibility:await directTurnVisibility(db,{spaceId:a.space_id,userId:p.userId,sessionId:session.id,projectId:req.project_id??null}),backend,sessionConfig,hostDispatch,
   // Only a managed container had a cwd to archive, which is the same condition its archive used.
   restoreManagedWorkspace:req.restore_workspace&&hostDispatch?{include_workspace:hostDispatch.workspace.kind==='managed'}:null});
  if(!await sessions.attachRunToUserMessage({space_id:a.space_id,user_id:p.userId,session_id:session.id,message_id:userMessage.id,run_id:runId}))throw new ChatTurnError(500,'The chat turn could not retain its Run recovery reference');
@@ -224,7 +311,8 @@ async function retryTurn(db:Queryable,config:ServerConfig,a:OperationActor,req:R
   assertConversationInputResourceTools(message.input_parts??[],backend.runtime_key);
   await assertSelectedSkillBindings(db as never,{space_id:a.space_id,project_id:session.project_id??null,agent_id:agent.id,user_id:p.userId,session_id:session.id},message.input_parts??[]);
  }catch(error){capabilityRefusal(error,'Retry context needs review: ');}
- const hostDispatch=backend.execution_host_id?await prepareHostConversationDispatch({db,backend,container:directContainer(session,p.userId),sessionId:session.id,spaceId:a.space_id,projectId:session.project_id??null,agentId:agent.id,userId:p.userId}):null;
+ const container=await directContainer(db,session,p.userId);
+ const hostDispatch=backend.execution_host_id?await prepareHostConversationDispatch({db,backend,container,sessionId:session.id,spaceId:a.space_id,projectId:session.project_id??null,agentId:agent.id,userId:p.userId}):null;
  if((original.workspace_location_id??null)!==(hostDispatch?.host_thread.workspace_location_id??null)
   ||(original.host_task_thread_id??null)!==(hostDispatch?.host_thread.id??null)
   ||(original.project_folder_id??null)!==(hostDispatch?.project_folder_id??null))
@@ -234,7 +322,7 @@ async function retryTurn(db:Queryable,config:ServerConfig,a:OperationActor,req:R
  const runId=await prepareChatRun(db,config,{agentId:agent.id,agentVersionId:original.agent_version_id,spaceId:a.space_id,userId:p.userId,sessionId:session.id,message:message.content,currentMessage:message,
   hasInputResources:message.input_parts?.some(part=>part.kind==='input_resource')===true,projectId:session.project_id,visibility:'private',backend,sessionConfig,hostDispatch,retryOfRunId:original.id,
   // A failed turn that asked for its workspace back keeps asking, as the same Host operation.
-  restoreManagedWorkspace:restore&&hostDispatch&&!session.project_id?{include_workspace:restore.include_workspace===true}:null,restoreIdentity:directRestoreIdentity(restore)});
+  restoreManagedWorkspace:restore&&hostDispatch&&container.kind==='direct'?{include_workspace:restore.include_workspace===true}:null,restoreIdentity:directRestoreIdentity(restore)});
  if(!await sessions.appendRetryRunToUserMessage({space_id:a.space_id,user_id:p.userId,session_id:session.id,message_id:message.id,run_id:runId}))throw new ChatTurnError(500,'The retry could not retain its linked user message');
  if(hostDispatch)await recordHostDispatch(new PgHostThreadRepository(db),hostDispatch.host_thread,{lastRunId:runId,sessionId:session.id,dispatchLockId:hostDispatch.dispatch_lock_id});
  await enqueueTurn(db,{run_id:runId,space_id:a.space_id,user_id:p.userId,agent_id:agent.id});

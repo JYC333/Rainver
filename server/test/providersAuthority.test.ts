@@ -4,6 +4,7 @@
  * covered by integration and stack smoke checks.
  */
 
+import { randomUUID } from "node:crypto";
 import { describe, it, expect, afterEach } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { buildModuleServer } from "./support/moduleServer.js";
@@ -166,13 +167,10 @@ describe("providers read authority", () => {
       expect.arrayContaining(["cohere_embedding", "cohere_rerank", "minimax"]),
     );
 
-    // Unknown ids 404. Do not special-case a deleted name: that would be a
-    // compatibility alias.
-    for (const url of ["/api/v1/providers/catalog", "/api/v1/providers/litellm-providers"]) {
-      const retired = await app.inject({ method: "GET", url });
-      expect(retired.statusCode, url).toBe(404);
-      expect(retired.json(), url).toMatchObject({ detail: expect.stringContaining("not found") });
-    }
+    // An unknown id is a 404, not a fall-through to another route.
+    const unknown = await app.inject({ method: "GET", url: `/api/v1/providers/unknown-${randomUUID()}` });
+    expect(unknown.statusCode).toBe(404);
+    expect(unknown.json()).toMatchObject({ detail: expect.stringContaining("not found") });
   });
 
   it("answers 503 when the DB read fails, without leaking the error", async () => {

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 import SourcesAreaPage from '../SourcesAreaPage'
@@ -6,6 +6,7 @@ vi.mock('../../../core/spaceNav',async()=>({SpaceLink:(await import('react-route
 vi.mock('../reading/ProjectReadingPage',()=>({default:()=> <div>Project Reading views</div>}))
 vi.mock('../sourcesArea/MonitoringPanel',()=>({default:()=> <div>All candidates</div>}))
 vi.mock('../ProjectSourcesPage',()=>({default:({view}:{view:string})=><div>{view==='materials'?'Project material':'Linked source manager'}</div>}))
+vi.mock('../sourcesArea/gmail/ProjectGmailThreads',()=>({ProjectGmailThreads:({projectId}:{projectId:string})=><div>Private Gmail threads for {projectId}</div>}))
 vi.mock('../ProjectRawMaterialPage',()=>({default:()=> <div>Approval queue</div>}))
 function Location(){const l=useLocation();return <output>{l.pathname+l.search}</output>}
 function page(search='') {render(<MemoryRouter initialEntries={['/projects/project-1/sources'+search]}><Routes><Route path="/projects/:projectId/sources" element={<><SourcesAreaPage/><Location/></>}/><Route path="/projects/:projectId" element={<Location/>}/></Routes></MemoryRouter>)}
@@ -20,6 +21,13 @@ describe('Project reading entry',()=>{
     page('?tab=materials&keep=choice')
     expect(screen.getByText('Project Reading views')).toBeInTheDocument()
     expect(screen.queryByText('Project material')).not.toBeInTheDocument()
+  })
+  it('places the private Gmail threads beside the linked source manager, not in the reading feed',()=>{
+    page('?tab=settings')
+    expect(screen.getByText('Linked source manager')).toBeInTheDocument()
+    expect(screen.getByText('Private Gmail threads for project-1')).toBeInTheDocument()
+    cleanup();page()
+    expect(screen.queryByText(/Private Gmail threads/)).not.toBeInTheDocument()
   })
   it.each([['sources','Linked source manager'],['raw','All candidates'],['digest','Project Reading views']])('preserves the existing %s destination', (tab,text)=>{
     page('?tab='+tab)

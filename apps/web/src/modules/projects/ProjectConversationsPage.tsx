@@ -24,7 +24,7 @@ import { ConversationStatusIndicator } from '../conversation/ConversationUnreadD
  * imported CLI history beside it.
  *
  * Reached from the Rooms index ("All conversations"), not from the Project
- * navigation: Rooms are the explicit entry (ADR 0018, as amended). The
+ * navigation: Rooms are the explicit entry (ADR 0018 decision 2). The
  * default Room's conversations lead with no heading; a conversation of a
  * limited Room appears in a section titled by *who can see it*, whose ⚙
  * opens that Room's members. Rooms the viewer is not in are absent.

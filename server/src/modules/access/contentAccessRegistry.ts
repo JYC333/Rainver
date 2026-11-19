@@ -12,6 +12,8 @@ export interface ContentResourceDefinition {
   contextTaintColumn?: string;
   projectShare?: ContentProjectShareDeclaration;
   activePredicate?: (alias: string) => string;
+  /** Rows only their owner may read; see the entity declaration. */
+  ownerOnlyPredicate?: (alias: string) => string;
   publishable: boolean;
 }
 
@@ -39,6 +41,7 @@ function definitions(): readonly ContentResourceDefinition[] {
         ...(declaration.contextTaintColumn ? { contextTaintColumn: declaration.contextTaintColumn } : {}),
         ...(declaration.projectShare ? { projectShare: declaration.projectShare } : {}),
         ...(declaration.activePredicate ? { activePredicate: declaration.activePredicate } : {}),
+        ...(declaration.ownerOnlyPredicate ? { ownerOnlyPredicate: declaration.ownerOnlyPredicate } : {}),
         publishable: declaration.publishable,
       };
     });

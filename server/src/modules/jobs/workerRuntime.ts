@@ -20,6 +20,7 @@ import {registerRunProposalPublication} from '../runs/proposalPublicationJob.js'
 import {registerProjectReadingJobs} from '../informationDigest/index.js';
 import {registerRevisionProviderRuns,registerReadingProviderReconciliation} from "../prompts/index.js";
 import {registerSourceGoalJob} from '../sources/goals/worker.js';
+import {registerGmailMailboxSyncJob} from '../sources/gmail/gmailSyncJob.js';
 import { registerMonitoringJob } from "../projects/monitoring/worker.js";
 import { randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
@@ -35,6 +36,7 @@ import { registerProviderTaskRunHandler } from "../runs/providerTaskRunHandler.j
 import { settleAbandonedQuestionRefineTurns } from "../projectResearch/questionRefineService.js";
 import { getDbPool } from "../../db/pool.js";
 import { registerPublicSummaryDraftRuns } from "../projects/publicSummaryDraftOperation.js";
+import { registerPluginNoteDraftRuns } from "../plugins/noteDraftPort.js";
 import { registerImportedHistoryExtractionJob } from "../importedSessions/extractionOperation.js";
 import { registerProjectSummaryBriefJob } from "../projects/summaryBriefOperation.js";
 import { registerSourceRetrievalJob } from "../sources/retrievalOperations.js";
@@ -127,6 +129,7 @@ export function buildJobHandlerRegistry(
 ): JobHandlerRegistry {
   const registry = new JobHandlerRegistry();
   registerSourceGoalJob(registry,config);
+  registerGmailMailboxSyncJob(registry,config);
   registerProjectReadingJobs(registry,config);
   registerDigestBackfillJobs(registry,config);
   registerActivitySummaryJob(registry,config);
@@ -137,6 +140,7 @@ export function buildJobHandlerRegistry(
   registerRevisionProviderRuns();
   registerProviderTaskRunHandler(registry, config);
   registerPublicSummaryDraftRuns(config);
+  registerPluginNoteDraftRuns();
   registerImportedHistoryExtractionJob(registry, config);
   registerProjectSummaryBriefJob(registry, config);
   registerSourceRetrievalJob(registry, config);

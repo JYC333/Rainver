@@ -1,6 +1,62 @@
 # Plan 3 — PhD Application Plugin (Pilot)
 
-Status: not started. Depends on [plan 2](02-plugin-operation-platform.md).
+Status: implemented and privately saved, not deployed: stage 1 (Project-level
+plugin contract, persistent Project binding and operation-core integration),
+stage 2 (the bundled application management package), stage 3 (materials in
+Notes: links, reviewed versions, source pins, draft generation and the Area's
+material view) and the four-area revision — one *Applications* entry in the
+Project with program applications grouped by institution, scholarships and
+funding (the `funding` track, migration `0003_funding_library_contact_links.sql`,
+submission history in `0004`/`0005`), the material library (`web/src/libraryTab.tsx`)
+and supervisors and contacts (`web/src/contactsTab.tsx`).
+A separate new-product pilot, not unfinished core entry infrastructure or
+legacy migration. Depends on P2 and the typed host ports/permission gates of
+[ADR 0030](../../decisions/0030-plugin-agent-data-access.md). Current behaviour lives in
+[Project binding](../../architecture/OFFICIAL_OPTIONAL_MODULES.md#project-binding)
+and [Application management package](../../architecture/OFFICIAL_OPTIONAL_MODULES.md#application-management-package);
+this plan keeps only the remaining work.
+
+Direction agreed 2026-11-18: one Project-level *application management*
+package with PhD application as its first track and scholarship/funding as its
+second; a job track would reuse the same records and operations as another
+configuration entry. Application records belong to the Project they are
+bound to; reusable CV, experience and statement text stay in Notes and other
+core objects and are referenced, so unbinding or disabling the package never
+removes them.
+
+## Stages
+
+| Stage | Scope | Status |
+| --- | --- | --- |
+| 1. Project-level platform | Manifest `project_binding`, binding table and person-only bind/unbind/list operations, host Project gate on every entry (Agent Run Project, Project ACL, replay, proposal apply, release), core-port confinement, binding-aware Project entries and settings card, unbind/disable retention | Implemented |
+| 2. Application domain package | `plugins/official/applications/` (PhD first track): records, multiple deadlines, checklist, progress/results, approved decisions, contacts and contact events, opportunity source; Project Area and overview card; Tasks and references through core ports; real-PG and Chromium acceptance | Implemented |
+| 3. Materials and Notes | Text materials in Notes linked to application requirements; reviewed generation | Implemented: Notes links, revision reads, reviewed versions, source pins through the `notes.read` port, [generated drafts](../../architecture/OFFICIAL_OPTIONAL_MODULES.md#generated-drafts) (private Run over pinned versions, preview, save through the Note writer with `expect_version`, `notes.draft` port) and the Area's material view |
+| Four-area revision | One *Applications* entry with four tabs: program applications grouped by institution, scholarships and funding (`funding` track with `submission: separate\|automatic` and funding links), material library over Notes, supervisors and contacts linked to applications; submission history guard | Implemented |
+
+Stage 2 resolved: package `applications` ("Application management", PhD as
+first track); application/deadline/material operations `non_sensitive` (ADR 0030
+mapping), contacts and contact events `personal`; deadlines become core Tasks
+only on request and the Board stays the progress truth; records are per person
+inside the Project; organization records and outreach sending stay out.
+
+Remaining (each needs its own authorization):
+
+- Follow-ups (not scheduled): a Note picker instead of ids when adding to the
+  material library (`libraryTab.tsx` takes a typed `note_id`). The earlier
+  new-Note placement exception was removed: a new Note follows the creation rule
+  (only in a Personal Space), and a shared Space saves only into a linked Note no
+  one else, oversight included, reads — see
+  [Generated drafts](../../architecture/OFFICIAL_OPTIONAL_MODULES.md#generated-drafts).
+- Deferred by direction: templates, PDF/Word export, any send or submit,
+  automatic opportunity intake from discovery.
+- Open product decisions: a proposal-class contact-event operation so an
+  authorized Agent can log outreach (personal writes are proposal-only);
+  Relations people/organizations (Relations person creation is user-only,
+  organizations have no port); a timeline/calendar view; sharing records
+  between Project members (needs a canonical B11 adapter); default landing
+  Area, Project-scoped Jobs/holds and cross-Project views only on demonstrated need.
+- Deployment of the package uses the stopped-writer maintenance path
+  (`maintenance-pending` reports it); not authorized here.
 
 ## Goal
 
@@ -11,8 +67,8 @@ Rainver's core objects, which later Projects (starting a PhD, research) reuse.
 
 ## Product shape
 
-The plugin mounts a **PhD application Area** inside an ordinary Project and sets
-it as that Project's default landing. It is not a Project type: generic Areas
+The plugin mounts a **PhD application Area** inside an ordinary Project it is
+bound to (stage 1 binding), optionally later as that Project's default landing. It is not a Project type: generic Areas
 remain reachable, collapsed.
 
 | View | Content |
@@ -32,38 +88,32 @@ remain reachable, collapsed.
 | | CV, SoP, outreach email versions (Artifacts) | Reused for papers and job search |
 | | Deadlines and to-dos (Tasks) | Generic capability |
 | | Agent conversation (Project Room) | Generic capability |
-| Plugin schema `plugin_phd_apply` | Application record (university × program × supervisor, deadline, status pipeline, requirement checklist, result) | Domain-specific structure |
+| Plugin schema `plugin_applications` | Application record (university × program × supervisor, deadline, status pipeline, requirement checklist, result) | Domain-specific structure |
 | | Opportunity reference (pointer to an external opportunity) | Domain-specific |
 
 Check: with the plugin disabled, supervisors, documents, background and tasks are
 all still present and useful.
 
-## Operations (first cut)
+## Operations
 
-| Operation | Side effects | Note |
-|---|---|---|
-| `plugin.phd_apply.application.list` / `.get` | none | |
-| `plugin.phd_apply.application.create` | durable | Reversible |
-| `plugin.phd_apply.application.update_checklist` | durable | |
-| `plugin.phd_apply.application.update_status` to submitted / offer accepted | proposal | Consequential status change |
-| `plugin.phd_apply.outreach.log` | durable | |
-| `plugin.phd_apply.outreach.send_email` | proposal | External send always approved by a person |
-
-All data is `data_class: normal`. The UI uses only `/api/v1/actions` and
-`/api/v1/queries`; the plugin registers no data routes.
+Implemented operations, classes and refusals are in the
+[owner guide](../../architecture/OFFICIAL_OPTIONAL_MODULES.md#application-management-package).
+Still open from the first cut: an outreach send (`send_email`, always a
+person-approved proposal) only once a governed send capability exists.
 
 ## Work items
 
-- [ ] Manifest, migrations in `plugin_phd_apply`, operations above.
-- [ ] Core-object references through host ports (Relations, Artifacts, Tasks).
-- [ ] Area slot views: overview, timeline, outreach, materials, inbox (empty until discovery).
+- [x] Project binding platform (stage 1): bindings, host gate, entries, settings.
+- [x] Manifest with `project_binding: 'required'`, migrations in `plugin_applications` keyed by Space, person and Project, operations as documented in the owner guide.
+- [x] Core-object references through host ports (Tasks, Artifacts/Tasks references). Relations not used.
+- [x] Area and overview views (applications with deadlines, checklist, progress, decisions, contacts). Timeline view and opportunity inbox remain open.
 - [ ] Optional bundled Skill describing the PhD application method; procedural
-  content only, grants nothing.
-- [ ] Acceptance: the same create/update performed from the UI and by an Agent in
+  content only, grants nothing (not started).
+- [x] Acceptance: the same create performed from the UI and by an Agent in
   the Project Room produces identical records, one policy decision each, and the
   same audit; disabling the plugin fails every entry closed; core objects survive disable.
-- [ ] Visual acceptance of the Area in its parent Project surface per
-  [UI_STYLE_GUIDE](../../architecture/UI_STYLE_GUIDE.md).
+- [x] Visual acceptance of the Area in its parent Project surface per
+  [UI_STYLE_GUIDE](../../architecture/UI_STYLE_GUIDE.md) (pending reviewer inspection).
 
 ## Out of scope
 

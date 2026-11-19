@@ -57,27 +57,30 @@ async function reconcileAuthorizationRequest(
   }
   const db = getDbPool(config.databaseUrl);
   const request = await db.query<{
-    status: "approved" | "rejected";
+    status: "approved" | "rejected" | "expired";
     agent_id: string;
     instructed_by_user_id: string;
-    decided_by_user_id: string;
+    decided_by_user_id: string | null;
   }>(
     `SELECT status, agent_id, instructed_by_user_id, decided_by_user_id
        FROM authorization_requests
       WHERE id = $1 AND run_id = $2 AND space_id = $3
-        AND status IN ('approved', 'rejected')
+        AND status IN ('approved', 'rejected', 'expired')
       LIMIT 1`,
     [requestId, runId, job.space_id],
   );
   const decided = request.rows[0];
   if (!decided) throw new Error("Decided authorization request not found");
 
-  if (decided.status === "rejected") {
+  // An ended request (ADR 0033: what it would allow went away) stops its Run like a rejection; nobody decided it.
+  if (decided.status === "rejected" || decided.status === "expired") {
     const result = await orchestration.cancelRun({
       run_id: runId,
       space_id: job.space_id,
       requested_by_user_id: decided.decided_by_user_id,
-      reason: "Agent authorization request was rejected.",
+      reason: decided.status === "expired"
+        ? "Agent authorization request ended: what it would allow is no longer available."
+        : "Agent authorization request was rejected.",
     });
     if (result.error_code === "finalization_failed") {
       throw new Error(

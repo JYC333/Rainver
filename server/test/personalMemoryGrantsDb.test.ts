@@ -9,6 +9,7 @@ import { seedAgentWithVersion, seedSpaceOwnerProject } from "./support/domainSee
 import { resetTables } from "./support/resetTables.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { waitForLockWaiter } from "./support/lockWait.js";
+import { PgRuntimeContextAcquisitionRepository, type RunContextRecord } from "../src/modules/runtimeContext/acquisitionRepository.js";
 
 // Real-Postgres coverage for personal memory grants: a grant whose read
 // window has closed is expired, not active; a Run gets a new grant once the
@@ -83,6 +84,16 @@ describe("personal memory grants (real Postgres)", () => {
     const again = await app.inject({ method: "POST", headers:{"idempotency-key":randomUUID()}, url: "/api/v1/personal-memory-grants", payload: createBody });
     expect(again.statusCode).toBe(201);
     expect(again.json().data).toMatchObject({ status: "active", target_run_id: RUN });
+  });
+
+  it("redelivers a used grant to the same Run's later attempts only inside its read window", async () => {
+    if (!db.available) return;
+    const run = { id: RUN, space_id: TEAM, instructed_by_user_id: OWNER } as RunContextRecord;
+    const acquisition = new PgRuntimeContextAcquisitionRepository(db.pool);
+    const used = await insertGrant("used", new Date(Date.now() + 3_600_000).toISOString());
+    expect((await acquisition.loadPersonalGrantForRun(run))?.metadata).toMatchObject({ grant_id: used, grant_status: "used" });
+    await db.pool.query(`UPDATE personal_memory_grants SET read_expires_at = now() - interval '1 minute' WHERE id = $1`, [used]);
+    expect(await acquisition.loadPersonalGrantForRun(run)).toBeNull();
   });
 
   it("answers a second grant for a Run that already has an active one as a conflict", async () => {

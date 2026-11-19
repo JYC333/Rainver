@@ -318,7 +318,7 @@ export async function runRetrievalToolCall(
       objectTypes: params.objectTypes ?? (spec.domain === "knowledge" ? undefined : [...spec.objectTypes]),
     };
     if (call.name === spec.searchTool) {
-      const response = await service.toolSearch(actor, searchParams);
+      const response = await service.toolSearch(actor, searchParams, spec.searchTool);
       return {
         modelResult: modelResultForSearch(call.name, response),
         summary: {
@@ -332,7 +332,7 @@ export async function runRetrievalToolCall(
       };
     }
     if (call.name === spec.briefTool) {
-      const response = await service.toolBrief(actor, searchParams);
+      const response = await service.toolBrief(actor, searchParams, spec.briefTool);
       const artifact = buildRetrievalBriefArtifactSpec({
         spaceId: run.space_id,
         ownerUserId: actor.instructedByUserId,

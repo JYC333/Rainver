@@ -221,7 +221,16 @@ progress, completion), rather than 1,002; this is synthetic evidence, not a
 production throughput benchmark.
 
 Terminal subscription refusals also use spec-declared text, including Claude's
-`session limit` wording. Valid structured reset instants take priority.
+`session limit` wording. Antigravity can complete a prompt and exit zero with
+its quota refusal as the entire reply. The adapter recognizes the known
+warning template after one completed, text-only prompt, with no earlier
+assistant message, tool work or reported generated tokens. The attempt
+preserves the zero exit code and records the notice as quota failure evidence.
+The reported reset countdown
+uses the same validated time bounds as other runtimes. The refusal stays
+with its Run even when the Antigravity quota probe is unavailable, so it
+cannot create an account-wide hold on its own. Valid structured reset
+instants take priority.
 `runtimeAdapters/quotaReset.ts` reads spec-declared epochs, explicit delays,
 and local reset clocks. Codex's unzoned `try again at 7:10 PM` requires the
 executing Host's optional completion `time_zone`; an explicit vendor timezone

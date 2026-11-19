@@ -1,13 +1,15 @@
 import { execFile, spawn } from "node:child_process";
-import { access, realpath } from "node:fs/promises";
+import { access, realpath, lstat, mkdtemp, rename, rm, chmod } from "node:fs/promises";
 import { constants } from "node:fs";
 import { delimiter, dirname, join, relative, resolve, sep } from "node:path";
 import { homedir } from "node:os";
 import { promisify } from "node:util";
-import { isOwnCliUpdateRuntimeKey, OWN_CLI_UPDATE_PACKAGES, type OwnCliUpdateRuntimeKey } from "@rainver/protocol";
+import { hasStableUpdate, isOwnCliUpdateRuntimeKey, OWN_CLI_UPDATE_PACKAGES, type OwnCliUpdateRuntimeKey, type HostServerFrameOf } from "@rainver/protocol";
 import { helperProcessEnv } from "./providerBinding.js";
 import { probeVersion } from "./capabilities.js";
 import { updateOwnNpmTool } from "./ownNpmToolUpdate.js";
+
+import { materializeRuntimeDistribution, platformKey } from "./tools.js";
 
 const exec = promisify(execFile);
 /** The binary each updatable CLI is found as; which runtimes qualify is the protocol's list. */
@@ -125,4 +127,52 @@ export async function updateOwnTool(runtimeKey: string, env: NodeJS.ProcessEnv =
   const to = versionOf(reported);
   if (!to) throw new Error("The updater finished, but the CLI is unavailable or failed its version check");
   return { from_version: from, to_version: to };
+}
+
+type AntigravityRelease = NonNullable<HostServerFrameOf<"update_own_tool">["release"]>;
+
+/** Replace a Google-installer copy in place after the pinned binary passes a version probe. */
+export async function updateOwnAntigravity(
+  release: AntigravityRelease,
+  env: NodeJS.ProcessEnv = process.env,
+  materialize = materializeRuntimeDistribution,
+): Promise<OwnToolUpdateOutcome> {
+  if (process.platform !== "linux" && process.platform !== "darwin") throw new Error("Own Antigravity updates require Linux or macOS");
+  const executable = await onPath("agy", env);
+  const officialPath = join(env.HOME ?? homedir(), ".local/bin/agy");
+  const original = await lstat(executable);
+  if (executable !== officialPath || !original.isFile() || await realpath(executable) !== executable || original.uid !== process.getuid?.()) {
+    throw new Error("Update this Antigravity copy through its original installation method");
+  }
+  const target = release.distribution.kind === "binary" ? release.distribution.platforms[platformKey()] : undefined;
+  const archive = target && new URL(target.archive);
+  if (!target || !archive || archive.origin !== "https://storage.googleapis.com" ||
+      !archive.pathname.startsWith(`/antigravity-public/antigravity-cli/${release.version}-`) ||
+      archive.username || archive.password || archive.search || archive.hash ||
+      !/^[a-f0-9]{128}$/i.test(target.sha512 ?? "") || target.cmd !== "./antigravity") {
+    throw new Error("No verified Antigravity release for this Host");
+  }
+  const probeEnv = { ...helperProcessEnv(env), AGY_CLI_DISABLE_AUTO_UPDATE: "true" };
+  const from = versionOf(await probeVersion(executable, 4000, { env: probeEnv }));
+  if (!from || !/^\d+\.\d+\.\d+$/.test(from)) throw new Error("The installed Antigravity version could not be verified");
+  if (!hasStableUpdate(from, release.version)) return { from_version: from, to_version: from };
+
+  const staging = await mkdtemp(join(dirname(executable), ".agy-update-"));
+  try {
+    const { command } = await materialize(release.distribution, staging, () => {});
+    if (command !== join(staging, "antigravity") || !(await lstat(command)).isFile() || await realpath(command) !== command) {
+      throw new Error("Invalid Antigravity release executable");
+    }
+    if (versionOf(await probeVersion(command, 4000, { env: probeEnv })) !== release.version) {
+      throw new Error("Antigravity release did not report the expected version");
+    }
+    await chmod(command, original.mode & 0o777);
+    const current = await lstat(executable);
+    if (current.dev !== original.dev || current.ino !== original.ino || current.ctimeMs !== original.ctimeMs ||
+        await realpath(executable) !== executable) throw new Error("The own Antigravity installation changed during the update");
+    await rename(command, executable);
+    return { from_version: from, to_version: release.version };
+  } finally {
+    await rm(staging, { recursive: true, force: true });
+  }
 }

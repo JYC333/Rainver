@@ -44,3 +44,11 @@ export async function withTransaction<T>(
     client.release(unsafeTransactions.has(client));
   }
 }
+
+/** Runs one unit of work in a transaction; a caller-owned bounded alternative to `withTransaction(pool, …)`. */
+export type TransactionRunner = <T>(fn: (client: PoolClient) => Promise<T>) => Promise<T>;
+
+/** `withTransaction` over a pool, or the caller's own runner (e.g. one with a request deadline). */
+export function runTransaction<T>(db: Pool | TransactionRunner, fn: (client: PoolClient) => Promise<T>): Promise<T> {
+  return typeof db === "function" ? db(fn) : withTransaction(db, fn);
+}

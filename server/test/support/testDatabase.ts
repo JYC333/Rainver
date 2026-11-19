@@ -33,7 +33,7 @@ export interface TestDatabase {
  */
 export function useTestDatabase(
   fileUrl: string,
-  options: { max?: number; empty?: boolean } = {},
+  options: { max?: number; empty?: boolean; searchPath?: string } = {},
 ): TestDatabase {
   let container: TestPostgresDatabase | undefined;
   let pool: Pool | undefined;
@@ -42,7 +42,11 @@ export function useTestDatabase(
   beforeAll(async () => {
     try {
       container = await getTestPostgres(fileUrl, { empty: options.empty });
-      pool = new Pool({ connectionString: container.getConnectionUri(), max: options.max ?? 3 });
+      pool = new Pool({
+        connectionString: container.getConnectionUri(),
+        max: options.max ?? 3,
+        options: options.searchPath ? `-c search_path=${options.searchPath}` : undefined,
+      });
       // `pool.end()` sends each idle client a graceful Terminate; `stop()`
       // then kills the backends. A client whose Terminate is still in flight
       // sees FATAL 57P01 from that kill and emits it as an error, which

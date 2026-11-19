@@ -102,8 +102,12 @@ export class RoomReferenceService {
         : await resolveThreadReference(client, identity, pick, room.project_id, budget));
     }
     // Content whose audience may never grow is refused, not confirmed, when the target reaches further.
+    // Another person's private data (their Gmail, carried by a conversation pick) is refused the same way.
     const fixed = resolved.filter((reference) => reference.disclosable === false);
     if ((await disclosureGainedBy(client, identity.spaceId, room, identity.userId, fixed)).length > 0) {
+      if (fixed.some((reference) => reference.nonDisclosableCode === "reference_sensitive_scope_mismatch")) {
+        throw new RoomMutationError(409, "This conversation holds another person's private data, which can only be copied where its own audience already reads it", { code: "reference_sensitive_scope_mismatch" });
+      }
       throw new RoomMutationError(409, "This content can only be discussed where its own audience already reads it", { code: "briefing_reference_scope_mismatch" });
     }
     // One check over the whole batch: attaching three references where two
@@ -149,6 +153,6 @@ export class RoomReferenceService {
       // as this person. Answering 201 with nothing attached would be a lie.
       if (!written) throw new HttpError(404, "Conversation not found in this Room");
     }
-    return base + resolved.length;
+    return resolved.length;
   }
 }

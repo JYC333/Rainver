@@ -1,6 +1,6 @@
 export { RetrievalProjectionService, objectRefKey } from "./projectionService.js";
 export { RetrievalSearchService } from "./searchService.js";
-export type { RetrievalSearchServiceOptions } from "./searchService.js";
+export type { RetrievalCandidateScope, RetrievalSearchServiceOptions } from "./searchService.js";
 export {
   RetrievalFeedbackService,
   DEFAULT_RETRIEVAL_FEEDBACK,

@@ -69,8 +69,15 @@ describe("ACP agent delegation tools", () => {
       properties: { budget: { properties: { collaboration: { properties: { participant_agent_ids: Record<string, unknown> } } } } };
     };
     expect(schema.properties.budget.properties.collaboration.properties.participant_agent_ids).not.toHaveProperty("maxItems");
-    const bounds = { task_id: "implementation-task", participant_agent_ids: targets.map((target) => target.agent_id), max_delegations: 20 };
+    const bounds = { task_id: "implementation-task", participant_agent_ids: targets.map((target) => target.agent_id) };
     expect(CollaborationBudgetSchema.parse(bounds)).toEqual(bounds);
+    // A mode, a cap or a reminder request is not a declaration: it is refused, never converted.
+    for (const legacy of [{ max_delegations: 20 }, { mode: "reminder" }, { mode: "finite", max_delegations: 5 }, { reminder_requested: true }]) {
+      expect(CollaborationBudgetSchema.safeParse({ ...bounds, ...legacy }).success).toBe(false);
+    }
+    const collaborationSchema = schema.properties.budget.properties.collaboration as { properties: Record<string, unknown>; additionalProperties?: unknown };
+    expect(Object.keys(collaborationSchema.properties).sort()).toEqual(["participant_agent_ids", "task_id"]);
+    expect(collaborationSchema.additionalProperties).toBe(false);
     expect(CollaborationBudgetSchema.safeParse({ ...bounds, participant_agent_ids: [] }).success).toBe(false);
     expect(CollaborationBudgetSchema.safeParse({ ...bounds, participant_agent_ids: ["implementer", "implementer"] }).success).toBe(false);
   });

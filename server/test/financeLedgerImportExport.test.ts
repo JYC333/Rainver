@@ -1,18 +1,11 @@
 import { describe, expect, it, beforeAll, beforeEach } from "vitest";
 import { resetTables } from "./support/resetTables.js";
-import { loadFinanceLedgerRuntime, type ImportEntryForTest, type ImportResultForTest } from "./financeLedgerRuntime.js";
+import { installFinanceLedgerTestSchema, loadFinanceLedgerRuntime, type ImportEntryForTest, type ImportResultForTest } from "./financeLedgerRuntime.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 
 const {
-  plugin: { financeLedgerPlugin },
   service: { financeLedgerService },
   engine: { financeLedgerEngine },
-  proposalAppliers: {
-    PROPOSAL_TYPE_POST_DIRECTIVE,
-    PROPOSAL_TYPE_POST_IMPORT_BATCH,
-    applyPostDirective,
-    applyPostImportBatch,
-  },
 } = loadFinanceLedgerRuntime();
 
 
@@ -58,13 +51,11 @@ poptag #import2026
 /** The fixture's dated directives an import lands once the book has its accounts and commodities. */
 const FIXTURE_IMPORTABLE_DIRECTIVES = 10;
 
-const db = useTestDatabase(import.meta.filename, { max: 10, empty: true });
+const db = useTestDatabase(import.meta.filename, { max: 10, empty: true, searchPath: "plugin_finance_ledger" });
 
 beforeAll(async () => {
   if (!db.available) return;
-  for (const migration of financeLedgerPlugin.migrations!) {
-  await db.pool.query(migration.sql);
-  }
+  await installFinanceLedgerTestSchema(db.pool);
 });
 
 beforeEach(async () => {
@@ -580,22 +571,12 @@ describe("finance ledger Beancount export", () => {
   });
 });
 
-describe("finance ledger proposal appliers", () => {
-  function proposalCtx(proposalType: string, spaceId: string | null, payload: Record<string, unknown>) {
-    return {
-      proposal: {
-        id: "proposal-1",
-        proposal_type: proposalType,
-        space_id: spaceId,
-        user_id: USER_1,
-        payload,
-      },
-      db: db.pool,
-      config: null,
-    };
-  }
-
-  it("posts a valid directive through finance_ledger.post_directive", async () => {
+/**
+ * The posting steps the package's two posting Proposals apply (Plan 7). The
+ * Proposal flow itself is covered end to end in financeLedgerPluginDb.test.ts.
+ */
+describe("finance ledger posting steps", () => {
+  it("posts a valid imported directive", async () => {
     const book = await createBook();
     await addCommodities(book.id, ["USD"]);
     await openAccounts(book.id, ["Assets:Cash", "Expenses:Misc"]);
@@ -608,12 +589,7 @@ describe("finance ledger proposal appliers", () => {
       directiveType: "transaction",
     });
 
-    await applyPostDirective(
-      proposalCtx(PROPOSAL_TYPE_POST_DIRECTIVE, SPACE_A, {
-        book_id: book.id,
-        directive_id: transactions[0]!["id"],
-      }),
-    );
+    await financeLedgerService.postDirective(db.pool, SPACE_A, book.id, transactions[0]!["id"] as string);
 
     const posted = await financeLedgerService.listDirectives(db.pool, SPACE_A, book.id, {
       directiveType: "transaction",
@@ -647,14 +623,7 @@ describe("finance ledger proposal appliers", () => {
       ],
     });
 
-    await expect(
-      applyPostDirective(
-        proposalCtx(PROPOSAL_TYPE_POST_DIRECTIVE, SPACE_A, {
-          book_id: book.id,
-          directive_id: draft.id,
-        }),
-      ),
-    ).rejects.toThrow("does not balance");
+    await expect(financeLedgerService.postDirective(db.pool, SPACE_A, book.id, draft.id)).rejects.toThrow("does not balance");
 
     const stillDraft = await financeLedgerService.listDirectives(db.pool, SPACE_A, book.id, {
       status: "draft",
@@ -667,14 +636,7 @@ describe("finance ledger proposal appliers", () => {
     const imported = await importText(book.id, '2026-01-06 event "location" "Berlin"\n');
     expect(imported.summary.imported).toBe(1);
 
-    await expect(
-      applyPostImportBatch(
-        proposalCtx(PROPOSAL_TYPE_POST_IMPORT_BATCH, SPACE_B, {
-          book_id: book.id,
-          import_source_id: imported.importSource.id,
-        }),
-      ),
-    ).resolves.toBeUndefined();
+    await expect(financeLedgerService.postImportBatch(db.pool, SPACE_B, book.id, imported.importSource.id)).resolves.toEqual({ posted: 0 });
 
     // The batch resolves but posts nothing because the book is scoped to space A.
     const posted = await financeLedgerService.listDirectives(db.pool, SPACE_A, book.id, {
@@ -683,16 +645,11 @@ describe("finance ledger proposal appliers", () => {
     expect(posted).toHaveLength(0);
   });
 
-  it("posts a full import batch through finance_ledger.post_import_batch", async () => {
+  it("posts a full import batch at once", async () => {
     const book = await createFixtureBook();
     const imported = await importText(book.id, FULL_FIXTURE);
 
-    await applyPostImportBatch(
-      proposalCtx(PROPOSAL_TYPE_POST_IMPORT_BATCH, SPACE_A, {
-        book_id: book.id,
-        import_source_id: imported.importSource.id,
-      }),
-    );
+    await financeLedgerService.postImportBatch(db.pool, SPACE_A, book.id, imported.importSource.id);
 
     const pending = await financeLedgerService.listDirectives(db.pool, SPACE_A, book.id, {
       status: "proposed",

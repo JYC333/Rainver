@@ -18,6 +18,7 @@ import type {
   RunStepInput,
   RunStepRecord,
   RunTerminalUpdate,
+  RunExecutionClaim,
 } from "../src/modules/runs/repository.js";
 import type { ExecutionControlSnapshot, InvocationDelivery } from "@rainver/protocol";
 import type { PreparedRunSandbox, RunSandboxManagerPort } from "../src/modules/projectFolders/index.js";
@@ -203,6 +204,18 @@ class FakeRepo implements RunExecutionRepositoryPort {
     const running = this.run;
     await this.runningHook?.();
     return running;
+  }
+
+  async claimRunExecution(input: {
+    run_id: string;
+    space_id: string;
+    started_at: string;
+    required_sandbox_level?: string | null;
+  }): Promise<RunExecutionClaim> {
+    const running = await this.markRunRunning(input);
+    return running
+      ? { outcome: "started", run: running }
+      : { outcome: "not_claimed", reason: "status_changed", status: this.run?.status ?? null };
   }
 
   async checkRunDispatchContract(): Promise<{ allowed: boolean; error_code?: string; error_message?: string }> {
@@ -891,6 +904,106 @@ describe("RunOrchestrationService", () => {
       "get:space-1:run-1",
       "lock:run-1:worker-1:none",
     ]);
+  });
+
+  describe("when the locked claim does not start the Run", () => {
+    function unstartedClaim(repo: FakeRepo, decide: () => RunExecutionClaim) {
+      const launched: string[] = [];
+      repo.claimRunExecution = async (input) => {
+        repo.calls.push(`claim:${input.run_id}`);
+        return decide();
+      };
+      const service = orchestration(repo, {
+        policyEnforcer: allowPolicy,
+        ...daemonCli({
+          async runCommand() {
+            launched.push("launched");
+            return { returncode: 0, stdout: "", stderr: "", timed_out: false };
+          },
+        }),
+      });
+      return { launched, execute: () => service.executeRun({ run_id: "run-1", space_id: "space-1", worker_id: "worker-1", command_source: "job" }) };
+    }
+    const rejected = (): RunExecutionClaim => ({
+      outcome: "authorization_rejected",
+      error_code: "run_execution_authorization_revoked",
+      error_message: "authorization revoked",
+    });
+
+    it("ends a still-queued Run the claim's recheck refused, through the same terminal publication", async () => {
+      const repo = new FakeRepo();
+      const { launched, execute } = unstartedClaim(repo, rejected);
+      await expect(execute()).resolves.toMatchObject({
+        status: "failed",
+        skipped: true,
+        skip_reason: "execution_authorization_revoked",
+        error_code: "run_execution_authorization_revoked",
+      });
+      expect(repo.run?.status).toBe("failed");
+      expect(repo.terminalUpdates).toHaveLength(1);
+      expect(repo.terminalUpdates[0]!.error_json).toMatchObject({ error_code: "run_execution_authorization_revoked" });
+      expect(launched).toEqual([]);
+    });
+
+    it("settles from the claim's refusal even when the permission is restored before settlement, without rechecking", async () => {
+      const repo = new FakeRepo();
+      // An ordinary Room permission is refused under the claim's locks and
+      // restored right after they release: an unlocked recheck would now pass.
+      let checksAtClaim = -1;
+      const { launched, execute } = unstartedClaim(repo, () => {
+        checksAtClaim = repo.authorizationRuns.length;
+        repo.executionAllowed = true;
+        return rejected();
+      });
+      await expect(execute()).resolves.toMatchObject({ status: "failed", skip_reason: "execution_authorization_revoked" });
+      expect(repo.authorizationRuns).toHaveLength(checksAtClaim);
+      expect(repo.run?.status).toBe("failed");
+      expect(repo.terminalUpdates.map((update) => update.status)).toEqual(["failed"]);
+      expect(launched).toEqual([]);
+    });
+
+    it("publishes a cancellation that arrived during preparation instead of a failure", async () => {
+      const repo = new FakeRepo();
+      const { launched, execute } = unstartedClaim(repo, () => {
+        repo.run = { ...repo.run!, status: "cancelling" };
+        return rejected();
+      });
+      await expect(execute()).resolves.toMatchObject({ status: "cancelled", error_code: "run_cancelled" });
+      expect(repo.terminalUpdates.map((update) => update.status)).toEqual(["cancelled"]);
+      expect(launched).toEqual([]);
+    });
+
+    it("publishes a pending cancellation the claim reported", async () => {
+      const repo = new FakeRepo();
+      const { launched, execute } = unstartedClaim(repo, () => {
+        repo.run = { ...repo.run!, status: "cancelling" };
+        return { outcome: "not_claimed", reason: "cancellation_pending", status: "cancelling" };
+      });
+      await expect(execute()).resolves.toMatchObject({ status: "cancelled", error_code: "run_cancelled" });
+      expect(repo.terminalUpdates.map((update) => update.status)).toEqual(["cancelled"]);
+      expect(launched).toEqual([]);
+    });
+
+    it("leaves a Run another claim already started untouched", async () => {
+      const repo = new FakeRepo();
+      const { launched, execute } = unstartedClaim(repo, () => {
+        repo.executionAllowed = false;
+        repo.run = { ...repo.run!, status: "running" };
+        return { outcome: "not_claimed", reason: "status_changed", status: "running" };
+      });
+      await expect(execute()).resolves.toMatchObject({ status: "running", skipped: true, skip_reason: "run_not_queued" });
+      expect(repo.terminalUpdates).toEqual([]);
+      expect(launched).toEqual([]);
+    });
+
+    it("keeps a still-queued Run held for quota queued, without a terminal", async () => {
+      const repo = new FakeRepo();
+      const { launched, execute } = unstartedClaim(repo, () => ({ outcome: "not_claimed", reason: "waiting_for_quota", status: "queued" }));
+      await expect(execute()).resolves.toMatchObject({ status: "queued", skipped: true, skip_reason: "run_waiting_for_quota" });
+      expect(repo.run?.status).toBe("queued");
+      expect(repo.terminalUpdates).toEqual([]);
+      expect(launched).toEqual([]);
+    });
   });
 
   it("maps ACP daemon failures and redacts their terminal evidence", async () => {

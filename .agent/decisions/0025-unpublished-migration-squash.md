@@ -101,7 +101,7 @@ history. Pre-conversion backups retain the old identity and must be restored
 using the archived source release before conversion, not forced through a
 target release's restore identity checks.
 
-## Addendum (2026-10-22): one-time schema-only rebase of 0001
+## One-time schema-only rebase of 0001
 
 After the first squash produced `0001_agent_workbench` as the exact composition
 of four development files (test converted with the managed tool, audit

@@ -16,6 +16,9 @@ export async function withJobEffectAuthority<T>(db:Queryable,job:JobEnvelopeForH
  return authority.run(credential,async()=>{try{const result=await work();if(credential.lost)throw new JobEffectLeaseLost();return result;}catch(error){if(credential.lost)throw new JobEffectLeaseLost();throw error;}finally{credential.closed=true;}});
 }
 export function hasJobEffectAuthority():boolean{return !!authority.getStore();}
+/** Whether this invocation's credential already found the Job claimed by someone else.
+ * A provider SDK may wrap the refusal; the flag, not the error type, is authoritative. */
+export function jobEffectAuthorityLost():boolean{const c=authority.getStore();return !!c&&c.lost;}
 /** Captures authority for a later Host request callback, whose incoming socket
  * event has a different async context. Closed credentials continue to refuse. */
 export function bindJobEffectAuthority<A extends unknown[],R>(fn:(...args:A)=>R):(...args:A)=>R{

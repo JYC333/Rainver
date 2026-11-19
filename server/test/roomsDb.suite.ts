@@ -1,5 +1,6 @@
 import { seedSpaceMember } from "./support/domainSeeds.js";
 import { waitForBlockedBy } from "./support/lockWait.js";
+import { LegacyStoredCollaborationSchema } from "./support/legacyCollaborationSchema.js";
 import type { FastifyInstance } from "fastify";
 import {lockRequestKey} from '../src/modules/systemActions/operations/repository.js';
 import {linkProposalOperation} from './support/linkedProposalOperation.js';
@@ -88,9 +89,11 @@ import type { ProviderCommandStore } from "../src/modules/providers/commands/sto
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
-import { ROOM_CONVERSATION_TOOL_ALLOWANCE } from "../src/modules/systemActions/scenarioToolAllowance.js";
+import { PROJECT_APPLICATIONS_TOOL_ALLOWANCE, ROOM_CONVERSATION_TOOL_ALLOWANCE } from "../src/modules/systemActions/scenarioToolAllowance.js";
 import { effectiveRunTrigger } from "../src/modules/systemActions/effectiveRunTrigger.js";
 import { PgTaskRepository } from "../src/modules/tasks/repository.js";
+import { PgUsageRepository } from "../src/modules/usage/repository.js";
+import { normalizeUsageObservation } from "../src/modules/usage/normalizer.js";
 
 import type {TestPartition} from './support/testPartition.js';
 
@@ -2655,6 +2658,51 @@ describe("Room workflow (real Postgres)", () => {
       return { owner, created, conversation, manager };
     }
 
+    it("lists visible active Room Runs beyond the latest message page", async (ctx) => {
+      if (!db.available || !service || !groupService) return ctx.skip();
+      const { owner, created, conversation } = await roomWithSpecialist("Long collaboration");
+      const member = { spaceId: owner.spaceId, userId: "user-2" };
+      await addRoomMember(created.room.id, member.userId);
+      const sent = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Ask the specialist." });
+      const parent = sent.run_ids[0]!;
+      const spawned = await groupService.spawnChildRun(owner, {
+        space_id: owner.spaceId, group_id: sent.task_group_ids[0]!, parent_run_id: parent, root_run_id: parent,
+        requesting_agent_id: "agent-1", target_agent_id: "agent-2", manager_user_id: owner.userId,
+        workspace_access: "write", instruction: "Review the change.",
+      });
+      const child = spawned.child_run_id!;
+      expect(child).toBeTruthy();
+      await seedConversationMessages(db.pool, {
+        space: owner.spaceId, session: conversation.id,
+        messages: Array.from({ length: 50 }, () => ({
+          id: randomUUID(), role: "assistant", senderAgentId: "agent-2", content: "Earlier result.",
+        })),
+      });
+      await dispatchQueuedRoomRuns([parent]);
+      await db.pool.query("UPDATE runs SET status = 'waiting_for_dependency' WHERE id = $1", [parent]);
+      await dispatchQueuedRoomRuns([child]);
+
+      const page = await service.listMessages(member, created.room.id, conversation.id, { limit: 50, offset: 0 });
+      expect(page.items).toHaveLength(50);
+      expect(page.items.every(message => message.id !== sent.message.id)).toBe(true);
+      expect(new Set(page.active_run_ids)).toEqual(new Set([parent, child]));
+      const older = await service.listMessages(owner, created.room.id, conversation.id, { limit: 50, offset: 50 });
+      expect(older.items.find(message => message.id === sent.message.id))
+        .toMatchObject({ metadata_json: { delegated_run_ids: [child] } });
+      expect(older.active_run_ids).toBeUndefined();
+
+      const other = await seedConversation(owner, created.room.id, "Other conversation");
+      await expect(service.listMessages(owner, created.room.id, other.id, { limit: 50, offset: 0 }))
+        .resolves.toMatchObject({ active_run_ids: [] });
+
+      await db.pool.query("UPDATE runs SET visibility = 'private' WHERE id = $1", [child]);
+      await expect(service.listMessages(member, created.room.id, conversation.id, { limit: 50, offset: 0 }))
+        .resolves.toMatchObject({ active_run_ids: [parent] });
+      await db.pool.query("UPDATE runs SET status = 'succeeded', ended_at = now() WHERE id = $1", [child]);
+      await expect(service.listMessages(owner, created.room.id, conversation.id, { limit: 50, offset: 0 }))
+        .resolves.toMatchObject({ active_run_ids: [parent] });
+    });
+
     it("saves each member's options independently and uses them for messages and delegation", async (ctx) => {
       if (!db.available || !service || !groupService) return ctx.skip();
       const { owner, created, conversation } = await roomWithSpecialist("Model selections");
@@ -3944,7 +3992,7 @@ describe("Room workflow (real Postgres)", () => {
         .markDelegatedRunTerminal((await new PgRunRepository(db.pool).getRun("space-1", runId))!);
     }
 
-    it.for([0, 1, 2, 5])("scales temporary limits for %i specialists, admits above soft and audits the hard refusal", async (agents, ctx) => {
+    it.for([0, 1, 2, 5])("scales the per-turn bound for %i specialists and reminds, never stops, a person's temporary delegation", async (agents, ctx) => {
       if (!db.available || !service || !groupService) return ctx.skip();
       const owner = { spaceId: "space-1", userId: "user-1" };
       const created = await service.createRoom(owner, { project_id: "project-1", title: "Scaled temporary budget" });
@@ -3967,38 +4015,85 @@ describe("Room workflow (real Postgres)", () => {
         }
       }
       if (agents !== 2) return;
-      const spawn = () => groupService!.spawnChildRun(owner, { workspace_access: "write" as const, space_id: "space-1", group_id: group.id,
+      const spawn = (target = "agent-2") => groupService!.spawnChildRun(owner, { workspace_access: "write" as const, space_id: "space-1", group_id: group.id,
         parent_run_id: sent.run_ids[0]!, root_run_id: group.root_run_id!, requesting_agent_id: "agent-1",
-        target_agent_id: "agent-2", manager_user_id: "user-1", instruction: "Review the next item." });
-      for (let i = 1; i <= hard; i += 1) {
+        target_agent_id: target, manager_user_id: "user-1", instruction: "Review the next item." });
+      const reminders = async () => (await db.pool.query(`SELECT role,metadata_json,content FROM messages WHERE session_id=$1
+        AND metadata_json->>'execution_event'='delegation_reminder' ORDER BY created_at,id`, [conversation.id])).rows;
+      // Past the old hard limit (40) the person's temporary delegation continues,
+      // with one reminder per threshold and no soft-budget notice.
+      for (let i = 1; i <= hard + 11; i += 1) {
         const child = await spawn();
-        expect(child.child_run_id).toBeTruthy();
-        if (i === soft || i === soft + 1) {
-          expect((await db.pool.query(`SELECT id FROM messages WHERE session_id=$1
-            AND metadata_json->>'execution_event'='delegation_soft_budget_exceeded'`, [conversation.id])).rows)
-            .toHaveLength(i === soft ? 0 : 1);
-        }
+        expect(child.child_run_id, `delegation ${i}`).toBeTruthy();
         await dispatchQueuedRoomRuns([child.child_run_id!]);
         await db.pool.query("UPDATE run_delegations SET status='succeeded' WHERE id=$1", [child.delegation.id]);
         await db.pool.query("UPDATE runs SET status='succeeded',ended_at=now() WHERE id=$1", [child.child_run_id]);
         await releaseConversationTurn(child.child_run_id!);
       }
-      const notices = (await db.pool.query(`SELECT role,metadata_json,content FROM messages WHERE session_id=$1
-        AND metadata_json->>'execution_event'='delegation_soft_budget_exceeded'`, [conversation.id])).rows;
-      expect(notices).toHaveLength(1);
-      expect(notices[0]).toMatchObject({ role: "system", metadata_json: { room_display: "system_notice",
-        execution_details: { soft_limit: soft, hard_limit: hard } } });
-      const denied = await spawn();
+      expect((await db.pool.query(`SELECT id FROM messages WHERE session_id=$1
+        AND metadata_json->>'execution_event'='delegation_soft_budget_exceeded'`, [conversation.id])).rows).toHaveLength(0);
+      const notices = await reminders();
+      expect(notices.map(n => n.metadata_json.execution_details.threshold)).toEqual([25, 50]);
+      expect(notices[1]).toMatchObject({ role: "system", metadata_json: { room_display: "system_notice",
+        execution_event_key: `${group.id}:delegation:reminder:50`, execution_details: { delegations_used: 50, container_group_id: group.id } } });
+      expect(notices[1]!.content).toContain("no total limit");
+      expect((await new PgAgentGroupRepository(db.pool).getGroup("space-1", group.id))!.budget_json).toMatchObject({ reminder_notified_through: 50 });
+      // One turn's fan-out is still bounded: children outstanding at once, not the lifetime total.
+      await db.pool.query(`UPDATE agent_run_groups SET budget_json=budget_json || '{"hard_max_fanout":2}'::jsonb WHERE id=$1`, [group.id]);
+      expect((await spawn("agent-2")).child_run_id).toBeTruthy();
+      expect((await spawn("agent-3")).child_run_id).toBeTruthy();
+      const denied = await spawn("agent-2");
       expect(denied).toMatchObject({ child_run_id: null, delegation: { status: "policy_denied" } });
       expect((await db.pool.query(`SELECT decision,audit_code FROM policy_decision_records WHERE id=$1`,
         [denied.policy_decision_record_id])).rows[0]).toMatchObject({ decision: "deny", audit_code: "run_spawn_child_capacity_limit" });
       expect((await db.pool.query(`SELECT count(*)::int AS count FROM run_delegations WHERE group_id=$1 AND status<>'policy_denied'`,
-        [group.id])).rows[0]?.count).toBe(hard);
+        [group.id])).rows[0]?.count).toBe(hard + 13);
+      expect(await reminders()).toHaveLength(2);
     });
 
-    it.for([0, 2, 100])("intersects a completion subgroup's hard bound %i with its container", async (limit, ctx) => {
+    it("keeps a discussion under a person's turn on its bounded soft notice, never the no-total reminder", async (ctx) => {
       if (!db.available || !service || !groupService) return ctx.skip();
-      const { owner, created, conversation } = await roomWithSpecialist("Subgroup bound");
+      const { owner, created, conversation } = await roomWithSpecialist("Discussion usage notice", "Research Specialist", ["agent-3"]);
+      const discussions = new RoomDiscussionService(loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot }), db.pool);
+      const opened = await discussions.open(owner, created.room.id, conversation.id, {
+        topic: "Split the review?", participant_agent_ids: ["agent-2"], shape: "open",
+      });
+      const groupId = opened.task_group_ids[0]!;
+      const root = (await db.pool.query<{ trigger_origin: string; parent_run_id: string | null; discussion_id: string | null }>(
+        `SELECT r.trigger_origin, r.parent_run_id, g.discussion_id FROM agent_run_groups g JOIN runs r ON r.id=g.root_run_id WHERE g.id=$1`,
+        [groupId])).rows[0]!;
+      // The discussion is rooted in the person's own manual turn: only its discussion keeps it bounded.
+      expect(root).toEqual({ trigger_origin: "manual", parent_run_id: null, discussion_id: opened.discussion.id });
+      const hard = 30;
+      await db.pool.query(`UPDATE agent_run_groups SET budget_json=budget_json || $2::jsonb WHERE id=$1`,
+        [groupId, JSON.stringify({ max_fanout: hard, soft_max_fanout: 10, hard_max_fanout: hard })]);
+      const spawn = () => groupService!.spawnChildRun(owner, { workspace_access: "write" as const, space_id: "space-1", group_id: groupId,
+        parent_run_id: opened.run_ids[0]!, root_run_id: opened.run_ids[0]!, requesting_agent_id: "agent-2",
+        target_agent_id: "agent-3", manager_user_id: "user-1", instruction: "Check one part." });
+      const notices = async (event: string) => (await db.pool.query<{ content: string }>(`SELECT content FROM messages WHERE session_id=$1
+        AND metadata_json->>'execution_event'=$2`, [conversation.id, event])).rows;
+      // Past 25 delegations: no "no total limit" reminder, one soft-budget notice naming the hard limit.
+      for (let i = 1; i <= hard; i += 1) {
+        const child = await spawn();
+        expect(child.child_run_id, `delegation ${i}`).toBeTruthy();
+        await dispatchQueuedRoomRuns([child.child_run_id!]);
+        await db.pool.query("UPDATE run_delegations SET status='succeeded' WHERE id=$1", [child.delegation.id]);
+        await db.pool.query("UPDATE runs SET status='succeeded',ended_at=now() WHERE id=$1", [child.child_run_id]);
+        await releaseConversationTurn(child.child_run_id!);
+      }
+      expect(await notices("delegation_reminder")).toEqual([]);
+      const soft = await notices("delegation_soft_budget_exceeded");
+      expect(soft).toHaveLength(1);
+      expect(soft[0]!.content).toContain(`hard limit (${hard} delegations`);
+      expect((await new PgAgentGroupRepository(db.pool).getGroup("space-1", groupId))!.budget_json).not.toHaveProperty("reminder_notified_through");
+      // And admission agrees: the discussion's cumulative hard bound still refuses.
+      expect(await spawn()).toMatchObject({ child_run_id: null, delegation: { status: "policy_denied" } });
+      expect(await notices("delegation_reminder")).toEqual([]);
+    });
+
+    it.for([0, 2, 100])("bounds a completion turn by its own fan-out %i within its container's, with no container total", async (limit, ctx) => {
+      if (!db.available || !service || !groupService) return ctx.skip();
+      const { owner, created, conversation } = await roomWithSpecialist("Subgroup bound", "Research Specialist", ["agent-3", "agent-4", "agent-5"]);
       const sent = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Review this." });
       const groupId = sent.task_group_ids[0]!;
       // Internal callers may supply a tighter budget than the Room default.
@@ -4009,33 +4104,36 @@ describe("Room workflow (real Postgres)", () => {
       const first = await groupService.spawnChildRun(owner, input);
       await publishBudgetTurn(input.parent_run_id);
       await publishBudgetTurn(first.child_run_id!, true);
-      const completion = (await db.pool.query<{ id: string; root_run_id: string }>(`SELECT id,root_run_id FROM agent_run_groups
+      const completion = (await db.pool.query<{ id: string; root_run_id: string; budget_json: Record<string, unknown> }>(`SELECT id,root_run_id,budget_json FROM agent_run_groups
         WHERE budget_json->>'container_group_id'=$1 ORDER BY created_at DESC LIMIT 1`, [groupId])).rows[0]!;
+      // The completion turn keeps the person's bound fields only.
+      expect(completion.budget_json).toEqual({ max_depth: 1, max_fanout: 3, container_group_id: groupId });
       await db.pool.query("UPDATE agent_run_groups SET budget_json=$2::jsonb WHERE id=$1",
         [completion.id, JSON.stringify({ max_depth: 1, max_fanout: limit, container_group_id: groupId })]);
-      const spawn = () => groupService!.spawnChildRun(owner, { ...input, group_id: completion.id,
+      const spawn = (target: string) => groupService!.spawnChildRun(owner, { ...input, group_id: completion.id, target_agent_id: target,
         parent_run_id: completion.root_run_id, root_run_id: completion.root_run_id });
-      const effectiveLimit = Math.min(3, limit);
-      for (let count = 2; count <= effectiveLimit; count += 1) {
-        const child = await spawn();
-        expect(child.child_run_id).toBeTruthy();
-        await publishBudgetTurn(child.child_run_id!);
-        await db.pool.query("UPDATE run_delegations SET status='succeeded' WHERE id=$1", [child.delegation.id]);
-      }
-      const denied = await spawn();
+      // Children stay outstanding (each with its own Agent): the bound is on
+      // one turn's children at once, the subgroup's narrowed by the container's
+      // (three). With the original turn's child the container holds four: no total.
+      const targets = ["agent-2", "agent-3", "agent-4", "agent-5"];
+      const admitted = Math.min(limit, 3);
+      for (let count = 0; count < admitted; count += 1) expect((await spawn(targets[count]!)).child_run_id, `child ${count}`).toBeTruthy();
+      const denied = await spawn(targets[admitted]!);
       expect(denied).toMatchObject({ child_run_id: null, delegation: { status: "policy_denied" } });
       expect((await db.pool.query("SELECT decision,audit_code FROM policy_decision_records WHERE id=$1",
         [denied.policy_decision_record_id])).rows[0]).toMatchObject({ decision: "deny", audit_code: "run_spawn_child_capacity_limit" });
       expect((await db.pool.query(`SELECT count(*)::int AS count FROM run_delegations d JOIN agent_run_groups g ON g.id=d.group_id
         WHERE (g.id=$1 OR g.budget_json->>'container_group_id'=$1) AND d.status<>'policy_denied'`, [groupId])).rows[0]?.count)
-        .toBe(Math.max(1, effectiveLimit));
+        .toBe(1 + admitted);
     });
 
-    it("audits a spawn refused by hard turn capacity after real completion turns, with fanout still available", async (ctx) => {
+    it.for(["person", "continuation"] as const)("keeps the hard turn ceiling only for a container not rooted in a person's turn: %s", async (root, ctx) => {
       if (!db.available || !service || !groupService) return ctx.skip();
       const { owner, created, conversation } = await roomWithSpecialist("Hard turn ceiling");
       const sent = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Research, then review." });
       const containerId = sent.task_group_ids[0]!;
+      // A container whose root is not the person's own turn is never upgraded to person-authorized work.
+      if (root === "continuation") await db.pool.query("UPDATE runs SET trigger_origin='continuation' WHERE id=$1", [sent.run_ids[0]]);
       await publishBudgetTurn(sent.run_ids[0]!);
       let current = { id: containerId, root_run_id: sent.run_ids[0]! };
       // Research result turns share capacity but consume no delegation slots.
@@ -4066,16 +4164,25 @@ describe("Room workflow (real Postgres)", () => {
       expect(accepted).toBe(19); // The twentieth delegation fits fanout but would cost turn 41.
       // Probe the original group, whose fanout bound is still twenty, so a zero
       // completion-subgroup bound cannot be the reason for this refusal.
-      const denied = await groupService.spawnChildRun(owner, { workspace_access: "write" as const, space_id: "space-1", group_id: containerId,
+      const probe = await groupService.spawnChildRun(owner, { workspace_access: "write" as const, space_id: "space-1", group_id: containerId,
         parent_run_id: sent.run_ids[0]!, root_run_id: sent.run_ids[0]!, requesting_agent_id: "agent-1",
         target_agent_id: "agent-2", manager_user_id: "user-1", instruction: "One more review." });
+      if (root === "person") {
+        // The person's own work passes turn 41 and keeps the cause of its completions.
+        expect(probe.child_run_id).toBeTruthy();
+        expect((await new PgAgentGroupRepository(db.pool).getGroup("space-1", containerId))!.budget_json).toMatchObject({ container_turns_used: 41 });
+        const standing = await withDbTransaction(db.pool, client => agentOriginContinuation(client, "space-1", containerId, probe.delegation.id));
+        expect(standing).toMatchObject({ cause: { run_id: sent.run_ids[0], within_budget: true }, delegation_budget: { max_fanout: 10 } });
+        return;
+      }
+      const denied = probe;
       expect(denied).toMatchObject({ child_run_id: null, delegation: { status: "policy_denied" } });
       expect((await db.pool.query("SELECT action,decision,audit_code FROM policy_decision_records WHERE id=$1",
         [denied.policy_decision_record_id])).rows[0]).toMatchObject({ action: "run.spawn_child", decision: "deny", audit_code: "run_spawn_child_capacity_limit" });
       expect((await new PgAgentGroupRepository(db.pool).getGroup("space-1", containerId))!.budget_json).toEqual(before);
     });
 
-    it("lets only the authenticated human change collaboration participants without refilling its budget", async (ctx) => {
+    it("lets only the authenticated human change collaboration participants without changing its counts", async (ctx) => {
       if (!db.available || !service || !groupService) return ctx.skip();
       const { owner, created, conversation } = await roomWithSpecialist("Human collaboration amendment", "Reviewer", ["agent-3", "agent-4"]);
       const task = await new PgTaskRepository(db.pool).createTask(owner, {title:"Clean migration",project_id:"project-1"});
@@ -4086,7 +4193,7 @@ describe("Room workflow (real Postgres)", () => {
         workspace_access:"write",space_id:"space-1",group_id:group.id,parent_run_id:sent.run_ids[0]!,root_run_id:group.root_run_id!,
         requesting_agent_id:"agent-1",target_agent_id:target,manager_user_id:"user-1",instruction:"Implement or review.",budget_json:budget,
       });
-      const bounds = {task_id:task.id,participant_agent_ids:["agent-2"],max_delegations:2};
+      const bounds = {task_id:task.id,participant_agent_ids:["agent-2"]};
       expect((await spawn("agent-4")).child_run_id).toBeTruthy();
       expect((await spawn("agent-2",{collaboration:bounds})).child_run_id).toBeTruthy();
       const before = (await repo.getGroup("space-1",group.id))!.budget_json!;
@@ -4144,13 +4251,14 @@ describe("Room workflow (real Postgres)", () => {
         expect(await collaborationLimits(client,(await repo.getGroup('space-1',group.id))!,{
           parent_run_id:sent.run_ids[0]!,requesting_agent_id:'agent-1',target_agent_id:'agent-3',manager_user_id:'user-1',
           budget_json:{collaboration:{...bounds,participant_agent_ids:['agent-3','agent-2']}},
-        })).toMatchObject({max_fanout:2});
+        })).toEqual({permitted:true,delegations:2,participants:2,task_id:task.id});
         await client.query('ROLLBACK');
       } finally {client.release();}
 
-      // Adding a participant admits that participant, but does not replenish the two-call allowance.
+      // Adding a participant admits that participant; offsets and reminder progress are unchanged.
       expect((await spawn('agent-3')).child_run_id).toBeTruthy();
-      expect(await spawn('agent-3')).toMatchObject({child_run_id:null,delegation:{status:'policy_denied'}});
+      expect((await repo.getGroup('space-1',group.id))!.budget_json!.collaboration).toMatchObject({
+        delegations_offset:(before.collaboration as {delegations_offset:number}).delegations_offset, reminder_notified_through:0});
       expect((await invoke({...input,expected_participant_agent_ids:input.participant_agent_ids,participant_agent_ids:['agent-2']})).http_status).toBe(409); // running child
       await db.pool.query("UPDATE room_user_members SET status='removed' WHERE room_id=$1 AND user_id='user-1'",[created.room.id]);
       expect((await invoke(input,key)).http_status).toBe(404); // replay still checks current authority
@@ -4171,7 +4279,7 @@ describe("Room workflow (real Postgres)", () => {
       if (mode === "outsider") participants.push("agent-outsider");
       if (mode === "duplicate") participants.push("agent-2");
       if (mode === "coordinator") participants.push("agent-1");
-      const bounds = { task_id: task.id, participant_agent_ids: participants, max_delegations: 3 };
+      const bounds = { task_id: task.id, participant_agent_ids: participants };
       const spawn = (target: string, budget?: Record<string, unknown>) => groupService!.spawnChildRun(owner, { workspace_access: "write" as const,
         space_id: "space-1", group_id: group.id, parent_run_id: sent.run_ids[0]!, root_run_id: group.root_run_id!,
         requesting_agent_id: "agent-1", target_agent_id: target, manager_user_id: "user-1",
@@ -4184,11 +4292,19 @@ describe("Room workflow (real Postgres)", () => {
         expect((await new PgAgentGroupRepository(db.pool).getGroup("space-1", group.id))!.budget_json?.collaboration).toBeUndefined();
         return;
       }
+      const children = [];
       for (const [index, target] of participants.entries()) {
-        expect((await spawn(target, index === 0 ? { collaboration: bounds } : undefined)).child_run_id).toBeTruthy();
+        const child = await spawn(target, index === 0 ? { collaboration: bounds } : undefined);
+        expect(child.child_run_id).toBeTruthy();
+        children.push(child);
       }
       expect((await new PgAgentGroupRepository(db.pool).getGroup("space-1", group.id))!.budget_json?.collaboration).toMatchObject(bounds);
-      expect(await spawn("agent-2")).toMatchObject({ child_run_id: null, delegation: { status: "policy_denied" } });
+      // There is no total: once its first handoff finished, a fourth to the same participant is admitted.
+      await dispatchQueuedRoomRuns([children[0]!.child_run_id!]);
+      await db.pool.query("UPDATE run_delegations SET status='succeeded' WHERE id=$1", [children[0]!.delegation.id]);
+      await db.pool.query("UPDATE runs SET status='succeeded',ended_at=now() WHERE id=$1", [children[0]!.child_run_id]);
+      await releaseConversationTurn(children[0]!.child_run_id!);
+      expect((await spawn("agent-2")).child_run_id).toBeTruthy();
     });
 
     it.for(["done", "cancelled"])("declares a fresh task collaboration on a completion after the prior Task is %s", async (status, ctx) => {
@@ -4201,7 +4317,7 @@ describe("Room workflow (real Postgres)", () => {
       const group = (await new PgAgentGroupRepository(db.pool).getGroup("space-1", sent.task_group_ids[0]!))!;
       const input = { workspace_access: "write" as const, space_id: "space-1", group_id: group.id, parent_run_id: sent.run_ids[0]!, root_run_id: group.root_run_id!,
         requesting_agent_id: "agent-1", target_agent_id: "agent-2", manager_user_id: "user-1", instruction: "Review this task." };
-      const bounds = { task_id: firstTask.id, participant_agent_ids: ["agent-2"], max_delegations: 1 };
+      const bounds = { task_id: firstTask.id, participant_agent_ids: ["agent-2"] };
       const child = await groupService.spawnChildRun(owner, { ...input, budget_json: { collaboration: bounds } });
       await expect(groupService.spawnChildRun(owner, { ...input, budget_json: { collaboration: { ...bounds, task_id: nextTask.id } } }))
         .rejects.toMatchObject({ statusCode: 409 });
@@ -4218,14 +4334,16 @@ describe("Room workflow (real Postgres)", () => {
         budget_json: { collaboration: { ...bounds, task_id: nextTask.id } } });
       expect(renewed.child_run_id).toBeTruthy();
       const stored = (await new PgAgentGroupRepository(db.pool).getGroup("space-1", group.id))!.budget_json!;
-      expect(stored.collaboration).toMatchObject({ task_id: nextTask.id, max_delegations: 1, delegations_offset: 1 });
+      expect(stored.collaboration).toMatchObject({ task_id: nextTask.id, delegations_offset: 1, reminder_notified_through: 0 });
+      expect(stored.collaboration).not.toHaveProperty("max_delegations");
       expect(stored.collaboration_history).toEqual([expect.objectContaining({ task_id: firstTask.id })]);
+      // The completion turn reaches its one declared participant at most once at a time.
       const denied = await groupService.spawnChildRun(owner, { ...input, group_id: continuation.id,
         parent_run_id: continuation.root_run_id, root_run_id: continuation.root_run_id });
       expect(denied).toMatchObject({ child_run_id: null, delegation: { status: "policy_denied" } });
     });
 
-    it("keeps a prior Task's late completion outside the renewed Task's turn quota", async (ctx) => {
+    it("keeps a prior Task's late completion outside the renewed Task's turn count", async (ctx) => {
       if (!db.available || !service || !groupService) return ctx.skip();
       const { owner, created, conversation } = await roomWithSpecialist("Late task result");
       const tasks = new PgTaskRepository(db.pool);
@@ -4235,7 +4353,7 @@ describe("Room workflow (real Postgres)", () => {
       const group = (await new PgAgentGroupRepository(db.pool).getGroup("space-1", sent.task_group_ids[0]!))!;
       const input = { workspace_access: "write" as const, space_id: "space-1", group_id: group.id, parent_run_id: sent.run_ids[0]!, root_run_id: group.root_run_id!,
         requesting_agent_id: "agent-1", target_agent_id: "agent-2", manager_user_id: "user-1", instruction: "Review." };
-      const bounds = { task_id: oldTask.id, participant_agent_ids: ["agent-2"], max_delegations: 1 };
+      const bounds = { task_id: oldTask.id, participant_agent_ids: ["agent-2"] };
       const prior = await groupService.spawnChildRun(owner, { ...input, budget_json: { collaboration: bounds } });
       await publishBudgetTurn(prior.child_run_id!);
       await db.pool.query("UPDATE run_delegations SET status='succeeded' WHERE id=$1", [prior.delegation.id]);
@@ -4271,32 +4389,41 @@ describe("Room workflow (real Postgres)", () => {
         await publishBudgetTurn(child.child_run_id!);
         await db.pool.query("UPDATE run_delegations SET status='succeeded' WHERE id=$1", [child.delegation.id]);
       }
-      const bounds = { task_id: task.id, participant_agent_ids: ["agent-2"], max_delegations: 1 };
+      const bounds = { task_id: task.id, participant_agent_ids: ["agent-2"] };
       const next = await groupService.spawnChildRun(owner, { ...input, group_id: continuation.id,
         parent_run_id: continuation.root_run_id, root_run_id: continuation.root_run_id,
         budget_json: { collaboration: bounds } });
       expect(next.child_run_id).toBeTruthy();
       expect((await new PgAgentGroupRepository(db.pool).getGroup("space-1", group.id))!.budget_json!.collaboration)
         .toMatchObject({ ...bounds, delegations_offset: 1, turns_offset: turn === "original" ? 1 : 2 });
-      // The admitted temporary child and any late result cannot spend this Task's allowance.
+      // The admitted temporary child and any late result are not this Task's turns.
       if (turn === "original") {
         const late = await withDbTransaction(db.pool, client => agentOriginContinuation(client, "space-1", group.id, child.delegation.id));
         expect(late.cause.within_budget).toBe(true);
       }
-      const denied = await groupService.spawnChildRun(owner, { ...input, group_id: continuation.id,
-        parent_run_id: continuation.root_run_id, root_run_id: continuation.root_run_id });
-      expect(denied).toMatchObject({ child_run_id: null, delegation: { status: "policy_denied" } });
+      // A completion turn reaches its one declared participant at most once at a time.
+      if (turn === "completion") {
+        expect(await groupService.spawnChildRun(owner, { ...input, group_id: continuation.id,
+          parent_run_id: continuation.root_run_id, root_run_id: continuation.root_run_id }))
+          .toMatchObject({ child_run_id: null, delegation: { status: "policy_denied" } });
+      }
+      // A cap is not a declaration (refused, never converted); other participants are a change.
       await expect(groupService.spawnChildRun(owner, { ...input, group_id: continuation.id,
         parent_run_id: continuation.root_run_id, root_run_id: continuation.root_run_id,
-        budget_json: { collaboration: { ...bounds, max_delegations: 2 } } })).rejects.toMatchObject({ statusCode: 409 });
+        budget_json: { collaboration: { ...bounds, max_delegations: 2 } } })).rejects.toMatchObject({ statusCode: 422 });
+      await expect(groupService.spawnChildRun(owner, { ...input, group_id: continuation.id,
+        parent_run_id: continuation.root_run_id, root_run_id: continuation.root_run_id,
+        budget_json: { collaboration: { ...bounds, participant_agent_ids: ["agent-2", "agent-1"] } } })).rejects.toMatchObject({ statusCode: 409 });
       await publishBudgetTurn(next.child_run_id!);
       const finished = await withDbTransaction(db.pool, client => agentOriginContinuation(client, "space-1", continuation.id, next.delegation.id));
       expect(finished.cause.within_budget).toBe(true);
       expect((await new PgAgentGroupRepository(db.pool).getGroup("space-1", group.id))!.budget_json!.collaboration)
         .toMatchObject({ turns_offset: 2 });
+      // No total: the original turn keeps its own group bound once the participant is free.
+      if (turn === "original") expect((await groupService.spawnChildRun(owner, input)).child_run_id).toBeTruthy();
     });
 
-    it.for(["budget", "failures", "degraded", "task_closed", "task_missing", "task_review", "reset", "origin", "participants", "stop", "turns"])("bounds task collaboration by %s without the ad-hoc two-call cap", async (mode, ctx) => {
+    it.for(["unbounded", "failures", "degraded", "task_closed", "task_missing", "task_review", "reset", "origin", "participants", "stop", "turns"])("bounds task collaboration by %s, never by a total", async (mode, ctx) => {
       if (!db.available || !service || !groupService) return ctx.skip();
       const { owner, created, conversation } = await roomWithSpecialist("Task collaboration");
       const task = await new PgTaskRepository(db.pool).createTask(owner, { title: "Implement and review", project_id: "project-1" });
@@ -4305,7 +4432,7 @@ describe("Room workflow (real Postgres)", () => {
       const groupId = sent.task_group_ids[0]!;
       const group = await new PgAgentGroupRepository(db.pool).getGroup("space-1", groupId);
       if (!group?.root_run_id) throw new Error("Missing group");
-      const bounds = { task_id: task.id, participant_agent_ids: ["agent-2"], max_delegations: 10 };
+      const bounds = { task_id: task.id, participant_agent_ids: ["agent-2"] };
       if (mode === "participants") bounds.participant_agent_ids = ["agent-1"];
       if (mode === "task_missing") bounds.task_id = randomUUID();
       const spawn = (budget?: Record<string, unknown>) => groupService!.spawnChildRun(owner, { workspace_access: "write" as const,
@@ -4322,7 +4449,7 @@ describe("Room workflow (real Postgres)", () => {
         await expect(spawn({ collaboration: bounds })).rejects.toThrow(mode === "participants" ? "other active Room members" : "open Task");
         return;
       }
-      const total = mode === "budget" ? 10 : mode === "failures" || mode === "degraded" ? 3 : 1;
+      const total = mode === "unbounded" ? 12 : mode === "failures" || mode === "degraded" ? 3 : 1;
       for (let index = 0; index < total; index += 1) {
         const child = await spawn(index === 0 ? { collaboration: bounds } : undefined);
         expect(child.child_run_id).toBeTruthy();
@@ -4333,44 +4460,686 @@ describe("Room workflow (real Postgres)", () => {
         await db.pool.query("UPDATE runs SET status = $2, ended_at = now() WHERE id = $1", [child.child_run_id, mode === "failures" ? "failed" : mode === "degraded" ? "degraded" : "succeeded"]);
         await releaseConversationTurn(child.child_run_id!);
       }
+      const standing = () => withDbTransaction(db.pool, client => agentOriginContinuation(client, "space-1", groupId));
+      if (mode === "failures") {
+        // The completion after the third child without a result reports
+        // without the person's cause and cannot delegate again.
+        const after = await standing();
+        expect(after.cause).toEqual({ run_id: group.root_run_id, within_budget: false });
+        expect(after.delegation_budget.max_fanout).toBe(0);
+      }
       if (mode === "degraded") {
         // Three replies in a row, each with a refused call of its own, are
         // results for the coordinator to judge, not a stop.
+        const after = await standing();
+        expect(after.cause).toEqual({ run_id: group.root_run_id, within_budget: true });
+        expect(after.delegation_budget.max_fanout).toBe(1);
         const fourth = await spawn();
         expect(fourth.child_run_id).toBeTruthy();
         expect(fourth.delegation.status).not.toBe("policy_denied");
         return;
       }
       if (mode === "reset") {
-        await expect(spawn({ collaboration: { ...bounds, max_delegations: 11 } })).rejects.toThrow("cannot be reset or widened");
+        await expect(spawn({ collaboration: { ...bounds, max_delegations: 11 } })).rejects.toMatchObject({ statusCode: 422 });
+        await expect(spawn({ collaboration: { ...bounds, mode: "reminder" } })).rejects.toMatchObject({ statusCode: 422 });
+        await expect(spawn({ collaboration: { ...bounds, task_id: (await new PgTaskRepository(db.pool).createTask(owner, { title: "Other", project_id: "project-1" })).id } }))
+          .rejects.toThrow("cannot be changed while its Task is open");
         return;
       }
       if (mode === "task_closed") await db.pool.query("UPDATE tasks SET status = 'done' WHERE id = $1", [task.id]);
       if (mode === "task_review") await db.pool.query("UPDATE tasks SET status = 'waiting_for_review' WHERE id = $1", [task.id]);
-      if (mode === "stop") await db.pool.query("UPDATE runs SET status = 'cancelled' WHERE id = $1", [parentId]);
-      if (mode === "turns") await db.pool.query("UPDATE agent_run_groups SET budget_json = budget_json || '{\"container_turns_used\":20}'::jsonb WHERE id = $1", [groupId]);
+      // A real cancellation stamps updated_at (`runs/repository.ts`), which dates it against the declaration.
+      if (mode === "stop") await db.pool.query("UPDATE runs SET status = 'cancelled', updated_at = now() WHERE id = $1", [parentId]);
+      // Far past the old doubled-turn ceiling.
+      if (mode === "turns") await db.pool.query("UPDATE agent_run_groups SET budget_json = budget_json || '{\"container_turns_used\":10000}'::jsonb WHERE id = $1", [groupId]);
       const next = await spawn();
-      expect(next).toMatchObject({ child_run_id: null, delegation: { status: "policy_denied" } });
-      if (mode === "budget") {
+      if (mode === "unbounded" || mode === "turns") {
+        expect(next.child_run_id).toBeTruthy();
         const client = await db.pool.connect();
         try {
-          // Completion messages retain the original cause beyond the old five-turn ceiling.
+          // Completions keep the original cause and fan-out beyond any count.
           const continuation = await agentOriginContinuation(client, "space-1", groupId);
           expect(continuation.cause).toEqual({ run_id: group.root_run_id, within_budget: true });
-          expect(continuation.delegation_budget.container_group_id).toBe(groupId);
-          // A completion turn reaches each declared participant once.
-          expect(continuation.delegation_budget.max_fanout).toBe(bounds.participant_agent_ids.length);
-          // The ceiling (two turns per declared delegation) is judged on the
-          // charged count: the turn that reaches it is still in budget, the
-          // next is not.
-          await db.pool.query("UPDATE agent_run_groups SET budget_json = budget_json || '{\"container_turns_used\":19}'::jsonb WHERE id = $1", [groupId]);
-          const atCeiling = await agentOriginContinuation(client, "space-1", groupId);
-          expect(atCeiling.cause.within_budget).toBe(true);
-          const past = await agentOriginContinuation(client, "space-1", groupId);
-          expect(past.cause.within_budget).toBe(false);
-          expect(past.delegation_budget.max_fanout).toBe(0);
+          expect(continuation.delegation_budget).toMatchObject({ container_group_id: groupId, max_fanout: 1 });
         } finally { client.release(); }
+        return;
       }
+      expect(next).toMatchObject({ child_run_id: null, delegation: { status: "policy_denied" } });
+    });
+
+    async function reminderCollaboration(title: string, participants: string[] = ["agent-2"]) {
+      const { owner, created, conversation } = await roomWithSpecialist(title, "Research Specialist", participants.filter(id => id !== "agent-2"));
+      const task = await new PgTaskRepository(db.pool).createTask(owner, { title: `${title} task`, project_id: "project-1" });
+      const sent = await service!.sendMessage(owner, created.room.id, conversation.id, { content: "Implement and review this task until complete." });
+      const group = (await new PgAgentGroupRepository(db.pool).getGroup("space-1", sent.task_group_ids[0]!))!;
+      const input = { workspace_access: "write" as const, space_id: "space-1", group_id: group.id, parent_run_id: sent.run_ids[0]!,
+        root_run_id: group.root_run_id!, requesting_agent_id: "agent-1", target_agent_id: "agent-2", manager_user_id: "user-1",
+        instruction: "Implement or review the current stage." };
+      const spawn = (extra: Record<string, unknown> = {}) => groupService!.spawnChildRun(owner, { ...input, ...extra });
+      const finish = async (child: { child_run_id: string | null; delegation: { id: string } }, status = "succeeded") => {
+        await dispatchQueuedRoomRuns([child.child_run_id!]);
+        await db.pool.query("UPDATE run_delegations SET status=$2, updated_at=now() WHERE id=$1", [child.delegation.id, status]);
+        await db.pool.query("UPDATE runs SET status=$2, ended_at=now(), updated_at=now() WHERE id=$1", [child.child_run_id, status]);
+        await releaseConversationTurn(child.child_run_id!);
+        await seedChatCompletion(child.child_run_id!);
+      };
+      const reminders = async () => (await db.pool.query<{ key: string; details: Record<string, unknown> }>(
+        `SELECT metadata_json->>'execution_event_key' AS key, metadata_json->'execution_details' AS details FROM messages
+          WHERE session_id=$1 AND metadata_json->>'execution_event'='collaboration_reminder' ORDER BY created_at, id`, [conversation.id])).rows;
+      const stored = async () => (await new PgAgentGroupRepository(db.pool).getGroup("space-1", group.id))!.budget_json!;
+      const bounds = { task_id: task.id, participant_agent_ids: participants };
+      const runtime = operationRuntime(loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot }));
+      const read = async (who = owner) => {
+        const result = await (await runtime).execute("room.collaboration.get", { room_id: created.room.id, session_id: conversation.id }, sessionActor(who), randomUUID());
+        expect(result.http_status, JSON.stringify(result.body)).toBe(200);
+        return (result.body as { data: { invalid: boolean; collaboration: Record<string, unknown> | null } }).data;
+      };
+      // The coordinator's declaration is the whole of it: nothing for anyone to confirm.
+      const declare = (extra: Record<string, unknown> = {}, declared: Record<string, unknown> = bounds) =>
+        spawn({ budget_json: { collaboration: declared }, ...extra });
+      // Finished handoffs recorded directly (older than any real one), to reach a
+      // high count without running each child; they count as the declaration's results.
+      const seedHandoffs = (n: number, groupId: string = group.id) => db.pool.query(`INSERT INTO run_delegations
+          (id,space_id,group_id,parent_run_id,requesting_agent_id,target_agent_id,status,instruction,created_at,updated_at)
+        SELECT gen_random_uuid()::text,'space-1',$1,$2,'agent-1','agent-2','succeeded','Seeded handoff',now()-interval '1 hour',now()-interval '1 hour'
+          FROM generate_series(1,$3::int)`, [groupId, input.parent_run_id, n]);
+      return { owner, created, conversation, task, sent, group, input, spawn, finish, reminders, stored, bounds, runtime, read, declare, seedHandoffs };
+    }
+
+    it("continues a reminder collaboration past the old 128-handoff and doubled-turn bounds through production handlers", async (ctx) => {
+      if (!db.available || !service || !groupService) return ctx.skip();
+      const c = await reminderCollaboration("Unbounded reminder collaboration", ["agent-2", "agent-3"]);
+      const first = await c.declare();
+      expect(first.child_run_id).toBeTruthy();
+      await c.finish(first);
+      for (let n = 2; n <= 130; n += 1) {
+        const child = await c.spawn();
+        expect(child.child_run_id, `handoff ${n}`).toBeTruthy();
+        await c.finish(child);
+      }
+      // The old finite schema topped out at 128 delegations and 2 × 128 turns.
+      await db.pool.query(`UPDATE agent_run_groups SET budget_json=budget_json || '{"container_turns_used":300}'::jsonb WHERE id=$1`, [c.group.id]);
+      const past = await c.spawn();
+      expect(past.child_run_id).toBeTruthy();
+      await c.finish(past);
+      // Past 128 handoffs and 256 turns its completion keeps the person's cause and fan-out.
+      const standing = await withDbTransaction(db.pool, client => agentOriginContinuation(client, "space-1", c.group.id, past.delegation.id));
+      expect(standing).toMatchObject({ cause: { run_id: c.group.root_run_id, within_budget: true }, delegation_budget: { max_fanout: 2 } });
+      const crossed = await c.reminders();
+      expect(crossed.map(r => r.details.threshold)).toEqual([25, 50, 100]);
+      expect(crossed[2]!.details).not.toHaveProperty("task_status");
+      expect(crossed[2]!.details).toMatchObject({ delegations_used: 100, task_id: c.task.id,
+        latest_result: expect.objectContaining({ agent_id: "agent-2", status: "succeeded" }), consecutive_failures: 0, priced_spend_usd: null });
+      expect(new Set(crossed.map(r => r.key)).size).toBe(3);
+      expect(Object.keys((await c.stored()).collaboration as object).sort()).toEqual(["coordinator_agent_id", "declared_at", "delegations_offset",
+        "participant_agent_ids", "reminder_notified_through", "task_id", "turns_offset"]);
+      expect((await c.stored()).collaboration).toMatchObject({ reminder_notified_through: 100 });
+
+      // A replayed tool call is charged and reminded once.
+      const replayed = await c.spawn({ tool_call_id: "reminder-replay" });
+      const again = await c.spawn({ tool_call_id: "reminder-replay" });
+      expect(again.delegation.id).toBe(replayed.delegation.id);
+      await c.finish(replayed);
+      const used = Number((await db.pool.query(`SELECT count(*)::int AS n FROM run_delegations WHERE group_id=$1 AND status<>'policy_denied'`, [c.group.id])).rows[0]!.n);
+      expect(used).toBe(132);
+      // A jump across several thresholds (132 → 402) is summarised in one notice.
+      await c.seedHandoffs(402 - used - 1);
+      await c.finish(await c.spawn());
+      expect((await c.reminders()).slice(3).map(r => r.details.crossed_thresholds)).toEqual([[200, 400]]);
+      // Concurrent admissions across one threshold (799, 800) notify exactly once and both continue.
+      await c.seedHandoffs(798 - 402);
+      // Different participants: one Agent's own Room turns stay serialized.
+      const pair = await Promise.all([c.spawn({ tool_call_id: "concurrent-a" }), c.spawn({ tool_call_id: "concurrent-b", target_agent_id: "agent-3" })]);
+      expect(pair.every(child => Boolean(child.child_run_id))).toBe(true);
+      expect((await c.reminders()).slice(4).map(r => r.details.threshold)).toEqual([800]);
+      expect((await c.read()).collaboration).toMatchObject({ delegations_used: 800, next_reminder_at: 1600, active: true });
+      await c.finish(pair[0]!);
+
+      // The coordinator's completion turn for the last child is the person's
+      // turn (manual), still within the collaboration, and may delegate again.
+      await publishBudgetTurn(c.input.parent_run_id);
+      await publishBudgetTurn(pair[1]!.child_run_id!, true);
+      const report = (await db.pool.query<{ id: string; trigger_origin: string; cause_run_id: string; run_group_id: string }>(
+        `SELECT r.id, r.trigger_origin, r.cause_run_id, r.run_group_id FROM runs r JOIN agent_run_groups g ON g.id=r.run_group_id
+          JOIN messages m ON m.id=g.trigger_message_id
+         WHERE g.session_id=$1 AND m.metadata_json->>'continuation_event_kind'='agent_delegation_result' ORDER BY r.created_at DESC LIMIT 1`,
+      [c.conversation.id])).rows[0]!;
+      expect(report).toMatchObject({ trigger_origin: "continuation", cause_run_id: c.group.root_run_id });
+      await expect(effectiveRunTrigger(db.pool, (await new PgRunRepository(db.pool).getRun("space-1", report.id))!))
+        .resolves.toMatchObject({ origin: "manual", rootRunId: c.group.root_run_id });
+      const subgroup = (await new PgAgentGroupRepository(db.pool).getGroup("space-1", report.run_group_id))!;
+      expect(subgroup.budget_json).toMatchObject({ max_fanout: 2, container_group_id: c.group.id });
+      const registry = new Map(POLICY_ACTION_REGISTRY.map((definition) => [definition.action, definition]));
+      // A Project write from that completion executes as the person's (B70), past 128 handoffs and 256 turns.
+      expect(engineCheck(registry, { action: "task.create", space_id: "space-1", trigger_origin: "manual" }).decision).toBe("allow");
+      const fromCompletion = { group_id: report.run_group_id, parent_run_id: report.id, root_run_id: report.id };
+      const stage2 = await c.spawn(fromCompletion);
+      expect(stage2.child_run_id).toBeTruthy();
+      expect((await c.spawn({ ...fromCompletion, target_agent_id: "agent-3" })).child_run_id).toBeTruthy();
+      // One completion turn reaches each participant at most once at a time.
+      expect(await c.spawn(fromCompletion)).toMatchObject({ child_run_id: null, delegation: { status: "policy_denied" } });
+      expect((await db.pool.query("SELECT status FROM tasks WHERE id=$1", [c.task.id])).rows[0]).toEqual({ status: "inbox" });
+      // A later stage — the completion of a completion turn's child — keeps the
+      // person's original cause and fan-out, so it is the person's turn again.
+      await publishBudgetTurn(report.id);
+      await publishBudgetTurn(stage2.child_run_id!);
+      const later = await withDbTransaction(db.pool, client => agentOriginContinuation(client, "space-1", report.run_group_id, stage2.delegation.id));
+      expect(later).toMatchObject({ cause: { run_id: c.group.root_run_id, within_budget: true }, delegation_budget: { max_fanout: 2, container_group_id: c.group.id } });
+    });
+
+    it.for(["pause", "cancel", "task_closed", "revoked", "failures", "degraded", "invalid", "fanout"])("still stops or bounds a reminder collaboration on %s", async (mode, ctx) => {
+      if (!db.available || !service || !groupService) return ctx.skip();
+      const c = await reminderCollaboration(`Reminder ${mode}`);
+      const first = await c.declare();
+      expect(first.child_run_id).toBeTruthy();
+      const denied = { child_run_id: null, delegation: { status: "policy_denied" } };
+      const continuation = () => withDbTransaction(db.pool, client => agentOriginContinuation(client, "space-1", c.group.id, first.delegation.id));
+      if (mode === "fanout") {
+        // The per-turn bound counts children still outstanding, not the lifetime total.
+        await db.pool.query(`UPDATE agent_run_groups SET budget_json=budget_json || '{"max_fanout":1,"soft_max_fanout":1,"hard_max_fanout":1}'::jsonb WHERE id=$1`, [c.group.id]);
+        expect(await c.spawn()).toMatchObject(denied);
+        await c.finish(first);
+        for (let n = 0; n < 3; n += 1) { const next = await c.spawn(); expect(next.child_run_id).toBeTruthy(); await c.finish(next); }
+        return;
+      }
+      await c.finish(first, mode === "failures" || mode === "degraded" ? "failed" : "succeeded");
+      if (mode === "failures") {
+        for (let n = 0; n < 2; n += 1) await c.finish(await c.spawn(), "failed");
+        // The read view reports the same stop admission applies.
+        expect((await c.read()).collaboration).toMatchObject({ active: false, stop_reason: "repeated_failures" });
+        expect(await c.spawn()).toMatchObject(denied);
+        // The completion turn for that third failure is judged on the same
+        // facts: no manual cause, no fan-out.
+        const after = await continuation();
+        expect(after.cause).toEqual({ run_id: c.group.root_run_id, within_budget: false });
+        expect(after.delegation_budget.max_fanout).toBe(0);
+        return;
+      }
+      if (mode === "degraded") {
+        // A degraded child replied (a refused governed call of its own): it
+        // breaks the streak, so failed, degraded, failed, failed is not three in a row.
+        const replied = await c.spawn();
+        await c.finish(replied, "failed");
+        await db.pool.query("UPDATE runs SET status='degraded' WHERE id=$1", [replied.child_run_id]);
+        for (let n = 0; n < 2; n += 1) await c.finish(await c.spawn(), "failed");
+        expect((await c.read()).collaboration).toMatchObject({ active: true, stop_reason: null });
+        expect(await continuation()).toMatchObject({ cause: { run_id: c.group.root_run_id, within_budget: true }, delegation_budget: { max_fanout: 1 } });
+        expect((await c.spawn()).child_run_id).toBeTruthy();
+        return;
+      }
+      if (mode === "invalid") {
+        // An earlier shape's key is not read (or silently converted) at run time: the record is invalid.
+        await db.pool.query(`UPDATE agent_run_groups SET budget_json=jsonb_set(budget_json,'{collaboration,max_delegations}','5') WHERE id=$1`, [c.group.id]);
+        await expect(c.spawn()).rejects.toMatchObject({ statusCode: 409, responseBody: { code: "collaboration_budget_invalid" } });
+        expect(await continuation()).toMatchObject({ cause: { within_budget: false }, delegation_budget: { max_fanout: 0 } });
+        const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot });
+        const runtime = await operationRuntime(config);
+        const read = await runtime.execute("room.collaboration.get", { room_id: c.created.room.id, session_id: c.conversation.id }, sessionActor(c.owner), randomUUID());
+        expect(read.body).toMatchObject({ status: "succeeded", data: { collaboration: null, invalid: true } });
+        const changed = await runtime.execute("room.collaboration.update_participants", { group_id: c.group.id, expected_participant_agent_ids: ["agent-2"],
+          participant_agent_ids: ["agent-2"], reason: "Repair" }, sessionActor(c.owner), randomUUID(), randomUUID());
+        expect(changed.http_status).toBe(409);
+        expect(JSON.stringify(changed.body)).toContain("collaboration_budget_invalid");
+        return;
+      }
+      if (mode === "pause") {
+        const runtime = await operationRuntime(loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot }));
+        const status = (value: string) => runtime.execute("agent_group.status.set", { group_id: c.group.id, status: value }, sessionActor(c.owner), randomUUID(), randomUUID());
+        expect((await status("paused")).http_status).toBe(200);
+        await expect(c.spawn()).rejects.toMatchObject({ statusCode: 409 });
+        expect((await continuation()).cause.within_budget).toBe(false);
+        expect((await status("active")).http_status).toBe(200);
+        expect((await c.spawn()).child_run_id).toBeTruthy();
+        return;
+      }
+      const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot });
+      if (mode === "cancel") {
+        // The person cancels the coordinator through the canonical Run cancel path.
+        const { buildRunOrchestration } = await import("../src/modules/runs/orchestrationFactory.js");
+        await buildRunOrchestration(config).orchestration.cancelRun({ space_id: "space-1", run_id: c.input.parent_run_id, requested_by_user_id: "user-1" });
+        expect((await c.read()).collaboration).toMatchObject({ active: false, stop_reason: "coordinator_cancelled" });
+      }
+      if (mode === "task_closed") await db.pool.query("UPDATE tasks SET status='cancelled' WHERE id=$1", [c.task.id]);
+      if (mode === "revoked") {
+        await db.pool.query("UPDATE projects SET owner_user_id='user-2' WHERE id='project-1'");
+        await db.pool.query("UPDATE space_memberships SET role='member' WHERE id='membership-1'");
+      }
+      try {
+        if (mode === "revoked") {
+          await expect(c.spawn()).rejects.toMatchObject({ statusCode: 404 });
+          // Without Project write access the read is hidden altogether: no Task content, no controls.
+          const hiddenRead = await (await c.runtime).execute("room.collaboration.get", { room_id: c.created.room.id, session_id: c.conversation.id }, sessionActor(c.owner), randomUUID());
+          expect(hiddenRead.http_status).toBe(404);
+        } else expect(await c.spawn()).toMatchObject(denied);
+        if (mode === "task_closed") expect((await c.read()).collaboration).toMatchObject({ active: false, stop_reason: "task_closed", task_status: "cancelled" });
+        expect(await continuation()).toMatchObject({ cause: { within_budget: false }, delegation_budget: { max_fanout: 0 } });
+      } finally {
+        if (mode === "revoked") {
+          await db.pool.query("UPDATE projects SET owner_user_id='user-1' WHERE id='project-1'");
+          await db.pool.query("UPDATE space_memberships SET role='owner' WHERE id='membership-1'");
+        }
+      }
+      if (mode === "cancel") {
+        // A cancellation never revives: the same declaration stays closed and
+        // the person's stop of the group is final.
+        expect(await c.spawn({ budget_json: { collaboration: c.bounds } })).toMatchObject(denied);
+        const status = (value: string) => c.runtime.then(runtime => runtime.execute("agent_group.status.set", { group_id: c.group.id, status: value },
+          sessionActor(c.owner), randomUUID(), randomUUID()));
+        expect((await status("cancelled")).http_status).toBe(200);
+        expect((await status("active")).http_status).not.toBe(200);
+        expect((await c.read()).collaboration).toMatchObject({ group_status: "cancelled", active: false, stop_reason: "stopped" });
+        // The person's own new message is the lawful way on: a new task group
+        // whose coordinator declares again, here for the same open Task.
+        const resumed = await service!.sendMessage(c.owner, c.created.room.id, c.conversation.id, { content: "Continue the same task from where it stopped." });
+        const fresh = (await new PgAgentGroupRepository(db.pool).getGroup("space-1", resumed.task_group_ids[0]!))!;
+        expect(fresh.id).not.toBe(c.group.id);
+        const renewed = await c.declare({ group_id: fresh.id, parent_run_id: resumed.run_ids[0]!, root_run_id: fresh.root_run_id! });
+        expect(renewed.child_run_id).toBeTruthy();
+        expect((await c.read()).collaboration).toMatchObject({ group_id: fresh.id, task_id: c.task.id, active: true, delegations_used: 1 });
+        // The stopped group's declaration is untouched.
+        expect((await c.stored()).collaboration).toMatchObject({ task_id: c.task.id, coordinator_agent_id: "agent-1" });
+      }
+    });
+
+    it("declares a collaboration with nothing to confirm and refuses a mode, cap or reminder request", async (ctx) => {
+      if (!db.available || !service || !groupService) return ctx.skip();
+      const c = await reminderCollaboration("Plain declaration");
+      for (const legacy of [{ mode: "reminder" }, { max_delegations: 128 }, { mode: "finite", max_delegations: 5 }, { reminder_requested: true }]) {
+        await expect(c.spawn({ budget_json: { collaboration: { ...c.bounds, ...legacy } } })).rejects.toMatchObject({ statusCode: 422 });
+      }
+      expect(await c.stored()).not.toHaveProperty("collaboration");
+      const first = await c.declare();
+      expect(first.child_run_id).toBeTruthy();
+      const stored = (await c.stored()).collaboration as Record<string, unknown>;
+      expect(stored).toEqual({ task_id: c.task.id, participant_agent_ids: ["agent-2"], coordinator_agent_id: "agent-1",
+        delegations_offset: 0, turns_offset: 0, declared_at: expect.any(String), reminder_notified_through: 0 });
+      // Nothing asks a person to switch or confirm anything.
+      expect((await db.pool.query(`SELECT count(*)::int AS n FROM messages WHERE session_id=$1
+        AND metadata_json->>'execution_event' IN ('collaboration_reminder_requested','collaboration_mode_changed')`, [c.conversation.id])).rows[0]).toEqual({ n: 0 });
+      const view = (await c.read()).collaboration!;
+      expect(view).toMatchObject({ task_title: "Plain declaration task", delegations_used: 1, next_reminder_at: 25, active: true, stop_reason: null, can_manage: true });
+      for (const legacy of ["mode", "max_delegations", "reminder_thresholds", "reminder_requested"]) expect(view).not.toHaveProperty(legacy);
+      // Repeating the same declaration is not a reset; later legacy keys are still refused.
+      await c.finish(first);
+      expect((await c.declare()).child_run_id).toBeTruthy();
+      await expect(c.spawn({ budget_json: { collaboration: { ...c.bounds, max_delegations: 2 } } })).rejects.toMatchObject({ statusCode: 422 });
+      expect(((await c.stored()).collaboration as Record<string, unknown>).delegations_offset).toBe(0);
+      const set = await (await c.runtime).execute("room.collaboration.set_mode", { group_id: c.group.id }, sessionActor(c.owner), randomUUID(), randomUUID());
+      expect(set.http_status).not.toBe(200);
+    });
+
+    it("migrates every earlier collaboration shape once: counts, offsets and history kept, no cap, closed work stays closed", async (ctx) => {
+      if (!db.available || !service || !groupService) return ctx.skip();
+      const { readFile } = await import("node:fs/promises");
+      const statements = (await readFile(new URL("./fixtures/preSquash/0024_room_work_reminders_without_limits.sql", import.meta.url), "utf8"))
+        .split("--> statement-breakpoint").filter(part => part.trim());
+      expect(statements).toHaveLength(2);
+      const applyConversion = async () => { for (const statement of statements) await db.pool.query(statement); };
+      const c = await reminderCollaboration("Legacy shapes");
+      await c.finish(await c.declare());
+      await c.finish(await c.spawn());
+      await c.finish(await c.spawn());
+      const created = (await db.pool.query<{ at: string }>(`SELECT to_json(created_at)#>>'{}' AS at FROM agent_run_groups WHERE id=$1`, [c.group.id])).rows[0]!.at;
+      const base = { task_id: c.task.id, participant_agent_ids: ["agent-2"], coordinator_agent_id: "agent-1" };
+      const history = [{ ...base, task_id: "older-task", max_delegations: 4 }];
+      const store = (collaboration: unknown, extra: Record<string, unknown> = {}) => db.pool.query(`UPDATE agent_run_groups
+        SET budget_json=budget_json || jsonb_build_object('collaboration',$2::jsonb,'collaboration_history',$3::jsonb) || $4::jsonb WHERE id=$1`,
+      [c.group.id, JSON.stringify(collaboration), JSON.stringify(history), JSON.stringify(extra)]);
+      const current = async () => (await c.stored());
+      // A finite record from before offsets and `declared_at`, already at its old cap of 3.
+      await store({ ...base, max_delegations: 3 }, { soft_budget_notified: true });
+      await expect(c.spawn()).rejects.toMatchObject({ statusCode: 409, responseBody: { code: "collaboration_budget_invalid" } });
+      const turns = (await current()).container_turns_used;
+      await applyConversion();
+      expect(await current()).toMatchObject({ container_turns_used: turns, collaboration_history: history });
+      expect(await current()).not.toHaveProperty("soft_budget_notified");
+      expect((await current()).collaboration).toEqual({ ...base, delegations_offset: 0, turns_offset: 0, declared_at: created, reminder_notified_through: 0 });
+      // The count is kept and there is no cap any more: the fourth handoff is admitted.
+      expect((await c.read()).collaboration).toMatchObject({ delegations_used: 3, active: true, stop_reason: null });
+      await c.finish(await c.spawn());
+      expect((await c.read()).collaboration).toMatchObject({ delegations_used: 4 });
+      // A migration applied again changes nothing.
+      const once = await current();
+      await applyConversion();
+      expect(await current()).toEqual(once);
+
+      // A confirmed reminder record keeps its offsets, declaration time and reminder progress.
+      const declaredAt = "2026-11-01T10:00:00.000+00:00";
+      await store({ ...base, delegations_offset: 1, turns_offset: 2, declared_at: declaredAt, mode: "reminder",
+        reminder_thresholds: [25, 50, 100, 200], reminder_notified_through: 25, converted_from_max_delegations: 128 });
+      await applyConversion();
+      expect((await current()).collaboration).toEqual({ ...base, delegations_offset: 1, turns_offset: 2, declared_at: declaredAt, reminder_notified_through: 25 });
+      expect((await c.read()).collaboration).toMatchObject({ delegations_used: 3, active: true });
+      // A pending Agent reminder request held at the interim cap.
+      await store({ ...base, delegations_offset: 0, turns_offset: 0, declared_at: declaredAt, max_delegations: 128, reminder_requested: true });
+      await applyConversion();
+      expect((await current()).collaboration).toEqual({ ...base, delegations_offset: 0, turns_offset: 0, declared_at: declaredAt, reminder_notified_through: 0 });
+      // A record matching neither earlier shape is left as it is and still fails closed.
+      const broken = { ...base, mode: "reminder", max_delegations: 3, reminder_thresholds: [25] };
+      await store(broken);
+      await applyConversion();
+      expect((await current()).collaboration).toEqual(broken);
+      expect(await c.read()).toEqual({ collaboration: null, invalid: true });
+      await expect(c.spawn()).rejects.toMatchObject({ statusCode: 409, responseBody: { code: "collaboration_budget_invalid" } });
+
+      // Only what the earlier release's strict union accepted is converted
+      // (4c6e23c0 StoredCollaborationSchema): every record it refused stays
+      // verbatim, so it still fails closed, wrong JSON types included (no cast error).
+      const finite = { ...base, max_delegations: 3 };
+      const reminder = { ...base, mode: "reminder", reminder_thresholds: [25, 50] };
+      const refused: Array<[string, Record<string, unknown>]> = [
+        ["cap 0", { ...base, max_delegations: 0 }], ["cap 129", { ...base, max_delegations: 129 }],
+        ["fractional cap", { ...base, max_delegations: 2.5 }], ["string cap", { ...base, max_delegations: "3" }],
+        ["null cap", { ...base, max_delegations: null }], ["finite mode key", { ...finite, mode: "finite" }],
+        ["false request", { ...finite, reminder_requested: false }], ["finite with progress", { ...finite, reminder_notified_through: 1 }],
+        ["finite with thresholds", { ...finite, reminder_thresholds: [25] }], ["unknown key", { ...finite, note: "x" }],
+        ["reminder without thresholds", { ...base, mode: "reminder" }], ["empty thresholds", { ...reminder, reminder_thresholds: [] }],
+        ["decreasing thresholds", { ...reminder, reminder_thresholds: [50, 25] }], ["equal thresholds", { ...reminder, reminder_thresholds: [25, 25] }],
+        ["zero threshold", { ...reminder, reminder_thresholds: [0, 25] }], ["string threshold", { ...reminder, reminder_thresholds: [25, "x"] }],
+        ["nine thresholds", { ...reminder, reminder_thresholds: [1, 2, 3, 4, 5, 6, 7, 8, 9] }], ["object thresholds", { ...reminder, reminder_thresholds: { a: 1 } }],
+        ["other mode", { ...reminder, mode: "Reminder" }], ["reminder with request", { ...reminder, reminder_requested: true }],
+        ["marker 0", { ...reminder, converted_from_max_delegations: 0 }], ["negative progress", { ...reminder, reminder_notified_through: -1 }],
+        ["no participants", { ...finite, participant_agent_ids: [] }], ["duplicate participants", { ...finite, participant_agent_ids: ["agent-2", "agent-2"] }],
+        ["empty participant", { ...finite, participant_agent_ids: [""] }], ["numeric participant", { ...finite, participant_agent_ids: [2] }],
+        ["participants string", { ...finite, participant_agent_ids: "agent-2" }], ["empty task", { ...finite, task_id: "" }],
+        ["numeric task", { ...finite, task_id: 7 }], ["no coordinator", { task_id: c.task.id, participant_agent_ids: ["agent-2"], max_delegations: 3 }],
+        ["negative offset", { ...finite, delegations_offset: -1 }], ["fractional offset", { ...finite, turns_offset: 1.5 }],
+        ["string offset", { ...reminder, delegations_offset: "0" }], ["null declared_at", { ...finite, declared_at: null }],
+        ["not a leap day", { ...finite, declared_at: "2026-02-29T10:00:00Z" }], ["space separator", { ...finite, declared_at: "2026-11-01 10:00:00Z" }],
+        ["no offset", { ...finite, declared_at: "2026-11-01T10:00:00" }], ["month 13", { ...reminder, declared_at: "2026-13-01T10:00:00Z" }],
+        ["numeric declared_at", { ...finite, declared_at: 12345 }], ["both shapes", { ...reminder, max_delegations: 3 }],
+      ];
+      for (const [label, record] of refused) {
+        await store(record);
+        await applyConversion();
+        expect((await current()).collaboration, label).toEqual(record);
+        expect(await c.read(), label).toEqual({ collaboration: null, invalid: true });
+        await expect(c.spawn(), label).rejects.toMatchObject({ statusCode: 409, responseBody: { code: "collaboration_budget_invalid" } });
+      }
+      // Accepted edge values of the same rules are converted, the count kept.
+      const handoffs = Number((await db.pool.query<{ n: number }>(`SELECT count(*)::int AS n FROM run_delegations
+        WHERE group_id=$1 AND status<>'policy_denied'`, [c.group.id])).rows[0]!.n);
+      for (const declared of ["2024-02-29T10:00Z", "2026-11-01T10:00:00.5+0530"]) {
+        await store({ ...reminder, declared_at: declared, reminder_thresholds: [1, 8], converted_from_max_delegations: 1 });
+        await applyConversion();
+        expect((await current()).collaboration, declared).toEqual({ ...base, delegations_offset: 0, turns_offset: 0, declared_at: declared, reminder_notified_through: 0 });
+        expect((await c.read()).collaboration).toMatchObject({ delegations_used: handoffs, active: true, stop_reason: null });
+      }
+
+      // Work already finished, stopped or cancelled before the conversion stays closed after it.
+      await store({ ...base, max_delegations: 10 });
+      await db.pool.query("UPDATE tasks SET status='done' WHERE id=$1", [c.task.id]);
+      await applyConversion();
+      expect((await c.read()).collaboration).toMatchObject({ active: false, stop_reason: "task_closed", task_status: "done" });
+      expect(await c.spawn()).toMatchObject({ child_run_id: null, delegation: { status: "policy_denied" } });
+      await db.pool.query("UPDATE tasks SET status='inbox' WHERE id=$1", [c.task.id]);
+      // A coordinator Run cancelled under a legacy record without `declared_at`
+      // stays a stop: the conversion stamps the container's creation time.
+      await store({ ...base, max_delegations: 10 });
+      const rootStatus = (await db.pool.query<{ status: string }>("SELECT status FROM runs WHERE id=$1", [c.group.root_run_id])).rows[0]!.status;
+      await db.pool.query("UPDATE runs SET status='cancelled',updated_at=now() WHERE id=$1", [c.group.root_run_id]);
+      await applyConversion();
+      expect((await current()).collaboration).toMatchObject({ declared_at: created });
+      expect((await c.read()).collaboration).toMatchObject({ active: false, stop_reason: "coordinator_cancelled" });
+      await expect(c.spawn().then(r => r.child_run_id, () => null)).resolves.toBeNull();
+      await db.pool.query("UPDATE runs SET status=$2 WHERE id=$1", [c.group.root_run_id, rootStatus]);
+      await store({ ...base, max_delegations: 10 });
+      await db.pool.query("UPDATE agent_run_groups SET status='cancelled' WHERE id=$1", [c.group.id]);
+      await applyConversion();
+      expect((await c.read()).collaboration).toMatchObject({ group_status: "cancelled", active: false, stop_reason: "stopped" });
+      await expect(c.spawn().then(r => r.child_run_id, () => null)).resolves.toBeNull();
+      expect((await db.pool.query("SELECT status FROM agent_run_groups WHERE id=$1", [c.group.id])).rows[0]).toEqual({ status: "cancelled" });
+      expect((await db.pool.query("SELECT status FROM tasks WHERE id=$1", [c.task.id])).rows[0]).toEqual({ status: "inbox" });
+    });
+
+    it("judges migration 0024 numbers as the earlier release read them: JSON.parse doubles, then its zod rules", async (ctx) => {
+      if (!db.available || !service || !groupService) return ctx.skip();
+      const { readFile } = await import("node:fs/promises");
+      const statements = (await readFile(new URL("./fixtures/preSquash/0024_room_work_reminders_without_limits.sql", import.meta.url), "utf8"))
+        .split("--> statement-breakpoint").filter(part => part.trim());
+      const c = await reminderCollaboration("Legacy numbers");
+      await c.finish(await c.declare());
+      // Exact decimals (BigInt arithmetic, no double rounding): n / 10^scale.
+      const exact = (n: bigint, scale: number) => { const digits = n.toString().padStart(scale + 1, "0");
+        return scale === 0 ? digits : `${digits.slice(0, -scale)}.${digits.slice(-scale)}`; };
+      const overflow = (2n ** 1024n - 2n ** 970n).toString(); // halfway to 2^1024: JSON.parse gives Infinity
+      const maxDouble = (2n ** 1024n - 2n ** 970n - 1n).toString(); // just below: Number.MAX_VALUE
+      const underflow = exact(5n ** 1075n, 1075); // 2^-1075, halfway to the smallest subnormal: 0
+      const aboveUnderflow = exact(5n ** 1075n * 10n ** 25n + 1n, 1100); // rounds up to 2^-1074
+      const belowOne = exact((2n ** 54n - 1n) * 5n ** 54n, 54); // 1 - 2^-54, ties to even: 1
+      const belowBelowOne = exact((2n ** 54n - 1n) * 5n ** 54n * 10n ** 6n - 1n, 60); // just under: 1 - 2^-53
+      const above128 = exact((128n * 2n ** 46n + 1n) * 5n ** 46n, 46); // 128 + 2^-46, ties to even: 128
+      const aboveAbove128 = exact((128n * 2n ** 46n + 1n) * 5n ** 46n * 10n ** 6n + 1n, 52); // just over: 128 + 2^-45
+      const base = `"task_id":"${c.task.id}","participant_agent_ids":["agent-2"],"coordinator_agent_id":"agent-1"`;
+      const finite = (fields: string) => `{${base},"max_delegations":3${fields}}`;
+      const reminder = (thresholds: string, fields = "") => `{${base},"mode":"reminder","reminder_thresholds":[${thresholds}]${fields}}`;
+      // [label, raw JSON text as stored, accepted by the earlier release]
+      const table: Array<[string, string, boolean]> = [
+        ["2^53 and 2^53+1 thresholds collapse", reminder("9007199254740992,9007199254740993"), false],
+        ["2^53-1 and 2^53 thresholds", reminder("9007199254740991,9007199254740992"), true],
+        ["2^53 and 2^53+2 thresholds", reminder("9007199254740992,9007199254740994"), true],
+        ["1 and 1e308 thresholds", reminder("1,1e308"), true],
+        ["Number.MAX_VALUE threshold", reminder(`1,${maxDouble}`), true],
+        ["threshold at the overflow halfway", reminder(`1,${overflow}`), false],
+        ["fraction rounding to the threshold 1", reminder(`${belowOne},2`), true],
+        ["fraction just under 1", reminder(`${belowBelowOne},2`), false],
+        ["thresholds 1 and 1.00000000000000001 collapse", reminder("1,1.00000000000000001"), false],
+        ["underflowing threshold is 0", reminder("1e-400,1"), false],
+        ["negative zero threshold", reminder("-0,1"), false],
+        ["offset 1e308", finite(`,"delegations_offset":1e308`), true],
+        ["offset Number.MAX_VALUE", finite(`,"turns_offset":${maxDouble}`), true],
+        ["offset at the overflow halfway", finite(`,"delegations_offset":${overflow}`), false],
+        ["offset 1e400", finite(`,"delegations_offset":1e400`), false],
+        ["negative offset overflow", finite(`,"turns_offset":-${overflow}`), false],
+        ["offset underflow to 0", finite(`,"delegations_offset":1e-400`), true],
+        ["negative offset underflow to -0", finite(`,"turns_offset":-1e-400`), true],
+        ["offset -0", finite(`,"delegations_offset":-0`), true],
+        ["offset exactly 2^-1075", finite(`,"turns_offset":${underflow}`), true],
+        ["offset just above 2^-1075 (subnormal)", finite(`,"turns_offset":${aboveUnderflow}`), false],
+        ["offset smallest subnormal", finite(`,"delegations_offset":5e-324`), false],
+        ["offset 1.0", finite(`,"delegations_offset":1.0`), true],
+        ["fractional offset rounding to 1", finite(`,"delegations_offset":${belowOne}`), true],
+        ["fractional offset just under 1", finite(`,"delegations_offset":${belowBelowOne}`), false],
+        ["progress 1e308", reminder("25,50", `,"reminder_notified_through":1e308`), true],
+        ["cap rounding to 128", `{${base},"max_delegations":${above128}}`, true],
+        ["cap just over 128", `{${base},"max_delegations":${aboveAbove128}}`, false],
+        ["cap 128.00000000000001", `{${base},"max_delegations":128.00000000000001}`, true],
+        ["cap 128.0000000000001", `{${base},"max_delegations":128.0000000000001}`, false],
+        ["cap rounding to 1", `{${base},"max_delegations":0.99999999999999999}`, true],
+        ["cap underflow to 0", `{${base},"max_delegations":1e-400}`, false],
+        ["marker rounding to 128", reminder("25", `,"converted_from_max_delegations":128.00000000000001`), true],
+        ["marker 1e308", reminder("25", `,"converted_from_max_delegations":1e308`), false],
+      ];
+      const history = '[{"task_id":"older-task","max_delegations":4}]';
+      const text = async () => (await db.pool.query<{ collaboration: string; history: string; turns: string | null }>(
+        `SELECT budget_json->>'collaboration' AS collaboration, budget_json->>'collaboration_history' AS history,
+                budget_json->>'container_turns_used' AS turns FROM agent_run_groups WHERE id=$1`, [c.group.id])).rows[0]!;
+      for (const [label, raw, accepted] of table) {
+        // Raw text straight into jsonb: no JavaScript serialisation smooths the decimal.
+        await db.pool.query(`UPDATE agent_run_groups SET budget_json=budget_json
+          || jsonb_build_object('collaboration',$2::text::jsonb,'collaboration_history',$3::text::jsonb) WHERE id=$1`, [c.group.id, raw, history]);
+        const before = await text();
+        // What the earlier release read: JSON.parse of the jsonb text PostgreSQL returns, then its own schema.
+        expect(LegacyStoredCollaborationSchema.safeParse(JSON.parse(before.collaboration)).success, label).toBe(accepted);
+        expect(LegacyStoredCollaborationSchema.safeParse(JSON.parse(raw)).success, label).toBe(accepted);
+        for (const statement of statements) await db.pool.query(statement);
+        const after = await text();
+        expect(after.history, label).toBe(before.history);
+        expect(after.turns, label).toBe(before.turns);
+        if (!accepted) {
+          expect(after.collaboration, label).toBe(before.collaboration);
+          expect(await c.read(), label).toEqual({ collaboration: null, invalid: true });
+          await expect(c.spawn(), label).rejects.toMatchObject({ statusCode: 409, responseBody: { code: "collaboration_budget_invalid" } });
+          continue;
+        }
+        const was = JSON.parse(before.collaboration) as Record<string, unknown>;
+        const now = JSON.parse(after.collaboration) as Record<string, unknown>;
+        expect(Object.keys(now).sort(), label).toEqual(["coordinator_agent_id", "declared_at", "delegations_offset",
+          "participant_agent_ids", "reminder_notified_through", "task_id", "turns_offset"]);
+        // Every kept number is the stored value itself, so the current release reads the same double.
+        for (const key of ["delegations_offset", "turns_offset", "reminder_notified_through"]) {
+          expect(now[key], `${label}: ${key}`).toBe(was[key] ?? 0);
+        }
+        const kept = (await db.pool.query<{ same: boolean }>(`SELECT bool_and(COALESCE(v.before->k, '0'::jsonb) = v.after->k) AS same
+          FROM (SELECT $1::text::jsonb AS before, $2::text::jsonb AS after) v,
+               unnest(ARRAY['delegations_offset','turns_offset','reminder_notified_through']) k`, [before.collaboration, after.collaboration])).rows[0]!.same;
+        expect(kept, label).toBe(true);
+        expect((await c.read()).invalid, label).toBe(false);
+      }
+    });
+
+    it("keeps the soft-notice flag of a person-rooted container a discussion charges, through migration 0024", async (ctx) => {
+      if (!db.available || !service) return ctx.skip();
+      const { readFile } = await import("node:fs/promises");
+      const statements = (await readFile(new URL("./fixtures/preSquash/0024_room_work_reminders_without_limits.sql", import.meta.url), "utf8"))
+        .split("--> statement-breakpoint").filter(part => part.trim());
+      const { owner, created, conversation } = await roomWithSpecialist("Discussion soft flag");
+      const discussions = new RoomDiscussionService(loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot }), db.pool);
+      const opened = await discussions.open(owner, created.room.id, conversation.id, { topic: "Keep it?", participant_agent_ids: ["agent-2"], shape: "open" });
+      await completeTurn(opened.run_ids[0]!, "Yes.");
+      const [closing] = await queuedRunsFor(conversation.id, "agent-1");
+      await completeTurn(closing!.id, "Agreed.");
+      const sent = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Plain work." });
+      const flag = '{"soft_budget_notified":true}';
+      for (const id of [opened.task_group_ids[0]!, sent.task_group_ids[0]!]) {
+        await db.pool.query(`UPDATE agent_run_groups SET budget_json=budget_json || $2::jsonb WHERE id=$1`, [id, flag]);
+      }
+      for (const statement of statements) await db.pool.query(statement);
+      const kept = async (id: string) => (await db.pool.query<{ kept: boolean }>(
+        `SELECT budget_json ? 'soft_budget_notified' AS kept FROM agent_run_groups WHERE id=$1`, [id])).rows[0]!.kept;
+      expect(await kept(opened.task_group_ids[0]!)).toBe(true);
+      expect(await kept(sent.task_group_ids[0]!)).toBe(false);
+    });
+
+    it("fails closed on a stored null collaboration in admission, continuation and the read view", async (ctx) => {
+      if (!db.available || !service || !groupService) return ctx.skip();
+      const c = await reminderCollaboration("Null collaboration");
+      const first = await c.declare();
+      await c.finish(first);
+      // A damaged record: the key is present with a null value.
+      await db.pool.query(`UPDATE agent_run_groups SET budget_json=jsonb_set(budget_json,'{collaboration}','null'::jsonb) WHERE id=$1`, [c.group.id]);
+      expect((await c.stored())).toHaveProperty("collaboration", null);
+      await expect(c.spawn()).rejects.toMatchObject({ statusCode: 409, responseBody: { code: "collaboration_budget_invalid" } });
+      // A new declaration cannot paper over it either.
+      await expect(c.declare()).rejects.toMatchObject({ statusCode: 409, responseBody: { code: "collaboration_budget_invalid" } });
+      const continuation = await withDbTransaction(db.pool, client => agentOriginContinuation(client, "space-1", c.group.id, first.delegation.id));
+      expect(continuation).toMatchObject({ cause: { within_budget: false }, delegation_budget: { max_fanout: 0 } });
+      expect(await c.read()).toEqual({ collaboration: null, invalid: true });
+      // Neither temporary-delegation notice treats it as unconfigured.
+      expect((await db.pool.query(`SELECT count(*)::int AS n FROM messages WHERE session_id=$1
+        AND metadata_json->>'execution_event' IN ('delegation_soft_budget_exceeded','delegation_reminder')`, [c.conversation.id])).rows[0]).toEqual({ n: 0 });
+    });
+
+    it("hides a Task moved out of the Project from the old Room and admits nothing for it", async (ctx) => {
+      if (!db.available || !service || !groupService) return ctx.skip();
+      const moved = await reminderCollaboration("Moved task");
+      await db.pool.query(`INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at)
+        VALUES ('project-moved', 'space-1', 'user-1', 'Other Project', 'active', now(), now()) ON CONFLICT DO NOTHING`);
+      const child = await moved.declare();
+      await moved.finish(child);
+      await new PgTaskRepository(db.pool).updateTask(moved.owner, moved.task.id, { project_id: "project-moved", title: "Renamed elsewhere" });
+      // The old Room shows neither the new title nor the status, and admits nothing.
+      const view = (await moved.read()).collaboration;
+      expect(view).toMatchObject({ task_id: moved.task.id, task_title: null, task_status: null, active: false, stop_reason: "task_unavailable" });
+      expect(JSON.stringify(view)).not.toContain("Renamed elsewhere");
+      expect(await moved.spawn()).toMatchObject({ child_run_id: null, delegation: { status: "policy_denied" } });
+      const continuation = await withDbTransaction(db.pool, client => agentOriginContinuation(client, "space-1", moved.group.id, child.delegation.id));
+      expect(continuation.cause.within_budget).toBe(false);
+    });
+
+    it("names priced spend in a reminder only when catalog-priced usage exists", async (ctx) => {
+      if (!db.available || !service || !groupService) return ctx.skip();
+      const c = await reminderCollaboration("Priced reminder");
+      const first = await c.declare();
+      await c.finish(first);
+      const usage = new PgUsageRepository(db.pool);
+      const instanceId = await usage.getOrCreateInstanceId();
+      await usage.appendEvent(normalizeUsageObservation({
+        space_id: "space-1", event_type: "llm.generation", source_type: "local_run", execution_channel: "managed_api",
+        run_id: first.child_run_id!, agent_id: "agent-2", estimated_cost_usd: 1.25, cost_accuracy: "catalog",
+        usage_details: { input: 10, output: 10 }, usage_accuracy: "estimated", idempotency_key: `collab-priced:${first.child_run_id}`,
+      }, instanceId, { owner_user_id: "user-1", visibility: "space_shared", access_level: "full", source_resource_type: null,
+        source_resource_id: null, project_folder_id: null, project_id: null, grant_snapshots: [] }));
+      // Recorded handoffs bring the next real one to the first threshold.
+      await c.seedHandoffs(23);
+      await c.finish(await c.spawn());
+      const [notice] = await c.reminders();
+      expect(notice!.details).toMatchObject({ threshold: 25, priced_spend_usd: 1.25 });
+      const content = (await db.pool.query<{ content: string }>(`SELECT content FROM messages WHERE session_id=$1
+        AND metadata_json->>'execution_event'='collaboration_reminder'`, [c.conversation.id])).rows[0]!.content;
+      expect(content).toContain("Priced spend: $1.25.");
+    });
+
+    it("never publishes the manager's private Task content in Room collaboration notices", async (ctx) => {
+      if (!db.available || !service || !groupService) return ctx.skip();
+      const c = await reminderCollaboration("Secret launch plan");
+      await addRoomMember(c.created.room.id, "user-2");
+      const member = { spaceId: "space-1", userId: "user-2" };
+      // The Task is private to its owner: the other Room member cannot read it.
+      await db.pool.query("UPDATE tasks SET description='Confidential acceptance notes', status='in_progress' WHERE id=$1", [c.task.id]);
+      expect(await new PgTaskRepository(db.pool).getTask(member, c.task.id)).toBeNull();
+      const first = await c.declare();
+      await c.finish(first);
+      await c.seedHandoffs(23);
+      await c.finish(await c.spawn());
+      // Every collaboration notice the other member reads through the Room's own read path.
+      const page = await service.listMessages(member, c.created.room.id, c.conversation.id, { limit: 200, offset: 0 });
+      const items = (page as unknown as { items: Array<{ content: string; metadata_json: Record<string, unknown> | null }> }).items;
+      const notices = items.filter(m => String(m.metadata_json?.execution_event ?? "").startsWith("collaboration_"));
+      expect(notices.map(m => m.metadata_json!.execution_event).sort())
+        .toEqual(["collaboration_reminder"]);
+      for (const notice of notices) {
+        const visible = JSON.stringify(notice);
+        expect(visible).not.toContain("Secret launch plan task");
+        expect(visible).not.toContain("Confidential acceptance notes");
+        expect(visible).not.toContain("in_progress");
+        expect(visible).not.toMatch(/task_title|task_status/);
+      }
+      // The manager still sees the Task through their own authorized read.
+      expect((await c.read()).collaboration).toMatchObject({ task_title: "Secret launch plan task", task_status: "in_progress" });
+    });
+
+    it("resumes a coordinator completion turn whose child finished while the collaboration was paused", async (ctx) => {
+      if (!db.available || !service || !groupService) return ctx.skip();
+      const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot });
+      const c = await reminderCollaboration("Paused completion", ["agent-2", "agent-3"]);
+      const first = await c.declare();
+      await publishBudgetTurn(c.input.parent_run_id);
+      await publishBudgetTurn(first.child_run_id!, true);
+      const report = (await db.pool.query<{ id: string; run_group_id: string }>(
+        `SELECT r.id, r.run_group_id FROM runs r JOIN agent_run_groups g ON g.id=r.run_group_id JOIN messages m ON m.id=g.trigger_message_id
+          WHERE g.session_id=$1 AND m.metadata_json->>'continuation_event_kind'='agent_delegation_result' ORDER BY r.created_at DESC LIMIT 1`,
+        [c.conversation.id])).rows[0]!;
+      expect(report.run_group_id).not.toBe(c.group.id);
+      const reviewer = await c.spawn({ group_id: report.run_group_id, parent_run_id: report.id, root_run_id: report.id, target_agent_id: "agent-3" });
+      expect(reviewer.child_run_id).toBeTruthy();
+      // The completion turn yields on its reviewer through the real wait action.
+      await dispatchQueuedRoomRuns([report.id]);
+      const repo = new PgRunRepository(db.pool);
+      const caller = (await repo.getAgentRun("space-1", report.id))!;
+      const binding = (await resolveAgentDelegationToolBinding(config, caller, { pool: db.pool }))!;
+      expect((await runAgentRoomToolCall({ id: randomUUID(), name: "agent.wait_for_results", arguments_json: "{}" }, binding, caller)).modelResult)
+        .toMatchObject({ status: "waiting" });
+      const status = async () => (await repo.getRun("space-1", report.id))!.status;
+      expect(await status()).toBe("waiting_for_dependency");
+      const runtime = await c.runtime;
+      const setStatus = (value: string) => runtime.execute("agent_group.status.set", { group_id: c.group.id, status: value }, sessionActor(c.owner), randomUUID(), randomUUID());
+      expect((await setStatus("paused")).http_status).toBe(200);
+      // The reviewer finishes during the pause: the paused container holds its completion turn.
+      await publishBudgetTurn(reviewer.child_run_id!, true);
+      expect(await status()).toBe("waiting_for_dependency");
+      expect((await c.read()).collaboration).toMatchObject({ group_status: "paused", active: false, stop_reason: "paused" });
+      // The person resumes; the committed wake re-evaluates the subgroup's parked turn — no manual spawn.
+      expect((await setStatus("active")).http_status).toBe(200);
+      const registry = new JobHandlerRegistry();
+      registerAgentGroupResumeWakeHandler(registry, config);
+      const [job] = (await db.pool.query<{ id: string; user_id: string }>(`SELECT id, user_id FROM jobs WHERE job_type=$1 AND status='pending'
+        AND payload_json->>'group_id'=$2`, [AGENT_GROUP_RESUME_WAKE_JOB, c.group.id])).rows;
+      expect(job).toBeDefined();
+      expect(await registry.dispatch({ job_id: job!.id, space_id: "space-1", user_id: job!.user_id, job_type: AGENT_GROUP_RESUME_WAKE_JOB,
+        attempts: 1, max_attempts: 5, worker_id: "test", payload: { group_id: c.group.id } })).toMatchObject({ woken: true });
+      expect(await status()).toBe("queued");
+      expect((await c.read()).collaboration).toMatchObject({ group_status: "active", active: true, stop_reason: null });
     });
 
     it("charges every branch of a delegation chain to one container", async (ctx) => {
@@ -4387,8 +5156,19 @@ describe("Room workflow (real Postgres)", () => {
           client.release();
         }
       }
-      expect(budgets.map((budget) => budget.max_fanout)).toEqual([...Array(39).fill(10), 0, 0]);
+      // A person's own container has no turn ceiling: past the old 40 turns
+      // every branch keeps its fan-out and is charged to the same counter.
+      expect(budgets.map((budget) => budget.max_fanout)).toEqual(Array(41).fill(10));
       expect(budgets.every((budget) => budget.container_group_id === groupId)).toBe(true);
+      expect((await new PgAgentGroupRepository(db.pool).getGroup("space-1", groupId))!.budget_json).toMatchObject({ container_turns_used: 41 });
+      // A container not rooted in the person's turn keeps its hard turn ceiling.
+      await db.pool.query("UPDATE runs SET trigger_origin='continuation' WHERE id=$1", [sent.run_ids[0]]);
+      await db.pool.query(`UPDATE agent_run_groups SET budget_json=budget_json || '{"container_turns_used":38}'::jsonb WHERE id=$1`, [groupId]);
+      const bounded = [];
+      for (let branch = 0; branch < 3; branch += 1) {
+        bounded.push(await withDbTransaction(db.pool, client => agentOriginContinuation(client, "space-1", groupId)));
+      }
+      expect(bounded.map(b => [b.delegation_budget.max_fanout, b.cause.within_budget])).toEqual([[10, true], [0, true], [0, false]]);
     });
 
     it("lets only whoever may spend a login continue a turn held on it", async (ctx) => {
@@ -5642,12 +6422,15 @@ describe("Room workflow (real Postgres)", () => {
     });
     expect(firstRun.rows[0]!.prompt).toContain('You are now in "Main".');
     expect(firstRun.rows[0]!.prompt).toContain("Research this remotely.");
-    expect(firstRun.rows[0]!.capabilities_json).toEqual(ROOM_CONVERSATION_TOOL_ALLOWANCE);
+    // A Project Room declares the application package's tools too; it is not enabled here, so none is granted.
+    const projectRoomAllowance = [...ROOM_CONVERSATION_TOOL_ALLOWANCE, ...PROJECT_APPLICATIONS_TOOL_ALLOWANCE];
+    expect(firstRun.rows[0]!.capabilities_json).toEqual(projectRoomAllowance);
     expect(firstRun.rows[0]!.permission_snapshot_json?.scenario_tool_allowance)
-      .toEqual(ROOM_CONVERSATION_TOOL_ALLOWANCE);
+      .toEqual(projectRoomAllowance);
     expect(new Set(
       firstRun.rows[0]!.permission_snapshot_json?.tool_grants?.map((grant) => grant.action_id) ?? [],
-    )).toEqual(new Set(["authorization.request", ...ROOM_CONVERSATION_TOOL_ALLOWANCE]));
+    )).toEqual(new Set(["authorization.request", ...ROOM_CONVERSATION_TOOL_ALLOWANCE.filter((id) => id !== "source.gmail.mail.read")]));
+    // The on-demand Gmail read is offered in a Room only to a person whose Gmail allows Agent reads (ADR 0033 §6), and nobody here has Gmail.
     const firstRunRecord = await new PgRunRepository(db.pool).getAgentRun("space-1", first.run_ids[0]!);
     if (!firstRunRecord) throw new Error("host-bound Room Run was not persisted");
     await expect(new PgRouteDecisionRepository(db.pool).routeRun(firstRunRecord))

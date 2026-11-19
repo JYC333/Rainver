@@ -156,6 +156,48 @@ GET/POST/PATCH /api/v1/projects/{projectId}/folders/{folderId}/execution-config
 - Save to Folder requires the exact draft version and Host existence/hash observed
   by the editor, is atomic, rejects traversal/symlink escapes and secret-like
   paths, and is capped at 1 MiB, matching the File-page read limit.
+  `writeFolderFile`/`restoreFolderFile` (`packages/folder-read/src/write.ts`)
+  check names once and then do every mutation through a pinned parent
+  directory, so an Agent swapping a checked directory for a link cannot
+  redirect a person's save: on Linux each component is opened (or created
+  with `mkdir`) relative to the previous `/proc/self/fd` handle with
+  `O_NOFOLLOW`, and the preimage read, exclusive temporary write, recheck,
+  rename and removal are relative to the final handle. A link anywhere below
+  the root refuses the save, as it already refuses the read. Because a pinned
+  handle follows a directory renamed out of the root, every handle in the
+  chain stays open and is proved (device/inode against the named entry of the
+  one above, and the root against its canonical path) to still hang from the
+  root just before and just after the rename or removal; Node has no
+  `renameat`, so the window between the two is narrowed, not closed. During
+  a save the preimage stays linked under a second private name (a hard link
+  to the same inode; a filesystem without hard links refuses the save). A
+  move caught by the second proof is undone in the moved directory touching
+  only this save's own file, identified by inode after it is moved aside,
+  and the preimage goes back with a no-clobber `link`, so its inode and mode
+  (for example `0600`) are kept; a removal likewise moves the checked file
+  aside and deletes it only once its directory is proved still in the root,
+  otherwise linking it back. When another writer replaced or recreated the
+  name meanwhile, their file is left alone, the preimage (or removed file)
+  is kept under its `.rainver-preimage-`/`.rainver-remove-` name, and the
+  save fails with `write_failed` naming it and its directory; a full undo is
+  reported as `path_forbidden`. Neither is ever reported as a success, and an
+  undo failure is never swallowed. A process killed mid-save can leave such a
+  link in the Folder. Folder writes are
+  Linux-only: macOS can refuse links in one `open` but Node has no
+  directory-relative rename/unlink there, so a pathname rename or removal
+  could follow a link swapped in after the check (a restore could delete a
+  same-named file outside the Folder). macOS and other platforms therefore
+  refuse Save to Folder and restore with an explicit reason; Folder reads on
+  macOS are unaffected. Cross-process saves of one file serialize on a
+  lock in a per-user `0700` directory under the temp dir and wait at most 30
+  seconds. The lock directory always holds exactly one holder entry named by
+  a unique token (pid, Linux process start time, random id): it is taken by
+  renaming an already-filled candidate onto the lock name, and both release
+  and takeover are "unlink this exact token, then `rmdir`", so only one
+  process can take over a dead holder and none can remove a lock a live
+  holder has since taken. A holder is dead only when its pid is gone or now
+  belongs to a process with a different start time; a live holder is never
+  taken over by age.
 - Drafts are private recovery rows owned by the authenticated Project writer:
   opening a file creates none, the first changed document upserts one bounded
   row, and a successful Save to Folder deletes only the exact saved version.

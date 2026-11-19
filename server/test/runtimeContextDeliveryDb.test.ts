@@ -92,8 +92,10 @@ beforeEach(async () => {
   );
   await db.pool.query(
     `INSERT INTO agent_versions (id,agent_id,space_id,version_label,system_prompt,context_policy_json,memory_policy_json,capabilities_json,tool_permissions_json,created_at)
-     VALUES ($1,$2,$3,'v1','test','{}','{}','[]','{}',now())`,
-    [VERSION, AGENT, SPACE],
+     VALUES ($1,$2,$3,'v1',$4,'{}','{}','[]','{}',now())`,
+    // A stored instruction may keep the editor's surrounding whitespace;
+    // acquisition plans it trimmed and Delivery must compare it the same way.
+    [VERSION, AGENT, SPACE, "\n  test\n"],
   );
   await db.pool.query(`UPDATE agents SET current_version_id=$2 WHERE id=$1`, [AGENT, VERSION]);
   await db.pool.query(
@@ -699,6 +701,43 @@ describe("Invocation Delivery and Snapshot persistence", () => {
         ? String(messageItem.payload.text).replaceAll("README.md", replacement)
         : skillMode ? "Forged selection" : String(messageItem.payload.text).replace("What code did I choose?", replacement);
       await expect(create(tampered)).rejects.toMatchObject({ statusCode: 409 });
+    }
+    // Delivery re-checks the Agent instruction like a preview does, and
+    // refuses any source type it has no owner re-check for.
+    const forgedInstruction = structuredClone(result.envelope);
+    forgedInstruction.items.find((item) => item.source_ref.type === "agent_version")!.payload.text = "Forged instruction";
+    await expect(create(forgedInstruction)).rejects.toMatchObject({
+      statusCode: 409, message: "Runtime Context Agent instruction changed after planning",
+    });
+    const unknownSource = structuredClone(result.envelope);
+    (unknownSource.items.find((item) => item.source_ref.type === "agent_version")!.source_ref as { type: string }).type = "unproduced_source";
+    await expect(create(unknownSource)).rejects.toMatchObject({
+      statusCode: 409, message: "Invocation Delivery source type 'unproduced_source' is not reauthorizable",
+    });
+    if (sourceState === "skill_project") {
+      // Isolation is judged on the snapshot's Project in both acquisition
+      // and Delivery: a plan made before the Agent was retained elsewhere is
+      // refused, and a new plan no longer carries its instruction.
+      const retained = randomUUID();
+      await db.pool.query(`INSERT INTO projects (id,space_id,owner_user_id,name,status,created_at,updated_at) VALUES ($1,$2,$3,'Retained','active',now(),now())`, [retained, SPACE, USER]);
+      await db.pool.query(`UPDATE agents SET access_project_id=$2 WHERE id=$1`, [AGENT, retained]);
+      await expect(create()).rejects.toMatchObject({
+        statusCode: 409, message: "Source Project Agent instructions cannot enter an isolated execution",
+      });
+      const replanned = await createProductionRuntimeContextPlanningService(db.pool).planExecution({
+        identity: { spaceId: SPACE, userId: USER },
+        invocationId: RUN,
+        deliveryId: randomUUID(),
+        turn: {
+          work_context_scope_id: sessionId,
+          expected_setup_version: 1,
+          current_message_ref: { type: "message", id: MESSAGE },
+          one_off_refs: [],
+          invocation_purpose: "agent_task",
+        },
+      });
+      expect(replanned.envelope.items.some((item) => item.source_ref.type === "agent_version")).toBe(false);
+      await db.pool.query(`UPDATE agents SET access_project_id=NULL WHERE id=$1`, [AGENT]);
     }
     await db.pool.query(
       `UPDATE runs

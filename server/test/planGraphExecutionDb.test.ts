@@ -15,6 +15,7 @@ import { PgAutomationRepository } from "../src/modules/automations/repository.js
 import { assertBudgetSourcesAvailable } from "../src/modules/runs/budgetEnforcement.js";
 import { WorkflowExecutionService } from "../src/modules/automations/workflowExecutionService.js";
 import { actionNodeHandlerRegistry, ActionNodeHandlerError } from "../src/modules/automations/actionNodeRegistry.js";
+import { workflowExecutionOutcomeHandlerRegistry, type WorkflowExecutionOutcomeContext } from "../src/modules/automations/workflowExecutionOutcomeRegistry.js";
 import { withQueryableTransaction, type SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 import { seedServerRuntimeProfile } from "./support/domainSeeds.js";
 import type { RunBudgetSource } from "../src/modules/runs/contractSnapshot.js";
@@ -652,6 +653,77 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     await expect(plans.executePlan(outsider, planId, { agentId: AGENT }))
       .rejects.toMatchObject({ statusCode: 404 });
     expect((await plans.getPlan(identity, planId))?.root_run_id).toBeNull();
+  });
+
+  it("closes a Workflow Execution whose coordinator Run ended outside the graph, scheduling nothing under it", async () => {
+    if (!db.available) return;
+    const now = new Date().toISOString();
+    await db.pool.query(
+      `INSERT INTO automations (
+         id, space_id, owner_user_id, agent_id, name, trigger_type, status,
+         config_json, created_at, updated_at
+       ) VALUES ($1, $2, $3, $4, 'Cancelled root automation', 'manual', 'active',
+                 '{"target_type":"workflow"}'::jsonb, $5, $5)`,
+      [AUTOMATION, SPACE, USER, AGENT, now],
+    );
+    // The owning domain hears the close (Research projects its failure from
+    // it), exactly once and with the coordinator's outcome.
+    const outcomes: Array<Pick<WorkflowExecutionOutcomeContext, "executionId" | "status">> = [];
+    workflowExecutionOutcomeHandlerRegistry.register("cancelled-root-workflow", async ({ executionId, status }) => {
+      outcomes.push({ executionId, status });
+    }, "test");
+    const service = new WorkflowExecutionService(CONFIG);
+    const execution = await service.start({
+      db: db.pool,
+      identity,
+      automation: {
+        id: AUTOMATION, space_id: SPACE, owner_user_id: USER, agent_id: AGENT,
+        project_folder_id: null, project_id: null, name: "Cancelled root automation", description: null,
+        trigger_type: "manual", status: "active", preflight_snapshot_json: null,
+        config_json: { target_type: "workflow" }, next_run_at: null, last_fired_at: null,
+        created_at: now, updated_at: now,
+      },
+      target: {
+        versionId: BINDING_WORKFLOW_VERSION,
+        resolutionTrace: [],
+        contentJson: {
+          schema_version: "workflow_definition.v1",
+          workflow_id: "cancelled-root-workflow",
+          name: "Cancelled root workflow",
+          description: "A coordinator cancelled outside the graph.",
+          input_schema_json: {}, output_artifact_types: [], metadata_json: {},
+          nodes: [
+            { id: "source", title: "Source", depends_on: [], capability_id: "source", contract_json: {}, metadata_json: {} },
+            { id: "next", title: "Next", depends_on: ["source"], capability_id: "next", contract_json: {}, metadata_json: {} },
+          ],
+        },
+      },
+      triggerType: "manual", triggerOrigin: "automation",
+      inputJson: {}, preflightSnapshot: { executable: true }, budgetSources: [],
+    });
+    const sourceRun = (await db.pool.query<{ run_id: string }>(
+      `SELECT link.run_id FROM workflow_execution_node_runs link
+       JOIN workflow_execution_nodes node ON node.id = link.node_id AND node.space_id = link.space_id
+       WHERE node.execution_id = $1 AND node.node_key = 'source'`,
+      [execution.workflowExecutionId],
+    )).rows[0]!.run_id;
+    const runs = new PgRunRepository(db.pool);
+    await runs.markRunTerminal({ run_id: execution.rootRunId, space_id: SPACE, status: "cancelled", output_json: {}, completed_at: now });
+    await dispatchAgentRun(sourceRun, now);
+    await runs.markRunTerminal({ run_id: sourceRun, space_id: SPACE, status: "succeeded", output_json: canonicalRunOutput({ success: true, outputText: "", outputJson: {} }), completed_at: now });
+    const runsBefore = (await db.pool.query(`SELECT id FROM runs WHERE space_id = $1`, [SPACE])).rows.length;
+
+    await service.reconcileForRun(db.pool, SPACE, sourceRun);
+
+    expect((await db.pool.query(`SELECT status, ended_at IS NOT NULL AS ended FROM workflow_executions WHERE id=$1`, [execution.workflowExecutionId])).rows[0])
+      .toEqual({ status: "cancelled", ended: true });
+    expect((await db.pool.query(`SELECT id FROM runs WHERE space_id = $1`, [SPACE])).rows).toHaveLength(runsBefore);
+    expect((await db.pool.query(`SELECT status FROM runs WHERE id=$1`, [execution.rootRunId])).rows[0]!.status).toBe("cancelled");
+    expect(outcomes).toEqual([{ executionId: execution.workflowExecutionId, status: "cancelled" }]);
+    // A later pass sees a closed execution: no second outcome, nothing scheduled.
+    await service.reconcileForRun(db.pool, SPACE, sourceRun);
+    expect(outcomes).toHaveLength(1);
+    expect((await db.pool.query(`SELECT id FROM runs WHERE space_id = $1`, [SPACE])).rows).toHaveLength(runsBefore);
   });
 
   it("schedules nothing more once the coordinator Run is cancelled", async () => {

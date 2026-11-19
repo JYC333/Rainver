@@ -26,6 +26,12 @@ export class OwnCliReleases {
     return cached?.value ?? null;
   }
 
+  /** On the first load, share the bounded request already started by peek. */
+  async initial(runtimeKey: string): Promise<string | null> {
+    const value = this.peek(runtimeKey);
+    return value ?? await this.pending.get(runtimeKey) ?? null;
+  }
+
   private refresh(runtimeKey: keyof typeof OWN_CLI_UPDATE_PACKAGES): Promise<string | null> {
     const pending = this.pending.get(runtimeKey);
     if (pending) return pending;

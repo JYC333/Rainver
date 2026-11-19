@@ -2,7 +2,7 @@ import type { OperationActor, OperationInput, RegisteredSystemActionDefinition }
 import type { Queryable } from '../routeUtils/common.js';
 import { canWriteProject } from '../projects/access.js';
 import { PgSessionRepository } from '../sessions/repository.js';
-import { hidden, OperationBusinessError } from '../systemActions/operations/errors.js';
+import { hidden, OperationBusinessError, OperationRefusal } from '../systemActions/operations/errors.js';
 import type { OperationRegistration } from '../systemActions/operations/types.js';
 import { collaborationContainer, taskOpen } from './collaborationBudgetRepository.js';
 import { PgAgentGroupRepository } from './repository.js';
@@ -13,20 +13,27 @@ const invalid = () => new OperationBusinessError('operation_invalid_input', 422,
 const sameParticipants = (left: readonly string[], right: readonly string[]) =>
   JSON.stringify([...left].sort()) === JSON.stringify([...right].sort());
 
-/** Only the authenticated human manager may change membership. Agent declarations remain immutable. */
-async function authorizedContainer(db: Queryable, groupId: string, actor: OperationActor) {
+/**
+ * Only the authenticated human manager may change a collaboration. Agent
+ * declarations remain immutable. An unreadable record is a named refusal
+ * after authority is proven, never a silent ad-hoc fallback.
+ */
+export async function authorizedCollaborationContainer(db: Queryable, groupId: string, actor: OperationActor) {
   if (actor.principal.kind !== 'user' || actor.principal.id !== actor.on_behalf_of_user_id) throw hidden();
   const repo = new PgAgentGroupRepository(db);
   const group = await repo.getGroup(actor.space_id, groupId);
   if (!group || !group.room_id || group.discussion_id || group.manager_user_id !== actor.principal.id) throw hidden();
   const container = await collaborationContainer(db, group);
-  if (!container?.collaboration || container.id !== groupId || !container.project_id) throw hidden();
+  if (!container || (!container.collaboration && !container.collaboration_invalid) || container.id !== groupId || !container.project_id) throw hidden();
   // Keep revocations serialized with this command, including live roster changes.
   const room = await db.query(`SELECT id FROM rooms WHERE space_id=$1 AND id=$2 AND status='active' FOR SHARE`, [actor.space_id, group.room_id]);
   const member = await db.query(`SELECT id FROM room_user_members WHERE space_id=$1 AND room_id=$2 AND user_id=$3 AND status='active' FOR SHARE`, [actor.space_id, group.room_id, actor.principal.id]);
   if (!room.rows.length || !member.rows.length
     || !await canWriteProject(db, actor.space_id, container.project_id, actor.principal.id, {lockAuthority:true})
     || !await repo.isActiveRoomUser(actor.space_id, group.room_id, actor.principal.id)) throw hidden();
+  if (container.collaboration_invalid) {
+    throw new OperationRefusal(409, 'agentGroups', 'This task collaboration record is invalid; it cannot be changed here', { code: 'collaboration_budget_invalid' });
+  }
   return container;
 }
 
@@ -37,11 +44,11 @@ export function collaborationParticipantsRegistration(definitions: ReadonlyMap<s
       const input = raw as Input;
       return {authority:`space:${actor.space_id}:collaboration:${input.group_id}`, targets:{group_id:input.group_id}, resourceType:'agent_run_group', resourceId:input.group_id};
     },
-    async authorize(db, raw, actor) { await authorizedContainer(db, (raw as Input).group_id, actor); },
-    async authorizeResult(db, raw, actor) { await authorizedContainer(db, (raw as {group_id:string}).group_id, actor); },
+    async authorize(db, raw, actor) { await authorizedCollaborationContainer(db, (raw as Input).group_id, actor); },
+    async authorizeResult(db, raw, actor) { await authorizedCollaborationContainer(db, (raw as {group_id:string}).group_id, actor); },
     async execute(db, raw, actor) {
       const input = raw as Input;
-      const container = await authorizedContainer(db, input.group_id, actor);
+      const container = await authorizedCollaborationContainer(db, input.group_id, actor);
       const previous = container.collaboration!;
       if (!['active','succeeded'].includes(container.status) || !await taskOpen(db, container, previous.task_id)) throw conflict();
       if (!sameParticipants(previous.participant_agent_ids, input.expected_participant_agent_ids)) throw conflict();
@@ -62,11 +69,11 @@ export function collaborationParticipantsRegistration(definitions: ReadonlyMap<s
            AND d.target_agent_id=ANY($3::text[]) AND d.status IN ('requested','queued','running') LIMIT 1`,
         [actor.space_id, container.id, removed])).rows.length) throw conflict();
       if (!sameParticipants(previous.participant_agent_ids, input.participant_agent_ids)) {
-        // Replace exactly one JSON leaf: caps, Task, coordinator, offsets and charged turns are untouched.
+        // Replace exactly one JSON leaf: Task, coordinator, offsets, reminders and charged turns are untouched.
         await db.query(`UPDATE agent_run_groups SET budget_json=jsonb_set(budget_json,'{collaboration,participant_agent_ids}',$3::jsonb), updated_at=now() WHERE space_id=$1 AND id=$2`,
           [actor.space_id, container.id, JSON.stringify(input.participant_agent_ids)]);
         const notice = await new PgSessionRepository(db).addRoomConversationNotice(actor.space_id, container.session_id!, {
-          content:`Task collaboration participants changed. Previous: ${previous.participant_agent_ids.join(', ')}. Current: ${input.participant_agent_ids.map(id => { const member = participants.rows.find(row => row.agent_id === id); return `${member?.name ?? id} (${id})`; }).join(', ')}. Reason: ${input.reason}. Delegation allowance and usage are unchanged.`,
+          content:`Task collaboration participants changed. Previous: ${previous.participant_agent_ids.join(', ')}. Current: ${input.participant_agent_ids.map(id => { const member = participants.rows.find(row => row.agent_id === id); return `${member?.name ?? id} (${id})`; }).join(', ')}. Reason: ${input.reason}. Usage and reminders are unchanged.`,
           metadata:{execution_event:'collaboration_participants_changed', execution_details:{
             container_group_id:container.id, task_id:previous.task_id, changed_by_user_id:actor.principal.id,
             previous_participant_agent_ids:previous.participant_agent_ids, participant_agent_ids:input.participant_agent_ids, reason:input.reason,
@@ -74,7 +81,7 @@ export function collaborationParticipantsRegistration(definitions: ReadonlyMap<s
         });
         if (!notice) throw conflict();
       }
-      return {group_id:container.id, task_id:previous.task_id, participant_agent_ids:input.participant_agent_ids, max_delegations:previous.max_delegations};
+      return {group_id:container.id, task_id:previous.task_id, participant_agent_ids:input.participant_agent_ids};
     },
   };
 }

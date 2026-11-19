@@ -5,6 +5,7 @@ import { normalizeToolName } from "../runtimeAdapters/toolName.js";
 import { createAcpRuntimeStatusProjector } from "../runtimeAdapters/acpRuntimeStatus.js";
 import type { ToolCallDetails } from "@rainver/protocol";
 import { createAcpToolPresentation, safeToolText } from "./acpToolPresentation.js";
+import { createPrivateToolCallFilter } from "../runtimeAdapters/privateToolCalls.js";
 
 export interface ThreadEventDraft {
   event_type: HostThreadEventType;
@@ -42,6 +43,7 @@ export function createThreadEventNormalizer(onDeferredOutput?: (drafts: ThreadEv
   const toolFingerprints = new Map<string, string>();
   const terminalTools = new Map<string, string>();
   const presentTool = createAcpToolPresentation();
+  const withholdPrivateCall = createPrivateToolCallFilter();
   const pendingOutput = new Map<string, ThreadEventDraft>();
   const outputEmittedAt = new Map<string, number>();
   let outputTimer: ReturnType<typeof setTimeout> | null = null;
@@ -125,7 +127,9 @@ export function createThreadEventNormalizer(onDeferredOutput?: (drafts: ThreadEv
     return delta ? appendDelta("assistant_thought", delta) : [];
   }
 
-  function pushAcpProtocolEvent(event: Record<string, unknown>): ThreadEventDraft[] {
+  function pushAcpProtocolEvent(received: Record<string, unknown>): ThreadEventDraft[] {
+    // A private action's arguments and result never reach the persisted thread (privateToolCalls.ts).
+    const event = withholdPrivateCall(received);
     const statuses = projectRuntimeStatus(event);
     if (statuses.length) return [...flushTextSegment(), ...statuses.map(value => ({ event_type: "status" as const, ...value }))];
     if (event.method !== "session/update") return [];

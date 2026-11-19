@@ -14,6 +14,7 @@ import { Skeleton } from '../../components/ui/skeleton'
 import { PreviewBadge, UrgencyBadge } from '../../components/PreviewBadge'
 import { EgressReviewNotice, isGrantDerivedProposal } from './EgressReviewNotice'
 import { codePatchAcceptOptions } from './codePatchConfirm'
+import { acceptRefusalKey, CONVERSATION_CARD_ONLY_PROPOSAL_TYPES, decisionOpenOutsideConversation } from './acceptOutcome'
 import { ContentAccessControl } from '../../components/ContentAccessControl'
 import { notifyReviewAttentionChanged } from '../../core/reviewAttention'
 import { MemoryRevisionEditor } from './MemoryRevisionEditor'
@@ -65,7 +66,7 @@ export default function ProposalDetailPage() {
   // and the rest are sent here to be decided, and a type the server cannot
   // apply yet is reported by `decide`.
   const patchBusy = Boolean(p?.code_patch_decision && ['pending','applying','compensating','compensation_failed'].includes(p.code_patch_decision.status))
-  const canDecide = p?.status === 'pending' && !patchBusy
+  const canDecide = !!p && decisionOpenOutsideConversation(p) && !patchBusy
   // A maintenance update waits for the person's revision before it can be accepted.
   const awaitingRevision = Boolean(p?.operator_revision && !p.operator_revision.edited_by_user_id)
 
@@ -77,7 +78,9 @@ export default function ProposalDetailPage() {
         const options = codePatchAcceptOptions(p)
         if (options === null) return
         const out: ProposalAcceptOut = await proposalsApi.accept(p.id, options)
-        if(out.result_type==='code_patch_pending'){toast.info(t(`mixed_surfaces.code_patch_${out.result.status === 'pending' ? 'queued' : out.result.status}`));}
+        const refusal = acceptRefusalKey(out)
+        if (refusal) toast.error(t(refusal))
+        else if(out.result_type==='code_patch_pending'){toast.info(t(`mixed_surfaces.code_patch_${out.result.status === 'pending' ? 'queued' : out.result.status}`));}
         else if (out.result_type === 'memory_entry') {
           toast.success('Accepted — memory entry created.')
         } else if (out.result_type === 'code_patch_apply') {
@@ -128,6 +131,8 @@ export default function ProposalDetailPage() {
       } else {
         toast.error(message)
       }
+      // A refused decision (e.g. 404 after expiry or another person's decision) shows the live state.
+      await proposalsApi.get(p.id).then(setP).catch(() => undefined)
     } finally {
       setBusy(false)
     }
@@ -190,6 +195,9 @@ export default function ProposalDetailPage() {
               )}
             </div>
           </div>
+          {CONVERSATION_CARD_ONLY_PROPOSAL_TYPES.has(p.proposal_type) && (
+            <p className="text-xs text-muted-foreground">{t(p.proposal_type === 'gmail_private_check' ? 'gmail_ui.private_check.withdrawn' : 'gmail_ui.private_read.withdrawn')}</p>
+          )}
           <div className="flex flex-wrap gap-1.5 items-center">
             <Badge variant="secondary">{p.proposal_type}</Badge>
             <StatusBadge status={p.status} />

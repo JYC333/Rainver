@@ -179,6 +179,7 @@ export const HostCapabilitiesSchema = z.object({
   native_workspace_integration:z.literal(true).optional(),
   /** Native integration supports the `rebase` publication strategy. */
   native_workspace_rebase:z.literal(true).optional(),
+  antigravity_own_updates: z.literal(true).optional(),
   managed_cli_updates: z.literal(true).optional(),
   workspace_read_only: z.object({supported:z.boolean(),mechanism:z.literal("bwrap-v1"),reason:z.string().nullable()}).optional(),
   /** PATH binaries the daemon found (vendor CLIs and git), for display only. */
@@ -230,6 +231,13 @@ export const HostCapabilitiesSchema = z.object({
    * refused (`host_update_required`).
    */
   host_command_receipts: z.literal(1).optional(),
+  /**
+   * `model_channel: 1`: a strict Host can launch a provider-bound Run with
+   * egress `none` and a single model channel (`HostLaunchModelChannelSchema`).
+   * Absent: the control plane never selects that path, so sensitive plugin
+   * data stays unreleased to Runs on this Host (ADR 0030 §4a).
+   */
+  model_channel: z.literal(1).optional(),
 });
 export type HostCapabilities = z.infer<typeof HostCapabilitiesSchema>;
 

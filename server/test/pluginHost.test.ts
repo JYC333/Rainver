@@ -69,6 +69,35 @@ describe("PluginHost", () => {
   });
 });
 
+describe("legacy plugin proposal subject", () => {
+  function context(config: ReturnType<typeof loadConfig>, type: string, owner: string, approver: string) {
+    return {
+      config, db: {} as never, userId: approver,
+      proposal: {
+        id: "proposal", space_id: "space", proposal_type: type, title: null, payload_json: {},
+        project_folder_id: null, visibility: "space", created_by_user_id: owner, owner_user_id: owner, project_id: null,
+      },
+    };
+  }
+
+  it("hands a space-scoped plugin the proposal's subject, not the approver", async () => {
+    const seen: Array<string | null> = [];
+    const config = loadConfig({}), registry = new ProposalApplierRegistry();
+    const host = new PluginHost([{
+      id: "finance_ledger", version: "0.1.0",
+      activate(ctx: PluginHostContext) {
+        ctx.proposals.register("finance_ledger_probe", async ({ proposal }) => { seen.push(proposal.user_id); });
+        return { activated: true };
+      },
+    }]);
+    host.activate(Fastify({ logger: false }), config);
+    host.applyProposalAppliers(registry);
+
+    await registry.get("finance_ledger_probe")!(context(config, "finance_ledger_probe", "requester", "admin"));
+    expect(seen).toEqual(["requester"]);
+  });
+});
+
 describe('Plugin resource cleanup deadlines', () => {
   afterEach(() => { vi.useRealTimers(); });
   const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };

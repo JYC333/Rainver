@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { markdownToReaderDocument, normalizeReaderDocument, readerNodeText, type ReaderNode } from "../src/index.js";
+import { markdownToReaderDocument, normalizeReaderDocument, normalizeReaderDocumentBounded, READER_MAX_NODES, readerNodeText, type ReaderNode } from "../src/index.js";
 
 const types = (nodes: ReaderNode[] | undefined) => (nodes ?? []).map(node => node.type);
 
@@ -124,5 +124,100 @@ describe("normalizeReaderDocument", () => {
     expect(cells[0]!.attrs).toEqual({ colspan: 2 });
     expect(cells[1]!.attrs).toEqual({ rowspan: 20 });
     expect(cells[1]!.content).toEqual([{ type: "paragraph" }]);
+  });
+
+  it("degrades nesting deeper than its budget to text instead of exhausting the stack", () => {
+    let quote: Record<string, unknown> = { type: "paragraph", content: [{ type: "text", text: "deep words" }] };
+    let unknown: Record<string, unknown> = { type: "text", text: "inline words" };
+    for (let i = 0; i < 20_000; i += 1) {
+      quote = { type: "blockquote", content: [quote] };
+      unknown = { type: "mystery", content: [unknown] };
+    }
+    const doc = normalizeReaderDocument({ type: "doc", content: [quote, { type: "paragraph", content: [unknown] }] });
+    expect(readerNodeText(doc)).toContain("deep words");
+    expect(readerNodeText(doc)).toContain("inline words");
+    expect(readerNodeText({ type: "doc", content: [unknown] })).toBe("inline words");
+
+    let shallow: Record<string, unknown> = { type: "paragraph", content: [{ type: "text", text: "kept" }] };
+    for (let i = 0; i < 5; i += 1) shallow = { type: "blockquote", content: [shallow] };
+    expect(JSON.stringify(normalizeReaderDocument({ type: "doc", content: [shallow] })).match(/blockquote/g)).toHaveLength(5);
+  });
+});
+
+describe("Reader document node budget", () => {
+  it("leaves an ordinary document untruncated", () => {
+    const result = normalizeReaderDocumentBounded({ type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Hi" }] }] });
+    expect(result.truncated).toBe(false);
+    expect(result.document.content).toHaveLength(1);
+  });
+
+  it("stops reading a wider-than-budget document and says so", () => {
+    const paragraph = { type: "paragraph", content: [{ type: "text", text: "x" }] };
+    const result = normalizeReaderDocumentBounded({ type: "doc", content: Array.from({ length: READER_MAX_NODES }, () => paragraph) });
+    expect(result.truncated).toBe(true);
+    expect(result.document.content.length).toBeLessThan(READER_MAX_NODES);
+    expect(result.document.content.length).toBeGreaterThan(0);
+  });
+
+  it("counts degraded subtrees against the same budget, each call afresh", () => {
+    // One unsupported node whose text is read by the degraded path.
+    const unsupported = { type: "callout", content: Array.from({ length: READER_MAX_NODES + 10 }, () => ({ type: "text", text: "y" })) };
+    const result = normalizeReaderDocumentBounded({ type: "doc", content: [unsupported] });
+    expect(result.truncated).toBe(true);
+    expect(readerNodeText(unsupported).length).toBeLessThan(READER_MAX_NODES);
+    expect(normalizeReaderDocumentBounded({ type: "doc", content: [{ type: "paragraph" }] }).truncated).toBe(false);
+  });
+
+  // An input array that counts how many of its items are read.
+  function countedArray(length: number, item: () => unknown): { items: unknown[]; reads: () => number } {
+    let reads = 0;
+    const items = new Proxy(new Array(length), {
+      get(target, key, receiver) {
+        if (typeof key === "string" && /^\d+$/.test(key)) { reads += 1; return item(); }
+        return Reflect.get(target, key, receiver);
+      },
+    });
+    return { items, reads: () => reads };
+  }
+
+  it("stops scanning every wide child list once the budget is spent", () => {
+    const length = READER_MAX_NODES * 3;
+    const text = () => ({ type: "text", text: "z" });
+    const cases: [string, (items: unknown[]) => unknown][] = [
+      ["paragraph inlines", items => ({ type: "doc", content: [{ type: "paragraph", content: items }] })],
+      ["list items", items => ({ type: "doc", content: [{ type: "bulletList", content: items }] })],
+      ["table rows", items => ({ type: "doc", content: [{ type: "table", content: items }] })],
+      ["code block", items => ({ type: "doc", content: [{ type: "codeBlock", content: items }] })],
+      ["unsupported node", items => ({ type: "doc", content: [{ type: "callout", content: items }] })],
+    ];
+    for (const [name, wrap] of cases) {
+      const counted = countedArray(length, text);
+      expect(normalizeReaderDocumentBounded(wrap(counted.items)).truncated, name).toBe(true);
+      expect(counted.reads(), name).toBeLessThanOrEqual(READER_MAX_NODES + 1);
+    }
+  });
+
+  it("reads a wide node past the nesting depth lazily instead of stacking all its children", () => {
+    const counted = countedArray(READER_MAX_NODES * 3, () => ({ type: "text", text: "w" }));
+    let deep: Record<string, unknown> = { type: "mystery", content: counted.items };
+    for (let i = 0; i < 100; i += 1) deep = { type: "mystery", content: [deep] };
+    const text = readerNodeText(deep);
+    expect(counted.reads()).toBeLessThanOrEqual(READER_MAX_NODES + 1);
+    expect(text.length).toBeGreaterThan(0);
+    expect(text.length).toBeLessThan(READER_MAX_NODES);
+
+    // Within the budget the degraded text keeps document order.
+    let ordered: Record<string, unknown> = { type: "mystery", content: [{ type: "text", text: "a" }, { type: "mystery", content: [{ type: "text", text: "b" }, { type: "hardBreak" }] }, { type: "text", text: "c" }] };
+    for (let i = 0; i < 100; i += 1) ordered = { type: "mystery", content: [ordered] };
+    expect(readerNodeText(ordered)).toBe("ab\nc");
+  });
+
+  it("keeps the cells a row was charged for when the budget runs out mid-table", () => {
+    const row = { type: "tableRow", content: [{ type: "tableCell", content: [{ type: "paragraph", content: [{ type: "text", text: "c" }] }] }] };
+    const result = normalizeReaderDocumentBounded({ type: "doc", content: [{ type: "table", content: Array.from({ length: READER_MAX_NODES }, () => row) }] });
+    expect(result.truncated).toBe(true);
+    const rows = result.document.content[0]!.content!;
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every(r => r.content!.length === 1)).toBe(true);
   });
 });

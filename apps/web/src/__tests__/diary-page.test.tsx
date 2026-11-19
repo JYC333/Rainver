@@ -4,6 +4,10 @@ import { createDiaryPage } from '../../../../plugins/official/diary/web/src/Diar
 import { saveDiaryEntry } from '../../../../plugins/official/diary/web/src/saveQueue'
 import type { DiaryApi, DiaryEntry, DiaryWebHost } from '../../../../plugins/official/diary/web/src/host'
 import { DIARY_MESSAGES } from '../../../../plugins/official/diary/web/src/messages'
+import { diaryOpsApi, DiaryOperationError } from '../../../../plugins/official/diary/web/src/opsApi'
+import views from '../../../../plugins/official/diary/web/src/operationViews'
+import { bundledPlugin } from '../modules/plugins/manifestCatalog'
+import type { PluginViewOps } from '@rainver/protocol'
 
 function entry(date: string, content: string): DiaryEntry {
   return { id: `entry-${date}`, user_id: 'user-1', entry_date: date, content, created_at: '', updated_at: '' }
@@ -17,10 +21,6 @@ function heldApi(stored: DiaryEntry[]) {
   })
   const forDate = (date: string) => stored.filter(item => item.entry_date.slice(5) === date.slice(5))
   const api: DiaryApi = {
-    today: vi.fn(() => {
-      const date = new Date().toISOString().slice(0, 10)
-      return held(date, () => ({ date, entry: stored.find(item => item.entry_date === date) ?? null }))
-    }),
     onThisDay: vi.fn((date: string) => held(date, () => ({ date, entries: forDate(date) }))),
     listEntries: vi.fn(async () => ({ entries: stored })),
     saveEntry: vi.fn(async (date: string, content: string) => ({ entry: entry(date, content) })),
@@ -38,8 +38,6 @@ function heldApi(stored: DiaryEntry[]) {
 function renderPage(api: DiaryApi, locale = 'en') {
   const host: DiaryWebHost = {
     api,
-    Link: ({ to, children }) => <a href={to}>{children}</a>,
-    usePluginState: () => ({ loading: false, enabled: true }),
     useLocale: () => locale,
   }
   const Page = createDiaryPage(host)
@@ -156,7 +154,6 @@ describe('DiaryPage', () => {
     renderPage(api)
 
     expect(await screen.findByRole('heading', { name: /October 2, 2026/ })).toBeInTheDocument()
-    expect(api.today).not.toHaveBeenCalled()
     expect(api.onThisDay).toHaveBeenCalledWith('2026-10-02')
   })
 
@@ -176,5 +173,37 @@ describe('DiaryPage', () => {
   it('has the same messages in every language it ships', () => {
     const keys = Object.keys(DIARY_MESSAGES.en).sort()
     for (const messages of Object.values(DIARY_MESSAGES)) expect(Object.keys(messages).sort()).toEqual(keys)
+  })
+
+  it('reads and writes only through the declared Diary operations, each write with its own key', async () => {
+    const calls: Array<[string, string, unknown, string | null]> = []
+    const manifest = bundledPlugin('diary')!.manifest
+    const declared = new Set(manifest.operations.map(o => o.id))
+    const ops: PluginViewOps = {
+      query: vi.fn(async (id: string, input: unknown) => {
+        calls.push(['query', id, input, null])
+        expect(declared.has(id)).toBe(true)
+        if (id === 'plugin.diary.entry.get') return { status: 'succeeded' as const, data: { date: '2026-11-19', entry: entry('2026-11-19', 'Today') } }
+        if (id === 'plugin.diary.entry.on_this_day') return { status: 'succeeded' as const, data: { date: '2026-11-19', entries: [entry('2025-11-19', 'Last year')] } }
+        if (id === 'plugin.diary.entry.list') return { status: 'succeeded' as const, data: { entries: [] } }
+        return { error: { code: 'operation_invalid_input', message: 'entry_not_found', metadata: { reason: 'entry_not_found' }, retryable: false, request_id: 'r', domain: 'plugin.diary' } } as never
+      }) as PluginViewOps['query'],
+      command: vi.fn(async (id: string, input: unknown, key: string) => {
+        calls.push(['command', id, input, key])
+        return { status: 'succeeded' as const, data: { entry: entry('2026-11-19', (input as { content: string }).content) } }
+      }) as PluginViewOps['command'],
+    }
+    let n = 0
+    const api = diaryOpsApi(ops, () => `key-${++n}`)
+    // The selected day first, then earlier years: the page finds the day's own entry among them.
+    expect((await api.onThisDay('2026-11-19')).entries.map(e => e.entry_date)).toEqual(['2026-11-19', '2025-11-19'])
+    await api.saveEntry('2026-11-19', 'One')
+    await api.saveEntry('2026-11-19', 'Two')
+    expect(calls.filter(c => c[0] === 'command').map(c => [c[1], c[3]])).toEqual([['plugin.diary.entry.save', 'key-1'], ['plugin.diary.entry.save', 'key-2']])
+    await api.listEntries({ limit: 60 })
+    expect(calls[calls.length - 1]).toEqual(['query', 'plugin.diary.entry.list', { limit: 60 }, null])
+    // A refusal surfaces its safe reason, never a body.
+    await expect(api.reflections('2026-11-18')).rejects.toEqual(new DiaryOperationError('operation_invalid_input', 'entry_not_found'))
+    expect(Object.keys(views)).toEqual(manifest.web!.entries.map(e => e.id))
   })
 })

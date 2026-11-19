@@ -132,7 +132,9 @@ describe('Agent definition operations (real PostgreSQL)',()=>{
  it('queues a person-started Run with the server-owned origin and creates from a template',async()=>{
   const agent=randomUUID();
   await seedAgentWithVersion(db.pool,{agent,version:randomUUID(),space:team,owner:user});
-  expect((await inject('POST',`/api/v1/agents/${agent}/runs`,{prompt:'x',trigger_origin:'automation'})).statusCode).toBe(422);
+  // The same request that succeeds below, plus a body origin: refused, and no Run is stored.
+  expect((await inject('POST',`/api/v1/agents/${agent}/runs`,{prompt:'Summarize',project_id:project,trigger_origin:'automation'})).statusCode).toBe(422);
+  expect(await rows('SELECT id FROM runs WHERE agent_id=$1',[agent])).toEqual([]);
   expect((await inject('POST',`/api/v1/agents/${agent}/run`,{prompt:'x',run_type:'system',project_id:project})).statusCode).toBe(422);
   // Without a Project the access owner places the Run in the Personal Space, where this team Agent is absent.
   expect((await inject('POST',`/api/v1/agents/${agent}/run`,{prompt:'x'})).statusCode).toBe(404);

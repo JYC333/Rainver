@@ -96,7 +96,7 @@ export class PgSpaceRepository implements SpaceRepository {
 
   /**
    * Whether members may take content out of this Space into a personal one
-   * (ADR 0013 amendment 6b). Readable by any member — the boundary you are
+   * (ADR 0013 decision 9). Readable by any member — the boundary you are
    * working inside should not be a secret — but changed only by an owner or
    * admin, and off until one of them says otherwise.
    */

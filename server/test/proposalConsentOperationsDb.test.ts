@@ -41,6 +41,23 @@ describe('formal Proposal consent entry',()=>{
   expect((await db.pool.query("SELECT id FROM policy_decision_records WHERE action='proposal.egress.approve'")).rows.length).toBeGreaterThan(0);
   expect((await db.pool.query('SELECT status,created_by_user_id FROM proposals WHERE id=$1',[proposal])).rows[0]).toEqual({status:'pending',created_by_user_id:requester});
  });
+ it('refuses consent to an expired pending Proposal on every entry, first use and keyed replay',async()=>{
+  const key=randomUUID();expect((await send({},key)).statusCode).toBe(200);
+  await db.pool.query("UPDATE proposal_approvals SET status='revoked',revoked_at=now() WHERE proposal_id=$1",[proposal]);
+  await db.pool.query("UPDATE proposals SET expires_at=now()-interval '1 second' WHERE id=$1",[proposal]);
+  const action=()=>app.inject({method:'POST',url:'/api/v1/actions/proposal.egress.approve',payload:{proposal_id:proposal},headers:{'idempotency-key':randomUUID()}});
+  for(const approve of [()=>send(),()=>send({},key),action]){
+   const refused=await approve();
+   expect([refused.statusCode,refused.json().error?.code],refused.body).toEqual([409,'operation_approval_expired']);
+  }
+  // Only the earlier, revoked consent exists; nothing new was approved or cached.
+  expect((await db.pool.query('SELECT status FROM proposal_approvals WHERE proposal_id=$1',[proposal])).rows).toEqual([{status:'revoked'}]);
+  expect((await db.pool.query("SELECT id FROM operation_idempotency WHERE operation_id='proposal.egress.approve'")).rows).toHaveLength(1);
+  expect((await db.pool.query('SELECT status FROM proposals WHERE id=$1',[proposal])).rows[0].status).toBe('pending');
+  // Unexpired again, the same consent is accepted normally.
+  await db.pool.query("UPDATE proposals SET expires_at=now()+interval '1 day' WHERE id=$1",[proposal]);
+  expect((await send()).statusCode).toBe(200);
+ });
  it.each([{grant_id:12},{user_id:'other'},{space_id:'other'},{proposal_id:'other'},{extra:true}])('refuses strict-field injection %j',async body=>{
   const res=await send(body);expect(res.statusCode,res.body).toBe(422);
   expect((await db.pool.query('SELECT id FROM proposal_approvals')).rows).toHaveLength(0);

@@ -1,5 +1,5 @@
 import type { CliProcessRegistry } from "./localCliExecution.js";
-import type { RunAttemptRecord, RunRecord } from "./repository.js";
+import type { LaunchIsolationRecord, RunAttemptRecord, RunRecord } from "./repository.js";
 import type { PgRunRepository } from "./repository.js";
 import type { RuntimeStopOutcome } from "./runTimeLimit.js";
 import { sharedHostConnectionRegistry, type HostConnectionRegistry } from "../hosts/connectionRegistry.js";
@@ -18,7 +18,7 @@ export interface ExecutionStopResult extends RuntimeStopOutcome {
 export async function bindHostAttemptLaunch(
   repository: Pick<PgRunRepository, 'getLatestRunAttempt' | 'bindAttemptLaunch'>,
   hosts: HostConnectionRegistry,
-  input: { space_id: string; run_id: string; host_id: string; launch_id: string },
+  input: { space_id: string; run_id: string; host_id: string; launch_id: string; isolation?: LaunchIsolationRecord },
 ): Promise<'bound' | 'closed' | 'previous_launch_unconfirmed'> {
   const previous = await repository.getLatestRunAttempt(input.space_id, input.run_id);
   if (!previous || !['queued', 'running'].includes(previous.status)) return 'closed';

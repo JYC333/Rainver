@@ -1,4 +1,5 @@
-import {withRunTerminalOwner,researchGraphRunRefs} from '../systemActions/operations/proposalTransitions.js';
+import {withRunTerminalOwner} from '../systemActions/operations/proposalTransitions.js';
+import {researchGraphRunRefs} from './graphRuns.js';
 import { reconcileResearchCall } from "./researchProblemCalls.js";
 import { assertResearchCallReadable } from "./researchCallAccess.js";
 import { randomUUID } from "node:crypto";
@@ -409,7 +410,8 @@ actionNodeHandlerRegistry.register(RESEARCH_APPLY_RUN_ACTION_KEY, async (context
 workflowExecutionOutcomeHandlerRegistry.register(
   RESEARCH_PASS_WORKFLOW_ID,
   async ({ db, spaceId, executionId, researchOperationId, status }) => {
-    if (status !== "failed" || !researchOperationId) return;
+    // A cancelled coordinator leaves the stage unfinished just as a failure does.
+    if (status === "completed" || !researchOperationId) return;
     const row = await db.query<{ progress_json: unknown }>(
       `SELECT progress_json FROM project_operations
         WHERE id=$1 AND space_id=$2 AND current_execution_id=$3
@@ -427,7 +429,7 @@ workflowExecutionOutcomeHandlerRegistry.register(
     const failure = await latestExecutionRunFailure(db, spaceId, executionId);
     const runError = objectValue(failure?.error_json);
     const errorCode = optionalString(runError.error_code)
-      ?? "workflow_execution_failed";
+      ?? (status === "cancelled" ? "workflow_execution_cancelled" : "workflow_execution_failed");
     const errorMessage = optionalString(runError.error_text)
       ?? failure?.error_message
       ?? "Research reconciliation pass failed";

@@ -71,6 +71,11 @@ async function fixtures(page, counts, recoveryRun = failed, liveParts = null) {
     else if (path === `/rooms/${room.id}/invitations`) data = pageOf([])
     else if (path.endsWith('/messages')) data = { ...pageOf(liveParts ? messages.filter(message => message.role !== 'assistant') : recoveryRun.status === 'running' ? messages.map(message => message.role === 'assistant' ? { ...message, content: '' } : message) : messages), queued: [] }
     else if (path === `/sessions/${session.id}`) data = session
+    // Conversation pending work is read through the session projection, one entry per batch with its Run.
+    else if (path === `/sessions/${session.id}/workspace-changes`) data = {
+      items: (recoveryRun.workspace_changes ?? []).map(change => ({ change, run: { id: recoveryRun.id, status: recoveryRun.status, agent_id: recoveryRun.agent_id } })),
+      next_cursor: null,
+    }
     else if (path === `/sessions/${session.id}/execution-context`) data = {
       summary: { session_id: session.id, state: 'initialized', host: null, runtime: null, runtimes: [], primary: null,
         attachments: [], dispatch_locked: false, queue_paused_at: null, can_send: true, blocked_reason: null },
@@ -135,6 +140,27 @@ async function fixtures(page, counts, recoveryRun = failed, liveParts = null) {
     else return route.fulfill({ status: 404, json: { detail: `Unavailable in recovery fixture: ${path}` } })
     return route.fulfill({ json: data })
   })
+}
+
+// A follow-up is one keyed Room command; the client then reads its turn back from the conversation page.
+const sentFollowUp = { id: 'continued', session_id: session.id, space_id: space, role: 'user', sender_user_id: 'user-recovery', sender_agent_id: null, run_id: null, content: '', metadata_json: {}, created_at: now }
+function fulfillRoomSend(route, path, commands) {
+  if (path === '/actions/room.message.send') {
+    commands.push({ path, input: route.request().postDataJSON(), key: route.request().headers()['idempotency-key'] })
+    return route.fulfill({ json: { status: 'succeeded', data: { id: sentFollowUp.id, space_id: space, room_id: room.id, session_id: session.id, message_id: sentFollowUp.id, task_group_ids: ['group-continued'], run_ids: ['run-continued'] } } })
+  }
+  if (path.endsWith('/messages') && new URL(route.request().url()).searchParams.get('message_id') === sentFollowUp.id)
+    return route.fulfill({ json: { ...pageOf([sentFollowUp]), conversation: session, queued: [] } })
+  return null
+}
+const followedUpInOriginal = commands => commands.every(c => c.key && c.input.room_id === room.id && c.input.session_id === session.id && c.input.recipient_segments[0].recipient_agent_ids[0] === agent.id)
+
+// A conversation shows a turn's workspace batches in one default-collapsed line; open it as a person does.
+async function openTurnChanges(page) {
+  const summary = page.getByTestId('turn-workspace-summary').first()
+  await summary.waitFor()
+  if (!await summary.evaluate(element => element.open)) await summary.locator('summary').first().click()
+  return summary
 }
 
 for (const locale of ['en', 'zh-CN']) for (const theme of ['dark', 'light']) for (const width of [390, 1280]) {
@@ -418,7 +444,7 @@ for(const locale of ['en','zh-CN'])for(const theme of ['dark','light'])for(const
    for(const [surface,path] of [['conversation',`/projects/${project.id}/rooms?room=${room.id}&conversation=${session.id}`],['run',`/runs/${failed.id}`]]){
     await page.goto(`${baseUrl}/spaces/${space}${path}`)
     if(theme==='light')await page.evaluate(()=>document.documentElement.classList.add('theme-light'))
-    const card=page.getByTestId(`workspace-changes-${failed.id}`).first()
+    const card=surface==='conversation'?await openTurnChanges(page):page.getByTestId(`workspace-changes-${failed.id}`).first()
     await card.getByText(continuation,{exact:true}).waitFor()
     await card.scrollIntoViewIfNeeded()
     assert.equal(await card.getByRole('button',{name:keep,exact:true}).last().isEnabled(),true)
@@ -434,7 +460,7 @@ for (const locale of ['en', 'zh-CN']) for (const theme of ['dark', 'light']) for
   test(`recovery entry, exact login destination and return: ${locale}/${theme}/${width}`, async () => {
     const context = await browser.newContext({ viewport: { width, height: 1000 }, serviceWorkers: 'block' })
     await context.addInitScript(locale => localStorage.setItem('rainver:locale', locale), locale)
-    const page = await context.newPage(), counts = { writes: 0, logins: 0 }, errors = []
+    const page = await context.newPage(), counts = { writes: 0, logins: 0, writePaths: [] }, errors = []
     page.setDefaultTimeout(10_000)
     page.on('pageerror', error => errors.push(error.message))
     await fixtures(page, counts)
@@ -466,7 +492,7 @@ for (const locale of ['en', 'zh-CN']) for (const theme of ['dark', 'light']) for
       await notice.getByRole('button', { name: locale === 'en' ? 'Refresh Host status' : '刷新执行机状态' }).click()
       await notice.getByRole('status').filter({ hasText: locale === 'en' ? 'reports this copy as signed in' : '上报这份安装已登录' }).waitFor()
       assert.equal(counts.logins, 1)
-      assert.equal(counts.writes, 0)
+      assert.deepEqual(counts.writePaths, [], 'Recovery guidance and Host status refresh make no writes')
       await page.goto(`${baseUrl}/spaces/${space}/runs/${failed.id}`)
       if (theme === 'light') await page.evaluate(() => document.documentElement.classList.add('theme-light'))
       await notice.waitFor()
@@ -542,7 +568,7 @@ for(const locale of ['en','zh-CN'])for(const theme of ['dark','light'])for(const
     if(path===`/runs/${repair.id}/turn`)return route.fulfill({json:turn({run_id:repair.id,state:'blocked',blocked_on:'run_decision'})})
     if(path===`/runs/${repair.id}/route-decision`)return route.fulfill({json:null})
     if(path===`/runs/${repair.id}/io`)return route.fulfill({json:{schema_version:'run_io.v1',run_id:repair.id,input:{},output:null,events:[],artifact_refs:[]}})
-    if(path===`/runs/${repair.id}/resume`){counts.writePaths.push(path);repair.status='queued';return route.fulfill({status:202,json:{id:repair.id,status:'queued'}})}
+    if(path==='/actions/run.resume'){counts.writePaths.push(path);assert.deepEqual(route.request().postDataJSON(),{run_id:repair.id});assert.ok(route.request().headers()['idempotency-key']);repair.status='queued';return route.fulfill({json:{status:'succeeded',data:{id:repair.id,space_id:space,run_id:repair.id,status:'queued',resumed_at:now,resume_kind:'new_attempt'}}})}
     if(path==='/actions/workspace.integration.retry'){
      resolutions.push(route.request().postDataJSON());assert.ok(route.request().headers()['idempotency-key']);
      source.workspace_changes[1]={...source.workspace_changes[1],state:'integrating',integration_status:'queued'}
@@ -565,6 +591,7 @@ for(const locale of ['en','zh-CN'])for(const theme of ['dark','light'])for(const
    await capture(page,`decision-work-${locale}-${theme}-${width}`)
    await page.goto(`${baseUrl}/spaces/${space}/projects/${project.id}/rooms?room=${room.id}&conversation=${session.id}`)
    if(theme==='light')await page.evaluate(()=>document.documentElement.classList.add('theme-light'))
+   await openTurnChanges(page)
    await page.getByRole('button',{name:retry,exact:true}).waitFor()
    await page.getByText(locale==='en'?'This background task handles an earlier code change. You can continue chatting independently.':'这是处理之前代码修改的后台任务，你可以继续在原对话中发消息。',{exact:true}).waitFor()
    assert.equal(await page.getByRole('button',{name:locale==='en'?'Abandon Run':'放弃 Run',exact:true}).isEnabled(),true)
@@ -588,7 +615,7 @@ for(const locale of ['en','zh-CN'])for(const theme of ['dark','light'])for(const
    await capture(page,`decision-run-${locale}-${theme}-${width}`)
    await page.getByRole('button',{name:retry,exact:true}).click()
    await page.getByRole('button',{name:retry,exact:true}).waitFor({state:'hidden'})
-   assert.deepEqual(counts.writePaths.filter(path=>path!=='/me/agent-attention/views'),[`/runs/${repair.id}/resume`])
+   assert.deepEqual(counts.writePaths.filter(path=>path!=='/me/agent-attention/views'),['/actions/run.resume'])
    assert.deepEqual(errors,[])
   }finally{await context.close()}
  })
@@ -646,7 +673,7 @@ for(const locale of ['en','zh-CN'])for(const theme of ['dark','light'])for(const
    await fixtures(page,counts,source)
    await page.route('**/api/v1/**',async route=>{
     const path=new URL(route.request().url()).pathname.replace('/api/v1','')
-    if(path.endsWith('/messages')&&route.request().method()==='POST'){commands.push({path,input:route.request().postDataJSON(),key:route.request().headers()['idempotency-key']});return route.fulfill({json:{message:{id:'continued'},conversation:session,task_group_ids:[],run_ids:['current-run']}})}
+    const sent=fulfillRoomSend(route,path,commands);if(sent)return sent
     if(path.endsWith('/messages'))return route.fulfill({json:path.startsWith('/sessions/')?[...messages,notice]:{...pageOf([...messages,notice]),queued:[]}})
     if(path==='/queries/workspace.integration.verification.get')return route.fulfill({json:{status:'succeeded',data:config}})
     if(path==='/actions/workspace.integration.retry'){
@@ -668,8 +695,8 @@ for(const locale of ['en','zh-CN'])for(const theme of ['dark','light'])for(const
    await capture(page,`agent-verification-run-${locale}-${theme}-${width}`)
    await runAction.click();await page.getByRole('status').filter({hasText:locale==='en'?'original conversation':'原对话'}).first().waitFor()
    assert.equal(await page.getByRole('dialog').count(),0)
-   assert.deepEqual(commands.map(c=>c.path),Array(2).fill(`/rooms/${room.id}/conversations/${session.id}/messages`))
-   assert.ok(commands.every(c=>c.input.recipient_segments[0].recipient_agent_ids[0]===agent.id&&c.key));assert.deepEqual(errors,[])
+   assert.deepEqual(commands.map(c=>c.path),Array(2).fill('/actions/room.message.send'))
+   assert.ok(followedUpInOriginal(commands));assert.deepEqual(errors,[])
   }finally{await context.close()}
  })
 }
@@ -693,7 +720,7 @@ for(const locale of ['en','zh-CN'])for(const theme of ['dark','light'])for(const
     return route.fulfill({json:{status:'succeeded',data:{change_set_id:input.change_set_id??'old-change',state:'ready',revision:10,integration_id:input.integration_id??null}}})
    })
    await page.goto(`${baseUrl}/spaces/${space}/projects/${project.id}/rooms?room=${room.id}&conversation=${session.id}`)
-   const card=page.getByTestId(`workspace-changes-${source.id}`),submit=card.getByRole('button',{name:locale==='en'?'Finish changes':'完成修改',exact:true})
+   const card=await openTurnChanges(page),submit=card.getByRole('button',{name:locale==='en'?'Finish changes':'完成修改',exact:true})
    await submit.waitFor();await submit.scrollIntoViewIfNeeded();await capture(page,`publication-entry-${locale}-${theme}-${width}`)
    await submit.focus();await submit.press('Enter')
    const dialog=page.getByRole('dialog');await dialog.getByRole('button',{name:locale==='en'?'Confirm':'确认',exact:true}).waitFor();assert.equal(await dialog.getByLabel(/commit ID|提交 ID/).count(),0)
@@ -704,7 +731,7 @@ for(const locale of ['en','zh-CN'])for(const theme of ['dark','light'])for(const
    assert.equal(commands[0].path,'/actions/workspace.change.complete');assert.equal(Object.hasOwn(commands[0].input,'commit'),false);assert.equal(commands[0].input.change_set_id,'new-change')
    const reconcile=card.getByRole('button',{name:locale==='en'?'Check whether already integrated':'核对是否已合入',exact:true});await reconcile.focus();await reconcile.press('Enter')
    await page.waitForFunction(()=>!document.querySelector('[role=dialog]'))
-   await card.getByRole('button',{name:locale==='en'?'Refresh':'刷新',exact:true}).waitFor({state:'visible'})
+   await card.getByRole('status').filter({hasText:locale==='en'?'Checking saved changes against the target. This comparison does not call a model.':'正在比较保存的修改与目标分支；这项检查不会调用模型。'}).waitFor()
    assert.equal(commands[1].path,'/actions/workspace.integration.retry');assert.deepEqual(commands[1].input,{integration_id:'old-integration',expected_revision:9,reconcile_only:true});assert.ok(commands.every(c=>c.key));assert.deepEqual(errors,[])
   }finally{await context.close()}
  })
@@ -724,17 +751,17 @@ for(const locale of ['en','zh-CN'])for(const theme of ['dark','light'])for(const
    await page.route('**/api/v1/**',async route=>{
     const path=new URL(route.request().url()).pathname.replace('/api/v1','');
     if(path==='/queries/workspace.change.get')return route.fulfill({json:{status:'succeeded',data:status}});
-    if(path.endsWith('/messages')&&route.request().method()==='POST'){commands.push({path,input:route.request().postDataJSON(),key:route.request().headers()['idempotency-key']});return route.fulfill({json:{message:{id:'native-followup'},conversation:session,task_group_ids:[],run_ids:['native-run']}});}
+    const sent=fulfillRoomSend(route,path,commands);if(sent)return sent;
     if(path.startsWith('/actions/workspace.'))throw new Error('Native merge must use the ordinary conversation ingress');
     return route.fallback();
    });
    await page.goto(`${baseUrl}/spaces/${space}/projects/${project.id}/rooms?room=${room.id}&conversation=${session.id}`);
-   const card=page.getByTestId(`workspace-changes-${failed.id}`).first();await card.getByRole('button',{name:label,exact:true}).waitFor();await card.scrollIntoViewIfNeeded();await capture(page,`native-merge-conversation-${locale}-${theme}-${width}`);
+   const card=await openTurnChanges(page);await card.getByRole('button',{name:label,exact:true}).waitFor();await card.scrollIntoViewIfNeeded();await capture(page,`native-merge-conversation-${locale}-${theme}-${width}`);
    await card.getByRole('button',{name:label,exact:true}).click();await card.getByRole('status').filter({hasText:locale==='en'?'original conversation':'原对话'}).waitFor();assert.equal(await page.getByRole('dialog').count(),0);
    await page.goto(`${baseUrl}/spaces/${space}/runs/${failed.id}`);
    const action=page.getByRole('button',{name:label,exact:true});await action.waitFor();await action.scrollIntoViewIfNeeded();await capture(page,`native-merge-run-${locale}-${theme}-${width}`);
    await action.focus();await action.press('Enter');await page.getByRole('status').filter({hasText:locale==='en'?'original conversation':'原对话'}).first().waitFor();
-   assert.deepEqual(commands.map(c=>c.path),Array(2).fill(`/rooms/${room.id}/conversations/${session.id}/messages`));assert.ok(commands.every(c=>c.key&&c.input.recipient_segments[0].recipient_agent_ids[0]===agent.id));assert.equal(await page.getByRole('dialog').count(),0);assert.deepEqual(errors,[]);
+   assert.deepEqual(commands.map(c=>c.path),Array(2).fill('/actions/room.message.send'));assert.ok(followedUpInOriginal(commands));assert.equal(await page.getByRole('dialog').count(),0);assert.deepEqual(errors,[]);
   }finally{await context.close();}
  });
 }
@@ -753,13 +780,16 @@ for (const locale of ['en', 'zh-CN']) for (const theme of ['dark', 'light']) for
     try {
       await fixtures(page, counts, recoveryRun)
       let consent
-      await page.route(`**/runs/${failed.id}/quota-recovery`, async route => {
-        consent = route.request().postDataJSON()
+      // One keyed Run command records the choice; the new state is read back with the Run.
+      await page.route('**/api/v1/actions/run.quota_recovery.update', async route => {
+        const { run_id: runId, ...input } = route.request().postDataJSON()
+        assert.equal(runId, failed.id); assert.ok(route.request().headers()['idempotency-key'])
+        consent = input
         recoveryRun.output_json.waiting_for_quota.recovery = {
           ...recoveryRun.output_json.waiting_for_quota.recovery, auto_continue: true, can_switch_model: false,
           switched_model: 'sonnet', pause_reason: null,
         }
-        await route.fulfill({ json: recoveryRun.output_json.waiting_for_quota.recovery })
+        await route.fulfill({ json: { status: 'succeeded', data: { id: failed.id, space_id: space, run_id: failed.id } } })
       })
       await page.goto(`${baseUrl}/spaces/${space}/projects/${project.id}/rooms?room=${room.id}&conversation=${session.id}`)
       const button = page.getByRole('button', { name: locale === 'en' ? 'Allow another model on this CLI and continue' : '同意自动换用此 CLI 的其他模型并继续', exact: true }).first()
@@ -802,26 +832,48 @@ for (const locale of ['en', 'zh-CN']) for (const theme of ['dark', 'light']) for
         enabled = body.allow_quota_model_switch; saves++
         await route.fulfill({ json: { status: 'succeeded', data: { id: body.session_id, space_id: space, agent_id: body.agent_id, session_id: body.session_id } } })
       })
+      // An initialized conversation reports its participants; this Agent's runtime is pinned on the Host it last ran on.
+      const pin = { agent_id: agent.id, runtime_profile_id: 'profile-recovery', runtime_key: 'claude_code', runtime_installation: 'managed:0.101.0' }
+      await page.route(`**/api/v1/sessions/${session.id}/execution-context`, route => route.fulfill({ json: {
+        summary: { session_id: session.id, state: 'initialized', participant_agent_ids: [agent.id], host: null, runtime: pin, runtimes: [pin], primary: null,
+          attachments: [], dispatch_locked: false, queue_paused_at: null, can_send: true, blocked_reason: null },
+        available_hosts: [], available_runtime_profiles: [], available_primary_locations: [],
+      } }))
       const url = `${baseUrl}/spaces/${space}/projects/${project.id}/rooms?room=${room.id}&conversation=${session.id}`
+      // Settings live behind the composer's one closed Conversation settings entry.
+      const openSettings = async () => {
+        await page.getByRole('button', { name: locale === 'en' ? 'Conversation settings · 1' : '对话设置 · 1', exact: true }).click()
+        const dialog = page.getByRole('dialog', { name: locale === 'en' ? 'Conversation settings' : '对话设置', exact: true })
+        await dialog.waitFor()
+        await dialog.evaluate(el => Promise.all(el.getAnimations({ subtree: true }).map(animation => animation.finished.catch(() => {}))))
+        assert.ok(await dialog.evaluate(el => { const r = el.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight }))
+        return dialog
+      }
+      const quota = dialog => dialog.getByRole('checkbox', { name: locale === 'en' ? /Automatically switch models when quota runs out/ : /模型额度耗尽时自动切换其他模型/ })
+      const save = dialog => dialog.getByRole('button', { name: locale === 'en' ? 'Save' : '保存', exact: true })
       await page.goto(url)
-      const checkbox = page.getByRole('checkbox', { name: locale === 'en' ? /Automatically switch models when quota runs out/ : /模型额度耗尽时自动切换其他模型/ })
+      let dialog = await openSettings(), checkbox = quota(dialog)
       await checkbox.waitFor()
       assert.equal(await checkbox.isChecked(), false)
       await checkbox.check()
       assert.equal(saves, 0)
       await checkbox.scrollIntoViewIfNeeded()
       await capture(page, `saved-quota-choice-${locale}-${theme}-${width}`)
-      await page.getByRole('button', { name: locale === 'en' ? 'Save' : '保存', exact: true }).click()
-      await page.getByText(locale === 'en' ? 'Saved · applies to future runs' : '已保存 · 对后续运行生效', { exact: true }).waitFor()
+      await save(dialog).click()
+      // A saved choice matches its readback: Save and the unsaved status go away, with no error.
+      await save(dialog).waitFor({ state: 'hidden' })
+      assert.equal(await dialog.getByRole('alert').count(), 0)
       assert.equal(enabled, true)
       await page.reload()
+      dialog = await openSettings(); checkbox = quota(dialog)
       await checkbox.waitFor()
       assert.equal(await checkbox.isChecked(), true)
       await checkbox.scrollIntoViewIfNeeded()
       await capture(page, `saved-quota-reloaded-${locale}-${theme}-${width}`)
       await checkbox.uncheck()
-      await page.getByRole('button', { name: locale === 'en' ? 'Save' : '保存', exact: true }).click()
-      await page.getByText(locale === 'en' ? 'Saved · applies to future runs' : '已保存 · 对后续运行生效', { exact: true }).waitFor()
+      await save(dialog).click()
+      await save(dialog).waitFor({ state: 'hidden' })
+      assert.equal(await dialog.getByRole('alert').count(), 0)
       assert.equal(enabled, false)
       assert.equal(saves, 2)
     } finally { await context.close() }

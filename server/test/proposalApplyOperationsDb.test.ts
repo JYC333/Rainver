@@ -121,6 +121,22 @@ describe('formal canonical typed Proposal accept',()=>{
   expect((await db.pool.query('SELECT id FROM tasks WHERE source_proposal_id=$1',[proposal])).rows).toHaveLength(1);
   expect((await db.pool.query("SELECT id FROM operation_idempotency WHERE operation_id='proposal.accept'")).rows).toHaveLength(1);
  });
+ it('an expired unlinked Proposal is neither applied nor rejected on any HTTP entry',async()=>{
+  await db.pool.query("UPDATE proposals SET expires_at=now()-interval '1 second' WHERE id=$1",[proposal]);
+  const action=(verb:string)=>app.inject({method:'POST',url:`/api/v1/actions/proposal.${verb}`,payload:{proposal_id:proposal},headers:{'idempotency-key':randomUUID()}});
+  const legacyReject=()=>app.inject({method:'POST',url:`/api/v1/proposals/${proposal}/reject`,payload:{},headers:{'idempotency-key':randomUUID()}});
+  for(const decide of [()=>send(),()=>action('accept'),()=>action('reject'),legacyReject]){
+   const refused=await decide();
+   expect([refused.statusCode,refused.json().error?.code],refused.body).toEqual([409,'operation_approval_expired']);
+  }
+  // Nothing was decided, applied or cached: the Proposal stays pending (derived expiry) for cleanup.
+  expect((await db.pool.query('SELECT status,reviewed_by FROM proposals WHERE id=$1',[proposal])).rows[0]).toEqual({status:'pending',reviewed_by:null});
+  expect((await db.pool.query('SELECT id FROM tasks WHERE source_proposal_id=$1',[proposal])).rows).toHaveLength(0);
+  expect((await db.pool.query("SELECT id FROM operation_idempotency WHERE operation_id IN ('proposal.accept','proposal.reject')")).rows).toHaveLength(0);
+  // Unexpired, the same unlinked Proposal still decides normally.
+  await db.pool.query("UPDATE proposals SET expires_at=now()+interval '1 day' WHERE id=$1",[proposal]);
+  expect((await send()).json().data).toMatchObject({proposal:{status:'accepted'},result_type:'follow_up_task'});
+ });
  it('requires a strict key and rejects injected authority',async()=>{
   expect((await send(null)).statusCode).toBe(422);expect((await send(randomUUID(),{user_id:owner})).statusCode).toBe(422);
  });
