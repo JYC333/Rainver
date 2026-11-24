@@ -22,7 +22,9 @@ import { PostRunFinalizationService } from "../src/modules/runs/finalizationServ
 import { runSettlement } from "../src/modules/runs/runSettlement.js";
 import { PgRunSupervisor } from "../src/modules/runs/supervisor.js";
 import { HostThreadClaimHeldError } from "../src/modules/runs/runSettlement.js";
-import { resumeUnsettledRuns } from "../src/modules/runs/recovery.js";
+import { resumeUnsettledRuns, RunRecoveryService } from "../src/modules/runs/recovery.js";
+import { PgJobQueueRepository } from "../src/modules/jobs/repository.js";
+import { RUN_CANCELLATION_RECONCILE_JOB } from "../src/modules/jobs/agentRunGeneration.js";
 import { RunMaterializationService } from "../src/modules/runs/materializationService.js";
 import { enqueueWhenTurnFree, holdInterruptedRun } from "../src/modules/rooms/quotaGate.js";
 import { withDbTransaction } from "../src/modules/routeUtils/common.js";
@@ -875,7 +877,19 @@ describe("host_threads owner constraints", () => {
         tool_details_json: { title: "Read project file", exit_code: 1, error: "file does not exist" },
         status: "pending",
       },
+      {
+        event_type: "tool_activity_finished",
+        tool_call_id: longCallId,
+        tool_result_summary: "before\u0000after",
+        tool_details_json: { diffs: [{ path: "file", old_text: null, new_text: "a\u0000b", truncated: false }] },
+        status: "succeeded",
+      },
     ]);
+    expect(events[2]).toMatchObject({
+      tool_result_summary: "before\uFFFDafter",
+      tool_details_json: { diffs: [{ path: "file", old_text: null, new_text: "a\uFFFDb", truncated: false }] },
+      status: "succeeded",
+    });
     expect(events[0]).toMatchObject({ project_id: null, event_type: "status", status: "run_started" });
     expect(events[1]).toMatchObject({
       project_id: null,
@@ -989,15 +1003,45 @@ describe("admitting a Run onto a Task thread", () => {
   }
 
   /** A remote Task dispatch onto the seeded thread, as the route admits one. */
-  function dispatch(threadId: string, taskId = TASK) {
+  function dispatch(threadId: string, taskId = TASK, execution: { mode?: "dry_run"; scheduled_at?: string } = {}) {
     return new PgTaskRepository(db.pool).createTaskRun({ spaceId: SPACE, userId: OWNER }, taskId, {
       workspace_location_id: LOCATION,
       prompt: "go",
       thread_id: threadId,
       agent_id: AGENT,
       runtime_profile_id: DISPATCH_PROFILE,
+      ...execution,
     });
   }
+
+  it("refuses dry-run Task dispatch and delays a live dispatch Job until scheduled", async () => {
+    const threadId = await seedDispatchableThread();
+    const scheduledAt = new Date(Date.now() + 3600_000);
+    await expect(dispatch(threadId, TASK, { mode: "dry_run" })).rejects.toThrow("Task execution does not support dry runs");
+    expect(await runsOnThread(threadId)).toBe("0");
+    const run = await dispatch(threadId, TASK, { scheduled_at: scheduledAt.toISOString() });
+    expect(run).toMatchObject({ mode: "live", scheduled_at: scheduledAt });
+    const queued = await db.pool.query("SELECT scheduled_at FROM jobs WHERE job_type='agent_run' AND payload_json->>'run_id'=$1", [run.id]);
+    expect(queued.rows).toEqual([{ scheduled_at: scheduledAt }]);
+  });
+
+  it("recovers a committed stop without waiting for the original scheduled execution", async () => {
+    const threadId = await seedDispatchableThread();
+    const scheduledAt = new Date(Date.now() + 3600_000);
+    const run = await dispatch(threadId, TASK, { scheduled_at: scheduledAt.toISOString() });
+    const runId = String(run.id);
+    const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri });
+    const runs = new PgRunRepository(db.pool, config);
+    await runs.markRunCancelling({ run_id: runId, space_id: SPACE, requested_at: new Date().toISOString(), requested_by_user_id: OWNER });
+    const recovery = new RunRecoveryService(config, runs);
+    await recovery.recover();
+    await recovery.recover();
+    const jobs = new PgJobQueueRepository(db.pool);
+    expect(await jobs.claimNext("stop-test", ["agent_run"])).toBeNull();
+    expect(await jobs.claimNext("stop-test", [RUN_CANCELLATION_RECONCILE_JOB]))
+      .toMatchObject({ payload_json: { run_id: runId }, status: "claimed" });
+    expect(await jobs.claimNext("stop-test", [RUN_CANCELLATION_RECONCILE_JOB])).toBeNull();
+  });
 
   function runsOnThread(threadId: string) {
     return db.pool.query<{ count: string }>(

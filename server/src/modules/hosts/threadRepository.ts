@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Queryable } from "../routeUtils/common.js";
 import { HARD_TERMINAL_RUN_STATUSES } from "../runs/orchestrationResults.js";
+import { launchRecordResetSql } from "./agentHostResetGeneration.js";
 
 /**
  * A host thread pins a run-file-lifecycle conversation to one
@@ -49,6 +50,9 @@ const COLUMNS = `id, space_id, execution_host_id, workspace_location_id, workspa
   identity_digest, identity_digest_run_id, context_tokens, context_window_tokens, handoff_artifact_id`;
 
 /** In `recordRunOutcome`: the same vendor session now reports less in context than before. */
+/** The Host a thread executes on: its own, or (a Location thread, whose own is null) its Location's. Over `thread`. */
+const THREAD_ON_HOST_SQL = `COALESCE(thread.execution_host_id, (
+  SELECT wl.execution_host_id FROM workspace_locations wl WHERE wl.id = thread.workspace_location_id))`;
 const COMPACTED_SQL = `($7::integer IS NOT NULL AND context_tokens IS NOT NULL AND $7::integer < context_tokens
                   AND ($3::varchar IS NULL OR vendor_session_id IS NOT DISTINCT FROM $3::varchar))`;
 
@@ -391,6 +395,7 @@ export class PgHostThreadRepository {
             AND conversation.room_id IS NULL
             AND thread.container_kind = 'conversation' AND thread.agent_id IS NOT NULL
             AND thread.status IN ('active', 'session_reset')
+          ORDER BY thread.id
           FOR UPDATE OF thread
        )
        UPDATE host_threads thread
@@ -465,6 +470,46 @@ export class PgHostThreadRepository {
     return result.rows[0] ?? null;
   }
 
+  /**
+   * Retire exactly `vendorSessionId` on any thread that still points at it — a conversation, direct, delegation or
+   * task thread alike: a session an isolated launch held is never resumed with network (ADR 0036 §11), whichever
+   * container it belongs to. Null when the thread no longer points at it (a newer pointer is kept).
+   */
+  async retireVendorSession(threadId: string, vendorSessionId: string): Promise<HostThread | null> {
+    const result = await this.db.query<HostThread>(
+      `UPDATE host_threads
+          SET status = 'session_reset',
+              retired_vendor_session_ids = retired_vendor_session_ids || to_jsonb(vendor_session_id),
+              vendor_session_id = NULL,
+              vendor_session_launch_id = NULL,
+              identity_digest = NULL,
+              identity_digest_run_id = NULL,
+              context_tokens = NULL,
+              context_window_tokens = NULL,
+              handoff_artifact_id = NULL,
+              updated_at = now()
+        WHERE id = $1 AND vendor_session_id = $2::text AND status IN ('active', 'session_reset')
+        RETURNING ${COLUMNS}`,
+      [threadId, vendorSessionId],
+    );
+    return result.rows[0] ?? null;
+  }
+
+  /**
+   * Exclude `vendorSessionId` from this thread for good: retired with the pointer when the pointer still names it
+   * (`retireVendorSession`), otherwise only listed as retired, so a late report of it never becomes the pointer
+   * (`recordRunOutcome`) and ambient import keeps telling it from the owner's own history. A newer pointer is kept.
+   */
+  async excludeVendorSession(threadId: string, vendorSessionId: string): Promise<void> {
+    if (await this.retireVendorSession(threadId, vendorSessionId)) return;
+    await this.db.query(
+      `UPDATE host_threads
+          SET retired_vendor_session_ids = retired_vendor_session_ids || to_jsonb($2::text), updated_at = now()
+        WHERE id = $1 AND vendor_session_id IS DISTINCT FROM $2::text AND NOT retired_vendor_session_ids ? $2::text`,
+      [threadId, vendorSessionId],
+    );
+  }
+
   async resetDirectAgent(agentId: string, userId: string): Promise<HostThread | null> {
     const result = await this.db.query<HostThread>(
       `UPDATE host_threads
@@ -530,16 +575,15 @@ export class PgHostThreadRepository {
    * the Location's.
    */
   async retireAgentSessionsOnHost(agentId: string, hostId: string): Promise<number> {
-    const result = await this.db.query(
+    const result = await this.db.query<{ id: string }>(
       `UPDATE host_threads thread
           SET status = 'session_reset',
               retired_vendor_session_ids = CASE WHEN vendor_session_id IS NULL THEN retired_vendor_session_ids ELSE retired_vendor_session_ids || to_jsonb(vendor_session_id) END,
               vendor_session_id = NULL,
               vendor_session_launch_id = NULL,
+              handoff_artifact_id = NULL,
               updated_at = now()
-        WHERE COALESCE(thread.execution_host_id, (
-                SELECT wl.execution_host_id FROM workspace_locations wl WHERE wl.id = thread.workspace_location_id
-              )) = $2
+        WHERE ${THREAD_ON_HOST_SQL} = $2
           AND thread.status IN ('active', 'session_reset')
           AND (
             thread.agent_id = $1
@@ -548,10 +592,43 @@ export class PgHostThreadRepository {
                WHERE r.host_task_thread_id = thread.id
                ORDER BY r.created_at DESC LIMIT 1
             ) = $1)
-          )`,
+          )
+        RETURNING thread.id`,
       [agentId, hostId],
     );
-    return result.rowCount ?? 0;
+    // A session a Run of this Agent froze or parked in (`host_thread.runtime_session_id`) but no pointer names — a
+    // Task Run waiting for review in the session its launch reported — lives in the same profile, archived with it.
+    // Retired on its thread too, so that Run's resume is refused (`networkedResumeVerdict`) instead of handing the
+    // CLI a session its profile no longer holds; its record alone no longer vouches for it. Only this Agent's Runs
+    // on this Host that may still launch: another Agent's or another Host's parked session keeps its own record.
+    // Such a Run may sit on a Location thread whose latest Run is another Agent's; the reset admission locks and
+    // checks those threads as well (`agent.host_state.reset` in `hosts/operations.ts`). A park reported after this commits is refused by its
+    // launch's reset generation instead (ADR 0036 §15).
+    const parkedRetired = await this.db.query<{ id: string }>(
+      `WITH parked AS (
+         SELECT r.host_task_thread_id AS thread_id,
+                jsonb_agg(DISTINCT r.model_override_json #>> '{host_thread,runtime_session_id}') AS ids
+           FROM runs r JOIN host_threads thread ON thread.id = r.host_task_thread_id
+          WHERE r.agent_id = $1 AND r.status <> ALL($3::text[])
+            AND COALESCE(r.model_override_json #>> '{host_thread,runtime_session_id}', '') <> ''
+            AND ${THREAD_ON_HOST_SQL} = $2
+            AND thread.status IN ('active', 'session_reset')
+          GROUP BY r.host_task_thread_id
+       )
+       UPDATE host_threads thread
+          SET retired_vendor_session_ids = thread.retired_vendor_session_ids || (
+                SELECT jsonb_agg(session.value) FROM jsonb_array_elements_text(parked.ids) AS session(value)
+                 WHERE NOT thread.retired_vendor_session_ids ? session.value),
+              updated_at = now()
+         FROM parked
+        WHERE thread.id = parked.thread_id
+          AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(parked.ids) AS session(value)
+                       WHERE NOT thread.retired_vendor_session_ids ? session.value)
+        RETURNING thread.id`,
+      [agentId, hostId, [...HARD_TERMINAL_RUN_STATUSES]],
+    );
+    // Every thread this reset retired something on, counted once.
+    return new Set([...result.rows, ...parkedRetired.rows].map((row) => row.id)).size;
   }
 
   /**
@@ -649,7 +726,18 @@ export class PgHostThreadRepository {
          CROSS JOIN LATERAL jsonb_array_elements_text(retired_vendor_session_ids) AS retired(value)
         WHERE (workspace_location_id = $1 OR workspace_location_id IS NULL)
           AND runtime_key = $2
-          AND runtime_installation = $3`,
+          AND runtime_installation = $3
+       UNION
+       -- A session a Run of these threads froze or parked in (host_thread.runtime_session_id) is the Agent's even
+       -- when no pointer or retirement names it yet — a park whose retirement a later reset or report decides
+       -- (ADR 0036 §16) — so it is never imported as the owner's own history.
+       SELECT r.model_override_json #>> '{host_thread,runtime_session_id}' AS vendor_session_id
+         FROM host_threads thread
+         JOIN runs r ON r.host_task_thread_id = thread.id
+        WHERE (thread.workspace_location_id = $1 OR thread.workspace_location_id IS NULL)
+          AND thread.runtime_key = $2
+          AND thread.runtime_installation = $3
+          AND COALESCE(r.model_override_json #>> '{host_thread,runtime_session_id}', '') <> ''`,
       [input.workspaceLocationId, input.runtimeKey, input.runtimeInstallation],
     );
     return new Set(result.rows.map((row) => row.vendor_session_id));
@@ -709,8 +797,28 @@ export class PgHostThreadRepository {
     // subscription window, say) — says nothing about the thread's current
     // session and must not bring the retired one back: only its last Run is
     // recorded.
+    //
+    // So must a Run whose launch predates a reset of its Agent's state on that
+    // launch's Host (ADR 0036 §15) — a Run the reset admitted, waiting for
+    // review or already ended, whose launch reported after the reset: whatever
+    // session it names lives in a profile the reset archived. That session is
+    // retired here too, as the reset retires what it saw.
     if (input.vendorSessionId) {
-      const retired = await this.db.query(
+      const stale = await this.db.query(
+        `UPDATE host_threads thread
+            SET retired_vendor_session_ids = thread.retired_vendor_session_ids || to_jsonb($2::text), updated_at = now()
+          WHERE thread.id = $1 AND NOT thread.retired_vendor_session_ids ? $2::text
+            AND EXISTS (SELECT 1 FROM (
+                  SELECT attempt.launch_isolation_json, attempt.created_at, reporting.agent_id
+                    FROM run_attempts attempt
+                    JOIN runs reporting ON reporting.id = attempt.run_id AND reporting.space_id = attempt.space_id
+                   WHERE attempt.run_id = $3::varchar AND attempt.launch_id IS NOT NULL
+                     AND reporting.host_task_thread_id = thread.id
+                   ORDER BY attempt.attempt_number DESC LIMIT 1) latest
+                 WHERE ${launchRecordResetSql("latest.launch_isolation_json", "latest.agent_id", "latest.created_at")})`,
+        [threadId, input.vendorSessionId, input.lastRunId],
+      );
+      const retired = (stale.rowCount ?? 0) > 0 ? stale : await this.db.query(
         `SELECT 1 FROM host_threads WHERE id = $1 AND retired_vendor_session_ids ? $2`,
         [threadId, input.vendorSessionId],
       );
@@ -776,6 +884,10 @@ export class PgHostThreadRepository {
                      AND reporting.host_task_thread_id = host_threads.id
                    ORDER BY attempt.attempt_number DESC LIMIT 1)
                 ELSE vendor_session_launch_id END,
+              handoff_artifact_id = CASE
+                WHEN $4::boolean OR ($3::varchar IS NOT NULL AND $3::varchar IS DISTINCT FROM vendor_session_id)
+                  THEN NULL
+                ELSE handoff_artifact_id END,
               status = CASE WHEN $4::boolean THEN 'session_reset' ELSE 'active' END,
               updated_at = now()
         WHERE id = $1 AND status <> 'closed'
@@ -831,8 +943,10 @@ export class PgHostThreadRepository {
     threadId: string,
     input: Parameters<PgHostThreadRepository["recordRunOutcome"]>[1],
   ): Promise<{ outcome_recorded: boolean; claim: "released" | "not_held" | "run_not_terminal" }> {
-    const run = await this.db.query<{ status: string }>(
-      `SELECT status FROM runs WHERE id = $1 AND host_task_thread_id = $2 FOR SHARE`,
+    const run = await this.db.query<{ status: string; handoff_candidate: string | null; parked_session: string | null }>(
+      `SELECT status, model_override_json->'host_thread'->>'handoff_candidate' AS handoff_candidate,
+              model_override_json->'host_thread'->>'runtime_session_id' AS parked_session
+         FROM runs WHERE id = $1 AND host_task_thread_id = $2 FOR SHARE`,
       [input.lastRunId, threadId],
     );
     // Refused before any write: a Run that is not ended (a Supervisor successor
@@ -842,7 +956,46 @@ export class PgHostThreadRepository {
     if (!run.rows[0] || !(HARD_TERMINAL_RUN_STATUSES as readonly string[]).includes(run.rows[0].status)) {
       return { outcome_recorded: false, claim: await this.holdsDispatchClaim(threadId, input.lastRunId) ? "run_not_terminal" : "not_held" };
     }
-    const outcomeRecorded = await this.recordRunOutcome(threadId, input);
+    const thread = await this.db.query<{
+      status: string; vendor_session_id: string | null; handoff_artifact_id: string | null; dispatch_lock_id: string | null;
+    }>(
+      `SELECT status, vendor_session_id, handoff_artifact_id, dispatch_lock_id
+         FROM host_threads WHERE id = $1 FOR UPDATE`,
+      [threadId],
+    );
+    const current = thread.rows[0];
+    const pendingHandoff = current?.status === "session_reset"
+      && current.vendor_session_id !== null && current.handoff_artifact_id !== null;
+    let outcomeRecorded = false;
+    const candidate = run.rows[0].handoff_candidate;
+    if (!pendingHandoff && !candidate) {
+      outcomeRecorded = await this.recordRunOutcome(threadId, input);
+    } else if (pendingHandoff && current.handoff_artifact_id === candidate && current.dispatch_lock_id === input.lastRunId) {
+      if (input.landed && input.vendorSessionId && input.vendorSessionId !== current.vendor_session_id) {
+        outcomeRecorded = await this.recordRunOutcome(threadId, input);
+      } else {
+        // Only the candidate's own terminal Run may cancel the handoff.
+        // Its session and context observations do not belong to the old session.
+        await this.db.query(
+          `UPDATE host_threads SET status = 'active', handoff_artifact_id = NULL, updated_at = now()
+            WHERE id = $1 AND dispatch_lock_id = $2`,
+          [threadId, input.lastRunId],
+        );
+        outcomeRecorded = true;
+      }
+    }
+    const discardedSession = input.vendorSessionId ?? run.rows[0].parked_session;
+    if (candidate && discardedSession && (!outcomeRecorded || !input.landed)) {
+      // Failed and superseded candidates still belong to Rainver. Exclude
+      // their vendor history from ambient workspace imports.
+      await this.db.query(
+        `UPDATE host_threads
+            SET retired_vendor_session_ids = retired_vendor_session_ids || to_jsonb($2::text)
+          WHERE id = $1 AND vendor_session_id IS DISTINCT FROM $2
+            AND NOT retired_vendor_session_ids ? $2`,
+        [threadId, discardedSession],
+      );
+    }
     const released = await this.db.query(
       `UPDATE host_threads SET dispatch_lock_id = NULL, updated_at = now()
         WHERE id = $1 AND dispatch_lock_id = $2`,
@@ -860,31 +1013,20 @@ export class PgHostThreadRepository {
     return (held.rowCount ?? 0) > 0;
   }
 
-  /**
-   * End a vendor session after its Agent wrote a handoff document: the next
-   * turn starts fresh from identity block + handoff + Room summary. The
-   * session is retired exactly like a reset, and the handoff it was replaced
-   * by is kept on the thread.
-   */
-  async rotateAfterHandoff(threadId: string, handoffArtifactId: string, retiringVendorSessionId: string): Promise<boolean> {
+  /** Stage a fresh turn from the summary, retaining the current session until it lands. */
+  async stageHandoff(threadId: string, handoffArtifactId: string, sourceVendorSessionId: string, dispatchClaim: string | null = null, waitingRunId: string | null = null): Promise<boolean> {
     const result = await this.db.query(
       `UPDATE host_threads
-          SET status = 'session_reset',
-              retired_vendor_session_ids = CASE WHEN vendor_session_id IS NULL THEN retired_vendor_session_ids ELSE retired_vendor_session_ids || to_jsonb(vendor_session_id) END,
-              vendor_session_id = NULL,
-              vendor_session_launch_id = NULL,
-              identity_digest = NULL,
-              identity_digest_run_id = NULL,
-              context_tokens = NULL,
-              context_window_tokens = NULL,
-              handoff_artifact_id = $2,
-              updated_at = now()
+          SET status = 'session_reset', handoff_artifact_id = $2, updated_at = now()
         WHERE id = $1 AND status IN ('active', 'session_reset')
-          -- Only the session the handoff was written from. A reset, or any
-          -- other change of session while the handoff ran, means the document
-          -- describes a session that is already gone.
-          AND vendor_session_id = $3`,
-      [threadId, handoffArtifactId, retiringVendorSessionId],
+          AND dispatch_lock_id IS NOT DISTINCT FROM $5::varchar AND vendor_session_id = $3
+          AND NOT EXISTS (
+            SELECT 1 FROM runs existing
+             WHERE existing.host_task_thread_id = host_threads.id
+               AND NOT (existing.status = ANY($4::text[]))
+               AND NOT (existing.id IS NOT DISTINCT FROM $6::varchar AND existing.status = 'waiting_for_dependency')
+          )`,
+      [threadId, handoffArtifactId, sourceVendorSessionId, HARD_TERMINAL_RUN_STATUSES, dispatchClaim, waitingRunId],
     );
     return (result.rowCount ?? 0) > 0;
   }

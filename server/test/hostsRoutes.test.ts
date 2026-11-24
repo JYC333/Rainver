@@ -188,6 +188,20 @@ describe("hosts routes", () => {
     const changed = await commands!.run(app, { method: "POST", url }, hostId);
     expect(changed.status).toMatchObject({ status: "succeeded", result: { changed: true } });
     expect(await upgrades()).toMatchObject([{ from_version: "1.2.0", to_version: "1.3.0" }]);
+    await db.pool.query(
+      `UPDATE hosts SET capabilities_json = capabilities_json || '{"host_command_receipts":1}'::jsonb WHERE id = $1`,
+      [hostId],
+    );
+    const journaled = vi.spyOn(sharedHostConnectionRegistry, "requestHostCommand").mockResolvedValueOnce({
+      sent: true, outcome: "completed", replayed: false, error: null,
+      result: { type: "tool_result", request_id: "receipt", ok: true, error: null, installation: "own", from_version: "1.3.0", to_version: "1.4.0" },
+    });
+    const withReceipt = await commands!.run(app, { method: "POST", url }, hostId);
+    expect(journaled).toHaveBeenCalledWith(hostId, expect.objectContaining({
+      command: { type: "update_own_tool", request_id: "pending", runtime_key: "codex_cli" },
+      fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+    }), expect.any(Number));
+    expect(withReceipt.status).toMatchObject({ status: "succeeded", result: { changed: true, to_version: "1.4.0" } });
     // Only the issuing person reads the outcome.
     __setAuthIdentityForTests({ spaceId: SPACE, userId: OTHER_USER });
     expect((await commands!.status(app, hostId, changed.receipt.id)).statusCode).toBe(404);

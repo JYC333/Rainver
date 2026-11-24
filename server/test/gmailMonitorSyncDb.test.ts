@@ -6,7 +6,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { GMAIL_DIGEST_LIMITS, SYSTEM_ACTION_REGISTRY, type GmailDigestReadOutput } from "@rainver/protocol";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
-import { seedRun, seedServerHost, seedSpaceMember, seedSpaceOwnerProject } from "./support/domainSeeds.js";
+import { seedConversationBinding, seedRun, seedServerHost, seedSpaceMember, seedSpaceOwnerProject } from "./support/domainSeeds.js";
 import { buildModuleServer } from "./support/moduleServer.js";
 import { publicAddressGuard } from "./support/outboundGuard.js";
 import { sourcesModule } from "../src/modules/sources/index.js";
@@ -307,6 +307,9 @@ async function digestConversation() {
   await db.pool.query(`INSERT INTO sessions (id,space_id,user_id,project_id,status,created_at,updated_at)
     VALUES ($1,$2,$3,$4,'active',now(),now())`, [session, space, owner, project]);
   await db.pool.query(`UPDATE runs SET session_id=$2 WHERE id=$1`, [run, session]);
+  // The binding the conversation's first turn wrote: a digest card names what it runs on (ADR 0035 §3).
+  const agent = (await db.pool.query<{ agent_id: string }>(`SELECT agent_id FROM runs WHERE id=$1`, [run])).rows[0]!.agent_id;
+  await seedConversationBinding(db.pool, { space, session, user: owner, agent });
 
   return { connectionId, setting, run, session };
 }
@@ -404,7 +407,7 @@ it("confirms daily and immediate rule summaries separately and manages their own
     kind: "rule", items: [expect.objectContaining({ id: matchedId, text: "Synthetic admission update." })],
   } } });
   await db.pool.query(`UPDATE runs SET status='succeeded' WHERE id=$1`, [runId]);
-  const reply = await settleGmailDigestRun(db.pool, await loadRun(), "One admissions reply arrived.", (tx, content) =>
+  const reply = await settleGmailDigestRun(db.pool, config, await loadRun(), "One admissions reply arrived.", (tx, content) =>
     new PgSessionRepository(tx).addAssistantMessageForRun(space, owner, session, runId, { content }));
   expect(reply).toMatchObject({ content: "One admissions reply arrived.", session_id: session });
   expect(await startDueGmailDigests(db.pool, config, 20, connectionId)).toBe(0);
@@ -415,11 +418,18 @@ it("confirms daily and immediate rule summaries separately and manages their own
   const fallWindow = gmailDigestDailyWindow(previousSlot, new Date(slot.getTime() + 180_000), slot, "08:00", "Europe/London");
   expect(fallWindow).toEqual({ start: previousSlot, end: slot, gapBefore: false });
   const firstHour = deliver({ at: previousSlot.getTime() + 1000 });
+  const authorityTimeouts: string[] = [];
   const fallPage = await readGmailDigestPage(config, db.pool, {
     spaceId: space, ownerUserId: owner, connectionId, kind: "daily", window: fallWindow,
-    ids: null, pageToken: null, signal: new AbortController().signal, authorizeSend: async () => {},
+    ids: null, pageToken: null, signal: new AbortController().signal,
+    authorizeSend: async tx => {
+      const row = (await tx.query<{ statement_timeout: string }>('SHOW statement_timeout')).rows[0];
+      authorityTimeouts.push(row!.statement_timeout);
+    },
   });
   expect(fallPage.items.map(item => item.id)).toEqual([firstHour.id]);
+  expect(authorityTimeouts.length).toBeGreaterThan(0);
+  expect(authorityTimeouts.every(timeout => timeout !== '0')).toBe(true);
   const old = deliver({ at: now - 48 * 3600_000 });
   const fresh = deliver({ at: now - 1000 });
   const archived = deliver({ at: now - 2000, labels: ["UNREAD"] });
@@ -563,11 +573,6 @@ it.each([
 
 it("acceptance: a confirmed daily digest is delivered on the conversation's remote codex_cli native login, reads its window and settles into that conversation", async () => {
   const { run, session } = await digestConversation();
-  const draft = await proposeGmailDigest(db.pool, run, space, { kind: "daily", local_time: "08:00", time_zone: "Europe/London" }, randomUUID());
-  const proposal = "proposal_id" in draft.modelResult ? draft.modelResult.proposal_id : "";
-  expect((await accept(proposal)).statusCode).toBe(200);
-  const covered = new Date(Math.floor(Date.now() / 1000) * 1000 - 3600_000);
-  const digestId = (await db.pool.query<{ id: string }>(`UPDATE gmail_digests SET covered_until=$1,next_run_at=now() WHERE space_id=$2 RETURNING id`, [covered, space])).rows[0]!.id;
   // The conversation's Agent runs on the owner's paired (remote) Host with codex_cli on its own login (runtime_native).
   const agentId = (await db.pool.query<{ agent_id: string }>(`SELECT agent_id FROM runs WHERE id=$1`, [run])).rows[0]!.agent_id;
   const remote = randomUUID();
@@ -578,6 +583,15 @@ it("acceptance: a confirmed daily digest is delivered on the conversation's remo
   await db.pool.query(`UPDATE agent_runtime_profiles SET execution_host_id=$2,workspace_mode='managed',runtime_installation='managed:1.0.0',runtime_key='codex_cli',
       backend_mode='runtime_native',model_provider_id=NULL,model_name=NULL WHERE agent_id=$1 AND is_default`, [agentId, remote]);
   await new PgProjectAgentRepository(db.pool).upsertActive({ spaceId: space, projectId: project, agentId, userId: owner });
+  // The conversation is bound to it (as its next turn binds the profile), and the card confirms exactly that (ADR 0035 §3).
+  await db.pool.query(`UPDATE session_conversation_backends SET runtime_key_snapshot='codex_cli',backend_mode_snapshot='runtime_native',model_provider_id_snapshot=NULL,model_name_snapshot=NULL
+    WHERE session_id=$1`, [session]);
+  const draft = await proposeGmailDigest(db.pool, run, space, { kind: "daily", local_time: "08:00", time_zone: "Europe/London" }, randomUUID());
+  const proposal = "proposal_id" in draft.modelResult ? draft.modelResult.proposal_id : "";
+  expect((await accept(proposal)).statusCode).toBe(200);
+  const covered = new Date(Math.floor(Date.now() / 1000) * 1000 - 3600_000);
+  const digestId = (await db.pool.query<{ id: string }>(`UPDATE gmail_digests SET covered_until=$1,next_run_at=now() WHERE space_id=$2 RETURNING id`, [covered, space])).rows[0]!.id;
+  expect((await db.pool.query(`SELECT runtime_binding->>'runtime_key' AS key FROM gmail_digests WHERE id=$1`, [digestId])).rows[0].key).toBe("codex_cli");
   const started = await startGmailDigestDelivery(db.pool, config, digestId);
   expect(started, JSON.stringify((await db.pool.query(`SELECT last_error_code FROM gmail_digests WHERE id=$1`, [digestId])).rows[0])).toBe("started");
   const delivery = (await db.pool.query(`SELECT * FROM gmail_digest_deliveries WHERE digest_id=$1`, [digestId])).rows[0];
@@ -974,12 +988,13 @@ it("checks a single history record larger than one sync in parts, persisting its
   const connectionId = await connect();
   const monitorId = await monitor(connectionId);
   await sync(connectionId);
-  const before = (await syncRow(connectionId)).history_id;
+  const { history_id: before, last_success_at: lastCaughtUp } = await syncRow(connectionId);
+  await nextMinute();
   const { recordId, mails } = deliverRecord(45);
   const first = await sync(connectionId);
   expect(first).toMatchObject({ status: "synced", newMatches: 40, more: true });
   // The cursor stays before the record; the record's progress is persisted with it.
-  expect(await syncRow(connectionId)).toMatchObject({ history_id: before, record_history_id: recordId, record_offset: 40 });
+  expect(await syncRow(connectionId)).toMatchObject({ history_id: before, record_history_id: recordId, record_offset: 40, last_success_at: lastCaughtUp });
   // A failed retry keeps both (no cursor or progress loss) and sets the retry floor.
   await nextMinute();
   google.failHistory = 1;
@@ -1310,4 +1325,160 @@ it("upgrade (migration 0040): consents and cards given under the earlier private
   expect((await db.pool.query(`SELECT count(*)::int AS n FROM gmail_digest_deliveries WHERE digest_id=$1`, [before.id])).rows[0].n).toBe(1);
   // The on-demand consent is not revived: the next read asks again in place.
   expect((await db.pool.query(`SELECT count(*)::int AS n FROM plugin_data_grants WHERE plugin_id='core:gmail' AND status='active'`)).rows[0].n).toBe(0);
+});
+
+it("ADR 0035 §3: a digest card names the Agent, runtime and model it runs on; a change pauses it until a new card in its conversation resumes it in place", async () => {
+  const { connectionId, run, session } = await digestConversation();
+  const agent = (await db.pool.query<{ agent_id: string }>(`SELECT agent_id FROM runs WHERE id=$1`, [run])).rows[0]!.agent_id;
+  await db.pool.query(`UPDATE session_conversation_backends SET session_config_json=$2::jsonb WHERE session_id=$1`,
+    [session, JSON.stringify([{ id: "model", type: "select", value: "synthetic-model-a", category: "model" }])]);
+  const drafted = await proposeGmailDigest(db.pool, run, space, { kind: "rule" }, randomUUID());
+  expect(drafted.modelResult, JSON.stringify(drafted)).toMatchObject({ ok: true });
+  const proposalId = String((drafted.modelResult as { proposal_id: string }).proposal_id);
+  const card = (await db.pool.query(`SELECT summary,payload_json FROM proposals WHERE id=$1`, [proposalId])).rows[0];
+  expect(card.payload_json.runtime_binding).toMatchObject({ pinned_model: "synthetic-model-a", session_config: [{ id: "model", value: "synthetic-model-a" }] });
+  expect(card.summary).toContain("Runs on ");
+  expect(card.summary).toContain("synthetic-model-a");
+  expect(card.summary).toContain("pauses until you confirm a new card here");
+  // The conversation switched model between drafting and accepting: the card no longer says what would run.
+  const switchModel = (value: string) => db.pool.query(`UPDATE session_conversation_backends SET session_config_json=$2::jsonb WHERE session_id=$1`,
+    [session, JSON.stringify([{ id: "model", type: "select", value, category: "model" }])]);
+  await switchModel("synthetic-model-b");
+  const refused = await accept(proposalId);
+  expect(refused.statusCode, refused.body).toBe(409);
+  expect(refused.body).toContain("gmail_digest_runtime_changed");
+  await switchModel("synthetic-model-a");
+  expect((await accept(proposalId)).statusCode).toBe(200);
+  const digest = (await db.pool.query(`SELECT * FROM gmail_digests WHERE proposal_id=$1`, [proposalId])).rows[0];
+  expect(digest.runtime_binding).toMatchObject({ pinned_model: "synthetic-model-a" });
+
+  // After acceptance the model changes: the next start pauses the digest (no Run, no Gmail read) and names why.
+  const hostId = await digestHost(run);
+  void hostId;
+  const ruleMonitor = await monitor(connectionId);
+  await db.pool.query(`INSERT INTO gmail_monitor_matches (rule_id,google_message_id,space_id,owner_user_id,matched_at) VALUES ($1,$2,$3,$4,clock_timestamp())`, [ruleMonitor, deliver().id, space, owner]);
+  await switchModel("synthetic-model-b");
+  const calls = google.calls.length;
+  expect(await startGmailDigestDelivery(db.pool, config, digest.id)).toBe("waiting");
+  expect((await db.pool.query(`SELECT status,last_error_code FROM gmail_digests WHERE id=$1`, [digest.id])).rows[0]).toEqual({ status: "paused", last_error_code: "gmail_digest_runtime_changed" });
+  expect((await db.pool.query(`SELECT count(*)::int AS n FROM gmail_digest_deliveries WHERE digest_id=$1`, [digest.id])).rows[0].n).toBe(0);
+  expect(google.calls.length).toBe(calls);
+  // The generic resume cannot put it back on a configuration nobody confirmed.
+  expect((await digestStatus(digest.id, "active")).statusCode).toBe(409);
+  // A new card in its own conversation names the current model and reactivates the same digest with one consent.
+  const again = await proposeGmailDigest(db.pool, run, space, { kind: "rule" }, randomUUID());
+  expect(again.modelResult, JSON.stringify(again)).toMatchObject({ ok: true });
+  const againId = String((again.modelResult as { proposal_id: string }).proposal_id);
+  expect((await db.pool.query(`SELECT summary FROM proposals WHERE id=$1`, [againId])).rows[0].summary).toContain("synthetic-model-b");
+  expect((await accept(againId)).statusCode).toBe(200);
+  const resumed = (await db.pool.query(`SELECT id,status,last_error_code,grant_id,runtime_binding FROM gmail_digests WHERE gmail_connection_id=$1 AND kind='rule' AND status<>'ended'`, [connectionId])).rows;
+  expect(resumed).toHaveLength(1);
+  expect(resumed[0]).toMatchObject({ id: digest.id, status: "active", last_error_code: null, runtime_binding: { pinned_model: "synthetic-model-b" } });
+  expect((await db.pool.query(`SELECT status FROM plugin_data_grants WHERE id=$1`, [digest.grant_id])).rows[0].status).toBe("revoked");
+  expect((await db.pool.query(`SELECT count(*)::int AS n FROM plugin_data_grants WHERE plugin_id='core:gmail_digest' AND status='active'`)).rows[0].n).toBe(1);
+
+  // A digest confirmed before cards named a configuration pauses the same way instead of running on whatever is bound.
+  await db.pool.query(`UPDATE gmail_digests SET runtime_binding=NULL WHERE id=$1`, [digest.id]);
+  await db.pool.query(`INSERT INTO gmail_monitor_matches (rule_id,google_message_id,space_id,owner_user_id,matched_at) VALUES ($1,$2,$3,$4,clock_timestamp())`, [ruleMonitor, deliver().id, space, owner]);
+  expect(await startGmailDigestDelivery(db.pool, config, digest.id)).toBe("waiting");
+  expect((await db.pool.query(`SELECT status,last_error_code FROM gmail_digests WHERE id=$1`, [digest.id])).rows[0]).toEqual({ status: "paused", last_error_code: "gmail_digest_runtime_changed" });
+  void agent;
+});
+
+it("ADR 0035 §3: a summary runs only on what its card showed as the Run is created and launched: an in-place profile switch starts nothing, and a dropped option, another Provider or a switched model reads and delivers nothing", async () => {
+  const { run, session } = await digestConversation();
+  const draft = await proposeGmailDigest(db.pool, run, space, { kind: "daily", local_time: "08:00", time_zone: "Europe/London" }, randomUUID());
+  expect((await accept(String((draft.modelResult as { proposal_id: string }).proposal_id))).statusCode).toBe(200);
+  const digest = (await db.pool.query(`SELECT * FROM gmail_digests WHERE space_id=$1 AND kind='daily'`, [space])).rows[0];
+  const shown = digest.runtime_binding.runtime_key as string;
+  // A Host offering both the confirmed runtime and another one, so a switched profile would really queue there.
+  const agentId = (await db.pool.query<{ agent_id: string }>(`SELECT agent_id FROM runs WHERE id=$1`, [run])).rows[0]!.agent_id;
+  const hostId = randomUUID();
+  const installation = { id: "managed:1.0.0", version: "1.0.0", logged_in: true, options: null, health_check_protocol: "acp" as const };
+  await seedServerHost(db.pool, { id: hostId, installations: { [shown]: [installation], codex_cli: [installation] } });
+  await db.pool.query(`UPDATE agent_runtime_profiles SET execution_host_id=$2,workspace_mode='managed',runtime_installation='managed:1.0.0' WHERE agent_id=$1 AND is_default`, [agentId, hostId]);
+  await new PgProjectAgentRepository(db.pool).upsertActive({ spaceId: space, projectId: project, agentId, userId: owner });
+  const due = () => db.pool.query(`UPDATE gmail_digests SET covered_until=now()-interval '1 hour',next_run_at=now(),retry_not_before=NULL WHERE id=$1`, [digest.id]);
+  const state = async () => (await db.pool.query(`SELECT status,last_error_code FROM gmail_digests WHERE id=$1`, [digest.id])).rows[0];
+  const automationRuns = async () => (await db.pool.query(`SELECT count(*)::int AS n FROM runs WHERE session_id=$1 AND trigger_origin='automation'`, [session])).rows[0].n as number;
+
+  // The Agent's profile switched in place to another runtime: the conversation's stored binding still names the
+  // confirmed one, but the Run would be created on the other — it is never queued, and the digest pauses for a new card.
+  await db.pool.query(`UPDATE agent_runtime_profiles SET runtime_key='codex_cli' WHERE agent_id=$1 AND is_default`, [agentId]);
+  await due();
+  const calls = google.calls.length;
+  expect(await startGmailDigestDelivery(db.pool, config, digest.id)).toBe("waiting");
+  expect(await state()).toEqual({ status: "paused", last_error_code: "gmail_digest_runtime_changed" });
+  expect((await db.pool.query(`SELECT count(*)::int AS n FROM gmail_digest_deliveries WHERE digest_id=$1`, [digest.id])).rows[0].n).toBe(0);
+  expect(await automationRuns()).toBe(0);
+  expect(google.calls.length).toBe(calls);
+  expect((await digestStatus(digest.id, "active")).statusCode).toBe(409);
+
+  // Back on the confirmed runtime, a new card in its conversation resumes it in place; its Run is queued and launched.
+  await db.pool.query(`UPDATE agent_runtime_profiles SET runtime_key=$2 WHERE agent_id=$1 AND is_default`, [agentId, shown]);
+  const again = await proposeGmailDigest(db.pool, run, space, { kind: "daily", local_time: "08:00", time_zone: "Europe/London" }, randomUUID());
+  expect((await accept(String((again.modelResult as { proposal_id: string }).proposal_id))).statusCode).toBe(200);
+  expect(await state()).toEqual({ status: "active", last_error_code: null });
+  await due();
+  expect(await startGmailDigestDelivery(db.pool, config, digest.id)).toBe("started");
+  const delivery = (await db.pool.query(`SELECT * FROM gmail_digest_deliveries WHERE digest_id=$1 AND status='running'`, [digest.id])).rows[0];
+  // The Run's immutable contract names the model the card showed: a Provider lease for it is held to that model for
+  // its whole life (`gmail_digest_model_required`, remoteProviderBindingFrame.test.ts), not only at launch.
+  expect((await db.pool.query(`SELECT contract_snapshot_json #> '{workflow_input_json,gmail_digest}' AS digest FROM runs WHERE id=$1`, [delivery.run_id])).rows[0].digest)
+    .toMatchObject({ digest_id: digest.id, delivery_id: delivery.id, kind: "daily", pinned_model: digest.runtime_binding.pinned_model ?? null });
+  const { loadRun, read } = await launchDigestReader(run, delivery.run_id, hostId);
+  deliver({ at: Date.now() - 600_000 });
+  const override = (await loadRun()).model_override_json as Record<string, unknown>;
+  const setRun = (patch: Record<string, unknown>, profile: Record<string, unknown> = {}) => db.pool.query(
+    `UPDATE runs SET model_override_json=$2::jsonb,runtime_profile_snapshot_json=COALESCE(runtime_profile_snapshot_json,'{}'::jsonb)||$3::jsonb WHERE id=$1`,
+    [delivery.run_id, JSON.stringify({ ...override, ...patch }), JSON.stringify(profile)]);
+  const refused = async () => {
+    const before = google.calls.length;
+    const response = await read();
+    expect(response.httpStatus, JSON.stringify(response.body)).toBe(409);
+    expect(JSON.stringify(response.body)).toContain("gmail_digest_runtime_changed");
+    expect(google.calls.length).toBe(before);
+  };
+  // The live session dropped a confirmed option and kept the runtime's default.
+  await setRun({ acp_session_config_dropped: [{ id: "model", type: "select", value: "synthetic-model-a", category: "model", reason: "option_unavailable" }] });
+  await refused();
+  // The Run's profile now names another Provider than the card showed.
+  await setRun({}, { model_provider_id: randomUUID() });
+  await refused();
+  await db.pool.query(`UPDATE runs SET runtime_profile_snapshot_json=runtime_profile_snapshot_json-'model_provider_id' WHERE id=$1`, [delivery.run_id]);
+  // Another model chosen after launch (as a quota switch does): no mail, and its reply is not the digest.
+  await setRun({ acp_session_config: [{ id: "model", type: "select", value: "synthetic-model-b", category: "model" }], acp_session_config_source: "request" });
+  await refused();
+  expect((await db.pool.query(`SELECT count(*)::int AS n FROM gmail_read_audit_events WHERE run_id=$1`, [delivery.run_id])).rows[0].n).toBe(0);
+  await db.pool.query(`UPDATE runs SET status='succeeded' WHERE id=$1`, [delivery.run_id]);
+  const reply = await settleGmailDigestRun(db.pool, config, await loadRun(), "A summary from another model.", (tx, content) =>
+    new PgSessionRepository(tx).addAssistantMessageForRun(space, owner, session, delivery.run_id, { content }));
+  expect(reply).toBeNull();
+  expect((await db.pool.query(`SELECT status,error_code FROM gmail_digest_deliveries WHERE id=$1`, [delivery.id])).rows[0]).toEqual({ status: "failed", error_code: "gmail_digest_runtime_changed" });
+  expect(await state()).toEqual({ status: "paused", last_error_code: "gmail_digest_runtime_changed" });
+  expect((await db.pool.query(`SELECT count(*)::int AS n FROM messages WHERE run_id=$1 AND role='assistant'`, [delivery.run_id])).rows[0].n).toBe(0);
+});
+
+it("ADR 0036 review: a private summary keeps its conversation's admission — drafted, accepted, started and read alike once its Agent left the Project's list", async () => {
+  const { run } = await digestConversation();
+  const hostId = await digestHost(run);
+  const agentId = (await db.pool.query<{ agent_id: string }>(`SELECT agent_id FROM runs WHERE id=$1`, [run])).rows[0]!.agent_id;
+  // The Agent leaves the Project's list after its turn in this conversation. As the owner's own next message there
+  // is still admitted (the conversation's earlier turn keeps it), so is the summary drafted, accepted and run there:
+  // only an application automation, whose Agent is chosen among the Project's, needs the Project's list now.
+  await db.pool.query(`UPDATE project_agent_links SET status='removed',removed_at=now() WHERE project_id=$1 AND agent_id=$2`, [project, agentId]);
+  const draft = await proposeGmailDigest(db.pool, run, space, { kind: "daily", local_time: "08:00", time_zone: "Europe/London" }, randomUUID());
+  expect(draft.modelResult).toMatchObject({ status: "pending" });
+  const proposal = "proposal_id" in draft.modelResult ? draft.modelResult.proposal_id : "";
+  expect((await accept(proposal)).statusCode).toBe(200);
+  const covered = new Date(Math.floor(Date.now() / 1000) * 1000 - 3600_000);
+  const digestId = (await db.pool.query<{ id: string }>(`UPDATE gmail_digests SET covered_until=$1,next_run_at=now() WHERE space_id=$2 RETURNING id`, [covered, space])).rows[0]!.id;
+  expect(await startGmailDigestDelivery(db.pool, config, digestId)).toBe("started");
+  expect((await db.pool.query(`SELECT last_error_code FROM gmail_digests WHERE id=$1`, [digestId])).rows[0].last_error_code).toBeNull();
+  const runId = (await db.pool.query<{ run_id: string }>(`SELECT run_id FROM gmail_digest_deliveries WHERE digest_id=$1 AND status='running'`, [digestId])).rows[0]!.run_id;
+  const mail = deliver({ at: covered.getTime() + 1000 });
+  const { read } = await launchDigestReader(run, runId, hostId);
+  const page = await read();
+  expect(page.httpStatus, JSON.stringify(page.body)).toBe(200);
+  expect((page.body as { data: GmailDigestReadOutput }).data.items.map((item) => item.id)).toContain(mail.id);
 });

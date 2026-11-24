@@ -481,8 +481,9 @@ describe('Project-level plugin binding', () => {
     const legacy = randomUUID();
     await db.pool.query(`INSERT INTO proposals (id,space_id,proposal_type,status,risk_level,urgency,title,payload_json,created_at,updated_at,created_by_user_id,owner_user_id)
       VALUES ($1,$2,'finance_ledger.post_directive','accepted','low','normal','Legacy',$3::jsonb,now(),now(),$4,$4)`, [legacy, space, JSON.stringify({book_id: 'b', directive_id: 'd', requester: {}}), owner]);
-    const file = readdirSync(join(import.meta.dirname, '../migrations')).find(f => f.endsWith('_proposal_operation_request_origin.sql'))!;
-    const backfill = readFileSync(join(import.meta.dirname, '../migrations', file), 'utf8').split('--> statement-breakpoint')[1]!;
+    const migration = readFileSync(join(import.meta.dirname, '../migrations/0020_gmail_integration.sql'), 'utf8');
+    const backfill = migration.match(/^UPDATE "proposals" p SET "operation_request_linked" = true\b[\s\S]*?;/m)?.[0];
+    if (!backfill) throw new Error('The consolidated migration is missing the proposal origin backfill');
     const marked = await withTransaction(db.pool, async tx => {
       await tx.query('DELETE FROM operation_idempotency WHERE proposal_id=$1', [pruned]);
       await tx.query(`UPDATE proposals SET payload_json=payload_json - 'requester' WHERE id=$1`, [requestOnly]);

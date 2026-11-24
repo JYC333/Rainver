@@ -1,19 +1,15 @@
 import { useState, useEffect, useRef } from 'react'
+import { RUN_TERMINAL_STATUS_VALUES } from '@rainver/protocol'
 import { runsApi } from '../api/client'
 import { errMsg, isNotFoundError } from '../lib/utils'
 import type { Run } from '../types/api'
 
 /** Run statuses after which polling stops; also used to refresh run sub-resources in UI. */
-export const RUN_TERMINAL_STATUSES = new Set<string>([
-  'succeeded',
-  'failed',
-  'cancelled',
-  'degraded',
-  'waiting_for_review',
-  'waiting_for_dependency',
-])
+export const RUN_TERMINAL_STATUSES = new Set<string>(RUN_TERMINAL_STATUS_VALUES)
 
 const POLL_INTERVAL_MS = 2000
+const isRunAccessError = (error: unknown) =>
+  isNotFoundError(error) || error instanceof Error && 'status' in error && (error.status === 401 || error.status === 403)
 
 interface UseRunResult {
   run: Run | null
@@ -50,54 +46,68 @@ export function useRun(runId: string | null, reloadKey: number = 0, spaceId?: st
     }
 
     let active = true
-    let intervalId: ReturnType<typeof setInterval> | undefined
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let detailStatus: Run['status'] | undefined
+    let detailAccess: Run['effective_access_level']
 
     async function loadDetail() {
       try {
         setError(null)
         const data = await runsApi.get(id, options)
         if (!active) return
+        detailStatus = data.status
+        detailAccess = data.effective_access_level
         setRun(data)
         setLoading(false)
-        if (RUN_TERMINAL_STATUSES.has(data.status)) return
-        startPolling()
+        if (!RUN_TERMINAL_STATUSES.has(data.status)) schedulePoll()
       } catch (e) {
         if (!active) return
+        if (isRunAccessError(e)) setRun(null)
         setError(errMsg(e))
         setLoading(false)
       }
     }
 
-    function startPolling() {
-      intervalId = setInterval(async () => {
-        try {
-          const s = await runsApi.status(id, options)
+    function schedulePoll() {
+      if (active) timer = setTimeout(poll, POLL_INTERVAL_MS)
+    }
+
+    async function poll() {
+      try {
+        const status = await runsApi.status(id, options)
+        if (!active) return
+        if (status.status !== detailStatus || status.effective_access_level !== detailAccess) {
+          if (status.effective_access_level === 'summary' && detailAccess !== 'summary') setRun(null)
+          // Status alone does not carry the result or structured failure.
+          // Refresh canonical detail on transitions, including resumable pauses.
+          const detail = await runsApi.get(id, options)
           if (!active) return
-          setRun(prev => {
-            if (!prev) return prev
-            return {
-              ...prev,
-              status: s.status,
-              model_selection: s.model_selection ?? prev.model_selection,
-              mode: s.mode,
-              run_type: s.run_type,
-              trigger_origin: s.trigger_origin,
-              started_at: s.started_at ?? prev.started_at,
-              ended_at: s.ended_at ?? prev.ended_at,
-              error_message: s.error_message ?? prev.error_message,
-            }
+          detailStatus = detail.status
+          detailAccess = detail.effective_access_level
+          setRun(detail)
+          if (RUN_TERMINAL_STATUSES.has(detail.status)) return
+        } else {
+          setRun(current => current && {
+            ...current,
+            model_selection: status.model_selection ?? current.model_selection,
+            mode: status.mode,
+            run_type: status.run_type,
+            trigger_origin: status.trigger_origin,
+            started_at: status.started_at ?? current.started_at,
+            ended_at: status.ended_at ?? current.ended_at,
+            error_message: status.error_message,
           })
-          if (RUN_TERMINAL_STATUSES.has(s.status) && intervalId) clearInterval(intervalId)
-        } catch (e) {
-          if (!active) return
-          // A Run that is gone ends the polling; anything else (a 502 while
-          // the server restarts, a dropped connection) is retried on the next
-          // tick rather than replacing the loaded Run with an error.
-          if (!isNotFoundError(e)) return
-          setError(errMsg(e))
-          if (intervalId) clearInterval(intervalId)
         }
-      }, POLL_INTERVAL_MS)
+      } catch (e) {
+        if (!active) return
+        // Keep the loaded Run during temporary failures and try again.
+        if (isRunAccessError(e)) {
+          setRun(null)
+          setError(errMsg(e))
+          return
+        }
+      }
+      schedulePoll()
     }
 
     loadDetail()
@@ -105,7 +115,7 @@ export function useRun(runId: string | null, reloadKey: number = 0, spaceId?: st
     return () => {
       active = false
       controller.abort()
-      if (intervalId) clearInterval(intervalId)
+      if (timer) clearTimeout(timer)
     }
   }, [runId, reloadKey, spaceId])
 

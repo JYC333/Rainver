@@ -308,6 +308,13 @@ export const RuntimeDelegationOutputItemSchema = z
     reason: z.string().min(1).nullish(),
     budget: TraceSafeObjectSchema.nullish(),
     context: TraceSafeObjectSchema.nullish(),
+    /** Explicit source-code review. An omitted previous Run starts an independent review. */
+    review: z.object({
+      previous_run_id: IdSchema.optional().describe("The completed review Run to follow up. Include the prior findings, changed files and relevant document sections in the instruction."),
+    }).strict().optional().describe("Read-only code review in an isolated Location-backed Room. Use {} for an independent review, or previous_run_id for a follow-up with continuity checks."),
+    continuation: z.object({
+      previous_run_id: IdSchema.describe("A completed write delegation by this Agent under the same coordinator Run."),
+    }).strict().optional().describe("Continue the same implementation with workspace_access=write in an isolated Location-backed Room. Give the remaining changes and checks in the instruction. The server checks whether the old session can be reused."),
     /**
      * `read`: the child reviews its workspace and may not write it (a
      * read-only review). Every new delegation must explicitly choose access.

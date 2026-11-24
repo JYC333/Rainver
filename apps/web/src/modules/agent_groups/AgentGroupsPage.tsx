@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { takeReferences } from './pendingReferences'
 import { useParams, useSearchParams } from 'react-router-dom'
-import { ArrowLeft, Loader2, MessageSquare, MessageSquarePlus, RefreshCw, Users } from 'lucide-react'
+import { Archive, ArchiveRestore, Trash2, ArrowLeft, Loader2, MessageSquare, MessageSquarePlus, RefreshCw, Users } from 'lucide-react'
 import { toast } from 'sonner'
 import { agentsApi, projectFoldersApi, projectsApi, roomsApi, spacesApi } from '../../api/client'
 import { SpaceLink as Link } from '../../core/spaceNav'
@@ -27,10 +27,13 @@ import type {
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
 import { Card, CardTitle } from '../../components/ui/card'
+import { ConfirmDialog } from '../../components/ui/dialog'
 import { EmptyState } from '../../components/ui/empty-state'
 import { Tabs, TabsList, TabsTrigger } from '../../components/ui/tabs'
 import { RoomRosterPanel } from './RoomRosterPanel'
 import { RoomsIndex } from './RoomsIndex'
+import { RoomConversationTrash } from './RoomConversationTrash'
+import { LIST_PAGE_SIZE, loadAllPages } from './loadAllPages'
 import { audienceLabel, rosterCountsLabel, roomVisibilityLabel } from './audience'
 import { displayRoomTitle as roomTitle } from './roomTitle'
 import { CREATED_AGENT_PARAM } from '../projects/agentCreationReturn'
@@ -43,8 +46,6 @@ import { conversationInputSourcesFromExecutionSummary } from '../conversation/Co
 
 import { useMobileBreakpoint, useMobileConversation } from '../conversation/mobile/useMobileConversation'
 import { MobileConversationNavigation } from '../conversation/mobile/MobileConversationNavigation'
-
-const LIST_PAGE_SIZE = 100
 
 /**
  * A Project's Rooms, one Room, and one Room conversation.
@@ -87,6 +88,8 @@ export default function AgentGroupsPage() {
   const roomId = search.get('room')
   const conversationId = search.get('conversation')
   const membersView = search.get('view') === 'members'
+  const archivedView = search.get('view') === 'archived'
+  const trashView = search.get('view') === 'trash'
   const createdAgentId = search.get(CREATED_AGENT_PARAM)
   /**
    * Deliberately composing a new conversation rather than simply having none
@@ -114,6 +117,11 @@ export default function AgentGroupsPage() {
   const [detail, setDetail] = useState<RoomDetail | null>(null)
   const [overview, setOverview] = useState<ProjectOverview | null>(null)
   const [boundFolderName, setBoundFolderName] = useState<string | null>(null)
+  const [conversationToDelete, setConversationToDelete] = useState<RoomConversationRecord | null>(null)
+  const [archivedConversations, setArchivedConversations] = useState<RoomConversationRecord[]>([])
+  const [archiveLoading, setArchiveLoading] = useState(false)
+  const [archiveError, setArchiveError] = useState<string | null>(null)
+  const [changingArchive, setChangingArchive] = useState<string | null>(null)
   const [conversations, setConversations] = useState<RoomConversationRecord[]>([])
   useRoomConversationRefresh(roomId, setConversations)
   const [draftConversationId, setDraftConversationId] = useState<string | null>(null)
@@ -250,6 +258,34 @@ export default function AgentGroupsPage() {
     return () => { cancelled = true }
   }, [loadRoomReporting])
 
+  useEffect(() => {
+    if (!archivedView || !roomId) return
+    let cancelled = false
+    setArchivedConversations([])
+    setArchiveError(null)
+    setArchiveLoading(true)
+    void loadAllPages((limit, offset) => roomsApi.conversations(roomId, { limit, offset, status: 'archived' }))
+      .then(items => { if (!cancelled) setArchivedConversations(items) })
+      .catch(error => { if (!cancelled) setArchiveError(errMsg(error)) })
+      .finally(() => { if (!cancelled) setArchiveLoading(false) })
+    return () => { cancelled = true }
+  }, [archivedView, roomId])
+
+  async function setConversationArchived(conversation: RoomConversationRecord, archive: boolean) {
+    setChangingArchive(conversation.id)
+    try {
+      await roomsApi.setConversationArchived(conversation.room_id, conversation.id, archive, { spaceId: conversation.space_id })
+      locallyCommittedConversations.current.delete(conversation.id)
+      if (archive) setConversations(current => current.filter(item => item.id !== conversation.id))
+      else setArchivedConversations(current => current.filter(item => item.id !== conversation.id))
+      await loadRoom()
+    } catch (error) {
+      toast.error(errMsg(error))
+    } finally {
+      setChangingArchive(null)
+    }
+  }
+
   /**
    * Start a thread, optionally carrying picked content into it.
    *
@@ -271,6 +307,27 @@ export default function AgentGroupsPage() {
     else if (!alreadyOnTheirThread) setPendingReferences(null)
     setSearch({ room: roomId, new: '1' })
     setExecutionReady(false)
+  }
+
+  async function deleteConversation(conversation: RoomConversationRecord) {
+    try {
+      await roomsApi.deleteConversation(conversation.room_id, conversation.id, { spaceId: conversation.space_id })
+      locallyCommittedConversations.current.delete(conversation.id)
+      setConversations(current => current.filter(item => item.id !== conversation.id))
+      setArchivedConversations(current => current.filter(item => item.id !== conversation.id))
+    } catch (error) {
+      toast.error(errMsg(error))
+    }
+  }
+
+  function deleteConversationButton(conversation: RoomConversationRecord) {
+    const label = t('collab_ui.room.delete_conversation')
+    return (
+      <Button size="icon" variant="ghost" className="text-destructive" aria-label={label} title={label}
+        disabled={conversation.is_running || changingArchive !== null} onClick={() => setConversationToDelete(conversation)}>
+        <Trash2 className="size-4" />
+      </Button>
+    )
   }
 
   function openConversation(id: string) {
@@ -406,18 +463,25 @@ export default function AgentGroupsPage() {
 
   // ── One Room: its conversations, or its members ─────────────────────────
   if (!inConversation) {
+    // Only someone who can delete here sees the bin; the server refuses others too.
+    const showTrash = trashView && detail.viewer_can_write
     return (
       <div className="mx-auto max-w-[1600px] space-y-4 p-4 md:p-6">
         {approvalsCard}
         {roomHeader}
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <Tabs value={membersView ? 'members' : 'conversations'} onValueChange={value => setSearch({ room: detail.room.id, ...(value === 'members' ? { view: 'members' } : {}) })}>
-            <TabsList aria-label={t('collab_ui.room.tabs')}>
+          <Tabs value={membersView ? 'members' : archivedView ? 'archived' : showTrash ? 'trash' : 'conversations'} onValueChange={value => setSearch({ room: detail.room.id, ...(value === 'conversations' ? {} : { view: value }) })}>
+            <TabsList
+              aria-label={t('collab_ui.room.tabs')}
+              className={detail.viewer_can_write ? 'max-sm:grid max-sm:h-auto max-sm:grid-cols-2 max-sm:gap-1' : undefined}
+            >
               <TabsTrigger value="conversations">{t('collab_ui.room.tab_conversations')}</TabsTrigger>
+              <TabsTrigger value="archived">{t('collab_ui.room.tab_archived')}</TabsTrigger>
+              {detail.viewer_can_write && <TabsTrigger value="trash">{t('collab_ui.room.tab_trash')}</TabsTrigger>}
               <TabsTrigger value="members">{t('collab_ui.room.tab_members')}</TabsTrigger>
             </TabsList>
           </Tabs>
-          {!membersView && (
+          {!membersView && !archivedView && !showTrash && (
             <Button size="sm" onClick={() => startConversation()}><MessageSquarePlus className="size-4" />{t('collab_ui.room.new_conversation')}</Button>
           )}
         </div>
@@ -433,6 +497,29 @@ export default function AgentGroupsPage() {
               onChanged={async () => { await Promise.all([loadCatalog(), loadRoom()]) }}
             />
           )
+        ) : showTrash ? (
+          <RoomConversationTrash roomId={detail.room.id} onRestored={loadRoom} />
+        ) : archivedView ? (
+          archiveLoading ? <p className="text-sm text-muted-foreground">{t('collab_ui.common.loading')}</p>
+          : archiveError ? <p role="alert" className="text-sm text-destructive">{archiveError}</p>
+          : archivedConversations.length === 0 ? <p className="text-sm text-muted-foreground">{t('collab_ui.room.no_archived_conversations')}</p>
+          : <ul className="space-y-2">
+            {archivedConversations.filter(item => item.room_id === detail.room.id).map(conversation => (
+              <li key={conversation.id}>
+                <Card className="mb-0 flex items-center justify-between gap-2 px-3 py-1.5">
+                  <span className="truncate text-sm">{conversation.title || t('collab_ui.room.untitled')}</span>
+                  {detail.viewer_can_write && (
+                    <div className="flex shrink-0 items-center gap-1">
+                      <Button size="icon" variant="ghost" aria-label={t('collab_ui.room.restore_conversation')} title={t('collab_ui.room.restore_conversation')} disabled={changingArchive !== null} onClick={() => void setConversationArchived(conversation, false)}>
+                        <ArchiveRestore className="size-4" />
+                      </Button>
+                      {deleteConversationButton(conversation)}
+                    </div>
+                  )}
+                </Card>
+              </li>
+            ))}
+          </ul>
         ) : roomLoading && conversations.length === 0 ? (
           <div className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" />{t('collab_ui.common.loading')}</div>
         ) : conversations.length === 0 ? (
@@ -444,26 +531,41 @@ export default function AgentGroupsPage() {
             />
           </Card>
         ) : (
-          <nav aria-label={t('collab_ui.room.tab_conversations')} className="space-y-2">
+          <nav aria-label={t('collab_ui.room.tab_conversations')} className="flex flex-col gap-3">
             {conversations.map(conversation => (
-              <button
-                type="button"
-                key={conversation.id}
-                className="block w-full rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                onClick={() => openConversation(conversation.id)}
-              >
-                <Card className="flex items-start gap-3 p-3 hover:bg-muted/40">
-                  <MessageSquare className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+              <Card key={conversation.id} className="mb-0 flex items-center gap-1 py-0 pl-0 pr-2">
+                <button
+                  type="button"
+                  className="flex min-w-0 flex-1 items-center gap-3 rounded-lg px-3 py-3 text-left hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  onClick={() => openConversation(conversation.id)}
+                >
+                  <MessageSquare className="mt-0.5 size-4 shrink-0 self-start text-muted-foreground" />
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-medium">{conversation.title || t('collab_ui.room.untitled')}</p>
                     <p className="text-xs text-muted-foreground">{t(conversation.last_message_at ? 'collab_ui.room.last_message' : 'collab_ui.room.started', { when: formatDateTime(conversation.last_message_at ?? conversation.created_at) })}</p>
                   </div>
                   <ConversationStatusIndicator running={conversation.is_running} unread={unreadConversations.has(conversation.id)} />
-                </Card>
-              </button>
+                </button>
+                {detail.viewer_can_write && (
+                  <div className="flex shrink-0 items-center gap-1">
+                    <Button size="icon" variant="ghost" aria-label={t('collab_ui.room.archive_conversation')} title={t('collab_ui.room.archive_conversation')} disabled={conversation.is_running || changingArchive !== null} onClick={() => void setConversationArchived(conversation, true)}>
+                      <Archive className="size-4" />
+                    </Button>
+                    {deleteConversationButton(conversation)}
+                  </div>
+                )}
+              </Card>
             ))}
           </nav>
         )}
+        <ConfirmDialog
+          open={conversationToDelete?.room_id === detail.room.id}
+          onOpenChange={open => { if (!open) setConversationToDelete(null) }}
+          title={t('collab_ui.room.delete_conversation')}
+          description={t('collab_ui.room.delete_conversation_confirm')}
+          confirmLabel={t('collab_ui.room.delete_conversation')}
+          onConfirm={() => { if (conversationToDelete) void deleteConversation(conversationToDelete) }}
+        />
       </div>
     )
   }
@@ -697,18 +799,4 @@ function RoomProjectStatePanel({ overview }: { overview: ProjectOverview | null 
 
 function sortConversationsNewestFirst(conversations: RoomConversationRecord[]): RoomConversationRecord[] {
   return sortRoomConversations(conversations)
-}
-
-async function loadAllPages<T>(
-  fetchPage: (
-    limit: number,
-    offset: number,
-  ) => Promise<{ items: T[] }>,
-): Promise<T[]> {
-  const items: T[] = []
-  for (;;) {
-    const page = await fetchPage(LIST_PAGE_SIZE, items.length)
-    items.push(...page.items)
-    if (page.items.length < LIST_PAGE_SIZE) return items
-  }
 }

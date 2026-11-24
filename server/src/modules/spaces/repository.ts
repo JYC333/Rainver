@@ -1,3 +1,4 @@
+import { readSpaceSnapshotDefaults, type SnapshotDefaults } from "./snapshotDefaults.js";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool, type Pool } from "../../db/pool.js";
 import { getOrCreateSpaceRetrievalSettings, type SpaceRetrievalSettingsOut } from "../retrieval/settings.js";
@@ -14,11 +15,6 @@ export interface SpaceMember {
 export interface SpaceFailure {
   statusCode: number;
   detail: string;
-}
-
-export interface SnapshotDefaults {
-  snapshot_retention_days_default: number | null;
-  snapshot_max_count_default: number | null;
 }
 
 export interface SpaceRepository {
@@ -86,12 +82,7 @@ export class PgSpaceRepository implements SpaceRepository {
   async getSnapshotDefaults(userId: string, spaceId: string): Promise<SnapshotDefaults | SpaceFailure> {
     const role = await this.activeRole(userId, spaceId);
     if (!role) return { statusCode: 403, detail: "Not a member of this space" };
-    const res = await this.pool.query<SnapshotDefaults>(
-      `SELECT snapshot_retention_days_default, snapshot_max_count_default
-         FROM spaces WHERE id = $1 LIMIT 1`,
-      [spaceId],
-    );
-    return res.rows[0] ?? { snapshot_retention_days_default: null, snapshot_max_count_default: null };
+    return readSpaceSnapshotDefaults(this.pool, spaceId);
   }
 
   /**

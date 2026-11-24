@@ -165,6 +165,18 @@ composer out of the Project chat sidecar. The composer can also scroll on very
 short viewports. Its expanded Runtime & workspace disclosure has a separate bounded
 scroller so it cannot consume the whole panel.
 
+Loading: the Project layout's static imports stop at the sidecar shell; its
+conversation body (`sidecar/ProjectSidecarConversation.tsx`: composer editor,
+message rendering, highlighting) is a separate chunk. From `lg` up it starts
+loading when the sidecar module evaluates, otherwise when the panel opens, and
+is held in state behind the panel's existing skeleton until both it and the
+Room reads are ready — not behind `<Suspense>`, because React holds every
+Suspense reveal for 300 ms after any fallback commits. For the same reason the
+Project index route renders `ProjectDetailPage` from the layout's outlet context
+(the layout already imports it) instead of through a second lazy boundary.
+`projectShellBundleBoundary.test.ts` keeps the conversation stack out of the
+layout's static import closure.
+
 The iOS PWA entry keeps `viewport-fit=cover` and web-app capability but does not
 set the deprecated `apple-mobile-web-app-status-bar-style=black-translucent`.
 WebKit recommends removing this key in

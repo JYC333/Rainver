@@ -131,7 +131,7 @@ function converts(history: readonly MigrationIdentity[], pair: ArchivedPair): bo
  * Among equally short sequences the one ending at the longest target wins;
  * distinct sequences that remain tied are ambiguous.
  */
-function cutoverPath(pairs: readonly ArchivedPair[], applied: readonly MigrationIdentity[], checkout: readonly MigrationIdentity[]): ArchivedPair[] {
+function cutoverPath(pairs: readonly ArchivedPair[], applied: readonly MigrationIdentity[], checkout: readonly MigrationIdentity[], allowCurrent: boolean): ArchivedPair[] {
   const best = (paths: ArchivedPair[][]): ArchivedPair[] => {
     const longest = Math.max(...paths.map((path) => path.at(-1)!.target.length));
     const selected = paths.filter((path) => path.at(-1)!.target.length === longest);
@@ -154,6 +154,7 @@ function cutoverPath(pairs: readonly ArchivedPair[], applied: readonly Migration
     if (done.length) return best(done);
     frontier = next;
   }
+  if (allowCurrent && applied.length > 0 && startsWith(checkout, applied)) return [];
   throw new Error("No archive matches this database's migration history and the checkout; prepare/register the original migration chain first");
 }
 
@@ -173,9 +174,10 @@ export async function selectMigrationArchives(
   catalogs: string[],
   applied: readonly MigrationIdentity[],
   explicit?: string,
+  allowCurrent = false,
 ): Promise<string[]> {
   const expected = identities(checkout);
-  if (expected.length < 2) throw new Error("No merged migration found in checkout");
+  if (expected.length < (allowCurrent ? 1 : 2)) throw new Error("No merged migration found in checkout");
   const candidates = explicit ? [explicit] : (await Promise.all([store, ...catalogs].map(async (root) =>
     (await names(root)).filter((name) => !name.startsWith(".")).map((name) => join(root, name))))).flat();
   const pairs = new Map<string, ArchivedPair>();
@@ -190,7 +192,7 @@ export async function selectMigrationArchives(
       pairs.set(plan.id, { id: plan.id, path: candidate, source: plan.manifest.source, target: plan.manifest.target, common: plan.common });
     }
   }
-  const path = cutoverPath([...pairs.values()], applied, expected);
+  const path = cutoverPath([...pairs.values()], applied, expected, allowCurrent && !explicit);
   for (const pair of path) await registerMigrationArchive(store, pair.path);
   return path.map((pair) => pair.id);
 }

@@ -1,15 +1,18 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import '@fontsource-variable/inter'
-import { registerSW } from 'virtual:pwa-register'
 import App from './App'
 import { dropApiCacheAtBoot } from './lib/sessionResidue'
+import { finishUpdateAfterReload } from './modules/settings/appVersion'
 import './index.css'
 
-// `autoUpdate` alone only installs a new service worker; the page already on
-// screen keeps the previous bundle until it reloads. Registering through the
-// virtual module reloads the page once the new worker takes control.
-registerSW({ immediate: true })
+// A new worker may wait in the background. Only the explicit update action
+// requests activation and reload, so a worker installed by another tab cannot
+// reload this one. A tab that reloaded for that action past its unsaved-input
+// prompt activates the update now, before it holds any input.
+if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+  void navigator.serviceWorker.register('/sw.js').then(() => finishUpdateAfterReload()).catch(() => {})
+}
 
 // Before anything asks who is signed in. The service worker must not cache
 // authenticated API bodies and does not. A cache from an older build, or from

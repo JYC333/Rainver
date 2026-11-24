@@ -1,5 +1,6 @@
+import { lockProjectAudienceForChange } from "../src/modules/projects/access.js";
 import { seedSpaceMember } from "./support/domainSeeds.js";
-import { waitForBlockedBy } from "./support/lockWait.js";
+import { waitForBlockedBy, waitForLockWaiter } from "./support/lockWait.js";
 import { LegacyStoredCollaborationSchema } from "./support/legacyCollaborationSchema.js";
 import type { FastifyInstance } from "fastify";
 import {lockRequestKey} from '../src/modules/systemActions/operations/repository.js';
@@ -14,12 +15,13 @@ import type { ApplyProposal } from "../src/modules/memory/memoryApplyRepository.
 import { SkillPackageSchema, agentMentionRoute, normalizeMentionText, renderMentionTokens, type AgentMentionToken } from "@rainver/protocol";
 import { agentsModule } from "../src/modules/agents/index.js";
 import { PgConversationBackendRepository } from "../src/modules/sessions/conversationBackendRepository.js";
+import { PgRunSupervisor } from "../src/modules/runs/supervisor.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import {afterAll,beforeAll,beforeEach,expect,vi} from "vitest";
-import { sharedHostConnectionRegistry } from "../src/modules/hosts/connectionRegistry.js";
+import { HostConnectionRegistry, sharedHostConnectionRegistry } from "../src/modules/hosts/connectionRegistry.js";
 import { processRoomAgentWorkspaceRestore, ROOM_AGENT_WORKSPACE_RESTORE_JOB } from "../src/modules/rooms/workspaceRestoreJob.js";
 import { AGENT_GROUP_RESUME_WAKE_JOB, registerAgentGroupResumeWakeHandler } from "../src/modules/agentGroups/resumeWakeJob.js";
 import { loadConfig } from "../src/config.js";
@@ -51,7 +53,7 @@ import { PgRouteDecisionRepository } from "../src/modules/routing/repository.js"
 import { AgentGroupRunService } from "../src/modules/agentGroups/service.js";
 import { AgentGroupRunLifecycleProjector } from "../src/modules/agentGroups/lifecycleProjector.js";
 import { agentOriginContinuation, RoomDiscussionService } from "../src/modules/rooms/discussionService.js";
-import { admitAgentOriginRun, continueHeldRuns, conversationQuota, enqueueWhenTurnFree, releaseHeldRuns } from "../src/modules/rooms/quotaGate.js";
+import { admitAgentOriginRun, continueHeldRuns, conversationQuota, enqueueWhenTurnFree, holdInterruptedRun, releaseHeldRuns } from "../src/modules/rooms/quotaGate.js";
 import { conversationTurnTaken } from "../src/modules/sessions/conversationRuntimeSessionRepository.js";
 import { buildModuleServer } from "./support/moduleServer.js";
 import { registerResearchOperationFailureNotifyHandler, RESEARCH_OPERATION_FAILURE_NOTIFY_JOB } from "../src/modules/projectResearch/pipeline/researchOperationFailureNotifyJob.js";
@@ -62,7 +64,8 @@ import { agentGroupsModule } from "../src/modules/agentGroups/index.js";
 import { providersModule } from "../src/modules/providers/index.js";
 import { withDbTransaction } from "../src/modules/routeUtils/common.js";
 import type { QuotaSource } from "../src/modules/rooms/subscriptionLogins.js";
-import { latestSummaryArtifactId, registerAgentHandoffExecutors } from "../src/modules/agentGroups/sessionHandoff.js";
+import { latestSummaryArtifactId, registerAgentHandoffExecutors, reusableModelHandoff } from "../src/modules/agentGroups/sessionHandoff.js";
+import { settleAutomaticHandoff } from "../src/modules/agentGroups/autoHandoff.js";
 import { resolveAgentDelegationToolBinding, runAgentRoomToolCall } from "../src/modules/runs/managedAgentDelegationTools.js";
 import {
   ROOM_DELEGATION_COMPLETION_RETRY_JOB,
@@ -75,10 +78,16 @@ import { JobWorker } from "../src/modules/jobs/worker.js";
 import { PgJobQueueRepository } from "../src/modules/jobs/repository.js";
 import { getDbPool } from "../src/db/pool.js";
 import { PgSessionRepository } from "../src/modules/sessions/repository.js";
+import { registerRunLiveInput } from "../src/modules/runs/liveInput.js";
+import { deliverRunLiveInput, liveInputDeliveryState, recordDeferredRunLiveInput, settleOrphanedRunLiveInputs } from "../src/modules/runs/liveInputService.js";
 import { ConversationExecutionContextService } from "../src/modules/sessions/executionContextService.js";
 import { ConversationInputResourceService } from "../src/modules/sessions/conversationInputResourceService.js";
 import { finalizeChatTurn } from "../src/modules/runs/chatTurnFinalizer.js";
 import { syncBuiltinPrompts } from "../src/modules/prompts/builtins.js";
+import { recordUsageObservation } from "../src/modules/usage/service.js";
+import { ensureExecutionWorkspace, ensurePrimaryExecutionWorkspace } from "../src/modules/projectFolders/executionWorkspaces.js";
+import { executeRemoteHostCliAdapter } from "../src/modules/runs/remoteHostCliAdapter.js";
+import { SyntheticAcpHost } from "./support/syntheticAcpHost.js";
 import {
   requestRoomConversationTitle,
   RoomConversationTitleService,
@@ -896,6 +905,74 @@ describe("Room workflow (real Postgres)", () => {
     expect(members[0]).toMatchObject({ role: "manager", agent_kind: "system_assistant" });
   });
 
+  it("archives and restores a Room conversation with its message intact", async (ctx) => {
+    if (!db.available || !service) return ctx.skip();
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    const { room } = await service.createRoom(owner, { project_id: "project-1", title: "Conversation archive" });
+    const conversation = await service.createConversationDraft(owner, room.id);
+    const sessions = new PgSessionRepository(db.pool);
+    const message = await sessions.addRoomUserMessage(owner.spaceId, owner.userId, room.id, conversation.id, {
+      content: "Keep this message through archive",
+    });
+    expect(message).not.toBeNull();
+
+    const page = { limit: 10, offset: 0 };
+    await service.setConversationArchived(owner, room.id, conversation.id, true);
+    await expect(service.listConversations(owner, room.id, page)).resolves.toMatchObject({ items: [], total: 0 });
+    await expect(service.listConversations(owner, room.id, { ...page, archived: true })).resolves.toMatchObject({
+      items: [{ id: conversation.id, status: "archived", can_delete_empty: false }],
+    });
+    await expect(sessions.addRoomUserMessage(owner.spaceId, owner.userId, room.id, conversation.id, {
+      content: "Cannot send while archived",
+    })).resolves.toBeNull();
+
+    await service.setConversationArchived(owner, room.id, conversation.id, false);
+    await expect(service.listConversations(owner, room.id, { ...page, archived: true })).resolves.toMatchObject({ items: [], total: 0 });
+    await expect(sessions.listRoomMessages(owner.spaceId, owner.userId, room.id, conversation.id, 10, 0))
+      .resolves.toMatchObject([{ id: message!.id, content: "Keep this message through archive" }]);
+    await service.setConversationArchived(owner, room.id, conversation.id, true);
+    await service.deleteConversation(owner, room.id, conversation.id);
+    await expect(service.listConversations(owner, room.id, { ...page, archived: true })).resolves.toMatchObject({ items: [], total: 0 });
+  });
+
+  it("deletes idle Room conversations with or without history", async (ctx) => {
+    if (!db.available || !service) return ctx.skip();
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    const { room } = await service.createRoom(owner, { project_id: "project-1", title: "Draft cleanup" });
+    const empty = await service.createConversationDraft(owner, room.id);
+    const page = { limit: 10, offset: 0 };
+    await expect(service.listConversations(owner, room.id, page)).resolves.toMatchObject({
+      items: [{ id: empty.id, can_delete_empty: true }],
+    });
+
+    await service.deleteEmptyConversation(owner, room.id, empty.id);
+    await expect(service.listConversations(owner, room.id, page)).resolves.toMatchObject({ items: [], total: 0 });
+    await expect(new PgRoomRepository(db.pool).getConversation(owner.spaceId, room.id, empty.id)).resolves.toBeNull();
+
+    const replacement = await service.createConversationDraft(owner, room.id);
+    expect(replacement.id).not.toBe(empty.id);
+    await new PgSessionRepository(db.pool).addRoomUserMessage(owner.spaceId, owner.userId, room.id, replacement.id, {
+      content: "Keep this conversation",
+    });
+    await expect(service.deleteEmptyConversation(owner, room.id, replacement.id)).rejects.toMatchObject({ statusCode: 409 });
+    const app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot }), [roomsModule]);
+    try {
+      __setAuthIdentityForTests(owner);
+      const response = await app.inject({
+        method: "DELETE",
+        url: `/api/v1/rooms/${room.id}/conversations/${replacement.id}`,
+        headers: { "idempotency-key": randomUUID() },
+      });
+      expect(response.statusCode, response.body).toBe(200);
+    } finally {
+      __setAuthIdentityForTests(null);
+      await app.close();
+    }
+    await expect(service.listConversations(owner, room.id, page)).resolves.toMatchObject({
+      items: [], total: 0,
+    });
+  });
+
   it("keeps a managed Assistant managed when a Project Location is added later", async (ctx) => {
     if (!db.available || !service) return ctx.skip();
     await removeManagedAssistant();
@@ -1353,6 +1430,9 @@ describe("Room workflow (real Postgres)", () => {
         continuity,
       },
     )).resolves.toMatchObject({ ok: true });
+    await expect(finalizeChatTurn(finalizerConfig, runRepository, waitingRun!, {
+      loadActionPreviews: async () => [], continuity,
+    })).resolves.toBeNull();
     await expect(finalizeChatTurn(
       finalizerConfig,
       runRepository,
@@ -2440,7 +2520,7 @@ describe("Room workflow (real Postgres)", () => {
          ) VALUES (
            'host-summary', 'user-1', 'machine-1', 'Summary host', 'remote',
            'linux_native', 'online', now(),
-           '{"installations":{"claude_code":[{"id":"managed:1.0.0","version":"1.0.0","logged_in":true,"health_check_protocol":"acp"}]}}'::jsonb,
+           '{"workspace_read_only":{"supported":true,"mechanism":"bwrap-v1"},"installations":{"claude_code":[{"id":"managed:1.0.0","version":"1.0.0","logged_in":true,"health_check_protocol":"acp"}]}}'::jsonb,
            now(), now()
          );
          UPDATE agent_runtime_profiles SET execution_host_id = 'host-summary' WHERE id = 'runtime-cli'`,
@@ -2469,6 +2549,148 @@ describe("Room workflow (real Postgres)", () => {
       await seedChatCompletion(firstRunId);
       return { owner, created, conversation, thread };
     }
+
+    for (const outcome of ["succeeded", "failed", "cancelled"] as const) it(`prepares an automatic summary once and settles a ${outcome} handoff`, async (ctx) => {
+      if (!db.available || !service) return ctx.skip();
+      const { owner, created, conversation, thread } = await liveSessionTurn();
+      const model = "claude-sonnet-4-6";
+      const source = "claude-opus-4-6";
+      await db.pool.query(
+        `UPDATE runs SET model_override_json = model_override_json || jsonb_build_object('runtime_reported_model', $2::text)
+           WHERE id = (SELECT last_run_id FROM host_threads WHERE id = $1)`, [thread.id, source],
+      );
+      await db.pool.query(
+        `UPDATE hosts SET capabilities_json = jsonb_set(capabilities_json, '{installations,claude_code,0,options}', $1::jsonb)
+          WHERE id = 'host-summary'`, [JSON.stringify({config_options: [{
+          id: "model", name: "Model", category: "model", type: "select", description: null, current_value: source,
+          options: [model, source].map(value => ({ value, name: value, description: null, group: null })),
+        }]})],
+      );
+      const sent = await service.sendMessage(owner, created.room.id, conversation.id, {
+        content: "Continue the parser with regression tests.",
+        backends: [{ agent_id: "agent-1", runtime_profile_id: "runtime-cli",
+          session_config: [{ id: "model", type: "select", category: "model", value: model }] }],
+      });
+      const originalId = sent.run_ids[0]!;
+      const runs = new PgRunRepository(db.pool);
+      const original = (await runs.getRun(owner.spaceId, originalId))!;
+      expect(original.status).toBe("waiting_for_dependency");
+      const waiting = recordOf(recordOf(original.output_json).waiting_for_results);
+      const [summaryId] = waiting.depends_on_run_ids as string[];
+      expect(summaryId).not.toBe(originalId);
+      const summary = (await runs.getRun(owner.spaceId, summaryId!))!;
+      expect(summary.capabilities_json).toEqual(["handoff.write"]);
+      expect(await conversationTurnTaken(db.pool, owner.spaceId, conversation.id)).toBe(true);
+      if (outcome === "cancelled") await runs.markRunCancelling({
+        space_id: owner.spaceId, run_id: originalId, requested_at: new Date().toISOString(),
+      });
+      expect(recordOf(summary.model_override_json).acp_session_config).toMatchObject([{ value: source }]);
+      const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot });
+      if (outcome === "succeeded") {
+        const executors = new Map<SystemActionId, SystemActionExecutor>();
+        registerAgentHandoffExecutors(executors, config, summary);
+        await executors.get("handoff.write" as SystemActionId)!(
+          { goal: "Refactor the parser.", decisions: "Keep the public API.", next_step: "Write the tests." },
+          { actor: { type: "agent", space_id: owner.spaceId }, visibility: "agent_tool" },
+        );
+      }
+      await dispatchQueuedRoomRuns([summary.id]);
+      await db.pool.query("UPDATE runs SET status = $2, ended_at = now() WHERE id = $1", [summary.id, outcome]);
+      await settleThreadTurn(thread.id, { lastRunId: summary.id, vendorSessionId: "vendor-live", sessionReset: false, landed: outcome === "succeeded" });
+      const settled = (await runs.getRun(owner.spaceId, summary.id))!;
+      if (outcome === "succeeded") {
+        await db.pool.query("UPDATE agent_run_groups SET status = 'paused' WHERE id = $1", [original.run_group_id]);
+        await expect(settleAutomaticHandoff(db.pool, settled)).rejects.toThrow("waits for its Room task to resume");
+        expect((await runs.getRun(owner.spaceId, originalId))?.status).toBe("waiting_for_dependency");
+        await db.pool.query("UPDATE agent_run_groups SET status = 'active' WHERE id = $1", [original.run_group_id]);
+        await new AgentGroupRunLifecycleProjector(db.pool, config).reconcileWaitingRun(original);
+        expect((await runs.getRun(owner.spaceId, originalId))?.status).toBe("waiting_for_dependency");
+      }
+      await settleAutomaticHandoff(db.pool, settled);
+      await settleAutomaticHandoff(db.pool, settled);
+      const next = (await runs.getRun(owner.spaceId, originalId))!;
+      expect(next.status).toBe(outcome === "succeeded" ? "queued" : outcome);
+      expect(recordOf(recordOf(next.model_override_json).chat_turn).assigned_task).toBe("Continue the parser with regression tests.");
+      const jobs = await db.pool.query("SELECT id FROM jobs WHERE job_type = 'agent_run' AND payload_json->>'run_id' = $1", [originalId]);
+      expect(jobs.rows).toHaveLength(outcome === "succeeded" ? 1 : 0);
+      const current = await new PgHostThreadRepository(db.pool).getById(thread.id);
+      expect(current?.vendor_session_id).toBe("vendor-live");
+      if (outcome === "succeeded") {
+        expect(next.prompt).toContain("Keep the public API.");
+        expect(recordOf(recordOf(next.model_override_json).host_thread)).toMatchObject({ fresh: true, runtime_session_id: null });
+        expect(current?.dispatch_lock_id).toBe(originalId);
+        await dispatchQueuedRoomRuns([originalId]);
+        await db.pool.query("UPDATE runs SET status = 'succeeded', ended_at = now() WHERE id = $1", [originalId]);
+        await settleThreadTurn(thread.id, { lastRunId: originalId, vendorSessionId: "vendor-target", sessionReset: false, landed: true });
+        expect((await new PgHostThreadRepository(db.pool).getById(thread.id))?.vendor_session_id).toBe("vendor-target");
+        await seedChatCompletion(originalId);
+      }
+      expect(await conversationTurnTaken(db.pool, owner.spaceId, conversation.id)).toBe(false);
+      expect(await runs.listTerminalChatRunsAwaitingCompletion()).not.toContainEqual(expect.objectContaining({ id: summary.id, space_id: owner.spaceId }));
+      if (outcome === "succeeded") {
+        const followup = await service.sendMessage(owner, created.room.id, conversation.id, {
+          content: "Continue after the model switch.",
+          backends: [{ agent_id: "agent-1", runtime_profile_id: "runtime-cli",
+            session_config: [{ id: "model", type: "select", category: "model", value: model }] }],
+        });
+        const continued = await runs.getRun(owner.spaceId, followup.run_ids[0]!);
+        expect(recordOf(recordOf(continued?.model_override_json).host_thread).runtime_session_id).toBe("vendor-target");
+      }
+    });
+
+    it("schedules one summary at delegated admission before creating any child execution job", async (ctx) => {
+      if (!db.available || !service) return ctx.skip();
+      const { owner, created, conversation, thread } = await liveSessionTurn();
+      const runs = new PgRunRepository(db.pool);
+      const threads = new PgHostThreadRepository(db.pool);
+      const sourceThread = (await threads.getById(thread.id))!;
+      const sourceRun = (await runs.getRun(owner.spaceId, sourceThread.last_run_id!))!;
+      const sourceModel = "claude-opus-4-6";
+      const targetModel = "claude-sonnet-4-6";
+      await db.pool.query(
+        "UPDATE runs SET model_override_json = model_override_json || jsonb_build_object('runtime_reported_model', $2::text) WHERE id = $1",
+        [sourceRun.id, sourceModel],
+      );
+      const groups = new PgAgentGroupRepository(db.pool);
+      const delegation = await groups.createDelegation({
+        space_id: owner.spaceId, group_id: sourceRun.run_group_id!, parent_run_id: sourceRun.id,
+        requesting_agent_id: "agent-1", target_agent_id: "agent-1", instruction: "Continue the parser.",
+        requested_by_user_id: owner.userId,
+      });
+      const child = await runs.createDelegatedChildRun({
+        execution_kind: "agent", allow_system_assistant: true,
+        instructed_by_agent_id: "agent-1", root_run_id: sourceRun.root_run_id ?? sourceRun.id,
+        agent_id: "agent-1", space_id: owner.spaceId, user_id: owner.userId,
+        session_id: conversation.id, project_id: sourceRun.project_id, host_task_thread_id: thread.id,
+        run_group_id: sourceRun.run_group_id!, delegation_id: delegation.id, parent_run_id: sourceRun.id,
+        prompt: "Continue the parser.",
+        model_override_json: {
+          workspace: recordOf(sourceRun.model_override_json).workspace,
+          chat_turn: { schema_version: "chat_turn.v1", room_id: created.room.id },
+          conversation_backend: { runtime_profile_id: "runtime-cli" },
+          acp_session_config: [{ id: "model", type: "select", category: "model", value: targetModel }],
+          host_thread: {
+            thread_id: thread.id, runtime_session_id: sourceThread.vendor_session_id,
+            automatic_handoff: { source_model: sourceModel, source_run_id: sourceRun.id, budget_tokens: 4096, context_tokens: 50_000 },
+          },
+        },
+      });
+      await groups.updateDelegationAfterPolicy({
+        space_id: owner.spaceId, delegation_id: delegation.id, status: "queued", child_run_id: child.id,
+      });
+      expect(await threads.claimConversationDispatch(thread.id, child.id)).toBe(true);
+      await threads.recordConversationDispatch(thread.id, { lastRunId: child.id, dispatchLockId: child.id, sessionId: conversation.id });
+      await withDbTransaction(db.pool, client => enqueueWhenTurnFree(client, {
+        spaceId: owner.spaceId, runId: child.id,
+        job: { user_id: owner.userId, agent_id: child.agent_id, project_folder_id: null,
+          payload: { run_id: child.id, trigger_origin: "delegation" } },
+      }));
+      const waiting = (await runs.getRun(owner.spaceId, child.id))!;
+      expect(waiting.status).toBe("waiting_for_dependency");
+      const summaryId = ((recordOf(recordOf(waiting.output_json).waiting_for_results).depends_on_run_ids) as string[])[0]!;
+      const jobs = await db.pool.query("SELECT payload_json->>'run_id' AS run_id FROM jobs WHERE payload_json->>'run_id' = ANY($1)", [[child.id, summaryId]]);
+      expect(jobs.rows).toEqual([{ run_id: summaryId }]);
+    });
 
     it("writes the summary a person asks for into the current session, keeps the session, and can restart from it", async (ctx) => {
       if (!db.available || !service) return ctx.skip();
@@ -2525,7 +2747,11 @@ describe("Room workflow (real Postgres)", () => {
       expect(artifact.rows[0]!.metadata_json).toMatchObject({ manual_summary: true, vendor_session_id: "vendor-live", host_thread_id: thread.id });
 
       await dispatchQueuedRoomRuns([summary.id]);
-      await db.pool.query(`UPDATE runs SET status = 'succeeded', ended_at = now(), updated_at = now() WHERE id = $1`, [summary.id]);
+      await db.pool.query(
+        `UPDATE runs SET status = 'succeeded', ended_at = now(), updated_at = now(),
+          model_override_json = model_override_json || '{"runtime_reported_model":"claude-opus-4-6"}'::jsonb WHERE id = $1`,
+        [summary.id],
+      );
       await settleThreadTurn(thread.id, {
         lastRunId: summary.id, vendorSessionId: "vendor-live", sessionReset: false, landed: true,
         contextWindow: { used: 52_000, size: 200_000 },
@@ -2533,18 +2759,106 @@ describe("Room workflow (real Postgres)", () => {
       // The session continues: the summary is a record, not a rotation.
       expect(await threadRow()).toMatchObject({ status: "active", vendor_session_id: "vendor-live", handoff_artifact_id: null });
       expect(await latestSummaryArtifactId(db.pool, { spaceId: "space-1", threadId: thread.id, vendorSessionId: "vendor-live" })).toBe(artifactId);
+      const source = (await new PgHostThreadRepository(db.pool).getById(thread.id))!;
+      await expect(reusableModelHandoff(db.pool, {
+        thread: source, model: "anthropic/claude-opus-4-6-20260201", userIds: [owner.userId],
+      })).resolves.toBeNull();
+      await expect(reusableModelHandoff(db.pool, {
+        thread: source, model: "claude-sonnet-4-6", userIds: [owner.userId, "user-outside-room"],
+      })).resolves.toBeNull();
 
+      await seedChatCompletion(summary.id);
       // Chosen by the person: the next turn starts from the summary instead.
       await service.restartFromSummary(owner, created.room.id, "agent-1");
-      expect(await threadRow()).toMatchObject({ status: "session_reset", vendor_session_id: null, handoff_artifact_id: artifactId });
+      expect(await threadRow()).toMatchObject({ status: "session_reset", vendor_session_id: "vendor-live", handoff_artifact_id: artifactId });
       const notice = await db.pool.query<{ metadata_json: Record<string, unknown> }>(
         `SELECT metadata_json FROM messages WHERE session_id = $1 AND metadata_json->>'host_thread_reset_reason' = 'summary'`,
         [conversation.id],
       );
       expect(notice.rows).toHaveLength(1);
       expect(notice.rows[0]!.metadata_json).toMatchObject({ execution_details: { artifact_id: artifactId } });
-      // A reset session has nothing to summarize.
+      // A staged restart does not start another summary.
       await expect(service.summarizeAgentContext(owner, created.room.id, "agent-1")).rejects.toMatchObject({ statusCode: 409 });
+
+      const sendCandidate = async (holdForQuota = false, switchModel = false) => {
+        const sent = await service!.sendMessage(owner, created.room.id, conversation.id, {
+          content: "Continue the parser.",
+          ...(switchModel ? { backends: [{
+            agent_id: "agent-1", runtime_profile_id: "runtime-cli",
+            session_config: [{ id: "model", category: "model", type: "select", value: "claude-sonnet-4-6" }],
+          }] } : {}),
+        });
+        const runId = sent.run_ids[0]!;
+        const run = (await new PgRunRepository(db.pool).getRun("space-1", runId))!;
+        expect(run.prompt).toContain("Keep the public API.");
+        expect(recordOf(recordOf(run.model_override_json).host_thread)).toMatchObject({ fresh: true, runtime_session_id: null });
+        if (holdForQuota) {
+          await holdInterruptedRun(db.pool, owner.spaceId, runId, {
+            window: "session", resets_at: null, utilization: 100, account_label: "fixture",
+            login: { host_id: "host-summary", runtime_key: "claude_code", installation: "managed:1.0.0" },
+            held_at: new Date().toISOString(),
+            job: { user_id: owner.userId, agent_id: "agent-1", project_folder_id: null, payload: { run_id: runId } },
+          });
+          expect((await new PgHostThreadRepository(db.pool).getById(thread.id))?.dispatch_lock_id).toBe(runId);
+          await expect(service!.restartFromSummary(owner, created.room.id, "agent-1")).rejects.toMatchObject({ statusCode: 409 });
+        }
+        await dispatchQueuedRoomRuns([runId]);
+        return runId;
+      };
+      const failed = await sendCandidate(true);
+      await db.pool.query("UPDATE runs SET status = 'failed', ended_at = now() WHERE id = $1", [failed]);
+      const failedRun = (await new PgRunRepository(db.pool).getRun(owner.spaceId, failed))!;
+      await expect(new PgRunSupervisor(db.pool).supervise({
+        run: failedRun, attempt_number: 1,
+        evaluation: { failure_reason_code: "runtime_timeout", outcome_status: "failed" },
+      })).resolves.toBeNull();
+      await settleThreadTurn(thread.id, {
+        lastRunId: failed, vendorSessionId: "candidate-failed", sessionReset: false, landed: false,
+      });
+      expect(await threadRow()).toMatchObject({ status: "active", vendor_session_id: "vendor-live", handoff_artifact_id: null });
+      await settleThreadTurn(thread.id, {
+        lastRunId: failed, vendorSessionId: "candidate-failed", sessionReset: false, landed: false,
+      });
+      expect((await threadRow()).vendor_session_id).toBe("vendor-live");
+      const retired = await db.pool.query<{ retired_vendor_session_ids: string[] }>(
+        "SELECT retired_vendor_session_ids FROM host_threads WHERE id = $1", [thread.id],
+      );
+      expect(retired.rows[0]!.retired_vendor_session_ids).toEqual(["candidate-failed"]);
+      await seedChatCompletion(failed);
+
+      // The valid source summary is the latest settled turn when auto-reuse
+      // is considered. Restore that fixture's source after exercising rollback.
+      await db.pool.query("UPDATE host_threads SET last_run_id = $2 WHERE id = $1", [thread.id, summary.id]);
+      await db.pool.query(
+        `UPDATE hosts SET capabilities_json = jsonb_set(capabilities_json,
+          '{installations,claude_code,0,options}', $1::jsonb) WHERE id = 'host-summary'`,
+        [JSON.stringify({ config_options: [{
+          id: "model", name: "Model", category: "model", type: "select", description: null,
+          current_value: "claude-opus-4-6",
+          options: ["claude-opus-4-6", "claude-sonnet-4-6"].map(value => ({ value, name: value, description: null, group: null })),
+        }] })],
+      );
+      const succeeded = await sendCandidate(false, true);
+      await db.pool.query("UPDATE runs SET status = 'succeeded', ended_at = now() WHERE id = $1", [succeeded]);
+      await seedChatCompletion(succeeded);
+      const beforeSettlement = (await new PgHostThreadRepository(db.pool).getById(thread.id))!;
+      await settleThreadTurn(thread.id, {
+        lastRunId: succeeded, vendorSessionId: "candidate-succeeded", sessionReset: false, landed: true,
+      });
+      const interleave = vi.spyOn(PgHostThreadRepository.prototype, "getOrCreateForConversationAgent")
+        .mockResolvedValueOnce(beforeSettlement);
+      try {
+        const sent = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Check the result." });
+        const next = (await new PgRunRepository(db.pool).getRun(owner.spaceId, sent.run_ids[0]!))!;
+        const snapshot = recordOf(recordOf(next.model_override_json).host_thread);
+        expect(snapshot).toMatchObject({ fresh: false, runtime_session_id: "candidate-succeeded" });
+        expect(snapshot).not.toHaveProperty("handoff_candidate");
+      } finally {
+        interleave.mockRestore();
+      }
+      expect(await threadRow()).toMatchObject({
+        status: "active", vendor_session_id: "candidate-succeeded", handoff_artifact_id: null,
+      });
     });
 
   });
@@ -2562,7 +2876,7 @@ describe("Room workflow (real Postgres)", () => {
      * would. `quotaSource` is what the projector's quota gate reads when it
      * admits the next Agent-triggered Run.
      */
-    async function completeTurn(runId: string, reply: string, quotaSource?: QuotaSource) {
+    async function completeTurn(runId: string, reply: string, quotaSource?: QuotaSource, skipAdvance = false) {
       const runs = new PgRunRepository(db.pool);
       await dispatchQueuedRoomRuns([runId]);
       await db.pool.query(
@@ -2572,7 +2886,9 @@ describe("Room workflow (real Postgres)", () => {
       const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot });
       await new AgentGroupRunLifecycleProjector(db.pool, config, quotaSource).markDelegatedRunTerminal((await runs.getRun("space-1", runId))!);
       await releaseConversationTurn(runId);
-      await finalizeChatTurn(config, runs, (await runs.getRun("space-1", runId))!, finalizerDeps);
+      await finalizeChatTurn(config, runs, (await runs.getRun("space-1", runId))!, skipAdvance
+        ? { ...finalizerDeps, discussions: { afterTurnFinalized: async () => {} } }
+        : finalizerDeps);
     }
 
     /** Fails one queued turn the way a vendor CLI's refusal would. */
@@ -2703,6 +3019,367 @@ describe("Room workflow (real Postgres)", () => {
         .resolves.toMatchObject({ active_run_ids: [parent] });
     });
 
+    it("adds an ordinary send to the one active Run its route reaches, asks among several and otherwise sends as before", async (ctx) => {
+      if (!db.available || !service || !groupService) return ctx.skip();
+      const { owner, created, conversation } = await roomWithSpecialist("Ordinary send into a turn");
+      const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot });
+      const runtime = await operationRuntime(config);
+      const send = async (body: Record<string, unknown>, who = owner, key = randomUUID()) => {
+        const out = await runtime.execute("room.message.send", { room_id: created.room.id, session_id: conversation.id, queue: true, ...body },
+          sessionActor(who), randomUUID(), key);
+        return { status: out.http_status, body: out.body as { status?: string; data?: Record<string, unknown>; error?: { metadata?: Record<string, unknown> } } };
+      };
+      const sent = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Ask the specialist." });
+      const parent = sent.run_ids[0]!;
+      const spawn = async () => (await groupService!.spawnChildRun(owner, {
+        space_id: owner.spaceId, group_id: sent.task_group_ids[0]!, parent_run_id: parent, root_run_id: parent,
+        requesting_agent_id: "agent-1", target_agent_id: "agent-2", manager_user_id: owner.userId,
+        workspace_access: "read", instruction: "Review the change.",
+      })).child_run_id!;
+      const first = await spawn(), second = randomUUID();
+      await dispatchQueuedRoomRuns([parent, first]);
+      // A second active turn of the same Agent in this conversation (its host thread admits one delegation at a time).
+      await db.pool.query(`INSERT INTO runs SELECT (jsonb_populate_record(NULL::runs, to_jsonb(run)
+          || jsonb_build_object('id', $2::text, 'delegation_id', NULL, 'host_task_thread_id', NULL, 'created_at', now()))).* FROM runs run WHERE id = $1`, [first, second]);
+      const waitOn = (runId: string, dependsOn: string[]) => db.pool.query(
+        `UPDATE runs SET status = 'waiting_for_dependency', output_json = jsonb_build_object('waiting_for_results',
+           jsonb_build_object('status', 'waiting', 'scope', 'current_turn', 'depends_on_run_ids', $2::jsonb)) WHERE id = $1`,
+        [runId, JSON.stringify(dependsOn)]);
+      await waitOn(parent, [first, second]);
+      const events = async (runId: string) => (await db.pool.query<{ event_type: string; status: string; state: string | null; mode: string | null; message_id: string }>(
+        `SELECT event_type, status, metadata_json->>'state' AS state, metadata_json->>'mode' AS mode, metadata_json->>'message_id' AS message_id
+           FROM run_events WHERE run_id = $1 AND metadata_json->>'action_name' = 'run.live_input' ORDER BY event_index`, [runId])).rows;
+
+      // No mention reaches the manager; parked on its delegations, it keeps the words for its resume.
+      const managerMessage = { content: "Also check the migration.", live_target: "auto" };
+      const sendKey = randomUUID();
+      const toManager = await send(managerMessage, owner, sendKey);
+      expect(toManager.status, JSON.stringify(toManager.body)).toBe(201);
+      expect(toManager.body.data).toMatchObject({ status: "live_input", run_id: parent, binding_id: null, delivery_state: "deferred" });
+      const saved = toManager.body.data!.message_id as string;
+      expect((await send(managerMessage, owner, sendKey)).body.data).toMatchObject({ message_id: saved });
+      expect(await events(parent)).toHaveLength(1);
+      expect(await liveInputDeliveryState(db.pool, owner.spaceId, parent, saved)).toBe("deferred");
+      expect((await db.pool.query(`SELECT run_id, content FROM messages WHERE id = $1`, [saved])).rows[0])
+        .toEqual({ run_id: parent, content: "Also check the migration." });
+      // Not a turn of its own: nothing queued or dispatched for it.
+      expect((await db.pool.query(`SELECT 1 FROM room_queued_messages WHERE session_id = $1`, [conversation.id])).rowCount).toBe(0);
+
+      // Two delegated turns of the addressed Agent: never a guess, the person chooses.
+      await waitOn(first, [parent]);
+      await waitOn(second, [parent]);
+      const specialist = { routing_mode: "direct", recipient_segments: [{ recipient_agent_ids: ["agent-2"], content: "@Research Specialist note the API change." }] };
+      const ambiguous = await send({ ...specialist, content: "@Research Specialist note the API change.", live_target: "auto" });
+      expect(ambiguous.status).toBe(409);
+      expect(ambiguous.body.error?.metadata).toMatchObject({ code: "live_input_target_choice_required" });
+      expect((ambiguous.body.error!.metadata!.candidates as Array<{ run_id: string; delegated: boolean; delivery: string }>)
+        .map(candidate => [candidate.run_id, candidate.delegated, candidate.delivery])).toEqual([[first, true, "with_results"], [second, false, "with_results"]]);
+      expect(await events(first)).toEqual([]);
+      const chosen = await send({ ...specialist, content: "@Research Specialist note the API change.", live_target: { run_id: second } });
+      expect(chosen.body.data).toMatchObject({ status: "live_input", run_id: second, delivery_state: "deferred" });
+      expect(await events(first)).toEqual([]);
+
+      // A Run the person chose is never replaced, neither by another Run nor by an ordinary send: a
+      // choice that cannot take this message is refused, naming the Runs that still can, and nothing is saved.
+      const saved_messages = async () => Number((await db.pool.query<{ n: string }>(`SELECT count(*) AS n FROM messages WHERE session_id = $1`, [conversation.id])).rows[0]!.n);
+      const before = await saved_messages();
+      const notACandidate = await send({ ...specialist, content: "@Research Specialist note the API change.", live_target: { run_id: parent } });
+      expect(notACandidate.status).toBe(409);
+      expect(notACandidate.body.error?.metadata).toMatchObject({ code: "live_input_target_unavailable" });
+      expect((notACandidate.body.error!.metadata!.candidates as Array<{ run_id: string }>).map(candidate => candidate.run_id)).toEqual([first, second]);
+      const rerouted = await send({ content: "Ask @Research Specialist too.", routing_mode: "agent_coordination",
+        coordination_target_agent_ids: ["agent-2"], live_target: { run_id: second } });
+      expect(rerouted.status).toBe(409);
+      expect(rerouted.body.error?.metadata).toMatchObject({ code: "live_input_target_unavailable", candidates: [] });
+      expect(await saved_messages()).toBe(before);
+      expect((await db.pool.query(`SELECT 1 FROM room_queued_messages WHERE session_id = $1`, [conversation.id])).rowCount).toBe(0);
+
+      // Another Room member cannot steer the owner's Runs: their message is an ordinary one.
+      await addRoomMember(created.room.id, "user-2");
+      const member = await send({ content: "From someone else.", live_target: "auto" }, { spaceId: owner.spaceId, userId: "user-2" });
+      expect(member.body.data?.status).toMatch(/^(sent|queued)$/);
+      // Attachments-free but arranged with another Agent: the manager's ordinary arrangement, not live input.
+      const arranged = await send({ content: "Ask @Research Specialist too.", routing_mode: "agent_coordination", coordination_target_agent_ids: ["agent-2"], live_target: "auto" });
+      expect(arranged.body.data?.status).toMatch(/^(sent|queued)$/);
+      expect((await events(parent)).filter(event => event.event_type === "action_invoked")).toHaveLength(1);
+
+      // A live channel that refuses before recording anything leaves an ordinary send.
+      await db.pool.query(`DELETE FROM room_queued_messages WHERE session_id = $1`, [conversation.id]);
+      await db.pool.query(`UPDATE runs SET status = 'running', output_json = NULL WHERE id = $1`, [first]);
+      const channel = registerRunLiveInput(first, { id: randomUUID(), audit_refs: { invocation_snapshot_id: randomUUID() } } as never, {
+        start() {}, async receive() {}, reject() {}, result: () => ({ completed: false, error: null, text: "" }),
+        canSteer: () => true, steer: async () => "injected",
+      });
+      try {
+        const racedChoice = await send({ ...specialist, content: "@Research Specialist note the API change.", live_target: { run_id: first } });
+        expect(racedChoice.status).toBe(409);
+        expect(racedChoice.body.error?.metadata).toMatchObject({
+          code: "live_input_target_unavailable", candidates: [{ run_id: second }],
+        });
+        await db.pool.query(`UPDATE runs SET status = 'cancelled', ended_at = now() WHERE id = $1`, [second]);
+        const refused = await send({ ...specialist, content: "@Research Specialist note the API change.", live_target: "auto" });
+        expect(refused.body.data?.status).toMatch(/^(sent|queued)$/);
+        expect(await events(first)).toEqual([]);
+      } finally { await channel.close(); }
+
+      // A live input the manager had not taken before it parked (it was yielding) waits for the resume too.
+      const yielding = await new PgSessionRepository(db.pool).addRoomUserMessage(owner.spaceId, owner.userId, created.room.id, conversation.id,
+        { content: "Sent while it was yielding.", run_id: parent });
+      await new PgRunRepository(db.pool).appendRunEvent({ run_id: parent, space_id: owner.spaceId, event_type: "action_invoked", status: "pending",
+        metadata_json: { action_name: "run.live_input", message_id: yielding!.id, binding_id: randomUUID(), user_id: owner.userId } });
+      // The cancelled turn never resumes: its saved input is settled as not delivered.
+      expect(await settleOrphanedRunLiveInputs(db.pool, config)).toBe(1);
+      expect(await liveInputDeliveryState(db.pool, owner.spaceId, parent, yielding!.id)).toBe("deferred");
+      expect(await liveInputDeliveryState(db.pool, owner.spaceId, second, chosen.body.data!.message_id as string)).toBe("not_injected");
+      // The parked manager keeps its input through the sweep, and its resume carries it with the results.
+      expect(await liveInputDeliveryState(db.pool, owner.spaceId, parent, saved)).toBe("deferred");
+      // Sent while the manager still ran; its last child finishes before the delivery Job or the sweep
+      // marks the input for the resume. It is still this turn's: unclaimed and unsettled, it is carried.
+      const racedBinding = randomUUID();
+      const raced = await new PgSessionRepository(db.pool).addRoomUserMessage(owner.spaceId, owner.userId, created.room.id, conversation.id,
+        { content: "Sent just before it parked.", run_id: parent });
+      await new PgRunRepository(db.pool).appendRunEvent({ run_id: parent, space_id: owner.spaceId, event_type: "action_invoked", status: "pending",
+        metadata_json: { action_name: "run.live_input", message_id: raced!.id, binding_id: racedBinding, user_id: owner.userId } });
+      // Saved for this Run by someone who may not steer it (standing is checked again at the resume):
+      // refused there, never written into the continuation.
+      const outsider = await new PgSessionRepository(db.pool).addRoomUserMessage(owner.spaceId, "user-2", created.room.id, conversation.id,
+        { content: "Words the Run must not receive.", run_id: parent });
+      await new PgRunRepository(db.pool).appendRunEvent({ run_id: parent, space_id: owner.spaceId, event_type: "action_invoked", status: "pending",
+        metadata_json: { action_name: "run.live_input", message_id: outsider!.id, binding_id: null, user_id: "user-2", mode: "with_results" } });
+      await db.pool.query(`UPDATE runs SET status = 'succeeded', ended_at = now() WHERE id = $1`, [first]);
+      await new AgentGroupRunLifecycleProjector(db.pool, config).reconcileWaitingRun((await new PgRunRepository(db.pool).getRun(owner.spaceId, parent))!);
+      const resumed = await new PgRunRepository(db.pool).getRun(owner.spaceId, parent);
+      expect(resumed?.status).toBe("queued");
+      expect(resumed?.prompt).toContain("Additional input from the person while you waited");
+      expect(resumed?.prompt).toContain("1. Also check the migration.\n2. Sent while it was yielding.\n3. Sent just before it parked.");
+      expect(resumed?.prompt).not.toContain("Words the Run must not receive.");
+      expect(await liveInputDeliveryState(db.pool, owner.spaceId, parent, saved)).toBe("delivered_with_results");
+      expect(await liveInputDeliveryState(db.pool, owner.spaceId, parent, yielding!.id)).toBe("delivered_with_results");
+      expect(await liveInputDeliveryState(db.pool, owner.spaceId, parent, raced!.id)).toBe("delivered_with_results");
+      expect(await liveInputDeliveryState(db.pool, owner.spaceId, parent, outsider!.id)).toBe("not_injected");
+      // Its delivery Job, arriving late, finds the outcome and never reports it as not delivered.
+      expect(await deliverRunLiveInput(db.pool, config, owner, parent, racedBinding, raced!.id)).toBe("delivered_with_results");
+      // Settled with the resume: a later sweep or resume never hands them over again.
+      expect(await settleOrphanedRunLiveInputs(db.pool, config)).toBe(0);
+    });
+
+    it.for(["Room", "Run", "group"])("projects delegated completion after a concurrent send holding the %s lock", async (lock, ctx) => {
+      if (!db.available || !service || !groupService) return ctx.skip();
+      const { owner, created, conversation } = await roomWithSpecialist("Concurrent delegated completion");
+      const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot });
+      const runs = new PgRunRepository(db.pool);
+      const sent = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Start the turn." });
+      const root = sent.run_ids[0]!;
+      const groupId = sent.task_group_ids[0]!;
+      const child = (await groupService.spawnChildRun(owner, {
+        space_id: owner.spaceId, group_id: groupId, parent_run_id: root, root_run_id: root,
+        requesting_agent_id: "agent-1", target_agent_id: "agent-2", manager_user_id: owner.userId,
+        workspace_access: "read", instruction: "Review the change.",
+      })).child_run_id!;
+      await dispatchQueuedRoomRuns([root, child]);
+      await db.pool.query(`UPDATE runs SET status = 'succeeded', ended_at = now(), output_json = '{"summary":"Review finished."}' WHERE id = $1`, [child]);
+      await db.pool.query(
+        `UPDATE runs SET status = 'waiting_for_dependency', output_json = jsonb_build_object('waiting_for_results',
+          jsonb_build_object('status', 'waiting', 'round_id', $2::text, 'scope', 'current_turn',
+            'depends_on_run_ids', jsonb_build_array($3::text))) WHERE id = $1`, [root, randomUUID(), child]);
+      const other = randomUUID();
+      await db.pool.query(`INSERT INTO runs SELECT (jsonb_populate_record(NULL::runs, to_jsonb(run)
+        || jsonb_build_object('id', $2::text, 'root_run_id', $1::text, 'host_task_thread_id', NULL,
+           'updated_at', now() - interval '1 minute'))).* FROM runs run WHERE id = $1`, [root, other]);
+      const otherInput = await withDbTransaction(db.pool, tx =>
+        recordDeferredRunLiveInput(tx, config, owner, other, "For the other waiter."));
+      const projector = new AgentGroupRunLifecycleProjector(db.pool, config);
+      const childRun = (await runs.getRun(owner.spaceId, child))!;
+      const holder = await db.pool.connect();
+      let completion: Promise<void> | undefined;
+      let messageId: string;
+      try {
+        await holder.query("BEGIN");
+        if (lock === "Room") {
+          await holder.query("SELECT id FROM rooms WHERE id = $1 FOR NO KEY UPDATE", [created.room.id]);
+        } else {
+          if (lock === "group") {
+            await holder.query("SELECT id FROM agent_run_groups WHERE id = $1 FOR NO KEY UPDATE", [groupId]);
+          }
+          await holder.query("SELECT id FROM runs WHERE id = $1 FOR NO KEY UPDATE", [root]);
+        }
+        const pid = (await holder.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
+        completion = projector.markDelegatedRunTerminal(childRun);
+        // On the old implementation this waiter already owns the root events lock.
+        let settled = false;
+        void completion.then(() => { settled = true; }, () => { settled = true; });
+        await waitForBlockedBy(db.pool, pid, { settled: () => settled });
+        messageId = (await recordDeferredRunLiveInput(holder, config, owner, root, "For the root waiter.")).message_id;
+        await holder.query("COMMIT");
+        await completion;
+      } finally {
+        await holder.query("ROLLBACK").finally(() => holder.release());
+        await completion;
+      }
+      await projector.markDelegatedRunTerminal(childRun);
+      for (const [id, inputId, words] of [[root, messageId!, "For the root waiter."], [other, otherInput.message_id, "For the other waiter."]]) {
+        const resumed = await runs.getRun(owner.spaceId, id!);
+        expect(resumed?.status).toBe("queued");
+        expect(resumed?.prompt).toContain(words);
+        expect(await liveInputDeliveryState(db.pool, owner.spaceId, id!, inputId!)).toBe("delivered_with_results");
+      }
+      const events = await db.pool.query<{ run_id: string; event_type: string }>(`SELECT run_id, event_type FROM run_events
+        WHERE run_id = ANY($1::varchar[]) AND event_type IN ('delegation_completed', 'action_completed')
+        ORDER BY run_id, event_index`, [[root, child]]);
+      expect(events.rows.filter(event => event.run_id === root).map(event => event.event_type)).toEqual(["delegation_completed", "action_completed"]);
+      expect(events.rows.filter(event => event.run_id === child)).toHaveLength(1);
+      const notification = await db.pool.query(`SELECT id FROM messages WHERE session_id = $1
+        AND metadata_json->>'continuation_event_kind' = 'agent_delegation_result'`, [conversation.id]);
+      expect(notification.rows).toEqual([]);
+    });
+
+    it("takes a parked Run's row lock before its events lock, and settles orphans behind any number of kept inputs", async (ctx) => {
+      if (!db.available || !service || !groupService) return ctx.skip();
+      const { owner, created, conversation } = await roomWithSpecialist("Live input locks");
+      const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot });
+      const sent = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Ask the specialist." });
+      const parent = sent.run_ids[0]!;
+      await dispatchQueuedRoomRuns([parent]);
+      const park = (runId: string) => db.pool.query(
+        `UPDATE runs SET status = 'waiting_for_dependency', output_json = jsonb_build_object('waiting_for_results',
+           jsonb_build_object('status', 'waiting', 'scope', 'current_turn', 'depends_on_run_ids', jsonb_build_array($2::text))) WHERE id = $1`,
+        [runId, randomUUID()]);
+      await park(parent);
+
+      // A claim or settle takes the Run's events lock, then inserts an event whose foreign key needs
+      // `FOR KEY SHARE` on the Run row. A deferral meanwhile holds that row and waits for the events
+      // lock. Its row lock must not block the key check, or neither transaction can finish.
+      const holder = await db.pool.connect();
+      try {
+        await holder.query("BEGIN");
+        await holder.query(`SELECT pg_advisory_xact_lock(hashtextextended('run_events:' || $1::text, 0))`, [parent]);
+        const deferring = withDbTransaction(db.pool, client => recordDeferredRunLiveInput(client, config, owner, parent, "Recorded behind a settle."));
+        await vi.waitFor(async () => {
+          const waiting = await db.pool.query(`SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND wait_event = 'advisory'`);
+          expect(waiting.rowCount).toBeGreaterThan(0);
+        }, { timeout: 10_000, interval: 50 });
+        await new PgRunRepository(holder).appendRunEvent({ run_id: parent, space_id: owner.spaceId, event_type: "action_completed", status: "warning",
+          metadata_json: { action_name: "run.live_input", message_id: randomUUID(), binding_id: null, state: "not_injected" } });
+        await holder.query("COMMIT");
+        const recorded = await deferring;
+        expect(await liveInputDeliveryState(db.pool, owner.spaceId, parent, recorded.message_id)).toBe("deferred");
+      } finally {
+        await holder.query("ROLLBACK").catch(() => undefined);
+        holder.release();
+      }
+
+      // More inputs kept for a parked Run's resume than one sweep reads, ordered ahead of an orphan
+      // of a cancelled Run: the sweep skips the kept ones in SQL, so the orphan is still settled.
+      const copy = (id: string, status: string) => db.pool.query(`INSERT INTO runs SELECT (jsonb_populate_record(NULL::runs, to_jsonb(run)
+          || jsonb_build_object('id', $2::text, 'status', $3::text, 'delegation_id', NULL, 'host_task_thread_id', NULL, 'created_at', now()))).* FROM runs run WHERE id = $1`,
+        [parent, id, status]);
+      const keeper = `0000000${randomUUID().slice(7)}`, ended = `fffffff${randomUUID().slice(7)}`;
+      await copy(keeper, "waiting_for_dependency");
+      await copy(ended, "cancelled");
+      const runs = new PgRunRepository(db.pool);
+      for (let index = 0; index < 201; index++) {
+        await runs.appendRunEvent({ run_id: keeper, space_id: owner.spaceId, event_type: "action_invoked", status: "pending",
+          metadata_json: { action_name: "run.live_input", message_id: `kept-${index}`, binding_id: null, user_id: owner.userId, mode: "with_results" } });
+      }
+      await runs.appendRunEvent({ run_id: ended, space_id: owner.spaceId, event_type: "action_invoked", status: "pending",
+        metadata_json: { action_name: "run.live_input", message_id: "orphan", binding_id: randomUUID(), user_id: owner.userId } });
+      expect(await settleOrphanedRunLiveInputs(db.pool, config)).toBeGreaterThanOrEqual(1);
+      expect(await liveInputDeliveryState(db.pool, owner.spaceId, ended, "orphan")).toBe("not_injected");
+      expect(await liveInputDeliveryState(db.pool, owner.spaceId, keeper, "kept-0")).toBe("deferred");
+      expect(await liveInputDeliveryState(db.pool, owner.spaceId, keeper, "kept-200")).toBe("deferred");
+    });
+
+    it("rechecks the claim after the sweep selects an orphan", async (ctx) => {
+      if (!db.available || !service) return ctx.skip();
+      const { owner, created, conversation } = await roomWithSpecialist("Live input sweep claim");
+      const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot });
+      const sent = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Start the turn." });
+      const runId = sent.run_ids[0]!;
+      await dispatchQueuedRoomRuns([runId]);
+      await db.pool.query("UPDATE runs SET status = 'cancelled' WHERE id = $1", [runId]);
+      const metadata = { action_name: "run.live_input", message_id: randomUUID(), binding_id: randomUUID(), user_id: owner.userId };
+      await new PgRunRepository(db.pool).appendRunEvent({ run_id: runId, space_id: owner.spaceId,
+        event_type: "action_invoked", status: "pending", metadata_json: metadata });
+      const holder = await db.pool.connect();
+      let sweep: Promise<number> | undefined;
+      try {
+        await holder.query("BEGIN");
+        await holder.query("SELECT id FROM runs WHERE id = $1 FOR NO KEY UPDATE", [runId]);
+        const pid = (await holder.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
+        sweep = settleOrphanedRunLiveInputs(db.pool, config);
+        await waitForBlockedBy(db.pool, pid);
+        await new PgRunRepository(holder).appendRunEvent({ run_id: runId, space_id: owner.spaceId,
+          event_type: "action_invoked", status: "running", metadata_json: metadata });
+        await holder.query("COMMIT");
+        expect(await sweep).toBe(1);
+        expect(await liveInputDeliveryState(db.pool, owner.spaceId, runId, metadata.message_id)).toBe("unconfirmed");
+        expect(await settleOrphanedRunLiveInputs(db.pool, config)).toBe(0);
+      } finally {
+        await holder.query("ROLLBACK").finally(() => holder.release());
+        await sweep;
+      }
+    });
+
+    it.for(["Room", "Project"])("refuses a stale wait round and rechecks %s access after revocation", async (authority, ctx) => {
+      if (!db.available || !service || !groupService) return ctx.skip();
+      const { owner, created, conversation } = await roomWithSpecialist("Live input resume fence");
+      const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot });
+      const runs = new PgRunRepository(db.pool);
+      const sent = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Start the turn." });
+      const parent = sent.run_ids[0]!;
+      const child = (await groupService.spawnChildRun(owner, {
+        space_id: owner.spaceId, group_id: sent.task_group_ids[0]!, parent_run_id: parent, root_run_id: parent,
+        requesting_agent_id: "agent-1", target_agent_id: "agent-2", manager_user_id: owner.userId,
+        workspace_access: "read", instruction: "Review the change.",
+      })).child_run_id!;
+      await dispatchQueuedRoomRuns([parent, child]);
+      await db.pool.query("UPDATE runs SET status = 'succeeded', ended_at = now() WHERE id = $1", [child]);
+      const park = (roundId: string) => db.pool.query(
+        `UPDATE runs SET status = 'waiting_for_dependency', output_json = jsonb_build_object('waiting_for_results',
+          jsonb_build_object('status', 'waiting', 'round_id', $2::text, 'scope', 'current_turn',
+            'depends_on_run_ids', jsonb_build_array($3::text))) WHERE id = $1`, [parent, roundId, child]);
+      await park(randomUUID());
+      const stale = (await runs.getRun(owner.spaceId, parent))!;
+      await park(randomUUID());
+      const current = (await runs.getRun(owner.spaceId, parent))!;
+      const sender = { spaceId: owner.spaceId, userId: "user-2" };
+      await addRoomMember(created.room.id, sender.userId);
+      await db.pool.query("UPDATE runs SET owner_user_id = $2, instructed_by_user_id = $2 WHERE id = $1", [parent, sender.userId]);
+      const saved = await withDbTransaction(db.pool, client =>
+        recordDeferredRunLiveInput(client, config, sender, parent, "Private words after revocation."));
+      const projector = new AgentGroupRunLifecycleProjector(db.pool, config);
+      await projector.reconcileWaitingRun(stale);
+      expect((await runs.getRun(owner.spaceId, parent))?.status).toBe("waiting_for_dependency");
+      expect(await liveInputDeliveryState(db.pool, owner.spaceId, parent, saved.message_id)).toBe("deferred");
+
+      const holder = await db.pool.connect();
+      let resume: Promise<void> | undefined;
+      try {
+        await holder.query("BEGIN");
+        const pid = (await holder.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
+        if (authority === "Room") {
+          await holder.query("SELECT id FROM rooms WHERE id = $1 FOR UPDATE", [created.room.id]);
+          await holder.query("UPDATE room_user_members SET status = 'removed' WHERE room_id = $1 AND user_id = $2",
+            [created.room.id, sender.userId]);
+        } else {
+          await lockProjectAudienceForChange(holder, owner.spaceId, created.room.project_id);
+          await holder.query("DELETE FROM project_members WHERE space_id = $1 AND project_id = $2 AND user_id = $3",
+            [owner.spaceId, created.room.project_id, sender.userId]);
+        }
+        resume = projector.reconcileWaitingRun(current);
+        await waitForBlockedBy(db.pool, pid);
+        await holder.query("COMMIT");
+        await resume;
+        const resumed = await runs.getRun(owner.spaceId, parent);
+        expect(resumed?.status).toBe("queued");
+        expect(resumed?.prompt).not.toContain("Private words after revocation.");
+        expect(await liveInputDeliveryState(db.pool, owner.spaceId, parent, saved.message_id)).toBe("not_injected");
+      } finally {
+        await holder.query("ROLLBACK").finally(() => holder.release());
+        await resume;
+      }
+    });
+
     it("saves each member's options independently and uses them for messages and delegation", async (ctx) => {
       if (!db.available || !service || !groupService) return ctx.skip();
       const { owner, created, conversation } = await roomWithSpecialist("Model selections");
@@ -2749,31 +3426,53 @@ describe("Room workflow (real Postgres)", () => {
         });
         expect((await runs.getRun("space-1", child.child_run_id!))!.model_override_json)
           .toMatchObject({ acp_session_config: [{ value: "ops" }] });
+        await dispatchQueuedRoomRuns([parent!.id]);
         expect((await save("agent-2", "fable")).statusCode).toBe(200);
+        await dispatchQueuedRoomRuns([child.child_run_id!]);
+        const completedChild = (await runs.getAgentRun("space-1", child.child_run_id!))!;
+        await db.pool.query("UPDATE runs SET status = 'succeeded', ended_at = now() WHERE id = $1", [completedChild.id]);
+        await settleThreadTurn(completedChild.host_task_thread_id!, {
+          lastRunId: completedChild.id, vendorSessionId: "specialist-session",
+          sessionReset: false, landed: true,
+        });
+        const nextChild = await groupService.spawnChildRun(owner, { workspace_access: "write" as const,
+          space_id: "space-1", group_id: group!.id, parent_run_id: parent!.id, root_run_id: group!.root_run_id!,
+          requesting_agent_id: "agent-1", target_agent_id: "agent-2", manager_user_id: "user-1", instruction: "Check the follow-up.",
+        });
+        expect((await runs.getRun("space-1", nextChild.child_run_id!))!.model_override_json)
+          .toMatchObject({ acp_session_config: [{ value: "fable" }] });
         // Saving future preferences never rewrites an already-created Run.
         expect((await runs.getRun("space-1", child.child_run_id!))!.model_override_json)
           .toMatchObject({ acp_session_config: [{ value: "ops" }] });
       } finally { __setAuthIdentityForTests(null); await app.close(); }
     });
 
-    it("falls back from saved options the runtime withdrew, but refuses an explicit one", async (ctx) => {
+    it("drops withdrawn saved modes, preserves saved Claude models for live validation, and refuses unavailable explicit models", async (ctx) => {
       if (!db.available || !service || !groupService) return ctx.skip();
       const { owner, created, conversation } = await roomWithSpecialist("Withdrawn selections");
-      const offer = (values: string[]) => db.pool.query(
+      const offer = (models: string[], modes: string[]) => db.pool.query(
         `UPDATE hosts SET capabilities_json = jsonb_set(capabilities_json,
           '{installations,claude_code,0,options}', $1::jsonb) WHERE id = 'host-1'`,
-        [JSON.stringify({ config_options: [{ id: "model", name: "Model", category: "model", type: "select", description: null,
-          current_value: "default", options: values.map(value => ({ value, name: value, description: null, group: null })) }] })],
+        [JSON.stringify({ config_options: [
+          { id: "model", name: "Model", category: "model", values: models },
+          { id: "mode", name: "Mode", category: "mode", values: modes },
+        ].map(({ values, ...option }) => ({
+          ...option, type: "select", description: null, current_value: "default",
+          options: values.map(value => ({ value, name: value, description: null, group: null })),
+        })) })],
       );
-      await offer(["default", "fable", "ops"]);
+      await offer(["default", "fable", "ops"], ["default", "review"]);
       const configRepository = new PgConversationBackendRepository(db.pool);
       for (const [agentId, model] of [["agent-1", "fable"], ["agent-2", "ops"]] as const) {
         await configRepository.resolveBinding({ space_id: "space-1", user_id: "user-1", session_id: conversation.id, agent_id: agentId, requested: null });
         await configRepository.saveSessionConfig("space-1", conversation.id, agentId,
-          [{ id: "model", type: "select", category: "model", value: model }]);
+          [
+            { id: "model", type: "select", category: "model", value: model },
+            { id: "mode", type: "select", category: "mode", value: "review" },
+          ]);
       }
-      // A CLI update withdraws both saved models.
-      await offer(["default"]);
+      // The Host catalog stops listing the saved values before the next turn.
+      await offer(["default"], ["default"]);
       // A selection sent with the message itself is still refused.
       const binding = (await configRepository.findBinding("space-1", "user-1", conversation.id, "agent-1"))!;
       await expect(service.sendMessage(owner, created.room.id, conversation.id, {
@@ -2784,25 +3483,28 @@ describe("Room workflow (real Postgres)", () => {
       const sent = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Have the specialist review this." });
       const runs = new PgRunRepository(db.pool);
       const parent = (await runs.getRun("space-1", sent.run_ids[0]!))!;
-      expect(parent.model_override_json).not.toHaveProperty("acp_session_config");
+      const modelSelection = (value: string) => ({ id: "model", type: "select", category: "model", value });
+      const droppedMode = { id: "mode", category: "mode", value: "review", reason: "value_unavailable" };
       expect(parent.model_override_json).toMatchObject({
-        acp_session_config_dropped: [{ id: "model", category: "model", value: "fable", reason: "value_unavailable" }],
+        acp_session_config: [modelSelection("fable")],
+        acp_session_config_source: "saved",
+        acp_session_config_dropped: [droppedMode],
       });
       const turn = await loadRunTurn(db.pool, { spaceId: "space-1", runId: parent.id });
-      expect(turn!.model_selection).toMatchObject({
-        requested: null, dropped: [{ id: "model", value: "fable", reason: "value_unavailable" }],
-      });
+      expect(turn!.model_selection).toMatchObject({ requested: "fable", reported: null, dropped: [droppedMode] });
       const group = (await new PgAgentGroupRepository(db.pool).getGroup("space-1", sent.task_group_ids[0]!))!;
       const child = await groupService.spawnChildRun(owner, { workspace_access: "write" as const,
         space_id: "space-1", group_id: group.id, parent_run_id: parent.id, root_run_id: group.root_run_id!,
         requesting_agent_id: "agent-1", target_agent_id: "agent-2", manager_user_id: "user-1", instruction: "Review the change.",
       });
       expect((await runs.getRun("space-1", child.child_run_id!))!.model_override_json).toMatchObject({
-        acp_session_config_dropped: [{ id: "model", value: "ops", reason: "value_unavailable" }],
+        acp_session_config: [modelSelection("ops")],
+        acp_session_config_source: "saved",
+        acp_session_config_dropped: [droppedMode],
       });
       // The saved choice stays; it applies again if the runtime offers it again.
       expect(await configRepository.sessionConfig("space-1", conversation.id, "agent-1"))
-        .toEqual([{ id: "model", type: "select", category: "model", value: "fable" }]);
+        .toEqual([modelSelection("fable"), { id: "mode", type: "select", category: "mode", value: "review" }]);
     });
 
     for (const parentAccess of ["read", "write"] as const) it(`rejects an undeclared delegation before policy or durable side effects (${parentAccess} parent)`, async (ctx) => {
@@ -3008,6 +3710,112 @@ describe("Room workflow (real Postgres)", () => {
       // Adapter routing resolves the immutable read ceiling at admission.
       expect(run.required_sandbox_level).toBe("none");
       expect(run.prompt).toContain("[Read-only review]");
+    });
+
+    it.for(["resume", "large context", "changed runtime", "changed audience", "parallel placement"] as const)("continues a saved writer with %s", async (scenario, ctx) => {
+      if (!db.available || !service || !groupService) return ctx.skip();
+      const basis = "a".repeat(40), checkpoint = "b".repeat(40);
+      await db.pool.query(`UPDATE hosts SET capabilities_json=capabilities_json||'{"execution_workspaces":{"version":2}}'::jsonb WHERE id='host-1'`);
+      await db.pool.query(`UPDATE agent_runtime_profiles SET workspace_mode='location',workspace_location_id='location-1' WHERE id='runtime-cli'`);
+      const { owner, created, conversation } = await roomWithSpecialist("Writer continuation", "Implementer", [], {
+        hostId: "host-1", primary: { kind: "location", workspace_location_id: "location-1" },
+      });
+      const sent = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Implement and address the review." });
+      const parentId = sent.run_ids[0]!;
+      const group = (await new PgAgentGroupRepository(db.pool).getGroup(owner.spaceId, sent.task_group_ids[0]!))!;
+      const runs = new PgRunRepository(db.pool);
+      const load = async (id: string) => (await runs.getRun(owner.spaceId, id))!;
+      const input = {
+        workspace_access: "write" as const, space_id: owner.spaceId, group_id: group.id, parent_run_id: parentId,
+        root_run_id: group.root_run_id!, requesting_agent_id: "agent-1", target_agent_id: "agent-2", manager_user_id: owner.userId,
+        instruction: "Implement the fix and run the targeted tests.",
+      };
+      const parkParent = () => db.pool.query(`UPDATE runs SET status='waiting_for_dependency',
+        output_json='{"waiting_for_results":{"status":"waiting"}}' WHERE id=$1`, [parentId]);
+      await dispatchQueuedRoomRuns([parentId]);
+      const workspace = await ensureExecutionWorkspace(db.pool, await load(parentId), "host-1", "location-1");
+      await db.pool.query(`UPDATE execution_workspaces SET state='ready',base_commit=$2,head_commit=$2 WHERE id=$1`, [workspace.workspace.id, basis]);
+      await db.pool.query(`UPDATE execution_workspace_runs SET start_commit=$2,checkpoint_commit=$2,checkpoint_state='saved' WHERE run_id=$1`, [parentId, basis]);
+      const first = (await groupService.spawnChildRun(owner, input)).child_run_id!;
+      await parkParent();
+      await db.pool.query(`INSERT INTO run_attempts (id,space_id,run_id,attempt_number,status,created_at,updated_at)
+        VALUES ($1,$2,$3,1,'waiting_for_dependency',now(),now())
+        ON CONFLICT (space_id,run_id,attempt_number) DO UPDATE SET status='waiting_for_dependency'`, [randomUUID(), owner.spaceId, parentId]);
+      expect(await ensurePrimaryExecutionWorkspace(db.pool, await load(first), "host-1", "location-1")).toMatchObject({
+        workspace: { id: workspace.workspace.id }, sharedWithCoordinator: true,
+      });
+      await dispatchQueuedRoomRuns([first]);
+      const previous = await load(first);
+      const threadId = previous.host_task_thread_id!;
+      const firstOverride = previous.model_override_json as { host_thread: { identity_digest: string } };
+      expect(previous.model_override_json).toMatchObject({ delegated_write: { session: "fresh", previous_run_id: null } });
+      await db.pool.query(`UPDATE runs SET status='succeeded',output_json=$2::jsonb,ended_at=now() WHERE id=$1`, [first, JSON.stringify({
+        schema_version: "run_output.v1", summary: "Targeted check A passed.",
+      })]);
+      await db.pool.query(`UPDATE execution_workspace_runs SET start_commit=$2,checkpoint_commit=$3,checkpoint_state='saved' WHERE run_id=$1`, [first, basis, checkpoint]);
+      await db.pool.query(`UPDATE execution_workspaces SET head_commit=$2 WHERE id=$1`, [workspace.workspace.id, checkpoint]);
+      await db.pool.query(`UPDATE host_threads SET execution_workspace_json=$2::jsonb WHERE id=$1`, [threadId, JSON.stringify({
+        id: workspace.workspace.id, generation: workspace.workspace.generation,
+      })]);
+      await settleThreadTurn(threadId, {
+        lastRunId: first, vendorSessionId: "writer-session", sessionReset: false, landed: true,
+        identity: { digest: firstOverride.host_thread.identity_digest, sent: true },
+        contextWindow: { size: 100_000, used: scenario === "large context" ? 40_000 : 10_000 },
+      });
+      await db.pool.query(`UPDATE runs SET status='running' WHERE id=$1`, [parentId]);
+      const request = { ...input, instruction: "Address finding B and recheck it.", continuation: { previous_run_id: first }, tool_call_id: "follow-up" };
+      if (scenario === "changed runtime") {
+        // The previous Run retains its routed config even when the pinned backend snapshot changes.
+        await db.pool.query(`UPDATE runs SET runtime_profile_snapshot_json=runtime_profile_snapshot_json||'{"runtime_config_json":{"previous":true}}' WHERE id=$1`, [first]);
+      }
+      if (scenario === "changed audience") await addRoomMember(created.room.id, "user-2");
+      await expect(groupService.preflightSpawnChildRunPolicy(owner, { ...request, workspace_access: "read" })).rejects.toMatchObject({ statusCode: 422 });
+      const next = await groupService.spawnChildRun(owner, request);
+      const result = await load(next.child_run_id!);
+      expect((await groupService.spawnChildRun(owner, request)).child_run_id).toBe(result.id);
+      const requestedResume = scenario === "resume" || scenario === "parallel placement";
+      expect(result.model_override_json).toMatchObject({
+        delegated_write: { previous_run_id: first, session: requestedResume ? "resume_requested" : "fresh" },
+        host_thread: { runtime_session_id: requestedResume ? "writer-session" : null },
+      });
+      expect(result.host_task_thread_id === threadId).toBe(requestedResume);
+      expect(result.prompt).toContain(request.instruction);
+      if (scenario === "changed runtime" || scenario === "changed audience") {
+        expect(result.prompt).not.toContain("Targeted check A passed.");
+      } else {
+        expect(result.prompt).toContain(checkpoint);
+        expect(result.prompt).toContain("Targeted check A passed.");
+      }
+      if (scenario === "parallel placement") {
+        expect((await groupService.spawnChildRun(owner, { ...input, instruction: "Work on a separate fix." })).child_run_id).toBeTruthy();
+      }
+      await parkParent();
+      const registry = new HostConnectionRegistry();
+      const host = new SyntheticAcpHost(registry, "host-1", undefined, [{
+        id: "model", category: "model", type: "select", currentValue: "opus", options: [{ value: "opus" }],
+      }]).connect();
+      const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot });
+      try {
+        await dispatchQueuedRoomRuns([result.id]);
+        const routed = (await runs.getAgentRun(owner.spaceId, result.id))!;
+        const execute = () => executeRemoteHostCliAdapter({
+          run: routed, prompt: result.prompt, model: null, resume_session_id: requestedResume ? "writer-session" : null,
+          workspace: { kind: "location", workspace_location_id: "location-1" },
+        }, "host-1", "location-1", { config, db: db.pool, connectionRegistry: registry });
+        const launched = await execute();
+        expect(launched.success, launched.error_message ?? undefined).toBe(true);
+        const expectedMethod = scenario === "resume" ? "session/resume" : "session/new";
+        expect(host.promptsFor(result.id)).toMatchObject([{ sessionMethod: expectedMethod }]);
+        if (scenario === "parallel placement") {
+          expect(host.promptsFor(result.id)[0]?.sessionId).not.toBe("writer-session");
+          expect((await execute()).success).toBe(true);
+          expect(host.promptsFor(result.id)).toMatchObject([{ sessionMethod: "session/new" }, { sessionMethod: "session/new" }]);
+        } else {
+          expect(host.launchFrames.get(result.id)).toMatchObject({ workspace: {
+            execution_workspace: { id: workspace.workspace.id, base_commit: checkpoint },
+          } });
+        }
+      } finally { host.disconnect(); }
     });
 
     it("replays a retried delegation even when the group has no fan-out left", async (ctx) => {
@@ -3474,6 +4282,116 @@ describe("Room workflow (real Postgres)", () => {
       expect(detail.waves.map((wave) => [wave.wave, wave.closing])).toEqual([[0, false], [1, true]]);
     });
 
+    it("recovers a completed Room reply before its emergent discussion exists", async (ctx) => {
+      if (!db.available || !service) return ctx.skip();
+      const { owner, created, conversation } = await roomWithSpecialist("Recover first wave");
+      const discussions = new RoomDiscussionService(loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot }), db.pool);
+      const first = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Plan the release." });
+      await completeTurn(first.run_ids[0]!, "@Research Specialist please check the numbers.", undefined, true);
+      expect(await discussionFor(conversation.id)).toBeUndefined();
+      await discussions.recoverUnadvancedWaves();
+      await discussions.recoverUnadvancedWaves();
+      expect(await queuedRunsFor(conversation.id, "agent-2")).toHaveLength(1);
+      await expect(discussionFor(conversation.id)).resolves.toMatchObject({ kind: "emergent", status: "active" });
+    });
+
+    it("keeps a successful wave advance when an earlier caller reports failure", async (ctx) => {
+      if (!db.available || !service) return ctx.skip();
+      const { owner, created, conversation } = await roomWithSpecialist("Concurrent wave advance");
+      const discussions = new RoomDiscussionService(loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot }), db.pool);
+      const opened = await discussions.open(owner, created.room.id, conversation.id, {
+        topic: "Pick a database.", participant_agent_ids: ["agent-2"], shape: "open",
+      });
+      await completeTurn(opened.run_ids[0]!, "Use Postgres.", undefined, true);
+      const groupId = opened.task_group_ids[0]!;
+      let entering!: () => void;
+      let release!: () => void;
+      const entered = new Promise<void>(resolve => { entering = resolve; });
+      const blocked = new Promise<void>(resolve => { release = resolve; });
+      const advance = vi.spyOn(discussions, "advanceInTransaction").mockImplementationOnce(async () => {
+        entering();
+        await blocked;
+        throw new Error("dispatch failed in earlier caller");
+      });
+      const failed = discussions.advanceGroup(owner.spaceId, groupId);
+      try {
+        await entered;
+        await discussions.advanceGroup(owner.spaceId, groupId);
+      } finally {
+        release();
+        await failed;
+        advance.mockRestore();
+      }
+      await expect(discussionFor(conversation.id)).resolves.toMatchObject({ status: "converged" });
+      expect(await queuedRunsFor(conversation.id, "agent-1")).toHaveLength(1);
+    });
+
+    it("advances a completed discussion wave when the original finalizer missed the handoff", async (ctx) => {
+      if (!db.available || !service) return ctx.skip();
+      const { owner, created, conversation } = await roomWithSpecialist("Recover finished wave");
+      const discussions = new RoomDiscussionService(loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot }), db.pool);
+      const opened = await discussions.open(owner, created.room.id, conversation.id, {
+        topic: "Which database should we use?", participant_agent_ids: ["agent-2"], shape: "open",
+      });
+      await completeTurn(opened.run_ids[0]!, "Use Postgres.", undefined, true);
+      expect(await queuedRunsFor(conversation.id, "agent-1")).toHaveLength(0);
+      await discussions.recoverUnadvancedWaves();
+      await discussions.recoverUnadvancedWaves();
+      expect(await queuedRunsFor(conversation.id, "agent-1")).toHaveLength(1);
+      await expect(discussionFor(conversation.id)).resolves.toMatchObject({ status: "converged" });
+    });
+
+    it("recovers later Room waves while a full earlier page stays busy", async (ctx) => {
+      if (!db.available || !service) return ctx.skip();
+      const {owner, created, conversation} = await roomWithSpecialist("Recover past busy waves");
+      const discussions = new RoomDiscussionService(loadConfig({SERVER_DATABASE_URL:db.connectionUri, RAINVER_HOME:testRoot}), db.pool);
+      const opened = await discussions.open(owner, created.room.id, conversation.id, {
+        topic:"Pick a database", participant_agent_ids:["agent-2"], shape:"open",
+      });
+      const groupId = opened.task_group_ids[0]!;
+      const runId = opened.run_ids[0]!;
+      await completeTurn(runId, "Use Postgres.", undefined, true);
+      await db.pool.query(
+        `WITH older_groups AS (
+           INSERT INTO agent_run_groups
+           SELECT (jsonb_populate_record(NULL::agent_run_groups, to_jsonb(seed) || jsonb_build_object(
+             'id',gen_random_uuid(),'discussion_id',NULL,'root_run_id',NULL,
+             'created_at',now()-interval '1 day','updated_at',now()-interval '1 day'))).*
+           FROM agent_run_groups seed CROSS JOIN generate_series(1,100) WHERE seed.id=$1 RETURNING id
+         ), older_runs AS (
+           INSERT INTO runs
+           SELECT (jsonb_populate_record(NULL::runs, to_jsonb(seed) || jsonb_build_object(
+             'id',gen_random_uuid(),'run_group_id',older_groups.id))).*
+           FROM runs seed CROSS JOIN older_groups WHERE seed.id=$2 RETURNING id
+         )
+         INSERT INTO run_events
+         SELECT (jsonb_populate_record(NULL::run_events, to_jsonb(seed) || jsonb_build_object(
+           'id',gen_random_uuid(),'run_id',older_runs.id))).*
+         FROM run_events seed CROSS JOIN older_runs WHERE seed.run_id=$2 AND seed.event_type='chat_completed'`,
+        [groupId, runId],
+      );
+      const advance = discussions.advanceGroup.bind(discussions);
+      let attempted = 0;
+      const originalFailure = new Error("waiting on an unavailable conversation");
+      const override = vi.spyOn(discussions, "advanceGroup").mockImplementation(async (spaceId, candidateId, options) => {
+        if (candidateId === groupId) return advance(spaceId, candidateId, options);
+        if (++attempted === 1) throw originalFailure;
+        return "busy";
+      });
+      const warnings: unknown[] = [];
+      try {
+        await discussions.recoverUnadvancedWaves((_id, error) => warnings.push(error));
+        expect(attempted).toBe(100);
+        expect(warnings).toEqual([originalFailure]);
+        expect(await queuedRunsFor(conversation.id, "agent-1")).toHaveLength(0);
+        await discussions.recoverUnadvancedWaves();
+        expect(await queuedRunsFor(conversation.id, "agent-1")).toHaveLength(1);
+        await expect(discussionFor(conversation.id)).resolves.toMatchObject({status:"converged"});
+      } finally {
+        override.mockRestore();
+      }
+    });
+
     it("refuses Agent-addressed discussion targets and old retries after participation is removed",async ctx=>{
       if(!db.available||!service)return ctx.skip();
       const {owner,created,conversation}=await roomWithSpecialist('Removed discussion target');
@@ -3703,7 +4621,7 @@ describe("Room workflow (real Postgres)", () => {
         continuity: { async finalizeChatTurn() { throw new Error("continuity temporarily unavailable"); } },
       })).rejects.toThrow("continuity temporarily unavailable");
       expect(await discussions.releaseQueued("space-1", conversation.id)).toBe("busy");
-      expect(await runs.listTerminalChatRunsAwaitingCompletion()).toContainEqual({ id: runId, space_id: "space-1" });
+      expect(await runs.listTerminalChatRunsAwaitingCompletion()).toContainEqual(expect.objectContaining({ id: runId, space_id: "space-1" }));
       await finalizeChatTurn(config, runs, terminal, finalizerDeps);
 
       const page = await service.listMessages(owner, created.room.id, conversation.id, { limit: 50, offset: 0 });
@@ -5700,7 +6618,8 @@ describe("Room workflow (real Postgres)", () => {
     it("opens a discussion through its route and answers 201 with a well-formed body", async (ctx) => {
       if (!db.available || !service) return ctx.skip();
       const { created, conversation } = await roomWithSpecialist("Open via route");
-      const app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot }), [roomsModule]);
+      const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot });
+      const app = buildModuleServer(config, [roomsModule]);
       try {
         __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
         const opened = await app.inject({
@@ -5714,13 +6633,94 @@ describe("Room workflow (real Postgres)", () => {
         const receipt = opened.json().data;
         expect(receipt).toMatchObject({ room_id: created.room.id, session_id: conversation.id, discussion_id: expect.any(String), run_ids: [expect.any(String)] });
         expect(opened.body).not.toContain("Pick a database");
+        const runId = receipt.run_ids[0];
+        await db.pool.query(`UPDATE host_threads SET runtime_key='acp_antigravity_acp'
+          WHERE id=(SELECT host_task_thread_id FROM runs WHERE id=$1)`, [runId]);
+        const record = (key: string, usageDetails: Record<string, number>) => recordUsageObservation(config, {
+          space_id: "space-1", run_id: runId, event_type: "llm.generation", source_type: "local_run",
+          execution_channel: "local_cli", runtime_key: "acp_antigravity_acp", usage_details: usageDetails,
+          idempotency_key: key,
+        });
+        await record("discussion-canonical-total", { input: 10, output: 4, input_cache_read: 80, input_cache_creation: 20, output_reasoning: 3, total: 114 });
+        await record("discussion-legacy-buckets", { input: 5 });
+        await db.pool.query(`UPDATE token_usage_events SET total_tokens=NULL, total_tokens_source='unknown'
+          WHERE idempotency_key='discussion-legacy-buckets' AND run_id=$1`, [runId]);
         const detail = await app.inject({ method: "GET", url: `/api/v1/rooms/${created.room.id}/conversations/${conversation.id}/discussions/${receipt.discussion_id}` });
-        expect(detail.json()).toMatchObject({ discussion: { status: "active", topic: "Pick a database" } });
+        expect(detail.json()).toMatchObject({
+          discussion: { status: "active", topic: "Pick a database" },
+          usage: { subscription: [expect.objectContaining({ tokens: 119 })] },
+        });
       } finally {
         __setAuthIdentityForTests(null);
         await app.close();
       }
     });
+
+    it.for(["start", "extend", "continue quota"] as const)(
+      "serializes the public Room %s route behind grouped completion without holding the Room",
+      async (operation, ctx) => {
+        if (!db.available || !service) return ctx.skip();
+        const { owner, created, conversation } = await roomWithSpecialist("Room writer lock order");
+        const roomId = created.room.id;
+        const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot });
+        const input = { topic: "Pick a database", participant_agent_ids: ["agent-2"], shape: "open" as const };
+        const opened = operation === "extend"
+          ? await new RoomDiscussionService(config, db.pool).open(owner, roomId, conversation.id, input)
+          : null;
+        const runId = opened?.run_ids[0] ?? (await service.sendMessage(owner, roomId, conversation.id, {
+          content: "Prepare the release.",
+        })).run_ids[0]!;
+        await dispatchQueuedRoomRuns([runId]);
+        await db.pool.query(
+          `UPDATE runs SET status = 'failed', ended_at = now(), error_message = 'Test run failed' WHERE id = $1`,
+          [runId],
+        );
+        await releaseConversationTurn(runId);
+        const run = (await new PgRunRepository(db.pool).getRun(owner.spaceId, runId))!;
+        const projector = new AgentGroupRunLifecycleProjector(db.pool, config);
+        const app = buildModuleServer(config, [roomsModule]);
+        const holder = await db.pool.connect();
+        let completion: Promise<void> | undefined;
+        let request: PromiseLike<unknown> | undefined;
+        try {
+          __setAuthIdentityForTests(owner);
+          await holder.query("BEGIN");
+          const pid = (await holder.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
+          // Completion owns the queue and waits on the Project before it can lock the Room.
+          await lockProjectAudienceForChange(holder, owner.spaceId, created.room.project_id);
+          completion = projector.markDelegatedRunTerminal(run);
+          void completion.catch(() => undefined);
+          await waitForBlockedBy(db.pool, pid);
+
+          const base = `/api/v1/rooms/${roomId}/conversations/${conversation.id}`;
+          const responsePromise = app.inject({
+            method: "POST",
+            url: operation === "start" ? `${base}/discussions`
+              : opened ? `${base}/discussions/${opened.discussion.id}/extend` : `${base}/quota/continue`,
+            headers: { "idempotency-key": randomUUID() },
+            payload: operation === "start" ? input : opened ? { rounds: 1 } : undefined,
+          }).then(response => response);
+          request = responsePromise;
+          void responsePromise.catch(() => undefined);
+          await waitForLockWaiter(db.pool, { lockType: "advisory" });
+          // Before the fix the HTTP transaction holds this row while it waits for completion's queue.
+          await holder.query("SELECT id FROM rooms WHERE id = $1 FOR NO KEY UPDATE NOWAIT", [roomId]);
+          await holder.query("COMMIT");
+
+          await completion;
+          const response = await responsePromise;
+          expect(response.statusCode, response.body).toBe(operation === "start" ? 201 : 200);
+          if (opened) {
+            expect(await discussionFor(conversation.id)).toMatchObject({ round_cap: opened.discussion.round_cap + 1 });
+          }
+        } finally {
+          await holder.query("ROLLBACK").finally(() => holder.release());
+          await Promise.allSettled([completion, request]);
+          __setAuthIdentityForTests(null);
+          await app.close();
+        }
+      },
+    );
 
     it("answers 404 when a discussion is opened on a conversation of another Room, even one holding an active discussion", async (ctx) => {
       if (!db.available || !service) return ctx.skip();
@@ -5926,12 +6926,17 @@ describe("Room workflow (real Postgres)", () => {
       expect(await runs.getRun(owner.spaceId,closing!.id)).toMatchObject({status:'cancelling',error_json:{requested_by_user_id:owner.userId}});
       expect((await db.pool.query('SELECT worker_id FROM run_execution_locks WHERE run_id=$1',[closing!.id])).rows).toEqual([{worker_id:'held-owner'}]);
       const {RunRecoveryService}=await import('../src/modules/runs/recovery.js');
-      await new RunRecoveryService(config).recover();expect(await hasRunJob(closing!.id)).toBe(true);
+      const {RUN_CANCELLATION_RECONCILE_JOB}=await import('../src/modules/jobs/agentRunGeneration.js');
+      await new RunRecoveryService(config).recover();
+      const stopJobs=await db.pool.query("SELECT status FROM jobs WHERE job_type=$1 AND payload_json->>'run_id'=$2",[RUN_CANCELLATION_RECONCILE_JOB,closing!.id]);
+      expect(stopJobs.rows).toEqual([{status:'pending'}]);
       // The actual execution owner releases in orchestration finally; the existing
       // cancellation protocol then settles without inventing execution ownership.
       await runs.releaseExecutionLock(closing!.id,'held-owner');
-      const {buildRunOrchestration}=await import('../src/modules/runs/orchestrationFactory.js');
-      await buildRunOrchestration(config).orchestration.cancelRun({space_id:owner.spaceId,run_id:closing!.id,requested_by_user_id:owner.userId});
+      const {registerAgentRunHandler}=await import('../src/modules/runs/agentRunHandler.js');
+      const registry=new JobHandlerRegistry();registerAgentRunHandler(registry,config);
+      const worker=new JobWorker(new PgJobQueueRepository(db.pool),registry,'stop-recovery-test',[RUN_CANCELLATION_RECONCILE_JOB]);
+      expect((await worker.processOne()).status).toBe('completed');
       expect((await runs.getRun(owner.spaceId,closing!.id))!.status).toBe('cancelled');
     });
 
@@ -6429,8 +7434,9 @@ describe("Room workflow (real Postgres)", () => {
       .toEqual(projectRoomAllowance);
     expect(new Set(
       firstRun.rows[0]!.permission_snapshot_json?.tool_grants?.map((grant) => grant.action_id) ?? [],
-    )).toEqual(new Set(["authorization.request", ...ROOM_CONVERSATION_TOOL_ALLOWANCE.filter((id) => id !== "source.gmail.mail.read")]));
-    // The on-demand Gmail read is offered in a Room only to a person whose Gmail allows Agent reads (ADR 0033 §6), and nobody here has Gmail.
+    )).toEqual(new Set(["authorization.request", ...ROOM_CONVERSATION_TOOL_ALLOWANCE.filter((id) => id !== "source.gmail.mail.read" && id !== "source.gmail.delegated.read")]));
+    // The on-demand Gmail read is offered in a Room only to a person whose Gmail allows Agent reads (ADR 0033 §6), and nobody here has Gmail;
+    // a delegated read only to a member someone delegated a mailbox to for this Project (ADR 0035 §4).
     const firstRunRecord = await new PgRunRepository(db.pool).getAgentRun("space-1", first.run_ids[0]!);
     if (!firstRunRecord) throw new Error("host-bound Room Run was not persisted");
     await expect(new PgRouteDecisionRepository(db.pool).routeRun(firstRunRecord))

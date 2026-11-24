@@ -63,6 +63,7 @@ export const ToolCallStatusSchema = z.enum(["pending", "running", "succeeded", "
 export type ToolCallStatus = z.infer<typeof ToolCallStatusSchema>;
 
 export const ToolCallDetailsSchema = z.object({
+  subagent_key: z.string().regex(/^[0-9a-f]{64}$/).optional(),
   title: z.string().optional(),
   name: z.string().optional(),
   exit_code: z.number().int().nullable().optional(),
@@ -133,6 +134,22 @@ export const ActionPreviewTurnPartSchema = z.object({
   decidable_by_user_id: IdSchema.nullable(),
 }).strict();
 
+export const SubagentObservationSchema = z.object({
+  key: z.string().regex(/^[0-9a-f]{64}$/),
+  title: z.string().max(160).optional(),
+  task: z.string().max(2_000).optional(),
+  output: z.string().max(8_000).optional(),
+  state: z.enum(["running", "waiting", "ended", "completed", "failed", "cancelled", "unknown"]).optional(),
+}).strict();
+
+export type SubagentObservation = z.infer<typeof SubagentObservationSchema>;
+
+export const SubagentTurnPartSchema = SubagentObservationSchema.extend({
+  type: z.literal("subagent"),
+  index: z.number().int().nonnegative(),
+  state: SubagentObservationSchema.shape.state.unwrap(),
+});
+
 export const TurnPartSchema = z.discriminatedUnion("type", [
   TextTurnPartSchema,
   ReasoningTurnPartSchema,
@@ -140,6 +157,7 @@ export const TurnPartSchema = z.discriminatedUnion("type", [
   PlanTurnPartSchema,
   DiagnosticTurnPartSchema,
   ActionPreviewTurnPartSchema,
+  SubagentTurnPartSchema,
 ]);
 export type TurnPart = z.infer<typeof TurnPartSchema>;
 export type TextTurnPart = z.infer<typeof TextTurnPartSchema>;

@@ -276,17 +276,6 @@ export const financeImportEntryRepository = {
     return result.rows;
   },
 
-  async countByStatus(db: Queryable, spaceId: string, importSourceId: string): Promise<Record<ImportEntryStatus, number>> {
-    const result = await db.query<{ status: ImportEntryStatus; count: string }>(
-      `SELECT status, count(*)::text AS count FROM finance_import_entries
-        WHERE space_id = $1 AND import_source_id = $2
-        GROUP BY status`,
-      [spaceId, importSourceId],
-    );
-    const counts = emptyStatusCounts();
-    for (const row of result.rows) counts[row.status] = Number(row.count);
-    return counts;
-  },
 };
 
 export function emptyStatusCounts(): Record<ImportEntryStatus, number> {

@@ -5,6 +5,7 @@ import type { RoomConversation, SessionOut } from "@rainver/protocol";
 import { RUN_TERMINAL_STATUS_VALUES } from "@rainver/protocol";
 import { isStale } from "../hosts/liveness.js";
 import { visibleRoomTranscriptSql } from "../sessions/messagePath.js";
+import { restorableFromTrashSql, TRASH_RETENTION_INTERVAL_SQL } from "./conversationTrash.js";
 
 /** Any unfinished Agent keeps the conversation in its executing presentation. */
 export function conversationHasUnfinishedAgentsSql(session: string): string {
@@ -308,6 +309,11 @@ export class PgRoomRepository {
     return required(result.rows[0], "Room agent member insert returned no row");
   }
 
+  /** Lock roster mutations before reading membership in a fresh statement. */
+  async lockRoomForTurn(spaceId: string, roomId: string): Promise<void> {
+    await this.db.query("SELECT id FROM rooms WHERE space_id = $1 AND id = $2 FOR NO KEY UPDATE", [spaceId, roomId]);
+  }
+
   async getVisibleRoom(
     spaceId: string,
     userId: string,
@@ -326,7 +332,7 @@ export class PgRoomRepository {
           AND room.id = $3
           AND room.status = 'active'
           AND ${ROOM_PROJECT_READABLE}
-        ${lock ? "FOR UPDATE OF room" : ""}`,
+        ${lock ? "FOR NO KEY UPDATE OF room" : ""}`,
       [spaceId, userId, roomId],
     );
     return result.rows[0] ?? null;
@@ -566,17 +572,70 @@ export class PgRoomRepository {
       : null;
   }
 
+  async deleteEmptyConversation(spaceId: string, roomId: string, sessionId: string): Promise<boolean> {
+    const locked = await this.db.query(
+      "SELECT id FROM sessions WHERE space_id = $1 AND room_id = $2 AND id = $3 AND status = 'active' FOR UPDATE",
+      [spaceId, roomId, sessionId],
+    );
+    if (!locked.rowCount) return false;
+    const result = await this.db.query(
+      `UPDATE sessions s SET ${moveToTrashSql()}
+        WHERE s.space_id = $1 AND s.room_id = $2 AND s.id = $3 AND ${roomConversationEmptySql()}`,
+      [spaceId, roomId, sessionId],
+    );
+    return Boolean(result.rowCount);
+  }
+
+  async deleteConversation(spaceId: string, roomId: string, sessionId: string) {
+    const locked = await this.db.query(
+      "SELECT id FROM sessions WHERE space_id = $1 AND room_id = $2 AND id = $3 AND status IN ('active', 'archived') FOR UPDATE",
+      [spaceId, roomId, sessionId],
+    );
+    if (!locked.rowCount) return "missing";
+    const result = await this.db.query(
+      `UPDATE sessions s SET ${moveToTrashSql()}
+        WHERE s.space_id = $1 AND s.room_id = $2 AND s.id = $3 AND (${roomConversationCanArchiveSql()})`,
+      [spaceId, roomId, sessionId],
+    );
+    return result.rowCount ? "changed" : "busy";
+  }
+
+  async setConversationArchived(spaceId: string, roomId: string, sessionId: string, archive: boolean) {
+    const current = await this.db.query<{ status: string }>(
+      "SELECT status FROM sessions WHERE space_id = $1 AND room_id = $2 AND id = $3 AND status IN ('active', 'archived') FOR UPDATE",
+      [spaceId, roomId, sessionId],
+    );
+    if (!current.rows[0]) return "missing";
+    const status = archive ? "archived" : "active";
+    if (current.rows[0].status === status) return "changed";
+    const result = await this.db.query(
+      `UPDATE sessions s SET status = $4, updated_at = now()
+        WHERE s.space_id = $1 AND s.room_id = $2 AND s.id = $3
+          AND ($4 = 'active' OR (${roomConversationCanArchiveSql()}))`,
+      [spaceId, roomId, sessionId, status],
+    );
+    return result.rowCount ? "changed" : "busy";
+  }
+
   async listConversations(input: {
     space_id: string;
     room_id: string;
     limit: number;
     offset: number;
-  }): Promise<{ items: Array<SessionOut & { last_message_at: string | null; is_running: boolean }>; total: number }> {
+    status?: RoomConversationListStatus;
+  }): Promise<{ items: Array<SessionOut & RoomConversationListExtras>; total: number }> {
+    const status = input.status ?? "active";
+    // The recycle bin lists only conversations the bin itself put there and
+    // can still restore: a legacy `deleted` row (no deleted_at) and one past
+    // its retention window are not offered.
+    const listed = (param: string) => status === "deleted"
+      ? `s.status = ${param} AND ${restorableFromTrashSql("s")}`
+      : `s.status = ${param}`;
     const total = await this.db.query<{ total: string }>(
       `SELECT count(*)::text AS total
-         FROM sessions
-        WHERE space_id = $1 AND room_id = $2 AND status = 'active'`,
-      [input.space_id, input.room_id],
+         FROM sessions s
+        WHERE s.space_id = $1 AND s.room_id = $2 AND ${listed("$3")}`,
+      [input.space_id, input.room_id, status],
     );
     const rows = await this.db.query<{
       id: string;
@@ -589,9 +648,15 @@ export class PgRoomRepository {
       updated_at: string;
       last_message_at: string | null;
       is_running: boolean;
+      can_delete_empty: boolean;
+      deleted_at: string | null;
+      purge_after: string | null;
     }>(
       `SELECT s.id, s.space_id, s.room_id, s.project_id, s.title, s.status, s.created_at, s.updated_at,
               last.created_at AS last_message_at,
+              s.deleted_at,
+              s.deleted_at + ${TRASH_RETENTION_INTERVAL_SQL} AS purge_after,
+              (s.status = 'active' AND ${roomConversationEmptySql()}) AS can_delete_empty,
               ${conversationHasUnfinishedAgentsSql('s')} AS is_running
          FROM sessions s
          LEFT JOIN LATERAL (
@@ -601,14 +666,17 @@ export class PgRoomRepository {
               AND ${visibleRoomTranscriptSql({ alias: "m", spaceParam: "s.space_id", sessionParam: "s.id" })}
             ORDER BY m.created_at DESC, m.id DESC LIMIT 1
          ) last ON true
-        WHERE s.space_id = $1 AND s.room_id = $2 AND s.status = 'active'
-        ORDER BY COALESCE(last.created_at, s.created_at) DESC, s.id DESC
+        WHERE s.space_id = $1 AND s.room_id = $2 AND ${listed("$5")}
+        ORDER BY ${status === "deleted" ? "s.deleted_at DESC," : ""} COALESCE(last.created_at, s.created_at) DESC, s.id DESC
         LIMIT $3 OFFSET $4`,
-      [input.space_id, input.room_id, input.limit, input.offset],
+      [input.space_id, input.room_id, input.limit, input.offset, status],
     );
     return {
-      items: rows.rows.map((row) => ({
+      items: rows.rows.map(({ deleted_at, purge_after, ...row }) => ({
         ...row,
+        ...(status === "deleted" && deleted_at && purge_after
+          ? { deleted_at: new Date(deleted_at).toISOString(), purge_after: new Date(purge_after).toISOString() }
+          : {}),
         last_message_at: row.last_message_at ? new Date(row.last_message_at).toISOString() : null,
         user_id: null,
         project_folder_id: null,
@@ -633,6 +701,40 @@ export class PgRoomRepository {
     );
     return result.rows.map((row) => row.id);
   }
+}
+
+export type RoomConversationListStatus = "active" | "archived" | "deleted";
+type RoomConversationListExtras = {
+  last_message_at: string | null;
+  is_running: boolean;
+  can_delete_empty: boolean;
+  deleted_at?: string;
+  purge_after?: string;
+};
+
+/** Both delete commands move the conversation to the recycle bin, remembering its list. */
+function moveToTrashSql(): string {
+  return `status = 'deleted', deleted_from_status = s.status, deleted_at = now(), updated_at = now()`;
+}
+
+// The list uses this as a hint. Deletion rechecks it under the conversation lock.
+function roomConversationCanArchiveSql(): string {
+  return `NOT (${conversationHasUnfinishedAgentsSql("s")})
+    AND NOT EXISTS (SELECT 1 FROM room_queued_messages WHERE space_id = s.space_id AND session_id = s.id AND status = 'queued')
+    AND NOT EXISTS (SELECT 1 FROM room_discussions WHERE space_id = s.space_id AND session_id = s.id AND status IN ('active', 'cap_reached'))
+    AND NOT EXISTS (SELECT 1 FROM conversation_execution_contexts WHERE space_id = s.space_id AND session_id = s.id AND dispatch_lock_id IS NOT NULL)
+    AND NOT EXISTS (SELECT 1 FROM gmail_digests WHERE space_id = s.space_id AND session_id = s.id AND status = 'active')`;
+}
+
+function roomConversationEmptySql(): string {
+  return `s.head_message_id IS NULL
+    AND NOT EXISTS (SELECT 1 FROM messages WHERE space_id = s.space_id AND session_id = s.id)
+    AND NOT EXISTS (SELECT 1 FROM runs WHERE space_id = s.space_id AND session_id = s.id)
+    AND NOT EXISTS (SELECT 1 FROM agent_run_groups WHERE space_id = s.space_id AND session_id = s.id)
+    AND NOT EXISTS (SELECT 1 FROM room_queued_messages WHERE space_id = s.space_id AND session_id = s.id)
+    AND NOT EXISTS (SELECT 1 FROM conversation_folder_access_grants WHERE space_id = s.space_id AND session_id = s.id)
+    AND NOT EXISTS (SELECT 1 FROM host_threads WHERE space_id = s.space_id AND session_id = s.id AND vendor_session_id IS NOT NULL)
+    AND NOT EXISTS (SELECT 1 FROM conversation_execution_contexts WHERE space_id = s.space_id AND session_id = s.id AND dispatch_lock_id IS NOT NULL)`;
 }
 
 function required<T>(value: T | null | undefined, message: string): T {

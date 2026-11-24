@@ -4,6 +4,7 @@ import { useTestDatabase } from './support/testDatabase.js';
 import { resetTables } from './support/resetTables.js';
 import { seedSpaceOwnerProject } from './support/domainSeeds.js';
 import { seedAttentionRun } from './support/agentAttentionSeeds.js';
+import { waitForBlockedBy } from './support/lockWait.js';
 import { AgentAttentionStreamFrameSchema, AgentWorkItemSchema, type AgentWorkItem } from '@rainver/protocol';
 import { buildModuleServer } from './support/moduleServer.js';
 import { streamingModule } from '../src/modules/streaming/index.js';
@@ -110,6 +111,11 @@ describe('global Agent Attention snapshot', () => {
     await db.pool.query(`INSERT INTO messages(id,space_id,session_id,user_id,role,content,parent_message_id,path_depth,branch_path,created_at)
       VALUES($1,$2,$3,$4,'user','Use the second input.',$5,2,'/',now())`, [reply,space,session,user,question]);
     await db.pool.query('UPDATE sessions SET head_message_id=$2 WHERE id=$1', [session,reply]);
+    const undispatched = await readAttentionSnapshot(db.pool,user);
+    expect(undispatched.page.items[0]!.reasons).toContainEqual(expect.objectContaining({
+      kind: 'awaiting_answer', message_id: question,
+    }));
+
     await db.pool.query(`INSERT INTO runs(id,space_id,agent_id,agent_version_id,run_type,trigger_origin,status,mode,
       runtime_profile_id,runtime_profile_selection_source,runtime_key,runtime_profile_snapshot_json,owner_user_id,visibility,
       created_at,updated_at,execution_kind,session_id,model_override_json)
@@ -148,6 +154,48 @@ describe('global Agent Attention snapshot', () => {
       const removed = await nextFrame(); expect(removed.type).toBe('attention.invalidation'); expect(removed.seq).toBe(2);
       expect(removed.page?.items).toEqual([]); expect(removed.unread_count).toBe(0);
     } finally { controller.abort(); await reader?.cancel().catch(() => {}); await app.close() }
+  });
+
+  it('drains a refresh already running in PostgreSQL before closing the stream on shutdown', async () => {
+    await seedAttentionRun(db.pool, { space, owner: user, status: 'running' });
+    __setAuthIdentityForTests({ spaceId: space, userId: user });
+    const app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: db.connectionUri }), [streamingModule]);
+    const shutdownStarted = new Promise<void>(resolve => {
+      app.addHook('preClose', async () => resolve());
+    });
+    const controller = new AbortController();
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]);
+    let closing: Promise<unknown> | undefined;
+    try {
+      const url = await app.listen({ host: '127.0.0.1', port: 0 });
+      const response = await fetch(`${url}/api/v1/me/agent-attention/stream`, { signal });
+      const reader = response.body!.getReader();
+      const decoder = new TextDecoder();
+      let firstFrame = '';
+      while (!firstFrame.includes('\n\n')) {
+        const chunk = await reader.read();
+        expect(chunk.done).toBe(false);
+        firstFrame += decoder.decode(chunk.value, { stream: true });
+      }
+      expect(firstFrame).toContain('event: attention.snapshot');
+
+      const lock = await db.pool.connect();
+      try {
+        const { pid } = (await lock.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!;
+        await lock.query('BEGIN');
+        await lock.query('LOCK TABLE runs IN ACCESS EXCLUSIVE MODE');
+        await waitForBlockedBy(db.pool, pid);
+        closing = app.close();
+        await shutdownStarted;
+      } finally {
+        await lock.query('ROLLBACK').finally(() => lock.release());
+      }
+      expect((await reader.read()).done).toBe(true);
+      await closing;
+    } finally {
+      controller.abort();
+      await (closing ?? app.close());
+    }
   });
 
   it('keeps personal decision reminders separate from merely visible review responsibility', async () => {

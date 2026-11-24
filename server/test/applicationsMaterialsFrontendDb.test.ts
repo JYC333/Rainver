@@ -105,8 +105,9 @@ it('drafts a material from pinned sources, previews it and saves it to Notes fro
     await expect.poll(async () => { try { return (await fetch(base)).status; } catch { return 0; } }, { timeout: 30000 }).toBe(200);
     browser = await chromium.launch({ executablePath: process.env.CHROMIUM_EXECUTABLE });
     const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
-    page.setDefaultTimeout(20000);
-    page.setDefaultNavigationTimeout(30000);
+    // Full verification runs this browser beside the database suites.
+    page.setDefaultTimeout(60000);
+    page.setDefaultNavigationTimeout(60000);
     const pageErrors: string[] = [];
     page.on('pageerror', (e: Error) => { pageErrors.push(e.message); });
     page.on('response', async (r: any) => { if (r.url().includes('/actions/plugin.applications') && r.status() >= 400) console.error('Operation response', r.status(), await r.text()); });
@@ -121,16 +122,16 @@ it('drafts a material from pinned sources, previews it and saves it to Notes fro
     const area = `${base}/spaces/${space}/projects/${project}/plugins/applications/board`;
     const shoot = (name: string) => page.screenshot({ path: join(shots, `materials-${name}.png`), fullPage: true });
     const noOverflow = async () => expect(await page.evaluate(() => (globalThis as any).document.documentElement.scrollWidth <= (globalThis as any).window.innerWidth)).toBe(true);
-    const openPanel = async (open: string, entry: string) => {
+    const openPanel = async (entry: string) => {
       await page.goto(area);
-      await page.getByRole('button', { name: open, exact: true }).first().click();
+      await page.getByRole('link', { name: 'PhD in Computer Science', exact: true }).click();
       const button = page.getByRole('button', { name: entry, exact: true });
       await button.scrollIntoViewIfNeeded();
       return button;
     };
 
     // Desktop, dark, English: the entry on the material row, beside its status and link actions.
-    const entry = await openPanel('Open', 'Notes and drafts for Statement of purpose');
+    const entry = await openPanel('Notes and drafts for Statement of purpose');
     await shoot('desktop-entry-dark-en');
     await entry.click();
     const drafts = page.getByRole('region', { name: 'Draft with AI', exact: true });
@@ -180,7 +181,7 @@ it('drafts a material from pinned sources, previews it and saves it to Notes fro
 
     // Light theme, Chinese, desktop: the same panel and the kept preview.
     await prefs('zh-CN', 'light');
-    const zh = await openPanel('打开', '个人陈述的笔记与草稿');
+    const zh = await openPanel('个人陈述的笔记与草稿');
     await shoot('desktop-entry-light-zh');
     await zh.click();
     // The newest draft's preview opens with the panel.
@@ -198,7 +199,7 @@ it('drafts a material from pinned sources, previews it and saves it to Notes fro
     const second = await post('actions/plugin.applications.material.generate', { project_id: project, material_id: statement, requirements: 'Second draft', include_linked: false });
     await performQueuedProviderTaskJob(db.pool, config, second.data.run_id);
     await prefs('en', 'dark');
-    await (await openPanel('Open', 'Notes and drafts for Statement of purpose')).click();
+    await (await openPanel('Notes and drafts for Statement of purpose')).click();
     const team = page.getByRole('region', { name: 'Draft with AI', exact: true });
     await team.getByText('In a shared Space a draft is saved only as the next version of a linked Note', { exact: false }).waitFor();
     expect(await team.getByRole('button', { name: 'Save as a new private Note', exact: true }).count()).toBe(0);
@@ -208,9 +209,9 @@ it('drafts a material from pinned sources, previews it and saves it to Notes fro
 
     // Phone width in both themes and languages: the panel wraps whole controls without overflow.
     await page.setViewportSize({ width: 390, height: 844 });
-    for (const [locale, theme, open, entryName] of [['zh-CN', 'dark', '打开', '个人陈述的笔记与草稿'], ['en', 'light', 'Open', 'Notes and drafts for Statement of purpose']] as const) {
+    for (const [locale, theme, entryName] of [['zh-CN', 'dark', '个人陈述的笔记与草稿'], ['en', 'light', 'Notes and drafts for Statement of purpose']] as const) {
       await prefs(locale, theme);
-      const phone = await openPanel(open, entryName);
+      const phone = await openPanel(entryName);
       await shoot(`phone-entry-${theme}-${locale}`);
       await noOverflow();
       await phone.click();

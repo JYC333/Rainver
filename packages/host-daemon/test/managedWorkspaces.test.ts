@@ -2,7 +2,8 @@ import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, utimes, writeFile
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { runGit } from "@rainver/folder-read";
 import { saveConfig } from "../src/config.js";
 import { captureWorkspaceDiff } from "../src/gitDiff.js";
 import {
@@ -32,11 +33,24 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   delete process.env.RAINVER_HOST_CONFIG_DIR;
   await rm(stateDir, { recursive: true, force: true });
 });
 
 describe("managed workspaces", () => {
+  it("initializes new managed directories with an empty commit", async () => {
+    const container = { kind: "direct" as const, id: USER_ID };
+    const path = managedWorkspacePath(AGENT_ID, container);
+    await mkdir(path, { recursive: true });
+    await writeFile(join(path, "summary.md"), "preserved");
+    expect(await ensureManagedWorkspace(AGENT_ID, container)).toBe(path);
+    expect((await runGit(["rev-parse", "--verify", "HEAD"], path)).code).toBe(0);
+    expect((await runGit(["ls-tree", "-r", "HEAD"], path)).stdout).toBe("");
+    expect(await readFile(join(path, "summary.md"), "utf8")).toBe("preserved");
+    const fresh = await ensureManagedWorkspace(OTHER_AGENT_ID, container);
+    expect((await runGit(["rev-parse", "--verify", "HEAD"], fresh)).code).toBe(0);
+  });
   it("derives a private per-container cwd and keeps it after a run", async () => {
     const frames: Record<string, unknown>[] = [];
     await handleLaunch({
@@ -230,6 +244,7 @@ describe('isolated cache launch and retirement',()=>{
  });
 
  it('launches with a workspace UUID cache and archives exactly that cache',async()=>{
+  vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("{}"));
   const {randomUUID}=await import('node:crypto'),{archiveRuntimeProfileContainer}=await import('../src/managedWorkspaces.js');
   const workspaceId=randomUUID(),frames:Record<string,unknown>[]=[];
   await handleLaunch({run_id:randomUUID(),launch_id:randomUUID(),workspace:{kind:'managed',agent_id:AGENT_ID,container:{kind:'conversation',id:CONVERSATION_ID}},

@@ -114,7 +114,8 @@ rainver version             # installed bundle commit
 `start` and `restart` keep the installed image. Use `update` for a new release;
 it runs the verified standalone installer and the same production start path.
 
-The installer downloads a verified deployment bundle and calls `start.sh --prod`.
+The installer downloads a verified deployment bundle and calls `start.sh --prod`
+with the matching image commit. It updates the installed launcher after startup.
 That script generates a database password only for a new instance, records
 the administrator email, and starts the stack. Existing valid database
 passwords are preserved on later runs; a placeholder is replaced only when
@@ -134,9 +135,9 @@ Production binds the web UI to `127.0.0.1:28400` and the provider proxy to
 `127.0.0.1:28421` by default, avoiding the development ports. Override
 `RAINVER_WEB_BIND`, `RAINVER_WEB_PORT`, `PROVIDER_PROXY_BIND`, or
 `PROVIDER_PROXY_PORT` in `$RAINVER_ROOT/prod/.env` when the deployment needs a
-different host mapping. Keep loopback binding for local WSL use; use a TLS
-reverse proxy and set `FRONTEND_URL` (plus `GOOGLE_REDIRECT_URI` when OAuth is
-enabled) to the public origin for domain access.
+different host mapping. Keep loopback binding for local WSL use. For domain access
+on a private network, use a TLS reverse proxy and set `FRONTEND_URL` (plus
+`GOOGLE_REDIRECT_URI` when OAuth is enabled) to the browser-facing origin.
 Docker-native `ops/scripts/db/migrate.sh`, DB-only `ops/scripts/db/{dump,restore,reset-postgres}.sh`,
 and offline `ops/scripts/system/{backup,restore,verify-restore}.sh` start PostgreSQL
 when needed and stop it after completion only when that script had to start it;

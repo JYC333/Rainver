@@ -1,10 +1,12 @@
+import { lockGroupLifecycleScope } from "./lifecycleLocks.js";
 import {isolatedWorkspaceContract} from '../projectFolders/executionWorkspaces.js';
-import { sensitiveThreadResumable } from "../runs/sensitiveRuntimeProfile.js";
+import { conversationCarriesIsolatingReads, pointerInSharedProfile, sensitiveThreadResumable, vendorSessionHeldIsolated } from "../runs/sensitiveRuntimeProfile.js";
 import { enqueueAgentGroupResumeWake } from "./resumeWakeJob.js";
 import { AgentGroupRefusal, HostDispatchRefusal } from "./hostDispatchErrors.js";
 import type {Queryable} from '../routeUtils/common.js';
 import {
   NO_SESSION_CONFIG,
+  pinnedSessionConfig,
   reconcileSavedSessionConfig,
   resolveSessionConfig,
   sessionConfigRunOverride,
@@ -32,15 +34,17 @@ import { hostIsOnline } from "../sessions/executionContextRepository.js";
 import { locationIsOnline } from "../sessions/executionContextService.js";
 import { PgHostThreadRepository, type HostThread } from "../hosts/threadRepository.js";
 import { renderRoomStandingContext, roomExecutionRules, standingContextRequired } from "./roomStandingContext.js";
+import { delegationAudienceDigest, lockDelegatedContinuation } from "./delegatedContinuation.js";
 import { chargeContainer, containerGroupOf } from "../rooms/discussionService.js";
 import { noteRoomDelegationUsage, roomBudgetLimits } from "../rooms/delegationBudget.js";
 import { admitAgentOriginRun } from "../rooms/quotaGate.js";
-import { AgentGroupRunLifecycleProjector } from "./lifecycleProjector.js";
+import { AgentGroupRunLifecycleProjector, terminalRunResultSummary } from "./lifecycleProjector.js";
 import { liveQuotaSource } from "../rooms/subscriptionLogins.js";
 import {
   HANDOFF_TOOL_ALLOWANCE,
   handoffBudgetTokens,
   handoffPromptBlock,
+  reusableModelHandoff,
   loadHandoffText,
   renderHandoffPrompt,
 } from "./sessionHandoff.js";
@@ -50,6 +54,8 @@ import { readOnlyWorkspaceHostRefusal } from "../runs/workspaceAccessPolicy.js";
 import { contractWorkspaceAccess, type RunGitSnapshot } from "../runs/contractSnapshot.js";
 import { RUN_REQUEST_INCLUDES_INSTRUCTION } from "../runtimeContext/runRequest.js";
 import { resolveModelWindow } from "../usage/modelCatalog.js";
+import { roomAudience } from "../rooms/threadReferences.js";
+import { enqueueAutomaticHandoff, prepareAutomaticHandoff } from "./autoHandoff.js";
 import { handedOverInstruction } from "./delegationBrief.js";
 import {
   conversationToolGrantInput as conversationToolGrantInputFor,
@@ -188,6 +194,8 @@ export interface SpawnChildRunInput {
    * parent is refused (a child never gets more than its parent).
    */
   workspace_access: "read" | "write";
+  review?: { previous_run_id?: string };
+  continuation?: { previous_run_id: string };
   /**
    * The originating tool call's canonical id. When set, a delegation request
    * carrying the same (space, parent_run, tool_call_id) replays the prior
@@ -461,6 +469,11 @@ export class AgentGroupRunService {
       if (group.session_id && !group.room_id) {
         throw new AgentGroupRefusal(409, "Room conversation is missing its Room authority");
       }
+      const roomRunGranteeUserIds = group.room_id
+        ? await repos.groups.listActiveRoomUserIds(input.space_id, group.room_id)
+        : [];
+      const handoffAudience = group.room_id
+        ? await handoffRoomAudience(client, input.space_id, group.room_id) : [];
       const backends = group.session_id
         ? await prepareRoomConversationBackends({
             config: this.config,
@@ -472,6 +485,11 @@ export class AgentGroupRunService {
             messageCursorId: group.trigger_message_id,
             agentIds: allRecipientAgentIds,
             requested: input.backends ?? [],
+            handoffAudience,
+            reuseHandoff: !unattended && !input.summary_agent_id && !input.retry_of_run_id,
+            generateHandoff: !unattended && !input.agent_origin && !input.summary_agent_id
+              && !input.retry_of_run_id && plannedRecipientRunCount === 1,
+            pinnedSessionConfig: unattended?.pinnedSessionConfig ?? null,
           })
         : new Map<string, PreparedRoomConversationBackend>();
       // Advancing a Project by talking about it is a capability of the Room,
@@ -535,9 +553,6 @@ export class AgentGroupRunService {
           // A scheduled turn gets only its own tools, as in a private conversation (`queueUnattendedPrivateTurn`).
           ? { ...defaults, capabilities_json: [...unattended.tools], scenario_tool_allowance: [...unattended.tools] }
           : { ...defaults, ...conversationToolGrantInput };
-      const roomRunGranteeUserIds = group.room_id
-        ? await repos.groups.listActiveRoomUserIds(input.space_id, group.room_id)
-        : [];
       const roomRunVisibility = group.room_id
         ? "selected_users" as const
         : undefined;
@@ -810,6 +825,8 @@ export class AgentGroupRunService {
         if (recipientRun.parent_run_id) jobPayload.parent_run_id = recipientRun.parent_run_id;
 
         if (group.session_id && recipientIndex > 0) continue;
+        if (await enqueueAutomaticHandoff(client, recipientRun, identity.userId, handoffAudience,
+          backends.get(recipientRun.agent_id ?? "")?.runtime_profile_id, jobPayload)) continue;
         if (input.agent_origin && group.session_id) {
           // An Agent-triggered turn waits past the subscription reserve line
           // (`rooms/quotaGate.ts`); a person's turn never does.
@@ -888,6 +905,7 @@ export class AgentGroupRunService {
       if (parentRun.agent_id !== input.requesting_agent_id) throw new HttpError(403, "requesting_agent_id must match the parent run agent");
       if ((parentRun.root_run_id ?? parentRun.id) !== group.root_run_id) throw new AgentGroupRefusal(409, "Parent run does not belong to the group root lineage");
       const childAccess = delegatedWorkspaceAccessFor(parentRun, input.workspace_access);
+      assertDelegationContinuity(input, childAccess, group.room_id, parentRun);
       // A retried call replays the delegation it already made; judged afresh,
       // that delegation would count against itself and be refused.
       if (input.tool_call_id) {
@@ -1128,7 +1146,7 @@ export class AgentGroupRunService {
     child_run_id: string | null;
     policy_decision_record_id: string | null;
   }> {
-    const group = await repos.groups.lockGroup(input.space_id, input.group_id);
+    const group = await lockGroupLifecycleScope(repos.db, repos.groups, input.space_id, input.group_id);
     if (!group || !(await this.canManageGroup(repos.groups, identity, group))) {
       throw new HttpError(404, "Agent group not found in this space");
     }
@@ -1154,6 +1172,7 @@ export class AgentGroupRunService {
       throw new AgentGroupRefusal(409, "Parent run does not belong to the group root lineage");
     }
     const childAccess = delegatedWorkspaceAccessFor(parentRun, input.workspace_access);
+    assertDelegationContinuity(input, childAccess, group.room_id, parentRun);
 
     if (input.tool_call_id) {
       const existing = await repos.groups.findDelegationByToolCallId(
@@ -1275,7 +1294,7 @@ export class AgentGroupRunService {
       tool_call_id: input.tool_call_id ?? null,
     });
 
-    await repos.runs.appendRunEvent({
+    const appendRequested = () => repos.runs.appendRunEvent({
       run_id: input.parent_run_id,
       space_id: input.space_id,
       event_type: "delegation_requested",
@@ -1295,6 +1314,7 @@ export class AgentGroupRunService {
         status: "policy_denied",
         policy_decision_record_id: policy.policy_decision_record_id ?? null,
       });
+      await appendRequested();
       await repos.runs.appendRunEvent({
         run_id: input.parent_run_id,
         space_id: input.space_id,
@@ -1323,8 +1343,15 @@ export class AgentGroupRunService {
     let delegatedHostDispatch: PreparedRoomHostDispatch | null = null;
     let delegatedStanding: { text: string; digest: string; sent: boolean } | null = null;
     let delegatedHandoff: string | null = null;
+    const previousRunId = input.review?.previous_run_id ?? input.continuation?.previous_run_id;
+    let prior: Awaited<ReturnType<typeof lockDelegatedContinuation>> = null;
+    let previousResult: string | null = null;
+    let delegatedAudience: string | null = null;
+    let writeContinuity = false;
+    let targetVersionId: string | null = null;
     let delegatedWorkspaceAccess: Array<{ workspace_location_id: string; access_mode: "read" | "write" }> = [];
     if (group.room_id) {
+      const handoffAudience = await handoffRoomAudience(repos.db, input.space_id, group.room_id);
       if (!parentRun.session_id) {
         throw new AgentGroupRefusal(409, "Room delegation requires a Room conversation session");
       }
@@ -1334,6 +1361,12 @@ export class AgentGroupRunService {
       if (!executionContext || executionContext.state !== "initialized" || !executionContext.execution_host_id || !executionContext.primary_workspace_mode) {
         throw new AgentGroupRefusal(409, "Initialize the Conversation execution context before delegating a Room task");
       }
+      if ((input.review || input.continuation) && executionContext.primary_workspace_mode !== "location") {
+        throw new AgentGroupRefusal(422, "Delegation continuity requires a Location-backed Room workspace");
+      }
+      writeContinuity = childAccess === "write" && executionContext.primary_workspace_mode === "location"
+        && isolatedWorkspaceContract(parentRun.contract_snapshot_json);
+      if (input.review || writeContinuity) delegatedAudience = delegationAudienceDigest(handoffAudience);
       const projectLocations = await executionContexts.listProjectLocations(input.space_id, parentRun.project_id);
       for (const attachment of await executionContexts.listAttachments(input.space_id, parentRun.session_id)) {
         if (attachment.status !== "active") continue;
@@ -1361,12 +1394,12 @@ export class AgentGroupRunService {
         if (!delegatedBackend) {
           throw new AgentGroupRefusal(409, `Conversation runtime for Agent '${input.target_agent_id}' is unavailable`);
         }
-        // Nobody chose these for this delegation: a value the runtime has
-        // since withdrawn falls back to its default rather than failing it.
+        // Read the delegated member’s own saved selections.
         delegatedSessionConfig = {
           ...reconcileSavedSessionConfig(
             await backendRepository.sessionConfig(input.space_id, parentRun.session_id, input.target_agent_id),
             delegatedBackend.session_config_options ?? [],
+            delegatedBackend.runtime_key,
           ),
           source: "saved",
         };
@@ -1388,8 +1421,40 @@ export class AgentGroupRunService {
           workspace_location_id: thread.workspace_location_id,
           runtime_installation: thread.runtime_installation,
         };
+        targetVersionId = (await repos.groups.getMemberWithAgentStatus({
+          space_id: input.space_id, group_id: input.group_id, agent_id: input.target_agent_id,
+          user_id: group.manager_user_id,
+        }))?.agent_current_version_id ?? null;
+        const standing = await renderRoomStandingContext(repos.db, {
+          spaceId: input.space_id, agentId: input.target_agent_id, roomId: group.room_id, review: Boolean(input.review),
+        });
+        if (previousRunId && targetVersionId && delegatedAudience
+          && delegatedBackend.workspace_mode === "location" && delegatedBackend.workspace_location_id
+          && !delegatedBackend.model_provider_id && delegatedWorkspaceAccess.length === 0
+          && delegatedSessionConfig.dropped.length === 0) {
+          prior = await lockDelegatedContinuation(repos.db, {
+            previousRunId, spaceId: input.space_id, parentRunId: parentRun.id,
+            sessionId: parentRun.session_id, agentId: input.target_agent_id, agentVersionId: targetVersionId,
+            userId: identity.userId, profileId: delegatedBackend.runtime_profile_id,
+            hostId: thread.execution_host_id, locationId: delegatedBackend.workspace_location_id,
+            runtimeKey: thread.runtime_key, installation: thread.runtime_installation,
+            config: delegatedSessionConfig.selections, granteeIds: roomRunGranteeUserIds,
+            audienceDigest: delegatedAudience, identityDigest: standing.digest,
+            ...(childAccess === "read" ? { access: "read" as const } : {
+              access: "write" as const, modelName: delegatedBackend.model_name,
+              runtimeConfig: delegatedBackend.runtime_config_json, runtimePolicy: delegatedBackend.runtime_policy_json,
+              contextPolicy: input.context_policy_json ?? {},
+            }),
+          });
+          if (prior && input.continuation) {
+            const visible = await repos.runs.getVisibleRun(input.space_id, identity.userId, previousRunId);
+            if (visible?.effective_access_level === "full") previousResult = terminalRunResultSummary(visible);
+            else prior = null;
+          }
+        }
         delegatedHostDispatch = await prepareHostConversationDispatch({
           ...(isolatedWorkspaceContract(parentRun.contract_snapshot_json)?{delegationId:delegation.id}:{}),
+          ...(prior?.thread_id ? { continuationThreadId: prior.thread_id } : {}),
           db: repos.db,
           backend: delegatedBackend,
           container: { kind: "conversation", conversation_id: parentRun.session_id },
@@ -1398,22 +1463,17 @@ export class AgentGroupRunService {
           projectId: parentRun.project_id,
           agentId: input.target_agent_id,
           userId: identity.userId,
+          modelHandoff: {
+            config: delegatedSessionConfig,
+            audience: handoffAudience,
+            generate: true,
+          },
         });
-        // A delegated specialist runs in the same vendor session as one that
-        // was addressed directly — `host_threads` is unique per Conversation ×
-        // Agent — so it is given the same standing context under the same
-        // rule: whenever that session does not already hold it. Otherwise the
-        // same Agent would run with its role and persona on one turn and
-        // without them on the next, depending only on how it was reached.
+        // An explicit continuation may have to start fresh at Host placement.
         if (group.room_id && delegatedHostDispatch) {
-          const standing = await renderRoomStandingContext(repos.db, {
-            spaceId: input.space_id,
-            agentId: input.target_agent_id,
-            roomId: group.room_id,
-          });
           delegatedStanding = {
             ...standing,
-            sent: standingContextRequired({
+            sent: Boolean(input.review || input.continuation) || standingContextRequired({
               resumingVendorSession: delegatedHostDispatch.host_resume_attempted,
               threadDigest: delegatedHostDispatch.host_thread.identity_digest,
               digest: standing.digest,
@@ -1421,10 +1481,14 @@ export class AgentGroupRunService {
           };
           // A delegation can be what opens a renewed session; the handoff
           // then goes into it, or every later turn resumes a session without.
-          const handoffArtifactId = delegatedHostDispatch.host_thread.handoff_artifact_id;
+          const handoffArtifactId = delegatedHostDispatch.host_thread.status === "session_reset"
+            ? delegatedHostDispatch.host_thread.handoff_artifact_id : null;
           delegatedHandoff = delegatedHostDispatch.host_prompt_fresh && handoffArtifactId
-            ? await loadHandoffText(repos.db, input.space_id, handoffArtifactId)
+            ? await loadHandoffText(repos.db, input.space_id, handoffArtifactId, [identity.userId, ...handoffAudience])
             : null;
+          if (delegatedHostDispatch.host_prompt_fresh && handoffArtifactId && !delegatedHandoff) {
+            throw new AgentGroupRefusal(409, "The conversation summary is unavailable to this turn's audience");
+          }
         }
       }
     }
@@ -1464,6 +1528,11 @@ export class AgentGroupRunService {
           delegatedStanding?.sent ? delegatedStanding.text : null,
           delegatedHandoff ? handoffPromptBlock(delegatedHandoff) : null,
           childAccess === "read" ? READ_ONLY_REVIEW_NOTICE : null,
+          input.review && prior ? `The prior review covered ${prior.old_commit}. Inspect the delta to the newly assigned version and recheck the listed findings. The current Host-verified commit governs this review.` : null,
+          input.continuation && prior && previousResult ? [
+            `The previous writer saved commit ${prior.old_commit}. Check the current assigned workspace and focus on the remaining changes and verification. Use previous readings of unchanged files when available.`,
+            `Previous Run report (evidence for the current task):\n${previousResult}`,
+          ].join("\n\n") : null,
           instruction,
         ].filter(Boolean).join("\n\n")
         : null,
@@ -1471,22 +1540,30 @@ export class AgentGroupRunService {
         ? `${READ_ONLY_REVIEW_NOTICE}\n\n${instruction}`
         : instruction,
       model_override_json: group.room_id
-        ? delegatedRoomModelOverride(
+        ? { ...delegatedRoomModelOverride(
           parentRun,
           input.target_agent_id,
-          (await repos.groups.getMemberWithAgentStatus({
-            space_id: input.space_id,
-            group_id: input.group_id,
-            agent_id: input.target_agent_id,
-            user_id: group.manager_user_id,
-          }))?.agent_current_version_id ?? null,
+          targetVersionId,
           instruction,
           delegatedBackend,
           delegatedHostDispatch,
           delegatedWorkspaceAccess,
           delegatedStanding,
           delegatedSessionConfig,
-        )
+        ), ...(input.review ? { delegated_review: {
+          previous_run_id: input.review.previous_run_id ?? null,
+          audience_digest: delegatedAudience,
+          session: delegatedHostDispatch?.host_resume_attempted ? "resume_requested" : "fresh",
+          ...(input.review.previous_run_id && !delegatedHostDispatch?.host_resume_attempted
+            ? { reason: "previous_review_not_resumable" } : {}),
+        } } : {}), ...(writeContinuity ? { delegated_write: {
+          audience_digest: delegatedAudience,
+          previous_run_id: input.continuation?.previous_run_id ?? null,
+          session: delegatedHostDispatch?.host_resume_attempted ? "resume_requested" : "fresh",
+          ...(prior?.thread_id && delegatedHostDispatch?.host_resume_attempted ? {
+            resume_workspace: { id: prior.workspace_id, generation: prior.generation },
+          } : {}),
+        } } : {}) }
         : null,
       runtime_profile_id: delegatedBackend?.runtime_profile_id ?? null,
       runtime_profile_selection_source: delegatedBackend ? "explicit" : "default",
@@ -1499,6 +1576,9 @@ export class AgentGroupRunService {
       grantee_user_ids: roomRunGranteeUserIds,
       allow_system_assistant: Boolean(group.room_id),
     });
+    if (prior && childRun.agent_version_id !== targetVersionId) {
+      throw new AgentGroupRefusal(409, "The delegated Agent version changed during dispatch. Request the continuation against the current version.");
+    }
     if (delegatedHostDispatch) {
       await recordHostDispatch(new PgHostThreadRepository(repos.db), delegatedHostDispatch.host_thread, {
         lastRunId: childRun.id,
@@ -1513,6 +1593,13 @@ export class AgentGroupRunService {
       child_run_id: childRun.id,
       policy_decision_record_id: policy.policy_decision_record_id ?? null,
     });
+    // The lifecycle projector enqueues compatible readers together and
+    // writers exclusively, only after their parent yields/finishes.
+    if (group.room_id && group.session_id) {
+      await chargeDelegatedChild(repos.db, group, childRun.id);
+    }
+
+    await appendRequested();
     await repos.runs.appendRunEvent({
       run_id: input.parent_run_id,
       space_id: input.space_id,
@@ -1528,11 +1615,6 @@ export class AgentGroupRunService {
         policy_decision_record_id: policy.policy_decision_record_id ?? null,
       },
     });
-    // The lifecycle projector enqueues compatible readers together and
-    // writers exclusively, only after their parent yields/finishes.
-    if (group.room_id && group.session_id) {
-      await chargeDelegatedChild(repos.db, group, childRun.id);
-    }
 
     return {
       delegation: queued,
@@ -1824,6 +1906,7 @@ interface PreparedRoomConversationBackend extends ResolvedConversationBackend {
   host_prompt_fresh: boolean;
   host_resume_attempted: boolean;
   host_dispatch_lock_id: string | null;
+  automatic_handoff: Awaited<ReturnType<typeof prepareAutomaticHandoff>>;
   /** The standing-context digest this turn was built with, and whether its block is in the prompt. */
   host_standing_context: { digest: string; sent: boolean } | null;
   /** Set when this thread's vendor session must hand off and rotate before the turn. */
@@ -1838,6 +1921,7 @@ interface PreparedRoomHostDispatch {
   workspace: LaunchWorkspace;
   host_prompt_fresh: boolean;
   host_resume_attempted: boolean;
+  automatic_handoff: Awaited<ReturnType<typeof prepareAutomaticHandoff>>;
   dispatch_lock_id: string;
   git_snapshot: RunGitSnapshot;
 }
@@ -1856,6 +1940,7 @@ export async function recordHostDispatch(
 
 export async function prepareHostConversationDispatch(input: {
   delegationId?: string;
+  continuationThreadId?: string;
   db: Queryable;
   backend: ResolvedConversationBackend;
   /**
@@ -1873,6 +1958,7 @@ export async function prepareHostConversationDispatch(input: {
   projectId: string | null;
   agentId: string;
   userId: string;
+  modelHandoff?: { config: ResolvedSessionConfig; audience: readonly string[]; generate?: boolean };
 }): Promise<PreparedRoomHostDispatch | null> {
   const hostFields = [
     input.backend.execution_host_id,
@@ -1955,7 +2041,8 @@ export async function prepareHostConversationDispatch(input: {
   }
 
   const threads = new PgHostThreadRepository(input.db);
-  let hostThread = input.delegationId && conversationScoped && input.backend.workspace_mode === 'location'
+  let hostThread = (input.continuationThreadId ? await threads.getById(input.continuationThreadId) : null)
+    ?? (input.delegationId && conversationScoped && input.backend.workspace_mode === 'location'
     ? await threads.getOrCreateForDelegation({delegationId:input.delegationId,
         executionHostId:input.backend.execution_host_id!,workspaceLocationId:input.backend.workspace_location_id!,
         spaceId:input.spaceId,sessionId:input.sessionId,agentId:input.agentId,runtimeKey:input.backend.runtime_key,
@@ -1991,7 +2078,7 @@ export async function prepareHostConversationDispatch(input: {
           runtimeKey: input.backend.runtime_key,
           runtimeInstallation: input.backend.runtime_installation!,
           createdByUserId: input.userId,
-        });
+        }));
   if (
     hostThread.execution_host_id !== input.backend.execution_host_id
     || hostThread.workspace_location_id !== input.backend.workspace_location_id
@@ -2019,15 +2106,48 @@ export async function prepareHostConversationDispatch(input: {
     const detail = `Room agent '${input.agentId}' is already handling another Room turn; wait for it to finish before sending another message`;
     throw new HostDispatchRefusal(409, detail, { detail, code: "room_agent_turn_in_progress" });
   }
-  // A conversation that may read sensitive data resumes only a vendor session whose pointer is
-  // bound to an isolated launch of this thread (ADR 0032); anything else is retired here, before the turn's
-  // context is assembled, so the turn replays as fresh. The launch re-checks the exact profile.
   // The thread is re-read under the claim: a turn that settled between the read above and the claim
   // may have moved the pointer, and only the current one is judged and handed to the launch.
-  if (sensitiveDirect) hostThread = await threads.getById(hostThread.id) ?? hostThread;
+  const claimedThread = await threads.getById(hostThread.id);
+  if (!claimedThread) throw new HostDispatchRefusal(409, "Conversation Agent thread disappeared during dispatch");
+  hostThread = claimedThread;
+  // A conversation that may read sensitive data resumes only a vendor session bound
+  // to an isolated launch of this thread. The launch re-checks the exact profile.
   if (sensitiveDirect && hostThread.vendor_session_id
     && !await sensitiveThreadResumable(input.db, hostThread.id, { vendorSessionId: hostThread.vendor_session_id })) {
     hostThread = await threads.resetConversationAgent(hostThread.id, hostThread.vendor_session_id) ?? hostThread;
+  } else if (!sensitiveDirect && hostThread.vendor_session_id
+    && await vendorSessionHeldIsolated(input.db, hostThread.id, hostThread.vendor_session_id)
+    // A turn that launches isolated or not at all (its conversation holds a plugin's sensitive read, ADR 0030) keeps the
+    // session for its launch to judge (`sensitiveThreadResumable`); any other turn may launch with network.
+    && !await conversationCarriesIsolatingReads(input.db, input.spaceId, input.sessionId)) {
+    // A session an isolated launch held — a provider-bound Gmail automation's mail, say — is never resumed by a launch
+    // with network (ADR 0036 §11): reset here, before the prompt is rendered, so this turn replays fresh.
+    hostThread = await threads.retireVendorSession(hostThread.id, hostThread.vendor_session_id) ?? hostThread;
+  } else if (hostThread.vendor_session_id && await pointerInSharedProfile(input.db, hostThread.id, hostThread.vendor_session_id)) {
+    // A session in the ModelProvider directory both channels shared before they were kept apart (ADR 0036 §11): no launch
+    // uses that directory now, so it replays fresh here rather than fail at launch on a session its CLI cannot find.
+    hostThread = await threads.retireVendorSession(hostThread.id, hostThread.vendor_session_id) ?? hostThread;
+  }
+  const selection = input.modelHandoff?.config.selections.find(option => option.category === "model");
+  const targetModel = selection?.value;
+  const advertisedModel = input.backend.session_config_options?.some(option =>
+    option.id === selection?.id && option.category === "model" && option.type === "select"
+      && option.options.some(choice => choice.value === targetModel));
+  let automaticHandoff: Awaited<ReturnType<typeof prepareAutomaticHandoff>> = null;
+  if (input.modelHandoff && !input.backend.model_provider_id && input.backend.runtime_key === "claude_code"
+    && advertisedModel && typeof targetModel === "string"
+    && hostThread.vendor_session_id && hostThread.last_session_id === input.sessionId) {
+    const artifact = await reusableModelHandoff(input.db, {
+      thread: hostThread, model: targetModel, userIds: [input.userId, ...input.modelHandoff.audience],
+    });
+    if (artifact && await threads.stageHandoff(hostThread.id, artifact, hostThread.vendor_session_id, dispatchLockId)) {
+      hostThread = { ...hostThread, status: "session_reset", handoff_artifact_id: artifact };
+    } else if (input.modelHandoff.generate && input.backend.workspace_mode === "managed"
+      && !readOnlyWorkspaceHostRefusal("read", input.backend.runtime_key, hostKind, target.capabilities_json)) {
+      automaticHandoff = await prepareAutomaticHandoff(input.db, hostThread, targetModel,
+        [input.userId, ...input.modelHandoff.audience]);
+    }
   }
   // A thread with no vendor session is fresh whatever its status says: a
   // first turn after a rotation or reset that failed before the runtime
@@ -2052,9 +2172,19 @@ export async function prepareHostConversationDispatch(input: {
     host_thread: { ...hostThread, dispatch_lock_id: dispatchLockId },
     host_prompt_fresh: hostPromptFresh,
     host_resume_attempted: Boolean(hostThread.vendor_session_id) && !hostPromptFresh,
+    automatic_handoff: hostPromptFresh ? null : automaticHandoff,
     dispatch_lock_id: dispatchLockId,
     git_snapshot: gitSnapshot,
   };
+}
+
+async function handoffRoomAudience(db: Queryable, spaceId: string, roomId: string): Promise<string[]> {
+  const room = (await db.query<{ id: string; project_id: string; is_mainline: boolean }>(
+    "SELECT id, project_id, is_mainline FROM rooms WHERE space_id = $1 AND id = $2",
+    [spaceId, roomId],
+  )).rows[0];
+  if (!room) throw new AgentGroupRefusal(409, "Conversation Room is unavailable");
+  return roomAudience(db, spaceId, room);
 }
 
 async function prepareRoomConversationBackends(input: {
@@ -2067,6 +2197,15 @@ async function prepareRoomConversationBackends(input: {
   messageCursorId: string | null;
   agentIds: readonly string[];
   requested: NonNullable<SendAgentGroupMessageInput["backends"]>;
+  handoffAudience: readonly string[];
+  reuseHandoff: boolean;
+  generateHandoff: boolean;
+  /**
+   * A scheduled turn on a setup its owner confirmed (a Room or mainline Gmail digest, ADR 0035 §3): the saved
+   * selection is applied only when it is exactly the confirmed one with nothing dropped, and then strictly, so the
+   * live session fails the turn instead of falling back to the runtime's default (`pinnedSessionConfig`).
+   */
+  pinnedSessionConfig?: readonly RuntimeSessionConfigSelection[] | null;
 }): Promise<Map<string, PreparedRoomConversationBackend>> {
   if (!input.messageCursorId) {
     throw new AgentGroupRefusal(409, "Room task is missing its triggering message");
@@ -2153,15 +2292,17 @@ async function prepareRoomConversationBackends(input: {
       workspace_location_id: thread.workspace_location_id,
       runtime_installation: thread.runtime_installation,
     };
-    // A selection sent with this message is strict; a saved, inherited or
-    // replayed one the runtime has since withdrawn falls back to its default.
-    const sessionConfig = requested?.session_config && requested.session_config_inherited
-      ? { ...reconcileSavedSessionConfig(requested.session_config, pinnedBackend.session_config_options ?? []), source: "saved" as const }
+    // A selection sent with this message is strict; saved Claude models
+    // are confirmed by the live session even if the cached picker omits them.
+    const resolvedSessionConfig = requested?.session_config && requested.session_config_inherited
+      ? { ...reconcileSavedSessionConfig(requested.session_config, pinnedBackend.session_config_options ?? [], pinnedBackend.runtime_key), source: "saved" as const }
       : await resolveSessionConfig(
         requested?.session_config,
         () => repository.sessionConfig(input.identity.spaceId, input.sessionId, agentId),
         pinnedBackend.session_config_options ?? [],
+        pinnedBackend.runtime_key,
       );
+    const sessionConfig = input.pinnedSessionConfig ? pinnedSessionConfig(resolvedSessionConfig, input.pinnedSessionConfig) : resolvedSessionConfig;
     const revision = contextRevisions.get(agentId) ?? null;
     if (!revision?.agent_version_id) {
       throw new AgentGroupRefusal(409, `Room agent '${agentId}' has no active version`);
@@ -2176,6 +2317,7 @@ async function prepareRoomConversationBackends(input: {
     let hostPromptFresh = false;
     let hostResumeAttempted = false;
     let hostDispatchLockId: string | null = null;
+    let automaticHandoff: Awaited<ReturnType<typeof prepareAutomaticHandoff>> = null;
     let standingContext: { digest: string; sent: boolean } | null = null;
     let gitSnapshot = unavailableGitSnapshot();
     if (hostBound) {
@@ -2188,12 +2330,16 @@ async function prepareRoomConversationBackends(input: {
         projectId: input.projectId,
         agentId,
         userId: input.identity.userId,
+        ...(input.reuseHandoff ? { modelHandoff: {
+          config: sessionConfig, audience: input.handoffAudience, generate: input.generateHandoff,
+        } } : {}),
       });
       if (!hostDispatch) throw new AgentGroupRefusal(409, `Room agent '${agentId}' has an incomplete host execution binding`);
       hostProjectFolderId = hostDispatch.project_folder_id;
       hostThread = hostDispatch.host_thread;
       hostWorkspace = hostDispatch.workspace;
       hostDispatchLockId = hostDispatch.dispatch_lock_id;
+      automaticHandoff = hostDispatch.automatic_handoff;
       hostPromptFresh = hostDispatch.host_prompt_fresh;
       hostResumeAttempted = hostDispatch.host_resume_attempted;
       gitSnapshot = hostDispatch.git_snapshot;
@@ -2214,11 +2360,14 @@ async function prepareRoomConversationBackends(input: {
       const conversationPrefix = hostPromptFresh
         ? `You are now in ${JSON.stringify(turnSource.conversation_title)}.`
         : null;
-      // A fresh session after a rotation starts from the handoff the Agent
-      // wrote, not only the turn that the rotation admitted.
-      const handoffText = hostPromptFresh && hostThread.handoff_artifact_id
-        ? await loadHandoffText(input.db, input.identity.spaceId, hostThread.handoff_artifact_id)
+      // Only a staged restart may seed a fresh session from a summary.
+      const handoffArtifactId = hostThread.status === "session_reset" ? hostThread.handoff_artifact_id : null;
+      const handoffText = hostPromptFresh && handoffArtifactId
+        ? await loadHandoffText(input.db, input.identity.spaceId, handoffArtifactId, [input.identity.userId, ...input.handoffAudience])
         : null;
+      if (hostPromptFresh && handoffArtifactId && !handoffText) {
+        throw new AgentGroupRefusal(409, "The conversation summary is unavailable to this turn's audience");
+      }
       // Who this Agent is, and the Room's rules, before what it is being
       // asked — whenever the vendor session does not already hold exactly
       // this: a fresh or reset session, or a revised persona, a roster change
@@ -2261,6 +2410,7 @@ async function prepareRoomConversationBackends(input: {
       host_prompt_fresh: hostPromptFresh,
       host_resume_attempted: hostResumeAttempted,
       host_dispatch_lock_id: hostDispatchLockId,
+      automatic_handoff: automaticHandoff,
       host_standing_context: standingContext,
       workspace_access: workspaceAccess,
       git_snapshot: gitSnapshot,
@@ -2371,6 +2521,9 @@ function roomRunModelOverride(
               ? backend.host_thread.vendor_session_id
               : null,
             fresh: backend.host_prompt_fresh,
+            ...(backend.automatic_handoff ? { automatic_handoff: backend.automatic_handoff } : {}),
+            ...(backend.host_thread.status === "session_reset" && backend.host_thread.vendor_session_id
+              ? { handoff_candidate: backend.host_thread.handoff_artifact_id } : {}),
             ...(backend.host_standing_context
               ? {
                   identity_digest: backend.host_standing_context.digest,
@@ -2440,6 +2593,9 @@ function delegatedRoomModelOverride(
               ? hostDispatch.host_thread.vendor_session_id
               : null,
             fresh: hostDispatch.host_prompt_fresh,
+            ...(hostDispatch.automatic_handoff ? { automatic_handoff: hostDispatch.automatic_handoff } : {}),
+            ...(hostDispatch.host_thread.status === "session_reset" && hostDispatch.host_thread.vendor_session_id
+              ? { handoff_candidate: hostDispatch.host_thread.handoff_artifact_id } : {}),
             ...(standing ? { identity_digest: standing.digest, identity_sent: standing.sent } : {}),
           },
         }
@@ -2701,6 +2857,21 @@ async function assertReplayedDelegationAccess(
       code: "delegation_workspace_access_conflict",
       detail: "Replay the original access choice; an existing Run's execution contract cannot be changed.",
     });
+  }
+}
+
+function assertDelegationContinuity(
+  input: Pick<SpawnChildRunInput, "review" | "continuation">,
+  access: "read" | "write",
+  roomId: string | null,
+  parent: Pick<RunRecord, "contract_snapshot_json">,
+): void {
+  const isolatedRoom = Boolean(roomId) && isolatedWorkspaceContract(parent.contract_snapshot_json);
+  if (input.review && (access !== "read" || !isolatedRoom)) {
+    throw new AgentGroupRefusal(422, "Code review requires a read-only delegation in an isolated Location-backed Room");
+  }
+  if (input.continuation && (access !== "write" || !isolatedRoom)) {
+    throw new AgentGroupRefusal(422, "Write continuation requires a write delegation in an isolated Location-backed Room");
   }
 }
 

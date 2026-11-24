@@ -15,6 +15,8 @@ import {inheritNoteSourceLineage} from '../knowledge/noteSourceLineage.js';
 import {revisionProvider} from '../prompts/reading/revisionProvider.js';
 import {referenceReadable} from './releaseGate.js';
 import {contentDecisionFromDb} from '../access/contentAccessQuery.js';
+import {sessionActor} from '../systemActions/operations/actor.js';
+import {actorReaders} from './releaseGate.js';
 import {invokeCoreOperation} from './corePorts.js';
 import {resolveContentCreationContext} from '../access/creationContext.js';
 import {authorizeJobEffect,lockCurrentJobClaim} from '../jobs/effectAuthority.js';
@@ -236,11 +238,19 @@ function savedOutput(row: DraftRunRow) {
 
 /** The `drafts` port for one plugin invocation; `invocation` is the same object the other ports fill. */
 export function noteDraftPort(host: <T>(fn: (db: Queryable) => Promise<T>) => Promise<T>, config: ServerConfig, manifest: PluginOperationManifest, actor: Readonly<OperationActor>, invocation: {kind: 'query' | 'command'; references: {type: 'task' | 'artifact' | 'space_object'; id: string}[]; projectId?: string}): NonNullable<PluginCorePorts['drafts']> {
-  // A person's own drafting: never an Agent's, and only for a Project-bound operation's bound Project.
-  const person = actor.principal.kind === 'user' ? actor.on_behalf_of_user_id : null;
+  // Agent drafts use the same private slot and keep the outer operation's Agent audit.
+  const agentDraft = manifest.id === 'applications' && actor.principal.kind === 'agent' &&
+    actor.origin === 'manual' && actor.effective_origin === 'manual';
+  const person = actor.principal.kind === 'user' || agentDraft ? actor.on_behalf_of_user_id : null;
   const identity = person ? {spaceId: actor.space_id, userId: person} : null;
   const bound = invocation.projectId;
   const admitted = (kind: 'query' | 'command') => !!identity && !!bound && invocation.kind === kind;
+  const assertPrivate = async (db: Queryable) => {
+    if (!agentDraft) return;
+    const {readers} = await actorReaders(db, actor);
+    if (readers.length !== 1 || readers[0] !== person) throw hidden();
+  };
+
   return {
     start: input => {
       if (!admitted('command') || input?.project_id !== bound) return Promise.reject(hidden());
@@ -276,6 +286,7 @@ export function noteDraftPort(host: <T>(fn: (db: Queryable) => Promise<T>) => Pr
     read: input => {
       if (!admitted('query')) return Promise.reject(hidden());
       return host(async db => {
+        await assertPrivate(db);
         const found = await draftRun(db, actor, manifest, bound!, input?.run_id);
         // The same rule as the generic Run entries: Project, inputs and their Sources.
         if (!found || !await draftReadable(db, identity!, found.frozen, false)) return null;
@@ -315,7 +326,7 @@ export function noteDraftPort(host: <T>(fn: (db: Queryable) => Promise<T>) => Pr
           // A new Note follows the ordinary context-free creation rule (Personal Space, no
           // Project, private), so it is created only where that rule lands in this Space.
           if (!await newNoteStaysHere(db, identity!)) return {outcome: 'placement_unavailable' as const};
-          const created = await invokeCoreOperation(db, config, actor, 'knowledge.note.create', {title, content_json: doc, plain_text, content_format: 'prosemirror_json'}) as {id: string; version: number};
+          const created = await invokeCoreOperation(db, config, agentDraft ? sessionActor(identity!) : actor, 'knowledge.note.create', {title, content_json: doc, plain_text, content_format: 'prosemirror_json'}) as {id: string; version: number};
           // The derived text keeps its inputs' Source policy for every later read and send.
           await inheritNoteSourceLineage(db, {spaceId: identity!.spaceId, noteId: created.id, fromNoteIds: inputs, pinConnectionIds: found.frozen.source_connection_ids});
           return {outcome: 'written' as const, note_id: created.id, version: created.version};
@@ -327,7 +338,7 @@ export function noteDraftPort(host: <T>(fn: (db: Queryable) => Promise<T>) => Pr
         const current = (await db.query<{version: number}>('SELECT version FROM notes WHERE object_id=$1 AND space_id=$2 FOR UPDATE', [targetId, identity!.spaceId])).rows[0];
         if (!current) return {outcome: 'unavailable' as const};
         if (current.version !== input.expect_version) return {outcome: 'conflict' as const, current_version: current.version};
-        const updated = await invokeCoreOperation(db, config, actor, 'knowledge.note.update', {note_id: targetId, changes: {content_json: doc, plain_text, content_format: 'prosemirror_json', expect_version: input.expect_version}}) as {id: string; version: number};
+        const updated = await invokeCoreOperation(db, config, agentDraft ? sessionActor(identity!) : actor, 'knowledge.note.update', {note_id: targetId, changes: {content_json: doc, plain_text, content_format: 'prosemirror_json', expect_version: input.expect_version}}) as {id: string; version: number};
         await inheritNoteSourceLineage(db, {spaceId: identity!.spaceId, noteId: targetId, fromNoteIds: inputs, pinConnectionIds: found.frozen.source_connection_ids});
         return {outcome: 'written' as const, note_id: updated.id, version: updated.version};
       });

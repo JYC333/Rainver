@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { GmailDigestProposalPayloadSchema, GmailMonitorProposalPayloadSchema, GmailPrivateCheckProposalPayloadSchema, GmailPrivateReadProposalPayloadSchema } from "@rainver/protocol";
+import { GmailDelegationProposalPayloadSchema, GmailDigestProposalPayloadSchema, GmailMonitorProposalPayloadSchema, GmailSetupProposalPayloadSchema, GmailPrivateCheckProposalPayloadSchema, GmailPrivateReadProposalPayloadSchema } from "@rainver/protocol";
 import {
   SOURCE_CAPTURE_POLICIES,
   SOURCE_RETENTION_POLICIES,
@@ -429,6 +429,8 @@ const ProposalPayloadSchema = z.discriminatedUnion("proposal_type", [
   sourceBackfillStart,
   gmailMonitorCreate,
   GmailDigestProposalPayloadSchema,
+  GmailSetupProposalPayloadSchema,
+  GmailDelegationProposalPayloadSchema,
   GmailPrivateReadProposalPayloadSchema,
   GmailPrivateCheckProposalPayloadSchema,
   projectBriefPublish,

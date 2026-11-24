@@ -15,7 +15,9 @@ export const PROPOSAL_REJECTION_OPERATION_SCHEMAS={
 } as const;
 
 export const PROPOSAL_APPLY_OPERATION_SCHEMAS={
- 'proposal.accept':{input:z.object({proposal_id:IdSchema,confirm_incomplete_patch:z.preprocess(v=>v==='true'?true:v==='false'?false:v,z.boolean()).default(false)}).strict(),output:ProposalAcceptOutSchema},
+ 'proposal.accept':{input:z.object({proposal_id:IdSchema,confirm_incomplete_patch:z.preprocess(v=>v==='true'?true:v==='false'?false:v,z.boolean()).default(false),
+  /** The revision the decider was shown (a card's `card_revision`): refused (409 `proposal_revision_changed`) once the Proposal changed since. */
+  expected_revision:z.string().regex(/^[a-f0-9]{64}$/).optional()}).strict(),output:ProposalAcceptOutSchema},
  'proposal.rollback':{input:rejectionInput,output:CodePatchDecisionReceiptSchema},
 } as const;
 

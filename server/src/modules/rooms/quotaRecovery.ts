@@ -10,6 +10,7 @@ import { contractRecord } from "../runs/contractSnapshot.js";
 import { runtimeQuotaResetAt, validQuotaResetAt } from "../runtimeAdapters/quotaReset.js";
 import { accountLabel, cachedQuotaReading, subscriptionLoginOfRun, type QuotaReading } from "./subscriptionLogins.js";
 import type { WaitingForQuota } from "./quotaGate.js";
+import { currentAgentRunJobSql } from "../jobs/agentRunGeneration.js";
 
 const RECHECK_MS = 15 * 60_000;
 const MAX_WAIT_MS = 7 * 86400_000;
@@ -92,7 +93,8 @@ export async function quotaRecoveryAccountFree(db: Queryable, marker: WaitingFor
         AND (run.status IN ('running', 'cancelling') OR (run.status = 'queued'
           AND NOT (COALESCE(run.output_json, '{}'::jsonb) ? 'waiting_for_quota')
           AND EXISTS (SELECT 1 FROM jobs job WHERE job.payload_json->>'run_id' = run.id
-            AND job.job_type = 'agent_run' AND job.status IN ('pending', 'claimed', 'running')))) LIMIT 1`,
+            AND job.job_type = 'agent_run' AND job.status IN ('pending', 'claimed', 'running')
+            AND ${currentAgentRunJobSql("job")}))) LIMIT 1`,
     [marker.login.host_id, marker.login.runtime_key, marker.login.installation, runId],
   );
   return busy.rows.length === 0;
@@ -151,6 +153,7 @@ export async function updateQuotaRecovery(db: Queryable, spaceId: string, runId:
   let switchedModel: string | undefined;
   if (switchModel) {
     if (!automatic) throw new RoomMutationError(422, "Model switching requires continuation consent");
+    if (parsed.data.switched_model) throw new RoomMutationError(409, "A model switch is already selected for this retry");
     const run = (await db.query<RunRecord>(`SELECT * FROM runs WHERE space_id = $1 AND id = $2`, [spaceId, runId])).rows[0]!;
     // Revalidate the current catalog rather than trusting a stale UI flag.
     const alternative = await quotaModelAlternative(db, run);

@@ -3,7 +3,7 @@ import { useMatch, useNavigate } from 'react-router-dom'
 import { setSpaceContext } from '../api/client'
 import { authApi } from '../api/client'
 import { useAuth } from './AuthContext'
-import { spacePath } from '../core/navigation'
+import { spacePath } from '../core/spacePath'
 import type { SpaceWithMembership } from '../types/api'
 
 /**
@@ -18,6 +18,8 @@ import type { SpaceWithMembership } from '../types/api'
  * must never filter the cross-space aggregates. `preferredSpaceId` is the Space to target when
  * building a space link from a user-scoped surface (active → last visited → default → personal).
  */
+const EMPTY_SPACES: SpaceWithMembership[] = []
+
 interface SpaceContextValue {
   spaces: SpaceWithMembership[]
   userId: string
@@ -44,9 +46,13 @@ export function SpaceProvider({ children }: { children: ReactNode }) {
   const activeSpaceId = spaceMatch?.params.spaceId ?? null
 
   const [lastSpaceId, setLastSpaceId] = useState<string | null>(null)
-  const [spaces, setSpaces] = useState<SpaceWithMembership[]>([])
+  const [membership, setMembership] = useState<{ userId: string; spaces: SpaceWithMembership[] } | null>(null)
   const [ready, setReady] = useState(false)
   const userId = currentUser?.id ?? ''
+  const spaces = membership?.userId === userId ? membership.spaces : EMPTY_SPACES
+  const membershipRequest = useRef(0)
+  const currentUserId = useRef(userId)
+  currentUserId.current = userId
 
   // The person's own personal Space: the personal Space they own. Being a
   // member of someone else's never makes it theirs.
@@ -66,10 +72,10 @@ export function SpaceProvider({ children }: { children: ReactNode }) {
 
   // The Space to target when entering a Space from a user-scoped surface.
   const preferredSpaceId = useMemo(() => {
-    if (activeSpaceId) return activeSpaceId
+    if (activeSpaceId && has(activeSpaceId)) return activeSpaceId
     if (has(lastSpaceId)) return lastSpaceId
     if (has(currentUser?.default_space_id)) return currentUser?.default_space_id ?? null
-    return personalSpaceId ?? spaces[0]?.id ?? lastSpaceId ?? null
+    return personalSpaceId ?? spaces[0]?.id ?? null
   }, [activeSpaceId, lastSpaceId, currentUser?.default_space_id, personalSpaceId, spaces, has])
 
   // Keep the API client's space header in sync BEFORE child effects run. Setting it during
@@ -87,22 +93,25 @@ export function SpaceProvider({ children }: { children: ReactNode }) {
   }, [currentUser?.id])
 
   const reloadSpaces = useCallback(async () => {
-    if (!currentUser) { setSpaces([]); return }
+    const request = ++membershipRequest.current
+    if (!userId) { setMembership(null); return }
+    let list: SpaceWithMembership[]
     try {
-      const list = await authApi.mySpaces()
-      setSpaces(list)
+      list = await authApi.mySpaces()
     } catch {
-      setSpaces([])
+      list = []
     }
-    // Keyed on the user id: a refreshed currentUser object for the same user must not refetch.
-  }, [currentUser?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+    if (request === membershipRequest.current && userId === currentUserId.current) {
+      setMembership({ userId, spaces: list })
+    }
+  }, [userId])
 
   useEffect(() => { reloadSpaces() }, [reloadSpaces])
 
   // Remember the last real Space visited (used to resolve preferredSpaceId off space routes).
   useEffect(() => {
-    if (activeSpaceId && activeSpaceId !== lastSpaceId) setLastSpaceId(activeSpaceId)
-  }, [activeSpaceId, lastSpaceId])
+    if (activeSpaceId && has(activeSpaceId) && activeSpaceId !== lastSpaceId) setLastSpaceId(activeSpaceId)
+  }, [activeSpaceId, lastSpaceId, has])
 
   // If the URL names a Space the user can't see (or that doesn't exist), fall back cleanly.
   useEffect(() => {

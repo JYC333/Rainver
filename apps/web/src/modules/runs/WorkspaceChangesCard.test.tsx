@@ -2,7 +2,7 @@ import {render,screen,fireEvent,waitFor} from '@testing-library/react'
 import {MemoryRouter} from 'react-router-dom'
 import {vi,it,expect,beforeEach} from 'vitest'
 import {WorkspaceChangesCard} from './WorkspaceChangesCard'
-import {runsApi,callOperation} from '../../api/client'
+import {ApiRequestError,runsApi,callOperation} from '../../api/client'
 import {run as fixture} from '../agent_work/fixtures.test-support'
 import {workspaceChange} from './workspaceFixtures.test-support'
 vi.mock('../../api/client',()=>({runsApi:{get:vi.fn()},callOperation:vi.fn(),ApiRequestError:class extends Error{status=500}}))
@@ -162,4 +162,36 @@ it('keeps a published batch visibly pending while its resource lifecycle awaits 
  render(<MemoryRouter><WorkspaceChangesCard run={published}/></MemoryRouter>);
  expect(await screen.findByText('Published · waiting for workspace users to exit')).toBeInTheDocument();
  expect(screen.queryByText('Publication and resource lifecycle complete')).not.toBeInTheDocument();
+});
+
+
+it('explains quarantine-only attention without offering a retry that cannot run',async()=>{
+ const retained=workspaceChange({state:'no_changes',cleanup_state:'blocked',cleanup_retryable:false,inventory:{quarantined_whole:1},retention:{state:'retained',reason:'primary_conversation',reclaim_after:null,hold_until:null,reclaimed_at:null,assessed_at:null,retained_refs:0,unclaimed_refs:0}});
+ vi.mocked(runsApi.get).mockResolvedValue({...run,workspace_changes:[retained]});
+ render(<MemoryRouter><WorkspaceChangesCard run={{...run,workspace_changes:[retained]}}/></MemoryRouter>);
+ expect(await screen.findByText(/An old workspace folder is protected/)).toBeInTheDocument();
+ expect(screen.queryByText(/No automatic expiry for unmerged work/)).not.toBeInTheDocument();
+ expect(screen.queryByRole('button',{name:'Retry cleanup'})).not.toBeInTheDocument();
+ expect(callOperation).not.toHaveBeenCalled();
+});
+it('offers and executes retry only for a real blocked cleanup task',async()=>{
+ const retained=workspaceChange({state:'no_changes',cleanup_state:'blocked',cleanup_retryable:true,cleanup_errors:['workspace_cleanup_incomplete'],retention:{state:'retained',reason:'primary_conversation',reclaim_after:null,hold_until:null,reclaimed_at:null,assessed_at:null,retained_refs:0,unclaimed_refs:0}});
+ vi.mocked(runsApi.get).mockResolvedValue({...run,workspace_changes:[retained]});
+ render(<MemoryRouter><WorkspaceChangesCard run={{...run,workspace_changes:[retained]}}/></MemoryRouter>);
+ fireEvent.click(await screen.findByRole('button',{name:'Retry cleanup'}));
+ await waitFor(()=>expect(callOperation).toHaveBeenCalledWith('workspace.retention.update',{change_set_id:'change',action:'retry'},expect.any(String),expect.anything()));
+});
+
+
+it.each([{status:409,code:'operation_conflict',refresh:true},{status:503,code:'operation_audit_unavailable',refresh:false},{status:409,code:'idempotency_in_progress',refresh:false}])('refreshes a definite refusal but preserves in-progress or ambiguous request identity ($code)',async({status,code,refresh})=>{
+ const retained=workspaceChange({state:'no_changes',cleanup_state:'blocked',cleanup_retryable:true,retention:{state:'retained',reason:'primary_conversation',reclaim_after:null,hold_until:null,reclaimed_at:null,assessed_at:null,retained_refs:0,unclaimed_refs:0}});
+ vi.mocked(runsApi.get).mockResolvedValue({...run,workspace_changes:[retained]});
+ vi.mocked(callOperation).mockRejectedValueOnce(Object.assign(new ApiRequestError('Cleanup refused',status,code),{status,code}));
+ render(<MemoryRouter><WorkspaceChangesCard run={{...run,workspace_changes:[retained]}}/></MemoryRouter>);
+ fireEvent.click(await screen.findByRole('button',{name:'Retry cleanup'}));
+ expect(await screen.findByRole('alert')).toHaveTextContent('Cleanup refused');
+ fireEvent.click(screen.getByRole('button',{name:'Retry cleanup'}));
+ await waitFor(()=>expect(callOperation).toHaveBeenCalledTimes(2));
+ const calls=vi.mocked(callOperation).mock.calls;
+ if(refresh)expect(calls[0]![2]).not.toBe(calls[1]![2]);else expect(calls[0]![2]).toBe(calls[1]![2]);
 });

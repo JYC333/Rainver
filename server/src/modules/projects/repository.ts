@@ -28,6 +28,7 @@ import { assertCanGrantRole } from "../access/roles.js";
 import { projectFolderReadAccessSql } from "../projectFolders/access.js";
 import { memorySensitivityReadSql } from "../memory/memorySensitivitySql.js";
 import { PgRunRepository } from "../runs/repository.js";
+import { PgJobQueueRepository } from "../jobs/repository.js";
 import { PgRoomRepository } from "../rooms/repository.js";
 import { canonicalRunOutput } from "../runs/orchestrationResults.js";
 
@@ -306,7 +307,7 @@ export class PgProjectRepository {
       ],
     ).catch(rethrowActiveNameConflict);
     if (status === "archived") {
-      await this.pauseArchivedProjectActivity(identity.spaceId, projectId, now);
+      await this.pauseArchivedProjectActivity(identity, projectId, now);
     }
     return projectToOut(
       result.rows[0]!,
@@ -337,7 +338,7 @@ export class PgProjectRepository {
         RETURNING ${PROJECT_COLUMNS}`,
       [identity.spaceId, projectId, now],
     );
-    await this.pauseArchivedProjectActivity(identity.spaceId, projectId, now);
+    await this.pauseArchivedProjectActivity(identity, projectId, now);
     return projectToOut(
       result.rows[0]!,
       true,
@@ -812,7 +813,8 @@ export class PgProjectRepository {
    * Reactivating the Project never auto-resumes these records; each one must be
    * reviewed and resumed through its owning module.
    */
-  private async pauseArchivedProjectActivity(spaceId: string, projectId: string, now: string): Promise<void> {
+  private async pauseArchivedProjectActivity(identity: SpaceUserIdentity, projectId: string, now: string): Promise<void> {
+    const spaceId = identity.spaceId;
     await this.db.query(
       `UPDATE automations
           SET status = 'paused', updated_at = $3
@@ -830,30 +832,29 @@ export class PgProjectRepository {
           AND execution.status IN ('queued','running')`,
       [spaceId, projectId, now],
     );
-    const workflowRuns = await this.db.query<{ run_id: string }>(
-      `SELECT DISTINCT run_id
-         FROM (
-           SELECT execution.root_run_id AS run_id
-             FROM workflow_executions execution
-             JOIN automations automation
-               ON automation.id=execution.automation_id AND automation.space_id=execution.space_id
-            WHERE execution.space_id=$1 AND automation.project_id=$2
-           UNION ALL
-           SELECT link.run_id
-             FROM workflow_execution_node_runs link
-             JOIN workflow_execution_nodes node
-               ON node.id=link.node_id AND node.space_id=link.space_id
-             JOIN workflow_executions execution
-               ON execution.id=node.execution_id AND execution.space_id=node.space_id
-             JOIN automations automation
-               ON automation.id=execution.automation_id AND automation.space_id=execution.space_id
-            WHERE link.space_id=$1 AND automation.project_id=$2
-         ) scoped_runs
-        WHERE run_id IS NOT NULL`,
-      [spaceId, projectId],
-    );
-    const runIds = workflowRuns.rows.map((row) => row.run_id);
+    const runIds = (await projectArchiveRunRefs(this.db, spaceId, projectId)).map(row => row.id);
     if (runIds.length > 0) {
+      // A Run's dispatch acquires this row before inserting its execution lock.
+      // Read the lock and latest launch only after obtaining a fresh snapshot.
+      await this.db.query(`SELECT id FROM runs WHERE space_id=$1 AND id=ANY($2::varchar[]) ORDER BY id FOR UPDATE`, [spaceId, runIds]);
+      const liveRuns = (await this.db.query<{id: string; status: string}>(
+        `SELECT r.id, r.status FROM runs r WHERE r.space_id=$1 AND r.id=ANY($2::varchar[])
+          AND r.status IN ('queued','running','cancelling','waiting_for_review','waiting_for_dependency')
+          AND (EXISTS (SELECT 1 FROM run_execution_locks l WHERE l.run_id=r.id)
+            OR (SELECT a.launch_id FROM run_attempts a WHERE a.space_id=r.space_id AND a.run_id=r.id
+                 ORDER BY a.attempt_number DESC LIMIT 1) IS NOT NULL)`, [spaceId, runIds])).rows;
+      const runs = new PgRunRepository(this.db);
+      const queue = new PgJobQueueRepository(this.db);
+      const reason = "Workflow run cancelled because its Project was archived";
+      for (const run of liveRuns) {
+        if (run.status !== "cancelling") {
+          await runs.markRunCancelling({run_id: run.id, space_id: spaceId, requested_at: now,
+            requested_by_user_id: identity.userId, reason});
+        }
+        await queue.ensureRunCancellationJob(spaceId, run.id);
+      }
+      const liveRunIds = new Set(liveRuns.map(run => run.id));
+      const stoppedRunIds = runIds.filter(id => !liveRunIds.has(id));
       await this.db.query(
         `UPDATE jobs
             SET status='cancelled', heartbeat_at=NULL, completed_at=$3, updated_at=$3
@@ -861,10 +862,9 @@ export class PgProjectRepository {
             AND job_type='agent_run'
             AND payload_json->>'run_id'=ANY($2::text[])
             AND status IN ('pending','claimed','running')`,
-        [spaceId, runIds, now],
+        [spaceId, stoppedRunIds, now],
       );
-      const runs = new PgRunRepository(this.db);
-      for (const runId of runIds) {
+      for (const runId of stoppedRunIds) {
         await runs.markRunTerminal({
           run_id: runId,
           space_id: spaceId,
@@ -874,7 +874,7 @@ export class PgProjectRepository {
             outputText: "",
             outputJson: { project_id: projectId, cancellation_source: "project_archive" },
           }),
-          error_json: { error_code: "project_archived", error_text: "Workflow run cancelled because its Project was archived" },
+          error_json: { error_code: "project_archived", error_text: reason },
           exit_code: null,
           completed_at: now,
         });

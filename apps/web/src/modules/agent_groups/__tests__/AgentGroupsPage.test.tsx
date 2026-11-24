@@ -71,6 +71,9 @@ vi.mock('../../../api/client', async () => {
     attachReferences: vi.fn(),
     conversations: vi.fn(),
     createConversation: vi.fn(),
+    deleteConversation: vi.fn(),
+    restoreDeletedConversation: vi.fn(),
+    setConversationArchived: vi.fn(),
     messages: vi.fn(),
     create: vi.fn(),
     sendMessage: vi.fn(),
@@ -103,7 +106,7 @@ vi.mock('../../../api/client', async () => {
     initializeExecution: vi.fn(),
     mutateExecutionAttachments: vi.fn(),
   },
-  runsApi: { get: vi.fn(), streamTurn: vi.fn(), turn: vi.fn(), authorizationRequests: vi.fn().mockResolvedValue([]), artifacts: vi.fn(async () => ({ items: [], total: 0, limit: 50, offset: 0 })) },
+  runsApi: { get: vi.fn(), streamTurn: vi.fn(), turn: vi.fn(), liveInputOutcome: vi.fn(async () => 'pending'), authorizationRequests: vi.fn().mockResolvedValue([]), artifacts: vi.fn(async () => ({ items: [], total: 0, limit: 50, offset: 0 })) },
   // Conversation pending workspace work: none unless a test says otherwise.
   agentWorkspacesApi: { conversationChanges: vi.fn(async () => ({ items: [] })) },
   spacesApi: { members: vi.fn() },
@@ -836,6 +839,77 @@ describe('Rooms page', () => {
     // that was open a moment ago.
     await waitFor(() => expect(screen.getByRole('heading', { level: 3, name: 'New conversation' })).toBeInTheDocument())
     expect(await screen.findByLabelText('Room message')).toBeInTheDocument()
+  })
+
+  it('restores a deleted conversation from the Recycle bin', async () => {
+    let deleted = true
+    const conversation = {
+      ...initialConversation, title: 'Trip budget', status: 'deleted',
+      deleted_at: '2026-07-20T10:00:00.000Z', purge_after: '2026-08-19T10:00:00.000Z',
+    }
+    vi.mocked(roomsApi.conversations).mockImplementation(async (_roomId, params) => {
+      const items = (params?.status === 'deleted') === deleted ? [{ ...conversation, status: deleted ? 'deleted' : 'active' }] : []
+      return { items, total: items.length, limit: 50, offset: 0 }
+    })
+    vi.mocked(roomsApi.restoreDeletedConversation).mockImplementation(async () => { deleted = false })
+    renderRooms('/rooms?room=room-1')
+    fireEvent.keyDown(await screen.findByRole('tab', { name: 'Recycle bin' }), { key: 'Enter' })
+    expect(await screen.findByText('Trip budget')).toBeInTheDocument()
+    expect(screen.getByText(/restorable until/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Restore conversation' }))
+    await waitFor(() => expect(roomsApi.restoreDeletedConversation).toHaveBeenCalledWith('room-1', 'session-1', { spaceId: 'space-1' }))
+    expect(await screen.findByText('The Recycle bin is empty.')).toBeInTheDocument()
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'Conversations' }), { key: 'Enter' })
+    expect(await screen.findByText('Trip budget')).toBeInTheDocument()
+  })
+
+  it('offers the Recycle bin only to people who can delete in the Room', async () => {
+    vi.mocked(roomsApi.get).mockResolvedValue({ ...detail, viewer_can_write: false })
+    vi.mocked(roomsApi.conversations).mockResolvedValue({ items: [initialConversation], total: 1, limit: 50, offset: 0 })
+    renderRooms('/rooms?room=room-1&view=trash')
+    expect(await screen.findByText('Conversation')).toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: 'Recycle bin' })).not.toBeInTheDocument()
+    expect(roomsApi.conversations).not.toHaveBeenCalledWith('room-1', expect.objectContaining({ status: 'deleted' }))
+  })
+
+  it('archives a conversation and restores it from the Archived tab', async () => {
+    let archived = false
+    const conversation = { ...initialConversation, title: 'Family plans' }
+    vi.mocked(roomsApi.conversations).mockImplementation(async (_roomId, params) => {
+      const items = (params?.status === 'archived') === archived
+        ? [{ ...conversation, status: archived ? 'archived' : 'active' }]
+        : []
+      return { items, total: items.length, limit: 50, offset: 0 }
+    })
+    vi.mocked(roomsApi.setConversationArchived).mockImplementation(async (_roomId, _sessionId, value) => { archived = value })
+    renderRooms('/rooms?room=room-1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Archive' }))
+    await waitFor(() => expect(screen.queryByText('Family plans')).not.toBeInTheDocument())
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'Archived' }), { key: 'Enter' })
+    fireEvent.click(await screen.findByRole('button', { name: 'Restore' }))
+    await waitFor(() => expect(screen.getByText('No archived conversations.')).toBeInTheDocument())
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'Conversations' }), { key: 'Enter' })
+    expect(await screen.findByText('Family plans')).toBeInTheDocument()
+  })
+
+  it('confirms deletion of a conversation with history', async () => {
+    vi.mocked(roomsApi.conversations).mockResolvedValue({
+      items: [
+        { ...initialConversation, title: 'Unused conversation', can_delete_empty: true },
+        { ...initialConversation, id: 'session-used', title: 'Used conversation', can_delete_empty: false },
+      ],
+      total: 2, limit: 50, offset: 0,
+    })
+    vi.mocked(roomsApi.deleteConversation).mockResolvedValue(undefined)
+    renderRooms('/rooms?room=room-1')
+    const row = (await screen.findByText('Used conversation')).closest('button')!.parentElement!
+    fireEvent.click(within(row).getByRole('button', { name: 'Delete conversation' }))
+    expect(roomsApi.deleteConversation).not.toHaveBeenCalled()
+    const confirmation = screen.getByRole('dialog', { name: 'Delete conversation' })
+    fireEvent.click(within(confirmation).getByRole('button', { name: 'Delete conversation' }))
+    await waitFor(() => expect(roomsApi.deleteConversation).toHaveBeenCalledWith('room-1', 'session-used', { spaceId: 'space-1' }))
+    await waitFor(() => expect(screen.queryByText('Used conversation')).not.toBeInTheDocument())
+    expect(screen.getByText('Unused conversation')).toBeInTheDocument()
   })
 
   it('keeps conversations in creation-time descending order', async () => {
@@ -2100,6 +2174,127 @@ describe('Rooms page', () => {
 
       }],
     }), expect.any(Object)))
+  })
+
+  it('sends typed instructions together with separately pasted text', async () => {
+    vi.mocked(roomsApi.sendMessage).mockResolvedValueOnce({
+      message: { id: 'm-pasted', session_id: 'session-1', role: 'user', content: 'Please summarize this' },
+      conversation: initialConversation, run_ids: [], task_group_ids: [],
+    } as never)
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+    const editor = await screen.findByLabelText('Room message')
+    const pasted = 'Example text '.repeat(50).trim()
+    fireEvent.paste(editor, { clipboardData: { getData: () => pasted, files: [] } })
+    fireEvent.change(editor, { target: { value: 'Please summarize this' } })
+    expect(screen.getByRole('button', { name: 'Edit message draft' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledWith('room-1', 'session-1',
+      expect.objectContaining({ content: `Please summarize this\n\n${pasted}` }), expect.any(Object)))
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Edit message draft' })).not.toBeInTheDocument())
+  })
+
+  it('asks which active Run takes an ordinary send when several could, keeping the draft, then shows its delivery', async () => {
+    const candidates = [
+      { run_id: 'run-live', agent_id: 'agent-1', agent_name: 'Manager', status: 'running', delivery: 'live', delegated: false, started_at: null },
+      { run_id: 'run-parked', agent_id: 'agent-1', agent_name: 'Manager', status: 'waiting_for_dependency', delivery: 'with_results', delegated: true, started_at: null },
+    ]
+    vi.mocked(roomsApi.sendMessage)
+      .mockRejectedValueOnce(new ApiRequestError('choose', 409, 'live_input_target_choice_required', { candidates }))
+      .mockResolvedValueOnce({
+        message: { id: 'm-live', session_id: 'session-1', role: 'user', content: 'Also check the migration', run_id: 'run-parked', metadata_json: {} },
+        conversation: initialConversation, live: { run_id: 'run-parked', message_id: 'm-live', state: 'deferred' },
+      } as never)
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+    fireEvent.change(await screen.findByLabelText('Room message'), { target: { value: 'Also check the migration' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledWith('room-1', 'session-1',
+      expect.objectContaining({ content: 'Also check the migration', live_target: 'auto', queue: true }), expect.any(Object)))
+    fireEvent.click(await screen.findByRole('button', { name: 'Manager · waiting for results · delegated' }))
+    expect(screen.getByLabelText('Room message')).toHaveTextContent('Also check the migration')
+    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenLastCalledWith('room-1', 'session-1',
+      expect.objectContaining({ live_target: { run_id: 'run-parked' } }), expect.any(Object)))
+    // Named as the person chose it, with what was sent, so several additions can be told apart.
+    expect(await screen.findByText('Saved for Manager. It is delivered with the results it is waiting for.')).toBeInTheDocument()
+    expect(screen.getByTestId('live-input-m-live')).toHaveTextContent('Also check the migration')
+    expect(screen.queryByRole('button', { name: 'Manager · running now' })).not.toBeInTheDocument()
+    expect(roomsApi.sendMessage).toHaveBeenCalledTimes(2)
+  })
+
+  it('refuses a chosen Run that can no longer take the draft instead of sending it ordinarily, and drops a choice the draft outgrew', async () => {
+    const candidates = [
+      { run_id: 'run-live', agent_id: 'agent-1', agent_name: 'Manager', status: 'running', delivery: 'live', delegated: false, started_at: null },
+      { run_id: 'run-parked', agent_id: 'agent-1', agent_name: 'Manager', status: 'waiting_for_dependency', delivery: 'with_results', delegated: true, started_at: null },
+    ]
+    vi.mocked(roomsApi.sendMessage)
+      .mockRejectedValueOnce(new ApiRequestError('choose', 409, 'live_input_target_choice_required', { candidates }))
+      .mockRejectedValueOnce(new ApiRequestError('gone', 409, 'live_input_target_unavailable', { candidates: [] }))
+      .mockRejectedValueOnce(new ApiRequestError('choose', 409, 'live_input_target_choice_required', { candidates }))
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+    fireEvent.change(await screen.findByLabelText('Room message'), { target: { value: 'Also check the migration' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Manager · running now' }))
+    // Refused: said so, nothing sent in its place, the draft kept for the person's next decision.
+    expect(await screen.findByText('The run you chose can no longer take this message. Nothing was sent; send it again to post it as a new message.')).toBeInTheDocument()
+    expect(roomsApi.sendMessage).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(roomsApi.sendMessage).mock.calls[1]![2]).toMatchObject({ live_target: { run_id: 'run-live' } })
+    expect(screen.getByLabelText('Room message')).toHaveTextContent('Also check the migration')
+    // A choice offered for one draft never applies to another.
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    expect(await screen.findByRole('button', { name: 'Manager · running now' })).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Room message'), { target: { value: 'Something else entirely' } })
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Manager · running now' })).not.toBeInTheDocument())
+    expect(roomsApi.sendMessage).toHaveBeenCalledTimes(3)
+  })
+
+  it.each([
+    new TypeError('Failed to fetch'),
+    new ApiRequestError('in progress', 409, 'idempotency_in_progress'),
+    Object.assign(new Error('read-back failed'), { cause: new ApiRequestError('not found', 404) }),
+  ])('keeps the ordinary send key after %s', async firstFailure => {
+    vi.mocked(roomsApi.sendMessage)
+      .mockRejectedValueOnce(firstFailure)
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+    fireEvent.change(await screen.findByLabelText('Room message'), { target: { value: 'Also check the migration' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled())
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledTimes(2))
+    const [first, second] = vi.mocked(roomsApi.sendMessage).mock.calls.map(call => (call[3] as { idempotencyKey?: string }).idempotencyKey)
+    expect(first).toEqual(expect.any(String))
+    expect(second).toBe(first)
+  })
+
+  it('keeps the resend key and body until the ordinary replacement outcome is known', async () => {
+    vi.mocked(roomsApi.sendMessage)
+      .mockResolvedValueOnce({
+        message: { id: 'm-live', session_id: 'session-1', role: 'user', content: 'Also check the migration', run_id: 'run-live', metadata_json: {} },
+        conversation: initialConversation, live: { run_id: 'run-live', message_id: 'm-live', state: 'not_injected' },
+      } as never)
+      .mockRejectedValueOnce(new ApiRequestError('in progress', 409, 'idempotency_in_progress'))
+      .mockRejectedValueOnce(Object.assign(new Error('read-back failed'), { cause: new ApiRequestError('not found', 404) }))
+      .mockRejectedValueOnce(new ApiRequestError('conflict', 409, 'operation_conflict'))
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+    fireEvent.change(await screen.findByLabelText('Room message'), { target: { value: 'Also check the migration' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+    const button = await screen.findByRole('button', { name: 'Send as a new message' })
+    for (const calls of [2, 3, 4, 5]) {
+      await waitFor(() => expect(button).toBeEnabled())
+      fireEvent.click(button)
+      await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledTimes(calls))
+    }
+    const [original, first, inProgress, unread, refused] = vi.mocked(roomsApi.sendMessage).mock.calls
+    expect(first![2]).toMatchObject({ content: 'Also check the migration' })
+    expect(first![2]).not.toHaveProperty('live_target')
+    expect(inProgress![2]).toEqual(first![2])
+    expect(unread![2]).toEqual(first![2])
+    expect(first![3]!.idempotencyKey).not.toBe(original![3]!.idempotencyKey)
+    expect(inProgress![3]!.idempotencyKey).toBe(first![3]!.idempotencyKey)
+    expect(unread![3]!.idempotencyKey).toBe(first![3]!.idempotencyKey)
+    expect(refused![3]!.idempotencyKey).not.toBe(first![3]!.idempotencyKey)
   })
 
   it('discards model and quota drafts and sends the original Room message without settings writes', async () => {

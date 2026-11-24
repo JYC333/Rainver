@@ -88,10 +88,12 @@ describe("journaled Host commands", () => {
     const { journal } = await daemon();
     const { effects, execute } = handler();
     const outer = { send: vi.fn() };
-    const [a, b] = await Promise.all([
+    const [a, b, mismatch] = await Promise.all([
       journal.runJournaledHostCommand(frame(install("send-1")), execute, outer),
       journal.runJournaledHostCommand(frame(install("send-2")), execute, outer),
+      journal.runJournaledHostCommand(frame(install("send-3"), { fingerprint: "b".repeat(64) }), execute, outer),
     ]);
+    expect(mismatch).toMatchObject({ outcome: "mismatch", replayed: false, result: null });
     expect(effects).toEqual(["uninstall_tool"]);
     expect(a).toMatchObject({ outcome: "completed", replayed: false, request_id: "send-1" });
     expect(b).toMatchObject({ outcome: "completed", replayed: true, request_id: "send-2" });

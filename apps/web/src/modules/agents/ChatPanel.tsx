@@ -32,6 +32,7 @@ import { ConfirmDialog } from '../../components/ui/dialog'
 import type { ConversationInputPart } from '@rainver/protocol'
 import { ConversationGitContext } from '../conversation/ConversationGitContext'
 import { clearConversationDraft, writeConversationDraft } from '../conversation/conversationDraft'
+import { withPastedText } from '../conversation/ConversationDraftEditor'
 import { useConversationDraft } from '../conversation/useConversationDraft'
 import { ConversationRunControls } from '../conversation/ConversationRunControls'
 import {isWorkspaceIntegrationNotice} from '../conversation/WorkspaceIntegrationNotice'
@@ -127,6 +128,8 @@ function ChatPanelContent({
   const draftDestination = `direct:${agent.id}:${projectId ?? ''}:${sessionId ?? 'new'}`
   const {
     value: input,
+    pastedText,
+    setPastedText,
     parts: inputParts,
     setValue: changeInput,
     setParts: changeInputParts,
@@ -138,6 +141,7 @@ function ChatPanelContent({
     textOf: sameText,
     withText: replaceText,
     sessionId,
+    flushOnUnmount: true,
   })
   const [sending, setSending] = useState(false)
   const [savingSettings, setSavingSettings] = useState(false)
@@ -319,8 +323,8 @@ function ChatPanelContent({
   const awaitingDecision = messages.some(message => message.turn?.state === 'blocked'
     && message.turn.blocked_on !== 'workspace' && message.turn.blocked_on !== 'quota')
 
-  const send = useCallback(async (text: string, parts: ConversationInputPart[] = inputParts) => {
-    const message = text.trim()
+  const send = useCallback(async (text: string, parts: ConversationInputPart[] = inputParts, paste = '') => {
+    const message = withPastedText(text, paste)
     // `inFlight` rather than `sending`: a blocked turn hands the composer back
     // so the person can go and approve something, but its request is still
     // open, and a second send while it is would be two turns at once.
@@ -363,6 +367,7 @@ function ChatPanelContent({
             // attachments added since send, including uploads still in flight.
             const currentDraft = draftInputRef.current
             if (currentDraft.textVersion === submittedDraft.textVersion && submittedDraft.value === text) changeInput('')
+            if (currentDraft.pasteVersion === submittedDraft.pasteVersion && submittedDraft.pastedText === paste) setPastedText('')
             changeInputParts(currentDraft.parts.filter(part => !parts.includes(part)))
             const acceptedDestination = `direct:${agent.id}:${projectId ?? ''}:${accepted.session_id}`
             draftReadyRef.current = acceptedDestination
@@ -371,6 +376,7 @@ function ChatPanelContent({
               destination: acceptedDestination,
               text: draftInputRef.current.value,
               input_parts: draftInputRef.current.parts,
+              pasted_text: draftInputRef.current.pastedText,
             })
             if (!sessionId) { setSavedSessionConfig(sessionConfig); acceptedSettings = true }
             setSessionId(accepted.session_id)
@@ -503,7 +509,7 @@ function ChatPanelContent({
         setSending(false)
       }
     }
-  }, [agent.id, agent.space_id, awaitingDecision, backend, changeInput, changeInputParts, draftDestination, inputParts, loadingBackends, loadingHistory, onSessionChange, projectId, restoreWorkspace, selectedBackendOption?.usable, sessionConfig, sessionId, scope, savingSettings])
+  }, [agent.id, agent.space_id, awaitingDecision, backend, changeInput, changeInputParts, setPastedText, draftDestination, inputParts, loadingBackends, loadingHistory, onSessionChange, projectId, restoreWorkspace, selectedBackendOption?.usable, sessionConfig, sessionId, scope, savingSettings])
 
   const retryRun = useCallback(async (runId: string) => {
     const retried = await agentsApi.retryConversation(agent.id, runId, { ...scope, spaceId: agent.space_id })
@@ -700,7 +706,9 @@ function ChatPanelContent({
         loadingHistory={loadingHistory}
         input={input}
         onInputChange={changeInput}
-        onSend={() => void send(input)}
+        pastedText={pastedText}
+        onPastedTextChange={setPastedText}
+        onSend={() => void send(input, inputParts, pastedText)}
         runHref={entry => (entry.turn ? `/runs/${entry.turn.run_id}` : undefined)}
         placeholder={t('conversation_ui.chat.placeholder')}
         emptyTitle={t('conversation_ui.chat.empty_title')}
@@ -739,7 +747,8 @@ function ChatPanelContent({
                 } finally { setSavingSettings(false) }
               } : undefined,
             }])}
-            disabled={sending || loadingBackends || hostBlocked || scope.actionRole === 'worker' || scope.actionRole === 'viewer'}
+            executionActive={sending}
+            disabled={(!sessionId && sending) || loadingBackends || hostBlocked || scope.actionRole === 'worker' || scope.actionRole === 'viewer'}
           />
         )}
         composerNote={!sessionId ? t('conversation_ui.session_config.first_send') : awaitingDecision

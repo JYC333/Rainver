@@ -51,6 +51,12 @@ pending job in the same response. It runs `scripts/update.sh <stage>` for each s
 but `drain`, which is an HTTP poll of the server's internal drain endpoint, and posts
 one event per stage. Reporting retries across the server restart that `recreate`
 causes, so a stage that ran is never missing from the job's audit.
+Pull resolves the channel using the server image, verifies that all three
+images carry the same commit, and shares its immutable image tag with every
+subsequent stage. An update holds the same instance-directory lock as the host
+startup and recovery scripts for its whole run. The heartbeat reports the
+configured channel separately from the running server image reference so a
+channel check can compare its digest to the running commit.
 
 The loop is configured by the generated `.deployer.env` (`DEPLOYER_SERVER_URL`,
 `SERVER_INTERNAL_TOKEN`). Without both, the loop does not start. The
@@ -66,8 +72,8 @@ host-run process below) is therefore safe from the server's side, though they
 would still compete for the same queued job. An `update` refuses outside prod:
 dev and test build their images from a checkout this container does not mount.
 
-The deployer never recreates itself, never writes `.env`, and never changes the
-image tag: channel selection and rollback stay host operations.
+The host operator owns channel selection, rollback, the instance `.env`, and
+replacement of the deployer itself.
 
 ## Wire Protocol
 

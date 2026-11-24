@@ -74,7 +74,7 @@ export const pluginDataGrants = pgTable("plugin_data_grants", {
 			AND ((scope = 'run' AND target_run_id IS NOT NULL) OR (scope = 'background' AND target_run_id IS NULL AND toolset = 'read')))
 		OR (data_class = 'sensitive' AND scope = 'project' AND data_owner_user_id IS NOT NULL AND data_owner_user_id = granted_by_user_id AND toolset = 'read'
 			AND target_run_id IS NULL AND expires_at IS NULL AND plugin_id LIKE 'core:%' AND project_id IS NOT NULL AND connection_id IS NOT NULL
-			AND connection_generation IS NOT NULL AND connection_generation >= 1 AND purpose IS NOT NULL AND purpose IN ('on_demand_read', 'daily_digest', 'rule_digest'))`),
+			AND connection_generation IS NOT NULL AND connection_generation >= 1 AND purpose IS NOT NULL AND purpose IN ('on_demand_read', 'daily_digest', 'rule_digest', 'application_update'))`),
 	check("ck_plugin_data_grants_binding", sql`scope = 'project' OR (project_id IS NULL AND connection_id IS NULL AND connection_generation IS NULL AND purpose IS NULL)`),
 	// A core data tool's only active consent is the owner's Project consent (ADR 0033); earlier per-Run rows stay as history.
 	check("ck_plugin_data_grants_core_scope", sql`status <> 'active' OR plugin_id NOT LIKE 'core:%' OR scope = 'project'`),

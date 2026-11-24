@@ -63,7 +63,7 @@ describe("root migration operations entrypoint", () => {
     const runtimeRoot = join(root, "runtime");
     const modeRoot = join(runtimeRoot, mode);
     mkdirSync(modeRoot, { recursive: true });
-    writeFileSync(join(modeRoot, ".env"), "POSTGRES_DB=fixture\n");
+    writeFileSync(join(modeRoot, ".env"), "POSTGRES_DB=fixture\nPOSTGRES_PASSWORD=fixture-owner-password\n");
     writeFileSync(join(modeRoot, ".server.env"), "SERVER_DATABASE_URL=postgresql://fixture\n");
     const bin = join(root, "bin");
     mkdirSync(bin);
@@ -134,29 +134,35 @@ if ((failure === 'build' && args.includes('build')) ||
     (failure === 'select' && args.includes('select')) ||
     (failure === 'complete' && args.includes('complete')) ||
     (failure === 'verify' && args.includes('--input-type=module')) ||
+    (failure === 'plugin_preview' && args.includes('preview-plugins')) ||
+    (failure === 'plugin_apply' && args.includes('apply-plugins')) ||
     (failure === 'backup' && args.includes('pg_dump')) ||
     (failure === 'apply' && args.includes('--apply')) ||
     (failure === 'up' && args.includes('dist/db/migrateCli.js'))) process.exit(9);
 if (args.includes('ps')) process.stdout.write(args.includes('restarting') ? process.env.CUTOVER_TEST_RESTARTING : process.env.CUTOVER_TEST_RUNNING);
-if (args.includes('select')) {
+if (args.includes('select') && !process.env.CUTOVER_TEST_NO_CORE) {
   const path = require('node:path');
   const ids = process.env.CUTOVER_TEST_CHAIN ? ['a'.repeat(64), 'b'.repeat(64)] : ['a'.repeat(64)];
   for (const id of ids) fs.cpSync(process.env.CUTOVER_TEST_ARCHIVE, path.join(process.env.RAINVER_ROOT, 'test/db/migration-archives', id), { recursive: true, force: true });
   process.stdout.write(ids.join('\\n') + '\\n');
 }
+if (args.includes('preview-plugins')) process.stdout.write(process.env.CUTOVER_TEST_PLUGINS + '\\n');
 if (args.includes('--input-type=module')) process.stdout.write(process.env.CUTOVER_TEST_LATER + '\\n');
 if (args.includes('pg_dump')) process.stdout.write('PGDMP-fixture');
 if (args.includes('convert')) process.stdout.write(JSON.stringify({state: args.includes('--apply') ? 'converted' : 'preview', pending: []}));
 `, { mode: 0o755 });
-    const run = (failure: string, options: { running?: string; restarting?: string; later?: number; chain?: boolean } = {}) => {
+    const run = (failure: string, options: { running?: string; restarting?: string; later?: number; chain?: boolean; plugins?: number; noCore?: boolean } = {}) => {
       rmSync(log, { force: true });
-      const result = spawnSync("bash", [cutoverScript, "cutover", "--mode", "test", ...(failure === "none" ? [] : ["--archive", archive])], {
+      const selection = options.plugins !== undefined || failure === "none" ? [] : ["--archive", archive];
+      const result = spawnSync("bash", [cutoverScript, "cutover", "--mode", "test", ...selection], {
         encoding: "utf8", env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, RAINVER_ROOT: runtimeRoot,
           RAINVER_HOST_MODE_ROOT: "", CUTOVER_TEST_LOG: log, CUTOVER_TEST_FAILURE: failure, CUTOVER_TEST_ARCHIVE: archive,
           CUTOVER_TEST_RUNNING: options.running ?? "postgres\nserver\nfrontend\n",
           CUTOVER_TEST_RESTARTING: options.restarting ?? "", CUTOVER_TEST_LATER: String(options.later ?? 0),
-          CUTOVER_TEST_CHAIN: options.chain ? "1" : "" },
+          CUTOVER_TEST_CHAIN: options.chain ? "1" : "", CUTOVER_TEST_PLUGINS: String(options.plugins ?? 0),
+          CUTOVER_TEST_NO_CORE: options.noCore ? "1" : "" },
       });
+      expect(existsSync(log), result.stderr).toBe(true);
       const commands = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line) as string[]);
       return {
         result, commands,
@@ -244,6 +250,38 @@ if (args.includes('convert')) process.stdout.write(JSON.stringify({state: args.i
     expect(failed.restore).toEqual([]);
     expect(existsSync(join(modeRoot, "db", ".migration-cutover.active"))).toBe(true);
   });
+
+  it("automatically previews and converts plugins without a core archive or extra arguments", () => {
+    const { modeRoot, run } = cutoverHarness();
+    const mismatch = run("plugin_preview", { plugins: 1, noCore: true });
+    expect(mismatch.result.status).not.toBe(0);
+    expect(mismatch.stopped).toBeUndefined();
+    const failed = run("plugin_apply", { plugins: 1, noCore: true });
+    expect(failed.result.status).not.toBe(0);
+    expect(failed.restore).toEqual([]);
+    const find = (args: string) => failed.commands.findIndex((command) => command.includes(args));
+    expect(find("preview-plugins")).toBeLessThan(find("stop"));
+    expect(find("pg_dump")).toBeLessThan(find("apply-plugins"));
+    expect(failed.commands[find("apply-plugins")]).toContain("--backup");
+    expect(find("convert")).toBe(-1);
+    const retry = run("retry", { plugins: 0, noCore: true, running: "postgres\n" });
+    expect(retry.result.status, retry.result.stderr).toBe(0);
+    expect(retry.restore.flat()).toEqual(expect.arrayContaining(["server", "frontend"]));
+    expect(existsSync(join(modeRoot, "db", ".migration-cutover.active"))).toBe(false);
+  });
+
+  it("converts core and plugin histories in the same lifecycle with one backup", () => {
+    const { run } = cutoverHarness();
+    const { result, commands } = run("none", { plugins: 2, later: 1 });
+    expect(result.status, result.stderr).toBe(0);
+    expect(commands.filter((args) => args.includes("pg_dump"))).toHaveLength(1);
+    expect(commands.filter((args) => args.includes("stop"))).toHaveLength(1);
+    const order = (argument: string) => commands.findIndex((args) => args.includes(argument));
+    expect(order("--apply")).toBeGreaterThan(order("pg_dump"));
+    expect(order("apply-core")).toBeGreaterThan(order("--apply"));
+    expect(order("apply-plugins")).toBeGreaterThan(order("apply-core"));
+    expect(order("apply-plugins")).toBeLessThan(order("start"));
+  });
 });
 
 describe("migration squash preparation", () => {
@@ -295,6 +333,15 @@ describe("migration squash preparation", () => {
     expect(plan.common).toBe(2);
     expect(plan.target[1].checksum).toBe(plan.source[1].checksum);
   });
+});
+
+it("permits a plugin cutover when core history is an exact checkout prefix without an archive", async () => {
+  const store = join(root, "store");
+  const applied = loadMigrations(source);
+  expect(await selectMigrationArchives(store, source, [], applied, undefined, true)).toEqual([]);
+  expect(await selectMigrationArchives(store, source, [], applied.slice(0, -1), undefined, true)).toEqual([]);
+  const divergent = [{ ...applied[0], checksum: "different" }];
+  await expect(selectMigrationArchives(store, source, [], divergent, undefined, true)).rejects.toThrow(/No archive/);
 });
 
 describe("data-preserving migration history conversion (real PostgreSQL)", () => {

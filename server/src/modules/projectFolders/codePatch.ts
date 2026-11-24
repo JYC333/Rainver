@@ -1,3 +1,4 @@
+import { resolveFolderSnapshotRetention } from "./snapshotRetention.js";
 import {CodePatchDecisionRefusal} from './codePatchDecisionErrors.js';
 import {sha256Json} from '../evolution/hash.js';
 import {codePatchDecisionAudit,codePatchEffectReceipt} from './codePatchEffectContext.js';
@@ -383,8 +384,7 @@ async function applyCodePatchProposal(context: ProposalApplyContext): Promise<Pr
       spaceId: proposal.space_id,
       projectFolderId: folderId,
       files: receipt.before,
-      retentionDays: folder.snapshot_retention_days,
-      maxCount: folder.snapshot_max_count,
+      ...await resolveFolderSnapshotRetention(context.db, proposal.space_id, folder),
     });
   } catch (error) {
     throw error;

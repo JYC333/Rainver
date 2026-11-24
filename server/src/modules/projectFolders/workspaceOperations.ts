@@ -91,7 +91,14 @@ export function workspaceOperationRegistrations(definitions:ReadonlyMap<string,R
   definition:definitions.get('workspace.change.complete')!,
   ...(native?{afterCommit:native.afterCommit}:{}),
   async resolve(db,raw,actor){const input=WorkspaceChangeCompleteInputSchema.parse(raw),c=await authorizedWorkspaceChange(db,input.change_set_id,actor,false,true);return {authority:`workspace:${c.workspace_id}`,targets:{workspace_id:c.workspace_id,change_set_id:c.id},resourceType:'project',resourceId:c.project_id};},
-  async authorize(db,raw,actor){const input=WorkspaceChangeCompleteInputSchema.parse(raw),c=await authorizedWorkspaceChange(db,input.change_set_id,actor,true,true);await refuseSharedDelegatedPublication(db,actor,c,input.action);},
+  async authorize(db,raw,actor,scope){
+   const input=WorkspaceChangeCompleteInputSchema.parse(raw),c=await authorizedWorkspaceChange(db,input.change_set_id,actor,true,true);
+   await refuseSharedDelegatedPublication(db,actor,c,input.action);
+   if(input.action==='checkpoint'&&c.access==='own'&&!input.commit&&!input.publication&&!input.verification){
+    const integration=await db.query('SELECT 1 FROM task_merges WHERE change_set_id=$1 AND space_id=$2',[c.id,actor.space_id]);
+    if(!integration.rows.length)scope.policyFacts={...scope.policyFacts,private_workspace_checkpoint:true};
+   }
+  },
   async authorizeResult(db,raw,actor){await authorizedWorkspaceChange(db,(raw as {change_set_id:string}).change_set_id,actor,false,true);},
   async execute(db,raw,actor,invocation){
    const input=WorkspaceChangeCompleteInputSchema.parse(raw),c=await authorizedWorkspaceChange(db,input.change_set_id,actor,true,true);

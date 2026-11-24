@@ -554,6 +554,21 @@ describe("deployment authority", () => {
     expect(status.update_available).toBe(true);
     expect(status.observations?.services[0]?.revision).toBe("abc");
 
+    // Production starts by immutable ref, while the registry check tracks the
+    // effective channel. A newer stable digest still compares with that image.
+    const pinnedServer = {
+      service: "server",
+      image_ref: `ghcr.io/x/server:sha-${"a".repeat(40)}`,
+      digest: "sha256:running",
+      configured_tag: "stable",
+      revision: "a".repeat(40),
+      surface: "s1",
+    };
+    await service().heartbeat(beat({ services: [pinnedServer], remote: null }));
+    expect((await service().status()).update_available).toBe(true);
+    await service().heartbeat(beat({ services: [{ ...pinnedServer, configured_tag: "edge" }], remote: null }));
+    expect((await service().status()).update_available).toBeNull();
+
     // A remote result outlives the heartbeat that carried it, and the operator
     // may change RAINVER_IMAGE_TAG in between. A digest read for another
     // channel answers nothing about this one.

@@ -265,9 +265,11 @@ validate_prod_env() {
 # source when it is missing or --build was given.
 ensure_images() {
   if [[ "$MODE" == "prod" ]]; then
-    echo "Pulling rainver images (tag: $(local_compose_setting_or_default RAINVER_IMAGE_TAG stable))..."
-    "${COMPOSE[@]}" pull
-    return 0
+    local_compose_pin_image_tag || return
+    echo "Pulling rainver images (tag: $RAINVER_IMAGE_TAG)..."
+    "${COMPOSE[@]}" pull || return
+    local_compose_verify_image_revision "${COMPOSE_APPLICATION_SERVICES[@]}"
+    return
   fi
 
   local image="$COMPOSE_PROJECT-server"
@@ -384,6 +386,7 @@ run_maintenance_upgrade() {
 
 private_dir "$RAINVER_ROOT"
 private_dir "$MODE_ROOT"
+local_compose_lock_instance "starting Rainver"
 prepare_prod_first_run
 init_data_dirs
 ensure_env
@@ -391,9 +394,6 @@ initialize_prod_env
 validate_prod_env
 local_compose_ensure_server_database_env
 local_compose_generate_server_env
-
-export DOCKER_GID
-DOCKER_GID=$(stat -c '%g' /var/run/docker.sock 2>/dev/null || echo 989)
 
 if [[ "$maintenance" == "1" ]]; then
   run_maintenance_upgrade
@@ -409,16 +409,53 @@ echo "  compose file: $COMPOSE_FILE"
 echo "  project:      $COMPOSE_PROJECT"
 echo "  mode root:    $MODE_ROOT"
 
-up_args=(up)
+up_args=(up --detach)
 if [[ -n "$build_flag" ]]; then
   up_args+=("$build_flag")
 fi
-if [[ -n "$detach_flag" ]]; then
-  up_args+=("$detach_flag")
-fi
+startup_logs_since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 "${COMPOSE[@]}" "${up_args[@]}"
 
 if [[ -n "$detach_flag" ]]; then
   echo "Started in the background. Follow logs with:"
   echo "  ${COMPOSE[*]} logs -f server"
+else
+  # Release the startup lock after Compose has brought up the stack. An
+  # attached log session can last indefinitely; stop the stack on Ctrl-C.
+  local_compose_unlock_instance
+  stop_attached_stack() {
+    if local_compose_lock_instance "stopping Rainver"; then
+      "${COMPOSE[@]}" stop
+    fi
+    exit "$1"
+  }
+  trap 'stop_attached_stack 130' INT
+  trap 'stop_attached_stack 143' TERM
+
+  log_args=(logs --follow --since "$startup_logs_since")
+  if [[ ! -t 0 || ! -t 1 ]]; then
+    "${COMPOSE[@]}" "${log_args[@]}"
+    exit
+  fi
+
+  printf '\n  d Detach    Ctrl+C Stop Rainver\n'
+  # Give the follower its own process group so cleanup also reaches the
+  # Compose plugin process launched by the Docker CLI.
+  set -m
+  "${COMPOSE[@]}" "${log_args[@]}" </dev/null &
+  logs_pid=$!
+  set +m
+  trap '
+    kill -TERM -- "-$logs_pid" 2>/dev/null || true
+    wait "$logs_pid" 2>/dev/null || true
+  ' EXIT
+
+  while kill -0 "$logs_pid" 2>/dev/null; do
+    if IFS= read -rsn1 -t 0.2 key && [[ "$key" == [dD] ]]; then
+      printf '\nDetached. Rainver is still running.\n'
+      exit 0
+    fi
+  done
+  trap - EXIT
+  wait "$logs_pid"
 fi

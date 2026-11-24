@@ -25,7 +25,9 @@ it('404 is one physical send; deterministic scope, quota and contract errors nev
  }
 });
 it.for(['timeout','cancel'])('preserves %s for an in-flight broker, without retry and with reusable lease',async(mode)=>{
- const {host,execution}=await fixture();execution.limits.wall_ms=mode==='timeout'?500:10000;
+ // Leave room for sandbox and lease setup under parallel suite load. The
+ // assertions still require the real broker to be in flight at the deadline.
+ const {host,execution}=await fixture();execution.limits.wall_ms=mode==='timeout'?2000:10000;
  const controller=new AbortController();let hits=0;
  const result=await runSourceCollection(host,execution,async(_request,abort)=>{
   hits++;if(mode==='cancel')setTimeout(()=>controller.abort(),30);

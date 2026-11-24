@@ -39,7 +39,8 @@ class InstallProdTest(unittest.TestCase):
             add_file(
                 archive,
                 "ops/scripts/start.sh",
-                b'#!/bin/sh\nprintf "%s\\n%s\\n" "$RAINVER_IMAGE_TAG" "${RAINVER_INITIAL_IMAGE_TAG:-}" > "$RAINVER_ROOT/started"\n',
+                b'#!/bin/sh\nif [ "${RAINVER_TEST_START_FAIL:-}" = 1 ]; then exit 42; fi\n'
+                b'printf "%s\\n%s\\n" "$RAINVER_IMAGE_TAG" "${RAINVER_INITIAL_IMAGE_TAG:-}" > "$RAINVER_ROOT/started"\n',
                 0o755,
             )
             add_file(archive, "ops/scripts/lib/local-compose.sh", LOCAL_COMPOSE.read_bytes())
@@ -178,6 +179,43 @@ esac
             (self.root / "data/started").read_text(),
             f"sha-{SHA}\nsha-{SHA}\n",
         )
+
+    def test_pin_mismatch_leaves_the_previous_bundle_active(self) -> None:
+        previous = "b" * 40
+        install_root = self.root / "install"
+        (install_root / "releases" / previous).mkdir(parents=True)
+        current = install_root / "current"
+        current.symlink_to(f"releases/{previous}")
+        env_file = self.root / "data/prod/.env"
+        env_file.parent.mkdir(parents=True)
+        env_file.write_text(f"RAINVER_IMAGE_TAG=sha-{previous}\n")
+
+        rejected = self.run_installer("--sha", SHA)
+
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("needs RAINVER_IMAGE_TAG", rejected.stderr)
+        self.assertEqual(current.readlink(), Path(f"releases/{previous}"))
+        self.assertFalse((self.root / "data/started").exists())
+        self.assertFalse((self.root / "bin/rainver").exists())
+
+    def test_failed_candidate_start_leaves_the_previous_launcher_active(self) -> None:
+        previous = "b" * 40
+        install_root = self.root / "install"
+        (install_root / "releases" / previous).mkdir(parents=True)
+        current = install_root / "current"
+        current.symlink_to(f"releases/{previous}")
+        self.env["RAINVER_TEST_START_FAIL"] = "1"
+
+        failed = self.run_installer()
+
+        self.assertEqual(failed.returncode, 42)
+        self.assertEqual(current.readlink(), Path(f"releases/{previous}"))
+        self.assertFalse((self.root / "bin/rainver").exists())
+
+        del self.env["RAINVER_TEST_START_FAIL"]
+        retried = self.run_installer()
+        self.assertEqual(retried.returncode, 0, retried.stderr)
+        self.assertEqual(current.readlink(), Path(f"releases/{SHA}"))
 
     def test_rejects_corrupt_bundle_before_activation(self) -> None:
         archive = self.releases / f"prod-sha-{SHA}/rainver-prod.tar.gz"

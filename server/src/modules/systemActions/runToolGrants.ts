@@ -30,10 +30,12 @@ export async function buildRunToolGrants(
   // Personal/sensitive tools are absent (names included) unless scenario and data-side consent admit them (ADR 0030).
   const admitted=context?await admitPluginDataTools(context.db,context.config,[...enabled],{spaceId:context.spaceId,scenario:context.scenario}):new Set<string>();
   for(const id of [...enabled])if(!admitted.has(id))enabled.delete(id);
+  // A member's delegated read (ADR 0035 §4) exists only where the owner delegated a mailbox for this conversation's Project.
+  if(context?.userId&&declared.has('source.gmail.delegated.read')&&allowed.has('source.gmail.delegated.read')){const {gmailDelegatedReadAvailable}=await import('../sources/gmail/gmailDelegatedReadOperation.js');if(await gmailDelegatedReadAvailable(context.db,{spaceId:context.spaceId,userId:context.userId,sessionId:context.sessionId??null}))enabled.add('source.gmail.delegated.read');}
   const grants: RunToolGrant[] = [...registry.values()]
     .filter(
       (definition) =>
-        (!(definition.id.startsWith("plugin.")||coreDataTool(definition.id))||enabled.has(definition.id)) &&
+        (!(definition.id.startsWith("plugin.")||coreDataTool(definition.id)||definition.id==="source.gmail.delegated.read")||enabled.has(definition.id)) &&
         definition.id !== "authorization.request" &&
         declared.has(definition.id) &&
         allowed.has(definition.id) &&

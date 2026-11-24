@@ -35,15 +35,6 @@ export async function enqueueRunTerminalReconcilers(
     });
     return;
   }
-  if (kind === "managed_experiment") {
-    await queue.enqueue({
-      job_type: "managed_experiment_reconcile",
-      space_id: input.space_id,
-      user_id: input.user_id,
-      payload: { run_id: input.run_id },
-    });
-    return;
-  }
   if (input.workflow_input_json.project_research_standing !== undefined) {
     await queue.enqueue({
       job_type: "project_research_standing_reconcile",

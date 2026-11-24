@@ -353,6 +353,12 @@ describe("enqueueDueCustomSourceHandlerRuns", () => {
     );
     expect(job.rows[0]).toMatchObject({ status: "failed", error_code: "stuck_reclaimed" });
 
+    // An interruption in the older two-statement reaper left this mismatch.
+    await db.pool.query(`UPDATE extraction_jobs SET status = 'running' WHERE connection_id = $1`, [connId]);
+    expect(await reclaimStuckCustomSourceHandlerRuns(db.pool, 600)).toBe(0);
+    expect((await db.pool.query(`SELECT status FROM extraction_jobs WHERE connection_id = $1`, [connId])).rows[0])
+      .toMatchObject({ status: "failed" });
+
     expect(await enqueueDueCustomSourceHandlerRuns(db.pool, 25)).toBe(1);
   });
 
@@ -392,6 +398,26 @@ describe("enqueueDueCustomSourceHandlerRuns", () => {
 });
 
 describe("runPendingCustomSourceHandlerRuns", () => {
+  it("settles the ExtractionJob from a committed Handler receipt without repeating the fetch", async (ctx) => {
+    if (!db.available || !config) return ctx.skip();
+    const connection = randomUUID();
+    await insertConnection({ id: connection, handlerKind: "generated_custom" });
+    await insertActiveHandlerVersion(connection);
+    expect(await enqueueDueCustomSourceHandlerRuns(db.pool, 25)).toBe(1);
+    const handler = (await db.pool.query<{ extraction_job_id: string }>(
+      `UPDATE source_handler_runs SET status='succeeded',completed_at=now()-interval '2 minutes',
+              validation_result_json='{"items_created":2,"items_updated":1}'
+        WHERE source_connection_id=$1 RETURNING extraction_job_id`, [connection],
+    )).rows[0]!;
+    await db.pool.query("UPDATE extraction_jobs SET status='running' WHERE id=$1", [handler.extraction_job_id]);
+    const sends = fetchCount;
+
+    expect(await runPendingCustomSourceHandlerRuns(db.pool, config, 10, fixtureServerGuard)).toBe(0);
+    expect(fetchCount).toBe(sends);
+    const job = (await db.pool.query("SELECT status,items_seen,items_created,items_updated FROM extraction_jobs WHERE id=$1", [handler.extraction_job_id])).rows[0];
+    expect(job).toEqual({ status: "succeeded", items_seen: 3, items_created: 2, items_updated: 1 });
+  });
+
   it.for(["scheduled", "manual"] as const)("blocks a retained legacy handler before fetching or producing output (%s)", async (mode, ctx) => {
     if (!db.available || !config) return ctx.skip();
     const connId = randomUUID();

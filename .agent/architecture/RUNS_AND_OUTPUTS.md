@@ -86,7 +86,10 @@ exists.
 `GET /api/v1/runs/{id}/io` is the user-facing logical I/O view. It reconstructs
 the runtime-neutral input without rendered hidden context or physical Exchange
 paths, returns only a validated `run_output.v1`, filters the event list to the
-semantic runtime vocabulary, and permission-filters Artifact references.
+semantic runtime vocabulary, and permission-filters Artifact references. The
+event filter is applied in SQL (`listRunEvents` with the vocabulary), so a long
+Run's operational events are not read to be discarded; a `summary` viewer's
+read does not query events at all. `/trace` still returns every event.
 Run Detail renders this view separately from phase audit data.
 It opens on logical I/O, with routing/model/profile provenance, verification,
 attempt/fallback evidence, Artifacts, Proposals, and actionable review recovery
@@ -122,7 +125,12 @@ the immutable permission snapshot. Persistent Host-thread context cursors are
 bound to the same opaque ACP session; a context/session mismatch starts a fresh
 session. Native login remains on that Host; ModelProvider-backed OpenCode uses
 the server proxy lease. There is no synchronous Chat endpoint or second Chat
-execution path. Run cancellation remains the normal Run stop operation.
+execution path. Run stop persists the cancellation intent and a separate,
+immediately due cancellation Job in the same transaction. That Job reconciles
+the stop even when the original execution Job has a future schedule.
+
+Room review notices are written only for the current paused Run version. A
+delayed pause notice cannot replace an already published terminal reply.
 
 Each Room message creates one `agent_run_group`; the group is a collaboration
 task, not the persistent conversation. The group records `room_id`,
@@ -736,10 +744,9 @@ Plan graph layer.
 The runtime registry exposes `AgentRuntimeDefinition`s for selectable ACP
 runtimes. One `AcpRuntimeAdapter` and `AcpController` implement Agent execution;
 runtime definitions provide command, installation, backend and capability
-facts. Static runtime capability declarations are not dynamic conformance
-evidence. The Host-daemon path does not apply a vendor subagent-deny
-declaration, so local CLI candidates stay at low
-effective trust. Do not treat a static declaration as that control.
+facts. Native subagents execute inside the owning Run under the CLI’s
+effective configuration. Effective trust is determined by the execution target
+and responsible owner.
 
 Workflow definitions are versioned through the evolvable-asset control plane.
 `runs.workflow_version_id` records the approved version selected for a fixed

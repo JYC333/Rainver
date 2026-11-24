@@ -32,13 +32,20 @@ export const ROOM_OPERATION_SCHEMAS={
  'room.member.remove':{input:z.object({...room,user_id:id}).strict(),output:receipt.extend({user_id:id}).strict()},
  'room.owner.transfer':{input:RoomOwnerTransferRequestSchema.extend(room).strict(),output:receipt},
  'room.owner.claim':{input:z.object(room).strict(),output:receipt},
+ 'room.conversation.archive':{input:z.object(conversation).strict(),output:conversationReceipt},
+ 'room.conversation.restore':{input:z.object(conversation).strict(),output:conversationReceipt},
+ 'room.conversation.restore_deleted':{input:z.object(conversation).strict(),output:conversationReceipt},
+ 'room.conversation.delete':{input:z.object(conversation).strict(),output:conversationReceipt},
+ 'room.conversation.delete_empty':{input:z.object(conversation).strict(),output:conversationReceipt},
  'room.conversation.create':{input:z.object(room).strict(),output:conversationReceipt},
  'room.conversation.attach_references':{input:AttachThreadReferencesRequestSchema.extend(conversation).strict(),output:conversationReceipt.extend({attached:z.number().int().nonnegative()}).strict()},
  'room.message.send':{input:SendRoomMessageRequestSchema.innerType().extend(conversation).strict().superRefine((value,ctx)=>{
    if(!value.content&&value.input_parts.length===0)ctx.addIssue({code:'custom',path:['content'],message:'content or an input part is required'});
    if(value.coordination_target_agent_ids?.length&&value.routing_mode!=='agent_coordination')ctx.addIssue({code:'custom',path:['coordination_target_agent_ids'],message:'coordination targets require routing_mode agent_coordination'});
   }),
-  output:z.discriminatedUnion('status',[turnReceipt.extend({status:z.literal('sent')}).strict(),conversationReceipt.extend({status:z.literal('queued'),queued_id:id}).strict()])},
+  output:z.discriminatedUnion('status',[turnReceipt.extend({status:z.literal('sent')}).strict(),conversationReceipt.extend({status:z.literal('queued'),queued_id:id}).strict(),
+   // Added to an active Run through `run.live_input`; `delivery_state` is what the command set, read the outcome back from the Run.
+   conversationReceipt.extend({status:z.literal('live_input'),run_id:id,message_id:id,binding_id:z.string().uuid().nullable(),delivery_state:z.enum(['pending','deferred'])}).strict()])},
  'room.message.withdraw_queued':{input:z.object({...conversation,queued_id:id}).strict(),output:conversationReceipt.extend({queued_id:id}).strict()},
  'room.message.retry':{input:ConversationRetryRequestSchema.extend(conversation).strict(),output:ConversationRetryResponseSchema.omit({reused:true}).extend({space_id:id,room_id:id}).strict()},
  'room.message.continue_after_proposal':{input:ContinueRoomAfterProposalRequestSchema.extend(conversation).strict(),output:turnReceipt},
@@ -62,6 +69,11 @@ export const ROOM_OPERATION_TITLES:Record<keyof typeof ROOM_OPERATION_SCHEMAS,st
  'room.member.remove':'Remove a person from a Room',
  'room.owner.transfer':'Transfer Room ownership',
  'room.owner.claim':'Claim an ownerless Room',
+ 'room.conversation.archive':'Archive a Room conversation',
+ 'room.conversation.restore':'Restore an archived Room conversation',
+ 'room.conversation.restore_deleted':'Restore a deleted Room conversation from the recycle bin',
+ 'room.conversation.delete':'Delete an idle Room conversation',
+ 'room.conversation.delete_empty':'Delete an unused Room conversation',
  'room.conversation.create':'Open a Room conversation draft',
  'room.conversation.attach_references':'Copy picked content into a Room conversation',
  'room.message.send':'Send or queue a Room message',

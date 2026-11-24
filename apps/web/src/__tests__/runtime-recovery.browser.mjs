@@ -30,7 +30,7 @@ async function fixtures(page, counts, recoveryRun = failed, liveParts = null) {
   const adapter = runtimeKey === 'opencode'
     ? { ...definition, runtime_key: runtimeKey, display_name: 'OpenCode', command: 'opencode', capability_probe: 'opencode', reports_managed_cli_version: false, supports_model_provider: true, provider_api: 'openai_compatible' }
     : definition
-  if (recoveryRun.status === 'running') await page.addInitScript(({ id, live }) => {
+  if (recoveryRun.status === 'running' || recoveryRun.status === 'waiting_for_dependency') await page.addInitScript(({ id, live }) => {
     const originalFetch = window.fetch.bind(window)
     window.fetch = (resource, options) => {
       const url = typeof resource === 'string' ? resource : resource.url ?? String(resource)
@@ -56,6 +56,10 @@ async function fixtures(page, counts, recoveryRun = failed, liveParts = null) {
   await page.route('**/api/v1/**', async route => {
     const path = new URL(route.request().url()).pathname.replace('/api/v1', '')
     let data
+    // Reading the attention stream acknowledges its UI view independently of recovery.
+    if (path === '/me/agent-attention/views' && route.request().method() === 'POST') {
+      return route.fulfill({ json: { read_count: 0, read_states: [] } })
+    }
     if (route.request().method() !== 'GET') { counts.writes++; counts.writePaths?.push(path) }
     if (path === '/me') data = { id: 'user-recovery', name: 'Recovery tester', email: 'recovery@example.test', default_space_id: space, instance_role: 'admin', is_instance_admin: true }
     else if (path === '/me/spaces') data = [{ id: space, name: 'Recovery Space', type: 'personal', role: 'owner' }]
@@ -85,6 +89,8 @@ async function fixtures(page, counts, recoveryRun = failed, liveParts = null) {
       work_context_scope_id: null, enabled: false, preferred_domains: [], setup_version: null,
     }
     else if (path === '/personal-memory-grants') data = []
+    else if (path === '/queries/agent_data_read.list') data = { status: 'succeeded', data: { items: [], has_more: false } }
+    else if (path === '/queries/plugin_data_grant.list') data = { status: 'succeeded', data: { items: [], consentable: [] } }
     else if (path === '/agents') data = [agent]
     else if (path === `/agents/${agent.id}`) data = agent
     else if (path.endsWith('/members')) data = [{ agent_id: agent.id, agent_name: agent.name, status: 'active' }]
@@ -426,6 +432,38 @@ async function capture(page, path) {
   await page.screenshot({ path: `${shots}/${path}.png`, fullPage: true })
 }
 
+for (const [locale, theme, width] of [['en', 'dark', 1280], ['zh-CN', 'light', 390]]) {
+  test(`parked Room turn keeps earlier work expandable: ${locale}/${theme}/${width}`, async () => {
+    const context = await browser.newContext({ viewport: { width, height: 1000 }, serviceWorkers: 'block' })
+    await context.addInitScript(([language, appearance]) => {
+      localStorage.setItem('rainver:locale', language)
+      localStorage.setItem('rainver:theme', appearance)
+    }, [locale, theme])
+    const page = await context.newPage()
+    try {
+      const earlier = 'The cancellation path is intact. I asked a reviewer to check usage.'
+      await fixtures(page, { writes: 0, logins: 0, writePaths: [] }, {
+        ...failed, status: 'waiting_for_dependency', ended_at: null, error_message: null, error_json: null,
+      }, [{ type: 'text', index: 0, text: earlier }])
+      await page.goto(`${baseUrl}/spaces/${space}/projects/${project.id}/rooms?room=${room.id}&conversation=${session.id}`)
+      const parent = page.getByTestId(`turn-${failed.id}`)
+      const disclosure = parent.getByText(locale === 'en' ? 'Work before waiting' : '等待前的工作', { exact: true })
+      const note = parent.getByText(earlier, { exact: true })
+      await disclosure.waitFor()
+      await parent.getByText(locale === 'en' ? 'Waiting for other Agents…' : '等待其他 Agent 返回…', { exact: true }).waitFor()
+      assert.equal(await note.isVisible(), false)
+      await capture(page, `parked-collapsed-${locale}-${theme}-${width}`)
+      await disclosure.focus()
+      await page.keyboard.press('Enter')
+      await note.waitFor()
+      assert.equal(await parent.getByText(locale === 'en' ? 'Working…' : '处理中…', { exact: true }).count(), 0)
+      await capture(page, `parked-expanded-${locale}-${theme}-${width}`)
+      await disclosure.click()
+      assert.equal(await note.isVisible(), false)
+    } finally { await context.close() }
+  })
+}
+
 for(const locale of ['en','zh-CN'])for(const theme of ['dark','light'])for(const width of [390,1280]){
  test(`workspace continuation and retained actions: ${locale}/${theme}/${width}`,async()=>{
   const context=await browser.newContext({viewport:{width,height:1000},serviceWorkers:'block'})
@@ -507,7 +545,7 @@ for (const locale of ['en', 'zh-CN']) for (const theme of ['dark', 'light']) for
 }
 
 for (const locale of ['en', 'zh-CN']) for (const theme of ['dark', 'light']) for (const width of [390, 1280]) {
-  test(`live input parent surface, dialog and delivery: ${locale}/${theme}/${width}`, async () => {
+  test(`running Room activity keeps Stop beside the ordinary composer: ${locale}/${theme}/${width}`, async () => {
     const context = await browser.newContext({ viewport: { width, height: 1000 }, serviceWorkers: 'block' })
     await context.addInitScript(locale => localStorage.setItem('rainver:locale', locale), locale)
     const page = await context.newPage(), counts = { writes: 0, logins: 0, writePaths: [] }, errors = []
@@ -517,28 +555,15 @@ for (const locale of ['en', 'zh-CN']) for (const theme of ['dark', 'light']) for
       await fixtures(page, counts, { ...failed, status: 'running', ended_at: null, error_message: null, error_json: null })
       await page.goto(`${baseUrl}/spaces/${space}/projects/${project.id}/rooms?room=${room.id}&conversation=${session.id}`)
       if (theme === 'light') await page.evaluate(() => document.documentElement.classList.add('theme-light'))
-      const label = locale === 'en' ? 'Add instruction' : '补充指令'
-      const add = page.getByRole('button', { name: label, exact: true }).first()
-      await add.waitFor()
-      await add.scrollIntoViewIfNeeded()
+      const activity = page.getByRole('status', { name: locale === 'en' ? 'Current activity' : '当前工作状态' })
+      const stop = activity.getByRole('button', { name: /^(Stop|停止)$/ }).first()
+      await stop.waitFor()
       await page.getByText(locale === 'en' ? 'Native subagent working: Check cancellation' : '原生子代理正在执行：Check cancellation', { exact: true }).first().waitFor()
-      assert.equal(await page.getByRole('button', { name: /^(Stop|停止)$/ }).count() > 0, true)
+      await page.locator('[data-conversation-input] [contenteditable="true"]').waitFor()
+      assert.equal(await activity.getByRole('button', { name: /^(Add instruction|补充指令)$/ }).count(), 0)
       assert.deepEqual(counts.writePaths.filter(path => path !== '/me/agent-attention/views'), [])
+      await stop.scrollIntoViewIfNeeded()
       await capture(page, `live-entry-${locale}-${theme}-${width}`)
-      await add.click()
-      const dialog = page.getByRole('dialog')
-      await dialog.getByRole('textbox', { name: label }).fill('Keep cancellation available while checking usage.')
-      await dialog.evaluate(async element => {
-        await Promise.allSettled(element.getAnimations().filter(animation => animation.effect?.getComputedTiming().iterations !== Infinity).map(animation => animation.finished))
-      })
-      const bounds = await dialog.boundingBox()
-      assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= width + 1, JSON.stringify(bounds))
-      await capture(page, `live-dialog-${locale}-${theme}-${width}`)
-      await dialog.getByRole('button', { name: locale === 'en' ? 'Send to running turn' : '发送到当前回合' }).click()
-      await dialog.getByRole('status').filter({ hasText: locale === 'en' ? 'Delivered to the running turn.' : '已送达当前执行回合。' }).waitFor()
-      // One keyed command write; the delivery state is a read.
-      assert.deepEqual(counts.writePaths.filter(path => path !== '/me/agent-attention/views'), ['/actions/run.live_input.submit'])
-      assert.equal(counts.input.binding_id, '30000000-0000-4000-8000-000000000093')
       assert.deepEqual(errors, [])
     } catch (error) {
       await page.screenshot({ path: `${shots}/live-failure-${locale}-${theme}-${width}.png`, fullPage: true })
@@ -878,4 +903,64 @@ for (const locale of ['en', 'zh-CN']) for (const theme of ['dark', 'light']) for
       assert.equal(saves, 2)
     } finally { await context.close() }
   })
+}
+
+test('native subagents show separate results on a narrow Room conversation', async () => {
+  const context = await browser.newContext({ viewport: { width: 390, height: 880 }, serviceWorkers: 'block' })
+  await context.addInitScript(() => localStorage.setItem('rainver:locale', 'en'))
+  const page = await context.newPage()
+  page.setDefaultTimeout(10000)
+  const a = 'a'.repeat(64), b = 'b'.repeat(64)
+  const children = [
+    { type: 'subagent', index: 0, key: a, title: 'Calculate', state: 'completed', output: '42' },
+    { type: 'subagent', index: 1, key: b, title: 'Reverse', state: 'ended', output: 'PCA' },
+    { type: 'tool_call', index: 2, call_id: 'read', name: 'Read input', kind: 'read', status: 'succeeded', input: 'test.txt', output: null, details: { subagent_key: a } },
+  ]
+  try {
+    await fixtures(page, { writes: 0, logins: 0 }, { ...failed, status: 'running', ended_at: null, error_message: null, error_json: null }, children)
+    const url = `${baseUrl}/spaces/${space}/projects/${project.id}/rooms?room=${room.id}&conversation=${session.id}`
+    await page.goto(url)
+    const group = page.getByRole('region', { name: 'Subagents' })
+    const calculate = group.getByRole('button', { name: 'Calculate Completed' })
+    const reverse = group.getByRole('button', { name: 'Reverse Ended' })
+    await calculate.waitFor()
+    assert.equal(await group.getByRole('listitem').count(), 2)
+    await calculate.focus()
+    await page.keyboard.press('Enter')
+    await group.getByText('42', { exact: true }).waitFor()
+    await group.getByRole('button', { name: /Read input/ }).waitFor()
+    assert.equal(await group.getByText('PCA', { exact: true }).count(), 0)
+    await reverse.click()
+    await group.getByText('PCA', { exact: true }).waitFor()
+    await capture(page, 'native-subagents-mobile')
+    await page.reload()
+    await reverse.waitFor()
+    if (await reverse.getAttribute('aria-expanded') !== 'true') await reverse.click()
+    await group.getByText('PCA', { exact: true }).waitFor()
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1))
+  } finally {
+    await context.close()
+  }
+})
+
+for(const locale of ['en','zh-CN'])for(const theme of ['dark','light'])for(const width of [390,1280]){
+ test(`quarantine cleanup attention: ${locale}/${theme}/${width}`,async()=>{
+  const context=await browser.newContext({viewport:{width,height:1000},serviceWorkers:'block'})
+  await context.addInitScript(({locale,theme})=>{localStorage.setItem('rainver:locale',locale);localStorage.setItem('rainver:theme',theme)},{locale,theme})
+  const page=await context.newPage(),counts={writes:0,logins:0,writePaths:[]},errors=[]
+  page.setDefaultTimeout(10000);page.on('pageerror',error=>errors.push(error.message))
+  const source={...failed,status:'succeeded',error_json:null,error_message:null,contract_snapshot_json:{execution_workspace_version:1},workspace_changes:[workspaceChange({state:'no_changes',cleanup_state:'blocked',cleanup_retryable:false,inventory:{quarantined_whole:1,retained_quarantine:0},retention:{state:'retained',reason:'primary_conversation',reclaim_after:null,hold_until:null,reclaimed_at:null,assessed_at:now,retained_refs:0,unclaimed_refs:0}})]}
+  const explanation=locale==='en'?'An old workspace folder is protected. Dependency remnants are checked automatically; other contents need inspection before removal.':'旧工作区目录已被保护保留。依赖残留会自动核查，其他内容需检查后才能移除。'
+  try{
+   await fixtures(page,counts,source)
+   for(const [surface,path] of [['conversation',`/projects/${project.id}/rooms?room=${room.id}&conversation=${session.id}`],['run',`/runs/${failed.id}`]]){
+    await page.goto(`${baseUrl}/spaces/${space}${path}`)
+    const card=surface==='conversation'?await openTurnChanges(page):page.getByTestId(`workspace-changes-${failed.id}`).first()
+    await card.getByText(explanation,{exact:true}).waitFor();await card.scrollIntoViewIfNeeded()
+    assert.equal(await card.getByRole('button',{name:locale==='en'?'Retry cleanup':'重试清理',exact:true}).count(),0)
+    await capture(page,`quarantine-${surface}-${locale}-${theme}-${width}`)
+   }
+   assert.deepEqual(counts.writePaths.filter(path=>path!=='/me/agent-attention/views'),[]);assert.deepEqual(errors,[])
+  }finally{await context.close()}
+ })
 }

@@ -30,6 +30,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 local_compose_init "$MODE"
+[[ -d "$MODE_ROOT" ]] || install -d -m 700 "$MODE_ROOT"
+local_compose_lock_instance "resetting the database"
 local_compose_ensure_mode_env_file
 local_compose_ensure_server_database_env
 local_compose_generate_server_env
@@ -42,40 +44,10 @@ DEV_SETUP_DUMP="$MODE_ROOT/setup/database.dump"
 local_compose_validate_pg_identifier "POSTGRES_DB" "$PGDB"
 local_compose_validate_pg_identifier "POSTGRES_USER" "$PGUSER"
 
-require_app_services_stopped() {
-  local running_services=""
-  local running=()
-  local service
-
-  if ! running_services="$("${COMPOSE[@]}" ps --services --filter status=running 2>/dev/null)"; then
-    echo "ERROR: unable to inspect running compose services for mode '$MODE'" >&2
-    exit 1
-  fi
-
-  for service in "$@"; do
-    if [[ $'\n'"$running_services"$'\n' == *$'\n'"$service"$'\n'* ]]; then
-      running+=("$service")
-    fi
-  done
-
-  if (( ${#running[@]} == 0 )); then
-    return 0
-  fi
-
-  if [[ "$FORCE_RUNNING" == "true" ]]; then
-    echo "WARNING: app service(s) still running during DB reset: ${running[*]}" >&2
-    return 0
-  fi
-
-  echo "ERROR: app service(s) still running for mode '$MODE': ${running[*]}" >&2
-  echo "       Stop app services first; reset will manage postgres as needed." >&2
-  echo "       $COMPOSE_HINT stop frontend server deployer" >&2
-  exit 1
-}
 
 trap 'local_compose_stop_postgres_if_started "reset"' EXIT
 
-require_app_services_stopped frontend server deployer
+local_compose_require_stopped_applications "DB reset" "$FORCE_RUNNING"
 
 restore_dev_setup=false
 if [[ "$MODE" == "dev" && "$USE_DEV_SETUP" == "true" && -f "$DEV_SETUP_DUMP" ]]; then
@@ -107,6 +79,8 @@ if [[ "$restore_dev_setup" == "true" ]] &&
   echo "       $DEV_SETUP_DUMP" >&2
   exit 1
 fi
+
+local_compose_require_stopped_applications "DB reset" "$FORCE_RUNNING"
 
 echo "Terminating active connections to '$PGDB'..."
 "${COMPOSE[@]}" exec -T postgres \

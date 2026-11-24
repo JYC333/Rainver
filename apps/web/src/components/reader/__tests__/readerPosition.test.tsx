@@ -120,6 +120,20 @@ describe('reading position', () => {
     expect(api.putPosition).toHaveBeenLastCalledWith('space-1', 'source_item', 'item-1', expect.objectContaining({ current: expect.objectContaining({ anchor: anchor(77) }) }), { keepalive: true })
   })
 
+  it('reports an old document version and stops resending that version', async () => {
+    api.getPosition.mockResolvedValue({ position: null, accepted: true })
+    api.putPosition.mockResolvedValueOnce({ position: null, accepted: false, reason: 'stale_document' })
+    render(view())
+    await settle()
+    fireEvent.scroll(shell())
+    await act(async () => { vi.advanceTimersByTime(POSITION_IDLE_MS) })
+    expect(screen.getByText('This document changed. Reopen it to save your reading position.')).toBeInTheDocument()
+    handle.readingAnchor.mockReturnValue(anchor(80))
+    fireEvent.scroll(shell())
+    await act(async () => { vi.advanceTimersByTime(POSITION_DWELL_MS * 2) })
+    expect(api.putPosition).toHaveBeenCalledTimes(1)
+  })
+
   it('stops saving into a document the person can no longer read', async () => {
     api.getPosition.mockResolvedValue({ position: null, accepted: true })
     api.putPosition.mockRejectedValue(Object.assign(new Error('gone'), { status: 404 }))
@@ -297,6 +311,24 @@ describe('reading position', () => {
     await act(async () => { await Promise.resolve(); await Promise.resolve() })
     expect(api.putPosition.mock.calls[1][3]).toEqual(failed)
     expect(screen.queryByText('Position not synced')).not.toBeInTheDocument()
+  })
+
+  it('retires an older ordinary failure when the latest reading place is accepted', async () => {
+    api.getPosition.mockResolvedValue({ position: null, accepted: true })
+    api.putPosition.mockRejectedValueOnce(new Error('offline')).mockResolvedValue({ position: saved(), accepted: true })
+    render(view())
+    await settle()
+    fireEvent.scroll(shell())
+    await act(async () => { await vi.advanceTimersByTimeAsync(POSITION_IDLE_MS) })
+    expect(screen.getByText('Position not synced')).toBeInTheDocument()
+
+    handle.readingAnchor.mockImplementation(() => anchor(75))
+    fireEvent.scroll(shell())
+    await act(async () => { await vi.advanceTimersByTimeAsync(POSITION_IDLE_MS) })
+
+    expect(screen.queryByText('Position not synced')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument()
+    expect(api.putPosition.mock.calls[1][3].current.anchor.pm_pos).toBe(75)
   })
 
   it('retries a failed reset as a reset, with its own measurement time, and reports what the server did', async () => {

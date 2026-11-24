@@ -43,6 +43,9 @@ and entry are retained until the promoted command also passes. A failed install
 or timeout leaves the old copy alone, and a failed promotion restores it. A
 rollback failure preserves the recovery directory and reports its location.
 Native installations still use their original vendor updater.
+A completed own CLI update invalidates the affected ACP version probe before
+triggering a heartbeat. The Command Center distinguishes a confirmed version
+change, an unchanged version, and a result without enough version data.
 
 Reuse / Dependency Check: reuse the fixed own-update recipes, streaming updater,
 bounded version probe and the managed installer's staging/rename pattern. npm
@@ -85,6 +88,12 @@ trust modes chosen at registration (ADR 0016 §2). A paired machine is
 reviews use the namespace described below. The built-in host is `strict`: the
 daemon runs inside the `sandbox-runner` container and wraps every Run in its
 own rootless bubblewrap namespace.
+
+The dev, test, and prod Compose definitions start the built-in runner with
+Docker's init as PID 1. It reaps orphaned subprocesses, including bubblewrap
+helpers, before they can accumulate and exhaust the container's PID limit.
+An existing runner must be recreated to start with init. Recreating only that
+service clears the old PID namespace and keeps its persisted mounts.
 
 ## The built-in host
 
@@ -323,6 +332,9 @@ matching `spaces` routes — hosts are user-scoped, not Space-scoped):
 
 ### Host commands (`hosts/hostCommands.ts`, `hostCommandWorker.ts`, daemon `src/hostCommandJournal.ts`)
 
+The daemon binds a command ID to its fingerprint while the command is running
+and after the receipt is durable. A different fingerprint is refused in both cases.
+
 Every person's command about a Host, its Locations or its imported history is
 one operation-core operation (P5 Host block; `packages/protocol/src/hostOperations.ts`).
 Commands with a Host effect — `host.workspace.register`, `host.runtime.install`
@@ -379,6 +391,11 @@ most once.
 | Journaled and unanswered for 24 h | `needs_attention` (`host_command_unconfirmed`) |
 | History import (`ambient_sync`, server-side `run`) | by its report: no error → `succeeded`; nothing committed and the Host offline or lost → repeated (the import reconciles by vendor identity); nothing committed and a definite error → `failed` (`ambient_sync_failed`); sessions written or marked gone and then an error → `needs_attention` (`ambient_sync_partial`), including a written session whose replay the Host read only in part (`load_state: partial`, counted in `partial_sessions`; the daemon's `ambient_import_result` stays `ok`, so the session frame is the evidence). The failed and partial outcomes keep the real report as their released result and are not repeated by the Job |
 | Reset whose earlier reset of the same Agent/Host is owed a receipt and the Host answers it without one | `failed` (`host_reset_unreconciled`), its own frame never sent |
+
+A managed ACP installation whose receipt was interrupted can be confirmed if
+its current manifest belongs to that exact command and the installed version
+passes a fresh ACP health check. The daemon writes a durable completed receipt
+without running the install again. An unproven install remains interrupted.
 
 Only a profile reset is repeated by the daemon after an interruption (it moves
 only what is still there). `agent.host_state.reset` requires the receipt
@@ -579,11 +596,18 @@ original-Project archive is imported. Source content isolation is enforced by
 Room admission and Runtime Context before this Host dispatch (see Agents).
 
 `profile_key` is
-`agents/<agent_id>/<container_kind>/<container_id>/<runtime_key>/<provider_id|ambient>`,
+`agents/<agent_id>/<container_kind>/<container_id>/<runtime_key>/<backend>`,
 and the profile lives at
-`agents/<agent_id>/profiles/<container_kind>/<container_id>/<runtime_key>/<provider_id|ambient>`
+`agents/<agent_id>/profiles/<container_kind>/<container_id>/<runtime_key>/<backend>`
 under the daemon's config directory — beside the Agent's managed workspaces,
-not inside them. The container is the **Conversation** for a Room turn and for a
+not inside them. `<backend>` is `ambient` for the machine's own login, and for a
+ModelProvider `<provider_id>.isolated` (a launch on the model-only channel) or
+`<provider_id>.network` (a launch with network): the two channels never share
+CLI state, and neither uses the earlier channel-less `<provider_id>` directory
+both may have written (ADR 0036 §12, `runtimeProfileKey`; a pointer recorded
+there replays fresh at admission, and a launch with network resumes a session
+only when its launch record names that launch's own directory, §13; it is
+judged again under the thread row's lock in the transaction that binds the launch, §14). The container is the **Conversation** for a Room turn and for a
 direct chat placed in a Project (its Session — so one Agent's chats in two
 Projects never share a profile), the **owner** for any other direct chat, and
 the **WorkspaceLocation** for everything else
@@ -956,7 +980,21 @@ would re-arm a retired thread with a session whose store is gone. Which threads
 are the Agent's: those carrying its `agent_id`, and the Location threads whose
 **latest** Run was its (that is where the session currently lives; an earlier
 Run of the same Agent does not make a session now in another Agent's profile
-this reset's to retire). It is the journaled `agent.host_state.reset` Host
+this reset's to retire). A session a Run of the Agent on that Host froze or
+parked in (`host_thread.runtime_session_id`) without the pointer naming it — a
+Task Run waiting for review, which the reset admits — is listed as retired on
+its thread too, so that Run's resume is refused instead of reaching an archived
+profile (ADR 0036 §14); other Agents' parked sessions are untouched. Admission locks and checks every thread it
+retires something on — also a Location thread whose latest Run is another Agent's where a Run of this Agent that may
+still launch is parked — and refuses while this Agent's Run there is in flight. A park or outcome a launch reports
+after the reset is fenced by generation (ADR 0036 §15): each launch record keeps `host_reset_generation`, the count of
+this Agent's resets on that Host when its nonce was bound (`hosts/agentHostResetGeneration.ts`), and a record behind
+the current count never resumes; its late-reported session is listed as retired too. A park is written and judged in
+one transaction under the reset's advisory lock (`agentHostResetLockKey`), taken shared before any row, so it lands
+wholly before the reset's scan or wholly after its intent (ADR 0036 §16); a record from before generations is judged on
+its attempt's `created_at`, never the `started_at` a re-claim rewrites. Admission locks its threads in id order, so
+two Agents' resets over shared Location threads cannot deadlock. Ambient import also skips every session a Run of a
+matching thread froze or parked in. It is the journaled `agent.host_state.reset` Host
 command (see "Host commands"): its admission transaction retires that Agent's
 vendor sessions through the existing `session_reset` path and commits the
 intent; the Host archives the profiles after commit under the command's
@@ -1330,7 +1368,8 @@ Host's matching adapter pack. Initial managed installation selects that catalog;
 users manage native CLI versions independently. Personal PATH copies retain the
 fixed own-update recipes. Managed copies use `managed_cli` update/rollback frames,
 which stage official npm packages and verify native version and isolated ACP
-initialization before atomic manifest promotion. The same native executable is
+initialization with an existing temporary CLI config directory before atomic
+manifest promotion. The same native executable is
 used for execution, login, logout and quota probes. The installation id, stable
 HOME and conversation bindings remain unchanged. Native CLI changes are recorded
 in `host_runtime_changes`; ACP identities remain available in diagnostics.
@@ -1604,7 +1643,9 @@ file holds several accounts declares `accounts_format` in its login spec
 (`json_object_by_provider`, OpenCode's `auth.json`); the daemon reports each
 copy's `accounts` as provider ids and credential kinds (`api`, `oauth`) and
 never reads past the `type` field. The host card shows such a copy as
-`own · 1.18 · 2 accounts` with the names on hover, its login as **Add
+`own · 1.18 · 2 providers` for OpenCode, counting distinct provider IDs from
+stored accounts and reported provider/model choices. Opening the badge shows provider
+IDs and CLI account status. The card labels its login as **Add
 account** and its logout as **Remove account**; a single-account CLI keeps
 **Log in / Log in again** (a login replaces the account) and gains **Log out**
 while logged in.
@@ -2375,7 +2416,21 @@ silently leaving a UTF-8 replacement.
 A pending run survives a brief WS drop: `HostConnectionRegistry` tracks
 pending runs by `run_id` (not nested per-connection) and gives a reconnect
 `RECONNECT_GRACE_MS` (60s) to resume the same in-flight run before failing it
-as `host_disconnected`. A disconnect past the grace window is an ordinary run
+as `host_disconnected`. With `run_completion_ack` negotiated at hello, the
+daemon also retains each enqueued terminal frame until the control plane
+acknowledges its exact launch. After hello the control plane probes each
+outstanding launch and only ends its grace period on a terminal receipt or
+an active launch phase from the reconnected daemon. An absent launch fails
+as `host_disconnected`. The bounded buffer replays offline launch,
+workspace-wait, output, stderr and completion frames in launch order.
+Older daemons keep the socket-level reconnect behavior until they update.
+When a stream exceeds its buffer, the daemon discards its remaining chunks and
+reports a failed completion after the child process finishes. If diff or output
+upload fails, the Run reports delivery failure
+and the daemon attempts to retain the failed diff payload or output directory
+under its private `run-delivery-recovery` directory. An orphan sweep preserves
+undelivered output while removing credentials, and a later attempt refuses to
+reuse an output directory with files still in it. A disconnect past the grace window is an ordinary run
 failure. Do not add a distinct `interrupted` status: that would touch retry
 policy, the supervisor, and finalization across the run subsystem. See the
 deferred register.
@@ -2504,15 +2559,55 @@ rewrites its context — and acts on neither.
 
 Restart from summary (`RoomRosterService.restartFromSummary`, `POST
 .../restart-from-summary`, same guards, 409 when the current session has no
-summary) is the person choosing the rotation: `rotateAfterHandoff` retires the
-session (`session_reset`, `vendor_session_id` null, digest and occupancy
-cleared, `handoff_artifact_id` set) and posts a notice
-(`host_thread_reset_reason: summary`); the next turn opens from standing
-context, the conversation title and the summary (`[Summary you wrote before
-this session was restarted]`), with no replay of the transcript. Any later fresh prompt on the
-thread carries that document until an explicit context reset clears it, and a
-thread with no vendor session is always treated as fresh. A stopped Run, or
-one that never started, is never read as a broken resume.
+summary) stages the summary on the existing thread and posts a notice
+(`host_thread_reset_reason: summary`). The next turn opens a fresh vendor
+session with standing context, the conversation title and the summary. The
+source session remains the resume target until the fresh turn succeeds.
+Settlement on the dispatched Run's claim adopts the new session and retires
+the old one. If that turn fails or stops, settlement restores the old session
+for the next turn and leaves the failed Run's result available for recovery.
+The summary Artifact remains available independently of the switch.
+Settlement and Host resets clear the staged summary pointer. The summary
+can seed only a staged restart, after checking it against the actual Room
+read audience (Project readers for a mainline conversation).
+An admitted replacement keeps its thread claim while held for quota so a
+second turn cannot consume the same staged summary. A restart cannot stage
+while an older nonterminal Run is still pinned to the thread. Discarded
+candidate sessions are excluded from ambient transcript imports.
+After taking a dispatch claim, admission rereads the thread so a concurrent
+settlement cannot leave it using an obsolete resume target. Terminal failures
+of replacement Runs go to conversation recovery without Supervisor replay.
+
+For a new non-mainline Room message or delegation, a native Claude model switch can reuse a
+summary when the resume exceeds the direct-switch allowance. The summary must
+come from the last successful turn of the same vendor session, and every
+intended recipient must be able to read it without oversight authority.
+The source and target must be distinct versioned models, and the installation
+must advertise the selected target. Admission checks the target against
+the model catalog and bounds the summary to at most 4,096 estimated tokens and
+one quarter of the window after the output reserve. It stages the replacement
+under the existing dispatch claim. The new session gets the summary and
+current work without replaying the old conversation transcript. Without an eligible summary the native
+session's pre-prompt switch guard still applies.
+
+A person's single-recipient Room turn or an admitted Room delegation on a
+managed Host workspace can prepare a missing summary in the source session
+for a known native Claude model change. The Host must support read-only
+workspace access. Delegated work reaches this path after the quota and turn
+gates, before its first execution attempt. Admission checks whole-thread
+read access and bounds source occupancy to 65,536 tokens and half its
+observed window. It budgets the pending request and standing context before
+asking for a bounded summary. The original Run waits without an execution job while
+a separate Run, with only the handoff tool, writes the summary. Durable
+settlement checks the source session and current Room audience, stages the
+replacement and enqueues the original Run once. A failed summary leaves
+the source session in place and records a failed original turn for recovery.
+A paused group waits for resumption before adoption. The summary settlement
+owns this dependency across pause and resume. The internal summary occupies
+the conversation while live and leaves no chat reply to finalize. Cancelling
+the waiting request also cancels its linked summary and can finish when the
+summary confirms exit. This generation path covers
+on-demand Room turns within the stated scope.
 
 `vendor_session_id` is the thread's own resume target, deliberately distinct
 from the server-owned `runs.session_id`. No surface displays it. What a
@@ -2548,7 +2643,9 @@ not truncated. Tool titles can be whole commands; both semantic and thread
 event normalizers pass them through the shared `runtimeAdapters/toolName.ts`
 secret redaction and 200-character display bound before persistence. The
 `tool_name` column is text as a defensive storage boundary, so a new provider's
-title shape cannot make the event insert fail.
+title shape cannot make the event insert fail. Before writing an event, the
+repository replaces NUL characters in text fields and tool detail strings with
+the Unicode replacement character so PostgreSQL can store the batch.
 
 Reasoning follows the ACP channel exactly, as Zed's client does:
 `agent_thought_chunk` becomes `assistant_thought` and `agent_message_chunk`
@@ -3196,7 +3293,10 @@ files a Run could write and git would obey:
    content, or a file where the Task needs a directory, in either case one
    `onto_commit` does not track — then runs `merge --ff-only
    --no-overwrite-ignore --no-autostash` and confirms the main branch moved;
-   otherwise it moves the branch by compare-and-swap from `onto_commit`. The
+   a durable Host journal protects the index and working edits until both are
+   restored. Replaying the exact publication finishes that work first. A newer
+   independent edit leaves the journal pending and the edit intact. For a
+   branch without a checkout the daemon moves the ref by compare-and-swap from `onto_commit`. The
    main branch checked out in another worktree is `main_checked_out_elsewhere`.
    A main branch no longer at `onto_commit` (`main_moved`), or a host whose
    record of the merge no longer matches, goes back to step 1 — a main branch
@@ -3560,8 +3660,11 @@ directory. Downloads stay outside the lock. An adapter request compares the
 pack with its pinned build before the lock and with the active `current`
 build only under it, so an update that switched `current` while the request
 waited is refused rather than placed; it still never writes
-`adapters/current` or prunes. It atomically moves `current`, installs a
-systemd user unit, and captures the installing user's PATH for CLI discovery.
+`adapters/current` or prunes. An update verifies any required adapter pack
+before switching `current`. A pending activation record stays until the
+launchers, systemd user unit and restart request are in place. Retrying an
+incomplete update finishes those steps. Installation captures the installing
+user's PATH for CLI discovery.
 The daemon launcher loads the owner-only `service.env` itself before Node
 starts; the unit does not rely on systemd `EnvironmentFile` parsing, whose
 quoted-path handling can silently discard the captured PATH and reduce
@@ -3590,8 +3693,9 @@ uploading. An install keeps the new build and the one it replaced, and while
 an earlier restart request is still pending (the running daemon may be on an
 older build than either) it removes no release at all. Each channel also publishes its checksummed `BUILD_ID` as a small
 standalone asset. An update compares it with the active build before fetching
-Node, daemon, or adapter archives, verifies local read-only protection and returns on a match; changing
-the timer setting still takes effect on that no-op path. The archive's own
+Node, daemon, or adapter archives. It verifies local read-only protection and
+returns when the launchers target that build and activation is complete.
+Changing the timer setting still takes effect on that path. The archive's own
 `BUILD_ID` must match the standalone metadata before installation. After the
 one-time installer bootstrap, `rainver-host update` owns manual updates,
 channel selection, and the optional timer toggle; the selected channel
@@ -4100,6 +4204,12 @@ continues through `workspaceIntegrations.ts`; native records bypass that engine.
 publication also changes onto the published content: a three-way merge per file
 (working copy, and a divergent staged copy) between the current target content
 and the published content, retained first under `refs/rainver/local-preimages/`.
+Publication compares the planned entries under Git's index lock and stages
+them together. A newer staged edit on an affected path makes publication wait.
+Recovery validates and replaces the affected index entries under the same lock.
+If the daemon exits while holding `index.lock`, confirm that the owning process
+has stopped before removing a stale lock and retrying the publication. The
+publication journal remains available for recovery once Git can acquire its lock.
 Unrelated staged and unstaged work is untouched; a file whose merge is not clean,
 a binary, symlink, mode change, local deletion or differing both-added file blocks
 publication for that file (`waiting_local_changes` names it). A
@@ -5187,6 +5297,13 @@ children are uncommon and this is not rebuilt from the parent automatically.
 
 ### Controlled Git publication (2026-11-09)
 
+Workspace completion and integration retry report a workspace conflict when
+the live sensitive-data egress policy denies an otherwise authorized request.
+The action list exposes the same blocker for a Run with sensitive context.
+The refusal happens before Host work is queued and does not release any
+sensitive data.
+
+
 Native publication keeps one canonical path (`workspace.change.complete` →
 Operation Core → `execution_workspace_native_integrate` Job → Host
 `workspace_integration` → `publishWorkspaceCommit` CAS). Git publication,
@@ -6267,3 +6384,18 @@ retention command, PostgreSQL cleanup Jobs and Host manifest transaction. Git an
 Node no-follow filesystem operations remain the physical authorities. These fixes
 are domain state and ownership rules; no new dependency, scheduler or workflow
 engine is introduced.
+
+
+### Dependency-only interrupted-removal remnants
+
+The existing quarantine sweep recognizes daemon-owned, timestamped whole-directory
+entries that contain only real `node_modules` directories and empty ancestor
+directories. Under the same workspace/repository lease as launch and cleanup it
+renames them into the existing `-retired` quarantine retention; their bytes and
+original creation time are preserved until that existing expiry. Inspection is
+bounded and never follows a symlink or descends into dependencies. Any source,
+configuration, other file or Git metadata outside dependencies, an unreadable
+directory, or an exceeded bound
+keeps the whole directory protected indefinitely. No unknown work is discarded
+or marked merged. Server inspection observes the changed inventory and recomputes
+attention; the current reusable conversation workspace is still retained.

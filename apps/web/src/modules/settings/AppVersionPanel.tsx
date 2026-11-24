@@ -8,7 +8,7 @@ import { currentBuild, fetchLatestBuild, readLayoutDiagnostics, reloadLatestBuil
 export function AppVersionPanel() {
   const { t } = useAppTranslation()
   const [latest, setLatest] = useState<AppBuild | null>(null)
-  const [status, setStatus] = useState<'idle' | 'checking' | 'current' | 'available' | 'updating' | 'error'>('idle')
+  const [status, setStatus] = useState<'idle' | 'checking' | 'current' | 'available' | 'updating' | 'kept' | 'error'>('idle')
   const [diagnostics, setDiagnostics] = useState('')
   async function collect() {
     const layout = readLayoutDiagnostics()
@@ -23,17 +23,17 @@ export function AppVersionPanel() {
   }
   async function update() {
     setStatus('updating')
-    try { await reloadLatestBuild() } catch { setStatus('error') }
+    try { await reloadLatestBuild(); setStatus('kept') } catch { setStatus('error') }
   }
   return <Card className="space-y-3 p-5">
     <CardTitle>{t('app_version.title')}</CardTitle>
     <p className="text-sm">{t('app_version.running')} <code className="break-all text-xs select-all">{currentBuild.id}</code></p>
     <p className="text-xs text-muted-foreground">{t('app_version.description')}</p>
-    {status === 'available' && latest && <p className="break-all text-xs">{t('app_version.available')}: {latest.id}{latest.inputsHash && <code className="block break-all">{latest.inputsHash}</code>}</p>}
+    {(status === 'available' || status === 'kept') && latest && <p className="break-all text-xs">{t('app_version.available')}: {latest.id}{latest.inputsHash && <code className="block break-all">{latest.inputsHash}</code>}</p>}
     <p role="status" className="text-xs">{status !== 'idle' && t(`app_version.${status}`)}</p>
     <div className="flex flex-wrap gap-2">
       <Button variant="outline" size="sm" onClick={() => void check()} disabled={status === 'checking' || status === 'updating'}>{t('app_version.check')}</Button>
-      {status === 'available' && <Button size="sm" onClick={() => void update()}>{t('app_version.reload')}</Button>}
+      {(status === 'available' || status === 'kept') && <Button size="sm" onClick={() => void update()}>{t('app_version.reload')}</Button>}
     </div>
     {status === 'available' && <p className="text-xs text-muted-foreground">{t('app_version.reload_hint')}</p>}
     <details className="text-xs">

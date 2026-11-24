@@ -177,8 +177,8 @@ export function RoomsIndex({ projectId, projectName, onRoomOpened }: {
               to={`/projects/${projectId}/rooms?${new URLSearchParams({ room: item.room_id, conversation: item.id }).toString()}`}
               className="block"
             >
-              <Card className="flex items-start gap-3 p-3 hover:bg-muted/40">
-                <MessageSquare className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+              <Card className="flex items-center gap-3 p-3 hover:bg-muted/40">
+                <MessageSquare className="mt-0.5 size-4 shrink-0 self-start text-muted-foreground" />
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium">{item.title ?? t('collab_ui.room.untitled')}</p>
                   <p className="truncate text-xs text-muted-foreground">

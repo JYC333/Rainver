@@ -71,11 +71,12 @@ function bind(input: {
   provider: Record<string, unknown>;
   leaseRegistry: ProviderProxyLeaseRegistry;
   modelChannel?: { loopback_port: number };
+  run?: Partial<AgentRunRecord>;
 }) {
   __setProvidersDbPortForTests({ async getProvider() { return input.provider; } } as never);
   return buildRemoteProviderBinding({
     config: loadConfig({ PROVIDER_PROXY_PORT: "8021", FRONTEND_URL: "http://192.168.1.5:3000" }),
-    run: run(),
+    run: { ...run(), ...input.run } as AgentRunRecord,
     hostId: "host-1",
     runtimeKey: input.runtimeKey,
     binding: { provider_id: "prov-1", model: input.model },
@@ -217,6 +218,58 @@ describe("remote provider binding frame", () => {
       // was refused must never have held one, not even briefly.
       expect(leases.size()).toBe(0);
     }
+  });
+
+  it("holds an automatic application-update Run's lease to its one confirmed model, and refuses any other or none before a lease", async () => {
+    setProviderProxyBaseUrlForProcess("http://server:8021", null);
+    const leases = new ProviderProxyLeaseRegistry();
+    const contract = (pinned?: string) => ({ trigger_origin: "automation", contract_snapshot_json: { workflow_input_json: { gmail_digest: {
+      digest_id: "d1", delivery_id: "dl1", kind: "application", rule_version: "p1", ...(pinned ? { pinned_model: pinned } : {}) } } } }) as never;
+    const automation = contract("synthetic-model-a");
+    const provider = { id: "prov-1", name: "Synthetic", provider_type: "anthropic", claude_compatible_base_url: "https://api.example.invalid" };
+    const binding = await bind({ runtimeKey: "claude_code", model: "synthetic-model-a", provider, leaseRegistry: leases, run: automation });
+    try {
+      const leaseId = new URL(binding.frame.env!.ANTHROPIC_BASE_URL!).pathname.split("/")[2]!;
+      expect(leases.resolve(leaseId, binding.frame.env!.ANTHROPIC_AUTH_TOKEN ?? binding.frame.env!.ANTHROPIC_API_KEY!)).toMatchObject({ pinned_model: "synthetic-model-a" });
+    } finally {
+      binding.revoke();
+    }
+    // Claude may otherwise bind without a model; such an automation Run may not, and no lease is minted.
+    await expect(bind({ runtimeKey: "claude_code", model: null, provider, leaseRegistry: leases, run: automation }))
+      .rejects.toMatchObject({ code: "gmail_application_model_required" });
+    // A model other than the one the owner confirmed (a Provider default that moved A→B), or a Run whose
+    // contract names none (started before the model was frozen), is refused before a lease as well.
+    await expect(bind({ runtimeKey: "claude_code", model: "synthetic-model-b", provider, leaseRegistry: leases, run: automation }))
+      .rejects.toMatchObject({ code: "gmail_application_model_required" });
+    await expect(bind({ runtimeKey: "claude_code", model: "synthetic-model-a", provider, leaseRegistry: leases, run: contract() }))
+      .rejects.toMatchObject({ code: "gmail_application_model_required" });
+    expect(leases.size()).toBe(0);
+  });
+
+  it("holds a daily or rule digest Run's whole lease to the model its card showed, so later inference over read mail cannot switch", async () => {
+    setProviderProxyBaseUrlForProcess("http://server:8021", null);
+    const leases = new ProviderProxyLeaseRegistry();
+    const contract = (kind: "daily" | "rule", pinned?: string) => ({ trigger_origin: "automation", contract_snapshot_json: { workflow_input_json: { gmail_digest: {
+      digest_id: "d1", delivery_id: "dl1", kind, ...(pinned ? { pinned_model: pinned } : {}) } } } }) as never;
+    const provider = { id: "prov-1", name: "Synthetic", provider_type: "anthropic", claude_compatible_base_url: "https://api.example.invalid" };
+    for (const kind of ["daily", "rule"] as const) {
+      const binding = await bind({ runtimeKey: "claude_code", model: "synthetic-model-a", provider, leaseRegistry: leases, run: contract(kind, "synthetic-model-a") });
+      try {
+        const leaseId = new URL(binding.frame.env!.ANTHROPIC_BASE_URL!).pathname.split("/")[2]!;
+        // The pin is on the lease itself: the proxy refuses any request of this Run naming another model or none.
+        expect(leases.resolve(leaseId, binding.frame.env!.ANTHROPIC_AUTH_TOKEN ?? binding.frame.env!.ANTHROPIC_API_KEY!)).toMatchObject({ pinned_model: "synthetic-model-a" });
+      } finally {
+        binding.revoke();
+      }
+    }
+    // Another model (a Provider default that moved), none at all, or a contract that names none: refused before a lease.
+    await expect(bind({ runtimeKey: "claude_code", model: "synthetic-model-b", provider, leaseRegistry: leases, run: contract("daily", "synthetic-model-a") }))
+      .rejects.toMatchObject({ code: "gmail_digest_model_required" });
+    await expect(bind({ runtimeKey: "claude_code", model: null, provider, leaseRegistry: leases, run: contract("rule", "synthetic-model-a") }))
+      .rejects.toMatchObject({ code: "gmail_digest_model_required" });
+    await expect(bind({ runtimeKey: "claude_code", model: "synthetic-model-a", provider, leaseRegistry: leases, run: contract("daily") }))
+      .rejects.toMatchObject({ code: "gmail_digest_model_required" });
+    expect(leases.size()).toBe(0);
   });
 
   it("exempts Claude, whose model comes from the environment the frame sets", async () => {

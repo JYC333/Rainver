@@ -465,7 +465,7 @@ export class HostConnectionRegistry {
     this.undeliveredStops.set(hostId, stops);
   }
 
-  registerConnection(hostId: string, sink: HostFrameSink, sourcesEnabled=false): boolean {
+  registerConnection(hostId: string, sink: HostFrameSink, sourcesEnabled=false, reconcileRuns=false): boolean {
     // Revoked after its hello authenticated but before it got here: the
     // revoke's `closeConnection` found nothing to close, and the token is
     // already gone, so this socket must not become the host's live
@@ -482,22 +482,10 @@ export class HostConnectionRegistry {
     }
     this.connections.get(hostId)?.sink?.close(1000, "superseded_by_new_connection");
     this.connections.set(hostId, { sink, sourcesEnabled });
-    // The daemon is back before any pending run's grace period expired —
-    // let it keep waiting for the real outcome instead of failing it out.
     for (const [runId, pendingRun] of this.pending) {
       if (pendingRun.hostId !== hostId) continue;
-      if (pendingRun.graceTimer) {
-        clearTimeout(pendingRun.graceTimer);
-        pendingRun.graceTimer = null;
-      }
-      if (pendingRun.pendingStdin.length === 0) continue;
-      const queued = pendingRun.pendingStdin;
-      pendingRun.pendingStdin = [];
-      for (const frame of queued) {
-        sink.send(frame.type === "stdin"
-          ? { type: "stdin", run_id: runId, value: frame.value }
-          : { type: "stdin_close", run_id: runId });
-      }
+      if (reconcileRuns) this.awaitReconnectedRun(runId, pendingRun);
+      else this.resumePendingRun(sink, runId, pendingRun);
     }
     const stops = this.undeliveredStops.get(hostId);
     this.undeliveredStops.delete(hostId);
@@ -505,6 +493,52 @@ export class HostConnectionRegistry {
       sink.send({ type: "terminate", run_id: stop.runId, launch_id: launchId, force: stop.force });
     }
     return true;
+  }
+
+  /** Sent after hello_ack, when the daemon has rebound its retained frames. */
+  probeReconnectedRuns(hostId: string, sink: HostFrameSink): void {
+    if (this.connections.get(hostId)?.sink !== sink) return;
+    for (const [runId, pending] of this.pending) {
+      if (pending.hostId === hostId && pending.graceTimer) {
+        sink.send({ type: "run_reconnect_probe", run_id: runId, launch_id: pending.launchId });
+      }
+    }
+  }
+
+  receiveReconnectedRun(hostId: string, sink: HostFrameSink, frame: HostDaemonFrameOf<"run_reconnect_state">): void {
+    if (this.connections.get(hostId)?.sink !== sink) return;
+    const pending = this.currentDispatch(hostId, frame.run_id, frame.launch_id);
+    if (!pending?.graceTimer) return;
+    if (frame.phase === "missing") {
+      this.finishPendingRun(frame.run_id, pending, {exit_code: -1, timed_out: false, error: "host_disconnected"});
+      return;
+    }
+    if (frame.phase === "launched") this.receiveLaunched(hostId, frame.run_id, frame.launch_id);
+    if (frame.phase === "waiting_for_workspace") pending.waitingForWorkspace = true;
+    this.resumePendingRun(sink, frame.run_id, pending);
+  }
+
+  private resumePendingRun(sink: HostFrameSink, runId: string, pending: PendingRun): void {
+    if (pending.graceTimer) clearTimeout(pending.graceTimer);
+    pending.graceTimer = null;
+    const queued = pending.pendingStdin;
+    pending.pendingStdin = [];
+    for (const frame of queued) {
+      sink.send(frame.type === "stdin"
+        ? { type: "stdin", run_id: runId, value: frame.value }
+        : { type: "stdin_close", run_id: runId });
+    }
+  }
+
+  private awaitReconnectedRun(runId: string, pending: PendingRun): void {
+    if (pending.graceTimer) return;
+    pending.graceTimer = setTimeout(() => {
+      if (this.pending.get(runId) !== pending) return;
+      try { this.sendTerminate(pending.hostId, runId, true); }
+      catch { this.owedStop(pending.hostId, runId, pending.launchId, true); }
+      this.finishPendingRun(runId, pending, { exit_code: -1, timed_out: false, error: "host_disconnected" });
+    }, RECONNECT_GRACE_MS);
+    pending.graceTimer.unref?.();
   }
 
   /**
@@ -517,14 +551,7 @@ export class HostConnectionRegistry {
     if (!connection || connection.sink !== sink) return false;
     connection.sink = null;
     for (const [runId, pendingRun] of this.pending) {
-      if (pendingRun.hostId !== hostId || pendingRun.graceTimer) continue;
-      pendingRun.graceTimer = setTimeout(() => {
-        this.pending.delete(runId);
-        // Given up here; whatever the daemon still holds of it must not run on.
-        this.owedStop(hostId, runId, pendingRun.launchId, true);
-        pendingRun.resolveComplete({ exit_code: -1, timed_out: false, error: "host_disconnected" });
-      }, RECONNECT_GRACE_MS);
-      pendingRun.graceTimer.unref?.();
+      if (pendingRun.hostId === hostId) this.awaitReconnectedRun(runId, pendingRun);
     }
     this.failPendingRequests(hostId);
     return true;
@@ -699,11 +726,11 @@ export class HostConnectionRegistry {
    */
   sendStdin(hostId: string, runId: string, value: string): boolean {
     const connection = this.connections.get(hostId);
-    if (connection?.sink) {
+    const pending = this.pending.get(runId);
+    if (connection?.sink && !(pending?.hostId === hostId && pending.graceTimer)) {
       connection.sink.send({ type: "stdin", run_id: runId, value });
       return true;
     }
-    const pending = this.pending.get(runId);
     if (pending?.hostId === hostId) pending.pendingStdin.push({ type: "stdin", value });
     return false;
   }
@@ -711,11 +738,11 @@ export class HostConnectionRegistry {
   /** Signals the daemon to close the run's child stdin, ending an interactive protocol session's input stream. Queued and redelivered the same way `sendStdin` is if the host is briefly offline. */
   sendStdinClose(hostId: string, runId: string): boolean {
     const connection = this.connections.get(hostId);
-    if (connection?.sink) {
+    const pending = this.pending.get(runId);
+    if (connection?.sink && !(pending?.hostId === hostId && pending.graceTimer)) {
       connection.sink.send({ type: "stdin_close", run_id: runId });
       return true;
     }
-    const pending = this.pending.get(runId);
     if (pending?.hostId === hostId) pending.pendingStdin.push({ type: "stdin_close" });
     return false;
   }
@@ -1428,7 +1455,9 @@ export class HostConnectionRegistry {
     const pending = this.currentDispatch(hostId, runId, launchId);
     if (!pending) return;
     pending.waitingForWorkspace = false;
-    pending.onLaunched?.();
+    const onLaunched = pending.onLaunched;
+    pending.onLaunched = undefined;
+    onLaunched?.();
   }
 
   /** Routes a daemon's `waiting_for_workspace` frame: the launch is queued behind another writer of its Location. */
@@ -1463,6 +1492,10 @@ export class HostConnectionRegistry {
     if (stopping?.hostId === hostId && stopping.runId === runId) stopping.settle(true);
     const pending = this.currentDispatch(hostId, runId, launchId);
     if (!pending) return;
+    this.finishPendingRun(runId, pending, result);
+  }
+
+  private finishPendingRun(runId: string, pending: PendingRun, result: HostRunCompletion): void {
     if (pending.graceTimer) clearTimeout(pending.graceTimer);
     this.pending.delete(runId);
     pending.resolveComplete(result);

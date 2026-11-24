@@ -110,6 +110,7 @@ it('cross-user manual intents and the original automatic worker share one real e
  const scan=vi.spyOn(SourceExtractionWorker.prototype as unknown as {executeConnectionScan:(job:unknown)=>Promise<{seen:number;page_size:number;narrowable:boolean}>},'executeConnectionScan').mockImplementation(async()=>{enter();await blocked;return {seen:0,page_size:0,narrowable:false};});
  const automatic=new SourceExtractionWorker(db.pool,cfg).runPendingJob(id,space);
  try{await entered;
+  await expect(registry.dispatch({job_id:randomUUID(),space_id:space,user_id:owner,job_type:'source_extraction',payload:{extraction_job_id:id},attempts:1,max_attempts:1,worker_id:'legacy'})).rejects.toBeInstanceOf(JobDeferredError);
   for(const r of records){await db.pool.query("UPDATE jobs SET status='running',attempts=1,claimed_by='test' WHERE id=$1",[r.id]);let deferred:unknown;try{await registry.dispatch(envelope(r));}catch(e){deferred=e;}expect(deferred).toBeInstanceOf(JobDeferredError);expect(await new PgJobQueueRepository(db.pool).deferJob(r.id,'claim busy','test',new Date())).toBe(true);expect((await db.pool.query('SELECT result_json,attempts FROM jobs WHERE id=$1',[r.id])).rows[0]).toMatchObject({result_json:null,attempts:0});}
   release();expect((await automatic).status).toBe('succeeded');
   for(const r of records){await claim(r.id);expect(await registry.dispatch(envelope(r))).toMatchObject({extraction_job_id:id,status:'succeeded'});}

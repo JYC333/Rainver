@@ -1,7 +1,9 @@
 import { PgConversationExecutionContextRepository } from "../sessions/executionContextRepository.js";
 import {withRunTerminalOwner} from '../systemActions/operations/proposalTransitions.js';
+import { lockRoomConversationWriter } from "./conversationWriter.js";
 import { RoomMutationError } from "./roomMutationError.js";
 import {PgRunRepository} from '../runs/repository.js';
+import { PgHostThreadRepository } from "../hosts/threadRepository.js";
 import {
   parseAgentMentions,
   ROOM_DISCUSSION_DEFAULT_ROUND_CAP,
@@ -16,7 +18,7 @@ import type { ServerConfig } from "../../config.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
 import { assertProjectWriter } from "../projects/access.js";
 import { HttpError, independentPool, type Queryable, withQueryableTransaction } from "../routeUtils/common.js";
-import { conversationTurnTaken, ConversationTurnInProgressError, isConversationTurnInProgressError } from "../sessions/conversationRuntimeSessionRepository.js";
+import { conversationTurnTaken, ConversationTurnInProgressError, isConversationTurnInProgressError, PgConversationRuntimeSessionRepository } from "../sessions/conversationRuntimeSessionRepository.js";
 import { PgSessionRepository } from "../sessions/repository.js";
 import { discussionOut, PgRoomDiscussionRepository, type DiscussionRecord } from "./discussionRepository.js";
 import { PgRoomRepository, roomConversationOut, type RoomAgentMemberRecord } from "./repository.js";
@@ -28,6 +30,7 @@ import { hasQueuedRoomMessage, isTransientDatabaseError, lockRoomConversationQue
 import { admitTurnParkedRuns, discussionQuotaHold } from "./quotaGate.js";
 import { accountLabel, cachedQuotaReading, refusedWindow, subscriptionLoginOfRun } from "./subscriptionLogins.js";
 import { SUBSCRIPTION_QUOTA_EXHAUSTED } from "../runs/retryPolicy.js";
+import { nextRecoveryCursor, type RecoveryCursor } from "../runs/recoveryCursor.js";
 import type { AgentGroupMessageRecipientSegment } from "../agentGroups/service.js";
 
 /**
@@ -57,6 +60,8 @@ export const ROOM_DISCUSSION_ADVANCE_RETRY_JOB = "room_discussion_advance_retry"
 const ADVANCE_RETRY_DELAY_MS = 4_000;
 
 export class RoomDiscussionService {
+  private recoveryCursor: RecoveryCursor | null = null;
+
   constructor(
     private readonly config: ServerConfig,
     private readonly pool: Queryable,
@@ -67,8 +72,9 @@ export class RoomDiscussionService {
   // -------------------------------------------------------------------------
 
   async open(identity: RoomIdentity, roomId: string, sessionId: string, request: OpenRoomDiscussionRequest) {
-    return withRunTerminalOwner(this.pool,async db=>{await this.requireWriter(db,identity,roomId,false);await this.requireMember(db,identity,roomId,sessionId);return heldClosingRunRefs(db,identity.spaceId,sessionId);}, async client => {
-      const room = await this.requireWriter(client, identity, roomId);
+    return withRunTerminalOwner(this.pool,async db=>{await this.requireWriter(db,identity,roomId);await this.requireMember(db,identity,roomId,sessionId);return heldClosingRunRefs(db,identity.spaceId,sessionId);}, async client => {
+      const room = await lockRoomConversationWriter(client, identity, roomId, sessionId);
+      if (!room) throw new HttpError(404, "Room not found in this space");
       // The conversation must belong to this Room before anything is read by
       // its session id: the active-discussion check below would otherwise
       // answer 409 with another Room's discussion id for a session the caller
@@ -77,7 +83,7 @@ export class RoomDiscussionService {
         throw new HttpError(404, "Room conversation not found");
       }
       const discussions = new PgRoomDiscussionRepository(client);
-      await lockSession(client, identity.spaceId, sessionId);
+      await new PgConversationRuntimeSessionRepository(client).lockConversation(identity.spaceId, sessionId);
       const current = await discussions.getOpenForSession(identity.spaceId, sessionId, { forUpdate: true });
       if (current?.status === "active") {
         const detail = `Another discussion is running in this conversation (${current.id}); stop it or wait for it to end`;
@@ -239,10 +245,12 @@ export class RoomDiscussionService {
    * for. The Agents it held back are dispatched as the next wave.
    */
   async extend(identity: RoomIdentity, roomId: string, sessionId: string, discussionId: string, rounds: number) {
-    return withRunTerminalOwner(this.pool,async db=>{await this.requireWriter(db,identity,roomId,false);await this.requireMember(db,identity,roomId,sessionId);return heldClosingRunRefs(db,identity.spaceId,sessionId);}, async client => {
-      await this.requireWriter(client, identity, roomId);
+    return withRunTerminalOwner(this.pool,async db=>{await this.requireWriter(db,identity,roomId);await this.requireMember(db,identity,roomId,sessionId);return heldClosingRunRefs(db,identity.spaceId,sessionId);}, async client => {
+      const room = await lockRoomConversationWriter(client, identity, roomId, sessionId);
+      if (!room) throw new HttpError(404, "Room not found in this space");
+      await this.requireMember(client, identity, roomId, sessionId);
+      await new PgConversationRuntimeSessionRepository(client).lockConversation(identity.spaceId, sessionId);
       const discussions = new PgRoomDiscussionRepository(client);
-      await lockSession(client, identity.spaceId, sessionId);
       const discussion = await requireDiscussion(discussions, identity.spaceId, roomId, sessionId, discussionId);
       if (discussion.status === "active") {
         if (discussion.opened_by_user_id !== identity.userId) {
@@ -378,6 +386,44 @@ export class RoomDiscussionService {
       if (!afterFailedAdvance) return this.releaseQueued(spaceId, sessionId, true);
     }
     return outcome;
+  }
+
+  async recoverUnadvancedWaves(onError?: (groupId: string, error: unknown) => void): Promise<void> {
+    const limit = 100;
+    const { rows } = await this.pool.query<RecoveryCursor & { space_id: string }>(
+      `SELECT grp.id, grp.space_id, grp.created_at::text AS created_at
+       FROM agent_run_groups grp
+       LEFT JOIN messages trigger ON trigger.space_id=grp.space_id AND trigger.id=grp.trigger_message_id
+       WHERE grp.room_id IS NOT NULL AND grp.session_id IS NOT NULL
+         AND grp.trigger_message_id IS NOT NULL AND grp.advanced_at IS NULL
+         AND ($2::timestamptz IS NULL OR (grp.created_at, grp.id) > ($2::timestamptz, $3::varchar))
+         AND EXISTS (
+           SELECT 1 FROM runs run JOIN run_events event
+             ON event.space_id = run.space_id AND event.run_id = run.id
+             AND event.event_type = 'chat_completed'
+           WHERE run.space_id = grp.space_id AND run.run_group_id = grp.id
+         )
+         AND NOT (${unfinishedGroupChatRuns("grp")})
+         AND (grp.discussion_id IS NULL OR trigger.metadata_json->>'discussion_closing' = 'true'
+           OR NOT EXISTS (
+             SELECT 1 FROM agent_run_groups sibling
+              JOIN messages message ON message.space_id=sibling.space_id AND message.id=sibling.trigger_message_id
+             WHERE sibling.space_id=grp.space_id AND sibling.discussion_id=grp.discussion_id AND sibling.id<>grp.id
+               AND COALESCE((message.metadata_json->>'wave')::int, 0) = COALESCE((trigger.metadata_json->>'wave')::int, 0)
+               AND COALESCE((message.metadata_json->>'discussion_closing')::boolean, false) = false
+               AND ${unfinishedGroupChatRuns("sibling")}
+           ))
+       ORDER BY grp.created_at, grp.id LIMIT $1`,
+      [limit, this.recoveryCursor?.created_at ?? null, this.recoveryCursor?.id ?? null],
+    );
+    this.recoveryCursor = nextRecoveryCursor(rows, limit);
+    for (const group of rows) {
+      try {
+        await this.advanceGroup(group.space_id, group.id, { enqueueRetry: false });
+      } catch (error) {
+        onError?.(group.id, error);
+      }
+    }
   }
 
   async advanceGroup(
@@ -639,7 +685,11 @@ export class RoomDiscussionService {
     if (!sessionRow?.session_id) return;
     await lockSession(client, spaceId, sessionRow.session_id);
     const group = await loadWaveGroup(client, spaceId, groupId);
-    if (!group?.room_id || !group.session_id) return;
+    if (!group?.room_id || !group.session_id || group.advanced_at) return;
+    await client.query(
+      `UPDATE agent_run_groups SET advanced_at = now() WHERE space_id = $1 AND id = $2`,
+      [spaceId, groupId],
+    );
     const reason = error instanceof Error ? error.message : String(error);
     const discussions = new PgRoomDiscussionRepository(client);
     const discussion = group.discussion_id ? await discussions.get(spaceId, group.discussion_id, { forUpdate: true }) : null;
@@ -905,8 +955,8 @@ export class RoomDiscussionService {
     return await waveComplete(client, discussion.space_id, latest.id) ? latest.id : null;
   }
 
-  private async requireWriter(client: Queryable, identity: RoomIdentity, roomId: string, lock=true) {
-    const room = await new PgRoomRepository(client).getVisibleRoom(identity.spaceId, identity.userId, roomId, lock);
+  private async requireWriter(client: Queryable, identity: RoomIdentity, roomId: string) {
+    const room = await new PgRoomRepository(client).getVisibleRoom(identity.spaceId, identity.userId, roomId);
     if (!room) throw new HttpError(404, "Room not found in this space");
     await assertProjectWriter(client, identity.spaceId, room.project_id, identity.userId);
     return room;
@@ -1183,19 +1233,23 @@ async function requireDiscussion(
 
 /** Every Run of the group has finished and completed its chat turn. */
 async function waveComplete(client: Queryable, spaceId: string, groupId: string): Promise<boolean> {
-  const result = await client.query<{ pending: string }>(
-    `SELECT count(*)::text AS pending
-       FROM runs run
-      WHERE run.space_id = $1 AND run.run_group_id = $2
+  const result = await client.query<{ ready: boolean }>(
+    `SELECT NOT (${unfinishedGroupChatRuns("grp")}) AS ready
+       FROM agent_run_groups grp WHERE grp.space_id=$1 AND grp.id=$2`,
+    [spaceId, groupId],
+  );
+  return result.rows[0]?.ready === true;
+}
+
+function unfinishedGroupChatRuns(group: "grp" | "sibling"): string {
+  return `EXISTS (SELECT 1 FROM runs run
+      WHERE run.space_id = ${group}.space_id AND run.run_group_id = ${group}.id
         AND COALESCE(run.model_override_json->'chat_turn'->>'kind', '') <> 'handoff'
         AND run.model_override_json->'chat_turn' IS NOT NULL
         AND NOT EXISTS (
           SELECT 1 FROM run_events event
            WHERE event.space_id = run.space_id AND event.run_id = run.id AND event.event_type = 'chat_completed'
-        )`,
-    [spaceId, groupId],
-  );
-  return Number(result.rows[0]?.pending ?? 1) === 0;
+        ))`;
 }
 
 interface WaveReply {
@@ -1317,11 +1371,17 @@ async function cancelHeldClosing(client: Queryable, spaceId: string, discussionI
     }
   }
   if (cancelled.rows.length === 0) return;
-  await client.query(
-    `UPDATE host_threads SET dispatch_lock_id = NULL, updated_at = now()
-      WHERE dispatch_lock_id = ANY($1::varchar[])`,
+  const claimedThreads = await client.query<{ id: string; dispatch_lock_id: string }>(
+    `SELECT id, dispatch_lock_id FROM host_threads
+      WHERE dispatch_lock_id = ANY($1::varchar[]) ORDER BY id`,
     [cancelled.rows.map((row) => row.id)],
   );
+  const threads = new PgHostThreadRepository(client);
+  for (const thread of claimedThreads.rows) {
+    await threads.settleRunOutcome(thread.id, {
+      lastRunId: thread.dispatch_lock_id, vendorSessionId: null, sessionReset: false,
+    });
+  }
 }
 
 /** The closing turn a discussion is waiting for: one per time it ends. */

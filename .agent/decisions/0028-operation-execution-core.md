@@ -8,8 +8,8 @@ Antigravity dual review. Plan 1 is complete within its documented scope:
 
 ## Context and implementation boundary
 
-The [Operation Core Program](../plans/operation-core/README.md) authorizes a
-phased design. This ADR freezes the implementation contract for its first plan;
+The completed Operation Core program used a phased design. This ADR freezes
+the implementation contract for its first plan;
 its design is not a claim that all operations have migrated. The current core
 enables the metadata query and cancellation pilot only; production approval
 mappings remain off. Enabled entries are recorded in the System Actions guide.

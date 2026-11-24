@@ -53,10 +53,10 @@ export function ReaderRestoreNotice({ position, onDone }: { position: ReaderPosi
 /** Whether the reading position reached the server; a failed save can be retried. */
 export function ReaderSyncStatus({ position }: { position: ReaderPositionState }) {
   const { t } = useAppTranslation()
-  if (position.sync !== 'error') return null
+  if (position.sync !== 'error' && position.sync !== 'stale') return null
   return <span role="status" className="flex items-center gap-1 text-xs text-muted-foreground">
-    {t('reading.syncError')}
-    <Button size="sm" variant="ghost" onClick={() => void position.retrySync()}>{t('reading.retry')}</Button>
+    {position.sync === 'stale' ? t('reading.sync_stale') : t('reading.syncError')}
+    {position.sync === 'error' && <Button size="sm" variant="ghost" onClick={() => void position.retrySync()}>{t('reading.retry')}</Button>}
   </span>
 }
 
@@ -69,7 +69,7 @@ export function ReaderProgressPanel({ shellRef, position, close }: {
   const { t } = useAppTranslation()
   const fraction = useScrollFraction(shellRef)
   const { furthest, sync } = position
-  const usable = sync !== 'denied' && position.restore !== 'unavailable'
+  const usable = sync !== 'denied' && sync !== 'stale' && position.restore !== 'unavailable'
   return <div className="w-full space-y-3 text-sm">
     <p>{t('reading.progressHere', { current: Math.round(fraction * 100) })}</p>
     <p className="text-muted-foreground">{furthest != null ? t('reading.progressFurthest', { furthest: Math.round(furthest * 100) }) : t('reading.progressNone')}</p>

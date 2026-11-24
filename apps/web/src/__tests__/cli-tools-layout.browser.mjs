@@ -20,6 +20,8 @@ const hosts = () => [
     capabilities_json: { runtimes: ['claude'], versions: {}, installations: { claude_code: [{ id: 'own', version: '2.1.0', logged_in: true, options: null }] } } },
 ]
 const runtimeDefinitions = [{ runtime_key: 'claude_code', display_name: 'Claude Code', command: 'claude', capability_probe: 'claude', remote_eligible: true, reports_managed_cli_version: true, supports_runtime_native: true, supports_model_provider: false, provider_api: 'claude_compatible' }]
+runtimeDefinitions.push({ ...runtimeDefinitions[0], runtime_key: 'opencode', display_name: 'OpenCode' })
+
 const tool = (overrides) => ({
   tool_id: 'git', label: 'Git', executable: 'git', requires_account: false, host_status: 'available', reported_live: true,
   source: 'path', version: '2.43.0', version_text: 'git version 2.43.0', registered: false,
@@ -145,12 +147,14 @@ for (const locale of ['en', 'zh-CN']) {
         await page.screenshot({ path: `${shots}/command-center-${tag}-1280.png`, fullPage: true })
 
         // A history navigation that names this Host's CLI tools opens them in place.
+        const beforeTools = counts.tools
         await page.evaluate(() => {
           window.history.pushState({}, '', `${location.pathname}?host=builtin&section=cli`)
           window.dispatchEvent(new PopStateEvent('popstate'))
         })
         await page.getByRole('button', { name: c.hide(c.builtin) }).waitFor()
-        assert.equal(counts.tools > 0, true)
+        await page.getByText('lark-cli').waitFor()
+        assert.ok(counts.tools > beforeTools)
         await page.goBack()
         await page.getByRole('button', { name: c.show(c.builtin) }).waitFor()
 
@@ -355,3 +359,35 @@ for (const width of [1280, 390]) {
     }
   })
 }
+
+test('OpenCode provider summary stays compact on a phone', async () => {
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 }, serviceWorkers: 'block' })
+  try {
+    await page.addInitScript(() => localStorage.setItem('rainver:locale', 'zh-CN'))
+    await mockApi(page, { hosts: 0, tools: 0 }, () => hosts().map(host => {
+      if (host.id !== 'desk') return host
+      host.capabilities_json.installations.opencode = [{
+        id: 'own', version: '1.18.11', logged_in: false, accounts: [],
+        options: { config_options: [{
+          type: 'select', category: 'model', id: 'model', name: 'Model', current_value: 'openai/a',
+          options: ['openai/a', 'openai/b', 'anthropic/a', 'google/a'].map(value => ({ value })),
+        }] },
+      }]
+      return host
+    }))
+    await page.goto(`${baseUrl}/spaces/${space}/command-center`)
+    await hostButton(page, copy['zh-CN'], 'Desk workstation').click()
+    const badge = page.getByRole('button', { name: /3 家供应商/ })
+    await badge.waitFor()
+    await noHorizontalOverflow(page, 'provider summary')
+    await badge.click()
+    const details = page.getByRole('dialog', { name: '供应商与 CLI 账户详情' })
+    await details.getByText('无 CLI 登录账户').waitFor()
+    await details.getByText('anthropic').waitFor()
+    await noHorizontalOverflow(page, 'provider details')
+    await settled(page)
+    await page.screenshot({ path: `${shots}/opencode-providers-390.png` })
+  } finally {
+    await page.close()
+  }
+})

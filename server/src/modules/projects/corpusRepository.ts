@@ -980,88 +980,16 @@ async function upsertProjectCorpusSourceItemsFromLinks(
   return result.rowCount ?? 0;
 }
 
-async function upsertProjectCorpusObjectsFromSourceItems(
-  db: Queryable,
-  input: { spaceId: string; sourceItemId?: string | null; projectId?: string | null },
-): Promise<number> {
-  const now = new Date().toISOString();
-  await syncProjectCorpusItemSourceProvenance(db, input);
-  const promoted = await db.query(
-    `WITH promoted AS (
-       SELECT DISTINCT ON (pci.project_id, sir.reference_object_id)
-              pci.id, sir.reference_object_id
-         FROM project_corpus_items pci
-         JOIN source_item_references sir
-           ON sir.source_item_id = pci.source_item_id AND sir.space_id = pci.space_id
-        WHERE pci.space_id = $1
-          AND pci.source_item_id IS NOT NULL
-          AND ($2::varchar IS NULL OR pci.source_item_id = $2)
-          AND ($3::varchar IS NULL OR pci.project_id = $3)
-          AND NOT EXISTS (
-            SELECT 1 FROM project_corpus_items existing
-             WHERE existing.space_id = pci.space_id
-               AND existing.project_id = pci.project_id
-               AND existing.object_id = sir.reference_object_id
-          )
-        ORDER BY pci.project_id, sir.reference_object_id, pci.created_at ASC, pci.id ASC
-     )
-     UPDATE project_corpus_items pci
-        SET object_id = promoted.reference_object_id,
-            source_item_id = NULL,
-            updated_at = $4
-       FROM promoted
-      WHERE pci.id = promoted.id`,
-    [input.spaceId, input.sourceItemId ?? null, input.projectId ?? null, now],
-  );
-  const result = await db.query(
-    `INSERT INTO project_corpus_items (
-       id, space_id, project_id, object_id, source_connection_id,
-       role, status, triage_status, read_status, reason, metadata_json, created_at, updated_at
-     )
-     SELECT DISTINCT ON (psil.project_id, sir.reference_object_id)
-            gen_random_uuid()::varchar, psil.space_id, psil.project_id, sir.reference_object_id,
-            COALESCE(psil.source_connection_id, si.connection_id),
-            'candidate', 'active', 'new', 'unread',
-            psil.match_reason, '{}'::jsonb, $4, $4
-       FROM project_source_item_links psil
-       JOIN source_items si ON si.id = psil.source_item_id AND si.space_id = psil.space_id
-       JOIN source_item_references sir
-         ON sir.source_item_id = si.id AND sir.space_id = si.space_id
-       JOIN space_objects so ON so.id = sir.reference_object_id AND so.space_id = sir.space_id
-      WHERE psil.space_id = $1
-        AND psil.status = 'active'
-        AND si.deleted_at IS NULL
-        AND so.deleted_at IS NULL
-        AND ($2::varchar IS NULL OR psil.source_item_id = $2)
-        AND ($3::varchar IS NULL OR psil.project_id = $3)
-      ORDER BY psil.project_id, sir.reference_object_id, psil.matched_at DESC, psil.id ASC
-     ON CONFLICT (space_id, project_id, object_id)
-       WHERE object_id IS NOT NULL
-     DO UPDATE SET status = 'active',
-                   source_connection_id = COALESCE(project_corpus_items.source_connection_id, EXCLUDED.source_connection_id),
-                   reason = COALESCE(project_corpus_items.reason, EXCLUDED.reason),
-                   updated_at = EXCLUDED.updated_at`,
-    [input.spaceId, input.sourceItemId ?? null, input.projectId ?? null, now],
-  );
-  await syncProjectCorpusItemSourceProvenance(db, input);
-  await db.query(
-    `WITH duplicates AS (
-       SELECT duplicate.id AS duplicate_id, canonical.id AS canonical_id, duplicate.space_id,
-              duplicate.triage_status, duplicate.triage_confirmed_by_user,
-              duplicate.read_status, duplicate.last_reviewed_at, duplicate.last_read_at,
-              duplicate.source_decision_id, duplicate.relevance, duplicate.confidence,
-              duplicate.reason, duplicate.created_at, duplicate.updated_at
-         FROM project_corpus_items duplicate
-         JOIN source_item_references sir
-           ON sir.source_item_id = duplicate.source_item_id AND sir.space_id = duplicate.space_id
-         JOIN project_corpus_items canonical
-           ON canonical.space_id = duplicate.space_id
-          AND canonical.project_id = duplicate.project_id
-          AND canonical.object_id = sir.reference_object_id
-        WHERE duplicate.space_id = $1
-          AND ($2::varchar IS NULL OR duplicate.source_item_id = $2)
-          AND ($3::varchar IS NULL OR duplicate.project_id = $3)
-     ), selected_triage AS (
+/**
+ * The merge a Corpus duplicate shares with its canonical Reference row, after
+ * a lineage's `duplicates` CTE names the pairs (`duplicate_id`, `canonical_id`
+ * and the duplicate's state). Both lineages — a SourceItem row through
+ * `source_item_references`, an Evidence row through its SourceItem or Source
+ * Object — use it, so the triage, read state, decision, provenance and
+ * Evidence Signal rules cannot drift between them
+ * (`projectCorpusLineageMergeDb.test.ts`). Parameter `$4` is the write time.
+ */
+const CORPUS_DUPLICATE_MERGE_TAIL = `), selected_triage AS (
        SELECT DISTINCT ON (canonical_id) canonical_id, triage_status,
               COALESCE(last_reviewed_at, created_at) AS confirmed_at
          FROM duplicates
@@ -1163,7 +1091,90 @@ async function upsertProjectCorpusObjectsFromSourceItems(
      DELETE FROM project_corpus_items duplicate
       USING duplicates, merged
       WHERE duplicate.id = duplicates.duplicate_id
-        AND merged.id = duplicates.canonical_id`,
+        AND merged.id = duplicates.canonical_id`;
+
+async function upsertProjectCorpusObjectsFromSourceItems(
+  db: Queryable,
+  input: { spaceId: string; sourceItemId?: string | null; projectId?: string | null },
+): Promise<number> {
+  const now = new Date().toISOString();
+  await syncProjectCorpusItemSourceProvenance(db, input);
+  const promoted = await db.query(
+    `WITH promoted AS (
+       SELECT DISTINCT ON (pci.project_id, sir.reference_object_id)
+              pci.id, sir.reference_object_id
+         FROM project_corpus_items pci
+         JOIN source_item_references sir
+           ON sir.source_item_id = pci.source_item_id AND sir.space_id = pci.space_id
+        WHERE pci.space_id = $1
+          AND pci.source_item_id IS NOT NULL
+          AND ($2::varchar IS NULL OR pci.source_item_id = $2)
+          AND ($3::varchar IS NULL OR pci.project_id = $3)
+          AND NOT EXISTS (
+            SELECT 1 FROM project_corpus_items existing
+             WHERE existing.space_id = pci.space_id
+               AND existing.project_id = pci.project_id
+               AND existing.object_id = sir.reference_object_id
+          )
+        ORDER BY pci.project_id, sir.reference_object_id, pci.created_at ASC, pci.id ASC
+     )
+     UPDATE project_corpus_items pci
+        SET object_id = promoted.reference_object_id,
+            source_item_id = NULL,
+            updated_at = $4
+       FROM promoted
+      WHERE pci.id = promoted.id`,
+    [input.spaceId, input.sourceItemId ?? null, input.projectId ?? null, now],
+  );
+  const result = await db.query(
+    `INSERT INTO project_corpus_items (
+       id, space_id, project_id, object_id, source_connection_id,
+       role, status, triage_status, read_status, reason, metadata_json, created_at, updated_at
+     )
+     SELECT DISTINCT ON (psil.project_id, sir.reference_object_id)
+            gen_random_uuid()::varchar, psil.space_id, psil.project_id, sir.reference_object_id,
+            COALESCE(psil.source_connection_id, si.connection_id),
+            'candidate', 'active', 'new', 'unread',
+            psil.match_reason, '{}'::jsonb, $4, $4
+       FROM project_source_item_links psil
+       JOIN source_items si ON si.id = psil.source_item_id AND si.space_id = psil.space_id
+       JOIN source_item_references sir
+         ON sir.source_item_id = si.id AND sir.space_id = si.space_id
+       JOIN space_objects so ON so.id = sir.reference_object_id AND so.space_id = sir.space_id
+      WHERE psil.space_id = $1
+        AND psil.status = 'active'
+        AND si.deleted_at IS NULL
+        AND so.deleted_at IS NULL
+        AND ($2::varchar IS NULL OR psil.source_item_id = $2)
+        AND ($3::varchar IS NULL OR psil.project_id = $3)
+      ORDER BY psil.project_id, sir.reference_object_id, psil.matched_at DESC, psil.id ASC
+     ON CONFLICT (space_id, project_id, object_id)
+       WHERE object_id IS NOT NULL
+     DO UPDATE SET status = 'active',
+                   source_connection_id = COALESCE(project_corpus_items.source_connection_id, EXCLUDED.source_connection_id),
+                   reason = COALESCE(project_corpus_items.reason, EXCLUDED.reason),
+                   updated_at = EXCLUDED.updated_at`,
+    [input.spaceId, input.sourceItemId ?? null, input.projectId ?? null, now],
+  );
+  await syncProjectCorpusItemSourceProvenance(db, input);
+  await db.query(
+    `WITH duplicates AS (
+       SELECT duplicate.id AS duplicate_id, canonical.id AS canonical_id, duplicate.space_id,
+              duplicate.triage_status, duplicate.triage_confirmed_by_user,
+              duplicate.read_status, duplicate.last_reviewed_at, duplicate.last_read_at,
+              duplicate.source_decision_id, duplicate.relevance, duplicate.confidence,
+              duplicate.reason, duplicate.created_at, duplicate.updated_at
+         FROM project_corpus_items duplicate
+         JOIN source_item_references sir
+           ON sir.source_item_id = duplicate.source_item_id AND sir.space_id = duplicate.space_id
+         JOIN project_corpus_items canonical
+           ON canonical.space_id = duplicate.space_id
+          AND canonical.project_id = duplicate.project_id
+          AND canonical.object_id = sir.reference_object_id
+        WHERE duplicate.space_id = $1
+          AND ($2::varchar IS NULL OR duplicate.source_item_id = $2)
+          AND ($3::varchar IS NULL OR duplicate.project_id = $3)
+     ${CORPUS_DUPLICATE_MERGE_TAIL}`,
     [input.spaceId, input.sourceItemId ?? null, input.projectId ?? null, now],
   );
   return (promoted.rowCount ?? 0) + (result.rowCount ?? 0);
@@ -1319,109 +1330,7 @@ async function upsertProjectCorpusObjectsFromEvidence(
         WHERE er.reference_object_id IS NOT NULL
           AND ($2::varchar IS NULL OR er.source_item_id = $2)
           AND ($3::varchar IS NULL OR duplicate.project_id = $3)
-     ), selected_triage AS (
-       SELECT DISTINCT ON (canonical_id) canonical_id, triage_status,
-              COALESCE(last_reviewed_at, created_at) AS confirmed_at
-         FROM duplicates
-        WHERE triage_confirmed_by_user
-        ORDER BY canonical_id, COALESCE(last_reviewed_at, created_at) DESC, duplicate_id ASC
-     ), decision_candidates AS (
-       SELECT duplicates.canonical_id, duplicates.source_decision_id,
-              duplicates.triage_status AS decision_triage_status,
-              duplicates.relevance, duplicates.confidence, duplicates.reason,
-              decision.updated_at AS decision_updated_at,
-              1 AS source_priority, duplicates.duplicate_id AS candidate_id
-         FROM duplicates
-         JOIN source_post_processing_item_decisions decision
-           ON decision.id = duplicates.source_decision_id
-          AND decision.space_id = duplicates.space_id
-       UNION ALL
-       SELECT canonical.id, canonical.source_decision_id,
-              canonical.triage_status, canonical.relevance, canonical.confidence, canonical.reason,
-              decision.updated_at, 0 AS source_priority, canonical.id AS candidate_id
-         FROM project_corpus_items canonical
-         JOIN (SELECT DISTINCT canonical_id FROM duplicates) duplicate_targets
-           ON duplicate_targets.canonical_id = canonical.id
-         JOIN source_post_processing_item_decisions decision
-           ON decision.id = canonical.source_decision_id
-          AND decision.space_id = canonical.space_id
-     ), selected_decision AS (
-       SELECT DISTINCT ON (canonical_id) canonical_id, source_decision_id,
-              decision_triage_status, relevance, confidence, reason
-         FROM decision_candidates
-        ORDER BY canonical_id, decision_updated_at DESC, source_priority ASC, candidate_id ASC
-     ), duplicate_state AS (
-       SELECT canonical_id,
-              max(CASE read_status
-                    WHEN 'unread' THEN 0 WHEN 'skimmed' THEN 1
-                    WHEN 'read' THEN 2 WHEN 'discussed' THEN 3 END) AS read_rank,
-              max(last_reviewed_at) AS last_reviewed_at,
-              max(last_read_at) AS last_read_at
-        FROM duplicates
-        GROUP BY canonical_id
-     ), copied_provenance AS (
-       INSERT INTO project_corpus_item_sources (
-         id, corpus_item_id, space_id, project_id, source_item_id, created_at
-       )
-       SELECT gen_random_uuid()::varchar, duplicates.canonical_id,
-              provenance.space_id, provenance.project_id, provenance.source_item_id, $4
-         FROM duplicates
-         JOIN project_corpus_item_sources provenance
-           ON provenance.corpus_item_id = duplicates.duplicate_id
-       ON CONFLICT (corpus_item_id, source_item_id) DO NOTHING
-       RETURNING corpus_item_id
-     ), moved_signals AS (
-       -- Evidence Signals cascade with their Corpus item; deleting the
-       -- duplicate below would silently take them, and a Candidate's grounds
-       -- with them.
-       UPDATE inquiry_evidence_signals signal
-          SET corpus_item_id = duplicates.canonical_id
-         FROM duplicates
-        WHERE signal.corpus_item_id = duplicates.duplicate_id
-          AND signal.space_id = duplicates.space_id
-       RETURNING signal.id
-     ), merged AS (
-       UPDATE project_corpus_items canonical
-          SET triage_status = CASE
-                WHEN canonical.triage_confirmed_by_user
-                 AND (selected_triage.canonical_id IS NULL
-                   OR COALESCE(canonical.last_reviewed_at, canonical.created_at) >= selected_triage.confirmed_at)
-                  THEN canonical.triage_status
-                ELSE COALESCE(
-                  selected_triage.triage_status,
-                  CASE WHEN selected_decision.canonical_id IS NOT NULL THEN selected_decision.decision_triage_status END,
-                  canonical.triage_status
-                )
-              END,
-              triage_confirmed_by_user = canonical.triage_confirmed_by_user OR selected_triage.canonical_id IS NOT NULL,
-              read_status = CASE GREATEST(
-                CASE canonical.read_status
-                  WHEN 'unread' THEN 0 WHEN 'skimmed' THEN 1
-                  WHEN 'read' THEN 2 WHEN 'discussed' THEN 3 END,
-                duplicate_state.read_rank
-              ) WHEN 0 THEN 'unread' WHEN 1 THEN 'skimmed' WHEN 2 THEN 'read' ELSE 'discussed' END,
-              last_reviewed_at = GREATEST(
-                canonical.last_reviewed_at,
-                duplicate_state.last_reviewed_at,
-                selected_triage.confirmed_at,
-                CASE WHEN canonical.triage_confirmed_by_user THEN canonical.created_at END
-              ),
-              last_read_at = GREATEST(canonical.last_read_at, duplicate_state.last_read_at),
-              source_decision_id = COALESCE(selected_decision.source_decision_id, canonical.source_decision_id),
-              relevance = CASE WHEN selected_decision.canonical_id IS NOT NULL THEN selected_decision.relevance ELSE canonical.relevance END,
-              confidence = CASE WHEN selected_decision.canonical_id IS NOT NULL THEN selected_decision.confidence ELSE canonical.confidence END,
-              reason = CASE WHEN selected_decision.canonical_id IS NOT NULL THEN selected_decision.reason ELSE canonical.reason END,
-              updated_at = $4
-         FROM duplicate_state
-         LEFT JOIN selected_triage ON selected_triage.canonical_id = duplicate_state.canonical_id
-         LEFT JOIN selected_decision ON selected_decision.canonical_id = duplicate_state.canonical_id
-        WHERE canonical.id = duplicate_state.canonical_id
-        RETURNING canonical.id
-     )
-     DELETE FROM project_corpus_items duplicate
-      USING duplicates, merged
-      WHERE duplicate.id = duplicates.duplicate_id
-        AND merged.id = duplicates.canonical_id`,
+     ${CORPUS_DUPLICATE_MERGE_TAIL}`,
     [input.spaceId, input.sourceItemId ?? null, input.projectId ?? null, now],
   );
   return (promoted.rowCount ?? 0) + (result.rowCount ?? 0);

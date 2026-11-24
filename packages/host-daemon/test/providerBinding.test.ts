@@ -174,6 +174,17 @@ describe("materializing a provider binding", () => {
 });
 
 describe("sweeping run directories left behind", () => {
+  it("keeps orphaned output available for recovery and removes its transient profile", async () => {
+    const runsRoot = await tempDir();
+    const run = join(runsRoot, "previous");
+    await mkdir(join(run, "outputs"), { recursive: true });
+    await writeFile(join(run, "outputs", "result.txt"), "result");
+    await writeFile(join(run, "temporary-profile"), "old");
+    await expect(sweepOrphanedRunDirectories(runsRoot, new Set())).resolves.toBe(0);
+    await expect(readFile(join(run, "outputs", "result.txt"), "utf8")).resolves.toBe("result");
+    await expect(stat(join(run, "temporary-profile"))).rejects.toThrow();
+  });
+
   it("removes an orphaned run directory but leaves an active run's alone", async () => {
     const runsRoot = await tempDir();
     for (const runId of ["dead-run", "live-run"]) {

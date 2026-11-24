@@ -32,8 +32,16 @@ export function isDebugDiagnostic(part: TurnPart): boolean {
 
 /** Execution history stays intact; technical logs have their own disclosure. */
 export function presentConversationParts(parts: readonly TurnPart[]): TurnPart[] {
-  return parts.filter(part => part.type !== 'reasoning'
-    && !isDebugDiagnostic(part))
+  let showedGmailLimit = false
+  return parts.filter(part => {
+    if (part.type === 'reasoning' || isDebugDiagnostic(part)) return false
+    if (part.type !== 'tool_call' || part.status !== 'failed' || part.name !== 'source.gmail.mail.read') return true
+    const detail = part.details?.error ?? part.output ?? ''
+    if (!/gmail[ _](quota[ _]exhausted|rate[ _]limited)/i.test(detail)) return true
+    if (showedGmailLimit) return false
+    showedGmailLimit = true
+    return true
+  })
 }
 
 type ToolPart = Extract<TurnPart, { type: 'tool_call' }>

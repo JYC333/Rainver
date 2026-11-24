@@ -163,7 +163,22 @@ describe('Generated material drafts', () => {
     await edit(master, 'Alice Example. CHANGED_AFTER_PIN.');
     reply = () => ({schema: 'rainver.note_draft.v1', draft: '# Statement\n\nAlice studied at ETH and wrote a paper on verified compilers.', verify: ['Confirm the MSc year'],
       sources_used: [{note_id: master, version: 1}, {note_id: 'hallucinated', version: 1}]});
-    const started = await ok(command('material.generate', {material_id: material.id, requirements: 'ETH asks for 1000 words on research fit', length_words: 1000}));
+    const parent = randomUUID();
+    await seedRun(db.pool, {id: parent, space, owner, agent: randomUUID(), version: randomUUID()});
+    await db.pool.query(`UPDATE runs SET status='running',trigger_origin='manual',instructed_by_user_id=$2,
+      visibility='private',project_id=$3,permission_snapshot_json=$4::jsonb WHERE id=$1`,
+      [parent, owner, projectA, JSON.stringify({tool_grants: ['material.generate', 'material.get_generation', 'material.apply_generation'].map(name => ({action_id: opId(name)}))})]);
+    await db.pool.query(`INSERT INTO run_attempts(id,space_id,run_id,attempt_number,status,created_at,updated_at)
+      VALUES ($1,$2,$3,1,'running',now(),now())`, [randomUUID(), space, parent]);
+    const active = (await db.pool.query<AgentRunRecord>('SELECT * FROM runs WHERE id=$1', [parent])).rows[0]!;
+    const transport = new CliAgentToolTransport(config, {actionEventSink: async () => {}});
+    const agentDraft = async (name: string, arguments_: Record<string, unknown>) => {
+      const result = await transport.call(active, {id: randomUUID(), name: opId(name),
+        arguments: {project_id: projectA, ...arguments_}}) as {httpStatus: number; body: {data: Record<string, string>}};
+      expect(result.httpStatus, JSON.stringify(result.body)).toBe(200);
+      return result.body.data;
+    };
+    const started = await agentDraft('material.generate', {material_id: material.id, requirements: 'ETH asks for 1000 words on research fit', length_words: 1000});
     // The request commits a private queued Run of the person; Note text is not copied into it.
     const queued = await runOf(started.run_id);
     expect(queued).toMatchObject({status: 'queued', visibility: 'private', instructed_by_user_id: owner, capability_id: NOTE_DRAFT_CAPABILITY, project_id: projectA});
@@ -177,12 +192,12 @@ describe('Generated material drafts', () => {
     expect(requests).toHaveLength(1);
     expect(requests[0]).toContain('verified compilers');
     expect(requests[0]).not.toContain('CHANGED_AFTER_PIN');
-    const preview = await ok(read('material.get_generation', {generation_id: started.generation_id}));
+    const preview = await agentDraft('material.get_generation', {generation_id: started.generation_id});
     expect(preview).toMatchObject({status: 'succeeded', draft: expect.stringContaining('verified compilers'), verify: ['Confirm the MSc year'], base: null, applied: null, length_words: 1000, save_new: true});
     // Only pinned inputs count as used; the newer source version is flagged.
     expect(preview.sources).toEqual([{note_id: master, title: 'Master CV', current_version: 2, available: true, note_version: 1, used: true, updated: true}]);
 
-    const saved = await ok(command('material.apply_generation', {generation_id: started.generation_id, target: 'new'}));
+    const saved = await agentDraft('material.apply_generation', {generation_id: started.generation_id, target: 'new'});
     const written = await noteRow(saved.note_id);
     // A new Note outside every Project and private to the person, written by Knowledge's writer.
     expect(written).toMatchObject({version: 1, visibility: 'private', owner_user_id: owner, primary_project_id: null});
@@ -288,15 +303,24 @@ describe('Generated material drafts', () => {
     expect(await runOf(g.run_id)).toMatchObject({visibility: 'private', instructed_by_user_id: owner});
     expect((await runRead(g.run_id, '/io')).statusCode).toBe(404);
     as(owner);
-    // Generating, previewing and saving are the person's own: no Agent tool reaches them.
+    // A manual shared turn can start a private draft, while its result preview stays private.
     const run = randomUUID();
     await seedRun(db.pool, {id: run, space, owner, agent: randomUUID(), version: randomUUID()});
-    await db.pool.query(`UPDATE runs SET status='running',trigger_origin='manual',instructed_by_user_id=$2,owner_user_id=$2,visibility='private',project_id=$3,permission_snapshot_json=$4::jsonb WHERE id=$1`,
+    await db.pool.query(`UPDATE runs SET status='running',trigger_origin='manual',instructed_by_user_id=$2,owner_user_id=$2,visibility='space_shared',project_id=$3,permission_snapshot_json=$4::jsonb WHERE id=$1`,
       [run, owner, projectA, JSON.stringify({tool_grants: ['material.generate', 'material.get_generation', 'material.apply_generation'].map(t => ({action_id: opId(t)}))})]);
+    await db.pool.query(`INSERT INTO run_attempts(id,space_id,run_id,attempt_number,status,created_at,updated_at)
+      VALUES ($1,$2,$3,1,'running',now(),now())`, [randomUUID(), space, run]);
     const agentRun = (await db.pool.query<AgentRunRecord>('SELECT * FROM runs WHERE id=$1', [run])).rows[0]!;
     const transport = new CliAgentToolTransport(config, {actionEventSink: async () => {}});
-    expect((await transport.list(agentRun)).map(t => t.name).filter(n => n.includes('generat'))).toEqual([]);
+    const started = await transport.call(agentRun, {id: randomUUID(), name: opId('material.generate'),
+      arguments: {project_id: projectA, material_id: material.id, requirements: 'Draft through a shared turn'}}) as {
+        httpStatus: number; body: {data: {generation_id: string; run_id: string}};
+      };
+    expect(started.httpStatus, JSON.stringify(started.body)).toBe(200);
+    expect(await runOf(started.body.data.run_id)).toMatchObject({visibility: 'private', instructed_by_user_id: owner});
+    await performQueuedProviderTaskJob(db.pool, config, started.body.data.run_id);
     const call = await transport.call(agentRun, {id: randomUUID(), name: opId('material.get_generation'), arguments: {project_id: projectA, generation_id: g.generation_id}}) as {httpStatus?: number; body?: unknown};
+    expect(call.httpStatus).toBe(404);
     expect(JSON.stringify(call)).not.toContain('Draft');
     // Privacy is the Note's actual audience: once no one else in the Space can read it, a fresh draft saves into it.
     await db.pool.query(`UPDATE space_memberships SET status='removed' WHERE space_id=$1 AND user_id=$2`, [space, member]);
@@ -433,6 +457,32 @@ describe('Generated material drafts', () => {
     expect(job).toMatchObject({claimed_by: 'another-worker', result_json: {source_dispatch: 'started'}});
     expect(job.result_json.effect_started).toBeUndefined();
     expect((await ok(read('material.get_generation', {generation_id: started.generation_id}))).draft).toBeNull();
+  });
+
+  it('counts only Source-authorized Note body matches and keeps visible title matches', async () => {
+    const linked = await note('Distinct public title', 'unique lineage search text', {
+      visibility: 'space_shared', project: projectA, owner: member,
+    });
+    await db.pool.query(`UPDATE notes n SET content_hash = r.content_hash
+      FROM note_revisions r WHERE r.note_id = n.object_id AND r.version = n.version AND n.object_id = $1`, [linked]);
+    const connection = await sourceLineage(linked, member);
+    const search = async (query: string, offset = 0) => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/knowledge/notes?project_id=${projectA}&q=${encodeURIComponent(query)}&offset=${offset}`,
+      });
+      expect(response.statusCode, response.body).toBe(200);
+      return response.json();
+    };
+    expect(await search('unique lineage search')).toMatchObject({
+      total: 1, items: [{id: linked, content_hash: expect.any(String)}],
+    });
+    expect(await search('unique lineage search', 1)).toMatchObject({total: 1, items: []});
+    await db.pool.query(`UPDATE source_connections SET consent_json=jsonb_set(consent_json,'{allow_space_admins}','false') WHERE id=$1`, [connection]);
+    expect(await search('unique lineage search')).toMatchObject({total: 0, items: []});
+    expect(await search('distinct public title')).toMatchObject({
+      total: 1, items: [{id: linked, content_hash: null}],
+    });
   });
 
   it('withholds a draft once the person loses a Source reader consent, while the Note ACL itself is unchanged', async () => {

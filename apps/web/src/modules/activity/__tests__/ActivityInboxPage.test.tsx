@@ -90,6 +90,28 @@ describe('ActivityInboxPage', () => {
     vi.clearAllMocks()
   })
 
+  it('returns to the previous page after archiving the last filtered row', async () => {
+    const firstPage = Array.from({ length: 50 }, (_, index) =>
+      activityRecord({ id: `first-${index}`, title: `First-page row ${index}` }))
+    const last = activityRecord({ id: 'last', title: 'Last-page row' })
+    vi.mocked(activityApi.list)
+      .mockResolvedValueOnce([...firstPage, last])
+      .mockResolvedValueOnce([last])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce(firstPage)
+    vi.mocked(activityApi.archive).mockResolvedValue({ ...last, status: 'archived', visibility: 'space_shared', metadata_json: {}, aggregate_key: null, access_level: 'full', owner_user_id: null, occurred_at: null, project_id: null })
+
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Next page' }))
+    expect(await screen.findByText('Last-page row')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Archive' }))
+    expect(await screen.findByText('First-page row 0')).toBeInTheDocument()
+    expect(activityApi.list).toHaveBeenLastCalledWith(
+      expect.objectContaining({ status: 'raw', offset: 0 }),
+      expect.objectContaining({ spaceId: 'space-1' }),
+    )
+  })
+
   it('renders briefing pointer rows as links to the Library digest view', async () => {
     vi.mocked(activityApi.list).mockResolvedValue([
       activityRecord({
@@ -234,6 +256,7 @@ describe('ActivityInboxPage project ownership', () => {
 
     await waitFor(() => expect(activityApi.list).toHaveBeenLastCalledWith(
       expect.objectContaining({ project_id: 'project-1' }),
+      expect.objectContaining({ spaceId: 'space-1' }),
     ))
   })
 
@@ -244,6 +267,19 @@ describe('ActivityInboxPage project ownership', () => {
 
     expect(await screen.findByText('Captured note')).toBeInTheDocument()
     expect(screen.queryByText('Marginalia')).toBeNull()
+  })
+
+  it('shows the next page beyond the first 50 and keeps older records reachable', async () => {
+    vi.mocked(activityApi.list).mockImplementation(async options => (options?.offset ? [51] : Array.from({ length: 51 }, (_, index) => index + 1))
+      .map(index => activityRecord({ id: `row-${index}`, title: `Capture ${index}` })))
+    renderPage()
+    expect(await screen.findByText('Capture 50')).toBeVisible()
+    expect(screen.queryByText('Capture 51')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Next page' }))
+    expect(await screen.findByText('Capture 51')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Next page' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Previous page' }))
+    expect(await screen.findByText('Capture 50')).toBeVisible()
   })
 
   it('reads in Chinese: labels, briefing counts for 0, 1 and many, runs and the capture time', async () => {

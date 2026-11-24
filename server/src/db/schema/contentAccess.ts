@@ -143,6 +143,11 @@ export const agentDataReadLogs = pgTable("agent_data_read_logs", {
 	resourceIdsJson: jsonb("resource_ids_json").notNull(),
 	dataClass: varchar("data_class", { length: 16 }).notNull(),
 	grantId: varchar("grant_id", { length: 36 }),
+	/**
+	 * The Run launch the data was released to, when the release is launch-bound (an application-update
+	 * automation's mail, ADR 0034): what one launch received is never evidence for another launch's write.
+	 */
+	launchId: varchar("launch_id", { length: 36 }),
 	accessedAt: timestamp("accessed_at", { withTimezone: true, mode: "string" }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [
 	index("ix_agent_data_read_logs_owner").on(table.spaceId, table.ownerUserId, table.accessedAt),

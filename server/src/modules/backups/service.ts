@@ -1,14 +1,15 @@
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   chmod,
   cp,
+  link,
   lstat,
   mkdir,
   mkdtemp,
   open,
   readFile,
   readdir,
-  rename,
   stat,
   unlink,
   writeFile,
@@ -80,16 +81,10 @@ export class BackupService {
 
     const releaseLock = await acquireLock(join(backupRoot, ".backup.lock"));
     try {
-      const timestamp = formatTimestamp(new Date());
-      let archivePath = join(backupRoot, `${kind}-${timestamp}.tar.gz`);
-      let counter = 1;
-      while (await pathExists(archivePath)) {
-        archivePath = join(backupRoot, `${kind}-${timestamp}-${counter}.tar.gz`);
-        counter += 1;
-      }
+      const archiveStem = join(backupRoot, `${kind}-${formatTimestamp(new Date())}`);
 
       const staging = await mkdtemp(join(tmpdir(), "rainver-backup-staging-"));
-      const temporaryArchivePath = `${archivePath}.tmp-${process.pid}`;
+      const temporaryArchivePath = `${archiveStem}.tmp-${randomUUID()}`;
       try {
         const { included, excluded, warnings } = await this.stage(dataRoot, staging);
         const versionMetadata = await this.versionMetadata();
@@ -114,8 +109,7 @@ export class BackupService {
         });
         await execFileAsync("tar", ["-tzf", temporaryArchivePath], { timeout: 600_000 });
         await chmodFile(temporaryArchivePath, 0o600);
-        await rename(temporaryArchivePath, archivePath);
-        return archivePath;
+        return await publishArchive(temporaryArchivePath, archiveStem);
       } finally {
         await unlink(temporaryArchivePath).catch(() => undefined);
         await rmDirSafe(staging);
@@ -335,15 +329,40 @@ export function automaticBackupIsDue(
   return latestCreatedAt + intervalHours * 60 * 60 * 1000 <= now.getTime();
 }
 
-/**
- * Locks this process holds. In a container the server is always PID 1, so a
- * lock a crashed predecessor left carries a pid that is alive again — this
- * process's own. A lock naming this pid that this process does not hold is
- * therefore a leftover, however live its pid looks.
- */
-const HELD_LOCKS = new Set<string>();
+async function publishArchive(source: string, stem: string): Promise<string> {
+  for (let suffix = 0; ; suffix += 1) {
+    const path = `${stem}${suffix ? `-${suffix}` : ""}.tar.gz`;
+    try {
+      await link(source, path);
+      return path;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+  }
+}
+
+// Reserve the path before any asynchronous acquisition or stale-lock check.
+const LOCAL_LOCKS = new Set<string>();
 
 async function acquireLock(lockPath: string): Promise<() => Promise<void>> {
+  if (LOCAL_LOCKS.has(lockPath)) throw new BackupInProgressError();
+  LOCAL_LOCKS.add(lockPath);
+  try {
+    await acquireLockFile(lockPath);
+  } catch (error) {
+    LOCAL_LOCKS.delete(lockPath);
+    throw error;
+  }
+  let released = false;
+  return async () => {
+    if (released) return;
+    released = true;
+    await unlink(lockPath).catch(() => undefined);
+    LOCAL_LOCKS.delete(lockPath);
+  };
+}
+
+async function acquireLockFile(lockPath: string): Promise<void> {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const content = `pid=${process.pid} acquired_at=${new Date().toISOString()}\n`;
     try {
@@ -356,14 +375,7 @@ async function acquireLock(lockPath: string): Promise<() => Promise<void>> {
         throw error;
       }
       await handle.close();
-      HELD_LOCKS.add(lockPath);
-      let released = false;
-      return async () => {
-        if (released) return;
-        released = true;
-        HELD_LOCKS.delete(lockPath);
-        await unlink(lockPath).catch(() => undefined);
-      };
+      return;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
         throw error;
@@ -393,7 +405,9 @@ async function removeStaleLock(lockPath: string, now = new Date()): Promise<bool
   }
 
   const parsed = parseLockContent(content);
-  const leftByPredecessor = parsed.pid === process.pid && !HELD_LOCKS.has(lockPath);
+  // A same-process holder could not reach this check through the reservation.
+  // PID 1 is reused across container restarts.
+  const leftByPredecessor = parsed.pid === process.pid;
   const pidAlive = parsed.pid === null ? null : leftByPredecessor ? false : isProcessAlive(parsed.pid);
   const ageAnchor = parsed.acquiredAt ?? lockStat.mtime;
   const staleByAge = now.getTime() - ageAnchor.getTime() > LOCK_STALE_AFTER_MS;

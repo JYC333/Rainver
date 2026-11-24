@@ -5,6 +5,14 @@ export const coreUiEn = {
       title: 'This page encountered an error',
       retry: 'Try again',
     },
+    module_load: {
+      title: 'This part of Rainver could not be loaded',
+      offline: 'It is not on this device yet, and the server cannot be reached right now. Reconnect, then check again.',
+      available: 'Rainver was updated after this tab opened. This part of the earlier version is no longer available, so updating is needed to open it.',
+      current: 'The download was interrupted. Reloading this tab downloads it again. If it still fails afterwards, close this tab or the installed app and open Rainver again.',
+      check_again: 'Check again',
+      reload_tab: 'Reload this tab',
+    },
     require_role: {
       space_admin_title: 'Space admin required',
       space_admin_message: 'Only a space owner or admin can open this page.',
@@ -47,6 +55,8 @@ export const coreUiEn = {
       restore_description: 'Bring back what this Agent left on the host — its CLI login and sessions, and its workspace when it had one — if the archive is still there and the host is online.',
     },
     date_picker: {
+      today: 'Today',
+      clear: 'Clear',
       placeholder: 'Choose a date',
       choose_date: 'Choose date',
       previous_month: 'Previous month',

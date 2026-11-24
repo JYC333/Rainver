@@ -78,6 +78,17 @@ async function appendRunEvent(runId: string, index: number, type: string, extra:
 }
 
 describe("run turn", () => {
+  it("closes a working Run's live stream when the server shuts down", async (ctx) => {
+    if (!db.available || !app) return ctx.skip();
+    await seedManagedRun("run-shutdown");
+    await db.pool.query("UPDATE runs SET status='running' WHERE id='run-shutdown'");
+    const url = await app.listen({ host: "127.0.0.1", port: 0 });
+    const response = await fetch(`${url}/api/v1/runs/run-shutdown/turn/stream`, { signal: AbortSignal.timeout(10_000) });
+    expect(response.headers.get("content-type")).toContain("text/event-stream");
+    const [body] = await Promise.all([response.text(), app.close()]);
+    expect(body).toContain("event: turn.snapshot");
+  });
+
   it("exposes requested and runtime-reported model independently, and clears stale attempt observations", async (ctx) => {
     if (!db.available || !app) return ctx.skip();
     await seedManagedRun("model-run");

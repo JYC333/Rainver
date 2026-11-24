@@ -28,6 +28,7 @@ interface LocalDateTimeParts {
 }
 
 const LOCAL_DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
+const OFFSET_PROBE_WINDOW_MS = 24 * 3_600_000;
 
 export function isValidTimezone(timezone: string): boolean {
   try {
@@ -73,27 +74,12 @@ export function localDayUtcBounds(localDate: string, timezone: string): LocalDay
 }
 
 /**
- * The first instant whose local date is `day`. Usually local midnight; where
- * the clock jumps forward at midnight (America/Santiago, America/Havana) that
- * midnight never happens and the day starts at the end of the gap, so the
- * plain conversion can land an hour early, in the previous day.
+ * The first instant whose local date is `day`: local midnight, or where the
+ * clock jumps forward at midnight (America/Santiago, America/Havana) the end
+ * of that gap, which `zonedLocalToUtc` resolves to.
  */
 function firstInstantOfLocalDay(day: LocalDateTimeParts, timeZone: string): Date {
-  const target = localDateKey(day);
-  let instant = zonedLocalToUtc(day, timeZone).getTime();
-  // Forward out of the previous day, in steps no gap is shorter than…
-  for (let i = 0; i < 16 && localDateKey(zonedParts(new Date(instant), timeZone)) < target; i += 1) {
-    instant += 15 * 60_000;
-  }
-  // …then back to the first minute still on the target day.
-  for (let i = 0; i < 15 && localDateKey(zonedParts(new Date(instant - 60_000), timeZone)) === target; i += 1) {
-    instant -= 60_000;
-  }
-  return new Date(instant);
-}
-
-function localDateKey(parts: Pick<LocalDateTimeParts, "year" | "month" | "day">): string {
-  return `${String(parts.year).padStart(4, "0")}-${String(parts.month).padStart(2, "0")}-${String(parts.day).padStart(2, "0")}`;
+  return zonedLocalToUtc(day, timeZone);
 }
 
 /** Whether every instant of the local day has passed, so a report on it covers all of it. */
@@ -101,26 +87,33 @@ export function isLocalDayComplete(localDate: string, timezone: string, now: Dat
   return Date.parse(localDayUtcBounds(localDate, timezone).endUtcIso) <= now.getTime();
 }
 
-/** The UTC instant of a local wall-clock time, by the zone's own clock. */
+/**
+ * The UTC instant of a local wall-clock time, by the zone's own clock.
+ *
+ * A wall time the clock skips (a DST gap) is read with the offset in force
+ * before the jump, which lands the same distance past it: 02:30 on New York's
+ * spring-forward day is 03:30 EDT, and Santiago's skipped midnight is 01:00,
+ * on its own day. A wall time that happens twice (fall back) is its first
+ * occurrence. A scheduled slot therefore never lands before its wall time, and
+ * never on the previous local day. `cron-parser` resolves both the same way.
+ */
 export function zonedLocalToUtc(parts: LocalDateTimeParts, timeZone: string): Date {
   const target = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, 0, 0);
-  let guess = target;
-  for (let i = 0; i < 4; i += 1) {
-    const actual = zonedParts(new Date(guess), timeZone);
-    const actualAsUtc = Date.UTC(
-      actual.year,
-      actual.month - 1,
-      actual.day,
-      actual.hour,
-      actual.minute,
-      0,
-      0,
-    );
-    const delta = actualAsUtc - target;
-    if (delta === 0) break;
-    guess -= delta;
-  }
-  return new Date(guess);
+  // target encodes the wall time as UTC. Probe a full day on each side
+  // to bracket transitions even in zones with offsets beyond ±12 hours.
+  const before = zoneOffsetAt(target - OFFSET_PROBE_WINDOW_MS, timeZone);
+  const after = zoneOffsetAt(target + OFFSET_PROBE_WINDOW_MS, timeZone);
+  const valid = [target - before, target - after]
+    .filter((instant) => zoneOffsetAt(instant, timeZone) === target - instant)
+    .sort((a, b) => a - b);
+  return new Date(valid[0] ?? target - before);
+}
+
+/** The zone's offset from UTC at an instant, in milliseconds (minute precision). */
+function zoneOffsetAt(instant: number, timeZone: string): number {
+  const local = zonedParts(new Date(instant), timeZone);
+  const minute = Math.floor(instant / 60_000) * 60_000;
+  return Date.UTC(local.year, local.month - 1, local.day, local.hour, local.minute, 0, 0) - minute;
 }
 
 export function zonedParts(date: Date, timeZone: string): LocalDateTimeParts {

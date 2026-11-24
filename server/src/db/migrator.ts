@@ -129,6 +129,23 @@ async function appliedMap(
   return out;
 }
 
+function assertAppliedChecksums(
+  files: MigrationFile[],
+  done: Map<string, { name: string; checksum: string }>,
+): void {
+  for (const file of files) {
+    const previous = done.get(file.version);
+    if (previous && previous.checksum !== file.checksum) {
+      throw new Error(
+        `migration ${file.version}_${file.name} was already applied with different ` +
+          `content (checksum mismatch). Applied migrations are immutable: restore the ` +
+          `committed file and express the change as a new numbered migration ` +
+          `(pnpm run schema:generate -- --name <name>).`,
+      );
+    }
+  }
+}
+
 /**
  * Apply all pending migrations in `dir`. Idempotent. Throws if an
  * already-applied migration's content changed (checksum mismatch).
@@ -146,24 +163,14 @@ export async function migrate(
     await client.query("SELECT pg_advisory_lock($1)", [MIGRATION_LOCK_KEY.toString()]);
     await ensureMigrationsTable(client);
     const done = await appliedMap(client);
+    assertAppliedChecksums(files, done);
 
     for (const file of files) {
       // skipMaintenance keeps the release that is still running and skips
       // maintenance migrations. Production migration commands leave this false
       // and apply every pending file.
       if (opts.skipMaintenance && requiresMaintenance(file.sql)) continue;
-      const prev = done.get(file.version);
-      if (prev) {
-        if (prev.checksum !== file.checksum) {
-          throw new Error(
-            `migration ${file.version}_${file.name} was already applied with different ` +
-              `content (checksum mismatch). Applied migrations are immutable: restore the ` +
-              `committed file and express the change as a new numbered migration ` +
-              `(pnpm run schema:generate -- --name <name>).`,
-          );
-        }
-        continue;
-      }
+      if (done.has(file.version)) continue;
 
       log(`applying migration ${file.version}_${file.name}`);
       await client.query("BEGIN");
@@ -193,13 +200,17 @@ export async function migrate(
   return { applied, all: files.map((f) => f.version) };
 }
 
-/** Report which migrations are applied vs pending, in order. */
+/** Read migration status without requiring schema creation privileges. */
 export async function status(pool: Pool, dir: string): Promise<MigrationStatus[]> {
   const files = loadMigrations(dir);
   const client = await pool.connect();
   try {
-    await ensureMigrationsTable(client);
-    const done = await appliedMap(client);
+    const { rows } = await client.query<{ journal: string | null }>(
+      "SELECT to_regclass($1) AS journal",
+      [MIGRATIONS_TABLE],
+    );
+    const done = rows[0]?.journal ? await appliedMap(client) : new Map();
+    assertAppliedChecksums(files, done);
     return files.map((f) => ({
       version: f.version,
       name: f.name,

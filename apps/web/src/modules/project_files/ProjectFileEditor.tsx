@@ -1,4 +1,6 @@
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
+import { sessionEpoch } from '../../lib/sessionResidue'
+import { forwardRef, useContext, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
+import { UNSAFE_DataRouterContext, useBlocker } from 'react-router-dom'
 import { FileCode, FilePlus, History, Save, Trash2, WandSparkles } from 'lucide-react'
 import type { ConversationInputResourcePart, InputResourceSelection } from '@rainver/protocol'
 import type { FileContent, ProjectFileDraft, ProjectFileDraftSave } from '../../types/api'
@@ -24,7 +26,8 @@ interface ProjectFileEditorProps {
   saving?: boolean
   onDraftUpsert: (input: DraftMutationInput) => Promise<ProjectFileDraft>
   onDraftDiscard: (draft: ProjectFileDraft) => Promise<void>
-  onDraftSave: (draft: ProjectFileDraft, options?: { confirmMixedLineEndingNormalization?: boolean }) => Promise<ProjectFileDraftSave>
+  onDraftSave: (draft: ProjectFileDraft, options?: { confirmMixedLineEndingNormalization?: boolean; retryIntentId?: string }) => Promise<ProjectFileDraftSave>
+  onCloseFailedSave?: (intentId: string, draft: ProjectFileDraft) => Promise<void>
   onDraftRebase: (input: DraftMutationInput) => Promise<ProjectFileDraft>
   onConvert?: () => Promise<void>
   onHistory?: () => void
@@ -78,6 +81,41 @@ function isEditable(file: FileContent | null, converted: boolean): boolean {
   return file.writable !== false && (!file.encoding || file.encoding === 'utf8')
 }
 
+function hasUnacknowledgedChanges(controller: ProjectFileDraftController): boolean {
+  const { status } = controller.snapshot()
+  return status !== 'clean' && status !== 'saved'
+}
+
+function folderRetryIntent(error: unknown): string | undefined {
+  const detail = (error as { payload?: { error?: { metadata?: Record<string, unknown> } } } | null)?.payload?.error?.metadata
+  if (detail?.io_status !== 'needs_attention' && detail?.code !== 'folder_io_needs_attention') return undefined
+  return typeof detail.intent_id === 'string' && detail.intent_id ? detail.intent_id : undefined
+}
+
+function DraftNavigationGuard({ controller, epoch }: { controller: ProjectFileDraftController; epoch: number }) {
+  const { t } = useAppTranslation()
+  const blocker = useBlocker(({ currentLocation, nextLocation }) =>
+    currentLocation.pathname !== nextLocation.pathname && sessionEpoch() === epoch && hasUnacknowledgedChanges(controller),
+  )
+  useEffect(() => {
+    if (blocker.state !== 'blocked') return
+    let active = true
+    const refuse = () => {
+      blocker.reset()
+      toast.error(t('management_ui.file_editor.draft_not_saved'))
+    }
+    void controller.flush().then(() => {
+      if (!active) return
+      if (hasUnacknowledgedChanges(controller)) refuse()
+      else blocker.proceed()
+    }).catch(() => {
+      if (active) refuse()
+    })
+    return () => { active = false }
+  }, [blocker, controller, t])
+  return null
+}
+
 export const ProjectFileEditor = forwardRef<ProjectFileEditorHandle, ProjectFileEditorProps>(function ProjectFileEditor({
   file,
   draft,
@@ -86,6 +124,7 @@ export const ProjectFileEditor = forwardRef<ProjectFileEditorHandle, ProjectFile
   onDraftUpsert,
   onDraftDiscard,
   onDraftSave,
+  onCloseFailedSave,
   onDraftRebase,
   onConvert,
   onHistory,
@@ -99,12 +138,16 @@ export const ProjectFileEditor = forwardRef<ProjectFileEditorHandle, ProjectFile
   onAttachmentStateChange,
 }: ProjectFileEditorProps, ref) {
   const { t } = useAppTranslation()
+  const dataRouter = useContext(UNSAFE_DataRouterContext)
   const [path, setPath] = useState(file?.path ?? draft?.relative_path ?? '')
   const [activeDraft, setActiveDraft] = useState<ProjectFileDraft | null>(draft)
   const activeDraftRef = useRef<ProjectFileDraft | null>(draft)
   const [saveInFlight, setSaveInFlight] = useState(false)
+  const savingToFolderRef = useRef(false)
+  const [retrySave, setRetrySave] = useState<{ intentId: string; draft: ProjectFileDraft; confirmed: boolean } | null>(null)
   const [converted, setConverted] = useState(false)
   const [confirmMixedSave, setConfirmMixedSave] = useState(false)
+  const [confirmCloseSave, setConfirmCloseSave] = useState(false)
   const [selection, setSelection] = useState<InputResourceSelection | undefined>(undefined)
   const selectionRef = useRef<InputResourceSelection | undefined>(undefined)
   const [snapshot, setSnapshot] = useState<DraftControllerSnapshot>(() => ({
@@ -147,6 +190,7 @@ export const ProjectFileEditor = forwardRef<ProjectFileEditorHandle, ProjectFile
     if (!relativePath || !folderId || !locationId) return null
     const currentSelection = selectionRef.current
     if (currentDraft) {
+      if (currentDraft.relative_path !== relativePath) return null
       return {
         kind: 'input_resource',
         source_state: 'draft',
@@ -231,7 +275,7 @@ export const ProjectFileEditor = forwardRef<ProjectFileEditorHandle, ProjectFile
   const buildMutation = useMemo(() => async (content: string, currentDraft: ProjectFileDraft | null): Promise<Omit<DraftMutationInput, 'content' | 'content_sha256' | 'byte_size'> | null> => {
     const currentFile = latestFileRef.current
     const relativePath = pathRef.current.trim()
-    if (!relativePath || relativePath.includes('\0')) return null
+    if (!relativePath || relativePath.includes('\0')) throw new Error(t('management_ui.file_editor.draft_not_saved'))
     const sourceEncoding = currentDraft?.source_encoding
       ?? (converted ? 'utf8' : currentFile?.encoding === 'utf16le' || currentFile?.encoding === 'utf16be' ? currentFile.encoding : 'utf8')
     return {
@@ -244,8 +288,9 @@ export const ProjectFileEditor = forwardRef<ProjectFileEditorHandle, ProjectFile
       preserve_bom: currentDraft?.preserve_bom ?? (converted ? false : Boolean(currentFile?.has_bom)),
       line_ending_mode: currentDraft?.line_ending_mode ?? lineMode,
     }
-  }, [converted, lineMode])
+  }, [converted, lineMode, t])
 
+  const draftSessionEpoch = useRef(sessionEpoch())
   const buildMutationRef = useRef(buildMutation)
   buildMutationRef.current = buildMutation
 
@@ -260,6 +305,7 @@ export const ProjectFileEditor = forwardRef<ProjectFileEditorHandle, ProjectFile
       buildMutation: (content, currentDraft) => buildMutationRef.current(content, currentDraft),
       save: async input => {
         try {
+          if (draftSessionEpoch.current !== sessionEpoch()) throw new Error("The session changed before the draft could be saved")
           const next = await onDraftUpsert(input)
           activeDraftRef.current = next
           setActiveDraft(next)
@@ -283,10 +329,7 @@ export const ProjectFileEditor = forwardRef<ProjectFileEditorHandle, ProjectFile
   useImperativeHandle(ref, () => ({
     flush: () => controller.flush(),
     flushForSend,
-    hasPendingChanges: () => {
-      const current = controller.snapshot()
-      return current.status === 'dirty' || current.status === 'saving' || current.status === 'error' || current.status === 'conflict'
-    },
+    hasPendingChanges: () => hasUnacknowledgedChanges(controller),
   }), [controller])
 
   useEffect(() => {
@@ -295,7 +338,14 @@ export const ProjectFileEditor = forwardRef<ProjectFileEditorHandle, ProjectFile
 
   useEffect(() => () => onAttachmentStateChange?.(null), [onAttachmentStateChange])
 
-  useEffect(() => () => controller.destroy(), [controller])
+  useEffect(() => () => {
+    const { status } = controller.snapshot()
+    if (draftSessionEpoch.current === sessionEpoch() && (status === 'dirty' || status === 'saving')) {
+      void controller.flush().catch(error => toast.error(errMsg(error))).finally(() => controller.destroy())
+    } else {
+      controller.destroy()
+    }
+  }, [controller])
 
   useEffect(() => {
     if (draft === activeDraftRef.current) return
@@ -306,7 +356,7 @@ export const ProjectFileEditor = forwardRef<ProjectFileEditorHandle, ProjectFile
 
   useEffect(() => {
     const warn = (event: BeforeUnloadEvent) => {
-      if (snapshot.status !== 'dirty' && snapshot.status !== 'saving') return
+      if (snapshot.status === 'clean' || snapshot.status === 'saved') return
       event.preventDefault()
       event.returnValue = ''
     }
@@ -314,27 +364,43 @@ export const ProjectFileEditor = forwardRef<ProjectFileEditorHandle, ProjectFile
     return () => window.removeEventListener('beforeunload', warn)
   }, [snapshot.status])
 
-  async function saveToFolder(confirmMixedLineEndingNormalization = false): Promise<void> {
+  async function saveToFolder(confirmMixedLineEndingNormalization = false, retry = false): Promise<void> {
+    if (savingToFolderRef.current) return
+    savingToFolderRef.current = true
     try {
       await controller.flush()
       const current = activeDraftRef.current
       if (!current) return
+      if (current.relative_path !== pathRef.current.trim()) {
+        toast.error(t('management_ui.file_editor.draft_not_saved'))
+        return
+      }
+      if (retry && (!retrySave || current.id !== retrySave.draft.id || current.version !== retrySave.draft.version)) return
       if (current.line_ending_mode === 'mixed' && !confirmMixedLineEndingNormalization) {
         setConfirmMixedSave(true)
         return
       }
       setSaveInFlight(true)
       try {
-        const result = await onDraftSave(current, { confirmMixedLineEndingNormalization })
+        const result = await onDraftSave(current, {
+          confirmMixedLineEndingNormalization,
+          ...(retry && retrySave ? { retryIntentId: retrySave.intentId } : {}),
+        })
+        setRetrySave(null)
         activeDraftRef.current = 'current_draft' in result?result.current_draft??null:result.newer_draft_retained ? current : null
         setActiveDraft(activeDraftRef.current)
         controller.commitCanonical(result.file.content, activeDraftRef.current)
+      } catch (error) {
+        const intentId = folderRetryIntent(error)
+        if (intentId) setRetrySave({ intentId, draft: current, confirmed: confirmMixedLineEndingNormalization })
       } finally {
         setSaveInFlight(false)
       }
     } catch {
       // The controller exposes conflict/error status; the page-level toast is
       // responsible for transport details.
+    } finally {
+      savingToFolderRef.current = false
     }
   }
 
@@ -396,10 +462,30 @@ export const ProjectFileEditor = forwardRef<ProjectFileEditorHandle, ProjectFile
   const hasDraft = Boolean(activeDraft)
   const canEdit = editable && !savePending
   const draftContent = snapshot.content
-  const canSave = hasDraft && snapshot.status !== 'saving' && snapshot.status !== 'conflict' && !hostConflict
+  const canSave = Boolean(path.trim()) && hasDraft && snapshot.status !== 'saving' && snapshot.status !== 'conflict' && !hostConflict
+  const canRetrySave = Boolean(retrySave && activeDraft && snapshot.status === 'saved' && !hostConflict
+    && activeDraft.id === retrySave.draft.id && activeDraft.version === retrySave.draft.version
+    && path.trim() === retrySave.draft.relative_path)
+  const canCloseFailedSave = Boolean(onCloseFailedSave && retrySave && path.trim() === retrySave.draft.relative_path)
+
+  async function closeFailedSave(): Promise<void> {
+    if (!onCloseFailedSave || !retrySave || !canCloseFailedSave || savingToFolderRef.current) return
+    savingToFolderRef.current = true
+    setSaveInFlight(true)
+    try {
+      await onCloseFailedSave(retrySave.intentId, retrySave.draft)
+      setRetrySave(null)
+    } catch {
+      // The page reports the refusal. Keep the retry and close controls available.
+    } finally {
+      savingToFolderRef.current = false
+      setSaveInFlight(false)
+    }
+  }
 
   return (
     <>
+    {dataRouter && <DraftNavigationGuard controller={controller} epoch={draftSessionEpoch.current} />}
     <ConfirmDialog
       open={confirmMixedSave}
       onOpenChange={setConfirmMixedSave}
@@ -408,6 +494,15 @@ export const ProjectFileEditor = forwardRef<ProjectFileEditorHandle, ProjectFile
       confirmLabel={t('management_ui.file_editor.normalize_confirm')}
       variant="default"
       onConfirm={() => { void saveToFolder(true) }}
+    />
+    <ConfirmDialog
+      open={confirmCloseSave}
+      onOpenChange={setConfirmCloseSave}
+      title={t('management_ui.file_editor.close_failed_save_title')}
+      description={t('management_ui.file_editor.close_failed_save_description')}
+      confirmLabel={t('management_ui.file_editor.close_failed_save')}
+      variant="default"
+      onConfirm={() => { void closeFailedSave() }}
     />
     <div className="flex h-full min-h-0 flex-1 flex-col bg-background">
       <div className="shrink-0 flex flex-wrap items-center gap-3 border-b border-border bg-background px-4 py-3">
@@ -421,7 +516,19 @@ export const ProjectFileEditor = forwardRef<ProjectFileEditorHandle, ProjectFile
           <Input
             aria-label={t('management_ui.file_editor.file_path')}
             value={path}
-            onChange={event => setPath(event.target.value)}
+            onChange={event => {
+              if (savingToFolderRef.current) return
+              const nextPath = event.target.value
+              const changed = nextPath.trim() !== pathRef.current.trim()
+              pathRef.current = nextPath
+              setPath(nextPath)
+              const current = controller.snapshot()
+              if (changed && (current.draft || current.status !== 'clean')) {
+                // A new draft's path and body are versioned together. Queue
+                // a new draft version even when only its path changed.
+                controller.setContent(current.content)
+              }
+            }}
             placeholder="path/to/file.txt"
             className="h-7 max-w-md font-mono text-xs"
             disabled={savePending}
@@ -429,11 +536,15 @@ export const ProjectFileEditor = forwardRef<ProjectFileEditorHandle, ProjectFile
           />
         )}
         <span role="status" className="text-xs text-muted-foreground">{statusLabel(snapshot, draftLoading, savePending)}</span>
-        <span className="ml-auto flex items-center gap-1.5">
+        <span className="ml-auto flex flex-wrap items-center gap-1.5">
           {onHistory && <Button type="button" size="sm" variant="ghost" className="h-8 gap-1.5 px-2.5 text-xs" onClick={onHistory}><History className="size-3" /> {t('management_ui.file_editor.history')}</Button>}
           {onCancel && !file && <Button type="button" size="sm" variant="ghost" className="h-8 px-2.5 text-xs" onClick={onCancel}>{t('management_ui.file_editor.cancel')}</Button>}
           {hasDraft && <Button type="button" size="sm" variant="ghost" className="h-8 gap-1.5 px-2.5 text-xs" onClick={() => void discardDraft()} disabled={savePending}><Trash2 className="size-3" /> {t('management_ui.file_editor.discard')}</Button>}
-          <Button type="button" size="sm" className="h-8 gap-1.5 px-2.5 text-xs" onClick={() => void saveToFolder()} disabled={!canSave || savePending}><Save className="size-3" /> {t('management_ui.file_editor.save_to_folder')}</Button>
+          {canCloseFailedSave && <Button type="button" size="sm" variant="ghost" className="h-8 px-2.5 text-xs" onClick={() => setConfirmCloseSave(true)} disabled={savePending}>{t('management_ui.file_editor.close_failed_save')}</Button>}
+          <Button type="button" size="sm" className="h-8 gap-1.5 px-2.5 text-xs" onClick={() => {
+            if (canRetrySave && retrySave) void saveToFolder(retrySave.confirmed, true)
+            else void saveToFolder()
+          }} disabled={!canSave || savePending}><Save className="size-3" /> {t(canRetrySave ? 'management_ui.file_editor.retry_save' : 'management_ui.file_editor.save_to_folder')}</Button>
         </span>
       </div>
       {(hostConflict || draftConflict) && activeDraft && baseFile && (

@@ -8,13 +8,13 @@ import {workspaceIntegrationRecoveryHints,workspaceClosureRecoveryHints} from '.
 import {executionWorkspaceMountRef,resolveWorkspaceScope} from '../hosts/workspaceScopes.js';
 import {workspaceLocationFrame} from '../hosts/workspaceLocation.js';
 import {ensureExecutionWorkspace, ensurePrimaryExecutionWorkspace, integrationWorkspaceForRun, isolatedWorkspaceContract, recordWorkspaceLaunch} from "../projectFolders/executionWorkspaces.js";
-import {delegatedReviewInstruction,sharedDelegationInstruction} from "../projectFolders/delegatedWorkspaceInstructions.js";
+import { conversationWorkspaceInstruction, delegatedReviewInstruction, sharedDelegationInstruction } from "../projectFolders/delegatedWorkspaceInstructions.js";
 import {recordReviewRefusal} from "../projectFolders/delegatedWorkspaceReview.js";
 import { randomUUID } from "node:crypto";
 import { ordinaryToolsForLaunch } from "./ordinaryToolLaunch.js";
 import { REMOTE_CWD_PLACEHOLDER, WORK_SKILL_PATH_PLACEHOLDER, type HostEgressTransport, type HostLaunchIsolation, type HostLaunchModelChannel, type HostLaunchOrdinaryTools, type InvocationDelivery, type LaunchWorkspace, type RunAdapterResultEnvelope, type RuntimeSemanticEvent, type RuntimeSessionConfigDroppedSelection as DroppedSessionConfigSelection } from "@rainver/protocol";
 import { selectModelChannelLaunch } from "./modelChannelLaunch.js";
-import { runRequiresIsolatedLaunch, sensitiveLaunchRefusal, sensitiveThreadResumable } from "./sensitiveRuntimeProfile.js";
+import { networkedResumeVerdict, runRequiresIsolatedLaunch, sensitiveLaunchRefusal, sensitiveThreadResumable } from "./sensitiveRuntimeProfile.js";
 import { PgHostThreadRepository } from "../hosts/threadRepository.js";
 import type { ContentBlock } from "./cliConversationProtocol.js";
 import type { CredentialSpendDeps } from "../policy/credentialSpend.js";
@@ -44,7 +44,10 @@ import { sharedHostConnectionRegistry, type HostConnectionRegistry, type HostRun
 import { createThreadEventNormalizer, type ThreadEventDraft } from "../hosts/threadEventNormalization.js";
 import { registerRunLiveInput } from "./liveInput.js";
 import { bindHostAttemptLaunch } from "./executionControl.js";
+import { launchModelWrites, recordRuntimeModelFallback } from "./runtimeModelFallback.js";
+import { canSwitchRetainedSessionModel } from "./retainedModelSwitch.js";
 import { getDbPool } from "../../db/pool.js";
+import { CLAUDE_CONVERSATION_DEFAULT_MODEL } from "../sessions/sessionConfig.js";
 import { ConversationInputService } from "../sessions/conversationInputService.js";
 import { promptInputLimitFailure, RUNTIME_INPUT_TOO_LARGE } from "./promptInputLimit.js";
 import type { ServerConfig } from "../../config.js";
@@ -276,6 +279,8 @@ export interface RemoteHostCliAdapterDeps {
 
 export interface RemoteBindingPort {
   observeModel?(runId: string, spaceId: string, model?: string | null): Promise<void>;
+  /** The runtime's explicit report that a response of this launch came from another model (`runtimeModelFallback.ts`). */
+  observeModelFallback?(input: { spaceId: string; runId: string; launchId: string; title: string; description: string | null }): Promise<void>;
   /** Saved session options the live session did not offer or apply; the runtime kept its default. */
   observeDroppedSessionConfig?(runId: string, spaceId: string, dropped: readonly DroppedSessionConfigSelection[]): Promise<void>;
   resolve(run: AgentRunRecord): Promise<ResolvedRemoteBinding | null>;
@@ -312,6 +317,7 @@ function databaseBindingPort(config: ServerConfig): RemoteBindingPort | null {
   return {
     resolve: (run) => resolveRemoteRunBinding(db, run),
     observeModel: (runId, spaceId, model) => recordRuntimeReportedModel(db, runId, spaceId, model),
+    observeModelFallback: (input) => recordRuntimeModelFallback(db, input),
     observeDroppedSessionConfig: (runId, spaceId, dropped) => recordDroppedSessionConfig(db, runId, spaceId, dropped),
     record: (runId, used, spaceId) => recordRemoteRunBackend(db, runId, used, spaceId),
     profileScope: (run, workspaceLocationId) => resolveRuntimeProfileScope(db, run, workspaceLocationId),
@@ -458,9 +464,6 @@ async function runRemoteHostCliAdapter(
       sandbox_cwd: REMOTE_HOST_ACP_CWD_PLACEHOLDER,
       resume_session_id: input.resume_session_id,
       required_sandbox_level: null,
-      // No server-local path exists to check, and faking one would not enforce
-      // anything. This path does not write a deny config into the daemon workspace.
-      skip_subagent_disable_check: true,
     });
   } catch (error) {
     return remoteFailureWithEvent(
@@ -558,26 +561,48 @@ async function runRemoteHostCliAdapter(
         :{...(scope?.workspace??launchWorkspace(input.workspace,workspaceLocationId,input.workspace_relative_path??null)!),execution_workspace:isolated.ref} as LaunchWorkspace;
       const review=isolated.review;
       const sharedChild=isolated.sharedWithCoordinator===true;
+      const readOnly = input.run.required_sandbox_level === "read_only";
       if(!review&&!isolated.ref.integration_id&&input.run.host_task_thread_id&&input.run.agent_id&&input.run.session_id){
         const oldBinding=(await workspaceDb.query<{execution_workspace_json:unknown}>('SELECT execution_workspace_json FROM host_threads WHERE id=$1',[input.run.host_task_thread_id])).rows[0]?.execution_workspace_json;
         if(!oldBinding)await enqueueLegacyWorkspaceProfileArchive(workspaceDb,isolated.workspace,input.run.agent_id,input.run.session_id,input.run.instructed_by_user_id??input.run.owner_user_id!);
       }
       // A legacy cached session cannot silently resume in a new cwd.
       if(input.resume_session_id){
+        const override = objectValue(input.run.model_override_json);
+        const inheritedWorkspace = objectValue(objectValue(override.delegated_write).resume_workspace);
+        const ownParkedLaunch = objectValue(override.host_thread).runtime_session_launch;
+        // A retry can see a Host thread already rebound by a fresh fork. Its
+        // inherited pointer still belongs to the original workspace. A Run's
+        // own later park uses the launch-bound session checked below instead.
+        if (inheritedWorkspace.id && !ownParkedLaunch &&
+          (inheritedWorkspace.id !== isolated.workspace.id || inheritedWorkspace.generation !== isolated.workspace.generation)) {
+          input.resume_session_id = null;
+        }
         const bindingDb=deps.db??getDbPool(deps.config.databaseUrl);
         const previous=input.run.host_task_thread_id?(await bindingDb.query<{execution_workspace_json:{id:string;generation:number}|null}>("SELECT execution_workspace_json FROM host_threads WHERE id=$1 AND execution_host_id=$2",[input.run.host_task_thread_id,hostId])).rows[0]?.execution_workspace_json:null;
         if(previous?.id!==isolated.workspace.id||previous.generation!==isolated.workspace.generation)input.resume_session_id=null;
       }
       if(input.run.host_task_thread_id)await (deps.db??getDbPool(deps.config.databaseUrl)).query("UPDATE host_threads SET execution_workspace_json=$2::jsonb WHERE id=$1 AND execution_host_id=$3",[input.run.host_task_thread_id,JSON.stringify({id:isolated.workspace.id,generation:isolated.workspace.generation,profile_container_id:isolated.ref.integration_id??isolated.workspace.id}),hostId]);
       if(review)addRunControl("execution_workspace",delegatedReviewInstruction(review.commit));
-      else if(sharedChild)addRunControl("execution_workspace",sharedDelegationInstruction(isolated.changeSetId!,isolated.changeRevision!));
-      else if(!isolated.ref.integration_id)addRunControl("execution_workspace",`Work in this conversation's isolated worktree. You can edit files, inspect Git and use normal Git operations on your own working branch; shared target publication uses workspace.change.complete. Your change set is ${isolated.changeSetId}, revision ${isolated.changeRevision}. For a private save without merging, use normal Git or action=checkpoint alone; do not prepare/publish. For an authorized merge, call workspace.change.complete with action=prepare and a summary. Read workspace.change.get for the actual result and current revision. Preparation rebases by default: your uncommitted edits are saved as one commit, then only this batch's own commits are replayed onto the target in your CURRENT worktree, one at a time, retaining your original session and dependencies; the target is later fast-forwarded to them. If prepare reports a conflict, it has stopped at one commit: resolve the listed files here (including any necessary related fixes; do not run git rebase yourself) and call prepare again to continue, until it reports prepared. Use publication={strategy:'squash',user_request_quote:<the person's words>} only when the person explicitly asked for a squash in their current message; never choose squash yourself. Do not ask for test-command configuration or internal IDs. Save a version using your own Git commit or action=checkpoint, run appropriate project checks in this SAME runtime environment, repair failures and repeat as needed. Then call action=publish with verification={commit:the version you checked,checks:[{command,summary}],note:what you checked}. If there are no applicable checks, use an empty checks array with an honest inspection note. Wait for pending Git operations before editing files or issuing another workspace command. After each operation, workspace.change.get supplies the current revision and progress. If target_moved, prepare again and check the updated result. Only merged/no_changes completes publication; obtain that result BEFORE your final response. There is no successor Agent, configuration phase or system-run test environment. Do not move shared target refs yourself. A prepared or checkpointed commit is private until publish succeeds.`);
+      else if (readOnly) {
+        const scope = isolated.ref.base_commit
+          ? `The assigned commit in your isolated read-only worktree is ${isolated.ref.base_commit}.`
+          : "Your worktree is isolated and read-only.";
+        addRunControl("execution_workspace", `${scope} Check the observed HEAD before reporting findings and cite the commit you read.`);
+      } else if(sharedChild)addRunControl("execution_workspace",sharedDelegationInstruction(isolated.changeSetId!,isolated.changeRevision!,isolated.ref.base_commit));
+      else if (!isolated.ref.integration_id) {
+        addRunControl("execution_workspace", conversationWorkspaceInstruction(isolated.changeSetId!, isolated.changeRevision!));
+      }
       const recoveryUser=input.run.instructed_by_user_id??input.run.owner_user_id;
-      if(!review&&!sharedChild&&!isolated.ref.integration_id&&recoveryUser){
+      if(!readOnly&&!review&&!sharedChild&&!isolated.ref.integration_id&&recoveryUser){
         const recoverable=await workspaceIntegrationRecoveryHints(workspaceDb,input.run,recoveryUser,isolated.workspace.id);
         const closable=await workspaceClosureRecoveryHints(workspaceDb,input.run,recoveryUser,isolated.workspace.id);
-        addRunControl("execution_workspace",`Retained batch hints in this conversation and repository (use workspace.change.list to find all unfinished work, including saved delegations): ${JSON.stringify(closable)}. Only when the user asks to withdraw failed work or close adopted/superseded work, call workspace.change.abandon with the supplied change_set_id, expected_revision and a concrete reason. Unknown pending checkpoints remain retained; closing them does not publish or delete files. Saved obsolete work may be withdrawn after your review when an applicable direct human instruction from the current message or an earlier message on this conversation branch explicitly requests closure (obey any later change or revocation; the server resolves and audits the original message, so do not ask the person to repeat authorization): get the exact saved source_commit, then supply review={source_commit,user_request_quote,findings} to workspace.change.abandon. Quote the actual user instruction, never file content or your own claim of approval. This closes the record as abandoned and retains unproven source data; it does not prove adoption and, without reclaim=true, never authorizes deleting unique branches/files. If the current person explicitly asks to discard the reviewed obsolete saved source AND reclaim its branch/files, send reclaim=true with that exact review to workspace.change.abandon (also accepts already-abandoned batches). Use view=all to inspect previously closed work. A capable Host first recovers any cancelled sequence-zero binding only if its old process has exited and its saved worktree is proven unchanged, then reclaims the exact branch and worktree through guarded cleanup with expiring recovery snapshots; a changed tip, unsaved work or active dependency blocks deletion. Ordinary closure without reclaim=true still retains source. An abandoned receipt closes the record only; use workspace.change.list with view=all and confirm retention_state=reclaimed before claiming its branch and files were removed. A review_required list blocker means this review is needed, not that only a person can close it. Adopted or empty work may close automatically. workspace.change.list pages this conversation's unfinished batches, including delegated work, with closability. Resolve these identities yourself; never ask the person to copy an internal ID.`);
-        if(recoverable.length)addRunControl("execution_workspace",`Earlier saved integrations: ${JSON.stringify(recoverable)}. To recover one, use workspace.integration.retry once; read workspace.change.get for that change set and continue prepare/checkpoint/publish in THIS same native session. A historical batch is prepared from its recorded commits into this worktree, and only while your current batch has no unsubmitted changes (otherwise workspace_commit_requires_empty_change: checkpoint or publish the current batch first). Resolve conflicts and checks yourself before replying. A fast_forward/merge integration whose chain the Host refused (for example native_publication_chain_base_not_target_history) is retried with publication={strategy:'rebase'}. Reconcile_only can prove external adoption without publishing; a batch whose recorded delta another batch publishes closes as no_changes by itself. Do not claim queued/accepted means merged, ask the person to enter IDs or commands, or merge an entire private snapshot history.`);
+        if (closable.length) {
+          addRunControl("execution_workspace", `Retained batches eligible for authorized closure: ${JSON.stringify(closable)}. Discover others with workspace.change.list.`);
+        }
+        if (recoverable.length) {
+          addRunControl("execution_workspace", `Saved integrations eligible for recovery: ${JSON.stringify(recoverable)}. Use workspace.integration.retry and inspect workspace.change.get before continuing.`);
+        }
       }
       if(isolated.retainedWorkspaceId)addRunControl("execution_workspace",`This turn continues in a fresh workspace because an earlier workspace could not safely continue. Earlier changes remain preserved in workspace ${isolated.retainedWorkspaceId} and are not included here. Tell the user this when relevant; do not claim those changes were discarded, adopted or published.`);
     }catch(error){if(error instanceof JobDeferredError)throw error;return remoteFailureWithEvent(input,spec.runtime_key,"execution_workspace_unavailable",error instanceof Error?error.message:String(error),startedAt);}
@@ -724,6 +749,44 @@ async function runRemoteHostCliAdapter(
   // will launch isolated in its own Session's profile and cwd with nothing shared writable. The frame
   // is checked again right before launch, on what it actually states.
   const sensitiveRun = runRequiresIsolatedLaunch(input.run) || isolatedModelChannel !== null;
+  const threadDb = deps.db ?? (config?.databaseUrl ? getDbPool(config.databaseUrl) : null);
+  const resumeThreadId = input.run.host_task_thread_id ?? null;
+  type ResumeRefusal = "sensitive_unconfirmed" | "held_isolated" | "unconfirmed";
+  /** Whether the frame may hand the CLI `resume_session_id`, judged on `db` — the pool here, the bind's
+   * transaction under the thread's lock at launch (`bindAttemptLaunchAfterResumeCheck`, ADR 0036 §14). */
+  const resumeRefusal = async (db: Queryable | null): Promise<ResumeRefusal | null> => {
+    const sessionId = input.resume_session_id!;
+    if (sensitiveRun) {
+      return resumeThreadId && db && await sensitiveThreadResumable(db, resumeThreadId,
+        { vendorSessionId: sessionId, profileKey: profileFrame!.profile_key }) ? null : "sensitive_unconfirmed";
+    }
+    if (!db) return null;
+    const verdict = resumeThreadId
+      ? await networkedResumeVerdict(db, { threadId: resumeThreadId, runId: input.run.id, vendorSessionId: sessionId,
+        profileKey: profileFrame?.profile_key ?? null })
+      : "unconfirmed";
+    return verdict === "resumable" ? null : verdict;
+  };
+  /** Nothing launches; only the refused session leaves the thread (a newer pointer is kept). */
+  const refuseResume = async (refusal: ResumeRefusal) => {
+    const sessionId = input.resume_session_id!;
+    if (resumeThreadId && threadDb) {
+      const threads = new PgHostThreadRepository(threadDb);
+      if (refusal === "sensitive_unconfirmed") await threads.resetConversationAgent(resumeThreadId, sessionId);
+      else await threads.excludeVendorSession(resumeThreadId, sessionId);
+    }
+    return refusal === "sensitive_unconfirmed"
+      ? remoteFailureWithEvent(input, spec.runtime_key, "sensitive_resume_unconfirmed",
+        "This conversation's earlier CLI session was not started in its current isolated profile, so it is not continued. Send the message again to continue in a new session.",
+        startedAt)
+      : refusal === "held_isolated"
+        ? remoteFailureWithEvent(input, spec.runtime_key, "isolated_session_resume_refused",
+          "This conversation's earlier CLI session ran isolated with private data, so it is not continued on a launch with network. Send the message again to continue in a new session.",
+          startedAt)
+        : remoteFailureWithEvent(input, spec.runtime_key, "resume_session_unconfirmed",
+          "This conversation's earlier CLI session is no longer the one it continues here, so it is not resumed. Send the message again to continue in a new session.",
+          startedAt);
+  };
   if (sensitiveRun) {
     const refusal = sensitiveLaunchRefusal({
       run: input.run, scope: profileScope!, workspace: input.workspace, workspaceLocationId,
@@ -736,18 +799,22 @@ async function runRemoteHostCliAdapter(
     // only when it is still the thread's current pointer and the launch bound to that pointer was
     // isolated in exactly this profile. Otherwise this Run, whose context was assembled for a resume,
     // does not start, and only that session is retired: a newer pointer recorded since is kept for
-    // the next turn to judge. While this Run holds the thread's dispatch claim the pointer can only
-    // be cleared, not replaced, so the check holds up to launch.
+    // the next turn to judge. Judged here, before anything is prepared, and again at the bind.
     if (input.resume_session_id) {
-      const threadId = input.run.host_task_thread_id ?? null;
-      const threadDb = deps.db ?? (config?.databaseUrl ? getDbPool(config.databaseUrl) : null);
-      if (!threadId || !threadDb || !await sensitiveThreadResumable(threadDb, threadId,
-        { vendorSessionId: input.resume_session_id, profileKey: profileFrame!.profile_key })) {
-        if (threadId && threadDb) await new PgHostThreadRepository(threadDb).resetConversationAgent(threadId, input.resume_session_id);
-        return remoteFailureWithEvent(input, spec.runtime_key, "sensitive_resume_unconfirmed",
-          "This conversation's earlier CLI session was not started in its current isolated profile, so it is not continued. Send the message again to continue in a new session.",
-          startedAt);
-      }
+      const refused = await resumeRefusal(threadDb);
+      if (refused) return refuseResume(refused);
+    }
+  } else if (input.resume_session_id) {
+    // A launch with network resumes only the session its thread names now, or this Run's own parked session on its
+    // reporting launch's frozen record, in this very CLI directory, and never one an isolated launch held (ADR 0036
+    // §11–§13): its admission resets a held pointer (`prepareHostConversationDispatch`); a Run admitted otherwise —
+    // before that check, queued before the channel split (its session in the earlier shared directory), a Task Run,
+    // one whose pointer was cleared, replaced or retired since, or a retry after a refusal — does not start, and only
+    // that session is excluded. (With no database at all — a protocol-only test — there is nothing to judge.)
+    // Judged here, before anything is prepared, and again at the bind (§14).
+    if (threadDb) {
+      const refused = await resumeRefusal(threadDb);
+      if (refused) return refuseResume(refused);
     }
   }
 
@@ -761,6 +828,9 @@ async function runRemoteHostCliAdapter(
   // `SystemActionDispatcher` enforces against — never from the dispatch
   // request, which does not carry one on this path.
   let workSurface: RunWorkSurface | null = null;
+  // This launch's nonce, generated before its Run tool token so the token is stored with the launch it is for
+  // (`PgRunToolIdentityRepository.issue`); the attempt is bound to it just before the frame leaves.
+  const launchId = randomUUID();
   if (assembleRunInputEnvelope(input.run).tool_grants.length > 0 && config?.databaseUrl) {
     try {
       workSurface = await buildRunWorkSurface({
@@ -768,6 +838,7 @@ async function runRemoteHostCliAdapter(
         config,
         run: input.run,
         hostId,
+        launchId,
         lifetimeSeconds: credentialLifetimeSeconds,
       });
     } catch (error) {
@@ -953,7 +1024,6 @@ async function runRemoteHostCliAdapter(
     });
     if (refusal) return remoteFailureWithEvent(input, spec.runtime_key, refusal.code, refusal.message, startedAt);
   }
-  const launchId = randomUUID();
   const executor = deps.executor ?? new RemoteWsCliCommandExecutor(
     hostId,
     workspaceLocationId,
@@ -981,16 +1051,35 @@ async function runRemoteHostCliAdapter(
   // ACP options travel independently in acp_session_config.
   const requestedModel = providerBinding?.used_model
     ?? runOverrideField(input.run.model_override_json, "model");
-  const requestedSessionConfig = withStrictHostSelections(
+  const savedSessionConfig = withStrictHostSelections(
     acpSessionConfigFromRunOverride(input.run.model_override_json),
     // Strict only. `dispatchIsolation` above says how the daemon binds the
     // workspace; this says what the runtime must not undo inside it. A paired
     // machine keeps its owner's own settings (B62, ADR 0016 section 3).
     strictHost ? spec.strict_session_config : undefined,
   );
+  const nativeClaudeConversation = !providerBinding && spec.runtime_key === "claude_code" && Boolean(input.run.session_id);
+  const savedModel = savedSessionConfig.find(selection => selection.category === "model");
+  const droppedConfig = objectValue(input.run.model_override_json).acp_session_config_dropped;
+  // Older queued requests could already have discarded the saved model.
+  const droppedModel = Array.isArray(droppedConfig)
+    ? droppedConfig.find(entry => objectValue(entry).category === "model") : undefined;
+  const claudeModel = savedModel?.value ?? objectValue(droppedModel).value;
+  const requestedSessionConfig = nativeClaudeConversation
+    ? withAcpModelSelection(savedSessionConfig,
+        typeof claudeModel === "string" && claudeModel !== "default"
+          ? claudeModel : CLAUDE_CONVERSATION_DEFAULT_MODEL)
+    : savedSessionConfig;
   const runtimeModel = providerBinding
     ? boundAcpModelId(spec.runtime_key as VendorCliRuntimeKey, requestedModel)
     : null;
+  // A model change can incur cold-cache input cost even on the same vendor
+  // session. Use the last settled occupancy and hold changes without evidence.
+  const modelSwitchDb = deps.db ?? (deps.config?.databaseUrl ? getDbPool(deps.config.databaseUrl) : null);
+  const allowResumedModelChange = !providerBinding && modelSwitchDb && input.run.session_id && input.resume_session_id
+    && requestedSessionConfig.some(selection => selection.category === "model")
+    ? await canSwitchRetainedSessionModel(modelSwitchDb, input.run.host_task_thread_id, input.resume_session_id)
+    : undefined;
   // Clear the previous attempt's observation before launch; never present it as this attempt's model.
   await bindings?.observeModel?.(input.run.id, input.run.space_id);
   // The launch nonce is written on the Run's attempt before the frame leaves,
@@ -1000,12 +1089,19 @@ async function runRemoteHostCliAdapter(
   // settled — on this server process or another — refuses here. A test with
   // no database runs the protocol alone.
   if (deps.config?.databaseUrl) {
+    // A resume is judged again in the bind's own transaction, under the thread row's lock (ADR 0036 §14): a reset,
+    // retirement or archive that committed first is seen and nothing is bound or sent; one that comes after waits
+    // for the bind and then applies to this launch as to any launch already in flight — the frame still leaves, the
+    // retired session is never recorded as the pointer again (`recordRunOutcome`), and a park of it never resumes.
+    const resumeGuard = input.resume_session_id && resumeThreadId
+      ? { thread_id: resumeThreadId, refusal: (tx: Queryable) => resumeRefusal(tx) } : undefined;
     const bound = await bindHostAttemptLaunch(new PgRunRepository(deps.db ?? getDbPool(deps.config.databaseUrl),deps.config), registry,
       { space_id: input.run.space_id, run_id: input.run.id, host_id: hostId, launch_id: launchId,
         // The isolation this very frame states, recorded with its nonce for the sensitive-data release proof.
         isolation: { host_id: hostId, host_kind: strictHost ? "server" : "remote", ...launchIsolation,
           ...(modelChannel ? { model_channel: "provider_lease" as const } : {}),
-          ...(profileFrame ? { profile_key: profileFrame.profile_key } : {}) } });
+          ...(profileFrame ? { profile_key: profileFrame.profile_key } : {}) } }, resumeGuard);
+    if (typeof bound === "object") return refuseResume(bound.resume_refused);
     if (bound === 'previous_launch_unconfirmed') {
       return remoteFailureWithEvent(input, spec.runtime_key, 'runtime_previous_launch_unconfirmed', 'The previous execution has not confirmed exit. Its workspace changes are preserved; a second execution was not started.', startedAt);
     }
@@ -1016,8 +1112,12 @@ async function runRemoteHostCliAdapter(
   // Nothing below awaits before the executor dispatches, so neither signal
   // can be aborted unseen between this check and the launch.
   if (stopRequested()) return stoppedBeforeLaunch();
-  let modelWrites = Promise.resolve();
-  let modelWriteError: unknown;
+  // The model observations, in the order they arrived, and a fallback report, started on receipt and never queued
+  // behind them (`launchModelWrites`).
+  const modelWrites = launchModelWrites({
+    observe: (model) => bindings?.observeModel?.(input.run.id, input.run.space_id, model),
+    fallback: (report) => bindings?.observeModelFallback?.({ spaceId: input.run.space_id, runId: input.run.id, launchId, ...report }),
+  });
   const stdioController = new AcpRuntimeAdapter(spec.runtime_key).createController({
     local_tool_directory: Boolean(workSurface),
     // A Delivery already contains the authoritative current input. Retaining
@@ -1037,6 +1137,7 @@ async function runRemoteHostCliAdapter(
     // model name.
     attributed_model: providerBinding?.used_model ?? null,
     runtime_session_id: input.resume_session_id,
+    allow_resumed_model_change: allowResumedModelChange,
     prompt_blocks: promptBlocks,
     on_thought_delta: (delta) => {
       const drafts = threadEvents.pushAcpThoughtDelta(delta);
@@ -1046,10 +1147,8 @@ async function runRemoteHostCliAdapter(
       const drafts = threadEvents.pushAcpTextDelta(delta);
       if (drafts.length > 0) void input.thread_event_sink?.(drafts);
     },
-    on_model_selected: (model) => {
-      modelWrites = modelWrites.then(() => bindings?.observeModel?.(input.run.id, input.run.space_id, model))
-        .catch(error => { modelWriteError = error; });
-    },
+    on_model_selected: (model) => modelWrites.selected(model),
+    on_model_fallback: (report) => modelWrites.fellBack(report),
     on_protocol_event: (event) => {
       for (const semanticEvent of runtimeEvents.push(event, new Date().toISOString())) {
         void input.runtime_event_sink?.(semanticEvent);
@@ -1122,8 +1221,7 @@ async function runRemoteHostCliAdapter(
   }).finally(async () => {
     const finalDrafts = threadEvents.finish();
     if (finalDrafts.length > 0) await input.thread_event_sink?.(finalDrafts);
-    await modelWrites;
-    if (modelWriteError) throw modelWriteError;
+    await modelWrites.settled();
   });
   const completedAt = new Date().toISOString();
   // A delegated review the Host refused (moved or dirty tree, no read-only
@@ -1183,6 +1281,9 @@ async function runRemoteHostCliAdapter(
     runtime_native_version: result.native_runtime_version ?? null,
     runtime_key: spec.runtime_key,
     external_session_id: measurement.external_session_id,
+    // The nonce of the launch that reported that session: a parked Run freezes that launch's own record with it
+    // (`recordParkedHostThreadSession`), so a relaunch of the same attempt does not erase what started it.
+    launch_id: launchId,
     // Which copy on the host actually ran it. The usage ledger records it as
     // the runtime's version, and the quota a Run carries back is folded into
     // that copy's cache — both need to know which copy, and only the
@@ -1275,13 +1376,18 @@ async function runRemoteHostCliAdapter(
     // thread gives it up (`hosts/threadOutcome.ts`) rather than time out on
     // it every turn. A wait before the process started says nothing about it.
     const resumeHung = Boolean(input.resume_session_id && protocolResult?.resume_unanswered);
-    return remoteFailure(
-      spec.runtime_key,
-      resumeHung ? "runtime_session_invalid" : stalled ? "runtime_stall_timeout" : "runtime_timeout",
-      resumeHung ? `${detail} It never answered the request to resume its session, which is given up.` : detail,
-      startedAt,
-      completedAt,
-    );
+    return {
+      ...remoteFailure(
+        spec.runtime_key,
+        resumeHung ? "runtime_session_invalid" : stalled ? "runtime_stall_timeout" : "runtime_timeout",
+        resumeHung ? `${detail} It never answered the request to resume its session, which is given up.` : detail,
+        startedAt,
+        completedAt,
+      ),
+      metadata_json: metadata,
+      usage: measurement.usage,
+      model_usage: measurement.model_usage,
+    };
   }
   const success = completedNormally && !replyQuotaFailure;
   await input.thread_event_sink?.([{ event_type: "status", status: dependencyYieldRequested ? "waiting_for_dependency" : success ? "run_succeeded" : "run_failed" }]);

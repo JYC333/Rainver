@@ -117,6 +117,8 @@ no status filter alone permits repeated provider I/O. Completed results remain
 subject to current Source authority. Active Jobs reuse their identity and expose
 queued/running state; the settings page describes completed/running reuse.
 
+The scheduler rechecks the scanned slot under the same Space/user transaction
+lock used by settings changes. Stale scans leave the current schedule alone.
 The scheduler rolls back business-refused admission to its local savepoint,
 requires the policy audit, and atomically advances the slot with a content-free
 `last_slot_outcome` (HTTP status only). SQL/audit/infrastructure failures roll

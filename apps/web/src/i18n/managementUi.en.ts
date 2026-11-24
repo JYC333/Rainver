@@ -1,6 +1,11 @@
 /** UI copy: Prompts, Skills, plugins, project files, network profiles and the job queue. */
 export const managementUiEn = {
   management_ui: {
+    project_load: {
+      error_title: "Could not load project",
+      error_help: "Check your connection and try again.",
+      retry: "Retry",
+    },
     project_members: {
       "loading_project": "Loading Project…",
       "title": "Members",
@@ -39,6 +44,10 @@ export const managementUiEn = {
       "link": "Registration invitation for {{email}}"
 },
     host_catalog: {
+      provider_count_one: "{{count}} provider",
+      provider_count_other: "{{count}} providers",
+      provider_details: "Provider and CLI account details",
+      no_cli_accounts: "No CLI login accounts",
       "more_label": "More for {{name}} on {{host}}",
       "upgrade_host_required": "Update this Host before managing CLI versions.",
       "version_management": "Version management",
@@ -68,6 +77,9 @@ export const managementUiEn = {
       "managed_copy_label": "Install managed copy of {{name}} on {{host}}",
       "install_label": "Install {{name}} on {{host}}",
       "enable_install_label": "Enable and install {{name}} on {{host}}",
+      "own_update_confirmed": "{{agent}} updated to {{version}} on {{host}}.",
+      "own_update_unchanged": "{{agent}} is still on {{version}} on {{host}}.",
+      "own_update_unverified": "The update command completed for {{agent}} on {{host}}, but the version change could not be confirmed.",
       "operation_in_progress": "An operation is already in progress for this CLI.",
       "upgrading": "Upgrading…",
       "installing": "Installing…",
@@ -154,6 +166,10 @@ export const managementUiEn = {
       cancel: "Cancel",
       discard: "Discard",
       save_to_folder: "Save to Folder",
+      retry_save: "Retry Folder save",
+      close_failed_save: "Close failed save",
+      close_failed_save_title: "Close this failed save?",
+      close_failed_save_description: "This releases the failed request and keeps your draft and current Folder file. Reload the Folder file before saving again.",
       mixed_line_endings: "mixed line endings",
       line_endings: "{{mode}} line endings",
       utf8_converted: "UTF-8 converted",
@@ -382,6 +398,9 @@ export const managementUiEn = {
       placeholder: 'Time tracking is planned and not available yet. Nothing here records or stores time.',
     },
     host_target: {
+      default_folder: 'Default Folder (optional)',
+      no_default_folder: 'No default Folder',
+      choose_default_folder: 'Use a Project Folder by default',
       sign_in: 'Sign in from Command Center',
       acp_models_hint: 'Models reported by ACP may still work without an account; choose one in the conversation.',
       managed_hint: 'Managed workspaces are host-owned and isolated per Agent; Project Locations remain optional.',

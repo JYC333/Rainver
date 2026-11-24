@@ -56,6 +56,7 @@ describe("projectResearchMonitoring", () => {
     it("normalizes Crossref Retraction Watch update relations into stable alerts", () => {
       const alerts = parseCrossrefIntegrityEvents("https://doi.org/10.1000/Original", "source-1", {
         message: {
+          "update-to": [{ DOI: "10.1000/other-work", type: "retraction" }],
           "updated-by": [
             { DOI: "10.1000/retraction", type: "retraction", source: "retraction-watch" },
             { DOI: "10.1000/correction", type: "expression-of-concern", source: "publisher" },

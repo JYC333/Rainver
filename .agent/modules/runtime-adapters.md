@@ -115,8 +115,14 @@ The shared controller projects auth-state kinds, compaction transitions,
 OpenCode native retry deadlines and declared native subagent lifecycle into
 bounded status events. These are informational: no account detail is stored,
 no second retry loop is started, and native children are not Rainver Agents.
-Only the root and explicitly declared child sessions are accepted. Child text
-never becomes the parent's answer. Declared running/background children keep
+Only the root and explicitly declared child sessions are accepted. The host
+thread records bounded child tasks, assistant text and status observations with
+a per-session grouping key. Child tools keep the same key on their normalized
+tool activity. The parent Turn projects one expandable work item per child;
+legacy adapters that report ordinary tools retain ordinary tool rows. Child
+text never becomes the parent's answer. The work item shows the latest reported
+task and a bounded record of child replies, flushed at status changes, follow-up
+tasks, and Run finalization. Declared running/background children keep
 the process alive after the parent response; Stop cancels the existing process
 group. No independent background scheduler or ACP v2 migration is introduced. Claude currently gates some child-session behavior behind its AIR integration; Rainver advertises the standard client capability and does not impersonate AIR.
 
@@ -146,15 +152,22 @@ accepts. The Claude adapter also resolves aliases in `session/set_config_option`
 to that adapter and waits for a successful response with a canonical picker
 value before prompting. A picker value alone does not prove the alias was
 honoured — an adapter that ignores an unknown alias echoes its unchanged
-default — so the response must either move the session to another value or
-name the alias (the choice's display name, or a dash-separated word of its
-canonical id such as `fable` in `claude-fable-5-1`). Otherwise the Run fails,
-or, for a saved selection, keeps the runtime default with a dropped-selection
-notice. Usage attribution uses that returned value. Rainver
+default. For a strict selection, the response must name the alias (the
+choice’s display name, or a dash-separated word of its canonical id such as
+`fable` in `claude-fable-5-1`). Host-native Claude conversations use strict
+model selection for saved choices and for Rainver’s Opus default. Selections
+that allow fallback can also accept a changed value as acknowledgement and
+otherwise keep the runtime default with a dropped-selection notice. Usage attribution uses that returned value. Rainver
 does not keep its own alias map. Explicit picker selections still require an
 exact acknowledgement, as do non-model options; other runtimes retain exact
 validation unless their spec declares alias support. An already-current value
 can be retained even when the picker omits it, as can happen on session resume.
+A resumed session that may not change models now (a full context,
+`allow_resumed_model_change: false`) and already stands on the one advertised
+choice the requested alias names — the adapter resolved that alias to it on an
+earlier turn — is resumed as it is, attributed to that value, instead of being
+held for a handoff every turn; an alias that names no or several advertised
+choices is still held (ADR 0037 §12).
 Rainver's `initialize` opts into boolean session options, so an adapter may
 advertise a toggle (Codex `fast-mode`, Claude `fast`) as `type: "boolean"`;
 the controller then sets it as `{ type: "boolean", value }`, the protocol's
@@ -221,7 +234,7 @@ progress, completion), rather than 1,002; this is synthetic evidence, not a
 production throughput benchmark.
 
 Terminal subscription refusals also use spec-declared text, including Claude's
-`session limit` wording. Antigravity can complete a prompt and exit zero with
+`session limit` and `5-hour limit` wording. Antigravity can complete a prompt and exit zero with
 its quota refusal as the entire reply. The adapter recognizes the known
 warning template after one completed, text-only prompt, with no earlier
 assistant message, tool work or reported generated tokens. The attempt
@@ -284,8 +297,17 @@ notifications can repeat or reset at compaction, so their sum is not token
 spend or processed context volume. Prompt-result token usage is whole-turn for
 current Claude/OpenCode and Codex 2.5+. Missing, unverified, preview or
 future-major Codex identities have `unknown` scope. The writer exposes only
-whole-attempt or unknown scope.
-This is derived from actual wrapper identity, not a static per-runtime flag.
+whole-attempt or unknown scope. This is derived from actual wrapper identity,
+not a static per-runtime flag.
+
+Native Claude ACP 0.101.0 can additionally supply SDK result receipts while
+the prompt is in flight. The controller consumes numeric usage for its own
+session, deduplicates receipts and withholds the raw payload from event
+projection. A matching standard prompt result remains the aggregate. A
+receipt supplies a confirmed one-hour write subset or fallback counts when
+the prompt ends without a standard result. Timed-out turns retain measured
+counts. A killed process or lost controller with no recoverable receipt still
+has unknown usage. Context occupancy measures the session size at a point in time.
 Unreported model calls remain unknown, including vendor helper/title calls.
 A spec's `usage.prompt_cache_ttl_seconds` remains a preflight notice only.
 The accepted Gateway plan's numeric allocation estimate is diagnostic; vendor
@@ -387,11 +409,8 @@ authorization can narrow execution; runtime selection never grants tools.
 
 The registry declares ACP command/distribution, credential mode, sandbox and
 workspace requirements, model/backend support, cancellation and observation
-facts. Its subagent-disable declarations describe runtime capabilities only:
-the Host-daemon launch sets `skip_subagent_disable_check`, so these
-declarations are not applied to a Run and do not raise its effective trust
-above the low baseline. Do not treat declarative capability as
-enforcement evidence. External permissions are mediated by Rainver's controller
+facts. The CLI’s effective configuration controls native subagent availability.
+External permissions are mediated by Rainver's controller
 and policy/tool gateways, not delegated to an independent server-side Agent
 loop.
 
@@ -418,6 +437,38 @@ unknown; a request or a Provider binding alone is not runtime confirmation.
 Run/Turn read models expose requested and reported values separately. This
 identifies what ACP reports, not an independently verified upstream model when
 the adapter exposes only an alias.
+
+`runtime_reported_model` is a display observation, never a judgment of which
+model answered: at prompt dispatch it is the option's echo. Rainver does not
+prove the answering model. What it acts on is the runtime's own explicit report
+of a fallback: a main-session `notice` (fields on the update itself, or under
+`notice`) whose title matches the regular expression the runtime's adapter
+catalog entry declares (`model.model_fallback_notice.notice_title`; no runtime is
+named in the detection code, `runs/runtimeModelFallback.ts`). Today
+`claude-agent-acp` declares its `model_refusal_fallback` warning ("… declined this
+request; retried with …", or "Model fallback") and `codex-acp` its
+`model/rerouted` notice ("Model rerouted"). The controller reports it through
+`on_model_fallback` only while this launch's prompt is in flight or just after
+its final answer — never during a `session/resume` replay or for a child session
+— and the Host adapter records the Run's first report on the Run
+(`model_override_json.runtime_model_fallback`, `recordRuntimeModelFallback`).
+The report counts from receipt, not from that row's commit: it is noted in the
+receiving server process before anything is awaited and read from that note
+first (`runModelFallback`) until the row commits (a failed write keeps the note
+for the process), and its write runs on its own chain in `launchModelWrites`,
+never behind the per-update display observations — a Gmail release holds the
+Run row `FOR UPDATE` and a fact or flag `FOR SHARE`, so the row write can wait
+behind the very step it must stop. Another server process sees it once the row
+commits. A step that must stop on it registers a commit guard
+(`stopAtCommitOnModelFallback` over `guardTransactionCommit`, `db/tx.ts`): a
+synchronous check of the note immediately before its `COMMIT` is issued, so a
+report received while the step waits on SQL after its check rolls it back; what
+committed first stays (ADR 0037 §11). A missing model, an
+echo, a `config_option_update`, an alias answered by its concrete id, a dated
+id or a usage row naming another model is never a fallback. A consumer decides
+what a report means: a Gmail application-update round stops on one (ADR 0037);
+an ordinary conversation only shows the notice (`runtime_notice`). The adapter
+does not stop the CLI on a report.
 
 ## Source and verification
 

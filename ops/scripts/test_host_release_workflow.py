@@ -203,5 +203,82 @@ class HostReleaseWorkflowTest(unittest.TestCase):
         self.assertEqual(moving, ["Publish unified installer"])
 
 
+class VerifyStepOrderTest(unittest.TestCase):
+    def test_infrastructure_tests_load_configs_after_protocol_is_built_from_resolved_candidates(self) -> None:
+        steps = [s["name"] for s in yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))["jobs"]["verify"]["steps"]]
+        order = [steps.index(name) for name in (
+            "Install workspace dependencies",
+            "Resolve current stable ACP candidates",  # rewrites packages/protocol/src/acpAdapters.json
+            "Build protocol",
+            "Test test infrastructure",  # imports apps/web/vitest.config.ts -> @rainver/protocol/dist
+        )]
+        self.assertEqual(order, sorted(order))
+
+
+class ProdImageChannelWorkflowTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
+        self.jobs = self.workflow["jobs"]
+        self.sandbox = Sandbox()
+        self.addCleanup(self.sandbox.close)
+        subprocess.run(["git", "-C", str(self.sandbox.repo), "push", "-q", "origin", "HEAD:dev"], check=True)
+        docker = self.sandbox.bin / "docker"
+        docker.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$DOCKER_FIXTURE_LOG"\n')
+        docker.chmod(0o700)
+
+    def run_promotion(self, candidate: str) -> subprocess.CompletedProcess[str]:
+        script = step(self.jobs["promote-image-channel"], "Advance the image channel")["run"]
+        return self.sandbox.run(script, {
+            "CHANNEL": "edge",
+            "GITHUB_REF_NAME": "dev",
+            "GITHUB_SHA": candidate,
+            "GITHUB_REPOSITORY_OWNER": "FixtureOwner",
+            "DOCKER_FIXTURE_LOG": str(self.sandbox.log),
+        })
+
+    def test_promotes_one_release_after_all_immutable_images_and_moves_the_server_pointer_last(self) -> None:
+        images = self.jobs["publish-images"]
+        tags = step(images, "Resolve image tags")["with"]["tags"].splitlines()
+        self.assertEqual(tags, ["type=sha,prefix=sha-,format=long"])
+        self.assertEqual(self.jobs["promote-image-channel"]["needs"], "publish-images")
+        promoted = self.run_promotion(self.sandbox.sha)
+        self.assertEqual(promoted.returncode, 0, promoted.stderr)
+        expected = []
+        for service in ("frontend", "sandbox-runner", "deployer", "server"):
+            image = f"ghcr.io/fixtureowner/rainver-{service}"
+            expected.append(f"buildx imagetools create --tag {image}:edge {image}:sha-{self.sandbox.sha}")
+        self.assertEqual(self.sandbox.calls(), expected)
+
+    def test_an_older_finished_build_cannot_move_the_channel(self) -> None:
+        promoted = self.run_promotion("0" * 40)
+        self.assertEqual(promoted.returncode, 0, promoted.stderr)
+        self.assertEqual(self.sandbox.calls(), [])
+
+    def test_commit_image_is_written_only_when_registry_reports_it_missing(self) -> None:
+        image_job = self.jobs["publish-images"]
+        self.assertIn("github.sha", image_job["concurrency"]["group"])
+        self.assertIn("matrix.name", image_job["concurrency"]["group"])
+        self.assertEqual(step(image_job, "Build and push")["if"], "steps.commit-image.outputs.missing == 'true'")
+        docker = self.sandbox.bin / "docker"
+        docker.write_text('#!/bin/sh\nprintf "%s\\n" "$REGISTRY_MESSAGE" >&2\nexit "$REGISTRY_STATUS"\n')
+        output = self.sandbox.bin / "github-output"
+        script = step(image_job, "Check whether this commit image was published")["run"]
+        for status, message, expected in (
+            ("0", "", "missing=false\n"),
+            ("1", "manifest unknown", "missing=true\n"),
+            ("1", "unauthorized", ""),
+        ):
+            with self.subTest(message=message):
+                output.write_text("")
+                result = self.sandbox.run(script, {
+                    "IMAGE": "ghcr.io/fixture/server:sha-release",
+                    "REGISTRY_STATUS": status,
+                    "REGISTRY_MESSAGE": message,
+                    "GITHUB_OUTPUT": str(output),
+                })
+                self.assertEqual(result.returncode, 0 if expected else 1, result.stderr)
+                self.assertEqual(output.read_text(), expected)
+
+
 if __name__ == "__main__":
     unittest.main()

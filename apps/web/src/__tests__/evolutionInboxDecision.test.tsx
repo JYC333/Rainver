@@ -1,11 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
+import { toast } from 'sonner'
 import EvolutionInboxPage from '../modules/evolution/EvolutionInboxPage'
 
-const api = vi.hoisted(() => ({ signals: vi.fn(), bundles: vi.fn(), proposals: vi.fn(), assets: vi.fn(), bundle: vi.fn(), decideBundle: vi.fn() }))
-vi.mock('../api/client', () => ({ evolutionApi: api, proposalsApi: {} }))
+const api = vi.hoisted(() => ({ signals: vi.fn(), bundles: vi.fn(), proposals: vi.fn(), assets: vi.fn(), bundle: vi.fn(), decideBundle: vi.fn(), accept: vi.fn() }))
+vi.mock('../api/client', () => ({ evolutionApi: api, proposalsApi: { accept: api.accept } }))
 vi.mock('../contexts/SpaceContext', () => ({ useSpace: () => ({ activeSpaceId: 'space', preferredSpaceId: 'space', userId: 'owner' }) }))
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 const base = { id: 'bundle', title: 'Mixed effects', status: 'pending_review', risk_level: 'high', member_count: 1,
@@ -45,5 +46,21 @@ describe('Evolution Inbox parent consumes durable decisions', () => {
     expect(screen.getByRole('button', { name: 'Approve' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Reject' })).toBeDisabled()
     expect(api.decideBundle).not.toHaveBeenCalled()
+  })
+})
+
+describe('Evolution Inbox individual approvals', () => {
+  it.each([
+    ['operation_approval_expired', /proposal expired/],
+    ['operation_approval_superseded', /request changed/],
+  ])('shows a refusal for %s even when the request succeeds', async (code, message) => {
+    api.proposals.mockResolvedValueOnce([{ id: 'proposal', status: 'pending', proposal_type: 'memory', summary: 'Test proposal' }])
+    api.accept.mockResolvedValue({ result_type: 'operation_failure', result: { error: { code } } })
+    render(<MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><EvolutionInboxPage /></MemoryRouter>)
+    const user = userEvent.setup({ delay: null })
+    await user.click(await screen.findByRole('tab', { name: /Evidence/ }))
+    await user.click(await screen.findByRole('button', { name: 'Approve' }))
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(message)))
+    expect(toast.success).not.toHaveBeenCalled()
   })
 })

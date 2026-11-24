@@ -253,7 +253,9 @@ then its first listed model, the order the binding uses — never the default
 alone. A proxy lease issued for a destination judged local carries that model
 (`pinned_model`), and the provider proxy refuses a request naming any other
 model, or a body-carrying request naming none (`403
-provider_proxy_model_not_leased`). The model-only lease of a network-isolated
+provider_proxy_model_not_leased`). An automatic Gmail application-update Run's lease is
+built only for the model its contract confirmed (`gmail_digest.pinned_model`, ADR 0034) and pinned
+to it the same way; any other resolved model, or none, mints no lease. The model-only lease of a network-isolated
 Run is stricter still: one named model, inference endpoints and an allowlisted
 request structure only — every model-input node, tool outputs included, carries
 inline content only, and Responses must send `store: false` (ADR 0030 §4a, `providers/proxy/modelOnlyPolicy.ts`,

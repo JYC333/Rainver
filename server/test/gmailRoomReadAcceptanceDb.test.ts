@@ -1,3 +1,4 @@
+import { DUPLICATE_TASK_CANCELLATION_REASON } from "@rainver/protocol";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -20,6 +21,7 @@ import { runsModule } from "../src/modules/runs/index.js";
 import { PgRunRepository } from "../src/modules/runs/repository.js";
 import { sensitiveConversationReads } from "../src/modules/runs/contextTaint.js";
 import { ConversationExecutionContextService } from "../src/modules/sessions/executionContextService.js";
+import { CLAUDE_CONVERSATION_DEFAULT_MODEL } from "../src/modules/sessions/sessionConfig.js";
 import { PgSessionRepository } from "../src/modules/sessions/repository.js";
 import { sourcesModule } from "../src/modules/sources/index.js";
 import { assertGmailAgentReadUrl } from "../src/modules/sources/gmail/gmailAgentReadContract.js";
@@ -28,13 +30,15 @@ import { startDueGmailDigests } from "../src/modules/sources/gmail/gmailDigests.
 import { __setGmailOAuthGuardForTests } from "../src/modules/sources/gmail/gmailOAuthTransport.js";
 import { __setGmailProfileGuardForTests } from "../src/modules/sources/gmail/gmailOAuthFlow.js";
 import { __setGmailReadGuardForTests } from "../src/modules/sources/gmail/gmailMailReads.js";
+import { PgTaskRepository } from "../src/modules/tasks/repository.js";
 import { systemActionsModule } from "../src/modules/systemActions/index.js";
-import { seedAgentWithVersion, seedRoomManager, seedSpaceMember, seedSpaceOwnerProject } from "./support/domainSeeds.js";
+import { seedAgentWithVersion, seedRoomManager, seedRun, seedSpaceMember, seedSpaceOwnerProject } from "./support/domainSeeds.js";
 import { buildModuleServer } from "./support/moduleServer.js";
 import { publicAddressGuard } from "./support/outboundGuard.js";
 import { resetTables } from "./support/resetTables.js";
 import { SyntheticAcpHost, type SyntheticAcpAnswer, type SyntheticAcpPrompt } from "./support/syntheticAcpHost.js";
 import { useTestDatabase } from "./support/testDatabase.js";
+import { proposeGmailDigest } from "../src/modules/sources/gmail/gmailDigestProposal.js";
 import { AuthorizationRequestService } from "../src/modules/policy/authorizationRequestService.js";
 
 /**
@@ -63,6 +67,12 @@ const db = useTestDatabase(import.meta.filename, { max: 6 });
 const CATALOG_ROOT = resolve(process.cwd(), "..", "catalog");
 const CLIENT_ID = "gmail-client.apps.googleusercontent.com";
 const READONLY = "https://www.googleapis.com/auth/gmail.readonly";
+// Match the default model the server requests on native Claude conversations.
+const ACP_CONFIG_OPTIONS = [{
+  id: "model", category: "model", type: "select", name: "Model",
+  currentValue: CLAUDE_CONVERSATION_DEFAULT_MODEL,
+  options: [{ value: CLAUDE_CONVERSATION_DEFAULT_MODEL, name: "Default model" }],
+}];
 const READ_TOOL = "source.gmail.mail.read";
 const REQUEST = "Summarize my five latest emails, then find the superlinear one.";
 const BODY = "ROOM-BODY-MARK-5d21";
@@ -243,7 +253,7 @@ describe("ADR 0033 §6 Gmail read in place in a Room, from the queue to the Room
     host = new SyntheticAcpHost(sharedHostConnectionRegistry, hostId, async (prompt: SyntheticAcpPrompt): Promise<SyntheticAcpAnswer> => {
       launched.push(prompt.runId);
       return onTurn(host!.launchFrames.get(prompt.runId) as Record<string, any>, prompt);
-    }).connect();
+    }, ACP_CONFIG_OPTIONS).connect();
     const execute = async (runId: string, until: readonly string[] = ["succeeded", "failed", "cancelled", "orphaned"]) => {
       for (let job = 0; job < 8; job += 1) {
         const state = (await db.pool.query("SELECT status FROM runs WHERE id=$1", [runId])).rows[0];
@@ -350,6 +360,212 @@ describe("ADR 0033 §6 Gmail read in place in a Room, from the queue to the Room
   const removeFromProject = (user: string) => db.pool.query(`DELETE FROM project_members WHERE project_id=$1 AND user_id=$2`, [project, user]);
   const restoreToProject = (user: string) => db.pool.query(`INSERT INTO project_members (id,space_id,project_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'member','active',now(),now())`,
     [randomUUID(), space, project, user]);
+
+  it("limits Gmail-tainted cancellation to shared, unstarted Tasks without execution or publication dependencies", async () => {
+    await connectGmail();
+    const tasks = new PgTaskRepository(db.pool);
+    const createTask = (projectId: string, userId: string, title: string, status = "ready", visibility = "space_shared") => tasks.createTask(
+      { spaceId: space, userId }, { project_id: projectId, title, status, visibility },
+    );
+    const duplicate = await createTask(project, owner, "Duplicate");
+    const other = await createTask(project, owner, "Other Task");
+    const ordinary = await createTask(project, owner, "Ordinary active Task", "in_progress");
+    const done = await createTask(project, owner, "Done Task");
+    await tasks.updateTask({ spaceId: space, userId: owner }, done.id, { status: "done" });
+    const active = await createTask(project, owner, "Active Task", "in_progress");
+    const reopened = await createTask(project, owner, "Reopened Task", "in_progress");
+    await tasks.updateTask({ spaceId: space, userId: owner }, reopened.id, { status: "ready" });
+    const privateTask = await createTask(project, peer, "Private Task", "ready", "private");
+    const withRun = await createTask(project, owner, "Task with Run");
+    const withMerge = await createTask(project, owner, "Task with merge");
+    const withWorkspace = await createTask(project, owner, "Task with workspace");
+    const withMergeJob = await createTask(project, owner, "Task with pending merge job");
+    const ineligible = [
+      { task: done, status: "done" }, { task: active, status: "in_progress" },
+      { task: reopened, status: "ready" }, { task: privateTask, status: "ready" },
+      { task: withRun, status: "ready" }, { task: withMerge, status: "ready" },
+      { task: withWorkspace, status: "ready" }, { task: withMergeJob, status: "ready" },
+    ];
+
+    const location = randomUUID(), folder = randomUUID(), linkedRun = randomUUID(), merge = randomUUID();
+    await db.pool.query(
+      `INSERT INTO project_folders (id,space_id,project_id,name,kind,status,protected,system_managed,created_at,updated_at)
+       VALUES ($1,$2,$3,'Fixture repo','code','active',false,false,now(),now())`, [folder, space, project],
+    );
+    await db.pool.query(
+      `INSERT INTO workspace_locations (id,space_id,project_folder_id,execution_host_id,execution_host_kind,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,'server',now(),now())`, [location, space, folder, hostId],
+    );
+    const version = (await db.pool.query<{ current_version_id: string }>(
+      "SELECT current_version_id FROM agents WHERE id=$1", [agent],
+    )).rows[0]!.current_version_id;
+    await seedRun(db.pool, { id: linkedRun, space, owner, agent, version, existingAgent: true });
+    await db.pool.query("UPDATE runs SET project_id=$2,project_folder_id=$3,workspace_location_id=$4 WHERE id=$1",
+      [linkedRun, project, folder, location]);
+    await db.pool.query(
+      "INSERT INTO task_runs (id,space_id,task_id,run_id,role,created_at) VALUES ($1,$2,$3,$4,'primary',now())",
+      [randomUUID(), space, withRun.id, linkedRun],
+    );
+    await db.pool.query(
+      `INSERT INTO task_merges (id,space_id,task_id,workspace_location_id,basis,status,requested_by_user_id,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,'fixture','conflict',$5,now(),now())`, [merge, space, withMerge.id, location, owner],
+    );
+    await db.pool.query(
+      `INSERT INTO execution_workspaces (id,space_id,project_id,workspace_location_id,execution_host_id,owner_kind,task_id)
+       VALUES ($1,$2,$3,$4,$5,'task',$6)`, [randomUUID(), space, project, location, hostId, withWorkspace.id],
+    );
+    const scheduledAt = new Date(Date.now() + 3600_000);
+    const pendingMerge = await new PgJobQueueRepository(db.pool).enqueue({
+      job_type: "task_merge", space_id: space, user_id: owner, scheduled_at: scheduledAt,
+      payload: { task_id: withMergeJob.id, merge_id: randomUUID(), workspace_location_id: location, host_id: hostId },
+    });
+    const foreignProject = randomUUID();
+    await db.pool.query(
+      "INSERT INTO projects(id,space_id,name,status,owner_user_id,created_at,updated_at) VALUES($1,$2,'Other Project','active',$3,now(),now())",
+      [foreignProject, space, peer],
+    );
+    const foreign = await createTask(foreignProject, peer, "Foreign Task");
+    const cancelled = { status: "cancelled", reason: DUPLICATE_TASK_CANCELLATION_REASON };
+    const results = new Map<string, Awaited<ReturnType<typeof runTool>>>();
+    let phase: "ordinary" | "read" | "cancel" | "revoked" = "ordinary";
+    const { room, conversationId, execute } = await roomQueue(async (frame) => {
+      const call = async (label: string, action: string, input?: Record<string, unknown>) => {
+        const result = await runTool(frame, action, input);
+        results.set(label, result);
+        return result;
+      };
+      if (phase === "read") {
+        const read = await call("read", READ_TOOL);
+        if (read.status === 403) {
+          await call("request", "authorization.request", { policy_decision_record_id: read.body.policy_decision_record_id, reason: "Check the latest mail" });
+        }
+        return { text: "Checked the request." };
+      }
+
+      const list = await call("list", "task.list");
+      const listed = list.body.tasks as Array<{ task_id: string; title: string }>;
+      const listedId = (title: string) => listed.find(t => t.title === title)!.task_id;
+      if (phase === "ordinary") {
+        await call("ordinary", "task.set_status", { ...cancelled, task_id: listedId(ordinary.title) });
+        return { text: "Checked the cancellation." };
+      }
+      if (phase === "revoked") {
+        await call("revoked", "task.set_status", { ...cancelled, task_id: listedId(other.title) });
+        return { text: "Checked the cancellation." };
+      }
+      for (const {task} of ineligible) {
+        await call(task.title, "task.set_status", { ...cancelled, task_id: listedId(task.title) });
+      }
+      const task_id = listedId(duplicate.title);
+      await call("text", "task.set_status", { ...cancelled, task_id, reason: `${cancelled.reason}: ${BODY}` });
+      for (const status of ["done", "waiting_for_review", "blocked"]) {
+        await call(status, "task.set_status", { task_id, status, reason: cancelled.reason });
+      }
+      await call("outward", "task.create", { title: BODY });
+      // Negative scope control: the peer owns this fixture but the tool is bound to this Run's Project.
+      await call("foreign", "task.set_status", { ...cancelled, task_id: foreign.id });
+      const role = (next: string) => db.pool.query("UPDATE project_members SET role=$3 WHERE project_id=$1 AND user_id=$2", [project, peer, next]);
+      await role("viewer");
+      try {
+        await call("no write", "task.set_status", { ...cancelled, task_id });
+      } finally {
+        await role("member");
+      }
+      await call("cancel", "task.set_status", { ...cancelled, task_id });
+      return { text: "Checked the duplicate." };
+    }, { room: "limited" });
+    const turn = async (userId: string, content: string) => (await new RoomService(config, db.pool)
+      .sendMessage({ spaceId: space, userId }, room, conversationId, { content })).run_ids[0]!;
+
+    await execute(await turn(peer, "Cancel the ordinary active Task."));
+    expect(results.get("ordinary")).toMatchObject({
+      status: 200, body: { data: { task_id: ordinary.id, status: "cancelled" } },
+    });
+    phase = "read";
+    const readRun = await turn(owner, "Check my latest mail.");
+    await execute(readRun, ["waiting_for_review"]);
+    const requests = new AuthorizationRequestService(db.pool, config);
+    const [card] = await requests.listForRun({ spaceId: space, userId: owner }, readRun);
+    const grant = (await requests.decide({ spaceId: space, userId: owner }, card!.id, "approved")).resulting_plugin_data_grant_id!;
+    await execute(readRun);
+    expect(results.get("read")).toMatchObject({ status: 200 });
+    expect(results.get("read")!.raw).toContain(BODY);
+
+    const before = [...google.calls];
+    phase = "cancel";
+    const cancelRun = await turn(peer, "Cancel the duplicate Task.");
+    const run = await execute(cancelRun);
+    expect(run.instructed_by_user_id).toBe(peer);
+    expect(run.context_taint_json).toMatchObject({
+      non_instructing_owner_user_ids: [owner],
+      plugin_reads: [{ plugin_id: "core:gmail", data_class: "sensitive", owner_user_id: owner, gmail_scope: { project_id: project, grant_id: grant } }],
+    });
+    expect(results.get("list")?.body.tasks).toEqual(expect.arrayContaining([expect.objectContaining({ task_id: duplicate.id })]));
+    for (const label of ["outward", "foreign", "no write"]) {
+      expect(results.get(label), label).toMatchObject({ status: 404, body: { error: { code: "operation_not_found", metadata: {} } } });
+    }
+    expect(results.get("foreign")?.body.error).toMatchObject({
+      message: expect.stringContaining("Use task.list in this Project"),
+    });
+    expect(results.get("no write")?.body.error).toMatchObject({
+      message: (results.get("foreign")?.body.error as {message: string}).message,
+    });
+    const blockers = {
+      text: "task_cancellation_requires_fixed_reason",
+      done: "task_status_not_cancellation",
+      waiting_for_review: "task_status_not_cancellation",
+      blocked: "task_status_not_cancellation",
+      [done.title]: "task_already_started_or_closed",
+      [active.title]: "task_already_started_or_closed",
+      [privateTask.title]: "task_not_shared",
+      [reopened.title]: "task_has_work_history",
+      [withRun.title]: "task_has_work_history",
+      [withMerge.title]: "task_has_work_history",
+      [withWorkspace.title]: "task_has_work_history",
+      [withMergeJob.title]: "task_has_work_history",
+    };
+    for (const [label, code] of Object.entries(blockers)) {
+      expect(results.get(label), label).toMatchObject({
+        status: 409, body: { error: { code: "operation_conflict", metadata: { code }, retryable: false } },
+      });
+      expect(results.get(label)!.raw).not.toContain(BODY);
+    }
+    expect(results.get("cancel"), JSON.stringify(results.get("cancel"))).toMatchObject({
+      status: 200, body: { data: { task_id: duplicate.id, status: "cancelled" } },
+    });
+    const unchanged = (await db.pool.query(
+      "SELECT id,status FROM tasks WHERE id=ANY($1::text[])", [ineligible.map(({task}) => task.id)],
+    )).rows;
+    expect(unchanged).toHaveLength(ineligible.length);
+    expect(unchanged).toEqual(expect.arrayContaining(ineligible.map(({task, status}) => ({ id: task.id, status }))));
+    expect((await db.pool.query("SELECT status FROM task_merges WHERE id=$1", [merge])).rows).toEqual([{ status: "conflict" }]);
+    expect((await db.pool.query(
+      "SELECT id,scheduled_at FROM jobs WHERE job_type IN ('task_branch_delete','task_merge') AND payload_json->>'task_id'=ANY($1::text[])",
+      [[duplicate.id, ...ineligible.map(({task}) => task.id)]],
+    )).rows).toEqual([{ id: pendingMerge.id, scheduled_at: scheduledAt }]);
+    const flow = (await db.pool.query(
+      "SELECT e.data_json,a.agent_id FROM project_work_events e JOIN actors a ON a.id=e.actor_id WHERE e.subject_id=$1 AND e.event_kind<>'task.created'",
+      [duplicate.id],
+    )).rows;
+    expect(flow).toEqual([{ agent_id: agent, data_json: { from: "ready", to: "cancelled", via: "agent", reason: cancelled.reason, run_id: cancelRun } }]);
+    const audits = (await db.pool.query(
+      "SELECT decision,policy_rule_id FROM policy_decision_records WHERE run_id=$1 AND action='task.status.set'", [cancelRun],
+    )).rows;
+    expect(audits).toEqual(expect.arrayContaining([
+      expect.objectContaining({ decision: "allow" }),
+      { decision: "deny", policy_rule_id: "hard_invariant_sensitive_plugin_read_egress" },
+    ]));
+
+    await revokeAsOwner(grant, "on_demand_read");
+    phase = "revoked";
+    await execute(await turn(peer, "Cancel the other Task."));
+    expect(results.get("revoked")).toMatchObject({
+      status: 409, body: { error: { code: "operation_conflict", metadata: { code: "task_status_restricted_context" } } },
+    });
+    expect((await db.pool.query("SELECT status FROM tasks WHERE id=$1", [other.id])).rows).toEqual([{ status: "ready" }]);
+    expect((await db.pool.query("SELECT status FROM tasks WHERE id=$1", [foreign.id])).rows).toEqual([{ status: "ready" }]);
+    expect(google.calls).toEqual(before);
+  });
 
   it("checks the audience before choosing a mailbox and never names the owner's mailboxes to a shared Room", async () => {
     const first = await connectGmail();
@@ -575,7 +791,7 @@ describe("ADR 0033 phase B: a Gmail digest set up and delivered in a Room conver
       seen.remember = await runTool(frame, "memory.remember", { content: "The owner has a visa appointment.", memory_type: "semantic", rationale: "Useful later." });
       seen.task = await runTool(frame, "task.create", { title: "Prepare the visa appointment" });
       return { text: "Noted here." };
-    }).connect();
+    }, ACP_CONFIG_OPTIONS).connect();
     const execute = async (runId: string) => {
       for (let job = 0; job < 8; job += 1) {
         const state = (await db.pool.query("SELECT status FROM runs WHERE id=$1", [runId])).rows[0];
@@ -709,7 +925,7 @@ describe("Room and mainline Gmail digests: one audience rule from start to settl
         state.pages.push(page);
       }
       return { text: page.status === 200 ? DIGEST_REPLY : "The digest could not be produced." };
-    }).connect();
+    }, ACP_CONFIG_OPTIONS).connect();
     const execute = async (runId: string, until: readonly string[] = ENDED) => {
       for (let job = 0; job < 8; job += 1) {
         const current = (await db.pool.query("SELECT status FROM runs WHERE id=$1", [runId])).rows[0];
@@ -1024,5 +1240,34 @@ describe("Room and mainline Gmail digests: one audience rule from start to settl
     expect(await h.replies(resumed.run_id)).toEqual([{ content: DIGEST_REPLY, session_id: h.conversationId }]);
     expect((await db.pool.query(`SELECT status FROM gmail_digest_deliveries WHERE digest_id=$1 ORDER BY created_at`, [digest.id])).rows.map((row) => row.status))
       .toEqual(["failed", "delivered"]);
+  });
+  it("ADR 0035 §3: a Room digest's confirmed model is applied strictly: when the live session does not offer it the turn reads and delivers nothing, never on the runtime's default", async () => {
+    const h = await digestRoom({ room: "limited" });
+    // The owner's turn binds the conversation's Agent; then the conversation saves a full model id that the live
+    // session (the synthetic Host offers only its default) will not apply, and the owner confirms a card naming it.
+    await h.draft(h.conversationId, DAILY);
+    const confirmedModel = "claude-opus-5-5";
+    await db.pool.query(`UPDATE session_conversation_backends SET session_config_json=$2::jsonb WHERE session_id=$1`,
+      [h.conversationId, JSON.stringify([{ id: "model", type: "select", value: confirmedModel, category: "model" }])]);
+    const ownerTurn = (await db.pool.query(`SELECT id FROM runs WHERE session_id=$1 AND instructed_by_user_id=$2 ORDER BY created_at DESC LIMIT 1`, [h.conversationId, owner])).rows[0].id;
+    const drafted = await proposeGmailDigest(db.pool, ownerTurn, space, DAILY as never, randomUUID());
+    expect(drafted.modelResult, JSON.stringify(drafted)).toMatchObject({ ok: true });
+    const proposalId = String((drafted.modelResult as { proposal_id: string }).proposal_id);
+    expect((await h.accept(proposalId)).statusCode).toBe(200);
+    const digest = (await db.pool.query(`SELECT * FROM gmail_digests WHERE proposal_id=$1`, [proposalId])).rows[0];
+    expect(digest.runtime_binding).toMatchObject({ pinned_model: confirmedModel, session_config: [{ id: "model", value: confirmedModel }] });
+    await h.due(digest.id);
+    h.state.pages = [];
+    expect(await startDueGmailDigests(db.pool, config, 20)).toBe(1);
+    const delivery = await h.latestDelivery(digest.id);
+    // Queued strictly (never a saved, droppable selection), so the live session cannot quietly keep its default.
+    const queued = (await db.pool.query(`SELECT model_override_json FROM runs WHERE id=$1`, [delivery.run_id])).rows[0].model_override_json;
+    expect(queued).toMatchObject({ acp_session_config: [{ id: "model", value: confirmedModel }] });
+    expect(queued.acp_session_config_source).not.toBe("saved");
+    await h.execute(delivery.run_id);
+    expect(h.state.pages.filter((page) => page.status === 200)).toEqual([]);
+    expect(await h.replies(delivery.run_id)).toEqual([]);
+    expect((await h.latestDelivery(digest.id)).status).toBe("failed");
+    expect((await db.pool.query(`SELECT count(*)::int AS n FROM gmail_read_audit_events WHERE operation='digest_read'`)).rows[0].n).toBe(0);
   });
 });

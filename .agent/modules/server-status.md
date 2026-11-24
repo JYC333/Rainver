@@ -30,11 +30,10 @@ Implemented:
 | `jobs_worker` | live worker id in this process | running | not running, nothing queued (or depth unreadable) | not running while jobs are pending |
 | `jobs_queue` | instance-wide pending/running counts | counted | depth unreadable | pending work with no worker |
 
-The production source reads queue depth through the worker
-(`scheduler/backgroundServices.ts`), so with no worker the depth is `null`:
-`jobs_worker` reports `degraded` ("No jobs worker running") and `jobs_queue`
-`degraded` ("Queue depth unavailable"). The `error` cells are reachable only
-from a source that can count the queue without a worker.
+The authorized status endpoint reads queue counts directly from PostgreSQL,
+even when no Worker is present. Pending counts include jobs whose scheduled
+time has arrived and whose attempts are below the limit. A failed count
+reports queue depth as unavailable.
 
 Not implemented — deliberately absent rather than reported healthy on no
 evidence: LLM Provider reachability, per-adapter runtime tools

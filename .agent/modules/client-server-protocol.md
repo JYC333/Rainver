@@ -20,6 +20,21 @@ protocol declaration build, not only a source `noEmit` check.
 How the web client talks to `/api/v1`. Unknown paths return the local
 404 catch-all.
 
+The browser's [API facade](../../apps/web/src/api/client.ts) re-exports typed
+domain APIs. They share [HTTP transport](../../apps/web/src/api/transport.ts)
+for identity, Space headers and typed refusals, and
+[operation adapters](../../apps/web/src/api/operations.ts) for keyed writes.
+[SSE framing](../../apps/web/src/api/streams.ts) is shared by turn reads,
+Attention, Project updates and login streams. Each caller owns its event and
+refusal semantics.
+
+[Durable status polling](../../apps/web/src/api/pollRead.ts) keeps the
+accepted receipt's Space. Host and System commands, Automation runs, Reader
+writes and other durable reads use the same browser lifetime checks and
+bounded waits. Leaving the surface or ending the session can stop the client
+wait without changing the server's command. A deadline or a failed status
+read never submits the write again.
+
 The Files & Code recovery-draft and lazy message-owned input-resource contract
 is recorded in [ADR 0021](../decisions/0021-files-code-codemirror-drafts-and-input-resources.md).
 
@@ -46,6 +61,10 @@ uses NetworkOnly for `/api/v1/*` so authenticated GET bodies are not reused
 across accounts. In-app `href` values from the server must be same-origin
 paths (`/` and not `//`); the browser drops anything else.
 
+Agent, Session, Run, Memory, Proposal and Artifact HTTP routes use the shared
+`routeUtils/common.ts` identity adapter for request IDs, refreshed cookies and
+identity refusals. Domain handlers enforce object and operation permissions.
+
 **Request body:** JSON with snake_case fields.
 
 Conversation execution preflight includes `available_participant_agents` (Agent id
@@ -61,7 +80,9 @@ images. Image bytes use the authenticated multipart endpoint
 `POST /api/v1/conversation-inputs/media` and are referenced in JSON by the
 server-issued `media_id`; the browser never sends a Host path or base64 image
 body. Historical image bytes are served only through the authenticated
-Space-scoped `GET /api/v1/conversation-inputs/media/{mediaId}` endpoint.
+Space-scoped `GET /api/v1/conversation-inputs/media/{mediaId}` endpoint. The
+uploader can also use this endpoint to restore their unexpired pending image
+from a draft. Pending media responses are private and must not be cached.
 Current-file attachments carry only server-validated saved/draft metadata in
 `input_parts` (Folder, Location, relative path, source state, version/hash, and
 optional selection). At send time the server freezes the exact bounded body in
@@ -98,12 +119,16 @@ bounded read-only metadata and no replacement-decoded body.
 { "error": "machine_code", "message": "human-readable message", "request_id": "..." }
 ```
 
+The Web JSON transport reads an error body once, preserves plain-text proxy
+errors, and uses the HTTP status for HTML error pages. Request correlation uses
+the nested Operation error ID, then the top-level ID, then the response header.
+
 **HTTP status codes:**
 - 200 OK — success (GET, PUT, PATCH)
 - 201 Created — new resource created (POST)
 - 204 No Content — delete success
 - 400 Bad Request — validation error (`detail`)
-- 401 Unauthorized — missing or invalid API key
+- 401 Unauthorized — missing or expired session, or a refused authentication step. A failed credential check does not terminate the current session.
 - 403 Forbidden — authenticated but not allowed (wrong space)
 - 404 Not Found — resource not found
 - 422 Unprocessable Entity — body parse or semantic validation error
@@ -111,6 +136,8 @@ bounded read-only metadata and no replacement-decoded body.
 
 **Pagination:** current DB-backed list routes generally use `?limit=50&offset=0`
 with a route-specific maximum.
+The Proposal list accepts a single `type` or up to 20 comma-separated `types`.
+The latter is one paginated result in review priority order, with an exact total for the combined filter.
 
 **Filtering:** query params matching model field names (e.g., `?scope=user&type=preference`).
 
@@ -144,6 +171,11 @@ model and displays as unknown. The existing Turn stream carries
 
 ## Run read model (`runs/runReadModel.ts`, `runToOut`)
 
+Run detail and status both report `effective_access_level`. A live poll can
+observe a permission change even when the Run's execution status stays the
+same. Web discards the earlier detail on a downgrade and reloads the authorized
+view. An explicit refusal clears an already loaded detail.
+
 Failed ACP Runs may expose safe `error_json.runtime_failure` evidence (typed
 category, RPC/vendor codes, message, observation/reset times, optional phase and
 phase elapsed milliseconds) and `error_json.runtime_target` (Host, runtime,
@@ -173,7 +205,10 @@ when the identity is issued and kept after revocation; the token digest is
 never returned. The Host adapter's result metadata carries the same value as
 `work_skill_content_hash`, but that is a copy, not a second identity source.
 The hash names code-owned Skill text rather than Run content, so a summary
-viewer sees it too. Run detail shows it under Technical identifiers.
+viewer sees it too. The Run detail interface omits this backend identifier.
+
+Summary-only Run IO returns an empty event list without reading Run events.
+Artifact reference visibility is evaluated independently.
 
 ## Current: Run Event SSE
 

@@ -34,7 +34,8 @@ import { PgProjectAgentRepository } from "../projects/projectAgents.js";
 import { PgHostThreadRepository } from "../hosts/threadRepository.js";
 import { sendPendingManagedWorkspaceArchive } from "../hosts/managedWorkspaceOperations.js";
 import { PgSessionRepository } from "../sessions/repository.js";
-import { latestSummaryArtifactId } from "../agentGroups/sessionHandoff.js";
+import { latestSummaryArtifactId, loadHandoffText } from "../agentGroups/sessionHandoff.js";
+import { roomAudience } from "./threadReferences.js";
 
 const INVITATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -404,9 +405,8 @@ export class RoomRosterService {
   }
 
   /**
-   * Start the Agent's next turn from the summary it wrote in its current
-   * session, instead of resuming that session: the same rotation Rainver's
-   * own handoff performs (`rotateAfterHandoff`), chosen by the person.
+   * Prepare the next turn from the current session's summary, preserving the
+   * source session until its replacement completes.
    */
   async restartFromSummary(identity: RoomIdentity, roomId: string, agentId: string) {
     return this.withRoomWriter(identity, roomId, async (client, room) => {
@@ -423,8 +423,12 @@ export class RoomRosterService {
       if (!summaryArtifactId || !current.vendor_session_id) {
         throw new RoomMutationError(409, "This Agent has no summary of its current session to restart from");
       }
-      const rotated = await new PgHostThreadRepository(client).rotateAfterHandoff(current.id, summaryArtifactId, current.vendor_session_id);
-      if (!rotated) throw new RoomMutationError(409, "Host Agent context changed before it could be restarted");
+      const audience = await roomAudience(client, identity.spaceId, room);
+      if (!await loadHandoffText(client, identity.spaceId, summaryArtifactId, [identity.userId, ...audience])) {
+        throw new RoomMutationError(409, "This summary is unavailable to the current Room audience");
+      }
+      const staged = await new PgHostThreadRepository(client).stageHandoff(current.id, summaryArtifactId, current.vendor_session_id);
+      if (!staged) throw new RoomMutationError(409, "Host Agent context changed before the restart could be prepared");
       await new PgSessionRepository(client).addRoomSystemNotice(
         identity.spaceId,
         identity.userId,
@@ -1009,7 +1013,7 @@ export class RoomRosterService {
         if(!member || member.role==='manager'&&!item.participating) throw new RoomMutationError(422,"Keep the Room manager and select active Room Agents");
         if(!await new PgConversationExecutionContextRepository(db).canAgentParticipate({id:'',space_id:identity.spaceId,room_id:roomId,project_id:room.project_id,project_folder_id:room.project_folder_id},item.agent_id,identity.userId)) throw new HttpError(403,"Agent use is not authorized in this Room");
         if(item.runtime_profile_id){
-          const option=(await new PgConversationBackendRepository(db).listOptions(identity.spaceId,identity.userId,item.agent_id,room.project_id)).find(option=>option.runtime_profile_id===item.runtime_profile_id);
+          const option=(await new PgConversationBackendRepository(db).listOptions(identity.spaceId,identity.userId,item.agent_id,room.project_id,"room-runtime")).find(option=>option.runtime_profile_id===item.runtime_profile_id);
           if(!option || option.usable===false) throw new RoomMutationError(409,"Room default runtime is unavailable to you");
           validateSessionConfig(item.session_config,option.session_config_options??[]);
         } else if(item.session_config.length) throw new RoomMutationError(422,"Choose a runtime before saving model defaults");

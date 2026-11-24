@@ -337,7 +337,10 @@ New goal code always uses the isolated executor and never falls back to the old
 runner. Host capabilities confer no Source authorization.
 
 Channel row locking and the database legacy-job admission guard serialize a
-late old scheduler against takeover. Competing goals cannot both own a channel.
+late old scheduler against takeover. The parent Source lock is FOR NO KEY
+UPDATE during takeover, so a legacy insert already holding the channel can
+complete its parent foreign-key check. Competing goals cannot both own a
+channel.
 Mapping checks the current binding owner under the channel lock before creating
 another compatibility identity. A stale legacy alias may be paused or deleted
 without changing the channel or Project-monitoring trigger owned by another
@@ -654,7 +657,10 @@ staging share one transaction. It uses the same materialization lease/recovery a
 stable-ID dedupe, with no active scheduler. Continuous collection reuses the
 existing scheduler owner. Successful item persistence precedes cursor commit;
 restart replays accepted output, not a paid model call. CAS prevents old Run
-settlement from pausing or overwriting replacement bindings. Failure, actual zero
+settlement from pausing or overwriting replacement bindings. Every materialization
+attempt rotates the binding token and records its own audit claim. Completion,
+refusal and retry update only that claim, and releasing a token cannot release a
+replacement attempt. Failure, actual zero
 results and preview insufficiency remain distinct. User cancellation does not
 silently create another paid Run.
 
@@ -809,7 +815,10 @@ following.
 materializer (`materialization.ts` → `goals/goalItems.ts`) writes it in the same
 transaction as items and the cursor, from the server-held goal, active version,
 leased binding, connection and collection audit (`first_goal_run_id`,
-`last_goal_run_id`, Agent `agent_run_id` when present). Item ids come from the
+`last_goal_run_id`, Agent `agent_run_id` when present). Native collection also
+settles its terminal audit in that transaction. Recovery recognizes an older
+committed native cursor for the same binding revision and collection and
+repairs its unfinished receipt. Item ids come from the
 canonical materializer's actual written/matched rows, including items already
 stored for that connection and canonical-URL matches from other Sources, so one
 SourceItem can belong to several goals, including two goals on different

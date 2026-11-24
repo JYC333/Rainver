@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { CUSTOM_SOURCE_LIST_PIPELINE, ONE_ARTICLE_HTML } from "./support/customSourceFixtures.js";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdtemp, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -239,7 +239,7 @@ async function seedLegacyVersionHistory(connectionId: string) {
 }
 
 describe("pruneSupersededCustomSourceHandlerArtifacts", () => {
-  it("prunes an old superseded version's artifact but never the connection's most-recently-superseded version", async () => {
+  it.each(["same file", "replacement"])("resumes interrupted cleanup and protects the newest superseded version (%s)", async (generation) => {
     if (!db.available) return;
     // This test regenerates 3 times for one connection, deliberately above
     // the rate limit under test elsewhere in this file — orthogonal concern.
@@ -274,25 +274,90 @@ describe("pruneSupersededCustomSourceHandlerArtifacts", () => {
     const v1AbsolutePath = join(config!.artifactStorageRoot, v1ArtifactPath.rows[0]!.storage_path);
     await expect(stat(v1AbsolutePath)).resolves.toBeDefined();
 
-    const pruned = await pruneSupersededCustomSourceHandlerArtifacts(db.pool, config!);
-    expect(pruned).toBe(1);
+    const failUnlink = async () => {
+      throw Object.assign(new Error("fixture unlink failure"), { code: "EIO" });
+    };
+    await expect(pruneSupersededCustomSourceHandlerArtifacts(db.pool, config!, 100, failUnlink))
+      .rejects.toThrow("Custom Source Artifact cleanup could not finish");
 
-    const v1After = await db.pool.query<{ handler_artifact_id: string | null }>(
-      `SELECT handler_artifact_id FROM source_handler_versions WHERE id = $1`,
+    const v1After = await db.pool.query<{ handler_artifact_id: string | null; handler_artifact_cleanup_json: unknown }>(
+      `SELECT handler_artifact_id, handler_artifact_cleanup_json FROM source_handler_versions WHERE id = $1`,
       [v1.id],
     );
     expect(v1After.rows[0]?.handler_artifact_id).toBeNull();
+    expect(v1After.rows[0]?.handler_artifact_cleanup_json).toMatchObject({
+      storagePath: v1ArtifactPath.rows[0]!.storage_path,
+    });
     const v1ArtifactRow = await db.pool.query(`SELECT id FROM artifacts WHERE id = $1`, [
       v1Before.rows[0]!.handler_artifact_id,
     ]);
     expect(v1ArtifactRow.rows).toHaveLength(0);
-    await expect(stat(v1AbsolutePath)).rejects.toThrow();
+    await expect(stat(v1AbsolutePath)).resolves.toBeDefined();
+    if (generation === "replacement") {
+      await rename(v1AbsolutePath, `${v1AbsolutePath}.old`);
+      await writeFile(v1AbsolutePath, "replacement fixture");
+    }
+    const retired: number[] = [];
+    expect(await pruneSupersededCustomSourceHandlerArtifacts(
+      db.pool, config!, 100, unlink, (count) => retired.push(count),
+    )).toBe(1);
+    expect(retired).toEqual(generation === "replacement" ? [1] : []);
+    expect(await pruneSupersededCustomSourceHandlerArtifacts(db.pool, config!)).toBe(0);
+    if (generation === "replacement") {
+      await expect(stat(v1AbsolutePath)).resolves.toBeDefined();
+    } else {
+      await expect(stat(v1AbsolutePath)).rejects.toMatchObject({ code: "ENOENT" });
+    }
 
     const v2After = await db.pool.query<{ handler_artifact_id: string | null }>(
       `SELECT handler_artifact_id FROM source_handler_versions WHERE id = $1`,
       [v2.id],
     );
     expect(v2After.rows[0]?.handler_artifact_id).not.toBeNull();
+  });
+
+  it("makes progress on new and queued cleanup when permanent failures fill the retry batch", async () => {
+    if (!db.available) return;
+    const root = config!.artifactStorageRoot;
+    const oldArtifact = async (suffix: string) => {
+      const connection = await createDraftConnection(suffix);
+      const { v1 } = await seedLegacyVersionHistory(connection.id);
+      await db.pool.query(
+        "UPDATE source_handler_versions SET superseded_at = now() - interval '40 days' WHERE id = $1",
+        [v1.id],
+      );
+      return { id: v1.id, path: join(root, SPACE_A, "custom-source", `${v1.handler_artifact_id}.handler.cjs`) };
+    };
+    const stuck = await oldArtifact("-stuck");
+    const remove: typeof unlink = async (path) => {
+      if (path === stuck.path) throw Object.assign(new Error("fixture unlink failure"), { code: "EIO" });
+      await unlink(path);
+    };
+
+    // A one-entry batch hits the same saturation boundary as 100/100 in production.
+    await expect(pruneSupersededCustomSourceHandlerArtifacts(db.pool, config!, 1, remove))
+      .rejects.toThrow("(1 failed, 0 completed)");
+    const fresh = await oldArtifact("-fresh");
+    await expect(pruneSupersededCustomSourceHandlerArtifacts(db.pool, config!, 1, remove))
+      .rejects.toThrow("(1 failed, 1 completed)");
+    await expect(stat(fresh.path)).rejects.toMatchObject({ code: "ENOENT" });
+
+    const queuedConnection = await createDraftConnection("-queued");
+    const queued = await seedLegacyCustomSourceVersion(db.pool, IDENTITY, queuedConnection.id, { status: "superseded" });
+    await db.pool.query(
+      `UPDATE source_handler_versions SET handler_artifact_cleanup_json = $2 WHERE id = $1`,
+      [queued.id, { storagePath: "absent.handler.cjs", identity: "absent" }],
+    );
+    await expect(pruneSupersededCustomSourceHandlerArtifacts(db.pool, config!, 1, remove)).resolves.toBe(1);
+    const { rows } = await db.pool.query<{ id: string; handler_artifact_cleanup_json: unknown }>(
+      "SELECT id, handler_artifact_cleanup_json FROM source_handler_versions WHERE id = ANY($1::varchar[])",
+      [[stuck.id, fresh.id, queued.id]],
+    );
+    const intents = new Map(rows.map((row) => [row.id, row.handler_artifact_cleanup_json]));
+    expect(intents.get(stuck.id)).toMatchObject({ lastFailureAt: expect.any(Number) });
+    expect(intents.get(fresh.id)).toBeNull();
+    expect(intents.get(queued.id)).toBeNull();
+    await expect(stat(stuck.path)).resolves.toBeDefined();
   });
 
   it("is a no-op when disabled", async () => {

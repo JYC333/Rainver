@@ -199,10 +199,12 @@ it("keeps connections and legacy selections private to their owner, even from Pr
     expect(definition.allowed_actor_types).toEqual(["user"]);
     expect(definition.grantable).toBe(false);
   }
-  // The only other mail reads are the Agent's on-demand read (ADR 0032) and a digest's own read (ADR 0033 B):
-  // Agent-only, ungrantable queries under ADR 0030's consent and isolation (`gmailAgentReadDb.test.ts`).
+  // The only other mail reads are the Agent's on-demand read (ADR 0032), a digest's own read (ADR 0033 B) and a
+  // member's read under the owner's delegation (ADR 0035 §4): Agent-only, ungrantable, read-only queries
+  // (`gmailAgentReadDb.test.ts`, `gmailApplicationUpdatesDb.test.ts`).
   expect(SYSTEM_ACTION_REGISTRY.filter((d) => /gmail.*(search|read)/.test(d.id)).map((d) => [d.id, [...d.visibility], d.allowed_actor_types, d.grantable, d.execution?.kind, d.side_effects]))
-    .toEqual([["source.gmail.connection.set_agent_read", ["public_api"], ["user"], false, "command", "durable"], ["source.gmail.mail.read", ["agent_tool"], ["agent"], false, "query", "none"], ["source.gmail.digest.read", ["agent_tool"], ["agent"], false, "query", "none"]]);
+    .toEqual([["source.gmail.connection.set_agent_read", ["public_api"], ["user"], false, "command", "durable"], ["source.gmail.mail.read", ["agent_tool"], ["agent"], false, "query", "none"], ["source.gmail.digest.read", ["agent_tool"], ["agent"], false, "query", "none"],
+      ["source.gmail.delegated.read", ["agent_tool"], ["agent"], false, "query", "none"]]);
 });
 
 it("removes a legacy selection as a hard delete; forget cascades the connection's selections", async () => {

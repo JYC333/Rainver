@@ -676,6 +676,102 @@ test('performance on a long synthetic article reports the low-end budget (4× CP
 })
 
 
+// Selection, anchor placement and annotation on the same long article, with
+// 200 stored anchors of every placement kind: unique quotes, repeated quotes
+// told apart only by their full context (English and Chinese), repeated quotes
+// without context (ambiguous) and quotes no longer in the text (missing).
+// Budgets, decided before measuring, warn only:
+//   longest main-thread task while drag-selecting ≤ 100 ms · pointer-up to toolbar ≤ 200 ms
+//   Highlight click to painted ≤ 500 ms · open to placed annotations ≤ 3,000 ms
+// `READER_INTERACTION_OUT` writes the timings plus every annotation's placement
+// (painted text per id) so two builds can be compared for placement equality.
+const INTERACTION_BUDGET = { dragLongestTaskMs: 100, toolbarMs: 200, highlightMs: 500, openPlacedMs: 3000 }
+function longArticleAnchors(documentId) {
+  const anchors = []
+  const add = (id, quote, before = '', after = '') => anchors.push({ id, document_type: 'source_item', document_id: documentId, annotation_type: 'highlight', status: 'active',
+    quote_text: quote, color: null, label: null, created_at: now, anchor_state: 'unverified', anchor_json: { schema_version: 1, quote_text: quote, before_context: before, after_context: after } })
+  const tail = 'and a position that survives devices and versions keep long reading continuous.'
+  for (let k = 0; k < 80; k++) { const n = 2 + k * 24; add(`unique-${k}`, `Paragraph ${n}:`) }
+  // The previous paragraph's end is part of the context: `Paragraph 6:` alone is also the end of `Paragraph 16:`.
+  for (let k = 0; k < 60; k++) { const n = 6 + k * 32; add(`context-en-${k}`, 'a calm measure', `验证滚动、查找和批注。 Paragraph ${n}:`, tail) }
+  for (let k = 0; k < 20; k++) { const n = 1 + k * 98; add(`context-zh-${k}`, '长文阅读需要稳定的版心', `第${n}段：`, '、清楚的段距和可以恢复的位置') }
+  for (let k = 0; k < 20; k++) add(`ambiguous-${k}`, k % 2 ? 'a calm measure' : '清楚的段距')
+  for (let k = 0; k < 20; k++) add(`missing-${k}`, `Paragraph ${k} was removed in this version`)
+  return anchors
+}
+
+test('drag-selection, anchor placement and highlighting on a long annotated article report the low-end budget (4× CPU throttle)', async () => {
+  const longJson = { type: 'doc', content: Array.from({ length: 2000 }, (_, n) => n % 100 === 0 ? h(2, `Part ${n / 100}`) : p(n % 2 ? zh(n) : en(n))) }
+  const fixture = makeServer({ longDocument: documentFor('item-long', longJson) })
+  for (const annotation of longArticleAnchors('item-long')) fixture.state.annotations.set(annotation.id, annotation)
+  const page = await newPage(fixture, { width: 1440, height: 900 })
+  const cdp = await page.context().newCDPSession(page)
+  try {
+    await page.goto(`${baseUrl}/spaces/${spaceId}/home`).catch(() => {})
+    await cdp.send('Emulation.setCPUThrottlingRate', { rate: 4 })
+    const started = Date.now()
+    await page.goto(`${baseUrl}/spaces/${spaceId}/library/items/item-long`)
+    await page.locator('.reader-surface [data-annotation-id]').first().waitFor()
+    const openPlacedMs = Date.now() - started
+    await page.evaluate(() => document.fonts.ready)
+    await settle(page)
+    const placements = await page.evaluate(() => {
+      const byId = {}
+      for (const element of document.querySelectorAll('.reader-surface [data-annotation-id]')) {
+        const id = element.getAttribute('data-annotation-id')
+        const block = [...element.closest('.reader-surface').children].findIndex(child => child.contains(element))
+        ;(byId[id] ??= { block, text: '' }).text += element.textContent
+      }
+      return byId
+    })
+    // Drag across three paragraphs in the middle of the article.
+    const startBlock = page.locator('.reader-surface > p').nth(1001)
+    await startBlock.evaluate(el => el.scrollIntoView({ block: 'center' }))
+    await settle(page)
+    const first = await startBlock.boundingBox()
+    const last = await page.locator('.reader-surface > p').nth(1003).boundingBox()
+    await page.evaluate(() => {
+      window.__readerLongTasks = []
+      new PerformanceObserver(list => { for (const entry of list.getEntries()) window.__readerLongTasks.push(entry.duration) }).observe({ type: 'longtask' })
+    })
+    const steps = 40
+    const dragStart = Date.now()
+    await page.mouse.move(first.x + 4, first.y + 6)
+    await page.mouse.down()
+    for (let i = 1; i <= steps; i++) {
+      await page.mouse.move(first.x + 4 + (last.x + last.width * 0.6 - first.x - 4) * (i / steps), first.y + 6 + (last.y + last.height * 0.5 - first.y - 6) * (i / steps))
+    }
+    const upAt = Date.now()
+    await page.mouse.up()
+    await page.getByRole('toolbar', { name: 'Annotate selection' }).waitFor()
+    const toolbarMs = Date.now() - upAt
+    const dragMs = upAt - dragStart
+    await settle(page)
+    const dragTasks = await page.evaluate(() => window.__readerLongTasks.splice(0))
+    const selectedQuote = await page.evaluate(() => window.getSelection()?.toString().length ?? 0)
+    const highlightAt = Date.now()
+    await page.getByRole('toolbar', { name: 'Annotate selection' }).getByRole('button', { name: 'Highlight', exact: true }).click()
+    await page.locator('.reader-surface [data-annotation-id="ann-201"]').first().waitFor()
+    const highlightMs = Date.now() - highlightAt
+    const created = fixture.state.annotations.get('ann-201')
+    assert.ok(created?.quote_text?.length > 100, 'the dragged selection became one annotation')
+    assert.ok(created.anchor_json.before_context.length > 0 && created.anchor_json.after_context.length > 0)
+    const located = Object.keys(placements)
+    // Every proof-placeable anchor is painted on its own paragraph; ambiguous and missing ones never are.
+    assert.equal(located.filter(id => /^(unique|context)/.test(id)).length, 160)
+    assert.equal(located.filter(id => /^(ambiguous|missing)/.test(id)).length, 0)
+    const result = { device: 'Chromium, 1440×900, 4× CPU throttle (proxy)', paragraphs: 2000, characters: plainOf(longJson).length, storedAnchors: 200,
+      openPlacedMs, dragSteps: steps, dragMs, dragLongTasks: dragTasks.length, dragLongTaskTotalMs: Math.round(dragTasks.reduce((a, b) => a + b, 0)),
+      dragLongestTaskMs: Math.round(Math.max(0, ...dragTasks)), selectedChars: selectedQuote, toolbarMs, highlightMs, budget: INTERACTION_BUDGET }
+    console.info('Reader interaction performance', JSON.stringify(result))
+    if (process.env.READER_INTERACTION_OUT) writeFileSync(process.env.READER_INTERACTION_OUT, JSON.stringify({ ...result, placements, created: { quote: created.quote_text, anchor: created.anchor_json } }, null, 2))
+    for (const key of Object.keys(INTERACTION_BUDGET)) warnTimeBudget(`Reader ${key}`, result[key], INTERACTION_BUDGET[key])
+  } finally {
+    await cdp.send('Emulation.setCPUThrottlingRate', { rate: 1 }).catch(() => {})
+    await page.context().close()
+  }
+})
+
 test('wide Reading previews follow selection and confirmed read changes can be undone', async () => {
   const fixture = makeServer()
   const page = await newPage(fixture, { width: 1600 })
@@ -783,6 +879,9 @@ test('automatic highlighting is opt-in, native ranges only, and undoable', async
     await page.keyboard.press('Escape')
     await paragraph.click()
     assert.equal(fixture.state.annotations.size, 0, 'paragraph focus is never an auto-save')
+    // Chromium may retain the old range on a plain click in a read-only block.
+    // Start the next gesture from a clean selection so it is a new native drag.
+    await page.evaluate(() => window.getSelection()?.removeAllRanges())
     await drag()
     await page.getByText('Highlighted', { exact: true }).waitFor()
     assert.equal(fixture.state.annotations.size, 1)

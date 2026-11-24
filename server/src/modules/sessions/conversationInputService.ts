@@ -588,13 +588,14 @@ export class ConversationInputService {
         projectId,
         part.project_folder_id,
         part.relative_path,
+        { workspaceLocationId: part.workspace_location_id },
       );
       const actualSize = Buffer.byteLength(file.content, "utf8");
       if (actualSize > CONVERSATION_MAX_FILE_SNAPSHOT_BYTES) {
         throw new ConversationInputError(413, `file '${part.display_name}' exceeds ${CONVERSATION_MAX_FILE_SNAPSHOT_BYTES} bytes`);
       }
-      if (looksBinaryText(file.content)) {
-        throw new ConversationInputError(415, `file '${part.display_name}' is binary; only text files can be attached`);
+      if ((file.encoding && file.encoding !== "utf8") || looksBinaryText(file.content)) {
+        throw new ConversationInputError(415, `file '${part.display_name}' is not UTF-8 text; only UTF-8 files can be attached`);
       }
       totalSnapshotBytes += actualSize;
       if (totalSnapshotBytes > CONVERSATION_MAX_TOTAL_FILE_SNAPSHOT_BYTES) {
@@ -817,8 +818,9 @@ export class ConversationInputService {
               media.media_type, media.byte_size, media.sha256, media.storage_path,
               media.lifecycle, media.message_id, media.expires_at
          FROM conversation_input_media media
-        WHERE media.id = $1 AND media.space_id = $2 AND media.lifecycle = 'claimed'
-          AND EXISTS (
+        WHERE media.id = $1 AND media.space_id = $2
+          AND ((media.lifecycle = 'pending' AND media.owner_user_id = $3 AND media.expires_at > now())
+          OR (media.lifecycle = 'claimed' AND EXISTS (
             SELECT 1
                FROM messages message_row
                JOIN sessions session_row
@@ -837,7 +839,7 @@ export class ConversationInputService {
                       AND member.user_id = $3 AND member.status = 'active'
                  )
                )
-          )
+          )))
         LIMIT 1`,
       [mediaId, spaceId, userId],
     );

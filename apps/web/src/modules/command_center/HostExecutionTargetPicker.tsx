@@ -53,6 +53,7 @@ export default function HostExecutionTargetPicker({
   onRuntimeChange,
   disabled = false,
   managedOnly = false,
+  optionalDefaultFolder = false,
   backendMode = 'runtime_native',
 }: {
   projectId?: string | null
@@ -64,6 +65,7 @@ export default function HostExecutionTargetPicker({
   backendMode?: 'runtime_native' | 'model_provider'
   /** Offer only managed workspaces when a caller explicitly needs a private, Location-independent directory. */
   managedOnly?: boolean
+  optionalDefaultFolder?: boolean
 }) {
   const { t } = useAppTranslation()
   const [targets, setTargets] = useState<HostExecutionTarget[]>([])
@@ -188,12 +190,15 @@ export default function HostExecutionTargetPicker({
 
   function selectHost(nextHostId: string) {
     const nextTarget = targets.find(item => item.host_id === nextHostId)
-    const nextLocation = nextTarget?.locations.find(location => location.execution_ready) ?? nextTarget?.locations[0]
+    const nextLocation = managedOnly ? undefined
+      : nextTarget?.locations.find(location => location.execution_ready) ?? nextTarget?.locations[0]
     const nextInstalledRuntime = nextTarget?.runtimes[0]
     const nextRuntimeKey = nextInstalledRuntime?.runtime_key
       ?? adapterCatalog.find(adapter => adapter.runtime_key === 'opencode')?.runtime_key
       ?? adapterCatalog[0]?.runtime_key
-    const nextMode: 'location' | 'managed' = nextLocation ? 'location' : nextTarget?.managed_workspace_available ? 'managed' : 'location'
+    const nextMode: 'location' | 'managed' = nextTarget?.managed_workspace_available && (optionalDefaultFolder || !nextLocation)
+      ? 'managed'
+      : 'location'
     setDraftHostId(nextHostId)
     setDraftLocationId(nextLocation?.id ?? '')
     setDraftRuntimeKey(nextRuntimeKey ?? '')
@@ -325,12 +330,16 @@ export default function HostExecutionTargetPicker({
       {target && (
         <>
           <Select
-            ariaLabel="Workspace mode"
+            ariaLabel={optionalDefaultFolder ? t('management_ui.host_target.default_folder') : 'Workspace mode'}
             value={workspaceMode}
             onChange={mode => selectMode(mode as 'location' | 'managed')}
             options={[
-              ...(target.managed_workspace_available ? [{ value: 'managed', label: 'Managed workspace on this host (no Project files)' }] : []),
-              ...(target.locations.length > 0 ? [{ value: 'location', label: 'Project Location' }] : []),
+              ...(target.managed_workspace_available ? [{ value: 'managed', label: optionalDefaultFolder
+                ? t('management_ui.host_target.no_default_folder')
+                : 'Managed workspace on this host (no Project files)' }] : []),
+              ...(locations.length > 0 ? [{ value: 'location', label: optionalDefaultFolder
+                ? t('management_ui.host_target.choose_default_folder')
+                : 'Project Location' }] : []),
             ]}
             disabled={disabled}
           />

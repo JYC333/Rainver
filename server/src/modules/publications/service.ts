@@ -256,7 +256,7 @@ export class PublicationService {
       if (!publication) throw new HttpError(404, "Publication not found");
 
       const existing = await loadImport(db, publicationId, identity.spaceId);
-      if (existing) return importOut(existing, identity.userId);
+      if (existing) return importOut(existing, identity.userId, publication.status === "active");
       if (publication.status !== "active") throw new HttpError(409, "Publication has been revoked");
 
       const adapter = requireAdapter(publication.source_resource_type);
@@ -285,7 +285,7 @@ export class PublicationService {
           identity.userId, now,
         ],
       );
-      return importOut(importedRow.rows[0]!, identity.userId);
+      return importOut(importedRow.rows[0]!, identity.userId, true);
     });
   }
 
@@ -438,13 +438,13 @@ function publicationOut(
   };
 }
 
-function importOut(row: ImportRow, viewerUserId: string) {
+function importOut(row: ImportRow, viewerUserId: string, snapshotVisible: boolean) {
   return {
     id: row.id,
     publication_id: row.publication_id,
     target_space_id: row.target_space_id,
     publication_version: row.publication_version,
-    snapshot_hash: row.snapshot_hash,
+    snapshot_hash: snapshotVisible ? row.snapshot_hash : null,
     imported_resource_type: row.imported_resource_type,
     // The same visibility rule as `publicationListOut`. The idempotent branch
     // must apply it too.

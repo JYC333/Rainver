@@ -201,7 +201,7 @@ it.each(ids)('keeps missing and hidden objects indistinguishable for %s while re
  record=(await db.pool.query('SELECT * FROM runs WHERE id=$1',[run])).rows[0];
  const missing=await agent(id,{...input(id),task_id:'composed-task-title'});
  expect(missing.httpStatus).toBe(404);
- expect(missing.body.error.message).toContain('objects returned by authorized reads');
+ expect(missing.body.error.message).toContain(id==='task.set_status' ? 'Use task.list in this Project' : 'objects returned by authorized reads');
  expect(JSON.stringify(missing.body)).not.toContain(task);
  for(const target of [privateTask,otherTask]){
   const denied=await agent(id,{...input(id),task_id:target.id});

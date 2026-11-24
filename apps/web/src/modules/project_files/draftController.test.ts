@@ -80,6 +80,46 @@ describe('ProjectFileDraftController', () => {
     controller.destroy()
   })
 
+  it('rejects a failed draft preparation without retrying or discarding the edit', async () => {
+    const failure = new Error('draft hash unavailable')
+    const prepare = vi.fn().mockRejectedValue(failure)
+    const save = vi.fn()
+    const controller = new ProjectFileDraftController({ initialContent: 'original', buildMutation: prepare, save })
+    try {
+      controller.setContent('edited')
+      await expect(controller.flush()).rejects.toBe(failure)
+      expect(prepare).toHaveBeenCalledTimes(1)
+      expect(save).not.toHaveBeenCalled()
+      expect(controller.snapshot()).toMatchObject({ content: 'edited', status: 'error' })
+    } finally {
+      controller.destroy()
+    }
+  })
+
+  it('rejects a newer flush if the pending save fails before it can persist that edit', async () => {
+    const first = deferred<ReturnType<typeof draft>>()
+    const save = vi.fn().mockReturnValueOnce(first.promise)
+    const controller = new ProjectFileDraftController({
+      initialContent: 'one',
+      buildMutation: async content => mutation(content),
+      save,
+    })
+    try {
+      controller.setContent('two')
+      const older = controller.flush()
+      await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+      controller.setContent('three')
+      const newer = controller.flush()
+      const failure = new Error('temporary save failure')
+      const checks = Promise.all([expect(older).rejects.toBe(failure), expect(newer).rejects.toBe(failure)])
+      first.reject(failure)
+      await checks
+      expect(controller.snapshot()).toMatchObject({ content: 'three', status: 'error' })
+    } finally {
+      controller.destroy()
+    }
+  })
+
   it('starts a max-age save while edits continue', async () => {
     vi.useFakeTimers()
     const save = vi.fn().mockResolvedValue(draft('long edit', 1))

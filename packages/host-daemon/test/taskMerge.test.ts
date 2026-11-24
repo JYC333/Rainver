@@ -9,6 +9,7 @@ import { saveConfig } from "../src/config.js";
 import { handleLaunch, type LaunchFrame } from "../src/execution.js";
 import { abortTaskMerge, continueTaskMerge, finishTaskMerge, prepareTaskMerge, prepareConflictResolution, prepareVerificationRepair } from "../src/taskMerge.js";
 import { deleteTaskBranch, settleTaskRun, sweepTaskWorktrees, TASK_BUSY } from "../src/taskWorktree.js";
+import { localPublicationJournalPath, reconcileLocalChanges } from "../src/localChangeReconciliation.js";
 
 let configDir: string;
 let workspaceDir: string;
@@ -607,6 +608,42 @@ describe("task_merge_finish", () => {
     expect(refs).toHaveLength(2);
     expect(git(["show", `${refs[0]}:README.md`]).trim()).toBe("ONE!\ntwo\nthree");
     expect(git(["show", `${refs[1]}:README.md`]).trim()).toBe("ONE\ntwo\nthree");
+  });
+
+  it("recovers the index and worktree when the daemon stopped after the branch moved", async () => {
+    const result = await rebasedTask("t-replay", "merge-replay");
+    await writeFile(join(workspaceDir, "README.md"), "ONE\ntwo\nthree\n");
+    git(["add", "README.md"]);
+    await writeFile(join(workspaceDir, "README.md"), "ONE!\ntwo\nthree\n");
+    const journal = localPublicationJournalPath(join(workspaceDir, ".git"), "refs/heads/main");
+    const local = await reconcileLocalChanges(workspaceDir, result.onto_commit!, result.task_commit!, ["README.md"], journal);
+    await local.stage();
+    git(["merge", "--ff-only", result.task_commit!]);
+    expect(existsSync(journal)).toBe(true);
+
+    expect(await finish("t-replay", "merge-replay", result)).toMatchObject({ ok: true, outcome: "merged" });
+    expect(git(["show", ":README.md"])).toBe("ONE\ntwo\nTHREE");
+    expect(await readFile(join(workspaceDir, "README.md"), "utf8")).toBe("ONE!\ntwo\nTHREE\n");
+    expect(existsSync(journal)).toBe(false);
+  });
+
+  it("preserves content staged after the publication plan was calculated", async () => {
+    const result = await rebasedTask("t-concurrent-stage", "merge-concurrent-stage");
+    const path = join(workspaceDir, "README.md");
+    await writeFile(path, "ONE\ntwo\nthree\n");
+    git(["add", "README.md"]);
+    const work = "ONE!\ntwo\nthree\n";
+    await writeFile(path, work);
+    const journal = localPublicationJournalPath(join(workspaceDir, ".git"), "refs/heads/main");
+    const local = await reconcileLocalChanges(workspaceDir, result.onto_commit!, result.task_commit!, ["README.md"], journal);
+    await writeFile(path, "new staged edit\ntwo\nthree\n");
+    git(["add", "README.md"]);
+    await writeFile(path, work);
+
+    await expect(local.stage()).rejects.toMatchObject({ paths: ["README.md"] });
+    expect(git(["show", ":README.md"])).toBe("new staged edit\ntwo\nthree");
+    expect(await readFile(path, "utf8")).toBe(work);
+    expect(existsSync(journal)).toBe(false);
   });
 
   it("waits when a file of the person's sits where the Task needs a directory", async () => {

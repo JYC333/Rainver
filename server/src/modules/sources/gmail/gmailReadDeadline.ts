@@ -51,8 +51,13 @@ export function __setGmailReadControlForTests(input: { control?: Pool | null; pa
   if (input.pageDeadlineMs !== undefined) pageDeadlineOverride = input.pageDeadlineMs ?? undefined;
 }
 
-export function gmailPageScope(config: ServerConfig, pool: Pool, clientSignal: AbortSignal): GmailPageScope {
-  const ms = pageDeadlineOverride ?? GMAIL_READ_LIMITS.pageDeadlineMs;
+/**
+ * `deadlineAt` is the end-to-end deadline of the request the page belongs to (a digest read's proof wait and
+ * page share one budget): the page ends at whichever comes first, it or its own `pageDeadlineMs`.
+ */
+export function gmailPageScope(config: ServerConfig, pool: Pool, clientSignal: AbortSignal, deadlineAt?: number): GmailPageScope {
+  const own = pageDeadlineOverride ?? GMAIL_READ_LIMITS.pageDeadlineMs;
+  const ms = Math.max(0, Math.min(own, deadlineAt === undefined ? own : deadlineAt - Date.now()));
   return {
     pool,
     control: controlOverride ?? getGmailReadControlPool(config.databaseUrl!),

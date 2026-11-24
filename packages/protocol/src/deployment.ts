@@ -80,6 +80,8 @@ export type DeploymentJobDetail = z.infer<typeof DeploymentJobDetailSchema>;
 export const DeploymentServiceObservationSchema = z.object({
   service: z.string(),
   image_ref: z.string(),
+  /** Effective tag from the instance configuration, present on the server observation. */
+  configured_tag: z.string().optional(),
   digest: z.string().nullable(),
   /** `org.opencontainers.image.revision` — the commit CI published from. */
   revision: z.string().nullable(),

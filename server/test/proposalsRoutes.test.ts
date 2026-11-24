@@ -71,8 +71,9 @@ describe("proposal review routes", () => {
       repository: {
         async listVisible(_spaceId, _userId, filters) {
           return {
-            items: [proposal({ proposal_type: filters.proposalType ?? "memory_create" })],
-            total: 1,
+            items: (filters.proposalTypes ?? [filters.proposalType ?? "memory_create"])
+              .map((proposal_type) => proposal({ proposal_type })),
+            total: filters.proposalTypes?.length ?? 1,
             limit: filters.limit,
             offset: filters.offset,
           } satisfies ProposalPage;
@@ -110,6 +111,15 @@ describe("proposal review routes", () => {
       limit: 25,
       offset: 10,
     });
+
+    const combined = await app.inject({ method: "GET", url: "/api/v1/proposals?limit=20&offset=8&types=claim_create,knowledge_archive" });
+    expect(combined.statusCode).toBe(200);
+    expect(combined.json()).toMatchObject({
+      items: [{ proposal_type: "claim_create" }, { proposal_type: "knowledge_archive" }],
+      total: 2, limit: 20, offset: 8,
+    });
+    const ambiguous = await app.inject({ method: "GET", url: "/api/v1/proposals?type=code_patch&types=claim_create" });
+    expect(ambiguous.statusCode).toBe(422);
   });
 
   it("serves visible proposal details with the public proposal shape", async () => {

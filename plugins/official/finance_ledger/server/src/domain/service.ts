@@ -20,7 +20,6 @@ import {
   type ImportBatchResult,
   type ImportBeancountInput,
   type ImportReviewDecision,
-  type ImportSourceSummary,
 } from "./importExportService.js";
 import type {
   AccountVisibility,
@@ -490,7 +489,7 @@ export class FinanceLedgerService {
   ): Promise<FinancePostingRow[]> {
     const account = await this.repository.findAccountForViewer(db, spaceId, bookId, accountId, viewerUserId);
     if (!account) throw new AccountNotFoundError();
-    return this.repository.getAccountLedger(db, spaceId, bookId, accountId);
+    return this.repository.getAccountLedger(db, spaceId, bookId, accountId, viewerUserId);
   }
 
   async computeBalances(
@@ -517,7 +516,7 @@ export class FinanceLedgerService {
         .map((account) => account.id),
     );
 
-    const postings = await this.repository.getPostedPostings(db, spaceId, bookId);
+    const postings = await this.repository.getPostedPostings(db, spaceId, bookId, options.viewerUserId);
     const byAccount = new Map<string, { accountName: string; inventory: Inventory }>();
     for (const posting of postings) {
       if (!posting.amount_text || !posting.commodity_symbol) continue;
@@ -586,8 +585,8 @@ export class FinanceLedgerService {
     return importBeancountToDb(db, spaceId, bookId, userId, input);
   }
 
-  listImportBatches(db: Queryable, spaceId: string, bookId: string, userId: string): Promise<ImportSourceSummary[]> {
-    return listImportBatches(db, spaceId, bookId, userId);
+  listImportBatches(db: Queryable, spaceId: string, bookId: string, userId: string, offset: number) {
+    return listImportBatches(db, spaceId, bookId, userId, offset);
   }
 
   getImportBatch(db: Queryable, spaceId: string, bookId: string, userId: string, importSourceId: string): Promise<ImportBatchResult> {

@@ -632,17 +632,20 @@ describe("runToolGrantProvisioningDb", () => {
         [request.id],
       );
       expect(reconcileJob.rows).toHaveLength(1);
+      const queue = new PgJobQueueRepository(db.pool);
+      const predecessor = await queue.enqueue({job_type:"agent_run", space_id:SPACE, user_id:USER, agent_id:AGENT, payload:{run_id:created.id}});
+      expect((await queue.claimNextAgentRun("old-worker"))?.id).toBe(predecessor.id);
+      expect(await queue.startJob(predecessor.id, "old-worker")).toBe(true);
       await db.pool.query(
         `INSERT INTO run_execution_locks (run_id, locked_at, worker_id, job_id)
-         VALUES ($1, $2, 'old-worker', NULL)`,
-        [created.id, now],
+         VALUES ($1, $2, 'old-worker', $3)`,
+        [created.id, now, predecessor.id],
       );
       const registry = new JobHandlerRegistry();
       registerAgentRunHandler(registry, loadConfig({
         SERVER_DATABASE_URL: db.connectionUri,
         SERVER_INTERNAL_TOKEN: "test-internal-token",
       }));
-      const queue = new PgJobQueueRepository(db.pool);
       const worker = new JobWorker(
         queue,
         registry,
@@ -678,6 +681,10 @@ describe("runToolGrantProvisioningDb", () => {
         [created.id, SPACE],
       );
       expect(resumedRun.rows[0]).toMatchObject({ status: "queued", error_json: null });
+      expect(await queue.completeJob(predecessor.id, {}, "old-worker")).toBe(true);
+      const successor = await queue.claimNextAgentRun("successor-worker");
+      expect(successor?.payload_json.run_id).toBe(created.id);
+      expect(successor?.id).not.toBe(predecessor.id);
       await db.pool.query(
         `DELETE FROM jobs
           WHERE job_type = 'agent_run'

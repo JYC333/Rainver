@@ -36,7 +36,12 @@ async function open(width,fixture){
  await page.addInitScript(({locale,theme})=>{localStorage.setItem('rainver:locale',locale);localStorage.setItem('rainver:theme',theme)}, {locale:fixture.locale??'en',theme:fixture.theme??'dark'})
  await page.route('**/api/v1/**',async route=>{
   const req=route.request(),path=new URL(req.url()).pathname.replace('/api/v1','')
-  if(req.method()!=='GET'){writes.push({path,body:req.postDataJSON()});const r=fixture.write(path,req.postDataJSON());return route.fulfill(r)}
+  if(path==='/me/agent-attention/views'&&req.method()==='POST')return route.fulfill({json:{read_count:0,read_states:[]}})
+  if(req.method()!=='GET'){
+   const body=req.postDataJSON();writes.push({path,body});const result=fixture.write(path,body);
+   assert.ok(req.headers()['idempotency-key'],'core topic changes need a retry key');
+   return route.fulfill(result.status>=400?result:{...result,json:{status:'succeeded',data:result.json}});
+  }
   let data
   if(path==='/me')data={id:'u',name:'Owner',email:'o@example.test',default_space_id:'s',instance_role:'member'}
   else if(path==='/me/spaces')data=[{id:'s',name:'Space',type:'personal',role:'owner'}]
@@ -67,6 +72,8 @@ test('REPORTED: a changed Source is explained in the topic, confirmed there, ref
    detail:()=>state==='blocked'?detail(followState()):detail(followState({phase:'scheduled',health:'ok',sources:[src({status:'active',health:'ok',error:null,attention:null,resolvable_by:null})]}),{status:'active'}),
    view:()=>current,
    write:(path,body)=>{
+    assert.equal(path,'/actions/source.goal.binding.confirm_source');
+    assert.equal(body.goal_id,'g');assert.equal(body.binding_id,'b');
     if(body.authority!==current.authority||body.binding_revision!==current.binding_revision)return {status:409,json:{error:'source_scope_changed',message:'source_scope_changed'}}
     state='active';return {json:{binding_id:'b',binding_revision:1,status:'active'}}
    },
@@ -97,7 +104,7 @@ test('REPORTED: a changed Source is explained in the topic, confirmed there, ref
    await dialog.getByRole('button',{name:'Confirm and continue'}).click()
    await page.getByText(/A source this topic uses changed/).waitFor({state:'detached'})
    assert.equal(await page.getByRole('dialog').count(),0)
-   assert.deepEqual(writes.map(w=>w.body),[{binding_revision:0,authority:'a'.repeat(64)},{binding_revision:0,authority:'b'.repeat(64)}])
+   assert.deepEqual(writes.map(w=>w.body),[{goal_id:'g',binding_id:'b',binding_revision:0,authority:'a'.repeat(64)},{goal_id:'g',binding_id:'b',binding_revision:0,authority:'b'.repeat(64)}])
    if(shots)await page.screenshot({path:`${shots}/recovered-${width}.png`,fullPage:true})
    assert.deepEqual(errors,[]);assert.deepEqual(unknown.filter(p=>!p.startsWith('/proposals')&&p!=='/me/agent-attention/stream'&&!p.startsWith('/sources/goal-setup/')),[])
   }finally{await page.close()}
@@ -128,9 +135,9 @@ test('latest collection replaces the unread chip without adding badges, metadata
    const fixture={locale:'zh-CN',items:()=>[row],detail:()=>detail(followState({phase:'scheduled',health:'ok',sources:[src({status:'active',health:'ok',error:null,attention:null,resolvable_by:null})]}),{status:'active'}),view:()=>view(),write:()=>({status:500,json:{}})};
    const {page,unknown,errors,writes}=await open(width,fixture);
    try{
-    await page.goto(`${baseUrl}/spaces/s/library/reading/goals/g`);
+    await page.goto(`${baseUrl}/spaces/s/library/reading?view=all&topic=g`);
     const heading=page.getByRole('heading',{name:row.title});await heading.waitFor();
-    const card=page.locator('li').filter({has:heading});await card.getByText(fresh?'本次新增':'未读',{exact:true}).waitFor();
+    const card=page.locator('[data-reading-row]').filter({has:heading});await card.getByText(fresh?'本次新增':'未读',{exact:true}).waitFor();
     await page.evaluate(()=>document.fonts.ready);
     measures.push(await card.evaluate(el=>{const h=el.querySelector('h2');return {height:el.getBoundingClientRect().height,metadataHeight:h.previousElementSibling.getBoundingClientRect().height,badges:el.querySelectorAll('[class*="rounded-full"]').length,overflow:el.scrollWidth>el.clientWidth}}));
     assert.equal(await card.locator('details[open]').count(),0,'supporting details remain collapsed');
@@ -155,8 +162,9 @@ test('Reading and Following share cards, full-width bottom progress, and explici
    if(edited)d.versions.unshift({id:'v2',revision:4,plan_json:{...d.versions[0].plan_json,title:'Updated design focus',analysis_brief:'Compare actual architecture with the project baseline.'}});
    return d;
   },view:()=>view(),write:(path,body)=>{
-   if(path==='/sources/goals/g/edit'){assert.equal(body.expected_revision,3);assert.equal(body.title,'Updated design focus');edited=true;return {json:{id:'v2',revision:4}}}
-   if(path==='/sources/goals/g/follow'){assert.equal(body.version_id,'v2');applied=true;return {json:{status:'running',activated:true}}}
+   assert.equal(body.goal_id,'g');
+   if(path==='/actions/source.goal.edit'){assert.equal(body.expected_revision,3);assert.equal(body.title,'Updated design focus');edited=true;return {json:{id:'v2',revision:4}}}
+   if(path==='/actions/source.goal.follow'){assert.equal(body.version_id,'v2');applied=true;return {json:{status:'running',activated:true}}}
    throw new Error(`Unexpected write: ${path}`);
   }};
   const {page,unknown,errors,writes}=await open(width,fixture);
@@ -166,7 +174,8 @@ test('Reading and Following share cards, full-width bottom progress, and explici
    const outerBar=outer.getByRole('progressbar');assert.equal(await outerBar.getAttribute('aria-valuenow'),'65');
    const outerStyle=await outer.locator('h2').evaluate(el=>{const s=getComputedStyle(el);return {font:s.fontSize,line:s.lineHeight,weight:s.fontWeight}});
    await page.goto(`${baseUrl}/spaces/s/library/reading/goals/g`);
-   const card=page.locator('li').filter({has:page.getByRole('heading',{name:row.title})});await card.waitFor();
+   await page.getByRole('link',{name:zh?'查看相关文章':'View collected articles',exact:true}).click();
+   const card=page.locator('[data-reading-row]').filter({has:page.getByRole('heading',{name:row.title})});await card.waitFor();
    assert.deepEqual(await card.locator('h2').evaluate(el=>{const s=getComputedStyle(el);return {font:s.fontSize,line:s.lineHeight,weight:s.fontWeight}}),outerStyle);
    const bar=card.getByRole('progressbar');assert.equal(await bar.getAttribute('aria-valuenow'),'65');
    const bounds=await bar.evaluate(el=>{const track=el.getBoundingClientRect(),card=el.parentElement.getBoundingClientRect(),fill=el.firstElementChild.getBoundingClientRect();return {track:track.width,card:card.width,bottom:card.bottom-track.bottom,ratio:fill.width/track.width}});
@@ -175,7 +184,8 @@ test('Reading and Following share cards, full-width bottom progress, and explici
    assert.equal(await card.getByRole('progressbar').getAttribute('aria-valuenow'),'65');
    await page.getByRole('button',{name:zh?'舒适':'Comfortable',exact:true}).click();
    if(shots)await page.screenshot({path:`${shots}/unified-${theme}-${locale}-${width}.png`,fullPage:true});
-   const edit=page.getByRole('button',{name:zh?'编辑主题':'Edit topic',exact:true});await edit.click();
+   await page.goBack();
+   const edit=page.getByRole('button',{name:zh?'调整关注':'Adjust following',exact:true});await edit.click();
    const dialog=page.getByRole('dialog');await dialog.waitFor();
    await dialog.getByRole('textbox',{name:zh?'主题名称':'Topic title',exact:true}).fill('Updated design focus');
    await dialog.getByRole('textbox',{name:zh?'分析问题与要求':'Analysis questions and requirements',exact:true}).fill('Compare actual architecture with the project baseline.');
@@ -187,11 +197,13 @@ test('Reading and Following share cards, full-width bottom progress, and explici
    await page.getByRole('button',{name:zh?'应用调整后的方案':'Apply adjusted plan',exact:true}).click();
    await page.getByRole('button',{name:zh?'应用调整后的方案':'Apply adjusted plan',exact:true}).waitFor({state:'hidden'});
    assert.equal(applied,true);
-   await page.getByRole('button',{name:zh?'对话调整':'Discuss changes',exact:true}).click();
-   await page.locator('details[open] textarea').first().waitFor();
+   await edit.click();
+   const discussionName=zh?'对话调整':'Discuss changes';
+   await dialog.getByRole('tab',{name:discussionName,exact:true}).click();
+   await dialog.getByRole('tabpanel',{name:discussionName,exact:true}).locator('textarea').waitFor();
    assert.equal(writes.length,2,'opening discussion does not send a model request');
    const overflow=await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth);assert.equal(overflow,false);
-   assert.deepEqual(errors,[]);assert.deepEqual(unknown,[]);
+   assert.deepEqual(errors,[]);assert.deepEqual(unknown.filter(path=>!path.startsWith('/sources/goal-setup/')),[]);
   }finally{await page.close()}
  }
 });

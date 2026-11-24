@@ -1,6 +1,5 @@
 import { execFileSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { connect } from "node:net";
 import { join } from "node:path";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
@@ -17,23 +16,7 @@ interface GlobalSetupProject {
 const serverRoot = join(import.meta.dirname, "..");
 
 function buildOfficialPlugins(): void {
-  const repoRoot = join(serverRoot, "..");
-  const officialPluginsRoot = join(repoRoot, "plugins", "official");
-  const pluginIds = existsSync(officialPluginsRoot)
-    ? readdirSync(officialPluginsRoot, { withFileTypes: true })
-        .filter((entry) => entry.isDirectory())
-        .map((entry) => entry.name)
-        .filter((id) => existsSync(join(officialPluginsRoot, id, "plugin.json")))
-    : [];
-
-  // Each package declares its compiled runtime entry (`server.main`) relative to its artifact directory.
-  const missingRuntime = pluginIds.some((id) => {
-    const main = (JSON.parse(readFileSync(join(officialPluginsRoot, id, "plugin.json"), "utf8")) as { server?: { main?: string } }).server?.main ?? "server/index.js";
-    return !existsSync(join(serverRoot, "dist", "official-plugins", id, main));
-  });
-  if (!missingRuntime) return;
-
-  execFileSync(process.execPath, ["scripts/build-official-plugins.mjs"], {
+  execFileSync(process.execPath, ["scripts/build-official-plugins.mjs", "--if-stale"], {
     cwd: serverRoot,
     stdio: "inherit",
   });
@@ -128,17 +111,13 @@ async function dropTestDatabases(admin: Pool, pattern: string): Promise<void> {
  * `CREATE DATABASE ... TEMPLATE`. Reclaim runs older than the age cutoff;
  * anything younger may still be a concurrent Vitest run sharing the container.
  */
-async function dropStaleTestDatabases(admin: Pool, currentTemplate: string): Promise<void> {
+async function dropStaleTestDatabases(admin: Pool): Promise<void> {
   const { rows } = await admin.query<{ datname: string }>(
     `SELECT datname FROM pg_database WHERE datname LIKE 'rainver_test_%'`,
   );
   const staleRuns = new Set<string>();
   for (const { datname } of rows) {
-    if (datname.startsWith(TEMPLATE_PREFIX)) {
-      // Templates outlive runs on purpose; only one for another baseline is stale.
-      if (datname !== currentTemplate) staleRuns.add(datname);
-      continue;
-    }
+    if (datname.startsWith(TEMPLATE_PREFIX)) continue;
     const match = /^rainver_test_([0-9a-z]+)x([0-9a-f]+)_/.exec(datname);
     // Databases from before run ids carried a timestamp have no age; they can
     // only come from finished runs, so reclaim them too.
@@ -197,7 +176,8 @@ export default async function setup(project: GlobalSetupProject): Promise<() => 
   // Named by the migrations' content so a reused container can keep serving
   // the same template across runs, and a baseline change gets a fresh one.
   const migrationsDir = join(serverRoot, "migrations");
-  const templateDatabase = `${TEMPLATE_PREFIX}${migrationsFingerprint(migrationsDir)}`;
+  const fingerprint = migrationsFingerprint(migrationsDir);
+  const templateDatabase = `${TEMPLATE_PREFIX}${fingerprint}`;
 
   try {
     await getContainerRuntimeClient();
@@ -238,7 +218,11 @@ export default async function setup(project: GlobalSetupProject): Promise<() => 
       "-c", "max_wal_size=4GB",
       "-c", "checkpoint_timeout=1h",
     ]);
-  if (reuse) configured = configured.withReuse();
+  // Testcontainers includes labels in the reuse identity. Older checkouts
+  // without this label cannot reclaim a template in this container.
+  if (reuse) {
+    configured = configured.withLabels({ "rainver.test.migrations": fingerprint }).withReuse();
+  }
 
   try {
     container = await configured.start();
@@ -246,7 +230,7 @@ export default async function setup(project: GlobalSetupProject): Promise<() => 
     const adminUri = await directConnectionUri(container);
     const admin = new Pool({ connectionString: adminUri, max: 1 });
     try {
-      if (reuse) await dropStaleTestDatabases(admin, templateDatabase);
+      if (reuse) await dropStaleTestDatabases(admin);
       await ensureTemplateDatabase(admin, adminUri, templateDatabase, migrationsDir);
     } finally {
       await admin.end();

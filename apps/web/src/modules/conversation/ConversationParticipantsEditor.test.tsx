@@ -57,10 +57,16 @@ it('shows recovery guidance when the manager runtime is missing',async()=>{
  expect(sessionsApi.initializeExecution).not.toHaveBeenCalled()
 })
 
-it.each([false,true])('generates a strict join payload with retained binding %s',async retained=>{
+it.each([false,true])('joins with a different default Folder or a retained binding (%s)',async retained=>{
  const saved=vi.fn().mockResolvedValue(undefined)
  vi.mocked(sessionsApi.initializeExecution).mockResolvedValue({} as never)
- render(<ConversationParticipantsEditor summary={{...summary,runtime:manager,runtimes:[{...manager,session_config:[]}],participant_agent_ids:['manager']}} profiles={profiles.map(profile=>({...profile,retained_binding:retained}))} detail={detail} onSaved={saved}/>)
+ const joiningProfiles = profiles.map(profile => ({
+   ...profile,
+   workspace_mode: !retained && profile.agent_id === worker.agent_id ? 'location' as const : profile.workspace_mode,
+   workspace_location_id: !retained && profile.agent_id === worker.agent_id ? 'other-location' : null,
+   retained_binding: retained,
+ }))
+ render(<ConversationParticipantsEditor summary={{...summary,runtime:manager,runtimes:[{...manager,session_config:[]}],participant_agent_ids:['manager']}} profiles={joiningProfiles} detail={detail} onSaved={saved}/>)
 
  fireEvent.click(screen.getByRole('button',{name:'Add Agent from Room'}))
  fireEvent.change(screen.getByRole('textbox'),{target:{value:'Worker'}})

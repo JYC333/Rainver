@@ -57,6 +57,7 @@ import type { Queryable } from "../../routeUtils/common.js";
 import { createSourceRequestBroker, SourceRequestError, type SourceRequestBroker } from "../sourceRequestBroker.js";
 import { admitSourceRequestGroups, coolDownSourceRequests, sourceQuotaGroup } from "../sourceRequestQuota.js";
 import type { OutboundGuard } from "../outboundUrlSafety.js";
+import { GMAIL_AGENT_EXCLUDED_LABELS } from "./gmailAgentReadContract.js";
 import { lockGmailOwnerSpace, type GmailConnectionRow } from "./gmailConnections.js";
 import { GMAIL_ACCOUNT_QUOTA, GMAIL_OWNER_QUOTA, gmailQuotaGroups } from "./gmailQuota.js";
 import { gmailPageRunner, gmailPageScope, withGmailReadTransaction, type GmailPageScope } from "./gmailReadDeadline.js";
@@ -123,6 +124,12 @@ interface SyncRow {
  * a new version, and the old batch neither reminds for it nor moves the cursor.
  */
 interface ClaimedRule { id: string; version: string; criteria: GmailMonitorCriteria; activeSinceMs: number }
+/**
+ * An active application-update automation (ADR 0034) as this sync saw it: it records every new inbox
+ * message received since `covered_until` (its `version`, which a resume or a new card moves), with no
+ * criteria — the Agent judges each message's meaning later.
+ */
+interface ClaimedAutomation { id: string; version: string; activeSinceMs: number; sentFromMs: number | null }
 interface Claim {
   leaseId: string;
   connectionId: string;
@@ -141,6 +148,7 @@ interface Claim {
   renewWatch: boolean;
   nowMs: number;
   rules: ClaimedRule[];
+  automations: ClaimedAutomation[];
 }
 
 /** Codes that mean this sync lost its authority (not Google load): never swallowed by the watch step. */
@@ -203,7 +211,12 @@ async function claim(config: ServerConfig, db: Queryable, connectionId: string):
     const criteria = parseGmailMonitorCriteria(rule.criteria);
     return criteria ? [{ id: rule.id, version: rule.version, criteria, activeSinceMs: ms(rule.active_since)! }] : [];
   });
-  if (!rules.length) return park(null, "idle");
+  const automations = (await db.query<{ id: string; covered_until: string | Date; version: string; sent_from: string | null }>(
+    `SELECT d.id,d.covered_until,d.proposal_id || '/' || d.covered_until::text AS version,d.runtime_binding->>'sent_from' AS sent_from FROM gmail_digests d
+       JOIN plugin_data_grants g ON g.id=d.grant_id AND g.status='active' AND g.connection_id=d.gmail_connection_id
+      WHERE d.gmail_connection_id=$1 AND d.kind='application' AND d.status='active' ORDER BY d.created_at,d.id`,
+    [connectionId])).rows.map((row) => ({ id: row.id, version: row.version, activeSinceMs: ms(row.covered_until)!, sentFromMs: ms(row.sent_from) }));
+  if (!rules.length && !automations.length) return park(null, "idle");
   const leaseId = randomUUID();
   await db.query(
     `UPDATE gmail_mailbox_sync_states SET lease_id=$2,lease_until=$3,last_attempt_at=$4,sync_requested_at=NULL,updated_at=$4 WHERE gmail_connection_id=$1`,
@@ -219,7 +232,7 @@ async function claim(config: ServerConfig, db: Queryable, connectionId: string):
     // Renew when none is current, when it nears expiry, or after a failed renewal — but not before that failure's retry time.
     renewWatch: config.gmailPush !== null && (watchRetry === null || watchRetry <= nowMs)
       && (watchExpires === null || watchExpires - nowMs < GMAIL_SYNC_LIMITS.watchRenewBeforeMs || row.watch_error_code !== null),
-    nowMs, rules,
+    nowMs, rules, automations,
   };
 }
 
@@ -240,6 +253,8 @@ interface Fetched {
   /** In-record progress to persist: the record after the cursor that this sync only partly checked. */
   record: { historyId: string; offset: number } | null;
   matches: { ruleId: string; messageId: string }[];
+  /** New inbox messages for the claimed application-update automations (ids and receipt times only). */
+  mailItems: { digestId: string; messageId: string; receivedMs: number }[];
 }
 
 /** What the `users.watch` step did, recorded apart from the sync result. */
@@ -298,6 +313,8 @@ function transport(config: ServerConfig, scope: GmailPageScope, current: Claim) 
     return new GmailSyncError("gmail_upstream_error");
   };
   return {
+    // Keep a full physical-send deadline and time to persist the exact cursor.
+    canContinue: () => scope.deadlineAt - Date.now() > GMAIL_SYNC_LIMITS.perSendDeadlineMs + 5_000,
     async get(url: string): Promise<{ kind: "ok"; json: Record<string, unknown> } | { kind: "not_found" }> {
       sequence += 1;
       let response;
@@ -359,13 +376,30 @@ const list = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 const obj = (value: unknown): Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
 
 async function fetchChanges(io: ReturnType<typeof transport>, current: Claim): Promise<Fetched> {
-  const candidates: string[] = [];
   const seen = new Set<string>();
-  const add = (id: unknown) => {
-    const valid = gmailId(id);
-    if (valid && !seen.has(valid)) { seen.add(valid); candidates.push(valid); }
+  const matches: Fetched["matches"] = [];
+  const mailItems: Fetched["mailItems"] = [];
+  const readMetadata = async (messageId: string) => {
+    const response = await io.get(gmailMessageMetadataUrl(messageId));
+    seen.add(messageId);
+    if (response.kind === "not_found") return;
+    const message = response.json;
+    const labelIds = list(message.labelIds).filter((label): label is string => typeof label === "string");
+    const receivedMs = typeof message.internalDate === "string" && /^[0-9]{1,16}$/.test(message.internalDate) ? Number(message.internalDate) : null;
+    const headers = obj(message.payload).headers;
+    const header = { from: headerValue(headers, "From"), subject: headerValue(headers, "Subject"), labelIds };
+    for (const rule of current.rules) {
+      if (receivedMs !== null && receivedMs >= rule.activeSinceMs && gmailMonitorMatches(rule.criteria, header)) matches.push({ ruleId: rule.id, messageId });
+    }
+    if (receivedMs !== null && !labelIds.some((label) => GMAIL_AGENT_EXCLUDED_LABELS.has(label))) {
+      const sent = labelIds.includes("SENT");
+      for (const automation of current.automations) {
+        const eligible = sent ? automation.sentFromMs !== null && receivedMs >= automation.sentFromMs : labelIds.includes("INBOX");
+        if (eligible && receivedMs >= automation.activeSinceMs) mailItems.push({ digestId: automation.id, messageId, receivedMs });
+      }
+    }
   };
-  let fetched: Omit<Fetched, "matches">;
+  let fetched: Omit<Fetched, "matches" | "mailItems">;
   if (current.state === "ok" && current.historyId) {
     let token: string | null = null;
     let pages = 0;
@@ -387,8 +421,8 @@ async function fetchChanges(io: ReturnType<typeof transport>, current: Claim): P
         for (; position < ids.length; position += 1) {
           const id = ids[position]!;
           if (seen.has(id)) continue;
-          if (candidates.length >= GMAIL_SYNC_LIMITS.messagesPerSync) break;
-          add(id);
+          if (seen.size >= GMAIL_SYNC_LIMITS.messagesPerSync || seen.size > 0 && !io.canContinue()) break;
+          await readMetadata(id);
         }
         if (position < ids.length) {
           // The bound falls inside this record: the cursor stays before it and the record's progress is
@@ -407,21 +441,21 @@ async function fetchChanges(io: ReturnType<typeof transport>, current: Claim): P
         final = isHistoryId(mailbox) && historyIdGreater(mailbox, lastSafe) ? mailbox : lastSafe;
         break;
       }
-      if (pages >= GMAIL_SYNC_LIMITS.historyPagesPerSync) { more = true; final = lastSafe; break; }
+      if (pages >= GMAIL_SYNC_LIMITS.historyPagesPerSync || !io.canContinue()) { more = true; final = lastSafe; break; }
     }
     if (expired) {
       // Recovery starts at the last success (minus clock skew), never before the
       // oldest still-active monitor was accepted; the scan bound applies later.
-      const oldest = Math.min(...current.rules.map((rule) => rule.activeSinceMs));
+      const oldest = Math.min(...current.rules.map((rule) => rule.activeSinceMs), ...current.automations.map((automation) => automation.activeSinceMs));
       const from = Math.max(oldest, (current.lastSuccessMs ?? current.nowMs) - 10 * 60_000);
-      return { nextState: "recovering", historyId: current.historyId, recoveryAfterMs: from, recoveryPartial: null, more: true, record: null, matches: [] };
+      return { nextState: "recovering", historyId: current.historyId, recoveryAfterMs: from, recoveryPartial: null, more: true, record: null, matches: [], mailItems: [] };
     }
     fetched = { nextState: "ok", historyId: final, recoveryAfterMs: null, recoveryPartial: null, more, record };
   } else {
     // Baseline or recovery: the position first, so mail arriving during the scan is history the next sync reads.
     const profile = await io.get(gmailProfileUrl());
     if (profile.kind === "not_found" || !isHistoryId(profile.json.historyId)) throw new GmailSyncError("gmail_upstream_error");
-    const oldest = Math.min(...current.rules.map((rule) => rule.activeSinceMs));
+    const oldest = Math.min(...current.rules.map((rule) => rule.activeSinceMs), ...current.automations.map((automation) => automation.activeSinceMs));
     const wanted = current.state === "recovering" && current.recoveryAfterMs !== null ? current.recoveryAfterMs : oldest;
     const floor = current.nowMs - GMAIL_SYNC_LIMITS.recoveryMaxDays * 86_400_000;
     let partial = wanted < floor;
@@ -429,7 +463,12 @@ async function fetchChanges(io: ReturnType<typeof transport>, current: Claim): P
     // Gmail's `after:` has second granularity; the ledger and `active_since` absorb the overlap.
     const page = await io.get(gmailRecoveryListUrl({ afterEpochSeconds: Math.floor(after / 1000) - 1 }));
     if (page.kind === "ok") {
-      for (const message of list(page.json.messages)) add(obj(message).id);
+      for (const message of list(page.json.messages)) {
+        const id = gmailId(obj(message).id);
+        if (!id || seen.has(id)) continue;
+        if (seen.size >= GMAIL_SYNC_LIMITS.messagesPerSync || seen.size > 0 && !io.canContinue()) { partial = true; break; }
+        await readMetadata(id);
+      }
       if (typeof page.json.nextPageToken === "string") partial = true;
     }
     const position = profile.json.historyId as string;
@@ -442,21 +481,7 @@ async function fetchChanges(io: ReturnType<typeof transport>, current: Claim): P
       record: null,
     };
   }
-  const matches: Fetched["matches"] = [];
-  for (const messageId of candidates.slice(0, GMAIL_SYNC_LIMITS.messagesPerSync)) {
-    const response = await io.get(gmailMessageMetadataUrl(messageId));
-    if (response.kind === "not_found") continue;
-    const message = response.json;
-    const labelIds = list(message.labelIds).filter((label): label is string => typeof label === "string");
-    const receivedMs = typeof message.internalDate === "string" && /^[0-9]{1,16}$/.test(message.internalDate) ? Number(message.internalDate) : null;
-    const headers = obj(message.payload).headers;
-    const header = { from: headerValue(headers, "From"), subject: headerValue(headers, "Subject"), labelIds };
-    for (const rule of current.rules) {
-      if (receivedMs === null || receivedMs < rule.activeSinceMs) continue;
-      if (gmailMonitorMatches(rule.criteria, header)) matches.push({ ruleId: rule.id, messageId });
-    }
-  }
-  return { ...fetched, matches };
+  return { ...fetched, matches, mailItems };
 }
 
 /**
@@ -504,6 +529,25 @@ async function settle(config: ServerConfig, db: Queryable, current: Claim, fetch
       });
     }
   }
+  const automationVersion = new Map(current.automations.map((automation) => [automation.id, automation.version]));
+  if (fetched.mailItems.length) {
+    // Only an automation still active in the version this sync checked records mail: one resumed or
+    // reconfirmed meanwhile has a new `covered_until`. The primary key records each message once.
+    const inserted = (await db.query<{ n: number }>(
+      `WITH m AS (
+         SELECT * FROM unnest($1::varchar[],$2::varchar[],$3::timestamptz[],$4::text[]) AS m(digest_id,message_id,received_at,version)
+       ), ins AS (
+         INSERT INTO gmail_digest_mail_items (digest_id,google_message_id,space_id,owner_user_id,received_at,recorded_at,status,attempts,updated_at)
+         SELECT d.id,m.message_id,d.space_id,d.owner_user_id,m.received_at,$6::timestamptz,'pending',0,$6::timestamptz
+           FROM m JOIN gmail_digests d ON d.id=m.digest_id AND d.gmail_connection_id=$5 AND d.kind='application' AND d.status='active'
+                AND (d.proposal_id || '/' || d.covered_until::text)=m.version
+         ON CONFLICT DO NOTHING RETURNING 1
+       ) SELECT count(*)::int AS n FROM ins`,
+      [fetched.mailItems.map((item) => item.digestId), fetched.mailItems.map((item) => item.messageId),
+        fetched.mailItems.map((item) => iso(item.receivedMs)), fetched.mailItems.map((item) => automationVersion.get(item.digestId)!),
+        current.connectionId, locked.row.now])).rows[0];
+    newMatches += inserted?.n ?? 0;
+  }
   const stored = locked.row.history_id;
   const storedRecord = locked.row.record_history_id !== null && locked.row.record_offset > 0
     ? { historyId: locked.row.record_history_id, offset: locked.row.record_offset } : null;
@@ -513,7 +557,11 @@ async function settle(config: ServerConfig, db: Queryable, current: Claim, fetch
   // sync did check from reminding twice.
   const unseen = (await db.query<{ id: string; version: string }>(
     `SELECT id,active_since::text AS version FROM gmail_monitor_rules WHERE gmail_connection_id=$1 AND status='active'`,
-    [current.connectionId])).rows.some((row) => versionOf.get(row.id) !== row.version);
+    [current.connectionId])).rows.some((row) => versionOf.get(row.id) !== row.version)
+    || (await db.query<{ id: string; version: string }>(
+      `SELECT d.id,d.proposal_id || '/' || d.covered_until::text AS version FROM gmail_digests d JOIN plugin_data_grants g ON g.id=d.grant_id AND g.status='active'
+        WHERE d.gmail_connection_id=$1 AND d.kind='application' AND d.status='active'`,
+      [current.connectionId])).rows.some((row) => automationVersion.get(row.id) !== row.version);
   const restarted = locked.row.state === "baseline" && current.state !== "baseline";
   if (unseen || restarted) {
     // The row keeps the state it had; a range is read again rather than skipped.
@@ -526,7 +574,7 @@ async function settle(config: ServerConfig, db: Queryable, current: Claim, fetch
   // In-record progress belongs to the cursor it was read from; a cursor that moved past it drops it.
   const record = fetched.nextState === "ok" && fetched.record && history && historyIdGreater(fetched.record.historyId, history) ? fetched.record : null;
   const nextPoll = nextPollMs(config, { expiresMs: ms(locked.row.watch_expires_at), errorCode: locked.row.watch_error_code }, nowMs);
-  const success = fetched.nextState === "ok";
+  const caughtUp = fetched.nextState === "ok" && !fetched.more;
   await db.query(
     `UPDATE gmail_mailbox_sync_states
         SET history_id=$2,state=$3::varchar,recovery_after=$4,recovery_partial=COALESCE($5,recovery_partial),
@@ -540,7 +588,7 @@ async function settle(config: ServerConfig, db: Queryable, current: Claim, fetch
             updated_at=$7
       WHERE gmail_connection_id=$1`,
     [current.connectionId, history, fetched.nextState, fetched.recoveryAfterMs === null ? null : iso(fetched.recoveryAfterMs),
-      fetched.recoveryPartial, success, iso(nowMs), fetched.more, iso(nextPoll),
+      fetched.recoveryPartial, caughtUp, iso(nowMs), fetched.more, iso(nextPoll),
       record?.historyId ?? null, record?.offset ?? 0, keepLease, iso(nowMs + GMAIL_SYNC_LIMITS.leaseMs)]);
   return { status: "synced", newMatches, more: fetched.more };
 }

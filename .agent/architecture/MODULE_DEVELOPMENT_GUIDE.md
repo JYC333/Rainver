@@ -221,6 +221,9 @@ Legacy steps (historical registration path):
    `apps/web/src/plugins/<plugin-id>/`. The adapter imports the plugin page factory
    and injects frontend host APIs. Runtime state is overlaid from backend.
 10. Use `useEffectivePlugins()` hook to show/hide UI elements based on backend state.
+    Every mounted reader shares one read per signed-in session, person and Space
+    (mount, focus and the 30 s refresh join it; a plugin-state announcement or
+    `refresh()` supersedes it), so adding a reader adds no request.
 11. Add core migrations only for control-plane tables shared by all plugins; plugin-owned
     domain tables belong to installer-managed plugin migrations.
 12. See `.agent/architecture/OFFICIAL_OPTIONAL_MODULES.md` and ADR 0006 for full context.

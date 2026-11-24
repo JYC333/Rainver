@@ -368,7 +368,9 @@ describe("PgJobQueueRepository", () => {
 
     expect(status).toBe("failed");
     const update = calls.find((call) => call.sql.includes("UPDATE jobs"))?.sql;
-    expect(update).toContain("completed_at = CASE WHEN attempts < max_attempts OR target.stop_claim THEN NULL ELSE $3::timestamptz END");
+    expect(update?.replace(/\s+/g, " ")).toContain(
+      "completed_at = CASE WHEN NOT target.superseded AND (attempts < max_attempts OR target.stop_claim) THEN NULL ELSE $3::timestamptz END",
+    );
     expect(update).toContain("updated_at = $3::timestamptz");
   });
 

@@ -107,7 +107,11 @@ export const HOST_COMMAND_HANDLERS:Record<HostCommandKind,KindHandler>={
       await recordHostRuntimeChange(db,{hostId:intent.host_id,runtimeKey:frozen(intent,'runtime_key'),action:'remove',fromVersion:frozen(intent,'version'),toVersion:null,actorUserId:intent.user_id});
       return {host_id:intent.host_id,runtime_key:frozen(intent,'runtime_key'),ok:true,error:null,installation:str(result.installation)};
     }),
-  runtime_own_update:tool('host.manage',intent=>({type:'update_own_tool',runtime_key:frozen(intent,'runtime_key'),release:intent.frozen_json.release} as InnerWithoutId),
+  runtime_own_update:tool('host.manage',intent=>{
+    const release=intent.frozen_json.release;
+    // The fingerprint accepts JSON values only. Native CLI updates have no release payload.
+    return {type:'update_own_tool',runtime_key:frozen(intent,'runtime_key'),...(release===undefined?{}:{release})} as InnerWithoutId;
+  },
     async(db,intent,{result})=>{
       const from=str(result.from_version),to=str(result.to_version),changed=!(from!==null&&from===to);
       if(changed)await recordHostRuntimeChange(db,{hostId:intent.host_id,runtimeKey:frozen(intent,'runtime_key'),action:'upgrade',fromVersion:from,toVersion:to,actorUserId:intent.user_id});

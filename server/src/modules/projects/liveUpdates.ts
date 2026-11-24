@@ -4,10 +4,15 @@ import type {ModuleContext} from '../../gateway/routeRegistry.js';
 import {sseResponseHeaders} from '../../gateway/sse.js';
 import {resolveRequestId} from '../../gateway/requestContext.js';
 import {introspectIdentity} from '../auth/identity.js';
-import {dbPool,params,requiredString,resolveIdentity,sendRouteError} from '../routeUtils/common.js';
+import {dbPool,params,requiredString,resolveIdentity,sendRouteError,type Queryable} from '../routeUtils/common.js';
 import {assertProjectReadable} from './access.js';
 
 const CHANNEL='rainver_project_live';
+/** Queue the same content-free invalidation as the core table triggers. */
+export async function notifyProjectChanged(db:Queryable,spaceId:string,projectId:string):Promise<void>{
+ await db.query("SELECT pg_notify($1,json_build_object('space_id',$2::text,'project_id',$3::text)::text)",[CHANNEL,spaceId,projectId]);
+}
+
 type Subscriber={space:string;project:string;change:()=>void;disconnected:()=>void};
 /** One LISTEN connection per server pool, shared by all authorized viewers.
  * No durable content or versions in the bus; reconnect always revalidates. */

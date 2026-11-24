@@ -78,7 +78,7 @@ export const ReaderPositionSchema = z.object({
   revision: z.number().int().min(0),
 }).strict();
 export type ReaderPosition = z.infer<typeof ReaderPositionSchema>;
-export const ReaderPositionResultSchema = z.object({ position: ReaderPositionSchema.nullable(), accepted: z.boolean() }).strict();
+export const ReaderPositionResultSchema = z.object({ position: ReaderPositionSchema.nullable(), accepted: z.boolean(), reason: z.literal('stale_document').optional() }).strict();
 export type ReaderPositionResult = z.infer<typeof ReaderPositionResultSchema>;
 
 /** A person's Reader appearance, kept in their user settings (all Spaces, all devices). */

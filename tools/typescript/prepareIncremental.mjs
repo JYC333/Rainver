@@ -15,20 +15,32 @@ const info = join(dist, '.tsbuildinfo');
 const stamp = join(dist, '.lock-sha256');
 const lock = createHash('sha256').update(readFileSync(join(root, 'pnpm-lock.yaml'))).digest('hex');
 
-function missingOutput(directory, relative = '') {
-  return readdirSync(directory, { withFileTypes: true }).some(entry => {
-    const path = join(directory, entry.name);
+function* regularFiles(root, relative = '') {
+  for (const entry of readdirSync(join(root, relative), { withFileTypes: true })) {
     const name = join(relative, entry.name);
-    if (entry.isDirectory()) return missingOutput(path, name);
-    if (!name.endsWith('.ts') || name.endsWith('.d.ts')) return false;
-    return ['.js', '.d.ts'].some(extension => !existsSync(join(dist, name.slice(0, -3) + extension)));
-  });
+    if (entry.isDirectory()) yield* regularFiles(root, name);
+    else if (entry.isFile()) yield name;
+  }
 }
 
-// Incremental tsc does not recreate deleted outputs recorded in its metadata.
-// Discard only compiler metadata when an expected artifact or lock identity is
-// missing; do not remove dist or maintain another source/config cache.
-if (!existsSync(stamp) || readFileSync(stamp, 'utf8') !== lock || missingOutput(join(packageRoot, 'src'))) {
+const outputExtensions = ['.js', '.d.ts'];
+const sourceStems = new Set([...regularFiles(join(packageRoot, 'src'))]
+  .filter(name => name.endsWith('.ts') && !name.endsWith('.d.ts'))
+  .map(name => name.slice(0, -3)));
+const missing = [...sourceStems].some(stem =>
+  outputExtensions.some(extension => !existsSync(join(dist, stem + extension))));
+
+// Remove only a paired compiler output for a source that disappeared. These
+// five package builds emit a JS/declaration pair per TS source under dist.
+const emitted = new Set(existsSync(dist) ? regularFiles(dist) : []);
+for (const name of emitted) {
+  if (!name.endsWith('.js')) continue;
+  const stem = name.slice(0, -3);
+  if (sourceStems.has(stem) || !emitted.has(stem + '.d.ts')) continue;
+  for (const extension of outputExtensions) rmSync(join(dist, stem + extension), { force: true });
+}
+
+if (!existsSync(stamp) || readFileSync(stamp, 'utf8') !== lock || missing) {
   rmSync(info, { force: true });
 }
 mkdirSync(dist, { recursive: true });

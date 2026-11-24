@@ -113,6 +113,30 @@ describe('Agent definition operations (real PostgreSQL)',()=>{
   expect((await inject('POST',`${url}/resolve-host-target`,{execution_host_id:randomUUID(),workspace_mode:'managed',runtime_key:'codex',runtime_installation:'default'})).statusCode).toBe(404);
  });
 
+ it('lets an owner edit an existing Runtime Profile while the Agent is disabled',async()=>{
+  const agent=randomUUID();
+  await seedAgentWithVersion(db.pool,{agent,version:randomUUID(),space:team,owner:user});
+  const [profile]=await rows('SELECT id FROM agent_runtime_profiles WHERE agent_id=$1 AND is_default',[agent]);
+  const agentUrl=`/api/v1/agents/${agent}`;
+  const url=`${agentUrl}/runtime-profiles`;
+  const disabled=await inject('PATCH',agentUrl,{status:'disabled'});
+  expect(disabled.statusCode,disabled.body).toBe(200);
+
+  const listed=await app.inject({method:'GET',url});
+  expect(listed.statusCode,listed.body).toBe(200);
+  expect(listed.json()).toEqual(expect.arrayContaining([expect.objectContaining({id:profile.id})]));
+  const saved=await inject('PATCH',`${url}/${profile.id}`,{name:'Ready for later'});
+  expect(saved.statusCode,saved.body).toBe(200);
+
+  const run=await inject('POST',`${agentUrl}/runs`,{prompt:'Summarize',project_id:project});
+  expect(run.statusCode,run.body).toBe(409);
+  expect(await rows('SELECT id FROM runs WHERE agent_id=$1',[agent])).toEqual([]);
+  as(team,member);
+  expect((await inject('PATCH',`${url}/${profile.id}`,{name:'Unauthorized'})).statusCode).toBe(404);
+  expect(await rows('SELECT a.status,p.name FROM agents a JOIN agent_runtime_profiles p ON p.agent_id=a.id WHERE p.id=$1',[profile.id]))
+    .toEqual([{status:'disabled',name:'Ready for later'}]);
+ });
+
  it('keeps Space defaults with owners/admins and Assistant preferences with their configurer',async()=>{
   const write={runtime_key:'opencode',backend_mode:'runtime_native'};
   as(team,member);

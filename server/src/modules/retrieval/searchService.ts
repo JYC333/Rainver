@@ -226,13 +226,23 @@ function scopeRefsPredicate(key: string, allowedParam: string, excludedParam: st
 }
 
 /**
- * One page of an arm's SQL. `hasMore` is judged in the SQL's own paging unit
- * (objects for the deduped arms, chunks for the vector arm's ANN window), not
- * by how many distinct objects the page yielded.
+ * One page of a deduped arm's SQL (exact, lexical), paged by OFFSET over an
+ * order that ends in the object id. The vector arm reads windows instead
+ * (`fetchVectorWindows`).
  */
 interface ScopedPage {
   candidates: SearchCandidate[];
   hasMore: boolean;
+}
+
+/**
+ * How many of a page's candidates the viewer can read, decided by the search's
+ * own revalidation (which fills its shared cache, so nothing is read twice).
+ * `target` is how many readable candidates one arm should offer.
+ */
+interface ReadableGate {
+  target: number;
+  count(candidates: readonly SearchCandidate[]): Promise<number>;
 }
 
 /** A page whose SQL LIMIT counts the returned rows themselves. */
@@ -250,8 +260,32 @@ async function fetchWithinScope(
   limit: number,
   scope: CandidateScopeGate | undefined,
   page: (offset: number) => Promise<ScopedPage>,
+  readable?: ReadableGate,
 ): Promise<SearchCandidate[]> {
-  if (!scope) return (await page(0)).candidates;
+  if (!scope) {
+    const first = await page(0);
+    if (!readable || !first.hasMore) return first.candidates;
+    let readableCount = await readable.count(first.candidates);
+    if (readableCount >= readable.target) return first.candidates;
+    // Sparse visibility: the window held more rows than the viewer can read.
+    // Read on, within the same bound as a scope, until the arm has offered as
+    // many readable candidates as the search returns. Earlier rows keep their
+    // SQL ranks; later rows rank after them. Readability is only counted here —
+    // every row still goes through the single revalidation gate downstream.
+    const out = [...first.candidates];
+    const seen = new Set(out.map(candidateKey));
+    for (let index = 1; index < SCOPED_FETCH_MAX_PAGES && readableCount < readable.target; index += 1) {
+      const { candidates, hasMore } = await page(index * limit);
+      const fresh = candidates.filter((candidate) => !seen.has(candidateKey(candidate)));
+      for (const candidate of fresh) {
+        seen.add(candidateKey(candidate));
+        out.push({ ...candidate, rank: out.length + 1 });
+      }
+      readableCount += await readable.count(fresh);
+      if (!hasMore) break;
+    }
+    return out;
+  }
   const out: SearchCandidate[] = [];
   const seen = new Set<string>();
   for (let index = 0; index < SCOPED_FETCH_MAX_PAGES && out.length < limit; index += 1) {
@@ -265,6 +299,61 @@ async function fetchWithinScope(
     if (!hasMore) break;
   }
   return out.slice(0, limit).map((candidate, index) => ({ ...candidate, rank: index + 1 }));
+}
+
+/** One vector window: its objects at their best chunk's distance, nearest first. */
+interface VectorWindow {
+  hits: Array<{ candidate: SearchCandidate; distance: number }>;
+  /** The window was full (in chunks), so a larger one may reach further. */
+  hasMore: boolean;
+}
+
+/**
+ * The vector arm's candidates. Its SQL orders chunks by distance alone — the
+ * only order the HNSW index serves — so chunks at an equal distance have no
+ * stable order between statements, and OFFSET pages could repeat or skip
+ * them. A further read is therefore a larger window from the nearest chunk
+ * (`limit`, 2×, … at most SCOPED_FETCH_MAX_PAGES × `limit` chunks): it holds
+ * every chunk strictly nearer than the previous window's farthest one, and
+ * reads the same index prefix OFFSET paging would have. Objects merge by key
+ * at their best distance and rank by (distance, id, type). Without a scope or
+ * a readability shortfall this is exactly one query, ranked as SQL ranked it.
+ */
+async function fetchVectorWindows(
+  limit: number,
+  scope: CandidateScopeGate | undefined,
+  window: (size: number) => Promise<VectorWindow>,
+  readable?: ReadableGate,
+): Promise<SearchCandidate[]> {
+  let current = await window(limit);
+  if (!scope && (!readable || !current.hasMore)) return current.hits.map((hit) => hit.candidate);
+  const best = new Map<string, { candidate: SearchCandidate; distance: number }>();
+  let offered = 0;
+  for (let index = 1; ; index += 1) {
+    const fresh: SearchCandidate[] = [];
+    for (const hit of current.hits) {
+      const key = candidateKey(hit.candidate);
+      const known = best.get(key);
+      if (!known) fresh.push(hit.candidate);
+      if (!known || hit.distance < known.distance) best.set(key, hit);
+    }
+    // Admission (scope) or readability is decided once per object and cached.
+    offered += scope ? (await scope.filter(fresh)).length : await readable!.count(fresh);
+    const target = scope ? limit : readable!.target;
+    if (offered >= target || !current.hasMore || index >= SCOPED_FETCH_MAX_PAGES) break;
+    current = await window((index + 1) * limit);
+  }
+  const ordered = [...best.values()]
+    .sort((a, b) => a.distance - b.distance
+      || compareText(a.candidate.objectId, b.candidate.objectId)
+      || compareText(a.candidate.objectType, b.candidate.objectType))
+    .map((hit) => hit.candidate);
+  const kept = scope ? (await scope.filter(ordered)).slice(0, limit) : ordered;
+  return kept.map((candidate, index) => ({ ...candidate, rank: index + 1 }));
+}
+
+function compareText(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
 }
 
 /** Per-request control flags derived from the input + the query intent. */
@@ -704,12 +793,24 @@ export class RetrievalSearchService {
     // fused set below.
     const scope = input.candidateScope ? new CandidateScopeGate(input.candidateScope) : undefined;
 
+    // The single revalidation cache. The direct arms consult it to tell
+    // whether their window held enough rows the viewer can read; the gate below
+    // then reuses every decision instead of reading it again.
+    const revalidationCache = new Map<string, RevalidatedObject | null>();
+    const readable: ReadableGate = {
+      target: maxResults,
+      count: async (candidates) => {
+        await this.revalidateCandidates(candidates, input.viewerUserId, input.spaceId, revalidationCache, input.agentId, trace);
+        return candidates.filter((candidate) => revalidationCache.get(candidateKey(candidate))).length;
+      },
+    };
+
     const exact = normalized
-      ? await this.exactAliasArm(input.spaceId, objectTypes, objectProfiles, normalized, maxResults, undefined, scope)
+      ? await this.exactAliasArm(input.spaceId, objectTypes, objectProfiles, normalized, maxResults, undefined, scope, readable)
       : [];
 
     const lexical = runLexical
-      ? await this.lexicalArm(input.spaceId, objectTypes, objectProfiles, query, maxResults, scope)
+      ? await this.lexicalArm(input.spaceId, objectTypes, objectProfiles, query, maxResults, scope, readable)
       : [];
 
     // Vector recall (hybrid tiers only, and only when an embedder is injected). It
@@ -717,7 +818,7 @@ export class RetrievalSearchService {
     // gate below, so an embedded-but-unreadable object can never be returned. Run
     // it before the graph arm so a semantic match can also seed graph traversal.
     const vector = runVector
-      ? await this.vectorArm(input.spaceId, input.viewerUserId, objectTypes, objectProfiles, query, maxResults, useCache, scope)
+      ? await this.vectorArm(input.spaceId, input.viewerUserId, objectTypes, objectProfiles, query, maxResults, useCache, scope, readable)
       : [];
 
     // Graph recall seeds from every DIRECT match the viewer can actually read
@@ -726,11 +827,11 @@ export class RetrievalSearchService {
     // traversal revalidates every hop, so a non-visible seed/intermediate node can
     // never surface its neighbors (invariant 4); expansion starts only from
     // visible nodes. The cache is reused by the post-fusion revalidation below.
-    const revalidationCache = await this.revalidateCandidates(
+    await this.revalidateCandidates(
       [...exact, ...lexical, ...vector],
       input.viewerUserId,
       input.spaceId,
-      undefined,
+      revalidationCache,
       input.agentId,
       trace,
     );
@@ -1047,6 +1148,7 @@ export class RetrievalSearchService {
     maxResults: number,
     normalizedMany?: string[],
     scope?: CandidateScopeGate,
+    readable?: ReadableGate,
   ): Promise<SearchCandidate[]> {
     const aliases = normalizedMany?.length ? [...new Set(normalizedMany)] : [normalized];
     const objectProfileParam = objectProfileFilterParam(objectProfiles);
@@ -1113,7 +1215,7 @@ export class RetrievalSearchService {
       arm: "exact",
       updatedAt: row.updated_at ?? null,
       sourceConnectionIds: sourceConnectionIdsFromJson(row.source_connection_ids_json),
-    })), limit));
+    })), limit), readable);
   }
 
   private async lexicalArm(
@@ -1123,6 +1225,7 @@ export class RetrievalSearchService {
     query: string,
     maxResults: number,
     scope?: CandidateScopeGate,
+    readable?: ReadableGate,
   ): Promise<SearchCandidate[]> {
     const trimmed = query.trim();
     if (!trimmed) return [];
@@ -1200,7 +1303,7 @@ export class RetrievalSearchService {
       arm: "lexical",
       updatedAt: row.updated_at ?? null,
       sourceConnectionIds: sourceConnectionIdsFromJson(row.source_connection_ids_json),
-    })), limit));
+    })), limit), readable);
   }
 
   /**
@@ -1617,6 +1720,7 @@ export class RetrievalSearchService {
     maxResults: number,
     useCache: boolean,
     scope?: CandidateScopeGate,
+    readable?: ReadableGate,
   ): Promise<SearchCandidate[]> {
     if (!this.queryEmbedder || !query) return [];
     let queryVector: number[] | null = null;
@@ -1647,13 +1751,13 @@ export class RetrievalSearchService {
     const dimPredicate = useAnn ? `rc.embedding_dimensions = ${queryDimensions}` : `rc.embedding_dimensions = $4`;
     const objectProfileParamIndex = useAnn ? "$4" : "$5";
     const limitParam = useAnn ? "$5" : "$6";
-    const [allowedParam, excludedParam, offsetParam] = useAnn ? ["$6", "$7", "$8"] : ["$7", "$8", "$9"];
+    const [allowedParam, excludedParam] = useAnn ? ["$6", "$7"] : ["$7", "$8"];
     const objectProfileParam = objectProfileFilterParam(objectProfiles);
     const refs = scope?.sqlRefParams() ?? NO_SCOPE_REFS;
-    const params = (offset: number) => useAnn
-      ? [spaceId, objectTypes, toVectorLiteral(queryVector), objectProfileParam, fetchLimit, ...refs, offset]
-      : [spaceId, objectTypes, toVectorLiteral(queryVector), queryDimensions, objectProfileParam, fetchLimit, ...refs, offset];
-    return fetchWithinScope(fetchLimit, scope, async (offset) => {
+    const params = (size: number) => useAnn
+      ? [spaceId, objectTypes, toVectorLiteral(queryVector), objectProfileParam, size, ...refs]
+      : [spaceId, objectTypes, toVectorLiteral(queryVector), queryDimensions, objectProfileParam, size, ...refs];
+    return fetchVectorWindows(fetchLimit, scope, async (size) => {
       const query = (db: Queryable) => db.query<VectorCandidateRow>(
        `WITH nearest AS (
          SELECT rc.retrieval_object_id, rc.object_type, rc.object_id, rc.plain_text,
@@ -1674,7 +1778,7 @@ export class RetrievalSearchService {
             AND (${objectProfileParamIndex}::varchar[] IS NULL OR (ro_filter.object_profile = ANY(${objectProfileParamIndex}::varchar[]) AND sok_filter.id IS NOT NULL))
             ${scopeRefsPredicate("(ro_filter.object_type || ':' || ro_filter.object_id)", allowedParam, excludedParam)}
           ORDER BY ${distanceExpr}
-          LIMIT ${limitParam} OFFSET ${offsetParam}
+          LIMIT ${limitParam}
        ),
        best AS (
          SELECT DISTINCT ON (object_type, object_id)
@@ -1687,7 +1791,7 @@ export class RetrievalSearchService {
               sok.label AS object_profile_label,
               ro.title, ro.source_connection_ids_json, b.plain_text AS snippet, b.distance,
               COALESCE(ro.source_updated_at, ro.updated_at) AS updated_at,
-              row_number() OVER (ORDER BY b.distance ASC, b.object_id ASC) AS rank,
+              row_number() OVER (ORDER BY b.distance ASC, b.object_id COLLATE "C" ASC, b.object_type::text COLLATE "C" ASC) AS rank,
               (SELECT count(*) FROM nearest)::int AS window_chunks
          FROM best b
          JOIN retrieval_objects ro
@@ -1699,14 +1803,14 @@ export class RetrievalSearchService {
           AND sok.status = 'active'
         WHERE (${objectProfileParamIndex}::varchar[] IS NULL OR (ro.object_profile = ANY(${objectProfileParamIndex}::varchar[]) AND sok.id IS NOT NULL))
         ORDER BY rank`,
-      params(offset),
+      params(size),
     );
       const rows = (useAnn ? await withIterativeAnnScan(this.db, query) : await query(this.db)).rows;
-      // The window pages by chunk; an object with several near chunks makes the
-      // page yield fewer objects than the window held, which is not the end.
+      // A window counts chunks; an object with several near chunks makes it
+      // yield fewer objects than it held, which is not the end.
       return {
-        hasMore: (rows[0]?.window_chunks ?? 0) >= fetchLimit,
-        candidates: rows.map((row) => ({
+        hasMore: (rows[0]?.window_chunks ?? 0) >= size,
+        hits: rows.map((row) => ({ distance: Number(row.distance), candidate: {
       objectType: row.object_type,
       objectId: row.object_id,
       objectProfile: row.object_profile ?? null,
@@ -1727,9 +1831,9 @@ export class RetrievalSearchService {
       // Carried separately from evidence.confidence for the post-RRF cosine blend
       // since fusion may overwrite this candidate's evidence.
       vectorSimilarity: similarityFromDistance(Number(row.distance)),
-        })),
+        } })),
       };
-    });
+    }, readable);
   }
 
   private async loadProjectedTarget(

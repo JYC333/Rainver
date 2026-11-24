@@ -43,7 +43,7 @@ export async function settleReaderWrite(config:ServerConfig,db:Queryable,job:Job
    if(operation==='reader.position.write'){
     const {document_type:_t,document_id:_d,...body}=input;
     const written=await new ReaderPositionStore(tx,config).write(identity,target.document_type,target.document_id,body,files);
-    return {outcome:written.accepted?'applied':'not_accepted',annotation_id:null};
+    return {outcome:written.reason ?? (written.accepted?'applied':'not_accepted'),annotation_id:null};
    }
    const {annotation_id,...body}=input;
    const updated=await replaceAnnotationRange(tx,config,identity,annotation_id,body,files);

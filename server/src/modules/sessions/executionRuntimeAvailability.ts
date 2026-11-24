@@ -13,7 +13,7 @@ export function runtimeAvailability(
   profile: RuntimeProfileRow,
   host: ExecutionHostRow | null,
   location: ExecutionLocationRow | null,
-  options: { allowStaleLocation?: boolean } = {},
+  options: { allowStaleLocation?: boolean; ignoreDefaultLocation?: boolean } = {},
 ): { usable: boolean; reason: string | null } {
   if (!profile.enabled) return { usable: false, reason: "The runtime profile is disabled" };
   if (!profile.execution_host_id || !profile.workspace_mode || !profile.runtime_installation) {
@@ -25,7 +25,7 @@ export function runtimeAvailability(
   if (!hostIsOnline(host)) return { usable: false, reason: "The execution Host is offline" };
   const installation = hostInstallationAvailability(host, profile.runtime_key, profile.runtime_installation);
   if (!installation.usable) return installation;
-  if (profile.workspace_mode === "location") {
+  if (profile.workspace_mode === "location" && !options.ignoreDefaultLocation) {
     if (!location || location.execution_host_id !== host.id) {
       return { usable: false, reason: "The bound Workspace Location is unavailable" };
     }

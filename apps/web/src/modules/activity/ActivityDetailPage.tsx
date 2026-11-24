@@ -37,7 +37,7 @@ export default function ActivityDetailPage() {
     }
     setLoading(true)
     try {
-      setRow(await activityApi.get(activityId))
+      setRow(await activityApi.get(activityId, { spaceId: activeSpaceId }))
     } catch (e) {
       if (!isNotFoundError(e)) toast.error(errMsg(e))
       setRow(null)
@@ -58,7 +58,7 @@ export default function ActivityDetailPage() {
       if (proposals.length > 0) {
         toast.success(t('activity_ui.detail.generated', { count: proposals.length }))
         // Refresh the record so its status updates to proposals_generated
-        const updated = await activityApi.get(activityId).catch(() => null)
+        const updated = await activityApi.get(activityId, { spaceId: activeSpaceId ?? undefined }).catch(() => null)
         if (updated) setRow(updated)
       } else {
         toast.info(t('activity_ui.detail.none_generated_toast'))

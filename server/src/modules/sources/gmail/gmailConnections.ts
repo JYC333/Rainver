@@ -96,7 +96,21 @@ export async function listGmailConnections(db: Queryable, identity: { spaceId: s
     [identity.spaceId, identity.userId],
   );
   const grants = await listGmailAgentReadGrants(db, identity);
-  return rows.rows.map((row) => gmailConnectionDto(row, grants.get(row.id) ?? []));
+  // Active read delegations per mailbox (ADR 0035 §4); a Project's name only while the owner still reads it.
+  const { canReadProject } = await import("../../projects/access.js");
+  const delegations = (await db.query<{ id: string; gmail_connection_id: string; project_id: string; project_name: string; grantee_name: string; query_scope: string; read_count: number; last_used_at: Date | string | null; created_at: Date | string }>(
+    `SELECT d.id,d.gmail_connection_id,d.project_id,p.name AS project_name,u.display_name AS grantee_name,d.query_scope,d.read_count,d.last_used_at,d.created_at
+       FROM gmail_read_delegations d JOIN projects p ON p.id=d.project_id AND p.space_id=d.space_id JOIN users u ON u.id=d.grantee_user_id
+      WHERE d.space_id=$1 AND d.owner_user_id=$2 AND d.status='active' ORDER BY d.created_at,d.id LIMIT 500`, [identity.spaceId, identity.userId])).rows;
+  const byConnection = new Map<string, NonNullable<GmailConnection["read_delegations"]>>();
+  for (const row of delegations) {
+    const list = byConnection.get(row.gmail_connection_id) ?? [];
+    list.push({ delegation_id: row.id, project_id: row.project_id, project_name: await canReadProject(db, identity.spaceId, row.project_id, identity.userId) ? row.project_name.slice(0, 512) : null,
+      grantee_name: row.grantee_name.slice(0, 200), query_scope: row.query_scope, read_count: row.read_count,
+      last_used_at: row.last_used_at ? new Date(row.last_used_at).toISOString() : null, created_at: new Date(row.created_at).toISOString() });
+    byConnection.set(row.gmail_connection_id, list);
+  }
+  return rows.rows.map((row) => ({ ...gmailConnectionDto(row, grants.get(row.id) ?? []), read_delegations: row.status === "active" ? byConnection.get(row.id) ?? [] : [] }));
 }
 
 /**

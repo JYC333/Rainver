@@ -115,7 +115,7 @@ export default function AgentDetailPage() {
             {agent.name} <StatusBadge status={agent.status} />
             {isAssistant && <Badge variant="secondary">System-managed</Badge>}
             {hostProfile && <Badge variant={boundHost?.status === 'online' ? 'secondary' : 'destructive'}>
-              {hostProfile.workspace_mode === 'managed' ? 'Managed workspace' : 'Location'} on {boundHost?.name ?? hostProfile.execution_host_id}
+              {boundHost?.name ?? hostProfile.execution_host_id}
               {boundHost?.status !== 'online' ? ' · offline' : ''}
             </Badge>}
           </h1>
@@ -625,7 +625,7 @@ function ModelTab({
       </div>
       {selectedProfile?.execution_host_id && selectedHost?.kind === 'remote' && (
         <p className="text-xs text-muted-foreground rounded-md border border-border bg-muted/20 px-3 py-2">
-          Runs in {selectedProfile.workspace_mode === 'managed' ? 'a managed workspace' : <>Location <span className="font-mono">{selectedProfile.workspace_location_id}</span></>} on host{' '}
+          Host{' '}
           <span className="font-mono">{selectedHost.name}</span> using installation{' '}
           <span className="font-mono">{selectedProfile.runtime_installation}</span>. Only the host owner can trigger this specialist from a Room.
         </p>
@@ -663,6 +663,7 @@ function ModelTab({
           key={selectedProfileId || 'new'}
           projectId={projectId}
           backendMode={backendMode}
+          optionalDefaultFolder
           value={hostExecution}
           onChange={changeExecutionTarget}
           onRuntimeChange={changeRuntime}

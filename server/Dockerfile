@@ -7,8 +7,19 @@
 # This image serves the backend. The production image runs compiled JS
 # (not tsx/ts-node).
 
+# ---- server-base: online backup client for dev and runtime ---------------------
+FROM node:24.18.0-slim AS server-base
+# Match the PostgreSQL major used by the bundled Compose database.
+ADD --chmod=644 --checksum=sha256:0144068502a1eddd2a0280ede10ef607d1ec592ce819940991203941564e8e76 https://www.postgresql.org/media/keys/ACCC4CF8.asc /etc/apt/keyrings/postgresql.asc
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && . /etc/os-release \
+    && printf 'deb [signed-by=/etc/apt/keyrings/postgresql.asc] https://apt.postgresql.org/pub/repos/apt %s-pgdg main\n' "$VERSION_CODENAME" > /etc/apt/sources.list.d/pgdg.list \
+    && apt-get update && apt-get install -y --no-install-recommends postgresql-client-18 \
+    && rm -f /etc/apt/sources.list.d/pgdg.list \
+    && rm -rf /var/lib/apt/lists/*
+
 # ---- deps: install workspace dependencies and build the protocol package ------
-FROM node:24.18.0-slim AS deps
+FROM server-base AS deps
 WORKDIR /app
 
 ENV PNPM_HOME=/pnpm \
@@ -20,7 +31,7 @@ RUN corepack enable
 
 # Build toolchain for native modules in the dependency tree.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates git python3 make g++ \
+    ca-certificates git python3 make g++ util-linux \
     && rm -rf /var/lib/apt/lists/*
 
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml .npmrc ./
@@ -124,7 +135,7 @@ RUN pnpm install --prod --frozen-lockfile \
     --filter @rainver/server
 
 # ---- runtime: prod deps + compiled output -------------------------------------
-FROM node:24.18.0-slim AS runtime
+FROM server-base AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 # CI passes the publishing commit so /api/v1/status reports which build a
@@ -160,14 +171,16 @@ WORKDIR /app/server
 
 COPY server/migrations ./migrations
 COPY --from=build /app/server/dist ./dist
-# Fail the image build if a workspace package cannot resolve its runtime deps.
-RUN node --input-type=module -e "await import('@rainver/outbound-guard'); await import('@rainver/reader-document')"
 
 # CLI login helper processes need a writable HOME before their state is synced
 # into the managed profile dir under RAINVER_HOME.
 RUN mkdir -p /home/node/.claude && chown -R node:node /home/node
 USER node
 ENV HOME=/home/node
+
+# Check dependency resolution and plugin artifact access as the runtime user.
+RUN pg_dump --version \
+    && node --input-type=module -e "await import('@rainver/outbound-guard'); await import('@rainver/reader-document'); await import('./dist/modules/plugins/builtInPlugins.js')"
 
 EXPOSE 8010
 

@@ -197,6 +197,14 @@ async function writeResolvedFile(
         preimage = null; // put back by the undo, or kept as recovery material: never removed below
         throw left ?? moved;
       }
+      try {
+        await pinned.sync();
+      } catch (error) {
+        // The rename is visible but durability is unknown. Keep the recovery
+        // link and never acknowledge the write as durable.
+        preimage = null;
+        throw error;
+      }
     } finally {
       await unlink(pinned.entry(temporary)).catch(() => undefined);
       if (preimage) await unlink(pinned.entry(preimage)).catch(() => undefined);
@@ -225,6 +233,7 @@ interface PinnedParent {
   noFollowFlags: number;
   /** Refuses unless every pinned directory is still the entry it was pinned as, under the root. */
   assertStillInRoot(): Promise<void>;
+  sync(): Promise<void>;
   /** Where the pinned directory is now, for an error that leaves recovery material in it. */
   location(): Promise<string>;
   close(): Promise<void>;
@@ -294,6 +303,10 @@ async function pinParent(resolved: ResolvedWriteTarget, create: boolean): Promis
         if (!entry?.isDirectory() || !sameInode(entry, await chain[index]!.handle.stat())) throw movedOutOfRoot();
       }
     },
+    sync: async () => {
+      // Newly created directory entries are part of the write as well.
+      for (let index = chain.length - 1; index >= 0; index--) await chain[index]!.handle.sync();
+    },
     location: () => readlink(`/proc/self/fd/${handle.fd}`).catch(() => "an unknown directory"),
     close: closeAll,
   };
@@ -314,6 +327,7 @@ async function createExclusive(parent: PinnedParent, name: string, bytes: Buffer
     await handle.writeFile(bytes);
     // The mode an `open` creates with is masked by the umask; keep the preimage's.
     if (mode !== null) await handle.chmod(mode);
+    await handle.sync();
     return await handle.stat();
   } finally {
     await handle.close();

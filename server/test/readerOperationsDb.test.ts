@@ -186,7 +186,7 @@ describe('Reader body-reading writers', () => {
     expect((await app.inject({ method: 'GET', url: `/api/v1/reader/write-requests/${jobId}` })).statusCode).toBe(404);
     __setAuthIdentityForTests(identity);
     const stale = await send('PUT', `/documents/source_item/${id}/position`, { content_hash: 'old', structure_hash: 'old', current: mark, client_at: new Date().toISOString() });
-    expect(await settle(stale.json().data.job_id)).toEqual({ outcome: 'not_accepted', annotation_id: null });
+    expect(await settle(stale.json().data.job_id)).toEqual({ outcome: 'stale_document', annotation_id: null });
   });
 
   it('replaces an annotation range only on the version shown, under the current claim', async () => {
@@ -233,17 +233,17 @@ describe('Reader body-reading writers', () => {
     } });
   }
 
-  it('refuses a position whose body changed after preparation as not_accepted, with zero position writes, after access and claim', async () => {
+  it('refuses a position whose body changed after preparation as stale_document, with zero position writes, after access and claim', async () => {
     const { id, doc } = await fileBackedItem();
     const queued = await send('PUT', `/documents/source_item/${id}/position`, { content_hash: doc.content_hash, structure_hash: doc.structure_hash, current: mark, dwelled: true, client_at: new Date().toISOString() });
     const jobId = queued.json().data.job_id as string;
     const envelope = await claimJobForHandler(db.pool, jobId);
     const result = await settleReaderWrite(config(), afterPreparation(id), envelope);
-    expect(result).toEqual({ outcome: 'not_accepted', annotation_id: null });
+    expect(result).toEqual({ outcome: 'stale_document', annotation_id: null });
     expect(await count('reader_positions')).toBe(0);
     await new PgJobQueueRepository(db.pool).completeJob(jobId, result, 'test');
     const view = ReaderWriteRequestViewSchema.parse((await app.inject({ method: 'GET', url: `/api/v1/reader/write-requests/${jobId}` })).json());
-    expect(view).toEqual({ job_id: jobId, status: 'completed', result: { outcome: 'not_accepted', annotation_id: null } });
+    expect(view).toEqual({ job_id: jobId, status: 'completed', result: { outcome: 'stale_document', annotation_id: null } });
     // A lost claim still refuses before any domain outcome.
     const again = await send('PUT', `/documents/source_item/${id}/position`, { content_hash: doc.content_hash, structure_hash: doc.structure_hash, current: mark, client_at: new Date().toISOString() });
     const lost = await claimJobForHandler(db.pool, again.json().data.job_id);

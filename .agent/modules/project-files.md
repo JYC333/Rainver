@@ -1,5 +1,10 @@
 # Module: Files & Code (Project Folders)
 
+File reads, conversions, and history operations apply their results only to the
+selection that started them. Draft flushes waiting behind a failed save are
+rejected together, and editor teardown attempts to flush pending edits through
+the original Space and session.
+
 ## Status
 Implemented. Files & Code is a Project-local Area, not a global operator console.
 
@@ -24,7 +29,9 @@ filesystem directly.
   `@rainver/folder-read`) is shown as the first files of an incomplete list,
   never as a clean or complete working tree.
 - Project Folder settings UI (`/projects/{projectId}/folders/{folderId}`), including
-  per-Folder snapshot retention overrides
+  per-Folder snapshot retention overrides. File revisions and Code Patch
+  snapshots resolve each setting independently when storing the rollback image,
+  using the Folder override, the Space default, then 7 days or 20 entries.
 - Files & Code backend read APIs (tree, file content, git status, git diff)
 - Files & Code draft/save/revision APIs (the only human write path is Save to Folder)
 - File tabs with individual close controls, CodeMirror editor lifecycle, draft autosave controller, and contextual history/restore UI
@@ -63,6 +70,7 @@ GET        /api/v1/projects/{projectId}/folders/{folderId}/file/drafts/{draftId}
 POST       /api/v1/projects/{projectId}/folders/{folderId}/file/draft/rebase
 POST       /api/v1/projects/{projectId}/folders/{folderId}/file/draft/discard
 POST       /api/v1/projects/{projectId}/folders/{folderId}/file/draft/save
+POST       /api/v1/projects/{projectId}/folders/{folderId}/file/draft/save/close
 GET        /api/v1/projects/{projectId}/folders/{folderId}/drafts/quota
 GET        /api/v1/projects/{projectId}/folders/{folderId}/file/revisions?path=...
 POST       /api/v1/projects/{projectId}/folders/{folderId}/file/revisions/restore-as-draft
@@ -90,8 +98,9 @@ GET/POST/PATCH /api/v1/projects/{projectId}/folders/{folderId}/execution-config
 - One Project owns zero or more Project Folders; one Folder belongs to exactly one Project
   (`project_folders.project_id` is a direct, non-null, single-owner FK — no link table, no
   Folder role vocabulary).
-- A newly created managed Project Folder is initialized as an empty Git repository before
-  it is registered, so later file creates/edits appear in Files & Code's Git status. Clone
+- A newly created managed Project Folder receives an empty initial Git commit before
+  registration, so it can immediately back an isolated Agent workspace. Initialization never
+  stages or commits existing files and preserves any existing commit and index. Clone
   already provides a repository; Connect existing and paired-host registration preserve the
   directory's existing Git state and do not initialize it implicitly.
 - A registered Project Folder is a shared workspace with no personal area and
@@ -207,12 +216,19 @@ GET/POST/PATCH /api/v1/projects/{projectId}/folders/{folderId}/execution-config
   explicit confirmation and removes confirmed rows in the same transaction.
 - Existing files show their path as selectable read-only text, with the full
   path available on hover; only new files offer a path input. The path display
-  is not a rename control.
+  is not a rename control for existing files. A new draft's path is versioned
+  together with its body, so Save to Folder waits for any path change to reach
+  the draft store before using that version.
+- When a Folder save needs attention, the editor offers an explicit retry of
+  the same save intent while its draft version, path and normalization choice
+  still match. The server rechecks the intent and observed file state before
+  continuing.
 - A writable file is always an editable CodeMirror 6 view. The first document
   change starts the serial 1.5-second idle / 10-second maximum-age draft queue;
   blur, file switch, Folder switch, and Cmd/Ctrl+S flush the same queue. A
-  saved draft is safe to leave in the browser; only unacknowledged in-memory
-  changes trigger the navigation warning.
+  saved draft is safe to leave in the browser. With unacknowledged in-memory
+  changes, app navigation flushes the draft and keeps the editor open if the
+  flush fails. Leaving the site with those changes triggers the browser warning.
 - File admission is strict and byte-honest. UTF-8 (including BOM and LF/CRLF
   metadata) is writable; mixed endings are reported; UTF-16 BOM files are
   read-only until the explicit `convert=utf8` preview action; malformed or
@@ -362,7 +378,8 @@ purpose-specific core commands and their retained REST adapters. Their 202
 receipt identifies a private `project_folder_io_intents` row and one required
 `project_folder_io` Job; its public payload contains only `intent_id`. The private
 owner-only `GET /api/v1/projects/{projectId}/folder-io/{intentId}` returns typed
-status/result metadata after current Project/Folder/Host authority checks. The
+status/result metadata after current Project/Folder/Host authority checks. It
+also exposes branch alignment status and the resulting commits. The
 browser polls that receipt without resubmitting, then reads current Folder/file/
 draft content in the receipt Space and pinned Location. A later draft stays open
 after saving an older accepted version. No Agent surface, grant or production
@@ -378,6 +395,14 @@ hash/receipt; an independent edit, changed root or unknown import outcome leaves
 compensate only the recognized written hash and original target identity. An
 offline Host defers through the existing queue without consuming an attempt.
 
+The owner may explicitly retry a fenced Save to Folder by sending `retry_intent_id`
+with the same draft id, version and line-ending confirmation under a fresh
+idempotency key. The prior Job must be terminal and the Project, Folder, Location,
+Host, path and frozen draft hashes must still match. The retry keeps the original
+intent and enqueues a new Job. The worker can recognize the already-written hash
+or save the same bytes against the exact original preimage. An independent edit
+leaves the file and draft intact and keeps the recovery fence in place.
+
 Cancelled/exhausted Jobs release an unused request lazily under the next owning
 admission only when no write/directory effect was started. Unknown outcomes keep
 the recovery fence even after cancellation or revoked authority. Successful and
@@ -386,8 +411,15 @@ only identity/hash/result metadata so these copies cannot bypass source TTLs.
 Pending recovery and `needs_attention` retain isolated private materials needed
 to establish an exact outcome or explicitly repair it; they are never included
 in readable Job payloads, events, contexts or status responses. Automatic replay
-does not overwrite independent edits. Migration0016 is generated from Drizzle;
+does not overwrite independent edits. The original requester can close a failed
+Save to Folder once its Job is terminal and the Folder write gate is idle. The
+closure releases the path and removes frozen copies of the draft and preimage.
+The current Folder file and active draft stay available for a fresh save against
+the current file baseline. Migration0016 is generated from Drizzle;
 only isolated shared PostgreSQL test databases have applied it in this work.
+The Host syncs the saved bytes and enclosing directories before acknowledging
+a Folder write. Recovery rechecks an acknowledged file hash before committing
+the receipt and consuming the saved draft version.
 
 ## Opening a file from a reply
 
@@ -1052,8 +1084,11 @@ batched once per list page and reused by each item's action projection.
 Legacy no-change settlement records the matching native receipt request in
 `cleanup_settlement`; it preserves the original completion time. A publication
 without either `merged_commit` or `onto_commit` has blocked lifecycle ownership
-with a null landing, never a fabricated landing or completed lifecycle. Explicit
-reclamation waits for that evidence to be repaired.
+with a null landing. The narrow exception is a completed `no_changes` batch with
+identical non-null base/source in both its integration and exact workspace,
+generation and batch, and no pending native request, Job or lock. Its empty delta
+needs no publication: cleanup may complete without inventing a landed commit.
+Nonempty, moved-generation and unfinished records still require landing evidence.
 
 ### Recovery of retained lifecycle obligations
 
@@ -1130,3 +1165,12 @@ Parent retention and reviewed-discard admission share the missing-child rule:
 absence and completed cleanup no longer pins the parent merely because an old head
 is recorded. Unacknowledged absence, quarantine, incomplete cleanup, open child
 batches and live Runs continue to block. This never supplies adoption proof.
+
+
+Cleanup attention distinguishes preserved directories from failed cleanup Jobs.
+Run/conversation projections expose `cleanup_retryable` from blocked resources or
+a retryable reconciliation error, not from the overall blocked label. A preserved
+whole directory with no failed Job has a path-free quarantine diagnostic and no
+retry action; direct retries return the specific inspection guidance. Reconciliation
+recomputes the cleanup summary after each fenced inspection, so removal or safe
+classification of the last protected remnant clears stale attention automatically.

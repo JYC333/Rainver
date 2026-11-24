@@ -19,11 +19,41 @@ function filesBelow(root: string, extension: string): string[] {
   });
 }
 
-function localMarkdownTargets(file: string): string[] {
+function localMarkdownTargets(file: string): Array<{ path: string; anchor?: string }> {
   const text = readFileSync(file, "utf8");
-  return [...text.matchAll(/\[[^\]]+\]\(([^)#]+)(?:#[^)]+)?\)/g)]
-    .map((match) => match[1]!)
-    .filter((target) => !/^(?:https?:|mailto:)/.test(target));
+  return [...text.matchAll(/\[[^\]]+\]\(([^)#]*)(?:#([^)]+))?\)/g)]
+    .map(([, path = "", anchor]) => ({ path, anchor }))
+    .filter((target) => !/^(?:https?:|mailto:)/.test(target.path));
+}
+
+function markdownAnchors(file: string): Set<string> {
+  const anchors = new Set<string>();
+  let fence: string | undefined;
+  for (const line of readFileSync(file, "utf8").split("\n")) {
+    const fenceMark = line.trim().match(/^(?:`{3,}|~{3,})/)?.[0][0];
+    if (fenceMark) {
+      if (fence === fenceMark) fence = undefined;
+      else fence ??= fenceMark;
+      continue;
+    }
+    if (fence) continue;
+    for (const [, id] of line.matchAll(/<(?:a|h[1-6])\b[^>]+(?:id|name)=["']([^"']+)["']/g)) {
+      anchors.add(id!);
+    }
+    const heading = line.match(/^ {0,3}#{1,6}\s+(.+?)\s*#*$/)?.[1];
+    if (!heading) continue;
+    const slug = heading
+      .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+      .replace(/<[^>]+>/g, "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^\p{L}\p{M}\p{N}_ -]/gu, "")
+      .replace(/ /g, "-");
+    let anchor = slug;
+    for (let suffix = 1; anchors.has(anchor); suffix += 1) anchor = `${slug}-${suffix}`;
+    anchors.add(anchor);
+  }
+  return anchors;
 }
 
 describe("repository agent guide invariants", () => {
@@ -63,14 +93,24 @@ describe("repository agent guide invariants", () => {
     const guides = [
       join(repoRoot, "AGENTS.md"),
       join(repoRoot, "CLAUDE.md"),
-      ...filesBelow(agentRoot, ".md"),
+      // INDEX treats audit reports as temporary evidence. They may deliberately
+      // record links that were stale when the audit ran.
+      ...filesBelow(agentRoot, ".md").filter(guide => !relative(agentRoot, guide).startsWith("reports/")),
     ];
     const broken: string[] = [];
+    const anchorCache = new Map<string, Set<string>>();
 
     for (const guide of guides) {
-      for (const target of localMarkdownTargets(guide)) {
-        if (!existsSync(resolve(dirname(guide), target))) {
-          broken.push(`${relative(repoRoot, guide)} -> ${target}`);
+      for (const { path, anchor } of localMarkdownTargets(guide)) {
+        const target = path ? resolve(dirname(guide), path) : guide;
+        if (!existsSync(target)) {
+          broken.push(`${relative(repoRoot, guide)} -> ${path}`);
+        } else if (anchor && target.endsWith(".md")) {
+          const anchors = anchorCache.get(target) ?? markdownAnchors(target);
+          anchorCache.set(target, anchors);
+          if (!anchors.has(decodeURIComponent(anchor))) {
+            broken.push(`${relative(repoRoot, guide)} -> ${path}#${anchor}`);
+          }
         }
       }
     }

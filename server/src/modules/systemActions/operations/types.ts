@@ -20,6 +20,7 @@ export interface ResolvedOperation {
 export interface OperationInvocation {
   readonly requestId: string;
   readonly idempotencyKey: string | null;
+  readonly signal?: AbortSignal;
 }
 export interface OperationRegistration {
   definition: SystemActionDefinition;
@@ -31,6 +32,11 @@ export interface OperationRegistration {
    * still checks the live actor and grants before admission and after locking.
    * No approval mapping or user-placement operation may opt into this path. */
   domainAuthorizationFirst?: true;
+  /** An Agent's domain locks that must come before the core pins person and Run, taken after the idempotency
+   * reservation (so a concurrent same-key request is still refused as in progress, not queued behind them) and
+   * before that pin: the Project → person → Run order of the Agent releases (ADR 0034). Refuses nothing;
+   * `authorize` repeats every check under these locks. Never called for a person. */
+  lockBeforeActor?(db: Queryable, input: unknown, actor: OperationActor, scope: ResolvedOperation): Promise<void>;
   readKind?: 'metadata' | 'content';
   /** Access-owned Personal/Project placement, for human new-content drafts and the named Monitor creation command.
    * Never accepts a target Space from input and never moves existing content. */

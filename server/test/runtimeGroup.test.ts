@@ -58,8 +58,6 @@ describe("runtimeAdapters", () => {
       for (const spec of listRuntimeAdapterSpecs()) {
         expect(spec.executor_family).toBe(spec.runtime_kind);
         expect(spec.subagent_support).toBeDefined();
-        expect(spec.subagent_disable_mechanism).toBeDefined();
-        expect(spec.delegation_controllability).toBeDefined();
         expect(spec.structured_output).toBeDefined();
         expect(spec.checkpoint_resume).toBeDefined();
         expect(spec.cancellation_reliability).toBeDefined();
@@ -71,27 +69,12 @@ describe("runtimeAdapters", () => {
       expect(getRuntimeAdapterSpec("claude_code")).toMatchObject({
         executor_family: "local_cli",
         subagent_support: "runtime_internal",
-        subagent_disable_mechanism: "runtime_config",
-        subagent_disable_config: {
-          relative_path: ".claude/settings.json",
-          denied_value: "Task",
-        },
       });
-      expect(getRuntimeAdapterSpec("codex_cli")?.subagent_disable_mechanism).toBe("unknown");
       expect(getRuntimeAdapterSpec("opencode")).toMatchObject({
         implementation_status: "implemented",
         invocation: {
           headless_command_template: ["{executable}", "acp"],
           protocol: "acp",
-        },
-        subagent_disable_config: {
-          relative_path: "opencode.json",
-          denied_value: { "*": "deny" },
-          required_values: expect.arrayContaining([
-            { path: ["default_agent"], value: "rainver-locked", value_mode: "exact" },
-            { path: ["subagent_depth"], value: 0, value_mode: "exact" },
-            { path: ["agent", "rainver-locked", "mode"], value: "primary", value_mode: "exact" },
-          ]),
         },
       });
     });

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ConversationInputPart } from '@rainver/protocol'
-import { conversationInputApi } from '../../api/client'
+import { ApiRequestError, conversationInputApi } from '../../api/client'
 import type { ConversationInputFileSource } from './ConversationInputComposer'
 import { useConversationScope } from './ConversationScope'
 import { sessionEpoch } from '../../lib/sessionResidue'
@@ -21,6 +21,8 @@ export interface VersionedConversationDraft<T> {
   value: T
   parts: ConversationInputPart[]
   textVersion: number
+  pastedText: string
+  pasteVersion: number
   partsVersion: number
 }
 
@@ -54,6 +56,8 @@ interface PendingRestore {
   parts: ConversationInputPart[]
   routeChoice: ConversationDraftRouteChoice | null
   textVersion: number
+  pastedText: string
+  pasteVersion: number
   partsVersion: number
 }
 
@@ -76,7 +80,8 @@ export function useConversationDraft<T>(options: ConversationDraftOptions<T>) {
   optionsRef.current = options
   const [value, setValueState] = useState(options.initialValue)
   const [parts, setPartsState] = useState<ConversationInputPart[]>([])
-  const draftRef = useRef<VersionedConversationDraft<T>>({ value, parts, textVersion: 0, partsVersion: 0 })
+  const [pastedText, setPastedTextState] = useState('')
+  const draftRef = useRef<VersionedConversationDraft<T>>({ value, parts, pastedText, textVersion: 0, pasteVersion: 0, partsVersion: 0 })
   /** The destination whose stored draft has been restored; edits persist only once it matches. */
   const readyRef = useRef<string | null>(null)
   const pendingRef = useRef<PendingRestore | null>(null)
@@ -84,7 +89,14 @@ export function useConversationDraft<T>(options: ConversationDraftOptions<T>) {
   const persist = useCallback(() => {
     const current=optionsRef.current;const text=current.textOf(draftRef.current.value)
     if(current.isTextPersistable?.(text)===false){clearConversationDraft(destination);return}
-    writeConversationDraft({destination,text,input_parts:draftRef.current.parts,route_choice:current.routeChoiceOf?.(draftRef.current.value)??undefined})
+    const draft = draftRef.current
+    const pending = pendingRef.current?.destination === destination ? pendingRef.current : null
+    if (pending && draft.textVersion === pending.textVersion && draft.partsVersion === pending.partsVersion && draft.pasteVersion === pending.pasteVersion) return
+    const inputParts = pending && draft.partsVersion === pending.partsVersion ? pending.parts : draft.parts
+    const unchangedText = pending && draft.textVersion === pending.textVersion
+    writeConversationDraft({ destination, text: unchangedText ? pending.text : text, input_parts: inputParts,
+      pasted_text: pending && draft.pasteVersion === pending.pasteVersion ? pending.pastedText : draft.pastedText,
+      route_choice: (unchangedText ? pending.routeChoice : current.routeChoiceOf?.(draft.value)) ?? undefined })
   },[destination])
 
   const setValue = useCallback((next: T) => {
@@ -93,6 +105,12 @@ export function useConversationDraft<T>(options: ConversationDraftOptions<T>) {
     draftRef.current = { ...current, value: next, textVersion: current.textVersion + 1 }
     setValueState(next)
   }, [])
+  const setPastedText = useCallback((next: string) => {
+    const current = draftRef.current
+    draftRef.current = { ...current, pastedText: next, pasteVersion: current.pasteVersion + 1 }
+    setPastedTextState(next)
+  }, [])
+
   const setParts = useCallback((next: ConversationInputPart[]) => {
     const current = draftRef.current
     draftRef.current = { ...current, parts: next, partsVersion: current.partsVersion + 1 }
@@ -117,6 +135,8 @@ export function useConversationDraft<T>(options: ConversationDraftOptions<T>) {
       pendingRef.current = {
         destination,
         text: stored.text,
+        pastedText: stored.pasted_text ?? '',
+        pasteVersion: current.pasteVersion,
         parts: stored.input_parts,
         routeChoice: stored.route_choice ?? null,
         textVersion: current.textVersion,
@@ -141,30 +161,32 @@ export function useConversationDraft<T>(options: ConversationDraftOptions<T>) {
       if (draftRef.current.partsVersion === restore.partsVersion) {
         setParts(validated.filter((part): part is ConversationInputPart => part !== null))
       }
+      if (draftRef.current.pasteVersion === restore.pasteVersion) setPastedText(restore.pastedText)
       pendingRef.current = null
       readyRef.current = destination
       persist()
     })()
     return () => { cancelled = true }
-  }, [destination, scope, setParts, setValue, persist])
+  }, [destination, scope, setParts, setValue, setPastedText, persist])
 
   const text = options.textOf(value)
   const routeChoice = options.routeChoiceOf?.(value) ?? null
   useEffect(() => {
-    if (readyRef.current !== destination) return
+    if (readyRef.current !== destination && pendingRef.current?.destination !== destination) return
     const timer = window.setTimeout(persist, 250)
     return () => window.clearTimeout(timer)
-  }, [destination, parts, routeChoice, text, persist])
+  }, [destination, parts, pastedText, routeChoice, text, persist])
 
   useEffect(() => {
     const epoch = sessionEpoch()
     return () => {
       if (optionsRef.current.flushOnUnmount && optionsRef.current.destination === destination
-        && readyRef.current === destination && epoch === sessionEpoch()) persist()
+        && (readyRef.current === destination || pendingRef.current?.destination === destination)
+        && epoch === sessionEpoch()) persist()
     }
   }, [destination, persist])
 
-  return { value, parts, setValue, setParts, draftRef, readyRef }
+  return { value, parts, pastedText, setPastedText, setValue, setParts, draftRef, readyRef }
 }
 
 async function validateDraftPart<T>(
@@ -190,7 +212,7 @@ async function validateDraftPart<T>(
       const result = await conversationInputApi.searchFiles(sessionId, draftFileSearchQuery(part.relative_path), undefined, scope)
       return result.items.some(item => item.project_folder_id === part.project_folder_id
         && item.workspace_location_id === part.workspace_location_id
-        && item.relative_path === part.relative_path)
+        && item.relative_path === part.relative_path) || result.truncated
         ? part
         : null
     }
@@ -199,7 +221,7 @@ async function validateDraftPart<T>(
       && (!source.workspaceLocationId || source.workspaceLocationId === part.workspace_location_id))
       ? part
       : null
-  } catch {
-    return null
+  } catch (error) {
+    return error instanceof ApiRequestError && [403, 404, 410].includes(error.status) ? null : part
   }
 }

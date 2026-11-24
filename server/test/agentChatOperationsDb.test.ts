@@ -10,6 +10,8 @@ import {loadConfig} from '../src/config.js';
 import {__setAuthIdentityForTests} from '../src/modules/auth/identity.js';
 import {agentsModule} from '../src/modules/agents/index.js';
 import {systemActionsModule} from '../src/modules/systemActions/index.js';
+import {PgRouteDecisionRepository} from '../src/modules/routing/repository.js';
+import {PgRunRepository} from '../src/modules/runs/repository.js';
 
 /** Direct conversation turns through the core: one transaction for the session,
  * message, Run and Job; Host work is a frozen request the dispatch performs. */
@@ -135,12 +137,26 @@ describe('reusable Project Agent turns (real PostgreSQL)', () => {
   expect(scopeA.project_id).toBe(project);
   expect(scopeB.project_id).toBe(projectB);
   expect(scopeA.host_task_thread_id).not.toBe(scopeB.host_task_thread_id);
+  const folder = randomUUID(), location = randomUUID();
+  await db.pool.query(`INSERT INTO project_folders(id,space_id,project_id,created_by_user_id,name,status,kind,protected,system_managed,created_at,updated_at)
+    VALUES($1,$2,$3,$4,'Project A folder','active','code',false,false,now(),now())`, [folder, space, project, owner]);
+  await db.pool.query(`INSERT INTO workspace_locations(id,space_id,project_folder_id,execution_host_id,execution_host_kind,display_path,execution_ready,status,created_at,updated_at)
+    VALUES($1,$2,$3,$4,'remote','/workspace/project-a',true,'active',now(),now())`, [location, space, folder, hostId]);
+  await db.pool.query("UPDATE agent_runtime_profiles SET workspace_mode='location', workspace_location_id=$2 WHERE agent_id=$1", [agent, location]);
+  const catalog = await app.inject({method:'GET', url:`/api/v1/agents/${agent}/conversation-backends?session_id=${first.session_id}&project_id=${projectB}`});
+  expect(catalog.statusCode, catalog.body).toBe(200);
+  expect(catalog.json().options).toEqual([expect.objectContaining({usable:true, workspace_mode:'managed', workspace_location_id:null})]);
+
   await db.pool.query("UPDATE runs SET status='failed' WHERE id=$1", [first.run_id]);
   await db.pool.query("UPDATE host_threads SET dispatch_lock_id=NULL WHERE id=$1", [scopeB.host_task_thread_id]);
   const retry = () => app.inject({method:'POST',url:`/api/v1/agents/${agent}/chat/retry`,payload:{run_id:first.run_id},headers:{'idempotency-key':randomUUID()}});
   const retried = await retry();
   expect(retried.statusCode,retried.body).toBe(202);
-  expect(await runScope(retried.json().data.run_id)).toEqual(scopeB);
+  const retriedRunId = retried.json().data.run_id as string;
+  expect(await runScope(retriedRunId)).toEqual(scopeB);
+  const retriedRun = (await new PgRunRepository(db.pool).getAgentRun(space, retriedRunId))!;
+  const routed = await new PgRouteDecisionRepository(db.pool).routeRun(retriedRun);
+  expect(routed.runtime_profile_snapshot_json).toMatchObject({execution_host_id:hostId, workspace_mode:'managed', workspace_location_id:null});
   expect(retried.json().data.user_message_id).toBe(first.user_message_id);
   await db.pool.query("UPDATE runs SET status='failed' WHERE id=$1", [retried.json().data.run_id]);
   await db.pool.query("UPDATE host_threads SET dispatch_lock_id=NULL WHERE id=$1", [scopeB.host_task_thread_id]);

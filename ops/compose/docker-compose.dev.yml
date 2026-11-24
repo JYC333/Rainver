@@ -76,9 +76,7 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-    command: >
-      sh -c "node scripts/watch-typescript.mjs &
-             node --watch dist/index.js"
+    command: ["node", "scripts/watch-typescript.mjs"]
     restart: unless-stopped
     networks:
       - default
@@ -89,6 +87,7 @@ services:
       context: ../../
       dockerfile: sandbox/Dockerfile
       network: host
+    init: true
     security_opt:
       - seccomp=unconfined
       - no-new-privileges=true
@@ -163,7 +162,7 @@ services:
       # host, so the two only agree when this container sees the mode root under
       # the same absolute path the host uses.
       - ${RAINVER_MODE_ROOT:-$HOME/.rainver-data/dev}:${RAINVER_MODE_ROOT:-$HOME/.rainver-data/dev}
-    user: "1000:989"
+    user: "1000:${DOCKER_GID:-989}"
     environment:
       - DEPLOYER_SOCKET=/tmp/rainver-deployer.sock
       - REPO_ROOT=/repo

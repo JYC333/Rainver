@@ -38,7 +38,7 @@ export interface DocumentVersion { contentHash: string; structureHash?: string |
 interface TextMap { text: string; positions: number[] }
 
 /** The document's text with the ProseMirror position of every UTF-16 unit (-1 for block separators). */
-function textMap(doc: ProseMirrorNode): TextMap {
+function buildTextMap(doc: ProseMirrorNode): TextMap {
   let text = ''
   const positions: number[] = []
   const separate = () => { if (text && !/\s$/.test(text)) { text += ' '; positions.push(-1) } }
@@ -75,13 +75,47 @@ function collapse(value: string): { text: string; index: number[] } {
 
 const squash = (value: string) => value.replace(/\s+/g, ' ').trim()
 
-/** Whether the text before an occurrence carries the whole stored context (empty: the occurrence starts the document). */
-function beforeSupports(textBefore: string, storedBefore: string): boolean {
-  return storedBefore ? textBefore.endsWith(storedBefore) : textBefore === ''
+/**
+ * The text index of one document version, built once. ProseMirror documents
+ * are immutable and the Reader keeps the same `doc` object until it shows other
+ * content, so the object is the version: every selection update, anchor and
+ * placement of that version reuses the index instead of walking and collapsing
+ * the whole document again (a drag fires one selection update per pointer move).
+ */
+interface TextIndex { map: TextMap; collapsed: ReturnType<typeof collapse> }
+const textIndexes = new WeakMap<ProseMirrorNode, TextIndex>()
+function textIndex(doc: ProseMirrorNode): TextIndex {
+  let index = textIndexes.get(doc)
+  if (!index) {
+    const map = buildTextMap(doc)
+    index = { map, collapsed: collapse(map.text) }
+    textIndexes.set(doc, index)
+  }
+  return index
 }
 
-function afterSupports(textAfter: string, storedAfter: string): boolean {
-  return storedAfter ? textAfter.startsWith(storedAfter) : textAfter === ''
+/** The stored normalized text, collapsed; one document's text at a time is ever current. */
+let canonicalCache: { source: string; collapsed: ReturnType<typeof collapse> } | null = null
+function collapsedCanonical(normalizedText: string): ReturnType<typeof collapse> {
+  if (canonicalCache?.source !== normalizedText) canonicalCache = { source: normalizedText, collapsed: collapse(normalizedText) }
+  return canonicalCache.collapsed
+}
+
+/**
+ * Whether the text before the occurrence at `start` carries the whole stored
+ * context (empty: the occurrence starts the document). The collapsed text has
+ * at most one space in a row, so trimming the text before an occurrence drops
+ * at most that one space; comparing in place avoids copying the document's
+ * prefix for every occurrence of a repeated quote.
+ */
+function beforeSupports(text: string, start: number, storedBefore: string): boolean {
+  const end = start > 0 && text[start - 1] === ' ' ? start - 1 : start
+  return storedBefore ? end >= storedBefore.length && text.startsWith(storedBefore, end - storedBefore.length) : end === 0
+}
+
+function afterSupports(text: string, end: number, storedAfter: string): boolean {
+  const start = end < text.length && text[end] === ' ' ? end + 1 : end
+  return storedAfter ? text.startsWith(storedAfter, start) : start === text.length
 }
 
 function rangeHoldsQuote(doc: ProseMirrorNode, from: number, to: number, quote: string): boolean {
@@ -111,8 +145,8 @@ function resolveOne(doc: ProseMirrorNode, map: TextMap, collapsed: ReturnType<ty
   if (chosen === null) {
     const before = squash(anchor.before_context ?? '')
     const after = squash(anchor.after_context ?? '')
-    const supported = starts.filter(start => beforeSupports(collapsed.text.slice(0, start).trimEnd(), before)
-      && afterSupports(collapsed.text.slice(start + quote.length).trimStart(), after))
+    const supported = starts.filter(start => beforeSupports(collapsed.text, start, before)
+      && afterSupports(collapsed.text, start + quote.length, after))
     if (supported.length !== 1) return { state: 'unlocated', reason: 'ambiguous' }
     chosen = supported[0]!
   }
@@ -126,8 +160,7 @@ function resolveOne(doc: ProseMirrorNode, map: TextMap, collapsed: ReturnType<ty
 
 /** Resolves every active annotation against `doc`; summary-level ones (no quote) are left out. */
 export function resolveAnnotationAnchors(doc: ProseMirrorNode, annotations: ReaderAnnotation[], version: DocumentVersion): Map<string, AnchorResolution> {
-  const map = textMap(doc)
-  const collapsed = collapse(map.text)
+  const { map, collapsed } = textIndex(doc)
   const resolved = new Map<string, AnchorResolution>()
   for (const annotation of annotations) {
     if (annotation.status !== 'active') continue
@@ -170,8 +203,7 @@ function firstAtLeast(values: number[], target: number): number {
  * another version a repeated quote is placed only by its context, or not at all.
  */
 export function anchorForSelection(doc: ProseMirrorNode, from: number, to: number, normalizedText: string): CreatedAnchor | null {
-  const map = textMap(doc)
-  const collapsed = collapse(map.text)
+  const { map, collapsed } = textIndex(doc)
   // Selection bounds in the Reader's text, then in its collapsed form.
   let mapStart = map.positions.findIndex(position => position >= from)
   if (mapStart === -1) return null
@@ -189,7 +221,7 @@ export function anchorForSelection(doc: ProseMirrorNode, from: number, to: numbe
   // one name a place in the other: then the selection's offset is the same in
   // both. Matching counts of the quote prove nothing (a table separator can
   // remove one match and add another).
-  const canonical = collapse(normalizedText)
+  const canonical = collapsedCanonical(normalizedText)
   const leadHere = collapsed.text.length - collapsed.text.trimStart().length
   const leadThere = canonical.text.length - canonical.text.trimStart().length
   let textRange: CreatedAnchor['textRange'] = null

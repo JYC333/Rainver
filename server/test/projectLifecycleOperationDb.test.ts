@@ -2,7 +2,7 @@ import {randomUUID} from 'node:crypto';
 import {beforeEach,afterEach,it,expect} from 'vitest';
 import {useTestDatabase} from './support/testDatabase.js';
 import {resetTables} from './support/resetTables.js';
-import {seedSpaceOwnerProject,seedRun} from './support/domainSeeds.js';
+import {seedSpaceOwnerProject,seedRun,seedServerHost} from './support/domainSeeds.js';
 import {linkProposalOperation} from './support/linkedProposalOperation.js';
 import {buildModuleServer} from './support/moduleServer.js';
 import {projectsModule} from '../src/modules/projects/index.js';
@@ -11,6 +11,12 @@ import {loadConfig} from '../src/config.js';
 import {__setAuthIdentityForTests} from '../src/modules/auth/identity.js';
 import {insertProposalRow} from '../src/modules/proposals/reviewPackets.js';
 import {PgJobQueueRepository} from '../src/modules/jobs/repository.js';
+import {PgRunRepository} from '../src/modules/runs/repository.js';
+import {RUN_CANCELLATION_RECONCILE_JOB} from '../src/modules/jobs/agentRunGeneration.js';
+import {JobHandlerRegistry} from '../src/modules/jobs/handlerRegistry.js';
+import {JobWorker} from '../src/modules/jobs/worker.js';
+import {registerAgentRunHandler} from '../src/modules/runs/agentRunHandler.js';
+import {sharedHostConnectionRegistry,type HostFrameSink} from '../src/modules/hosts/connectionRegistry.js';
 const db=useTestDatabase(import.meta.filename,{max:6});
 let space:string,user:string,project:string,app:ReturnType<typeof buildModuleServer>;
 const call=(id:string,input:object,key:string=randomUUID())=>app.inject({method:'POST',url:'/api/v1/actions/'+id,payload:input,headers:{'idempotency-key':key}});
@@ -28,6 +34,46 @@ it('edits normal fields via formal and generic entries and preserves archived Pr
 });
 it.each(['project.archive','project.update'])('atomically retires linked Workflow/Run/Proposal/request and Job effects through %s',async id=>{
  const f=await workflow(),body={project_id:project,...(id==='project.update'?{status:'archived'}:{})},r=await call(id,body);expect(r.statusCode,r.body).toBe(200);expect(r.body).not.toContain('PRIVATE');expect(await state(f)).toEqual({project:'archived',run:'cancelled',automation:'paused',execution:'cancelled',proposal:'rejected',request:'rejected',job:'cancelled'});
+});
+it('preserves a live Workflow dispatch until its Host confirms exit',async()=>{
+ const f=await workflow(), runs=new PgRunRepository(db.pool), jobs=new PgJobQueueRepository(db.pool);
+ const host=randomUUID();
+ await seedServerHost(db.pool,{id:host});
+ await db.pool.query(`UPDATE runs SET runtime_profile_snapshot_json=jsonb_build_object('execution_host_id',$2::text) WHERE id=$1`,[f.run,host]);
+ expect((await jobs.claimNextAgentRun('workflow-worker'))?.id).toBe(f.job);
+ expect(await jobs.startJob(f.job,'workflow-worker')).toBe(true);
+ expect(await runs.tryAcquireExecutionLock({run_id:f.run,worker_id:'workflow-worker',job_id:f.job})).toBe(true);
+ const launch=randomUUID();
+ await db.pool.query("INSERT INTO run_attempts(id,space_id,run_id,attempt_number,status,launch_id,started_at,created_at,updated_at) VALUES($1,$2,$3,1,'running',$4,now(),now(),now())",[randomUUID(),space,f.run,launch]);
+ const reply=await call('project.archive',{project_id:project});
+ expect(reply.statusCode,reply.body).toBe(200);
+ expect(await state(f)).toMatchObject({project:'archived',run:'cancelling',job:'running',automation:'paused',execution:'cancelled',proposal:'staged'});
+ expect(await runs.getLatestRunAttempt(space,f.run)).toMatchObject({status:'cancelling',launch_id:launch,ended_at:null});
+ const archivedAgain=await call('project.archive',{project_id:project});
+ expect(archivedAgain.statusCode,archivedAgain.body).toBe(200);
+ const stop=await db.pool.query<{id:string}>(`SELECT id FROM jobs WHERE job_type=$1 AND payload_json->>'run_id'=$2`,[RUN_CANCELLATION_RECONCILE_JOB,f.run]);
+ expect(stop.rows).toHaveLength(1);
+ let markSent!: (frame: Parameters<HostFrameSink['send']>[0])=>void;
+ const sent=new Promise<Parameters<HostFrameSink['send']>[0]>(resolve=>{markSent=resolve;});
+ const connection:HostFrameSink={send:markSent,close(){}};
+ const registry=new JobHandlerRegistry();
+ registerAgentRunHandler(registry,loadConfig({SERVER_DATABASE_URL:db.connectionUri}));
+ const worker=new JobWorker(jobs,registry,'stop-worker',[RUN_CANCELLATION_RECONCILE_JOB]);
+ sharedHostConnectionRegistry.registerConnection(host,connection);
+ try {
+   const pending=worker.processOne();
+   const frame=await Promise.race([sent,pending.then(result=>{throw new Error(`Stop job ended before sending termination: ${JSON.stringify(result)}`);})]);
+   expect(frame).toMatchObject({type:'terminate',run_id:f.run,launch_id:launch});
+   expect((await state(f)).run).toBe('cancelling');
+   expect((await db.pool.query('SELECT job_id FROM run_execution_locks WHERE run_id=$1',[f.run])).rows).toEqual([{job_id:f.job}]);
+   await runs.releaseExecutionLock(f.run,'workflow-worker');
+   sharedHostConnectionRegistry.receiveComplete(host,f.run,{exit_code:1,timed_out:false,error:null},launch);
+   await expect(pending).resolves.toEqual({status:'completed',job_id:stop.rows[0]!.id});
+   expect(await jobs.completeJob(f.job,{},'workflow-worker')).toBe(true);
+   expect(await state(f)).toMatchObject({run:'cancelled',job:'completed',proposal:'rejected',request:'rejected'});
+ } finally {
+   sharedHostConnectionRegistry.unregisterConnection(host,connection);
+ }
 });
 it.each(['project.archive','project.update'])('rolls every nested effect back when linked request storage fails through %s',async id=>{
  const f=await workflow(),before=await state(f);await db.pool.query("CREATE FUNCTION refuse_lifecycle_request() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.state='rejected' THEN RAISE EXCEPTION 'PRIVATE lifecycle request failure'; END IF; RETURN NEW; END $$");await db.pool.query('CREATE TRIGGER refuse_lifecycle_request BEFORE UPDATE ON operation_idempotency FOR EACH ROW EXECUTE FUNCTION refuse_lifecycle_request()');

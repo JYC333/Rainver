@@ -12,7 +12,7 @@ import {
 } from "./verification/index.js";
 import type { VerificationResultRecord } from "./verification/index.js";
 import type { RunSupervisorPort } from "./supervisor.js";
-import { EXECUTION_CONTROLLER_LOST } from "./retryPolicy.js";
+import { EXECUTION_CONTROLLER_LOST, TASK_DRY_RUN_UNSUPPORTED } from "./retryPolicy.js";
 
 const RUN_FINALIZER_VERSION = "post_run_finalization.v1";
 
@@ -240,10 +240,9 @@ export class PostRunFinalizationService {
     const evaluation = await this.repository.getRunEvaluationForAttempt(spaceId, runId, attemptNumber)
       ?? await this.evaluate(run, attemptNumber);
     const now = new Date().toISOString();
-    const taskBridge = await this.repository.bridgeTaskEvaluationForRunEvaluation(
-      spaceId,
-      evaluation,
-    );
+    const taskBridge = recordValue(run.error_json).error_code === TASK_DRY_RUN_UNSUPPORTED
+      ? { taskEvaluationId: null, skippedReason: TASK_DRY_RUN_UNSUPPORTED }
+      : await this.repository.bridgeTaskEvaluationForRunEvaluation(spaceId, evaluation);
     const evolutionExperience = await this.evolutionSolidifier?.solidifyFromRunEvaluation(evaluation) ?? null;
     const skippedReasons = taskBridge.skippedReason ? [taskBridge.skippedReason] : [];
     const finalization = await this.repository.insertRunFinalization({

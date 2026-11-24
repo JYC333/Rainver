@@ -11,6 +11,7 @@ import {
   type SystemActionDispatcherDeps,
 } from "../systemActions/systemActionDispatcher.js";
 import type { AgentRunRecord } from "./repository.js";
+import { withRunToolRequest, type RunToolRequestFacts } from "./runToolRequest.js";
 
 export class CliAgentToolTransport {
   constructor(
@@ -24,9 +25,23 @@ export class CliAgentToolTransport {
     return dispatcher.listGrantedDefinitions();
   }
 
+  /**
+   * `request` carries the caller's launch and arrival time, resolved from its token by the Run tool
+   * route (`runToolRequest.ts`); launch-bound work inside the call refuses without it.
+   */
   async call(
     run: AgentRunRecord,
     call: { id: string; name: string; arguments: unknown },
+    signal?: AbortSignal,
+    request?: RunToolRequestFacts,
+  ): Promise<unknown> {
+    return request ? withRunToolRequest({ ...request, signal: request.signal ?? signal }, () => this.dispatch(run, call, signal)) : this.dispatch(run, call, signal);
+  }
+
+  private async dispatch(
+    run: AgentRunRecord,
+    call: { id: string; name: string; arguments: unknown },
+    signal?: AbortSignal,
   ): Promise<unknown> {
     this.assertActive(run);
     const dispatcher = await SystemActionDispatcher.create(this.config, run, this.deps);
@@ -38,10 +53,8 @@ export class CliAgentToolTransport {
     const definition=(await loadSystemActionRegistry(this.config)).get(call.name as never);
     if(definition?.execution){
       const runtime=await operationRuntime(this.config);
-      // Project authority is resolved from the live Run by the core, never injected/overridden by caller input.
-      const input = call.arguments;
-      const result = await dispatchRunOperation(this.config, run, {...call, arguments: input}, definition,
-        actor => runtime.execute(call.name, input, actor, call.id, call.id), this.deps.actionEventSink);
+      const result = await dispatchRunOperation(this.config, run, call, definition,
+        (actor, input) => runtime.execute(call.name, input, actor, call.id, call.id, undefined, signal), this.deps.actionEventSink);
       // Preserve the existing Agent cancellation receipt; generic HTTP keeps the typed envelope.
       if(call.name === 'research.cancel_acquisition' && result.body.status === 'succeeded')
         return new OperationToolResponse(result.httpStatus, {ok:true,tool:call.name,...result.body.data as Record<string,unknown>},result.summary);

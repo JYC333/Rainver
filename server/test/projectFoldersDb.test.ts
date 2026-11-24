@@ -1,3 +1,4 @@
+import { runGit } from '@rainver/folder-read';
 import {folderIoHarness} from './support/folderIoHarness.js';
 import * as folderIoDomain from '../src/modules/projectFolders/ioDomain.js';
 import {FolderIoRefusal} from '../src/modules/projectFolders/ioIntentRepository.js';
@@ -462,6 +463,9 @@ describe("Project Folder database invariants", () => {
         truncated: false,
       });
 
+      const folderRoot = row.rows[0]!.root_path;
+      expect((await runGit(['rev-parse', '--verify', 'HEAD^{commit}'], folderRoot)).code).toBe(0);
+      expect((await runGit(['ls-tree', '-r', 'HEAD'], folderRoot)).stdout).toBe('');
       await writeFile(join(row.rows[0]!.root_path, "created.txt"), "created\n", "utf8");
       await expect(repo.getGitStatus(identity, PROJECT, String(created.folder_id))).resolves.toMatchObject({
         is_repo: true,
@@ -691,6 +695,7 @@ describe("Project Folder database invariants", () => {
     try {
       const identity = { spaceId: SPACE, userId: USER };
       const folderId = "16161616-1616-4616-8616-161616161616";
+      await db.pool.query("UPDATE spaces SET snapshot_retention_days_default = 13 WHERE id = $1", [SPACE]);
       const content = "# Today\n";
       const draft = await repo.upsertDraft(identity, PROJECT, folderId, draftBody({ content, relativePath: "today.md" }));
 
@@ -704,6 +709,11 @@ describe("Project Folder database invariants", () => {
         kind:'save_draft',path:'today.md',
         revision: { path: "today.md", before_exists: false, after_exists: true },
       });
+      const { rows } = await db.pool.query(
+        "SELECT extract(epoch FROM expires_at - created_at)::int AS seconds FROM project_file_revisions WHERE project_folder_id = $1",
+        [folderId],
+      );
+      expect(rows).toEqual([{ seconds: 13 * 86400 }]);
       await expect(readFile(join(folderRoot, "today.md"), "utf8")).resolves.toBe(content);
       await expect(db.pool.query(
         `SELECT 1 FROM project_file_drafts WHERE id = $1`,
@@ -784,8 +794,70 @@ describe("Project Folder database invariants", () => {
         if(mode!=='cancelled')expect(pending.status).toBe('needs_attention');
         expect(JSON.stringify(pending.frozen_json)).toContain('PRIVATE frozen draft body');
         expect(pending.effect_json).toMatchObject({write_started:true,desired:{content:secret}});
+        if(mode==='cancelled'){
+          const closed=await io.submit('project.folder.draft.close_save',{...input,intent_id:receipt.id});
+          expect(closed.http_status,JSON.stringify(closed.body)).toBe(200);
+          expect(await io.read(receipt.id)).toMatchObject({status:'failed',error_code:'folder_save_closed'});
+        }
       }
       await expect(readFile(join(folderRoot,path),'utf8')).resolves.toBe(mode==='independent_edit'?'Independent editor\n':secret);
+    }finally{write.mockRestore();await cleanup();}
+  });
+
+  it.each(['already_written','original_preimage','independent_edit'] as const)('recovers the exact fenced Save after %s',async state=>{
+    if(!db.available)return;
+    const folderId=randomUUID(),{folderRoot,repo,io,cleanup}=await draftFolder(db.pool,folderId);
+    const path='recovery.txt',file=join(folderRoot,path),before='Original bytes\n',desired='PRIVATE exact recovery text\n';
+    const write=vi.spyOn(folderIoDomain,'writeFrozenDraft').mockImplementationOnce(async()=>{
+      await writeFile(file,desired);
+      throw new FolderIoRefusal('folder_write_unconfirmed');
+    });
+    try{
+      await writeFile(file,before);
+      const draft=await repo.upsertDraft({spaceId:SPACE,userId:USER},PROJECT,folderId,draftBody({content:desired,relativePath:path,baseSha256:createHash('sha256').update(before).digest('hex')}));
+      const action='project.folder.draft.save',input={project_id:PROJECT,folder_id:folderId,draft_id:draft.id,draft_version:draft.version};
+      const first=await io.submit(action,input),receipt=('data'in first.body?first.body.data:null) as{id:string;job_id:string};
+      expect(first.http_status).toBe(202);
+      expect((await io.process()).status).toBe('deferred');
+      write.mockRestore();
+      const retry={...input,retry_intent_id:receipt.id};
+      expect((await io.submit(action,retry)).http_status).toBe(409);
+      expect(await io.queue.cancelJob(receipt.job_id,null)).toBe(true);
+      if(state==='original_preimage')await writeFile(file,before);
+      if(state==='independent_edit')await writeFile(file,'Independent edit\n');
+      const key=randomUUID(),accepted=await io.submit(action,retry,key);
+      const resumed=('data'in accepted.body?accepted.body.data:null) as{id:string;job_id:string};
+      expect(accepted.http_status,JSON.stringify(accepted.body)).toBe(202);
+      expect(resumed.id).toBe(receipt.id);
+      expect(resumed.job_id).not.toBe(receipt.job_id);
+      expect((await io.submit(action,retry,key)).body).toEqual(accepted.body);
+      expect((await io.process()).status).toBe('completed');
+      if(state==='independent_edit'){
+        await expect(readFile(file,'utf8')).resolves.toBe('Independent edit\n');
+        expect(await io.read(receipt.id)).toMatchObject({status:'needs_attention'});
+        expect((await db.pool.query('SELECT id FROM project_file_drafts WHERE id=$1',[draft.id])).rows).toHaveLength(1);
+        expect((await io.submit(action,input)).http_status).toBe(409);
+        const conflictHash=createHash('sha256').update('Independent edit\n').digest('hex');
+        const newDraft=await repo.upsertDraft({spaceId:SPACE,userId:USER},PROJECT,folderId,
+          draftBody({content:desired,relativePath:path,baseSha256:conflictHash,expectedVersion:draft.version}));
+        const closed=await io.submit('project.folder.draft.close_save',{project_id:PROJECT,folder_id:folderId,intent_id:receipt.id});
+        expect(closed.http_status,JSON.stringify(closed.body)).toBe(200);
+        const closedIntent=await io.read(receipt.id);
+        expect(closedIntent).toMatchObject({status:'failed',error_code:'folder_save_closed'});
+        expect(JSON.stringify(closedIntent)).not.toContain('PRIVATE exact recovery text');
+        await expect(readFile(file,'utf8')).resolves.toBe('Independent edit\n');
+        expect((await db.pool.query('SELECT version FROM project_file_drafts WHERE id=$1',[newDraft.id])).rows).toEqual([{version:newDraft.version}]);
+        const fresh=await io.submit(action,{...input,draft_id:newDraft.id,draft_version:newDraft.version});
+        expect(fresh.http_status,JSON.stringify(fresh.body)).toBe(202);
+        expect((await io.process()).status).toBe('completed');
+        await expect(readFile(file,'utf8')).resolves.toBe(desired);
+        expect((await db.pool.query('SELECT id FROM project_file_revisions WHERE project_folder_id=$1',[folderId])).rows).toHaveLength(1);
+        return;
+      }
+      await expect(readFile(file,'utf8')).resolves.toBe(desired);
+      expect(await io.read(receipt.id)).toMatchObject({status:'succeeded',result_json:{draft_deleted:true}});
+      expect((await db.pool.query('SELECT id FROM project_file_revisions WHERE project_folder_id=$1',[folderId])).rows).toHaveLength(1);
+      expect(JSON.stringify(await io.read(receipt.id))).not.toContain('PRIVATE exact recovery text');
     }finally{write.mockRestore();await cleanup();}
   });
 

@@ -15,10 +15,12 @@ posting an event retries across that gap rather than losing the job's audit.
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import hashlib
 import json
 import logging
 import os
+import re
 import signal
 import socket
 import time
@@ -85,18 +87,25 @@ def _kill_process_group(process: asyncio.subprocess.Process) -> None:
     later update could then run a second migration beside it.
     """
     try:
-        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        os.killpg(process.pid, signal.SIGKILL)
     except (ProcessLookupError, PermissionError):
-        process.kill()
+        if process.returncode is None:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
 
 
-async def run_command(*args: str, timeout: int = 120, env: dict[str, str] | None = None) -> tuple[int, str, str]:
+async def run_command(
+    *args: str, timeout: int = 120, env: dict[str, str] | None = None, pass_fds: tuple[int, ...] = (),
+) -> tuple[int, str, str]:
     try:
         process = await asyncio.create_subprocess_exec(
             *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
+            pass_fds=pass_fds,
             # Its own session, so the whole tree can be killed together.
             start_new_session=True,
         )
@@ -153,7 +162,10 @@ class ServerClient:
 
     async def running_runs(self) -> int:
         response = await self.request("GET", "/internal/deployment/drain")
-        return int(response.get("running_runs", 0))
+        count = response.get("running_runs")
+        if type(count) is not int or count < 0:
+            raise ValueError("Invalid running Run count")
+        return count
 
 
 class DeploymentPoller:
@@ -179,6 +191,7 @@ class DeploymentPoller:
         self.mode = self.env.get("RAINVER_ENV", "dev")
         self.project = f"rainver-{self.mode}"
         self.remote: dict[str, Any] | None = None
+        self.remote_check_tag: str | None = None
         self.next_remote_check_at: float | None = None
 
     # ── Observation ─────────────────────────────────────────────────────────
@@ -229,7 +242,7 @@ class DeploymentPoller:
             value = parts[index].strip() if len(parts) > index else ""
             return value or None
 
-        return {
+        observation = {
             "service": service,
             "image_ref": image_ref,
             "digest": await self.image_digest(image_id, image_ref),
@@ -238,6 +251,9 @@ class DeploymentPoller:
             # it. Two services disagreeing means the host step is due.
             "surface": label(3),
         }
+        if service == "server":
+            observation["configured_tag"] = self.configured_tag()
+        return observation
 
     async def image_digest(self, image_id: str, image_ref: str) -> str | None:
         """The registry digest of the image a container runs, or None locally."""
@@ -293,19 +309,17 @@ class DeploymentPoller:
             return found
         for line in lines:
             line = line.strip()
-            if line.startswith("export "):
-                line = line[len("export "):].strip()
-            if not line.startswith("RAINVER_IMAGE_TAG="):
+            assignment = re.fullmatch(r"(?:export\s+)?RAINVER_IMAGE_TAG\s*=\s*(.*)", line)
+            if not assignment:
                 continue
-            value = line.split("=", 1)[1].strip()
+            value = assignment.group(1).strip()
             if value[:1] in {'"', "'"}:
                 quote = value[0]
                 end = value.find(quote, 1)
                 value = value[1:end] if end > 0 else value[1:]
             else:
-                value = value.split("#", 1)[0].strip()
-            if value:
-                found = value
+                value = re.split(r"\s+#", value, maxsplit=1)[0].strip()
+            found = value or "stable"
         return found
 
     async def server_repository(self) -> str | None:
@@ -324,11 +338,12 @@ class DeploymentPoller:
         reason. Recording a null digest would erase what was known and, worse,
         would report "no update available" as if it had been checked.
         """
+        tag = self.configured_tag()
+        self.remote_check_tag = tag
         repository = await self.server_repository()
         if not repository:
             self._schedule_remote_retry()
             return None, "the running server image is not a registry reference, so there is no remote to check"
-        tag = self.configured_tag()
         code, out, err = await self.runner(
             "docker", "buildx", "imagetools", "inspect", "--raw", f"{repository}:{tag}", timeout=120,
         )
@@ -388,9 +403,11 @@ class DeploymentPoller:
                 await self.sleep(delay)
                 delay = min(delay * 2, 30.0)
 
-    async def run_stage_script(self, stage: str) -> tuple[int, str | None, str]:
+    async def run_stage_script(self, stage: str, image_tag: str, lock_fd: int) -> tuple[int, str | None, str]:
         code, out, err = await self.runner(
-            str(UPDATE_SCRIPT), stage, timeout=STAGE_TIMEOUT_SECONDS, env=self.env,
+            str(UPDATE_SCRIPT), stage, timeout=STAGE_TIMEOUT_SECONDS,
+            env={**self.env, "RAINVER_IMAGE_TAG": image_tag, "RAINVER_OPERATION_LOCK_FD": str(lock_fd)},
+            pass_fds=(lock_fd,),
         )
         output = f"{out}{err}"
         return code, tail(output), output
@@ -431,15 +448,43 @@ class DeploymentPoller:
             await self.sleep(DRAIN_POLL_SECONDS)
 
     async def execute_update(self, job: dict[str, Any]) -> None:
+        instance_root = self.env["RAINVER_HOME"]
+        lock_fd = None
+        try:
+            lock_fd = os.open(instance_root, os.O_RDONLY | os.O_DIRECTORY)
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as error:
+            if lock_fd is not None:
+                os.close(lock_fd)
+            await self.report(job["id"], {"stage": "pull", "status": "started"})
+            await self.report(job["id"], {
+                "stage": "pull", "status": "failed",
+                "log_tail": f"Cannot lock the instance for update: {error}",
+            })
+            return
+        try:
+            await self.execute_update_stages(job, lock_fd)
+        finally:
+            os.close(lock_fd)
+
+    async def execute_update_stages(self, job: dict[str, Any], lock_fd: int) -> None:
         job_id = job["id"]
         target_tag = self.configured_tag()
+        image_tag = target_tag
         for stage in UPDATE_STAGES:
             await self.report(job_id, {"stage": stage, "status": "started", "target_tag": target_tag})
             if stage == "drain":
                 code, log_tail = await self.drain(int(job.get("drain_timeout_seconds") or 0))
                 output = ""
             else:
-                code, log_tail, output = await self.run_stage_script(stage)
+                code, log_tail, output = await self.run_stage_script(stage, image_tag, lock_fd)
+                if stage == "pull" and code == 0:
+                    pinned = re.search(r"^\[update\] selected image tag: (sha-[0-9a-f]{40})$", output, re.MULTILINE)
+                    if pinned is None:
+                        code = 1
+                        log_tail = "the pull stage did not return an immutable release tag"
+                    else:
+                        image_tag = pinned.group(1)
             if code != 0:
                 # The dump path matters most when migrate is what failed, so it
                 # is recorded on the job rather than left to survive inside a
@@ -501,7 +546,11 @@ class DeploymentPoller:
     # ── Loop ────────────────────────────────────────────────────────────────
 
     def remote_check_due(self) -> bool:
-        return self.next_remote_check_at is None or self.clock() >= self.next_remote_check_at
+        return (
+            self.next_remote_check_at is None
+            or self.clock() >= self.next_remote_check_at
+            or self.remote_check_tag != self.configured_tag()
+        )
 
     async def tick(self) -> dict[str, Any] | None:
         if self.remote_check_due():

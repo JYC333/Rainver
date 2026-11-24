@@ -302,6 +302,8 @@ const PROPOSAL_TYPE_RISK: Record<string, RiskLevel> = {
   evolution_bundle_rollback: "high",
   gmail_monitor_create: "medium",
   gmail_digest_create: "high",
+  gmail_setup: "high",
+  gmail_read_delegation: "high",
   gmail_private_read: "high",
   gmail_private_check: "high",
 };

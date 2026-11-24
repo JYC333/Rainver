@@ -52,7 +52,11 @@ let config: ServerConfig, app: ReturnType<typeof buildModuleServer>;
 let space: string, spaceOwner: string, member: string, project: string;
 
 type Msg = { id: string; at: number; labels?: string[]; subject?: string; text?: string };
-const google = { calls: [] as { url: string; method: string }[], mailbox: [] as Msg[], nextSub: "3003", afterMailGet: null as null | ((count: number) => Promise<void>) };
+const google = {
+  calls: [] as { url: string; method: string }[], mailbox: [] as Msg[], nextSub: "3003",
+  afterMailGet: null as null | ((count: number) => Promise<void>),
+  mailOverride: null as null | ((url: URL) => Response | undefined),
+};
 const b64 = (text: string) => Buffer.from(text, "utf8").toString("base64url");
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
 const idToken = (sub: string) => `e30.${Buffer.from(JSON.stringify({ iss: "https://accounts.google.com", aud: CLIENT_ID, sub, iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 600 })).toString("base64url")}.sig`;
@@ -77,7 +81,7 @@ async function stub(url: string, init?: RequestInit): Promise<Response> {
   if (parsed.pathname.endsWith("/profile")) return json({ emailAddress: "member@gmail.example" });
   // Every mail request is on the Agent-read allowlist.
   expect(() => assertGmailAgentReadUrl(url)).not.toThrow();
-  const response = await mailResponse(parsed);
+  const response = google.mailOverride?.(parsed) ?? mailResponse(parsed);
   await google.afterMailGet?.(google.calls.filter((c) => c.url.includes("/messages")).length);
   return response;
 }
@@ -88,7 +92,10 @@ function mailResponse(parsed: URL): Response {
     const word = q?.split(" ")[0]?.toLowerCase();
     const listed = [...google.mailbox].sort((a, b) => b.at - a.at)
       .filter((m) => q ? (m.subject ?? "").toLowerCase().includes(word!) || (m.text ?? "").toLowerCase().includes(word!) : (m.labels ?? ["INBOX"]).includes("INBOX"));
-    return json({ messages: listed.slice(0, max).map((m) => ({ id: m.id, threadId: m.id })), resultSizeEstimate: listed.length });
+    const offset = Number(parsed.searchParams.get("pageToken") ?? 0);
+    const end = offset + max;
+    return json({ messages: listed.slice(offset, end).map((m) => ({ id: m.id, threadId: m.id })),
+      nextPageToken: end < listed.length ? String(end) : undefined, resultSizeEstimate: listed.length });
   }
   const id = /\/messages\/([0-9a-f]+)$/.exec(parsed.pathname)?.[1];
   const m = google.mailbox.find((x) => x.id === id);
@@ -122,7 +129,7 @@ beforeEach(async () => {
   __setGmailProfileGuardForTests(publicAddressGuard);
   __setGmailReadGuardForTests(publicAddressGuard);
   const base = Date.UTC(2026, 10, 1);
-  google.calls = []; google.nextSub = "3003"; google.afterMailGet = null;
+  google.calls = []; google.nextSub = "3003"; google.afterMailGet = null; google.mailOverride = null;
   google.mailbox = [
     ...Array.from({ length: 7 }, (_, i) => ({ id: (0x1a00 + i).toString(16), at: base + i * 60_000, subject: `Weekly note ${i}` })),
     { id: "1b01", at: base + 3_600_000, subject: "Superlinear offer", text: `${BODY} superlinear terms` },
@@ -413,15 +420,15 @@ describe("ADR 0032 on-demand Gmail reads for an Agent", () => {
     expect(JSON.stringify(data)).not.toMatch(/UNSENT-DRAFT-TEXT|SPAM-TEXT/);
     const list = new URL(mailGets()[0]!.url);
     expect(Object.fromEntries(list.searchParams)).toEqual({ maxResults: "3", q: "superlinear -in:drafts -in:chats -in:spam -in:trash" });
-    // Input bounds: at most five messages, a bounded single-line query.
-    expect((await call(run, { max_messages: 6 })).httpStatus).toBe(422);
+    // Respect Gmail’s page maximum and keep the query single-line.
+    expect((await call(run, { max_messages: 501 })).httpStatus).toBe(422);
     expect((await call(run, { query: "a\nb" })).httpStatus).toBe(422);
     // The allowlist refuses any other Gmail request shape.
     for (const url of [
-      "https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=6&labelIds=INBOX",
+      "https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=501&labelIds=INBOX",
       "https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=5&labelIds=SPAM",
       "https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=5&q=x",
-      "https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=5&labelIds=INBOX&pageToken=abc",
+      "https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=5&labelIds=INBOX&pageToken=",
       "https://gmail.googleapis.com/gmail/v1/users/me/messages/1a01?format=raw",
       "https://gmail.googleapis.com/gmail/v1/users/me/messages/1a01/attachments/x",
       "https://gmail.googleapis.com/gmail/v1/users/me/threads?q=x",
@@ -461,7 +468,7 @@ describe("ADR 0032 on-demand Gmail reads for an Agent", () => {
     expect((await db.pool.query(`SELECT count(*)::int AS n FROM gmail_read_audit_events`)).rows[0].n).toBe(1);
   });
 
-  it("caps the reads one Run makes under the standing consent", async () => {
+  it("reads more than five messages, preserves long bodies and continues after ten reads", async () => {
     const connectionId = await connect();
     as(member); await setAgentRead(connectionId, true);
     const session = await directSession();
@@ -469,10 +476,125 @@ describe("ADR 0032 on-demand Gmail reads for an Agent", () => {
     const grantId = await consent(run);
     for (let i = 0; i < 10; i += 1) await db.pool.query(`INSERT INTO agent_data_read_logs (id,space_id,owner_user_id,run_id,agent_id,action_id,resource_type,resource_ids_json,data_class,grant_id,accessed_at)
       VALUES ($1,$2,$3,$4,$5,$6,'gmail_message','[]'::jsonb,'sensitive',$7,now())`, [randomUUID(), space, member, run.id, run.agent_id, ACTION, grantId]);
-    const capped = await call(run);
-    expect(capped.httpStatus).toBe(429);
-    expect(capped.body).toMatchObject({ error: { metadata: { code: "gmail_agent_read_limit" } } });
+    const longBody = "x".repeat(40 * 1024);
+    google.mailbox = Array.from({ length: 7 }, (_, i) => ({
+      id: (0x100 + i).toString(16), at: Date.now() - i, text: i === 0 ? longBody : "mail",
+    }));
+    const first = await call(run, { max_messages: 6 });
+    expect(first.httpStatus, JSON.stringify(first.body)).toBe(200);
+    expect(first.body.data).toMatchObject({ next_page_token: "6", truncated: false });
+    const items = (first.body.data as { items: { text: string }[] }).items;
+    expect(items).toHaveLength(6);
+    expect(items[0]?.text).toBe(longBody);
+    const next = await call(run, { max_messages: 6, page_token: "6" });
+    expect(next.httpStatus).toBe(200);
+    expect(next.body.data).toMatchObject({ items: [{ id: "106" }], next_page_token: null });
+  });
+
+  it("records the safe cause of a Gmail continuation failure in the tool result and Run diagnostics", async () => {
+    const connectionId = await connect();
+    as(member); await setAgentRead(connectionId, true);
+    const session = await directSession();
+    const run = await agentRun(session, await grants(session));
+    await consent(run);
+
+    const token = "opaque-test-cursor";
+    const query = "in:sent diagnostic-query-marker";
+    const privateText = "upstream-message-with-private-input";
+    const upstream400 = () => json({ error: { message: privateText, errors: [{ reason: "invalidArgument" }] } }, 400);
+    let nextPage = upstream400;
+    google.mailOverride = url => {
+      if (!url.pathname.endsWith("/messages")) return;
+      if (url.searchParams.get("pageToken") === token) return nextPage();
+      return json({ nextPageToken: token });
+    };
+    const first = await call(run, { query, max_messages: 40 });
+    expect(first.httpStatus).toBe(200);
+    expect(first.body.data).toMatchObject({ next_page_token: token });
+
+    const args = { query, max_messages: 40, page_token: token };
+    const callId = randomUUID();
+    const failed = await new CliAgentToolTransport(config).call(run, { id: callId, name: ACTION, arguments: args }) as OperationToolResponse;
+    expect(failed.httpStatus).toBe(503);
+    expect(failed.body).toMatchObject({ error: { code: "operation_temporarily_unavailable", retryable: true, metadata: {
+      code: "gmail_upstream_error", stage: "list_next_page", cause: "upstream_http", upstream_status: 400, upstream_reason: "invalidArgument",
+    } } });
+    const events = await db.pool.query(`SELECT error_message, metadata_json FROM run_events
+      WHERE run_id=$1 AND event_type='action_completed' AND metadata_json->>'tool_call_id'=$2`, [run.id, callId]);
+    expect(events.rows).toHaveLength(1);
+    expect(events.rows[0].error_message).toContain("list next page, gmail_upstream_error, upstream http, Google HTTP 400, invalidArgument");
+    for (const text of [token, query, privateText]) {
+      expect(JSON.stringify(failed.body)).not.toContain(text);
+      expect(JSON.stringify(events.rows)).not.toContain(text);
+    }
+
+    nextPage = () => json({ error: { errors: [{ reason: privateText }] } }, 403);
+    const forbidden = await call(run, args);
+    expect(forbidden.body).toMatchObject({ error: { metadata: { stage: "list_next_page", cause: "upstream_http", upstream_status: 403 } } });
+    expect(JSON.stringify(forbidden.body)).not.toContain(privateText);
+
+    nextPage = () => json({ nextPageToken: token });
+    expect((await call(run, args)).body).toMatchObject({ error: { metadata: { stage: "list_next_page", cause: "repeated_page_token" } } });
+
+    nextPage = () => { throw new Error(privateText); };
+    const network = await call(run, args);
+    expect(network.body).toMatchObject({ error: { metadata: { stage: "list_next_page", cause: "network_failed" } } });
+    expect(JSON.stringify(network.body)).not.toContain(privateText);
+  });
+
+  it("ignores exhausted local request windows while honoring Google cooldowns", async () => {
+    const connectionId = await connect();
+    as(member); await setAgentRead(connectionId, true);
+    const session = await directSession();
+    const run = await agentRun(session, await grants(session));
+    await consent(run);
+    const groups = await db.pool.query<{ group_key: string }>("SELECT group_key FROM source_request_quota_state");
+    expect(groups.rows.length).toBeGreaterThan(0);
+    await db.pool.query(`UPDATE source_request_quota_state SET windows_json =
+      jsonb_build_object('minute', jsonb_build_object('limit', 1, 'used', 1, 'reset', 4102444800000))`);
+    expect((await call(run, { max_messages: 1 })).httpStatus).toBe(200);
+    await db.pool.query("UPDATE source_request_quota_state SET cooldown_until=clock_timestamp()+interval '1 minute'");
+    google.calls = [];
+    const cooled = await call(run, { max_messages: 1 });
+    expect(cooled.httpStatus).toBe(429);
+    expect(cooled.body).toMatchObject({ error: { metadata: { code: "gmail_rate_limited", retry_at: expect.any(String) } } });
     expect(mailGets()).toEqual([]);
+  });
+
+  it("resumes the unread tail of a Gmail page before moving to the next page", async () => {
+    const connectionId = await connect();
+    as(member); await setAgentRead(connectionId, true);
+    const session = await directSession();
+    const run = await agentRun(session, await grants(session));
+    await consent(run);
+    google.mailbox = Array.from({ length: 7 }, (_, i) => ({
+      id: (0x100 + i).toString(16), at: Date.now() - i, text: "x".repeat(1200000),
+    }));
+    const args = { max_messages: 6 };
+    const first = await call(run, args);
+    expect(first.httpStatus).toBe(200);
+    type Page = { items: { id: string }[]; next_page_token: string | null; truncated: boolean };
+    const page = first.body.data as Page;
+    expect(page.items.length).toBeGreaterThan(0);
+    expect(page.items.length).toBeLessThan(6);
+    expect(page.next_page_token).toMatch(/^resume:/);
+    expect(page.truncated).toBe(false);
+
+    google.calls = [];
+    const wrongQuery = await call(run, { ...args, query: "different", page_token: page.next_page_token });
+    expect(wrongQuery.httpStatus).toBe(422);
+    expect(mailGets()).toEqual([]);
+
+    const resumed = await call(run, { ...args, page_token: page.next_page_token });
+    expect(resumed.httpStatus).toBe(200);
+    const tail = resumed.body.data as Page;
+    expect([...page.items, ...tail.items].map(item => item.id)).toEqual(["100", "101", "102", "103", "104", "105"]);
+    expect(tail.next_page_token).toBe("6");
+    expect(mailGets().every(call => !new URL(call.url).pathname.endsWith("/messages"))).toBe(true);
+
+    const next = await call(run, { ...args, page_token: tail.next_page_token });
+    expect(next.httpStatus).toBe(200);
+    expect(next.body.data).toMatchObject({ items: [{ id: "106" }], next_page_token: null });
   });
 
   it("keeps a conversation's later Runs on its own runtime after a read, with no reflection memory of it", async () => {
@@ -480,11 +602,10 @@ describe("ADR 0032 on-demand Gmail reads for an Agent", () => {
     as(member); await setAgentRead(connectionId, true);
     const session = await directSession();
     const run = await agentRun(session, await grants(session));
-    await consent(run);
+    const grantId = await consent(run);
     expect((await call(run)).httpStatus).toBe(200);
     await db.pool.query(`UPDATE runs SET status='succeeded' WHERE id=$1`, [run.id]);
-    // The next Run of the same conversation, created by the real repository, even after the opt-out.
-    expect((await setAgentRead(connectionId, false)).statusCode).toBe(200);
+    // The next Run is created by the real repository without another Gmail read.
     const { PgRunRepository } = await import("../src/modules/runs/repository.js");
     const next = await new PgRunRepository(db.pool, config).createQueuedRun({
       execution_kind: "agent", space_id: space, user_id: member, agent_id: run.agent_id!, session_id: session, mode: "live", run_type: "agent",
@@ -497,7 +618,16 @@ describe("ADR 0032 on-demand Gmail reads for an Agent", () => {
     expect(runRequiresIsolatedLaunch(next)).toBe(false);
     const inherited = (await db.pool.query(`SELECT has_context_taint,context_taint_json FROM runs WHERE id=$1`, [next.id])).rows[0];
     expect(inherited.has_context_taint).toBe(true);
-    expect(inherited.context_taint_json.plugin_reads).toEqual([{ plugin_id: "core:gmail", data_class: "sensitive", owner_user_id: member }]);
+    expect(inherited.context_taint_json.plugin_reads).toEqual([{ plugin_id: "core:gmail", data_class: "sensitive", owner_user_id: member,
+      gmail_scope: { project_id: project, grant_id: grantId } }]);
+    const { canWriteGmailDerivedProjectContent } = await import("../src/modules/plugins/egress.js");
+    const actor = { space_id: space, run_id: next.id, on_behalf_of_user_id: member, effective_origin: "manual" as const };
+    const mayWrite = () => canWriteGmailDerivedProjectContent(
+      db.pool, actor, "plugin.applications.application.create", { project_id: project }, {},
+    );
+    expect(await mayWrite()).toBe(true);
+    expect((await setAgentRead(connectionId, false)).statusCode).toBe(200);
+    expect(await mayWrite()).toBe(false);
     // A user-requested reflection does not turn the conversation into a memory.
     expect(await new PgSessionRepository(db.pool).addMessage(space, member, session, { role: "user", content: "summarize my latest mail" })).toBeTruthy();
     expect(await new PgSessionRepository(db.pool).reflectSession(space, member, session)).toEqual({ session_id: session, proposals_created: 0 });

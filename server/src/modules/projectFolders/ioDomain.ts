@@ -1,3 +1,4 @@
+import { resolveFolderSnapshotRetention } from "./snapshotRetention.js";
 import {createHash} from 'node:crypto';
 import {mkdir,lstat,realpath,readdir} from 'node:fs/promises';
 import {dirname,resolve} from 'node:path';
@@ -96,7 +97,7 @@ export async function writeFrozenDraft(config:ServerConfig,folder:ProjectFolderR
 }
 export async function commitSavedDraft(db:Queryable,intent:FolderIoIntent,before:{exists:boolean;file:import('@rainver/folder-read').FileContent|null},afterHash:string):Promise<Record<string,unknown>>{
   const frozen=intent.frozen_json,draft=frozen.draft!,folder=frozen.folder!;
-  const revision=await new PgProjectFileRevisionStore(db).createInTransaction(db,{spaceId:intent.space_id,projectId:intent.project_id,projectFolderId:folder.id,workspaceLocationId:draft.workspace_location_id,path:draft.relative_path,beforeExists:before.exists,beforeContent:before.file?revisionText(before.file):null,afterExists:true,afterSha256:afterHash,userId:intent.user_id,retentionDays:folder.snapshot_retention_days,maxCount:folder.snapshot_max_count});
+  const revision=await new PgProjectFileRevisionStore(db).createInTransaction(db,{spaceId:intent.space_id,projectId:intent.project_id,projectFolderId:folder.id,workspaceLocationId:draft.workspace_location_id,path:draft.relative_path,beforeExists:before.exists,beforeContent:before.file?revisionText(before.file):null,afterExists:true,afterSha256:afterHash,userId:intent.user_id,...await resolveFolderSnapshotRetention(db,intent.space_id,folder)});
   const deleted=await new PgProjectFileDraftRepository(db).deleteExact(db,{id:draft.id,spaceId:intent.space_id,ownerUserId:intent.user_id,version:draft.version});
   return{kind:'save_draft',folder_id:folder.id,workspace_location_id:draft.workspace_location_id,path:draft.relative_path,revision,draft_deleted:deleted,newer_draft_retained:!deleted,after_sha256:afterHash};
 }

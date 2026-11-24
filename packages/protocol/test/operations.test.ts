@@ -232,9 +232,10 @@ it('canonicalizes optional Note rollback concurrency to null without loosening t
  expect(schema.safeParse({note_id:'note',to_version:1,force:true}).success).toBe(false);
 });
 
-it('keeps all Note object commands strictly human-only without author/Run/permission injection',()=>{
+it('exposes only working Project Note commands to Agents without author or Run injection',()=>{
  const ids=['knowledge.note.create','knowledge.note.update','knowledge.collection.create','knowledge.collection.update','knowledge.collection.delete','knowledge.collection.ensure_project','knowledge.note.placement.add','knowledge.note.placement.remove','knowledge.note.share.revoke','knowledge.note.tree.reorder'] as const;
- for(const id of ids){const def=SYSTEM_ACTION_REGISTRY.find(d=>d.id===id)!;expect(def.allowed_actor_types).toEqual(['user']);expect(def.grantable).toBe(false);expect(def.visibility.has('agent_tool')).toBe(false);expect(def.execution).toEqual({kind:'command',tx:'core_owned'});}
+ const agentIds: readonly string[] = ['knowledge.note.create','knowledge.note.update','knowledge.collection.create','knowledge.collection.update','knowledge.note.tree.reorder'];
+ for(const id of ids){const def=SYSTEM_ACTION_REGISTRY.find(d=>d.id===id)!;const agent=agentIds.includes(id);expect(def.allowed_actor_types).toEqual(agent?['user','agent']:['user']);expect(def.grantable).toBe(false);expect(def.visibility.has('agent_tool')).toBe(agent);expect(def.execution).toEqual({kind:'command',tx:'core_owned'});}
  const schema=OPERATION_SCHEMA_TABLE['knowledge.note.create'].input;
  for(const extra of [{user_id:'other'},{created_by_run_id:'run'},{force:true},{space_id:'other'}])expect(schema.safeParse({title:'Draft',...extra}).success).toBe(false);
  const doc={type:'doc',attrs:{custom:'kept'},content:[{type:'paragraph',attrs:{block_id:'stable'},content:[{type:'text',text:'Working'}]}]};expect(schema.parse({title:'Draft',content_json:doc}).content_json).toEqual(doc);

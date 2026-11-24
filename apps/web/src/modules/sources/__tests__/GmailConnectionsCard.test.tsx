@@ -4,13 +4,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { GMAIL_MANUAL_REVOCATION_URL, type GmailConnection, type GmailConnectionList } from '@rainver/protocol'
 import { ApiRequestError } from '../../../api/client'
 import { gmailApi } from '../../../api/gmail'
+import { ProjectGmailUpdates } from '../gmail/ProjectGmailUpdates'
 import { GmailConnectionsCard } from '../gmail/GmailConnectionsCard'
 
 const space = vi.hoisted(() => ({ activeSpaceId: 'space-a', userId: 'user-a' }))
 vi.mock('../../../contexts/SpaceContext', () => ({ useSpace: () => space }))
 vi.mock('../../../api/gmail', async importOriginal => ({
   ...await importOriginal<typeof import('../../../api/gmail')>(),
-  gmailApi: { connections: vi.fn(), digests: vi.fn(), setDigestStatus: vi.fn(), endDigest: vi.fn(), startOAuth: vi.fn(), disconnect: vi.fn(), forget: vi.fn(), setAgentRead: vi.fn(), revokeAgentReadGrant: vi.fn() },
+  gmailApi: { connections: vi.fn(), digests: vi.fn(), setDigestStatus: vi.fn(), endDigest: vi.fn(), startOAuth: vi.fn(), disconnect: vi.fn(), forget: vi.fn(), setAgentRead: vi.fn(), revokeAgentReadGrant: vi.fn(), revokeDelegation: vi.fn() },
 }))
 
 const now = '2026-11-16T09:00:00.000Z'
@@ -22,6 +23,10 @@ async function disconnect() {
   fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Disconnect' }))
 }
 const view = (entry = '/spaces/space-a/sources/access') => <MemoryRouter initialEntries={[entry]}><GmailConnectionsCard /><Location /></MemoryRouter>
+
+const projectView = () => <MemoryRouter initialEntries={['/spaces/space-a/projects/p1/plugins/applications/board']}>
+  <ProjectGmailUpdates projectId="p1" spaceId="space-a" scopeKey="user-a|space-a|p1" />
+</MemoryRouter>
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -37,7 +42,7 @@ describe('Personal Gmail connections', () => {
     render(view())
     const section = await screen.findByLabelText('Agent access')
     expect(within(section).getByText('Off')).toBeInTheDocument()
-    expect(within(section).getByText(/at most five at a time/)).toBeInTheDocument()
+    expect(within(section).getByText(/5 messages per page by default and up to 500/)).toBeInTheDocument()
     expect(within(section).getByText(/once per Project, on the card in the conversation where you ask/)).toBeInTheDocument()
     // Only an active connection offers it.
     expect(screen.getAllByLabelText('Agent access')).toHaveLength(1)
@@ -71,6 +76,35 @@ describe('Personal Gmail connections', () => {
     await waitFor(() => expect(screen.queryByText('Thesis')).not.toBeInTheDocument())
   })
 
+  it('lists the members allowed to read with scope and use, and stops one only after confirmation (ADR 0035 §4)', async () => {
+    const delegation = { delegation_id: 'dl1', project_id: 'p1', project_name: 'Thesis', grantee_name: 'Lin Peer', query_scope: 'label:applications', read_count: 3, last_used_at: now, created_at: now }
+    vi.mocked(gmailApi.connections).mockResolvedValue({ configured: true, connections: [{ ...connection('c1'), agent_read_enabled: true, read_delegations: [delegation] }] })
+    vi.mocked(gmailApi.revokeDelegation).mockResolvedValue({ delegation_id: 'dl1', status: 'revoked' })
+    render(view())
+    const list = await screen.findByRole('list', { name: 'Members who may read this mailbox' })
+    expect(within(list).getByText('Lin Peer')).toBeInTheDocument()
+    expect(within(list).getByText(/Thesis · only “label:applications” · 3 reads, last/)).toBeInTheDocument()
+    fireEvent.click(within(list).getByRole('button', { name: 'Stop Lin Peer reading this mailbox' }))
+    expect(gmailApi.revokeDelegation).not.toHaveBeenCalled()
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText(/including a read in progress/)).toBeInTheDocument()
+    vi.mocked(gmailApi.connections).mockResolvedValue({ configured: true, connections: [{ ...connection('c1'), agent_read_enabled: true, read_delegations: [] }] })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Revoke' }))
+    await waitFor(() => expect(gmailApi.revokeDelegation).toHaveBeenCalledWith('dl1', expect.any(String), expect.objectContaining({ spaceId: 'space-a' })))
+    await waitFor(() => expect(screen.queryByText('Lin Peer')).not.toBeInTheDocument())
+  })
+
+  it('offers no generic resume for a digest paused because its Agent, runtime or model changed (ADR 0035 §3)', async () => {
+    const digest = { id: 'd2', connection_id: 'c1', project_id: 'p1', project_name: 'Thesis', session_id: 's1', room_id: null, agent_id: 'a1', kind: 'rule' as const,
+      local_time: null, time_zone: null, status: 'paused' as const, covered_until: now, next_run_at: null, retry_at: null, last_delivered_at: null,
+      failure_count: 0, last_error_code: 'gmail_digest_runtime_changed', last_delivery: null, created_at: now }
+    vi.mocked(gmailApi.connections).mockResolvedValue({ configured: true, connections: [{ ...connection('c1'), agent_read_enabled: true }] })
+    vi.mocked(gmailApi.digests).mockResolvedValue([digest])
+    render(view())
+    expect(await screen.findByText(/nothing runs on it silently/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Resume' })).not.toBeInTheDocument()
+  })
+
   it('shows a digest paused for re-confirmation without resume or retime, and links a Room digest to its Room conversation', async () => {
     const digest = { id: 'd1', connection_id: 'c1', project_id: 'p1', project_name: 'Thesis', session_id: 's1', room_id: 'r1', agent_id: 'a1', kind: 'daily' as const,
       local_time: '08:00', time_zone: 'Europe/London', status: 'paused' as const, covered_until: now, next_run_at: null, retry_at: null, last_delivered_at: now,
@@ -99,6 +133,72 @@ describe('Personal Gmail connections', () => {
     expect(own.getAttribute('href')).toMatch(/\/projects\/p1\/agents\/a1\/chat\?session=s-d1$/)
     const room = screen.getByRole('link', { name: 'Open Room conversation' })
     expect(room.getAttribute('href')).toMatch(/\/projects\/p1\/rooms\?room=r2&conversation=s-d2$/)
+  })
+
+  it('shows an application-update automation with its Agent, model and message counts, and why it waits for a new card', async () => {
+    const digest = { id: 'd3', connection_id: 'c1', project_id: 'p1', project_name: 'Thesis', session_id: 's3', room_id: null, agent_id: 'a1', kind: 'application' as const,
+      effects: ['interview' as const, 'deadline' as const], runtime: { agent_name: 'Claude', model_label: 'synthetic-model (Default)' }, mail_items: { pending: 2, review: 1, failed: 0 },
+      local_time: null, time_zone: null, status: 'active' as const, covered_until: now, next_run_at: null, retry_at: now, last_delivered_at: null,
+      failure_count: 1, last_error_code: 'gmail_digest_runtime_changed', last_delivery: null, created_at: now }
+    vi.mocked(gmailApi.connections).mockResolvedValue({ configured: true, connections: [{ ...connection('c1'), agent_read_enabled: true }] })
+    vi.mocked(gmailApi.digests).mockResolvedValue([digest, { ...digest, id: 'other', project_id: 'p2', runtime: { agent_name: 'Other project', model_label: 'Other model' } }])
+    render(projectView())
+    expect(await screen.findByText('Automatic application updates')).toBeInTheDocument()
+    expect(screen.queryByText(/Other project/)).not.toBeInTheDocument()
+    expect(screen.getByText('No mail processed yet.')).toBeInTheDocument()
+    expect(screen.getByText('Claude on synthetic-model (Default)')).toBeInTheDocument()
+    expect(screen.getByText('2 waiting · 1 kept for your review · 0 not processed')).toBeInTheDocument()
+    expect(screen.getByText(/uses another Agent runtime or model than the one you confirmed/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Change summary time' })).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Open private conversation' }).getAttribute('href')).toMatch(/\/projects\/p1\/agents\/a1\/chat\?session=s3$/)
+    vi.mocked(gmailApi.setDigestStatus).mockResolvedValue({ digest_id: 'd3', space_id: 'space-a', status: 'paused' })
+    vi.mocked(gmailApi.digests).mockResolvedValue([{ ...digest, status: 'paused' }])
+    fireEvent.click(screen.getByRole('button', { name: 'Pause' }))
+    expect(await screen.findByText('Paused')).toBeInTheDocument()
+    expect(gmailApi.setDigestStatus).toHaveBeenCalledWith('d3', 'paused', expect.any(String), expect.objectContaining({ spaceId: 'space-a' }))
+  })
+
+  it('says why an automation stopped a round on a reported fallback, waits for a withdrawn model, or waits for a new card after its launch changed', async () => {
+    const digest = (id: string, code: string) => ({ id, connection_id: 'c1', project_id: 'p1', project_name: 'Thesis', session_id: `s-${id}`, room_id: null, agent_id: 'a1', kind: 'application' as const,
+      effects: ['interview' as const], runtime: { agent_name: 'Claude', model_label: 'opus (Default)' }, mail_items: { pending: 1, review: 0, failed: 0 },
+      local_time: null, time_zone: null, status: 'active' as const, covered_until: now, next_run_at: null, retry_at: now, last_delivered_at: null,
+      failure_count: 1, last_error_code: code, last_delivery: null, created_at: now })
+    vi.mocked(gmailApi.connections).mockResolvedValue({ configured: true, connections: [{ ...connection('c1'), agent_read_enabled: true }] })
+    vi.mocked(gmailApi.digests).mockResolvedValue([digest('d5', 'gmail_digest_model_fallback'), digest('d6', 'gmail_digest_model_unavailable'),
+      digest('d7', 'gmail_digest_launch_reconfirm_required')])
+    render(projectView())
+    expect(await screen.findByText(/reported that it answered with another model.*posted nothing.*could not be taken back/)).toBeInTheDocument()
+    expect(screen.getByText(/no longer offers the model you confirmed/)).toBeInTheDocument()
+    expect(screen.getByText(/confirmed it under an earlier rule \(isolated to its ModelProvider, or reading mail only once its runtime proved which model answered\).*new card/)).toBeInTheDocument()
+    expect(screen.queryByText(/Claude Code/)).toBeNull()
+    expect(screen.queryByText('The digest has a delivery or authorization issue.')).not.toBeInTheDocument()
+  })
+
+  it('offers no generic Resume for a paused application-update automation: it resumes only by a new card in its conversation', async () => {
+    const digest = { id: 'd4', connection_id: 'c1', project_id: 'p1', project_name: 'Thesis', session_id: 's4', room_id: null, agent_id: 'a1', kind: 'application' as const,
+      effects: ['interview' as const], runtime: { agent_name: 'Claude', model_label: 'synthetic-model (Default)' }, mail_items: { pending: 0, review: 0, failed: 0 },
+      local_time: null, time_zone: null, status: 'paused' as const, covered_until: now, next_run_at: null, retry_at: null, last_delivered_at: null,
+      failure_count: 0, last_error_code: null, last_delivery: null, created_at: now }
+    vi.mocked(gmailApi.connections).mockResolvedValue({ configured: true, connections: [{ ...connection('c1'), agent_read_enabled: true }] })
+    vi.mocked(gmailApi.digests).mockResolvedValue([digest])
+    render(projectView())
+    expect(await screen.findByText(/ask the Agent in its conversation to set it up again/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Resume' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Pause' })).not.toBeInTheDocument()
+    expect(gmailApi.setDigestStatus).not.toHaveBeenCalled()
+  })
+
+  it('links from the mailbox to its project applications and keeps revocation in Sources', async () => {
+    vi.mocked(gmailApi.connections).mockResolvedValue({ configured: true, connections: [connection('c1')] })
+    vi.mocked(gmailApi.digests).mockResolvedValue([{
+      id: 'd3', connection_id: 'c1', project_id: 'p1', project_name: 'Thesis', session_id: 's3', room_id: null, agent_id: 'a1',
+      kind: 'application', status: 'active', local_time: null, time_zone: null, covered_until: now, next_run_at: null, retry_at: null,
+      last_delivered_at: null, failure_count: 0, last_error_code: null, last_delivery: null, created_at: now,
+    }])
+    render(view())
+    expect(await screen.findByRole('link', { name: 'Open Thesis applications' })).toHaveAttribute('href', '/spaces/space-a/projects/p1/plugins/applications/board')
+    expect(screen.getByRole('button', { name: 'Revoke digest access' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Pause' })).not.toBeInTheDocument()
   })
 
   it('explains a server without Gmail configuration and asks for no secret', async () => {

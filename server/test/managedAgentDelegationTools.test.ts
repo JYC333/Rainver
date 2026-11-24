@@ -125,7 +125,11 @@ describe("ACP agent delegation tools", () => {
     });
 
     expect(binding?.toolDefinitions[0]?.input_schema).toMatchObject({
-      properties: { target_agent_id: { enum: ["agent-reviewer-a", "agent-reviewer-b"] } },
+      properties: {
+        target_agent_id: { enum: ["agent-reviewer-a", "agent-reviewer-b"] },
+        review: { properties: { previous_run_id: { type: "string" } } },
+        continuation: { properties: { previous_run_id: { type: "string" } } },
+      },
     });
     expect(binding?.toolDefinitions).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -142,15 +146,17 @@ describe("ACP agent delegation tools", () => {
       name: "agent.delegate",
       arguments_json: JSON.stringify({ workspace_access: "read",
         target_agent_id: `agent-reviewer-${suffix}`,
-        instruction: "Answer 1+1 independently.",
+        instruction: suffix === "a" ? "Recheck the previous review's findings." : "Review independently.",
+        review: suffix === "a" ? { previous_run_id: "previous-review" } : {},
       }),
     }, binding!, managerRun)));
 
     expect(spawnCalls).toHaveLength(2);
     expect(spawnCalls[0]).toMatchObject({
       identity: { spaceId: "space-1", userId: "user-1" },
-      input: { parent_run_id: "run-manager-turn", root_run_id: "run-root", target_agent_id: "agent-reviewer-a", workspace_access: "read" },
+      input: { parent_run_id: "run-manager-turn", root_run_id: "run-root", target_agent_id: "agent-reviewer-a", workspace_access: "read", review: { previous_run_id: "previous-review" } },
     });
+    expect(spawnCalls[1]).toMatchObject({ input: { target_agent_id: "agent-reviewer-b", review: {} } });
     expect(results.map((result) => result.modelResult)).toEqual(expect.arrayContaining([
       expect.objectContaining({ ok: true, target_agent_id: "agent-reviewer-a", child_run_id: "run-child-a", workspace_access: "read", workspace_concurrency: "shared_read" }),
       expect.objectContaining({ ok: true, target_agent_id: "agent-reviewer-b", child_run_id: "run-child-b" }),

@@ -1,4 +1,4 @@
-import {settleLegacyCleanupPublication} from '../projectFolders/workspacePublicationState.js';
+import {emptyWorkspacePublicationSql,settleLegacyCleanupPublication} from '../projectFolders/workspacePublicationState.js';
 import type {Queryable} from '../routeUtils/common.js';
 
 /** Publication and resource release are separate durable facts. The integration
@@ -7,7 +7,7 @@ import type {Queryable} from '../routeUtils/common.js';
  */
 export async function recordWorkspaceLanding(db:Queryable,integrationId:string){
  await db.query(`UPDATE task_merges m SET detail_json=m.detail_json||jsonb_build_object('lifecycle',
-  jsonb_build_object('operation_id',m.id,'phase',CASE WHEN COALESCE(m.merged_commit,m.onto_commit) IS NULL THEN 'blocked' ELSE 'awaiting_release' END,'workspace_id',m.workspace_id,
+  jsonb_build_object('operation_id',m.id,'phase',CASE WHEN COALESCE(m.merged_commit,m.onto_commit) IS NULL AND NOT ${emptyWorkspacePublicationSql('m')} THEN 'blocked' ELSE 'awaiting_release' END,'workspace_id',m.workspace_id,
    'slot_use_id',COALESCE(m.detail_json->'slot_use_id',(SELECT c.verification_json->'slot_use_id' FROM workspace_change_sets c WHERE c.id=m.change_set_id)),'generation',m.generation,'base_commit',m.base_commit,'source_commit',m.source_commit,
    'target_ref',m.target_ref,'landed_commit',COALESCE(m.merged_commit,m.onto_commit),
    'publication_status',m.status,'cleanup_key','source-g'||m.generation::text))
@@ -22,7 +22,7 @@ export async function recordWorkspaceLanding(db:Queryable,integrationId:string){
 export async function refreshWorkspaceLifecycle(db:Queryable,workspaceId:string){
  await db.query(`UPDATE task_merges m SET detail_json=jsonb_set(m.detail_json,'{lifecycle}',
    (m.detail_json->'lifecycle')||jsonb_build_object('phase',CASE
-    WHEN m.detail_json->'lifecycle'->>'landed_commit' IS NULL THEN 'blocked'
+    WHEN m.detail_json->'lifecycle'->>'landed_commit' IS NULL AND NOT ${emptyWorkspacePublicationSql('m')} THEN 'blocked'
     WHEN w.parent_workspace_id IS NULL AND w.owner_kind='conversation' AND w.state='ready' AND NOT EXISTS(SELECT 1 FROM execution_workspaces n WHERE n.space_id=w.space_id AND n.session_id=w.session_id AND n.workspace_location_id=w.workspace_location_id AND n.owner_kind='conversation' AND n.generation>w.generation) AND NOT EXISTS(SELECT 1 FROM jsonb_each(w.cleanup_json) res WHERE res.key NOT LIKE 'source-g%' AND COALESCE(res.value->>'kind','') NOT IN ('local_preimages','run_history','ref_pages') AND res.value->>'state'<>'cleaned') THEN 'complete'
     WHEN (w.retention_json->>'state'='reclaimed' OR w.retention_json->>'preserved_commit'=w.head_commit) AND w.cleanup_state='cleaned'
      AND NOT EXISTS(SELECT 1 FROM jsonb_each(w.cleanup_json) res WHERE (res.value->>'state'<>'cleaned' AND NOT(COALESCE(res.value->>'kind','') IN ('local_preimages','run_history') AND res.value->>'state'='pending')) OR res.value ? 'inflight')

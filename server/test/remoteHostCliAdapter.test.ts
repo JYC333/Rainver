@@ -120,6 +120,48 @@ describe("selected Skill work-surface transport", () => {
 });
 
 describe("executeRemoteHostCliAdapter", () => {
+  it.each([
+    { saved: undefined, wanted: "opus", acknowledged: "opus", prompts: true },
+    { saved: "default", wanted: "opus", acknowledged: "opus", prompts: true },
+    { saved: "sonnet", wanted: "sonnet", acknowledged: "fable", prompts: false },
+    { saved: "claude-retired", wanted: "claude-retired", acknowledged: "sonnet", prompts: false },
+  ])("applies the Claude conversation model before prompting ($wanted)", async ({ saved, wanted, acknowledged, prompts }) => {
+    const sent: Array<Record<string, unknown>> = [];
+    const modelOption = (currentValue: string) => ({
+      id: "model", category: "model", type: "select", currentValue,
+      options: ["default", "fable", "opus", "sonnet"].map(value => ({ value })),
+    });
+    const modelOverride = saved ? {
+      acp_session_config_source: "saved",
+      acp_session_config: [{ id: "model", category: "model", type: "select", value: saved }],
+    } : {};
+    const result = await executeRemoteHostCliAdapter({
+      run: run({ session_id: "conversation-1", model_override_json: modelOverride }),
+      prompt: "continue", model: null, resume_session_id: saved ? "vendor-session" : null,
+    }, "host-1", "folder-1", {
+      bindings: NO_PROVIDER_BINDINGS,
+      executor: { async runCommand(input) {
+        const controller = input.stdio_controller!;
+        const send = (message: Record<string, unknown>) => { sent.push(message); };
+        const close = () => {};
+        controller.start(send);
+        await controller.receive({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } }, send, close);
+        await controller.receive({ jsonrpc: "2.0", id: 2, result: {
+          sessionId: "vendor-session", configOptions: [modelOption("fable")],
+        } }, send, close);
+        expect(sent.at(-1)).toMatchObject({ method: "session/set_config_option", params: { value: wanted } });
+        await controller.receive({ jsonrpc: "2.0", id: 3, result: {
+          configOptions: [modelOption(acknowledged)],
+        } }, send, close);
+        expect(sent.some(message => message.method === "session/prompt")).toBe(prompts);
+        if (prompts) await controller.receive({ jsonrpc: "2.0", id: 4, result: { stopReason: "end_turn" } }, send, close);
+        return { returncode: prompts ? 0 : 1, stdout: "", stderr: "", timed_out: false };
+      } },
+    });
+    expect(result.success).toBe(prompts);
+    if (!prompts) expect(result.error_message).toContain(wanted);
+  });
+
   it('records the actual managed primary and mount references independently of a primary Git workspace',async()=>{
     // Pure adapter transport seam: the supplied references stand for a previously
     // authorized allocation; durable allocation/authority is tested with real PG.
@@ -1566,6 +1608,40 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
       releasePreparation();
       await expect(adapter!).resolves.toMatchObject({ success: false, error_code: "run_timed_out" });
       expect(sink.sent.some((frame) => frame.type === "launch")).toBe(false);
+    });
+
+    it("records the runtime's own fallback notice for its launch through the binding port (ADR 0037), and nothing for any other notice", async () => {
+      const registry = new HostConnectionRegistry();
+      const sink = new FakeSink();
+      registry.registerConnection("host-1", sink);
+      const reports: { runId: string; launchId: string; title: string; description: string | null }[] = [];
+      const execution = executeRemoteHostCliAdapter({
+        run: run({ runtime_key: "codex_cli" }), prompt: "check the mail", model: null, resume_session_id: null,
+      }, "host-1", "folder-1", {
+        connectionRegistry: registry,
+        bindings: { ...NO_PROVIDER_BINDINGS, observeModelFallback: async (input) => { reports.push(input); } },
+      });
+      await vi.waitUntil(() => sink.sent.some((frame) => frame.type === "launch"));
+      const launchId = launchIdOf(sink, "run-1");
+      registry.receiveLaunched("host-1", "run-1", launchId);
+      const send = async (frame: Record<string, unknown>) => {
+        registry.receiveOutput("host-1", "run-1", `${JSON.stringify(frame)}\n`, launchId);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      };
+      const update = (update: Record<string, unknown>) => send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "session-1", update } });
+      await vi.waitUntil(() => sink.sent.length >= 2);
+      await send({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } });
+      await vi.waitUntil(() => sink.sent.some((frame) => typeof frame.value === "string" && frame.value.includes("session/new")));
+      await send({ jsonrpc: "2.0", id: 2, result: { sessionId: "session-1" } });
+      await vi.waitUntil(() => sink.sent.some((frame) => typeof frame.value === "string" && frame.value.includes("session/prompt")));
+      await update({ sessionUpdate: "notice", severity: "warning", title: "Reconnecting, attempt 1 of 3." });
+      await update({ sessionUpdate: "notice", severity: "info", title: "Model rerouted", description: "Switched from gpt-6.1 to gpt-6.1-mini (high_risk_cyber_activity)." });
+      await update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "done" } });
+      const prompt = sink.sent.map((frame) => typeof frame.value === "string" ? JSON.parse(frame.value) as { id?: number; method?: string } : null).find((message) => message?.method === "session/prompt");
+      await send({ jsonrpc: "2.0", id: prompt!.id, result: { stopReason: "end_turn" } });
+      registry.receiveComplete("host-1", "run-1", { exit_code: 0, timed_out: false, error: null }, launchId);
+      await execution;
+      expect(reports).toEqual([expect.objectContaining({ runId: "run-1", launchId, title: "Model rerouted", description: "Switched from gpt-6.1 to gpt-6.1-mini (high_risk_cyber_activity)." })]);
     });
 
     it("never dispatches a launch for a Run stopped while its dispatch was being prepared", async () => {

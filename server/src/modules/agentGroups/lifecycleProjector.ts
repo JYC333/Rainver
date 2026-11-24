@@ -1,19 +1,23 @@
+import { AUTOMATIC_HANDOFF_WAIT_SCOPE } from "./autoHandoff.js";
 import {isolatedWorkspaceContract} from '../projectFolders/executionWorkspaces.js';
 import { contractWorkspaceAccess } from "../runs/contractSnapshot.js";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool, type Pool, type PoolClient } from "../../db/pool.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
+import { currentAgentRunJobSql } from "../jobs/agentRunGeneration.js";
 import { withDbTransaction } from "../routeUtils/common.js";
 import { PgRunRepository, type RunRecord } from "../runs/repository.js";
 import { runOutputResult } from "../runs/orchestrationResults.js";
 import { RoomService } from "../rooms/service.js";
 import { agentOriginContinuation } from "../rooms/discussionService.js";
 import { isRetryableRoomPostError } from "../rooms/messageQueue.js";
+import { lockGroupLifecycleScope } from "./lifecycleLocks.js";
 import { PgAgentGroupRepository, type RunDelegationRecord } from "./repository.js";
 import { ROOM_DELEGATION_COMPLETION_RETRY_JOB } from "./delegationCompletionRetryJob.js";
 import { runAssignedTask, runAssignedTaskExcerpt } from "../runs/runAssignedTask.js";
 import { CONVERSATION_SERIALIZATION_WAIT_SCOPE } from "./waitScopes.js";
 import { handoffTurnOf } from "./sessionHandoff.js";
+import { settleDeferredRunLiveInputs, takeDeferredRunLiveInputs, type DeferredRunLiveInputs } from "../runs/liveInputService.js";
 import { admitAgentOriginRun, enqueueWhenTurnFree, isAgentOriginGroup } from "../rooms/quotaGate.js";
 import { liveQuotaSource, type QuotaSource } from "../rooms/subscriptionLogins.js";
 import {
@@ -45,6 +49,7 @@ export class AgentGroupRunLifecycleProjector {
     await withDbTransaction(this.pool, async (client) => {
       const groups = new PgAgentGroupRepository(client);
       const runs = new PgRunRepository(client);
+      await groups.lockGroup(run.space_id, ids.group_id);
       const result = await groups.markDelegationRunning({
         space_id: run.space_id,
         delegation_id: ids.delegation_id,
@@ -68,6 +73,7 @@ export class AgentGroupRunLifecycleProjector {
     await withDbTransaction(this.pool, async (client) => {
       const groups = new PgAgentGroupRepository(client);
       const runs = new PgRunRepository(client);
+      await lockGroupLifecycleScope(client, groups, run.space_id, run.run_group_id!);
       await this.queueDelegatedChildrenInTransaction({ client, groups, runs, parent: run });
     });
   }
@@ -82,15 +88,13 @@ export class AgentGroupRunLifecycleProjector {
     await withDbTransaction(this.pool, async (client) => {
       const groups = new PgAgentGroupRepository(client);
       const runs = new PgRunRepository(client);
+      const group = await lockGroupLifecycleScope(client, groups, run.space_id, ids.group_id);
       const currentRun = await runs.getRun(run.space_id, run.id) ?? run;
       const terminalStatus = delegationStatusForRun(currentRun.status);
       if (!terminalStatus) return;
       // Only a Room turn can follow a change link (its resource tools read
       // within its conversation), so only a Room's result carries one.
-      const inRoom = currentRun.run_group_id
-        ? Boolean((await groups.getGroup(currentRun.space_id, currentRun.run_group_id))?.room_id)
-        : false;
-      const change = inRoom
+      const change = group?.room_id
         ? (await loadRunChanges(client, currentRun.space_id, [currentRun.id])).get(currentRun.id) ?? null
         : null;
       const resultSummary = delegationResultSummary(currentRun, change);
@@ -121,14 +125,6 @@ export class AgentGroupRunLifecycleProjector {
           status: terminalStatus,
         },
       });
-      await appendDelegationLifecycleEvent({
-        runs,
-        run: currentRun,
-        delegation: result.delegation,
-        event_type: "delegation_completed",
-        status: terminalStatus === "cancelled" ? "cancelled" : terminalStatus,
-        summary: resultSummary,
-      });
       // Must read before queueWaitingDependencyRunsIfReady, which resumes
       // (and thereby mutates away from waiting_for_dependency) any run
       // waiting on this one — reading after would always see zero waiting
@@ -140,12 +136,14 @@ export class AgentGroupRunLifecycleProjector {
         run_group_id: currentRun.run_group_id as string,
         dependency_run_id: currentRun.id,
       });
+      const settlements: InputSettlement[] = [];
       await queueWaitingDependencyRunsIfReady({
         db: client,
         groups,
         runs,
         jobs: new PgJobQueueRepository(client),
         completedRun: currentRun,
+        settlements,
         quotaSource: this.quotaSource,
       });
       await this.queueDelegatedChildrenInTransaction({ client, groups, runs, parent: currentRun });
@@ -157,6 +155,7 @@ export class AgentGroupRunLifecycleProjector {
         runs,
         jobs: new PgJobQueueRepository(client),
         completedRun: currentRun,
+        settlements,
         quotaSource: this.quotaSource,
       });
       if (waitingBeforeResume.length === 0) {
@@ -169,6 +168,17 @@ export class AgentGroupRunLifecycleProjector {
           terminalStatus,
         });
       }
+      // Take event locks only after admissions and Room notification have taken
+      // their domain locks. Keep the completion event ahead of input outcomes.
+      await appendDelegationLifecycleEvent({
+        runs,
+        run: currentRun,
+        delegation: result.delegation,
+        event_type: "delegation_completed",
+        status: terminalStatus,
+        summary: resultSummary,
+      });
+      await flushInputSettlements(runs, settlements);
     });
   }
 
@@ -240,15 +250,21 @@ export class AgentGroupRunLifecycleProjector {
   async reconcileWaitingRun(run: RunRecord): Promise<void> {
     if (run.status !== "waiting_for_dependency" || !run.run_group_id) return;
     await withDbTransaction(this.pool, async (client) => {
+      const groups = new PgAgentGroupRepository(client);
+      const runs = new PgRunRepository(client);
+      await lockGroupLifecycleScope(client, groups, run.space_id, run.run_group_id!);
+      const settlements: InputSettlement[] = [];
       await queueWaitingDependencyRunIfReady({
         db: client,
-        groups: new PgAgentGroupRepository(client),
-        runs: new PgRunRepository(client),
+        groups,
+        runs,
         jobs: new PgJobQueueRepository(client),
         completedRun: run,
         waitingRun: run,
+        settlements,
         quotaSource: this.quotaSource,
       });
+      await flushInputSettlements(runs, settlements);
     });
   }
 
@@ -262,10 +278,12 @@ export class AgentGroupRunLifecycleProjector {
       space_id: input.parent.space_id,
       parent_run_id: input.parent.id,
     });
-    const children = (await Promise.all(delegations
-      .filter((delegation) => Boolean(delegation.child_run_id))
-      .map(async (delegation) => input.runs.getRun(input.parent.space_id, delegation.child_run_id!))))
-      .filter((child): child is RunRecord => Boolean(child));
+    const children: RunRecord[] = [];
+    for (const delegation of delegations) {
+      if (!delegation.child_run_id) continue;
+      const child = await input.runs.getRun(input.parent.space_id, delegation.child_run_id);
+      if (child) children.push(child);
+    }
     // Delegated children share the Conversation's cwd: a writer runs alone,
     // while read-only reviews (`contract.workspace_access = read`) run
     // together. The FIFO admits, in order, either the next writer once no
@@ -361,6 +379,7 @@ export class AgentGroupRunLifecycleProjector {
     await withDbTransaction(this.pool, async (client) => {
       const groups = new PgAgentGroupRepository(client);
       const runs = new PgRunRepository(client);
+      await lockGroupLifecycleScope(client, groups, run.space_id, run.run_group_id!);
       const currentRun = await runs.getRun(run.space_id, run.id) ?? run;
       if (!isTerminalRunStatus(currentRun.status)) return;
       const currentContent = handoffTurnOf(currentRun) ? null : groupedRunMessageContent(currentRun);
@@ -397,14 +416,17 @@ export class AgentGroupRunLifecycleProjector {
           });
         }
       }
+      const settlements: InputSettlement[] = [];
       await queueWaitingDependencyRunsIfReady({
         db: client,
         groups,
         runs,
         jobs: new PgJobQueueRepository(client),
         completedRun: currentRun,
+        settlements,
         quotaSource: this.quotaSource,
       });
+      await flushInputSettlements(runs, settlements);
     });
   }
 }
@@ -555,12 +577,21 @@ async function appendDelegationLifecycleEvent(input: {
   });
 }
 
+type InputSettlement = { run: RunRecord; inputs: DeferredRunLiveInputs };
+
+async function flushInputSettlements(runs: PgRunRepository, settlements: InputSettlement[]): Promise<void> {
+  for (const { run, inputs } of settlements) {
+    await settleDeferredRunLiveInputs(runs, run.space_id, run.id, inputs);
+  }
+}
+
 async function queueWaitingDependencyRunsIfReady(input: {
   db: PoolClient;
   groups: PgAgentGroupRepository;
   runs: PgRunRepository;
   jobs: PgJobQueueRepository;
   completedRun: RunRecord;
+  settlements: InputSettlement[];
   quotaSource: QuotaSource;
 }): Promise<void> {
   if (!input.completedRun.run_group_id) return;
@@ -581,6 +612,7 @@ async function childAdmitted(db: PoolClient, run: RunRecord): Promise<boolean> {
     `SELECT 1 FROM jobs
       WHERE space_id = $1 AND job_type = 'agent_run' AND payload_json->>'run_id' = $2
         AND status IN ('pending', 'claimed', 'running')
+        AND ${currentAgentRunJobSql()}
       LIMIT 1`,
     [run.space_id, run.id],
   );
@@ -605,6 +637,7 @@ async function queueSerializedRecipientsIfReady(input: {
   runs: PgRunRepository;
   jobs: PgJobQueueRepository;
   completedRun: RunRecord;
+  settlements: InputSettlement[];
   quotaSource: QuotaSource;
 }): Promise<void> {
   if (!input.completedRun.run_group_id) return;
@@ -621,7 +654,7 @@ async function queueSerializedRecipientsIfReady(input: {
   }
 }
 
-function terminalRunResultSummary(run: RunRecord): string {
+export function terminalRunResultSummary(run: RunRecord): string {
   const content = groupedRunMessageContent(run);
   if (content) return content;
 
@@ -644,6 +677,7 @@ async function queueWaitingDependencyRunIfReady(input: {
   jobs: PgJobQueueRepository;
   completedRun: RunRecord;
   waitingRun: RunRecord;
+  settlements: InputSettlement[];
   quotaSource: QuotaSource;
 }): Promise<void> {
   const waiting = waitingForResultsFromRun(input.waitingRun);
@@ -695,12 +729,21 @@ async function queueWaitingDependencyRunIfReady(input: {
   const changes = handoffTurn || independent || !group.room_id || !group.session_id
     ? new Map<string, RunChange>()
     : await loadRunChanges(input.db, input.waitingRun.space_id, dependencyRuns.map((run) => run.id));
+  const continuation = !handoffTurn && !independent && !serialized;
+  // The wait this resume was decided for: read above from a snapshot, held from here under the Run's
+  // row lock (a continuation) or by the requeue's own condition, so a stale decision never wakes a later wait.
+  const round = { round_id: waiting.round_id, depends_on_run_ids: waiting.depends_on_run_ids };
+  // What the person added while this Run waited (`modules/rooms.md`, "Ordinary send into an active turn").
+  const personInputs = continuation
+    ? await takeDeferredRunLiveInputs(input.db, { spaceId: input.waitingRun.space_id, runId: input.waitingRun.id, round,
+      projectId: input.waitingRun.project_id ?? null, roomId: group.room_id ?? null })
+    : { carried: [], refused: [] };
+  if (!personInputs) return;
   const prompt = handoffTurn || independent
     ? input.waitingRun.prompt ?? ""
     : serialized
       ? serializedRecipientPrompt(input.waitingRun, replies, changes)
-      : waitingContinuationPrompt(input.waitingRun, waiting, dependencyRuns, changes);
-  const continuation = !handoffTurn && !independent && !serialized;
+      : waitingContinuationPrompt(input.waitingRun, waiting, dependencyRuns, changes, personInputs.carried);
   const resumed = await input.runs.requeueWaitingDependencyRun({
     run_id: input.waitingRun.id,
     space_id: input.waitingRun.space_id,
@@ -708,8 +751,13 @@ async function queueWaitingDependencyRunIfReady(input: {
     resumed_at: new Date().toISOString(),
     model_override_json: null,
     ...(continuation ? { delivered_run_ids: [...new Set([...waiting.delivered_run_ids, ...waiting.depends_on_run_ids])] } : {}),
+    expected_wait: round,
   });
   if (!resumed) return;
+  if (personInputs.carried.length > 0 || personInputs.refused.length > 0) {
+    input.settlements.push({ run: resumed, inputs: personInputs });
+  }
+  await input.jobs.supersedeAgentRunJobs(resumed.space_id, resumed.id);
   // A change link is only useful if the Run can follow it: it gains the
   // resource tools the way a turn with attached resources has them.
   // Only for a block this admission rendered: link-shaped text an Agent wrote
@@ -764,6 +812,8 @@ async function queueWaitingDependencyRunIfReady(input: {
 }
 
 interface WaitingForResultsState {
+  /** This wait as distinct from the Run's other ones; null for a wait parked before rounds were named. */
+  round_id: string | null;
   scope: string | null;
   reason: string | null;
   resume_instruction: string | null;
@@ -774,10 +824,11 @@ interface WaitingForResultsState {
 
 function waitingForResultsFromRun(run: RunRecord): WaitingForResultsState | null {
   const waiting = recordValue(recordValue(run.output_json).waiting_for_results);
-  if (waiting.status !== "waiting") return null;
+  if (waiting.status !== "waiting" || waiting.scope === AUTOMATIC_HANDOFF_WAIT_SCOPE) return null;
   const dependsOnRunIds = stringArrayValue(waiting.depends_on_run_ids);
   if (dependsOnRunIds.length === 0) return null;
   return {
+    round_id: stringValue(waiting.round_id),
     scope: stringValue(waiting.scope),
     reason: stringValue(waiting.reason),
     resume_instruction: stringValue(waiting.resume_instruction),
@@ -834,6 +885,7 @@ function waitingContinuationPrompt(
   waiting: WaitingForResultsState,
   dependencyRuns: readonly RunRecord[],
   changes: ReadonlyMap<string, RunChange>,
+  personInputs: ReadonlyArray<{ content: string }> = [],
 ): string {
   // A Run that waits again (`own_delegations` lists every delegation it ever
   // made) was handed the earlier results on its earlier resumes. Name them
@@ -846,7 +898,8 @@ function waitingContinuationPrompt(
   return [
     "Continue the paused room agent run using the completed agent results below.",
     "Use these results as available room context. Do not say the results are unavailable.",
-    "Do not call additional agents unless the completed results clearly require a follow-up.",
+    "Continue the original authorized work through its completion criteria. A child result is evidence for the next step: verify or integrate it, delegate any required review or repair, and wait for those results. Diagnose failed handoffs before retrying and continue unaffected work.",
+    "Give a final report when the requested work and verification are complete, or when no authorized recovery or next step remains. Preserve the existing collaboration and permission limits.",
     waitingTask ? `Original instruction:\n${waitingTask}` : null,
     waiting.reason ? `Wait reason:\n${waiting.reason}` : null,
     waiting.resume_instruction ? `Resume instruction:\n${waiting.resume_instruction}` : null,
@@ -856,6 +909,14 @@ function waitingContinuationPrompt(
       ? [
           "Results already given to this run on an earlier resume (not repeated here; read one again with agent.wait_for_results, scope=run_ids):",
           ...earlier.map((run) => `- ${stringValue(run.agent_name) ?? "Agent"} — run_id: ${run.id}, status: ${run.status}`),
+        ].join("\n")
+      : null,
+    // The person's own words, saved as their messages in this conversation
+    // while the Run waited: part of this turn's instructions, read with the results.
+    personInputs.length > 0
+      ? [
+          "Additional input from the person while you waited (also in the conversation; follow it together with the results):",
+          ...personInputs.map((item, index) => `${index + 1}. ${item.content}`),
         ].join("\n")
       : null,
   ].filter((part): part is string => typeof part === "string" && part.length > 0).join("\n\n");

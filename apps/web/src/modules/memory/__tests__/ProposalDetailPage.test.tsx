@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import type { ReactNode } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { ProposalOutSchema } from '@rainver/protocol'
 import type { Proposal } from '../../../types/api'
 
 const mocked = vi.hoisted(() => ({ get: vi.fn(), accept: vi.fn(), reject: vi.fn(), memoryGet: vi.fn(), reviseProposal: vi.fn() }))
@@ -15,6 +16,8 @@ vi.mock('../../../core/spaceNav', async importOriginal => ({
   SpaceLink: ({ to, children }: { to: string; children: ReactNode }) => <a href={to}>{children}</a>,
 }))
 vi.mock('../../../components/ContentAccessControl', () => ({ ContentAccessControl: () => null }))
+const gmail = vi.hoisted(() => ({ applicationExecutionOptions: vi.fn(), selectApplicationExecution: vi.fn() }))
+vi.mock('../../../api/gmail', () => ({ gmailApi: gmail }))
 vi.mock('../../../api/client', () => ({
   proposalsApi: { get: mocked.get, accept: mocked.accept, reject: mocked.reject, approveEgressGrantingUserProposal: vi.fn() },
   memoryApi: { get: mocked.memoryGet, reviseProposal: mocked.reviseProposal },
@@ -45,6 +48,73 @@ function renderPage() {
 }
 
 beforeEach(() => vi.clearAllMocks())
+
+// ADR 0036: an application-update card reached from a Proposal entry shows the choice made on it and is accepted
+// only on the revision it shows; anyone but its owner sees no choice and cannot accept it.
+const executionOptions = (revision: string, summary: string) => ({
+  proposal_id: 'proposal-1', applies: true, selected: { agent_id: 'agent-1', runtime_profile_id: 'profile-1', model: 'model-full-id-1' }, summary,
+  next_cursor: null, card_revision: revision.repeat(64),
+  scope: { mailbox_email: 'owner@gmail.example', effects: ['interview'], results_to: 'private', room_title: null, reader_names: [], reader_count: 0 },
+  configurations: [{ agent_id: 'agent-1', agent_name: 'Coder', agent_kind: 'standard', runtime_profile_id: 'profile-1', profile_name: 'Main', runtime_key: 'claude_code',
+    backend_mode: 'runtime_native', available: true, reason: null, models: [{ model: 'model-full-id-1', available: true, reason: null }], omitted_models: 0, models_cursor: null }],
+})
+/**
+ * A card as `GET /proposals/:id` returns it (checked against the wire DTO): a strict Gmail payload names no owner, so
+ * `owner_user_id` is the proposal row's own — standalone (`gmail_digest_create`) or combined (`gmail_setup`).
+ */
+const applicationCard = (owner: string, proposalType: 'gmail_digest_create' | 'gmail_setup' = 'gmail_digest_create') => ProposalOutSchema.parse({
+  id: 'proposal-1', space_id: 'space-1', user_id: owner, project_folder_id: null, source_session_id: null, source_task_id: null,
+  source_run_id: 'run-1', created_by_run_id: 'run-1', proposal_type: proposalType, target_scope: '', target_namespace: '', memory_type: '',
+  proposed_title: 'Automatic application updates from Gmail', title_parts: null, proposed_content: '', rationale: '', status: 'pending',
+  risk_level: 'medium', urgency: 'normal', visibility: 'private', preview: false, review_deadline: null, expires_at: null, expired: false,
+  created_at: '2026-11-23T00:00:00.000Z', decided_at: null, resulting_memory_id: null, owner_user_id: owner, subject_user_id: null,
+  sensitivity_level: null, access_level: null, provenance_entries: null, source_activity_id: null, grant_id: null,
+  required_approver_user_id: null, required_approver_user_ids: null, requires_approval_type: null, egress_approval_status: null,
+  egress_approval_id: null, project_id: 'project-1', target_memory_id: null, chosen_on_card: true,
+}) as unknown as Proposal
+const cardTypes = ['gmail_digest_create', 'gmail_setup'] as const
+
+describe('ProposalDetailPage application-update card', () => {
+  it.each(cardTypes)('shows its Agent and model choice to its owner and accepts only on the revision it shows (%s)', async proposalType => {
+    mocked.get.mockResolvedValue(applicationCard('user-owner', proposalType))
+    gmail.applicationExecutionOptions.mockResolvedValue(executionOptions('a', 'Coder on model-full-id-1 reads each new inbox message.'))
+    mocked.accept.mockResolvedValue({ result_type: 'gmail_digest', result: {}, proposal: { id: 'proposal-1', status: 'accepted' } })
+    renderPage()
+    expect(await screen.findByTestId('gmail-application-execution')).toBeInTheDocument()
+    expect(await screen.findByText('Coder on model-full-id-1 reads each new inbox message.')).toBeInTheDocument()
+    const accept = screen.getByRole('button', { name: 'Accept' })
+    await waitFor(() => expect(accept).toBeEnabled())
+    fireEvent.click(accept)
+    await waitFor(() => expect(mocked.accept).toHaveBeenCalledWith('proposal-1', expect.objectContaining({ expectedRevision: 'a'.repeat(64) })))
+  })
+
+  it('reloads the choice when acceptance finds the card changed, and accepts nothing before it loaded', async () => {
+    mocked.get.mockResolvedValue(applicationCard('user-owner'))
+    let first!: (value: unknown) => void
+    gmail.applicationExecutionOptions
+      .mockReturnValueOnce(new Promise(resolve => { first = resolve }))
+      .mockResolvedValueOnce(executionOptions('b', 'Chosen again in another tab.'))
+    const { ApiRequestError } = await import('../../../api/transport')
+    mocked.accept.mockRejectedValueOnce(new ApiRequestError('changed', 409, 'proposal_apply_refused', { error: { metadata: { code: 'proposal_revision_changed' } } }))
+    renderPage()
+    const accept = await screen.findByRole('button', { name: 'Accept' })
+    expect(accept).toBeDisabled()
+    first(executionOptions('a', 'Coder on model-full-id-1.'))
+    await waitFor(() => expect(accept).toBeEnabled())
+    fireEvent.click(accept)
+    expect(await screen.findByText('Chosen again in another tab.')).toBeInTheDocument()
+    expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/This card changed since it was shown here/))
+    expect(mocked.accept).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(cardTypes)('shows no choice to anyone but its owner, and offers them no Accept they could use (%s)', async proposalType => {
+    mocked.get.mockResolvedValue(applicationCard('user-someone-else', proposalType))
+    renderPage()
+    expect(await screen.findByText(/Only the mailbox owner chooses the Agent and model/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Accept' })).toBeDisabled()
+    expect(gmail.applicationExecutionOptions).not.toHaveBeenCalled()
+  })
+})
 
 describe('ProposalDetailPage', () => {
   it('offers Accept and Reject on any pending proposal, as the list does', async () => {

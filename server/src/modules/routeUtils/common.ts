@@ -1,4 +1,5 @@
 import {isOperationTransaction} from "../../db/operationTransaction.js";
+import { closeCommitBoundary, openCommitBoundary, runCommitBoundary } from "../../db/tx.js";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { z } from "zod";
 import type { ServerConfig } from "../../config.js";
@@ -379,15 +380,19 @@ export async function withQueryableTransaction<T>(
   // roll back the caller's transaction.
   if (typeof pool.release === "function" || typeof pool.connect !== "function") return fn(db);
   const client = await pool.connect();
+  let boundary = false;
   try {
     await client.query("BEGIN");
+    boundary = openCommitBoundary(client);
     const result = await fn(client);
+    runCommitBoundary(client);
     await client.query("COMMIT");
     return result;
   } catch (error) {
     await client.query("ROLLBACK").catch(() => {});
     throw error;
   } finally {
+    if (boundary) closeCommitBoundary(client);
     client.release();
   }
 }

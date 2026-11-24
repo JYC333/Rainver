@@ -26,6 +26,47 @@ function finish(usage: unknown) {
 }
 
 describe("ACP token measurement", () => {
+  it.each(["end_turn", "max_turn_requests", "rpc_error"])("keeps the Claude receipt exactly once on %s", (outcome) => {
+    const events: unknown[] = [];
+    const sent: unknown[] = [];
+    const send = (frame: unknown) => { sent.push(frame); };
+    const controller = createCliConversationController({
+      runtime_key: "claude_code", cwd: "/workspace", prompt: "review",
+      on_protocol_event: frame => events.push(frame),
+    })!;
+    const receive = (frame: Record<string, unknown>) => controller.receive({ jsonrpc: "2.0", ...frame }, send, () => {});
+    controller.start(send);
+    receive({ id: 1, result: { protocolVersion: 1, agentInfo: { name: "claude", version: "0.101.0" } } });
+    expect(sent).toContainEqual(expect.objectContaining({ method: "session/new", params: expect.objectContaining({
+      _meta: { claudeCode: { emitRawSDKMessages: [{ type: "result" }] } },
+    }) }));
+    receive({ id: 2, result: { sessionId: "s1", configOptions: [] } });
+    const receipt = { uuid: "receipt-1", session_id: "s1", type: "result", origin: { kind: "human" },
+      result: "private SDK payload", usage: { input_tokens: 2, output_tokens: 3,
+        cache_read_input_tokens: 70, cache_creation_input_tokens: 25,
+        cache_creation: { ephemeral_1h_input_tokens: 20 } } };
+    const sdk = (message: unknown) => receive({ method: "_claude/sdkMessage", params: { sessionId: "s1", message } });
+    sdk({ ...receipt, uuid: "wrong-session", session_id: "s2" });
+    sdk({ ...receipt, uuid: "native-background", origin: { kind: "task-notification" } });
+    sdk(receipt);
+    sdk(receipt);
+    if (outcome === "rpc_error") receive({ id: 4, error: { code: -32603, message: "interrupted" } });
+    else receive({ id: 4, result: { stopReason: outcome, usage: { inputTokens: 2, outputTokens: 3,
+      cachedReadTokens: 70, cachedWriteTokens: 25, totalTokens: 100 },
+      _meta: { quota: { model_usage: [
+        { model: "claude-opus", token_count: { inputTokens: 2, outputTokens: 3, cachedInputTokens: 70, cachedWriteTokens: 25, totalTokens: 100 } },
+        { model: "claude-haiku", token_count: { inputTokens: 1, outputTokens: 2, totalTokens: 3 } },
+      ] } },
+    } });
+    expect(controller.result().usage).toMatchObject({ total_tokens: 100, cache_creation_input_tokens: 25, cache_creation_1h_input_tokens: 20 });
+    if (outcome !== "rpc_error") {
+      expect(controller.result().model_usage?.[0]?.usage).toMatchObject({ cache_creation_1h_input_tokens: 20 });
+      expect(controller.result().model_usage?.[1]?.usage).not.toHaveProperty("cache_creation_1h_input_tokens");
+    }
+    expect(controller.result().error === null).toBe(outcome === "end_turn");
+    expect(JSON.stringify(events)).not.toContain("private SDK payload");
+  });
+
   it("reads concrete model versions from wrapper quota rows and separates Codex cached input", () => {
     const meta = { quota: { model_usage: [{ model: "gpt-6.1-sol", token_count: {
       inputTokens: 20, cachedInputTokens: 80, cacheWriteInputTokens: 0, outputTokens: 10, reasoningOutputTokens: 5, totalTokens: 110,

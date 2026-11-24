@@ -1,5 +1,5 @@
 import { operationPackageIdentity } from './packageIdentity.js';
-import { pluginFrontendEntries, pluginRefusalOf, PluginOperationManifestSchema, type OperationActor, type RainverPlugin, type OfficialPluginDescriptor, type PolicyActionDefinition, type RegisteredSystemActionDefinition as SystemActionDefinition, type PluginOperationId, type PluginOperationExecutor, type PluginOperationManifest } from '@rainver/protocol';
+import { GMAIL_APPLICATION_FACT_ACTION, GMAIL_APPLICATION_FACTS_LIST_ACTION, pluginFrontendEntries, pluginRefusalOf, PluginOperationManifestSchema, type OperationActor, type RainverPlugin, type OfficialPluginDescriptor, type PolicyActionDefinition, type RegisteredSystemActionDefinition as SystemActionDefinition, type PluginOperationId, type PluginOperationContext, type PluginOperationExecutor, type PluginOperationManifest } from '@rainver/protocol';
 import { proposalApproval } from './proposalContributions.js';
 import type { PluginBackground } from './background.js';
 import { pluginServiceFor } from './service.js';
@@ -10,12 +10,14 @@ import { hidden, OperationError, OperationRefusal } from '../systemActions/opera
 import { withPluginDb } from './operationDb.js';
 import type { Queryable } from '../routeUtils/common.js';
 import { registerOperationDescriptors } from './registry.js';
-import { perReaderRead, pluginDataFacts, runScenario, sharedAudience } from './dataAccess.js';
+import { applicationProjectContactReads, perReaderRead, pluginDataFacts, runScenario, sharedAudience, UNKNOWN_AUDIENCE } from './dataAccess.js';
 import { pluginCorePorts } from './corePorts.js';
-import { assertOutputWithinClass, attachReleaseFacts, readReleaseFacts, releasePluginResult, type PluginReference } from './releaseGate.js';
+import { APPLICATION_DRAFT_PREVIEW, assertOutputWithinClass, attachReleaseFacts, isApplicationDraftAction, readReleaseFacts, releasePluginResult, type PluginReference } from './releaseGate.js';
 import { canonical } from '../systemActions/operations/repository.js';
 import { assertPluginProjectAudience, assertPluginProjectTarget } from './projectBindings.js';
-import { canReadProject } from '../projects/access.js';
+import { assertProjectReadableLocked, canReadProject, lockAgentProjectBeforeActor } from '../projects/access.js';
+import { notifyProjectChanged } from '../projects/liveUpdates.js';
+import { applicationProjectQueries, releaseApplicationReads } from './applicationReadRelease.js';
 const packages = new WeakMap<ServerConfig, readonly RainverPlugin[]>();
 export function operationPackages(config?: ServerConfig) {
   return config ? packages.get(config) ?? [] : [];
@@ -79,6 +81,7 @@ export function composePluginOperations(config: ServerConfig, plugin: RainverPlu
   const m = validateOperationPlugin(plugin);
   if (executors.size !== m.operations.length || m.operations.some(o => !executors.has(o.id))) throw new Error('Declared/registered operation mismatch');
   return m.operations.map(o => {
+    const applicationProjectRead = m.id === 'applications' && m.project_binding && applicationProjectQueries.has(o.id);
     const definition: SystemActionDefinition = {
       id: o.id,
       version: o.version,
@@ -114,10 +117,16 @@ export function composePluginOperations(config: ServerConfig, plugin: RainverPlu
       definition,
       approval: proposalApproval(m, o.id, background),
       readKind: o.kind === 'query' ? 'content' : undefined,
-      async resolve(_db, input, actor) {
+      async resolve(db, input, actor) {
         const base = m.scope === 'user' ? `plugin:${m.id}:user:${actor.on_behalf_of_user_id}` : `plugin:${m.id}:space:${actor.space_id}`;
         // A Project-bound operation's target is its Project; the host authorizes it, never the plugin.
         const project = m.project_binding ? projectOf(input) : undefined;
+        // An Agent's Project-bound command locks its Project before the core pins person and Run, in the order
+        // of every Agent release of a Project-bound result and of the Gmail reads' releases (Project → person →
+        // Run, ADR 0034): pinned first, `application.update` held the Run FOR SHARE while waiting for the Project
+        // that the same Run's `application.list`/`.get` release held FOR SHARE while waiting for the Run FOR UPDATE.
+        // `mail_fact.apply` is one of these commands; authorize rechecks it all under the locks.
+        if (o.kind === 'command' && project) await lockAgentProjectBeforeActor(db, actor, project);
         return {
           authority: project ? `${base}:project:${project}` : base,
           targets: {
@@ -134,6 +143,29 @@ export function composePluginOperations(config: ServerConfig, plugin: RainverPlu
           operationManifest: m
         }, actor.space_id, actor.on_behalf_of_user_id!, o.kind === 'command', config);
         if (m.project_binding) await assertPluginProjectTarget(db, m, actor, projectOf(input), o.kind);
+        // An external fact from Gmail is recorded only by the owner's application-update automation Run,
+        // for a message it was given and read (ADR 0034); a person or any other Run never reaches it.
+        if (o.id === GMAIL_APPLICATION_FACT_ACTION) {
+          const {gmailApplicationFactAdmitted} = await import('../sources/gmail/gmailApplicationUpdates.js');
+          if (!await gmailApplicationFactAdmitted(db, actor, input)) throw hidden();
+        }
+        // What the owner's mail changed is answered only to the owner: directly, or to an Agent in their own
+        // private conversation of the Project, never into a conversation anyone else reads (ADR 0034).
+        if (o.id === GMAIL_APPLICATION_FACTS_LIST_ACTION) {
+          const {gmailApplicationFactsAudienceAdmitted} = await import('../sources/gmail/gmailApplicationUpdates.js');
+          if (!await gmailApplicationFactsAudienceAdmitted(db, actor, input)) throw hidden();
+        }
+        if (actor.principal.kind === 'agent' && isApplicationDraftAction(o.id)) {
+          if (actor.origin !== 'manual' || actor.effective_origin !== 'manual') throw hidden();
+          if (o.id === APPLICATION_DRAFT_PREVIEW) {
+            const scenario = await runScenario(db, actor);
+            if (scenario?.audience.length !== 1 || scenario.audience[0] !== actor.on_behalf_of_user_id) throw hidden();
+          }
+          if (o.id.endsWith('.generate')) {
+            const selection = input as {model_provider_id?: string | null; model?: string | null};
+            if (selection.model_provider_id || selection.model) throw hidden();
+          }
+        }
         const facts = await pluginDataFacts(db, config, actor, o.id, o.kind === 'command');
         if (facts === 'pin_mismatch') throw new OperationError('operation_not_granted', 403);
         if (facts) scope.policyFacts = {plugin_data_class: facts.dataClass, plugin_data_consent: facts.consent, plugin_data_requestable: facts.requestable, ...(facts.isolated === false ? {plugin_data_isolated: false} : {})};
@@ -155,7 +187,7 @@ export function composePluginOperations(config: ServerConfig, plugin: RainverPlu
         if (o.side_effects === 'proposal') throw new OperationError('operation_approval_mapping_unavailable', 503);
         const references: PluginReference[] = [];
         const bound = m.project_binding && projectOf(input) ? {project_id: projectOf(input)!} : {};
-        const run = async (viewer: OperationActor, collect: PluginReference[] | null) => {
+        const run = async (viewer: OperationActor, collect: PluginReference[] | null, applicationRead?: PluginOperationContext['applicationRead']) => {
           const settings = (await pluginServiceFor(config).getPlugin(db, m.id, viewer.space_id, viewer.on_behalf_of_user_id!)).effective.settings;
           const raw = await withPluginDb(db, m.id, viewer, pdb => executors.get(o.id)!(input, {
             settings,
@@ -164,6 +196,7 @@ export function composePluginOperations(config: ServerConfig, plugin: RainverPlu
               userId: viewer.on_behalf_of_user_id!
             }),
             db: pdb,
+            ...(applicationRead ? {applicationRead} : {}),
             core: collect ? pluginCorePorts(pdb, config, m, viewer, o.data_class, {kind: o.kind, references: collect, ...(m.project_binding ? {projectId: projectOf(input)} : {})}) : undefined,
             actor: Object.freeze({
               ...viewer,
@@ -176,6 +209,31 @@ export function composePluginOperations(config: ServerConfig, plugin: RainverPlu
           assertOutputWithinClass(raw, o.data_class);
           return raw;
         };
+        if (applicationProjectRead) {
+          let audience: string[] | undefined;
+          let projectOnly = false;
+          if (actor.principal.kind === 'agent') {
+            const scenario = await runScenario(db, actor);
+            if (!scenario || scenario.audience.includes(UNKNOWN_AUDIENCE)) throw hidden();
+            if (sharedAudience(scenario)) {
+              audience = [...scenario.audience];
+              projectOnly = true;
+              for (const reader of audience) if (!await canReadProject(db, actor.space_id, bound.project_id!, reader)) throw hidden();
+            } else if (applicationProjectContactReads.has(o.id)) {
+              const access = await pluginDataFacts(db, config, actor, o.id);
+              projectOnly = !access || access === 'pin_mismatch' || !access.grantId;
+            }
+          }
+          const ids = new Set<string>();
+          const related = new Set<string>();
+          const raw = await run(actor, references, {
+            projectOnly,
+            record: values => { for (const value of values) ids.add(value); },
+            recordRelatedApplications: values => { for (const value of values) related.add(value); },
+          }).catch(error => { throw projectOnly && pluginRefusalOf(error) ? hidden() : error; });
+          attachReleaseFacts(raw, {v: 1, references, ...bound, applicationIds: [...ids], applicationRelatedIds: [...related], applicationProjectOnly: projectOnly, ...(audience ? {audience} : {})});
+          return raw;
+        }
         // caller_owned rows belong to the person who wrote them, whatever their data class, so every
         // shared read (not only a personal one) is released as what each reader reads themselves.
         if (actor.principal.kind === 'agent' && perReaderRead(m, o)) {
@@ -203,6 +261,15 @@ export function composePluginOperations(config: ServerConfig, plugin: RainverPlu
           }
         }
         const raw = await run(actor, references);
+        if (m.id === 'applications' && o.side_effects === 'durable' && bound.project_id) {
+          await notifyProjectChanged(db, actor.space_id, bound.project_id);
+        }
+        // A fact recorded on an application the Project reads, by an automation enabled from a shared conversation
+        // of the Project, is kept (structured, never mail text) for that conversation's notice (ADR 0035 §1).
+        if (o.id === GMAIL_APPLICATION_FACT_ACTION) {
+          const {recordGmailApplicationSharedResult} = await import('../sources/gmail/gmailApplicationSharedConversation.js');
+          await recordGmailApplicationSharedResult(db, actor, raw);
+        }
         attachReleaseFacts(raw, {v: 1, references, ...bound});
         return raw;
       },
@@ -216,16 +283,35 @@ export function composePluginOperations(config: ServerConfig, plugin: RainverPlu
       // Reviewed caller-owned queries need no B11 cross-person row; the manifest label cannot waive B11.
       // Every result body, fresh or replayed, query or command, is released here (ADR 0030).
       async releaseGate(audit, release) {
-        await releasePluginResult(audit, config, m, o, release.actor, release.data, release.facts as Parameters<typeof releasePluginResult>[6]);
+        const facts = release.facts as Parameters<typeof releasePluginResult>[6];
+        // An Agent's Project-bound result takes its Project first, before the person and the Run
+        // (Project → person → Run, the order of the Gmail digest read's release and of the mail fact a
+        // mail-reading automation Run records, ADR 0034): with people and the Run first, this release held the
+        // Run FOR UPDATE while waiting for the Project that the same Run's fact holds FOR UPDATE while waiting for
+        // the Run — a deadlock between `application.list`/`.get` and `mail_fact.apply`. Every Project-bound
+        // command of an Agent therefore takes its Project in `resolve`, before its own actor pin.
+        if (m.project_binding && release.actor.principal.kind === 'agent') {
+          const project = projectOf(release.input);
+          if (!project || !release.actor.on_behalf_of_user_id) throw new OperationError('operation_audit_unavailable', 503, true);
+          await assertProjectReadableLocked(audit, release.actor.space_id, project, release.actor.on_behalf_of_user_id)
+            .catch(() => { throw new OperationError('operation_audit_unavailable', 503, true); });
+        }
+        const consent = await releasePluginResult(audit, config, m, o, release.actor, release.data, facts, m.project_binding ? projectOf(release.input) : undefined);
         // An unbind, a lost Project role or a moved Run committed after execution withholds the body,
         // for a fresh result and for every replay of a stored receipt.
         if (m.project_binding) {
           const project = projectOf(release.input);
-          const audience = (release.facts as Parameters<typeof releasePluginResult>[6])?.audience ?? [];
+          const audience = facts?.audience ?? [];
           await (async () => {
             await assertPluginProjectTarget(audit, m, release.actor, project, 'query', {lockBinding: true});
             // A shared result's audience: every reader it was intersected for still reads the Project now.
-            if (audience.length) await assertPluginProjectAudience(audit, release.actor.space_id, project!, audience);
+            if (applicationProjectRead) {
+              if (!facts?.applicationIds) throw hidden();
+              const projectOnly = facts.applicationProjectOnly === true ||
+                (release.actor.principal.kind === 'agent' && applicationProjectContactReads.has(o.id) && !consent?.grantId);
+              await releaseApplicationReads(audit, release.actor, project!, o.id, facts.applicationIds, facts.audience, projectOnly, consent);
+              if (facts.applicationRelatedIds?.length) await releaseApplicationReads(audit, release.actor, project!, o.id, facts.applicationRelatedIds, facts.audience, projectOnly, undefined, 'applications');
+            } else if (audience.length) await assertPluginProjectAudience(audit, release.actor.space_id, project!, audience);
           })().catch(() => { throw new OperationError('operation_audit_unavailable', 503, true); });
         }
       }

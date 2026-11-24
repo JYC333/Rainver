@@ -72,15 +72,12 @@ export function DatePicker({
 }: DatePickerProps) {
   const { t, locale } = useAppTranslation()
   const rootRef = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const dialogRef = useRef<HTMLDivElement>(null)
+  const pendingFocus = useRef<string | null>(null)
   const [open, setOpen] = useState(false)
   const [dropUp, setDropUp] = useState(false)
   const [viewDate, setViewDate] = useState(() => startOfMonth(parseIsoDate(value) ?? new Date()))
-
-  useEffect(() => {
-    if (open) {
-      setViewDate(startOfMonth(parseIsoDate(value) ?? new Date()))
-    }
-  }, [open, value])
 
   useEffect(() => {
     function closeOnOutsideClick(event: MouseEvent) {
@@ -114,6 +111,43 @@ export function DatePicker({
   })
   const today = toIsoDate(new Date())
 
+  useLayoutEffect(() => {
+    if (!open || !pendingFocus.current) return
+    const target = dialogRef.current?.querySelector<HTMLButtonElement>(
+      `[data-date="${pendingFocus.current}"]:enabled`,
+    )
+    const first = dialogRef.current?.querySelector<HTMLButtonElement>('[data-date]:enabled')
+    const focusTarget = target ?? first ?? dialogRef.current
+    focusTarget?.focus()
+    pendingFocus.current = null
+  }, [open, viewDate])
+
+  function closeAndRestoreFocus() {
+    setOpen(false)
+    triggerRef.current?.focus()
+  }
+
+  function openCalendar() {
+    const preferred = value || today
+    const initial = min && preferred < min ? min : max && preferred > max ? max : preferred
+    const date = parseIsoDate(initial) ?? new Date()
+    pendingFocus.current = toIsoDate(date)
+    setViewDate(startOfMonth(date))
+    setOpen(true)
+  }
+
+  function moveDateFocus(event: React.KeyboardEvent<HTMLButtonElement>, date: Date) {
+    const offsets: Record<string, number> = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -7, ArrowDown: 7 }
+    const offset = offsets[event.key]
+    if (offset === undefined) return
+    event.preventDefault()
+    const next = new Date(date.getFullYear(), date.getMonth(), date.getDate() + offset)
+    const nextValue = toIsoDate(next)
+    if (isDateOutsideRange(nextValue, min, max)) return
+    pendingFocus.current = nextValue
+    setViewDate(startOfMonth(next))
+  }
+
   function changeMonth(offset: number) {
     setViewDate(current => new Date(current.getFullYear(), current.getMonth() + offset, 1))
   }
@@ -122,18 +156,28 @@ export function DatePicker({
     const nextValue = toIsoDate(date)
     if (isDateOutsideRange(nextValue, min, max)) return
     onChange(nextValue)
-    setOpen(false)
+    closeAndRestoreFocus()
   }
 
   return (
-    <div ref={rootRef} className={cn('relative', className)}>
+    <div
+      ref={rootRef}
+      className={cn('relative', className)}
+      onKeyDown={event => {
+        if (!open || event.key !== 'Escape') return
+        event.preventDefault()
+        event.stopPropagation()
+        closeAndRestoreFocus()
+      }}
+    >
       <button
+        ref={triggerRef}
         type="button"
         disabled={disabled}
         aria-label={ariaLabel}
         aria-haspopup="dialog"
         aria-expanded={open}
-        onClick={() => setOpen(current => !current)}
+        onClick={() => open ? closeAndRestoreFocus() : openCalendar()}
         className={cn(
           'flex h-9 w-full items-center justify-between gap-2 rounded-md border border-border',
           'bg-input px-3 text-left text-sm text-foreground transition-colors',
@@ -147,6 +191,8 @@ export function DatePicker({
 
       {open && !disabled && (
         <div
+          ref={dialogRef}
+          tabIndex={-1}
           role="dialog"
           aria-label={ariaLabel ?? t('core_ui.date_picker.choose_date')}
           className={cn(
@@ -190,6 +236,8 @@ export function DatePicker({
                   disabled={disabledDate}
                   aria-label={new Intl.DateTimeFormat(locale, { dateStyle: 'long' }).format(date)}
                   aria-pressed={selected}
+                  data-date={dateValue}
+                  onKeyDown={event => moveDateFocus(event, date)}
                   onClick={() => selectDate(date)}
                   className={cn(
                     'h-8 rounded-md text-xs transition-colors focus:outline-none focus:ring-1 focus:ring-ring',
@@ -214,15 +262,15 @@ export function DatePicker({
               onClick={() => selectDate(new Date())}
               disabled={isDateOutsideRange(today, min, max)}
             >
-              Today
+              {t('core_ui.date_picker.today')}
             </button>
             {value && (
               <button
                 type="button"
                 className="text-xs text-muted-foreground hover:text-foreground hover:underline focus:outline-none focus:ring-1 focus:ring-ring"
-                onClick={() => { onChange(''); setOpen(false) }}
+                onClick={() => { onChange(''); closeAndRestoreFocus() }}
               >
-                Clear
+                {t('core_ui.date_picker.clear')}
               </button>
             )}
           </div>

@@ -3,7 +3,7 @@ import type {
   CustomSourcePolicyEnvelope,
 } from "@rainver/protocol";
 import type { ServerConfig } from "../../../config.js";
-import type { Queryable } from "../../routeUtils/common.js";
+import { withQueryableTransaction, type Queryable } from "../../routeUtils/common.js";
 import {
   HANDLER_VERSION_COLUMNS,
   PgCustomSourceHandlerRepository,
@@ -28,6 +28,33 @@ interface QueuedRunRow {
   extraction_job_id: string | null;
 }
 
+/** Repair a Handler that persisted its terminal receipt before its partner ExtractionJob. */
+export async function reconcileTerminalCustomSourceScans(db: Queryable, limit: number): Promise<void> {
+  await withQueryableTransaction(db, async tx => {
+    const repaired = await tx.query<QueuedRunRow & { completed_at: Date; items_created: number; status: string }>(
+      `WITH stranded AS (
+         SELECT cr.id, cr.space_id, cr.source_connection_id, cr.handler_version_id, cr.extraction_job_id,
+                cr.status, cr.completed_at, cr.failure_class, ej.metadata_json->>'source_channel_id' AS source_channel_id,
+                COALESCE((cr.validation_result_json->>'items_created')::int, 0) AS items_created,
+                COALESCE((cr.validation_result_json->>'items_updated')::int, 0) AS items_updated
+           FROM source_handler_runs cr JOIN extraction_jobs ej ON ej.id=cr.extraction_job_id AND ej.space_id=cr.space_id
+          WHERE cr.status IN ('succeeded','failed','blocked','validation_failed') AND ej.status IN ('pending','running')
+            AND cr.completed_at < now() - interval '1 minute'
+          ORDER BY cr.completed_at, cr.id LIMIT $1 FOR UPDATE OF ej SKIP LOCKED
+       ) UPDATE extraction_jobs ej SET status=CASE WHEN s.status='succeeded' THEN 'succeeded' ELSE 'failed' END,
+           completed_at=s.completed_at, items_seen=s.items_created+s.items_updated, items_created=s.items_created,
+           items_updated=s.items_updated, error_code=s.failure_class
+         FROM stranded s WHERE ej.id=s.extraction_job_id RETURNING s.*`, [limit]);
+    for (const row of repaired.rows) {
+      await rescheduleSourceChannelScanAfterRun(tx, { channelId: row.source_channel_id, completedAt: new Date(row.completed_at).toISOString() });
+      if (row.status !== "succeeded" || row.items_created === 0) continue;
+      const input = { spaceId: row.space_id, sourceChannelId: row.source_channel_id, sourceConnectionId: row.source_connection_id, newItemCount: row.items_created };
+      await emitSourcePostProcessingEvent(tx, input);
+      await enqueueItemsForAnnotation(tx, input);
+    }
+  });
+}
+
 /**
  * Mirrors `processPendingSourceJobs` (scheduler/backgroundServices.ts) for
  * `source_handler_runs` rows queued by `enqueueDueCustomSourceHandlerRuns`.
@@ -48,6 +75,7 @@ export async function runPendingCustomSourceHandlerRuns(
    */
   guard?: OutboundGuard,
 ): Promise<number> {
+  await reconcileTerminalCustomSourceScans(db, batchLimit);
   const pending = await db.query<QueuedRunRow>(
     `SELECT shr.id, shr.space_id, shr.source_connection_id, shr.handler_version_id, shr.extraction_job_id,
             ej.metadata_json->>'source_channel_id' AS source_channel_id

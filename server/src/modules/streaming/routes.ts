@@ -15,8 +15,12 @@ import { streamAgentAttention } from "./agentAttentionStream.js";
 import { streamRunTurn } from "./turnStream.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
-  app.get("/api/v1/me/agent-attention/stream", async (request, reply) => streamAgentAttention(context.config, request, reply));
+  const shutdown = new AbortController();
+  app.addHook("preClose", async () => shutdown.abort());
+  app.get("/api/v1/me/agent-attention/stream", async (request, reply) =>
+    streamAgentAttention(context.config, request, reply, shutdown.signal),
+  );
   app.get("/api/v1/runs/:runId/turn/stream", async (request, reply) =>
-    streamRunTurn(context.config, request, reply),
+    streamRunTurn(context.config, request, reply, shutdown.signal),
   );
 }

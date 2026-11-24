@@ -45,7 +45,7 @@ export function memoryHumanRegistrations(defs:ReadonlyMap<string,RegisteredSyste
     const out=await proposals(db,config).updateMemoryProposal(a.space_id,user(a),memory,{...i,operation:'update',target_memory_id:memory,provenance_entries:[]} as never);
     return {id:String(out.id),space_id:a.space_id};}}),
   reg('memory.archive',{target:i=>i.memory_id,
-   async authorize(db,raw,a){await lockActivePerson(db,a.space_id,user(a));const m=(raw as Input).memory_id;if(!(await db.query('SELECT id FROM memory_entries WHERE id=$1 AND space_id=$2 AND deleted_at IS NULL FOR SHARE',[m,a.space_id])).rows.length)throw hidden();},
+   async authorize(db,raw,a){await lockActivePerson(db,a.space_id,user(a));const m=(raw as Input).memory_id;if(!(await db.query('SELECT id FROM memory_entries WHERE id=$1 AND space_id=$2 AND deleted_at IS NULL',[m,a.space_id])).rows.length)throw hidden();},
    async authorizeResult(db,raw,a){const o=raw as {id:string;space_id:string;outcome:string};if(o.space_id!==a.space_id||!(o.outcome==='archived'?await owns(db,a,o.id):await proposalVisible(db,a,o.id)))throw hidden();},
    async execute(db,raw,a){const m=(raw as Input).memory_id;
     // Only the owner archives directly; ownerless and other people's entries are proposals.
@@ -53,7 +53,7 @@ export function memoryHumanRegistrations(defs:ReadonlyMap<string,RegisteredSyste
     const out=await proposals(db,config).archiveMemoryProposal(a.space_id,user(a),m,{operation:'archive',target_memory_id:m,provenance_entries:[]} as never);
     return {id:String(out.id),space_id:a.space_id,outcome:'proposed' as const};}}),
   ...(['memory.restore','memory.revert'] as const).map(id=>reg(id,{target:i=>i.memory_id,
-   async authorize(db,raw,a){await lockActivePerson(db,a.space_id,user(a));if(!await new PgMemoryApplyRepository(db).authorizeOwnVersion(a.space_id,user(a),(raw as Input).memory_id))throw hidden();},
+   async authorize(db,raw,a){await lockActivePerson(db,a.space_id,user(a));if(!await new PgMemoryApplyRepository(db).authorizeOwnVersion(a.space_id,user(a),(raw as Input).memory_id,id==='memory.revert'))throw hidden();},
    async authorizeResult(db,raw,a){const o=raw as {id:string;space_id:string};if(o.space_id!==a.space_id||!await owns(db,a,o.id))throw hidden();},
    async execute(db,raw,a){const m=(raw as Input).memory_id,repo=new PgMemoryApplyRepository(db);
     const row=id==='memory.restore'?await repo.setOwnStatus(a.space_id,user(a),m,'active'):await repo.revertToPreviousVersion(a.space_id,user(a),m);

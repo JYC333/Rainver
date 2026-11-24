@@ -17,6 +17,26 @@ const privateAttribution = {
 };
 
 describe("usage normalizer", () => {
+  it.each([
+    {
+      raw: { input_tokens: 1000, output_tokens: 100, total_tokens: 1100,
+        input_tokens_details: { cached_tokens: 600 }, output_tokens_details: { reasoning_tokens: 30 } },
+      expected: { input: 400, input_cache_read: 600, output: 70, output_reasoning: 30, total: 1100 },
+    },
+    {
+      raw: { input_tokens: 50, output_tokens: 25, cache_read_input_tokens: 30,
+        cache_creation_input_tokens: 100, cache_creation: { ephemeral_1h_input_tokens: 60 } },
+      expected: { input: 50, input_cache_read: 30, input_cache_creation: 100,
+        input_cache_creation_1h: 60, output: 25, total: 205 },
+    },
+  ])("counts native provider usage without losing token sub-buckets", ({ raw, expected }) => {
+    const event = normalizeUsageObservation({
+      space_id: "space-1", event_type: "llm.generation", source_type: "local_run",
+      execution_channel: "managed_api", provider_usage: raw,
+    }, "instance-1", privateAttribution);
+    expect(event.usage_details_json).toEqual(expected);
+  });
+
   it("does not invent model calls for aggregated CLI usage and preserves safe diagnostics", () => {
     const observation = {
       space_id: "space-1", event_type: "llm.generation" as const, source_type: "local_run" as const,

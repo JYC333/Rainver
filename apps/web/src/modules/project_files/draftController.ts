@@ -222,6 +222,11 @@ export class ProjectFileDraftController {
         byte_size: new TextEncoder().encode(requestContent).byteLength,
       }, requestGeneration)
       await this.inFlight
+    } catch (error) {
+      this.clearTimers()
+      this.error = error
+      this.setStatus('error')
+      for (const waiter of this.waiters.splice(0)) waiter.reject(error)
     } finally {
       this.draining = false
       if (!this.inFlight && this.generation > this.acknowledgedGeneration && this.status !== 'error' && this.status !== 'conflict') {
@@ -256,10 +261,7 @@ export class ProjectFileDraftController {
       }
       if (current !== undefined) this.draft = current
       this.setStatus(isConflictError(error) ? 'conflict' : 'error')
-      for (const waiter of this.waiters.splice(0)) {
-        if (waiter.generation <= requestGeneration) waiter.reject(error)
-        else this.waiters.push(waiter)
-      }
+      for (const waiter of this.waiters.splice(0)) waiter.reject(error)
     }
   }
 

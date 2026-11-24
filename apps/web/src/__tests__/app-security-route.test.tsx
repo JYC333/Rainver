@@ -21,10 +21,10 @@ import App from '../App'
 describe('Security route', () => {
   beforeEach(() => window.history.replaceState(null, '', '/settings/security'))
 
-  it('renders the authenticated Security page inside the app shell', () => {
+  it('renders the authenticated Security page inside the app shell', async () => {
     render(<App />)
 
-    expect(screen.getByRole('navigation', { name: 'Global navigation' })).toBeInTheDocument()
+    expect(await screen.findByRole('navigation', { name: 'Global navigation' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Account security' })).toBeInTheDocument()
   })
 })

@@ -20,6 +20,17 @@ import { ProjectFolderConversationProvider } from './ProjectFolderConversationCo
 import { useProjectContentEdge } from './useProjectContentEdge'
 
 /**
+ * What the Area routes read from this layout. `OverviewPage` is the Project's
+ * index page, which this layout already loads statically for the no-access
+ * view; the index route renders it from here instead of through its own lazy
+ * boundary, because a second Suspense reveal is throttled by React for 300 ms.
+ */
+export interface ProjectAreaOutletContext {
+  onAccessChanged: () => void
+  OverviewPage: typeof ProjectDetailPage
+}
+
+/**
  * What a person switches between while running a Project.
  *
  * Agents and Rooms are two separate, parallel entries because they are two
@@ -227,7 +238,7 @@ export default function ProjectAreaLayout() {
           at never means leaving it. It renders the Room's own conversation, not
           a private one. */}
       <div className={cn('flex min-w-0',boardArea?'min-h-0 flex-1 overflow-hidden':'lg:min-h-0 lg:overflow-hidden')}>
-        <main ref={setContent} data-project-area-content className={cn('min-w-0 flex-1',boardArea?'min-h-0 overflow-hidden':'lg:min-h-0 lg:overflow-y-auto lg:overscroll-y-contain')}><Outlet context={{ onAccessChanged: () => setCleared(n => n + 1) }} /></main>
+        <main ref={setContent} data-project-area-content className={cn('min-w-0 flex-1',boardArea?'min-h-0 overflow-hidden':'lg:min-h-0 lg:overflow-y-auto lg:overscroll-y-contain')}><Outlet context={{ onAccessChanged: () => setCleared(n => n + 1), OverviewPage: ProjectDetailPage } satisfies ProjectAreaOutletContext} /></main>
         <div data-shell-chrome className="contents"><ProjectChatSidecar attention={visibleOverview?.attention} /></div>
       </div>
       </div>

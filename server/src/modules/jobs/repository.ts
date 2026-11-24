@@ -13,6 +13,7 @@ import {
 } from "../runs/evidenceRedaction.js";
 import { PgRunRepository } from "../runs/repository.js";
 import { wakeJobWorkers } from "./wakeSignal.js";
+import { currentAgentRunJobSql, RUN_CANCELLATION_RECONCILE_JOB, SUPERSEDED_AGENT_RUN_JOB } from "./agentRunGeneration.js";
 
 
 /**
@@ -97,7 +98,7 @@ const JOB_SELECT_COLUMNS = `
 
 /** Job types that perform a Run: their job ending without it ends the Run. */
 const RUN_BACKED_JOB_TYPES = new Set(["agent_run", "provider_task_run", "daily_capture_report"]);
-/** A Run in one of these is not this job's to end: finished, or parked for a person. */
+/** A completed Run or a parked Run has no work left on this Job. */
 const RUN_NOT_ENDED_BY_JOB = new Set([
   "succeeded",
   "failed",
@@ -105,12 +106,15 @@ const RUN_NOT_ENDED_BY_JOB = new Set([
   "cancelled",
   "orphaned",
   "waiting_for_review",
+  "waiting_for_dependency",
 ]);
 
-/** The job's agent Run is running/cancelling on a launched latest attempt (correlated on `jobs`). */
-const LAUNCHED_AGENT_RUN_ACTIVE = `EXISTS(SELECT 1 FROM runs r WHERE r.id=jobs.payload_json->>'run_id' AND r.space_id=jobs.space_id
+const CURRENT_AGENT_RUN_JOB = currentAgentRunJobSql();
+
+/** The current agent Run job owes its launched latest attempt stop reconciliation. */
+const LAUNCHED_AGENT_RUN_ACTIVE = `(${CURRENT_AGENT_RUN_JOB} AND EXISTS(SELECT 1 FROM runs r WHERE r.id=jobs.payload_json->>'run_id' AND r.space_id=jobs.space_id
   AND r.status IN ('running','cancelling') AND EXISTS(SELECT 1 FROM run_attempts a WHERE a.run_id=r.id AND a.space_id=r.space_id AND a.launch_id IS NOT NULL
-    AND a.attempt_number=(SELECT max(latest.attempt_number) FROM run_attempts latest WHERE latest.run_id=r.id AND latest.space_id=r.space_id)))`;
+    AND a.attempt_number=(SELECT max(latest.attempt_number) FROM run_attempts latest WHERE latest.run_id=r.id AND latest.space_id=r.space_id))))`;
 /** An exhausted agent_run job whose launched attempt still runs keeps a reserved stop-reconciliation claim. */
 const STOP_CLAIM_RESERVED = `(attempts >= max_attempts AND job_type='agent_run' AND ${LAUNCHED_AGENT_RUN_ACTIVE})`;
 
@@ -126,6 +130,7 @@ async function endRunBehindJob(
   spaceId: string,
   runId: string,
   ending: { status: "cancelled" | "failed"; error_code: string; error_text: string; completed_at: string },
+  agentJobId?: string,
 ): Promise<void> {
   const runs = new PgRunRepository(db);
   const run = await runs.getRun(spaceId, runId);
@@ -137,6 +142,7 @@ async function endRunBehindJob(
     output_json: {},
     error_json: { error_code: ending.error_code, error_text: ending.error_text },
     completed_at: ending.completed_at,
+    expected_agent_job_id: agentJobId,
   });
 }
 
@@ -146,6 +152,18 @@ async function endRunBehindJob(
  */
 function isClaimableNow(scheduledAt: Date | undefined, now: Date): boolean {
   return !scheduledAt || scheduledAt.getTime() <= now.getTime();
+}
+
+async function lockAgentRunJobs(db: Queryable, spaceId: string, runId: string): Promise<void> {
+  await db.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [JSON.stringify(["agent_run_job", spaceId, runId])]);
+}
+
+/** The dispatch transition locks Run before rewriting old Jobs. Match that order. */
+async function lockBackingRun(db: Queryable, jobId: string, nonWaiting = false): Promise<void> {
+  await db.query(`SELECT run.id FROM jobs JOIN runs run
+     ON run.space_id=jobs.space_id AND run.id=jobs.payload_json->>'run_id'
+    WHERE jobs.id=$1 AND jobs.job_type=ANY($2::text[])
+    FOR UPDATE OF run ${nonWaiting ? 'NOWAIT' : ''}`, [jobId, [...RUN_BACKED_JOB_TYPES]]);
 }
 
 export class PgJobQueueRepository {
@@ -201,11 +219,45 @@ export class PgJobQueueRepository {
     input: EnqueueJobInput & { job_type: "agent_run" },
     now: Date = new Date(),
   ): Promise<JobRecord> {
-    if(hasJobEffectAuthority())return withQueryableTransaction(this.db,async tx=>{
-      await authorizeJobEffect(tx);
-      return new PgJobQueueRepository(tx).ensureAgentRunJobAdmitted(input,now);
+    return withQueryableTransaction(this.db, async tx => {
+      if (hasJobEffectAuthority()) await authorizeJobEffect(tx);
+      // Acquire before the lookup so a second READ COMMITTED transaction sees
+      // the active job inserted by the caller that held this lock before it.
+      await lockAgentRunJobs(tx, input.space_id, String(input.payload.run_id ?? ""));
+      return new PgJobQueueRepository(tx).ensureAgentRunJobAdmitted(input, now);
     });
-    return this.ensureAgentRunJobAdmitted(input,now);
+  }
+
+  /** A stop has its own due Job, even while execution is scheduled or running. */
+  async ensureRunCancellationJob(spaceId: string, runId: string): Promise<void> {
+    await withQueryableTransaction(this.db, async db => {
+      const cancelling = await db.query(`SELECT id FROM runs WHERE space_id=$1 AND id=$2 AND status='cancelling' FOR UPDATE`, [spaceId, runId]);
+      if (!cancelling.rows.length) return;
+      const existing = await db.query(`SELECT 1 FROM jobs WHERE space_id=$1 AND job_type=$2
+        AND payload_json->>'run_id'=$3 AND status IN ('pending','claimed','running') LIMIT 1`,
+        [spaceId, RUN_CANCELLATION_RECONCILE_JOB, runId]);
+      if (!existing.rows.length) await new PgJobQueueRepository(db).enqueue({job_type: RUN_CANCELLATION_RECONCILE_JOB,
+        space_id: spaceId, user_id: null, payload: {run_id: runId}});
+    });
+  }
+
+  /** Retire the preceding dispatch in the transaction that requeues its Run.
+   * An already-running predecessor can finish its own bookkeeping. */
+  async supersedeAgentRunJobs(spaceId: string, runId: string): Promise<void> {
+    await withQueryableTransaction(this.db, async db => {
+      const queued = await db.query(`SELECT id FROM runs WHERE space_id=$1 AND id=$2 AND status='queued' FOR UPDATE`, [spaceId, runId]);
+      if (!queued.rows.length) throw new Error("Agent Run must be queued before superseding its dispatch");
+      await lockAgentRunJobs(db, spaceId, runId);
+      await db.query(
+        `UPDATE jobs SET payload_json = payload_json || jsonb_build_object('${SUPERSEDED_AGENT_RUN_JOB}', true),
+                status = CASE WHEN status IN ('pending','claimed') THEN 'cancelled' ELSE status END,
+                completed_at = CASE WHEN status IN ('pending','claimed') THEN now() ELSE completed_at END,
+                updated_at = CASE WHEN status IN ('pending','claimed') THEN now() ELSE updated_at END
+          WHERE space_id=$1 AND job_type='agent_run' AND payload_json->>'run_id'=$2
+            AND status IN ('pending','claimed','running') AND ${CURRENT_AGENT_RUN_JOB}`,
+        [spaceId, runId],
+      );
+    });
   }
 
   private async ensureAgentRunJobAdmitted(input:EnqueueJobInput & {job_type:'agent_run'},now:Date):Promise<JobRecord>{
@@ -219,6 +271,7 @@ export class PgJobQueueRepository {
             AND job_type = 'agent_run'
             AND payload_json->>'run_id' = $2
             AND status IN ('pending', 'claimed', 'running')
+            AND ${CURRENT_AGENT_RUN_JOB}
           ORDER BY created_at DESC
           LIMIT 1
        ), inserted AS (
@@ -336,7 +389,7 @@ export class PgJobQueueRepository {
    */
   async countQueueDepth(): Promise<{ pending: number; running: number }> {
     const result = await this.db.query<{ pending: string; running: string }>(
-      `SELECT count(*) FILTER (WHERE status = 'pending')::text AS pending,
+      `SELECT count(*) FILTER (WHERE status = 'pending' AND scheduled_at <= now() AND attempts < max_attempts)::text AS pending,
               count(*) FILTER (WHERE status IN ('claimed', 'running'))::text AS running
          FROM jobs`,
     );
@@ -475,14 +528,17 @@ export class PgJobQueueRepository {
         AND job_type=ANY($2::text[]) AND payload_json->>'run_id' IS NOT NULL
         AND status IN ('claimed','running') AND attempts>=max_attempts AND ($3::text IS NULL OR claimed_by=$3)
         AND NOT(job_type='agent_run' AND ${LAUNCHED_AGENT_RUN_ACTIVE})`,[jobId,[...RUN_BACKED_JOB_TYPES],workerId])).rows,async db=>{
+      await lockBackingRun(db, jobId);
       const result = await db.query<{ status: JobStatus; job_type: string; space_id: string; run_id: string | null; stop_claim: boolean }>(
         `WITH target AS (
-           SELECT id, ${STOP_CLAIM_RESERVED} AS stop_claim FROM jobs
+           SELECT id, ${STOP_CLAIM_RESERVED} AS stop_claim,
+                  job_type='agent_run' AND NOT ${CURRENT_AGENT_RUN_JOB} AS superseded FROM jobs
             WHERE id = $1 AND status IN ('claimed', 'running')
               AND (CAST($4 AS text) IS NULL OR claimed_by = $4)
          )
          UPDATE jobs
-            SET status = CASE WHEN attempts < max_attempts OR target.stop_claim THEN 'pending' ELSE 'failed' END,
+            SET status = CASE WHEN target.superseded THEN 'cancelled'
+                           WHEN attempts < max_attempts OR target.stop_claim THEN 'pending' ELSE 'failed' END,
                 attempts = CASE WHEN target.stop_claim THEN max_attempts - 1 ELSE attempts END,
                 payload_json = CASE WHEN job_type='activity_upload' AND attempts>=max_attempts THEN payload_json-'input' ELSE payload_json END,
                 error = $2,
@@ -490,7 +546,8 @@ export class PgJobQueueRepository {
                 claimed_by = CASE WHEN attempts < max_attempts OR target.stop_claim THEN NULL ELSE claimed_by END,
                 claimed_at = CASE WHEN attempts < max_attempts OR target.stop_claim THEN NULL ELSE claimed_at END,
                 started_at = CASE WHEN attempts < max_attempts OR target.stop_claim THEN NULL ELSE started_at END,
-                completed_at = CASE WHEN attempts < max_attempts OR target.stop_claim THEN NULL ELSE $3::timestamptz END,
+                completed_at = CASE WHEN NOT target.superseded AND (attempts < max_attempts OR target.stop_claim)
+                                    THEN NULL ELSE $3::timestamptz END,
                 updated_at = $3::timestamptz
            FROM target
           WHERE jobs.id = target.id AND jobs.status IN ('claimed', 'running')
@@ -506,7 +563,7 @@ export class PgJobQueueRepository {
           error_code: "run_abandoned",
           error_text: "run abandoned: backing job failed and retry attempts exhausted",
           completed_at: now.toISOString(),
-        });
+        }, job.job_type === 'agent_run' ? jobId : undefined);
       }
       return job?.status ?? null;
     });
@@ -535,7 +592,8 @@ export class PgJobQueueRepository {
               updated_at = $4
         WHERE id = $1
           AND status IN ('claimed', 'running')
-          AND (CAST($5 AS text) IS NULL OR claimed_by = $5)`,
+          AND (CAST($5 AS text) IS NULL OR claimed_by = $5)
+          AND (job_type <> 'agent_run' OR ${CURRENT_AGENT_RUN_JOB})`,
       [
         jobId,
         redactEvidenceText(error),
@@ -563,6 +621,7 @@ export class PgJobQueueRepository {
       `SELECT payload_json->>'run_id' AS id,space_id FROM jobs WHERE id=$1
         AND job_type=ANY($2::text[]) AND payload_json->>'run_id' IS NOT NULL
         AND status=ANY($3::text[]) AND ($4::text IS NULL OR claimed_by=$4)`,[jobId,[...RUN_BACKED_JOB_TYPES],[...fromStatuses],workerId])).rows,async db=>{
+      await lockBackingRun(db, jobId);
       const result = await db.query<{ id: string; job_type: string; space_id: string; run_id: string | null }>(
         `UPDATE jobs
             SET status = 'cancelled',
@@ -587,7 +646,7 @@ export class PgJobQueueRepository {
             error_code: "run_cancelled",
             error_text: "Run cancelled",
             completed_at: now.toISOString(),
-          });
+          }, job.job_type === 'agent_run' ? jobId : undefined);
         }
       }
       return (result.rowCount ?? 0) > 0;
@@ -670,25 +729,24 @@ export class PgJobQueueRepository {
       `SELECT DISTINCT payload_json->>'run_id' AS id,space_id FROM jobs
         WHERE id=$3 AND status IN ('claimed','running') AND COALESCE(heartbeat_at,updated_at)<$1
           AND job_type=ANY($2::text[]) AND payload_json->>'run_id' IS NOT NULL AND attempts>=max_attempts
-          AND NOT(job_type='agent_run' AND EXISTS(SELECT 1 FROM runs r WHERE r.id=jobs.payload_json->>'run_id' AND r.space_id=jobs.space_id
-            AND r.status IN ('running','cancelling') AND EXISTS(SELECT 1 FROM run_attempts a WHERE a.run_id=r.id AND a.space_id=r.space_id AND a.launch_id IS NOT NULL
-              AND a.attempt_number=(SELECT max(latest.attempt_number) FROM run_attempts latest WHERE latest.run_id=r.id AND latest.space_id=r.space_id))))`,[cutoff,[...RUN_BACKED_JOB_TYPES],jobId])).rows,async db=>{
+          AND NOT(job_type='agent_run' AND ${LAUNCHED_AGENT_RUN_ACTIVE})`,[cutoff,[...RUN_BACKED_JOB_TYPES],jobId])).rows,async db=>{
+      await lockBackingRun(db, jobId, true);
       if(!(await db.query('SELECT id FROM jobs WHERE id=$1 FOR UPDATE SKIP LOCKED',[jobId])).rows.length)return {rows:[]};
       const result = await db.query<{
       reclaimed_count: string | number;
       exhausted_jobs: JobReclaimResult["exhausted_jobs"] | null;
-      abandoned_runs: Array<{ space_id: string; run_id: string }> | null;
+      abandoned_runs: Array<{ space_id: string; run_id: string; job_type: string }> | null;
     }>(
       `WITH interrupted_agent_jobs AS (
          -- Even an exhausted job still owes its dispatched process a stop.
          -- Reclaim it for reconciliation, not another physical execution.
-         SELECT j.id FROM jobs j
-           JOIN runs r ON r.id = j.payload_json->>'run_id' AND r.space_id = j.space_id
-          WHERE j.job_type = 'agent_run' AND r.status IN ('running', 'cancelling')
-            AND EXISTS (SELECT 1 FROM run_attempts a
-              WHERE a.run_id = r.id AND a.space_id = r.space_id AND a.launch_id IS NOT NULL
-                AND a.attempt_number = (SELECT max(latest.attempt_number) FROM run_attempts latest
-                  WHERE latest.run_id = r.id AND latest.space_id = r.space_id))
+         SELECT id FROM jobs WHERE id=$4 AND job_type='agent_run' AND ${LAUNCHED_AGENT_RUN_ACTIVE}
+       ), superseded_agent_job AS (
+         UPDATE jobs SET status='cancelled', heartbeat_at=NULL, completed_at=$1, updated_at=$1
+          WHERE id=$4 AND status IN ('claimed','running')
+            AND COALESCE(heartbeat_at, updated_at) < $2::timestamptz
+            AND job_type='agent_run' AND NOT ${CURRENT_AGENT_RUN_JOB}
+         RETURNING id
        ), retryable AS (
          UPDATE jobs
             SET status = 'pending',
@@ -704,6 +762,7 @@ export class PgJobQueueRepository {
           WHERE id=$4 AND status IN ('claimed', 'running')
             AND COALESCE(heartbeat_at, updated_at) < $2::timestamptz
             AND result_json->>'source_dispatch' IS DISTINCT FROM 'started'
+            AND (job_type <> 'agent_run' OR ${CURRENT_AGENT_RUN_JOB})
             AND (attempts < max_attempts OR id IN (SELECT id FROM interrupted_agent_jobs))
           RETURNING id, space_id, user_id, job_type, attempts, max_attempts
        ),
@@ -721,10 +780,11 @@ export class PgJobQueueRepository {
             AND COALESCE(heartbeat_at, updated_at) < $2::timestamptz
             AND (attempts >= max_attempts OR result_json->>'source_dispatch'='started')
             AND id NOT IN (SELECT id FROM interrupted_agent_jobs)
+            AND (job_type <> 'agent_run' OR ${CURRENT_AGENT_RUN_JOB})
           RETURNING id, space_id, user_id, job_type, attempts, max_attempts, payload_json
        )
        SELECT
-         (SELECT COUNT(*) FROM retryable) + (SELECT COUNT(*) FROM failed)
+         (SELECT COUNT(*) FROM retryable) + (SELECT COUNT(*) FROM failed) + (SELECT COUNT(*) FROM superseded_agent_job)
            AS reclaimed_count,
          COALESCE(
            (SELECT jsonb_agg(jsonb_build_object(
@@ -742,7 +802,7 @@ export class PgJobQueueRepository {
          -- started would otherwise sit queued forever, still spending its
          -- domain's daily budget, with nothing left to perform it.
          COALESCE(
-           (SELECT jsonb_agg(jsonb_build_object('space_id', space_id, 'run_id', payload_json->>'run_id'))
+           (SELECT jsonb_agg(jsonb_build_object('space_id', space_id, 'run_id', payload_json->>'run_id', 'job_type', job_type))
               FROM failed
              WHERE job_type = ANY($3::text[]) AND payload_json->>'run_id' IS NOT NULL),
            '[]'::jsonb
@@ -755,7 +815,7 @@ export class PgJobQueueRepository {
           error_code: "run_abandoned",
           error_text: "run abandoned: backing job stuck and retry attempts exhausted",
           completed_at: now.toISOString(),
-        });
+        }, run.job_type === 'agent_run' ? jobId : undefined);
       }
       return result;
     },{nonWaiting:true});
@@ -779,6 +839,7 @@ export class PgJobQueueRepository {
            FROM jobs
           WHERE status IN ('claimed', 'running')
             AND job_type = 'agent_run'
+            AND ${CURRENT_AGENT_RUN_JOB}
             AND COALESCE(heartbeat_at, updated_at) < $1
             AND payload_json ? 'run_id'
        )

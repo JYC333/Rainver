@@ -1,6 +1,6 @@
 import { EditorView } from '@codemirror/view'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { createMemoryRouter, Link, MemoryRouter, Route, RouterProvider, Routes } from 'react-router-dom'
 import { useEffect } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { projectFoldersApi } from '../../api/client'
@@ -11,6 +11,7 @@ import type { FileContent } from '../../types/api'
 import { notifyProjectFolderContentChanged } from '../../core/projectFolderEvents'
 import { ThemeProvider } from '../../contexts/ThemeContext'
 import { ProjectFileEditor } from './ProjectFileEditor'
+import { DiffViewer } from './ProjectFilesParts'
 
 vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn() },
@@ -177,6 +178,73 @@ describe('Project Files & Code Area', () => {
     await waitFor(() => expect(onDraftSave).toHaveBeenCalledWith(draft, {
       confirmMixedLineEndingNormalization: true,
     }))
+  })
+
+  const newDraft = {
+    id: 'draft-new', space_id: 'space-1', project_id: 'project-1', project_folder_id: 'folder-1',
+    workspace_location_id: 'location-1', owner_user_id: 'user-1', target_kind: 'new' as const,
+    relative_path: 'first.txt', base_exists: false, base_sha256: null,
+    content: 'New text', content_sha256: 'b'.repeat(64), byte_size: 8, version: 1,
+    source_encoding: 'utf8' as const, preserve_bom: false, line_ending_mode: 'none' as const,
+    created_at: '', updated_at: '', expires_at: '',
+  }
+
+  it('versions a new draft rename before requesting a Folder write', async () => {
+    const renamed = { ...newDraft, relative_path: 'second.txt', version: 2 }
+    const onDraftUpsert = vi.fn().mockResolvedValue(renamed)
+    const onDraftSave = vi.fn().mockResolvedValue({ file: { content: renamed.content }, draft_deleted: true, newer_draft_retained: false })
+    render(<ProjectFileEditor file={null} draft={newDraft} onDraftUpsert={onDraftUpsert} onDraftDiscard={vi.fn()} onDraftSave={onDraftSave} onDraftRebase={vi.fn()} />)
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'File path' }), { target: { value: 'second.txt' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save to Folder' }))
+
+    await waitFor(() => expect(onDraftSave).toHaveBeenCalledWith(renamed, { confirmMixedLineEndingNormalization: false }))
+    expect(onDraftUpsert).toHaveBeenCalledWith(expect.objectContaining({ expected_version: 1, relative_path: 'second.txt', content: newDraft.content }))
+  })
+
+  it('explicitly retries a needs-attention Folder save using the original intent and draft', async () => {
+    const refusal = Object.assign(new Error('Needs attention'), {
+      payload: { error: { metadata: { io_status: 'needs_attention', intent_id: 'held-intent' } } },
+    })
+    const onDraftSave = vi.fn().mockRejectedValueOnce(refusal)
+      .mockResolvedValue({ file: { content: newDraft.content }, draft_deleted: true, newer_draft_retained: false })
+    render(<ProjectFileEditor file={null} draft={newDraft} onDraftUpsert={vi.fn()} onDraftDiscard={vi.fn()} onDraftSave={onDraftSave} onDraftRebase={vi.fn()} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save to Folder' }))
+    const retry = await screen.findByRole('button', { name: 'Retry Folder save' })
+    expect(onDraftSave).toHaveBeenCalledTimes(1)
+    fireEvent.click(retry)
+    await waitFor(() => expect(onDraftSave).toHaveBeenLastCalledWith(newDraft, {
+      confirmMixedLineEndingNormalization: false,
+      retryIntentId: 'held-intent',
+    }))
+  })
+
+  it('keeps unacknowledged edits on the Files page when route navigation cannot save them', async () => {
+    const onDraftUpsert = vi.fn().mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValue({ ...newDraft, relative_path: 'second.txt', version: 2 })
+    const router = createMemoryRouter([
+      { path: '/files', element: <><Link to="/projects">Projects</Link><ProjectFileEditor file={null} draft={newDraft} onDraftUpsert={onDraftUpsert} onDraftDiscard={vi.fn()} onDraftSave={vi.fn()} onDraftRebase={vi.fn()} /></> },
+      { path: '/projects', element: <h1>Projects</h1> },
+    ], { initialEntries: ['/files'] })
+    render(<RouterProvider router={router} />)
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'File path' }), { target: { value: 'second.txt' } })
+    fireEvent.click(screen.getByRole('link', { name: 'Projects' }))
+    await screen.findByText('Draft save failed')
+    expect(screen.getByRole('textbox', { name: 'File path' })).toHaveValue('second.txt')
+    expect(router.state.location.pathname).toBe('/files')
+
+    fireEvent.click(screen.getByRole('link', { name: 'Projects' }))
+    expect(await screen.findByRole('heading', { name: 'Projects' })).toBeVisible()
+    expect(onDraftUpsert).toHaveBeenCalledTimes(2)
+  })
+
+  it('distinguishes file headers from hunk text starting with repeated diff markers', () => {
+    render(<DiffViewer diff={'diff --git a/file b/file\n--- a/file\n+++ b/file\n@@ -1 +1 @@\n---old\n+++new\ndiff --git a/other b/other\n+++ b/other'} />)
+    expect(screen.getByText('+++new')).toHaveClass('text-success')
+    expect(screen.getByText('---old')).toHaveClass('text-destructive')
+    expect(screen.getByText('+++ b/other')).toHaveClass('font-bold')
   })
 
   it('does not flash a Host conflict while a successful save adopts the new file', async () => {

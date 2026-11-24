@@ -1,5 +1,6 @@
 import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
 import { saveConversationModelSwitch, conversationModelSwitchAllowed } from "../src/modules/sessions/conversationQuotaPolicy.js";
+import { conversationTurnTaken } from "../src/modules/sessions/conversationRuntimeSessionRepository.js";
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
@@ -95,12 +96,28 @@ async function persistAcpResult(runtime: string, promptFrames: Record<string, un
     bindings: NO_PROVIDER_BINDINGS,
     executor: { async runCommand(input) {
       const controller = input.stdio_controller!;
-      const send = () => {};
+      const requests: Record<string, unknown>[] = [];
+      const send = (message: Record<string, unknown>) => { requests.push(message); };
+      const close = () => {};
+      const respond = async (method: string, reply: Record<string, unknown>) => {
+        const request = requests.find((message) => message.method === method);
+        expect(request, `ACP request ${method}`).toBeDefined();
+        await controller.receive({ jsonrpc: "2.0", ...reply, id: request!.id }, send, close);
+      };
       controller.start(send);
-      await controller.receive({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } }, send, send);
-      for (const frame of options.beforeResume ?? []) await controller.receive({ jsonrpc: "2.0", ...frame }, send, send);
-      await controller.receive({ jsonrpc: "2.0", id: 2, result: { sessionId: "native-session", configOptions: [] } }, send, send);
-      for (const frame of promptFrames) await controller.receive({ jsonrpc: "2.0", ...frame }, send, send);
+      await respond("initialize", { result: { protocolVersion: 1 } });
+      for (const frame of options.beforeResume ?? []) await controller.receive({ jsonrpc: "2.0", ...frame }, send, close);
+      const configOptions = runtime === "claude_code" ? [{
+        id: "model", name: "Model", type: "select", category: "model",
+        currentValue: "opus", options: [{ value: "opus", name: "Opus" }],
+      }] : [];
+      const sessionMethod = requests.find((message) => typeof message.method === "string" && /^session\/(new|load|resume)$/.test(message.method))?.method;
+      expect(sessionMethod).toBeDefined();
+      await respond(String(sessionMethod), { result: { sessionId: "native-session", configOptions } });
+      for (const frame of promptFrames) {
+        if ("id" in frame) await respond("session/prompt", frame);
+        else await controller.receive({ jsonrpc: "2.0", ...frame }, send, close);
+      }
       return { returncode: 0, stdout: "", stderr: "", timed_out: false, time_zone: options.timeZone };
     } },
   });
@@ -193,7 +210,10 @@ describe("interrupted quota recovery", () => {
     const previous = await new PgJobQueueRepository(db.pool).enqueue({ job_type: "agent_run", space_id: SPACE,
       user_id: USER, agent_id: AGENT, payload: { run_id: RUN } });
     await db.pool.query(`UPDATE jobs SET status = 'running' WHERE id = $1`, [previous.id]);
+    await db.pool.query(`UPDATE runs SET model_override_json = COALESCE(model_override_json, '{}'::jsonb)
+      || '{"chat_turn":{"schema_version":"chat_turn.v1"}}'::jsonb WHERE id=$1`, [RUN]);
     const held = await automatic();
+    expect(await conversationTurnTaken(db.pool, SPACE, SESSION)).toBe(false);
     const now = new Date(Date.parse(held.resets_at) + 1000);
     expect(await releaseHeldRuns(db.pool, { source: emptyQuota, now })).toBe(1);
     // The finishing job has already executed its physical attempt. Reusing
@@ -411,6 +431,61 @@ describe("explicit native model switching", () => {
       acp_session_config: [{ id: "mode", type: "select", category: "mode", value: "safe" }],
     })]);
   }
+
+  async function retainNativeSession(tokens: number | null, window = 32_000) {
+    await db.pool.query(`UPDATE host_threads
+      SET vendor_session_id='native-retained',context_tokens=$2, context_window_tokens=$3 WHERE id=$1`, [THREAD, tokens, window]);
+    await db.pool.query(`UPDATE runs SET model_override_json=model_override_json ||
+      '{"host_thread":{"runtime_session_id":"native-retained"}}'::jsonb WHERE id=$1`, [RUN]);
+  }
+
+  it("skips an advertised alias of the reported model", async ctx => {
+    if (!db.available) return ctx.skip();
+    await advertise("claude_code", ["claude-opus-4-8", "opus", "sonnet"]);
+    await supervise();
+    await withDbTransaction(db.pool, client => updateQuotaRecovery(client, SPACE, RUN, true, new Date(), true));
+    expect((await marker()).recovery).toMatchObject({switched_model:"sonnet", can_switch_model:false});
+    await expect(withDbTransaction(db.pool, client => updateQuotaRecovery(client, SPACE, RUN, true, new Date(), true)))
+      .rejects.toMatchObject({statusCode:409});
+  });
+
+  it("offers no switch when the remaining advertised choices are aliases", async ctx => {
+    if (!db.available) return ctx.skip();
+    await advertise("claude_code", ["opus", "claude-opus-4-8"]);
+    await supervise();
+    expect((await marker()).recovery.can_switch_model).toBe(false);
+    expect(await jobs()).toHaveLength(0);
+  });
+
+  it.for([null, 4_097])("keeps retained sessions with %s context tokens on their existing model", async (tokens, ctx) => {
+    if (!db.available) return ctx.skip();
+    await advertise();
+    await retainNativeSession(tokens);
+    const run = (await new PgRunRepository(db.pool).getRun(SPACE, RUN))!;
+    await saveConversationModelSwitch(db.pool, SPACE, SESSION, AGENT, USER, run.runtime_profile_id!, "claude_code", true);
+    await supervise();
+    expect((await marker()).recovery).toMatchObject({can_switch_model:false});
+    expect((await marker()).recovery.switched_model).toBeUndefined();
+    await expect(withDbTransaction(db.pool, client => updateQuotaRecovery(client, SPACE, RUN, true, new Date(), true)))
+      .rejects.toMatchObject({statusCode:409});
+    expect(await jobs()).toHaveLength(0);
+  });
+
+  it("rechecks retained session occupancy when admitting an already authorized switch", async ctx => {
+    if (!db.available) return ctx.skip();
+    await advertise();
+    await retainNativeSession(2_000);
+    await supervise();
+    await withDbTransaction(db.pool, client => updateQuotaRecovery(client, SPACE, RUN, true, new Date(), true));
+    expect((await marker()).recovery.switched_model).toBe("sonnet");
+    await retainNativeSession(5_000);
+    expect(await releaseHeldRuns(db.pool, {source:emptyQuota, now:new Date(Date.now()+1_000)})).toBe(0);
+    expect(await jobs()).toHaveLength(0);
+    await retainNativeSession(2_000);
+    const nextCheck = Date.parse((await marker()).recovery.next_check_at);
+    expect(await releaseHeldRuns(db.pool, {source:emptyQuota, now:new Date(nextCheck+1_000)})).toBe(1);
+    expect(await jobs()).toHaveLength(1);
+  });
 
   describe("Antigravity's terminal quota reply", () => {
     const runtime = "acp_antigravity_acp";

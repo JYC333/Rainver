@@ -55,10 +55,19 @@ export function roomExecutionRules(): string {
 
 export async function renderRoomStandingContext(
   db: Queryable,
-  input: { spaceId: string; agentId: string; roomId: string },
+  input: { spaceId: string; agentId: string; roomId: string; review?: boolean },
 ): Promise<RoomStandingContext> {
   const identity = await renderAgentIdentityPrompt(db, input);
-  const text = [identity, roomExecutionRules()].filter(Boolean).join("\n\n");
+  const rules = input.review ? [
+    "[Room code review rules]",
+    "Review the assigned version and report actionable findings with evidence and verification limits. Preserve the authorized workspace, audience, and approval boundaries. Follow relevant repository rules; use the supplied changes and document sections to focus a follow-up review.",
+    "When you have the prior review in this session, reuse readings of unchanged sources and revisit files or document sections that changed or affect a finding.",
+    IDENTIFIER_POLICY,
+    ACTION_FAILURE_RECOVERY_POLICY,
+    DURABLE_ACTION_CLAIM_POLICY,
+    ASK_THE_PERSON_POLICY,
+  ].join("\n") : roomExecutionRules();
+  const text = [identity, rules].filter(Boolean).join("\n\n");
   return { text, digest: createHash("sha256").update(text).digest("hex") };
 }
 

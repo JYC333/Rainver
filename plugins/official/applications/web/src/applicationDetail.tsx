@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { blank, Field, k, Notice, touch, useOperations, type Ctx } from './viewKit';
 import { MaterialNotes } from './materialNotes';
 import { LinkPicker } from './linkPicker';
@@ -53,7 +53,7 @@ export function NewApplication({ ctx, track, programs = [], appliesTo = [], onCr
   </CardContent></Card>;
 }
 
-export function ApplicationDetail({ ctx, applicationId, onChanged, onOpen }: { ctx: Ctx; applicationId: string; onChanged: () => void; onOpen: Open }) {
+export function ApplicationDetail({ ctx, applicationId, onOpen }: { ctx: Ctx; applicationId: string; onOpen: Open }) {
   const { ui } = ctx, { Button, Input, Textarea, Select, Badge, t, formatDay, ProposalLink } = ui;
   const { query, command, reason } = useOperations(ctx);
   const [detail, setDetail] = useState<Detail | null>(null), [state, setState] = useState<'loading' | 'ready' | 'error'>('loading');
@@ -67,51 +67,66 @@ export function ApplicationDetail({ ctx, applicationId, onChanged, onOpen }: { c
   const [editing, setEditing] = useState<{ id: string; kind: string; label: string; due_on: string } | null>(null);
   const [submission, setSubmission] = useState('separate'), [linkTarget, setLinkTarget] = useState('');
   const [candidates, setCandidates] = useState<Application[]>([]);
-  const load = useCallback(async () => {
+  const lastRead = useRef(0);
+  const baseline = useRef<{ facts: typeof facts; progress: string; submission: string } | null>(null);
+  const load = useCallback(async (resetDrafts = false) => {
+    const read = ++lastRead.current;
     try {
       const data = await query<Detail>('application.get', { application_id: applicationId });
+      if (read !== lastRead.current) return;
       setDetail(data); setState('ready');
       const a = data.application;
-      setFacts({ institution: a.institution, program: a.program, department: a.department ?? '', intake: a.intake ?? '', notes: a.notes ?? '', source_label: a.source?.label ?? '', source_url: a.source?.url ?? '' });
-      setProgress((PROGRESS_STATUSES as readonly string[]).includes(a.status) ? a.status : 'preparing');
-      setSubmission(a.submission ?? 'separate');
+      const next = {
+        facts: { institution: a.institution, program: a.program, department: a.department ?? '', intake: a.intake ?? '', notes: a.notes ?? '', source_label: a.source?.label ?? '', source_url: a.source?.url ?? '' },
+        progress: (PROGRESS_STATUSES as readonly string[]).includes(a.status) ? a.status : 'preparing',
+        submission: a.submission ?? 'separate',
+      };
+      const previous = baseline.current;
+      baseline.current = next;
+      setFacts(draft => !resetDrafts && previous && JSON.stringify(draft) !== JSON.stringify(previous.facts) ? draft : next.facts);
+      setProgress(draft => !resetDrafts && previous && draft !== previous.progress ? draft : next.progress);
+      setSubmission(draft => !resetDrafts && previous && draft !== previous.submission ? draft : next.submission);
       // The records on the other side of a funding link that this one could still be linked to.
       const other = await query<{ items: Application[] }>('application.list', { track: a.track === 'funding' ? 'phd' : 'funding' });
       const linked = new Set(a.track === 'funding' ? a.applies_to : a.funding_ids);
+      if (read !== lastRead.current) return;
       setCandidates(other.items.filter(x => !linked.has(x.id)));
-      setLinkTarget('');
+      if (resetDrafts) setLinkTarget('');
       // An archived application is read-only: an editor opened before archiving closes.
       if (a.archived) { setEditing(null); setLinking(null); }
-    } catch { setState('error'); }
+    } catch { if (read === lastRead.current) setState('error'); }
   }, [query, applicationId]);
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { void load(); }, [load, ctx.projectRevision]);
   const run = async (name: string, input: Record<string, unknown>, done: string) => {
     setBusy(true); setNotice(''); setError('');
     try {
       const result = await command(name, input);
       if ('status' in result && result.status === 'pending_approval') { setProposal(result.proposal_id); setNotice(t(k('pending'))); }
       else setNotice(t(k(done)));
-      await load(); onChanged();
+      await load(true);
       return true;
     } catch (e) { setError(reason(e)); await load(); return false; } finally { setBusy(false); }
   };
   if (state === 'loading' && !detail) return <p role="status" className="text-sm text-muted-foreground">{t(k('loading'))}</p>;
   if (state === 'error' || !detail) return <div className="space-y-2"><Notice text={t(k('load_failed'))} tone="alert" /><Button className={touch} variant="outline" size="sm" onClick={() => void load()}>{t(k('retry'))}</Button></div>;
   const a = detail.application;
+  const canEdit = ctx.projectCanWrite !== false;
+  const editable = canEdit && !a.archived;
   const funding = a.track === 'funding', automatic = a.submission === 'automatic';
   const decisions = DECISION_STATUSES.filter(v => !(automatic && v === 'submitted'));
   const sourceUrl = a.source?.url && /^https?:\/\//i.test(a.source.url) ? a.source.url : null;
-  return <div className="space-y-4 border-t border-border pt-4">
+  return <div className="space-y-4">
+    <header><h3 className="break-words text-xl font-semibold">{a.program}</h3><p className="text-sm text-muted-foreground">{a.institution}</p></header>
     <Notice text={notice} />{proposal && <ProposalLink id={proposal} />}<Notice text={error} tone="alert" />
     <section className="space-y-3" aria-label={t(k('status_section'))}>
       <h4 className="text-sm font-semibold">{t(k('status_section'))}</h4>
       <p className="text-sm">{t(k('current_status'))}: <Badge variant={statusVariant(a.status)}>{t(k(`status.${a.status}`))}</Badge>{a.result_note && <span className="ml-2 text-xs text-muted-foreground">{a.result_note}</span>}</p>
-      <Field label={t(k('result_note'))}><Input className={touch} value={resultNote} onChange={e => setResultNote(e.target.value)} /></Field>
+      <Field label={t(k('result_note'))}><Input className={touch} disabled={!editable} value={resultNote} onChange={e => setResultNote(e.target.value)} /></Field>
       <div className="grid gap-3 md:grid-cols-2">
-        <div className="space-y-2"><Field label={t(k('progress_label'))}><Select ariaLabel={t(k('progress_label'))} value={progress} onChange={setProgress} options={PROGRESS_STATUSES.map(v => ({ value: v, label: t(k(`status.${v}`)) }))} /></Field>
-          <Button className={touch} size="sm" variant="outline" disabled={busy || a.archived} onClick={() => void run('application.update_status', { application_id: a.id, status: progress, ...(resultNote.trim() ? { result_note: resultNote.trim() } : {}) }, 'saved')}>{t(k('record_progress'))}</Button></div>
-        <div className="space-y-2"><Field label={t(k('decision_label'))} hint={t(k('decision_hint'))}><Select ariaLabel={t(k('decision_label'))} value={decisions.includes(decision as never) ? decision : decisions[0]!} onChange={setDecision} options={decisions.map(v => ({ value: v, label: t(k(`status.${v}`)) }))} /></Field>
-          <Button className={touch} size="sm" variant="outline" disabled={busy || a.archived} onClick={() => void run('application.propose_status', { application_id: a.id, status: decisions.includes(decision as never) ? decision : decisions[0]!, ...(resultNote.trim() ? { result_note: resultNote.trim() } : {}) }, 'saved')}>{t(k('propose_decision'))}</Button></div>
+        <div className="space-y-2"><Field label={t(k('progress_label'))}><Select ariaLabel={t(k('progress_label'))} disabled={!editable} value={progress} onChange={setProgress} options={PROGRESS_STATUSES.map(v => ({ value: v, label: t(k(`status.${v}`)) }))} /></Field>
+          <Button className={touch} size="sm" variant="outline" disabled={busy || !editable} onClick={() => void run('application.update_status', { application_id: a.id, status: progress, ...(resultNote.trim() ? { result_note: resultNote.trim() } : {}) }, 'saved')}>{t(k('record_progress'))}</Button></div>
+        <div className="space-y-2"><Field label={t(k('decision_label'))} hint={t(k('decision_hint'))}><Select ariaLabel={t(k('decision_label'))} disabled={!editable} value={decisions.includes(decision as never) ? decision : decisions[0]!} onChange={setDecision} options={decisions.map(v => ({ value: v, label: t(k(`status.${v}`)) }))} /></Field>
+          <Button className={touch} size="sm" variant="outline" disabled={busy || !editable} onClick={() => void run('application.propose_status', { application_id: a.id, status: decisions.includes(decision as never) ? decision : decisions[0]!, ...(resultNote.trim() ? { result_note: resultNote.trim() } : {}) }, 'saved')}>{t(k('propose_decision'))}</Button></div>
       </div>
     </section>
     <LinkedRecords ctx={ctx} detail={detail} candidates={candidates} target={linkTarget} setTarget={setLinkTarget} busy={busy} onOpen={onOpen}
@@ -125,11 +140,11 @@ export function ApplicationDetail({ ctx, applicationId, onChanged, onOpen }: { c
           <div className="flex flex-wrap items-center justify-between gap-2">
             <span className="min-w-0 break-words"><span className="font-medium">{formatDay(d.due_on)}</span> · {name}{d.task_id && <span className="ml-2 text-xs text-muted-foreground">{t(k('task_linked'))}</span>}</span>
             <div className="flex flex-wrap items-center gap-2">
-              <Button className={touch} size="sm" variant="ghost" disabled={busy || a.archived} aria-expanded={editing?.id === d.id} aria-label={t(k('edit_deadline'), { label: name })} onClick={() => setEditing(e => e?.id === d.id ? null : { id: d.id, kind: d.kind, label: d.label ?? '', due_on: d.due_on })}>{t(k('edit'))}</Button>
-              <Button className={touch} size="sm" variant="ghost" disabled={busy || a.archived} aria-label={t(k('remove_deadline'), { label: name })} onClick={() => void run('deadline.remove', { deadline_id: d.id }, 'saved')}>{t(k('remove'))}</Button>
+              <Button className={touch} size="sm" variant="ghost" disabled={busy || !editable} aria-expanded={editing?.id === d.id} aria-label={t(k('edit_deadline'), { label: name })} onClick={() => setEditing(e => e?.id === d.id ? null : { id: d.id, kind: d.kind, label: d.label ?? '', due_on: d.due_on })}>{t(k('edit'))}</Button>
+              <Button className={touch} size="sm" variant="ghost" disabled={busy || !editable} aria-label={t(k('remove_deadline'), { label: name })} onClick={() => void run('deadline.remove', { deadline_id: d.id }, 'saved')}>{t(k('remove'))}</Button>
             </div>
           </div>
-          {!a.archived && editing?.id === d.id && <div className="space-y-3 border-t border-border pt-3">
+          {editable && editing?.id === d.id && <div className="space-y-3 border-t border-border pt-3">
             <div className="grid gap-3 md:grid-cols-3">
               <Field label={t(k('deadline_kind_label'))}><Select ariaLabel={t(k('deadline_kind_label'))} value={editing.kind} onChange={v => setEditing(x => x && { ...x, kind: v })} options={DEADLINE_KINDS.map(v => ({ value: v, label: t(k(`deadline_kind.${v}`)) }))} /></Field>
               <Field label={t(k('deadline_label'))}><Input className={touch} value={editing.label} onChange={e => setEditing(x => x && { ...x, label: e.target.value })} /></Field>
@@ -145,13 +160,13 @@ export function ApplicationDetail({ ctx, applicationId, onChanged, onOpen }: { c
       })}</ul>
         : <p className="text-sm text-muted-foreground">{t(k('no_deadlines'))}</p>}
       <div className="grid gap-3 md:grid-cols-3">
-        <Field label={t(k('deadline_kind_label'))}><Select ariaLabel={t(k('deadline_kind_label'))} value={deadline.kind} onChange={v => setDeadline(d => ({ ...d, kind: v }))} options={DEADLINE_KINDS.map(v => ({ value: v, label: t(k(`deadline_kind.${v}`)) }))} /></Field>
-        <Field label={t(k('deadline_label'))}><Input className={touch} value={deadline.label} onChange={e => setDeadline(d => ({ ...d, label: e.target.value }))} /></Field>
-        <Field label={t(k('due_on'))}><Input className={touch} type="date" value={deadline.due_on} onChange={e => setDeadline(d => ({ ...d, due_on: e.target.value }))} /></Field>
+        <Field label={t(k('deadline_kind_label'))}><Select ariaLabel={t(k('deadline_kind_label'))} disabled={!editable} value={deadline.kind} onChange={v => setDeadline(d => ({ ...d, kind: v }))} options={DEADLINE_KINDS.map(v => ({ value: v, label: t(k(`deadline_kind.${v}`)) }))} /></Field>
+        <Field label={t(k('deadline_label'))}><Input className={touch} disabled={!editable} value={deadline.label} onChange={e => setDeadline(d => ({ ...d, label: e.target.value }))} /></Field>
+        <Field label={t(k('due_on'))}><Input className={touch} type="date" disabled={!editable} value={deadline.due_on} onChange={e => setDeadline(d => ({ ...d, due_on: e.target.value }))} /></Field>
       </div>
       <div className="flex flex-wrap items-center gap-3">
-        <label className="flex items-center gap-2 text-sm"><input type="checkbox" className="h-4 w-4 accent-primary" checked={deadline.create_task} onChange={e => setDeadline(d => ({ ...d, create_task: e.target.checked }))} />{t(k('create_task'))}</label>
-        <Button className={touch} size="sm" variant="outline" disabled={busy || !deadline.due_on || a.archived} onClick={async () => { if (await run('deadline.add', { application_id: a.id, kind: deadline.kind, label: blank(deadline.label), due_on: deadline.due_on, create_task: deadline.create_task }, 'saved')) setDeadline({ kind: 'application', label: '', due_on: '', create_task: false }); }}>{t(k('add_deadline'))}</Button>
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" className="h-4 w-4 accent-primary" disabled={!editable} checked={deadline.create_task} onChange={e => setDeadline(d => ({ ...d, create_task: e.target.checked }))} />{t(k('create_task'))}</label>
+        <Button className={touch} size="sm" variant="outline" disabled={busy || !deadline.due_on || !editable} onClick={async () => { if (await run('deadline.add', { application_id: a.id, kind: deadline.kind, label: blank(deadline.label), due_on: deadline.due_on, create_task: deadline.create_task }, 'saved')) setDeadline({ kind: 'application', label: '', due_on: '', create_task: false }); }}>{t(k('add_deadline'))}</Button>
       </div>
     </section>
     {automatic ? <section className="space-y-2 border-t border-border pt-4" aria-label={t(k('materials'))}>
@@ -165,16 +180,16 @@ export function ApplicationDetail({ ctx, applicationId, onChanged, onOpen }: { c
           <div className="flex flex-wrap items-center justify-between gap-2">
             <span className="min-w-0 break-words font-medium">{name}{!m.required && <span className="ml-2 text-xs font-normal text-muted-foreground">{t(k('optional'))}</span>}</span>
             <div className="flex flex-wrap items-center gap-2">
-              <Select size="sm" ariaLabel={t(k('material_status_label'), { name })} value={m.status} disabled={busy || a.archived} onChange={v => void run('material.update', { material_id: m.id, status: v }, 'saved')} options={MATERIAL_STATUSES.map(v => ({ value: v, label: t(k(`material_status.${v}`)) }))} />
+              <Select size="sm" ariaLabel={t(k('material_status_label'), { name })} value={m.status} disabled={busy || !editable} onChange={v => void run('material.update', { material_id: m.id, status: v }, 'saved')} options={MATERIAL_STATUSES.map(v => ({ value: v, label: t(k(`material_status.${v}`)) }))} />
               <Button className={touch} size="sm" variant="outline" aria-expanded={notesOpen === m.id} aria-label={t(k('notes_and_drafts_for'), { name })} onClick={() => setNotesOpen(o => o === m.id ? null : m.id)}>{t(k('notes_and_drafts'))}</Button>
-              <Button className={touch} size="sm" variant="ghost" disabled={busy || a.archived} onClick={() => setLinking({ id: m.id, type: m.reference?.type ?? 'artifact', ref: m.reference?.id ?? '' })}>{m.reference ? t(k('change_reference')) : t(k('link_reference'))}</Button>
-              <Button className={touch} size="sm" variant="ghost" disabled={busy || a.archived} aria-label={t(k('remove_material'), { name })} onClick={() => void run('material.remove', { material_id: m.id }, 'saved')}>{t(k('remove'))}</Button>
+              <Button className={touch} size="sm" variant="ghost" disabled={busy || !editable} onClick={() => setLinking({ id: m.id, type: m.reference?.type ?? 'artifact', ref: m.reference?.id ?? '' })}>{m.reference ? t(k('change_reference')) : t(k('link_reference'))}</Button>
+              <Button className={touch} size="sm" variant="ghost" disabled={busy || !editable} aria-label={t(k('remove_material'), { name })} onClick={() => void run('material.remove', { material_id: m.id }, 'saved')}>{t(k('remove'))}</Button>
             </div>
           </div>
           {m.reference && <p className="text-xs text-muted-foreground">{t(k(`reference_${m.reference.type}`))}: {m.reference.available ? m.reference.title || t(k('untitled')) : t(k('reference_unavailable'))}</p>}
           {m.note && notesOpen !== m.id && <p className="text-xs text-muted-foreground">{t(k('note_summary'), { title: m.note.available ? m.note.title || t(k('untitled')) : t(k('note_unavailable')) })}{m.sources.some(x => x.updated) ? ` · ${t(k('sources_updated'))}` : ''}</p>}
-          {notesOpen === m.id && <MaterialNotes ctx={ctx} material={m} archived={a.archived} onChanged={async () => { await load(); onChanged(); }} />}
-          {!a.archived && linking?.id === m.id && <div className="grid gap-2 md:grid-cols-[10rem_1fr_auto_auto] md:items-end">
+          {notesOpen === m.id && <MaterialNotes ctx={ctx} material={m} archived={!editable} onChanged={async () => { await load(); }} />}
+          {editable && linking?.id === m.id && <div className="grid gap-2 md:grid-cols-[10rem_1fr_auto_auto] md:items-end">
             <Field label={t(k('reference_type'))}><Select ariaLabel={t(k('reference_type'))} value={linking.type} onChange={v => setLinking(l => l && { ...l, type: v })} options={[{ value: 'artifact', label: t(k('reference_artifact')) }, { value: 'task', label: t(k('reference_task')) }]} /></Field>
             <Field label={t(k('reference_id'))}><Input className={touch} value={linking.ref} onChange={e => setLinking(l => l && { ...l, ref: e.target.value })} /></Field>
             <Button className={touch} size="sm" disabled={busy || !linking.ref.trim()} onClick={async () => { if (await run('material.update', { material_id: m.id, reference: { type: linking.type, id: linking.ref.trim() } }, 'saved')) setLinking(null); }}>{t(k('save'))}</Button>
@@ -184,33 +199,33 @@ export function ApplicationDetail({ ctx, applicationId, onChanged, onOpen }: { c
         </li>;
       })}</ul>
       <div className="grid gap-3 md:grid-cols-[12rem_1fr_auto] md:items-end">
-        <Field label={t(k('material_kind_label'))}><Select ariaLabel={t(k('material_kind_label'))} value={material.kind} onChange={v => setMaterial(m => ({ ...m, kind: v }))} options={MATERIAL_KINDS.map(v => ({ value: v, label: t(k(`material_kind.${v}`)) }))} /></Field>
-        <Field label={t(k('material_label'))}><Input className={touch} value={material.label} onChange={e => setMaterial(m => ({ ...m, label: e.target.value }))} /></Field>
-        <Button className={touch} size="sm" variant="outline" disabled={busy || a.archived} onClick={async () => { if (await run('material.add', { application_id: a.id, kind: material.kind, label: blank(material.label) }, 'saved')) setMaterial({ kind: 'other', label: '' }); }}>{t(k('add_material'))}</Button>
+        <Field label={t(k('material_kind_label'))}><Select ariaLabel={t(k('material_kind_label'))} disabled={!editable} value={material.kind} onChange={v => setMaterial(m => ({ ...m, kind: v }))} options={MATERIAL_KINDS.map(v => ({ value: v, label: t(k(`material_kind.${v}`)) }))} /></Field>
+        <Field label={t(k('material_label'))}><Input className={touch} disabled={!editable} value={material.label} onChange={e => setMaterial(m => ({ ...m, label: e.target.value }))} /></Field>
+        <Button className={touch} size="sm" variant="outline" disabled={busy || !editable} onClick={async () => { if (await run('material.add', { application_id: a.id, kind: material.kind, label: blank(material.label) }, 'saved')) setMaterial({ kind: 'other', label: '' }); }}>{t(k('add_material'))}</Button>
       </div>
     </section>}
     <RelatedContacts ctx={ctx} applicationId={a.id} onOpen={onOpen} />
     <section className="space-y-3 border-t border-border pt-4" aria-label={t(k('facts'))}>
       <h4 className="text-sm font-semibold">{t(k('facts'))}</h4>
       <div className="grid gap-3 md:grid-cols-2">
-        <Field label={t(k(funding ? 'funder' : 'institution'))}><Input className={touch} disabled={a.archived} value={facts.institution} onChange={e => setFacts(f => ({ ...f, institution: e.target.value }))} /></Field>
-        <Field label={t(k(funding ? 'funding_name' : 'program'))}><Input className={touch} disabled={a.archived} value={facts.program} onChange={e => setFacts(f => ({ ...f, program: e.target.value }))} /></Field>
-        {funding ? <Field label={t(k('submission_label'))} hint={t(k('submission_hint'))}><Select ariaLabel={t(k('submission_label'))} disabled={a.archived} value={submission} onChange={setSubmission} options={FUNDING_SUBMISSIONS.map(v => ({ value: v, label: t(k(`submission.${v}`)) }))} /></Field>
-          : <Field label={t(k('department'))}><Input className={touch} disabled={a.archived} value={facts.department} onChange={e => setFacts(f => ({ ...f, department: e.target.value }))} /></Field>}
-        <Field label={t(k('intake'))}><Input className={touch} disabled={a.archived} value={facts.intake} onChange={e => setFacts(f => ({ ...f, intake: e.target.value }))} /></Field>
-        <Field label={t(k('source_label'))}><Input className={touch} disabled={a.archived} value={facts.source_label} onChange={e => setFacts(f => ({ ...f, source_label: e.target.value }))} /></Field>
-        <Field label={t(k('source_url'))}><Input className={touch} type="url" disabled={a.archived} value={facts.source_url} onChange={e => setFacts(f => ({ ...f, source_url: e.target.value }))} /></Field>
+        <Field label={t(k(funding ? 'funder' : 'institution'))}><Input className={touch} disabled={!editable} value={facts.institution} onChange={e => setFacts(f => ({ ...f, institution: e.target.value }))} /></Field>
+        <Field label={t(k(funding ? 'funding_name' : 'program'))}><Input className={touch} disabled={!editable} value={facts.program} onChange={e => setFacts(f => ({ ...f, program: e.target.value }))} /></Field>
+        {funding ? <Field label={t(k('submission_label'))} hint={t(k('submission_hint'))}><Select ariaLabel={t(k('submission_label'))} disabled={!editable} value={submission} onChange={setSubmission} options={FUNDING_SUBMISSIONS.map(v => ({ value: v, label: t(k(`submission.${v}`)) }))} /></Field>
+          : <Field label={t(k('department'))}><Input className={touch} disabled={!editable} value={facts.department} onChange={e => setFacts(f => ({ ...f, department: e.target.value }))} /></Field>}
+        <Field label={t(k('intake'))}><Input className={touch} disabled={!editable} value={facts.intake} onChange={e => setFacts(f => ({ ...f, intake: e.target.value }))} /></Field>
+        <Field label={t(k('source_label'))}><Input className={touch} disabled={!editable} value={facts.source_label} onChange={e => setFacts(f => ({ ...f, source_label: e.target.value }))} /></Field>
+        <Field label={t(k('source_url'))}><Input className={touch} type="url" disabled={!editable} value={facts.source_url} onChange={e => setFacts(f => ({ ...f, source_url: e.target.value }))} /></Field>
       </div>
-      <Field label={t(k('notes'))}><Textarea disabled={a.archived} value={facts.notes} onChange={e => setFacts(f => ({ ...f, notes: e.target.value }))} /></Field>
+      <Field label={t(k('notes'))}><Textarea disabled={!editable} value={facts.notes} onChange={e => setFacts(f => ({ ...f, notes: e.target.value }))} /></Field>
       {sourceUrl && <p className="text-xs text-muted-foreground">{t(k('source'))}: <a className="underline underline-offset-2" href={sourceUrl} target="_blank" rel="noopener noreferrer">{a.source?.label || sourceUrl}</a></p>}
       {a.archived && <p className="text-xs text-muted-foreground">{t(k('application_archived_hint'))}</p>}
       <div className="flex flex-wrap gap-2">
-        {!a.archived && <Button className={touch} size="sm" disabled={busy || !facts.institution.trim() || !facts.program.trim()} onClick={() => void run('application.update', {
+        {editable && <Button className={touch} size="sm" disabled={busy || !facts.institution.trim() || !facts.program.trim()} onClick={() => void run('application.update', {
           application_id: a.id, revision: a.revision, institution: facts.institution.trim(), program: facts.program.trim(), intake: blank(facts.intake), notes: blank(facts.notes),
           ...(funding ? (submission !== a.submission ? { submission } : {}) : { department: blank(facts.department) }),
           source: blank(facts.source_label) || blank(facts.source_url) ? { label: blank(facts.source_label), url: blank(facts.source_url) } : null,
         }, 'saved')}>{t(k('save'))}</Button>}
-        <Button className={touch} size="sm" variant="outline" disabled={busy} onClick={() => void run('application.update', { application_id: a.id, revision: a.revision, archived: !a.archived }, a.archived ? 'restored' : 'archived_done')}>{a.archived ? t(k('restore')) : t(k('archive'))}</Button>
+        <Button className={touch} size="sm" variant="outline" disabled={busy || !canEdit} onClick={() => void run('application.update', { application_id: a.id, revision: a.revision, archived: !a.archived }, a.archived ? 'restored' : 'archived_done')}>{a.archived ? t(k('restore')) : t(k('archive'))}</Button>
       </div>
     </section>
   </div>;
@@ -228,6 +243,7 @@ function LinkedRecords({ ctx, detail, candidates, target, setTarget, busy, onOpe
   const { Button, Badge, Select, t, formatDay } = ctx.ui;
   const a = detail.application, funding = a.track === 'funding';
   const rows = funding ? detail.applies_to : detail.funding;
+  const canEdit = ctx.projectCanWrite !== false;
   const options = candidates.filter(c => !c.archived);
   return <section className="space-y-3 border-t border-border pt-4" aria-label={t(k(funding ? 'linked_applications' : 'linked_funding'))}>
     <div className="space-y-1"><h4 className="text-sm font-semibold">{t(k(funding ? 'linked_applications' : 'linked_funding'))}</h4><p className="text-xs text-muted-foreground">{t(k(funding ? 'linked_applications_hint' : 'linked_funding_hint'))}</p></div>
@@ -244,10 +260,10 @@ function LinkedRecords({ ctx, detail, candidates, target, setTarget, busy, onOpe
       </span>
       <span className="flex flex-wrap items-center gap-2">
         <Button className={touch} size="sm" variant="outline" onClick={() => onOpen(tabOf(r.track), { id: r.id })}>{t(k('open_record'))}</Button>
-        <Button className={touch} size="sm" variant="ghost" disabled={busy || (funding ? a.archived : r.archived)} aria-label={t(k('unlink_record'), { name: recordName(r) })} onClick={() => void onUnlink(r.id)}>{t(k('unlink'))}</Button>
+        <Button className={touch} size="sm" variant="ghost" disabled={busy || !canEdit || (funding ? a.archived : r.archived)} aria-label={t(k('unlink_record'), { name: recordName(r) })} onClick={() => void onUnlink(r.id)}>{t(k('unlink'))}</Button>
       </span>
     </li>)}</ul> : <p className="text-sm text-muted-foreground">{t(k(funding ? 'no_linked_applications' : 'no_linked_funding'))}</p>}
-    {!a.archived && <div className="flex flex-wrap items-end gap-2">
+    {canEdit && !a.archived && <div className="flex flex-wrap items-end gap-2">
       {options.length > 0 && <>
         <Field label={t(k(funding ? 'link_application_label' : 'link_funding_label'))}><Select ariaLabel={t(k(funding ? 'link_application_label' : 'link_funding_label'))} value={target || options[0]!.id} onChange={setTarget} options={options.map(o => ({ value: o.id, label: recordName(o) }))} /></Field>
         <Button className={touch} size="sm" variant="outline" disabled={busy} onClick={() => void onLink(target || options[0]!.id)}>{t(k('link'))}</Button>
@@ -262,7 +278,7 @@ function RelatedContacts({ ctx, applicationId, onOpen }: { ctx: Ctx; application
   const { Button, Badge, t, formatDay } = ctx.ui;
   const { query } = useOperations(ctx);
   const [items, setItems] = useState<Contact[] | null>(null), [failed, setFailed] = useState(false);
-  useEffect(() => { void query<{ items: Contact[] }>('contact.list', { application_id: applicationId }).then(r => { setItems(r.items); setFailed(false); }, () => setFailed(true)); }, [query, applicationId]);
+  useEffect(() => { void query<{ items: Contact[] }>('contact.list', { application_id: applicationId }).then(r => { setItems(r.items); setFailed(false); }, () => setFailed(true)); }, [query, applicationId, ctx.projectRevision]);
   return <section className="space-y-3 border-t border-border pt-4" aria-label={t(k('related_contacts'))}>
     <div className="space-y-1"><h4 className="text-sm font-semibold">{t(k('related_contacts'))}</h4><p className="text-xs text-muted-foreground">{t(k('related_contacts_hint'))}</p></div>
     {failed ? <Notice text={t(k('contacts_unavailable'))} /> : items === null ? <p role="status" className="text-sm text-muted-foreground">{t(k('loading'))}</p>

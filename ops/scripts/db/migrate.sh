@@ -72,45 +72,32 @@ while [[ $# -gt 0 ]]; do
 done
 
 local_compose_init "$MODE"
+[[ -d "$MODE_ROOT" ]] || install -d -m 700 "$MODE_ROOT"
+local_compose_lock_instance "migrating the database"
 local_compose_ensure_mode_env_file
 local_compose_ensure_server_database_env
 local_compose_generate_server_env
+if [[ "$RUN_MODE" == docker ]]; then
+  local_compose_prepare_prod_server_image
+fi
 trap 'local_compose_stop_postgres_if_started "migrate"' EXIT
 
 redacted_target() {
   # Show only host:port/db — never user:pass.
   local safe="${1#*://}"   # drop scheme://
+  safe="${safe%%[?#]*}"    # drop libpq options, which may include credentials
   safe="${safe##*@}"       # drop user:pass@, keep host:port/db
   echo "postgresql://[credentials-redacted]@${safe}"
 }
 
-urlencode() {
-  python3 -c 'from urllib.parse import quote; import sys; print(quote(sys.argv[1], safe=""))' "$1"
-}
-
-postgres_password_or_default() {
-  local pgpass
-  pgpass="$(local_compose_setting POSTGRES_PASSWORD || true)"
-  if [[ -n "$pgpass" ]]; then
-    printf '%s\n' "$pgpass"
-    return 0
-  fi
-  if [[ "$MODE" == "prod" ]]; then
-    echo "ERROR: POSTGRES_PASSWORD is required for production migrations." >&2
-    exit 1
-  fi
-  printf '%s\n' "rainver_dev_password"
-}
-
-compose_admin_database_url() {
-  local pguser pgpass pgdb
-  pguser="$(local_compose_setting_or_default POSTGRES_USER rainver)"
-  pgpass="$(postgres_password_or_default)"
-  pgdb="$(local_compose_setting_or_default POSTGRES_DB rainver)"
-  local_compose_validate_pg_identifier "POSTGRES_USER" "$pguser"
-  local_compose_validate_pg_identifier "POSTGRES_DB" "$pgdb"
-  printf 'postgresql://%s:%s@postgres:5432/%s\n' \
-    "$(urlencode "$pguser")" "$(urlencode "$pgpass")" "$pgdb"
+run_compose_migration_cli() {
+  local owner_url command=(run --rm -T --no-deps)
+  [[ "$MODE" != prod ]] || command+=(--pull never)
+  owner_url="$(local_compose_server_owner_database_url)" || return
+  SERVER_DATABASE_URL="$owner_url" "${COMPOSE[@]}" "${command[@]}" \
+    -e SERVER_DATABASE_URL \
+    -e SERVER_MIGRATIONS_DIR=/app/server/migrations \
+    server node dist/db/migrateCli.js "$@"
 }
 
 ensure_docker_database_exists() {
@@ -162,6 +149,7 @@ run_drizzle_schema_check_host() {
   echo "[migrate] checking Drizzle schema artifacts before database bootstrap..."
   cd "$REPO_ROOT/server"
   pnpm run schema:check
+  pnpm run build >/dev/null
 }
 
 # Resolve a host-mode DATABASE_URL (env, mode .env, or POSTGRES_* parts). Sets the
@@ -180,7 +168,7 @@ resolve_host_database_url() {
       pghost="$(local_compose_setting_or_default POSTGRES_HOST localhost)"
       pgport="$(local_compose_setting_or_default POSTGRES_PORT 5432)"
       local_compose_validate_pg_identifier "POSTGRES_DB" "$pgdb"
-      database_url="postgresql://$(urlencode "$pguser"):$(urlencode "$pgpass")@${pghost}:${pgport}/${pgdb}"
+      database_url="postgresql://$(local_compose_urlencode "$pguser"):$(local_compose_urlencode "$pgpass")@${pghost}:${pgport}/${pgdb}"
     fi
   fi
   if [[ -z "$database_url" ]]; then
@@ -220,7 +208,10 @@ pre_migration_backup_docker() {
 pre_migration_backup_host() {
   local out="$1"
   resolve_host_database_url
-  pg_dump -Fc --no-owner --no-acl "$MIGRATION_DATABASE_URL" > "$out"
+  (
+    cd "$REPO_ROOT/server"
+    node --input-type=module -e 'import { pgDump } from "./dist/modules/backups/service.js"; await pgDump(process.env.MIGRATION_DATABASE_URL, process.argv[1]);' "$out"
+  )
 }
 
 # Returns 1 when the runner reports nothing pending. Otherwise returns 0 and
@@ -236,10 +227,7 @@ migration_backup_needed() {
       SERVER_MIGRATIONS_DIR="$REPO_ROOT/server/migrations" \
       node dist/db/migrateCli.js pending)" || status=$?
   else
-    output="$("${COMPOSE[@]}" run --rm -T --no-deps \
-      -e SERVER_DATABASE_URL="$(compose_admin_database_url)" \
-      -e SERVER_MIGRATIONS_DIR=/app/server/migrations \
-      server node dist/db/migrateCli.js pending)" || status=$?
+    output="$(run_compose_migration_cli pending)" || status=$?
   fi
   if [[ "$status" -eq 0 ]]; then
     return 1
@@ -313,18 +301,13 @@ run_docker() {
   echo "Checking/applying generated server migrations in a one-shot migration container (mode: $MODE)..."
   echo "  target: in-network postgres service (generated from POSTGRES_*)"
 
-  local pguser pgdb database_url
+  local pguser pgdb
   pguser="$(local_compose_setting_or_default POSTGRES_USER rainver)"
   pgdb="$(local_compose_setting_or_default POSTGRES_DB rainver)"
   local_compose_validate_pg_identifier "POSTGRES_USER" "$pguser"
   local_compose_validate_pg_identifier "POSTGRES_DB" "$pgdb"
   local_compose_ensure_postgres_ready "migration" "$pguser" "$pgdb"
-  database_url="$(compose_admin_database_url)"
-
-  "${COMPOSE[@]}" run --rm -T --no-deps \
-    -e SERVER_DATABASE_URL="$database_url" \
-    -e SERVER_MIGRATIONS_DIR=/app/server/migrations \
-    server node dist/db/migrateCli.js up
+  run_compose_migration_cli up
   echo "Migrations complete."
 }
 
@@ -338,7 +321,7 @@ run_host() {
   cd "$REPO_ROOT/server"
   SERVER_DATABASE_URL="$MIGRATION_DATABASE_URL" \
     SERVER_MIGRATIONS_DIR="$REPO_ROOT/server/migrations" \
-    pnpm run migrate
+    node dist/db/migrateCli.js up
   echo "Migrations complete."
 }
 
@@ -356,25 +339,12 @@ assert_no_pending_maintenance() {
   [[ "$ALLOW_MAINTENANCE" == "1" ]] && return 0
   local pending status=0
   if [[ "$RUN_MODE" == "host" ]]; then
-    # Host mode resolves its target lazily; without this the URL is unbound
-    # here and the whole check dies under `set -u` before it asks anything.
     resolve_host_database_url
-    # And it runs from source, so `dist/` may be absent or stale — the gate
-    # runs before `run_host`'s own build. Building here rather than reading a
-    # stale binary: with the refusal below, an unbuilt tree would otherwise
-    # make every post-pull host migration fail.
-    (cd "$REPO_ROOT/server" && pnpm run build >/dev/null) || {
-      echo "ERROR: could not build the migration runner to check for a maintenance migration." >&2
-      exit 1
-    }
     pending="$(cd "$REPO_ROOT/server" && SERVER_DATABASE_URL="$MIGRATION_DATABASE_URL" \
       SERVER_MIGRATIONS_DIR="$REPO_ROOT/server/migrations" \
       node dist/db/migrateCli.js maintenance-pending)" || status=$?
   else
-    pending="$("${COMPOSE[@]}" run --rm -T --no-deps \
-      -e SERVER_DATABASE_URL="$(compose_admin_database_url)" \
-      -e SERVER_MIGRATIONS_DIR=/app/server/migrations \
-      server node dist/db/migrateCli.js maintenance-pending)" || status=$?
+    pending="$(run_compose_migration_cli maintenance-pending)" || status=$?
   fi
   if [[ "$status" -eq 0 ]]; then
     return 0

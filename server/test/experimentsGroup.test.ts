@@ -13,6 +13,8 @@ import { ExperimentRunService } from "../src/modules/experiments/runService.js";
 import { InquirySignalService } from "../src/modules/inquiry/signalService.js";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
 import { PgRunRepository } from "../src/modules/runs/repository.js";
+import { RunRecoveryService } from "../src/modules/runs/recovery.js";
+import { PgJobQueueRepository } from "../src/modules/jobs/repository.js";
 import { PgRouteDecisionRepository } from "../src/modules/routing/repository.js";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 import { resetTables } from "./support/resetTables.js";
@@ -390,7 +392,8 @@ describe("experimentsDb", () => {
         output_json: { experiment_metrics: { accuracy: 0.91, notes: "stable" } },
         completed_at: new Date().toISOString(),
       });
-      await expect(runs.reconcileManagedRun(SPACE, managedRunId)).resolves.toBe(true);
+      const recovery = new RunRecoveryService(loadConfig({SERVER_DATABASE_URL:db.connectionUri}), runRepository);
+      await recovery.recover();
       await expect(runs.reconcileManagedRun(SPACE, managedRunId)).resolves.toBe(false);
       expect((await runs.listRuns(identity, PROJECT, definition.id as string))
         .find(row => row.id === launched.id)).toMatchObject({ status: "completed" });
@@ -398,6 +401,13 @@ describe("experimentsDb", () => {
       expect(observations).toEqual(expect.arrayContaining([
         expect.objectContaining({ metric_name: "accuracy", value_number: 0.91, source: "parsed" }),
       ]));
+
+      const queued = await runs.launchManagedRun(identity, PROJECT, definition.id as string, version.id as string,
+        {agent_id:AGENT, is_baseline:false});
+      const queuedJob = (await db.pool.query<{id:string}>(`SELECT id FROM jobs WHERE job_type='agent_run' AND payload_json->>'run_id'=$1`, [queued.run_id])).rows[0]!;
+      expect(await new PgJobQueueRepository(db.pool).cancelJob(queuedJob.id, null)).toBe(true);
+      await recovery.recover();
+      expect((await runs.listRuns(identity, PROJECT, definition.id as string)).find(row => row.id === queued.id)).toMatchObject({status:"cancelled"});
     });
 
     it("does not let a completion overwrite a terminal state committed under it", async () => {

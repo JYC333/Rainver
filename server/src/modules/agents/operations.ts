@@ -64,7 +64,7 @@ export function agentOperationRegistrations(definitions:ReadonlyMap<string,Regis
     default:return {authority:`agent:${i.agent_id}`,targets:{agent_id:i.agent_id,profile_id:i.profile_id??null,version_id:i.version_id??null,session_id:i.session_id??null,...(id==='agent.run.create'?{project_id:i.project_id??null}:{})},resourceType:'agent',resourceId:i.agent_id!};
    }
   },
-  async authorize(db,raw,a){const i=raw as Input,p=person(a),repo=new PgAgentRepository(db);
+  async authorize(db,raw,a,scope){const i=raw as Input,p=person(a),repo=new PgAgentRepository(db);
    switch(id){
     case 'agent.create':case 'agent.template.instantiate':await lockProjectPlacement(db,a,i.project_id);return;
     case 'agent.runtime_default.set':{
@@ -78,7 +78,9 @@ export function agentOperationRegistrations(definitions:ReadonlyMap<string,Regis
      if(!await repo.canConfigureAssistantSettings(p,target))throw hidden();return;
     }
     case 'agent.runtime_profile.create':case 'agent.runtime_profile.update':case 'agent.runtime_profile.ensure_host':
-     await lockAgent(db,a,i.agent_id!);if(!await repo.canWriteRuntimeProfiles(a.space_id,p.userId,i.agent_id!))throw hidden();return;
+     await lockAgent(db,a,i.agent_id!);
+     if(!await repo.canWriteRuntimeProfiles(a.space_id,p.userId,i.agent_id!,{allowDisabled:id==='agent.runtime_profile.update'}))throw hidden();
+     return;
     case 'agent.update':
      await lockAgent(db,a,i.agent_id!);await assertVisibleAgent(db,a,i.agent_id!);
      if((DEFINITION_FIELDS.some(k=>Object.hasOwn(i,k))||hasConfigPatch(i))&&!await canChangeAgent(db,p,i.agent_id!))throw hidden();return;
@@ -110,7 +112,17 @@ export function agentOperationRegistrations(definitions:ReadonlyMap<string,Regis
       if(!await new PgConversationExecutionContextRepository(db).canAgentParticipate({id:session.id,space_id:a.space_id,room_id:session.room_id,project_id:session.project_id,project_folder_id:session.project_folder_id??null},i.agent_id!,p.userId))throw hidden();
       if(!(await db.query("SELECT 1 FROM room_agent_members WHERE space_id=$1 AND room_id=$2 AND agent_id=$3 AND status='active' FOR SHARE",[a.space_id,session.room_id,i.agent_id])).rows[0])throw hidden();
      }else if(session.agent_id&&session.agent_id!==i.agent_id)throw hidden();
-     await new PgConversationRuntimeSessionRepository(db).lockConversation(a.space_id,session.id);return;
+     await new PgConversationRuntimeSessionRepository(db).lockConversation(a.space_id,session.id);
+     if(a.principal.kind==='agent'){
+      const selection=raw as {runtime_profile_id:string;session_config:never[]};
+      const backend=await new PgConversationBackendRepository(db).resolveBinding({
+       space_id:a.space_id,user_id:p.userId,session_id:session.id,agent_id:i.agent_id!,
+       requested:{runtime_profile_id:selection.runtime_profile_id}
+      });
+      validateSessionConfig(selection.session_config,backend.session_config_options??[]);
+      scope.policyFacts={...scope.policyFacts,validated_current_conversation_config:true};
+     }
+     return;
     }
    }
   },

@@ -1,6 +1,6 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from 'react'
 import { EditorContent, useEditor } from '@tiptap/react'
-import { Extension, Mark, Node, mergeAttributes } from '@tiptap/core'
+import { Extension, Mark, Node as TiptapNode, mergeAttributes } from '@tiptap/core'
 import StarterKit from '@tiptap/starter-kit'
 import { BlockIdAttribute } from './blockIds'
 import { Plugin, PluginKey } from '@tiptap/pm/state'
@@ -195,7 +195,7 @@ export interface ReaderImagePolicy { remoteImages: boolean }
 
 // Passed as a function: Tiptap deep-copies plain option objects on configure(),
 // which would detach the holder from the component that updates it.
-const ReaderImage = Node.create<{ remoteImagesAllowed: () => boolean }>({
+const ReaderImage = TiptapNode.create<{ remoteImagesAllowed: () => boolean }>({
   name: 'image',
   group: 'block',
   atom: true,
@@ -261,7 +261,7 @@ const ReaderImage = Node.create<{ remoteImagesAllowed: () => boolean }>({
   },
 })
 
-const ReaderTable = Node.create({
+const ReaderTable = TiptapNode.create({
   name: 'table',
   group: 'block',
   content: 'tableRow+',
@@ -280,7 +280,7 @@ const ReaderTable = Node.create({
   },
 })
 
-const ReaderTableRow = Node.create({
+const ReaderTableRow = TiptapNode.create({
   name: 'tableRow',
   content: '(tableCell | tableHeader)+',
 
@@ -293,7 +293,7 @@ const ReaderTableRow = Node.create({
   },
 })
 
-const ReaderTableCell = Node.create({
+const ReaderTableCell = TiptapNode.create({
   name: 'tableCell',
   content: 'block+',
   isolating: true,
@@ -314,7 +314,7 @@ const ReaderTableCell = Node.create({
   },
 })
 
-const ReaderTableHeader = Node.create({
+const ReaderTableHeader = TiptapNode.create({
   name: 'tableHeader',
   content: 'block+',
   isolating: true,
@@ -399,6 +399,10 @@ export const ReadOnlyTiptapReader = forwardRef<ReadOnlyTiptapReaderHandle, ReadO
     const onReferenceClickRef = useRef(onReferenceClick)
     onReferenceClickRef.current = onReferenceClick
     const suppressClickSelectionUpdateRef = useRef(false)
+    const selectionAtPointerDown = useRef<{
+      pointer: number; x: number; y: number;
+      anchor: Node | null; anchorOffset: number; focus: Node | null; focusOffset: number;
+    } | null>(null)
 
     const annotationsRef = useRef<ReaderAnnotation[]>([])
     annotationsRef.current = annotations ?? []
@@ -538,15 +542,34 @@ export const ReadOnlyTiptapReader = forwardRef<ReadOnlyTiptapReaderHandle, ReadO
           class: 'reader-surface',
         },
         handleDOMEvents: {
+          pointerdown: (_view, event) => {
+            if (event.button !== 0) return false
+            const range = window.getSelection()
+            selectionAtPointerDown.current = range && {
+              pointer: event.pointerId, x: event.clientX, y: event.clientY,
+              anchor: range.anchorNode, anchorOffset: range.anchorOffset,
+              focus: range.focusNode, focusOffset: range.focusOffset,
+            }
+            return false
+          },
           pointerup: (view, event) => {
             if (event.button !== 0) return false
+            const before = selectionAtPointerDown.current
+            selectionAtPointerDown.current = null
+            if (!before || before.pointer !== event.pointerId) return false
+            const moved = Math.hypot(event.clientX - before.x, event.clientY - before.y) > 4
             // Let the browser/ProseMirror finish the native range first. Never
-            // turn a collapsed paragraph click into an automatic annotation.
+            // turn paragraph focus or a still-selected earlier range into an
+            // automatic annotation on a click.
             window.setTimeout(() => {
               if (view.isDestroyed) return
               const range = window.getSelection()
               if (!range || range.isCollapsed || !view.dom.contains(range.anchorNode) || !view.dom.contains(range.focusNode)) return
-              const { from, to } = view.state.selection
+              if (!moved && range.anchorNode === before.anchor && range.anchorOffset === before.anchorOffset
+                && range.focusNode === before.focus && range.focusOffset === before.focusOffset) return
+              const native = range.getRangeAt(0)
+              const from = view.posAtDOM(native.startContainer, native.startOffset)
+              const to = view.posAtDOM(native.endContainer, native.endOffset)
               const selected = buildSelection(view.state.doc, from, to, normalizedText, domSelectionRect())
               if (selected) committedRef.current?.(selected)
             }, 0)

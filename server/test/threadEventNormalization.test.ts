@@ -13,7 +13,7 @@ describe("createThreadEventNormalizer", () => {
     expect(normalizer.pushAcpProtocolEvent({ method: "session/update", params: { update: { sessionUpdate: "session_info_update", _meta: { "opencode/retry": { nextRetryAt: "2026-11-05T23:00:00Z", error: { token: "do not persist" } } } } } }))
       .toEqual([{ event_type: "status", status: "runtime_retry_waiting", text: "2026-11-05T23:00:00.000Z" }]);
     expect(normalizer.pushAcpProtocolEvent({ method: "session/update", params: { update: { sessionUpdate: "subagent_update", sessionId: "child", title: "Review", state: { state: "running" } } } }))
-      .toEqual([{ event_type: "status", status: "runtime_subagent_running", text: "Review" }]);
+      .toEqual([{ event_type: "status", status: "runtime_subagent", text: expect.stringContaining('"title":"Review","state":"running"') }]);
   });
   it("keeps a private Gmail monitor draft call's arguments and result out of the persisted thread, before and after a refusal", () => {
     const normalizer = createThreadEventNormalizer();
@@ -46,7 +46,7 @@ describe("createThreadEventNormalizer", () => {
       sessionUpdate: "subagent_update", sessionId: "child", title, state: { state: "running" },
     } } });
     expect(JSON.stringify(events)).not.toContain("sk-");
-    expect(events[0]?.text?.length).toBeLessThanOrEqual(160);
+    expect(JSON.parse(events[0]!.text!).title.length).toBeLessThanOrEqual(160);
   });
 
   it("preserves diagnostic stderr across chunks and flushes the final unterminated line", () => {

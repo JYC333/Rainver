@@ -1,11 +1,14 @@
 import {randomUUID} from 'node:crypto';
-import type {OperationActor,OperationInput,RegisteredSystemActionDefinition} from '@rainver/protocol';
+import {DUPLICATE_TASK_CANCELLATION_REASON} from '@rainver/protocol';
+import type {OperationActor,OperationInput,RegisteredSystemActionDefinition,TaskStatus} from '@rainver/protocol';
 import type {ServerConfig} from '../../config.js';
 import {resolveAgentActorId} from '../../db/actorResolver.js';
 import {dbPool,HttpError,type Queryable} from '../routeUtils/common.js';
 import {contentReadSql,contentAccessLevelSql} from '../access/contentAccessSql.js';
 import {contentResourceDefinition} from '../access/contentAccessRegistry.js';
-import {assertProjectWriter,assertProjectWriterForMutation,lockActiveProjectForMutation} from '../projects/access.js';
+import {TASK_BRANCH_DELETE_JOB,TASK_RUN_SETTLE_JOB} from '../hosts/taskBranchRequests.js';
+import {TASK_MERGE_JOB} from '../hosts/taskMerges.js';
+import {assertProjectWriter,assertProjectWriterForMutation,lockActiveProjectForMutation,lockAgentRunProjectBeforeActor} from '../projects/access.js';
 import {PgTaskRepository} from '../tasks/repository.js';
 import {deleteTask} from '../tasks/deleteTask.js';
 import {TaskControlError} from '../tasks/controlErrors.js';
@@ -18,13 +21,55 @@ import {CompletionRequirementsUnmet} from './taskWriteEvents.js';
 export const TASK_LIFECYCLE_OPERATIONS=['task.set_status','task.delete','task.report','task.complete','task.request_review','task.handoff'] as const;
 type Id=typeof TASK_LIFECYCLE_OPERATIONS[number];
 type Input=OperationInput<Id>;
-type Task={id:string;project_id:string|null;status:string};
+type Task={
+  id:string;project_id:string|null;status:TaskStatus;visibility:string;
+  completed_at:unknown;cancelled_at:unknown;
+};
+const UNSTARTED_TASK_STATUSES: readonly TaskStatus[] = ['inbox','ready'];
+
+async function unstartedCancellationBlocker(db:Queryable,spaceId:string,task:Task){
+  if (task.visibility !== 'space_shared') return 'task_not_shared';
+  if (!UNSTARTED_TASK_STATUSES.includes(task.status) || task.completed_at != null || task.cancelled_at != null) {
+    return 'task_already_started_or_closed';
+  }
+
+  // The caller already holds the Task FOR UPDATE. Run admission, flow writes
+  // and late merge enqueue serialize on that same row. Check dependencies in
+  // a subsequent statement so it sees anything committed before we got the lock.
+  // A reset Board status alone cannot make previous work eligible again.
+  const result = await db.query<{eligible:boolean}>(`
+    SELECT NOT (
+      EXISTS (SELECT 1 FROM task_runs WHERE space_id=$1 AND task_id=$2)
+      OR EXISTS (SELECT 1 FROM task_merges WHERE space_id=$1 AND task_id=$2)
+      OR EXISTS (SELECT 1 FROM execution_workspaces WHERE space_id=$1 AND task_id=$2)
+      OR EXISTS (SELECT 1 FROM task_artifacts WHERE space_id=$1 AND task_id=$2)
+      OR EXISTS (
+        SELECT 1 FROM jobs
+        WHERE space_id=$1 AND payload_json->>'task_id'=$2
+          AND job_type IN ('${TASK_BRANCH_DELETE_JOB}','${TASK_RUN_SETTLE_JOB}','${TASK_MERGE_JOB}')
+          AND status IN ('pending','claimed','running')
+      )
+      OR EXISTS (
+        SELECT 1 FROM project_work_events
+        WHERE space_id=$1 AND subject_type='task' AND subject_id=$2
+          AND (
+            event_kind IN ('task.reported','task.accepted','task.run_settled','task.merged','task.merge_blocked')
+            OR (event_kind='task.created' AND (data_json->>'status' = ANY($3::text[])) IS NOT TRUE)
+            OR (event_kind='task.flow_changed' AND (
+              (data_json->>'from' = ANY($3::text[])) IS NOT TRUE
+              OR (data_json->>'to' = ANY($3::text[])) IS NOT TRUE
+            ))
+          )
+      )
+    ) AS eligible`,[spaceId,task.id,UNSTARTED_TASK_STATUSES]);
+  return result.rows[0]?.eligible === true ? null : 'task_has_work_history';
+}
 class CompletionRefusal extends OperationBusinessError {
   constructor(private readonly missing:string[],private readonly unacknowledged:string[]){super('operation_invalid_input',422,'tasks');}
   override body(id:string){const b=super.body(id);b.error.metadata={code:'completion_requirements_unmet',missing:this.missing,unacknowledged:this.unacknowledged};return b;}
 }
 async function readTask(db:Queryable,id:string,actor:OperationActor,deleted:boolean,lock=false):Promise<Task>{
-  const row=(await db.query<Task>(`SELECT t.id,t.project_id,t.status FROM tasks t
+  const row=(await db.query<Task>(`SELECT t.id,t.project_id,t.status,t.visibility,t.completed_at,t.cancelled_at FROM tasks t
     WHERE t.id=$1 AND t.space_id=$2 ${deleted?'':'AND t.deleted_at IS NULL'}
     AND ${contentReadSql('task','t','$3')}
     AND ${contentAccessLevelSql({definition:contentResourceDefinition('task')!,alias:'t',userExpr:'$3'})}='full'
@@ -53,18 +98,33 @@ export function taskLifecycleRegistrations(config:ServerConfig,definitions:Reado
   const pool=dbPool(config);
   return TASK_LIFECYCLE_OPERATIONS.map(id=>({
     definition:definitions.get(id)!,
+    // An Agent's Task is in its Run's Project: locked before the core pins person and Run (Project → person →
+    // Run, the order of the same Run's releases); `authorizeTask` repeats every check under it.
+    lockBeforeActor:(db,_raw,actor)=>lockAgentRunProjectBeforeActor(db,actor),
     async resolve(db,raw,actor){
       const t=await readTask(db,(raw as Input).task_id,actor,id==='task.delete');
       return {authority:`task:${t.id}${actor.run_id?`:run:${actor.run_id}`:''}`,targets:{task_id:t.id},resourceType:'task',resourceId:t.id};
     },
-    async authorize(db,raw,actor){
+    async authorize(db,raw,actor,scope){
       const input=raw as Input;
       if(actor.principal.kind==='agent'){
         if((id==='task.set_status'||id==='task.delete')&& !('reason' in input&&input.reason))throw new OperationError('operation_invalid_input',422);
         if('override_completion' in input&&input.override_completion || 'blocked_reason' in input&&input.blocked_reason)throw new OperationError('operation_invalid_input',422);
       }
       // A handoff's recipient is held in the Task write closure's order (people/Agents before the Task).
-      await authorizeTask(db,input.task_id,actor,id==='task.delete',id==='task.handoff'?()=>holdHandoffRecipient(db,actor.space_id,(input as OperationInput<'task.handoff'>).to):undefined);
+      const task = await authorizeTask(db,input.task_id,actor,id==='task.delete',id==='task.handoff'?()=>holdHandoffRecipient(db,actor.space_id,(input as OperationInput<'task.handoff'>).to):undefined);
+      if (id === 'task.set_status' && actor.principal.kind === 'agent' && task.project_id) {
+        const {status, reason, blocked_reason, override_completion} = input as OperationInput<'task.set_status'>;
+        // The fixed reason bounds the event text. The Task's locked state
+        // bounds the effect. Neither proves duplication or what the person asked.
+        const blocker = status !== 'cancelled' ? 'task_status_not_cancellation'
+          : reason !== DUPLICATE_TASK_CANCELLATION_REASON || blocked_reason != null || override_completion != null
+            ? 'task_cancellation_requires_fixed_reason'
+            : await unstartedCancellationBlocker(db,actor.space_id,task);
+        scope.policyFacts = blocker
+          ? {...scope.policyFacts, task_status_sensitive_read_blocker: blocker}
+          : {...scope.policyFacts, unstarted_task_cancellation_project_id: task.project_id};
+      }
     },
     async authorizeResult(db,raw,actor){await authorizeTask(db,(raw as {task_id:string}).task_id,actor,id==='task.delete');},
     async execute(db,raw,actor){

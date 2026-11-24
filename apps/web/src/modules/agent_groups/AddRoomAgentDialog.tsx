@@ -115,7 +115,7 @@ export function AddRoomAgentDialog({
             <summary className="cursor-pointer text-xs font-medium">{t('collab_ui.roster.presets')}</summary>
             <div className="mt-2 space-y-2">
               <p className="text-xs text-muted-foreground">{t('collab_ui.roster.preset_hint')}</p>
-              <HostExecutionTargetPicker projectId={projectId} value={presetExecution} onChange={onPresetExecutionChange} disabled={busy} />
+              <HostExecutionTargetPicker projectId={projectId} value={presetExecution} onChange={onPresetExecutionChange} optionalDefaultFolder disabled={busy} />
               <p className="text-xs text-muted-foreground">
                 {presetExecution?.workspace_mode === 'location'
                   ? t('collab_ui.roster.preset_host_location')

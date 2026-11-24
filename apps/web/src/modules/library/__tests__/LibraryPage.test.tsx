@@ -178,8 +178,12 @@ describe('LibraryPage', () => {
     vi.mocked(projectsApi.list).mockResolvedValue({ items: [], total: 0, limit: 200, offset: 0 })
   })
 
-  it('labels Agent-provided material in the compatible item cards',async()=>{
-    vi.mocked(sourcesApi.items).mockResolvedValue(page([sourceItem({metadata_json:{result_provenance:'agent_provided_unverified'}})],1));renderLibrary();await screen.findByText('Agent-provided · Not independently verified');
+  it('labels Agent-provided material in the compatible item cards', async () => {
+    // Warm the lazy page module before timing the rendered label's behavior.
+    await import('../LibraryPage')
+    vi.mocked(sourcesApi.items).mockResolvedValue(page([sourceItem({ metadata_json: { result_provenance: 'agent_provided_unverified' } })], 1))
+    renderLibrary()
+    expect(await screen.findByText('Agent-provided · Not independently verified')).toBeVisible()
   })
 
   it('shows a missing day without generating it, and backfills only when asked', async () => {

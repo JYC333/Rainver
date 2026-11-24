@@ -33,8 +33,6 @@ export function acpAgentRuntimeAdapterSpec(agent: EnabledAcpAgent): RuntimeAdapt
     implementation_status: "implemented",
     enabled_by_default: false,
     subagent_support: "unknown",
-    subagent_disable_mechanism: "unknown",
-    delegation_controllability: "unknown",
     structured_output: "native_event_stream",
     checkpoint_resume: "runtime_session",
     cancellation_reliability: "best_effort",

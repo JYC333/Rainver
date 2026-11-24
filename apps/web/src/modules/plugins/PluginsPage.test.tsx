@@ -5,6 +5,9 @@ import {pluginsApi} from '../../api/client'
 import i18n from '../../i18n'
 import { formatDate } from '../../i18n/format'
 
+const { space } = vi.hoisted(() => ({ space: { activeSpaceId: 'space-a', userId: 'user' } }))
+vi.mock('../../contexts/SpaceContext', () => ({ useSpace: () => space }))
+
 vi.mock('../../api/client', () => ({
   pluginsApi: {
     list: vi.fn(async () => ({
@@ -23,7 +26,7 @@ vi.mock('../../api/client', () => ({
   },
 }))
 
-afterEach(async () => { await i18n.changeLanguage('en') })
+afterEach(async () => { space.activeSpaceId = 'space-a'; await i18n.changeLanguage('en') })
 
 describe('Optional modules', () => {
   it('reads in English by default', async () => {
@@ -66,7 +69,7 @@ describe('Disable cleanup on the plugin card', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Some resources from the last disable could not be released (1).')
     expect(screen.getByRole('button',{name:'Enable'})).toBeDisabled()
     fireEvent.click(retry)
-    await waitFor(() => expect(pluginsApi.disable).toHaveBeenCalledWith('probe'))
+    await waitFor(() => expect(pluginsApi.disable).toHaveBeenCalledWith('probe', {}, undefined, { spaceId: 'space-a' }))
     await waitFor(() => expect(screen.queryByRole('button',{name:'Retry cleanup'})).toBeNull())
     expect(screen.getByRole('button',{name:'Enable'})).toBeEnabled()
     expect(screen.queryByRole('status')).toBeNull()
@@ -126,4 +129,16 @@ describe('Disable cleanup on the plugin card', () => {
     expect(screen.queryByRole('button',{name:'重试清理'})).toBeNull()
     expect(screen.getByRole('status')).toHaveTextContent('重试清理无法释放；所属服务进程重启或退出后会自动释放。在此之前无法重新启用。')
   })
+})
+
+
+it('drops the previous Space controls and scopes mutations to the loaded Space', async () => {
+  const view = render(<PluginsPage />)
+  await screen.findByRole('button', { name: 'Disable' })
+  space.activeSpaceId = 'space-b'
+  view.rerender(<PluginsPage />)
+  expect(screen.queryByRole('button', { name: 'Disable' })).not.toBeInTheDocument()
+  fireEvent.click(await screen.findByRole('button', { name: 'Disable' }))
+  expect(pluginsApi.list).toHaveBeenCalledWith({ spaceId: 'space-b' })
+  expect(pluginsApi.disable).toHaveBeenCalledWith('diary', {}, undefined, { spaceId: 'space-b' })
 })

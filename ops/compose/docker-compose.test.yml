@@ -61,6 +61,7 @@ services:
       context: ../../
       dockerfile: sandbox/Dockerfile
       network: host
+    init: true
     security_opt:
       - seccomp=unconfined
       - no-new-privileges=true
@@ -101,6 +102,11 @@ services:
       target: prod
     ports:
       - "3100:80"
+    volumes:
+      # Disposable: the previous release's hashed /assets/ files, kept so a tab
+      # still open on it can lazy-load a feature after the switch
+      # (apps/web/docker/retain-previous-assets.sh). Not part of backups.
+      - frontend-previous-assets:/var/cache/rainver-web
     depends_on:
       server:
         condition: service_healthy
@@ -121,7 +127,7 @@ services:
       # host, so the two only agree when this container sees the mode root under
       # the same absolute path the host uses.
       - ${RAINVER_MODE_ROOT:-$HOME/.rainver-data/test}:${RAINVER_MODE_ROOT:-$HOME/.rainver-data/test}
-    user: "1000:989"
+    user: "1000:${DOCKER_GID:-989}"
     environment:
       - DEPLOYER_SOCKET=/tmp/rainver-deployer.sock
       - REPO_ROOT=/repo
@@ -146,3 +152,6 @@ networks:
   # Outbound only, and only for the built-in execution host. Narrowing what a
   # Run may reach through it is the daemon-owned egress proxy's job.
   host-egress:
+
+volumes:
+  frontend-previous-assets:

@@ -10,7 +10,7 @@ import { RuntimeFailureNotice } from './RuntimeFailureNotice'
 import { runtimeFailure } from './runtimeFailure'
 import { ArrowLeft, ExternalLink, FileCode2, FlaskConical, Loader2, Save, ShieldCheck } from 'lucide-react'
 import { toast } from 'sonner'
-import { artifactsApi, evolutionApi, runsApi, type SaveWorkflowFromRunResult } from '../../api/client'
+import { agentsApi, artifactsApi, evolutionApi, projectFoldersApi, runsApi, type SaveWorkflowFromRunResult } from '../../api/client'
 import { SavedWorkflowNotice } from './SavedWorkflowNotice'
 import { errMsg } from '../../lib/utils'
 import type { ActivityInboxRecord, Artifact, AuthorizationRequest, Proposal, Run, RunAttempt, RunEvaluation, RunFinalization, RunLogicalIO, RunSupervisorDecision, RunVerificationResult } from '../../types/api'
@@ -106,6 +106,31 @@ function RunDetailPageContent() {
   const [reloadKey, setReloadKey] = useState(0)
   const [executingRun, setExecutingRun] = useState(false)
   const { run: polled, loading, error } = useRun(runId && activeSpaceId ? runId : null, reloadKey, activeSpaceId ?? undefined)
+  const [contextNames, setContextNames] = useState<{ agent?: string; version?: string; folder?: string }>({})
+  const runSpaceId = polled?.space_id
+  const agentId = polled?.agent_id
+  const agentVersionId = polled?.agent_version_id
+  const projectId = polled?.project_id
+  const folderId = polled?.project_folder_id
+  useEffect(() => {
+    if (!runSpaceId) return
+    const controller = new AbortController()
+    const options = { spaceId: runSpaceId, signal: controller.signal }
+    setContextNames({})
+    void Promise.allSettled([
+      agentId ? agentsApi.get(agentId, options) : null,
+      agentId && agentVersionId ? agentsApi.getVersion(agentId, agentVersionId, options) : null,
+      projectId && folderId ? projectFoldersApi.get(projectId, folderId, options) : null,
+    ]).then(([agent, version, folder]) => {
+      if (controller.signal.aborted) return
+      setContextNames({
+        agent: agent.status === 'fulfilled' ? agent.value?.name : undefined,
+        version: version.status === 'fulfilled' ? version.value?.version_label : undefined,
+        folder: folder.status === 'fulfilled' ? folder.value?.name : undefined,
+      })
+    })
+    return () => controller.abort()
+  }, [runSpaceId, agentId, agentVersionId, projectId, folderId])
   const [activities, setActivities] = useState<ActivityInboxRecord[]>([])
   const [artifacts, setArtifacts] = useState<Artifact[]>([])
   const [proposals, setProposals] = useState<Proposal[]>([])
@@ -449,7 +474,7 @@ function RunDetailPageContent() {
           {r.status === 'waiting_for_review' && <ConversationRunControls runId={r.id} run={r} reviewOnly onChanged={async () => { setReloadKey(key => key + 1); await loadSubs() }} />}
         </div>
         {savedWorkflow && savedWorkflow.scopeKey === `${activeSpaceId}:${runId}` && <SavedWorkflowNotice result={savedWorkflow.result} />}
-        <p className="text-xs text-muted-foreground">Viewing: {activeSpaceName ?? activeSpaceId ?? 'No operational space selected'}</p>
+        <p className="text-xs text-muted-foreground">Viewing: {activeSpaceName ?? (activeSpaceId ? 'Unavailable space name' : 'No operational space selected')}</p>
         <div className="flex flex-wrap gap-1.5 items-center">
           <StatusBadge status={r.status} />
           <Badge variant="secondary">{r.mode}</Badge>
@@ -469,26 +494,14 @@ function RunDetailPageContent() {
           </div>
           <div className="grid gap-2 text-sm sm:grid-cols-2">
             <p><span className="text-muted-foreground">Execution space</span><br /><span>{executionSpace?.name ?? 'Unavailable space'}</span></p>
-            <p><span className="text-muted-foreground">Project context</span><br /><span>{r.project_folder_id ? 'Project Folder attached' : 'No Project Folder'}</span></p>
+            <p><span className="text-muted-foreground">Project context</span><br /><span>{r.project_folder_id ? contextNames.folder ?? 'Folder name unavailable' : 'No Project Folder'}</span></p>
             <p><span className="text-muted-foreground">Instructed by</span><br /><span>{instructedBy}</span></p>
-            {/* A bounded provider task has no Agent, AgentVersion or runtime
-                snapshot by construction, so the identifiers below are empty by
-                design. Say what it is instead of leaving the page silent. */}
-            {r.execution_kind === 'provider_task' && (
-              <p><span className="text-muted-foreground">Ran by</span><br /><span>{runActorLabel(r, null)}</span></p>
+            <p><span className="text-muted-foreground">Ran by</span><br /><span>{runActorLabel(r, contextNames.agent ?? null)}</span></p>
+            {r.agent_version_id && (
+              <p><span className="text-muted-foreground">Agent version</span><br /><span>{contextNames.version ?? 'Version name unavailable'}</span></p>
             )}
+            <p><span className="text-muted-foreground">Work Skill</span><br /><span>{r.work_skill ? 'Rainver Work Skill' : 'None assigned'}</span></p>
           </div>
-          <details className="rounded-md border border-border bg-muted/20 p-3 text-xs">
-            <summary className="cursor-pointer font-medium">Technical identifiers</summary>
-            <div className="mt-3 grid gap-2 sm:grid-cols-2">
-              <p className="break-all"><span className="text-muted-foreground">run_id</span><br /><span className="font-mono select-all">{r.id}</span></p>
-              <p className="break-all"><span className="text-muted-foreground">agent_id</span><br /><span className="font-mono select-all">{r.agent_id ?? '—'}</span></p>
-              <p className="break-all"><span className="text-muted-foreground">agent_version_id</span><br /><span className="font-mono select-all">{r.agent_version_id ?? '—'}</span></p>
-              <p className="break-all"><span className="text-muted-foreground">project_folder_id</span><br /><span className="font-mono select-all">{r.project_folder_id ?? '—'}</span></p>
-              <p className="break-all"><span className="text-muted-foreground">space_id</span><br /><span className="font-mono select-all">{r.space_id}</span></p>
-              <p className="break-all"><span className="text-muted-foreground">work_skill_content_hash</span><br /><span className="font-mono select-all">{r.work_skill?.content_hash ?? '—'}</span></p>
-            </div>
-          </details>
           <div className="rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground space-y-1">
             <div>Memory scope: Space-scoped memory.</div>
             <div>Personal context grants can be used for reasoning only.</div>

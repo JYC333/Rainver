@@ -7,9 +7,11 @@ use implementation call order as acceptance evidence.
 
 ## Gates and evidence
 
-Before manual acceptance:
+Before manual acceptance, prepare Playwright Chromium once on the machine
+and run the deterministic gate:
 
 ```bash
+pnpm --filter @rainver/web exec playwright-core install chromium
 ./ops/scripts/product-acceptance-gate.sh
 ```
 

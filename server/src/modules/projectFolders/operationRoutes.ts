@@ -11,6 +11,7 @@ export const PROJECT_FOLDER_OPERATION_ROUTES = [
   ['PUT', `${base}/file/draft`, 'project.folder.draft.upsert'],
   ['POST', `${base}/file/draft/rebase`, 'project.folder.draft.upsert'],
   ['POST', `${base}/file/draft/discard`, 'project.folder.draft.discard'],
+  ['POST', `${base}/file/draft/save/close`, 'project.folder.draft.close_save'],
   ['POST', `${base}/unregister`, 'project.folder.unregister'],
   ['PATCH', base, 'project.folder.update'],
   ['DELETE', base, 'project.folder.archive'],

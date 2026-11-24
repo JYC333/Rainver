@@ -42,9 +42,7 @@ export function ConversationParticipantsEditor({ summary, profiles, availableAge
     ?? (summary.runtime?.agent_id === managerId ? summary.runtime : null)
   const locked = scope.actionRole === 'worker' || scope.actionRole === 'viewer' || disabled || busy || summary.dispatch_locked || !detail.viewer_can_write
   const optionsFor = (id: string) => profiles.filter(profile => profile.agent_id === id && profile.usable
-    && profile.runtime_installation && profile.execution_host_id === summary.host?.host_id
-    && profile.workspace_mode === summary.primary?.kind
-    && (summary.primary?.kind !== 'location' || profile.workspace_location_id === summary.primary.workspace_location_id))
+    && profile.runtime_installation && profile.execution_host_id === summary.host?.host_id)
   const retained = (id: string) => availableAgents ? availableAgents.some(agent => agent.agent_id === id && agent.retained_thread) : pinned.some(pin => pin.agent_id === id)
     || profiles.some(profile => profile.agent_id === id && profile.retained_binding)
   // Use authority is separate from profile usability, including an empty catalog.

@@ -1,4 +1,4 @@
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { act, render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { pluginFrontendEntries, type PluginOperationManifest } from '@rainver/protocol';
@@ -25,7 +25,7 @@ vi.mock('../manifestCatalog', async () => {
     operations: [{ id: 'plugin.bind_probe.record.list', version: 1, title: 'List', description: 'List', kind: 'query', side_effects: 'none', data_class: 'non_sensitive', input_schema: input.pick({}).extend({ project_id: input.shape.key }).strict(), output_schema: input.pick({}), gate_class: null },
       { id: 'plugin.bind_probe.record.write', version: 1, title: 'Write', description: 'Write', kind: 'command', side_effects: 'durable', data_class: 'non_sensitive', input_schema: input.pick({}).extend({ project_id: input.shape.key }).strict(), output_schema: input.pick({}), gate_class: null }],
   };
-  const view = { default: { records: () => <div>Bound records view</div> } };
+  const view = { default: { records: ({ctx}: {ctx: {projectRevision?: number}}) => <div>Bound records view<input aria-label="Draft" /><output>{ctx.projectRevision}</output></div> } };
   const plugins = [
     { manifest, load: async () => view },
     { manifest: probeManifest, load: async () => ({ default: { records: () => <div>Probe view</div> } }) },
@@ -34,7 +34,7 @@ vi.mock('../manifestCatalog', async () => {
 });
 vi.mock('../../../api/client', () => ({
   pluginsApi: { list: vi.fn() },
-  projectsApi: { get: vi.fn() },
+  projectsApi: { get: vi.fn(), streamUpdates: vi.fn().mockResolvedValue(undefined) },
   queryOperation: vi.fn(),
   callOperation: vi.fn(),
   queryPluginOperation: vi.fn(),
@@ -126,4 +126,18 @@ it('lets a Space admin outside the Project manage a binding while saying they ca
   at(<ProjectPluginBindingsCard projectId="project" />);
   await screen.findByRole('button', { name: 'Unbind Applications from this Project' });
   expect(screen.getByText('You can change this binding, but only Project members can open its data.')).toBeTruthy();
+});
+
+
+it('forwards Project live updates to the mounted plugin without clearing the draft', async () => {
+  state = { status: 'bound', effective: true, can_manage: true };
+  vi.mocked(projectsApi.streamUpdates).mockResolvedValue(undefined);
+  at(<PluginSlot pluginId="bind_probe" entryId="records" />);
+  const draft = await screen.findByRole('textbox', { name: 'Draft' });
+  fireEvent.change(draft, { target: { value: 'Keep my notes' } });
+  await waitFor(() => expect(projectsApi.streamUpdates).toHaveBeenCalledWith('project', expect.any(Function), expect.objectContaining({ spaceId: 'space' })));
+  act(() => vi.mocked(projectsApi.streamUpdates).mock.calls[0]![1]({ type: 'changed' }));
+  await screen.findByText('1');
+  expect(screen.getByRole('textbox', { name: 'Draft' })).toBe(draft);
+  expect((draft as HTMLInputElement).value).toBe('Keep my notes');
 });

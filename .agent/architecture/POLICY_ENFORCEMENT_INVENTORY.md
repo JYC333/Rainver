@@ -86,6 +86,13 @@ when their audit cannot be written. Hard invariant `hard_invariant_sensitive_plu
 Run's taint holds a sensitive plugin read; its context keys
 `sensitive_plugin_read_taint`/`outward_action` are host-computed for both the
 OperationExecutor and declared-resource dispatcher paths.
+For `task.set_status`, the core may treat an explicitly requested cancellation
+as confined to the verified Gmail Project when the locked Task is shared,
+unstarted and free of execution or publication dependencies. Manual origin,
+live original mailbox consents and current Project-writer authority are
+required. The fixed reason `Duplicate task` bounds event text. The person's
+request supplies the intent and the server performs no duplicate check.
+See [Core Task lifecycle boundary](PROJECT_WORK.md#core-task-lifecycle-boundary).
 
 Space membership role checks remain separate from persisted Policy rows.
 Canonical roles (ascending authority): `guest < member < reviewer < admin <
@@ -295,7 +302,10 @@ fail closed via `unknown_policy_action` DENY if ever passed to `engineCheck` or
 | `gmail_private_check` proposal (withdrawn in-place check) | `server/src/modules/sources/gmail/gmailPrivateCheck.ts` | ADR 0033 §6 (*Withdrawn paths*). `source.gmail.private_check.request`/`.get` are removed; migration `0039_gmail_private_check_withdrawn` closes pending cards (`superseded`) and ends unfinished checks. The applier hides a card from anyone but its owner (404) and refuses the owner (409) without writing anything; the preview projection never offers one. A Run a check started is refused before dispatch and at launch (`gmail_private_check_withdrawn`). **fail_closed**. |
 | `source.gmail.digest.propose` | `server/src/modules/sources/gmail/gmailDigestProposal.ts` | Drafts one owner-only confirmation for a digest in the mailbox owner's own turn of a Project conversation (private, Room or mainline; a Room only while every reader reads the Project). Acceptance rechecks owner, Project, conversation and its audience, and connection generation, and writes the scoped grant with the digest (or reactivates a digest paused for re-confirmation by migration 0040). **fail_closed**. |
 | `source.gmail.digest.read` | `server/src/modules/sources/gmail/gmailDigestReadOperation.ts` | A delivery Run, on its delivery conversation's own runtime (an owner-only turn, or one scheduled Room turn), reads its pinned inbox window or the frozen monitor matches under the corresponding standing grant. Admission, the Run's claim, each send, model release and reply persistence recheck authority and the audience by one rule (`gmailDigestConversationAdmits`: Project readers, every active Room roster row and the Run's own audience, all inside the Project). The read is audited before release. **fail_closed**. |
-| `source.gmail.digest.manage` | `server/src/modules/sources/gmail/gmailOperations.ts` | Human-only pause, resume, time edit or revoke for the owner's private digest. Pausing or ending invalidates its in-flight delivery. **fail_closed**. |
+| `source.gmail.digest.manage` | `server/src/modules/sources/gmail/gmailOperations.ts` | Human-only pause, resume, time edit or revoke for the owner's private digest. Pausing or ending invalidates its in-flight delivery. An application-update automation (ADR 0034) is never resumed here (409): resuming is a new card. **fail_closed**. |
+| `source.gmail.application_updates.propose` / `.manage` (`.list`, `.set_status`) | `server/src/modules/sources/gmail/gmailApplicationUpdates.ts` | ADR 0034. Drafting is the owner-only `gmail_digest_create` card of kind `application` (effects and the frozen Agent/model binding) under `source.gmail.digest.propose`; list and pause/end under `source.gmail.application_updates.manage`. Each executor admits only the mailbox owner's own `manual` turn in their own private conversation of the Project, never a Room or the mainline (`gmailDigestConversationAdmits` with `ownerOnly`); drafting also needs Application management enabled, bound and writable for them. Acceptance (owner deciding directly) rechecks the Project, conversation, connection generation and writes or changes the automation with its `application_update` consent. Allowed after a mail read (`TAINTED_RUN_WRITES`): they widen nothing and publish nothing to others. **fail_closed**. |
+| `source.gmail.application_updates.flag` | `server/src/modules/sources/gmail/gmailApplicationUpdates.ts` | Only the automation's running delivery Run, for a message frozen for it and released to it; writes `review`, a fixed reason and at most five application ids. **fail_closed**. |
+| `plugin.applications.mail_fact.apply` | `server/src/modules/plugins/operationRegistry.ts`, `server/src/modules/plugins/egress.ts` → `gmailApplicationFactAdmitted` | ADR 0034. The host refuses (hidden 404) everything but the owner's application-update automation Run: the running delivery of an active automation in the targeted Project, live consent and owner-only audience (`gmailDigestRunAdmits`), the frozen runtime and model and the current rule version, a frozen message released to the Run with exactly its receipt time, an effect the rule allows, and no sensitive read besides the owner's own mail of this Project (an inherited on-demand read only with its verified scope and live consent); the same gate lifts the outward refusal after the mail read for this one action. The package then decides replay, revision and ordering under the application row lock. The gate locks person and Run (`FOR SHARE`, the actor pin) → Gmail mutex → connection → digest and reads taint `FOR SHARE`, never upgrading. `plugin.applications.mail_fact.list` passes `gmailApplicationFactsAudienceAdmitted` in the same `authorize` and again in `releasePluginResult`: the owner directly, or an Agent only in a Run of the owner's private conversation of the Project, whose taint then records a `core:gmail_digest` sensitive read of the owner (outward writes refused). **fail_closed**. |
 | `source.gmail.summary.share` | `server/src/modules/sources/gmail/gmailSummaryShare.ts` | A human posts their edited preview under their own identity to a conversation in the same Project. The preview resolves effective readers. Posting rechecks the reviewed audience, source owner and destination membership and records provenance with the command receipt and policy audit. **fail_closed**. |
 | `source.gmail.monitor.propose` | `server/src/modules/sources/gmail/gmailMonitorProposal.ts` | Drafts a private `gmail_monitor_create` proposal (visibility `private`, owner = the instructing person, no Project on the row). The executor refuses unless the stored Run is the person's own `manual` turn (not delegated, continuation or unattended) and `runAudience` is that person alone (ADR 0030 decision 4). It reads no mail and returns no criteria. Only the owner's acceptance applies it (`registerGmailMonitorProposalApplier`); scenario check, replay lookup and insert share one transaction behind the owner's locks. **fail_closed**. |
 | `memory.write` | `server/src/modules/systemActions/systemActionDispatcher.ts` | An Agent's own bounded write (ADR 0003 §2). In `ORIGIN_GATED_PROJECT_WRITES`: allowed from a person's turn, `require_approval` from an unattended origin — **except** a persona write on an `agent`-scope entry, the single exception ADR 0003 §5 and ADR 0017 §1–§2 name, whose origin test runs the other way round. The exemption is scoped to that one write, never to the action: `memoryPolicyContext` resolves it server-side from the input for a create and from the target row for a revision, and `ruleUnattendedProjectWrite` reads only that flag. What the exemption grants is passage past the *origin* boundary; `decidePersonaWrite` then applies ADR 0003 §5's table, so an unattended Run whose responsible person is not the Agent's owner leaves a proposal for the owner rather than applying. Reach changes become proposals in `memoryDirectWriteExecutors.ts`. **fail_closed**. |
@@ -557,11 +567,11 @@ manual write capability; registration is user-only and ungrantable. It does
 not authorize Note promotion, Memory, Agent mutation or purge. The protocol registry fixture adds
 only this policy, reaching 126 entries together with the three dedicated workspace policies.
 
-P5-5 basis4cf62800: note.edit also covers the ordinary human Note draft/edit,
-collection/placement/reorder commands through noteObjectOperations. Default
-allow, mandatory failclosed audit and human-only scope are unchanged. Existing
-NoteWriter/Project/read gates remain authoritative. Human Note linking has its own allow policy and canonical access gates.
-No production approval mapping or new Agent permission is enabled.
+`note.edit` also covers Note draft/edit, collection and reorder operations through
+`noteObjectOperations`. The policy registry declares `note` as its default
+resource and `project` for the Agent adapter. Granted Agent working edits are
+limited to the current Project. Existing Note writer and Project access checks
+remain authoritative. Human Note linking has its own policy and access checks.
 
 P5-5 passage/evidence migration on1d156dfd adds transactional core enforcement at
 knowledge/knowledgeObjectOperations.ts: pending Note promotion uses proposal.create,
@@ -660,7 +670,9 @@ its required embedding Job atomically.
 
 Folder IO commands store private frozen intents and required Jobs under the
 existing Folder authority. Draft save retains `project_folder.apply_patch` and
-its direct-user context; create/scan/restore use `project.folder.command`.
+its direct-user context; create/scan/restore and closing a failed save use
+`project.folder.command`. The close command validates the original requester,
+the terminal Job and the Folder write gate before releasing the save's scope.
 Workers recheck live actor, Project, Folder, Location/Host and policy before IO
 and before the final short transaction. No filesystem/Host effect occurs in the
 core transaction. Unknown effects and independent file changes cannot be

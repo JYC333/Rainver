@@ -245,6 +245,31 @@ describe("daily capture report schedule", () => {
     const after = await settings.get(SPACE, OWNER);
     expect(after).toMatchObject({ next_run_at: enabled.next_run_at, last_report_date: "2026-09-10" });
   });
+
+  it.each([
+    // Midnight never happens on 2026-09-06 in Santiago (00:00 → 01:00) or on 2026-03-08 in Havana.
+    ["America/Santiago", "00:00", "2026-09-05T04:00:00.000Z", ["2026-09-04", "2026-09-05", "2026-09-06", "2026-09-07"]],
+    ["America/Havana", "00:00", "2026-03-07T05:00:00.000Z", ["2026-03-06", "2026-03-07", "2026-03-08", "2026-03-09"]],
+    // A wall time inside the New York gap fires once, after the jump; the repeated hour fires once.
+    ["America/New_York", "02:30", "2026-03-07T07:30:00.000Z", ["2026-03-06", "2026-03-07", "2026-03-08", "2026-03-09"]],
+    ["America/New_York", "01:30", "2026-10-31T05:30:00.000Z", ["2026-10-30", "2026-10-31", "2026-11-01", "2026-11-02"]],
+  ])("advances %s %s slots across a DST jump, reporting each local day once", async (timezone, localTime, firstSlot, days) => {
+    if (!db.available) return;
+    const settings = new PgDailyReportSettingsRepository(db.pool);
+    await settings.getOrCreate(SPACE, OWNER);
+    const setting = await settings.update(SPACE, OWNER, { enabled: true, local_time: localTime, timezone });
+    const reported: string[] = [];
+    let slot = firstSlot;
+    for (let index = 0; index < days.length; index += 1) {
+      reported.push(String(buildDailyReportJobPayload(setting, slot)!.local_date));
+      await settings.advanceNextRun(setting, slot);
+      const next = (await settings.get(SPACE, OWNER))!.next_run_at!;
+      // Each advance moves the cursor forward; a slot that maps back onto itself would fire forever.
+      expect(Date.parse(next), `${timezone} after ${slot}`).toBeGreaterThan(Date.parse(slot));
+      slot = next;
+    }
+    expect(reported).toEqual(days);
+  });
 });
 
 async function withReportApp(work:(app:ReturnType<typeof buildModuleServer>)=>Promise<void>){
@@ -422,6 +447,33 @@ it.each(['consent','retention','changed_manual'])('review regression: %s refusal
  if(kind==='changed_manual')expect((await worker().processOne()).status).toBe('failed');
  expect((await worker().processOne()).status).toBe('completed');
 });
+it.each([{ enabled: false }, { local_time: '23:32' }, { timezone: 'Asia/Tokyo' }])(
+  'leaves the new daily report schedule intact after a stale scan (%j)',
+  async change => {
+    const repo = new PgDailyReportSettingsRepository(db.pool);
+    await repo.update(SPACE, OWNER, { enabled: true, timezone: 'UTC', local_time: '06:00' });
+    await db.pool.query("UPDATE scheduler_tasks SET next_run_at='2026-09-13T06:00:00Z' WHERE user_id=$1 AND task_type='daily_capture_report'", [OWNER]);
+    const listDue = PgDailyReportSettingsRepository.prototype.listDue;
+    const scan = vi.spyOn(PgDailyReportSettingsRepository.prototype, 'listDue').mockImplementationOnce(async function (this: PgDailyReportSettingsRepository, now) {
+      const rows = await listDue.call(this, now);
+      await repo.update(SPACE, OWNER, change);
+      return rows;
+    });
+    try {
+      const { scanDailyReportsAndEnqueue } = await import('../src/modules/dailyReports/scheduler.js');
+      expect(await scanDailyReportsAndEnqueue(config())).toBe(0);
+      expect(await countRows('jobs')).toBe(0);
+      expect(await countRows('runs')).toBe(0);
+      const live = await repo.get(SPACE, OWNER);
+      expect(live).toMatchObject(change);
+      if (live?.enabled) expect(Date.parse(live.next_run_at ?? '')).toBeGreaterThan(Date.now());
+      else expect(live?.next_run_at).toBeNull();
+    } finally {
+      scan.mockRestore();
+    }
+  },
+);
+
 it('review recovery: scheduler infrastructure failure keeps the same slot for a later retry',async()=>{
  const repo=new PgDailyReportSettingsRepository(db.pool);await repo.update(SPACE,OWNER,{enabled:true});
  await db.pool.query("UPDATE scheduler_tasks SET next_run_at='2026-09-13T06:00:00Z' WHERE space_id=$1 AND task_type='daily_capture_report'",[SPACE]);

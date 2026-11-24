@@ -80,13 +80,13 @@ describe("system action registry loading", () => {
     );
   });
 
-  it("declares one resource type per action across both registries", () => {
+  it("matches the declared Agent policy resource for each registered action", () => {
     // The dispatcher passes the System Action's declared resource. Do not let
     // the two registries disagree. The policy entry would document a resource
     // the dispatcher does not use. A Task has no id yet when it is created,
     // so `project` is the resource for `task.create`.
-    const policyResources = new Map(
-      actualProtocol.POLICY_ACTION_REGISTRY.map((entry) => [entry.action, entry.resource_type]),
+    const policyResources = new Map<string, (typeof actualProtocol.PolicyActionDefinitionSchema)["_output"]>(
+      actualProtocol.POLICY_ACTION_REGISTRY.map((entry) => [entry.action, entry]),
     );
     const mismatches: string[] = [];
     let compared = 0;
@@ -94,8 +94,9 @@ describe("system action registry loading", () => {
       const declared = action.policy_resource?.resource_type;
       const policyAction = action.policy_action;
       if (!declared || !policyAction) continue;
-      const expected = policyResources.get(policyAction);
-      if (!expected) continue;
+      const policy = policyResources.get(policyAction);
+      if (!policy) continue;
+      const expected = policy.agent_resource_type ?? policy.resource_type;
       compared += 1;
       if (expected !== declared) {
         mismatches.push(`${action.id}: system=${declared} policy=${expected} (${policyAction})`);

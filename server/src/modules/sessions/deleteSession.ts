@@ -74,6 +74,7 @@ export async function archiveDirectSession(client: Queryable, identity: SpaceUse
       WHERE binding.space_id = $1
         AND binding.session_id = $2
         AND binding.bound_by_user_id = $3
+      ORDER BY thread.id
       FOR UPDATE OF thread`,
     [identity.spaceId, sessionId, identity.userId],
   );

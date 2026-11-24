@@ -19,3 +19,15 @@ it('folds every earlier message, including buffered prose after the last tool',(
  const parts:TurnPart[]=[{type:'text',index:0,text:'First progress.'},{type:'text',index:1,text:'Second progress.'},{type:'text',index:2,text:'Final answer.'}];
  expect([...progressTextIndexes(parts)]).toEqual([0,1]);
 });
+
+it('shows one Gmail rate-limit failure and keeps unrelated failures', () => {
+  const failure = (index: number, name: string, output: string): TurnPart =>
+    ({type: 'tool_call', index, name, call_id: null, kind: null, status: 'failed', input: null, output})
+  const first = failure(0, 'source.gmail.mail.read', 'gmail quota exhausted')
+  const repeated = failure(1, 'source.gmail.mail.read', 'gmail_rate_limited')
+  const different = failure(2, 'source.gmail.mail.read', 'gmail connection unavailable')
+  const unrelated = failure(3, 'other_tool', 'gmail quota exhausted')
+  const parts = [first, repeated, different, unrelated]
+  expect(presentConversationParts(parts)).toEqual([first, different, unrelated])
+  expect(parts).toHaveLength(4)
+})

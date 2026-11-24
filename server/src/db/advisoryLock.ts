@@ -27,11 +27,24 @@ export async function tryWithDedicatedSessionAdvisoryLock<T>(
   return sessionAdvisoryLock(db, lockKey, fn, false);
 }
 
+/** Execute database work on the locking session itself. If that connection
+ * disappears, PostgreSQL releases the lock and every later write by this
+ * callback fails on the same connection. The callback can open short
+ * transactions on the session while the lock spans the whole operation. */
+export async function tryWithSessionBoundAdvisoryLock<T>(
+  db: Queryable,
+  lockKey: string,
+  fn: (db: Queryable, signal: AbortSignal) => Promise<T>,
+): Promise<{ acquired: true; value: T } | { acquired: false }> {
+  return sessionAdvisoryLock(db, lockKey, fn, false, true);
+}
+
 async function sessionAdvisoryLock<T>(
   db: Queryable,
   lockKey: string,
-  fn: (db: Queryable) => Promise<T>,
+  fn: (db: Queryable, signal: AbortSignal) => Promise<T>,
   wait: boolean,
+  bindWork = false,
 ): Promise<{ acquired: true; value: T } | { acquired: false }> {
   const connectable = db as Queryable & {
     connect?: () => Promise<PoolClient>;
@@ -42,21 +55,19 @@ async function sessionAdvisoryLock<T>(
   const isPool = !alreadyClient
     && typeof connectable.connect === "function"
     && connectable.options !== undefined;
-  if (!alreadyClient && !isPool) return { acquired: true, value: await fn(db) };
+  const lifetime = new AbortController();
+  if (!alreadyClient && !isPool) return { acquired: true, value: await fn(db, lifetime.signal) };
 
   let client: PoolClient | Client;
-  // The dedicated connection sits idle while `fn` runs on the pool. If the
-  // server drops it (restart, failover, terminated backend), pg emits 'error'
-  // on the client; unheard, that is an uncaught exception that takes the whole
-  // process down. The session lock is gone with the session, so the only thing
-  // left to do is skip the unlock.
-  let lockConnectionLost = false;
+  // The dedicated connection can be idle while the callback performs external
+  // work. A dropped connection emits an error even when no query is awaiting
+  // a result. Notify session-bound work and skip the now-unnecessary unlock.
   for (;;) {
     client = alreadyClient
       ? connectable as unknown as PoolClient
       : new Client(connectable.options);
     if (!alreadyClient) {
-      (client as Client).on("error", () => { lockConnectionLost = true; });
+      (client as Client).on("error", (error) => { lifetime.abort(error); });
       await (client as Client).connect();
     }
     let acquired;
@@ -76,14 +87,33 @@ async function sessionAdvisoryLock<T>(
   }
 
   try {
-    return { acquired: true, value: await fn(alreadyClient ? client : db) };
+    const workDb = alreadyClient ? client : bindWork ? sessionQueryable(client, lifetime.signal) : db;
+    return { acquired: true, value: await fn(workDb, lifetime.signal) };
   } finally {
-    if (lockConnectionLost) {
+    if (lifetime.signal.aborted) {
       await (client as Client).end().catch(() => {});
     } else {
       await unlock(client, alreadyClient, lockKey);
     }
   }
+}
+
+/** Adapt a dedicated pg Client to the shared transaction helper's borrowing
+ * contract. The borrowed Queryable joins nested transactions, and releasing
+ * it leaves ownership of the connection with the advisory-lock scope. */
+function sessionQueryable(client: Queryable, signal: AbortSignal): Queryable {
+  const query: Queryable["query"] = async (sql, params) => {
+    signal.throwIfAborted();
+    return client.query(sql, params);
+  };
+  const session = {
+    query,
+    async connect() {
+      signal.throwIfAborted();
+      return { query, release() {} };
+    },
+  };
+  return session;
 }
 
 async function unlock(client: PoolClient | Client, alreadyClient: boolean, lockKey: string): Promise<void> {

@@ -1,9 +1,15 @@
-"""Production first-start credential and existing-data safety."""
+"""First-start credential safety and the startup script's terminal controls."""
+import errno
+import fcntl
 import os
 from pathlib import Path
+import pty
+import select
+import signal
 import stat
 import subprocess
 import tempfile
+import time
 import unittest
 
 
@@ -105,6 +111,77 @@ class StartProdTest(unittest.TestCase):
             "RAINVER_IMAGE_TAG=sha-" + "a" * 40,
             (self.root / "data/prod/.env").read_text(),
         )
+
+    def test_attached_log_keys(self) -> None:
+        trace = self.root / "compose.log"
+        self.env.update(TEST_COMPOSE_TRACE=str(trace), PRE_MIGRATION_BACKUP="0")
+        docker = self.root / "bin/docker"
+        docker.write_text("""#!/usr/bin/env bash
+if [[ "$1 $2" == "image inspect" ]]; then exit 0; fi
+[[ "$1" == compose ]] || exit 22
+shift 7
+case "$1" in
+  ps) echo postgres ;;
+  exec) echo 1 ;;
+  run) ;;
+  up|stop) echo "$*" >> "$TEST_COMPOSE_TRACE" ;;
+  logs)
+    echo "$*" >> "$TEST_COMPOSE_TRACE"
+    trap 'echo "logs ended" >> "$TEST_COMPOSE_TRACE"; exit 0' TERM
+    echo 'Following fixture logs'
+    sleep 10 & wait "$!"
+    ;;
+  *) exit 22 ;;
+esac
+""")
+        for key, expected_code in ((b"d", 0), (b"D", 0), (b"\x03", 130)):
+            with self.subTest(key=key):
+                trace.write_text("")
+                self.assertEqual(self.run_attached_start(key), expected_code)
+                calls = trace.read_text().splitlines()
+                self.assertEqual(calls[0], "up --detach")
+                self.assertRegex(calls[1], r"^logs --follow --since \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+                self.assertIn("logs ended", calls)
+                self.assertEqual("stop" in calls, key == b"\x03")
+
+    def run_attached_start(self, key: bytes) -> int:
+        pid, terminal = pty.fork()
+        if pid == 0:
+            os.execvpe("bash", ["bash", str(SCRIPT), "--test"], self.env)
+
+        output = bytearray()
+        key_sent = False
+        deadline = time.monotonic() + 15
+        try:
+            while True:
+                ready, _, _ = select.select([terminal], [], [], max(0, deadline - time.monotonic()))
+                self.assertTrue(ready, output.decode(errors="replace"))
+                try:
+                    chunk = os.read(terminal, 4096)
+                except OSError as error:
+                    if error.errno != errno.EIO:
+                        raise
+                    break
+                if not chunk:
+                    break
+                output.extend(chunk)
+                if not key_sent and b"Following fixture logs" in output:
+                    self.assertIn(b"d Detach", output)
+                    mode_dir = os.open(self.root / "data/test", os.O_RDONLY)
+                    try:
+                        fcntl.flock(mode_dir, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    finally:
+                        os.close(mode_dir)
+                    os.write(terminal, key)
+                    key_sent = True
+        except BaseException:
+            os.kill(pid, signal.SIGKILL)
+            raise
+        finally:
+            os.close(terminal)
+            _, status = os.waitpid(pid, 0)
+        self.assertTrue(key_sent, output.decode(errors="replace"))
+        return os.waitstatus_to_exitcode(status)
 
 
 if __name__ == "__main__":

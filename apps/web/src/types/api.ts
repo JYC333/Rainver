@@ -1897,6 +1897,7 @@ export interface RunUsage {
 }
 
 export interface Run {
+  effective_access_level?: ContentAccessLevel
   workspace_changes?:import("@rainver/protocol").WorkspaceChangeView[];
   id: string
   space_id: string
@@ -2201,6 +2202,7 @@ export interface EvolutionBundle {
 }
 
 export interface RunStatusOut {
+  effective_access_level?: ContentAccessLevel
   model_selection?: import("@rainver/protocol").RunModelSelection
   id: string
   status: string
@@ -2334,6 +2336,8 @@ export interface Proposal {
   /** Set on a maintenance update that must be revised before it can be accepted. */
   operator_revision?: { edited_by_user_id: string | null; edited_at: string | null }
   incomplete_patch?: boolean
+  /** Its Agent and model are chosen on its card (ADR 0036): accepted only where that choice is shown. */
+  chosen_on_card?: true
   skipped_changes?: Array<Record<string, unknown>>
   skipped_count?: number
 }
@@ -3675,6 +3679,8 @@ export interface HomePendingProposalItem {
   visibility?: ObjectVisibility
   /** A maintenance update the person must revise before it can be accepted. */
   awaiting_revision: boolean
+  /** Accepted only where the choice made on its card is shown (ADR 0036); never quick-accepted here. */
+  chosen_on_card?: boolean
 }
 
 export interface HomePendingProposalsSection {

@@ -2102,3 +2102,54 @@ it('rolls back the release epoch when durable plan persistence is interrupted, t
  expect(effects).toBe(1);
  expect(await workspace(c.row.id)).toMatchObject({materialization_epoch:1,retention_json:{state:'reclaimed'}});
 });
+
+
+describe('cleanup attention recovery',()=>{
+ it.for(['ready','retired'] as const)('does not advertise a cleanup retry for quarantine-only attention, and clears it after a fresh %s inspection',async(ownerState,ctx)=>{
+  if(!db.available)return ctx.skip();
+  const {refreshCleanupSummary}=await import('../src/modules/hosts/workspaceCleanup.js');
+  const c=await settled('no_changes');const q=await queued(c.row.id,A);
+  if(ownerState==='retired')await db.pool.query(`UPDATE execution_workspaces SET state='retired',baseline_mode='snapshot',retention_json='{"state":"retained","reason":"private_baseline"}' WHERE id=$1`,[c.row.id]);
+  await db.pool.query("UPDATE execution_workspaces SET cleanup_json=jsonb_build_object('source-g1',$2::jsonb),inventory_json=$3::jsonb WHERE id=$1",[c.row.id,JSON.stringify({...q,state:'cleaned',error:null}),JSON.stringify(inventory({quarantined_whole:1}))]);
+  await refreshCleanupSummary(db.pool,c.row.id);
+  expect((await workspace(c.row.id)).cleanup_state).toBe('blocked');
+  const {workspaceRecoveryDiagnostics}=await import('../src/modules/projectFolders/workspaceRecoveryDiagnostics.js');
+  expect(await workspaceRecoveryDiagnostics(db.pool,c.row.id,c.w.changeSetId)).toContainEqual(expect.objectContaining({kind:'cleanup',reason:'workspace_quarantined',recovery_action:null}));
+  const view=await conversationWorkspaceChangesForViewer(db.pool,SPACE,CONVERSATION,OWNER);
+  expect(view!.entries.find(e=>e.change.workspace_id===c.row.id)!.change).toMatchObject({cleanup_state:'blocked',cleanup_retryable:false,cleanup_errors:[]});
+  const hosts=confirmingHosts();hosts.isOnline=()=>true;
+  hosts.requestTaskBranch=async(_h,_t,frame):Promise<any>=>(frame as any).action==='inspect'?{ok:true,commit:A,inventory:inventory(),error:null}:{ok:false,error:'host_offline'};
+  await reconcileExecutionWorkspaces(db.pool,'/tmp/unused',{hosts});
+  expect((await workspace(c.row.id)).cleanup_state).toBe('cleaned');
+  // A genuine failed task still exposes retry even if its previous inspection
+  // also reported a protected directory.
+  await db.pool.query("UPDATE execution_workspaces SET cleanup_json=jsonb_build_object('source-g1',$2::jsonb) WHERE id=$1",[c.row.id,JSON.stringify({...q,state:'blocked',error:'workspace_cleanup_incomplete'})]);
+  await refreshCleanupSummary(db.pool,c.row.id);
+  const retry=await conversationWorkspaceChangesForViewer(db.pool,SPACE,CONVERSATION,OWNER);
+  expect(retry!.entries.find(e=>e.change.workspace_id===c.row.id)!.change).toMatchObject({cleanup_state:'blocked',cleanup_retryable:true,cleanup_errors:['workspace_cleanup_incomplete']});
+ });
+ it.for(['empty','nonempty','moved_generation','unfinished','native_pending','job_pending'] as const)('settles only a proven empty historical publication (%s), without inventing a target commit',async(mode,ctx)=>{
+  if(!db.available)return ctx.skip();
+  const {backfillWorkspaceLifecycle,refreshWorkspaceLifecycle}=await import('../src/modules/hosts/workspaceLifecycle.js');
+  const {cleanupPublicationStatus}=await import('../src/modules/projectFolders/workspacePublicationState.js');
+  const c=await settled('no_changes'),id=randomUUID(),source=mode==='nonempty'?B:A;
+  await db.pool.query("UPDATE workspace_change_sets SET base_commit=$2,source_commit=$3 WHERE id=$1",[c.w.changeSetId,A,source]);
+  await db.pool.query(`INSERT INTO task_merges(id,space_id,workspace_id,change_set_id,workspace_location_id,basis,generation,attempt_id,source_commit,base_commit,target_ref,status,requested_by_user_id,detail_json,created_at,updated_at,completed_at)
+   VALUES($1,$2,$3,$4,$5,$4,$6,$7,$8,$9,'refs/heads/main','no_changes',$10,'{}',now(),now(),CASE WHEN $11::boolean THEN NULL ELSE now() END)`,[id,SPACE,c.row.id,c.w.changeSetId,LOCATION,mode==='moved_generation'?2:1,randomUUID(),source,A,OWNER,mode==='unfinished']);
+  if(mode==='native_pending')await db.pool.query(`UPDATE task_merges SET detail_json='{"native_progress":{"status":"pending"}}' WHERE id=$1`,[id]);
+  if(mode==='job_pending'){
+   const {PgJobQueueRepository}=await import('../src/modules/jobs/repository.js');
+   await new PgJobQueueRepository(db.pool).enqueue({job_type:'execution_workspace_native_integrate',space_id:SPACE,user_id:OWNER,payload:{change_set_id:c.w.changeSetId}});
+  }
+  await db.pool.query("UPDATE execution_workspaces SET cleanup_state='cleaned',retention_json='{\"state\":\"retained\",\"reason\":\"primary_conversation\"}' WHERE id=$1",[c.row.id]);
+  await backfillWorkspaceLifecycle(db.pool,c.row.id);await refreshWorkspaceLifecycle(db.pool,c.row.id);
+  const record=(await db.pool.query("SELECT merged_commit,onto_commit,detail_json->'lifecycle' AS lifecycle FROM task_merges WHERE id=$1",[id])).rows[0];
+  expect(record.merged_commit).toBeNull();expect(record.onto_commit).toBeNull();
+  expect((await cleanupPublicationStatus(db.pool,c.w.changeSetId)).landingMissing).toBe(mode!=='empty');
+  if(mode==='empty'){
+   expect(record.lifecycle).toMatchObject({phase:'complete',landed_commit:null});
+   await refreshWorkspaceLifecycle(db.pool,c.row.id);expect((await db.pool.query("SELECT detail_json->'lifecycle'->>'phase' AS phase FROM task_merges WHERE id=$1",[id])).rows[0].phase).toBe('complete');
+  }else if(mode!=='moved_generation')expect(record.lifecycle.phase).toBe('blocked');
+  else expect(record.lifecycle).toBeNull();
+ });
+});

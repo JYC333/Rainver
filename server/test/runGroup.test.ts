@@ -1033,11 +1033,14 @@ describe("runRecoveryLoop", () => {
       listUnsettledFinalizations: async () => { calls.push("settlement"); return [{ run_id: "bad", space_id: "s" }, { run_id: "good", space_id: "s" }]; },
     } as unknown as PgRunRepository;
     const warnings: string[] = [];
-    await new RunRecoveryService(loadConfig({ SERVER_DATABASE_URL: "postgresql://server@localhost:5432/rainver" }), runs)
+    await new RunRecoveryService(loadConfig({ SERVER_DATABASE_URL: "postgresql://server@localhost:5432/rainver" }), runs, {
+      discussions: { recoverUnadvancedWaves: async () => { calls.push("room waves"); } },
+      experiments: { listRunsAwaitingFinalization: async () => { calls.push("experiments"); return []; } },
+    })
       .recover({ warn: message => warnings.push(message) });
     expect(calls).toEqual(["cancellation", "stale", "orphaned", "get:bad", "get:good",
       "chat", "get:bad", "get:good", "waiting", "get:bad", "get:good",
-      "task", "get:bad", "get:good", "settlement", "get:bad", "get:good"]);
+      "room waves", "task", "get:bad", "get:good", "experiments", "settlement", "get:bad", "get:good"]);
     expect(warnings).toEqual([
       expect.stringContaining("recovery step cancellation_intent failed: cancellation query failed"),
       expect.stringContaining("orphaned Run bad finalization failed: row unreadable"),

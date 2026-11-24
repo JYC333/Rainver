@@ -87,6 +87,10 @@ COPY apps/web/nginx.conf /etc/nginx/conf.d/default.conf
 # at http level as well as at each include site.
 COPY apps/web/security-headers.conf /etc/nginx/security-headers.conf
 COPY --from=build /repo/apps/web/dist /usr/share/nginx/html
+# Runs before nginx starts; records this build's /assets/ in the mounted store
+# and exposes the previous build's beside it (see the script and nginx.conf).
+COPY apps/web/docker/retain-previous-assets.sh /docker-entrypoint.d/40-rainver-retain-previous-assets.sh
+RUN chmod 0755 /docker-entrypoint.d/40-rainver-retain-previous-assets.sh
 
 EXPOSE 80
 

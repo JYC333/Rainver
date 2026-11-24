@@ -5,6 +5,7 @@ import { normalizeToolName } from "../runtimeAdapters/toolName.js";
 import { createAcpRuntimeStatusProjector } from "../runtimeAdapters/acpRuntimeStatus.js";
 import type { ToolCallDetails } from "@rainver/protocol";
 import { createAcpToolPresentation, safeToolText } from "./acpToolPresentation.js";
+import { createAcpSubagentObservations } from "./acpSubagentObservations.js";
 import { createPrivateToolCallFilter } from "../runtimeAdapters/privateToolCalls.js";
 
 export interface ThreadEventDraft {
@@ -39,6 +40,7 @@ export function createThreadEventNormalizer(onDeferredOutput?: (drafts: ThreadEv
 } {
   let stderrBuffer = "";
   const projectRuntimeStatus = createAcpRuntimeStatusProjector();
+  const subagents = createAcpSubagentObservations();
   const toolCalls = createAcpToolCallLifecycle();
   const toolFingerprints = new Map<string, string>();
   const terminalTools = new Map<string, string>();
@@ -130,12 +132,16 @@ export function createThreadEventNormalizer(onDeferredOutput?: (drafts: ThreadEv
   function pushAcpProtocolEvent(received: Record<string, unknown>): ThreadEventDraft[] {
     // A private action's arguments and result never reach the persisted thread (privateToolCalls.ts).
     const event = withholdPrivateCall(received);
+    const subagent = subagents.push(event);
+    if (subagent.events.length) return [...flushTextSegment(), ...subagent.events];
+    if (subagent.handled) return [];
     const statuses = projectRuntimeStatus(event);
     if (statuses.length) return [...flushTextSegment(), ...statuses.map(value => ({ event_type: "status" as const, ...value }))];
     if (event.method !== "session/update") return [];
     const update = recordValue(recordValue(event.params).update);
     if (update.sessionUpdate === "notice") {
-      const notice = recordValue(update.notice);
+      // The ACP adapters send a notice's fields on the update itself; an older shape nests them under `notice`.
+      const notice = typeof update.title === "string" ? update : recordValue(update.notice);
       if (typeof notice.title !== "string") return [];
       return [...flushTextSegment(), {
         event_type: "status", status: "runtime_notice",
@@ -149,6 +155,7 @@ export function createThreadEventNormalizer(onDeferredOutput?: (drafts: ThreadEv
       const lifecycle = toolCalls.started({ callId, name: toolName, status: stringValue(update.status) });
       if (terminalTools.has(lifecycle.callId) && !isTerminalAcpToolStatus(stringValue(update.status))) return flushTextSegment();
       const presentation = presentTool(lifecycle.callId, update);
+      if (subagent.key) presentation.details = { ...presentation.details, subagent_key: subagent.key };
       const input = summarizeInput(update.rawInput ?? update.raw_input);
       if (input !== null) presentation.details = { ...presentation.details, input_truncated: input.length > MAX_TOOL_INPUT_SUMMARY_CHARS };
       if (isTerminalAcpToolStatus(stringValue(update.status))) terminalTools.set(lifecycle.callId, stringValue(update.status)!);
@@ -178,6 +185,7 @@ export function createThreadEventNormalizer(onDeferredOutput?: (drafts: ThreadEv
       const terminal = terminalTools.get(lifecycle.callId);
       if (terminal && status && !isTerminalAcpToolStatus(status)) return flushTextSegment();
       const presentation = presentTool(lifecycle.callId, update);
+      if (subagent.key) presentation.details = { ...presentation.details, subagent_key: subagent.key };
       if (toolInput !== null) presentation.details = { ...presentation.details, input_truncated: toolInput.length > MAX_TOOL_INPUT_SUMMARY_CHARS };
       if (isTerminalAcpToolStatus(status)) terminalTools.set(lifecycle.callId, status!);
       const start: ThreadEventDraft[] = lifecycle.missingStart
@@ -234,7 +242,7 @@ export function createThreadEventNormalizer(onDeferredOutput?: (drafts: ThreadEv
     outputTimer = null;
     const drafts: ThreadEventDraft[] = [];
     drafts.push(...flushTextSegment());
-    drafts.push(...pendingOutput.values());
+    drafts.push(...pendingOutput.values(), ...subagents.finish());
     pendingOutput.clear();
     if (stderrBuffer.trim()) {
       drafts.push({ event_type: "diagnostic", text: safeToolText(stderrBuffer.trim(), 8_000) });

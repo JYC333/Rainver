@@ -233,6 +233,9 @@ it('private deep reading survives a killed worker via canonical recovery, explic
  await new RuntimeContextPolicyRepository(db.pool).write(identity,'space',SPACE,{base_version_id:null,policy:{constraints:{},preferences:{}},reason:'Synthetic private worker recovery'});
  const beforeArtifacts=await w.count('artifacts'),beforeOriginal=(await db.pool.query('SELECT content_hash,extracted_artifact_id FROM source_items WHERE id=$1',[itemId])).rows[0];
  const op=await start();await buildServerDist();
+ // Starting the worker represents a newly connected Host. Age its prior
+ // heartbeat so recovery exercises the fresh connection instead of seed time.
+ await db.pool.query("UPDATE hosts SET last_heartbeat_at=now()-interval '1 minute' WHERE id=$1",[HOST]);
  worker=await startWorkerProcess({databaseUrl:db.connectionUri,home:root,hostId:HOST});
  const launch=await worker.next(isPrompted(op.run_id!));
  const old=(await new PgRunRepository(db.pool).getRun(SPACE,op.run_id!))!;

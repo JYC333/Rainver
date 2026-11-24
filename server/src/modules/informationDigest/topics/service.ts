@@ -9,7 +9,7 @@ import {HttpError,withQueryableTransaction,type Queryable,type SpaceUserIdentity
 import {InformationBriefingService,selectExecution} from '../briefing/service.js';
 import {PgBriefingRepository} from '../briefing/repository.js';
 import {projectBriefing} from '../briefing/projection.js';
-import {topicScope,TOPIC_METHOD} from './scope.js';
+import {topicKey,topicScope,TOPIC_METHOD} from './scope.js';
 import type {ThemeRound} from './rounds.js';
 import {canReadProject,canWriteProject} from '../../projects/access.js';
 import {freezeReadingMethod} from '../../prompts/index.js';
@@ -35,6 +35,13 @@ export async function configureThemeAnalysis(db:Queryable,config:ServerConfig,id
 }
 export async function settleThemeRound(db:Queryable,config:ServerConfig,id:string,explicitRetry=false){
  await withQueryableTransaction(db,async tx=>{
+  const scope=(await tx.query<Pick<ThemeRound,'space_id'|'goal_id'>>('SELECT space_id,goal_id FROM project_reading_rounds WHERE id=$1',[id])).rows[0];
+  if(!scope)return;
+  const repository=new PgBriefingRepository(tx);
+  await repository.lockScope({spaceId:scope.space_id,key:topicKey(scope.goal_id)});
+  const linked=(await tx.query<Pick<ThemeRound,'briefing_id'>>('SELECT briefing_id FROM project_reading_rounds WHERE id=$1',[id])).rows[0];
+  // Composition, cancellation and terminal projection pin the version before its round.
+  if(linked?.briefing_id)await repository.get(scope.space_id,linked.briefing_id,true);
   const round=(await tx.query<ThemeRound>('SELECT * FROM project_reading_rounds WHERE id=$1 FOR UPDATE',[id])).rows[0];if(!round||['complete','superseded'].includes(round.status)||round.status==='blocked'&&round.error_code!=='theme_scope_busy'&&!explicitRetry)return;
   const g=(await tx.query<ThemeGoal>('SELECT * FROM source_goals WHERE space_id=$1 AND id=$2',[round.space_id,round.goal_id])).rows[0];
   if(!g||g.status!=='running'||g.active_version_id!==round.version_id||g.compatibility_json?.theme_analysis?.enabled!==true||g.compatibility_json?.theme_analysis?.version_id!==round.version_id){await tx.query("UPDATE project_reading_rounds SET status='superseded',error_code='theme_scope_changed',updated_at=now() WHERE id=$1",[id]);return;}
@@ -69,7 +76,7 @@ export async function settleThemeRound(db:Queryable,config:ServerConfig,id:strin
    if(!round.execution_json.frozen_context)throw new HttpError(409,'Frozen collection context missing');
    const contextState=await adapter.contextState(tx,round.execution_json.frozen_context.map(c=>c.source));
    if(contextState.outdated||round.execution_json.frozen_context.some(c=>!contextState.allowed.has(`${c.source.type}:${c.source.id}`)))throw new HttpError(409,'Collection context changed; start a new authorized round');
-   const inFlight=await new PgBriefingRepository(tx).findInFlight(adapter.scope);
+   const inFlight=await repository.findInFlight(adapter.scope);
    if(inFlight&&inFlight.id!==round.briefing_id){await tx.query("UPDATE project_reading_rounds SET status='blocked',error_code='theme_scope_busy' WHERE id=$1",[id]);await tx.query('RELEASE SAVEPOINT theme_admission');return;}
    const outcome=await new InformationBriefingService(tx,config).request(adapter,g.owner_user_id,{kind:'manual',cutoff,themeExecutionHash:round.execution_json.profile_hash,execution:round.execution_json,origin:'job',label:'this confirmed Following'});
    const r=outcome.briefing;

@@ -2,6 +2,8 @@ import type { Queryable } from "../routeUtils/common.js";
 import { memoryProposalDecider } from "../memory/memoryProposalDecider.js";
 import { OWNER_ONLY_PROPOSAL_TYPES } from "../ontology/entities.js";
 import { digestCardSummary } from "../sources/gmail/gmailDigestProposal.js";
+import { applicationUpdatesCardSummary } from "../sources/gmail/gmailApplicationUpdates.js";
+import { GmailDigestProposalPayloadSchema } from "@rainver/protocol";
 import { GMAIL_PRIVATE_READ_PROPOSAL, privateReadCardSummary } from "../sources/gmail/gmailPrivateReadHandoff.js";
 import { GMAIL_PRIVATE_CHECK_PROPOSAL, privateCheckCardSummary } from "../sources/gmail/gmailPrivateCheck.js";
 
@@ -26,6 +28,8 @@ interface ProposalPreviewRow {
   status: string;
   risk_level: string;
   payload_json: Record<string, unknown>;
+  /** Only for cards whose stored summary is what the owner decides on (ADR 0035). */
+  summary?: string | null;
   action_idempotency_key: string | null;
   created_by_run_id: string;
   created_by_agent_id: string | null;
@@ -72,6 +76,7 @@ export async function loadChatActionPreviewsByRunIds(
   const [proposalRows, eventRows] = await Promise.all([
     db.query<ProposalPreviewRow>(
       `SELECT id, proposal_type, title, status, risk_level, payload_json,
+              CASE WHEN proposal_type IN ('gmail_setup','gmail_read_delegation') THEN summary END AS summary,
               action_idempotency_key, created_by_run_id, created_by_agent_id, owner_user_id,
               (status = 'pending' AND expires_at IS NOT NULL AND expires_at <= now()) AS expired
          FROM proposals
@@ -115,7 +120,9 @@ export async function loadChatActionPreviewsByRunIds(
       // A Gmail digest's one confirmation card says what accepting allows (owner-only card, never shared).
       summary: row.proposal_type === "gmail_digest_create" ? gmailDigestSummary(row.payload_json)
         : row.proposal_type === GMAIL_PRIVATE_READ_PROPOSAL ? gmailPrivateReadSummary(row.payload_json)
-        : row.proposal_type === GMAIL_PRIVATE_CHECK_PROPOSAL ? gmailPrivateCheckSummary(row.payload_json) : null,
+        : row.proposal_type === GMAIL_PRIVATE_CHECK_PROPOSAL ? gmailPrivateCheckSummary(row.payload_json)
+        // ADR 0035: the combined card and a read delegation show the summary they were drafted with.
+        : row.proposal_type === "gmail_setup" || row.proposal_type === "gmail_read_delegation" ? (typeof row.summary === "string" ? row.summary : null) : null,
       risk_level: row.risk_level,
       scope: typeof row.payload_json?.project_id === "string" ? { project_id: row.payload_json.project_id } : null,
       decidable_by_user_id: decider.required ? decider.userId : null,
@@ -183,7 +190,19 @@ export function sharedActionPreviews(
 function gmailDigestSummary(payload: Record<string, unknown>): string | null {
   const text = (key: string) => typeof payload?.[key] === "string" ? payload[key] as string : null;
   const kind = text("kind"), mailbox = text("mailbox_email"), localTime = text("local_time"), timeZone = text("time_zone");
-  return mailbox && (kind === "rule" || (kind === "daily" && localTime && timeZone)) ? digestCardSummary({ kind, mailbox_email: mailbox, local_time: localTime, time_zone: timeZone, shared: payload?.shared_conversation === true }) : null;
+  const parsed = GmailDigestProposalPayloadSchema.safeParse(payload);
+  // The audience and the execution configuration the card froze (ADR 0035 §1, §3), as its stored summary shows them.
+  const audience = parsed.success ? parsed.data.audience ?? null : null;
+  const binding = parsed.success ? parsed.data.runtime_binding ?? null : null;
+  if (kind === "application") {
+    return parsed.success && parsed.data.effects ? applicationUpdatesCardSummary({
+      mailbox_email: parsed.data.mailbox_email, effects: parsed.data.effects, binding, audience, include_sent: parsed.data.include_sent,
+    }) : null;
+  }
+  return mailbox && (kind === "rule" || (kind === "daily" && localTime && timeZone)) ? digestCardSummary({
+    kind, mailbox_email: mailbox, local_time: localTime, time_zone: timeZone, shared: payload?.shared_conversation === true,
+    ...(binding ? { agent_name: binding.agent_name, model_label: binding.model_label } : {}), audience,
+  }) : null;
 }
 
 function gmailPrivateReadSummary(payload: Record<string, unknown>): string | null {

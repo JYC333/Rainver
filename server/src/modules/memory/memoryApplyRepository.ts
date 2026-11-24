@@ -1167,10 +1167,16 @@ export class PgMemoryApplyRepository {
    */
   /** Read-only authority check for a command that names this person's own version.
    * Status is deliberately not a gate: a successful archive must remain replayable. */
-  async authorizeOwnVersion(spaceId: string, userId: string, memoryId: string): Promise<boolean> {
-    const row = await this.db.query<{root_id: string}>('SELECT COALESCE(root_memory_id,id) AS root_id FROM memory_entries WHERE id=$1 AND space_id=$2 AND deleted_at IS NULL AND owner_user_id=$3 FOR UPDATE', [memoryId,spaceId,userId]);
-    if (!row.rows[0]) return false;
-    await this.db.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [`memory-chain:${spaceId}:${row.rows[0].root_id}`]);
+  async authorizeOwnVersion(spaceId: string, userId: string, memoryId: string, includePrevious = false): Promise<boolean> {
+    const row = await this.db.query<{id: string; root_id: string}>(
+      `SELECT id, COALESCE(root_memory_id,id) AS root_id FROM memory_entries
+        WHERE space_id=$2 AND deleted_at IS NULL AND owner_user_id=$3
+          AND (id=$1 OR ($4 AND id=(SELECT supersedes_memory_id FROM memory_entries
+            WHERE id=$1 AND space_id=$2 AND deleted_at IS NULL AND owner_user_id=$3)))
+        ORDER BY id FOR UPDATE`, [memoryId,spaceId,userId,includePrevious]);
+    const target = row.rows.find((entry) => entry.id === memoryId);
+    if (!target) return false;
+    await this.db.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [`memory-chain:${spaceId}:${target.root_id}`]);
     return true;
   }
 
@@ -1193,6 +1199,7 @@ export class PgMemoryApplyRepository {
     userId: string,
     memoryId: string,
     status: "archived" | "active",
+    reverting = false,
   ): Promise<AppliedMemoryRow | null> {
     // Ownership, and only ownership. Do not treat authorship as a stand-in
     // for the ownerless case. A `space_shared` entry has no owner, and
@@ -1205,8 +1212,8 @@ export class PgMemoryApplyRepository {
     // after an Agent's in-flight revision of the same entry. Do not archive
     // without the row lock. The superseded row would be archived and the new
     // head left active.
-    const owned = await db.query<{ id: string; status: string; root_id: string }>(
-      `SELECT id, status, COALESCE(root_memory_id, id) AS root_id FROM memory_entries
+    const owned = await db.query<{ id: string; status: string; root_id: string; scope_type: string; memory_type: string }>(
+      `SELECT id, status, COALESCE(root_memory_id, id) AS root_id, scope_type, memory_type FROM memory_entries
         WHERE id = $1 AND space_id = $2 AND deleted_at IS NULL AND owner_user_id = $3
         FOR UPDATE`,
       [memoryId, spaceId, userId],
@@ -1218,6 +1225,9 @@ export class PgMemoryApplyRepository {
       [`memory-chain:${spaceId}:${found.root_id}`],
     );
     if (status === "archived") {
+      if (!reverting && found.scope_type === "agent" && found.memory_type === PERSONA_MEMORY_TYPE) {
+        throw new MemoryApplyError("an Agent persona must stay active; revert to its previous version instead");
+      }
       if (found.status !== "active") {
         throw new MemoryApplyError(`this memory is ${found.status}, so it cannot be archived`);
       }
@@ -1390,8 +1400,10 @@ export class PgMemoryApplyRepository {
     spaceId: string,
     userId: string,
     memoryId: string,
+    expectedPreviousId?: string,
   ): Promise<AppliedMemoryRow | null> {
     return withQueryableTransaction(this.db, async (tx) => {
+      if (!await new PgMemoryApplyRepository(tx).authorizeOwnVersion(spaceId, userId, memoryId, true)) return null;
       const head = await tx.query<{ supersedes_memory_id: string | null }>(
         `SELECT supersedes_memory_id FROM memory_entries
           WHERE id = $1 AND space_id = $2 AND owner_user_id = $3
@@ -1404,7 +1416,8 @@ export class PgMemoryApplyRepository {
       if (!previousId) {
         throw new MemoryApplyError("this memory replaced nothing, so there is no earlier version to put back");
       }
-      await this.setOwnStatusLocked(tx, spaceId, userId, memoryId, "archived");
+      if (expectedPreviousId && previousId !== expectedPreviousId) throw new MemoryApplyError("the previous memory version changed");
+      await this.setOwnStatusLocked(tx, spaceId, userId, memoryId, "archived", true);
       const restored = await this.setOwnStatusLocked(tx, spaceId, userId, previousId, "active");
       // Throwing rather than returning null: `setOwnStatusLocked` answers null
       // for a row that is not the caller's or is soft-deleted, and returning it

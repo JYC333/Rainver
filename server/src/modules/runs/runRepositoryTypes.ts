@@ -366,6 +366,8 @@ export interface RunTerminalUpdate {
   space_id: string;
   /** Recovery must not terminalize a successor attempt admitted while it waited for Host exit. */
   expected_attempt_number?: number | null;
+  /** Queue failure may end only the dispatch it was assigned. */
+  expected_agent_job_id?: string;
   status: "succeeded" | "failed" | "degraded" | "cancelled" | "orphaned";
   output_text?: string | null;
   output_json?: unknown;

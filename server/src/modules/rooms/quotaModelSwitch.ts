@@ -5,7 +5,17 @@ import { objectValue, type Queryable } from "../routeUtils/common.js";
 import { fullerWindow } from "./subscriptionLogins.js";
 import { readSubscriptionQuotaPolicy } from "../providers/subscriptionQuotaPolicy.js";
 import { HostUsageQuotaSchema } from "@rainver/protocol";
-import { runModelSelection } from "../runs/runModelSelection.js";
+import { acpModelChoiceNamesAlias, runModelSelection } from "../runs/runModelSelection.js";
+import { canSwitchRetainedSessionModel } from "../runs/retainedModelSwitch.js";
+import { hostThreadDispatchInputs } from "../hosts/threadDispatchInputs.js";
+import { getRuntimeAdapterSpec } from "../runtimeAdapters/specs.js";
+
+/** Use the same resume id and occupancy rule as the eventual native dispatch. */
+export async function quotaModelSwitchReady(db: Queryable, run: RunRecord): Promise<boolean> {
+  const dispatch = hostThreadDispatchInputs(run);
+  return !run.session_id || !dispatch.resume_session_id
+    || await canSwitchRetainedSessionModel(db, dispatch.thread_id, dispatch.resume_session_id);
+}
 
 /** Same installed runtime and native login only; never a Provider/Host fallback. */
 export async function quotaModelAlternative(db: Queryable, run: RunRecord): Promise<RuntimeSessionConfigSelection | null> {
@@ -16,9 +26,9 @@ export async function quotaModelAlternative(db: Queryable, run: RunRecord): Prom
        FROM host_threads thread JOIN hosts host ON host.id = thread.execution_host_id
        LEFT JOIN host_runtime_usage usage ON usage.host_id = host.id
          AND usage.runtime_key = thread.runtime_key AND usage.installation = thread.runtime_installation
-      WHERE thread.id = $1 AND host.status <> 'revoked'`, [run.host_task_thread_id],
+      WHERE thread.id = $1 AND thread.space_id = $2 AND host.status <> 'revoked'`, [run.host_task_thread_id, run.space_id],
   )).rows[0];
-  if (!row || row.runtime_key !== run.runtime_key) return null;
+  if (!row || row.runtime_key !== run.runtime_key || !await quotaModelSwitchReady(db, run)) return null;
   const quota = HostUsageQuotaSchema.safeParse(row.quota_json);
   if (quota.success && quota.data.available) {
     const window = fullerWindow(quota.data, new Date());
@@ -33,7 +43,10 @@ export async function quotaModelAlternative(db: Queryable, run: RunRecord): Prom
   const current = [selection.reported, selection.requested, option.current_value]
     .find(value => value && value !== "default");
   if (!current) return null;
-  const choice = option.options.find(choice => choice.value !== "default" && choice.value !== current);
+  const usesAliases = getRuntimeAdapterSpec(row.runtime_key)?.model.acp_model_aliases === true;
+  const currentChoice = option.options.find(choice => choice.value === current) ?? {value: current};
+  const choice = option.options.find(choice => choice.value !== "default" && choice.value !== current
+    && !(usesAliases && (acpModelChoiceNamesAlias(currentChoice, choice.value) || acpModelChoiceNamesAlias(choice, current))));
   return choice ? { id: option.id, type: "select", category: "model", value: choice.value } : null;
 }
 

@@ -16,12 +16,19 @@ export async function scanDailyReportsAndEnqueue(config: ServerConfig): Promise<
   const nowIso = new Date().toISOString();
   const due = await repo.listDue(nowIso);
   let count = 0;
-  for (const setting of due) {
-    const slotUtc = setting.next_run_at ?? nowIso;
-    const payload = buildDailyReportJobPayload(setting, slotUtc);
-    if (!payload) continue;
+  for (const scanned of due) {
+    const slotUtc = scanned.next_run_at;
+    if (!slotUtc) continue;
     try {
       const queued=await withTransaction(db, async (tx) => {
+        const lockedRepo = new PgDailyReportSettingsRepository(tx);
+        await lockedRepo.lockSchedule(scanned.space_id, scanned.user_id);
+        const setting = await lockedRepo.get(scanned.space_id, scanned.user_id);
+        if (!setting?.enabled || setting.id !== scanned.id || setting.next_run_at !== slotUtc
+          || setting.timezone !== scanned.timezone || setting.local_time !== scanned.local_time) return false;
+        const payload = buildDailyReportJobPayload(setting, slotUtc);
+        if (!payload) return false;
+
         // Roll back only admission on a business refusal. Its safe outcome and
         // the slot advance must still commit; SQL/audit failures retry the slot.
         await tx.query('SAVEPOINT daily_schedule_admission');
@@ -45,7 +52,7 @@ export async function scanDailyReportsAndEnqueue(config: ServerConfig): Promise<
           outcome={status:'refused',http_status:403};queued=false;
         }
         await tx.query('RELEASE SAVEPOINT daily_schedule_admission');
-        await new PgDailyReportSettingsRepository(tx).advanceNextRun(setting, slotUtc, outcome);
+        await lockedRepo.advanceNextRun(setting, slotUtc, outcome);
         return queued;
       });
       if(queued){wakeJobWorkers();count += 1;}

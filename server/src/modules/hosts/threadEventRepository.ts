@@ -5,6 +5,12 @@ import { withDbTransaction, serializeCalls } from "../routeUtils/common.js";
 
 const LOCK_PREFIX = "host_thread_events:";
 
+// PostgreSQL rejects NUL in text and in decoded JSONB strings. Keep the rest
+// of the event readable, including when a tool emits binary output.
+function eventText(value: string | null | undefined): string | null {
+  return value?.replaceAll("\u0000", "\uFFFD") ?? null;
+}
+
 /**
  * Normalized conversation event log for a task thread: server-side text,
  * tool activity, status, and diagnostic events, not the vendor's raw stream.
@@ -123,15 +129,16 @@ export class PgHostThreadEventRepository {
             threadId,
             runId,
             event.event_type,
-            event.text ?? null,
-            event.tool_call_id ?? null,
-            event.tool_name ?? null,
-            event.tool_input_summary ?? null,
-            event.tool_kind ?? null,
-            event.tool_result_summary ?? null,
-            event.status ?? null,
+            eventText(event.text),
+            eventText(event.tool_call_id),
+            eventText(event.tool_name),
+            eventText(event.tool_input_summary),
+            eventText(event.tool_kind),
+            eventText(event.tool_result_summary),
+            eventText(event.status),
             attemptNumber,
-            event.tool_details_json ? JSON.stringify(event.tool_details_json) : null,
+            event.tool_details_json ? JSON.stringify(event.tool_details_json, (_key, value: unknown) =>
+              typeof value === "string" ? eventText(value) : value) : null,
           ],
         );
         // Nothing written: the attempt was superseded, and so is every later

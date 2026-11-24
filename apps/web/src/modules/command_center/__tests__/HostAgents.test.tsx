@@ -196,14 +196,23 @@ describe('HostAgents', () => {
     }
   })
 
-  it('updates an own CLI through its separate endpoint and refreshes the Host', async () => {
-    const update = vi.spyOn((await import('../../../api/client')).hostsApi, 'updateOwnRuntime').mockResolvedValue({ ok: true, error: null, installation: 'own' } as never)
+  it.each([
+    ['2.0.0', 'success', 'Claude Code updated to 2.0.0 on Laptop.'],
+    ['1.0.0', 'info', 'Claude Code is still on 1.0.0 on Laptop.'],
+    [null, 'info', 'The update command completed for Claude Code on Laptop, but the version change could not be confirmed.'],
+  ] as const)('reports the own CLI update result %s and refreshes the Host', async (version, level, message) => {
+    const { toast } = await import('sonner')
+    vi.mocked(toast.success).mockClear()
+    vi.mocked(toast.info).mockClear()
+    const update = vi.spyOn((await import('../../../api/client')).hostsApi, 'updateOwnRuntime').mockResolvedValue({ ok: true, error: null, installation: 'own', from_version: '1.0.0', to_version: version } as never)
     const changed = vi.fn()
     const host = { ...HOST, capabilities_json: { runtimes: ['claude'], installations: { claude_code: [{ id: 'own', version: '1.0.0', logged_in: true }] } } } as unknown as Host
     render(<HostAgents host={host} adapters={ADAPTERS.map(adapter => ({ ...adapter, latest_own_version: '2.0.0' }))} isInstanceAdmin={false} manageable onChanged={changed} />)
     await userEvent.click(screen.getByRole('button', { name: 'Update own Claude Code on Laptop' }))
     await waitFor(() => expect(update).toHaveBeenCalledWith('h1', 'claude_code'))
     await waitFor(() => expect(changed).toHaveBeenCalled())
+    expect(toast[level]).toHaveBeenCalledWith(message)
+    if (level === 'info') expect(toast.success).not.toHaveBeenCalled()
     update.mockRestore()
   })
   it.each([
@@ -221,7 +230,7 @@ describe('HostAgents', () => {
     const onChanged = vi.fn()
     render(<HostAgents host={HOST} adapters={ADAPTERS} isInstanceAdmin={false}
           manageable onChanged={onChanged} />)
-    expect(screen.getByTestId('host-agent-h1-opencode').textContent).toContain('own · 1.18.11 · 1 account')
+    expect(screen.getByTestId('host-agent-h1-opencode').textContent).toContain('own · 1.18.11 · 1 provider')
     expect(screen.getByTestId('host-agent-h1-opencode').textContent).not.toContain('opencode 1.18.11')
     expect(screen.getByTestId('host-agent-h1-acp_goose').textContent).toContain('managed · 1.2.3 · not logged in')
     // Claude is in the catalog but not on this host: not a row, only a choice under "Add agent…".
@@ -321,12 +330,12 @@ describe('HostAgents', () => {
     render(<HostAgents host={HOST} adapters={ADAPTERS} isInstanceAdmin={false}
           manageable onChanged={vi.fn()} />)
     const row = screen.getByTestId('host-agent-h1-opencode')
-    // The count in the row, the names on hover, never a secret.
-    expect(row.textContent).toContain('1 account')
+    // The count in the row, the names in details, never a secret.
+    expect(row.textContent).toContain('1 provider')
     expect(row.textContent).not.toContain('logged in')
-    await userEvent.hover(screen.getByText('own · 1.18.11 · 1 account'))
-    const tooltip = await screen.findByRole('tooltip')
-    expect(tooltip).toHaveTextContent('yitang · api')
+    await userEvent.click(screen.getByRole('button', { name: 'own · 1.18.11 · 1 provider' }))
+    const details = await screen.findByRole('dialog', { name: 'Provider and CLI account details' })
+    expect(details).toHaveTextContent('yitang · api')
     // Login adds an account here, so the button says so and stays prominent.
     expect(screen.getByRole('button', { name: 'Add account to own of OpenCode on Laptop' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Log in again/ })).toBeNull()
@@ -335,6 +344,24 @@ describe('HostAgents', () => {
     await waitFor(() => expect(loginStream.mock.calls.length).toBe(before + 1))
     expect(loginStream).toHaveBeenLastCalledWith('h1', 'opencode', 'own', { kind: 'logout' }, expect.any(AbortSignal))
     await waitFor(() => expect(screen.getByTestId('runtime-login-terminal')).toHaveTextContent('Logged out.'))
+  })
+
+  it('counts distinct OpenCode providers even without CLI accounts', async () => {
+    const host = { ...HOST, capabilities_json: { installations: { opencode: [{
+      id: 'own', version: 'opencode 1.18.11', logged_in: false, accounts: [],
+      options: { config_options: [{
+        type: 'select', category: 'model', id: 'model', name: 'Model', current_value: 'first/a',
+        options: ['first/a', 'first/b', 'second/a', 'third/a', 'default'].map(value => ({ value })),
+      }] },
+    }] } } } as unknown as Host
+    render(<HostAgents host={host} adapters={ADAPTERS} isInstanceAdmin={false} manageable onChanged={vi.fn()} />)
+    const badge = screen.getByRole('button', { name: 'own · 1.18.11 · 3 providers' })
+    expect(badge).not.toHaveTextContent('No CLI login accounts')
+    await userEvent.click(badge)
+    const details = await screen.findByRole('dialog', { name: 'Provider and CLI account details' })
+    expect(details).toHaveTextContent('No CLI login accounts')
+    expect(details).toHaveTextContent('second')
+    expect(details).not.toHaveTextContent('first/a')
   })
 
   it('offers Log out on a single-account copy that is logged in', async () => {

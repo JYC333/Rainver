@@ -78,11 +78,10 @@ migration runner for them. See Non-Goals below.
 ### Plugin frontend source lives with the plugin package
 Official plugin frontend pages live under `plugins/official/<plugin_id>/web/src/`.
 The shell uses `apps/web/src/modules/registry.ts` as the route and nav source of
-truth. The registry statically imports an app-owned adapter under
-`apps/web/src/plugins/<plugin_id>/`, and that adapter injects host APIs (navigation,
-API client, and plugin-state hook) into the plugin page. Plugin web source must not
-import `apps/web/src` directly. This keeps feature source colocated with the plugin
-package without introducing remote frontend bundle loading.
+truth. `modules/plugins/manifestCatalog.tsx` reads each package's `operationManifest.ts`
+and bundles the declared views from `web/src/operationViews.tsx` at build time.
+The shared `PluginSlot` injects the host APIs. Plugin web source must not import
+`apps/web/src` directly, and manifests never load frontend code from remote URLs.
 
 ### Official optional modules install before they enable
 There is no remote package download. Built-in official plugin source lives in
@@ -168,6 +167,14 @@ Core plugin control-plane schema (`official_plugin_enablements`, `official_plugi
 
 Plugin-owned domain tables do not live in the core baseline. The `diary` operation package owns `plugin_diary.entries` and `plugin_diary.reflections` through its generated operation migration; an existing database's retired `public.diary_entries` / `public.diary_reflections` are adopted once by the offline installer and left in place (see [Diary package](#diary-package)). The `finance_ledger` operation package owns its ledger and import/export tables in `plugin_finance_ledger`. The offline installer adopts the retired public Finance tables once. See [Finance ledger package](#finance-ledger-package).
 
+The shared operator `cutover` command discovers merged plugin migrations in the
+selected image. The offline converter uses the package's install advisory lock
+and ordinary DDL runner, checks the journal against the original IDs and SQL
+embedded in the merged file, and commits the catch-up, journal, install
+contract and audit together. Fresh installs run the original SQL steps under
+one migration ID. Normal install refuses old suffix IDs that require cutover.
+See the [operator procedure](../../server/migrations/README.md#squashing-a-bundled-operation-plugin).
+
 ### Editor-owned content vs raw input
 Diary entries are editor-owned user documents, similar to Notes. A person's
 save writes the Diary tables through the person-only `plugin.diary.entry.save`
@@ -189,6 +196,8 @@ is an import/export compatibility format, not the source of truth; PostgreSQL
 rows are authoritative at runtime. A personal account with `visibility =
 private` is readable and exportable only by its owner; other Space members do
 not receive that account, its postings, or transactions that touch it.
+An account ledger and balances include only transactions the viewer can read
+in full, including when a transaction also uses a shared account.
 The `plugin.finance_ledger.import.beancount` command stages dated entries as
 `proposed`. It takes `book_id`, text and an optional `source_type`. Posting
 uses the separate proposal commands. The importer records `open`, `close`,
@@ -214,6 +223,12 @@ as `needs_review` until the uploader uses `import.review`
 with `import` or `duplicate`; a trusted external id already imported settles
 as `duplicate` on its own. A batch, its entries and their text are visible
 only to the member who uploaded it.
+The import history reads batch metadata and status counts without loading the
+upload text. The query requires an `offset` starting at zero. Each page
+returns up to 25 owned batches in newest-first order and includes
+`next_offset` when more are available.
+The import panel loads older batches without leaving the current result. Batch
+detail and retry load the text when needed.
 
 Account close, direct posting, import validation/persistence and batch import
 approval share a transaction-held `FOR NO KEY UPDATE` book lock. Posting checks
@@ -250,7 +265,7 @@ An official optional module may contribute to these extension points:
 | Contribution point | Status | How |
 |---|---|---|
 | Backend route surface | Implemented | Via `PluginHost` + `ctx.http.pluginGuard()` |
-| Frontend module entry | Implemented | Page source in `plugins/official/<plugin_id>/web/src/`; app adapter in `apps/web/src/plugins/<plugin_id>/`; `official_plugin` source entry in `MODULE_REGISTRY` + overlay |
+| Frontend module entry | Implemented | Package `operationManifest.ts` declares placements and `web/src/operationViews.tsx` provides the views. `manifestCatalog` contributes navigation entries and `PluginSlot` renders the declared view. |
 | Settings | Opaque JSON in the enablement row | `settings_json` field |
 | Job handlers | Implemented | `ctx.jobs.register()`; host wraps handlers with enablement gating |
 | Scheduled tasks | Implemented | `ctx.scheduler.register()`; task code must fan out only to enabled scopes |
@@ -298,7 +313,9 @@ same-owner reads qualify for B11's same-owner exclusion; operation policy audit
 is mandatory. Cross-person content needs a canonical B11 adapter before enabling
 that package. Personal and sensitive operations reach an Agent only through
 the [ADR 0030 data access gates](#agent-data-access-adr-0030); without data-side
-consent they stay user-only, even with a frozen Agent grant. Fixtures exercise cross-person/Space predicates; the manifest label
+consent they stay user-only, even with a frozen Agent grant. The bundled
+Applications contact exception is scoped to Project records and ID-only
+commands. Fixtures exercise cross-person/Space predicates; the manifest label
 cannot prove every future plugin query safe.
 
 ### Agent data access (ADR 0030)
@@ -376,8 +393,9 @@ classification), `corePorts.ts` (typed ports); attribution store
   and idempotent command replay — passes `releasePluginResult` in a separate
   audit transaction before it leaves the server; a failure returns
   `operation_audit_unavailable` (a committed command's receipt is released by
-  the same gate on retry). Lock order, identical to the writers': people
-  (`lockActivePeople`) → Run `FOR UPDATE` → plugin installs → enablements
+  the same gate on retry). Lock order, identical to the writers': (an Agent's
+  Project-bound result: its Project `FOR SHARE` with the person's member row) →
+  people (`lockActivePeople`) → Run `FOR UPDATE` → plugin installs → enablements
   (dependency closure, sorted) → consent `FOR SHARE`; disable takes the install
   row and revocation the consent row `FOR UPDATE`, so either commits first and
   the release withholds, or waits. It rechecks actor, audience, dependency
@@ -386,7 +404,8 @@ classification), `corePorts.ts` (typed ports); attribution store
   (`frozen_json.release`).
 - Shared per-reader reads (`perReaderRead` in `dataAccess.ts`): every personal
   read and, because `caller_owned` rows belong to the person who wrote them,
-  every query of a `caller_owned` package whatever its class. The same
+  every query of a `caller_owned` package whatever its class. Applications
+  has an explicit Project query path with its own audience and audit gates. The same
   read-only query runs as each other current reader (active Space member with
   the plugin enabled and, for a Project-bound package, reading the Project); a
   reader's own refusal withholds the result, and so does the requester's own
@@ -1007,7 +1026,7 @@ The following are out of scope for the current implementation:
 | `server/dist/official-plugins/finance_ledger/` | finance_ledger build output loaded by the server at startup |
 | `server/migrations/0000_baseline.sql` | DB migration — plugin control-plane and install tracking only |
 | `apps/web/src/api/client.ts` | Frontend API client |
-| `apps/web/src/modules/plugins/useEffectivePlugins.ts` | Plugin state hook |
+| `apps/web/src/modules/plugins/useEffectivePlugins.ts` | Plugin state hook; one shared read per session, person and Space |
 | `apps/web/src/modules/plugins/useProjectPluginBindings.ts` | One Project's binding state for navigation, slots and the settings card |
 | `apps/web/src/modules/plugins/ProjectPluginBindingsCard.tsx` | Project settings card: binding status and owner-level Bind/Unbind |
 | `apps/web/src/modules/plugins/PluginsPage.tsx` | Official plugins management page |
@@ -1084,7 +1103,7 @@ process browser/plugin code is not a malicious sandbox.
 ## Project binding
 
 Implemented 2026-11-18 as the first stage of the Project-level application
-plugin work ([P3](../plans/operation-core/03-phd-application-plugin.md)). The
+plugin work ([Applications Plugin Plan](../plans/applications-plugin-plan.md)). The
 first bundled package declaring it is the
 [Application management package](#application-management-package). It adds a
 Project layer on top of install and enablement; it does not replace either.
@@ -1178,7 +1197,13 @@ Project-level operation accept only that operation's `project_id`; a mismatch
 is not found and rolls the whole command back.
 
 Lock order: plugin installs → enablements → Project authority rows → binding
-row. A command takes the Project row `FOR UPDATE` first, the canonical
+row. An Agent's command takes its Project `FOR UPDATE` and audience even earlier,
+in the registration's `resolve` before the operation core pins person and Run
+(`lockAgentProjectBeforeActor`, `projects/access.ts`, shared with the core Task
+commands of an Agent): an Agent release of a Project-bound result
+holds the Project `FOR SHARE` before it takes the Run `FOR UPDATE`, so a command
+pinned first deadlocked with the same Run's `application.list` (ADR 0034).
+A command takes the Project row `FOR UPDATE` first, the canonical
 aggregate write fence (`lockActiveProjectForMutation`, which the Task and
 Artifact core write ports also take), then its authority rows `FOR SHARE`; no
 command holds the Project `FOR SHARE` and upgrades it later, which deadlocked
@@ -1233,7 +1258,7 @@ independent slot on a binding change, settings card incl. the admin hint).
 ## Application management package
 
 Implemented 2026-11-18 as stage 2 of
-[P3](../plans/operation-core/03-phd-application-plugin.md): the first bundled
+[Applications Plugin Plan](../plans/applications-plugin-plan.md): the first bundled
 Project-level operation package, `plugins/official/applications/` (id
 `applications`, "Application management"). PhD application (one program at one
 institution) is its first *track* and `funding` (a scholarship, studentship or
@@ -1251,55 +1276,57 @@ runtime (`server/src/index.ts`, compiled to
 `dist/official-plugins/applications/server/src/index.js`, its `plugin.json`
 `server.main`) and the bundled views (`web/src/operationViews.tsx`). Schema
 `plugin_applications` is authored in `schema.ts` and generated by drizzle-kit
-(command in [COMMANDS](../COMMANDS.md)); `migrations/0000_application_records.sql`
-creates `applications`, `application_deadlines`, `application_materials`,
-`application_contacts` and `application_contact_events`;
-`0001_material_notes.sql` adds `application_materials.note_id`,
-`application_material_reviews` and `application_material_sources`;
-`0002_material_generations.sql` adds `application_material_generations`;
-`0003_funding_library_contact_links.sql` adds `applications.submission`,
-`application_funding_links`, `application_library_items` and
-`application_contact_links`, copies every existing `application_contacts.application_id`
-binding into one link row (Project-level contacts get none) and then drops that
-column, in the installer's single migration transaction.
-`0004_submission_recorded.sql` adds the submission history guard and
-`0005_narrow_submission_history.sql` corrects the legacy backfill.
-Every table's key is
-(Space, person, Project, id); child rows reference their parent with that
-whole key, so a deadline, material or event cannot leave its owner's
-application/contact. Core objects (Projects, Tasks, Artifacts) are referenced
-by id only: the plugin role cannot reference core tables.
+(command in [COMMANDS](../COMMANDS.md)). `migrations/0000_applications_and_mail_facts.sql`
+contains the Applications chain, including the original contact-link adoption,
+submission-history backfills and Project collaboration changes, followed by the
+mail fact ledger and its status and deadline timestamp backfills. It retains
+the original SQL boundaries and IDs so the offline migration cutover can adopt
+older journal entries. A fresh installation records one migration. The schema retains original owner keys,
+lets funding and contact links cross owners inside a Project, and records the
+requester of each new draft.
+Deadlines, checklist items and contact events retain their parent's storage
+owner. Core objects are referenced by ID and checked through the host ports.
 
-**Ownership.** Each statement filters `rainver.space_id`, `rainver.user_id` and
-the host-authorized `project_id`. Records are the person's own inside the
-Project: another Project member (any role) neither reads nor changes them, a
-viewer cannot write (Project write gate), and nothing reads across persons, so
-no B11 adapter is needed. Sharing records between members would first need a
-canonical B11 cross-person adapter. An Agent Run another person can also read
-(a multi-person Room, selected users, a Space-shared Run) receives every query
-only as the readable intersection of each reader's own result (see
-[Agent data access](#agent-data-access-adr-0030)): its list shows only rows
-every reader has, which for per-person records is none, and `get`/`summary`
-are withheld unless identical; the release gate rechecks that audience and each
-reader's Project read.
+**Ownership and visibility.** New applications and funding records are shared
+by default with readers of their Project. Existing rows start with their
+original owner visibility. Owners can share selected private applications
+through `application.share`. A Project writer can maintain any shared
+application, funding record, deadline, checklist item, shared contact or
+shared library entry. New contacts are shared when they are Project-level or
+all their linked applications are shared. A new library entry is shared when
+its Note is shared in the bound Project. Legacy private contacts and library
+entries retain their original visibility. The browser uses the Project's
+current write permission for editing controls. The server checks the same
+permission on every command, including proposals and receipt replays.
 
-**Operations** (`plugin.applications.<entity>.<verb>`, every input carries a
-required `project_id`):
+Shared Agent Runs see the Project-shared set, with Project read access
+checked for every reader. The host rechecks the released rows under the
+Applications role and records cross-person reads before returning the result.
+Note and task references use their own read gates. Draft text and requirements
+are visible only to the person who requested the draft.
+
+**Operations** (`plugin.applications.<entity>.<verb>`). The public API requires
+`project_id`. The Agent tool schema lets a Project-bound Run omit it. The shared
+Run adapter fills it from that Run before validating the operation input. The
+host checks the current Run's Project, its live binding, and the caller's
+Project access on every call. An explicit `project_id` still has to pass those
+checks.
 
 | Entity / class | Queries | Commands |
 | --- | --- | --- |
 | `application`, `non_sensitive` | `list` (optional `track` filter; next deadline, deadline count, checklist done/total, `submission`, `funding_ids` / `applies_to`; archived only on request), `get` (deadlines, checklist with resolved references, and the linked records on the other side as list rows: `funding` for a program application, `applies_to` for a funding record), `summary` (program applications: counts by status, open count, open checklist totals; `funding` total/open; next five deadlines of either track with `track`) | `create` (track `phd` or `funding`; institution — the funder for funding — program — the funding name — department, intake, notes, opportunity source label/http(s) URL, any number of deadlines, `create_tasks`, `checklist: track_default|empty`; funding only: required `submission: separate|automatic` and optional `applies_to` program applications), `update` (needs the current `revision`; archive/restore; a funding record's `submission`), `update_status` (reversible progress and external results: planning … interview, offer, waitlisted, rejected), `propose_status` (proposal, `gate_class: direction`: submitted, accepted, declined, withdrawn) |
 | `funding` (exempt: funding records are `application` rows of track `funding`, read with `application.list`/`get`) | — | `link`, `unlink` (`funding_id`, `application_id`) |
 | `deadline`, `non_sensitive` (read through `application.get`) | — | `add` (optional `create_task`), `update`, `remove` |
-| `material`, `non_sensitive` (read through `application.get`) | `read_note` (one revision of a Note this material links, reviewed or draws on; see [Materials in Notes](#materials-in-notes)), `get_generation` (person-only draft preview; see [Generated drafts](#generated-drafts)) | `add`, `update` (status, label, required, reference to an `artifact` or `task`), `remove`, `link_note`, `add_source`, `remove_source`, `mark_reviewed`, `generate`, `apply_generation` (the last three person-only) |
+| `material`, `non_sensitive` (read through `application.get`) | `read_note` (one revision of a Note this material links, reviewed or draws on; see [Materials in Notes](#materials-in-notes)), `get_generation` (private draft preview; see [Generated drafts](#generated-drafts)) | `add`, `update` (status, label, required, reference to an `artifact` or `task`), `remove`, `link_note`, `add_source`, `remove_source`, `mark_reviewed`, `generate`, `apply_generation` (`mark_reviewed` is person-only) |
 | `library`, `non_sensitive` | `list` (each entry's Note title/current version through `notes.read` and every material that uses the Note; see [Material library](#material-library)) | `add`, `update` (kind, label), `remove` |
 | `contact`, entity floor `personal` | `list` (`application_ids`, latest event and count; optional `application_id` filter), `list_events` | `create` and `update` (`application_ids`: any number of applications of either track; `update` replaces the set), `log_event` (a contact that already happened; nothing is sent) |
+| `mail_fact`, `non_sensitive` (the owner's own rows) | `list` (what the owner's Gmail application updates recorded or left for them, newest first: application, effect, outcome and conflict reason, value before and after, Gmail message id and receipt time; answered only to the owner or into their private conversation of the Project) | `apply` (only the owner's application-update automation Run, through the host gate of [ADR 0034](../decisions/0034-gmail-application-updates.md); see *Gmail application updates*) |
 
-Classes follow the P4 mapping: application records are the normal class;
-third-party contact details and communication history are `personal` (ADR
-0030), so an Agent reads them only with the Space owner's personal consent and
-never writes them (personal writes are proposal-only; no contact proposal
-exists). An Agent reaches these tools through the Runs Rainver creates in a
+Contact details and communication history carry the `personal` data class
+(ADR 0030). The host admits shared contacts through the Project read and audit
+gates. An Agent in a solo Run needs standing personal consent to also read
+the person's legacy private contacts. Contact writes return only IDs. An
+Agent reaches these tools through the Runs Rainver creates in a
 Project — a direct chat, a Room message, its delegated child and a Task
 dispatched to a Workspace Location on the built-in or a paired Host declare
 `PROJECT_APPLICATIONS_TOOL_ALLOWANCE` (`systemActions/scenarioToolAllowance.ts`,
@@ -1308,17 +1335,14 @@ wildcard), and each entry builds the Run's snapshot with the server
 configuration that registers the package; a Run without a Project declares
 none, and a Task with no Workspace Location declares no capabilities at all, so
 it gets no Rainver tool
-([SYSTEM_ACTIONS](SYSTEM_ACTIONS.md#scenario-tool-allowances)). Records are
-always the instructing person's own in the Run's bound Project. Who reads a
+([SYSTEM_ACTIONS](SYSTEM_ACTIONS.md#scenario-tool-allowances)). Who reads a
 Run's output is its live audience (`runAudience`): a private direct chat only
 that person; a Room turn and its delegated child the Room's audience (a mainline
 Room is every Project reader); a Task Run is private, or every active Space
-member when the dispatched Agent is Space-shared. When that audience includes
-anyone besides the instructing person, the package being `caller_owned`, every
-query is released only as the rows each current reader reads themselves
-(intersected per reader, so in practice none of one person's records), while
-commands still act on the instructing person's records; contacts stay
-owner-only. Writes on an archived application are refused, including its details
+member when the dispatched Agent is Space-shared. The package's shared
+Project queries use the Project audience gate. Other caller-owned queries
+follow the usual per-reader rules. Writes on an archived
+application are refused, including its details
 (`application.update` with any field besides `archived`, even together with a
 restore; restoring alone is allowed) and new links to it: `contact.create` or
 `contact.update` adding it, and `funding.link` or a funding `create` naming it,
@@ -1403,8 +1427,9 @@ statement material, other): a Note id, kind and optional label, unique per Note
 Note `notes.verify` accepts (active, every reader reads it, its closure inside the
 bound Project or Project-free; `note_unavailable` otherwise) and never changes it.
 `library.list` resolves each Note's title and current version through `notes.read`
-(unavailable Notes show no title) and lists every material of the person in this
-Project that uses it — as a pinned source (`relation: source`, the pinned version)
+and lists the visible materials in this Project that use it. An unavailable
+Note shows no title for the entry's owner. Other readers only see entries
+whose Note they can read. A Note can serve as a pinned source (`relation: source`, the pinned version)
 or as its own text (`relation: linked`, the newest reviewed version or none) —
 with the application's track, names and archive state and `updated` when the Note
 is newer than that version. Tailored materials stay in their application (a
@@ -1426,8 +1451,11 @@ ordinary `task.update` between discoveries is refused, never waited on; a move
 after locking fails the release's final closure comparison. A same-Project
 reference is then verified on its pinned closure. It is resolved on `get` through
 `references.resolve` with the same Project condition, so a title appears only
-when every reader may still read the object in this Project; one that became
-unreadable or moved shows as unavailable, and the release gate rechecks it. Notes are reached only through
+when every reader may still read the object in this Project. The record owner
+sees an unavailable reference when the object is moved or access is lost.
+The release gate rechecks active membership, installed packages and enablement
+under shared locks for human callers as well as Agents, then rechecks every
+resolved reference. Notes are reached only through
 the `notes.read` port (below). Relations people and organization records are
 not used yet (Relations person creation is user-only and organizations have no
 port).
@@ -1467,7 +1495,11 @@ but never a Note or a Run.
 <a id="generated-drafts"></a>
 **Generated drafts.** A person drafts a material's text from its pinned sources
 through `notes.draft`; nothing is written to Notes until they save a draft they
-previewed. All three operations are person-only (`actors: ['user']`).
+previewed. A manually instructed Agent can generate or apply a private draft
+from the Project Room. The draft preview is available only to its requester
+in the Applications view or a solo Run. The configured provider and the
+existing source, save and private-Note checks still apply. Human review stamps
+remain person-only.
 
 - `material.generate` takes this application's requirements (institution or
   person, at most 4000 characters), optional target length and emphasis, which of
@@ -1514,6 +1546,39 @@ previewed. All three operations are person-only (`actors: ['user']`).
 The same pinned source can serve two applications: each material keeps its own
 requirements, Runs, Note and reviews, and the source Note is only read.
 
+**Gmail application updates.** The owner's automation
+([ADR 0034](../decisions/0034-gmail-application-updates.md); Sources side in
+[Automatic application updates](../modules/sources.md#automatic-application-updates-adr-0034))
+records application facts from incoming and sent mail through `mail_fact.apply`. The host admits a call only
+from that automation's running delivery Run for a message frozen for and released to it, at its exact
+receipt time, for an effect the rule allows (`gmailApplicationFactAdmitted`, in `operationRegistry.ts`
+`authorize` and the egress check); a person, an ordinary turn and every other Run get the hidden 404,
+and `PROJECT_APPLICATIONS_TOOL_ALLOWANCE` never offers it. The handler locks the application and
+decides against current state: a replay of the same message, effect and application returns the
+first outcome (`replayed: true`); every outcome also returns `project_shared`, `institution` and `program`, which
+the host uses only to keep a recorded fact on an application the Project reads for the notice of an automation
+enabled from a shared conversation ([ADR 0035](../decisions/0035-gmail-shared-project-scope.md) §1); an archived application (`application_archived`) or a revision other
+than `expected_revision` (`revision_conflict`, not stored) writes nothing; a status (`under_review`,
+`interview`, `waitlisted`, `offer`, `rejected`) moves only forward along `EXTERNAL_RESULT_RANK`
+(`status_regression`), never from `accepted`/`declined`/`withdrawn` (`status_decided`) and never over a
+status that became true after the message was received (`newer_status`; `status_changed_at` is the
+person's change, the message's receipt time, or the epoch for a new record's initial status);
+`submission_received` records `submitted` from a preparation status (`no_submission` for automatic
+funding; later statuses are `unchanged`); `deadline` adds one without a Task, or moves the one deadline
+of that kind unless its date was set after the message (`newer_deadline`, `date_changed_at`); several of
+that kind is `ambiguous_deadline`. `contact` records an email event in either direction using a matching
+linked contact. A new contact learned from mail stays private to the mailbox owner. Multiple matches
+return `ambiguous_contact` for review. The event and its deduplication entry commit together. Shared
+notices use the application label and fixed event text. Every recorded change advances the revision. Each outcome is kept in
+`application_mail_facts` (unique per mailbox owner, Project, message, effect key and application; ids,
+values and codes, no mail text) and read with `mail_fact.list`, which the host answers to the owner
+directly or to an Agent only in a Run of the owner's private conversation of that Project
+(`gmailApplicationFactsAudienceAdmitted`, rechecked at release; a Room, the mainline or any other audience
+gets the hidden 404); an Agent Run that receives it records a sensitive read of the owner's mail in its
+taint, so its outward writes are refused. A person's own `update_status` and
+deadline edits stamp `status_changed_at` / `date_changed_at` with now. Evidence:
+`server/test/gmailApplicationUpdatesDb.test.ts`.
+
 **Refusals.** Plugin code throws `PluginOperationRefusal(kind, reason)` from
 `@rainver/protocol`; the registration's `classifyError` maps `conflict` to
 `operation_conflict` (409) and `invalid` to `operation_invalid_input` (422),
@@ -1540,9 +1605,7 @@ has four tabs through the host's shared Radix tabs (`ui.Tabs`/`TabsList`/
 `PluginSlot.tsx`): **Programs** / 院校申请 (default; `operationViews.tsx`), program
 applications grouped under an institution heading, each program its own card;
 **Scholarships & funding** / 奖学金与资助, funding records with an all / linked /
-independent filter (the open record stays shown, and a program stays under the
-institution group it was opened in, until it is closed, so an edit that moves it
-out of the filter or to another institution keeps its detail and save feedback), the programs each applies to and a create form (name, funder,
+independent filter, the programs each applies to and a create form (name, funder,
 separate/automatic, the program applications it applies to); **My materials** /
 我的材料库 (`libraryTab.tsx`), library entries with kind, current version, *Open in
 Notes*, stale-use count and every use with its pinned or reviewed version and an
@@ -1550,7 +1613,7 @@ Notes*, stale-use count and every use with its pinned or reviewed version and an
 导师与联系人 (`contactsTab.tsx`), the former Project-wide list, each contact with
 its linked records (buttons that open them), a multi-application picker
 (`linkPicker.tsx`; an archived application appears only while linked and can only
-be cleared) and the history/log form. A card opens the shared detail
+be cleared) and the history/log form. The Project overview card title links to the Applications area. In the area, each program or funding card title links to a dedicated, reloadable record view
 (`applicationDetail.tsx`) for either track, ordered progress/decision (no
 `submitted` for automatic funding) → linked records (a program's **Funding**, a
 funding record's **Applies to**: status, mode, next deadline, checklist, *Open* in
@@ -1604,10 +1667,10 @@ loader-admitted artifact installed by the offline installer; HTTP and Agent
 tool entries: binding gate, end-to-end deadlines→Tasks, checklist, revision
 conflict, material reference title through the core gate, reversible progress,
 approved decision, final-decision refusal, script-URL refusal, other Project,
-archive, per-person ownership and viewer refusal, contact events, personal
-class refused to an unconsented Agent, identical UI/Agent records with one
-policy decision each, disable/unbind retention with surviving Tasks, a shared
-two-person Room Run releasing none of one person's records, an older decision
+archive, collaboration across Project writers with viewer refusal, contact
+events, legacy private contacts withheld from an unconsented Agent, identical
+UI/Agent records with one policy decision each, disable/unbind retention with
+surviving Tasks, a shared two-person Room receiving only shared records, an older decision
 Proposal refused after a newer approved one or any edit, material references
 refused at save when missing/another Project's/unreadable (HTTP and Agent) and
 unavailable after moving Projects, crossed saves referencing each other's
@@ -1721,7 +1784,7 @@ private Note* and showing why; dark/light, English/Chinese, 1280 px and 390 px, 
 touch targets on phone; screenshots prefixed `materials-`).
 
 **Not in this package yet.** Templates, PDF/Word export, sending or submitting
-anything, automatic opportunity intake, timeline/calendar view, a Note picker
+anything, automatic opportunity intake (automatic updates of existing records from Gmail are above), timeline/calendar view, a Note picker
 (Notes and sources are linked by id), an Agent contact proposal,
 Relations/organization records, default landing Area, cross-Project views.
 
@@ -1766,7 +1829,9 @@ route, scheduler and web adapter are retired without a compatibility layer.
   (a fresh command key per write, no automatic retry). Like Finance, it keeps
   the mounted page and its draft on same-scope catalog refreshes and forwards
   calls to the current operation port. The slot discards the page on scope
-  changes or loss of access. The page redesign is deferred.
+  changes or loss of access. The selected date must load successfully before
+  the editor opens. A failed read shows a retry and leaves autosave disabled.
+  The page redesign is deferred.
 
 Evidence: `server/test/diaryPluginDb.test.ts` (real PG: person isolation across Spaces, disable, reflection Job and
 concurrency, Agent snapshot/consent/isolated read/taint/attribution, append

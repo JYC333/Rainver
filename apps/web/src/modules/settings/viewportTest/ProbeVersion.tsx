@@ -8,7 +8,7 @@ import { probeRevision } from './topComparison'
 export function ProbeVersion() {
   const { t } = useAppTranslation()
   const [latest, setLatest] = useState<AppBuild | null>(null)
-  const [status, setStatus] = useState<'checking' | 'current' | 'available' | 'updating' | 'error'>('checking')
+  const [status, setStatus] = useState<'checking' | 'current' | 'available' | 'updating' | 'kept' | 'error'>('checking')
   async function check() {
     setStatus('checking'); setLatest(null)
     try {
@@ -20,7 +20,7 @@ export function ProbeVersion() {
   useEffect(() => { void check() }, [])
   async function reload() {
     setStatus('updating')
-    try { await reloadLatestBuild() } catch { setStatus('error') }
+    try { await reloadLatestBuild(); setStatus('kept') } catch { setStatus('error') }
   }
   return <section className="space-y-2 rounded border border-border bg-card p-3" aria-label={t('viewport_test.version')}>
     <p className="font-semibold">{t('viewport_test.version')} · {probeRevision}</p>

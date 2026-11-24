@@ -130,6 +130,8 @@ export class AgentGroupRuntimeDelegationMaterializer
           budget_json: objectValue(entry.budget),
           context_policy_json: objectValue(entry.context),
           workspace_access: entry.workspace_access,
+          ...(entry.review ? { review: entry.review } : {}),
+          ...(entry.continuation ? { continuation: entry.continuation } : {}),
           tool_call_id: toolCallId,
         },
       );
@@ -276,6 +278,8 @@ function runtimeOutputDelegationKey(
       reason: entry.reason ?? null,
       budget: objectValue(entry.budget),
       context: objectValue(entry.context),
+      ...(entry.review ? { review: entry.review } : {}),
+      ...(entry.continuation ? { continuation: entry.continuation } : {}),
     })))
     .digest("hex");
   return `runtime_output:${digest}`;

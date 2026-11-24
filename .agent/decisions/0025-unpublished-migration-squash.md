@@ -47,6 +47,20 @@ It retains PostgreSQL and stops on failure without automatic rollback or
 recovery. Production uses its selected published image rather than a local
 build. This host-operated lifecycle command is not a product deployment API.
 
+The same `cutover` command also converts unpublished suffixes for bundled
+operation packages. The generated merged file carries the original migration
+IDs and ordered SQL boundaries. Preparation can include an unpublished initial
+plugin migration. Cutover discovers the original history from the target image,
+so core and plugin conversions share one backup and stopped service window.
+The package's install lock, DDL role and per-file backfill time remain the
+authorities for catch-up. Replacement of its journal, install contract and audit
+event commit together. Core archive discovery still uses the core journal.
+
+Reuse / Dependency Check: reuse archive SQL and Drizzle metadata preparation,
+the Compose cutover lifecycle, and the operation-plugin SQL executor and
+role reconciler. The converter is specific to the plugin journal and admission
+contract. It adds no dependency or alternate migration framework.
+
 Managed preparation freezes the source and target under the selected instance's
 `db/migration-archives/<content-id>/`. Cutover defaults to content-based discovery
 in that store, other mode stores and the legacy parent catalog, matched against

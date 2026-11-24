@@ -1,10 +1,11 @@
-import {PLUGIN_DATA_CLASS_RANK,type OperationActor,type PluginDataClass,type PluginOperationManifest} from '@rainver/protocol';
+import {GMAIL_APPLICATION_FACTS_LIST_ACTION,PLUGIN_DATA_CLASS_RANK,type OperationActor,type PluginDataClass,type PluginOperationManifest} from '@rainver/protocol';
 import type {ServerConfig} from '../../config.js';
 import type {Queryable} from '../routeUtils/common.js';
 import {OperationError} from '../systemActions/operations/errors.js';
 import {assertCurrentActor} from '../systemActions/operations/actor.js';
 import {canonical} from '../systemActions/operations/repository.js';
 import {persistRunContextTaint} from '../runs/contextTaint.js';
+import {GMAIL_DIGEST_CONSENT_ID} from '../sources/gmail/gmailDigests.js';
 import {recordAgentDataRead, resultResourceIds} from '../contentAccess/agentReads.js';
 import {ContentAccessAuditService} from '../contentAccess/audit.js';
 import {contentDecisionFromDb} from '../access/contentAccessQuery.js';
@@ -13,7 +14,7 @@ import {contentAclProjects} from '../runtimeContext/envelopeAuthority.js';
 import {lockActivePeople} from '../access/activePerson.js';
 import {sourceLineageReadable} from '../retrieval/sourcePolicy.js';
 import {perReaderRead, pluginDataFacts, runAudience, sharedAudience, UNKNOWN_AUDIENCE} from './dataAccess.js';
-import {dependencyIds, operationPluginEnabled} from './operationEnablement.js';
+import {dependencyIds, lockOperationPluginScope, operationPluginEnabled} from './operationEnablement.js';
 
 /**
  * Release gate for plugin operation results (ADR 0030).
@@ -54,10 +55,14 @@ export interface PluginReleaseFacts {
   references?: PluginReference[];
   /** The bound Project of a Project-bound operation, which every resolved reference must stay in. */
   project_id?: string;
+  /** Bundled Applications row IDs; the host verifies the released Project and owner at audit time. */
+  applicationIds?: string[];
+  applicationRelatedIds?: string[];
+  applicationProjectOnly?: boolean;
 }
 export const RELEASE_FACTS = Symbol('rainver.plugin.release_facts');
 export function attachReleaseFacts(raw: unknown, facts: PluginReleaseFacts): void {
-  if (!facts.audience && !facts.references?.length) return;
+  if (!facts.audience && !facts.references?.length && !facts.applicationIds) return;
   if (!raw || typeof raw !== 'object') throw withheld();
   Object.defineProperty(raw, RELEASE_FACTS, {value: facts, enumerable: false});
 }
@@ -112,6 +117,13 @@ export async function referenceReadable(db: Queryable, actor: OperationActor, re
   return {ownerUserId: row.owner, visibility};
 }
 
+export const APPLICATION_DRAFT_PREVIEW = 'plugin.applications.material.get_generation';
+
+export function isApplicationDraftAction(id: string): boolean {
+  return id === 'plugin.applications.material.generate' || id === APPLICATION_DRAFT_PREVIEW ||
+    id === 'plugin.applications.material.apply_generation';
+}
+
 /** Readers an actor's output reaches: the person alone, or an Agent Run's live audience. */
 export async function actorReaders(db: Queryable, actor: OperationActor): Promise<{readers: string[]; run: ReleaseRun | null}> {
   if (actor.principal.kind !== 'agent') return {readers: [actor.on_behalf_of_user_id!], run: null};
@@ -122,7 +134,9 @@ export async function actorReaders(db: Queryable, actor: OperationActor): Promis
 
 /**
  * Releases one plugin result. Lock order, discovered in full before the first
- * lock and identical to every writer's: people (users → memberships) → Run
+ * lock and identical to every writer's: (an Agent's Project-bound result: its
+ * Project with the person's member row, taken first by the caller in
+ * `operationRegistry.ts`) → people (users → memberships) → Run
  * (FOR UPDATE; taint) → plugin installs → enablements (whole dependency
  * closure, sorted) → consent row (FOR SHARE). Disable/uninstall take the
  * install row FOR UPDATE and revocation the consent row FOR UPDATE, so each
@@ -130,10 +144,13 @@ export async function actorReaders(db: Queryable, actor: OperationActor): Promis
  * The command transaction holds the Run only FOR SHARE and has committed
  * before this runs, so no lock is ever upgraded.
  */
-export async function releasePluginResult(db: Queryable, config: ServerConfig, manifest: PluginOperationManifest, op: {id: string; kind: 'query' | 'command'; data_class: PluginDataClass}, actor: OperationActor, data: unknown, facts: PluginReleaseFacts | null): Promise<void> {
+export async function releasePluginResult(db: Queryable, config: ServerConfig, manifest: PluginOperationManifest, op: {id: string; kind: 'query' | 'command'; data_class: PluginDataClass}, actor: OperationActor, data: unknown, facts: PluginReleaseFacts | null, boundProjectId?: string) {
   const person = actor.on_behalf_of_user_id!;
   const references = facts?.references ?? [];
   if (actor.principal.kind !== 'agent') {
+    try { await lockActivePeople(db, actor.space_id, [person]); } catch { throw withheld(); }
+    await lockOperationPluginScope(db, manifest.id, actor.space_id, person, config);
+    if (!await operationPluginEnabled(db, manifest.id, actor.space_id, person, config)) throw withheld();
     // A person's own read: references are rechecked and cross-person ones recorded under B11.
     if (references.length) await releaseReferences(db, actor, references, [person], null, facts?.project_id);
     return;
@@ -150,6 +167,7 @@ export async function releasePluginResult(db: Queryable, config: ServerConfig, m
   if (!run) throw withheld();
   try { await assertCurrentActor(db, actor); } catch { throw withheld(); }
   const readers = (await actorReaders(db, actor)).readers;
+  if (op.id === APPLICATION_DRAFT_PREVIEW && (readers.length !== 1 || readers[0] !== person)) throw withheld();
   if (canonical(readers) !== canonical(discovered.readers)) throw withheld();
   if (perReader && canonical(facts?.audience ?? null) !== canonical(readers)) throw withheld();
   const ids = dependencyIds(manifest.id, config);
@@ -160,17 +178,29 @@ export async function releasePluginResult(db: Queryable, config: ServerConfig, m
   const consent = await pluginDataFacts(db, config, actor, op.id, true);
   if (!consent || consent === 'pin_mismatch' || !consent.consent) throw withheld();
   const referenceTaint = references.length ? await releaseReferences(db, actor, references, readers, run, facts?.project_id) : [];
-  if (consent.dataClass !== 'non_sensitive' || referenceTaint.length) {
+  // The owner's ledger of what their mail recorded (ADR 0034) is their mail's: released only while the Run is
+  // still in their own private conversation of that Project (rechecked here, under the Run lock), and held
+  // by the Run as a read of that mail, so its outward writes are refused also when it never read Gmail.
+  const gmailDerived = op.id === GMAIL_APPLICATION_FACTS_LIST_ACTION;
+  if (gmailDerived) {
+    const {gmailApplicationFactsAudienceAdmitted} = await import('../sources/gmail/gmailApplicationUpdates.js');
+    if (!boundProjectId || !await gmailApplicationFactsAudienceAdmitted(db, actor, {project_id: boundProjectId})) throw withheld();
+  }
+  if (consent.dataClass !== 'non_sensitive' || referenceTaint.length || gmailDerived) {
     await persistRunContextTaint(db, {
       runId: run.id, spaceId: actor.space_id, instructingUserId: person, runVisibility: run.visibility,
-      items: [...(consent.dataClass !== 'non_sensitive' ? [{ownerUserId: person, visibility: 'private' as const}] : []), ...referenceTaint],
-      pluginReads: consent.dataClass !== 'non_sensitive' ? [{plugin_id: manifest.id, data_class: consent.dataClass, owner_user_id: person}] : [],
+      items: [...(consent.dataClass !== 'non_sensitive' || gmailDerived ? [{ownerUserId: person, visibility: 'private' as const}] : []), ...referenceTaint],
+      pluginReads: [
+        ...(consent.dataClass !== 'non_sensitive' ? [{plugin_id: manifest.id, data_class: consent.dataClass, owner_user_id: person}] : []),
+        ...(gmailDerived ? [{plugin_id: GMAIL_DIGEST_CONSENT_ID, data_class: 'sensitive' as const, owner_user_id: person}] : []),
+      ],
     });
   }
-  await recordAgentDataRead(db, {
+  if (!facts?.applicationIds) await recordAgentDataRead(db, {
     spaceId: actor.space_id, ownerUserId: person, runId: run.id, agentId: actor.agent_id, actionId: op.id, resourceType: `plugin.${manifest.id}`,
     resourceIds: resultResourceIds(data), dataClass: consent.dataClass, grantId: consent.grantId,
   });
+  return consent;
 }
 
 /** Rechecks every resolved reference for the current readers and records it: B11 for cross-person rows, the owner log for an Agent's same-owner rows. */

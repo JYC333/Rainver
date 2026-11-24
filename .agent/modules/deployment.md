@@ -28,13 +28,14 @@ For a host without a checkout, the `prod-stable` release publishes a small
 installer and a `BUILD_ID` pointer. The installer downloads the immutable
 `prod-sha-<commit>` bundle, verifies its SHA-256 checksum, and activates
 `~/.local/share/rainver-prod/current/ops`. The bundle contains tracked `ops/`,
-`server/migrations/` for restore inspection, and `server/package.json` for
+`server/migrations/` for host-side inspection, and `server/package.json` for
 backup metadata. Runtime data and secrets remain under `RAINVER_ROOT/prod`.
 On a new instance the installer invokes `start.sh --prod --detach`;
 `start.sh` asks for the administrator email, generates the database password,
-and writes the production `.env`. The installer pins images to the bundle's
-commit for that invocation. By default the `.env` stays on the stable
-channel for later in-app updates; `--sha` pins it.
+and writes the production `.env`. The installer starts the verified candidate
+with its immutable image tag and activates the bundle and CLI after startup
+succeeds. By default the `.env` stays on the stable channel for later in-app
+updates. The `--sha` option pins it.
 Existing valid database passwords are preserved. An old placeholder is
 replaced only when PostgreSQL data is absent or the data directory is empty.
 An initialized PostgreSQL data directory without its original credential blocks
@@ -52,10 +53,26 @@ migrating. `rainver update` invokes the bundled verified installer and the
 production start path, including the pre-migration backup. The CLI has no
 deployer socket or product API entry point.
 
+Startup, container lifecycle commands, migrations, offline backups and restores,
+and the deployer's entire update use an exclusive lock on the instance
+directory. A competing operation stops without touching services or the
+database. The lock is released when its owner exits and stays in place when
+restore swaps directories below it. Direct Docker commands do not take this lock.
+An attached `start.sh` releases it after startup, then follows logs from the
+start of the current Compose `up`. Earlier container logs can be read separately
+with Compose `logs`. In an interactive terminal, press `d` or `D` to exit the
+log view and leave the stack running. Ctrl+C still reacquires the lock before
+stopping the stack.
+
 Production compose files reference the images CI publishes to GHCR
 (`ghcr.io/jyc333/rainver-<name>:${RAINVER_IMAGE_TAG:-stable}`; see the
-`publish-images` job in `.github/workflows/ci.yml`). A prod machine pulls; it
-never builds. dev and test still build from the checkout. Dev mounts source
+`publish-images` and `promote-image-channel` jobs in `.github/workflows/ci.yml`).
+CI publishes all commit-tagged images before advancing the channel. It serializes
+publication per service and commit, reuses existing manifests on reruns, and
+builds only when the registry reports the manifest missing. The server's
+channel tag identifies the commit. The host start path pulls all app services at
+that commit and verifies their revisions before migration.
+Prod pulls prebuilt images. Dev and test build from the checkout. Dev mounts source
 and runs watchers; test runs fixed local builds using the server `runtime`
 and frontend Nginx `prod` targets, with no application source mounts. Update
 test explicitly with `./ops/scripts/start.sh --test --build --detach` when no
@@ -63,10 +80,15 @@ work is in flight; runtime data remains under `$RAINVER_ROOT/test`. Its browser
 entrypoint remains port 3100, with `FRONTEND_URL` set to the actual local or
 Tailscale HTTPS URL. Test migrations and official plugin artifacts come from
 the built server image; its build enforces the schema check, as production does.
-The server image
-copies runtime dependencies for each workspace package it loads; its Dockerfile
-imports `@rainver/outbound-guard` during the image build to catch missing
-package-local dependencies before publication. Cropped server, web and sandbox-runner dependency layers copy
+The server image copies runtime dependencies for each workspace package it
+loads. The development and fixed server runtimes install PostgreSQL client 18
+for online backups. During the fixed image build, the `node` runtime user runs
+`pg_dump --version` and imports the compiled official plugins and workspace
+dependencies to verify access and dependency resolution.
+The official plugin build checks the staged runtime ID and version against
+the manifest before it publishes the build index.
+The build keeps the published plugin directory root-owned and readable by that
+user (`0755`). Cropped server, web and sandbox-runner dependency layers copy
 `tools/typescript/prepareIncremental.mjs` before their first library
 build, since workspace-library prebuild hooks resolve it from the repository
 root. Only the server/web layers omit Host wrapper packages, so their workspace
@@ -81,6 +103,8 @@ host-equivalent authority, so its socket is private to that container. It reads
 `.deployer.env` (internal token plus the in-network server URL) and runs with
 `RAINVER_ENV_FILE_READONLY=1`, which makes the shared ops library refuse to write the
 instance `.env` (B43).
+Compose starts the sidecar with the host Docker socket's group ID, detected by
+the shared ops library unless the operator supplies `DOCKER_GID`.
 
 The instance-update product trigger is implemented (see *Instance Update*
 below): the server holds the jobs, the sidecar's pull loop claims and runs them
@@ -175,6 +199,11 @@ rather than a shell command. `recreate` restarts the server, so posting an event
 retries across the gap: a stage that ran is never missing from the job's audit
 because its own control plane was restarting. `migrate` records the dump path and
 `health` its result on the job, so recovery does not depend on reading a log tail.
+Pull resolves the channel to the server image's commit, pulls the three
+immutable image references, and verifies their revision labels. The later
+stages inherit that same image tag through their process environment. The job
+continues to identify the configured channel. The pull loop holds the instance
+lock until the final stage and its report are complete.
 
 An `update` is refused outside production at creation, not queued and failed: dev and
 test build their images from a checkout the sidecar does not mount, and a queued job
@@ -260,6 +289,11 @@ what the instance runs is rewritten by the deployer's next heartbeat rather than
 by the job. It offers no channel switch and no rollback — both are host
 operations (ADR 0020 §3).
 
+The server observation can carry the configured channel separately from the
+running image reference. This makes a stable or edge check comparable to a
+running `sha-<commit>` image. The server ignores previous-channel digests after
+a channel change. For older deployers it falls back to the running image tag.
+
 **Liveness.** The pull loop is supervised rather than fired and forgotten: if it
 ever ends, `deployer.py` exits so the container's restart policy
 (`restart: unless-stopped`) brings both entries back. That policy is the only
@@ -318,6 +352,45 @@ block every later update.
   provider proxy on `127.0.0.1:28421` by default. Operators may override the
   bind addresses and ports through `RAINVER_WEB_*` and `PROVIDER_PROXY_*` in
   the production environment file; widening a bind is an explicit exposure.
+- The frontend container keeps the previous release's hashed `/assets/` files
+  in the disposable `frontend-previous-assets` volume (prod and test Compose).
+  `apps/web/docker/retain-previous-assets.sh` runs from the nginx entrypoint
+  before nginx starts. Under a volume lock, the script reads `order`, removes
+  interrupted staging files, stages the current assets and atomically renames
+  the snapshot into `releases/<version.json id>`. It atomically records the
+  latest three distinct builds, oldest first, then prunes unlisted snapshots.
+  A restart or rollback moves the build to the most recent position.
+  Normally the script selects the newest usable snapshot other than the current
+  build while holding the lock. After releasing it, the script creates the
+  container-local `/run/rainver-web/previous` symlink. A later container cannot
+  rewrite that link, but two subsequent distinct new builds can prune its
+  target. nginx checks the current build first, then the selected snapshot,
+  and returns 404 when neither has the requested hashed file.
+  A missing volume is logged and nginx serves the current image. An unreadable
+  existing `order` produces a warning and stops retention before any snapshot
+  is changed or pruned. Write errors before committing `order` leave the prior
+  recorded snapshots available. Pruning errors after the commit can leave
+  extra files for the next start to remove. On a read-only volume or lock
+  timeout, fallback selection runs without the lock and can race a prune.
+  Retention failures leave the current image available. The volume is
+  disposable and outside backup scope. Its first release has no previous
+  build recorded. Measured in the nginx image on a new, labelled temporary
+  volume that the measuring script creates and removes itself; it refuses any
+  non-empty store and deletes nothing from a volume
+  (`tools/perf-baselines/assetRetention.measure.sh`): a snapshot of the
+  current 289-file, 10.4 MiB `/assets/` copies in 10–20 ms, three snapshots
+  occupy 31.3 MiB, and a start that finds the lock held waits in whole
+  seconds (a 50 ms hold costs about 1 s). Compose replaces the container
+  rather than overlapping starts, so that wait applies only to concurrent
+  starts on one volume. Because the build id is not in any chunk, a release
+  with unchanged web source reuses every hashed name and its snapshot is
+  never needed by an open tab.
+- The frontend nginx gzips static text (JS, CSS, HTML, JSON, the manifest and
+  SVG over 1 KiB) and leaves woff2/PNG as they are. `/api/` and the host
+  WebSocket set `gzip off`, so authenticated responses that reflect request
+  input are never compressed. The image's own `nginx.conf` leaves gzip off;
+  before this, every JS and CSS response, including the service worker's
+  precache, went out uncompressed (`apps/web/nginx.conf`).
 - Nginx accepts any Host name (`server_name _`); `FRONTEND_URL` controls auth
   redirects, not a Host allowlist. Domain deployments therefore enforce the
   public hostname and TLS at their reverse-proxy edge.
@@ -358,6 +431,8 @@ app role. The owner URL and role passwords reach these one-off containers by
 inherited variable name, never on the docker argv. Ordinary start never
 rewrites an activated URL, and an activated server refuses to start as a role
 that has drifted beyond the app target.
+The preliminary update check only reads the migration journal, so it works
+with the activated read-only journal grant.
 
 ## Verification Not Covered By CI
 

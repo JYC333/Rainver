@@ -44,8 +44,7 @@ plugin operations. Gmail is a core Sources module.
    under `core:gmail_digest`.
 2. **One tool, `source.gmail.mail.read`.** Newest inbox messages (no query) or
    a Gmail search (the owner's words plus fixed exclusions of drafts, chats,
-   spam and trash); at most five messages per call, plain text, 32 KiB per
-   message, ten released reads per Run. It is an operation-core query; its
+   spam and trash), with paginated plain-text results. It is an operation-core query; its
    release gate writes the taint, the Agent-read log and an `agent_read` row
    in the owner's Gmail read audit before the result leaves. Its own request
    allowlist admits only `messages.list` and `messages.get format=full`.

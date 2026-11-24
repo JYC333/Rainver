@@ -1,6 +1,6 @@
 import {z} from 'zod';
 import type {PluginOperationManifest} from '@rainver/protocol';
-import {APPLICATION_TRACKS, CONTACT_CHANNELS, CONTACT_DIRECTIONS, CONTACT_LINKS_MAX, CONTACT_RESPONSES, CONTACT_ROLES, DEADLINE_KINDS, DECISION_STATUSES, FUNDING_LINKS_MAX, FUNDING_SUBMISSIONS, LIBRARY_KINDS, MATERIAL_KINDS, MATERIAL_STATUSES, PROGRESS_STATUSES} from './domain.js';
+import {APPLICATION_TRACKS, CONTACT_CHANNELS, CONTACT_DIRECTIONS, CONTACT_LINKS_MAX, CONTACT_RESPONSES, CONTACT_ROLES, DEADLINE_KINDS, DECISION_STATUSES, EXTERNAL_RESULT_STATUSES, FUNDING_LINKS_MAX, FUNDING_SUBMISSIONS, LIBRARY_KINDS, MAIL_FACT_CONFLICTS, MAIL_FACT_OUTCOMES, MATERIAL_KINDS, MATERIAL_STATUSES, PROGRESS_STATUSES} from './domain.js';
 
 /**
  * Application management: the first bundled Project-level operation package
@@ -56,6 +56,7 @@ const ApplicationRow = z.object({
   deadlines: z.number().int(), materials: z.object({done: z.number().int(), total: z.number().int()}).strict(),
   /** A program application's funding records (ids). */
   funding_ids: z.array(z.string()),
+  owned_by_caller: z.boolean().optional(),
   /** A funding record's program applications (ids); empty for funding not tied to one yet. */
   applies_to: z.array(z.string()),
 }).strict();
@@ -79,17 +80,41 @@ const LibraryItemOut = z.object({
   uses: z.array(LibraryUseOut),
 }).strict();
 const FundingLinkInput = z.object({...project, funding_id: id, application_id: id}).strict();
+/**
+ * One application fact from a Gmail message (ADR 0034). The host admits it only from the owner's
+ * application-update automation Run, for a message frozen for that Run, released to it and
+ * received at exactly `received_at`, and for an effect the owner's rule allows.
+ */
+const MailFactEffect = z.discriminatedUnion('kind', [
+  z.object({kind: z.literal('status'), status: z.enum(EXTERNAL_RESULT_STATUSES)}).strict(),
+  z.object({kind: z.literal('submission_received')}).strict(),
+  z.object({kind: z.literal('deadline'), deadline_kind: z.enum(DEADLINE_KINDS), due_on: DaySchema, label: optionalText(200)}).strict(),
+  z.object({kind: z.literal('contact'), direction: z.enum(CONTACT_DIRECTIONS), email: z.string().trim().email().max(320),
+    name: optionalText(200), role: z.enum(CONTACT_ROLES).optional()}).strict(),
+]);
+const MailFactSource = z.object({
+  kind: z.literal('gmail'),
+  message_id: z.string().regex(/^[0-9a-f]{1,64}$/),
+  /** The message's `internal_date` exactly as the automation's read returned it. */
+  received_at: z.string().datetime({offset: true}),
+}).strict();
+const MailFactOut = z.object({
+  id: z.string(), application_id: z.string(), effect: z.string(), outcome: z.enum(MAIL_FACT_OUTCOMES), reason: z.enum(MAIL_FACT_CONFLICTS).nullable(),
+  before: z.string().nullable(), after: z.string().nullable(), deadline_id: z.string().nullable(),
+  source_message_id: z.string(), source_received_at: Stamp, recorded_at: Stamp,
+}).strict();
 const ContactLinks = z.array(id).max(CONTACT_LINKS_MAX);
 
 export const inputs = {
   'application.list': z.object({...project, include_archived: z.boolean().optional(), track: z.enum(APPLICATION_TRACKS).optional()}).strict(),
   'application.get': z.object({...project, application_id: id}).strict(),
+  'application.share': z.object({...project, application_ids: z.array(id).min(1).max(100)}).strict(),
   'application.summary': z.object({...project}).strict(),
   'application.create': z.object({
     ...project, track: z.enum(APPLICATION_TRACKS).default('phd'), institution: text(200), program: text(200), department: optionalText(200), intake: optionalText(100), notes: optionalText(4000),
     source: SourceSchema.nullable().optional(), deadlines: z.array(DeadlineInput).max(20).optional(), create_tasks: z.boolean().optional(), checklist: z.enum(['track_default', 'empty']).default('track_default'),
     /** Funding track only (required there): its own submission or considered automatically with the program application. */
-    submission: z.enum(FUNDING_SUBMISSIONS).optional(),
+    submission: z.enum(FUNDING_SUBMISSIONS).describe('Required for funding: separate application or automatic consideration').optional(),
     /** Funding track only: active program applications of this Project it applies to. */
     applies_to: z.array(id).max(FUNDING_LINKS_MAX).optional(),
   }).strict(),
@@ -102,6 +127,7 @@ export const inputs = {
   'funding.link': FundingLinkInput,
   'funding.unlink': FundingLinkInput,
   'application.update_status': z.object({...project, application_id: id, status: z.enum(PROGRESS_STATUSES), result_note: optionalText(1000)}).strict(),
+  'application.record_submission': z.object({...project, application_id: id, evidence: text(1000)}).strict(),
   'application.propose_status': z.object({...project, application_id: id, status: z.enum(DECISION_STATUSES), result_note: optionalText(1000)}).strict(),
   'deadline.add': z.object({...project, application_id: id, ...DeadlineInput.shape, create_task: z.boolean().optional()}).strict(),
   'deadline.update': z.object({...project, deadline_id: id, kind: z.enum(DEADLINE_KINDS).optional(), label: optionalText(200), due_on: DaySchema.optional()}).strict(),
@@ -134,6 +160,8 @@ export const inputs = {
   'contact.create': z.object({...project, application_ids: ContactLinks.optional(), name: text(200), role: z.enum(CONTACT_ROLES), email: z.string().trim().max(320).email().nullable().optional(), affiliation: optionalText(200), note: optionalText(2000)}).strict(),
   'contact.update': z.object({...project, contact_id: id, application_ids: ContactLinks.optional(), name: text(200).optional(), role: z.enum(CONTACT_ROLES).optional(), email: z.string().trim().max(320).email().nullable().optional(), affiliation: optionalText(200), note: optionalText(2000)}).strict(),
   'contact.log_event': z.object({...project, contact_id: id, occurred_on: DaySchema, channel: z.enum(CONTACT_CHANNELS), direction: z.enum(CONTACT_DIRECTIONS), summary: text(2000), response: z.enum(CONTACT_RESPONSES), next_step: optionalText(500)}).strict(),
+  'mail_fact.apply': z.object({...project, application_id: id, expected_revision: z.number().int().positive(), source: MailFactSource, effect: MailFactEffect}).strict(),
+  'mail_fact.list': z.object({...project, application_id: id.optional(), limit: z.number().int().min(1).max(50).optional()}).strict(),
 } as const;
 export type ApplicationsOperation = keyof typeof inputs;
 
@@ -155,8 +183,10 @@ export const outputs = {
     upcoming: z.array(z.object({application_id: z.string(), track: z.string(), institution: z.string(), program: z.string(), kind: z.string(), label: z.string().nullable(), due_on: Day}).strict()),
   }).strict(),
   'application.create': z.object({application_id: z.string(), revision: z.number().int(), task_ids: z.array(z.string())}).strict(),
+  'application.share': z.object({application_ids: z.array(id)}).strict(),
   'application.update': z.object({application_id: z.string(), revision: z.number().int()}).strict(),
   'application.update_status': z.object({application_id: z.string(), status: z.string(), revision: z.number().int()}).strict(),
+  'application.record_submission': z.object({application_id: z.string(), status: z.string(), revision: z.number().int()}).strict(),
   'application.propose_status': z.object({application_id: z.string(), status: z.string(), revision: z.number().int()}).strict(),
   'funding.link': z.object({funding_id: z.string(), application_id: z.string()}).strict(),
   'funding.unlink': z.object({funding_id: z.string(), application_id: z.string()}).strict(),
@@ -196,17 +226,24 @@ export const outputs = {
   'contact.create': Ref('contact_id'),
   'contact.update': Ref('contact_id'),
   'contact.log_event': Ref('event_id'),
+  /** The application's revision after the call (unchanged unless recorded); `replayed` when this message, effect and application already had an outcome. */
+  // `project_shared`, `institution` and `program` let the host post a recorded fact on an application the Project
+  // reads into the shared conversation the owner enabled the automation from (ADR 0035 §1); nothing else is shared.
+  'mail_fact.apply': MailFactOut.extend({revision: z.number().int(), replayed: z.boolean(), deadline_kind: z.enum(DEADLINE_KINDS).nullable(), project_shared: z.boolean(), institution: z.string(), program: z.string()}).strict(),
+  'mail_fact.list': z.object({items: z.array(MailFactOut.extend({institution: z.string(), program: z.string()}).strict())}).strict(),
 } as const;
 
 export const STATUS_PROPOSAL_TYPE = `plugin.${PLUGIN_ID}.application.decide`;
 type Spec = {title: string; description: string; kind?: 'query'; proposal?: true; data_class?: 'personal'; person_only?: true};
 const specs: Record<ApplicationsOperation, Spec> = {
-  'application.list': {kind: 'query', title: 'List applications', description: 'List your program applications (track phd) and funding records (track funding) in this Project with next deadline, checklist progress and funding links; filter by track'},
+  'application.list': {kind: 'query', title: 'List applications', description: 'List program applications (track phd) and funding records (track funding) visible in this Project with next deadline, checklist progress and funding links; filter by track'},
   'application.get': {kind: 'query', title: 'Read an application', description: 'Read one program application or funding record with its deadlines, material checklist and linked funding or program applications; referenced core objects are resolved for the readers'},
   'application.summary': {kind: 'query', title: 'Summarize applications', description: 'Program application counts by status and checklist completion, funding counts and the next upcoming deadlines'},
-  'application.create': {title: 'Create an application', description: 'Create a program application (institution, program) or a funding record (track funding: funder as institution, name as program, submission separate or automatic, optional program applications it applies to) with deadlines, source and the track checklist; due dates become Project Tasks only when asked per deadline'},
-  'application.update': {title: 'Edit an application', description: 'Edit application or funding facts (and a funding record\'s submission mode) or archive/restore it; requires the current revision'},
+  'application.create': {title: 'Create an application', description: 'Create a program application (institution, program) or a funding record (track funding: funder as institution, name as program, required submission separate or automatic, optional program applications it applies to) with deadlines, source and the track checklist; due dates become Project Tasks only when asked per deadline. When the request identifies a supervisor or other contact for the application, look up and link the matching contact using this application ID.'},
+  'application.share': {person_only: true, title: 'Share existing applications with the Project', description: 'Make the specified applications owned by the caller readable by Project members'},
+  'application.update': {title: 'Edit an application', description: 'Edit application or funding facts (and a funding record\'s submission mode) or archive/restore it; requires the current revision. When the request supplies an identifiable supervisor or contact, maintain that link through the contact tools as part of the same task.'},
   'application.update_status': {title: 'Record application progress', description: 'Record reversible progress or an external result (preparing, interview, offer, rejected, ...)'},
+  'application.record_submission': {title: 'Record a confirmed submission', description: 'Record an application already submitted externally using verified evidence, such as a portal receipt. This does not submit anything'},
   'application.propose_status': {proposal: true, title: 'Propose an application decision', description: 'Propose a consequential status (submitted, accepted, declined, withdrawn); it takes effect only after the person approves it'},
   'funding.link': {title: 'Link funding to an application', description: 'Record that a funding record applies to a program application of this Project; both must be active'},
   'funding.unlink': {title: 'Unlink funding from an application', description: 'Remove a funding link; neither record is changed'},
@@ -220,19 +257,21 @@ const specs: Record<ApplicationsOperation, Spec> = {
   'material.add_source': {title: 'Add a source Note', description: 'Record a Note this material draws on (master CV, experience, supervisor facts), pinned to its current or a given version; adding it again re-pins the version'},
   'material.remove_source': {title: 'Remove a source Note', description: 'Remove a source reference from a material; the Note itself is not changed'},
   'material.mark_reviewed': {person_only: true, title: 'Record a reviewed version', description: 'Record that you reviewed and confirmed a version of the material\'s linked Note; only the person can record it, and earlier reviewed versions are kept'},
-  'material.generate': {person_only: true, title: 'Generate a material draft', description: 'Generate a private draft for this material from its pinned source Note versions and your requirements for this application; you preview it before anything is written'},
-  'material.get_generation': {kind: 'query', person_only: true, title: 'Preview a material draft', description: 'Read a generated draft with the sources it used and the statements to check'},
-  'material.apply_generation': {person_only: true, title: 'Save a material draft to Notes', description: 'Write a previewed draft once as a new version of the material\'s private Note (refused if the Note changed since) or as a new private Note linked to the material'},
+  'material.generate': {title: 'Generate a material draft', description: 'Generate a private draft for this material from its pinned source Note versions and your requirements for this application; preview the draft or save it after checking it'},
+  'material.get_generation': {kind: 'query', title: 'Preview a material draft', description: 'Read a generated draft with the sources it used and the statements to check'},
+  'material.apply_generation': {title: 'Save a material draft to Notes', description: 'Write a previewed draft once as a new version of the material\'s private Note (refused if the Note changed since) or as a new private Note linked to the material'},
   'material.read_note': {kind: 'query', title: 'Read a material Note version', description: 'Read the text of the material\'s linked, reviewed or source Note at its current or a given version, through the Note\'s own access rules'},
-  'library.list': {kind: 'query', title: 'List library materials', description: 'List your reusable material Notes (master CV, experience) with their current version and every material that draws on them, with stale pinned versions'},
+  'library.list': {kind: 'query', title: 'List library materials', description: 'List reusable material Notes visible in this Project with their current version and the materials that use them, including stale pinned versions'},
   'library.add': {title: 'Add a library material', description: 'Register an existing Note you can read (a Note of this Project or a Project-free personal Note) as a reusable material; the Note is not changed'},
   'library.update': {title: 'Edit a library material', description: 'Change a library material\'s kind or label'},
   'library.remove': {title: 'Remove a library material', description: 'Remove a Note from the library; the Note and the materials that pin it are not changed'},
-  'contact.list': {kind: 'query', data_class: 'personal', title: 'List contacts', description: 'List supervisors, referees and other contacts with the applications they are involved in and their latest contact event'},
+  'contact.list': {kind: 'query', data_class: 'personal', title: 'List contacts', description: 'List supervisors, referees and other contacts visible in this Project with their linked applications and latest contact event'},
   'contact.list_events': {kind: 'query', data_class: 'personal', title: 'List contact events', description: 'List the recorded contact history with one contact'},
-  'contact.create': {data_class: 'personal', title: 'Add a contact', description: 'Add a supervisor, referee or other contact, optionally linked to one or more active applications'},
-  'contact.update': {data_class: 'personal', title: 'Edit a contact', description: 'Edit a contact or replace the applications it is linked to'},
-  'contact.log_event': {data_class: 'personal', title: 'Log a contact event', description: 'Record a contact that already happened (nothing is sent) with its response and next step'},
+  'contact.create': {data_class: 'personal', title: 'Add a contact', description: 'Add a supervisor, referee or other contact. First look up contacts and active applications in this Project, reuse a unique matching contact with contact.update, and include application_ids for all clearly identified links. Leave ambiguous matches for the person to resolve.'},
+  'contact.update': {data_class: 'personal', title: 'Edit a contact', description: 'Edit a contact or replace its links. To add a link, first read the existing links and pass their union with the clearly matched application IDs; remove existing links only when requested.'},
+  'contact.log_event': {data_class: 'personal', title: 'Log a contact event', description: 'Record correspondence that already happened with its response and next step. Reuse the matching Project contact, link a clearly identified application if needed, then log the event. Nothing is sent.'},
+  'mail_fact.apply': {title: 'Record an application fact from Gmail', description: 'In the owner\'s automatic application-update Run, record one fact for an application from an authorized Gmail message. Use contact for actual email correspondence, with its direction and the other person\'s address. An institutional result, receipt or deadline requires an incoming message. The server checks the source, card, current revision and prior outcomes.'},
+  'mail_fact.list': {kind: 'query', title: 'List facts recorded from Gmail', description: 'List the facts your automatic Gmail application updates recorded or left for you, newest first, with the application, the value before and after and the Gmail message id'},
 };
 
 const manifest: PluginOperationManifest = {
@@ -252,10 +291,12 @@ const manifest: PluginOperationManifest = {
     {name: 'library'},
     {name: 'deadline', exemption: 'Deadlines are read with their application (application.get / summary)'},
     {name: 'material', exemption: 'Material items are read with their application (application.get); a linked Note version through material.read_note'},
-    // Third-party contact details and communication history: personal (ADR 0030), so an Agent needs a Space owner's consent to read them and cannot write them.
+    // Contact details and history are personal (ADR 0030). Writes return only IDs and use Project write authority.
     {name: 'contact', data_class: 'personal'},
+    // External facts the owner's Gmail application updates recorded (ADR 0034): the owner's own rows, read with mail_fact.list.
+    {name: 'mail_fact'},
   ],
-  migrations: ['0000_application_records', '0001_material_notes', '0002_material_generations', '0003_funding_library_contact_links', '0004_submission_recorded', '0005_narrow_submission_history'],
+  migrations: ['0000_applications_and_mail_facts'],
   core_ports: ['tasks.create', 'references.resolve', 'notes.read', 'notes.draft'],
   proposalTypes: [{id: STATUS_PROPOSAL_TYPE, operation: `plugin.${PLUGIN_ID}.application.propose_status`, payload_schema: inputs['application.propose_status']}],
   web: {entries: [

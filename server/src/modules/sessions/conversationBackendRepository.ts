@@ -1,3 +1,4 @@
+import { conversationConfigOptions } from "./sessionConfig.js";
 import { randomUUID } from "node:crypto";
 import type {
   ConversationBackendBinding,
@@ -86,6 +87,9 @@ export interface ResolvedConversationBackend extends ConversationBackendBinding 
   /** Git snapshot captured with the backend's current execution target. */
   git_snapshot?: RunGitSnapshot | null;
 }
+
+type PinnedBackendWorkspace = Pick<ResolvedConversationBackend,
+  "runtime_profile_id" | "execution_host_id" | "workspace_mode" | "workspace_location_id">;
 
 function effectivePromptCapabilities(profile: BackendRow): RuntimePromptCapabilities | null {
   const hostBound = Boolean(profile.execution_host_id && profile.workspace_mode && profile.runtime_installation);
@@ -200,7 +204,10 @@ export class PgConversationBackendRepository {
     userId: string,
     agentId: string,
     projectId: string | null = null,
+    workspaceScope?: PinnedBackendWorkspace | "room-runtime",
   ): Promise<ConversationBackendOption[]> {
+    const runtimeOnly = workspaceScope === "room-runtime";
+    const pinned = runtimeOnly ? undefined : workspaceScope;
     const profiles = await this.db.query<BackendRow>(
         `SELECT agent.agent_kind,
                 profile.id AS runtime_profile_id, profile.name,
@@ -214,8 +221,8 @@ export class PgConversationBackendRepository {
                 ${providerCredentialEligibilitySql("provider.id", "provider.credential_id", "provider_credential")}
                   AS provider_has_eligible_credential,
                 profile.execution_host_id,
-                profile.workspace_location_id,
-                profile.workspace_mode,
+                workspace.location_id AS workspace_location_id,
+                workspace.mode AS workspace_mode,
                 profile.runtime_installation,
                 host.kind AS host_kind,
                 host.name AS host_name,
@@ -245,8 +252,15 @@ export class PgConversationBackendRepository {
              ON provider_credential.id = provider.credential_id
            LEFT JOIN hosts host
              ON host.id = profile.execution_host_id
+           CROSS JOIN LATERAL (
+             SELECT CASE WHEN $7 THEN NULL
+                         WHEN profile.id = $3 AND profile.execution_host_id = $4
+                       THEN $5::varchar ELSE profile.workspace_location_id END AS location_id,
+                    CASE WHEN profile.id = $3 AND profile.execution_host_id = $4
+                       THEN $6::varchar ELSE profile.workspace_mode END AS mode
+           ) workspace
            LEFT JOIN workspace_locations location
-             ON location.id = profile.workspace_location_id
+             ON location.id = workspace.location_id
             AND location.execution_host_id = profile.execution_host_id
            LEFT JOIN project_folders location_folder
              ON location_folder.id = location.project_folder_id
@@ -258,11 +272,13 @@ export class PgConversationBackendRepository {
                         ELSE false END DESC,
                    profile.is_default DESC,
                    profile.created_at ASC, profile.id ASC`,
-      [spaceId, agentId],
+      [spaceId, agentId, pinned?.runtime_profile_id ?? null, pinned?.execution_host_id ?? null,
+        pinned?.workspace_location_id ?? null, pinned?.workspace_mode ?? null, runtimeOnly],
     );
 
     return profiles.rows.flatMap((profile) => {
-      if (profile.workspace_mode === "location" && (!projectId || profile.location_project_id !== projectId)) return [];
+      const usesProfileLocation = !runtimeOnly && profile.workspace_mode === "location";
+      if (usesProfileLocation && (!projectId || profile.location_project_id !== projectId)) return [];
       const spec = getRuntimeAdapterSpec(profile.runtime_key);
       if (!spec || spec.implementation_status !== "implemented") return [];
       const hostBound = Boolean(
@@ -292,8 +308,6 @@ export class PgConversationBackendRepository {
       const hostOwnerIsMe = hostBound && (
         profile.host_kind === "server" || profile.host_owner_user_id === userId
       );
-      const locationMatchesConversationProject = hostBound && profile.workspace_mode === "location"
-        && profile.location_project_id === projectId;
       const installationAvailable = hostBound
         && hostInstallationIds(profile.host_capabilities_json, profile.runtime_key).includes(
           profile.runtime_installation!,
@@ -306,13 +320,10 @@ export class PgConversationBackendRepository {
       } else if (hostBound && !hostOnline) {
         usable = false;
         reason = "The execution Host is offline.";
-      } else if (hostBound && profile.workspace_mode === "location" && profile.location_status !== "active") {
+      } else if (hostBound && usesProfileLocation && profile.location_status !== "active") {
         usable = false;
         reason = "The bound Workspace Location is unavailable.";
-      } else if (hostBound && profile.workspace_mode === "location" && !locationMatchesConversationProject) {
-        usable = false;
-        reason = "The bound Workspace Location belongs to a different Project.";
-      } else if (hostBound && profile.workspace_mode === "location" && profile.location_execution_ready !== true) {
+      } else if (hostBound && usesProfileLocation && profile.location_execution_ready !== true) {
         usable = false;
         reason = "The bound Workspace Location is not ready.";
       } else if (hostBound && !installationAvailable) {
@@ -328,23 +339,30 @@ export class PgConversationBackendRepository {
         reason,
         host_bound: hostBound,
         host_id: hostBound ? profile.execution_host_id : null,
-        workspace_mode: hostBound ? profile.workspace_mode : null,
+        workspace_mode: hostBound && !runtimeOnly ? profile.workspace_mode : null,
         project_folder_id: hostBound ? profile.location_project_folder_id : null,
         workspace_location_id: hostBound ? profile.workspace_location_id : null,
         host_name: hostBound ? profile.host_name : null,
         host_online: hostBound ? hostOnline : null,
         host_owner_is_me: hostBound ? hostOwnerIsMe : null,
-        git: backendGitSnapshot(profile, hostBound),
+        git: runtimeOnly ? null : backendGitSnapshot(profile, hostBound),
         session_config_options: hostBound && profile.runtime_installation
-          ? hostInstallationOptions(
+          ? conversationConfigOptions(profile.runtime_key, hostInstallationOptions(
               profile.host_capabilities_json,
               profile.runtime_key,
               profile.runtime_installation,
-            ).filter((option) => !(profile.model_provider_id && option.category === "model"))
+            ).filter((option) => !(profile.model_provider_id && option.category === "model")))
           : [],
         prompt_capabilities: effectivePromptCapabilities(profile),
       }];
     });
+  }
+
+  async listOptionsForSession(
+    spaceId: string, userId: string, agentId: string, projectId: string | null, sessionId: string | null,
+  ): Promise<ConversationBackendOption[]> {
+    const pinned = sessionId ? await this.findConversationResolvedBinding(spaceId, sessionId, agentId) : null;
+    return this.listOptions(spaceId, userId, agentId, projectId, pinned ?? undefined);
   }
 
   async resolveBinding(input: {
@@ -398,11 +416,11 @@ export class PgConversationBackendRepository {
       }
       // Explicit CLI/copy changes have been reconciled above. An initialized
       // Conversation never re-resolves mutable profile defaults
-      // or silently switches to a fallback. Runtime dispatch will additionally
-      // replace mutable workspace fields with the pinned Host thread snapshot.
+      // or silently switches to a fallback. Read ACP metadata for its pinned
+      // workspace even when the Profile now defaults to another Project.
       // ACP option metadata is read afresh because the installed Agent may
       // legitimately change its catalog without changing this binding.
-      const option = (await this.listOptions(input.space_id, input.user_id, input.agent_id, projectId))
+      const option = (await this.listOptions(input.space_id, input.user_id, input.agent_id, projectId, existing))
         .find((candidate) => candidate.runtime_profile_id === existing.runtime_profile_id);
       return { ...existing, session_config_options: option?.session_config_options ?? [], prompt_capabilities: option?.prompt_capabilities ?? null };
     }
@@ -541,9 +559,9 @@ export class PgConversationBackendRepository {
               binding.model_provider_id_snapshot AS model_provider_id,
               binding.runtime_config_snapshot_json AS runtime_config_json,
               binding.runtime_policy_snapshot_json AS runtime_policy_json,
-              profile.execution_host_id, profile.workspace_location_id,
-              profile.workspace_mode,
-              profile.runtime_installation
+              thread.execution_host_id, thread.workspace_location_id,
+              thread.workspace_mode,
+              thread.runtime_installation
          FROM session_conversation_backends binding
          JOIN agent_runtime_profiles profile
            ON profile.id = binding.runtime_profile_id
@@ -552,6 +570,10 @@ export class PgConversationBackendRepository {
          JOIN sessions session_row
            ON session_row.id = binding.session_id
           AND session_row.space_id = binding.space_id
+         JOIN conversation_execution_contexts context
+           ON context.space_id = binding.space_id
+          AND context.session_id = binding.session_id
+          AND context.state = 'initialized'
          JOIN host_threads thread
            ON thread.agent_id = binding.agent_id
           -- A Room Conversation uses a conversation-scoped Host thread; a
@@ -568,6 +590,7 @@ export class PgConversationBackendRepository {
                 (thread.container_kind = 'direct'
                   AND thread.container_user_id = session_row.user_id)
                 OR (thread.container_kind = 'conversation'
+                  AND thread.space_id = binding.space_id
                   AND thread.session_id = binding.session_id)
               ))
             OR (session_row.room_id IS NOT NULL
@@ -576,9 +599,11 @@ export class PgConversationBackendRepository {
               AND thread.session_id = binding.session_id)
           )
           AND thread.status IN ('active', 'session_reset')
+          AND thread.delegation_id IS NULL
           AND thread.execution_host_id = profile.execution_host_id
-          AND thread.workspace_mode = profile.workspace_mode
-          AND thread.workspace_location_id IS NOT DISTINCT FROM profile.workspace_location_id
+          AND thread.execution_host_id = context.execution_host_id
+          AND thread.workspace_mode = context.primary_workspace_mode
+          AND thread.workspace_location_id IS NOT DISTINCT FROM context.primary_workspace_location_id
           AND thread.runtime_key = binding.runtime_key_snapshot
           AND thread.runtime_installation = profile.runtime_installation
          JOIN agents agent

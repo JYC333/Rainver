@@ -56,6 +56,8 @@ export async function replayCommits(root:string,repoRoot:string,commits:readonly
 
 /** Whether a resolved worktree tree still carries conflict markers in the stopped commit's conflicted files. */
 export async function hasUnresolvedMarkers(root:string,replayed:string,tree:string,files:readonly string[]):Promise<boolean>{
- if(!files.length)return false;
- return (await runLocationGit(['diff','--check',replayed,tree,'--',...files],root)).code!==0;
+ const result=await runLocationGit(['diff','--check',replayed,tree,'--',...files],root,30_000,{env:{LC_ALL:'C'}});
+ if(result.code===0)return false;
+ if(result.code===2)return /^.+:\d+: leftover conflict marker\r?$/m.test(result.stdout);
+ throw new Error('Could not check workspace changes for conflict markers');
 }

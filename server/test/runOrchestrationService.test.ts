@@ -930,6 +930,15 @@ describe("RunOrchestrationService", () => {
       error_message: "authorization revoked",
     });
 
+    it("closes a previously queued Task preview before preparing or executing it", async () => {
+      const repo = new FakeRepo();
+      repo.run = { ...repo.run!, run_type: "agent", mode: "dry_run", contract_snapshot_json: { source: { kind: "task", id: "task-1" } } };
+      const { launched, execute } = unstartedClaim(repo, () => { throw new Error("Task preview reached claim"); });
+      await expect(execute()).resolves.toMatchObject({ status: "failed", error_code: "task_dry_run_unsupported" });
+      expect(repo.run?.status).toBe("failed");
+      expect(launched).toEqual([]);
+    });
+
     it("ends a still-queued Run the claim's recheck refused, through the same terminal publication", async () => {
       const repo = new FakeRepo();
       const { launched, execute } = unstartedClaim(repo, rejected);

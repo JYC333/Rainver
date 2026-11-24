@@ -308,6 +308,19 @@ describe('records whose branch was removed outside Rainver',()=>{
 });
 
 describe('Active management for Agents and people',()=>{
+ it('reports the sensitive-data blocker for otherwise available workspace completion',async ctx=>{
+  if(!db.available)return ctx.skip();
+  const c=await savedBatch('a'.repeat(40),'b'.repeat(40),{session:CONVERSATION,status:'running'});
+  await db.pool.query(`UPDATE runs SET permission_snapshot_json=$2::jsonb, context_taint_json=$3::jsonb WHERE id=$1`,[
+   c.run.id,JSON.stringify({tool_grants:[{action_id:'workspace.change.complete'}]}),
+   JSON.stringify({schema_version:1,narrowest_visibility:'private',plugin_reads:[{plugin_id:'core:gmail',data_class:'sensitive',owner_user_id:OWNER}]}),
+  ]);
+  const actions=await workspaceActionApplicability(db.pool,c.change,agent(c.run.id));
+  expect(actions).toEqual(expect.arrayContaining(['prepare','publish'].map(action=>
+   expect.objectContaining({action,available:false,blocker:'workspace_sensitive_read_egress'}))));
+  expect(actions.find(action=>action.action==='checkpoint')?.blocker).not.toBe('workspace_sensitive_read_egress');
+ });
+
  it('projects per-action admission in a read-only transaction and execution rechecks changed state',async ctx=>{
   if(!db.available)return ctx.skip();
   const c=await savedBatch('a'.repeat(40),'b'.repeat(40),{session:CONVERSATION,status:'running'});
@@ -591,7 +604,7 @@ describe('Active management for Agents and people',()=>{
 
  it.for(['reclaimed','generation','head','source_null','safety','host','cleanup','landing','job','native_job','reader','child','child_empty_live'] as const)('shares the discard blocker across list/get/execution: %s',async(mode,ctx)=>{
   if(!db.available)return ctx.skip();
-  const source='b'.repeat(40),saved=await savedBatch(source,source),merge=await landedMerge(saved,source,'no_changes');
+  const source='b'.repeat(40),saved=await savedBatch(mode==='landing'?'a'.repeat(40):source,source),merge=await landedMerge(saved,source,'no_changes');
   await db.pool.query(`UPDATE hosts SET capabilities_json=jsonb_set(capabilities_json,'{execution_workspaces,reclaim}','5') WHERE id=$1`,[HOST]);
   let blocker='workspace_discard_dependencies_active';
   if(mode==='reclaimed'){
@@ -660,9 +673,9 @@ describe('Active management for Agents and people',()=>{
   expect((await db.pool.query('SELECT completed_at FROM task_merges WHERE id=$1',[merge])).rows[0]).toEqual(before);
  });
 
- it.for(['no_changes','verifying'] as const)('retains blocked lifecycle ownership for a native %s receipt without a landing',async(status,ctx)=>{
+ it.for(['no_changes','verifying'] as const)('retains blocked lifecycle ownership for a nonempty native %s receipt without a landing',async(status,ctx)=>{
   if(!db.available)return ctx.skip();
-  const saved=await savedBatch('b'.repeat(40),'b'.repeat(40)),merge=await landedMerge(saved,'b'.repeat(40),'no_changes',status);
+  const saved=await savedBatch('a'.repeat(40),'b'.repeat(40)),merge=await landedMerge(saved,'b'.repeat(40),'no_changes',status);
   await db.pool.query('UPDATE task_merges SET merged_commit=NULL,onto_commit=NULL WHERE id=$1',[merge]);
   const {backfillWorkspaceLifecycle,refreshWorkspaceLifecycle}=await import('../src/modules/hosts/workspaceLifecycle.js');
   await backfillWorkspaceLifecycle(db.pool,saved.workspace);
@@ -1179,4 +1192,15 @@ describe('bounded recovery of existing obligations',()=>{
   const other=await conversationRun('running',OTHER_CONVERSATION,MEMBER,MEMBER_HOST,MEMBER_LOCATION);
   await expect(op.execute(db.pool,input,{...agent(other.run.id),on_behalf_of_user_id:MEMBER},Object.freeze({requestId:randomUUID(),idempotencyKey:null}))).rejects.toMatchObject({code:'operation_not_found',httpStatus:404});
  });
+});
+
+
+it('returns actionable quarantine guidance instead of a generic conflict when no failed cleanup exists',async ctx=>{
+ if(!db.available)return ctx.skip();
+ const saved=await savedBatch('a'.repeat(40),'a'.repeat(40));
+ await db.pool.query(`UPDATE execution_workspaces SET cleanup_state='blocked',cleanup_json='{}',inventory_json='{"quarantined_whole":1}' WHERE id=$1`,[saved.workspace]);
+ const call=()=>workspaceRetentionRegistration(definitions).execute(db.pool,{change_set_id:saved.change,action:'retry'},user(),Object.freeze({requestId:randomUUID(),idempotencyKey:null}));
+ await expect(call()).rejects.toMatchObject({details:{code:'workspace_quarantined',recovery_action:'workspace.change.get'}});
+ expect((await row(saved.workspace)).cleanup_json).toEqual({});
+ expect((await db.pool.query("SELECT 1 FROM jobs WHERE job_type='execution_workspace_cleanup' AND payload_json->>'workspace_id'=$1",[saved.workspace])).rowCount).toBe(0);
 });

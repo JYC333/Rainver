@@ -23,7 +23,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-for command_name in curl tar sha256sum install mktemp stat; do
+for command_name in curl tar sha256sum install mktemp stat flock; do
   command -v "$command_name" >/dev/null 2>&1 || die "$command_name is required"
 done
 
@@ -74,6 +74,10 @@ curl -fLsS --retry 3 "$release_url/rainver-prod.tar.gz" -o "$scratch/rainver-pro
 curl -fLsS --retry 3 "$release_url/rainver-prod.tar.gz.sha256" -o "$scratch/rainver-prod.tar.gz.sha256"
 (cd "$scratch" && sha256sum --check --status rainver-prod.tar.gz.sha256) || die "release checksum mismatch"
 
+# Serialize installation and activation for this root.
+exec 9>>"$install_root/.install.lock"
+flock -x 9
+
 release_dir="$install_root/releases/$selected_sha"
 if [[ ! -d "$release_dir" ]]; then
   stage="$(mktemp -d "$install_root/releases/.stage.XXXXXXXX")"
@@ -94,53 +98,51 @@ if [[ -e "$bin_dir/rainver" || -L "$bin_dir/rainver" ]] \
 fi
 
 [[ ! -e "$install_root/current" || -L "$install_root/current" ]] || die "$install_root/current is not a symlink"
-next_link="$install_root/.current.$$"
-ln -s "releases/$selected_sha" "$next_link"
-mv -Tf "$next_link" "$install_root/current"
-next_link=""
-echo "Installed production scripts for $selected_sha at $install_root/current"
+
+# Prepare and start the candidate by its verified path. A failed preflight or
+# startup must leave the installed operator command on its previous bundle.
+source "$release_dir/ops/scripts/lib/local-compose.sh"
+local_compose_init prod
+# A standalone installer can intentionally select a bundle from before the
+# shared helper existed. Lock the same instance directory in that case too.
+if declare -F local_compose_lock_instance >/dev/null; then
+  local_compose_lock_instance "installing the production bundle"
+else
+  exec {operation_fd}<"$data_root/prod"
+  flock --exclusive --nonblock "$operation_fd" || die "another operation is using $data_root/prod"
+  export RAINVER_OPERATION_LOCK_FD="$operation_fd"
+fi
+env_file="$data_root/prod/.env"
+if [[ -e "$env_file" ]]; then
+  image_tag="$(local_compose_env_value RAINVER_IMAGE_TAG || true)"
+  image_tag="${image_tag:-stable}"
+  if [[ "$pin_requested" == 1 && "$image_tag" != "sha-$selected_sha" ]]; then
+    die "the requested --sha needs RAINVER_IMAGE_TAG=sha-$selected_sha in $env_file."
+  fi
+  if [[ "$image_tag" != stable && "$image_tag" != "sha-$selected_sha" ]]; then
+    die "RAINVER_IMAGE_TAG=$image_tag does not match this bundle. Set it to sha-$selected_sha in $env_file, or use stable."
+  fi
+elif [[ "$pin_requested" == 1 ]]; then
+  export RAINVER_INITIAL_IMAGE_TAG="sha-$selected_sha"
+fi
 
 # Keep the command stable while current/ changes atomically between releases.
 # The launcher records non-default roots so later shells manage this instance.
+next_link="$(mktemp "$install_root/.current.XXXXXXXX")"
+ln -sfn "releases/$selected_sha" "$next_link"
 cli_stage="$(mktemp "$bin_dir/.rainver.XXXXXXXX")"
 printf '#!/usr/bin/env bash\n# Rainver production CLI launcher (managed by install-prod.sh).\nexport RAINVER_ROOT=%q\nexport RAINVER_INSTALL_DIR=%q\nexport RAINVER_BIN_DIR=%q\nexec %q "$@"\n' \
   "$data_root" "$install_root" "$bin_dir" "$install_root/current/ops/scripts/rainver" > "$cli_stage"
 chmod 755 "$cli_stage"
+
+RAINVER_IMAGE_TAG="sha-$selected_sha" "$release_dir/ops/scripts/start.sh" --prod --detach
+
 mv -f "$cli_stage" "$bin_dir/rainver"
 cli_stage=""
+mv -Tf "$next_link" "$install_root/current"
+next_link=""
+echo "Installed production scripts for $selected_sha at $install_root/current"
 echo "Installed command: $bin_dir/rainver"
 if [[ ":$PATH:" != *":$bin_dir:"* ]]; then
   echo "Add $bin_dir to PATH to run it as 'rainver' in this shell."
-fi
-
-# A pinned image needs the matching deployment scripts. The stable channel is
-# allowed to move normally; the deployer reports when its surface lags.
-source "$install_root/current/ops/scripts/lib/local-compose.sh"
-local_compose_init prod
-
-env_file="$data_root/prod/.env"
-if [[ ! -e "$env_file" ]]; then
-  if [[ "$pin_requested" == 1 ]]; then
-    RAINVER_INITIAL_IMAGE_TAG="sha-$selected_sha" RAINVER_IMAGE_TAG="sha-$selected_sha" \
-      "$install_root/current/ops/scripts/start.sh" --prod --detach
-  else
-    RAINVER_IMAGE_TAG="sha-$selected_sha" \
-      "$install_root/current/ops/scripts/start.sh" --prod --detach
-  fi
-  exit 0
-fi
-image_tag="$(local_compose_setting_or_default RAINVER_IMAGE_TAG stable)"
-if [[ "$pin_requested" == 1 && "$image_tag" != "sha-$selected_sha" ]]; then
-  die "the requested --sha needs RAINVER_IMAGE_TAG=sha-$selected_sha in $env_file."
-fi
-if [[ "$image_tag" != stable && "$image_tag" != "sha-$selected_sha" ]]; then
-  die "RAINVER_IMAGE_TAG=$image_tag does not match this bundle. Set it to sha-$selected_sha in $env_file, or use stable."
-fi
-
-if [[ "$image_tag" == stable ]]; then
-  # Start this exact verified release, even if the stable tag moves between
-  # bundle download and image pull. The .env stays on stable for later UI updates.
-  RAINVER_IMAGE_TAG="sha-$selected_sha" "$install_root/current/ops/scripts/start.sh" --prod --detach
-else
-  "$install_root/current/ops/scripts/start.sh" --prod --detach
 fi

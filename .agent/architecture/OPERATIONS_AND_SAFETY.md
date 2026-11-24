@@ -85,6 +85,10 @@ read-only-context staging directory or generated vendor context file exists.
 
 **PostgreSQL backup:** `BackupService` uses `pg_dump -Fc --no-owner --no-acl` (custom format) for a consistent snapshot. It fails closed if `BACKUP_DATABASE_URL` is unset or `pg_dump` fails — no partial archive is produced. `db_snapshot_method` in the manifest is `"pg_dump_custom"`. `BACKUP_DATABASE_URL` reaches `pg_dump` only as libpq connection environment variables (host, port, user, password, database and every URI query parameter such as `sslmode`/`sslrootcert`); the command line carries no URL or password, the child receives only `PATH`/`HOME`/locale/`TMPDIR` and libpq `PG*` variables (no provider keys or other server secrets), and a URI parameter libpq does not define (for example node-postgres `ssl=true`) fails the backup instead of being dropped. The dump is restored with `pg_restore`. The live `db/postgres` data directory is **never** copied into an archive — the database is only captured logically.
 
+For file-bearing restores, directory exchange support is probed beside each
+existing target before the database is replaced. The probe leaves live targets
+untouched.
+
 **Manifest version metadata:** every manifest records `backup_format`, `app_version`, `git_commit`, `schema_migration_version`, `schema_migration_checksum`, `postgres_server_version`, and `pg_dump_version` (best-effort, `null` when undeterminable). `ops/scripts/system/restore.sh` reads these during preflight and **fails** on an incompatible `backup_format`, a PostgreSQL major-version mismatch, a `schema_migration_version` this build's `server/migrations/` chain does not contain (the archive came from a newer build), or a `schema_migration_checksum` that differs from this build's copy of that file, unless `--force-incompatible-backup` is supplied — the metadata is never silently ignored. A mismatch can also mean the archive belongs to the prior schema epoch: restoring it would produce a database the migration runner refuses to start against. An archive from an older build within this same epoch is compatible: append-only migrations (`server/migrations/README.md`) let the normal migrate step at the next `start.sh` bring it forward. A prior-epoch archive has no upgrade path; do not bypass preflight with `--force-incompatible-backup` to cross the epoch. Recreate the instance from the new baseline instead.
 
 **Pre-migration backup:** `ops/scripts/db/migrate.sh --mode prod` takes a `pg_dump` custom-format dump to `$RAINVER_ROOT/<mode>/db/dumps/pre-migrate-<ts>-from-<applied version>.dump` before server migrations run whenever the runner's `pending` check reports a pending migration (an unanswered check still dumps, without the version suffix), and aborts if it fails; non-prod opts in via `PRE_MIGRATION_BACKUP=1` / `--pre-migration-backup`.
@@ -143,7 +147,7 @@ curl http://localhost:3000/api/v1/system/commands/<command-id> --cookie 'better-
 
 ## Backup — Offline: ops/scripts/system/backup.sh
 
-Use `ops/scripts/system/backup.sh` when app services are stopped. It produces the same archive format as `BackupService` (PostgreSQL snapshot + file data + `backup_manifest.json`). PostgreSQL must be running.
+Use `ops/scripts/system/backup.sh` when app services are stopped. It produces the same archive format as `BackupService` (PostgreSQL snapshot + file data + `backup_manifest.json`) and starts PostgreSQL if needed. Offline operations check for running, restarting, and paused app containers and hold the instance lock shared by the bundled lifecycle commands.
 
 Sensitive recovery state is separate: `ops/scripts/system/backup-credentials.sh` writes an
 archive containing `secrets/` plus the mode `.env` as `instance.env`, and
@@ -162,20 +166,23 @@ DB-only expert tools live under `ops/scripts/db/` (`dump.sh`, `restore.sh`).
 
 ## Restore
 
-Restore is always **manual and explicit**. There is no automatic restore. One command restores both the database and the file data:
+Restore is always **manual and explicit**. Follow the
+[full-system restore runbook](../../docs/BACKUP_AND_RESTORE.md#restore-full-system-single-command)
+to stop app services, restore the database and file data, then bring the app
+back up for verification.
 
-```bash
-# 1. Stop the app, leaving postgres running
-docker compose -p rainver-dev -f ops/compose/docker-compose.dev.yml stop frontend server deployer
-
-# 2. Ensure PostgreSQL is up
-ops/scripts/start.sh --dev
-
-# 3. Restore database + files from one archive
-ops/scripts/system/restore.sh ~/.rainver-data/dev/backups/auto-<timestamp>.tar.gz --mode dev --force
-```
-
-`ops/scripts/system/restore.sh` runs `pg_restore` against the database and restores the file directories; `--force` overwrites existing file data. The live `db/postgres` directory is never touched. Because the restore uses `--no-owner --no-acl`, it then runs `plugin-reconcile` and, when the [ADR 0031](../decisions/0031-runtime-database-roles.md) runtime roles exist, `runtime-roles-reconcile --if-present` to re-grant them; an activated instance cannot start until that succeeds. With activation, scheduled backups run as the read-only `rainver_backup` role.
+Both restore entry points read the migration chain and verify the
+reconciliation commands inside the selected server image. Production uses one
+verified commit image throughout. They restore with `--no-owner --no-acl`
+into a staging database, reconcile plugin and
+[runtime roles](../decisions/0031-runtime-database-roles.md) there, and verify
+the required application and backup access when role activation is enabled.
+PostgreSQL renames the staged and previous databases in one transaction. The
+previous generation remains available under the reported protection name
+with connections disabled. Full-system restore replaces each prepared file
+directory after the database switch. It prints the protection name and the
+replaced directories if a later file step fails. `--force` overwrites existing
+file data. The PostgreSQL storage directory stays in place.
 
 **After restore, verify before resuming writes:**
 1. `curl -s http://localhost:3000/api/v1/server/health` — expected: `{"status":"ok","service":"server","checks":{"database":"ok"}}`
@@ -251,7 +258,10 @@ Operator restores an archived Folder: `PATCH /projects/{id}/folders/{folderId}` 
   `RAINVER_IMAGE_TAG`, default `stable`); the prod machine pulls and never builds.
   Rolling back is re-running `start.sh --prod` with a `sha-<commit>` tag.
 - Product deployment routes create instance-admin `deployment_jobs`; the deployer's pull loop claims one every thirty seconds and reports each stage. A failed stage ends the job with that stage named and the dump path in its log tail; nothing rolls back automatically. An update is refused when no deployer has reported in three minutes, because a queued one pauses unattended work until the sweep releases it.
-- **An update carries the four images and nothing else.** The compose files, `ops/scripts` and `migrate.sh` come from the host's installed `ops/` tree, and the deployer's own image is never recreated (ADR 0020 §6). A release that changes any of them — or the server↔deployer internal contract — needs a host step: `rainver update` from a standalone installation (or rerun its installer), or `git pull && ops/scripts/start.sh --prod` from a checkout. The instance reports the skew as `deployer_behind` in Instance Settings — a content digest of `deployer/` and `ops/` stamped on every image, so it fires when that surface changed rather than after every update — and the panel names that command; it cannot detect a stale `ops/` on its own, so treat the deployer image and the host's `ops/` tree as moving together.
+- The drain accepts only a present nonnegative integer Run count. Malformed
+  responses count as failed reads. Stage cancellation and timeout signal the
+  process group created for the stage, including when its leader has exited.
+- An instance update advances the server, frontend, and sandbox-runner together at a verified commit. The deployer image and its `ops/` tree are installed together by the host update path. See [Deployment](../modules/deployment.md#instance-update) for the channel resolution, deployer skew and recovery procedure.
 - Migrations are applied before the services are recreated, so a release's schema must stay readable by the build it replaces (B59).
 - The privileged deployer socket is container-private and is not reachable from server or agent runtimes.
 - Deployer `ALLOWED_JOB_TYPES`: `rebuild_rainver`, `restart_rainver`, `health_check`. No arbitrary shell.
@@ -281,7 +291,7 @@ Dogfooding must stop immediately on any of these:
 
 ## Rollback Procedure
 
-1. Stop writes: `docker compose stop frontend server deployer`.
+1. Stop writes: `docker compose stop frontend server deployer sandbox-runner`.
 2. Snapshot current state: `cp -a ~/.rainver-data/dev ~/.rainver-data/dev-pre-rollback-$(date +%Y%m%d-%H%M%S)`.
 3. Identify known-good revision: `git log --oneline -10`.
 4. Revert app: `git checkout <known-good-commit>`.

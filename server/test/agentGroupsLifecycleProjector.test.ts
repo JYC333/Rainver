@@ -153,6 +153,29 @@ class FakeClient {
     if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK" || sql.includes("pg_advisory_xact_lock")) {
       return { rows: [], rowCount: 0 };
     }
+    if (sql.includes("FROM runs WHERE space_id = $1 AND id = $2 FOR NO KEY UPDATE")) {
+      const run = this.state.runs.get(String(params[1]));
+      const rows = run?.space_id === params[0] ? [run as Row] : [];
+      return { rows, rowCount: rows.length };
+    }
+    if (sql.includes("FROM rooms WHERE space_id = $1 AND id = $2 FOR SHARE")
+      || sql.includes("FROM rooms WHERE space_id = $1 AND id = $2 FOR NO KEY UPDATE")
+      || sql.includes("FROM run_events pending")) {
+      return { rows: [], rowCount: 0 };
+    }
+    if (sql.includes("SELECT id FROM runs WHERE space_id=$1 AND id=$2 AND status='queued' FOR UPDATE")) {
+      const run = this.state.runs.get(String(params[1]));
+      const rows = run?.status === "queued" && run.space_id === params[0] ? [{ id: run.id } as Row] : [];
+      return { rows, rowCount: rows.length };
+    }
+    if (sql.includes("UPDATE jobs SET payload_json = payload_json || jsonb_build_object('agent_run_dispatch_superseded'")) {
+      const jobs = (this.state.jobs ?? []).filter((job) => job.space_id === params[0] && job.payload_json.run_id === params[1]);
+      for (const job of jobs) {
+        job.payload_json.agent_run_dispatch_superseded = true;
+        if (job.status === "pending" || job.status === "claimed") job.status = "cancelled";
+      }
+      return { rows: [], rowCount: jobs.length };
+    }
     // The subscription quota gate (`rooms/quotaGate.ts`).
     if (sql.includes("SELECT 1 FROM jobs")) {
       const rows = (this.state.jobs ?? []).filter((job) => job.payload_json.run_id === params[1]);
@@ -994,8 +1017,11 @@ describe("AgentGroupRunLifecycleProjector", () => {
     const resumedRun = state.runs.get("run-manager")!;
     expect(resumedRun.status).toBe("queued");
     expect(resumedRun.prompt).toContain("Continue the paused room agent run");
+    expect(resumedRun.prompt).toContain("delegate any required review or repair");
+    expect(resumedRun.prompt).toContain("when the requested work and verification are complete");
     expect(resumedRun.prompt).toContain("Reviewer test result.");
     expect(resumedRun.prompt).toContain("1 + 1 = 2.");
+    expect(resumedRun.prompt).not.toContain("Additional input from the person while you waited");
 
     const completedManagerRun = {
       ...resumedRun,

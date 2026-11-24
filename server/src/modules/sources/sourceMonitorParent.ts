@@ -36,8 +36,11 @@ export async function lockMonitorCreation(db:Queryable,identity:SpaceUserIdentit
 export async function lockSourceChannelReference(db:Queryable,space:string,channel:string,update=false):Promise<string|null>{
  const parent=(await db.query<{source_connection_id:string}>('SELECT source_connection_id FROM source_channels WHERE id=$1 AND space_id=$2',[channel,space])).rows[0]?.source_connection_id;
  if(!parent)return null;
+ // Parent keys are stable here. A legacy scan holding the child lock still
+ // needs KEY SHARE on the parent for its extraction_jobs foreign key.
+ const parentMode=update?'NO KEY UPDATE':'SHARE';
+ if(!(await db.query(`SELECT id FROM source_connections WHERE id=$1 AND space_id=$2 AND deleted_at IS NULL FOR ${parentMode}`,[parent,space])).rows.length)return null;
  const mode=update?'UPDATE':'SHARE';
- if(!(await db.query(`SELECT id FROM source_connections WHERE id=$1 AND space_id=$2 AND deleted_at IS NULL FOR ${mode}`,[parent,space])).rows.length)return null;
  // Lock only a child still attached to the admitted parent. A concurrent
  // reparent must not cause a late lock of a different Source.
  if(!(await db.query(`SELECT id FROM source_channels WHERE id=$1 AND space_id=$2 AND source_connection_id=$3 FOR ${mode}`,[channel,space,parent])).rows.length)return null;

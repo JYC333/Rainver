@@ -11,6 +11,7 @@ import {
 } from "../jobs/handlerRegistry.js";
 import type { JobHandlerResult } from "../jobs/handlerRegistry.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
+import { currentAgentRunJobSql, RUN_CANCELLATION_RECONCILE_JOB } from "../jobs/agentRunGeneration.js";
 import { finalizeChatTurn } from "./chatTurnFinalizer.js";
 import { hostThreadDispatchInputs } from "../hosts/threadDispatchInputs.js";
 import { protocolRunStatus } from "./orchestrationResults.js";
@@ -42,6 +43,21 @@ export function registerAgentRunHandler(
     handleAgentRun(job, orchestration, materializer, repository, config));
   registry.register("authorization_request_reconcile", async (job) =>
     reconcileAuthorizationRequest(job, orchestration, repository, config));
+  registry.register(RUN_CANCELLATION_RECONCILE_JOB, async job => {
+    const runId = stringValue(job.payload.run_id);
+    if (!runId) throw new Error("Run cancellation reconciliation requires run_id");
+    try {
+      const run = await repository.getRun(job.space_id, runId);
+      if (run?.status !== "cancelling") return {run_id: runId, status: run?.status ?? "unknown"};
+      const request = recordValue(run.error_json);
+      const result = await orchestration.cancelRun({run_id: runId, space_id: job.space_id,
+        requested_by_user_id: stringValue(request.requested_by_user_id), reason: stringValue(request.error_text)});
+      if (result.status !== "cancelling") return result;
+    } catch (error) {
+      throw new JobDeferredError(`Run cancellation reconciliation failed: ${error instanceof Error ? error.message : String(error)}`, 30_000);
+    }
+    throw new JobDeferredError("Waiting for Run cancellation to be confirmed", 30_000);
+  });
 }
 
 async function reconcileAuthorizationRequest(
@@ -103,6 +119,7 @@ async function reconcileAuthorizationRequest(
     });
     const current = updated ?? await runs.getRun(job.space_id, runId);
     if (current?.status === "queued") {
+      if (updated) await queue.supersedeAgentRunJobs(job.space_id, runId);
       await queue.ensureAgentRunJob({
         job_type: "agent_run",
         space_id: job.space_id,
@@ -181,7 +198,7 @@ export async function handleAgentRun(
   // Only a Run not yet admitted waits: a `running` one whose job was
   // reclaimed after a worker died has already taken its turn, and holding it
   // could leave it and the Run it waits for waiting on each other.
-  if (queuedRun?.status === "queued" && await taskRunAhead(getDbPool(config.databaseUrl!), queuedRun)) {
+  if (queuedRun?.status === "queued" && queuedRun.mode !== "dry_run" && await taskRunAhead(getDbPool(config.databaseUrl!), queuedRun)) {
     throw new JobDeferredError(TASK_RUN_AHEAD, 30_000);
   }
   const hostThread = hostThreadDispatchInputs(queuedRun ?? { host_task_thread_id: null, model_override_json: null });
@@ -207,6 +224,7 @@ export async function handleAgentRun(
     if (error instanceof JobDeferredError) throw error;
     if (job.attempts >= job.max_attempts) {
       const current = await repository.getRun(job.space_id, runId);
+      if (current?.status === "waiting_for_review" || current?.status === "waiting_for_dependency") throw error;
       const terminal = current && isTerminalRun(current.status)
         ? current
         : await repository.markRunTerminal({
@@ -222,6 +240,7 @@ export async function handleAgentRun(
             },
             exit_code: 1,
             completed_at: new Date().toISOString(),
+            expected_agent_job_id: job.job_id,
           });
       if (terminal) {
         const finalization = await materializer.finalizeRun(terminal);
@@ -317,6 +336,7 @@ export async function taskRunAhead(db: Queryable, run: RunRecord): Promise<boole
         AND r.id <> $2
         AND r.workspace_location_id = $3
         AND r.run_type = 'agent'
+        AND r.mode <> 'dry_run'
         AND r.required_sandbox_level <> 'read_only'
         AND (
           ${runInProgressSql("r")}
@@ -327,6 +347,7 @@ export async function taskRunAhead(db: Queryable, run: RunRecord): Promise<boole
               SELECT 1 FROM jobs j
                WHERE j.job_type = 'agent_run'
                  AND j.status IN ('pending', 'claimed', 'running')
+                 AND ${currentAgentRunJobSql("j")}
                  AND j.payload_json->>'run_id' = r.id
             )
           )
@@ -348,33 +369,6 @@ export async function taskRunAhead(db: Queryable, run: RunRecord): Promise<boole
   return (result.rowCount ?? result.rows.length) > 0;
 }
 
-export async function enqueueAgentRunJob(
-  config: ServerConfig,
-  input: {
-    run_id: string;
-    space_id: string;
-    user_id: string;
-    agent_id?: string | null;
-    project_folder_id?: string | null;
-    payload?: Record<string, unknown>;
-  },
-): Promise<void> {
-  if (!config.databaseUrl) {
-    throw new Error("enqueueAgentRunJob requires SERVER_DATABASE_URL");
-  }
-  const queue = new PgJobQueueRepository(getDbPool(config.databaseUrl));
-  await queue.enqueue({
-    job_type: "agent_run",
-    space_id: input.space_id,
-    user_id: input.user_id,
-    agent_id: input.agent_id ?? null,
-    project_folder_id: input.project_folder_id ?? null,
-    payload: {
-      run_id: input.run_id,
-      ...(input.payload ?? {}),
-    },
-  });
-}
 
 function stringValue(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;

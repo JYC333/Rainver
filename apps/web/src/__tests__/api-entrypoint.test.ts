@@ -42,7 +42,7 @@ function routeMatches(entry: RuntimeCaching, href: string, method: string): bool
   return Boolean(pattern({
     url,
     request: new Request(url, { method }),
-    sameOrigin: true,
+    sameOrigin: url.origin === origin,
     event: {} as never,
   }))
 }
@@ -88,5 +88,20 @@ describe('web API entrypoint', () => {
     const denylist = workbox.navigateFallbackDenylist ?? []
     expect(denylist.some(pattern => pattern.test('/api/v1/auth/google/callback'))).toBe(true)
     expect(denylist.some(pattern => pattern.test('/rooms/r1'))).toBe(false)
+  })
+
+  it('runtime-caches only same-origin immutable asset paths', async () => {
+    const { workbox } = await devConfig()
+    const assetRoute = workbox.runtimeCaching?.find(route => route.handler === 'CacheFirst')
+    expect(assetRoute).toBeDefined()
+    for (const path of ['/assets/editor-BY_abcDE.js', '/assets/editor-BY_abcDE.css', '/assets/inter-BY_abcDE.woff2']) {
+      expect(routeMatches(assetRoute!, origin + path, 'GET')).toBe(true)
+    }
+    for (const href of [
+      `${origin}/assets/editor.js`, `${origin}/assets/editor-BY_abcDE.js?preview=1`,
+      `${origin}/api/v1/assets/editor-BY_abcDE.js`, 'https://peer.example/assets/editor-BY_abcDE.js',
+    ]) {
+      expect(routeMatches(assetRoute!, href, 'GET')).toBe(false)
+    }
   })
 })

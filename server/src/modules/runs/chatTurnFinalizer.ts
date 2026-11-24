@@ -73,6 +73,7 @@ export async function finalizeChatTurn(
         sender_agent_id: metadata.agent_id,
         run_id: run.id,
         content: roomReviewReply(run),
+        reviewPause: { updatedAt: run.updated_at },
         metadata: {
           ...(run.run_group_id ? { task_group_id: run.run_group_id } : {}),
           status: run.status,
@@ -131,7 +132,7 @@ export async function finalizeChatTurn(
     const reply = outcome.ok && !outcome.awaitingAnswer && outcome.reply.trim() ? outcome.reply : null;
     // The reply belongs to the conversation the digest was set up in: the owner's private one, or a Room or
     // the mainline, where it is the Room's message for its audience (ADR 0033 phase B).
-    const message = await settleGmailDigestRun(getDbPool(config.databaseUrl!), run, reply, (db, content) => isRoomConversationRun(run)
+    const message = await settleGmailDigestRun(getDbPool(config.databaseUrl!), config, run, reply, (db, content) => isRoomConversationRun(run)
       ? new PgSessionRepository(db).addRoomAgentMessageForRun({
         space_id: run.space_id, session_id: metadata.session_id, sender_agent_id: metadata.agent_id, run_id: run.id, content,
         metadata: { ...(run.run_group_id ? { task_group_id: run.run_group_id } : {}), status: run.status },
@@ -357,7 +358,7 @@ export async function recordChatTurnFinalizationFailure(
     return { attempts, completed: false };
   }
   if (digest && config.databaseUrl) {
-    await settleGmailDigestRun(getDbPool(config.databaseUrl), run, null, async () => null);
+    await settleGmailDigestRun(getDbPool(config.databaseUrl), config, run, null, async () => null);
   }
   const resolveActor = deps.resolveAgentActorId
     ?? ((spaceId: string, agentId: string) => resolveAgentActorId(getDbPool(config.databaseUrl!), spaceId, agentId));

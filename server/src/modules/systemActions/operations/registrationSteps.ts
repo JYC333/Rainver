@@ -1,7 +1,7 @@
 import type {OperationActor, PolicyCheckRequest} from '@rainver/protocol';
 import type {Queryable} from '../../routeUtils/common.js';
 import {runOperationWork} from '../../../db/operationTransaction.js';
-import {sensitiveTaintEgressContext} from '../../plugins/egress.js';
+import {canWriteGmailDerivedProjectContent,sensitiveTaintEgressContext} from '../../plugins/egress.js';
 import {OperationError} from './errors.js';
 import type {OperationInvocation, OperationRegistration, ResolvedOperation} from './types.js';
 
@@ -25,6 +25,22 @@ export async function resolveRegisteredInput(item: OperationRegistration, db: Qu
 /** The registration's policy request for its own action, scope and context, including the sensitive-read egress facts for an Agent. */
 export async function registeredPolicyRequest(db: Queryable, item: OperationRegistration, input: unknown, actor: OperationActor, scope: ResolvedOperation, extra: {space: string; context?: Record<string, unknown>; metadata: Record<string, unknown>}): Promise<PolicyCheckRequest> {
   const d = item.definition;
+  const egress = actor.principal.kind === 'agent'
+    ? await sensitiveTaintEgressContext(db, actor.space_id, actor.run_id, d) : undefined;
+  if (egress?.sensitive_plugin_read_taint && egress.outward_action) {
+    const projectId = scope.policyFacts?.gmail_write_project_id;
+    const cancellationProject = scope.policyFacts?.unstarted_task_cancellation_project_id;
+    if (await canWriteGmailDerivedProjectContent(db, actor, d.id, projectId ? {project_id: projectId} : scope.targets,
+      input, typeof cancellationProject === 'string' ? cancellationProject : undefined)) {
+      egress.outward_action = false;
+    }
+  }
+  if (egress && (
+    d.id === 'workspace.change.complete' && scope.policyFacts?.private_workspace_checkpoint === true ||
+    d.id === 'conversation.session_config.save' && scope.policyFacts?.validated_current_conversation_config === true
+  )) {
+    egress.outward_action = false;
+  }
   return {
     action: d.policy_action,
     force_record: true,
@@ -37,7 +53,7 @@ export async function registeredPolicyRequest(db: Queryable, item: OperationRegi
     run_id: actor.run_id,
     context: {
       ...item.policyContext?.(input, actor, scope),
-      ...(actor.principal.kind === 'agent' ? await sensitiveTaintEgressContext(db, actor.space_id, actor.run_id, d) : {}),
+      ...egress,
       action_id: d.id,
       trigger_origin: actor.effective_origin,
       instructed_by_user_id: actor.on_behalf_of_user_id,

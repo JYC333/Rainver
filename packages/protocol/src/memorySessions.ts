@@ -126,7 +126,7 @@ const CommonMessageMetadata = {
 /** A person speaking, or an Agent replying. The default. */
 export const ConversationMessageMetadataSchema = z.object({
   gmail_result: z.literal(true).optional(),
-  gmail_digest: z.object({ digest_id: IdSchema, delivery_id: IdSchema, kind: z.enum(["daily", "rule"]) }).strict().optional(),
+  gmail_digest: z.object({ digest_id: IdSchema, delivery_id: IdSchema, kind: z.enum(["daily", "rule", "application"]) }).strict().optional(),
   shared_from: z.literal("private_gmail_summary").optional(),
   /** Shared Gmail text: the source Project and the source Run's sensitive reads, which this conversation's later Runs inherit. */
   source_project_id: IdSchema.optional(),

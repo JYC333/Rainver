@@ -14,6 +14,7 @@ const configFields = {
 export const PROJECT_FOLDER_SCHEMAS = {
   'project.folder.draft.upsert': {input:z.object({...target,workspace_location_id:id.nullable().default(null),expected_version:z.number().int().positive().nullable().default(null),target_kind:z.enum(['existing','new']),relative_path:relativePath,base_exists:z.boolean(),base_sha256:hash.nullable(),content:z.string(),content_sha256:hash,byte_size:z.number().int().min(0).max(1048576),source_encoding:z.enum(['utf8','utf16le','utf16be']),preserve_bom:z.boolean(),line_ending_mode:z.enum(['lf','crlf','mixed','none'])}).strict().refine(input=>(input.base_exists?input.base_sha256!==null:input.base_sha256===null)&&(input.target_kind!=='new'||!input.base_exists),'The draft baseline must match its target'),output:draftReceipt},
   'project.folder.draft.discard': {input:z.object({...target,draft_id:id,draft_version:z.number().int().positive()}).strict(),output:receipt},
+  'project.folder.draft.close_save': {input:z.object({...target,intent_id:id}).strict(),output:receipt},
   'project.folder.unregister': {input:z.object({...target,confirm:z.boolean().default(false)}).strict(),output:receipt},
   'project.folder.update': { input: z.object({ ...target,
     name: z.string().min(1).max(256).optional(), description: z.string().nullable().optional(),
@@ -40,6 +41,7 @@ export const PROJECT_FOLDER_SCHEMAS = {
 export const PROJECT_FOLDER_TITLES: Record<keyof typeof PROJECT_FOLDER_SCHEMAS, string> = {
   'project.folder.draft.upsert':'Save a private Project Folder recovery draft',
   'project.folder.draft.discard':'Discard an exact private Project Folder draft version',
+  'project.folder.draft.close_save':'Close a failed Project Folder save request',
   'project.folder.unregister':'Unregister a Project Folder without touching its files',
   'project.folder.update': 'Update Project Folder metadata',
   'project.folder.archive': 'Archive a Project Folder',

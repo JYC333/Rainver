@@ -178,6 +178,7 @@ export const workspaceUiZhCN = {
     "reclaim_now": "立即回收",
     "hold": "再保留 7 天",
     "release_hold": "取消保留",
+    quarantine_attention: '旧工作区目录已被保护保留。依赖残留会自动核查，其他内容需检查后才能移除。',
     "retry": "重试清理",
     "acknowledge_missing": "关闭缺失记录",
     "acknowledge_missing_description": "把这个已删除分支的未完成记录关闭为“保留但不合入”。不会标记为已合入，审计历史会保留。",

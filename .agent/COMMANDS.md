@@ -12,6 +12,7 @@ pnpm install --frozen-lockfile
 # The start script applies the committed migration chain before the app services
 # start; it never generates a migration (that is a developer step, below).
 ./ops/scripts/start.sh
+# In the interactive log view, press d to detach or Ctrl+C to stop the stack.
 
 # Other profiles (from a checkout)
 ./ops/scripts/start.sh --test
@@ -44,12 +45,14 @@ rainver version
 
 # Production images: CI (.github/workflows/ci.yml, publish-images job) builds
 # server, frontend, sandbox-runner, and deployer after the verify job passes
-# and pushes them to ghcr.io/jyc333/rainver-<name>. dev pushes tag `edge`,
-# master pushes `stable`, every push also tags `sha-<commit>`. The prod
-# compose file pulls `${RAINVER_IMAGE_TAG:-stable}`; set RAINVER_IMAGE_TAG in
+# and pushes all four by `sha-<commit>` to ghcr.io/jyc333/rainver-<name>.
+# Promotion then advances `edge` for dev or `stable` for master. The
+# production start path resolves the channel from the server and pulls the
+# complete release by SHA. CI reuses already-published commit images on reruns.
+# Set RAINVER_IMAGE_TAG in
 # $RAINVER_ROOT/prod/.env to follow edge or pin/roll back to a sha tag. The
 # checkout is optional on a prod machine; the standalone bundle carries the
-# scripts, compose files, and restore migration metadata.
+# scripts, compose files, and migration files for host-side inspection.
 # Update a running prod instance (pull images, migrate with pg_dump, recreate):
 # Checkout deployment: update ops and recreate the stack.
 git pull && ./ops/scripts/start.sh --prod --detach
@@ -57,6 +60,7 @@ git pull && ./ops/scripts/start.sh --prod --detach
 # For a pinned bundle: rainver update --sha <40-character commit SHA>
 # An existing prod .env must set RAINVER_IMAGE_TAG=sha-<same commit>.
 # Rolling back across a database migration also requires a compatible dump restore.
+# Use the same selected SHA for restore and the subsequent startup.
 # The GHCR packages are linked to this repository by the workflow push and
 # inherit its public visibility; a prod machine pulls without logging in.
 ```
@@ -83,6 +87,7 @@ for warning and cancellation limitations.
 
 ```bash
 # Focused budget semantics regression checks, from repository root.
+# Loads the real package configs; build protocol first (pnpm --filter @rainver/protocol build).
 node --test tools/vitest/budgetReporter.test.mjs tools/typescript/prepareIncremental.test.mjs
 ```
 
@@ -96,12 +101,16 @@ cd server
 pnpm run verify
 
 # Independent entry points still prepare workspace dependencies correctly.
-# Warm preparation checks content with tsc incrementality and emits no unchanged
+# Warm preparation removes stale compiler output pairs and emits no unchanged
 # outputs; missing JS/declarations or a changed lock discard compiler metadata.
 # Build/typecheck/test
 pnpm run build
 pnpm run typecheck
 pnpm test
+
+# Integration setup checks official plugin source, protocol build inputs, and
+# packaged files by content. A warm matching package is reused. Linux builders
+# serialize with flock and stage compilation before publishing cached files.
 
 # Local iteration: run only the files for the module you touched. The full
 # server suite is ~1:40 (web ~40s); one file is 5–20s. Real-Postgres files
@@ -209,7 +218,8 @@ In dev Docker Compose, server hot reload is enabled: the service
 uses the Dockerfile `dev-runtime` target, bind-mounts `server/src` and
 `packages/protocol/src`, uses `server/scripts/watch-typescript.mjs` to poll
 those bind mounts plus official plugin packages, compile protocol, server, and
-official plugins in order, and restart with `node --watch dist/index.js`. This
+official plugins in order, and restart the server after the complete build
+succeeds. This
 avoids native watcher failures on Docker bind mounts. Test and prod run compiled
 JS only. Test builds the same server `runtime` and frontend Nginx `prod` targets
 locally, without mounting application source or watching for changes. Update it
@@ -645,9 +655,11 @@ not an application fallback or manual per-request backfill.
 
 ## Product acceptance
 
-Run the deterministic product gate from the repository root:
+Run the deterministic product gate from the repository root. It requires an
+available Docker runtime, PostgreSQL fixtures, and Playwright Chromium.
 
 ```bash
+pnpm --filter @rainver/web exec playwright-core install chromium
 ./ops/scripts/product-acceptance-gate.sh
 ```
 
@@ -723,6 +735,32 @@ Screenshots default to `/tmp/rainver-reading-stage-three`; set
 `READING_SCREENSHOT_DIR` to another temporary artifact directory if needed.
 This explicit browser config does not run in the canonical server suite or
 change its thresholds. It never connects to a running product database.
+
+### PWA lifecycle browser checks
+
+From `apps/web` with Node 24, after a production build into `dist` and a second
+build of a different checkout into another directory:
+
+```bash
+PWA_PREVIOUS_BUILD_DIR=/tmp/<previous-build> node --test src/__tests__/pwa-lifecycle.browser.mjs
+```
+
+Without `PWA_PREVIOUS_BUILD_DIR` only the clean-install case runs. The two
+builds must differ in their `ProjectFilesPage` and `CodeMirrorEditor` chunks.
+`PWA_ENGINES` (default `chromium,webkit`) selects the engines for the cases
+where the person stays at, then leaves, the unsaved-input prompt from Settings
+and from the failed-feature panel. The update
+cases cover waiting activation, Settings reload and a tab left on the previous
+build lazy-loading its editor through the retained assets
+(`docker/retain-previous-assets.sh`, run against a temporary store; the nginx
+fallback order is mirrored by the fixture, not run through nginx). The script's
+locking, rollback, pruning and failure handling are covered by
+`cd server && pnpm exec vitest run test/frontendAssetRetention.test.ts`.
+
+Mobile PWA measurements and release-switch cases across three builds use
+`tools/perf-baselines/pwa-mobile.mjs`. Run them as bounded per-engine,
+per-case processes (`CASES`, `SAMPLES=0`; see that directory's README, ⑤ PWA)
+instead of one full matrix; each process ends with a terminal state line.
 
 ## Sources execution foundation verification
 

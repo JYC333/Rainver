@@ -1,4 +1,5 @@
 import type { ServerConfig } from "../../config.js";
+import { proposalChosenOnCard } from "./cardChoice.js";
 import { getDbPool } from "../../db/pool.js";
 import { assertProjectInSpace } from "../projects/access.js";
 import {CodePatchDecisionReceiptSchema, type ProposalOut, type ProposalPage } from "@rainver/protocol";
@@ -47,6 +48,7 @@ export interface ProposalRow {
 export interface ProposalListFilters {
   status: string | null;
   proposalType?: string | null;
+  proposalTypes?: string[];
   urgency?: string | null;
   expired?: boolean | null;
   projectId?: string | null;
@@ -206,6 +208,7 @@ function buildVisibleWhere(
   }
   if (filters.status) clauses.push(`p.status = ${addParam(filters.status)}`);
   if (filters.proposalType) clauses.push(`p.proposal_type = ${addParam(filters.proposalType)}`);
+  if (filters.proposalTypes) clauses.push(`p.proposal_type = ANY(${addParam(filters.proposalTypes)}::text[])`);
   if (filters.urgency) clauses.push(`p.urgency = ${addParam(filters.urgency)}`);
   if (filters.expired !== null && filters.expired !== undefined) {
     const nowParam = addParam((filters.now ?? new Date()).toISOString());
@@ -328,7 +331,9 @@ export function proposalToOut(row: ProposalRow, now: Date): ProposalOut {
     created_at: dateValue(row.created_at) ?? new Date(0).toISOString(),
     decided_at: dateValue(row.reviewed_at),
     resulting_memory_id: stringValue(payload.resulting_memory_id),
-    owner_user_id: stringValue(payload.owner_user_id),
+    // The row's owner is canonical (the private card's owner, which Gmail cards and every access check use); a payload
+    // field is only the fallback older proposals carried, and strict payloads (Gmail) have none.
+    owner_user_id: row.owner_user_id ?? stringValue(payload.owner_user_id),
     subject_user_id: stringValue(payload.subject_user_id),
     sensitivity_level: stringValue(payload.sensitivity_level),
     access_level: typeof payload.access_level === "string"
@@ -347,6 +352,7 @@ export function proposalToOut(row: ProposalRow, now: Date): ProposalOut {
     project_id: row.project_id,
     target_memory_id: stringValue(payload.target_memory_id),
     ...operatorRevision(row.proposal_type, payload),
+    ...(proposalChosenOnCard(row.proposal_type, payload) ? { chosen_on_card: true } : {}),
     ...codePatchFields,
   };
 }

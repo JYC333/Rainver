@@ -43,7 +43,9 @@ Human reasons are typed `awaiting_answer`, `authorization`, `run_decision`,
 `proposal`, `task` or `task_merge`, with their exact source and responsible actor.
 Questions remain open until accepted human input on the visible Session branch
 reaches that Agent; merely viewing, a failed send, or another recipient/branch
-does not answer. Authorization and supervisor decisions use their owning paths.
+does not answer. The snapshot searches for an accepted reply only when the
+visible message explicitly awaits an answer and the Run has no delegation.
+Authorization and supervisor decisions use their owning paths.
 Structured `resource` codes come from Run/Host/Turn readers: workspace,
 predecessor/dependency, quota and other resource waits are not approvals and carry
 no human responsibility. Task merge reasons use the owning blocked-outcome schema
@@ -455,7 +457,8 @@ sends `attention.invalidation`; only a changed personal display window (items or
 cursor, excluding as_of/count churn) carries a replacement page. Snapshot/resync
 always include it; unchanged data sends `attention.heartbeat` without a page. More than 100 new notices produces a silent `attention.resync`.
 Revoked sources disappear on replacement; denied account identity closes with
-`attention.denied`. Only response close/destroyed ends a healthy connection.
+`attention.denied`. Server shutdown stops polling and lets an already-started
+snapshot finish before ending the stream.
 A false `write` result is backpressure: the writer awaits drain before another
 read/write, keeping at most one pending frame. Abort cancels drain/timer waits.
 Post-hijack read/write failures are logged and end the response without escaping

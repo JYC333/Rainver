@@ -8,12 +8,14 @@ import {sessionActor} from '../../src/modules/systemActions/operations/actor.js'
 import {projectFolderIoRegistrations,PROJECT_FOLDER_IO_JOB} from '../../src/modules/projectFolders/ioOperations.js';
 import {registerProjectFolderIoHandler} from '../../src/modules/projectFolders/ioWorker.js';
 import {loadFolderIoIntent} from '../../src/modules/projectFolders/ioIntentRepository.js';
+import {projectFolderRegistrations} from '../../src/modules/projectFolders/operations.js';
 import {JobHandlerRegistry} from '../../src/modules/jobs/handlerRegistry.js';
 import {PgJobQueueRepository} from '../../src/modules/jobs/repository.js';
 import {JobWorker} from '../../src/modules/jobs/worker.js';
 /** Real core + domain worker around the file-system boundary; no fake database. */
 export async function folderIoHarness(pool:Pool,config:ServerConfig,identity:SpaceUserIdentity){
-  const executor=new OperationExecutor(pool,config,projectFolderIoRegistrations(await loadSystemActionRegistry(config),config));
+  const definitions=await loadSystemActionRegistry(config);
+  const executor=new OperationExecutor(pool,config,[...projectFolderIoRegistrations(definitions,config),...projectFolderRegistrations(definitions,config)]);
   const registry=new JobHandlerRegistry();registerProjectFolderIoHandler(registry,config);
   const queue=new PgJobQueueRepository(pool),worker=new JobWorker(queue,registry,`folder-io-${randomUUID()}`,[PROJECT_FOLDER_IO_JOB]);
   const submit=(operation:string,input:object,key=randomUUID())=>executor.execute(operation,input,sessionActor(identity),randomUUID(),key);

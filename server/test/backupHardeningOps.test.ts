@@ -246,7 +246,7 @@ describe("backup credential separation", () => {
       const { result, root, modeRoot } = refusedRestore(validMembers(), dockerOutput);
       try {
         expect(result.status).not.toBe(0);
-        expect(result.stderr).toContain("app service 'server' is running");
+        expect(result.stderr).toContain("app service 'server' is active");
         expectNothingRestored(modeRoot);
       } finally {
         rmSync(root, { recursive: true, force: true });

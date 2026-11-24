@@ -1,13 +1,16 @@
 import type { ClipboardEvent, DragEvent, ReactNode } from 'react'
 import { Loader2, Send } from 'lucide-react'
+import { ConversationDraftEditor, isLongPaste, withPastedText } from './ConversationDraftEditor'
 import { Button } from '../../components/ui/button'
 import { useAppTranslation } from '../../i18n'
 import type { ConversationInputPart, RuntimePromptCapabilities } from '@rainver/protocol'
 import { ConversationInputSendGuardContext, useConversationInputDraft, type ConversationInputFileSource } from './ConversationInputComposer'
 
 /** One composer frame for direct chat, Rooms, and the Project sidecar. */
-export function ConversationComposer({ editor, controls, note, sending, inputDisabled = sending, sendDisabled, onSend, attachments, renderInputReferences = true, inputAttachmentsEnabled = true, inputParts, onInputPartsChange, projectId, projectFolderId, fileSources, sessionId, inputResetToken, inputCapabilities, inputCapabilityMessage, onPaste, onDragOver, onDrop }: {
+export function ConversationComposer({ editor, pastedText, onPastedTextChange, controls, note, sending, inputDisabled = sending, sendDisabled, onSend, attachments, renderInputReferences = true, inputAttachmentsEnabled = true, inputParts, onInputPartsChange, projectId, projectFolderId, fileSources, sessionId, inputResetToken, inputCapabilities, inputCapabilityMessage, onPaste, onDragOver, onDrop }: {
   editor: ReactNode
+  pastedText?: string
+  onPastedTextChange?: (value: string) => void
   controls?: ReactNode
   note?: ReactNode
   sending: boolean
@@ -33,6 +36,7 @@ export function ConversationComposer({ editor, controls, note, sending, inputDis
   const { t } = useAppTranslation()
   const inputDraft = useConversationInputDraft({
     parts: inputParts,
+    extraAttachment: pastedText && onPastedTextChange ? <ConversationDraftEditor text={pastedText} onChange={onPastedTextChange} disabled={inputDisabled} /> : null,
     onPartsChange: onInputPartsChange,
     projectId,
     projectFolderId,
@@ -47,6 +51,15 @@ export function ConversationComposer({ editor, controls, note, sending, inputDis
     <ConversationInputSendGuardContext.Provider value={() => canSend}>
       <div data-conversation-input
         className="rounded-lg border border-border bg-background focus-within:ring-1 focus-within:ring-ring"
+        onPasteCapture={event => {
+          if (!onPastedTextChange || inputDisabled || event.currentTarget !== event.target && !event.currentTarget.contains(event.target as Node)
+            || event.clipboardData.files?.length) return
+          const text = event.clipboardData.getData?.('text/plain') ?? ''
+          if (!text.trim() || !isLongPaste(text)) return
+          event.preventDefault()
+          event.stopPropagation()
+          onPastedTextChange(withPastedText(pastedText ?? '', text))
+        }}
         onPaste={event => { if(inputAttachmentsEnabled)inputDraft.onPaste(event); onPaste?.(event) }}
         onDragOver={event => { if(inputAttachmentsEnabled)inputDraft.onDragOver(event); onDragOver?.(event) }}
         onDrop={event => { if(inputAttachmentsEnabled)inputDraft.onDrop(event); onDrop?.(event) }}

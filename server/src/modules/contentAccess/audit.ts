@@ -42,6 +42,27 @@ export function contentResourceTypeForRetrievalObject(
 export class ContentAccessAuditService {
   constructor(private readonly db: Queryable) {}
 
+  /** Called by the host after it locks and confirms plugin-owned rows and their audience. */
+  async recordApplicationReads(input: {
+    spaceId: string;
+    rows: readonly { id: string; user_id: string }[];
+    readers: readonly string[];
+    agentId: string | null;
+    runId: string | null;
+  }): Promise<void> {
+    if (!input.rows.length) return;
+    await this.db.query(
+      `INSERT INTO content_access_logs (id,space_id,resource_type,resource_id,owner_user_id,
+        viewer_user_id,agent_id,run_id,access_type,accessed_at)
+       SELECT gen_random_uuid()::text,$1,'plugin_applications', application.id, application.owner,
+        reader,$5,$6,'plugin_query',now()
+       FROM unnest($2::varchar[],$3::varchar[]) AS application(id,owner)
+       CROSS JOIN unnest($4::varchar[]) AS viewers(reader)
+       WHERE application.owner<>reader`,
+      [input.spaceId, input.rows.map(row => row.id), input.rows.map(row => row.user_id), input.readers, input.agentId, input.runId],
+    );
+  }
+
   async recordReads(input: {
     spaceId: string;
     resourceType: string;

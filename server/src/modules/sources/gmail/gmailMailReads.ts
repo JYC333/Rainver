@@ -55,10 +55,11 @@ type Truncation = GmailThreadReadOutput["truncation"][number];
 /** What a reader other than the owner's thread page changes in the transport (the Agent read, ADR 0032). */
 export interface GmailTransportOptions {
   scopeId?: string;
+  upstreamCooldownOnly?: boolean;
   policy?: typeof gmailSourceRequestPolicy;
   budget?: GmailSendBudget;
   /** A further check before every physical send, after the authority recheck; its refusal is kept as the failure. */
-  authorizeSend?: (signal: AbortSignal) => Promise<void>;
+  authorizeSend?: (db: Queryable) => Promise<void>;
 }
 
 /** The page's broker, budget and byte accounting; every failure is mapped to a fixed code. */
@@ -79,14 +80,15 @@ export function pageTransport(config: ServerConfig, scope: GmailPageScope, snaps
   const broker: SourceRequestBroker = createSourceRequestBroker(run, {
     scopeId: options.scopeId ?? `gmail-read:${snapshot.connectionId}`,
     quotaGroup: keys.account,
+    upstreamCooldownOnly: options.upstreamCooldownOnly,
     quota: GMAIL_ACCOUNT_QUOTA,
     endpointQuotas: [{ key: keys.owner, windows: GMAIL_OWNER_QUOTA }],
     authorize: async (sendSignal) => {
       try {
         await authorizeGmailSend(scope, snapshot, sendSignal ?? signal);
-        await options.authorizeSend?.(sendSignal ?? signal);
+        if (options.authorizeSend) await withGmailReadTransaction(scope, options.authorizeSend, sendSignal ?? signal);
       } catch (error) {
-        refusal = error instanceof GmailReadError ? error : new GmailReadError(503, "gmail_upstream_error");
+        refusal = error instanceof GmailReadError ? error : new GmailReadError(503, "gmail_upstream_error", undefined, { cause: "authority_check_failed" });
         throw error;
       }
     },
@@ -114,11 +116,16 @@ export function pageTransport(config: ServerConfig, scope: GmailPageScope, snaps
       return new GmailReadError(503, "gmail_refresh_unavailable");
     }
     if (error instanceof SourceRequestError) {
+      if (error.code === "source_upstream_cooldown") return new GmailReadError(429, "gmail_rate_limited", error.retryAt);
       if (error.code === "source_quota_exhausted") return new GmailReadError(429, "gmail_quota_exhausted", error.retryAt);
       if (error.code === "source_timeout") return new GmailReadError(504, "gmail_upstream_timeout");
       if (error.code === "source_cancelled") return new GmailReadError(499, "gmail_cancelled");
+      if (error.code === "source_network_failed") return new GmailReadError(502, "gmail_upstream_error", undefined, { cause: "network_failed" });
+      if (error.code === "source_network_refused" || error.code === "source_scope_refused") {
+        return new GmailReadError(502, "gmail_upstream_error", undefined, { cause: "request_refused" });
+      }
     }
-    return new GmailReadError(502, "gmail_upstream_error");
+    return new GmailReadError(502, "gmail_upstream_error", undefined, { cause: "broker_failed" });
   };
   return {
     /** Bytes still allowed before the next send could pass the page's raw ceiling. */
@@ -139,14 +146,32 @@ export function pageTransport(config: ServerConfig, scope: GmailPageScope, snaps
       const body = Buffer.from(response.body_base64, "base64");
       rawBytes += body.length;
       if (response.status === 404) return { kind: "not_found" };
-      if (response.status === 429 || response.status === 503) throw new GmailReadError(429, "gmail_rate_limited", response.retry_at);
-      if (response.status !== 200) throw new GmailReadError(502, "gmail_upstream_error");
-      try { return { kind: "ok", json: JSON.parse(body.toString("utf8")) }; } catch { throw new GmailReadError(502, "gmail_upstream_error"); }
+      if (response.status !== 200) {
+        const reason = googleErrorReason(body);
+        const diagnostic = { cause: "upstream_http" as const, upstream_status: response.status, ...(reason ? { upstream_reason: reason } : {}) };
+        if (response.status === 429 || response.status === 503) throw new GmailReadError(429, "gmail_rate_limited", response.retry_at, diagnostic);
+        throw new GmailReadError(502, "gmail_upstream_error", undefined, diagnostic);
+      }
+      try { return { kind: "ok", json: JSON.parse(body.toString("utf8")) }; }
+      catch { throw new GmailReadError(502, "gmail_upstream_error", undefined, { cause: "invalid_json", upstream_status: 200 }); }
     },
   };
 }
 
 export const record = (value: unknown): Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
+
+const GOOGLE_READ_ERROR_REASONS = new Set([
+  "authError", "backendError", "dailyLimitExceeded", "forbidden", "insufficientPermissions",
+  "invalidArgument", "invalidParameter", "rateLimitExceeded", "userRateLimitExceeded",
+]);
+
+function googleErrorReason(body: Buffer): string | undefined {
+  try {
+    const errors = record(record(JSON.parse(body.toString("utf8"))).error).errors;
+    const reason = Array.isArray(errors) ? record(errors[0]).reason : undefined;
+    if (typeof reason === "string" && GOOGLE_READ_ERROR_REASONS.has(reason)) return reason;
+  } catch { /* An HTTP error may have no JSON body. */ }
+}
 const messagesOf = (thread: unknown): GmailApiMessage[] => Array.isArray(record(thread).messages) ? (record(thread).messages as unknown[]).map(record) as GmailApiMessage[] : [];
 const isDraft = (message: GmailApiMessage) => Array.isArray(message.labelIds) && message.labelIds.includes("DRAFT");
 

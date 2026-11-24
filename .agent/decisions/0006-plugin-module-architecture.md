@@ -69,9 +69,10 @@ A product-level control plane is added **above** (not replacing) the
   state at startup was rejected because it puts a DB dependency into the
   gateway layer and makes the module graph hard to reason about.
 - **Frontend pages are contributed through an app-owned adapter.**
-  `MODULE_REGISTRY` entries with `source: 'official_plugin'` lazy-import
-  `apps/web/src/plugins/<plugin_id>/`, which injects host APIs into the plugin's
-  own `web/src/` pages; plugin pages never import `apps/web/src` directly.
+  The original per-plugin adapter was replaced by the bundled operation manifest
+  catalog and shared `PluginSlot`. Each official package declares frontend
+  placements and exports its views. `PluginSlot` supplies host APIs and plugin
+  pages never import `apps/web/src` directly.
   `useEffectivePlugins` overlays runtime `enabled`/`visible` state onto the
   static registry, and `/plugins` is the management page.
 

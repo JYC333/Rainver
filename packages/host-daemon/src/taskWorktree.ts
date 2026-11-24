@@ -1509,6 +1509,25 @@ async function sweepLocationRoot(
   return recorded;
 }
 
+/** A failed removal may leave only disposable dependency directories and empty
+ * ancestors. Never descend into dependencies or classify a file/symlink outside
+ * them as rebuildable; unknown, unreadable and oversized trees remain whole. */
+async function dependencyRemnantsOnly(path:string):Promise<boolean>{
+ const pending=[path];let visited=0,dependencies=false;
+ while(pending.length){
+  const dir=pending.pop()!;
+  if(++visited>4096||relative(path,dir).split(sep).length>64||!await isRealDirectory(dir)||(await realpath(dir))!==dir)return false;
+  const entries=await readdir(dir,{withFileTypes:true});
+  if(entries.length+pending.length>4096)return false;
+  for(const entry of entries){
+   if(!entry.isDirectory()||entry.name==='.git')return false;
+   if(entry.name==='node_modules')dependencies=true;
+   else pending.push(join(dir,entry.name));
+  }
+ }
+ return dependencies;
+}
+
 /**
  * `-retired` quarantine targets past `RETIRED_QUARANTINE_RETENTION_MS`, by the
  * time in their name (a moved directory keeps its own mtime). Only real
@@ -1526,7 +1545,19 @@ async function pruneRetiredQuarantine(now: number, log: (line: string) => void):
     ()=>sweepRetiredIgnored(root!,locationId,now,log).catch(error=>log(String(error))),
     ()=>sweepWorkspaceFilePage(dir,'retired-'+locationId,async name=>{
       const match = RETIRED_TARGET.exec(name);
-      if (!match) return;
+      if (!match) {
+        const whole=/^(.+)-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[0-9a-f]{8})$/.exec(name);
+        if(!whole||!validTaskWorktreeIds(locationId,whole[1]!))return;
+        // Same lease as launch, cleanup and inventory. Rename only: the existing
+        // retired-quarantine retention still owns disposal, never unknown work.
+        await withTaskHeld(taskLeaseKey(locationId,whole[1]!),async()=>{
+          const path=join(dir,name),retired=path+'-retired';
+          if(await lstat(retired).catch(()=>null)||!await dependencyRemnantsOnly(path).catch(()=>false))return;
+          await rename(path,retired);
+          log(`workspace quarantine ${locationId}/${name}: dependency-only remnants retained as rebuildable cache`);
+        });
+        return;
+      }
       const madeAt = Date.parse(`${match[1]}T${match[2]}:${match[3]}:${match[4]}.${match[5]}Z`);
       if (!Number.isFinite(madeAt) || now - madeAt < RETIRED_QUARANTINE_RETENTION_MS) return;
       const path = join(dir, name);

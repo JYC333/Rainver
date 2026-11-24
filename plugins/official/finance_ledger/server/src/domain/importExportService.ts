@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Queryable } from "@rainver/protocol";
+import { FINANCE_IMPORT_HISTORY_PAGE_SIZE } from "../../../operationManifest.js";
 import type {
   DatedEntry,
   LedgerEntry,
@@ -13,7 +14,7 @@ import { parseBeancountText } from "../beancount/importer.js";
 import { sortEntries } from "../beancount/sort.js";
 import { interpolateEntries, transformEntries, validateEntries } from "../beancount/validation.js";
 import type { FinanceAccountRow, FinanceCommodityRow } from "./directives.js";
-import { financeDirectiveRepository, type FinanceExportRow, type FinanceImportSourceRow } from "./directiveRepository.js";
+import { financeDirectiveRepository, type FinanceExportRow, type FinanceImportSourceRow, type FinanceImportSourceSummary } from "./directiveRepository.js";
 import { FinanceRuleError } from "./errors.js";
 import {
   emptyStatusCounts,
@@ -48,7 +49,7 @@ export interface ImportBatchResult {
 }
 
 export interface ImportSourceSummary {
-  importSource: FinanceImportSourceRow;
+  importSource: FinanceImportSourceSummary;
   summary: Record<ImportEntryStatus, number>;
 }
 
@@ -230,13 +231,19 @@ export async function listImportBatches(
   spaceId: string,
   bookId: string,
   userId: string,
-): Promise<ImportSourceSummary[]> {
-  const sources = await financeDirectiveRepository.listImportSourcesForUser(db, spaceId, bookId, userId);
-  const result: ImportSourceSummary[] = [];
-  for (const importSource of sources) {
-    result.push({ importSource, summary: await financeImportEntryRepository.countByStatus(db, spaceId, importSource.id) });
-  }
-  return result;
+  offset: number,
+): Promise<{ items: ImportSourceSummary[]; nextOffset?: number }> {
+  const size = FINANCE_IMPORT_HISTORY_PAGE_SIZE;
+  const sources = await financeDirectiveRepository.listImportSourcesForUser(
+    db, spaceId, bookId, userId, size + 1, offset,
+  );
+  return {
+    items: sources.slice(0, size).map(({ counts, ...importSource }) => ({
+      importSource,
+      summary: { ...emptyStatusCounts(), ...counts },
+    })),
+    ...(sources.length > size ? { nextOffset: offset + size } : {}),
+  };
 }
 
 export async function exportBeancountFromDb(
@@ -368,9 +375,10 @@ async function settleEntry(
     };
   }
   if (!RETRIED_STATUSES.has(row.status)) return null;
-  if (row.status_reason === "not_attempted") {
+  const firstAttempt = row.status_reason === "not_attempted";
+  if (firstAttempt || row.identity_kind === "external_id") {
     const review = await reviewAgainstOtherBatches(tx, spaceId, bookId, importSourceId, row);
-    if (review) return review;
+    if (review && (firstAttempt || review.status === "duplicate")) return review;
   }
   const persisted = await persister.persistEntry(item, row.account_mapping_json);
   switch (persisted.kind) {

@@ -215,8 +215,10 @@ async function settleTasksForRunIn(
     `WITH linked AS (
        SELECT DISTINCT tr.task_id
          FROM task_runs tr
+         JOIN runs r ON r.id = tr.run_id AND r.space_id = tr.space_id
         WHERE tr.space_id = $1 AND tr.run_id = $2
           AND tr.role <> ALL ($4::text[])
+          AND r.mode <> 'dry_run'
      ), settleable AS (
        -- Every execution Run of the Task has stopped advancing. A Run still
        -- queued, running, or recovering from a crash means the Task is not
@@ -229,6 +231,7 @@ async function settleTasksForRunIn(
             JOIN runs r ON r.id = tr.run_id AND r.space_id = tr.space_id
            WHERE tr.task_id = l.task_id AND tr.space_id = $1
              AND tr.role <> ALL ($4::text[])
+             AND r.mode <> 'dry_run'
              AND r.status <> ALL ($3::text[])
         )
      ), latest AS (
@@ -237,7 +240,7 @@ async function settleTasksForRunIn(
          FROM settleable s
          JOIN task_runs tr ON tr.task_id = s.task_id AND tr.space_id = $1
          JOIN runs r ON r.id = tr.run_id AND r.space_id = tr.space_id
-        WHERE tr.role <> ALL ($4::text[])
+        WHERE tr.role <> ALL ($4::text[]) AND r.mode <> 'dry_run'
         ORDER BY tr.task_id, r.created_at DESC, r.id DESC
      ), decided AS (
        -- The latest Run has been finalized: its evaluation exists and the

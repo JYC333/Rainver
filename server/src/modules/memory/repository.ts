@@ -18,6 +18,7 @@ import { resolveOversightLevel } from "../access/oversightResolver.js";
 import { memoryAgentScopeReadSql, memorySensitivityReadSql } from "./memorySensitivitySql.js";
 import { ContentAccessAuditService } from "../contentAccess/audit.js";
 import { escapeLikePattern } from "../routeUtils/common.js";
+import { runBodyReadableSql } from "../runs/runBodyReadSql.js";
 
 export interface QueryResult<Row> {
   rows: Row[];
@@ -277,7 +278,6 @@ export class PgMemoryReadRepository {
       `space_id = $1`,
       `status = 'active'`,
       `deleted_at IS NULL`,
-      `(title ILIKE $2 ESCAPE '\\' OR content ILIKE $2 ESCAPE '\\')`,
     ];
     const params: unknown[] = [spaceId, `%${escapeLikePattern(filters.query)}%`];
     if (filters.scope) {
@@ -294,12 +294,14 @@ export class PgMemoryReadRepository {
     }
     params.push(userId);
     const userExpr = `$${params.length}`;
+    const accessLevel = contentAccessLevelSql({ definition: MEMORY_DEFINITION, alias: "me", userExpr });
+    where.push(`(title ILIKE $2 ESCAPE '\\' OR (${accessLevel} = 'full' AND content ILIKE $2 ESCAPE '\\'))`);
     where.push(contentReadSql("memory", "me", userExpr));
     where.push(memorySensitivityReadSql("me", userExpr));
     where.push(memoryAgentScopeReadSql("me", userExpr));
     const result = await this.db.query<WithAccessLevel<MemoryRow>>(
       `SELECT ${MEMORY_COLUMNS},
-              ${contentAccessLevelSql({ definition: MEMORY_DEFINITION, alias: "me", userExpr })} AS effective_access_level
+              ${accessLevel} AS effective_access_level
          FROM memory_entries me
         WHERE ${where.join(" AND ")}
         ORDER BY importance DESC, confidence DESC`,
@@ -422,12 +424,19 @@ export class PgMemoryReadRepository {
    * as the list — a version the caller cannot read is not in the answer.
    */
   async versions(spaceId: string, userId: string, memoryId: string): Promise<MemoryVersionsResponse> {
-    const anchor = await this.db.query<{ root_memory_id: string | null; id: string }>(
-      `SELECT id, root_memory_id FROM memory_entries WHERE id = $1 AND space_id = $2 AND deleted_at IS NULL`,
-      [memoryId, spaceId],
+    const anchor = await this.db.query<WithAccessLevel<MemoryRow>>(
+      `SELECT ${memoryColumnsWithAccess("$3")} FROM memory_entries me
+        WHERE me.id = $1 AND me.space_id = $2 AND me.deleted_at IS NULL
+          AND ${contentReadSql("memory", "me", "$3")}
+          AND ${memorySensitivityReadSql("me", "$3")}
+          AND ${memoryAgentScopeReadSql("me", "$3")}`,
+      [memoryId, spaceId, userId],
     );
     const found = anchor.rows[0];
     if (!found) return { items: [] };
+    const oversightLevel = await resolveOversightLevel(this.db, spaceId, userId);
+    if (!canReadMemory(found, { userId, spaceId, oversightLevel })) return { items: [] };
+    if (found.project_id && !await canAccessProject(this.db, spaceId, found.project_id, userId)) return { items: [] };
     const rootId = found.root_memory_id ?? found.id;
     const rows = await this.db.query<WithAccessLevel<MemoryRow> & {
       run_id: string | null; session_id: string | null; rationale: string | null; agent_id: string | null;
@@ -440,10 +449,13 @@ export class PgMemoryReadRepository {
          LEFT JOIN LATERAL (
            -- Aliased because the memory column list selects an unqualified
            -- source_id, which an unaliased one here makes ambiguous.
-           SELECT source_id AS prov_run_id, evidence_json FROM provenance_links
-            WHERE space_id = me.space_id AND target_type = 'memory' AND target_id = me.id
-              AND source_type = 'run' AND evidence_json->>'rationale' IS NOT NULL
-            ORDER BY created_at DESC LIMIT 1
+           SELECT link.source_id AS prov_run_id, link.evidence_json
+             FROM provenance_links link
+             JOIN runs provenance_run ON provenance_run.id = link.source_id AND provenance_run.space_id = link.space_id
+            WHERE link.space_id = me.space_id AND link.target_type = 'memory' AND link.target_id = me.id
+              AND link.source_type = 'run' AND link.evidence_json->>'rationale' IS NOT NULL
+              AND ${runBodyReadableSql("provenance_run", "$3")}
+            ORDER BY link.created_at DESC LIMIT 1
          ) prov ON true
         WHERE me.space_id = $1 AND me.deleted_at IS NULL
           AND (me.id = $2 OR me.root_memory_id = $2)
@@ -453,26 +465,27 @@ export class PgMemoryReadRepository {
         ORDER BY me.created_at ASC`,
       [spaceId, rootId, userId],
     );
-    const oversightLevel = await resolveOversightLevel(this.db, spaceId, userId);
     const readable = rows.rows.filter((row) => canReadMemory(row, { userId, spaceId, oversightLevel }));
     // The access filters carry MemoryRow through, so the provenance columns
     // are looked back up by id rather than cast onto the narrowed rows.
     const provenance = new Map(rows.rows.map((row) => [row.id, row]));
     const visible = await this.filterByProjectAccess(readable, spaceId, userId);
-    return {
-      items: visible.map((row) => {
-        const prov = provenance.get(row.id);
-        return {
-          memory: this.serialize(row, userId),
-          written_by_agent_id: row.created_by?.startsWith("agent:")
-            ? row.created_by.slice("agent:".length)
-            : null,
-          run_id: prov?.run_id ?? null,
-          session_id: prov?.session_id ?? null,
-          rationale: prov?.rationale ?? null,
-        };
-      }),
-    };
+    const items = visible.map((row) => {
+      const prov = shouldRedactMemoryContent(row, userId) ? undefined : provenance.get(row.id);
+      return {
+        memory: this.serialize(row, userId),
+        written_by_agent_id: row.created_by?.startsWith("agent:") ? row.created_by.slice("agent:".length) : null,
+        run_id: prov?.run_id ?? null,
+        session_id: prov?.session_id ?? null,
+        rationale: prov?.rationale ?? null,
+      };
+    });
+    await this.recordReads(visible.map((row) => row.id), spaceId, userId, "explicit_read", "memory version history");
+    await new ContentAccessAuditService(this.db).recordReads({
+      spaceId, viewerUserId: userId, resourceType: "run", resourceIds: items.flatMap((item) => item.run_id ? [item.run_id] : []),
+      accessType: "explicit_read", reason: "memory version provenance",
+    });
+    return { items };
   }
 
   private serialize(row: WithAccessLevel<MemoryRow>, viewerUserId: string): MemoryOut {

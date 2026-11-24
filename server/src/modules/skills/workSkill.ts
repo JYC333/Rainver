@@ -282,6 +282,16 @@ available (or an unknown basis if capture failed). A read-only parent can only
 delegate \`"read"\`. Read-only execution requires the server Host or a personal
 Linux Host reporting verified read-only support; unsupported Hosts refuse it.
 Never silently retry as writable or move files.
+For code review in an isolated Git Location-backed Room, set \`review\` to \`{}\`
+for an independent review, including a second opinion. Use
+\`review.previous_run_id\` for the same reviewer's follow-up after a fix. Include
+the prior findings, changed files, checks already run and any relevant document
+sections. The server decides whether the previous reviewer session can be reused.
+To continue the same implementation in an isolated Git Location-backed Room,
+delegate \`"write"\` to the same Agent with \`continuation.previous_run_id\` set to
+its last completed write Run under this coordinator Run. Give the remaining
+findings, changed files and checks to rerun. Use an ordinary delegation for
+independent work. The server checks session and workspace continuity.
 Delegate all independent readers before calling \`agent.wait_for_results\` to
 yield: children start after the parent yields or finishes, not while it keeps
 working. FIFO, same-Agent sessions and Host capacity still apply; later readers
@@ -303,7 +313,12 @@ held Task, lost authority, three children in a row without a result, spend and
 subscription gates, depth one and per-turn fan-out still stop or bound it. Stop
 when the task needs the person or the server refuses more work. Keep the
 ordinary five-object write ceiling separate from this task's repeated
-implementation/review handoffs.
+implementation/review handoffs. Verify the saved version before dispatching
+independent reviews. On completion, use the results to continue any required
+repair and re-review without another user message. Diagnose placement or
+checkpoint failures before retrying; use a supported recovery if available.
+Give the final report once the requested verification and reviews are complete
+or a concrete blocker prevents further authorized work.
 `;
 }
 

@@ -1,6 +1,6 @@
 import {useRef,useState} from 'react'
 import type {WorkspaceChangeView} from '@rainver/protocol'
-import {callOperation} from '../../api/client'
+import {ApiRequestError,callOperation} from '../../api/client'
 import {Button} from '../../components/ui/button'
 import {useConversationScope} from '../conversation/ConversationScope'
 import {useAppTranslation} from '../../i18n'
@@ -25,7 +25,7 @@ export function WorkspaceRetentionStatus({change,onChanged,showRefCounts=true}:{
   ...(['grace','held','reclaimable'].includes(r.state)?['reclaim_now' as const]:[]),
   ...(['grace','reclaimable','active'].includes(r.state)?['hold' as const]:[]),
   ...(r.state==='held'?['release_hold' as const]:[]),
-  ...(blocked?['retry' as const]:[]),
+  ...(blocked&&(change.cleanup_retryable??true)?['retry' as const]:[]),
   ...(r.state==='missing'&&r.reason==='branch_missing'?['acknowledge_missing' as const]:[]),
  ]:[]
  async function run(action:Action){
@@ -37,7 +37,12 @@ export function WorkspaceRetentionStatus({change,onChanged,showRefCounts=true}:{
    if(scope.signal?.aborted)return
    if('error' in outcome)throw new Error(outcome.error.message)
    command.current=null;setConfirming(false);onChanged()
-  }catch(e){if(!scope.signal?.aborted)setError(errMsg(e))}
+  }catch(e){if(!scope.signal?.aborted){
+   setError(errMsg(e))
+   // A definite refusal is a completed command, not a lost reply. Read fresh
+   // applicability and use a new key for a later explicit attempt.
+   if(e instanceof ApiRequestError&&e.status===409&&e.code==='operation_conflict'&&(e.payload?.error as {retryable?:boolean}|undefined)?.retryable!==true){command.current=null;onChanged()}
+  }}
   finally{if(!scope.signal?.aborted)setBusy(false)}
  }
  return <div className="min-w-0 space-y-1" data-testid={`workspace-retention-${change.workspace_id}`}>
@@ -45,9 +50,10 @@ export function WorkspaceRetentionStatus({change,onChanged,showRefCounts=true}:{
    {t(r.state==='reclaimed'&&r.reason==='discarded'?'workspace_ui.execution.retention.state.discarded':r.state==='missing'&&r.reason==='missing_acknowledged'?'workspace_ui.execution.missing_closed':`workspace_ui.execution.retention.state.${r.state}`,{time})}
    {!['reclaimed','reclaiming'].includes(r.state)&&<> · {t('workspace_ui.execution.retention.because',{reason})}</>}
   </p>
-  {NO_EXPIRY.has(r.state)&&<p className="text-xs text-muted-foreground">{t('workspace_ui.execution.retention.no_expiry')}</p>}
+  {NO_EXPIRY.has(r.state)&&r.reason!=='primary_conversation'&&<p className="text-xs text-muted-foreground">{t('workspace_ui.execution.retention.no_expiry')}</p>}
   {showRefCounts&&r.retained_refs>0&&<p className="text-xs text-muted-foreground">{t('workspace_ui.execution.retention.refs',{count:r.retained_refs})}</p>}
   {showRefCounts&&r.unclaimed_refs>0&&<p className="text-xs text-muted-foreground">{t('workspace_ui.execution.retention.unclaimed',{count:r.unclaimed_refs})}</p>}
+  {blocked&&change.cleanup_retryable===false&&Number(change.inventory?.quarantined_whole)>0&&<p className="text-xs text-muted-foreground">{t('workspace_ui.execution.retention.quarantine_attention')}</p>}
   {error&&<p role="alert" className="break-words text-xs text-destructive">{error}</p>}
   {confirming&&<p role="status" className="break-words text-xs text-muted-foreground">{t('workspace_ui.execution.retention.acknowledge_missing_description')}</p>}
   {actions.length>0&&<div className="flex flex-wrap gap-2">{confirming

@@ -11,7 +11,7 @@ import {
 import { toast } from 'sonner'
 import { projectsApi } from '../../api/client'
 import { useSpace } from '../../contexts/SpaceContext'
-import { errMsg, isNotFoundError } from '../../lib/utils'
+import { errMsg } from '../../lib/utils'
 import type { Project, ProjectOverview } from '../../types/api'
 import { Card } from '../../components/ui/card'
 import { Button } from '../../components/ui/button'
@@ -39,6 +39,10 @@ import ProjectPublicSummaryCard from './ProjectPublicSummaryCard'
 import { FocusAreaField } from '../focusAreas/FocusAreaField'
 import { formatDateTime } from '../../i18n/format'
 import { useAppTranslation } from '../../i18n'
+
+function isProjectAccessError(error: unknown) {
+  return error instanceof Error && 'status' in error && [401, 403, 404].includes(Number(error.status))
+}
 
 function fmt(dt: string | null | undefined) {
   return formatDateTime(dt)
@@ -129,7 +133,6 @@ function EditProjectDialog({ project, overview, open, onOpenChange, onSaved }: E
         </DialogHeader>
         <div className="space-y-4 py-2">
           <Button variant="outline" asChild><Link to={sourcesPath} onClick={openSources} aria-disabled={saving || undefined} className="aria-disabled:opacity-40">{t('reading.monitoringSettings')}</Link></Button>
-          <ProjectConversationBackendCard projectId={project.id} />
           <ProjectPluginBindingsCard projectId={project.id} />
           <div className="space-y-1.5">
             <Label>Name <span className="text-destructive">*</span></Label>
@@ -194,7 +197,7 @@ export default function ProjectDetailPage({ onAccessChanged }: { onAccessChanged
   const [project, setProject] = useState<Project | null>(null)
   const [kernelOverview, setKernelOverview] = useState<ProjectOverview | null>(null)
   const [loading, setLoading] = useState(true)
-  const [notFound, setNotFound] = useState(false)
+  const [loadFailed, setLoadFailed] = useState(false)
   const [accessLimited, setAccessLimited] = useState(false)
   const [membersOpen, setMembersOpen] = useState(false)
   const [editOpen, setEditOpen] = useState(false)
@@ -202,11 +205,13 @@ export default function ProjectDetailPage({ onAccessChanged }: { onAccessChanged
   const [instructionOpen, setInstructionOpen] = useState(false)
   const [archiveConfirmOpen, setArchiveConfirmOpen] = useState(false)
   const [archiving, setArchiving] = useState(false)
-  const runtimeSettingsRequested = ['runtime', 'project'].includes(searchParams.get('settings') ?? '')
+  const settingsRequest = searchParams.get('settings')
+  const [runtimeSettingsOpen, setRuntimeSettingsOpen] = useState(false)
 
   useEffect(() => {
-    if (runtimeSettingsRequested) setEditOpen(true)
-  }, [runtimeSettingsRequested])
+    if (settingsRequest === 'runtime') setRuntimeSettingsOpen(true)
+    if (settingsRequest === 'project') setEditOpen(true)
+  }, [settingsRequest])
 
   // React StrictMode (dev only) intentionally double-invokes the mount effect,
   // which has no cleanup to cancel the first call — collapse a second call for
@@ -226,7 +231,7 @@ export default function ProjectDetailPage({ onAccessChanged }: { onAccessChanged
     }
     const requestedScope = `${activeSpaceId}:${userId}:${projectId}`
     if (!quiet) setLoading(true)
-    setNotFound(false)
+    setLoadFailed(false)
     try {
       const proj = await projectsApi.get(projectId)
       if (currentScope.current !== requestedScope) return
@@ -241,15 +246,21 @@ export default function ProjectDetailPage({ onAccessChanged }: { onAccessChanged
           setKernelOverview(overview)
         } catch (error) {
           if (currentScope.current !== requestedScope) return
-          if (isNotFoundError(error) || (error instanceof Error && 'status' in error && [401, 403].includes(Number(error.status)))) { setKernelOverview(null); setAccessLimited(true) } else throw error
+          if (isProjectAccessError(error)) {
+            setKernelOverview(null)
+            setAccessLimited(true)
+          } else {
+            toast.error(errMsg(error))
+          }
         }
       }
       setLoading(false)
     } catch (e) {
       if (currentScope.current !== requestedScope) return
       setLoadedScope(requestedScope)
-      if (isNotFoundError(e) || (e instanceof Error && 'status' in e && [401, 403].includes(Number(e.status)))) { setNotFound(true); setProject(null); setKernelOverview(null) }
-      else toast.error(errMsg(e))
+      setProject(null)
+      setKernelOverview(null)
+      setLoadFailed(!isProjectAccessError(e))
       setLoading(false)
     }
   }, [projectId, activeSpaceId, userId])
@@ -299,7 +310,19 @@ export default function ProjectDetailPage({ onAccessChanged }: { onAccessChanged
     )
   }
 
-  if (notFound || !project) {
+  if (loadFailed) {
+    return (
+      <div className="p-6">
+        <EmptyState
+          title={t('management_ui.project_load.error_title')}
+          description={t('management_ui.project_load.error_help')}
+          action={<Button variant="outline" onClick={() => void load()}>{t('management_ui.project_load.retry')}</Button>}
+        />
+      </div>
+    )
+  }
+
+  if (!project) {
     return (
       <div className="p-6">
         <EmptyState
@@ -353,6 +376,9 @@ export default function ProjectDetailPage({ onAccessChanged }: { onAccessChanged
         </div>
         <div className="flex flex-wrap gap-2">
           {project.current_user_grantable_member_role && <Button variant="outline" size="sm" onClick={() => setMembersOpen(true)}>{t('management_ui.project_members.title')}</Button>}
+          {!accessLimited && <Button variant="outline" size="sm" onClick={() => setRuntimeSettingsOpen(true)}>
+            {t('conversation_ui.preflight.runtime_settings')}
+          </Button>}
           {!accessLimited && canEdit && <>
           <Button variant="outline" size="sm" className="gap-1.5" onClick={() => setEditOpen(true)}>
             <SettingsIcon className="size-3.5" />
@@ -432,6 +458,16 @@ export default function ProjectDetailPage({ onAccessChanged }: { onAccessChanged
           onDefineGoal={canEdit ? () => setBriefGoalOpen(true) : undefined}
         />
       )}
+
+      <Dialog open={runtimeSettingsOpen} onOpenChange={setRuntimeSettingsOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t('conversation_ui.preflight.runtime_settings')}</DialogTitle>
+            <DialogDescription className="sr-only">Project Assistant runtime</DialogDescription>
+          </DialogHeader>
+          <ProjectConversationBackendCard projectId={project.id} canConfigure={project.owner_user_id === userId && project.status === 'active'} />
+        </DialogContent>
+      </Dialog>
 
       {canEdit && <>
       <ConfirmDialog

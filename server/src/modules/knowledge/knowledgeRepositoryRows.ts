@@ -1,5 +1,5 @@
 import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
-import { contentAccessLevelSql } from "../access/contentAccessSql.js";
+import { contentAccessLevelSql, projectReadAccessSql } from "../access/contentAccessSql.js";
 
 export interface KnowledgeItemRow {
   id: string;
@@ -320,7 +320,23 @@ export const NOTE_FROM = `
  * the read to one `collection_id`, and do not reorder by `note_id` alone:
  * that moves every placement.
  */
-export const NOTE_PLACEMENTS_JOIN = `
+/** A collection inherits the nearest Project from its ancestor chain. */
+export function noteCollectionReadableSql(collectionExpr: string, spaceExpr: string, userExpr: string): string {
+  return `NOT EXISTS (
+    WITH RECURSIVE folder_scope AS (
+      SELECT c.id, c.parent_id, c.project_id, ARRAY[c.id]::varchar[] AS visited
+        FROM note_collections c WHERE c.space_id = ${spaceExpr} AND c.id = ${collectionExpr}
+      UNION ALL
+      SELECT parent.id, parent.parent_id, parent.project_id, array_append(child.visited, parent.id)
+        FROM folder_scope child JOIN note_collections parent ON parent.id = child.parent_id
+       WHERE parent.space_id = ${spaceExpr} AND child.project_id IS NULL AND NOT parent.id = ANY(child.visited)
+    )
+    SELECT 1 FROM folder_scope
+     WHERE project_id IS NOT NULL AND NOT ${projectReadAccessSql(spaceExpr, "folder_scope.project_id", userExpr)}
+  )`;
+}
+
+export const notePlacementsJoin = (userExpr: string) => `
   LEFT JOIN LATERAL (
     SELECT COALESCE(
              json_agg(
@@ -332,6 +348,7 @@ export const NOTE_PLACEMENTS_JOIN = `
       FROM note_collection_items nci
      WHERE nci.note_id = n.object_id
        AND nci.space_id = n.space_id
+       AND ${noteCollectionReadableSql("nci.collection_id", "nci.space_id", userExpr)}
   ) note_placements ON true
 `;
 

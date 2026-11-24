@@ -8,6 +8,9 @@ import { recordHostThreadOutcome } from "../hosts/threadOutcome.js";
 import { PgHostThreadRepository } from "../hosts/threadRepository.js";
 import { isHardTerminalRunStatus } from "./orchestrationResults.js";
 import { runFinalizationReconcilerRegistry } from "./finalizationReconcilerRegistry.js";
+import { settleAutomaticHandoff } from "../agentGroups/autoHandoff.js";
+import { ExperimentRunService } from "../experiments/runService.js";
+import { objectValue } from "../routeUtils/common.js";
 
 /** Durable completion steps, shared by every terminal entrypoint and replay. */
 export function runSettlement(config: ServerConfig, db: Queryable): RunSettlementPort {
@@ -31,12 +34,27 @@ export function runSettlement(config: ServerConfig, db: Queryable): RunSettlemen
           return Boolean(thread.thread_id) && new PgHostThreadRepository(db).holdsDispatchClaim(thread.thread_id!, run.id);
         },
       }] : []),
+      ...(isHardTerminalRunStatus(run.status) ? [{
+        key: "automatic_model_handoff",
+        settle: async (run: RunRecord) => {
+          const ended = await settleAutomaticHandoff(db, run);
+          if (ended) {
+            const { AgentGroupRunLifecycleProjector } = await import("../agentGroups/lifecycleProjector.js");
+            await AgentGroupRunLifecycleProjector.fromConfig(config)?.markDelegatedRunTerminal(ended);
+          }
+        },
+      }] : []),
       {
         key: "plan_graph",
         settle: (run: RunRecord) => new PlanExecutionService(db, config)
           .reconcileForRun(run.space_id, run.id, run.owner_user_id ?? run.instructed_by_user_id ?? undefined),
       },
       { key: "workflow_graph", settle: (run: RunRecord) => new WorkflowExecutionService(config).reconcileForRun(db, run.space_id, run.id) },
+      ...(isHardTerminalRunStatus(run.status)
+        && objectValue(objectValue(run.contract_snapshot_json).workflow_input_json).kind === "managed_experiment" ? [{
+          key: "managed_experiment",
+          settle: async (run: RunRecord) => { await new ExperimentRunService(db).reconcileManagedRun(run.space_id, run.id); },
+        }] : []),
       ...runFinalizationReconcilerRegistry.entries().map(({ key, reconcile }) => ({
         key,
         settle: (run: RunRecord) => reconcile(db, run),

@@ -55,6 +55,21 @@ afterEach(() => {
 })
 
 describe('DiaryPage', () => {
+  it('keeps editing closed until a failed read is retried successfully', async () => {
+    const date = localToday()
+    const { api } = heldApi([])
+    api.onThisDay = vi.fn()
+      .mockRejectedValueOnce(new Error('Temporary read failure'))
+      .mockResolvedValue({ date, entries: [entry(date, 'Existing entry')] })
+    renderPage(api)
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not load this entry.')
+    expect(screen.queryByRole('textbox')).toBeNull()
+    expect(api.saveEntry).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByRole('textbox')).toHaveValue('Existing entry')
+  })
+
   it('sends the latest edit after the in-flight save, including when leaving and reopening the day', async () => {
     const today = localToday()
     const { api, release } = heldApi([])

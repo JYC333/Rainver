@@ -29,9 +29,9 @@ vi.mock('../../../core/spaceNav', () => ({
   SpaceLink: ({ to, children }: { to: string; children: React.ReactNode }) => <a href={to}>{children}</a>,
 }))
 
-function Harness({ initialValue = null }: { initialValue?: HostExecutionSelection | null }) {
+function Harness({ initialValue = null, optionalDefaultFolder = false }: { initialValue?: HostExecutionSelection | null; optionalDefaultFolder?: boolean }) {
   const [value, setValue] = React.useState<HostExecutionSelection | null>(initialValue)
-  return <HostExecutionTargetPicker projectId="project-1" value={value} onChange={setValue} />
+  return <HostExecutionTargetPicker projectId="project-1" value={value} onChange={setValue} optionalDefaultFolder={optionalDefaultFolder} />
 }
 
 function provisioning(overrides: Record<string, unknown> = {}) {
@@ -142,6 +142,18 @@ describe('HostExecutionTargetPicker', () => {
     expect(screen.getByRole('link', { name: /Sign in from Command Center/ })).toHaveAttribute('href', expect.stringMatching(/^\/command-center\?host=[^&]+&section=runtime$/))
     expect(screen.queryByRole('button', { name: 'Login' })).not.toBeInTheDocument()
     expect(mockedApi.loginStream).not.toHaveBeenCalled()
+  })
+
+  it('starts without a default Folder and lets the Profile choose one', async () => {
+    render(<Harness optionalDefaultFolder />)
+    fireEvent.click(await screen.findByLabelText('Execution host'))
+    fireEvent.click(await screen.findByRole('option', { name: /Workstation/ }))
+    const workspace = await screen.findByLabelText('Default Folder (optional)')
+    expect(workspace).toHaveTextContent('No default Folder')
+    expect(screen.queryByLabelText('Execution Location')).toBeNull()
+    fireEvent.click(workspace)
+    fireEvent.click(await screen.findByRole('option', { name: 'Use a Project Folder by default' }))
+    expect(await screen.findByLabelText('Execution Location')).toHaveTextContent('Financial System')
   })
 
   it('does not require a native login for a ModelProvider-backed Server Profile', async () => {

@@ -171,10 +171,8 @@ export async function enqueueDueResearchIntegrityChecks(db: Queryable, now = new
 
 export function parseCrossrefIntegrityEvents(doi: string, sourceItemId: string | null, response: unknown): ResearchIntegrityAlert[] {
   const message = objectValue(objectValue(response).message);
-  const entries = [
-    ...(Array.isArray(message["updated-by"]) ? message["updated-by"] : []),
-    ...(Array.isArray(message["update-to"]) ? message["update-to"] : []),
-  ];
+  // The queried work is the subject of the alert, so only incoming updates apply.
+  const entries = Array.isArray(message["updated-by"]) ? message["updated-by"] : [];
   const alerts: ResearchIntegrityAlert[] = [];
   for (const raw of entries) {
     const entry = objectValue(raw);

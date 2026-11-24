@@ -22,6 +22,7 @@ import {pruneOperationRequests} from '../src/modules/systemActions/operations/re
 import {PgTaskRepository} from '../src/modules/tasks/repository.js';
 import {lockSourceRetrievalReleaseBatch, sourceRetrievalReleaseProjects} from '../src/modules/sources/retrievalReleaseLocks.js';
 import {loadProjectChatActionPreviews} from '../src/modules/agents/projectChatActionPreviews.js';
+import {pluginToolPins} from '../src/modules/plugins/dataAccess.js';
 
 /**
  * The bundled application management package (`plugins/official/applications`,
@@ -31,7 +32,7 @@ import {loadProjectChatActionPreviews} from '../src/modules/agents/projectChatAc
  */
 const db = useTestDatabase(import.meta.filename);
 const pid = 'applications';
-const opId = (name: string) => `plugin.${pid}.${name}`;
+const opId = (name: string) => name.startsWith('task.') || name.startsWith('knowledge.') ? name : `plugin.${pid}.${name}`;
 const plugin = BUILT_IN_PLUGINS.find(p => p.id === pid) as RainverPlugin;
 let host: PluginHost, space: string, owner: string, writer: string, viewer: string, projectA: string, projectB: string, config: ReturnType<typeof loadConfig>, app: ReturnType<typeof buildModuleServer>;
 
@@ -77,8 +78,9 @@ const rows = async (table: string) => (await db.pool.query(`SELECT * FROM plugin
 async function agentRun(user: string, project: string | null, tools: string[], session: string | null = null) {
   const runId = randomUUID();
   await seedRun(db.pool, {id: runId, space, owner: user, agent: randomUUID(), version: randomUUID()});
+  const grants = tools.map(t => ({action_id: opId(t), approval_behavior: 'none' as const, side_effecting: true}));
   await db.pool.query(`UPDATE runs SET status='running',trigger_origin='manual',instructed_by_user_id=$2,owner_user_id=$2,visibility='private',project_id=$3,permission_snapshot_json=$4::jsonb,session_id=$5 WHERE id=$1`,
-    [runId, user, project, JSON.stringify({tool_grants: tools.map(t => ({action_id: opId(t)}))}), session]);
+    [runId, user, project, JSON.stringify({tool_grants: grants, plugin_tool_pins: pluginToolPins(config, grants)}), session]);
   await db.pool.query(`INSERT INTO run_attempts(id,space_id,run_id,attempt_number,status,created_at,updated_at) VALUES ($1,$2,$3,1,'running',now(),now())`, [randomUUID(), space, runId]);
   return runId;
 }
@@ -180,22 +182,52 @@ describe('Application management package (PhD track)', () => {
     await ok(command('material.add', {application_id, kind: 'portfolio', label: 'Code samples', required: false}));
   });
 
-  it('records stay with their person inside the Project; a viewer cannot write', async () => {
+  it('Project writers can maintain another member’s shared application and its child records', async () => {
     await bind(projectA);
     const mine = await ok(command('application.create', phd));
+    const privateRecord = await ok(command('application.create', {...phd, program: 'Private legacy record'}));
+    await db.pool.query('UPDATE plugin_applications.applications SET project_shared=false WHERE id=$1', [privateRecord.application_id]);
+    const contact = await ok(command('contact.create', {name: 'Project supervisor', role: 'supervisor', application_ids: [mine.application_id]}));
     as(writer);
     const theirs = await ok(command('application.create', {...phd, institution: 'EPFL'}));
-    expect((await ok(read('application.list'))).items.map((a: {id: string}) => a.id)).toEqual([theirs.application_id]);
-    const foreign = await command('application.update_status', {application_id: mine.application_id, status: 'preparing'});
+    expect((await ok(read('application.list'))).items).toEqual(expect.arrayContaining([
+      expect.objectContaining({id: mine.application_id, owned_by_caller: false}),
+      expect.objectContaining({id: theirs.application_id, owned_by_caller: true}),
+    ]));
+    const application_id = mine.application_id as string;
+    await ok(command('application.update', {application_id, revision: mine.revision, notes: 'Team notes'}));
+    await ok(command('application.update_status', {application_id, status: 'preparing'}));
+    await ok(command('application.record_submission', {application_id, evidence: 'Verified submission'}));
+    const funding = await ok(command('application.create', {track: 'funding', institution: 'Funder', program: 'Scholarship', submission: 'separate', applies_to: [application_id]}));
+    const link = {funding_id: funding.application_id, application_id};
+    await ok(command('funding.unlink', link));
+    await ok(command('funding.link', link));
+    const {deadline_id} = await ok(command('deadline.add', {application_id, kind: 'interview', due_on: future(6)}));
+    await ok(command('deadline.update', {deadline_id, due_on: future(8)}));
+    const {material_id} = await ok(command('material.add', {application_id, kind: 'cv'}));
+    await ok(command('material.update', {material_id, status: 'ready'}));
+    await ok(command('contact.update', {contact_id: contact.contact_id, application_ids: [application_id, theirs.application_id], affiliation: 'Shared lab'}));
+    await ok(command('contact.log_event', {contact_id: contact.contact_id, occurred_on: future(0), channel: 'meeting', direction: 'outbound', response: 'positive', summary: 'Team met the supervisor'}));
+    expect((await ok(read('application.get', {application_id}))).funding).toEqual([expect.objectContaining({id: funding.application_id})]);
+    expect((await ok(read('contact.list', {application_id: theirs.application_id}))).items).toMatchObject([{id: contact.contact_id, affiliation: 'Shared lab'}]);
+    await ok(command('deadline.remove', {deadline_id}));
+    await ok(command('material.remove', {material_id}));
+    const foreign = await command('application.update_status', {application_id: privateRecord.application_id, status: 'preparing'});
     expect(foreign.json().error).toMatchObject({metadata: {reason: 'application_not_found'}});
     as(viewer);
-    expect((await ok(read('application.list'))).items).toEqual([]);
+    expect((await ok(read('application.list'))).items).toHaveLength(3);
+    expect((await ok(read('application.get', {application_id: mine.application_id}))).application).toMatchObject({id: mine.application_id, owned_by_caller: false});
     expect((await command('application.create', phd)).statusCode).toBe(404);
-    as(owner);
-    expect((await ok(read('application.list'))).items.map((a: {id: string}) => a.id)).toEqual([mine.application_id]);
+    expect((await command('deadline.add', {application_id, kind: 'interview', due_on: future(9)})).statusCode).toBe(404);
+    expect((await command('contact.update', {contact_id: contact.contact_id, name: 'Denied'})).statusCode).toBe(404);
+    expect((await read('application.list', {}, projectB)).statusCode).toBe(404);
+    expect((await db.pool.query(`SELECT owner_user_id,viewer_user_id FROM content_access_logs WHERE space_id=$1 AND resource_type='plugin_applications' AND resource_id=$2`,
+      [space, mine.application_id])).rows).toEqual(expect.arrayContaining([
+        {owner_user_id: owner, viewer_user_id: writer}, {owner_user_id: owner, viewer_user_id: viewer},
+      ]));
   });
 
-  it('contacts and contact events: the person records them; nothing is sent; an Agent without consent gets none', async () => {
+  it('contacts and events use Project authority while historical private contacts stay private', async () => {
     await bind(projectA);
     const {application_id} = await ok(command('application.create', phd));
     const {contact_id} = await ok(command('contact.create', {application_ids: [application_id], name: 'Prof. Ada Example', role: 'supervisor', email: 'ada@example.edu', affiliation: 'Systems Group'}));
@@ -205,47 +237,63 @@ describe('Application management package (PhD track)', () => {
     expect(contacts.items).toEqual([expect.objectContaining({id: contact_id, name: 'Prof. Ada Example', events: 2, last_event: {occurred_on: future(-1), channel: 'email', direction: 'inbound', response: 'positive', next_step: null}})]);
     expect((await ok(read('contact.list_events', {contact_id}))).items.map((e: {summary: string}) => e.summary)).toEqual(['Invited to a call', 'Sent CV and research interests']);
     expect((await command('contact.create', {name: 'Bad', role: 'referee', email: 'not-an-email'})).statusCode).toBe(422);
-    // Personal class (ADR 0030): a Run without the Space owner's consent cannot read or write them, even when granted.
+    const legacy = await ok(command('contact.create', {name: 'Legacy private referee', role: 'referee'}));
+    await db.pool.query('UPDATE plugin_applications.application_contacts SET project_shared=false WHERE id=$1', [legacy.contact_id]);
     const run = await agentRun(owner, projectA, ['contact.list', 'contact.log_event', 'application.list']);
     const listed = await agentCall(run, 'contact.list', {project_id: projectA});
-    expect(listed.httpStatus).not.toBe(200);
-    expect(JSON.stringify(listed.body)).not.toContain('Ada');
-    expect((await agentCall(run, 'contact.log_event', {project_id: projectA, contact_id, occurred_on: future(0), channel: 'email', direction: 'outbound', summary: 'x', response: 'awaiting'})).httpStatus).not.toBe(200);
-    expect(await rows('application_contact_events')).toHaveLength(2);
+    expect(listed.httpStatus, JSON.stringify(listed.body)).toBe(200);
+    expect(listed.body.data).toMatchObject({items: [{id: contact_id}]});
+    expect(JSON.stringify(listed.body)).not.toContain('Legacy private referee');
+    const logged = await agentCall(run, 'contact.log_event', {project_id: projectA, contact_id, occurred_on: future(0), channel: 'email', direction: 'outbound', summary: 'Followed up', response: 'awaiting'});
+    expect(logged.httpStatus, JSON.stringify(logged.body)).toBe(200);
+    expect(logged.body.data).toEqual({event_id: expect.any(String)});
+    expect(await rows('application_contact_events')).toHaveLength(3);
     expect((await agentCall(run, 'application.list', {project_id: projectA})).httpStatus).toBe(200);
+
+    const input = {project_id: projectA, name: 'Another Supervisor', role: 'supervisor'};
+    const writerRun = await agentRun(writer, projectA, ['application.create', 'contact.create']);
+    expect((await agentCall(writerRun, 'application.create', {project_id: projectA, ...phd})).httpStatus).toBe(200);
+    expect((await agentCall(writerRun, 'contact.create', input)).httpStatus).toBe(200);
+    const viewerRun = await agentRun(viewer, projectA, ['application.create', 'contact.create']);
+    expect((await agentCall(viewerRun, 'application.create', {project_id: projectA, ...phd})).httpStatus).toBe(404);
+    expect((await agentCall(viewerRun, 'contact.create', input)).httpStatus).toBe(404);
+    expect(await rows('application_contacts')).toEqual([
+      expect.objectContaining({user_id: owner, project_id: projectA, id: contact_id}),
+      expect.objectContaining({user_id: owner, project_id: projectA, id: legacy.contact_id}),
+      expect.objectContaining({user_id: writer, project_id: projectA, name: input.name}),
+    ]);
   });
 
-  it('a shared Agent Run releases no one person\'s application records to the other readers', async () => {
+  it('a shared Agent Run reads shared applications and a person can share selected legacy rows', async () => {
     await bind(projectA);
-    const {application_id} = await ok(command('application.create', {...phd, notes: 'Private funding plan', deadlines: [{kind: 'application', due_on: future(9)}]}));
+    const {application_id} = await ok(command('application.create', {...phd, notes: 'Legacy funding plan', deadlines: [{kind: 'application', due_on: future(9)}]}));
+    const other = await ok(command('application.create', {...phd, institution: 'Another legacy application'}));
+    await db.pool.query(`UPDATE plugin_applications.applications SET project_shared=false WHERE space_id=$1 AND id=ANY($2::text[])`,
+      [space, [application_id, other.application_id]]);
     as(writer);
     const theirs = await ok(command('application.create', {...phd, institution: 'EPFL'}));
+    expect((await command('application.share', {application_ids: [application_id]})).statusCode).toBe(422);
     as(owner);
     const tools = ['application.list', 'application.get', 'application.summary'];
-    // Owner-only Run: the instructing person's own records.
     const solo = await agentRun(owner, projectA, tools);
-    expect(((await agentCall(solo, 'application.list', {project_id: projectA})).body as {data: {items: unknown[]}}).data.items).toHaveLength(1);
-    // A two-person Room: only rows every reader has themselves (none for per-person records), and
-    // get/summary only when identical for both, which per-person records are not.
+    expect((await agentCall(solo, 'application.get', {project_id: projectA, application_id})).httpStatus).toBe(200);
     const room = await agentRun(owner, projectA, tools, await sharedRoom([owner, writer]));
-    const listed = await agentCall(room, 'application.list', {project_id: projectA});
-    expect(listed.httpStatus, JSON.stringify(listed.body)).toBe(200);
-    expect((listed.body as {data: {items: unknown[]}}).data.items).toEqual([]);
-    // Whose record is missing is not observable: the requester lacking it (another person's id,
-    // or none at all) answers exactly like another reader lacking the requester's own record.
     const publicError = (r: OperationToolResponse) => { const {request_id: _r, ...error} = (r.body as {error: Record<string, unknown>}).error; return {status: r.httpStatus, error}; };
-    const solo404 = publicError(await agentCall(solo, 'application.get', {project_id: projectA, application_id: randomUUID()}));
-    const responses = [];
-    for (const [name, args] of [['application.get', {application_id}], ['application.get', {application_id: theirs.application_id}], ['application.get', {application_id: randomUUID()}], ['application.summary', {}]] as const) {
-      const withheld = await agentCall(room, name, {project_id: projectA, ...args});
-      expect(JSON.stringify(withheld.body)).not.toContain('ETH Zurich');
-      expect(JSON.stringify(withheld.body)).not.toContain('Private funding plan');
-      responses.push(publicError(withheld));
-    }
-    expect(responses[0]).toMatchObject({status: 404, error: {code: 'operation_not_found', domain: 'operations', metadata: {}, retryable: false}});
-    for (const response of responses) expect(response).toEqual(responses[0]);
-    // A one-person Run still explains its own missing record.
-    expect(solo404).toMatchObject({status: 422, error: {metadata: {reason: 'application_not_found'}}});
+    const get = (id: string) => agentCall(room, 'application.get', {project_id: projectA, application_id: id});
+    const hidden = publicError(await get(randomUUID()));
+    expect(hidden.status).toBe(404);
+    expect(publicError(await get(application_id))).toEqual(hidden);
+    const listed = await agentCall(room, 'application.list', {project_id: projectA});
+    expect(listed.body).toMatchObject({data: {items: [expect.objectContaining({id: theirs.application_id})]}});
+
+    await ok(command('application.share', {application_ids: [application_id]}));
+    const detail = await get(application_id);
+    expect(detail.httpStatus, JSON.stringify(detail.body)).toBe(200);
+    expect(detail.body).toMatchObject({data: {application: {id: application_id, notes: 'Legacy funding plan'}, deadlines: [{due_on: future(9)}]}});
+    expect(publicError(await get(other.application_id))).toEqual(hidden);
+    expect((await agentCall(room, 'application.summary', {project_id: projectA})).body).toMatchObject({data: {total: 2}});
+    expect((await db.pool.query(`SELECT viewer_user_id,owner_user_id FROM content_access_logs WHERE space_id=$1 AND run_id=$2 AND resource_id=$3 AND resource_type='plugin_applications'`,
+      [space, room, application_id])).rows).toContainEqual({viewer_user_id: writer, owner_user_id: owner});
   });
 
   it('an older decision Proposal cannot overwrite a newer approved one: it is frozen to the revision it was proposed for', async () => {
@@ -599,7 +647,7 @@ describe('Application management package (PhD track)', () => {
     const fromAgent = await agentCall(run, 'application.create', {project_id: projectA, ...input});
     expect(fromAgent.httpStatus, JSON.stringify(fromAgent.body)).toBe(200);
     const agentData = (fromAgent.body as {data: {application_id: string; task_ids: string[]}}).data;
-    const shape = (r: Record<string, unknown>) => { const {id: _id, created_at: _c, updated_at: _u, application_id: _a, task_id: _t, ...rest} = r; return rest; };
+    const shape = (r: Record<string, unknown>) => { const {id: _id, created_at: _c, updated_at: _u, date_changed_at: _d, application_id: _a, task_id: _t, ...rest} = r; return rest; };
     const [ui, agent] = [fromUi.application_id, agentData.application_id].map(id => db.pool.query(`SELECT * FROM plugin_applications.applications WHERE id=$1`, [id]));
     expect(shape((await agent).rows[0])).toEqual(shape((await ui).rows[0]));
     const byApp = async (table: string, id: string) => (await db.pool.query(`SELECT * FROM plugin_applications.${table} WHERE application_id=$1 ORDER BY kind,label`, [id])).rows.map(shape);
@@ -612,6 +660,73 @@ describe('Application management package (PhD track)', () => {
     expect(decisions).toEqual([{actor_type: 'agent', decision: 'allow', run_id: run}, {actor_type: 'user', decision: 'allow', run_id: null}]);
     // The Agent reaches only its Run's Project, even one the person bound and reads.
     expect((await agentCall(run, 'application.list', {project_id: projectB})).httpStatus).toBe(404);
+  });
+
+  it('allows a verified owner Gmail read to feed a shared application in the same Project', async () => {
+    await bind(projectA);
+    await bind(projectB);
+    const [credential, connection, grant] = [randomUUID(), randomUUID(), randomUUID()];
+    await db.pool.query("INSERT INTO credentials(id,space_id,owner_user_id,name,credential_type,secret_ref,scopes_json,created_at,updated_at) VALUES($1,$2,$3,'Gmail','gmail_oauth','enc:test','[]',now(),now())", [credential, space, owner]);
+    await db.pool.query(`INSERT INTO gmail_connections(id,space_id,owner_user_id,google_subject,mailbox_email,credential_id,status,generation,granted_scopes,connected_at,agent_read_enabled,created_at,updated_at)
+      VALUES($1,$2,$3,'test-sub','me@example.test',$4,'active',1,'[]',now(),true,now(),now())`, [connection, space, owner, credential]);
+    await db.pool.query(`INSERT INTO plugin_data_grants(id,space_id,plugin_id,toolset,data_class,scope,data_owner_user_id,granted_by_user_id,plugin_version,authority_hash,expanded_json,status,project_id,connection_id,connection_generation,purpose,created_at,updated_at)
+      VALUES($1,$2,'core:gmail','read','sensitive','project',$3,$3,'1','test','[]','active',$4,$5,1,'on_demand_read',now(),now())`, [grant, space, owner, projectA, connection]);
+    const session = await sharedRoom([owner, viewer]);
+    const run = await agentRun(owner, projectA, ['application.create', 'application.update_status', 'application.record_submission', 'application.propose_status', 'contact.create', 'deadline.add', 'material.link_note', 'material.add_source', 'library.add', 'library.update', 'task.create', 'task.update', 'task.create_batch', 'knowledge.note.create'], session);
+    const gmailRead = {plugin_id: 'core:gmail', data_class: 'sensitive', owner_user_id: owner, gmail_scope: {project_id: projectA, grant_id: grant}};
+    const setReads = (reads: unknown[]) => db.pool.query("UPDATE runs SET context_taint_json=$2::jsonb WHERE id=$1",
+      [run, JSON.stringify({schema_version: 1, narrowest_visibility: 'private', plugin_reads: reads})]);
+    const input = {...phd, project_id: projectA};
+    await setReads([gmailRead]);
+    expect((await agentCall(run, 'application.create', {...input, project_id: projectB})).httpStatus).toBe(404);
+    await setReads([{...gmailRead, owner_user_id: writer}]);
+    expect((await agentCall(run, 'application.create', input)).httpStatus).toBe(404);
+    await setReads([gmailRead, {...gmailRead, gmail_scope: undefined}]);
+    expect((await agentCall(run, 'application.create', input)).httpStatus).toBe(404);
+    await setReads([gmailRead]);
+    const result = await agentCall(run, 'application.create', {...input, create_tasks: true, deadlines: [{kind: 'application', due_on: future(7)}]});
+    expect(result.httpStatus, JSON.stringify(result.body)).toBe(200);
+    expect(await rows('applications')).toEqual([expect.objectContaining({user_id: owner, project_id: projectA, project_shared: true})]);
+    expect((await agentCall(run, 'task.create', {project_id: projectB, title: 'Different Project'})).httpStatus).toBe(404);
+    const task = await agentCall(run, 'task.create', {project_id: projectA, title: 'Follow up on application'});
+    expect(task.httpStatus, JSON.stringify(task.body)).toBe(201);
+    const taskId = (task.body.data as {task_id: string}).task_id;
+    expect((await agentCall(run, 'task.update', {task_id: taskId, title: 'Follow up next week'})).httpStatus).toBe(200);
+    const batch = await agentCall(run, 'task.create_batch', {
+      request_summary: 'Record both follow-ups', tasks: [{title: 'Request transcript'}, {title: 'Check funding'}],
+    });
+    expect(batch).toMatchObject({ok: true, created_count: 2});
+    const application_id = (result.body.data as {application_id: string}).application_id;
+    const owned = {project_id: projectA, application_id};
+    const contact = {project_id: projectA, application_ids: [application_id], name: 'Example Supervisor', role: 'supervisor'};
+    const createdContact = await agentCall(run, 'contact.create', contact);
+    expect(createdContact.httpStatus, JSON.stringify(createdContact.body)).toBe(200);
+    const submission = await agentCall(run, 'application.record_submission', {...owned, evidence: 'Verified portal receipt'});
+    expect(submission.httpStatus, JSON.stringify(submission.body)).toBe(200);
+    expect((await agentCall(run, 'application.update_status', {...owned, status: 'interview'})).httpStatus).toBe(200);
+    const deadline = {...owned, kind: 'interview', due_on: future(3)};
+    const added = await agentCall(run, 'deadline.add', {...deadline, create_task: true});
+    expect(added.httpStatus, JSON.stringify(added.body)).toBe(200);
+    expect(added.body.data).toMatchObject({task_id: expect.any(String)});
+    const note = await agentCall(run, 'knowledge.note.create', {title: 'Application notes'});
+    expect(note.httpStatus, JSON.stringify(note.body)).toBe(201);
+    const note_id = (note.body.data as {id: string}).id;
+    const detail = await ok(read('application.get', {application_id}));
+    const material_id = detail.materials[0].id as string;
+    const linkedNote = await agentCall(run, 'material.link_note', {project_id: projectA, material_id, note_id});
+    expect(linkedNote.httpStatus, JSON.stringify(linkedNote.body)).toBe(200);
+    expect((await agentCall(run, 'material.add_source', {project_id: projectA, material_id, note_id})).httpStatus).toBe(200);
+    const library = await agentCall(run, 'library.add', {project_id: projectA, note_id, kind: 'cv'});
+    expect(library.httpStatus, JSON.stringify(library.body)).toBe(200);
+    expect((await agentCall(run, 'library.update', {project_id: projectA, item_id: (library.body.data as {item_id: string}).item_id, label: 'Team CV'})).httpStatus).toBe(200);
+    const decision = await agentCall(run, 'application.propose_status', {...owned, status: 'accepted'});
+    expect(decision).toMatchObject({httpStatus: 202, body: {status: 'pending_approval'}});
+    await db.pool.query("UPDATE gmail_connections SET agent_read_enabled=false WHERE id=$1", [connection]);
+    expect((await agentCall(run, 'application.create', input)).httpStatus).toBe(404);
+    expect((await agentCall(run, 'contact.create', contact)).httpStatus).toBe(404);
+    expect(await rows('applications')).toHaveLength(1);
+    expect((await agentCall(run, 'knowledge.note.create', {title: 'After revocation'})).httpStatus).toBe(404);
+    expect((await agentCall(run, 'task.update', {task_id: taskId, title: 'After revocation'})).httpStatus).toBe(404);
   });
 
   it('disable and unbind stop every entry, keep plugin data and leave core objects useful', async () => {

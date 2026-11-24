@@ -1,10 +1,10 @@
 import { describe, it, expect, vi } from 'vitest'
 import { act, render, screen, waitFor } from '@testing-library/react'
 import { AuthProvider, useAuth } from '../contexts/AuthContext'
+import { authApi } from '../api/client'
 import { __resetLogoutChannelForTests, API_CACHE_NAME, API_KEY_STORAGE } from '../lib/sessionResidue'
 
 vi.mock('../api/client', () => ({
-  setAuth: vi.fn(),
   authApi: {
     me: vi.fn().mockResolvedValue({
       id: 'u1',
@@ -20,17 +20,66 @@ vi.mock('../api/client', () => ({
 }))
 
 function Probe() {
-  const { currentUser, isLoading, logout } = useAuth()
+  const { currentUser, isLoading, logout, reloadUser } = useAuth()
   if (isLoading) return <div>loading</div>
   return (
     <div>
       <span>{currentUser ? currentUser.display_name : 'signed out'}</span>
       <button type="button" onClick={() => { void logout() }}>sign out</button>
+      <button type="button" onClick={() => { void reloadUser() }}>check session</button>
     </div>
   )
 }
 
 describe('AuthProvider', () => {
+  it('ignores a late identity read after signing out', async () => {
+    let finish!: (value: Awaited<ReturnType<typeof authApi.me>>) => void
+    const stale = new Promise<Awaited<ReturnType<typeof authApi.me>>>(resolve => { finish = resolve })
+    render(<AuthProvider><Probe /></AuthProvider>)
+    await screen.findByText('Ada')
+    vi.mocked(authApi.me).mockReturnValueOnce(stale)
+    act(() => screen.getByRole('button', { name: 'check session' }).click())
+    act(() => screen.getByRole('button', { name: 'sign out' }).click())
+    await screen.findByText('signed out')
+    const oldUser = await authApi.me()
+    await act(async () => finish(oldUser))
+    expect(screen.getByText('signed out')).toBeVisible()
+  })
+
+  it('keeps the current identity after a temporary failure and retries on reconnect', async () => {
+    render(<AuthProvider><Probe /></AuthProvider>)
+    await screen.findByText('Ada')
+    const previousReads = vi.mocked(authApi.me).mock.calls.length
+    vi.mocked(authApi.me).mockRejectedValueOnce(new TypeError('offline'))
+    await act(async () => screen.getByRole('button', { name: 'check session' }).click())
+    expect(screen.getByText('Ada')).toBeVisible()
+    act(() => window.dispatchEvent(new Event('online')))
+    await waitFor(() => expect(authApi.me).toHaveBeenCalledTimes(previousReads + 2))
+    expect(screen.getByText('Ada')).toBeVisible()
+  })
+
+  it('keeps a failed sign-out across a reload and retries without reading the old session', async () => {
+    const first = render(<AuthProvider><Probe /></AuthProvider>)
+    await screen.findByText('Ada')
+    const reads = vi.mocked(authApi.me).mock.calls.length
+    const logouts = vi.mocked(authApi.logout).mock.calls.length
+    vi.mocked(authApi.logout)
+      .mockRejectedValueOnce(new TypeError('offline'))
+      .mockRejectedValueOnce(new TypeError('still offline'))
+
+    await act(async () => screen.getByRole('button', { name: 'sign out' }).click())
+    expect(screen.getByText('signed out')).toBeVisible()
+    first.unmount()
+    render(<AuthProvider><Probe /></AuthProvider>)
+    await screen.findByText('signed out')
+    expect(authApi.me).toHaveBeenCalledTimes(reads)
+
+    await act(async () => window.dispatchEvent(new Event('online')))
+    expect(authApi.logout).toHaveBeenCalledTimes(logouts + 3)
+    expect(authApi.me).toHaveBeenCalledTimes(reads)
+    expect(screen.getByText('signed out')).toBeVisible()
+  })
+
   it('clears the current user when the API reports authentication is required', async () => {
     render(
       <AuthProvider>

@@ -17,6 +17,7 @@ import { contentReadSql } from "../access/contentAccessSql.js";
 import { canReadAgent } from "../agents/agentAccess.js";
 import { PgRunRepository } from "../runs/repository.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
+import type { RecoveryCursor } from "../runs/recoveryCursor.js";
 
 const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled"]);
 const OBSERVATION_SOURCES = new Set(["manual", "parsed", "agent"]);
@@ -261,6 +262,25 @@ export class ExperimentRunService {
       });
       return runToOut((await this.runRow(db, identity.spaceId, experimentRunId))!);
     });
+  }
+
+  /** Missed terminal entrypoints and pre-existing settled Runs re-enter canonical finalization. */
+  async listRunsAwaitingFinalization(limit: number, after: RecoveryCursor | null): Promise<Array<RecoveryCursor & {space_id: string}>> {
+    return (await this.db.query<RecoveryCursor & {space_id: string}>(
+      `SELECT r.id, r.space_id, r.created_at::text AS created_at
+         FROM experiment_runs e JOIN runs r ON r.id=e.run_id AND r.space_id=e.space_id
+        WHERE e.status IN ('queued','running')
+          AND r.status IN ('succeeded','failed','degraded','cancelled','orphaned')
+          AND ($2::timestamptz IS NULL OR (r.created_at,r.id) > ($2::timestamptz,$3::varchar))
+          -- This pass handles absent or previously settled finalizations. The ordinary
+          -- unsettled sweep owns pending settlement and its retry backoff.
+          AND NOT EXISTS (SELECT 1 FROM run_finalizations f
+            WHERE f.space_id=r.space_id AND f.run_id=r.id AND f.status='completed' AND f.settled_at IS NULL
+              AND f.attempt_number=COALESCE((SELECT max(a.attempt_number) FROM run_attempts a
+                WHERE a.space_id=r.space_id AND a.run_id=r.id),1))
+        ORDER BY r.created_at,r.id LIMIT $1`,
+      [limit, after?.created_at ?? null, after?.id ?? null],
+    )).rows;
   }
 
   async reconcileManagedRun(spaceId: string, managedRunId: string): Promise<boolean> {

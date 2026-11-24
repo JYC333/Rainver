@@ -15,7 +15,9 @@ import {lockOperationPluginScope, operationPluginEnabled} from './operationEnabl
  *
  * Lock order, shared by every writer and reader that locks: plugin installs →
  * enablements (`lockOperationPluginScope`) → Project authority rows (Project,
- * Space membership, Project membership) → the binding row. A command takes the
+ * Space membership, Project membership) → the binding row; an Agent's command
+ * and an Agent's result release take the Project earlier still, before the
+ * person and the Run (`lockAgentProjectBeforeActor`, `projects/access.ts`). A command takes the
  * Project row `FOR UPDATE` first, as the canonical aggregate write fence
  * (`lockActiveProjectForMutation`) does, and only then its authority rows
  * `FOR SHARE`: the Task and Artifact core write ports take that same fence, so
@@ -47,6 +49,10 @@ export function projectBoundManifest(config: ServerConfig | undefined, pluginId:
 
 async function bindingRow(db: Queryable, pluginId: string, spaceId: string, projectId: string, lock: '' | ' FOR SHARE' | ' FOR UPDATE' = ''): Promise<BindingRow | undefined> {
   return (await db.query<BindingRow>(`SELECT ${COLUMNS} FROM official_plugin_project_bindings WHERE plugin_id=$1 AND space_id=$2 AND project_id=$3${lock}`, [pluginId, spaceId, projectId])).rows[0];
+}
+
+export async function isPluginProjectBound(db: Queryable, pluginId: string, spaceId: string, projectId: string, lock = false): Promise<boolean> {
+  return (await bindingRow(db, pluginId, spaceId, projectId, lock ? ' FOR SHARE' : ''))?.status === 'bound';
 }
 
 async function projectStatus(db: Queryable, spaceId: string, projectId: string): Promise<string | undefined> {
@@ -85,8 +91,7 @@ export async function assertPluginProjectTarget(db: Queryable, manifest: PluginO
     if (!await canWriteProject(db, actor.space_id, projectId, person, {lockAuthority: true})) throw hidden();
     if (status !== 'active') throw archived();
   }
-  const binding = await bindingRow(db, manifest.id, actor.space_id, projectId, kind === 'command' || options.lockBinding ? ' FOR SHARE' : '');
-  if (binding?.status !== 'bound') throw hidden();
+  if (!await isPluginProjectBound(db, manifest.id, actor.space_id, projectId, kind === 'command' || options.lockBinding)) throw hidden();
 }
 
 /** Bind: the package is Project-level and enabled for the person, the Project is active, and the person is Project owner level. */

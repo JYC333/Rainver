@@ -36,6 +36,7 @@ export interface ConversationExecutionPreflightProps {
   onSettingsOpenChange?: (open: boolean) => void
   agentConfigurations?: AgentSessionConfiguration[]
   disabled?: boolean
+  executionActive?: boolean
   spaceId?: string
   projectId: string
   roomId: string
@@ -75,6 +76,7 @@ export function ConversationExecutionPreflightContent({
   onSummaryChange,
   agentConfigurations = [],
   disabled = false,
+  executionActive = false,
 }: ConversationExecutionPreflightProps) {
   const scope = useConversationScope()
   const { t } = useAppTranslation()
@@ -83,8 +85,7 @@ export function ConversationExecutionPreflightContent({
   const [profiles, setProfiles] = useState<ConversationExecutionRuntimeProfile[]>([])
   const [hostId, setHostId] = useState('')
   const [primaryKey, setPrimaryKey] = useState('')
-  const [runtimeProfileId, setRuntimeProfileId] = useState('')
-  const [participantRuntimeProfileIds, setParticipantRuntimeProfileIds] = useState<Record<string, string>>({})
+  const [draftRuntimeIds, setDraftRuntimeIds] = useState<Record<string, string>>({})
   const [draftParticipants,setDraftParticipants]=useState<Record<string,boolean>>({})
   const [attachLocationId, setAttachLocationId] = useState('')
   const [attachMode, setAttachMode] = useState<ConversationAttachmentAccessMode>('write')
@@ -105,9 +106,8 @@ export function ConversationExecutionPreflightContent({
     setProfiles([])
     setHostId('')
     setPrimaryKey('')
-    setRuntimeProfileId('')
-    setParticipantRuntimeProfileIds({})
     setDraftParticipants({})
+    setDraftRuntimeIds({})
     setAttachLocationId('')
     setBaselineMode('')
     setBusy(false)
@@ -213,28 +213,23 @@ export function ConversationExecutionPreflightContent({
     for (const member of participantMembers) {
       candidates.set(member.agent_id, profiles.filter(profile => (
         profile.agent_id === member.agent_id
+        && profile.runtime_profile_id !== null
         && profile.usable
         && Boolean(profile.execution_host_id)
         && Boolean(profile.runtime_installation)
         && profile.execution_host_id === hostId
-        && profile.workspace_mode === selectedPrimary?.kind
-        && (selectedPrimary?.kind !== 'location' || profile.workspace_location_id === selectedPrimary.workspace_location_id)
       )))
     }
     return candidates
-  }, [hostId, participantMembers, profiles, selectedPrimary, scope])
+  }, [hostId, participantMembers, profiles])
   const candidateProfiles = manager ? candidateProfilesByAgent.get(manager.agent_id) ?? [] : []
-  const selectedProfile = candidateProfiles.find(profile => runtimeCandidateKey(profile) === runtimeProfileId) ?? null
   const participantChoices = participantMembers.filter(member=>member.role==='manager'||(draftParticipants[member.agent_id]??((detail??suppliedDetail)?.room.conversation_defaults_json?.find(item=>item.agent_id===member.agent_id)?.participating!==false))).map(member => {
     const options = candidateProfilesByAgent.get(member.agent_id) ?? []
-    const selectedId = member.role === 'manager' ? runtimeProfileId : participantRuntimeProfileIds[member.agent_id] ?? ''
-    return {
-      member,
-      options,
-      selectedId,
-      selected: options.find(profile => runtimeCandidateKey(profile) === selectedId) ?? null,
-    }
+    const selected = options.find(profile => profile.runtime_profile_id === draftRuntimeIds[member.agent_id])
+      ?? configuredRuntime(options)
+    return { member, options, selected }
   })
+  const selectedProfile = participantChoices.find(choice => choice.member.role === 'manager')?.selected ?? null
   const draftParticipantIds = participantChoices.map(choice => choice.member.agent_id).join(',')
   useEffect(() => {
     if (summary?.state === 'draft') onSummaryChange?.({...summary, participant_agent_ids: draftParticipantIds ? draftParticipantIds.split(',') : []})
@@ -286,37 +281,7 @@ export function ConversationExecutionPreflightContent({
       if (preferredProjectFolderId) return serverPrimary
       return current || serverPrimary
     })
-    if (summary?.runtime?.runtime_profile_id) {
-      const pinned = profiles.find(profile => profile.runtime_profile_id === summary.runtime!.runtime_profile_id)
-      if (pinned) setRuntimeProfileId(current => current || runtimeCandidateKey(pinned))
-    }
   }, [executableLocations, initialized, onReadyChange, preflight, preferredProjectFolderId, ready, summary, scope])
-
-  useEffect(() => {
-    if (initialized || !hostId || !selectedPrimary) return
-    setRuntimeProfileId(current => (
-      current && candidateProfiles.some(profile => runtimeCandidateKey(profile) === current)
-        ? current
-        : suggestedRuntimeCandidateKey(candidateProfiles)
-    ))
-    setParticipantRuntimeProfileIds(current => {
-      let changed = false
-      const next = { ...current }
-      for (const choice of participantChoices) {
-        if (choice.member.role === 'manager') continue
-        const currentId = next[choice.member.agent_id] ?? ''
-        const nextId = currentId && choice.options.some(profile => runtimeCandidateKey(profile) === currentId)
-          ? currentId
-          : suggestedRuntimeCandidateKey(choice.options)
-        if (nextId !== currentId) {
-          changed = true
-          if (nextId) next[choice.member.agent_id] = nextId
-          else delete next[choice.member.agent_id]
-        }
-      }
-      return changed ? next : current
-    })
-  }, [candidateProfiles, hostId, initialized, participantChoices, selectedPrimary, scope])
 
   useEffect(() => { onReadyChange?.(ready) }, [onReadyChange, ready, scope])
 
@@ -445,7 +410,9 @@ export function ConversationExecutionPreflightContent({
     const ids = initialized
       ? summary?.participant_agent_ids ?? summaryRuntimes.map(pin => pin.agent_id)
       : participantChoices.map(choice => choice.member.agent_id)
-    const locked = !sessionId || !preflight || loading || Boolean(error) || scope.actionRole === 'worker' || scope.actionRole === 'viewer' || disabled || busy || Boolean(summary?.dispatch_locked) || !detail?.viewer_can_write
+    const configLocked = !sessionId || !preflight || loading || Boolean(error) || scope.actionRole === 'worker' || scope.actionRole === 'viewer' || disabled || busy || !detail?.viewer_can_write
+    const dispatchActive = executionActive || Boolean(summary?.dispatch_locked)
+    const locked = configLocked || dispatchActive
     const renderAgent = (id: string, actions: React.ReactNode) => {
       const config = agentConfigurations.find(agent => agent.id === id)
       const member = participantMembers.find(member => member.agent_id === id)
@@ -454,7 +421,7 @@ export function ConversationExecutionPreflightContent({
         id, name: member?.agent_name ?? t('conversation_ui.preflight.unknown_agent'),
         options: [], value: [], persistedValue: pin?.session_config ?? [], onChange: () => undefined,
         unavailableReason: profiles.some(profile => profile.agent_id === id && profile.usable) ? undefined : t('conversation_ui.settings.unavailable'),
-      }} disabled={locked} actions={actions} defaultExpanded={ids.length === 1} />
+      }} disabled={configLocked} actions={actions} defaultExpanded={ids.length === 1} />
     }
     const unavailable = sessionId && !preflight
     const recovery = <div className="space-y-2 text-xs" role="status">
@@ -467,7 +434,7 @@ export function ConversationExecutionPreflightContent({
       : <ConversationDraftParticipants members={participantMembers} ids={ids}
           onChange={(id, participating) => setDraftParticipants(current => ({ ...current, [id]: participating }))}
           disabled={locked} renderAgent={renderAgent} />
-    return <ConversationAgentSessionConfigs agents={agentConfigurations} open={settingsOpen} onOpenChange={onSettingsOpenChange} participantCount={unavailable ? null : ids.length}
+    return <ConversationAgentSessionConfigs agents={agentConfigurations} executionActive={dispatchActive && !configLocked} open={settingsOpen} onOpenChange={onSettingsOpenChange} participantCount={unavailable ? null : ids.length}
       participants={participants} environment={environment} environmentIssue={unavailable ? null : !ready ? error ?? effectiveDraftBlockedReason ?? t('conversation_ui.preflight.review_first') : null} disabled={locked} />
   }
 
@@ -477,7 +444,7 @@ export function ConversationExecutionPreflightContent({
         <div className="flex items-center gap-2 text-sm font-medium"><Shield className="size-4" />{t('conversation_ui.preflight.setup_title')}</div>
         <p className="text-xs text-muted-foreground">{t('conversation_ui.preflight.setup_description')}</p>
         <div className="flex flex-wrap gap-2">
-          <Button size="sm" disabled={busy || disabled || scope.actionRole === 'worker' || scope.actionRole === 'viewer' || !detail?.viewer_can_write} onClick={() => void openDraft()}>{busy ? <Loader2 className="mr-1 size-3.5 animate-spin" /> : null}{t('conversation_ui.preflight.configure')}</Button>
+          <Button size="sm" disabled={busy || disabled || executionActive || scope.actionRole === 'worker' || scope.actionRole === 'viewer' || !detail?.viewer_can_write} onClick={() => void openDraft()}>{busy ? <Loader2 className="mr-1 size-3.5 animate-spin" /> : null}{t('conversation_ui.preflight.configure')}</Button>
           <Link to="/command-center" className="inline-flex items-center text-xs underline">{t('conversation_ui.preflight.configure_host')}</Link>
         </div>
         {error && <p className="text-xs text-destructive">{error}</p>}
@@ -492,7 +459,7 @@ export function ConversationExecutionPreflightContent({
     runtimes={summary.runtimes ?? []}
     nameForAgent={id => participantMembers.find(member => member.agent_id === id)?.agent_name
       ?? profiles.find(profile => profile.agent_id === id)?.agent_name ?? t('conversation_ui.preflight.unknown_agent')}
-    disabled={disabled || busy || loading || summary.dispatch_locked || !detail?.viewer_can_write}
+    disabled={disabled || executionActive || busy || loading || summary.dispatch_locked || !detail?.viewer_can_write}
     onReset={async agentId => {
       if (!sessionId) return
       await roomsApi.resetAgentContext(roomId, agentId, sessionId, scope)
@@ -510,15 +477,15 @@ export function ConversationExecutionPreflightContent({
       {((initialized?summary?.git?.dirty:selectedLocation?.git?.dirty)||summary?.attachments.some(a=>a.status==='active'&&a.git_dirty))&&<div className="space-y-2 rounded-md border border-border bg-muted/20 p-3">
         <p className="text-sm font-medium">{t('workspace_ui.execution.baseline_title')}</p>
         <p className="text-xs text-muted-foreground">{t('workspace_ui.execution.baseline_description')}</p>
-        <div className="flex flex-wrap gap-2"><Button size="sm" variant={baselineMode==='committed'?'default':'outline'} disabled={busy || disabled || loading || Boolean(summary?.dispatch_locked)} onClick={()=>void chooseBaseline('committed')}>{t('workspace_ui.execution.baseline_committed')}</Button><Button size="sm" variant={baselineMode==='snapshot'?'default':'outline'} disabled={busy || disabled || loading || Boolean(summary?.dispatch_locked)} onClick={()=>void chooseBaseline('snapshot')}>{t('workspace_ui.execution.baseline_snapshot')}</Button></div>
+        <div className="flex flex-wrap gap-2"><Button size="sm" variant={baselineMode==='committed'?'default':'outline'} disabled={busy || disabled || executionActive || loading || Boolean(summary?.dispatch_locked)} onClick={()=>void chooseBaseline('committed')}>{t('workspace_ui.execution.baseline_committed')}</Button><Button size="sm" variant={baselineMode==='snapshot'?'default':'outline'} disabled={busy || disabled || executionActive || loading || Boolean(summary?.dispatch_locked)} onClick={()=>void chooseBaseline('snapshot')}>{t('workspace_ui.execution.baseline_snapshot')}</Button></div>
         {baselineMode&&<p className="text-xs text-muted-foreground">{t(`workspace_ui.execution.baseline_selected_${baselineMode}`)}</p>}
       </div>}
       {initialized ? (
         <InitializedSummary summary={summary!} profiles={profiles} participants={participantMembers} cacheNotice={cacheNotice} />
       ) : (
-        <fieldset disabled={disabled || busy || loading || Boolean(summary?.dispatch_locked)} className="space-y-2">
-          <SelectionField label={t('conversation_ui.preflight.host')} value={hostId} onChange={value => { hostSelectionTouched.current = true; setHostId(value) }} options={preflight.available_hosts.map(host => ({ value: host.host_id, label: hostLabel(host) }))} placeholder={t('conversation_ui.preflight.choose_host')} />
-          <SelectionField label={t('conversation_ui.preflight.primary')} value={primaryKey} onChange={value => { primarySelectionTouched.current = true; setPrimaryKey(value) }} options={[
+        <fieldset disabled={disabled || executionActive || busy || loading || Boolean(summary?.dispatch_locked)} className="space-y-2">
+          <SelectionField label={t('conversation_ui.preflight.host')} value={hostId} onChange={value => { hostSelectionTouched.current = true; setDraftRuntimeIds({}); setHostId(value) }} options={preflight.available_hosts.map(host => ({ value: host.host_id, label: hostLabel(host) }))} placeholder={t('conversation_ui.preflight.choose_host')} />
+          <SelectionField label={t('conversation_ui.preflight.primary')} value={primaryKey} onChange={value => { primarySelectionTouched.current = true; setDraftRuntimeIds({}); setPrimaryKey(value) }} options={[
             { value: 'managed', label: t('conversation_ui.preflight.managed_workspace') },
             ...locations.map(location => ({ value: `location:${location.workspace_location_id}`, label: `${location.folder_name}${location.display_path ? ` · ${location.display_path}` : ''}${location.execution_ready ? '' : t('conversation_ui.preflight.not_ready_suffix')}` })),
           ]} placeholder={t('conversation_ui.preflight.choose_primary')} />
@@ -532,18 +499,26 @@ export function ConversationExecutionPreflightContent({
               <Link to={`/projects/${projectId}/files?setup=folder`} className="underline">{t('conversation_ui.preflight.connect_folder')}</Link>
             </div>
           )}
-          {participantChoices.filter(choice => choice.options.length > 0 && (!choice.selected || choice.options.length > 1)).map(({ member, options, selectedId }) => (
-            <SelectionField
-              key={member.agent_id}
-              label={member.role === 'manager' ? t('conversation_ui.preflight.cli_installation') : t('conversation_ui.preflight.cli_installation_for', { agent: member.agent_name })}
-              value={selectedId}
-              onChange={value => member.role === 'manager'
-                ? setRuntimeProfileId(value)
-                : setParticipantRuntimeProfileIds(current => ({ ...current, [member.agent_id]: value }))}
-              options={options.map(profile => ({ value: runtimeCandidateKey(profile), label: `${profile.agent_name} · ${profile.runtime_key} · ${profile.runtime_installation}${profile.runtime_profile_id ? '' : t('conversation_ui.preflight.detected_suffix')}` }))}
-              placeholder={t('conversation_ui.preflight.choose_cli')}
-              disabled={!hostId || !selectedPrimary}
-            />
+          {participantChoices.map(({ member, options, selected }) => (
+            <div key={member.agent_id} className="flex flex-wrap items-center gap-2 text-xs">
+              <span>{member.agent_name}</span>
+              {options.length > 1 ? (
+                <SelectionField label={t('conversation_ui.preflight.cli_installation_for', { agent: member.agent_name })}
+                  value={selected?.runtime_profile_id ?? ''}
+                  onChange={value => setDraftRuntimeIds(previous => ({ ...previous, [member.agent_id]: value }))}
+                  options={options.map(profile => ({ value: profile.runtime_profile_id!, label: `${profile.runtime_key} · ${profile.runtime_installation}` }))}
+                  placeholder={t('conversation_ui.preflight.choose_cli')} />
+              ) : (
+                <span className="text-muted-foreground">
+                  {selected ? `${selected.runtime_key} · ${selected.runtime_installation}` : t('conversation_ui.preflight.runtime_unavailable')}
+                </span>
+              )}
+              <Link to={member.role === 'manager'
+                ? `/projects/${projectId}?settings=runtime`
+                : `/agents/${member.agent_id}`} className="underline">
+                {t('conversation_ui.preflight.runtime_settings')}
+              </Link>
+            </div>
           ))}
           <div className="flex flex-wrap items-center gap-2 text-xs">
             {selectedHost && <Badge variant={selectedHost.online ? 'success' : 'destructive'}>{selectedHost.online ? t('conversation_ui.preflight.daemon_online') : t('conversation_ui.preflight.daemon_offline')}</Badge>}
@@ -552,7 +527,7 @@ export function ConversationExecutionPreflightContent({
           {effectiveDraftBlockedReason && <p className="text-xs text-destructive">{effectiveDraftBlockedReason}</p>}
           <div className="flex flex-wrap gap-2">
             <Button size="sm" disabled={busy || effectiveDraftBlockedReason !== null} onClick={() => void initialize()}>{busy ? <Loader2 className="mr-1 size-3.5 animate-spin" /> : null}{t('conversation_ui.preflight.confirm')}</Button>
-            {!manager && <Button size="sm" variant="outline" disabled={busy || disabled || scope.actionRole === 'worker' || scope.actionRole === 'viewer' || !detail?.viewer_can_write} onClick={() => void openDraft()}>{t('conversation_ui.preflight.retry_agent')}</Button>}
+            {!manager && <Button size="sm" variant="outline" disabled={busy || disabled || executionActive || scope.actionRole === 'worker' || scope.actionRole === 'viewer' || !detail?.viewer_can_write} onClick={() => void openDraft()}>{t('conversation_ui.preflight.retry_agent')}</Button>}
             {/* The Host chosen above, when there is one; otherwise the overview. */}
             <Link to={hostId ? commandCenterHostPath(hostId, 'runtime') : '/command-center'} className="inline-flex items-center text-xs underline">{t('conversation_ui.preflight.configure_host')}</Link>
           </div>
@@ -567,7 +542,7 @@ export function ConversationExecutionPreflightContent({
         mode={attachMode}
         onModeChange={setAttachMode}
         onMutate={mutateAttachment}
-        disabled={busy || disabled || loading || Boolean(error) || Boolean(summary?.dispatch_locked)}
+        disabled={busy || disabled || executionActive || loading || Boolean(error) || Boolean(summary?.dispatch_locked)}
       />}
       {onNewConversation && initialized && <div className="flex flex-wrap items-center gap-2"><Button size="sm" variant="outline" onClick={onNewConversation}>{t('conversation_ui.preflight.new_conversation')}</Button><Popover><PopoverTrigger asChild><Button type="button" size="sm" variant="ghost" aria-label={t('conversation_ui.settings.environment_help')}><Info className="size-3.5" /></Button></PopoverTrigger><PopoverContent className="text-xs">{t('conversation_ui.settings.locked')}</PopoverContent></Popover></div>}
       {error && <p className="text-xs text-destructive">{error}</p>}
@@ -644,23 +619,10 @@ function hostLabel(host: ConversationExecutionHostSummary): string {
   return `${host.host_name} · ${host.online ? i18n.t('conversation_ui.preflight.host_online') : i18n.t('conversation_ui.preflight.host_offline')}${host.host_kind === 'server' ? i18n.t('conversation_ui.preflight.host_server_suffix') : ''}`
 }
 
-function runtimeCandidateKey(profile: ConversationExecutionRuntimeProfile): string {
-  return JSON.stringify([
-    profile.runtime_profile_id ?? 'detected',
-    profile.agent_id,
-    profile.execution_host_id ?? '',
-    profile.workspace_mode ?? '',
-    profile.workspace_location_id ?? '',
-    profile.runtime_key,
-    profile.runtime_installation ?? '',
-  ])
-}
-
-function suggestedRuntimeCandidateKey(profiles: ConversationExecutionRuntimeProfile[]): string {
+function configuredRuntime(profiles: ConversationExecutionRuntimeProfile[]): ConversationExecutionRuntimeProfile | null {
   const preferred = profiles.filter(profile => profile.preferred)
-  const persisted = profiles.filter(profile => profile.runtime_profile_id !== null)
-  const suggested = preferred.length === 1 ? preferred[0] : persisted.length === 1 ? persisted[0] : profiles.length === 1 ? profiles[0] : null
-  return suggested ? runtimeCandidateKey(suggested) : ''
+  if (preferred.length === 1) return preferred[0]!
+  return profiles.length === 1 ? profiles[0]! : null
 }
 
 function draftReason(input: {

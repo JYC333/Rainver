@@ -22,6 +22,7 @@ import type { HostLaunchModelChannel, HostLaunchProviderBinding, RuntimeSessionC
 import { getRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
 import type { AgentRunRecord } from "./repository.js";
 import type { VendorCliRuntimeKey } from "../runtimeAdapters/specs.js";
+import { gmailDigestRunContext } from "../sources/gmail/gmailDigests.js";
 
 /**
  * What the executing host is told. The daemon creates a directory, writes
@@ -143,11 +144,22 @@ export async function resolveRuntimeProfileScope(
  * beside the bound ones so that switching a Conversation between a
  * subscription login and a ModelProvider starts a fresh vendor session rather
  * than resuming one whose context another backend produced.
+ *
+ * A bound run's backend segment also names its channel (ADR 0036 §11): a launch
+ * isolated to the model-only channel (`<provider>.isolated`) and one with
+ * network (`<provider>.network`) never share a directory, so what an isolated
+ * launch was given — its session transcripts, the CLI's own memory of the mail
+ * it read — is never on disk for a launch with network. Neither uses the
+ * earlier, channel-less `<provider>` directory, which both may have written
+ * before: it is left as it is (archived and reset with its container), and a
+ * session recorded there is not found in the new one, so it starts fresh. A run
+ * with no ModelProvider is never isolated: `ambient` stays one directory.
  */
 export function runtimeProfileKey(
   scope: RuntimeProfileScope,
   runtimeKey: string,
   providerId: string | null,
+  isolated = false,
 ): string {
   return [
     "agents",
@@ -155,7 +167,7 @@ export function runtimeProfileKey(
     scope.container_kind,
     scope.container_id,
     runtimeKey,
-    providerId ?? "ambient",
+    providerId === null ? "ambient" : `${providerId}.${isolated ? "isolated" : "network"}`,
   ].join("/");
 }
 
@@ -402,6 +414,68 @@ export function effectiveRunProviderModel(
 }
 
 /**
+ * What a lease for this runtime and this Provider (as the runtime's provider
+ * read returns it: `getProvider(space, null, id)`, so no subscription
+ * Provider) is built against, checked before any lease exists: the runtime
+ * binds a ModelProvider at all, the Provider is there, its vendor protocol is
+ * one the runtime speaks, and it carries that protocol's compatible URL. The
+ * model is the one the lease resolves — `model` (the Profile's, else the Run's
+ * override), else the Provider's default, else its first listed model — or
+ * null when none is named (each caller decides what that means for it).
+ *
+ * The one statement of these checks: the lease builder and the Gmail
+ * automation card (`gmailApplicationExecution.ts`, which must never offer a
+ * configuration whose lease would be refused) both ask it. Throws
+ * `RemoteProviderBindingError` with the lease's own codes.
+ */
+export function providerLeaseTarget(runtimeKey: string, record: Record<string, unknown> | null, binding: { model: string | null }): {
+  requirement: NonNullable<ReturnType<typeof adapterProviderRequirement>>;
+  upstreamBaseUrl: string;
+  providerName: string;
+  availableModels: string[];
+  model: string | null;
+} {
+  if (!adapterProviderApi(runtimeKey)) {
+    throw new RemoteProviderBindingError(
+      "adapter_provider_binding_unsupported",
+      `Runtime adapter '${runtimeKey}' does not support a ModelProvider binding.`,
+    );
+  }
+  if (!record) {
+    throw new RemoteProviderBindingError(
+      "model_provider_not_found",
+      "The ModelProvider this run was bound to is no longer available in this Space.",
+    );
+  }
+  // Which endpoint and route the binding uses can depend on the provider: a
+  // runtime declaring `vendor` (OpenCode) speaks the bound vendor's own
+  // protocol, so the requirement is resolved only once the provider is known.
+  const requirement = adapterProviderRequirement(runtimeKey, stringValue(record.provider_type));
+  if (!requirement) {
+    throw new RemoteProviderBindingError(
+      "provider_protocol_unsupported",
+      `Runtime adapter '${runtimeKey}' cannot bind a ModelProvider of type '${stringValue(record.provider_type) ?? "unknown"}': `
+        + "its vendor protocol is neither Anthropic Messages nor OpenAI-compatible.",
+    );
+  }
+  const upstreamBaseUrl = stringValue(record[requirement.base_url_field]);
+  if (!upstreamBaseUrl) {
+    throw new RemoteProviderBindingError(
+      requirement.missing_base_url_code,
+      `The ModelProvider this run was bound to is not configured with ${requirement.base_url_label} URL.`,
+    );
+  }
+  const availableModels = stringArray(record.available_models);
+  return {
+    requirement,
+    upstreamBaseUrl,
+    providerName: stringValue(record.name) ?? "Rainver Provider",
+    availableModels,
+    model: binding.model ?? stringValue(record.default_model) ?? availableModels[0] ?? null,
+  };
+}
+
+/**
  * Turns a resolved binding into a lease the host can use and the files its
  * runtime needs. The provider's real key is never part of this — the proxy
  * substitutes it inside the server process.
@@ -446,38 +520,38 @@ export async function buildRemoteProviderBinding(input: {
     );
   }
   const record = provider as Record<string, unknown>;
-  // Which endpoint and route the binding uses can depend on the provider: a
-  // runtime declaring `vendor` (OpenCode) speaks the bound vendor's own
-  // protocol, so the requirement is resolved only once the provider is known.
-  const requirement = adapterProviderRequirement(input.runtimeKey, stringValue(record.provider_type));
-  if (!requirement) {
-    throw new RemoteProviderBindingError(
-      "provider_protocol_unsupported",
-      `Runtime adapter '${input.runtimeKey}' cannot bind a ModelProvider of type '${stringValue(record.provider_type) ?? "unknown"}': `
-        + "its vendor protocol is neither Anthropic Messages nor OpenAI-compatible.",
-    );
-  }
-  const upstreamBaseUrl = stringValue(record[requirement.base_url_field]);
-  if (!upstreamBaseUrl) {
-    throw new RemoteProviderBindingError(
-      requirement.missing_base_url_code,
-      `The ModelProvider this run was bound to is not configured with ${requirement.base_url_label} URL.`,
-    );
-  }
-
-  const providerName = stringValue(record.name) ?? "Rainver Provider";
-  const availableModels = stringArray(record.available_models);
-  const model = input.binding.model
-    ?? stringValue(recordValue(input.run.model_override_json).model)
-    ?? stringValue(record.default_model)
-    ?? availableModels[0]
-    ?? null;
+  const { requirement, upstreamBaseUrl, providerName, availableModels, model } = providerLeaseTarget(input.runtimeKey, record, {
+    model: input.binding.model ?? stringValue(recordValue(input.run.model_override_json).model),
+  });
   // A model-only channel's lease is held to one named model (ADR 0030 §4a):
   // without one, any model the upstream serves would do. Refused before a lease.
   if (input.modelChannel && !model) {
     throw new RemoteProviderBindingError(
       "model_channel_model_required",
       `ModelProvider '${providerName}' must name a model for a network-isolated Run.`,
+    );
+  }
+  // The owner's Gmail application updates run on the one model they confirmed (ADR 0034): the lease is
+  // held to it, so neither the runtime nor its side requests can send the owner's mail to another model.
+  // The model is the one frozen in the Run's contract when its owner confirmed the card: a Provider whose
+  // default (or first listed model) moved from that model to another since never receives the mail.
+  const digestContext = gmailDigestRunContext(input.run);
+  const pinnedApplicationModel = digestContext?.application === true;
+  if (pinnedApplicationModel && (!model || !digestContext.pinned_model || model !== digestContext.pinned_model)) {
+    throw new RemoteProviderBindingError(
+      "gmail_application_model_required",
+      `ModelProvider '${providerName}' must serve exactly the model confirmed for automatic application updates.`,
+    );
+  }
+  // A daily or rule digest's Run likewise (ADR 0035 §3): not only its launch but every request of its lease goes
+  // to the model its card showed, so once mail was read no later inference of the Run (a retry, a side request, a
+  // runtime switching models itself) can send it elsewhere. A Run whose contract names no model, or another one,
+  // is refused before a lease.
+  const pinnedDigestModel = !!digestContext && !pinnedApplicationModel;
+  if (pinnedDigestModel && (!model || !digestContext.pinned_model || model !== digestContext.pinned_model)) {
+    throw new RemoteProviderBindingError(
+      "gmail_digest_model_required",
+      `ModelProvider '${providerName}' must serve exactly the model confirmed for this Gmail digest.`,
     );
   }
   // Codex and OpenCode name a model in their config. Refuse without one.
@@ -534,7 +608,7 @@ export async function buildRemoteProviderBinding(input: {
     route: requirement.route,
     upstream_base_url: upstreamBaseUrl,
     model,
-    pinned_model: localDestination ? model : null,
+    pinned_model: localDestination || pinnedApplicationModel || pinnedDigestModel ? model : null,
     request_policy: input.modelChannel ? "model_only" : null,
     runtime_key: input.runtimeKey,
     session_id: input.run.session_id,
@@ -657,7 +731,8 @@ function bindingFrame(input: {
   // Every segment is already constrained — the adapter type comes from the
   // runtime-adapter catalog, the ids are generated identifiers — and the
   // daemon validates the shape again before it builds a path from it.
-  const profile_key = runtimeProfileKey(input.scope, input.runtimeKey, input.providerId);
+  // The isolated and the networked launch of one backend keep separate CLI state (`runtimeProfileKey`).
+  const profile_key = runtimeProfileKey(input.scope, input.runtimeKey, input.providerId, input.modelOnly);
   // A bound run reaches its backend through the lease this frame carries, so
   // it needs no login and gets no link: linking one in would put the machine's
   // subscription credential inside a profile that is not using it. B67 applies

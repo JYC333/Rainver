@@ -94,7 +94,10 @@ export interface FinanceLedgerRuntime {
       computeBalances(db: unknown, spaceId: string, bookId: string, options: { viewerUserId: string; scope?: string }): Promise<Array<Record<string, unknown>>>;
       closeAccount(db: unknown, spaceId: string, bookId: string, accountId: string, date: string, viewerUserId: string): Promise<Record<string, string>>;
       importBeancount(db: unknown, spaceId: string, bookId: string, userId: string, input: Record<string, unknown>): Promise<ImportResultForTest>;
-      listImportBatches(db: unknown, spaceId: string, bookId: string, userId: string): Promise<Array<{ importSource: { id: string }; summary: Record<string, number> }>>;
+      listImportBatches(db: unknown, spaceId: string, bookId: string, userId: string, offset: number): Promise<{
+        items: Array<{ importSource: { id: string }; summary: Record<string, number> }>;
+        nextOffset?: number;
+      }>;
       getImportBatch(db: unknown, spaceId: string, bookId: string, userId: string, importSourceId: string): Promise<ImportResultForTest>;
       retryImportBatch(db: unknown, spaceId: string, bookId: string, userId: string, importSourceId: string): Promise<ImportResultForTest>;
       applyImportEntryMapping(db: unknown, spaceId: string, bookId: string, userId: string, importSourceId: string, entryId: string, accountMapping: Record<string, string>): Promise<ImportResultForTest>;

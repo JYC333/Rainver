@@ -44,6 +44,7 @@ import {
 import { GMAIL_OAUTH_CALLBACK_PATH, GMAIL_PUSH_PATH } from "../../../config.js";
 import { withQueryableTransaction } from "../../routeUtils/common.js";
 import { listGmailMonitors, requestGmailMailboxSync } from "./gmailMonitors.js";
+import { gmailSyncWantedSql } from "./gmailSyncRequests.js";
 import { listGmailDigests } from "./gmailDigests.js";
 import { GMAIL_PUSH_BODY_LIMIT, gmailPushMailbox, verifyGmailPushToken } from "./gmailPush.js";
 import type { ModuleContext } from "../../../gateway/routeRegistry.js";
@@ -143,7 +144,7 @@ export function registerGmailRoutes(app: FastifyInstance, context: ModuleContext
       const targets = (await pool.query<{ id: string }>(
         `SELECT c.id FROM gmail_connections c JOIN gmail_mailbox_sync_states s ON s.gmail_connection_id=c.id
           WHERE lower(c.mailbox_email)=$1 AND c.status='active'
-            AND EXISTS (SELECT 1 FROM gmail_monitor_rules r WHERE r.gmail_connection_id=c.id AND r.status='active')
+            AND ${gmailSyncWantedSql("c.id")}
           ORDER BY c.id LIMIT 20`, [mailbox])).rows;
       for (const target of targets) await withQueryableTransaction(pool, (tx) => requestGmailMailboxSync(tx, target.id, "push"));
     }

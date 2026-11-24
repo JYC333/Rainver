@@ -5,6 +5,7 @@ import { sha256Utf8 } from '../project_files/draftController'
 import * as React from 'react'
 import type { ConversationInputMediaOut, RuntimePromptCapabilities } from '@rainver/protocol'
 import { ConversationComposer } from './ConversationComposer'
+import { useConversationDraft } from './useConversationDraft'
 import { ConversationInputPartsView } from './ConversationInputComposer'
 import { conversationInputApi, projectFoldersApi } from '../../api/client'
 import type { ConversationInputPart } from '@rainver/protocol'
@@ -82,6 +83,51 @@ describe('shared conversation input composer', () => {
     expect(screen.getByAltText('diagram.png')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
     expect(screen.getByTestId('sent')).toHaveTextContent('1')
+  })
+
+  it('restores a pasted draft image after leaving and removes it only on request', async () => {
+    const destination = 'room:room-1:session-1'
+    sessionStorage.clear()
+    vi.mocked(conversationInputApi.imageBlob).mockResolvedValue(new Blob(['image'], { type: 'image/png' }))
+
+    function DraftComposer() {
+      const draft = useConversationDraft({
+        destination,
+        flushOnUnmount: true,
+        initialValue: () => '',
+        textOf: text => text,
+        withText: (_current, text) => text,
+      })
+      return <ConversationComposer
+        editor={<textarea aria-label="Message" value={draft.value} onChange={event => draft.setValue(event.target.value)} />}
+        sending={false}
+        sendDisabled={false}
+        onSend={vi.fn()}
+        inputParts={draft.parts}
+        onInputPartsChange={draft.setParts}
+      />
+    }
+
+    const first = render(<ConversationScope spaceId="source-b"><DraftComposer /></ConversationScope>)
+    const editor = screen.getByLabelText('Message')
+    fireEvent.change(editor, { target: { value: 'See the diagram' } })
+    fireEvent.paste(editor, { clipboardData: { files: [imageFile()] } })
+    await screen.findByRole('button', { name: 'Remove diagram.png' })
+    first.unmount()
+    expect(conversationInputApi.deletePendingImage).not.toHaveBeenCalled()
+
+    const restored = render(<ConversationScope spaceId="source-b"><DraftComposer /></ConversationScope>)
+    expect(await screen.findByAltText('diagram.png')).toBeInTheDocument()
+    expect(screen.getByLabelText('Message')).toHaveValue('See the diagram')
+    expect(conversationInputApi.uploadImage).toHaveBeenCalledTimes(1)
+    expect(conversationInputApi.imageBlob).toHaveBeenCalledWith('media-1', expect.objectContaining({ spaceId: 'source-b' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Remove diagram.png' }))
+    expect(conversationInputApi.deletePendingImage).toHaveBeenCalledWith('media-1', expect.objectContaining({ spaceId: 'source-b' }))
+    restored.unmount()
+
+    render(<ConversationScope spaceId="source-b"><DraftComposer /></ConversationScope>)
+    await waitFor(() => expect(screen.getByLabelText('Message')).toHaveValue('See the diagram'))
+    expect(screen.queryByAltText('diagram.png')).not.toBeInTheDocument()
   })
 
   it('uploads only as many images from one drop as the cap leaves room for', async () => {
@@ -194,6 +240,20 @@ describe('shared conversation input composer', () => {
     expect(await screen.findByRole('option', { name: /App\.tsx/ })).toBeInTheDocument()
     expect(conversationInputApi.searchFiles).toHaveBeenCalledWith('session-1', '', expect.any(AbortSignal), expect.any(Object))
     expect(projectFoldersApi.tree).not.toHaveBeenCalled()
+  })
+
+  it('refuses a binary file even if its decoded body is empty', async () => {
+    vi.mocked(conversationInputApi.searchFiles).mockResolvedValue({
+      items: [{ project_folder_id: 'folder-1', workspace_location_id: 'location-1', source: 'repo', relative_path: 'pic.bin', display_name: 'pic.bin', kind: 'file', size_bytes: 12 }],
+      truncated: false,
+    })
+    vi.mocked(projectFoldersApi.file).mockResolvedValue({ path: 'pic.bin', content: '', size: 12, line_count: 0, encoding: 'binary' })
+    render(<Harness projectId="project-1" projectFolderId="folder-1" sessionId="session-1" />)
+    fireEvent.click(screen.getByRole('button', { name: 'Reference file' }))
+    fireEvent.click(await screen.findByRole('option', { name: /pic\.bin/ }))
+
+    expect(await screen.findByText(/Only UTF-8 text files can be referenced/)).toBeVisible()
+    expect(screen.getByTestId('parts')).toHaveTextContent('[]')
   })
 
   it('restores historical images through the authenticated media endpoint', async () => {

@@ -45,11 +45,21 @@ function reportSideLoad(error: unknown): null {
 
 export default function TaskDetailPage() {
   const { taskId = '', projectId = '' } = useParams()
+  const { activeSpaceId, activeSpaceName } = useSpace()
+  return <TaskDetail key={JSON.stringify([activeSpaceId, projectId, taskId])}
+    {...{ taskId, projectId, activeSpaceId, activeSpaceName }} />
+}
+
+function TaskDetail({ taskId, projectId, activeSpaceId, activeSpaceName }: {
+  taskId: string
+  projectId: string
+  activeSpaceId: string | null
+  activeSpaceName: string | null
+}) {
   // Opened from a Project's Board, Back belongs to that Board: sending the
   // person to the cross-Project list would unmount the Project shell, which is
   // the thing opening the Task inside it was meant to preserve.
   const backTo = projectId ? `/projects/${projectId}/board` : '/tasks'
-  const { activeSpaceId, activeSpaceName } = useSpace()
   const [task, setTask] = useState<Task | null>(null)
   const [runs, setRuns] = useState<TaskRunListItem[]>([])
   const [arts, setArts] = useState<TaskArtifact[]>([])
@@ -75,13 +85,19 @@ export default function TaskDetailPage() {
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const navigate = useSpaceNavigate()
+  const mounted = useRef(false)
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
 
   async function removeTask() {
+    if (!task) return
     setDeleting(true)
     try {
-      await tasksApi.delete(taskId,crypto.randomUUID())
+      await tasksApi.delete(task.id,crypto.randomUUID())
       toast.success('Task deleted')
-      navigate(backTo, { replace: true })
+      if (mounted.current) navigate(backTo, { replace: true })
     } catch (error) { toast.error(errMsg(error)) }
     finally { setDeleting(false) }
   }
@@ -165,12 +181,6 @@ export default function TaskDetailPage() {
   // Navigating to another Task starts at Work again, where a fresh mount
   // starts. Do not run this on mount. It would override the default above,
   // and a tab clicked before it flushed would be undone.
-  const shownTaskId = useRef(taskId)
-  useEffect(() => {
-    if (shownTaskId.current === taskId) return
-    shownTaskId.current = taskId
-    setActiveTab('work')
-  }, [taskId])
 
   async function createRun() {
     if (!taskId || !task) return
@@ -183,7 +193,7 @@ export default function TaskDetailPage() {
       if (runtimeProfilePick && runtimeProfilePick !== defaultRuntimeProfileId) body.runtime_profile_id = runtimeProfilePick
       const aid = task.assigned_agent_id || agentPick || undefined
       if (aid) body.agent_id = aid
-      await tasksApi.createRun(taskId, body)
+      await tasksApi.createRun(task.id, body)
       toast.success('Queued run created')
       await reloadAfterWrite()
     } catch (e) {

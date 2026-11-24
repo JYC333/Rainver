@@ -8,10 +8,10 @@ const grant=z.object({
  scope:z.enum(['space','run','background','project']),data_owner_user_id:IdSchema.nullable(),granted_by_user_id:IdSchema,target_run_id:IdSchema.nullable(),
  /**
   * `project` scope (ADR 0033, core data tools only): the Project, the owner's connection and the purpose it is bound to —
-  * an on-demand mail read, or a scheduled digest's read (`daily_digest`/`rule_digest`, phase B). The set matches the
+  * an on-demand mail read, or a scheduled digest's read (`daily_digest`/`rule_digest`, phase B) or an application-update automation's (`application_update`, ADR 0034). The set matches the
   * `ck_plugin_data_grants_shape` check, so every stored consent can be listed and revoked.
   */
- project_id:IdSchema.nullable(),connection_id:IdSchema.nullable(),purpose:z.enum(['on_demand_read','daily_digest','rule_digest']).nullable(),
+ project_id:IdSchema.nullable(),connection_id:IdSchema.nullable(),purpose:z.enum(['on_demand_read','daily_digest','rule_digest','application_update']).nullable(),
  plugin_version:z.string(),authority_hash:z.string(),expanded:z.array(pin),
  status:z.enum(['active','revoked','expired']),expires_at:ISODateTimeSchema.nullable(),revoked_at:ISODateTimeSchema.nullable(),
  created_at:ISODateTimeSchema,

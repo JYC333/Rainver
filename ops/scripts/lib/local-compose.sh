@@ -52,6 +52,7 @@ local_compose_init() {
     exit 1
   fi
   export RAINVER_MODE_ROOT="${RAINVER_HOST_MODE_ROOT:-$MODE_ROOT}"
+  export DOCKER_GID="${DOCKER_GID:-$(stat -c '%g' /var/run/docker.sock 2>/dev/null || echo 989)}"
 
   # Host shells and Node tooling often export DEBUG for their own purposes
   # (for example DEBUG=release). Strip that from the compose process.
@@ -60,6 +61,126 @@ local_compose_init() {
   COMPOSE=(env -u DEBUG docker compose --env-file "$ENV_FILE" -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE")
   COMPOSE_HINT="docker compose --env-file $ENV_FILE -p $COMPOSE_PROJECT -f $COMPOSE_FILE"
   LOCAL_COMPOSE_POSTGRES_STARTED=false
+}
+
+# The instance directory is already shared with the deployer. Lock its inode,
+# which stays in place when a restore swaps the directories below it.
+local_compose_lock_instance() {
+  local operation="$1" fd="${RAINVER_OPERATION_LOCK_FD:-}"
+  if [[ ! "$fd" =~ ^[0-9]+$ || ! "$MODE_ROOT" -ef "/dev/fd/$fd" ]]; then
+    if ! exec {fd}<"$MODE_ROOT"; then
+      echo "ERROR: cannot open the instance directory for $operation ($MODE_ROOT)." >&2
+      return 1
+    fi
+  fi
+  if command -v flock >/dev/null 2>&1; then
+    flock --exclusive --nonblock "$fd" || fd=""
+  else
+    python3 -c 'import fcntl; fcntl.flock(0, fcntl.LOCK_EX | fcntl.LOCK_NB)' <&"$fd" 2>/dev/null || fd=""
+  fi
+  if [[ -z "$fd" ]]; then
+    echo "ERROR: cannot lock instance for $operation; another operation may be active ($MODE_ROOT)." >&2
+    return 1
+  fi
+  export RAINVER_OPERATION_LOCK_FD="$fd"
+}
+
+local_compose_unlock_instance() {
+  if command -v flock >/dev/null 2>&1; then
+    flock --unlock "$RAINVER_OPERATION_LOCK_FD"
+  else
+    python3 -c 'import fcntl; fcntl.flock(0, fcntl.LOCK_UN)' <&"$RAINVER_OPERATION_LOCK_FD"
+  fi
+}
+
+# A mutable image tag is a pointer on the server repository. CI moves it
+# after the complete release's immutable commit tags are available.
+local_compose_pin_image_tag() {
+  local tag="${1:-$(local_compose_setting_or_default RAINVER_IMAGE_TAG stable)}"
+  case "$tag" in
+    stable|edge)
+      local ref="ghcr.io/jyc333/rainver-server:$tag" revision
+      docker pull "$ref" >&2 || return
+      revision="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$ref")" || return
+      tag="sha-$revision"
+      ;;
+  esac
+  if [[ ! "$tag" =~ ^sha-[0-9a-f]{40}$ ]]; then
+    echo "ERROR: could not resolve a Rainver release to a valid immutable image tag." >&2
+    return 1
+  fi
+  export RAINVER_IMAGE_TAG="$tag"
+}
+
+local_compose_verify_image_revision() {
+  local service revision
+  for service in "$@"; do
+    revision="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' \
+      "ghcr.io/jyc333/rainver-$service:$RAINVER_IMAGE_TAG")" || return
+    if [[ "sha-$revision" != "$RAINVER_IMAGE_TAG" ]]; then
+      echo "ERROR: the $service image does not match release $RAINVER_IMAGE_TAG." >&2
+      return 1
+    fi
+  done
+}
+
+# One-off production commands must run the same commit image throughout the
+# operation. An existing local copy keeps offline restore possible.
+local_compose_prepare_prod_server_image() {
+  [[ "$MODE" == prod ]] || return 0
+  local_compose_pin_image_tag || return
+  if ! docker image inspect "ghcr.io/jyc333/rainver-server:$RAINVER_IMAGE_TAG" >/dev/null 2>&1; then
+    "${COMPOSE[@]}" pull server || return
+  fi
+  local_compose_verify_image_revision server
+}
+
+local_compose_run_restore_server() {
+  local database="$1" owner_url command=(run --rm -T --no-deps)
+  shift
+  [[ "$MODE" != prod ]] || command+=(--pull never)
+  owner_url="$(local_compose_server_owner_database_url "$database")" || return
+  SERVER_DATABASE_URL="$owner_url" \
+  RAINVER_DB_APP_ROLE="$(local_compose_setting_or_default RAINVER_DB_APP_ROLE rainver_app)" \
+  RAINVER_DB_BACKUP_ROLE="$(local_compose_setting_or_default RAINVER_DB_BACKUP_ROLE rainver_backup)" \
+    "${COMPOSE[@]}" "${command[@]}" -e SERVER_DATABASE_URL -e RAINVER_DB_APP_ROLE -e RAINVER_DB_BACKUP_ROLE server "$@"
+}
+
+local_compose_restore_preflight() {
+  local_compose_run_restore_server "$1" sh -s < "$REPO_ROOT/ops/scripts/lib/restore-preflight.sh"
+}
+
+COMPOSE_APPLICATION_SERVICES=(frontend server sandbox-runner deployer)
+
+local_compose_active_application_services() {
+  local status services all="" service
+  for status in running restarting paused; do
+    if ! services="$("${COMPOSE[@]}" ps --services --all --filter "status=$status" 2>/dev/null)"; then
+      echo "ERROR: unable to inspect Compose service status for mode '$MODE'." >&2
+      return 1
+    fi
+    all+=$'\n'"$services"
+  done
+  for service in "${COMPOSE_APPLICATION_SERVICES[@]}"; do
+    if [[ $'\n'"$all"$'\n' == *$'\n'"$service"$'\n'* ]]; then
+      printf '%s\n' "$service"
+    fi
+  done
+}
+
+local_compose_require_stopped_applications() {
+  local operation="$1" force="${2:-false}" active
+  active="$(local_compose_active_application_services)" || return
+  if [[ -z "$active" ]]; then
+    return 0
+  fi
+  if [[ "$force" == "true" ]]; then
+    echo "WARNING: app services active during $operation: ${active//$'\n'/ }" >&2
+    return 0
+  fi
+  echo "ERROR: app services still active for $operation (mode '$MODE'): ${active//$'\n'/ }" >&2
+  echo "       To stop application services: $COMPOSE_HINT stop ${COMPOSE_APPLICATION_SERVICES[*]}" >&2
+  return 1
 }
 
 local_compose_ensure_mode_env_file() {
@@ -191,13 +312,16 @@ local_compose_stop_postgres_if_started() {
 local_compose_env_value() {
   local key="$1"
   local file="${2:-$ENV_FILE}"
-  local line parsed_key value
+  local line parsed_key value found=false
 
   [[ -f "$file" ]] || return 1
 
   while IFS= read -r line || [[ -n "$line" ]]; do
     line="$(local_compose_trim "$line")"
     [[ -z "$line" || "$line" == \#* ]] && continue
+    if [[ "$line" =~ ^export[[:space:]]+(.+)$ ]]; then
+      line="${BASH_REMATCH[1]}"
+    fi
 
     if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=(.*)$ ]]; then
       parsed_key="${BASH_REMATCH[1]}"
@@ -217,12 +341,11 @@ local_compose_env_value() {
         value="$(local_compose_trim "$value")"
       fi
 
-      printf '%s\n' "$value"
-      return 0
+      found=true
     fi
   done < "$file"
 
-  return 1
+  [[ "$found" == true ]] && printf '%s\n' "$value"
 }
 
 local_compose_setting() {
@@ -298,10 +421,10 @@ local_compose_set_env_value() {
   [[ -f "$file" ]] || : > "$file"
   tmp="$(mktemp "${file}.tmp.XXXXXX")"
 
-  awk -v key="$key" -v value="$value" '
-    BEGIN { done = 0 }
-    $0 ~ "^[[:space:]]*#?[[:space:]]*" key "[[:space:]]*=" {
-      print key "=" value
+  RAINVER_COMPOSE_ENV_VALUE="$value" awk -v key="$key" '
+    BEGIN { done = 0; value = ENVIRON["RAINVER_COMPOSE_ENV_VALUE"] }
+    $0 ~ "^[[:space:]]*#?[[:space:]]*(export[[:space:]]+)?" key "[[:space:]]*=" {
+      if (!done) print key "=" value
       done = 1
       next
     }
@@ -329,7 +452,7 @@ local_compose_ensure_env_secret() {
 }
 
 local_compose_urlencode() {
-  python3 -c 'from urllib.parse import quote; import sys; print(quote(sys.argv[1], safe=""))' "$1"
+  printf '%s' "$1" | python3 -c 'from urllib.parse import quote; import sys; print(quote(sys.stdin.read(), safe=""))'
 }
 
 local_compose_postgres_password_or_default() {
@@ -354,7 +477,7 @@ local_compose_server_owner_database_url() {
   local pguser pgpass pgdb
   pguser="$(local_compose_setting_or_default POSTGRES_USER rainver)"
   pgpass="$(local_compose_postgres_password_or_default)"
-  pgdb="$(local_compose_setting_or_default POSTGRES_DB rainver)"
+  pgdb="${1:-$(local_compose_setting_or_default POSTGRES_DB rainver)}"
   local_compose_validate_pg_identifier "POSTGRES_USER" "$pguser"
   local_compose_validate_pg_identifier "POSTGRES_DB" "$pgdb"
   printf 'postgresql://%s:%s@postgres:5432/%s\n' \
@@ -396,7 +519,7 @@ local_compose_generate_server_env() {
   local deployer_env="$MODE_ROOT/.deployer.env"
   # ADR 0031: the owner URL kept for rollback and the role passwords are
   # operator inputs; the server only receives its own SERVER/BACKUP URLs.
-  grep -vE '^[[:space:]]*(POSTGRES_(MAJOR|DB|USER|PASSWORD)|DATABASE_URL|RAINVER_DB_(APP_PASSWORD|BACKUP_PASSWORD|OWNER_[A-Z_]+))[[:space:]]*=' \
+  grep -vE '^[[:space:]]*(export[[:space:]]+)?(POSTGRES_(MAJOR|DB|USER|PASSWORD)|DATABASE_URL|RAINVER_DB_(APP_PASSWORD|BACKUP_PASSWORD|OWNER_[A-Z_]+))[[:space:]]*=' \
     "$ENV_FILE" > "$server_env"
   # The deployer pull loop authenticates to the server with the internal token
   # (ADR 0020 §1). The execution host is deliberately not given it: it holds a

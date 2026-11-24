@@ -17,7 +17,11 @@ printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"
 for v in SERVER_DATABASE_URL RAINVER_DB_APP_PASSWORD RAINVER_DB_BACKUP_PASSWORD; do
   if [[ -n "${!v:-}" ]]; then printf 'env:%s\\n' "$v" >> "$FAKE_DOCKER_LOG"; fi
 done
-if [[ "$*" == *"ps --services"* ]]; then printf '%s' "${FAKE_RUNNING:-}"; fi
+if [[ "$*" == *"ps --services"* ]]; then
+  if [[ "${FAKE_STATUS_ERROR:-}" == true ]]; then exit 1; fi
+  if [[ "$*" == *"status=running"* ]]; then printf '%s' "${FAKE_RUNNING:-}"; fi
+  if [[ "$*" == *"status=restarting"* ]]; then printf '%s' "${FAKE_RESTARTING:-}"; fi
+fi
 exit 0
 """
 
@@ -42,8 +46,13 @@ class RuntimeRolesScriptTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
-    def run_script(self, *args: str, running: str = "") -> subprocess.CompletedProcess[str]:
-        return subprocess.run(["bash", str(SCRIPT), *args, "--mode", "test"], env={**self.env, "FAKE_RUNNING": running}, text=True, capture_output=True)
+    def run_script(self, *args: str, running: str = "", restarting: str = "", status_error: bool = False) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["bash", str(SCRIPT), *args, "--mode", "test"],
+            env={**self.env, "FAKE_RUNNING": running, "FAKE_RESTARTING": restarting, "FAKE_STATUS_ERROR": str(status_error).lower()},
+            text=True,
+            capture_output=True,
+        )
 
     def env_text(self) -> str:
         return self.env_file.read_text(encoding="utf-8")
@@ -80,7 +89,7 @@ class RuntimeRolesScriptTest(unittest.TestCase):
                 self.assertNotIn(value, result.stdout + result.stderr)
 
     def test_owner_channel_scripts_never_spell_a_secret_on_docker_argv(self) -> None:
-        for script in ("db/runtime-roles.sh", "db/restore.sh", "system/restore.sh"):
+        for script in ("db/migrate.sh", "db/runtime-roles.sh", "db/restore.sh", "system/restore.sh"):
             text = (Path(__file__).parent / script).read_text(encoding="utf-8")
             self.assertNotIn('-e SERVER_DATABASE_URL="', text, script)
             self.assertNotIn('-e RAINVER_DB_APP_PASSWORD="', text, script)
@@ -91,6 +100,14 @@ class RuntimeRolesScriptTest(unittest.TestCase):
         blocked = self.run_script("activate", "--yes", running="server\n")
         self.assertNotEqual(blocked.returncode, 0)
         self.assertIn("stop application services", blocked.stderr)
+        before = self.env_text()
+        blocked_restart = self.run_script("activate", "--yes", restarting="sandbox-runner\n")
+        self.assertNotEqual(blocked_restart.returncode, 0)
+        self.assertIn("sandbox-runner", blocked_restart.stderr)
+        blocked_query = self.run_script("rollback", "--yes", status_error=True)
+        self.assertNotEqual(blocked_query.returncode, 0)
+        self.assertIn("unable to inspect Compose", blocked_query.stderr)
+        self.assertEqual(self.env_text(), before)
         self.assertEqual(self.run_script("activate", "--yes").returncode, 0)
         text = self.env_text()
         self.assertIn("SERVER_DATABASE_URL=postgresql://rainver_app:", text)

@@ -12,14 +12,15 @@ type Target=OperationInput<'publication.import'>;
  * may read an immutable publication; it never gains live source access. */
 async function authorizePublication(db:Queryable,a:OperationActor,id:string,kind:'import'|'revoke'){
  await lockSpaceRole(db,a.space_id,a.on_behalf_of_user_id!);
- const row=(await db.query<{source_space_id:string;published_by_user_id:string}>(
-   'SELECT source_space_id,published_by_user_id FROM content_publications WHERE id=$1 FOR UPDATE',[id])).rows[0];
+ const row=(await db.query<{source_space_id:string;published_by_user_id:string;status:string}>(
+   'SELECT source_space_id,published_by_user_id,status FROM content_publications WHERE id=$1 FOR UPDATE',[id])).rows[0];
  if(!row)throw hidden();
  if(kind==='revoke'){
    if(row.source_space_id!==a.space_id||row.published_by_user_id!==a.on_behalf_of_user_id)throw hidden();
  }else{
    if(!(await db.query('SELECT id FROM content_publication_targets WHERE publication_id=$1 AND target_space_id=$2 FOR SHARE',[id,a.space_id])).rows.length)throw hidden();
  }
+ return row;
 }
 export function publicationRegistrations(definitions:ReadonlyMap<string,RegisteredSystemActionDefinition>):OperationRegistration[]{
  return (Object.keys(PUBLICATION_OPERATION_SCHEMAS) as (keyof typeof PUBLICATION_OPERATION_SCHEMAS)[]).map(id=>({
@@ -42,9 +43,12 @@ export function publicationRegistrations(definitions:ReadonlyMap<string,Register
      // Replays retain the current source/target gate. Import receipts disclose
      // a private resource id only to its original importer.
      if(id==='publication.import'){
-       const out=raw as {publication_id:string;imported_by_user_id:string;imported_resource_id:string|null};
-       await authorizePublication(db,a,out.publication_id,'import');
+       const out=raw as {publication_id:string;imported_by_user_id:string;imported_resource_id:string|null;snapshot_hash:string|null};
+       const publication=await authorizePublication(db,a,out.publication_id,'import');
        if(out.imported_resource_id&&out.imported_by_user_id!==a.on_behalf_of_user_id)throw hidden();
+       // The executor returns this in-memory response. Stored import provenance
+       // and the original receipt remain intact.
+       if(publication.status!=='active')out.snapshot_hash=null;
      }else{
        const out=raw as {id:string};
        await authorizePublication(db,a,out.id,'revoke');

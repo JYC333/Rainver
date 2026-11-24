@@ -66,39 +66,9 @@ if [[ ! "$BACKUP_RETENTION_COUNT" =~ ^[0-9]+$ ]]; then
   echo "ERROR: BACKUP_RETENTION_COUNT must be a non-negative integer" >&2; exit 1
 fi
 
-require_app_services_stopped() {
-  local running_services=""
-  local running=()
-  local service
 
-  if ! running_services="$("${COMPOSE[@]}" ps --services --filter status=running 2>/dev/null)"; then
-    echo "ERROR: unable to inspect running compose services for mode '$MODE'" >&2
-    exit 1
-  fi
-
-  for service in "$@"; do
-    if [[ $'\n'"$running_services"$'\n' == *$'\n'"$service"$'\n'* ]]; then
-      running+=("$service")
-    fi
-  done
-
-  if (( ${#running[@]} == 0 )); then
-    return 0
-  fi
-
-  if [[ "$FORCE_RUNNING" == "true" ]]; then
-    echo "WARNING: app service(s) still running during offline full-system backup: ${running[*]}" >&2
-    echo "WARNING: database and file snapshots may be inconsistent." >&2
-    return 0
-  fi
-
-  echo "ERROR: app service(s) still running for mode '$MODE': ${running[*]}" >&2
-  echo "       Stop app services first; backup will manage postgres as needed." >&2
-  echo "       $COMPOSE_HINT stop frontend server deployer" >&2
-  exit 1
-}
-
-require_app_services_stopped frontend server deployer
+local_compose_lock_instance "taking an offline backup"
+local_compose_require_stopped_applications "offline full-system backup" "$FORCE_RUNNING"
 
 STAGING=""
 ARCHIVE_TMP=""

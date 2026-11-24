@@ -1,6 +1,6 @@
 import {withDbTransaction} from '../src/modules/routeUtils/common.js';
 import {previewNow} from './support/sourceGoalPreview.js';
-import {waitForLockWaiter} from './support/lockWait.js';
+import {waitForBlockedBy,waitForLockWaiter} from './support/lockWait.js';
 import {RuntimeContextContinuityService} from '../src/modules/runtimeContext/continuity/service.js';
 import {ExecutionControlSnapshotRepository} from '../src/modules/policy/executionControlSnapshots.js';
 import {RuntimeContextPolicyRepository} from '../src/modules/policy/runtimeContextPolicyRepository.js';
@@ -64,6 +64,33 @@ it('serializes a competing legacy job and scheduler transfer without dual owners
   if(handover.status==='fulfilled'){expect(job.status).toBe('rejected');if(job.status==='rejected')expect(job.reason).toMatchObject({code:'23514'});expect(owner).toBe('goal');expect(ticks).toBe(1);expect((await db.pool.query('SELECT count(*)::int n FROM extraction_jobs')).rows[0].n).toBe(0);}
   else{expect(handover.reason).toMatchObject({statusCode:409});expect(job.status).toBe('fulfilled');expect(owner).toBe('legacy');expect(ticks).toBe(0);expect((await db.pool.query('SELECT count(*)::int n FROM extraction_jobs')).rows[0].n).toBe(1);}
  }finally{await holder.query('ROLLBACK');holder.release();await Promise.allSettled([start,...(insert?[insert]:[])])}
+});
+it('lets a legacy writer holding the channel finish its foreign-key check before takeover',async ctx=>{
+ if(!db.available)return ctx.skip();
+ const {goal,service,version}=await prepared();
+ const writer=await db.pool.connect();
+ let handover:Promise<unknown>|undefined;
+ try{
+  await writer.query('BEGIN');
+  await writer.query('SELECT id FROM source_channels WHERE id=$1 FOR UPDATE',[channelId]);
+  const {pid}=(await writer.query<{pid:number}>('SELECT pg_backend_pid() AS pid')).rows[0];
+  handover=service.follow(identity,goal.id,{version_id:version.id,idempotency_key:'legacy-wins'});
+  const refused=expect(handover).rejects.toMatchObject({statusCode:409});
+  void refused.catch(()=>undefined);
+  await waitForBlockedBy(db.pool,pid);
+  await writer.query(`INSERT INTO extraction_jobs(id,space_id,connection_id,job_type,status,metadata_json,created_at)
+   VALUES($1,$2,$3,'connection_scan','pending',$4,now())`,[randomUUID(),identity.spaceId,connectionId,{source_channel_id:channelId}]);
+  await writer.query('COMMIT');
+  await refused;
+  expect((await db.pool.query("SELECT compatibility_json->>'scheduler_owner' AS owner FROM source_goals WHERE id=$1",[goal.id])).rows)
+   .toEqual([{owner:'legacy'}]);
+  expect((await db.pool.query("SELECT count(*)::int AS n FROM scheduler_tasks WHERE task_type='source_goal_tick' AND task_key=$1 AND status='active'",[goal.id])).rows)
+   .toEqual([{n:0}]);
+ }finally{
+  await writer.query('ROLLBACK');
+  writer.release();
+  await Promise.allSettled(handover?[handover]:[]);
+ }
 });
 it('does not resume or modify a legacy schedule after its Source access is revoked',async ctx=>{
  if(!db.available)return ctx.skip();const m=await mapLegacyGoal(db.pool,identity,channelId);const service=new SourceGoalService(db.pool,config,port);await service.stop(identity,m.goal.id);await db.pool.query('UPDATE source_connections SET deleted_at=now() WHERE id=$1',[connectionId]);const before=await snapshot();await expect(service.resume(identity,m.goal.id,'legacy')).rejects.toMatchObject({statusCode:404});expect(await snapshot()).toEqual(before);

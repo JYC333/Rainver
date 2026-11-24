@@ -81,9 +81,12 @@ historical Tasks, Runs, Artifacts, Memory, and Corpus content, while pausing
 active Automations, Project Source bindings, and Source post-processing rules,
 pausing the active research workflow, cancelling non-terminal managed research
 operations, and cancelling queued/running Workflow Executions while blocking
-all non-terminal nodes, cancelling their queued/running Jobs and child Runs,
-and terminalizing the coordinator Run so no reconciler can continue the
+all non-terminal nodes. It cancels undispatched Jobs and Runs, and terminalizes
+the coordinator Run so no reconciler can continue the
 archived Project or leave a permanent `waiting_for_dependency` record.
+For a child Run with an execution lock or persisted launch, archive records
+`cancelling` and queues a durable stop request. The execution Job keeps its
+recovery path until the Host confirms that launch exited.
 Reactivating a Project does not automatically resume any of those components;
 each must be reviewed and resumed through its owning module.
 Project-scoped mutation gates reject writes while the Project is archived;
@@ -99,8 +102,9 @@ then Research Workflow.
 
 Before archive's Project lock, the root owner pre-discovers every affected
 Workflow coordinator/node Run and admits the full sorted linked-request set.
-The same transaction cancels Workflow/Job/Run state and publishes Proposal/request
-outcomes; storage failure rolls the Project archive back. The status-update entry
+The same transaction cancels Workflow state, writes Job/Run cancellations or
+stop requests as appropriate, and publishes Proposal/request outcomes for Runs
+that can already be ended. Storage failure rolls the Project archive back. The status-update entry
 uses the same owner. Nonlocking writer preflight does not replace the locked
 current-authority check. New Run membership after admission conflicts without
 late key acquisition; no automatic retry or approval mapping is enabled.

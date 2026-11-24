@@ -49,12 +49,13 @@ export const PublicationImportSummarySchema = z.object({
 export type PublicationImportSummary = z.infer<typeof PublicationImportSummarySchema>;
 
 export const PublicationImportSchema = PublicationImportSummarySchema.extend({
-  /** The importer's own response about their own copy: always named. */
+  /** Target members may only see the ID of a copy they imported. */
   imported_resource_id: IdSchema.nullable(),
   publication_id: IdSchema,
   target_space_id: IdSchema,
   publication_version: z.number().int().positive(),
-  snapshot_hash: z.string().length(64),
+  /** Current publication access controls this field even on a receipt replay. */
+  snapshot_hash: z.string().length(64).nullable(),
 }).strict();
 export type PublicationImport = z.infer<typeof PublicationImportSchema>;
 

@@ -34,12 +34,15 @@ export function registerProjectFolderIoRoutes(app:FastifyInstance,context:Module
       await assertProjectWriter(db,identity.spaceId,intent.project_id,identity.userId,{allowArchived:true});
       if(intent.folder_id){
         await new PgProjectFolderRepository(db,context.config).writableFolderForIo(identity,intent.project_id,intent.folder_id);
-        const location=await resolveLocationWithHost(db,identity.spaceId,intent.folder_id,intent.frozen_json.location!.id);
+        const locationId=intent.frozen_json.location?.id??intent.frozen_json.location_id;
+        if(!locationId)throw new OperationError('operation_not_found',404);
+        const location=await resolveLocationWithHost(db,identity.spaceId,intent.folder_id,locationId);
         if(location.execution_host_kind==='remote'&&location.host_owner_user_id!==identity.userId)throw new OperationError('operation_not_found',404);
       }
       const job=(await db.query<{status:string}>('SELECT status FROM jobs WHERE id=$1 AND space_id=$2',[intent.job_id,identity.spaceId])).rows[0];
       const stalled=!['succeeded','failed','needs_attention'].includes(intent.status)&&job&&['failed','cancelled'].includes(job.status);
-      const result=ProjectFolderIoStatusSchema.safeParse({id:intent.id,space_id:intent.space_id,project_id:intent.project_id,folder_id:intent.folder_id,job_id:intent.job_id,kind:intent.kind,status:stalled?'needs_attention':intent.status,error:intent.error_code?{code:intent.error_code,metadata:intent.effect_json.error_metadata??{}}:stalled?{code:'folder_job_requires_attention',metadata:{}}:null,result:intent.result_json});
+      const outcome=intent.frozen_json.location_id&&intent.result_json?{kind:'branch_align',...intent.result_json}:intent.result_json;
+      const result=ProjectFolderIoStatusSchema.safeParse({id:intent.id,space_id:intent.space_id,project_id:intent.project_id,folder_id:intent.folder_id,job_id:intent.job_id,kind:intent.kind,status:stalled?'needs_attention':intent.status,error:intent.error_code?{code:intent.error_code,metadata:intent.effect_json.error_metadata??{}}:stalled?{code:'folder_job_requires_attention',metadata:{}}:null,result:outcome});
       if(!result.success)throw new OperationError('operation_invalid_output',500);return reply.send(result.data);
     }catch(error){if(error instanceof OperationError)return reply.code(error.httpStatus).send(error.body(resolveRequestId(request)));return sendRouteError(reply,error);}
   });

@@ -73,6 +73,9 @@ const buttonStyle: CSSProperties = {
 const primaryButtonStyle: CSSProperties = {
   ...buttonStyle, background: '#1976d2', borderColor: '#1976d2', color: '#fff', fontWeight: 500,
 }
+const importButtonStyle: CSSProperties = {
+  ...buttonStyle, background: 'var(--card)', color: 'var(--card-foreground)', borderColor: 'var(--border)',
+}
 const errorTextStyle: CSSProperties = { color: '#b71c1c', fontSize: 13 }
 
 function statusBadge(status: string): CSSProperties {
@@ -886,25 +889,51 @@ function ImportPanel({
 }) {
   const [text, setText] = useState('')
   const [result, setResult] = useState<FinanceImportResult | null>(null)
-  const [batches, setBatches] = useState<FinanceImportBatch[]>([])
+  const [history, setHistory] = useState<{
+    batches: FinanceImportBatch[]
+    nextOffset?: number
+    loading: boolean
+    error: string | null
+  }>({ batches: [], loading: true, error: null })
+  const [offset, setOffset] = useState(0)
+  const [historyRevision, setHistoryRevision] = useState(0)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
-  const loadBatches = useCallback(() => {
-    api.listImports(bookId)
-      .then((listed) => setBatches(listed.imports))
-      .catch(() => setBatches([]))
-  }, [api, bookId])
+  useEffect(() => {
+    let active = true
+    setHistory((current) => ({ ...current, loading: true, error: null }))
+    void (offset === 0 ? api.listImports(bookId) : api.listImports(bookId, offset)).then(
+      (listed) => {
+        if (!active) return
+        setHistory((current) => {
+          const prior = offset === 0 ? [] : current.batches
+          const ids = new Set(prior.map((batch) => batch.id))
+          return {
+            batches: [...prior, ...listed.imports.filter((batch) => !ids.has(batch.id))],
+            nextOffset: listed.next_offset,
+            loading: false,
+            error: null,
+          }
+        })
+      },
+      () => {
+        if (active) setHistory((current) => ({ ...current, loading: false, error: 'Could not load import history' }))
+      },
+    )
+    return () => { active = false }
+  }, [api, bookId, offset, historyRevision])
 
-  useEffect(() => { loadBatches() }, [loadBatches])
-
-  const apply = async (work: () => Promise<FinanceImportResult>) => {
+  const apply = async (work: () => Promise<FinanceImportResult>, refreshHistory = true) => {
     setBusy(true)
     setError(null)
     try {
       const next = await work()
       setResult(next)
-      loadBatches()
+      if (refreshHistory) {
+        setOffset(0)
+        setHistoryRevision((current) => current + 1)
+      }
       if (next.created_directives > 0) onChanged()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Import failed')
@@ -921,48 +950,63 @@ function ImportPanel({
     await apply(() => api.importBeancount(bookId, { text }))
   }
 
-  const unfinished = batches.filter((batch) =>
+  const unfinished = history.batches.filter((batch) =>
     batch.summary.pending_mapping + batch.summary.needs_review + batch.summary.error > 0
     && batch.id !== result?.import_source.id)
   const needsReview = result?.entries.filter((entry) => entry.status === 'needs_review') ?? []
   const shownEntries = result?.entries.filter((entry) => entry.status !== 'imported') ?? []
 
   return (
-    <div style={{ ...panelStyle, background: '#fafcff', borderColor: '#cfe0f5' }}>
-      <h3 style={panelTitleStyle}>Import Beancount</h3>
+    <div style={{ ...panelStyle, background: 'var(--card)', color: 'var(--card-foreground)', borderColor: 'var(--border)' }}>
+      <h3 style={{ ...panelTitleStyle, color: 'var(--muted-foreground)' }}>Import Beancount</h3>
       <textarea
         aria-label="Beancount text"
         value={text}
         onChange={(e) => setText(e.target.value)}
         placeholder={'2026-01-04 * "Tesco" "Groceries"\n  Assets:Bank:Checking  -12.50 USD\n  Expenses:Food\n…'}
-        style={{ ...inputStyle, ...monoStyle, width: '100%', minHeight: 140, whiteSpace: 'pre', resize: 'vertical' }}
+        style={{ ...inputStyle, ...monoStyle, background: 'var(--input)', borderColor: 'var(--border)', width: '100%', minHeight: 140, whiteSpace: 'pre', resize: 'vertical' }}
       />
-      <div style={{ fontSize: 12, color: '#777', marginTop: 6 }}>
+      <div style={{ fontSize: 12, color: 'var(--muted-foreground)', marginTop: 6 }}>
         Transactions and other dated entries are imported as proposed and post after review. Accounts, commodities
         and options are not created from a file: open them in Accounts and Commodities, then map or retry.
       </div>
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 8, flexWrap: 'wrap' }}>
         <div style={{ flex: 1 }} />
-        <button style={buttonStyle} onClick={onDone}>Close</button>
+        <button style={importButtonStyle} onClick={onDone}>Close</button>
         <button style={primaryButtonStyle} disabled={busy} onClick={() => void submit()}>Run import</button>
       </div>
       {error && <div style={{ ...errorTextStyle, marginTop: 8 }}>{error}</div>}
       {unfinished.length > 0 && (
         <div style={{ marginTop: 12, fontSize: 13 }}>
-          <div style={{ color: '#555', marginBottom: 4 }}>Earlier imports with unfinished entries</div>
+          <div style={{ color: 'var(--muted-foreground)', marginBottom: 4 }}>Earlier imports with unfinished entries</div>
           <ul style={{ margin: 0, paddingLeft: 18 }}>
             {unfinished.map((batch) => (
               <li key={batch.id}>
                 <button
-                  style={{ ...buttonStyle, padding: '2px 8px', fontSize: 12 }}
+                  style={{ ...importButtonStyle, padding: '2px 8px', fontSize: 12 }}
                   disabled={busy}
-                  onClick={() => void apply(() => api.getImport(bookId, batch.id))}
+                  onClick={() => void apply(() => api.getImport(bookId, batch.id), false)}
                 >
                   {batch.source_name ?? batch.id} · {batch.summary.pending_mapping} waiting, {batch.summary.needs_review} to review, {batch.summary.error} failed
                 </button>
               </li>
             ))}
           </ul>
+        </div>
+      )}
+      {history.error && (
+        <div style={{ marginTop: 8 }}>
+          <div style={{ ...errorTextStyle, color: 'var(--destructive)' }} role="alert">{history.error}</div>
+          <button style={importButtonStyle} disabled={busy} onClick={() => setHistoryRevision((current) => current + 1)}>
+            Retry import history
+          </button>
+        </div>
+      )}
+      {!history.error && history.nextOffset !== undefined && (
+        <div style={{ marginTop: 8 }}>
+          <button style={importButtonStyle} disabled={busy || history.loading} onClick={() => setOffset(history.nextOffset!)}>
+            More imports
+          </button>
         </div>
       )}
       {result && (
@@ -980,13 +1024,13 @@ function ImportPanel({
           )}
           <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
             {(result.summary.pending_mapping > 0 || result.summary.error > 0) && (
-              <button style={buttonStyle} disabled={busy} onClick={() => void apply(() => api.retryImport(bookId, result.import_source.id))}>
+              <button style={importButtonStyle} disabled={busy} onClick={() => void apply(() => api.retryImport(bookId, result.import_source.id))}>
                 Retry unfinished entries
               </button>
             )}
             {needsReview.length > 1 && (
               <>
-                <button style={buttonStyle} disabled={busy} onClick={() => void apply(() => api.reviewImportEntries(bookId, result.import_source.id, 'duplicate'))}>
+                <button style={importButtonStyle} disabled={busy} onClick={() => void apply(() => api.reviewImportEntries(bookId, result.import_source.id, 'duplicate'))}>
                   Skip all {needsReview.length} matches as the same records
                 </button>
                 <button style={buttonStyle} disabled={busy} onClick={() => void apply(() => api.reviewImportEntries(bookId, result.import_source.id, 'import'))}>
@@ -1113,7 +1157,7 @@ function FinanceLedgerView({ api, book, books, onSelectBook, onCreateBook }: {
         <button style={primaryButtonStyle} onClick={() => setPanel(panel === 'transaction' ? 'none' : 'transaction')}>
           + Transaction
         </button>
-        <button style={buttonStyle} onClick={() => setPanel(panel === 'import' ? 'none' : 'import')}>Import</button>
+        <button style={importButtonStyle} onClick={() => setPanel(panel === 'import' ? 'none' : 'import')}>Import</button>
         <button
           style={buttonStyle}
           onClick={() => {
@@ -1146,6 +1190,7 @@ function FinanceLedgerView({ api, book, books, onSelectBook, onCreateBook }: {
       {panel === 'import' && (
         <div style={{ marginBottom: 16 }}>
           <ImportPanel
+            key={book.id}
             api={api}
             bookId={book.id}
             accounts={accounts}

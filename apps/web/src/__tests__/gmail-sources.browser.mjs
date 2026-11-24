@@ -20,6 +20,13 @@ const now = '2026-11-16T09:00:00.000Z'
 const space = { id: 'space-mail', name: 'Family Space', type: 'team', role: 'member' }
 const project = { id: 'project-mail', space_id: space.id, owner_user_id: 'user-other', name: 'House renovation', description: null, status: 'active', current_focus: null,
   settings_json: null, active_brief_version_id: null, created_at: now, updated_at: now, archived_at: null, current_user_can_read: true, current_user_can_write: true }
+const applicationsDescriptor = {
+  id: 'applications', version: '1.0.0',
+  frontend_entries: ['board', 'summary'].map(entry => ({
+    module_id: `plugin.applications.${entry}`, entry_id: entry, label: 'Applications', path: `/plugins/applications/${entry}`,
+    icon: 'graduation-cap', section: 'knowledge', group: 'work', placements: [entry === 'board' ? 'project.area' : 'project.overview.card'],
+  })),
+}
 const other = { ...project, id: 'project-other', name: 'Holiday plans' }
 const agent = { id: 'agent-manager', space_id: space.id, name: 'Mail Assistant', status: 'active', agent_kind: 'system_assistant' }
 const room = { id: 'room-mail', space_id: space.id, project_id: project.id, title: 'House renovation', status: 'active', is_mainline: true }
@@ -61,6 +68,12 @@ async function mockApi(page) {
     if (path === '/me/agent-attention' || path === '/me/agent-attention/snapshot') return ok({ type: 'attention.snapshot', seq: 1, version: 'f', unread_count: 0, notices: [], page: { items: [], total: 0, limit: 50, offset: 0 }, items: [], total: 0, limit: 50, offset: 0 })
     if (path === '/me/agent-attention/stream') return route.fulfill({ contentType: 'text/event-stream', body: '' })
     if (path === '/plugins/effective') return ok({ plugins: {} })
+    if (path === '/plugins') return ok({ items: [{ descriptor: applicationsDescriptor, effective: { enabled: true } }] })
+    if (path === '/queries/official_plugin.project_binding.list') return receipt({ project_id: project.id, can_manage: false, items: [{
+      plugin_id: 'applications', name: 'Applications', version: '1.0.0', status: 'bound', plugin_enabled: true, effective: true, bound_at: now, unbound_at: null,
+    }] })
+    if (path.startsWith('/queries/plugin.applications.')) return receipt({ items: [] })
+
     if (path === '/projects') return ok({ items: [project, other], total: 2, limit: 50, offset: 0 })
     if (path === `/projects/${project.id}`) return ok(project)
     if (path === `/projects/${other.id}`) return ok(other)
@@ -112,6 +125,12 @@ async function mockApi(page) {
       last_error_code: fixture.digestStatus === 'active' ? null : 'gmail_digest_read_limit',
       last_delivery: { status: 'failed', window_start: '2026-11-15T09:00:00.000Z', window_end: now, message_count: 50, gap_before: false,
         error_code: 'gmail_digest_read_limit', finished_at: now }, created_at: now,
+    }, {
+      id: 'application-browser', connection_id: 'conn-active', project_id: project.id, project_name: project.name,
+      session_id: privateSession, agent_id: agent.id, kind: 'application', local_time: null, time_zone: null,
+      status: 'active', covered_until: now, next_run_at: null, retry_at: null, last_delivered_at: now,
+      failure_count: 0, last_error_code: null, last_delivery: null, created_at: now,
+      runtime: { agent_name: 'Mail Assistant', model_label: 'Original model' }, mail_items: { pending: 2, review: 1, failed: 0 },
     }] })
     if (path === '/sources/gmail/connections') return ok({ configured: fixture.configured, connections: fixture.connections })
     if (path === '/sources/gmail/oauth/start') return ok({ authorize_url: 'https://accounts.google.com/o/oauth2/v2/auth?client_id=fixture&state=fixture' })
@@ -220,6 +239,15 @@ for (const locale of ['en', 'zh-CN']) {
           await page.getByText(L.connections.title).waitFor()
           await page.getByText('avery.work@example.test').waitFor()
           await shot('access-connections')
+          const openApplications = page.getByRole('link', { name: L.digests.open_project_applications.replace('{{project}}', project.name) })
+          await openApplications.click()
+          const updates = page.locator('#gmail-application-updates')
+          await updates.getByText(L.digests.application, { exact: true }).waitFor()
+          assert.equal(await updates.getByRole('link', { name: L.private_read.open }).count(), 1)
+          await shot('project-application-updates')
+          await page.goBack()
+          await page.getByText(L.connections.title).waitFor()
+
           // 2a. The owner's opt-in for on-demand Agent reads: only on the active connection, off by default.
           const agentRead = page.getByLabel(L.connections.agent_read.title)
           assert.equal(await agentRead.count(), 1)

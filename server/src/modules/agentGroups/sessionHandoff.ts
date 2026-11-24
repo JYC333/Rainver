@@ -2,12 +2,15 @@ import type { SystemActionId } from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
 import { inheritContentAccessGrants } from "../access/contentAccessInheritance.js";
+import { contentReadSql, roomRunReadAccessSql } from "../access/contentAccessSql.js";
 import { insertArtifactRow } from "../artifacts/reviewArtifactWriter.js";
 import { resolvePrompt } from "../prompts/resolver.js";
 import { HttpError, withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
 import type { RunRecord } from "../runs/repository.js";
 import type { SystemActionExecutor } from "../systemActions/gateway.js";
-import { fitTextToTokenBudget } from "../usage/modelCatalog.js";
+import { estimateModelTokens, fitTextToTokenBudget } from "../usage/modelCatalog.js";
+import { modelSpec } from "../providers/modelSpecs.js";
+import type { HostThread } from "../hosts/threadRepository.js";
 
 /**
  * Conversation summary and restart.
@@ -18,7 +21,7 @@ import { fitTextToTokenBudget } from "../usage/modelCatalog.js";
  * turn into the current session whose only tool is `handoff.write`, whose
  * document is an Artifact on the Project, and after which the session
  * continues. They may then **restart** the Agent from that summary
- * (`RoomRosterService.restartFromSummary`): `rotateAfterHandoff` retires the
+ * (`RoomRosterService.restartFromSummary`): `stageHandoff` retains the
  * session and the next turn opens from the identity block, the summary and
  * the Room replay. Nothing here runs on its own.
  */
@@ -73,12 +76,60 @@ export async function renderHandoffPrompt(
   }
 }
 
-export async function loadHandoffText(db: Queryable, spaceId: string, artifactId: string): Promise<string | null> {
+const handoffAudienceSql = `NOT EXISTS (
+  SELECT 1 FROM unnest($4::text[]) audience(user_id)
+   WHERE NOT COALESCE((
+     ${contentReadSql("artifact", "a", "audience.user_id", { includeOversight: false })}
+     AND ${roomRunReadAccessSql("a.run_id", "a.space_id", "audience.user_id")}
+   ), false)
+)`;
+
+export async function loadHandoffText(db: Queryable, spaceId: string, artifactId: string, userIds: readonly string[]): Promise<string | null> {
   const result = await db.query<{ content: string | null }>(
-    `SELECT content FROM artifacts WHERE space_id = $1 AND id = $2 AND artifact_type = $3 LIMIT 1`,
-    [spaceId, artifactId, AGENT_HANDOFF_ARTIFACT_TYPE],
+    `SELECT a.content FROM artifacts a
+      WHERE a.space_id = $1 AND a.id = $2 AND a.artifact_type = $3 AND ${handoffAudienceSql} LIMIT 1`,
+    [spaceId, artifactId, AGENT_HANDOFF_ARTIFACT_TYPE, userIds],
   );
   return result.rows[0]?.content?.trim() || null;
+}
+
+/** Reuse only the last settled turn's summary, with no intervening work to lose. */
+export async function reusableModelHandoff(
+  db: Queryable,
+  input: { thread: HostThread; model: string; userIds: readonly string[] },
+): Promise<string | null> {
+  const { thread, model, userIds } = input;
+  const normalizedTarget = versionedClaudeModel(model);
+  const target = normalizedTarget ? modelSpec(normalizedTarget) : null;
+  if (!target || thread.status !== "active" || !thread.vendor_session_id || !thread.last_run_id) return null;
+  if (thread.context_tokens !== null && thread.context_window_tokens !== null
+    && thread.context_tokens <= Math.min(4096, thread.context_window_tokens / 4)) return null;
+  const result = await db.query<{ id: string; content: string; source_model: string | null }>(
+    `SELECT a.id, a.content, source.model_override_json->>'runtime_reported_model' AS source_model FROM artifacts a
+       JOIN runs source ON source.id = a.run_id AND source.space_id = a.space_id
+       JOIN sessions session ON session.id = source.session_id AND session.space_id = source.space_id
+       JOIN rooms room ON room.id = session.room_id AND room.space_id = session.space_id
+      WHERE a.space_id = $1 AND source.id = $2 AND source.status = 'succeeded'
+        AND source.host_task_thread_id = $5
+        AND source.model_override_json->'chat_turn'->>'kind' = 'handoff'
+        AND NOT room.is_mainline AND source.model_override_json->'host_thread'->>'runtime_session_id' = $6
+        AND a.artifact_type = $3 AND a.metadata_json->>'vendor_session_id' = $6
+        AND a.metadata_json->>'host_thread_id' = $5
+        AND ${handoffAudienceSql}
+      ORDER BY a.created_at DESC LIMIT 1`,
+    [thread.space_id, thread.last_run_id, AGENT_HANDOFF_ARTIFACT_TYPE, userIds, thread.id, thread.vendor_session_id],
+  );
+  const summary = result.rows[0];
+  const sourceModel = versionedClaudeModel(summary?.source_model);
+  if (!sourceModel || sourceModel === normalizedTarget) return null;
+  const budget = Math.min(4096, Math.floor(
+    (target.contextWindowTokens - target.defaultOutputReserveTokens - target.providerOverheadTokens) / 4,
+  ));
+  return summary?.content?.trim() && estimateModelTokens(handoffPromptBlock(summary.content)) <= budget ? summary.id : null;
+}
+
+function versionedClaudeModel(model: string | null | undefined): string | null {
+  return model?.trim().toLowerCase().match(/^(?:anthropic\/)?(claude-(?:opus|sonnet|haiku|fable|mythos)-\d{1,2}(?:-\d{1,2})?)(?:-\d{8})?$/)?.[1] ?? null;
 }
 
 /**

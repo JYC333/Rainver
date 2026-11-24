@@ -3,6 +3,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { insertProposalRow } from "../../proposals/reviewPackets.js";
 import { HttpError, bestEffortStep, page, countFromRow, type Queryable, withQueryableTransaction } from "../../routeUtils/common.js";
 import { PgSchedulerTaskStore, type SchedulerTaskRow } from "../../scheduler/taskStore.js";
+import { localDateNow, localDayUtcBounds } from "../../scheduler/localDay.js";
 import { computeNextRunAt, InvalidScheduleError } from "../../automations/schedule.js";
 import type { SourceConnectionRow, SourceItemRow, EvidenceRow } from "../sourceRepositoryRows.js";
 import { ITEM_COLUMNS, evidenceColumnsForAlias } from "../sourceRepositoryRows.js";
@@ -2814,61 +2815,12 @@ function sha256(value: string): string {
 }
 
 /**
- * The local calendar day `now` falls in, as a UTC range. Its end is the next
- * local midnight, not a fixed 24 hours on: a day that changes clocks is 23 or
- * 25 hours long, and a fixed offset would drop the last hour of a 25-hour day.
+ * The local calendar day `now` falls in, as a half-open UTC interval.
+ * Both dates begin at their first real instant, including midnight gaps.
  */
 export function localDayRange(timezone: string, now = new Date()): { start: string; end: string } {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: timezone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(now);
-  const year = Number(parts.find((part) => part.type === "year")?.value ?? now.getUTCFullYear());
-  const month = Number(parts.find((part) => part.type === "month")?.value ?? now.getUTCMonth() + 1);
-  const day = Number(parts.find((part) => part.type === "day")?.value ?? now.getUTCDate());
-  const start = zonedLocalToUtc({ year, month, day, hour: 0, minute: 0 }, timezone);
-  const nextDay = new Date(Date.UTC(year, month - 1, day + 1));
-  const end = zonedLocalToUtc(
-    { year: nextDay.getUTCFullYear(), month: nextDay.getUTCMonth() + 1, day: nextDay.getUTCDate(), hour: 0, minute: 0 },
-    timezone,
-  );
-  return { start: start.toISOString(), end: end.toISOString() };
-}
-
-function zonedLocalToUtc(
-  target: { year: number; month: number; day: number; hour: number; minute: number },
-  timezone: string,
-): Date {
-  let guess = Date.UTC(target.year, target.month - 1, target.day, target.hour, target.minute);
-  for (let index = 0; index < 4; index += 1) {
-    const actual = zonedParts(new Date(guess), timezone);
-    const delta = Date.UTC(
-      target.year - actual.year,
-      target.month - actual.month,
-      target.day - actual.day,
-      target.hour - actual.hour,
-      target.minute - actual.minute,
-    ) - Date.UTC(0, 0, 0, 0, 0);
-    if (delta === 0) break;
-    guess += delta;
-  }
-  return new Date(guess);
-}
-
-function zonedParts(date: Date, timezone: string): { year: number; month: number; day: number; hour: number; minute: number } {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: timezone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  }).formatToParts(date);
-  const part = (type: Intl.DateTimeFormatPartTypes) => Number(parts.find((item) => item.type === type)?.value ?? 0);
-  return { year: part("year"), month: part("month"), day: part("day"), hour: part("hour"), minute: part("minute") };
+  const { startUtcIso, endUtcIso } = localDayUtcBounds(localDateNow(timezone, now), timezone);
+  return { start: startUtcIso, end: endUtcIso };
 }
 
 /** Configuration admission excludes mutable cursor/fire progress. */

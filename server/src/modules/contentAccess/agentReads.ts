@@ -23,12 +23,14 @@ export async function recordAgentDataRead(db: Queryable, entry: {
   resourceIds: readonly string[];
   dataClass: "non_sensitive" | "personal" | "sensitive";
   grantId: string | null;
+  /** The Run launch a launch-bound release went to (ADR 0034); omitted for every other read. */
+  launchId?: string | null;
 }): Promise<void> {
   const ids = [...new Set(entry.resourceIds.filter((id) => typeof id === "string" && id.length > 0 && id.length <= 128))].sort().slice(0, AGENT_READ_MAX_IDS);
   await db.query(
-    `INSERT INTO agent_data_read_logs (id, space_id, owner_user_id, run_id, agent_id, action_id, resource_type, resource_ids_json, data_class, grant_id, accessed_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,now())`,
-    [randomUUID(), entry.spaceId, entry.ownerUserId, entry.runId, entry.agentId, entry.actionId, entry.resourceType, JSON.stringify(ids), entry.dataClass, entry.grantId],
+    `INSERT INTO agent_data_read_logs (id, space_id, owner_user_id, run_id, agent_id, action_id, resource_type, resource_ids_json, data_class, grant_id, launch_id, accessed_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,now())`,
+    [randomUUID(), entry.spaceId, entry.ownerUserId, entry.runId, entry.agentId, entry.actionId, entry.resourceType, JSON.stringify(ids), entry.dataClass, entry.grantId, entry.launchId ?? null],
   );
 }
 

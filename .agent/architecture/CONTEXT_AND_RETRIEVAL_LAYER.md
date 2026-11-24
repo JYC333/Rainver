@@ -142,6 +142,25 @@ second-stage post-processing pass over those candidate items only.
   visible seed resolution, typed-edge traversal, target filtering, and a
   direct-target fallback for single-type registries such as Project public
   summaries; aggregate-only trace); and a **vector** arm over pgvector.
+- **Sparse visibility.** Arm SQL carries no read rule (the single live gate
+  decides), so a window can be filled by rows the viewer cannot read. The exact,
+  lexical and vector arms therefore count, with the search's own revalidation
+  and its shared cache, how many of their first window's candidates the viewer
+  can read; when that is fewer than `maxResults` and the SQL has more rows,
+  they read further, bounded by `SCOPED_FETCH_MAX_PAGES`, until it is not. The
+  exact and lexical arms read OFFSET pages over an order ending in the object
+  id. The vector arm's SQL can only order by distance (the order HNSW serves),
+  so equal distances have no stable order between statements and OFFSET pages
+  were seen to repeat and skip rows; it reads larger windows from the nearest
+  chunk instead (`limit`, 2×, … 4× chunks), merges objects at their best chunk
+  and ranks by (distance, id). Larger windows avoid stepping across OFFSET boundaries. The returned
+  candidate set can still vary when equal distances straddle the LIMIT or when
+  PostgreSQL changes plans. A scoped search reads the vector arm the same way. A
+  window that already holds enough readable rows is used unchanged, as are its
+  ranks. Every row still passes the gate below, so this can only add readable
+  candidates. Past the bound (more than about four windows of unreadable
+  nearer or stronger matches) recall still degrades, and HNSW may not reach
+  every element of a degenerate graph; graph and relational arms are unchanged.
 - **Per-arm max-pool → RRF.** Each arm collapses to one best entry per object
   *before* fusion (so chunk count can't inflate an object), then arms are fused
   with cross-arm RRF (multi-arm agreement still rewarded). The SQL arms pick the
@@ -175,11 +194,12 @@ second-stage post-processing pass over those candidate items only.
   (2560) `db/schema/retrieval.ts` (generated into `0000_baseline`) defines `ix_retrieval_chunks_embedding_hnsw_2560`, a partial HNSW
   index over `embedding::halfvec(2560)`, and the vector arm emits a matching
   constant-dimension halfvec query for dims in `ANN_HALFVEC_DIMENSIONS` (kept in
-  sync with the migration); other dims keep the exact scan. Each ANN page runs
+  sync with the migration); other dims keep the exact scan. Each ANN window runs
   pgvector's `hnsw.iterative_scan = strict_order` (pgvector ≥ 0.8, the images'
   `pgvector/pgvector:pg18`) capped by `hnsw.max_scan_tuples` =
   `ANN_ITERATIVE_SCAN_MAX_TUPLES`, so the Space/scope filters do not cut a page
-  short at `hnsw.ef_search`. Both settings are transaction-local: a pool gets its
+  short at `hnsw.ef_search`. A vector window is one such statement with a
+  LIMIT and no OFFSET. Both settings are transaction-local: a pool gets its
   own short transaction, an idle client a BEGIN/COMMIT, and a caller's
   transaction a savepoint rolled back after the read-only page; nothing is set
   for the session or database. Rewrite variants' arms run in parallel only on a
@@ -216,6 +236,9 @@ write pointer-only audit.
   those changes; editing an unrelated connection leaves it set aside. The app
   layer computes the per-connection digests and the engine store only
   compares them, so the store still reads no domain table.
+  A full batch yields and durably requeues the same Job for the next batch
+  without spending a failure attempt. Each pass rechecks the Space's current
+  embedding settings and egress policy.
 - **Query rewriter** — pre-recall, query-string-only. Rewrite results are returned
   in a **separate** `rewrite_items` list, never blended into or co-ranked with the
   primary (original-query) list, so the primary list is never biased by how many

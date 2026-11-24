@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {toast} from 'sonner'
@@ -10,7 +10,7 @@ vi.mock('../../../contexts/SpaceContext', () => ({ useSpace: () => ({ personalSp
 vi.mock('../../../api/client', () => ({ activityApi: { create: vi.fn(), upload: vi.fn() } }))
 
 const track = { stop: vi.fn() }
-const recorders: Array<{ stop: ReturnType<typeof vi.fn>; state: string }> = []
+const recorders: Array<{ stop: () => void; ondataavailable: (event: { data: Blob }) => void }> = []
 
 beforeEach(() => {
   recorders.length = 0
@@ -44,6 +44,24 @@ function renderPage() {
 }
 
 describe('CapturePage voice recording', () => {
+  it.each([false, true])('only uploads a recording when Stop & save was used (%s)', async shouldSave => {
+    stubRecorder()
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: /Record voice/ }))
+    const save = await screen.findByRole('button', { name: /Stop & save/ })
+    recorders[0]!.ondataavailable({ data: new Blob(['voice']) })
+    if (shouldSave) fireEvent.click(save)
+    else act(() => { recorders[0]!.stop() })
+
+    if (shouldSave) {
+      await waitFor(() => expect(activityApi.upload).toHaveBeenCalledWith(expect.any(File), { kind: 'voice', spaceId: 'personal-1' }))
+    } else {
+      expect(activityApi.upload).not.toHaveBeenCalled()
+      expect(toast.error).toHaveBeenCalledWith('Recording stopped before it was saved')
+      expect(screen.getByRole('button', { name: /Record voice/ })).toBeEnabled()
+    }
+  })
+
   it('releases the microphone when the page is left mid-recording, saving nothing', async () => {
     stubRecorder()
     const view = renderPage()
@@ -54,6 +72,24 @@ describe('CapturePage voice recording', () => {
 
     expect(recorders[0]!.stop).toHaveBeenCalled()
     expect(track.stop).toHaveBeenCalled()
+    expect(activityApi.upload).not.toHaveBeenCalled()
+  })
+
+  it('releases late permission after leaving and requests it only once', async () => {
+    stubRecorder()
+    let grant!: (stream: MediaStream) => void
+    vi.mocked(navigator.mediaDevices.getUserMedia).mockReturnValue(
+      new Promise(resolve => { grant = resolve }),
+    )
+    const view = renderPage()
+    const button = screen.getByRole('button', { name: /Record voice/ })
+    fireEvent.click(button)
+    fireEvent.click(button)
+    expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledTimes(1)
+    view.unmount()
+    grant({ getTracks: () => [track] } as unknown as MediaStream)
+    await waitFor(() => expect(track.stop).toHaveBeenCalledTimes(1))
+    expect(recorders).toHaveLength(0)
     expect(activityApi.upload).not.toHaveBeenCalled()
   })
 

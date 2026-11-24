@@ -11,6 +11,7 @@
  * Expiry is issued and judged on the database clock (`clock_timestamp()`, read
  * after the admission locks), never on the application clock.
  */
+import { GMAIL_AGENT_PAGE_SIZE } from "@rainver/protocol";
 import { createHmac, hkdfSync, timingSafeEqual } from "node:crypto";
 import type { ServerConfig } from "../../../config.js";
 import type { Queryable } from "../../routeUtils/common.js";
@@ -22,7 +23,10 @@ interface CursorBase { v: 1; o: string; s: string; c: string; g: number; p: stri
 /** `th` the selection's thread; `ba`/`bi` the last released message's internal date (ISO) and id (newest-first order). */
 export interface GmailReadCursor extends CursorBase { k: "read"; sel: string; w: string; th: string; ba: string; bi: string }
 export interface GmailDigestCursor extends CursorBase { k: "digest"; delivery: string; page: string; index: number }
-export type GmailCursor = GmailReadCursor | GmailDigestCursor;
+export interface GmailAgentCursor extends CursorBase {
+  k: "agent"; query: string | null; max: number; remaining: string[]; next: string | null;
+}
+export type GmailCursor = GmailReadCursor | GmailDigestCursor | GmailAgentCursor;
 
 export class GmailCursorError extends Error {
   constructor() { super("gmail_cursor_invalid"); this.name = "GmailCursorError"; }
@@ -71,5 +75,10 @@ export async function openGmailCursor<K extends GmailCursor["k"]>(
   if (kind === "read" && (!str(c.sel) || typeof c.w !== "string" || !str(c.th) || typeof c.ba !== "string" || Number.isNaN(Date.parse(c.ba))
     || new Date(c.ba).toISOString() !== c.ba || typeof c.bi !== "string" || !/^[0-9a-f]{1,64}$/.test(c.bi))) throw new GmailCursorError();
   if (kind === "digest" && (!str(c.delivery) || !Number.isSafeInteger(c.index) || Number(c.index) < 1 || typeof c.page !== "string" || !/^[A-Za-z0-9_-]{1,256}$/.test(c.page))) throw new GmailCursorError();
+  if (kind === "agent" && ((c.query !== null && !str(c.query)) ||
+    typeof c.max !== "number" || !Number.isInteger(c.max) || c.max < 1 || c.max > GMAIL_AGENT_PAGE_SIZE.maximum ||
+    !Array.isArray(c.remaining) || !c.remaining.length || c.remaining.length > c.max ||
+    !c.remaining.every((id) => typeof id === "string" && /^[0-9a-f]{1,64}$/.test(id)) ||
+    (c.next !== null && (typeof c.next !== "string" || !/^[^\x00-\x20\x7f]+$/.test(c.next))))) throw new GmailCursorError();
   return c as unknown as Extract<GmailCursor, { k: K }>;
 }

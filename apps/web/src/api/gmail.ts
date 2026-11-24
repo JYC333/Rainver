@@ -2,11 +2,12 @@ import {
   GmailConnectionDisconnectOutputSchema, GmailConnectionForgetOutputSchema, GmailConnectionListSchema, GmailConnectionSetAgentReadOutputSchema, GmailMonitorDeleteOutputSchema,
   GmailMonitorListSchema, GmailMonitorProposalPayloadSchema, GmailMonitorSetStatusOutputSchema, GmailOAuthStartOutputSchema,
   GmailShareOutputSchema, GmailSharePreviewOutputSchema, GmailDigestListSchema, GmailDigestSetStatusOutputSchema, GmailDigestEndOutputSchema,
-  GmailSelectionRemoveOutputSchema, GmailThreadReadOutputSchema, GmailThreadSelectionListSchema,
-  PLUGIN_DATA_ACCESS_OPERATION_SCHEMAS,
-  type OperationInput, type GmailConnectionList, type GmailMonitorCriteria, type GmailMonitorList, type GmailThreadReadOutput, type GmailThreadSelection,
+  GmailSelectionRemoveOutputSchema, GmailThreadReadOutputSchema, GmailThreadSelectionListSchema, GmailApplicationExecutionOptionsOutputSchema,
+  PLUGIN_DATA_ACCESS_OPERATION_SCHEMAS, GMAIL_OPERATION_SCHEMAS,
+  type OperationInput, type GmailApplicationExecutionOptions, type GmailApplicationExecutionSelection, type GmailConnectionList, type GmailMonitorCriteria, type GmailMonitorList, type GmailThreadReadOutput, type GmailThreadSelection,
 } from '@rainver/protocol'
-import { ApiRequestError, apiTransport, queryOperation } from './client'
+import { apiTransport, queryOperation } from './operations'
+import { ApiRequestError } from './transport'
 
 /**
  * Typed consumer of the owner-only Gmail routes (`packages/protocol/src/gmail.ts`).
@@ -16,6 +17,8 @@ import { ApiRequestError, apiTransport, queryOperation } from './client'
  * only in the calling component's state.
  */
 export interface GmailCallOptions { spaceId: string; signal?: AbortSignal }
+/** A conversation card's request scope: its source Space when known (else the active one) and its lifetime. */
+export interface CardCallOptions { spaceId?: string; signal?: AbortSignal }
 
 // Read at call time so a test can mock the client module wholesale.
 const request = <T,>(...args: Parameters<typeof apiTransport.request>) => apiTransport.request<T>(...args)
@@ -48,6 +51,9 @@ export const gmailApi = {
   /** Ends the owner's standing consent for one Project (ADR 0033); the next read there asks again. */
   revokeAgentReadGrant: async (grantId: string, key: string, o: GmailCallOptions) =>
     PLUGIN_DATA_ACCESS_OPERATION_SCHEMAS['plugin_data_grant.revoke'].output.parse(await operationAt('POST', '/actions/plugin_data_grant.revoke', { grant_id: grantId }, key, at(o))),
+  /** Ends one member's read delegation now (ADR 0035 §4); a read of theirs in progress delivers nothing. */
+  revokeDelegation: async (delegationId: string, key: string, o: GmailCallOptions) =>
+    GMAIL_OPERATION_SCHEMAS['source.gmail.delegation.revoke'].output.parse(await operationAt('POST', '/actions/source.gmail.delegation.revoke', { delegation_id: delegationId }, key, at(o))),
   forget: async (connectionId: string, key: string, o: GmailCallOptions) =>
     GmailConnectionForgetOutputSchema.parse(await operationAt('DELETE', `/sources/gmail/connections/${seg(connectionId)}`, {}, key, at(o))),
   previewSummaryAudience: async (input: OperationInput<'source.gmail.summary.preview'>, o: GmailCallOptions) => {
@@ -57,6 +63,21 @@ export const gmailApi = {
   },
   shareSummary: async (input: OperationInput<'source.gmail.summary.share'>, key: string, o: GmailCallOptions) =>
     GmailShareOutputSchema.parse(await operationAt('POST', '/actions/source.gmail.summary.share', input, key, at(o))),
+  /**
+   * ADR 0036: on the owner's own pending application-update card, the scope it covers and which Agents and models can
+   * run it in the background (each unavailable one with its reason). Reads no mail.
+   */
+  /** `cursor`: the `next_cursor` of the page shown before (the first page when omitted). */
+  /** One page of the card's configurations (`cursor`), or more models of one configuration (`models_of`). */
+  applicationExecutionOptions: async (proposalId: string, o: CardCallOptions, page?: string | { agent_id: string; runtime_profile_id: string; models_cursor: string }): Promise<GmailApplicationExecutionOptions> => {
+    const more = typeof page === 'string' ? { cursor: page } : page ? { models_of: page } : {}
+    const outcome = await queryOperation('source.gmail.application_updates.execution_options', { proposal_id: proposalId, ...more }, o)
+    if (!('status' in outcome) || outcome.status !== 'succeeded') throw new Error('Could not load the Agent and model choices')
+    return GmailApplicationExecutionOptionsOutputSchema.parse(outcome.data)
+  },
+  /** The owner's choice on their pending card; the server rechecks it and redraws the card. Nothing runs until they accept. */
+  selectApplicationExecution: async (proposalId: string, selection: GmailApplicationExecutionSelection, key: string, o: CardCallOptions): Promise<GmailApplicationExecutionOptions> =>
+    GmailApplicationExecutionOptionsOutputSchema.parse(await operationAt('POST', '/actions/source.gmail.application_updates.select_execution', { proposal_id: proposalId, ...selection }, key, o)),
   digests: async (o: GmailCallOptions) =>
     GmailDigestListSchema.parse(await request('GET', '/sources/gmail/digests', undefined, at(o))).digests,
   setDigestStatus: async (id: string, status: 'active' | 'paused', key: string, o: GmailCallOptions) =>

@@ -16,6 +16,10 @@ It has two distinct parts:
 Unknown `/api/v1/*` traffic hits the local catch-all and returns
 `404 { "detail": "Route not found" }`.
 
+During shutdown, the streaming module stops Agent Attention and Run Turn
+polling before Fastify drains HTTP. The entrypoint then closes the PostgreSQL
+pools before exiting.
+
 ## Source Layout
 
 ```text

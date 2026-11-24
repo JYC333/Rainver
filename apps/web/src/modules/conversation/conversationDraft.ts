@@ -11,6 +11,7 @@ interface ConversationDraft {
   version: typeof CONVERSATION_DRAFT_VERSION
   destination: string
   text: string
+  pasted_text?: string
   input_parts: ConversationInputPart[]
   route_choice?: ConversationDraftRouteChoice
   saved_at: string
@@ -41,7 +42,8 @@ export function readConversationDraft(destination: string, storage: Storage | nu
     const savedAt = Date.parse(record.saved_at)
     const age = Date.now() - savedAt
     if (!Number.isFinite(savedAt) || age > CONVERSATION_DRAFT_MAX_AGE_MS || age < -5 * 60 * 1000) return null
-    const input = ConversationMessageInputSchema.safeParse({ text: record.text, input_parts: record.input_parts })
+    const pastedText = typeof record.pasted_text === 'string' ? record.pasted_text : ''
+    const input = ConversationMessageInputSchema.safeParse({ text: record.text.trim() || (pastedText.trim() ? 'pasted text' : ''), input_parts: record.input_parts })
     // An empty draft is not useful. Parsing through the send contract rejects
     // unknown part kinds before they reach a send. Do not restore a draft the
     // contract refuses.
@@ -49,7 +51,8 @@ export function readConversationDraft(destination: string, storage: Storage | nu
     return {
       version: CONVERSATION_DRAFT_VERSION,
       destination,
-      text: input.data.text,
+      text: record.text.trim(),
+      ...(pastedText ? { pasted_text: pastedText } : {}),
       input_parts: input.data.input_parts,
       ...(routeChoiceOf(record.route_choice) ? { route_choice: routeChoiceOf(record.route_choice) } : {}),
       saved_at: record.saved_at,
@@ -64,20 +67,21 @@ export function writeConversationDraft(
   storage: Storage | null = safeSessionStorage(),
 ): void {
   if (!storage || !draft.destination.trim()) return
-  if (!draft.text.trim() && draft.input_parts.length === 0) {
+  if (!draft.text.trim() && !draft.pasted_text?.trim() && draft.input_parts.length === 0) {
     clearConversationDraft(draft.destination, storage)
     return
   }
   // Text that cannot be sent as written (over the length cap, too many
   // attachments) is still what the person is working on: leave the last
   // sendable draft in place rather than deleting it.
-  const input = ConversationMessageInputSchema.safeParse({ text: draft.text, input_parts: draft.input_parts })
+  const input = ConversationMessageInputSchema.safeParse({ text: draft.text.trim() || (draft.pasted_text?.trim() ? 'pasted text' : ''), input_parts: draft.input_parts })
   if (!input.success) return
   try {
     storage.setItem(storageKey(draft.destination), JSON.stringify({
       version: CONVERSATION_DRAFT_VERSION,
       destination: draft.destination,
-      text: input.data.text,
+      text: draft.text.trim(),
+      ...(draft.pasted_text ? { pasted_text: draft.pasted_text } : {}),
       input_parts: input.data.input_parts,
       ...(routeChoiceOf(draft.route_choice) ? { route_choice: draft.route_choice } : {}),
       saved_at: new Date().toISOString(),

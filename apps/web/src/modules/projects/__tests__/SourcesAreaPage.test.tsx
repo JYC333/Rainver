@@ -29,7 +29,7 @@ describe('Project reading entry',()=>{
     cleanup();page()
     expect(screen.queryByText(/Private Gmail threads/)).not.toBeInTheDocument()
   })
-  it.each([['sources','Linked source manager'],['raw','All candidates'],['digest','Project Reading views']])('preserves the existing %s destination', (tab,text)=>{
+  it.each([['sources','Linked source manager'],['raw','Approval queue'],['candidates','All candidates'],['digest','Project Reading views']])('preserves the existing %s destination', (tab,text)=>{
     page('?tab='+tab)
     expect(screen.getByText(text)).toBeInTheDocument()
   })

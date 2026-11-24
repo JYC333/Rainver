@@ -14,6 +14,7 @@ import {sensitiveTaintEgressContext} from './egress.js';
 import {actorReaders,referenceReadable,type PluginReference} from './releaseGate.js';
 import {insertArtifactRow} from '../artifacts/reviewArtifactWriter.js';
 import {readNoteRevision} from '../knowledge/noteRevisionService.js';
+import {contentAclProjects} from '../runtimeContext/envelopeAuthority.js';
 import {noteDraftPort} from './noteDraftPort.js';
 import {assertProjectWriter,assertProjectWriterForMutation,lockActiveProjectForMutation} from '../projects/access.js';
 
@@ -87,16 +88,20 @@ export function pluginCorePorts(db: PluginDb, config: ServerConfig, manifest: Pl
       if (!ref || !['task', 'artifact', 'space_object'].includes(ref.type) || typeof ref.id !== 'string') return false;
       // A Project-bound package stores a space object only as a typed Note (`notes.verify`).
       if (invocation.projectId !== undefined && ref.type === 'space_object') return false;
-      return verifyPinnedReference(host, actor, {type: ref.type, id: ref.id}, invocation.projectId);
+      return !!await verifyPinnedReference(host, actor, {type: ref.type, id: ref.id}, invocation.projectId);
     })}} : {}),
     ...(declared.has('notes.read') ? {notes: {
       verify: (ref: {note_id: string; version?: number}) => pluginHostWrite(db, async host => {
         // Save-time check for a stored Note reference (and optionally one of its versions): the
         // current version number only, so a command output carries no Note content.
         const target = noteTarget(ref);
-        if (!target || !await verifyPinnedReference(host, actor, {type: 'space_object', id: target.noteId}, invocation.projectId)) return null;
+        if (!target) return null;
+        const scope = await verifyPinnedReference(host, actor, {type: 'space_object', id: target.noteId}, invocation.projectId);
+        if (!scope) return null;
         const revision = await readNoteRevision(host, {spaceId: actor.space_id, noteId: target.noteId, ...(target.version ? {version: target.version} : {})});
-        return revision ? {current_version: revision.current_version} : null;
+        const projectShared = !!invocation.projectId && scope.visibility === 'space_shared' &&
+          (await contentAclProjects(host, actor.space_id, 'space_object', target.noteId)).includes(invocation.projectId);
+        return revision ? {current_version: revision.current_version, project_shared: projectShared} : null;
       }),
       read: (ref: {note_id: string; version?: number; body?: boolean}) => {
         // Query-only, like `references.resolve`: the release gate rechecks and audits the Note.
@@ -132,9 +137,9 @@ function noteTarget(ref: {note_id?: unknown; version?: unknown} | null | undefin
  * Whether a stored reference may be saved now: it exists, every current reader reads it, and for a
  * Project-bound operation its whole closure stays in the bound Project.
  */
-async function verifyPinnedReference(host: Queryable, actor: Readonly<OperationActor>, target: PluginReference, bound: string | undefined): Promise<boolean> {
+async function verifyPinnedReference(host: Queryable, actor: Readonly<OperationActor>, target: PluginReference, bound: string | undefined) {
   const {readers, run} = await actorReaders(host, actor);
-  if (!readers.length || readers.includes(UNKNOWN_AUDIENCE)) return false;
+  if (!readers.length || readers.includes(UNKNOWN_AUDIENCE)) return null;
   // Authorization and Project ownership are decided on one pinned closure: the object row, its
   // Project shares, every reader's grants and membership and the Projects involved are held
   // FOR SHARE to commit, so a concurrent move or revocation either commits first and is seen
@@ -149,10 +154,10 @@ async function verifyPinnedReference(host: Queryable, actor: Readonly<OperationA
     await lockSourceRetrievalReleaseBatch(host, [{spaceId: actor.space_id, userId: sorted[0]!, refs: [{object_type: target.type, object_id: target.id}],
       additionalProjects: bound ? [bound] : [], additionalPeople: sorted.slice(1), ...(bound ? {confineProjects: [bound]} : {})}]);
   } catch (error) {
-    if (error instanceof HttpError) return false;
+    if (error instanceof HttpError) return null;
     throw error;
   }
-  return !!await referenceReadable(host, actor, target, readers, run, bound);
+  return referenceReadable(host, actor, target, readers, run, bound);
 }
 
 /**

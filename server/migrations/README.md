@@ -331,6 +331,46 @@ archived source release and normal restore checks, then convert; do not force
 them through the target release's restore preflight. Keep source archives
 until the corresponding backup retention period ends.
 
+### Squashing a bundled operation plugin
+
+Point the existing `prepare --source` option at the official package's
+migrations directory in a checkout that still contains the files to combine.
+Publish only squashes of unpublished migrations. A plugin's initial migration
+can be included when that entire plan is unpublished.
+
+```bash
+./ops/scripts/db/squash-migrations.sh prepare --mode dev \
+  --source plugins/official/applications/migrations --from 0000 --name applications_plan
+```
+
+Preparation copies the original SQL and Drizzle metadata into `source/` and
+writes the merged chain and final snapshot to `target/` at the path it prints.
+The default is under the selected mode's `db/plugin-migration-archives/`.
+Review and use `target/` as the plugin's migrations directory, then update its
+operation manifest's ordered migration ID list and build the target image.
+Keep the archive with the release. The generated SQL retains the original
+migration IDs, SQL text and execution boundaries. Keep its marker intact.
+
+Run the usual cutover command with the target image selected:
+
+```bash
+./ops/scripts/db/squash-migrations.sh cutover --mode test
+```
+
+Cutover discovers plugin conversions from the selected image and matches them
+against each installed plugin's journal. Core archive discovery and all plugin
+previews run before apps stop. Core changes and plugin conversions share one
+backup and one restart. The `--archive` override remains available for the
+core chain. For a standalone plugin preview, use the existing `convert
+--source ARCHIVE/source --target ARCHIVE/target` with the target image.
+
+The conversion checks the plugin's original IDs and SQL checksums, runs only
+missing files under its DDL role, and preserves the actual predecessor
+`applied_at` for time-dependent backfills. The catch-up, journal replacement,
+install contract and `migration_squashed` audit event commit together. An exact
+target is a no-op. Unexpected, failed or divergent records refuse conversion.
+Fresh databases use normal `migrate up` with the merged package.
+
 ## Squashes after 0002
 
 - `0003_vendor_session_owned_conversation.sql` is `prepare --from 0003` over
@@ -568,3 +608,24 @@ Validation of this consolidation: ordered composition checked with
 passes; 104 targeted tests pass across baseline apply, migration conversion,
 archive retention, maintenance, managed-workspace scope upgrades and guide checks
 (shared real PostgreSQL, Node 24.22.2). No full-suite repetition.
+
+
+## Applications and Gmail correspondence consolidation (2026-11-24)
+
+The core development suffix `0021`–`0031` is composed into
+`0021_application_correspondence_and_workspace.sql`. The published
+`0000`–`0020` prefix is unchanged. Applications has one bundled migration,
+`0000_applications_and_mail_facts.sql`, which embeds the previous Applications
+baseline and the mail-fact migration with their original boundaries. Diary and
+Finance Ledger already have one migration each.
+
+The managed core archive identity is
+`4aae9213fd7810f0a1d886c70f4ea9cad54d391783d0d609d2f270daa93de2b5`.
+The Applications archive is `applications-0000_applications_and_mail_facts`
+under the dev plugin migration archive store. Use the ADR 0025 offline cutover
+for an instance whose journal still records any replaced migration. The same
+cutover handles the core and plugin histories and retains existing data.
+Preparation did not apply or convert an instance database.
+
+Reuse / Dependency Check: both chains use the existing managed squash tooling,
+ordered SQL and Drizzle snapshots. No regeneration or dependency changes.

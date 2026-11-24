@@ -1,3 +1,4 @@
+import { resolveIdentity as resolveRouteIdentity } from "../routeUtils/common.js";
 import {registerContentRetrievalRoutes} from '../retrieval/contentRequests.js';
 import {registerOperationAdapters} from "../systemActions/operations/routeAdapter.js";
 import type {FastifyInstance,FastifyReply,FastifyRequest} from "fastify";
@@ -6,10 +7,7 @@ import * as protocol from "@rainver/protocol";
 import {registerMemoryProjectIntegration} from "./projectIntegration.js";
 import {MemoryApplyError,PgMemoryApplyRepository} from "./memoryApplyRepository.js";
 import type {ModuleContext} from "../../gateway/routeRegistry.js";
-import {errorEnvelope,sendErrorEnvelope} from "../../gateway/errorEnvelope.js";
-import {REQUEST_ID_HEADER,resolveRequestId} from "../../gateway/requestContext.js";
 import {getDbPool} from "../../db/pool.js";
-import {introspectIdentity} from "../auth/identity.js";
 
 import {canReviewSpaceOpsPackets} from "../contextOps/reviewPolicy.js";
 
@@ -225,28 +223,7 @@ async function resolveIdentity(
       ? identityOverride(request)
       : identityOverride;
   }
-  const requestId = resolveRequestId(request);
-  reply.header(REQUEST_ID_HEADER, requestId);
-  const identity = await introspectIdentity(context.config, request, reply);
-  if (identity.ok) return { spaceId: identity.spaceId, userId: identity.userId };
-  if (identity.reason === "denied") {
-    reply.code(identity.statusCode);
-    reply.header("content-type", "application/json");
-    reply.send(identity.body);
-    return null;
-  }
-  await sendErrorEnvelope(
-    reply,
-    502,
-    errorEnvelope(
-      identity.reason === "contract_violation"
-        ? "introspect_contract_violation"
-        : "identity_unavailable",
-      "Identity introspection failed",
-      requestId,
-    ),
-  );
-  return null;
+  return resolveRouteIdentity(context.config, request, reply);
 }
 
 function sendDomainError(reply: FastifyReply, error: unknown): FastifyReply {

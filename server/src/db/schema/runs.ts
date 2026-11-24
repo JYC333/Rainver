@@ -357,9 +357,18 @@ export const runAttempts = pgTable("run_attempts", {
 	// bound to its thread's current pointer was isolated in the same profile
 	// (`host_threads.vendor_session_launch_id`, ADR 0032).
 	launchIsolationJson: jsonb("launch_isolation_json"),
+	// Idle since ADR 0037: an earlier release wrote here the models a launch's
+	// runtime reported for its own prompt (`{launch_id, source, models}`) and
+	// released automation mail only on that proof. Nothing reads or writes it
+	// now; a relaunch still clears another launch's value so the check holds.
+	// Kept, not dropped, so an older server stopped by an ordinary update and
+	// its in-flight Runs need no maintenance drain (dropping it is a later,
+	// separate migration).
+	modelProofJson: jsonb("model_proof_json"),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [
+	check("ck_run_attempts_model_proof", sql`model_proof_json IS NULL OR (launch_id IS NOT NULL AND model_proof_json->>'launch_id' = launch_id AND jsonb_typeof(model_proof_json->'models') = 'array')`),
 	uniqueIndex("uq_run_attempts_launch_id").using("btree", table.launchId.asc().nullsLast()).where(sql`launch_id IS NOT NULL`),
 	check("ck_run_attempts_launch_isolation", sql`launch_isolation_json IS NULL OR (launch_id IS NOT NULL AND launch_isolation_json->>'launch_id' = launch_id)`),
 	index("ix_run_attempts_run_status").using("btree", table.spaceId.asc().nullsLast(), table.runId.asc().nullsLast(), table.status.asc().nullsLast()),

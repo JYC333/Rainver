@@ -11,6 +11,7 @@ import { LIBRARY_KINDS } from '../../domain';
  * Tailored materials stay in their application.
  */
 export function LibraryTab({ ctx, onOpen }: { ctx: Ctx; onOpen: Open }) {
+  const canEdit = ctx.projectCanWrite !== false;
   const { ui } = ctx, { Button, Input, Select, Badge, Card, CardContent, t, NoteLink } = ui;
   const { query, command, reason } = useOperations(ctx);
   const [items, setItems] = useState<LibraryItem[] | null>(null), [failed, setFailed] = useState(false);
@@ -20,7 +21,7 @@ export function LibraryTab({ ctx, onOpen }: { ctx: Ctx; onOpen: Open }) {
   const load = useCallback(async () => {
     try { setItems((await query<{ items: LibraryItem[] }>('library.list', {})).items); setFailed(false); } catch { setFailed(true); }
   }, [query]);
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { void load(); }, [load, ctx.projectRevision]);
   const run = async (name: string, input: Record<string, unknown>) => {
     setBusy(true); setNotice(''); setError('');
     try { await command(name, input); setNotice(t(k('saved'))); await load(); return true; } catch (e) { setError(reason(e)); await load(); return false; } finally { setBusy(false); }
@@ -48,11 +49,13 @@ export function LibraryTab({ ctx, onOpen }: { ctx: Ctx; onOpen: Open }) {
             </div>
             <div className="flex flex-wrap items-center gap-2">
               {item.note.available && <NoteLink noteId={item.note.note_id}>{t(k('open_in_notes'))}</NoteLink>}
-              <Button className={touch} size="sm" variant="ghost" aria-expanded={editing?.id === item.id} disabled={busy} onClick={() => setEditing(e => e?.id === item.id ? null : { id: item.id, kind: item.kind, label: item.label ?? '' })}>{t(k('edit'))}</Button>
-              <Button className={touch} size="sm" variant="ghost" disabled={busy} aria-label={t(k('library_remove'), { name: item.label || name })} onClick={() => void run('library.remove', { item_id: item.id })}>{t(k('remove'))}</Button>
+              {canEdit && <>
+                <Button className={touch} size="sm" variant="ghost" aria-expanded={editing?.id === item.id} disabled={busy} onClick={() => setEditing(e => e?.id === item.id ? null : { id: item.id, kind: item.kind, label: item.label ?? '' })}>{t(k('edit'))}</Button>
+                <Button className={touch} size="sm" variant="ghost" disabled={busy} aria-label={t(k('library_remove'), { name: item.label || name })} onClick={() => void run('library.remove', { item_id: item.id })}>{t(k('remove'))}</Button>
+              </>}
             </div>
           </div>
-          {editing?.id === item.id && <div className="grid gap-3 border-t border-border pt-3 md:grid-cols-[12rem_1fr_auto_auto] md:items-end">
+          {canEdit && editing?.id === item.id && <div className="grid gap-3 border-t border-border pt-3 md:grid-cols-[12rem_1fr_auto_auto] md:items-end">
             <Field label={t(k('library_kind_label'))}><Select ariaLabel={t(k('library_kind_label'))} value={editing.kind} onChange={v => setEditing(x => x && { ...x, kind: v })} options={kinds} /></Field>
             <Field label={t(k('library_label'))}><Input className={touch} value={editing.label} onChange={e => setEditing(x => x && { ...x, label: e.target.value })} /></Field>
             <Button className={touch} size="sm" disabled={busy} onClick={async () => { if (await run('library.update', { item_id: item.id, kind: editing.kind, label: blank(editing.label) })) setEditing(null); }}>{t(k('save'))}</Button>
@@ -73,7 +76,7 @@ export function LibraryTab({ ctx, onOpen }: { ctx: Ctx; onOpen: Open }) {
           </div>
         </CardContent></Card></li>;
       })}</ul>}
-    <Card className="mb-0"><CardContent className="space-y-3">
+    {canEdit && <Card className="mb-0"><CardContent className="space-y-3">
       <h3 className="text-sm font-semibold">{t(k('library_add_title'))}</h3>
       <div className="grid gap-3 md:grid-cols-[1fr_12rem_1fr_auto] md:items-end">
         <Field label={t(k('library_note_id'))}><Input className={touch} value={form.note_id} onChange={e => setForm(f => ({ ...f, note_id: e.target.value }))} /></Field>
@@ -82,6 +85,6 @@ export function LibraryTab({ ctx, onOpen }: { ctx: Ctx; onOpen: Open }) {
         <Button className={touch} size="sm" variant="outline" disabled={busy || !form.note_id.trim()} onClick={async () => { if (await run('library.add', { note_id: form.note_id.trim(), kind: form.kind, label: blank(form.label) })) setForm({ note_id: '', kind: form.kind, label: '' }); }}>{t(k('library_add'))}</Button>
       </div>
       <p className="text-xs text-muted-foreground">{t(k('library_add_hint'))}</p>
-    </CardContent></Card>
+    </CardContent></Card>}
   </div>;
 }

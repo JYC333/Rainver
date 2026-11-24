@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { acpSessionConfigFromRunOverride, createCliConversationController } from "../src/modules/runs/cliConversationProtocol.js";
 
+import { conversationConfigOptions, resolveSessionConfig } from "../src/modules/sessions/sessionConfig.js";
+
 const canonicalModel = "claude-fable-5-1";
 const modelOption = (currentValue: string, choices = [canonicalModel, "opus"]) => ({
   id: "model", category: "model", type: "select", currentValue,
@@ -9,6 +11,7 @@ const modelOption = (currentValue: string, choices = [canonicalModel, "opus"]) =
 
 function open(input: {
   resume?: boolean;
+  allowResumedModelChange?: boolean;
   runtime?: "claude_code" | "codex_cli";
   value?: string;
   current?: string;
@@ -23,6 +26,7 @@ function open(input: {
   const controller = createCliConversationController({
     runtime_key: input.runtime ?? "claude_code", cwd: "/workspace", prompt: "continue",
     ...(input.resume ? { runtime_session_id: "session-1" } : {}),
+    allow_resumed_model_change: input.allowResumedModelChange,
     on_model_selected: input.onModel,
     session_config: [{
       id: "model", category: "model", type: "select", value: input.value ?? "fable",
@@ -39,6 +43,22 @@ function open(input: {
 }
 
 describe("ACP model selection", () => {
+  it("uses Rainver's Claude default independently of the Host's current model", async () => {
+    const advertised = [{
+      id: "model", category: "model", name: "Model", description: null, type: "select" as const,
+      current_value: "fable",
+      options: ["default", "fable", "opus"].map(value => ({ value, name: value, description: null, group: null })),
+    }];
+    const options = conversationConfigOptions("claude_code", advertised);
+    expect(options[0]?.current_value).toBe("opus");
+    expect(advertised[0]?.current_value).toBe("fable");
+    expect(conversationConfigOptions("codex_cli", advertised)).toBe(advertised);
+
+    const saved = [{ id: "model", category: "model", type: "select", value: "claude-retired" }];
+    await expect(resolveSessionConfig(undefined, async () => saved, options, "claude_code"))
+      .resolves.toEqual({ selections: saved, dropped: [], source: "saved" });
+  });
+
   it("reports the resolved model only after its selection is acknowledged", () => {
     const observed: Array<string | null> = [];
     const { receive } = open({ onModel: model => { observed.push(model); } });
@@ -75,6 +95,41 @@ describe("ACP model selection", () => {
     } });
     expect(controller.result()).toMatchObject({ completed: true, error: null });
     expect(controller.result().model_usage).toMatchObject([{ model: canonicalModel }]);
+  });
+
+  it("holds a model switch before prompting when the resumed context needs a handoff", () => {
+    const { controller, sent, closed } = open({ resume: true, allowResumedModelChange: false, value: "opus" });
+    expect(controller.result().error).toContain("Model not switched");
+    expect(controller.result().resume_handshake_failed).toBeUndefined();
+    expect(closed()).toBe(true);
+    expect(sent.map(message => message.method)).toEqual(["initialize", "session/resume"]);
+  });
+
+  it("still prompts a resumed session on its current model when a switch would be held", () => {
+    const { controller, sent } = open({ resume: true, allowResumedModelChange: false, value: canonicalModel });
+    expect(controller.result().error).toBeNull();
+    expect(sent.at(-1)?.method).toBe("session/prompt");
+  });
+
+  it("resumes a session that may not switch as it is when it already stands on the one choice the picker alias names", () => {
+    // The alias was resolved to its canonical value on an earlier turn; the full session reports that value on resume.
+    const observed: Array<string | null> = [];
+    const { controller, sent, receive } = open({ resume: true, allowResumedModelChange: false, value: "fable", current: canonicalModel,
+      onModel: model => { observed.push(model); } });
+    expect(controller.result().error).toBeNull();
+    expect(sent.map(message => message.method)).toEqual(["initialize", "session/resume", "session/prompt"]);
+    receive({ jsonrpc: "2.0", id: 4, result: { stopReason: "end_turn", usage: { inputTokens: 2, outputTokens: 1, totalTokens: 3 } } });
+    expect(controller.result()).toMatchObject({ completed: true, error: null });
+    expect(controller.result().model_usage).toMatchObject([{ model: canonicalModel }]);
+  });
+
+  it.each([
+    ["names two advertised choices", ["claude-fable-4-0", canonicalModel], canonicalModel],
+    ["names another choice than the current one", [canonicalModel, "claude-opus-5-5"], canonicalModel, "opus"],
+  ])("still holds a resumed switch when the alias %s", (_case, choices, current, value = "fable") => {
+    const { controller, sent } = open({ resume: true, allowResumedModelChange: false, value, current, choices });
+    expect(controller.result().error).toContain("Model not switched");
+    expect(sent.map(message => message.method)).toEqual(["initialize", "session/resume"]);
   });
 
   it("stops without prompting when the runtime rejects the alias", () => {

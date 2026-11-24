@@ -371,6 +371,31 @@ describe("finance ledger Beancount import", () => {
     expect(await financeLedgerService.listDirectives(db.pool, SPACE_A, book.id, { directiveType: "transaction" })).toHaveLength(4);
   });
 
+  it("checks a trusted external id again when retrying a pending batch", async () => {
+    const book = await createBook();
+    await addCommodities(book.id, ["USD"]);
+    await openAccounts(book.id, ["Assets:Cash", "Expenses:Food"]);
+    const record = (account: string) => `2026-01-05 * "Bank fee"
+  external_id: "bank-retry"
+  Assets:Cash  -1.00 USD
+  ${account}  1.00 USD
+`;
+    const pending = await importText(book.id, record("Expenses:Unmapped"));
+    expect(pending.summary.pending_mapping).toBe(1);
+
+    const second = await importText(book.id, record("Expenses:Food"));
+    expect(second.summary.needs_review).toBe(1);
+    const decided = await financeLedgerService.decideImportEntryReview(
+      db.pool, SPACE_A, book.id, USER_1, second.importSource.id, "import", null,
+    );
+    expect(decided.summary.imported).toBe(1);
+
+    await openAccounts(book.id, ["Expenses:Unmapped"]);
+    const retried = await importText(book.id, record("Expenses:Unmapped"));
+    expect(retried.entries).toMatchObject([{ status: "duplicate", status_reason: "external_id_imported", directive_id: null }]);
+    expect(await financeLedgerService.listDirectives(db.pool, SPACE_A, book.id, { directiveType: "transaction" })).toHaveLength(1);
+  });
+
   it("refuses a second line reusing an external id in one file, with a status of its own", async () => {
     const book = await createBook();
     await addCommodities(book.id, ["USD"]);
@@ -421,9 +446,9 @@ describe("finance ledger Beancount import", () => {
     await expect(importText(book.id, text, USER_2)).rejects.toThrow("already imported by another member");
     await expect(financeLedgerService.getImportBatch(db.pool, SPACE_A, book.id, USER_2, mine.importSource.id)).rejects.toThrow("Import not found");
     await expect(financeLedgerService.retryImportBatch(db.pool, SPACE_A, book.id, USER_2, mine.importSource.id)).rejects.toThrow("Import not found");
-    expect(await financeLedgerService.listImportBatches(db.pool, SPACE_A, book.id, USER_2)).toEqual([]);
-    const listed = await financeLedgerService.listImportBatches(db.pool, SPACE_A, book.id, USER_1);
-    expect(listed).toEqual([{ importSource: expect.objectContaining({ id: mine.importSource.id }), summary: expect.objectContaining({ imported: 1 }) }]);
+    expect(await financeLedgerService.listImportBatches(db.pool, SPACE_A, book.id, USER_2, 0)).toEqual({ items: [] });
+    const listed = await financeLedgerService.listImportBatches(db.pool, SPACE_A, book.id, USER_1, 0);
+    expect(listed.items).toEqual([{ importSource: expect.objectContaining({ id: mine.importSource.id }), summary: expect.objectContaining({ imported: 1 }) }]);
   });
 
   it("drops an entry that fails part way whole, keeping the rest of the import, and retries it later", async () => {

@@ -4,9 +4,9 @@ import { createHash } from 'node:crypto';
 import type { Pool } from '../../db/pool.js';
 import { PluginOperationManifestSchema, type RainverPlugin } from '@rainver/protocol';
 import { pluginOrder } from './dependencies.js';
-import { pluginRoleNames, provisionPluginRoles, reconcilePluginRole } from './roleReconcile.js';
+import { provisionPluginRoles, reconcilePluginRole } from './roleReconcile.js';
 import { pluginRepository } from './repository.js';
-import { operationSqlCode } from '../../db/operationSql.js';
+import { applyOperationMigrationSql, isMergedPluginMigration } from './migrationSql.js';
 import { HttpError } from '../routeUtils/common.js';
 const digest = (s: string) => createHash('sha256').update(s).digest('hex');
 /** Explicit offline transaction owner. Session lock spans rollback/failure journal; xact lock protects DDL. */
@@ -35,6 +35,10 @@ export async function migrateOperationPlugin(pool: Pool, plugin: RainverPlugin, 
     // Preserve the existing journal and error summary when repair is required.
     const prior = await pluginRepository.findInstall(client, plugin.id);
     if (prior?.lifecycle_state === 'migration_error' && !options.repairFailed) throw new HttpError(409, 'Plugin requires explicit offline repair');
+    if (actual.some(({ sql }) => isMergedPluginMigration(sql)) && (await client.query(
+      'SELECT 1 FROM public.plugin_migrations WHERE plugin_id=$1 AND NOT (migration_id=ANY($2::text[])) LIMIT 1',
+      [plugin.id, declared],
+    )).rows.length) throw new HttpError(409, 'Plugin history requires an offline squash cutover');
     await client.query('BEGIN');
     try {
       await client.query("SELECT set_config('lock_timeout',$1,true)", [`${options.lockTimeoutMs ?? 3000}ms`]);
@@ -54,10 +58,6 @@ export async function migrateOperationPlugin(pool: Pool, plugin: RainverPlugin, 
       await client.query("UPDATE plugin_installs SET status='disabled',lifecycle_state='installing',lifecycle_error=NULL WHERE plugin_id=$1", [plugin.id]);
       phase = 'provision';
       if (prior) await reconcilePluginRole(client, plugin.id);else await provisionPluginRoles(client, plugin.id);
-      const {
-        ddl,
-        schema
-      } = pluginRoleNames(plugin.id);
       for (const [index, migration] of actual.entries()) {
         phase = 'migration';
         current = migration.id;
@@ -68,25 +68,7 @@ export async function migrateOperationPlugin(pool: Pool, plugin: RainverPlugin, 
           continue;
         }
         if (existing?.status === 'failed' && !options.repairFailed) throw new HttpError(409, 'Plugin requires explicit offline repair');
-        // Pass only the preceding migration's timestamp for this package. A backfill can
-        // bound its legacy rows without giving the DDL role access to the core journal.
-        await client.query(`SELECT set_config('rainver.previous_migration_applied_at', coalesce((
-          SELECT applied_at::text FROM plugin_migrations WHERE plugin_id=$1 AND migration_id=$2 AND status='applied'
-        ), ''), true)`, [plugin.id, actual[index - 1]?.id ?? null]);
-        await client.query(`SET LOCAL ROLE ${ddl}`);
-        await client.query(`SET LOCAL search_path=${schema},pg_temp`);
-        for (const statement of migration.sql.split('--> statement-breakpoint')) {
-          if (!statement.trim()) continue;
-          const code = operationSqlCode(statement);
-          if (code.includes(';') || /\b(?:temp|temporary)\b/i.test(code) || !/^(create|alter|drop|comment|insert|update|delete)\b/i.test(code) || /\bset_config\b/i.test(code)) throw new Error('Migration transaction/session control refused');
-          await client.query(statement);
-        }
-        const role = (await client.query<{
-          role: string;
-        }>('SELECT current_user AS role')).rows[0]!.role;
-        if (role !== ddl) throw new Error('Migration role tripwire');
-        await client.query('SET LOCAL ROLE NONE');
-        await client.query('SET LOCAL search_path=public');
+        await applyOperationMigrationSql(client, plugin.id, migration.sql, actual[index - 1]?.id);
         if (existing) await client.query('DELETE FROM plugin_migrations WHERE plugin_id=$1 AND migration_id=$2 AND status=\'failed\'', [plugin.id, current]);
         await pluginRepository.insertAppliedMigration(client, {
           pluginId: plugin.id,

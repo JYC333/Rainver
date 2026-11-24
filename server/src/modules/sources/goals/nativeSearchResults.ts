@@ -74,36 +74,104 @@ export async function reconcileNativeSearch(db:Pool,config:ServerConfig,goalId:s
   await tx.query(`UPDATE source_goal_runs SET status=$2::varchar,result_json=result_json||$3::jsonb,ended_at=CASE WHEN $2::varchar='accepted' THEN NULL ELSE now() END WHERE id=$1`,[audit.id,error?'failed':p.preview_id?'succeeded':'accepted',{...(coverage?{coverage}:{}),...(error?{error}:{}),...(p.preview_id?{}:{accepted_output:output})}]);
  });}
  // Persist submitted output via the sole existing materializer, then commit
- // audit success. A crash between them replays stable-ID dedupe, not the model.
- const accepted=await db.query(`SELECT * FROM source_goal_runs WHERE goal_id=$1 AND (status='accepted' OR (status='materializing' AND (result_json->>'materialization_lease_until')::timestamptz<now())) ORDER BY started_at LIMIT 20`,[goalId]);
+ // audit success together. Current leases allow retry without rerunning the model.
+ const accepted=await db.query(`SELECT * FROM source_goal_runs WHERE goal_id=$1 AND (status='accepted' OR (status='materializing' AND COALESCE((result_json->>'materialization_lease_until')::timestamptz,'-infinity')<now())) ORDER BY started_at LIMIT 20`,[goalId]);
  for(const pending of accepted.rows){
-  const claim=await db.query(`UPDATE source_goal_runs SET status='materializing',result_json=result_json||jsonb_build_object('materialization_lease_until',now()+interval '5 minutes') WHERE id=$1 AND (status='accepted' OR (status='materializing' AND (result_json->>'materialization_lease_until')::timestamptz<now())) RETURNING *`,[pending.id]);
-  const audit=claim.rows[0];if(!audit)continue;const p=audit.result_json;
+  const claimId = randomUUID();
+  const claimed = await withDbTransaction(db, async tx => {
+   // Binding before audit matches materialization's write order. Every attempt
+   // gets its own binding token, including a takeover of an unexpired token
+   // that belonged to the previous attempt for this same audit.
+   const binding = (await tx.query<GoalBindingRow & { status: string }>(
+    'SELECT * FROM source_goal_bindings WHERE id=$1 FOR UPDATE', [pending.binding_id],
+   )).rows[0];
+   const audit = (await tx.query(
+    `UPDATE source_goal_runs SET status='materializing',result_json=result_json||jsonb_build_object(
+      'materialization_lease_until',now()+interval '5 minutes','materialization_claim_id',$2::text)
+      WHERE id=$1 AND (status='accepted' OR (status='materializing' AND
+        COALESCE((result_json->>'materialization_lease_until')::timestamptz,'-infinity')<now())) RETURNING *`,
+    [pending.id, claimId],
+   )).rows[0];
+   if (!audit) return null;
+   if (binding?.status !== 'collecting' || binding.revision !== audit.result_json.binding_revision) {
+    return { audit, token: null };
+   }
+   const previousToken = audit.result_json.materialization_token ?? null;
+   const token = randomUUID();
+   const renewed = await tx.query(
+    `UPDATE source_goal_bindings SET lease_token=$2,lease_until=now()+interval '5 minutes'
+      WHERE id=$1 AND (lease_token=$3 OR lease_token IS NULL OR lease_until<now())`,
+    [binding.id, token, previousToken],
+   );
+   if (!renewed.rowCount) {
+    await tx.query("UPDATE source_goal_runs SET status='accepted' WHERE id=$1", [audit.id]);
+    return null;
+   }
+   await tx.query(
+    "UPDATE source_goal_runs SET result_json=result_json||jsonb_build_object('materialization_token',$2::text) WHERE id=$1",
+    [audit.id, token],
+   );
+   return { audit, token };
+  });
+  if (!claimed) continue;
+  const { audit, token } = claimed;
+  const p = audit.result_json;
   try{
-   const b=(await db.query('SELECT * FROM source_goal_bindings WHERE id=$1',[audit.binding_id])).rows[0] as GoalBindingRow;if(!b)throw new Error('source_native_stale_result');
+   const b=(await db.query('SELECT * FROM source_goal_bindings WHERE id=$1',[audit.binding_id])).rows[0] as GoalBindingRow&{status:string};if(!b)throw new Error('source_native_stale_result');
    const identity={spaceId:audit.space_id,userId:(await db.query('SELECT owner_user_id FROM source_goals WHERE id=$1',[goalId])).rows[0].owner_user_id};const g=await activeGoalIntent(db,await requireGoal(db,identity,goalId,true));
    if(g.status!=='running'||g.active_version_id!==audit.version_id||b.revision!==p.binding_revision||JSON.stringify(b.spec_json)!==JSON.stringify(p.spec))throw new Error('source_native_stale_result');
-   if(b.lease_token!==p.materialization_token||!b.lease_until||Date.parse(String(b.lease_until))<=Date.now()){
-    const token=randomUUID();const reclaimed=await db.query(`UPDATE source_goal_bindings SET lease_token=$2,lease_until=now()+interval '5 minutes' WHERE id=$1 AND revision=$3 AND status='collecting' AND (lease_token IS NULL OR lease_until<now()) RETURNING id`,[b.id,token,b.revision]);
-    if(!reclaimed.rows.length){await db.query(`UPDATE source_goal_runs SET status='accepted' WHERE id=$1`,[audit.id]);continue;}
-    p.materialization_token=token;await db.query(`UPDATE source_goal_runs SET result_json=result_json||$2::jsonb WHERE id=$1 AND status='materializing'`,[audit.id,{materialization_token:token}]);
+   const collectedAt=new Date(audit.started_at).toISOString();
+   // A pre-upgrade worker could have committed the cursor and membership,
+   // then stopped before marking this collection done. Reuse that commit.
+   if(b.status==='active'&&b.cursor_json.last_collected_at===collectedAt){
+    const repaired=await db.query(`UPDATE source_goal_runs r SET status='succeeded',ended_at=now(),result_json=r.result_json||jsonb_build_object(
+      'goal_items_new',(SELECT count(*) FROM source_goal_items WHERE goal_id=r.goal_id AND first_goal_run_id=r.id),
+      'items_observed',(SELECT count(*) FROM source_goal_items WHERE goal_id=r.goal_id AND last_goal_run_id=r.id))
+      WHERE r.id=$1 AND r.status='materializing' AND r.result_json->>'materialization_claim_id'=$4 AND EXISTS(SELECT 1 FROM source_goal_bindings WHERE id=r.binding_id AND status='active' AND revision=$2 AND cursor_json->>'last_collected_at'=$3)`,[audit.id,b.revision,collectedAt,claimId]);
+    if(repaired.rowCount)continue;
    }
-   await recoverGoalWatermark(db,g.id,b,p.materialization_token);p.cursor_before=b.cursor_json;
+   if (b.status !== 'collecting' || !token) throw new Error('source_native_stale_result');
+   await recoverGoalWatermark(db,g.id,b,token);
+   p.cursor_before=b.cursor_json;
    const source=await preflightGoalSource(db,config,identity,g,b.spec_json);const policy=agentReadingPolicy(source);
    const prepared=CustomSourceHandlerOutputSchema.parse(p.accepted_output);
-   const result:GoalExecutionResult={output:prepared,topicSignals:p.topic_signals??null,fixture:null,source_kind:'search',cursor:{coverage:'native_search_window',last_collected_at:new Date(audit.started_at).toISOString(),physical_requests:null},filesRoot:config.sandboxRoot,cleanup:async()=>{},envelope:{allowed_network_origins:[],capture_policy:policy.capture,retention_policy:policy.retention,credential_ref:null,limits:{timeout_ms:10000,max_download_bytes:1048576,max_output_bytes:1048576,max_items:g.budget_json.items_per_source,max_files:g.budget_json.items_per_source,max_evidence_items:100,log_max_bytes:1}}};
-   const selected=await selectGoalResult(db,g,b.spec_json,{...p.cursor_before,__goal_history:false},result);const materialized=await materializeGoalBatch(db,config,g,b,p.materialization_token,audit.id,selected);
-   await db.query(`UPDATE source_goal_runs SET result_json=result_json||$2::jsonb WHERE id=$1`,[audit.id,{goal_items_new:materialized.goal_items_new,items_observed:materialized.itemIds.length,selection:selected.selection,coverage:{...p.coverage,returned_items:CustomSourceHandlerOutputSchema.parse(selected.output).items.length,truncated:p.coverage?.truncated===true||Number(selected.cursor.remaining_count)>0}}]);
-   // A reused preview already covered this window: the next check of this
-   // binding waits one interval instead of immediately paying again.
-   if(p.bootstrap_preview_id)await db.query(`UPDATE source_goal_bindings SET retry_at=now()+make_interval(secs=>$2::int) WHERE id=$1 AND status='active' AND retry_at IS NULL`,[b.id,g.budget_json.interval_seconds]);
-   await db.query(`UPDATE source_goal_runs SET status='succeeded',ended_at=now() WHERE id=$1 AND status='materializing'`,[audit.id]);
+   const result:GoalExecutionResult={output:prepared,topicSignals:p.topic_signals??null,fixture:null,source_kind:'search',cursor:{coverage:'native_search_window',last_collected_at:collectedAt,physical_requests:null},filesRoot:config.sandboxRoot,cleanup:async()=>{},envelope:{allowed_network_origins:[],capture_policy:policy.capture,retention_policy:policy.retention,credential_ref:null,limits:{timeout_ms:10000,max_download_bytes:1048576,max_output_bytes:1048576,max_items:g.budget_json.items_per_source,max_files:g.budget_json.items_per_source,max_evidence_items:100,log_max_bytes:1}}};
+   const selected=await selectGoalResult(db,g,b.spec_json,{...p.cursor_before,__goal_history:false},result);
+   const coverage={...p.coverage,returned_items:CustomSourceHandlerOutputSchema.parse(selected.output).items.length,truncated:p.coverage?.truncated===true||Number(selected.cursor.remaining_count)>0};
+   await materializeGoalBatch(db,config,g,b,token,audit.id,selected,false,async(tx,{newItems,observedItems})=>{
+    // A reused preview already covered this window. Wait one interval before the next check.
+    if(p.bootstrap_preview_id)await tx.query(`UPDATE source_goal_bindings SET retry_at=now()+make_interval(secs=>$2::int) WHERE id=$1 AND status='active' AND retry_at IS NULL`,[b.id,g.budget_json.interval_seconds]);
+    const done=await tx.query(`UPDATE source_goal_runs SET status='succeeded',ended_at=now(),result_json=result_json||$2::jsonb WHERE id=$1 AND status='materializing' AND result_json->>'materialization_token'=$3 AND result_json->>'materialization_claim_id'=$4`,[audit.id,{goal_items_new:newItems,items_observed:observedItems,selection:selected.selection,coverage},token,claimId]);
+    if(!done.rowCount)throw new Error('source_materialization_lease_lost');
+   });
   }catch(error){
    const refused=error instanceof HttpError&&[403,404,409].includes(error.statusCode)||error instanceof Error&&/^source_(native_|authority_|scope_|policy_)/.test(error.message);
-   if(refused){const body=error instanceof HttpError?(error.responseBody as {error?:unknown}|undefined)?.error:undefined;const code=typeof body==='string'&&/^source_[a-z_]+$/.test(body)?body:error instanceof Error&&/^source_[a-z_]+$/.test(error.message)?error.message:error instanceof HttpError&&[403,404].includes(error.statusCode)?'source_authority_revoked':'source_native_stale_result';await db.query(`UPDATE source_goal_runs SET status='failed',result_json=result_json||$2::jsonb,ended_at=now() WHERE id=$1`,[audit.id,{error:code}]);await db.query(`UPDATE source_goal_bindings SET status='paused',retry_at=NULL,fixture_json=fixture_json||$2::jsonb WHERE id=$1 AND status='collecting' AND revision IS NOT DISTINCT FROM $3::int`,[audit.binding_id,{collection_error:code},p.binding_revision]);}
-   else{await db.query(`UPDATE source_goal_runs SET status='accepted' WHERE id=$1 AND status='materializing'`,[audit.id]);throw error;}
-  }finally{
-   await db.query('UPDATE source_goal_bindings SET lease_token=NULL,lease_until=NULL WHERE id=$1 AND lease_token=$2',[audit.binding_id,p.materialization_token]);
+   if (refused) {
+    const body = error instanceof HttpError ? (error.responseBody as {error?:unknown}|undefined)?.error : undefined;
+    const code = typeof body==='string'&&/^source_[a-z_]+$/.test(body)?body:error instanceof Error&&/^source_[a-z_]+$/.test(error.message)?error.message:error instanceof HttpError&&[403,404].includes(error.statusCode)?'source_authority_revoked':'source_native_stale_result';
+    const failed = await db.query(
+     `UPDATE source_goal_runs SET status='failed',result_json=result_json||$2::jsonb,ended_at=now()
+        WHERE id=$1 AND status='materializing' AND result_json->>'materialization_claim_id'=$3`,
+     [audit.id, {error:code}, claimId],
+    );
+    if (failed.rowCount && token) await db.query(
+     `UPDATE source_goal_bindings SET status='paused',retry_at=NULL,fixture_json=fixture_json||$2::jsonb
+        WHERE id=$1 AND status='collecting' AND revision IS NOT DISTINCT FROM $3::int AND lease_token=$4`,
+     [audit.binding_id, {collection_error:code}, p.binding_revision, token],
+    );
+   } else {
+    const returned = await db.query(
+     `UPDATE source_goal_runs SET status='accepted'
+        WHERE id=$1 AND status='materializing' AND result_json->>'materialization_claim_id'=$2`,
+     [audit.id, claimId],
+    );
+    if (returned.rowCount) throw error;
+   }
+  } finally {
+   if (token) await db.query(
+    'UPDATE source_goal_bindings SET lease_token=NULL,lease_until=NULL WHERE id=$1 AND lease_token=$2',
+    [audit.binding_id, token],
+   );
   }
  }
  await db.query("UPDATE source_goals g SET status='paused',compatibility_json=compatibility_json-'manual_pending' WHERE g.id=$1 AND g.compatibility_json->>'manual_pending'='true' AND g.compatibility_json->>'execution_mode'='manual' AND NOT EXISTS(SELECT 1 FROM source_goal_runs r WHERE r.goal_id=g.id AND r.status IN ('accepted','materializing'))",[goalId]);

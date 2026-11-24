@@ -1,16 +1,33 @@
 import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
+import { RoomDiscussionService } from "../rooms/discussionService.js";
+import { ExperimentRunService } from "../experiments/runService.js";
 import { PgRunRepository } from "./repository.js";
 import { RunMaterializationService } from "./materializationService.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
 import { finalizeChatTurn, recordChatTurnFinalizationFailure, type ChatTurnFinalizerDeps } from "./chatTurnFinalizer.js";
 import { isHardTerminalRunStatus } from "./orchestrationResults.js";
 import { finalizedForPostRun } from "./finalizationOutcome.js";
+import { nextRecoveryCursor, type RecoveryCursor } from "./recoveryCursor.js";
 
 interface RecoveryLogger { warn(message: string): void }
+interface RecoveryDependencies {
+  discussions?: Pick<RoomDiscussionService, "recoverUnadvancedWaves">;
+  experiments?: Pick<ExperimentRunService, "listRunsAwaitingFinalization">;
+}
 
 /** Replays durable lifecycle obligations; never executes an Agent directly. */
 export class RunRecoveryService {
-  constructor(private readonly config: ServerConfig, private readonly runs = PgRunRepository.fromConfig(config)) {}
+  private readonly discussions?: RecoveryDependencies["discussions"];
+  private readonly experiments?: RecoveryDependencies["experiments"];
+  private chatCursor: RecoveryCursor | null = null;
+  private experimentCursor: RecoveryCursor | null = null;
+
+  constructor(private readonly config: ServerConfig, private readonly runs = PgRunRepository.fromConfig(config), deps: RecoveryDependencies = {}) {
+    const pool = config.databaseUrl ? getDbPool(config.databaseUrl) : null;
+    this.discussions = deps.discussions ?? (pool ? new RoomDiscussionService(config, pool) : undefined);
+    this.experiments = deps.experiments ?? (pool ? new ExperimentRunService(pool) : undefined);
+  }
 
   /**
    * One pass. Steps are independent obligations, so one failing (a query
@@ -24,11 +41,7 @@ export class RunRecoveryService {
     const steps: Array<[string, () => Promise<void>]> = [
       ["cancellation_intent", async () => {
         for (const run of await this.runs.listCancellingAgentRuns()) {
-          const userId = run.instructed_by_user_id ?? run.owner_user_id;
-          if (!userId) { log?.warn(`[runs] cancelled-intent Run ${run.id} has no job actor`); continue; }
-          await isolated(log, `cancellation of Run ${run.id}`, () => jobs.ensureAgentRunJob({ job_type: "agent_run",
-            space_id: run.space_id, user_id: userId, agent_id: run.agent_id, project_folder_id: run.project_folder_id,
-            payload: { run_id: run.id } }));
+          await isolated(log, `cancellation of Run ${run.id}`, () => jobs.ensureRunCancellationJob(run.space_id, run.id));
         }
       }],
       ["stale_preparation", async () => {
@@ -43,8 +56,28 @@ export class RunRecoveryService {
           });
         }
       }],
-      ["chat_completion", () => reconcileTerminalChatRuns(this.config, this.runs, log, materializer)],
+      ["chat_completion", async () => {
+        this.chatCursor = await reconcileTerminalChatRuns(this.config, this.runs, log, materializer, {}, this.chatCursor);
+      }],
+      ["room_discussion_advance", async () => {
+        await this.discussions?.recoverUnadvancedWaves((groupId, error) => log?.warn(
+          `[runs] Room wave ${groupId} recovery failed: ${error instanceof Error ? error.message : String(error)}`));
+      }],
       ["task_finalization", () => reconcileUnfinalizedTaskRuns(this.config, this.runs, log, materializer)],
+      ["experiment_finalization", async () => {
+        if (!this.experiments) return;
+        const limit = 100;
+        const pending = await this.experiments.listRunsAwaitingFinalization(limit, this.experimentCursor);
+        this.experimentCursor = nextRecoveryCursor(pending, limit);
+        for (const item of pending) await isolated(log, `Experiment Run ${item.id} finalization`, async () => {
+          const run = await this.runs.getRun(item.space_id, item.id);
+          if (!run || !isHardTerminalRunStatus(run.status)) return;
+          const finalization = await materializer.finalizeRun(run);
+          if (finalization.error_code !== "finalization_in_progress" && !finalizedForPostRun(finalization)) {
+            throw new Error(finalization.error_message ?? "Run finalization failed");
+          }
+        });
+      }],
       ["settlement", () => resumeUnsettledRuns(this.config, this.runs, log, materializer)],
     ];
     for (const [name, step] of steps) await isolated(log, `recovery step ${name}`, step);
@@ -66,36 +99,32 @@ export async function reconcileTerminalChatRuns(
   materializer: Pick<RunMaterializationService, "finalizeRun"> =
     RunMaterializationService.fromConfig(config),
   finalizerDeps: ChatTurnFinalizerDeps = {},
-): Promise<void> {
-  const pending = await runs.listTerminalChatRunsAwaitingCompletion();
+  after: RecoveryCursor | null = null,
+): Promise<RecoveryCursor | null> {
+  const limit = 100;
+  const pending = await runs.listTerminalChatRunsAwaitingCompletion(limit, after);
   for (const item of pending) {
     try {
       const run = await runs.getRun(item.space_id, item.id);
-      if (!run) continue;
-      const finalization = await materializer.finalizeRun(run);
-      if (finalization.error_code === "finalization_in_progress") continue;
-      // Owed settlement is finished for the chat turn: the sweep settles the rest.
-      if (!finalizedForPostRun(finalization)) {
-        throw new Error(
-          finalization.error_message ?? "Run finalization reconciliation failed.",
-        );
-      }
-      const current = await runs.getRun(item.space_id, item.id);
-      if (current && isHardTerminalRunStatus(current.status)) {
-        try {
-          await finalizeChatTurn(config, runs, current, finalizerDeps);
-        } catch (error) {
-          // Bounded: a successful chat Run holds its conversation until it
-          // completes, so a finalization that keeps failing must not hold it
-          // for good. Past the bound the turn completes as failed.
-          const failure = await recordChatTurnFinalizationFailure(config, runs, current, error, finalizerDeps);
-          if (!failure.completed) throw error;
-          log?.warn(
-            `[jobs-worker] chat Run ${item.id} completed as failed after ${failure.attempts} finalization attempts: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
+      if (!run || !isHardTerminalRunStatus(run.status)) continue;
+      try {
+        const finalization = await materializer.finalizeRun(run);
+        if (finalization.error_code === "finalization_in_progress") continue;
+        // Owed settlement is finished for the chat turn: the sweep settles the rest.
+        if (!finalizedForPostRun(finalization)) {
+          throw new Error(finalization.error_message ?? "Run finalization reconciliation failed.");
         }
+        const current = await runs.getRun(item.space_id, item.id);
+        if (current && isHardTerminalRunStatus(current.status)) await finalizeChatTurn(config, runs, current, finalizerDeps);
+      } catch (error) {
+        // Both materialization and publication can hold the turn. Count either
+        // failure in the same durable bound, while a newly queued retry can run.
+        const current = await runs.getRun(item.space_id, item.id);
+        if (!current || !isHardTerminalRunStatus(current.status)) continue;
+        const failure = await recordChatTurnFinalizationFailure(config, runs, current, error, finalizerDeps);
+        if (!failure.completed) throw error;
+        log?.warn(`[jobs-worker] chat Run ${item.id} completed as failed after ${failure.attempts} finalization attempts: ${
+          error instanceof Error ? error.message : String(error)}`);
       }
     } catch (error) {
       log?.warn(
@@ -119,6 +148,7 @@ export async function reconcileTerminalChatRuns(
       );
     }
   }
+  return nextRecoveryCursor(pending, limit);
 }
 
 /**

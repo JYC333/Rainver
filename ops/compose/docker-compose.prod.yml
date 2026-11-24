@@ -19,7 +19,8 @@ services:
   # Production runs the images CI publishes to GHCR (.github/workflows/ci.yml)
   # instead of building on this machine. RAINVER_IMAGE_TAG in the mode .env
   # selects the channel: stable (default, master), edge (dev), or an immutable
-  # sha-<commit> for a pinned rollback. All four images move together.
+  # sha-<commit> for a pinned rollback. The ops scripts resolve the server
+  # channel pointer and verify all service images at the same commit.
   #
   # Official server — the default production API entrypoint. nginx
   # proxies /api to this service (see apps/web/nginx.conf). The API itself is
@@ -77,6 +78,7 @@ services:
 
   sandbox-runner:
     image: ghcr.io/jyc333/rainver-sandbox-runner:${RAINVER_IMAGE_TAG:-stable}
+    init: true
     security_opt:
       - seccomp=unconfined
       - no-new-privileges=true
@@ -117,6 +119,11 @@ services:
       # Loopback by default so a production instance in WSL is local-only
       # unless the operator deliberately exposes it to the LAN or a reverse proxy.
       - "${RAINVER_WEB_BIND:-127.0.0.1}:${RAINVER_WEB_PORT:-28400}:80"
+    volumes:
+      # Disposable: the previous release's hashed /assets/ files, kept so a tab
+      # still open on it can lazy-load a feature after the switch
+      # (apps/web/docker/retain-previous-assets.sh). Not part of backups.
+      - frontend-previous-assets:/var/cache/rainver-web
     depends_on:
       server:
         condition: service_healthy
@@ -134,7 +141,7 @@ services:
       # host, so the two only agree when this container sees the mode root under
       # the same absolute path the host uses.
       - ${RAINVER_MODE_ROOT:-$HOME/.rainver-data/prod}:${RAINVER_MODE_ROOT:-$HOME/.rainver-data/prod}
-    user: "1000:989"
+    user: "1000:${DOCKER_GID:-989}"
     environment:
       - DEPLOYER_SOCKET=/tmp/rainver-deployer.sock
       - REPO_ROOT=/repo
@@ -159,3 +166,6 @@ networks:
   # Outbound only, and only for the built-in execution host. Narrowing what a
   # Run may reach through it is the daemon-owned egress proxy's job.
   host-egress:
+
+volumes:
+  frontend-previous-assets:

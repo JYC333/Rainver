@@ -133,15 +133,18 @@ execution exit/unwind before confirming terminal state. Crash recovery
 orphans the Attempt, rejects its proposals, and removes its stale lock in the
 same recovery statement. Consequently, neither automatic nor explicit
 finalization can queue the next physical Attempt while the previous Attempt
-still owns its execution authority.
+still owns its execution authority. A committed redispatch retires the previous
+Agent Job in the same Run transaction, including a resume of the same Attempt.
+The old Job may finish its own cleanup. Its failure, cancellation and recovery
+no longer change or retry the current Run dispatch.
 
 Runtime-output delegation has one execution entry: terminal finalization
 replays the durable canonical output with a stable idempotency key before
 creating RunEvaluation/Supervisor evidence. Explicit finalization uses the same
-materializer path. Chat/Room completion recovery only projects Runs that have a
-completed current-version finalization for the latest Attempt that is settled
-(`settled_at`): delegation reconciliation, the Supervisor decision and
-settlement all committed.
+materializer path. Chat/Room completion recovery publishes after successful
+materialization and a durable current-attempt finalization. The reply can be
+published while independent settlement steps are still pending. Each failed
+materialization or reply publication consumes one of the turn's recovery attempts.
 
 A deferred Job keeps an explicit wakeup that moved `scheduled_at` after its
 current claim, so a handler returning an older hold deadline cannot overwrite a
@@ -224,6 +227,19 @@ read-only mounts, not a second scheduler or a prompt-only convention. See
 There is no new Task-form toggle: request read-only delegation explicitly;
 the Agent tool schema exposes the access choice. Review reports are ordinary
 outputs, while source diff collection is disabled for read-only Runs.
+
+In version-1 Location-backed Rooms, `review: {}` starts an independent code
+review. `review.previous_run_id` requests continuity for the same reviewer
+under the same coordinator Run. The previous review must have a verified Git
+basis, an eligible session, matching identity and audience, and sufficiently
+small known context. The new Run checks its own Git basis at launch. See
+[isolated delegated execution](../modules/rooms.md#isolated-delegated-execution).
+
+In those Rooms a serial writer can request the same Agent's completed native
+session using `workspace_access: "write"` and `continuation.previous_run_id`.
+The previous write must have saved a checkpoint in the coordinator's same open
+batch. Session reuse remains optional and Host placement and launch checks
+still apply. The coordinator retains publication authority.
 
 The coordinator creates every independent reader before yielding with
 `agent.wait_for_results`; children start only after the parent's execution
@@ -515,14 +531,19 @@ not silently alter an existing Conversation.
 The Conversation execution context owns the single Primary Workspace: a
 managed workspace is keyed by Conversation, while a Location Primary and any
 Attached Folder Locations are concrete same-Host bindings. Attachments carry
-grants that are evaluated for each later Run; they never change cwd. Any
-selected Host, including the built-in server Host, may honor an explicit read
+grants that are evaluated for each later Run. A configured Room Profile supplies
+its CLI on the selected Host. A new Conversation can use a different authorized
+Folder on that Host. Existing Conversations keep the Primary Workspace on their
+Host thread when the Profile's directory preference changes.
+Attachments leave the working directory unchanged. Any selected Host,
+including the built-in server Host, may honor an explicit read
 or write grant. Server-host Locations remain confined to the managed workspace
 root, and the Host namespace enforces the grant's bind mode; the grant does not
 bypass that containment boundary. A Location that becomes stale remains usable
 by an initialized Conversation that already pins it as Primary or attachment.
-A healthy vendor session resumes only its own Conversation × Agent thread, and
-a Host/CLI/Primary change requires a new Conversation. Vendor
+A healthy vendor session resumes only its own Conversation × Agent thread.
+Changing the Host or Primary Workspace requires a new Conversation. A CLI
+change on the same Host and workspace starts a new native session. Vendor
 state remains a disposable cache rather than a replay authority. One
 Conversation-wide dispatch admission keeps shared-workspace writers exclusive;
 explicitly read-only delegated children may share it. There is no Room-owned runtime thread or Room Folder
@@ -597,11 +618,10 @@ System-level delegation runs through ACP Agent Runs inside an
 `AgentRunGroup`: `agent.delegate` and `agent.wait_for_results` are exposed
 through the Rainver work surface and policy boundary. A runtime may also create
 runtime-internal subagents, which are not represented as Rainver Agent Runs and
-do not receive independent Run attribution. The Host-daemon path does not
-apply a vendor subagent-deny declaration, so its static capability
-declarations do not prove that runtime-internal delegation is disabled. CLI
-candidates stay at their low effective-trust baseline. Do not raise it from a
-static declaration the Host path does not apply.
+do not receive independent Run attribution. The CLI and its effective runtime
+configuration govern whether it can start native subagents. Rainver observes
+the ACP events that the adapter emits. Effective trust derives from the
+execution target and owner.
 
 ### Containers and Agent-triggered budgets
 
@@ -702,8 +722,7 @@ the protections below. The implementation is `rooms/delegationBudget.ts`
 
 ### Runtime capability declarations
 
-The spec fields `subagent_support`, `subagent_disable_mechanism`,
-`delegation_controllability`, `structured_output`, `checkpoint_resume`,
+The spec fields `subagent_support`, `structured_output`, `checkpoint_resume`,
 `cancellation_reliability`, `observability_level`, `side_effect_level`,
 `data_exposure`, and `baseline_trust_level` describe registry-known runtime
 behavior used by runtime selection and UI. Such declarations describe product
@@ -838,8 +857,8 @@ continue instruction (`modules/rooms.md`).
 **Finalized** means the canonical materializer has reconciled durable
 runtime-output delegation, `PostRunFinalizationService` has performed
 deterministic evaluation and Supervisor handling, and the Run is **settled**:
-every settlement reconciler — hard-terminal Host-thread release, Plan graph,
-Workflow graph, then each one in
+every settlement reconciler — hard-terminal Host-thread release, automatic model
+handoff, Plan graph, Workflow graph, managed Experiment outcomes, then each one in
 `runFinalizationReconcilerRegistry` (project work, autonomy, follow-up Tasks,
 Reading method generation and method-pair trials, Source material processing,
 information briefings)
@@ -856,6 +875,8 @@ and the sweep finishes settlement on its own; any other finalization failure
 fails the job before those steps, and its retry runs them. The finalization
 read model separates the two: the Agent finished, and `settlement.status` is
 `settled` or `pending` with a `settlement_pending:<reconciler>` reason code.
+Recovery also finalizes managed Experiment Runs whose terminal outcomes were
+never projected, including cancellation and Job exhaustion before dispatch.
 Evolution signals, the `run_finalized` audit event and cost estimates stay
 best-effort extras outside the gate.
 
@@ -1295,6 +1316,10 @@ content, consent, approval, spend or secret authority and replaces none of those
 gates. Retrieval, recipe/custom requests, Goal preview, manual extraction and
 manual post-processing share this path; automatic Jobs keep their existing
 lifecycle. No new queue, retry engine, schema or migration is introduced.
+
+Agent Run callers that ensure an active Job serialize on the Space and Run
+identity in PostgreSQL. The next caller reuses a pending, claimed, or running
+Job under that identity.
 
 ### Generic Job cancellation (`job.cancel`)
 

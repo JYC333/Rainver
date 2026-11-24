@@ -17,6 +17,8 @@ source "$SCRIPT_DIR/../lib/local-compose.sh"
 
 MODE="dev"
 local_compose_init "$MODE"
+[[ -d "$MODE_ROOT" ]] || install -d -m 700 "$MODE_ROOT"
+local_compose_lock_instance "saving the development database setup"
 local_compose_ensure_mode_env_file
 
 PGDB="$(local_compose_setting_or_default POSTGRES_DB rainver)"

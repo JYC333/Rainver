@@ -10,9 +10,14 @@ import { grantPluginRuntimeMemberships, protectMigrationJournal } from "./runtim
  * new runtime roles' SET memberships. No role/owner DDL runs when nothing is
  * pending beyond that declared journal revoke.
  */
-export async function migrateUp(pool: Pool, dir: string, appRole: string, log: (message: string) => void = () => {}): Promise<{ applied: string[] }> {
+export async function migrateCore(pool: Pool, dir: string, appRole: string, log: (message: string) => void = () => {}): Promise<{ applied: string[] }> {
   const result = await migrate(pool, dir, { log });
   await protectMigrationJournal(pool, appRole);
+  return result;
+}
+
+export async function migrateUp(pool: Pool, dir: string, appRole: string, log: (message: string) => void = () => {}): Promise<{ applied: string[] }> {
+  const result = await migrateCore(pool, dir, appRole, log);
   const { offlineOperationPlugins, operationPluginsPending } = await import("../modules/plugins/offline.js");
   if ((await operationPluginsPending(pool)).length) {
     await offlineOperationPlugins(pool, "migrate");

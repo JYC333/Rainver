@@ -72,12 +72,15 @@ interface ArtifactRow {
   project_folder_id: string | null;
 }
 
-interface ArtifactListFilters {
+interface ArtifactFilters {
   artifactType?: string | null;
   runId?: string | null;
   projectId?: string | null;
   projectFolderId?: string | null;
   includeSystemArchives?: boolean;
+}
+
+interface ArtifactListFilters extends ArtifactFilters {
   limit: number;
   offset: number;
 }
@@ -122,25 +125,59 @@ export class PgArtifactRepository {
       );
       if ((folder.rowCount ?? 0) === 0) throw new ArtifactValidationError("Project Folder not found");
     }
+    // The read rules expand to several hundred sub-selects; planning one such
+    // statement costs over a hundred milliseconds. When the filters select no
+    // row at all, no rule can make one readable, so an indexed probe answers
+    // the common empty page (a Run without Artifacts) without planning them.
+    const candidates = candidateWhere(spaceId, filters);
+    const candidate = await this.db.query(`SELECT 1 FROM artifacts a ${candidates.whereSql} LIMIT 1`, candidates.params);
+    if ((candidate.rowCount ?? 0) === 0) return { items: [], total: 0, limit: filters.limit, offset: filters.offset };
+    // Count and page come from one statement, so both see one snapshot: a
+    // concurrent write cannot make `total` disagree with the page, and a page
+    // past the end still reports the visible total. The read rules are
+    // evaluated once, into `visible`; the access level only for the page's
+    // rows. Equal timestamps order by id, so offsets neither repeat nor skip.
     const built = buildWhere(spaceId, userId, filters);
-    const total = await this.db.query<{ total: string | number }>(
-      `SELECT count(a.id)::text AS total FROM artifacts a ${built.whereSql}`,
-      built.params,
-    );
     const limitParam = built.params.length + 1;
     const offsetParam = built.params.length + 2;
-    const rows = await this.db.query<WithAccessLevel<ArtifactRow>>(
-      `${artifactSelectSql("$2")} ${built.whereSql}
-        ORDER BY a.created_at DESC
-        LIMIT $${limitParam} OFFSET $${offsetParam}`,
+    const result = await this.db.query<{ total: string } & Partial<WithAccessLevel<ArtifactRow>>>(
+      `WITH visible AS MATERIALIZED (
+         SELECT a.id, a.created_at FROM artifacts a ${built.whereSql}
+       ),
+       page AS (
+         SELECT id FROM visible ORDER BY created_at DESC, id DESC
+          LIMIT $${limitParam} OFFSET $${offsetParam}
+       )
+       SELECT t.total, r.*
+         FROM (SELECT count(*)::text AS total FROM visible) t
+         LEFT JOIN LATERAL (
+           ${artifactSelectSql("$2")} JOIN page p ON p.id = a.id
+         ) r ON true
+        ORDER BY r.created_at DESC, r.id DESC`,
       [...built.params, filters.limit, filters.offset],
     );
+    const rows = result.rows.filter((row) => row.id != null) as Array<WithAccessLevel<ArtifactRow>>;
     return {
-      items: await Promise.all(rows.rows.map(async row=>artifactToOut(await this.gateResearchOrigin(spaceId,userId,row,"artifact list read"),false))),
-      total: numberValue(total.rows[0]?.total) ?? 0,
+      items: await Promise.all(rows.map(async row=>artifactToOut(await this.gateResearchOrigin(spaceId,userId,row,"artifact list read"),false))),
+      total: numberValue(result.rows[0]?.total) ?? 0,
       limit: filters.limit,
       offset: filters.offset,
     };
+  }
+
+  async listVisibleForRun(spaceId: string, userId: string, runId: string): Promise<ArtifactOut[]> {
+    const filters = { runId, includeSystemArchives: true };
+    const candidates = candidateWhere(spaceId, filters);
+    const candidate = await this.db.query(`SELECT 1 FROM artifacts a ${candidates.whereSql} LIMIT 1`, candidates.params);
+    if ((candidate.rowCount ?? 0) === 0) return [];
+
+    const built = buildWhere(spaceId, userId, filters);
+    const { rows } = await this.db.query<WithAccessLevel<ArtifactRow>>(
+      `${artifactSelectSql("$2")} ${built.whereSql} ORDER BY a.created_at ASC, a.id ASC`,
+      built.params,
+    );
+    return Promise.all(rows.map(async (row) =>
+      artifactToOut(await this.gateResearchOrigin(spaceId, userId, row, "artifact list read"), false)));
   }
 
   async getVisible(
@@ -289,7 +326,7 @@ export class ArtifactNotExportableError extends Error {
 function buildWhere(
   spaceId: string,
   userId: string,
-  filters: ArtifactListFilters,
+  filters: ArtifactFilters,
 ): { whereSql: string; params: unknown[] } {
   const params: unknown[] = [spaceId, userId];
   const add = (value: unknown): string => {
@@ -308,6 +345,29 @@ function buildWhere(
   if (filters.runId) clauses.push(`a.run_id = ${add(filters.runId)}`);
   if (filters.projectId) clauses.push(`a.project_id = ${add(filters.projectId)}`);
   if (workspaceParam) clauses.push(`a.project_folder_id = ${workspaceParam}`);
+  return { whereSql: `WHERE ${clauses.join(" AND ")}`, params };
+}
+
+/**
+ * The rows `buildWhere`'s filters select before any read rule. It may only
+ * prove that nothing exists to read (the read rules can only remove rows),
+ * never that something is readable.
+ */
+function candidateWhere(
+  spaceId: string,
+  filters: ArtifactFilters,
+): { whereSql: string; params: unknown[] } {
+  const params: unknown[] = [spaceId];
+  const add = (value: unknown): string => {
+    params.push(value);
+    return `$${params.length}`;
+  };
+  const clauses = [`a.space_id = $1`];
+  if (!filters.includeSystemArchives) clauses.push(`a.surface_role <> 'system_archive'`);
+  if (filters.artifactType) clauses.push(`a.artifact_type = ${add(filters.artifactType)}`);
+  if (filters.runId) clauses.push(`a.run_id = ${add(filters.runId)}`);
+  if (filters.projectId) clauses.push(`a.project_id = ${add(filters.projectId)}`);
+  if (filters.projectFolderId) clauses.push(`a.project_folder_id = ${add(filters.projectFolderId)}`);
   return { whereSql: `WHERE ${clauses.join(" AND ")}`, params };
 }
 

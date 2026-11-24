@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, rm, readFile } from "node:fs/promises";
+import { mkdtemp, rm, readFile, readdir } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { connect } from "node:net";
 import { pathToFileURL } from "node:url";
 import { prepareAntigravityProfile } from "../src/antigravity.js";
@@ -57,8 +57,15 @@ beforeEach(async () => {
   workspaceDir = await mkdtemp(join(tmpdir(), "rainver-host-exec-workspace-"));
   attachedWorkspaceDir = await mkdtemp(join(tmpdir(), "rainver-host-exec-attached-"));
   process.env.RAINVER_HOST_CONFIG_DIR = configDir;
-  // Not a real control plane — uploads are expected to fail and be caught
-  // internally; these tests only assert on the WS frames handleLaunch sends.
+  // A default upload acknowledgement for process tests. Cases testing HTTP
+  // behavior use a real loopback fixture on a different port.
+  const fetchWithoutFixture = globalThis.fetch;
+  vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+    if (typeof input === "string" && input.startsWith("http://127.0.0.1:1/")) {
+      return Promise.resolve(new Response("{}"));
+    }
+    return fetchWithoutFixture(input, init);
+  });
   await saveConfig({
     server_url: "http://127.0.0.1:1",
     host_id: "host-1",
@@ -69,6 +76,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   delete process.env.RAINVER_HOST_BWRAP;
   delete process.env.RAINVER_HOST_CONFIG_DIR;
   delete process.env.RAINVER_HOST_WORKSPACES_ROOT;
@@ -1166,7 +1174,7 @@ async function initRepository(dir: string): Promise<void> {
 }
 
 /** A stand-in control plane that records each Run's diff upload body. */
-async function captureUploads(): Promise<{ server: Server; diffs: Map<string, Record<string, unknown>> }> {
+async function captureUploads(failOutputs = false): Promise<{ server: Server; diffs: Map<string, Record<string, unknown>> }> {
   const diffs = new Map<string, Record<string, unknown>>();
   const server = createServer((request, response) => {
     let body = "";
@@ -1174,7 +1182,7 @@ async function captureUploads(): Promise<{ server: Server; diffs: Map<string, Re
     request.on("end", () => {
       const match = /\/runs\/([^/]+)\/diff$/.exec(request.url ?? "");
       if (match) diffs.set(decodeURIComponent(match[1]!), JSON.parse(body) as Record<string, unknown>);
-      response.writeHead(201, { "content-type": "application/json" });
+      response.writeHead(failOutputs && request.url?.endsWith("/outputs") ? 503 : 201, { "content-type": "application/json" });
       response.end("{}");
     });
   });
@@ -1369,6 +1377,24 @@ describe("Location lease", () => {
       // Read with the lease held, just before the process started.
       expect(upload?.git_before).toEqual({ branch: "main", head: git(["rev-parse", "HEAD~1"], workspaceDir) });
       expect(String(upload?.diff)).toContain("+change");
+    } finally {
+      server.close();
+    }
+  });
+
+  it("preserves the output files and fails the Run when delivery is rejected", async () => {
+    const { server } = await captureUploads(true);
+    try {
+      const { send, complete } = collectSend();
+      await handleLaunch({
+        run_id: "failed-delivery", launch_id: "failed-delivery-launch", workspace_location_id: "folder-1",
+        argv: ["sh", "-c", 'echo result > "$RAINVER_OUTPUT_DIR/result.txt"'],
+      }, send, () => {});
+      expect(await complete()).toMatchObject({ exit_code: 1, error: expect.stringContaining("delivery failed") });
+      const recovery = join(configDir, "run-delivery-recovery");
+      const [attempt] = await readdir(recovery);
+      expect(await readFile(join(recovery, attempt!, "outputs", "result.txt"), "utf8")).toBe("result\n");
+      expect(existsSync(runDirForTests("failed-delivery"))).toBe(false);
     } finally {
       server.close();
     }

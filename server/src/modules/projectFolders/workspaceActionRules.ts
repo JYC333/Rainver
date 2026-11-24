@@ -1,3 +1,5 @@
+import {sensitiveTaintEgressContext} from '../plugins/egress.js';
+import {workspaceSensitiveReadBlocker} from './workspaceSensitiveReadBlocker.js';
 import {workspaceRecoveryBlocker} from './workspaceRecoveryDiagnostics.js';
 import {assessWorkspaceDiscards,discardRecovery,type CleanupPublication,type DiscardAssessment} from './workspaceDiscard.js';
 import {closedWorkspaceState,cleanupPublicationStatus} from './workspacePublicationState.js';
@@ -24,6 +26,7 @@ export function closeAdmissionBlocker(state:string,status:string|null,active:boo
 }
 const recovery:Record<string,string>={
  ...discardRecovery,
+ [workspaceSensitiveReadBlocker.code]:workspaceSensitiveReadBlocker.message,
  revision_moved:'Read workspace.change.get and use its current revision for the same authorized intent; do not replay a stale write.',
  change_closed:'Read workspace.change.get; this saved change does not accept this action in its current state.',
  request_pending:'Wait for the pending operation, then read workspace.change.get before deciding another action.',
@@ -59,6 +62,8 @@ export async function workspaceActionApplicability(db:Queryable,id:string,actor:
   LEFT JOIN task_merges m ON m.change_set_id=c.id AND m.space_id=c.space_id WHERE c.id=$1 AND c.space_id=$2`,[id,actor.space_id])).rows[0]!;
  const publication=assessment?.publication??await cleanupPublicationStatus(db,id);
  const actions=[];
+ const sensitive = actor.principal.kind === 'agent'
+  && (await sensitiveTaintEgressContext(db,actor.space_id,actor.run_id,{id:'workspace.change.complete',side_effects:'durable'})).sensitive_plugin_read_taint;
  const authority=new Map<string,Promise<{blocker:string|null;access?:string}>>();
  for(const action of ['checkpoint','prepare','publish','reconcile','retry','abandon','recover','cleanup_retry'] as const){
   const retention=action==='recover'||action==='cleanup_retry';
@@ -83,6 +88,10 @@ export async function workspaceActionApplicability(db:Queryable,id:string,actor:
   })());
   const admitted=await authority.get(mode)!;
   let blocker=admitted.blocker;
+  const ownPrivateCheckpoint=action==='checkpoint'&&admitted.access==='own'&&f.status===null;
+  if(sensitive && !ownPrivateCheckpoint && (operation==='workspace.change.complete'||operation==='workspace.integration.retry')) {
+   blocker??=workspaceSensitiveReadBlocker.code;
+  }
   const reclaimOnly=action==='abandon'&&closedWorkspaceState(f.state);
   const recoveryKey=action==='cleanup_retry'?`${f.workspace_id}:retry`:f.workspace_id;
   if(retention&&!blocker&&f.generation===f.current_generation&&!recoveryBlockers.has(recoveryKey))

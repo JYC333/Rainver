@@ -27,6 +27,7 @@ import {PgRunRepository} from '../src/modules/runs/repository.js';
 import {PostRunFinalizationService} from '../src/modules/runs/finalizationService.js';
 import {runSettlement} from '../src/modules/runs/runSettlement.js';
 import {composeProjectReading,readProjectComposition} from '../src/modules/informationDigest/composition/service.js';
+import {waitForBlockedBy} from './support/lockWait.js';
 
 import type {TestPartition} from './support/testPartition.js';
 
@@ -148,6 +149,26 @@ it('cancelled analysis is not publication; explicit retry is bounded and late ol
  await stopThemeRoundRun(db.pool,config(),identity,id);expect((await w.rowOf(r.briefing_id)).status).toBe('cancelled');
  await settleThemeRound(db.pool,config(),id,true);const next=await w.runOf(r.briefing_id);expect(next.id).not.toBe(old.id);expect((await w.rowOf(r.briefing_id)).attempt).toBe(2);
  await (await import('../src/modules/informationDigest/briefing/settlement.js')).settleBriefingRun(db.pool,old);expect((await w.rowOf(r.briefing_id)).run_id).toBe(next.id);
+});
+
+it('allows composition to pin its round while an explicit retry waits for the briefing',async()=>{
+ await enable();const id=await collect();await settleThemeRound(db.pool,config(),id);
+ const {briefing_id}=await round(id),old=await w.runOf(briefing_id);
+ const done=await w.finishRun(old.id,'Invalid briefing output');
+ await new PostRunFinalizationService(new PgRunRepository(db.pool),undefined,undefined,undefined,runSettlement(config(),db.pool)).finalize(done.id,SPACE);
+ expect((await w.rowOf(briefing_id)).status).toBe('failed');
+ let retry:Promise<void>|undefined;
+ try{
+  await withDbTransaction(db.pool,async tx=>{
+   const pid=(await tx.query<{pid:number}>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
+   // Use the same shared row locks as the composition authorization fence.
+   await tx.query('SELECT id FROM information_briefings WHERE space_id=$1 AND id=$2 FOR SHARE',[SPACE,briefing_id]);
+   retry=settleThemeRound(db.pool,config(),id,true);void retry.catch(()=>{});
+   await waitForBlockedBy(db.pool,pid);
+   await tx.query('SELECT id FROM project_reading_rounds WHERE space_id=$1 AND id=$2 FOR SHARE NOWAIT',[SPACE,id]);
+  });
+ }finally{await retry;}
+ expect((await w.rowOf(briefing_id)).attempt).toBe(2);
 });
 
 it('empty first collection is honestly empty and does not spend a model Run',async()=>{

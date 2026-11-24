@@ -10,8 +10,15 @@ import { publishNoteChanged } from '../core/noteEvents'
 import { useProjectCaptureContext } from '../contexts/CaptureContext'
 import type { CaptureDestination } from '../types/api'
 import { useAppTranslation } from '../i18n'
+import { registerInMemoryResidue, sessionEpoch } from '../lib/sessionResidue'
 
 const URL_RE = /^https?:\/\/\S+$/i
+interface CaptureDraft {
+  text: string
+  pasted: boolean
+  chosen: CaptureDestination | null
+}
+const emptyDraft: CaptureDraft = { text: '', pasted: false, chosen: null }
 
 /**
  * The one capture affordance, everywhere. Do not add a second floating button
@@ -33,16 +40,22 @@ export function FloatingQuickCapture() {
   const { projectId, target } = useProjectCaptureContext()
 
   const [open, setOpen] = useState(false)
-  const [text, setText] = useState('')
   const [busy, setBusy] = useState(false)
   const [dragOver, setDragOver] = useState(false)
-  // Set by the paste event, not derived from the text: a paste is where the
-  // content came from, which is the only deterministic signal available.
-  const [pasted, setPasted] = useState(false)
-  // Reset after every capture (ADR 0013 decision 2). Do not remember a
-  // destination from last time. It is invisible at the moment of writing,
-  // which is a mode error.
-  const [chosen, setChosen] = useState<CaptureDestination | null>(null)
+  const spaceId = activeSpaceId ?? personalSpaceId
+  const draftKey = JSON.stringify([spaceId, projectId, target?.objectId])
+  const [drafts, setDrafts] = useState<Record<string, CaptureDraft>>({})
+  useEffect(() => registerInMemoryResidue(() => setDrafts({})), [])
+  const { text, pasted, chosen } = drafts[draftKey] ?? emptyDraft
+  const updateDraft = useCallback((update: (draft: CaptureDraft) => CaptureDraft) => {
+    setDrafts(previous => {
+      const next = { ...previous }
+      const updated = update(previous[draftKey] ?? emptyDraft)
+      if (updated.text || updated.pasted || updated.chosen) next[draftKey] = updated
+      else delete next[draftKey]
+      return next
+    })
+  }, [draftKey])
   const textRef = useRef<HTMLTextAreaElement>(null)
 
   const available = useMemo<CaptureDestination[]>(() => {
@@ -63,12 +76,10 @@ export function FloatingQuickCapture() {
 
   const destination = chosen && available.includes(chosen) ? chosen : inferred
 
-  // An abandoned capture must not set the destination for the next one either.
-  // The composer is mounted once for the whole app. An explicit choice would
-  // survive closing the panel and walking into another Project.
-  const reset = useCallback(() => { setPasted(false); setChosen(null) }, [])
-  const close = useCallback(() => { setOpen(false); reset() }, [reset])
-  useEffect(reset, [reset, projectId, target?.objectId])
+  const close = () => {
+    setOpen(false)
+    updateDraft(draft => draft.text.trim() ? draft : emptyDraft)
+  }
 
   // In a Space with one member there is no team to be divided from, so the
   // "only you / team visible" half of every line is noise. What gets stored is
@@ -105,6 +116,7 @@ export function FloatingQuickCapture() {
   const save = useCallback(async () => {
     const value = text.trim()
     if (!value || busy) return
+    const epoch = sessionEpoch()
     setBusy(true)
     try {
       const result = await captureApi.create({
@@ -112,24 +124,22 @@ export function FloatingQuickCapture() {
         destination,
         ...(destination === 'personal_inbox' ? {} : { project_id: projectId ?? undefined }),
         ...(destination === 'object_marginalia' && target ? { target_id: target.objectId } : {}),
-      })
+      }, undefined, spaceId ?? undefined)
+      if (epoch !== sessionEpoch()) return
       // Only what was sent is cleared. The box keeps focus for the next
       // thought, so text typed while the save ran is kept, not thrown away.
-      setText(current => current === text ? '' : current.startsWith(text) ? current.slice(text.length).trimStart() : current)
-      reset()
+      updateDraft(current => ({
+        ...emptyDraft,
+        text: current.text === text ? '' : current.text.startsWith(text) ? current.text.slice(text.length).trimStart() : current.text,
+      }))
       // A capture that landed in a note may have landed in a note the user is
       // looking at. Tell the surfaces once, here, instead of making them watch.
       if (result.note_id) {
         publishNoteChanged({ noteId: result.note_id, projectId: result.project_id, reason: 'capture' })
       }
-      // Raw material joins the Space's one review queue, but the reader should
-      // land where they were standing: the Project's own view of that queue,
-      // not the Space-wide list they would then have to navigate back out of.
       const href = result.note_id
         ? spacePath(result.space_id, `/projects/${result.project_id}/notes/${result.note_id}`)
-        : result.project_id
-          ? spacePath(result.space_id, `/projects/${result.project_id}/sources?tab=raw`)
-          : spacePath(result.space_id, '/activity?status=raw')
+        : spacePath(result.space_id, `/activity/${encodeURIComponent(result.activity_id)}`)
       toast.success(result.note_title
         ? t('capture.captured_to', { name: result.note_title })
         : t('capture.saved', { destination: label(destination) }), {
@@ -137,11 +147,11 @@ export function FloatingQuickCapture() {
       })
       textRef.current?.focus()
     } catch (err) {
-      toast.error(errMsg(err))
+      if (epoch === sessionEpoch()) toast.error(errMsg(err))
     } finally {
       setBusy(false)
     }
-  }, [text, busy, destination, projectId, target, label, navigate, reset, t])
+  }, [text, busy, destination, projectId, target, label, navigate, spaceId, updateDraft, t])
 
   function onDrop(e: React.DragEvent) {
     e.preventDefault()
@@ -202,7 +212,7 @@ export function FloatingQuickCapture() {
                 aria-checked={value === destination}
                 aria-label={label(value)}
                 title={label(value)}
-                onClick={() => { setChosen(value); textRef.current?.focus() }}
+                onClick={() => { updateDraft(draft => ({ ...draft, chosen: value })); textRef.current?.focus() }}
                 className={cn(
                   'min-w-0 flex-1 truncate rounded-md px-2 py-1 text-[11px] font-medium transition-all',
                   value === destination
@@ -225,8 +235,11 @@ export function FloatingQuickCapture() {
           ref={textRef}
           autoFocus
           value={text}
-          onChange={e => { setText(e.target.value); if (!e.target.value.trim()) setPasted(false) }}
-          onPaste={() => setPasted(true)}
+          onChange={e => {
+            const value = e.target.value
+            updateDraft(draft => ({ ...draft, text: value, pasted: Boolean(value.trim()) && draft.pasted }))
+          }}
+          onPaste={() => updateDraft(draft => ({ ...draft, pasted: true }))}
           placeholder={t('capture.placeholder')}
           rows={3}
           className="w-full resize-none bg-transparent border-none outline-none text-[14px] leading-relaxed text-foreground placeholder:text-muted-foreground"

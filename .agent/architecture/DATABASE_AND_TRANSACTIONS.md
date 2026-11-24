@@ -483,7 +483,8 @@ successful commit and never participate in the critical write outcome.
   for an empty file when drizzle-kit cannot derive the change); review the SQL
   and add data backfills before it is applied anywhere. A file any database has
   applied is never edited — the runner records checksums and refuses a changed
-  one. `schema:check` (no-write) validates chain shape, declared extensions,
+  one. Both migration status and apply check every known applied file before
+  advancing the chain. `schema:check` (no-write) validates chain shape, declared extensions,
   and schema drift. The explicit exception for an unpublished plan's terminal
   suffix is ADR 0025: prepare a separate merged chain, then convert each
   existing database's verified history without a reset. Published files and
@@ -1146,6 +1147,17 @@ result closure is locked instead of a fresh candidate discovery. The opt-in
 rejects approval mappings, placement and terminal-Run owners; other operations
 are unchanged. See the Information Digest owner guide for discovery/recheck and
 the real invitation-writer cycle negative control.
+
+`lockBeforeActor` is a narrower opt-in for an Agent's command whose domain
+locks must precede the actor pin, without moving its authorization: the core
+calls it, for an Agent only, after the request reservation and before the
+locked actor pin, then runs the normal pin, grant check and `authorize`. It
+refuses nothing (`authorize` repeats every check under the locks), so refusal
+precedence and a person's order are unchanged, and a concurrent same-key
+request is still refused as in progress. The core Task and Board commands of an
+Agent use it to take their Run's Project before person and Run, the order of
+the Agent releases (ADR 0034, `PROJECT_WORK.md`); a Project-bound package
+command takes the same lock in its `resolve`.
 
 The core's locked `assertCurrentActor` uses `lockActivePerson`: separate users
 then Space-membership `FOR SHARE` statements, never a joined two-table lock.

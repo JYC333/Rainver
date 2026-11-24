@@ -190,10 +190,11 @@ function withdrawnSelections(
 
 /** Shared bounded settings surface; preflight remains mounted while this dialog is closed. */
 export function ConversationAgentSessionConfigs({
-  agents, disabled, participants, participantCount = agents.length, environment, environmentIssue, open, onOpenChange,
+  agents, disabled, executionActive, participants, participantCount = agents.length, environment, environmentIssue, open, onOpenChange,
 }: {
   agents: AgentSessionConfiguration[]
   disabled?: boolean
+  executionActive?: boolean
   participants?: ReactNode
   open?: boolean
   onOpenChange?: (open: boolean) => void
@@ -223,6 +224,7 @@ export function ConversationAgentSessionConfigs({
         </TabsList>
         <TabsContent value="agents" className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden data-[state=inactive]:hidden">
           {environmentIssue && <Button variant="outline" size="sm" className="h-auto shrink-0 whitespace-normal text-left" onClick={() => setTab('environment')}>{environmentIssue}</Button>}
+          {executionActive && agents.some(agent => agent.onSave && agent.options.some(option => option.category === 'model')) && <p role="note" className="text-xs text-muted-foreground">{t('conversation_ui.settings.model_next_work')}</p>}
           {pending && <p role="note" className="text-xs text-warning">{t('conversation_ui.session_config.send_guard')}</p>}
           <div className="min-h-0 flex-1">
           {participants ?? <div className="h-full space-y-2 overflow-y-auto overscroll-contain">
@@ -279,7 +281,6 @@ export function ConversationAgentConfiguration({ agent, disabled, actions, defau
       {agent.error && <p role="alert" className="basis-full text-xs text-destructive">{agent.error}</p>}
     </div>}
     {expanded && <div className="space-y-3 border-t border-border pt-3">
-      {disabled && <p role="note" className="text-xs text-muted-foreground">{t('conversation_ui.settings.frozen')}</p>}
       {(otherOptions.length > 0 || agent.quotaModelSwitchAvailable || (!agent.modelPending && agent.status !== 'saved')) &&
         <SavedConversationSessionConfig {...agent} persistedValue={agent.persistedValue?.filter(item => item.category !== 'model')} error={agent.modelPending ? undefined : agent.error} status={agent.beforeFirstSend ? 'saved' : agent.modelPending ? 'saved' : agent.status} quotaModelSwitchAvailable={!agent.beforeFirstSend && agent.quotaModelSwitchAvailable} options={otherOptions} disabled={locked || agent.modelPending || (!agent.onSave && !agent.beforeFirstSend)} />}
     </div>}

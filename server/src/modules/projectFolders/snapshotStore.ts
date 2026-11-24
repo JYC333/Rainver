@@ -1,8 +1,7 @@
+import { DEFAULT_RETENTION_DAYS, DEFAULT_MAX_COUNT } from "./snapshotRetention.js";
 import { randomUUID } from "node:crypto";
 import type { Queryable } from "../routeUtils/common.js";
 
-const SNAPSHOT_DEFAULT_RETENTION_DAYS = 7;
-const SNAPSHOT_DEFAULT_MAX_COUNT = 20;
 
 export interface SnapshotFile {
   path: string;
@@ -48,8 +47,8 @@ export class PgSnapshotStore {
     retentionDays?: number | null;
     maxCount?: number | null;
   }): Promise<void> {
-    const retentionDays = params.retentionDays ?? SNAPSHOT_DEFAULT_RETENTION_DAYS;
-    const maxCount = params.maxCount ?? SNAPSHOT_DEFAULT_MAX_COUNT;
+    const retentionDays = params.retentionDays ?? DEFAULT_RETENTION_DAYS;
+    const maxCount = params.maxCount ?? DEFAULT_MAX_COUNT;
     const now = new Date();
     const expiresAt = new Date(now.getTime() + retentionDays * 24 * 60 * 60 * 1000);
 

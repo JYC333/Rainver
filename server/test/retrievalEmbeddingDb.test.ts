@@ -1,4 +1,9 @@
+import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { loadConfig } from "../src/config.js";
+import { JobHandlerRegistry } from "../src/modules/jobs/handlerRegistry.js";
+import { PgJobQueueRepository } from "../src/modules/jobs/repository.js";
+import { JobWorker } from "../src/modules/jobs/worker.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { RetrievalProjectionService } from "../src/modules/retrieval/projectionService.js";
@@ -8,7 +13,9 @@ import {
   type RetrievalEmbedder,
   type RetrievalEmbeddingAuditEvent,
 } from "../src/modules/retrieval/embedding/service.js";
-import { EMBED_DIMENSIONS, EMBED_MAX_ATTEMPTS } from "../src/modules/retrieval/embedding/config.js";
+import { EMBED_DIMENSIONS, EMBED_MAX_ATTEMPTS, RETRIEVAL_EMBEDDING_JOB } from "../src/modules/retrieval/embedding/config.js";
+import { enqueueRetrievalEmbeddingBackfillWithQueue, registerRetrievalEmbeddingHandler } from "../src/modules/retrieval/embedding/job.js";
+import { ProviderEmbedder } from "../src/modules/retrieval/embedding/providerEmbedder.js";
 import { insertKnowledgeItem } from "./support/knowledgeFixtures.js";
 
 // Exercises embedding backfill and the vector schema end-to-end on a
@@ -65,6 +72,43 @@ async function pendingCount(spaceId?: string): Promise<number> {
 }
 
 describe("Retrieval embedding backfill (real Postgres + pgvector)", () => {
+  it("keeps one durable rebuild Job until every batch has been processed", async () => {
+    const user = randomUUID();
+    await db.pool.query(
+      `INSERT INTO users (id,display_name,email,status,registration_source,created_at,updated_at)
+       VALUES ($1,'Backfill owner',$2,'active','system',now(),now())`,
+      [user, `${user}@test.invalid`],
+    );
+    await db.pool.query(
+      `INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at)
+       VALUES ($1,$2,$3,'owner','active',now(),now())`,
+      [randomUUID(), SPACE, user],
+    );
+    const queue = new PgJobQueueRepository(db.pool);
+    const registry = new JobHandlerRegistry();
+    registerRetrievalEmbeddingHandler(registry, loadConfig({ SERVER_DATABASE_URL: db.connectionUri }));
+    const embed = vi.spyOn(ProviderEmbedder.prototype, "embed").mockImplementation(fakeEmbedder(EMBED_DIMENSIONS).embed);
+    try {
+      const total = await pendingCount(SPACE);
+      expect(total).toBeGreaterThan(1);
+      const { jobId } = await enqueueRetrievalEmbeddingBackfillWithQueue(queue, {
+        spaceId: SPACE, userId: user, batchLimit: 1, maxAttempts: 1, trigger: "retrieval_embedding_policy_update",
+      });
+      const worker = () => new JobWorker(queue, registry, randomUUID(), [RETRIEVAL_EMBEDDING_JOB]);
+      for (let index = 0; index < total; index += 1) {
+        expect(await worker().processOne()).toEqual({ status: "deferred", job_id: jobId });
+        expect(await queue.getJob(jobId)).toMatchObject({ status: "pending", attempts: 0, user_id: user });
+        expect(await pendingCount(SPACE)).toBe(total - index - 1);
+        await db.pool.query("UPDATE jobs SET scheduled_at=now()-interval '1 second' WHERE id=$1", [jobId]);
+      }
+      expect(await worker().processOne()).toEqual({ status: "completed", job_id: jobId });
+      expect(embed).toHaveBeenCalledTimes(total);
+      expect(await queue.getJob(jobId)).toMatchObject({ status: "completed", attempts: 1 });
+    } finally {
+      embed.mockRestore();
+    }
+  });
+
   it("embeds pending chunks, records the model, and is idempotent", async () => {
     if (!db.available) return;
     // Another Space's chunks are never claimed or sent with this Space's batch.

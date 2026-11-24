@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import hashlib
 import json
 import os
 import pathlib
+import tempfile
 import unittest
 import unittest.mock
 import urllib.error
@@ -43,13 +45,21 @@ class FakeRunner:
 
     def __init__(self, failures: dict[str, tuple[int, str, str]] | None = None) -> None:
         self.calls: list[tuple[str, ...]] = []
+        self.stage_tags: dict[str, str] = {}
         self.failures = failures or {}
 
-    async def __call__(self, *args: str, timeout: int = 120, env: dict | None = None) -> tuple[int, str, str]:
+    async def __call__(
+        self, *args: str, timeout: int = 120, env: dict | None = None, pass_fds: tuple[int, ...] = (),
+    ) -> tuple[int, str, str]:
         self.calls.append(args)
         if args[0].endswith("update.sh"):
             stage = args[1]
-            return self.failures.get(stage, (0, f"[update] {stage} done\n", ""))
+            self.assert_stage_lock(env or {}, pass_fds)
+            self.stage_tags[stage] = (env or {}).get("RAINVER_IMAGE_TAG", "")
+            output = f"[update] {stage} done\n"
+            if stage == "pull":
+                output += f"[update] selected image tag: sha-{'a' * 40}\n"
+            return self.failures.get(stage, (0, output, ""))
         if args[:2] == ("docker", "ps"):
             service = next(a.split("=")[-1] for a in args if a.startswith("label=com.docker.compose.service="))
             return 0, f"container-{service}\n", ""
@@ -72,6 +82,11 @@ class FakeRunner:
 
     def stages(self) -> list[str]:
         return [args[1] for args in self.calls if args[0].endswith("update.sh")]
+
+    @staticmethod
+    def assert_stage_lock(env: dict, pass_fds: tuple[int, ...]) -> None:
+        assert pass_fds == (int(env["RAINVER_OPERATION_LOCK_FD"]),)
+        assert os.path.samestat(os.fstat(pass_fds[0]), os.stat(env["RAINVER_HOME"]))
 
 
 #: A published image is an index: the platform manifest plus buildx's
@@ -99,6 +114,8 @@ class FakeClock:
 
 def build(client: FakeClient, runner: FakeRunner, clock: FakeClock | None = None) -> DeploymentPoller:
     clock = clock or FakeClock()
+    mode_root = tempfile.TemporaryDirectory()
+    unittest.addModuleCleanup(mode_root.cleanup)
 
     async def sleep(seconds: float) -> None:
         clock.value += seconds
@@ -106,7 +123,7 @@ def build(client: FakeClient, runner: FakeRunner, clock: FakeClock | None = None
     return DeploymentPoller(
         client,  # type: ignore[arg-type]
         runner=runner,
-        env={"RAINVER_ENV": "prod", "RAINVER_HOME": "/nonexistent-mode-root"},
+        env={"RAINVER_ENV": "prod", "RAINVER_HOME": mode_root.name},
         sleep=sleep,
         clock=clock,
     )
@@ -170,6 +187,7 @@ class HeartbeatTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(observation["services"][0], {
             "service": "server",
             "image_ref": "ghcr.io/x/rainver-server:stable",
+            "configured_tag": "stable",
             "digest": "sha256:server-digest",
             "revision": "abc1234",
             "surface": "surface-1",
@@ -208,6 +226,23 @@ class HeartbeatTests(unittest.IsolatedAsyncioTestCase):
         manifest_calls = [c for c in runner.calls if c[:4] == ("docker", "buildx", "imagetools", "inspect")]
         self.assertEqual(len(manifest_calls), 2)
 
+    async def test_a_changed_channel_is_reported_even_when_its_registry_check_fails(self) -> None:
+        client = FakeClient()
+        runner = FakeRunner()
+        poller = build(client, runner)
+        await poller.tick()
+        (pathlib.Path(poller.env["RAINVER_HOME"]) / ".env").write_text("RAINVER_IMAGE_TAG=edge\n")
+        runner.failures["manifest"] = (1, "", "registry offline")
+
+        await poller.tick()
+        await poller.tick()
+
+        latest = client.heartbeats[-1]
+        self.assertEqual(latest["services"][0]["configured_tag"], "edge")
+        self.assertEqual(latest["remote"]["tag"], "stable")
+        manifest_calls = [c[-1] for c in runner.calls if c[:4] == ("docker", "buildx", "imagetools", "inspect")]
+        self.assertEqual([ref.rsplit(":", 1)[-1] for ref in manifest_calls], ["stable", "edge"])
+
 
 class UpdateJobTests(unittest.IsolatedAsyncioTestCase):
     def job(self, job_type: str = "update") -> dict:
@@ -221,6 +256,8 @@ class UpdateJobTests(unittest.IsolatedAsyncioTestCase):
         await poller.tick()
 
         self.assertEqual(runner.stages(), ["pull", "migrate", "recreate", "health"])
+        self.assertEqual(runner.stage_tags["pull"], "stable")
+        self.assertEqual({runner.stage_tags[stage] for stage in ("migrate", "recreate", "health")}, {"sha-" + "a" * 40})
         reported = [(event["stage"], event["status"]) for _, event in client.events]
         self.assertEqual(reported, [
             (stage, status)
@@ -237,6 +274,33 @@ class UpdateJobTests(unittest.IsolatedAsyncioTestCase):
             "frontend": "sha256:frontend-digest",
             "sandbox-runner": "sha256:sandbox-runner-digest",
         })
+
+    async def test_cannot_migrate_without_a_verified_release_tag(self) -> None:
+        client = FakeClient(jobs=[self.job()])
+        runner = FakeRunner(failures={"pull": (0, "pull finished\n", "")})
+
+        await build(client, runner).tick()
+
+        self.assertEqual(runner.stages(), ["pull"])
+        last = client.events[-1][1]
+        self.assertEqual((last["stage"], last["status"]), ("pull", "failed"))
+        self.assertIn("immutable release tag", last["log_tail"])
+
+    async def test_host_operation_lock_prevents_an_update_from_starting(self) -> None:
+        client = FakeClient(jobs=[self.job()])
+        runner = FakeRunner()
+        poller = build(client, runner)
+        restore_fd = os.open(poller.env["RAINVER_HOME"], os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            fcntl.flock(restore_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            await poller.tick()
+        finally:
+            os.close(restore_fd)
+
+        self.assertEqual(runner.stages(), [])
+        self.assertEqual(client.events[-1][1]["stage"], "pull")
+        self.assertEqual(client.events[-1][1]["status"], "failed")
+        self.assertIn("Cannot lock the instance", client.events[-1][1]["log_tail"])
 
     async def test_a_job_is_claimed_and_run_at_most_once(self) -> None:
         client = FakeClient(jobs=[self.job(), None])
@@ -486,6 +550,22 @@ class ProcessGroupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(code, 0)
         self.assertIs(seen.get("start_new_session"), True)
 
+    async def test_drain_rejects_an_invalid_running_count(self) -> None:
+        client = poll.ServerClient("http://localhost", "fixture")
+        for response in ({}, {"running_runs": True}, {"running_runs": -1}):
+            with self.subTest(response=response), unittest.mock.patch.object(
+                client, "request", return_value=response,
+            ):
+                with self.assertRaisesRegex(ValueError, "running Run count"):
+                    await client.running_runs()
+
+    async def test_cleanup_uses_group_id_after_the_leader_exits(self) -> None:
+        process = unittest.mock.Mock(pid=123, returncode=0)
+        with unittest.mock.patch.object(poll.os, "killpg") as kill_group:
+            poll._kill_process_group(process)
+        kill_group.assert_called_once_with(123, poll.signal.SIGKILL)
+        process.kill.assert_not_called()
+
     async def test_a_timed_out_stage_kills_the_whole_group(self) -> None:
         killed: list[int] = []
         real_killpg = os.killpg
@@ -530,6 +610,9 @@ class ConfiguredTagTests(unittest.TestCase):
         self.assertEqual(
             self.tag_for("RAINVER_IMAGE_TAG=edge\nRAINVER_IMAGE_TAG=sha-abc123\n"), "sha-abc123"
         )
+
+    def test_final_empty_image_tag_uses_compose_default(self) -> None:
+        self.assertEqual(self.tag_for("RAINVER_IMAGE_TAG=edge\nRAINVER_IMAGE_TAG=\n"), "stable")
 
     def test_strips_quotes_export_and_a_trailing_comment(self) -> None:
         self.assertEqual(self.tag_for('RAINVER_IMAGE_TAG="edge"\n'), "edge")

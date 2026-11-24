@@ -47,7 +47,7 @@ export const RAIL_ITEMS: RailItem[] = [
   { id: 'home',       label: 'Home',       to: '/home',        icon: Home,        scope: 'home',  mobile: true },
   { id: 'agent-work', label: 'Agent Work', to: '/agent-work', icon: Bot, scope: 'home', mobile: true },
   // ADR 0016 D11: Command Center is the default landing page for a Space
-  // (see App.tsx's `spaces/:spaceId` index redirect) — placed first among
+  // (see AuthenticatedApp.tsx's `spaces/:spaceId` index redirect) — placed first among
   // the space-scoped rail items so it reads as the space's home surface.
   { id: 'command-center', label: 'Command Center', to: '/command-center', icon: Server, scope: 'space' },
   { id: 'inbox',      label: 'Inbox',      to: '/activity',    icon: Inbox,       scope: 'space' },
@@ -196,31 +196,9 @@ export const SCENES: Scene[] = [
 
 export type RouteScope = 'home' | 'space'
 
-/**
- * Top-level paths that are NOT inside a Space, so they never get a `/spaces/:id` prefix.
- * Home is user-scoped (cross-space); Settings/Time/Cards are neutral system surfaces.
- */
-const USER_SCOPED_PREFIXES = ['/home', '/agent-work', '/settings', '/instance-settings', '/time', '/cards', '/evolution', '/login']
-
-function isUserScopedPath(path: string): boolean {
-  // A query or fragment (`/evolution?asset=…`) does not move a path into a Space.
-  const pathname = path.split(/[?#]/, 1)[0]
-  return USER_SCOPED_PREFIXES.some(p => pathname === p || pathname.startsWith(`${p}/`))
-}
-
-/**
- * Compose the actual href for a logical in-space path, e.g. `spacePath('team-1', '/proposals')`
- * → `/spaces/team-1/proposals`. Query strings are preserved. Top-level paths (Home, Settings),
- * already-scoped paths, relative paths, and external URLs are returned unchanged. When no Space
- * id is available the logical path is returned as-is (callers fall back gracefully).
- */
-export function spacePath(spaceId: string | null | undefined, to: string): string {
-  if (typeof to !== 'string' || !to.startsWith('/')) return to
-  if (to.startsWith('/spaces/')) return to
-  if (isUserScopedPath(to)) return to
-  if (!spaceId) return to
-  return `/spaces/${spaceId}${to}`
-}
+// In its own module so the sign-in pages and SpaceContext do not load the rail
+// and its icons.
+export { spacePath } from './spacePath'
 
 /**
  * Inverse of {@link spacePath} for matching: strip a leading `/spaces/:id` so a real pathname

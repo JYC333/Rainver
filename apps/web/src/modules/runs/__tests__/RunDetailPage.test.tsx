@@ -30,6 +30,8 @@ vi.mock('../../../api/client', () => ({
   runsApi: runsApiMock,
   authorizationRequestsApi: { approve: vi.fn(), reject: vi.fn() },
   artifactsApi: { export: vi.fn() },
+  agentsApi: { get: vi.fn().mockResolvedValue({ name: 'Research Assistant' }), getVersion: vi.fn().mockResolvedValue({ version_label: 'Revision 2' }) },
+  projectFoldersApi: { get: vi.fn().mockResolvedValue({ name: 'Research notes' }) },
   evolutionApi: evolutionApiMock,
 }))
 vi.mock('../../../hooks/useRun', () => ({
@@ -65,7 +67,7 @@ const run = {
   contract_snapshot_json: { run_id: 'run-1' },
 } as never
 
-const run2 = { ...(run as Record<string, unknown>), id: 'run-2', contract_snapshot_json: { run_id: 'run-2' } } as never
+const run2 = { ...(run as Record<string, unknown>), id: 'run-2', instruction: 'Second run request', contract_snapshot_json: { run_id: 'run-2' } } as never
 const waitingRun = { ...(run as Record<string, unknown>), status: 'waiting_for_review', error_message: 'Supervisor review required', error_json: {supervisor_review:true} } as never
 
 function renderPage() {
@@ -128,36 +130,23 @@ describe('RunDetailPage route decision panel', () => {
 
     expect(await screen.findByText('provider task')).toBeInTheDocument()
     expect(screen.getByText(/Bounded provider task · research\.adhoc_analyze/)).toBeInTheDocument()
-    expect(screen.getByText('agent_id').closest('p')).toHaveTextContent('—')
-    expect(screen.getByText('agent_version_id').closest('p')).toHaveTextContent('—')
+    expect(screen.queryByText('Technical identifiers')).not.toBeInTheDocument()
   })
 
-  it('leaves an Agent Run unmarked and keeps its identifiers', async () => {
-    runsApiMock.routeDecision.mockResolvedValue({})
-    renderPage()
-
-    expect(await screen.findByText('agent_id')).toBeInTheDocument()
-    expect(screen.getByText('agent_id').closest('p')).toHaveTextContent('agent-1')
-    expect(screen.queryByText('provider task')).toBeNull()
-    expect(screen.queryByText(/Bounded provider task/)).toBeNull()
-  })
-
-  it('names the Work Skill the Run was given, and says when it was given none', async () => {
+  it('keeps internal identifiers and the Work Skill hash out of the run context', async () => {
     const hash = 'f'.repeat(64)
-    useRunMock.mockReturnValue({
-      run: { ...(run as unknown as Record<string, unknown>), work_skill: { content_hash: hash } } as never,
-      loading: false,
-      error: null,
-    })
+    useRunMock.mockReturnValue({ run: { ...(run as Record<string, unknown>), project_id: 'project-1', project_folder_id: 'folder-1', work_skill: { content_hash: hash } } as never, loading: false, error: null })
     runsApiMock.routeDecision.mockResolvedValue({})
-    const { unmount } = renderPage()
-
-    expect((await screen.findByText('work_skill_content_hash')).closest('p')).toHaveTextContent(hash)
-    unmount()
-
-    useRunMock.mockReturnValue({ run: { ...(run as unknown as Record<string, unknown>), work_skill: null } as never, loading: false, error: null })
     renderPage()
-    expect((await screen.findByText('work_skill_content_hash')).closest('p')).toHaveTextContent('—')
+
+    expect(await screen.findByText('Research Assistant')).toBeInTheDocument()
+    expect(screen.getByText('Revision 2')).toBeInTheDocument()
+    expect(screen.getByText('Research notes')).toBeInTheDocument()
+    expect(screen.getByText('Rainver Work Skill')).toBeInTheDocument()
+    expect(screen.queryByText('Technical identifiers')).not.toBeInTheDocument()
+    expect(screen.queryByText('agent_id')).not.toBeInTheDocument()
+    expect(screen.queryByText(hash)).not.toBeInTheDocument()
+    expect(screen.queryByText('provider task')).not.toBeInTheDocument()
   })
 
   it('renders the persisted decision when the route API returns one', async () => {
@@ -294,7 +283,7 @@ describe('RunDetailPage route decision panel', () => {
     expect(screen.queryByRole('link', { name: 'Open draft' })).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Switch run', hidden: true }))
-    expect(await screen.findByText('run-2')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Second run request' })).toBeInTheDocument()
     expect(screen.queryByRole('link', { name: 'Review proposal' })).not.toBeInTheDocument()
   })
 
@@ -315,7 +304,7 @@ describe('RunDetailPage route decision panel', () => {
     expect(await screen.findByText(/Run A preview/)).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Switch run', hidden: true }))
-    expect(await screen.findByText('run-2')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Second run request' })).toBeInTheDocument()
     expect(screen.queryByText(/Run A preview/)).not.toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Save as workflow' }))
@@ -328,7 +317,7 @@ describe('RunDetailPage route decision panel', () => {
       ? { run, loading: false, error: 'Run not found' }
       : { run, loading: false, error: null }))
     renderPageWithSwitcher()
-    await screen.findByText('run-1', { exact: false })
+    await screen.findByRole('heading', { name: 'Run Context' })
 
     fireEvent.click(screen.getByRole('button', { name: 'Switch run' }))
     expect(await screen.findByText('Run not found or not in this space')).toBeInTheDocument()

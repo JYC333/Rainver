@@ -28,7 +28,10 @@ export function formatOperationForAgent(result:OperationResponse,tool:string):Sy
     body={...body,error:{...body.error,retryable:false,message:"This data needs its owner's consent for this Run. Call authorization.request with this policy_decision_record_id and a one-line reason, then stop; do not retry until it is approved."}};
   }
   if('error' in body && body.error.code==='operation_not_found'){
-    body={...body,error:{...body.error,message:'Object unavailable. Check only the current Run action list and objects returned by authorized reads. Do not guess names or ids, replay writes, or promise an unverified repair.'}};
+    const message=tool==='task.set_status'
+      ? 'Task unavailable for a status change. Use task.list in this Project to check the current Task. If it is listed, check that the person making the request can edit it on the Project Board. Do not guess an ID or replay the write.'
+      : 'Object unavailable. Check only the current Run action list and objects returned by authorized reads. Do not guess names or ids, replay writes, or promise an unverified repair.';
+    body={...body,error:{...body.error,message}};
   }
   return {
     modelResult:{ok:!failed,tool,...body,http_status:result.http_status,replayed:result.replayed,policy_decision_record_id:result.policy_decision_record_id},

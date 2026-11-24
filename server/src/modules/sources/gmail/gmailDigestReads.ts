@@ -10,11 +10,19 @@
  *   `q=after:<epoch> before:<epoch>` (server-built from the frozen window, no
  *   person's words) and optionally `pageToken`;
  * - every kind: `messages.get format=full` of a listed or frozen id.
- * Drafts, chats, spam and trash are dropped even when listed. Rule digests
- * page through their frozen ids by offset; no list request is sent for them.
+ * Drafts, chats, spam and trash are dropped even when listed (an automation's
+ * frozen mail also when sent by the owner). Rule digests and automations page
+ * through their frozen ids by offset; no list request is sent for them. A
+ * frozen id dropped that way is reported in `excludedIds`, never in `items`.
+ * An automation's frozen id Gmail answers with 404 (deleted for good) is
+ * reported in `goneIds` and skipped, so one vanished message neither fails the
+ * page nor keeps the batch waiting; every other failure — 5xx, 429, a
+ * malformed body — still fails the page for a retry, and other digest kinds
+ * keep failing on a 404.
  */
-import { GMAIL_DIGEST_LIMITS, type GmailAgentMessage, type GmailDigestKind } from "@rainver/protocol";
+import { GMAIL_DIGEST_LIMITS, type GmailDigestReadOutput, type GmailDigestKind } from "@rainver/protocol";
 import type { ServerConfig } from "../../../config.js";
+import type { Queryable } from "../../routeUtils/common.js";
 import type { Pool } from "../../../db/pool.js";
 import type { SourceRequestGrant, SourceRequestRoute } from "../sourceRequestBroker.js";
 import { admit, pageTransport, record } from "./gmailMailReads.js";
@@ -76,16 +84,29 @@ function gmailDigestSourceRequestPolicy(input: { credentialHeaders: () => Promis
 export interface GmailDigestReadRequest {
   spaceId: string; ownerUserId: string; connectionId: string; kind: GmailDigestKind;
   window: { start: Date; end: Date };
-  /** Rule digests: the frozen matched ids of this delivery. */
+  sentFrom?: string;
+  /** Rule digests and application updates: the frozen message ids of this delivery. */
   ids: readonly string[] | null;
   pageToken: string | null;
   signal: AbortSignal;
-  authorizeSend: (signal: AbortSignal) => Promise<void>;
+  /** The read's end-to-end deadline (epoch ms); the page ends at it if that comes before its own deadline. */
+  deadlineAt?: number;
+  authorizeSend: (db: Queryable) => Promise<void>;
 }
 
 export interface GmailDigestReadResult {
   snapshot: GmailReadSnapshot;
-  items: GmailAgentMessage[];
+  items: GmailDigestReadOutput["items"];
+  /**
+   * Frozen ids of this page (rule digests, application updates) that were fetched and found ineligible by
+   * their labels now. Never shown to the Agent; the release settles an automation's as examined, not eligible.
+   */
+  excludedIds: string[];
+  /**
+   * Frozen ids of this page (application updates only) that Gmail answered with 404: nothing was read. Never shown
+   * to the Agent; the release settles them as given up (ADR 0034 §7), never as released mail.
+   */
+  goneIds: string[];
   nextPageToken: string | null;
   truncated: boolean;
 }
@@ -94,14 +115,15 @@ export interface GmailDigestReadResult {
 export async function readGmailDigestPage(config: ServerConfig, pool: Pool, input: GmailDigestReadRequest): Promise<GmailDigestReadResult> {
   if (!config.gmailOAuth) throw new GmailReadError(503, "gmail_not_configured");
   let offset = 0;
-  if (input.kind === "rule") {
+  // Rule digests and application updates page through their frozen ids; only a daily window lists.
+  if (input.kind !== "daily") {
     if (input.pageToken !== null) {
       const match = RULE_TOKEN.exec(input.pageToken);
       if (!match) throw new GmailReadError(422, "gmail_cursor_invalid");
       offset = Number(match[1]);
     }
   } else if (input.pageToken !== null && !PAGE_TOKEN.test(input.pageToken)) throw new GmailReadError(422, "gmail_cursor_invalid");
-  const scope = gmailPageScope(config, pool, input.signal);
+  const scope = gmailPageScope(config, pool, input.signal, input.deadlineAt);
   const snapshot = await admit(scope, { spaceId: input.spaceId, ownerUserId: input.ownerUserId, projectId: null, connectionId: input.connectionId, agentRead: true }, async () => {});
   const transport = pageTransport(config, scope, snapshot, {
     scopeId: `gmail-digest-read:${snapshot.connectionId}`,
@@ -134,26 +156,35 @@ export async function readGmailDigestPage(config: ServerConfig, pool: Pool, inpu
     ids = frozen.slice(offset, offset + GMAIL_DIGEST_LIMITS.messagesPerCall);
     nextPageToken = offset + ids.length < frozen.length ? `r${offset + ids.length}` : null;
   }
-  const items: GmailAgentMessage[] = [];
+  const items: GmailDigestReadOutput["items"] = [];
+  const excludedIds: string[] = [];
+  const goneIds: string[] = [];
+  const sentFromMs = Date.parse(input.sentFrom ?? "");
   const startMs = input.window.start.getTime(), endMs = input.window.end.getTime();
   for (const id of ids) {
     if (!transport.roomForAnotherSend()) throw new GmailReadError(502, "gmail_upstream_error");
     const got = await transport.get(gmailMessageFullUrl(id));
+    // Only Gmail's explicit 404 of a frozen message is final; it never stops the automation's other mail.
+    if (got.kind === "not_found" && input.kind === "application") { goneIds.push(id); continue; }
     if (got.kind !== "ok") throw new GmailReadError(502, "gmail_upstream_error");
     const full = record(got.json) as GmailApiMessage;
     const labels = Array.isArray(full.labelIds) ? full.labelIds.filter((l): l is string => typeof l === "string") : [];
     const at = internalDateIso(full.internalDate);
     if (gmailId(full.id) !== id || !at || !Array.isArray(full.labelIds)) throw new GmailReadError(502, "gmail_upstream_error");
-    if (labels.some((label) => GMAIL_AGENT_EXCLUDED_LABELS.has(label))) continue;
+    const sent = input.kind === "application" && labels.includes("SENT");
+    if (labels.some((label) => GMAIL_AGENT_EXCLUDED_LABELS.has(label)) || (sent && !(Date.parse(at) >= sentFromMs))) {
+      if (input.kind !== "daily") excludedIds.push(id);
+      continue;
+    }
     // Gmail's after:/before: are second-granular: a daily window keeps exactly its own mail.
     if (input.kind === "daily" && (!labels.includes("INBOX") || Date.parse(at) < startMs || Date.parse(at) >= endMs)) continue;
     const headers = full.payload?.headers;
     items.push({
-      id, internal_date: at,
+      id, internal_date: at, ...(sent ? { direction: "sent" as const } : {}),
       subject: headerValue(headers, "Subject"), from: headerValue(headers, "From"), to: headerValue(headers, "To"),
       cc: headerValue(headers, "Cc"), date_header: headerValue(headers, "Date"),
       ...normalizeMessageBody(full.payload, GMAIL_DIGEST_LIMITS.textBytesPerMessage),
     });
   }
-  return { snapshot, items, nextPageToken, truncated: items.some((item) => item.text_truncated) };
+  return { snapshot, items, excludedIds, goneIds, nextPageToken, truncated: items.some((item) => item.text_truncated) };
 }

@@ -56,6 +56,8 @@ export function ConversationView({
   loadingHistory,
   input,
   onInputChange,
+  pastedText,
+  onPastedTextChange,
   onSend,
   placeholder,
   emptyTitle,
@@ -81,6 +83,8 @@ export function ConversationView({
   sending: boolean
   loadingHistory: boolean
   input: string
+  pastedText?: string
+  onPastedTextChange?: (value: string) => void
   onInputChange: (value: string) => void
   onSend: () => void
   placeholder: string
@@ -151,7 +155,7 @@ export function ConversationView({
       </Conversation>
 
       <form className="mt-3" onSubmit={event => { event.preventDefault(); onSend() }}>
-        <ConversationComposer inputAttachmentsEnabled={inputAttachmentsEnabled}
+        <ConversationComposer inputAttachmentsEnabled={inputAttachmentsEnabled} pastedText={pastedText} onPastedTextChange={onPastedTextChange}
           editor={<ConversationTextEditor
             input={input}
             inputParts={inputParts} onInputPartsChange={onInputPartsChange}
@@ -170,7 +174,7 @@ export function ConversationView({
           note={composerNote}
           sending={sending}
           inputDisabled={inputDisabled}
-          sendDisabled={composerDisabled || sending || loadingHistory || (!input.trim() && inputParts.length === 0)}
+          sendDisabled={composerDisabled || sending || loadingHistory || (!input.trim() && !pastedText?.trim() && inputParts.length === 0)}
           onSend={onSend}
           inputParts={inputParts}
           onInputPartsChange={onInputPartsChange}
@@ -276,7 +280,7 @@ function ConversationTextEditor({ input, onInputChange, onSend, placeholder, dis
         }
         if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); if (canSend()) onSend() }
       }} placeholder={placeholder} disabled={disabled} rows={2}
-      className="relative min-h-[84px] resize-none border-0 bg-transparent shadow-none [scrollbar-gutter:stable] focus-visible:ring-0" />
+      className="relative min-h-[84px] max-h-[min(30dvh,10rem)] resize-none border-0 bg-transparent shadow-none [scrollbar-gutter:stable] focus-visible:ring-0" />
   </div>
 }
 

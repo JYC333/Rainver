@@ -107,6 +107,23 @@ it('returns durable scan candidates and refuses unknown outcomes without another
   expect(fetch).toHaveBeenCalledTimes(2);
 });
 
+it('reissues only the explicit Folder recovery with the original draft, consent and Space', async () => {
+  vi.mocked(fetch).mockResolvedValueOnce(response(ioReceipt()))
+    .mockResolvedValueOnce(response(ioStatus(null, 'needs_attention', { code: 'folder_file_needs_attention', metadata: {} })));
+  await expect(projectFoldersApi.saveDraft('project/one', 'folder/one', 'draft', 1, true, 'recovery-event', {
+    spaceId: 'original-space', retryIntentId: 'prior-intent',
+  })).rejects.toMatchObject({ payload: { error: { metadata: { io_status: 'needs_attention', intent_id: 'intent' } } } });
+  const [command, status] = vi.mocked(fetch).mock.calls;
+  expect(JSON.parse(String(command![1]?.body))).toEqual({
+    project_id: 'project/one', folder_id: 'folder/one', draft_id: 'draft', draft_version: 1,
+    confirm_mixed_line_ending_normalization: true, retry_intent_id: 'prior-intent',
+  });
+  expect(new Headers(command![1]?.headers).get('X-Rainver-Space-Id')).toBe('original-space');
+  expect(new Headers(command![1]?.headers).get('Idempotency-Key')).toBe('recovery-event');
+  expect(status![1]?.method).toBe('GET');
+  expect(fetch).toHaveBeenCalledTimes(2);
+});
+
 it('scopes draft Agent backend choices to their Project and keeps an existing Session authoritative', async () => {
   vi.mocked(fetch).mockImplementation(async () => response({options: [], binding: null}));
   await agentsApi.conversationBackends('agent-one', {spaceId: 'project-space', projectId: 'project/one'});

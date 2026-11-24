@@ -60,9 +60,12 @@ export const RunLiveInputRequestSchema = z.object({
 export type RunLiveInputRequest = z.infer<typeof RunLiveInputRequestSchema>;
 export const RunLiveInputAvailabilitySchema = z.object({ available: z.boolean(), binding_id: z.string().uuid().nullable() });
 export type RunLiveInputAvailability = z.infer<typeof RunLiveInputAvailabilitySchema>;
-/** `pending`: recorded, and its delivery to the exact binding is still owed (never re-sent by the client). */
+/**
+ * `pending`: recorded, and its delivery to the exact binding is still owed (never re-sent by the client).
+ * `deferred`: saved for a Run parked on its waited results; `delivered_with_results` once its resume carried it.
+ */
 export const RunLiveInputResultSchema = z.object({
-  state: z.enum(["pending", "injected", "not_injected", "unconfirmed"]),
+  state: z.enum(["pending", "deferred", "injected", "delivered_with_results", "not_injected", "unconfirmed"]),
   message_id: z.string().uuid(), delivery_id: z.string().uuid().nullable(),
 });
 export type RunLiveInputResult = z.infer<typeof RunLiveInputResultSchema>;

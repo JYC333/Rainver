@@ -1,4 +1,4 @@
-import { useCallback, type ButtonHTMLAttributes, type ComponentType, type HTMLAttributes, type InputHTMLAttributes, type ReactNode, type TextareaHTMLAttributes } from 'react';
+import { useCallback, useLayoutEffect, useRef, type ButtonHTMLAttributes, type ComponentType, type HTMLAttributes, type InputHTMLAttributes, type ReactNode, type TextareaHTMLAttributes } from 'react';
 import type { PluginOperationId, PluginViewContext, OperationOutcome } from '@rainver/protocol';
 
 /** The host's shared controls and helpers as the bundled views see them (structural types), and the views' common helpers. */
@@ -22,7 +22,9 @@ export interface UI {
   formatDay: (day: string) => string;
   ProposalLink: El<{ id: string }>;
   NoteLink: El<{ noteId: string; children: ReactNode }>;
-  EntryLink: El<{ entry: string; children: ReactNode }>;
+  entrySearch: string;
+  setEntrySearch: (search: string) => void;
+  EntryLink: El<{ entry: string; search?: string; children: ReactNode }>;
 }
 export type Ctx = PluginViewContext<UI>;
 
@@ -39,13 +41,15 @@ export const touch = 'max-md:min-h-[44px]';
 /** Reads and writes through the scoped port; a refusal reason becomes translated copy, never raw server text. */
 export function useOperations(ctx: Ctx) {
   const { ops, ui, projectId } = ctx;
+  const port = useRef(ops);
+  useLayoutEffect(() => { port.current = ops; }, [ops]);
   const query = useCallback(async <T,>(name: string, input: Record<string, unknown>): Promise<T> => {
-    const result = await ops.query<T>(op(name), { project_id: projectId, ...input });
+    const result = await port.current.query<T>(op(name), { project_id: projectId, ...input });
     if ('status' in result && result.status === 'succeeded') return result.data;
     throw new Error('query_failed');
-  }, [ops, projectId]);
+  }, [projectId]);
   const command = useCallback(async <T,>(name: string, input: Record<string, unknown>): Promise<OperationOutcome<T>> =>
-    ops.command<T>(op(name), { project_id: projectId, ...input }, crypto.randomUUID()), [ops, projectId]);
+    port.current.command<T>(op(name), { project_id: projectId, ...input }, crypto.randomUUID()), [projectId]);
   const reason = useCallback((error: unknown) => {
     const code = (error as { payload?: { error?: { metadata?: { reason?: unknown } } } })?.payload?.error?.metadata?.reason;
     return typeof code === 'string' ? ui.t(k(`errors.${code}`), { defaultValue: ui.t(k('errors.generic')) }) : ui.t(k('errors.generic'));

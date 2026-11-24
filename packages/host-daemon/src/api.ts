@@ -162,6 +162,7 @@ async function helloInfo(
       managed_workspace_operations: 1,
       // Isolated-workspace profile archives journaled under the thread's archive identity (executionWorkspace.ts).
       workspace_profile_operations: 1,
+      run_completion_ack: 1,
       // Identity-less archives can be drained and closed for good (legacyArchiveDrain.ts).
       legacy_archive_drain: 1,
       // Journaled Host commands with durable receipts (hostCommandJournal.ts).

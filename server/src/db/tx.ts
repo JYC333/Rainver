@@ -16,13 +16,45 @@ const unsafeTransactions = new WeakSet<object>();
 /** Host tripwires poison a connection; caught plugin errors cannot make it reusable. */
 export function poisonTransaction(client: object): void { unsafeTransactions.add(client); }
 
+/** Checks to run at the commit boundary of the transaction open on a client (`withTransaction`, `withQueryableTransaction`). */
+const commitGuards = new WeakMap<object, (() => void)[]>();
+
+/**
+ * Registers a synchronous check run at this transaction's commit boundary: after its work, immediately before
+ * `COMMIT` is issued, with no await between the two, so nothing this process receives in between can be missed.
+ * A throw rolls the transaction back and is the caller's error. Only a transaction opened by `withTransaction` or
+ * `withQueryableTransaction` has the boundary; registering on any other client throws (never a check silently
+ * skipped). Cleared when the transaction ends, so a pooled client carries none into its next one.
+ */
+export function guardTransactionCommit(client: object, check: () => void): void {
+  const guards = commitGuards.get(client);
+  if (!guards) throw new Error("A commit guard needs a transaction that runs its commit boundary");
+  guards.push(check);
+}
+
+/** Opens a client's commit boundary (its BEGIN was sent); returns whether this call owns it (an outer one may). */
+export function openCommitBoundary(client: object): boolean {
+  if (commitGuards.has(client)) return false;
+  commitGuards.set(client, []);
+  return true;
+}
+
+/** Runs the boundary's checks synchronously; the caller issues `COMMIT` with no await in between. */
+export function runCommitBoundary(client: object): void {
+  for (const check of commitGuards.get(client) ?? []) check();
+}
+
+export function closeCommitBoundary(client: object): void { commitGuards.delete(client); }
+
 export async function withTransaction<T>(
   pool: Pool,
   fn: (client: PoolClient) => Promise<T>,
 ): Promise<T> {
   const client = await pool.connect();
+  let boundary = false;
   try {
     await client.query("BEGIN");
+    boundary = openCommitBoundary(client);
     let result: T;
     try {
       result = await fn(client);
@@ -34,6 +66,7 @@ export async function withTransaction<T>(
     }
     try {
       if (unsafeTransactions.has(client)) throw new Error("Unsafe transaction refused");
+      runCommitBoundary(client);
       await client.query("COMMIT");
     } catch (err) {
       await client.query("ROLLBACK").catch(() => {});
@@ -41,6 +74,7 @@ export async function withTransaction<T>(
     }
     return result;
   } finally {
+    if (boundary) closeCommitBoundary(client);
     client.release(unsafeTransactions.has(client));
   }
 }

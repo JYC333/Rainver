@@ -36,8 +36,11 @@ export interface PluginUi {
     children: ReactNode;
   }>;
   /** A link to one of this package's own `project.area` entries in the current Project; renders nothing elsewhere. */
+  entrySearch: string;
+  setEntrySearch: (search: string) => void;
   EntryLink: ComponentType<{
     entry: string;
+    search?: string;
     children: ReactNode;
   }>;
 }

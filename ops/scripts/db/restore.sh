@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Restore the PostgreSQL database from a pg_dump custom-format archive.
 #
-# Drops the target database, recreates it, then runs pg_restore.
-# Terminates active connections before drop so the operation never blocks.
+# Restores and validates a separate database before switching it in.
+# The previous database is kept under a separate name with connections disabled.
 #
 # Usage:
 #   ./ops/scripts/db/restore.sh /path/to/dump.dump [--mode dev|test|prod] [--force-running]
@@ -12,6 +12,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../lib/local-compose.sh
 source "$SCRIPT_DIR/../lib/local-compose.sh"
+source "$SCRIPT_DIR/../lib/restore-database.sh"
 
 MODE="${RAINVER_MODE:-dev}"
 
@@ -49,41 +50,14 @@ PGUSER="$(local_compose_setting_or_default POSTGRES_USER rainver)"
 # Validate identifiers
 local_compose_validate_pg_identifier "POSTGRES_DB" "$PGDB"
 local_compose_validate_pg_identifier "POSTGRES_USER" "$PGUSER"
+restore_database_check_target
 
-require_app_services_stopped() {
-  local running_services=""
-  local running=()
-  local service
+local_compose_lock_instance "restoring the database"
+trap 'restore_database_cleanup; local_compose_stop_postgres_if_started "restore"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
-  if ! running_services="$("${COMPOSE[@]}" ps --services --filter status=running 2>/dev/null)"; then
-    echo "ERROR: unable to inspect running compose services for mode '$MODE'" >&2
-    exit 1
-  fi
-
-  for service in "$@"; do
-    if [[ $'\n'"$running_services"$'\n' == *$'\n'"$service"$'\n'* ]]; then
-      running+=("$service")
-    fi
-  done
-
-  if (( ${#running[@]} == 0 )); then
-    return 0
-  fi
-
-  if [[ "$FORCE_RUNNING" == "true" ]]; then
-    echo "WARNING: app service(s) still running during DB restore: ${running[*]}" >&2
-    return 0
-  fi
-
-  echo "ERROR: app service(s) still running for mode '$MODE': ${running[*]}" >&2
-  echo "       Stop app services first; restore will manage postgres as needed." >&2
-  echo "       $COMPOSE_HINT stop frontend server deployer" >&2
-  exit 1
-}
-
-trap 'local_compose_stop_postgres_if_started "restore"' EXIT
-
-require_app_services_stopped frontend server deployer
+local_compose_require_stopped_applications "DB restore" "$FORCE_RUNNING"
 
 if ! local_compose_ensure_postgres_ready "restore" "$PGUSER"; then
   exit 1
@@ -93,49 +67,17 @@ if ! "${COMPOSE[@]}" exec -T postgres pg_restore --list < "$DUMP_FILE" >/dev/nul
   echo "ERROR: dump file is not a readable pg_restore custom-format archive" >&2
   exit 1
 fi
+local_compose_prepare_prod_server_image
+local_compose_restore_preflight "$PGDB" >/dev/null
 
-echo "WARNING: This will overwrite all data in '$PGDB' (mode: $MODE)."
+echo "WARNING: This will replace the active database '$PGDB' (mode: $MODE)."
 read -r -p "Type 'yes' to continue: " confirm
 if [[ "$confirm" != "yes" ]]; then
   echo "Aborted."
   exit 1
 fi
 
-echo "Terminating active connections to '$PGDB'..."
-"${COMPOSE[@]}" exec -T postgres \
-  psql -U "$PGUSER" -d postgres -c \
-  "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '$PGDB' AND pid <> pg_backend_pid();"
-
-echo "Dropping database '$PGDB'..."
-"${COMPOSE[@]}" exec -T postgres \
-  psql -U "$PGUSER" -d postgres -c "DROP DATABASE IF EXISTS \"$PGDB\";"
-
-echo "Creating database '$PGDB'..."
-"${COMPOSE[@]}" exec -T postgres \
-  psql -U "$PGUSER" -d postgres -c "CREATE DATABASE \"$PGDB\";"
-
-echo "Restoring '$PGDB' from: $DUMP_FILE"
-# --clean       — drop objects before recreating (safe with fresh DB; harmless here)
-# --if-exists   — suppress errors if object doesn't exist when dropping
-# --no-owner    — restore without setting ownership (avoids role requirement)
-# --no-acl      — skip GRANT/REVOKE statements
-"${COMPOSE[@]}" exec -T postgres \
-  pg_restore -U "$PGUSER" --exit-on-error --clean --if-exists --no-owner --no-acl -d "$PGDB" \
-  < "$DUMP_FILE"
-
-# pg_restore --no-owner --no-acl strips operation-package ownership and grants.
-# Explicit stopped-service host reconciliation; never run plugin migrations here.
-# The owner URL carries its password: inherited by name (`-e NAME`), never on argv.
-SERVER_DATABASE_URL="$(local_compose_server_owner_database_url)" "${COMPOSE[@]}" run --rm -T --no-deps \
-  -e SERVER_DATABASE_URL \
-  server node dist/db/migrateCli.js plugin-reconcile
-
-# ADR 0031: --no-acl also drops the runtime/backup role grants. Re-grant them
-# only when those roles were provisioned; this never creates or activates them.
-SERVER_DATABASE_URL="$(local_compose_server_owner_database_url)" \
-RAINVER_DB_APP_ROLE="$(local_compose_setting_or_default RAINVER_DB_APP_ROLE rainver_app)" \
-RAINVER_DB_BACKUP_ROLE="$(local_compose_setting_or_default RAINVER_DB_BACKUP_ROLE rainver_backup)" \
-  "${COMPOSE[@]}" run --rm -T --no-deps -e SERVER_DATABASE_URL -e RAINVER_DB_APP_ROLE -e RAINVER_DB_BACKUP_ROLE \
-  server node dist/db/migrateCli.js runtime-roles-reconcile --if-present
+local_compose_require_stopped_applications "DB restore" "$FORCE_RUNNING"
+restore_database "$DUMP_FILE" "DB restore" "$FORCE_RUNNING"
 
 echo "Restore complete."

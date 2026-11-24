@@ -1,12 +1,21 @@
 import { useConversationScope } from './ConversationScope'
 import { useEffect, useState } from 'react'
 import { proposalsApi } from '../../api/client'
+import { ApiRequestError } from '../../api/transport'
 import { Button } from '../../components/ui/button'
 import { ConversationLink as SpaceLink } from './ConversationScope'
 import { errMsg } from '../../lib/utils'
 import { useAppTranslation } from '../../i18n'
 import { acceptRefusalKey } from '../memory/acceptOutcome'
 import type { ChatActionPreview } from '../../types/api'
+import { GmailApplicationExecutionChoice, gmailApplicationExecutionAcceptable, type GmailApplicationExecutionState } from '../sources/gmail/GmailApplicationExecutionChoice'
+
+/** The domain code of a refused operation (`error.metadata.code`), else its operation code. */
+function refusalCode(error: unknown): string | undefined {
+  if (!(error instanceof ApiRequestError)) return undefined
+  const metadata = (error.payload?.error as { metadata?: { code?: unknown } } | undefined)?.metadata
+  return typeof metadata?.code === 'string' ? metadata.code : error.code
+}
 
 export type ActionDecision = 'accept' | 'reject'
 /**
@@ -19,6 +28,8 @@ const WITHDRAWN_GMAIL_ACTIONS: ReadonlySet<string> = new Set(['source.gmail.priv
  * none of them offers the generic "continue to next step", which would start an unrelated Agent follow-up.
  */
 const OWNER_GMAIL_CARD_PREFIX = 'source.gmail.'
+/** Owner cards that set up application updates: the Agent and model are chosen on the card itself (ADR 0036). */
+const APPLICATION_EXECUTION_ACTIONS: ReadonlySet<string> = new Set(['source.gmail.application_updates.propose', 'source.gmail.setup.propose'])
 
 /*
  * Not AI Elements' `Confirmation`, deliberately.
@@ -58,7 +69,8 @@ export function ActionPreviewCards({
           preview={preview}
           onDecision={onDecision}
           continueAfterDecision={continueAfterDecision}
-          standaloneDecision={STANDALONE_OWNER_ACTIONS.has(preview.action_id) && Boolean(viewerUserId) && preview.decidable_by_user_id === viewerUserId}
+          standaloneDecision={(STANDALONE_OWNER_ACTIONS.has(preview.action_id) || (!onDecision && APPLICATION_EXECUTION_ACTIONS.has(preview.action_id)))
+            && Boolean(viewerUserId) && preview.decidable_by_user_id === viewerUserId}
         />
       ))}
     </div>
@@ -67,7 +79,10 @@ export function ActionPreviewCards({
 
 /**
  * Owner-only Gmail cards decided on their own: the decision does not continue
- * the conversation's Agent turn.
+ * the conversation's Agent turn. An application-update card (ADR 0036) is too
+ * where the surface has no decision handler (the direct Agent chat): its Agent,
+ * model and revision are chosen and accepted on the card itself, never through
+ * a Proposal entry that cannot show them.
  */
 const STANDALONE_OWNER_ACTIONS = new Set(['source.gmail.digest.propose'])
 
@@ -100,9 +115,22 @@ function ActionPreviewCard({
   const [error, setError] = useState<string | null>(null)
   const [pendingPatch, setPendingPatch] = useState(false)
   const [resultMessage, setResultMessage] = useState<string | null>(null)
+  const [execution, setExecution] = useState<GmailApplicationExecutionState | null>(null)
+  const [executionReload, setExecutionReload] = useState(0)
+  const [liveSummary, setLiveSummary] = useState<string | null>(null)
   const withdrawn = WITHDRAWN_GMAIL_ACTIONS.has(preview.action_id)
   const gmailCard = preview.action_id.startsWith(OWNER_GMAIL_CARD_PREFIX)
   const decidable = !withdrawn && (standaloneDecision || Boolean(onDecision)) && !pendingPatch && !checkingStatus && status === 'proposed' && Boolean(preview.proposal_id)
+  const choosesExecution = decidable && APPLICATION_EXECUTION_ACTIONS.has(preview.action_id) && Boolean(preview.decidable_by_user_id)
+  // Accepting needs the configuration and model saved on the card, shown on both levels, and the revision it shows; until
+  // the choice is known, while another configuration waits for its model and while a choice is still being saved,
+  // nothing can be accepted (the server also refuses any other revision).
+  const acceptBlocked = choosesExecution && !gmailApplicationExecutionAcceptable(execution)
+  const onExecution = (next: GmailApplicationExecutionState) => {
+    setExecution(next)
+    // The server redraws the whole card (every part of a combined card) for what is chosen now.
+    if (next.summary) setLiveSummary(next.summary)
+  }
   const canContinue = !withdrawn && !gmailCard && !standaloneDecision && continueAfterDecision && Boolean(onDecision) && (status === 'auto_applied' || status === 'rejected') && !resultMessage
   const appliedDescription = preview.action_id === 'project.propose_definition'
     ? t('mixed_surfaces.action_preview.action_project_definition_saved')
@@ -163,11 +191,11 @@ function ActionPreviewCard({
   }
 
   const decide = async (action: ActionDecision) => {
-    if (!decidable || !preview.proposal_id) return
+    if (!decidable || !preview.proposal_id || (action === 'accept' && acceptBlocked)) return
     setBusy(true)
     setError(null)
     try {
-      if (action === 'accept'){const out=await proposalsApi.accept(preview.proposal_id,scope);if(out?.result_type==='code_patch_pending'){setPendingPatch(['pending','applying','compensating','compensation_failed'].includes(out.result.status));setResultMessage(t(`mixed_surfaces.code_patch_${out.result.status === 'pending' ? 'queued' : out.result.status}`));return;}
+      if (action === 'accept'){const out=await proposalsApi.accept(preview.proposal_id,{...scope,...(choosesExecution&&execution?.revision?{expectedRevision:execution.revision}:{})});if(out?.result_type==='code_patch_pending'){setPendingPatch(['pending','applying','compensating','compensation_failed'].includes(out.result.status));setResultMessage(t(`mixed_surfaces.code_patch_${out.result.status === 'pending' ? 'queued' : out.result.status}`));return;}
         // HTTP 200 can still be a decision that applied nothing (superseded / expired): show the
         // Proposal's actual state and never continue as if the change took effect.
         const refusal = out ? acceptRefusalKey(out) : null
@@ -175,12 +203,15 @@ function ActionPreviewCard({
       else await proposalsApi.reject(preview.proposal_id, scope)
       if (scope.signal?.aborted) return
       setStatus(action === 'accept' ? 'auto_applied' : 'rejected')
-      if (!standaloneDecision) {
-        if (continueAfterDecision && !gmailCard) await continueAfterDecisionAction(action)
+      if (!standaloneDecision && !gmailCard) {
+        if (continueAfterDecision) await continueAfterDecisionAction(action)
         else await onDecision?.(preview, action)
       }
     } catch (decisionError) {
-      setError(errMsg(decisionError))
+      const changed = choosesExecution && action === 'accept' && refusalCode(decisionError) === 'proposal_revision_changed'
+      setError(changed ? t('gmail_ui.execution.card_changed') : errMsg(decisionError))
+      // A refused acceptance of a card chosen on: show it again as it stands now before anything else is accepted.
+      if (choosesExecution && action === 'accept') { setExecution(null); setExecutionReload(n => n + 1) }
       // A refused decision (404 after expiry or another member's decision) shows the live state.
       await proposalsApi.get(preview.proposal_id, scope).then(p => { if (!scope.signal?.aborted) setStatus(proposalStatus(p)) }).catch(() => undefined)
     } finally {
@@ -208,11 +239,12 @@ function ActionPreviewCard({
           {checkingStatus ? t('mixed_surfaces.action_preview.checking_status') : statusLabels[status]}
         </span>
       </div>
-      {preview.summary && <p className="mt-1 text-xs text-muted-foreground">{preview.summary}</p>}
+      {(liveSummary ?? preview.summary) && <p className="mt-1 whitespace-pre-line text-xs text-muted-foreground">{liveSummary ?? preview.summary}</p>}
+      {choosesExecution && preview.proposal_id && <GmailApplicationExecutionChoice proposalId={preview.proposal_id} scope={scope} onState={onExecution} reloadKey={executionReload} />}
       {riskLabel && <span className="mt-1 block text-[11px] text-muted-foreground">{riskLabel}</span>}
       {decidable && (
         <div className="mt-2 flex gap-2">
-          <Button size="sm" disabled={busy} onClick={() => decide('accept')}>{t('mixed_surfaces.action_preview.accept')}</Button>
+          <Button size="sm" disabled={busy || acceptBlocked} onClick={() => decide('accept')}>{t('mixed_surfaces.action_preview.accept')}</Button>
           <Button size="sm" variant="outline" disabled={busy} onClick={() => decide('reject')}>{t('mixed_surfaces.action_preview.reject')}</Button>
         </div>
       )}

@@ -161,6 +161,14 @@ it('prepares a historical batch from its recorded delta only into a worktree wit
  expect(await call('native_publish',{verified_commit:await checkpoint()})).toMatchObject({ok:true,outcome:'merged'});expect(git('show','dev:feature.txt')).toBe('feature');expect(git('show','dev:earlier.txt')).toBe('earlier');
  expect(await readFile(join(cwd,'node_modules','prepared'),'utf8')).toBe('keep');
 });
+it('publishes intentional Markdown hard breaks',async()=>{
+ await init();
+ await writeFile(join(cwd,'notes.md'),'first line  \nsecond line\n');
+ expect(await call('native_prepare')).toMatchObject({ok:true,outcome:'rebased'});
+ expect(await call('native_publish',{verified_commit:await checkpoint()})).toMatchObject({ok:true,outcome:'merged'});
+ expect(git('show','dev:notes.md')).toBe('first line  \nsecond line');
+});
+
 it('proves publication after a lost final receipt even when the original Agent has exited',async()=>{
  await init();await writeFile(join(cwd,'feature.txt'),'feature\n');await call('native_prepare');const request=frame('native_publish',{verified_commit:await checkpoint()}),published=await executeWorkspaceIntegration(root,request);expect(published.outcome).toBe('merged');
  const directory=join(config,'workspace-native',location,workspaceWorktreeKey(ref)),file=join(directory,`${mergeId}.json`),journal=JSON.parse(await readFile(file,'utf8'));delete journal.merged;await writeFile(file,JSON.stringify(journal));await rm(join(directory,`request-${request.operation_id}.json`));releaseLocationLeases([lease],launch);

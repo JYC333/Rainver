@@ -136,8 +136,6 @@ interface TaskRuntimeProfile {
   id: string;
   runtime_key: string;
   execution_host_id: string | null;
-  workspace_location_id: string | null;
-  workspace_mode: "location" | "managed" | null;
   runtime_installation: string | null;
   enabled: boolean;
 }
@@ -149,8 +147,7 @@ async function requireTaskRuntimeProfile(
   runtimeProfileId: string | null,
 ): Promise<TaskRuntimeProfile> {
   const result = await db.query<TaskRuntimeProfile>(
-    `SELECT id, runtime_key, execution_host_id, workspace_location_id,
-            workspace_mode, runtime_installation, enabled
+    `SELECT id, runtime_key, execution_host_id, runtime_installation, enabled
        FROM agent_runtime_profiles
       WHERE space_id = $1 AND agent_id = $2
         AND (($3::varchar IS NULL AND is_default = true) OR id = $3)
@@ -838,6 +835,7 @@ export class PgTaskRepository {
       const currentTask = lockedTask.rows[0];
       if (!currentTask) throw new HttpError(404, "Task not found");
       if(currentTask.project_id!==task.project_id)throw new TaskControlError(409,"Task Project changed; reload before starting a Run");
+      if (body.mode === "dry_run") throw new TaskControlError(422, "Task execution does not support dry runs");
       // A merge's resolution Run works on a done Task: that is the only Task
       // with a merge.
       if (TASK_DISPATCH_REFUSED_STATUSES.has(currentTask.status) && !(merge && currentTask.status === "done")) {
@@ -900,10 +898,6 @@ export class PgTaskRepository {
       if (target && runtimeProfile.execution_host_id !== target.host_id) {
         throw new TaskControlError(409, "Task Workspace Location does not match the selected Runtime Profile Host");
       }
-      if (target && runtimeProfile.workspace_mode === "location"
-        && runtimeProfile.workspace_location_id !== target.location_id) {
-        throw new TaskControlError(409, "Task Workspace Location does not match the selected Runtime Profile");
-      }
       // A built-in Host Location: the same dispatch allowance a paired Host's
       // Task Run carries (`prepareRemoteTaskRun`). Without it the Run has no
       // grants, so no work surface, and cannot report or declare its output.
@@ -916,7 +910,7 @@ export class PgTaskRepository {
         agent_id: agentId,
         space_id: identity.spaceId,
         user_id: identity.userId,
-        mode: optionalString(body.mode) ?? "live",
+        mode: "live",
         run_type: "agent",
         trigger_origin: PERSON_STARTED_TRIGGER_ORIGIN,
         // Never from a body: only `createMergeResolutionRun` passes `merge`.
@@ -958,7 +952,7 @@ export class PgTaskRepository {
          ON CONFLICT (task_id, run_id) DO NOTHING`,
         [randomUUID(), identity.spaceId, taskId, run.id, optionalString(body.role) ?? "primary", now],
       );
-      await this.enqueueTaskRunJob(client, identity, { runId: run.id, agentId, projectFolderId: task.project_folder_id }, merge);
+      await this.enqueueTaskRunJob(client, identity, run, merge);
       if (body.set_task_in_progress !== false) {
         await markTaskRunStarted(client,{spaceId:identity.spaceId,userId:identity.userId,taskId,runId:run.id,at:now});
       }
@@ -1010,14 +1004,15 @@ export class PgTaskRepository {
   private async enqueueTaskRunJob(
     client: Queryable,
     identity: SpaceUserIdentity,
-    input: { runId: string; agentId: string; projectFolderId: string | null },
+    run: { id: string; agent_id: string | null; project_folder_id: string | null; scheduled_at?: string | null },
     merge?: MergeResolutionAdmission,
   ): Promise<void> {
     const job = {
       user_id: identity.userId,
-      agent_id: input.agentId,
-      project_folder_id: input.projectFolderId,
-      payload: { run_id: input.runId },
+      agent_id: run.agent_id,
+      project_folder_id: run.project_folder_id,
+      payload: { run_id: run.id },
+      ...(run.scheduled_at ? { scheduled_at: new Date(run.scheduled_at) } : {}),
     };
     if (merge) {
       // Live quota refresh may outlive admission and requires its original Pool.
@@ -1025,7 +1020,7 @@ export class PgTaskRepository {
       if (!isConnectablePool(this.pool)) throw new Error("Merge resolution requires a live quota Pool");
       await admitAgentOriginRun(client as PoolClient, {
         spaceId: identity.spaceId,
-        runId: input.runId,
+        runId: run.id,
         job,
         source: liveQuotaSource(this.pool),
       });
@@ -1091,21 +1086,21 @@ export class PgTaskRepository {
     if (!target.execution_ready) throw new TaskControlError(409, "Workspace Location is not execution-ready");
 
     const prompt = optionalString(body.prompt);
-    if (!prompt) throw new TaskControlError(422, "prompt is required");
 
     const threads = new PgHostThreadRepository(client);
     const threadId = optionalString(body.thread_id);
     let thread = threadId ? await threads.getForLocation(threadId, target.location_id, task.id) : null;
     if (threadId && !thread) throw new HttpError(404, "Task thread not found for this Workspace Location");
+    if (thread?.execution_host_id && thread.execution_host_id !== target.host_id) {
+      throw new TaskControlError(409, "Task thread is pinned to a different Host; start a new thread to change it");
+    }
     const previousRun = thread ? await threadRunBinding(client, thread.id) : null;
     const inheritedProfileId = previousRun?.agent_id === agentId ? previousRun.runtime_profile_id : null;
     const requestedProfileId = optionalString(body.runtime_profile_id) ?? inheritedProfileId;
     const runtimeProfile = await requireTaskRuntimeProfile(client, identity.spaceId, agentId, requestedProfileId);
     if (runtimeProfile.execution_host_id !== target.host_id
-      || runtimeProfile.workspace_mode !== "location"
-      || runtimeProfile.workspace_location_id !== target.location_id
       || !runtimeProfile.runtime_installation) {
-      throw new TaskControlError(409, "Task Workspace Location does not match the selected Runtime Profile");
+      throw new TaskControlError(409, "Task Workspace Location and Runtime Profile must use the same Host with an installed CLI");
     }
     const runtimeKey = runtimeProfile.runtime_key;
     const installation = runtimeProfile.runtime_installation;
@@ -1125,6 +1120,7 @@ export class PgTaskRepository {
     }
     if (!thread) {
       thread = await threads.create({
+        executionHostId: target.host_id,
         workspaceLocationId: target.location_id,
         runtimeKey,
         runtimeInstallation: installation,
@@ -1189,6 +1185,7 @@ export class PgTaskRepository {
       project_id: task.project_id,
       prompt,
       instruction: optionalString(body.instruction) ?? defaultTaskInstruction(task),
+      scheduled_at: toDbDate(body.scheduled_at),
       scenario_tool_allowance: [...allowance],
       capabilities_json: [...allowance],
       model_override_json: {
@@ -1227,7 +1224,7 @@ export class PgTaskRepository {
        ON CONFLICT (task_id, run_id) DO NOTHING`,
       [randomUUID(), identity.spaceId, task.id, run.id, optionalString(body.role) ?? "primary", now],
     );
-    await this.enqueueTaskRunJob(client, identity, { runId: run.id, agentId, projectFolderId: task.project_folder_id }, merge);
+    await this.enqueueTaskRunJob(client, identity, run, merge);
     if (body.set_task_in_progress !== false) {
       await markTaskRunStarted(client,{spaceId:identity.spaceId,userId:identity.userId,taskId:task.id,runId:run.id,at:now});
     }

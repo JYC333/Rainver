@@ -14,8 +14,11 @@ export const TaskHandoffInputSchema=z.object({
   task_id:taskId,to:z.object({kind:z.enum(['user','agent']),id:z.string().min(1)}).strict().nullable(),
   note:z.string().trim().max(2000).nullable().default(null),
 }).strict();
+export const DUPLICATE_TASK_CANCELLATION_REASON = 'Duplicate task';
 export const TaskStatusInputSchema=z.object({
-  task_id:taskId,status:z.enum(TASK_STATUSES),reason:reason.max(500).nullable().default(null),
+  task_id:taskId,status:z.enum(TASK_STATUSES),reason:reason.max(500).describe(
+    `Only when the person explicitly asks to cancel a duplicate, use status cancelled and the exact reason "${DUPLICATE_TASK_CANCELLATION_REASON}" without adding details. The Gmail-read exception applies only to shared, unstarted Tasks in the same Project with no execution or publication dependencies.`,
+  ).nullable().default(null),
   blocked_reason:z.string().nullable().optional(),
   override_completion:TaskCompletionOverrideSchema.nullable().default(null),
 }).strict();

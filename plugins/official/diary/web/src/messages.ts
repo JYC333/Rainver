@@ -19,6 +19,8 @@ const en = {
   enable: 'Install or enable in Optional Modules',
   to_today: '→ today',
   loading: 'Loading…',
+  entry_load_failed: 'Could not load this entry.',
+  retry: 'Retry',
 }
 
 export type DiaryMessages = typeof en
@@ -39,6 +41,8 @@ const zhCN: DiaryMessages = {
   enable: '在可选模块中安装或启用',
   to_today: '→ 今天',
   loading: '加载中…',
+  entry_load_failed: '无法加载这一天的日记。',
+  retry: '重试',
 }
 
 export const DIARY_MESSAGES: Record<string, DiaryMessages> = { en, 'zh-CN': zhCN }

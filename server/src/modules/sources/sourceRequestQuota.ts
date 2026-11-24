@@ -30,7 +30,7 @@ export async function admitSourceRequest(pool: Pool | TransactionRunner, key: st
 
 /** Account-wide windows and narrower endpoint windows are locked/debited together.
  * Sorting keeps two workers taking overlapping groups from deadlocking. */
-export async function admitSourceRequestGroups(pool: Pool | TransactionRunner, groups: readonly { key: string; windows: readonly RequestQuotaWindow[] }[], signal?: AbortSignal): Promise<{ allowed: boolean; retryAt?: string }> {
+export async function admitSourceRequestGroups(pool: Pool | TransactionRunner, groups: readonly { key: string; windows: readonly RequestQuotaWindow[] }[], signal?: AbortSignal, options: { upstreamCooldownOnly?: boolean } = {}): Promise<{ allowed: boolean; retryAt?: string }> {
   if (!groups.length || groups.length > 8 || new Set(groups.map(g => g.key)).size !== groups.length) throw new Error("Invalid quota groups");
   for (const group of groups) validate(group.key, group.windows);
   signal?.throwIfAborted();
@@ -45,6 +45,11 @@ export async function admitSourceRequestGroups(pool: Pool | TransactionRunner, g
     }
     const {rows:[clock]} = await db.query<{now_ms:string}>(`SELECT floor(extract(epoch FROM clock_timestamp())*1000)::text AS now_ms`);
     const now = Number(clock.now_ms);
+    if (options.upstreamCooldownOnly) {
+      const blockedUntil = Math.max(...locked.map(row => row.cooldown));
+      signal?.throwIfAborted();
+      return blockedUntil > now ? { allowed: false, retryAt: new Date(blockedUntil).toISOString() } : { allowed: true };
+    }
     for (const group of groups) {
       const states = locked.find(row => row.key === group.key)!.states;
       for (const p of group.windows) {

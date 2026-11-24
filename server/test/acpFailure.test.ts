@@ -61,6 +61,7 @@ describe("ACP failure evidence", () => {
     ["claude_code", { details: { error: { type: "overloaded_error", message: "Overloaded" } } }, "transient", "adapter_runtime_error"],
     ["claude_code", { details: { error: { type: "rate_limit_error", message: "Too many requests" } } }, "rate_limit", "provider_rate_limit"],
     ["claude_code", { details: "You've hit your session limit · resets 7pm (Europe/London)" }, "quota", "subscription_quota_exhausted"],
+    ["claude_code", { errorKind: "rate_limit", details: "You've hit your 5-hour limit · resets 2:50pm (Europe/London)" }, "quota", "subscription_quota_exhausted"],
   ])("distinguishes %s failures by their actual cause", (runtime, data, category, code) => {
     const failure = normalizeAcpFailure(runtime as string, rpc(data), now);
     expect(failure.category).toBe(category);

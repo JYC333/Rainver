@@ -1,5 +1,5 @@
 import type { CliProcessRegistry } from "./localCliExecution.js";
-import type { LaunchIsolationRecord, RunAttemptRecord, RunRecord } from "./repository.js";
+import type { LaunchIsolationRecord, LaunchResumeGuard, RunAttemptRecord, RunRecord } from "./repository.js";
 import type { PgRunRepository } from "./repository.js";
 import type { RuntimeStopOutcome } from "./runTimeLimit.js";
 import { sharedHostConnectionRegistry, type HostConnectionRegistry } from "../hosts/connectionRegistry.js";
@@ -15,18 +15,25 @@ export interface ExecutionStopResult extends RuntimeStopOutcome {
 /** A parked/resumed Run still names its previous physical launch. Confirm that
  * launch has finished before replacing its nonce; a missing controller after
  * server restart is not evidence that its Host process exited. */
-export async function bindHostAttemptLaunch(
-  repository: Pick<PgRunRepository, 'getLatestRunAttempt' | 'bindAttemptLaunch'>,
+export async function bindHostAttemptLaunch<R = never>(
+  repository: Pick<PgRunRepository, 'getLatestRunAttempt' | 'bindAttemptLaunch' | 'bindAttemptLaunchAfterResumeCheck'>,
   hosts: HostConnectionRegistry,
   input: { space_id: string; run_id: string; host_id: string; launch_id: string; isolation?: LaunchIsolationRecord },
-): Promise<'bound' | 'closed' | 'previous_launch_unconfirmed'> {
+  /** The frame resumes a vendor session: judged again under the thread's lock, in the bind's own transaction. */
+  resumeGuard?: LaunchResumeGuard<R>,
+): Promise<'bound' | 'closed' | 'previous_launch_unconfirmed' | { resume_refused: R }> {
   const previous = await repository.getLatestRunAttempt(input.space_id, input.run_id);
   if (!previous || !['queued', 'running'].includes(previous.status)) return 'closed';
   if (previous?.launch_id && previous.launch_id !== input.launch_id) {
     const stopped = await stopHostAttempt(hosts, input.host_id, input.run_id, previous.launch_id, false);
     if (!stopped.confirmed_exit) return 'previous_launch_unconfirmed';
   }
-  return await repository.bindAttemptLaunch({ ...input, expected_launch_id: previous.launch_id, expected_attempt_id: previous.id }) ? 'bound' : 'closed';
+  const bind = { space_id: input.space_id, run_id: input.run_id, launch_id: input.launch_id, isolation: input.isolation,
+    expected_launch_id: previous.launch_id, expected_attempt_id: previous.id };
+  if (!resumeGuard) return await repository.bindAttemptLaunch(bind) ? 'bound' : 'closed';
+  const result = await repository.bindAttemptLaunchAfterResumeCheck(bind, resumeGuard);
+  if (result.refusal !== null) return { resume_refused: result.refusal };
+  return result.bound ? 'bound' : 'closed';
 }
 
 export async function stopHostAttempt(hosts: HostConnectionRegistry, hostId: string, runId: string, launchId: string, force: boolean) {

@@ -4,7 +4,7 @@ import {
 } from "../routeUtils/common.js";
 import { isSpaceOwnerOrAdmin } from "../access/roles.js";
 import { projectReadAccessSql } from "../access/contentAccessSql.js";
-import type { ProjectReader } from "@rainver/protocol";
+import type { OperationActor, ProjectReader } from "@rainver/protocol";
 
 /**
  * Projects a transaction share-locked first, before a lock that some Project
@@ -240,6 +240,43 @@ export async function assertProjectWriterForMutation(
   if (!(await canWriteProject(db, spaceId, projectId, userId, { lockAuthority: true }))) {
     throw new HttpError(403, "Requires project writer, project owner, or space owner/admin role");
   }
+}
+
+/**
+ * Takes an Agent command's Project `FOR UPDATE` and its audience `FOR SHARE` before the operation core pins the
+ * person and the Run (from a package command's `resolve`, or a core command's `lockBeforeActor`, which the
+ * core runs after the idempotency reservation and before that pin): the order
+ * Project → person → Run of every Agent release of a Project-bound plugin result and of the Gmail reads'
+ * releases (ADR 0034). With the pin first, a command held the Run `FOR SHARE` while it waited for the Project
+ * that the same Run's release holds `FOR SHARE` while it waits for the Run `FOR UPDATE` — a deadlock. Used by
+ * every Project-bound package command (`plugins/operationRegistry.ts`) and by the core Task and Board commands
+ * an Agent calls in its Run's Project (`tasks/operations.ts`, `projectWork/taskLifecycleOperations.ts`,
+ * `projectWork/boardOperations.ts`, through `lockAgentRunProjectBeforeActor` from the registration's
+ * `lockBeforeActor`). Only the Run's own Project, and only after the unlocked read and writer
+ * checks pass, so a caller that cannot reach the Project never blocks its row. It refuses nothing: the
+ * registration's `authorize` repeats every check under these locks. A person's command holds no Run, so it
+ * keeps the core's order; a query takes no lock before its release.
+ */
+export async function lockAgentProjectBeforeActor(db: Queryable, actor: OperationActor, projectId: unknown): Promise<void> {
+  const person = actor.on_behalf_of_user_id;
+  if (actor.principal.kind !== "agent" || typeof projectId !== "string" || !projectId || !person) return;
+  const run = (await db.query<{ project_id: string | null }>("SELECT project_id FROM runs WHERE id=$1 AND space_id=$2", [actor.run_id, actor.space_id])).rows[0];
+  if (run?.project_id !== projectId) return;
+  if (!await canReadProject(db, actor.space_id, projectId, person) || !await canWriteProject(db, actor.space_id, projectId, person)) return;
+  if (!(await db.query("SELECT id FROM projects WHERE id=$1 AND space_id=$2 AND deleted_at IS NULL FOR UPDATE", [projectId, actor.space_id])).rows.length) return;
+  // Only a refusal (the person lost the Project meanwhile) is left to `authorize`; a database error — a lock
+  // timeout, a deadlock, a cancelled statement — has aborted the transaction and is thrown as itself, so the core
+  // classifies it as transient instead of failing on the aborted transaction's next query.
+  await assertProjectReadableLocked(db, actor.space_id, projectId, person).catch((error: unknown) => {
+    if (!(error instanceof HttpError)) throw error;
+  });
+}
+
+/** `lockAgentProjectBeforeActor` for the Agent's own Run's Project: the only Project an Agent's Task command acts in. */
+export async function lockAgentRunProjectBeforeActor(db: Queryable, actor: OperationActor): Promise<void> {
+  if (actor.principal.kind !== "agent" || !actor.run_id) return;
+  const run = (await db.query<{ project_id: string | null }>("SELECT project_id FROM runs WHERE id=$1 AND space_id=$2", [actor.run_id, actor.space_id])).rows[0];
+  if (run?.project_id) await lockAgentProjectBeforeActor(db, actor, run.project_id);
 }
 
 /** Explicit active-Project mutation refusal; callers may classify this known condition. */

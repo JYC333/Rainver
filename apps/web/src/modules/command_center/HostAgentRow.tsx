@@ -15,7 +15,7 @@ import type {
   RuntimeAuthMethod,
   RuntimeInstallation,
 } from '../../types/api'
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../../components/ui/tooltip'
+import { Popover, PopoverContent, PopoverTrigger } from '../../components/ui/popover'
 
 export type HostAgentLoginTarget =
   | { kind: 'configured' }
@@ -116,38 +116,62 @@ export default function HostAgentRow({
           // the account, which "Log in again" already says.
           const accounts = entry.accounts
           const multiAccount = accounts !== undefined
-          const accountSummary = multiAccount
-            ? accounts.length === 0 ? 'no accounts' : `${accounts.length} account${accounts.length === 1 ? '' : 's'}`
+          // OpenCode model choices use provider/model IDs. Count provider IDs,
+          // including providers configured outside the CLI credential store.
+          const providers = new Set<string>()
+          if (adapter.runtime_key === 'opencode') {
+            for (const account of accounts ?? []) providers.add(account.id)
+            for (const option of entry.options?.config_options ?? []) {
+              if (option.category !== 'model' || option.type !== 'select') continue
+              for (const choice of option.options) {
+                const slash = choice.value.indexOf('/')
+                if (slash > 0 && slash < choice.value.length - 1) providers.add(choice.value.slice(0, slash))
+              }
+            }
+          }
+          const providerSummary = providers.size > 0
+            ? t('management_ui.host_catalog.provider_count', { count: providers.size })
             : null
+          const accountSummary = accounts?.length
+            ? `${accounts.length} account${accounts.length === 1 ? '' : 's'}`
+            : null
+          const summary = providerSummary ?? (multiAccount
+            ? accountSummary
+            : entry.logged_in === null ? null : entry.logged_in ? 'logged in' : 'not logged in')
           // Only where a logout path exists: the server accepts one through a
           // CLI login or a logout command, both of which leave `authMethods`
           // empty. A copy signed in only by its advertised Agent Auth has
           // nothing to log out of here.
           const canLogout = (entry.logged_in === true || (multiAccount && accounts.length > 0)) && authMethods.length === 0
           const badge = (
-            <Badge variant={entry.logged_in === false || (multiAccount && accounts.length === 0) ? 'warning' : 'secondary'}>
+            <Badge variant={!providerSummary && !multiAccount && entry.logged_in === false ? 'warning' : 'secondary'}>
               {installationVersionLabel(entry, adapter)}
-              {multiAccount ? ` · ${accountSummary}` : entry.logged_in === null ? '' : entry.logged_in ? ' · logged in' : ' · not logged in'}
+              {summary && ` · ${summary}`}
             </Badge>
           )
           return <span key={entry.id} ref={entry.id === targetInstallation ? targetRef : undefined} tabIndex={entry.id === targetInstallation ? -1 : undefined}
             data-runtime-installation={entry.id} data-recovery-target={entry.id === targetInstallation || undefined}
             className="flex min-w-0 flex-wrap items-center gap-1 rounded-md data-[recovery-target=true]:ring-2 data-[recovery-target=true]:ring-primary data-[recovery-target=true]:ring-offset-2 data-[recovery-target=true]:ring-offset-background">
-              {multiAccount && accounts.length > 0 ? (
-                // The names on hover, in the app's tooltip rather than the
-                // browser's title bubble; the row itself stays one line.
-                <TooltipProvider delayDuration={200}>
-                  <Tooltip>
-                    <TooltipTrigger asChild><span tabIndex={0} className="inline-flex">{badge}</span></TooltipTrigger>
-                    <TooltipContent>
+              {multiAccount || providerSummary ? (
+                <Popover>
+                  <PopoverTrigger asChild><button type="button" className="inline-flex">{badge}</button></PopoverTrigger>
+                  <PopoverContent align="start" className="w-64" aria-label={t('management_ui.host_catalog.provider_details')}>
+                    {providerSummary && (
+                      <ul className="mb-1 max-h-40 max-w-64 space-y-0.5 overflow-auto break-all">
+                        {[...providers].sort().map(provider => <li key={provider}>{provider}</li>)}
+                      </ul>
+                    )}
+                    {multiAccount && (accounts.length === 0 ? (
+                      <p>{t('management_ui.host_catalog.no_cli_accounts')}</p>
+                    ) : (
                       <ul className="space-y-0.5">
                         {accounts.map(account => (
                           <li key={account.id}><span className="font-medium">{account.id}</span> · {account.kind}</li>
                         ))}
                       </ul>
-                    </TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
+                    ))}
+                  </PopoverContent>
+                </Popover>
               ) : badge}
               {(usage.has(entry.id) || entry.reports_subscription_quota) && (
                 <RuntimeAccountLink usage={entry.logged_in === false ? undefined : usage.get(entry.id)} hostId={host.id} runtimeKey={adapter.runtime_key} installation={entry.id} />

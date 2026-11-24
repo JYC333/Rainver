@@ -7,7 +7,7 @@ import {randomUUID} from 'node:crypto';
 import {WorkspaceRetentionUpdateInputSchema,WorkspaceRetentionSchema,type RegisteredSystemActionDefinition} from '@rainver/protocol';
 import type {Queryable} from '../routeUtils/common.js';
 import type {OperationRegistration} from '../systemActions/operations/types.js';
-import {OperationBusinessError,hidden} from '../systemActions/operations/errors.js';
+import {OperationBusinessError,OperationRefusal,hidden} from '../systemActions/operations/errors.js';
 import {PgJobQueueRepository} from '../jobs/repository.js';
 import {authorizedWorkspaceChange} from './workspaceOperations.js';
 import type {ExecutionWorkspaceRow} from './executionWorkspaces.js';
@@ -121,7 +121,9 @@ export function workspaceRetentionRegistration(definitions:ReadonlyMap<string,Re
     // Retry re-delivers blocked cleanup; a sent request keeps its journal
     // identity and plan. The Job still rechecks generation, leases and proof.
     const blocked=Object.entries(w.cleanup_json).filter(([,r])=>r.state==='blocked'&&(!agentRetry||r.workspace.id===w.id&&r.workspace.generation===w.generation));
-    if(!blocked.length&&(agentRetry||!w.inventory_json?.reconciliation_error))throw conflict();
+    if(!blocked.length&&(agentRetry||!w.inventory_json?.reconciliation_error))throw new OperationRefusal(409,'workspaces',
+     Number(w.inventory_json?.quarantined_whole)>0?'A preserved workspace directory needs inspection; there is no failed cleanup task to retry. Rebuildable dependency remnants are handled by Host maintenance. Other files must be reviewed before removal.':'There is no failed cleanup task to retry. Refresh the workspace status.',
+     {code:Number(w.inventory_json?.quarantined_whole)>0?'workspace_quarantined':'cleanup_not_retryable',recovery_action:'workspace.change.get'});
     for(const [key,r] of blocked){
      // A release keeps its epoch and plan: the Host resumes that exact release
      // (journal keyed by identity and epoch) instead of losing its remaining work.

@@ -18,19 +18,29 @@ export default function CapturePage() {
   const [recording, setRecording] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const recorderRef = useRef<MediaRecorder | null>(null)
-  const chunksRef = useRef<Blob[]>([])
+  const saveRecordingRef = useRef<MediaRecorder | null>(null)
+  const lifetimeRef = useRef<object | null>(null)
+  const acquiringRef = useRef(false)
   const streamRef = useRef<MediaStream | null>(null)
 
   // Leaving the page mid-recording releases the microphone. What was
   // recorded is dropped: it is saved only by "Stop & save".
-  useEffect(() => () => {
-    const recorder = recorderRef.current
-    if (recorder) {
-      recorder.onstop = null
-      recorder.ondataavailable = null
-      if (recorder.state !== 'inactive') recorder.stop()
+  useEffect(() => {
+    lifetimeRef.current = {}
+    return () => {
+      lifetimeRef.current = null
+      acquiringRef.current = false
+      saveRecordingRef.current = null
+      const recorder = recorderRef.current
+      if (recorder) {
+        recorder.onstop = null
+        recorder.ondataavailable = null
+        if (recorder.state !== 'inactive') recorder.stop()
+      }
+      streamRef.current?.getTracks().forEach(t => t.stop())
+      streamRef.current = null
+      recorderRef.current = null
     }
-    streamRef.current?.getTracks().forEach(t => t.stop())
   }, [])
 
   async function handleCapture(e: React.FormEvent) {
@@ -84,21 +94,36 @@ export default function CapturePage() {
       toast.error('Voice recording is not supported in this browser')
       return
     }
+    const lifetime = lifetimeRef.current
+    if (!lifetime || acquiringRef.current || recorderRef.current) return
+    acquiringRef.current = true
     let stream: MediaStream | null = null
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      if (lifetimeRef.current !== lifetime) {
+        stream.getTracks().forEach(track => track.stop())
+        return
+      }
       streamRef.current = stream
       const mr = new MediaRecorder(stream)
-      chunksRef.current = []
-      mr.ondataavailable = (ev) => { if (ev.data.size) chunksRef.current.push(ev.data) }
+      const chunks: Blob[] = []
+      mr.ondataavailable = (ev) => { if (ev.data.size) chunks.push(ev.data) }
       const recorded = stream
       mr.onstop = () => {
         recorded.getTracks().forEach(t => t.stop())
+        if (lifetimeRef.current !== lifetime) return
+        const shouldSave = saveRecordingRef.current === mr
+        saveRecordingRef.current = null
         streamRef.current = null
+        recorderRef.current = null
+        setRecording(false)
+        if (!shouldSave) {
+          toast.error('Recording stopped before it was saved')
+          return
+        }
         const type = mr.mimeType || 'audio/webm'
         const ext = type.includes('ogg') ? 'ogg' : type.includes('mp4') ? 'mp4' : 'webm'
-        const blob = new Blob(chunksRef.current, { type })
-        setRecording(false)
+        const blob = new Blob(chunks, { type })
         if (blob.size > 0) {
           void doUpload(new File([blob], `voice-${Date.now()}.${ext}`, { type }), 'voice')
         }
@@ -108,14 +133,26 @@ export default function CapturePage() {
       setRecording(true)
     } catch (err) {
       stream?.getTracks().forEach(t => t.stop())
-      streamRef.current = null
-      toast.error(errMsg(err))
+      if (lifetimeRef.current === lifetime) {
+        streamRef.current = null
+        recorderRef.current = null
+        toast.error(errMsg(err))
+      }
+    } finally {
+      if (lifetimeRef.current === lifetime) acquiringRef.current = false
     }
   }
 
   function stopRecording() {
-    recorderRef.current?.stop()
-    recorderRef.current = null
+    const recorder = recorderRef.current
+    if (!recorder || recorder.state === 'inactive') return
+    saveRecordingRef.current = recorder
+    try {
+      recorder.stop()
+    } catch (err) {
+      saveRecordingRef.current = null
+      toast.error(errMsg(err))
+    }
   }
 
   const busy = submitting || uploading

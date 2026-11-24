@@ -1196,15 +1196,12 @@ families retain their existing domain-specific semantics.
 pairs, distinguishing unmigrated business routes from existing auth/internal/
 binary transport exemptions and the generic command adapter. `operationRoutes`
 captures onRoute registrations from real modules and activated bundled plugins and fails on additions or drift;
-an annotation or `/internal*` prefix cannot add an unlisted route. P5 migration is complete; its temporary
-[plan ledger](../plans/operation-core/05-core-module-operation-migration.md) is retired.
-Current inventory (recounted 2026-11-19 from `routeInventory.json`) has **638
-method/path pairs: 582 core adapters, 13 legacy business entries and 43 exact
-protocol-owner exemptions**. The remaining legacy
-entries are Finance (Plan 7; Diary's two routes were retired with its operation
-package), not a P5 queue. Exemptions do not waive owning
-protocol authorization, audit or replay safety; see the permanent
-[P5 acceptance and limits](OPERATION_CORE_ACCEPTANCE.md#p5-closeout).
+an annotation or `/internal*` prefix cannot add an unlisted route.
+The inventory has **625 method/path pairs: 582 core adapters and 43 exact
+protocol-owner exemptions**, with no legacy business entries after P7.
+Exemptions retain their owning protocol authorization, audit and replay safety.
+See [P5 closeout](OPERATION_CORE_ACCEPTANCE.md#p5-closeout) and
+[P7 closeout](OPERATION_CORE_ACCEPTANCE.md#p7-closeout).
 Plugin activation grants no exemption for bypasses.
 
 The cancellation pilot and process-death/COMMIT-loss, worker recovery and local
@@ -1591,6 +1588,13 @@ proposal tool (`agent_tool` only, `grantable: false`, gate class
 owner's own turn of an ordinary conversation of a Project the digest then
 delivers into, and it reads no mail
 ([ADR 0033](../decisions/0033-gmail-project-consent-and-private-delivery.md)).
+`source.gmail.application_updates.propose` (proposal type `gmail_digest_create`, kind
+`application`), `.list` and `.set_status` (`source.gmail.application_updates.manage`) are
+Agent-only conversation tools in `CONVERSATION_TOOL_ALLOWANCE` whose executors admit only the
+mailbox owner's own turn in a conversation only they read; `.flag` exists only in the
+automation's own Run (`APPLICATION_UPDATE_RUN_TOOLS`), as does
+`plugin.applications.mail_fact.apply`, which no allowance names
+([ADR 0034](../decisions/0034-gmail-application-updates.md)).
 
 ## Monitor management and manual scan enqueue
 
@@ -1939,7 +1943,10 @@ No Host, process or provider IO runs in a core transaction:
   `run.live_input.submit` persists the message, its pending event and a
   `run_live_input_deliver` Job in one transaction; delivery is that Job's, with
   an immediate first attempt after commit (`GET /runs/:id/live-input?message_id=`
-  reads `pending`/`injected`/`not_injected`/`unconfirmed`). Only the process
+  reads `pending`/`injected`/`not_injected`/`unconfirmed`, and for a Run parked
+  on its waited results `deferred`/`delivered_with_results`). `room.message.send`
+  with `live_target` records the same input for an ordinary Room send and
+  returns `status: "live_input"` (modules/rooms.md). Only the process
   owning the exact binding's live channel delivers; elsewhere the Job waits.
   An attempt enters the channel's serialized section, then appends a durable
   claim (`action_invoked`/`running`) before injecting, so an outcome lost after

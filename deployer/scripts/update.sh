@@ -35,14 +35,21 @@ REPO_ROOT="${REPO_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 # shellcheck source=../../ops/scripts/lib/local-compose.sh
 source "$REPO_ROOT/ops/scripts/lib/local-compose.sh"
 local_compose_init "$MODE"
+local_compose_lock_instance "running an update stage"
 
 # The services an update recreates. The deployer is deliberately absent.
 UPDATED_SERVICES=(server frontend sandbox-runner)
+if [[ "$STAGE" != pull && ! "${RAINVER_IMAGE_TAG:-}" =~ ^sha-[0-9a-f]{40}$ ]]; then
+    echo "ERROR: an update stage needs the immutable image tag resolved by pull." >&2
+    exit 1
+fi
 
 case "$STAGE" in
     pull)
+        local_compose_pin_image_tag
         echo "[update] pulling ${UPDATED_SERVICES[*]}..."
         "${COMPOSE[@]}" pull "${UPDATED_SERVICES[@]}"
+        local_compose_verify_image_revision "${UPDATED_SERVICES[@]}"
         # Asked here rather than at `migrate`, because this is the last moment
         # nothing has moved: the new image is on disk and its migration chain
         # can be read, but no Run has been drained and no service recreated.
@@ -67,6 +74,7 @@ case "$STAGE" in
             echo "$pending" | sed 's/^/[update]   /' >&2
             exit 1
         fi
+        echo "[update] selected image tag: $RAINVER_IMAGE_TAG"
         ;;
     migrate)
         # migrate.sh takes the required pre-migration dump and refuses to

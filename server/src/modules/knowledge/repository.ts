@@ -86,7 +86,8 @@ import {
   KNOWLEDGE_VISIBILITIES,
   NOTE_COLLECTION_COLUMNS,
   NOTE_FROM,
-  NOTE_PLACEMENTS_JOIN,
+  noteCollectionReadableSql,
+  notePlacementsJoin,
   NOTE_STATUSES,
   OBJECT_RELATION_COLUMNS,
   SOURCE_COLUMNS,
@@ -113,13 +114,14 @@ import {
   loadViewerSpaceRole,
   sourcePolicyAllowsRead,
 } from "../retrieval/index.js";
-import { sourceLineageReadable } from "../retrieval/sourcePolicy.js";
+import { SOURCE_LINEAGE_PROVENANCE_TYPES, sourceLineageReadable, sourceLineageReadableTargets } from "../retrieval/sourcePolicy.js";
 import { knowledgeRetrievalRegistry } from "./retrievalAdapter.js";
 import { isKnowledgeRetrievalObjectType } from "./retrievalObjectTypes.js";
 import { markdownToPm } from "./noteDocument.js";
 import { ensureProjectNotesFolder, projectOwningCollection } from "./noteProjectFolders.js";
 import { assertNoteEntryInvariant, lockNotesForPlacementChange } from "./notePlacementInvariant.js";
 import { NOTE_PROJECT_ROLE_DEFAULT_TITLES } from "./noteProjectRoles.js";
+
 import { listNoteRevisions as listNoteRevisionRows } from "./noteRevisionService.js";
 import {
   listSpaceObjectProjectShares,
@@ -139,6 +141,16 @@ import {
   claimResolutionStateError,
   claimStatusTransitionError,
 } from "./claimStatusRules.js";
+
+interface NoteListFilters {
+  status: string | null;
+  projectId: string | null;
+  collectionId: string | null;
+  collectionIds: string[] | null;
+  q: string | null;
+  limit: number;
+  offset: number;
+}
 
 interface SpaceObjectRow {
   id: string;
@@ -1043,16 +1055,19 @@ export class PgKnowledgeRepository {
     await this.safeReindex((p) => p.reindex(identity.spaceId, "knowledge_item", itemId));
   }
 
-  async listNotes(identity: SpaceUserIdentity, filters: {
-    status: string | null;
-    projectId: string | null;
-    collectionId: string | null;
-    collectionIds: string[] | null;
-    q: string | null;
-    limit: number;
-    offset: number;
-  }): Promise<Record<string, unknown>> {
-    const built = buildNoteWhere(identity, filters);
+  async listNotes(identity: SpaceUserIdentity, filters: NoteListFilters): Promise<Record<string, unknown>> {
+    const db = this.db as Queryable & { connect?: unknown; release?: unknown };
+    const ownsTransaction = typeof db.connect === "function" && typeof db.release !== "function";
+    return withQueryableTransaction(db, async (tx) => {
+      // The list's authorization, count, page and body hashes read one committed
+      // snapshot. An existing transaction should supply the same read isolation.
+      if (ownsTransaction) await tx.query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY");
+      return this.readNotePage(tx, identity, filters);
+    });
+  }
+
+  private async readNotePage(db: Queryable, identity: SpaceUserIdentity, filters: NoteListFilters): Promise<Record<string, unknown>> {
+    const { where: scope, params } = buildNoteScope(identity, filters);
     // The membership join exists only to answer "is this note in *that* folder,
     // and where in its order" — a single collection, so it contributes at most
     // one row. Do not join it unconditionally. Every note would be multiplied
@@ -1063,24 +1078,46 @@ export class PgKnowledgeRepository {
            ON nci_filter.note_id = n.object_id
           AND nci_filter.space_id = n.space_id`
       : "";
-    const total = await this.db.query<{ total: string }>(
+    let where = scope;
+    if (filters.q) {
+      const slot = `$${params.push(`%${filters.q}%`)}`;
+      const bodyMatch = bodyMatchSql("n.plain_text", slot, "$2");
+      const candidates = await db.query<{ id: string }>(
+        `SELECT n.object_id AS id
+           FROM ${NOTE_FROM} ${membershipJoin}
+          ${scope} AND ${bodyMatch}
+            AND EXISTS (
+              SELECT 1 FROM provenance_links pl
+               WHERE pl.space_id = n.space_id AND pl.target_type = 'note'
+                 AND pl.target_id = n.object_id AND pl.source_type = ANY($${params.length + 1}::varchar[])
+            )`,
+        [...params, [...SOURCE_LINEAGE_PROVENANCE_TYPES]],
+      );
+      const ids = candidates.rows.map((row) => row.id);
+      const readable = await sourceLineageReadableTargets(db, identity.spaceId, "note", ids, { viewerUserId: identity.userId });
+      const denied = ids.filter((id) => !readable.has(id));
+      const lineage = denied.length ? ` AND n.object_id <> ALL($${params.push(denied)}::varchar[])` : "";
+      where = `${scope} AND (so.title ILIKE ${slot} OR (${bodyMatch}${lineage}))`;
+    }
+    const total = await db.query<{ total: string }>(
       `SELECT count(DISTINCT n.object_id)::text AS total
          FROM ${NOTE_FROM}
          ${membershipJoin}
-        ${built.where}`,
-      built.params,
+        ${where}`,
+      params,
     );
-    const rows = await this.db.query<WithAccessLevel<NoteRow>>(
+    const rows = await db.query<WithAccessLevel<NoteRow>>(
       `SELECT ${noteColumnsWithAccess("$2")}
          FROM ${NOTE_FROM}
-         ${NOTE_PLACEMENTS_JOIN}
+         ${notePlacementsJoin("$2")}
          ${membershipJoin}
-        ${built.where}
+        ${where}
         ORDER BY ${filters.collectionId ? "nci_filter.sort_order ASC," : ""} so.updated_at DESC, n.object_id DESC
-        LIMIT $${built.params.length + 1} OFFSET $${built.params.length + 2}`,
-      [...built.params, filters.limit, filters.offset],
+        LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+      [...params, filters.limit, filters.offset],
     );
-    return page(rows.rows.map(noteSummaryOut), countFromRow(total.rows[0]), filters.limit, filters.offset);
+    const bodyReadable = await sourceLineageReadableTargets(db, identity.spaceId, "note", rows.rows.map((row) => row.id), { viewerUserId: identity.userId });
+    return page(rows.rows.map((row) => noteSummaryOut(bodyReadable.has(row.id) ? row : { ...row, effective_access_level: "summary" })), countFromRow(total.rows[0]), filters.limit, filters.offset);
   }
 
   async listNoteCollections(identity: SpaceUserIdentity): Promise<Record<string, unknown>[]> {
@@ -2630,7 +2667,7 @@ export class PgKnowledgeRepository {
     const result = await this.db.query<WithAccessLevel<NoteRow>>(
       `SELECT ${noteColumnsWithAccess("$3")}
          FROM ${NOTE_FROM}
-         ${NOTE_PLACEMENTS_JOIN}
+         ${notePlacementsJoin("$3")}
         WHERE n.object_id = $1 AND n.space_id = $2
           AND ${contentReadSql("space_object", "so", "$3")}`,
       [noteId, identity.spaceId, identity.userId],
@@ -2756,15 +2793,9 @@ export class PgKnowledgeRepository {
   }
 }
 
-function buildNoteWhere(
+function buildNoteScope(
   identity: SpaceUserIdentity,
-  filters: {
-    status: string | null;
-    projectId: string | null;
-    collectionId: string | null;
-    collectionIds: string[] | null;
-    q: string | null;
-  },
+  filters: NoteListFilters,
 ): { where: string; params: unknown[] } {
   const params: unknown[] = [identity.spaceId];
   const clauses = ["n.space_id = $1"];
@@ -2777,7 +2808,10 @@ function buildNoteWhere(
   clauses.push(contentReadSql("space_object", "so", add(identity.userId)));
   clauses.push(filters.status ? `n.status = ${add(filters.status)}` : "n.status <> 'deleted'");
   if (filters.projectId) clauses.push(`so.primary_project_id = ${add(filters.projectId)}`);
-  if (filters.collectionId) clauses.push(`nci_filter.collection_id = ${add(filters.collectionId)}`);
+  if (filters.collectionId) {
+    clauses.push(`nci_filter.collection_id = ${add(filters.collectionId)}`);
+    clauses.push(noteCollectionReadableSql("nci_filter.collection_id", "nci_filter.space_id", "$2"));
+  }
   // `collection_ids` restricts to a *set* of folders — the hoisted subtree a
   // notes surface is focused on — where `collection_id` selects one folder's
   // ordered contents. A search run while hoisted must not reach outside the
@@ -2791,12 +2825,9 @@ function buildNoteWhere(
       `EXISTS (SELECT 1 FROM note_collection_items nci_scope
                 WHERE nci_scope.note_id = n.object_id
                   AND nci_scope.space_id = n.space_id
-                  AND nci_scope.collection_id = ANY(${add(filters.collectionIds)}::varchar[]))`,
+                  AND nci_scope.collection_id = ANY(${add(filters.collectionIds)}::varchar[])
+                  AND ${noteCollectionReadableSql("nci_scope.collection_id", "nci_scope.space_id", "$2")})`,
     );
-  }
-  if (filters.q) {
-    const slot = add(`%${filters.q}%`);
-    clauses.push(`(so.title ILIKE ${slot} OR ${bodyMatchSql("n.plain_text", slot, "$2")})`);
   }
   return { where: `WHERE ${clauses.join(" AND ")}`, params };
 }

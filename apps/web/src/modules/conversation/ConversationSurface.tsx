@@ -53,10 +53,12 @@ import {
   type SessionConfigSelection,
 } from './ConversationSessionConfig'
 import { ConversationComposer } from './ConversationComposer'
-import type { ConversationInputPart } from '@rainver/protocol'
+import { ROOM_LIVE_INPUT_CHOICE_REQUIRED, ROOM_LIVE_INPUT_TARGET_UNAVAILABLE, type ConversationInputPart, type RoomLiveInputCandidate, type RoomLiveTarget } from '@rainver/protocol'
+import { RoomLiveInputChoice, RoomLiveInputStatus, type RoomLiveDelivery } from './RoomLiveInputPanel'
 import { ConversationInputPartsView, type ConversationInputFileSource } from './ConversationInputComposer'
 import type { CurrentFileAttachment } from '../projects/ProjectFolderConversationContext'
 import { clearConversationDraft } from './conversationDraft'
+import { withPastedText } from './ConversationDraftEditor'
 import { useConversationDraft } from './useConversationDraft'
 import { ConversationRunControls } from './ConversationRunControls'
 import { ConversationActivity } from './ConversationActivity'
@@ -259,6 +261,14 @@ function ConversationSurfaceContent({
   // Messages waiting for the conversation's turn, posted by the server at the
   // next turn boundary; the poll replaces this with what still waits.
   const [queued, setQueued] = useState<QueuedRoomMessage[]>([])
+  // An ordinary send the server would add to one of several active Runs waits for the person's choice;
+  // sends it added to a Run show that Run's delivery outcome (`modules/rooms.md`, "Ordinary send into an active turn").
+  // `unavailable`: the Run the person chose can no longer take this draft; nothing was sent.
+  const [liveChoice, setLiveChoice] = useState<{ candidates: RoomLiveInputCandidate[]; unavailable: boolean } | null>(null)
+  const [liveDeliveries, setLiveDeliveries] = useState<LiveDeliveryEntry[]>([])
+  // The idempotency key of a send whose outcome this client did not learn (its result could not be read
+  // back, or the connection failed): sending the identical request again replays it rather than adding it twice.
+  const sendKeyRef = useRef<{ fingerprint: string; key: string } | null>(null)
   const [messagesLoading, setMessagesLoading] = useState(true)
   const [messagesOwner, setMessagesOwner] = useState<string | null>(null)
   const messagesReady = !messagesLoading && messagesOwner === conversationId
@@ -316,9 +326,12 @@ function ConversationSurfaceContent({
   const [picking, setPicking] = useState(false)
   const pickingRef = useRef(false)
   const referencesAttachedRef = useRef(false)
+  const draftPromotedTo = useRef<string | null>(null)
   const draftDestination = `room:${roomId}:${conversationId ?? 'new'}`
   const {
     value: composer,
+    pastedText,
+    setPastedText,
     parts: inputParts,
     setValue: setComposer,
     setParts: setInputParts,
@@ -344,6 +357,7 @@ function ConversationSurfaceContent({
       setInputParts([])
       setResetToken(value => value + 1)
     }
+    if (previous !== conversationId && draftPromotedTo.current !== conversationId) draftPromotedTo.current = null
     previousConversationId.current = conversationId
     setDiscussionSendMode('join')
   }, [conversationId, setComposer, setInputParts])
@@ -572,6 +586,8 @@ function ConversationSurfaceContent({
     setDiscussionDetails({})
     detailVersions.current.clear()
     setQueued([])
+    setLiveChoice(null)
+    setLiveDeliveries([])
     fetchedTurns.current.clear()
     referencesAttachedRef.current = false
     loadMessages()
@@ -657,6 +673,9 @@ function ConversationSurfaceContent({
   })) ?? []
   const participantAgents=roomAgents.filter(agent=>!participantAgentIds||participantAgentIds.includes(agent.id))
   const labelAgents = [...roomAgents, ...agents.filter(agent => !roomAgents.some(item => item.id === agent.id))]
+  // Read at send time only, for naming the Agent an addition went to.
+  const labelAgentsRef = useRef(labelAgents)
+  labelAgentsRef.current = labelAgents
   // Who is speaking in a turn that has no reply yet: the Run record names
   // the Agent, the roster names it for people. Unknown until the Run has
   // been read once, which the refresh after a send does.
@@ -775,14 +794,23 @@ function ConversationSurfaceContent({
   const activeDiscussion = Object.values(discussions).find(item =>
     item.session_id === conversationId && item.status === 'active') ?? null
 
-  const sendMessage = useCallback(async (confirmDisclosure?: string[]) => {
-    const text = composer.text.trim()
+  const sendMessage = useCallback(async (confirmDisclosure?: string[], liveTarget: RoomLiveTarget | null = 'auto', chosen?: RoomLiveInputCandidate) => {
+    const text = withPastedText(composer.text, pastedText)
     if (!conversationId || sendingRef.current || savingSettings > 0 || !executionReady) return
+    // A Run the person chose is only ever the target of this exact text-only draft. If the draft now
+    // carries what a running turn cannot take, the choice is refused, never turned into an ordinary send.
+    const explicitTarget = typeof liveTarget === 'object' && liveTarget !== null
+    if (explicitTarget && (inputParts.length > 0 || implicitInputResource || references?.length || focusRefs?.length
+      || (activeDiscussion && discussionSendMode === 'join'))) {
+      setLiveChoice({ candidates: [], unavailable: true })
+      return
+    }
     if (!settingsDraft.beforeSend()) return
     const route = roomMessageRoute(composer, managerAgentId)
     const routingMode = route.routing_mode
     const segments = route.recipient_segments
-      .map(segment => ({ recipient_agent_ids: uniqueIds(segment.recipient_agent_ids), content: segment.content.trim() }))
+      .map((segment, index, all) => ({ recipient_agent_ids: uniqueIds(segment.recipient_agent_ids),
+        content: withPastedText(segment.content, index === all.length - 1 ? pastedText : '') }))
       .filter(segment => segment.recipient_agent_ids.length > 0 && (segment.content || inputParts.length > 0 || implicitInputResource))
     const recipientAgentIds = uniqueIds(
       routingMode === 'agent_coordination' || segments.length === 0
@@ -812,7 +840,7 @@ function ConversationSurfaceContent({
         if (scope.signal?.aborted) return
         referencesAttachedRef.current = true
       }
-      const dispatched = await roomsApi.sendMessage(roomId, conversationId, {
+      const request = {
         content: text,
         ...(activeDiscussion && discussionSendMode === 'join' ? { discussion_id: activeDiscussion.id } : {}),
         ...(effectiveInputParts.length > 0 ? { input_parts: effectiveInputParts } : {}),
@@ -834,12 +862,36 @@ function ConversationSurfaceContent({
         // it and is sent when it ends. Attachments are claimed at send, so a
         // message with any is sent now or refused.
         ...(effectiveInputParts.length === 0 ? { queue: true } : {}),
-      }, scope)
+      }
+      // Text the route's one active Run can take goes into it; the server decides and refuses to guess.
+      // Anything a running turn cannot carry keeps its ordinary meaning.
+      const live = liveTarget && effectiveInputParts.length === 0 && !references?.length && !focusRefs?.length
+        && !(activeDiscussion && discussionSendMode === 'join') ? liveTarget : null
+      const body = { ...request, ...(live ? { live_target: live } : {}) }
+      const fingerprint = JSON.stringify([scope.spaceId, roomId, conversationId, body])
+      const idempotencyKey = sendKeyRef.current?.fingerprint === fingerprint ? sendKeyRef.current.key : crypto.randomUUID()
+      sendKeyRef.current = { fingerprint, key: idempotencyKey }
+      const dispatched = await roomsApi.sendMessage(roomId, conversationId, body, { ...scope, idempotencyKey })
+      sendKeyRef.current = null
       if (scope.signal?.aborted) return
-      if ('queued' in dispatched) {
+      setLiveChoice(null)
+      if ('live' in dispatched) {
+        watchRuns([dispatched.live.run_id])
+        setMessages(current => uniqueMessages([...current, dispatched.message]))
+        const agentId = chosen?.agent_id ?? recipientAgentIds[0]
+        const agentName = chosen?.agent_name
+          ?? detail?.agent_members.find(member => member.agent_id === agentId)?.agent_name
+          ?? labelAgentsRef.current.find(agent => agent.id === agentId)?.name ?? null
+        setLiveDeliveries(current => [...current.filter(item => item.message_id !== dispatched.live.message_id), {
+          ...dispatched.live, agent_name: agentName, excerpt: liveExcerpt(text),
+          request: { ...request, input_parts: undefined }, recipient_agent_ids: recipientAgentIds,
+        }])
+      } else if ('queued' in dispatched) {
         // A poll already in flight read the list before this message joined it.
         requestSequence.current += 1
-        setQueued(current => [...current.filter(item => item.id !== dispatched.queued.id), dispatched.queued])
+        const queued = dispatched.queued
+        if (queued) setQueued(current => [...current.filter(item => item.id !== queued.id), queued])
+        else void loadMessages().catch(() => undefined)
       } else {
         watchRuns(dispatched.run_ids)
         setMessages(current => uniqueMessages([...current, dispatched.message]))
@@ -849,14 +901,29 @@ function ConversationSurfaceContent({
       }
       onSentRef.current?.()
       clearConversationDraft(draftDestination)
-      clearConversationDraft(`room:${roomId}:new`)
+      if (draftPromotedTo.current === conversationId) {
+        clearConversationDraft(`room:${roomId}:new`)
+        draftPromotedTo.current = null
+      }
+      setPastedText('')
       setResetToken(value => value + 1)
     } catch (error) {
+      // A refusal the server answered settles this attempt: nothing was recorded, so the next is new.
+      if (roomSendWasRefused(error)) sendKeyRef.current = null
       // The one refusal the person can answer. Held rather than reported: the
       // dialog names who would gain access and re-sends with their ids, and
       // the composer keeps what was typed so nothing is lost either way.
       if (error instanceof ApiRequestError && error.code === 'reference_disclosure_confirmation_required') {
         setDisclosure(disclosureRequestFrom(error))
+        return
+      }
+      // Several active Runs could take it, or the chosen one no longer can, and nothing was recorded or
+      // sent: the draft stays while the person chooses again or sends it as a new message.
+      if (error instanceof ApiRequestError && (error.code === ROOM_LIVE_INPUT_CHOICE_REQUIRED || error.code === ROOM_LIVE_INPUT_TARGET_UNAVAILABLE)) {
+        const candidates = Array.isArray(error.payload?.candidates) ? error.payload.candidates as RoomLiveInputCandidate[] : []
+        const unavailable = error.code === ROOM_LIVE_INPUT_TARGET_UNAVAILABLE
+        setLiveChoice(candidates.length > 0 || unavailable ? { candidates, unavailable } : null)
+        if (candidates.length === 0 && !unavailable) toast.error(errMsg(error))
         return
       }
       // A pick the server will never accept — a thread with no summary yet,
@@ -878,7 +945,63 @@ function ConversationSurfaceContent({
       sendingRef.current = false
       setSending(false)
     }
-  }, [activeDiscussion, composer, configuredBackendsFor, conversationId, discussionSendMode, executionReady, focusRefs, implicitInputResource, inputParts, managerAgentId, onReferencesRejected, references, roomId, variant, watchRuns, scope, savingSettings])
+  }, [activeDiscussion, composer, configuredBackendsFor, conversationId, discussionSendMode, executionReady, focusRefs, implicitInputResource, inputParts, pastedText, setPastedText, loadMessages, managerAgentId, onReferencesRejected, references, detail?.agent_members, roomId, variant, watchRuns, scope, savingSettings])
+
+  // A changed draft is a different send: a pending choice no longer applies to it. Everything that
+  // decides whether and where the text could go counts — its words, route, attachments, references,
+  // focus and discussion — so a stale choice can never be applied to a different message.
+  const liveChoiceKey = JSON.stringify([
+    composer.text.trim(), pastedText, composerRoute, inputParts.length, Boolean(implicitInputResource),
+    references?.length ?? 0, focusRefs ?? null, activeDiscussion?.id ?? null, discussionSendMode,
+  ])
+  useEffect(() => { setLiveChoice(null) }, [liveChoiceKey])
+
+  const updateLiveDelivery = useCallback((messageId: string, state: RoomLiveDelivery['state']) => {
+    setLiveDeliveries(current => current.map(item => item.message_id === messageId ? { ...item, state } : item))
+  }, [])
+  const dismissLiveDelivery = useCallback((messageId: string) => {
+    setLiveDeliveries(current => current.filter(item => item.message_id !== messageId))
+  }, [])
+  // Only a definitely undelivered addition is offered again, and only as the person's own new message.
+  // It is a send like any other: one at a time, only when the conversation can send, with the
+  // conversation's current backends, and with one key per addition so a lost result is not sent twice.
+  const resendLiveDelivery = useCallback(async (messageId: string) => {
+    const entry = liveDeliveries.find(item => item.message_id === messageId)
+    if (!entry || entry.state !== 'not_injected' || !conversationId) return
+    if (sendingRef.current || savingSettings > 0 || !executionReady || !settingsDraft.beforeSend()) return
+    sendingRef.current = true
+    setSending(true)
+    const attempt = entry.resendAttempt ?? {
+      key: crypto.randomUUID(),
+      body: { ...entry.request, backends: configuredBackendsFor(entry.recipient_agent_ids) },
+    }
+    setLiveDeliveries(current => current.map(item => item.message_id === messageId ? { ...item, resendAttempt: attempt } : item))
+    try {
+      const dispatched = await roomsApi.sendMessage(roomId, conversationId, attempt.body, { ...scope, idempotencyKey: attempt.key })
+      if (scope.signal?.aborted) return
+      if ('queued' in dispatched) {
+        requestSequence.current += 1
+        const queued = dispatched.queued
+        if (queued) setQueued(current => [...current.filter(item => item.id !== queued.id), queued])
+        else void loadMessages().catch(() => undefined)
+      } else if (!('live' in dispatched)) {
+        watchRuns(dispatched.run_ids)
+        setMessages(current => uniqueMessages([...current, dispatched.message]))
+        if (dispatched.conversation?.id === conversationId) conversationUpdatedRef.current?.(dispatched.conversation)
+      }
+      onSentRef.current?.()
+      void scrolling.scrollToBottom()
+      dismissLiveDelivery(messageId)
+    } catch (error) {
+      if (roomSendWasRefused(error)) {
+        setLiveDeliveries(current => current.map(item => item.message_id === messageId ? { ...item, resendAttempt: undefined } : item))
+      }
+      toast.error(errMsg(error))
+    } finally {
+      sendingRef.current = false
+      setSending(false)
+    }
+  }, [configuredBackendsFor, conversationId, dismissLiveDelivery, executionReady, liveDeliveries, loadMessages, roomId, savingSettings, scope, scrolling, settingsDraft, watchRuns])
 
   // A decision made here continues the conversation here.
   const continueAfterDecision = useCallback(async (preview: ChatActionPreview, action: ActionDecision) => {
@@ -1137,7 +1260,8 @@ function ConversationSurfaceContent({
     )
   }
 
-  const settingsLocked = scope.actionRole === 'worker' || scope.actionRole === 'viewer' || sending || Object.values(runs).some(run => run.status === 'running')
+  const settingsLocked = scope.actionRole === 'worker' || scope.actionRole === 'viewer' || sending
+  const executionActive = Object.values(runs).some(run => run.status === 'running')
   const agentConfigurations = settingsDraft.configure(participantAgents.map(agent => {
     const catalog = backendCatalogs[agent.id]
     const backend = catalog?.binding ?? catalog?.options.find(option => option.usable !== false)
@@ -1324,7 +1448,18 @@ function ConversationSurfaceContent({
         />
         <ConversationCollaborationLine roomId={roomId} conversationId={conversationId} scope={scope}
           changeSignals={[messages.length, settledRunCount]} readOnly={readOnly} />
+        <RoomLiveInputStatus deliveries={liveDeliveries} scope={scope} onState={updateLiveDelivery}
+          disabled={sending || savingSettings > 0 || !executionReady}
+          onDismiss={dismissLiveDelivery} onResend={resendLiveDelivery} />
+        {liveChoice && (
+          <RoomLiveInputChoice candidates={liveChoice.candidates} unavailable={liveChoice.unavailable}
+            disabled={sending || savingSettings > 0 || !executionReady}
+            onChoose={candidate => void sendMessage(undefined, { run_id: candidate.run_id }, candidate)}
+            onOrdinary={() => void sendMessage(undefined, null)}
+            onDismiss={() => setLiveChoice(null)} />
+        )}
         <ConversationComposer
+          pastedText={pastedText} onPastedTextChange={setPastedText}
           renderInputReferences={false}
           editor={<RoomMessageComposer
             value={composer}
@@ -1375,13 +1510,20 @@ function ConversationSurfaceContent({
                 </Button>
               )}
               {isValidElement<ConversationExecutionPreflightProps>(executionPreflight)
-                ? cloneElement(executionPreflight, { agentConfigurations, disabled: settingsLocked, settingsOpen: settingsDraft.open, onSettingsOpenChange: settingsDraft.onOpenChange })
-                : <ConversationAgentSessionConfigs agents={agentConfigurations} open={settingsDraft.open} onOpenChange={settingsDraft.onOpenChange} disabled={settingsLocked} />}
+                ? cloneElement(executionPreflight, {
+                    agentConfigurations, disabled: settingsLocked, executionActive, settingsOpen: settingsDraft.open,
+                    onSettingsOpenChange: settingsDraft.onOpenChange,
+                    onConversationCreated: conversation => {
+                      draftPromotedTo.current = conversation.id
+                      executionPreflight.props.onConversationCreated?.(conversation)
+                    },
+                  })
+                : <ConversationAgentSessionConfigs agents={agentConfigurations} open={settingsDraft.open} onOpenChange={settingsDraft.onOpenChange} disabled={settingsLocked} executionActive={executionActive} />}
             </>
           )}
           note={!executionReady ? t('conversation_ui.surface.configure_first') : undefined}
           sending={sending}
-          sendDisabled={sending || savingSettings > 0 || !executionReady || (!composer.text.trim() && inputParts.length === 0 && !implicitInputResource)}
+          sendDisabled={sending || savingSettings > 0 || !executionReady || (!composer.text.trim() && !pastedText.trim() && inputParts.length === 0 && !implicitInputResource)}
           onSend={() => void sendMessage()}
           inputParts={inputParts}
           onInputPartsChange={setInputParts}
@@ -1549,7 +1691,10 @@ function RoomAgentTurn({ runId, turn, agentName, delegatedBy, run, projectId, on
   onRetry?: (runId: string) => Promise<void>
 }) {
   const { t } = useAppTranslation()
-  const waiting = !run || run.status === 'queued' || run.status === 'waiting_for_dependency'
+  const waitingForAgents = run?.status === 'waiting_for_dependency'
+  const waiting = !run || run.status === 'queued' || waitingForAgents
+  const hasWork = run?.started_at && turn?.parts.some(part => part.type !== 'reasoning' && part.type !== 'action_preview'
+    && (part.type !== 'text' || Boolean(part.text.trim())))
   return (
     <div className="group flex w-full justify-start pr-6" data-role="agent" data-testid={`turn-${runId}`}>
       <div className="w-full min-w-0">
@@ -1558,11 +1703,23 @@ function RoomAgentTurn({ runId, turn, agentName, delegatedBy, run, projectId, on
           <span className="truncate">{agentName ?? t('conversation_ui.surface.agent')}</span>
           {delegatedBy && <span className="shrink-0 font-normal">{t('conversation_ui.surface.delegated_by', { name: delegatedBy })}</span>}
         </div>
-        {waiting
-          ? <p className="text-sm text-muted-foreground">{run?.status === 'waiting_for_dependency' ? t('conversation_ui.surface.waiting_previous') : run?.status === 'queued' ? t(queuedRunLabel(turn)) : t('conversation_ui.surface.checking')}</p>
-          : turn
-            ? <ConversationTurn turn={turn} runHref={`/runs/${runId}`} className="max-w-none" />
-            : <p className="text-sm text-muted-foreground">{run && ['failed', 'succeeded', 'degraded', 'cancelled', 'orphaned'].includes(run.status) ? t('conversation_ui.surface.loading_result') : t('conversation_ui.surface.starting')}</p>}
+        {waiting && <p className="text-sm text-muted-foreground">
+          {waitingForAgents ? t(hasWork ? 'conversation_ui.surface.waiting_agents' : 'conversation_ui.surface.waiting_previous')
+            : run?.status === 'queued' ? t(queuedRunLabel(turn)) : t('conversation_ui.surface.checking')}
+        </p>}
+        {waitingForAgents && turn && hasWork && (
+          <details className="mt-1">
+            <summary data-conversation-disclosure className="w-fit cursor-pointer rounded px-1.5 py-1 text-xs text-muted-foreground hover:text-foreground">
+              {t('conversation_ui.surface.work_before_wait')}
+            </summary>
+            <div className="mt-1">
+              <ConversationTurn turn={turn} runHref={`/runs/${runId}`} className="max-w-none" paused />
+            </div>
+          </details>
+        )}
+        {!waiting && (turn
+          ? <ConversationTurn turn={turn} runHref={`/runs/${runId}`} className="max-w-none" />
+          : <p className="text-sm text-muted-foreground">{['failed', 'succeeded', 'degraded', 'cancelled', 'orphaned'].includes(run.status) ? t('conversation_ui.surface.loading_result') : t('conversation_ui.surface.starting')}</p>)}
         {run && <ConversationRunControls runId={runId} run={run} projectId={projectId} onRetry={onRetry} showStatus={false} workspaceSummary={false} />}
       </div>
     </div>
@@ -1603,6 +1760,32 @@ function ProposalContinuationStatus({ continuation, turns }: {
  * with Cancel for its sender — or one that could not be posted, with the
  * reason and Dismiss.
  */
+/** What an undelivered addition is re-sent as: the same ordinary message, never a live input again. */
+type LiveResendRequest = Omit<Parameters<typeof roomsApi.sendMessage>[2], 'live_target'>
+
+/** An addition this composer made, with what is needed to send it again as an ordinary message. */
+type LiveDeliveryEntry = RoomLiveDelivery & {
+  request: LiveResendRequest
+  recipient_agent_ids: string[]
+  resendAttempt?: { key: string; body: LiveResendRequest }
+}
+
+function roomSendWasRefused(error: unknown): boolean {
+  if (!(error instanceof ApiRequestError)) return false
+  // Only refusals that establish the command wrote nothing let the next attempt start fresh.
+  return error.status === 422 && error.code === 'operation_invalid_input'
+    || error.status === 429 && error.code === 'operation_limit_exceeded'
+    || error.status === 409 && (error.code === 'operation_conflict'
+      || error.code === ROOM_LIVE_INPUT_CHOICE_REQUIRED || error.code === ROOM_LIVE_INPUT_TARGET_UNAVAILABLE
+      || error.code === 'reference_disclosure_confirmation_required')
+}
+
+/** The start of an addition's text, shown beside its delivery state. */
+function liveExcerpt(text: string): string {
+  const line = text.replace(/\s+/g, ' ').trim()
+  return line.length > 80 ? `${line.slice(0, 79)}…` : line
+}
+
 function QueuedMessageCard({ message, author, canWithdraw, onWithdraw }: {
   message: QueuedRoomMessage
   author: string

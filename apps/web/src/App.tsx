@@ -1,43 +1,22 @@
 import { lazy, Suspense } from 'react'
-import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom'
+import { createBrowserRouter, createRoutesFromElements, RouterProvider, Outlet, Route, Navigate, useLocation } from 'react-router-dom'
 import { SpaceProvider } from './contexts/SpaceContext'
 import { AuthProvider } from './contexts/AuthContext'
 import { ThemeProvider } from './contexts/ThemeContext'
-import { TooltipProvider } from './components/ui/tooltip'
-import Shell from './core/Shell'
+import { UpdateNotAppliedNotice } from './core/UpdateNotAppliedNotice'
 import ErrorBoundary from './core/ErrorBoundary'
-import { MODULE_REGISTRY, type Module } from './modules/registry'
-import { Skeleton } from './components/ui/skeleton'
+import { PageLoader } from './core/SuspensePage'
 import LoginPage from './pages/LoginPage'
 import AcceptInvitationPage from './pages/AcceptInvitationPage'
 import RegistrationPage from './pages/RegistrationPage'
-import SecurityPage from './pages/SecurityPage'
-import GmailCallbackLanding from './modules/sources/gmail/GmailCallbackLanding'
 import ResetPasswordPage from './pages/ResetPasswordPage'
 import { useAuth } from './contexts/AuthContext'
-import { RequireInstanceAdmin, RequireSpaceAdmin } from './core/RequireRole'
+import { loadAuthenticatedApp } from './core/loadAuthenticatedApp'
 import './i18n'
 
-const HomePage = lazy(() => import('./modules/home/HomePage'))
-
-function PageLoader() {
-  return (
-    <div className="space-y-3 p-6">
-      <Skeleton className="h-32 w-full" />
-      <Skeleton className="h-48 w-full" />
-    </div>
-  )
-}
-
-function SuspensePage({ children }: { children: React.ReactNode }) {
-  return (
-    <ErrorBoundary>
-      <Suspense fallback={<PageLoader />}>
-        {children}
-      </Suspense>
-    </ErrorBoundary>
-  )
-}
+// The Shell and every signed-in route. Kept out of the boot chunk so the
+// sign-in screen, its offline copy and the worker's precache stay small.
+const AuthenticatedApp = lazy(loadAuthenticatedApp)
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { currentUser, isLoading } = useAuth()
@@ -53,65 +32,43 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
   return <>{children}</>
 }
 
-/** A registered module rendered as a route element. */
-function moduleRoute({ path, component: Page, hasSubRoutes, requiresSpaceAdmin, requiresInstanceAdmin }: Module) {
-  const routePath = hasSubRoutes ? path.replace(/^\//, '') + '/*' : path.replace(/^\//, '')
-  let page = <SuspensePage><Page /></SuspensePage>
-  if (requiresInstanceAdmin) page = <RequireInstanceAdmin>{page}</RequireInstanceAdmin>
-  else if (requiresSpaceAdmin) page = <RequireSpaceAdmin>{page}</RequireSpaceAdmin>
+// One boundary that is already on screen: signing in navigates in a
+// transition, so the sign-in page stays until the signed-in chunk is ready
+// instead of committing a second loading fallback (and React's reveal delay)
+// before the destination page's own.
+function SpaceRoutes() {
   return (
-    <Route
-      key={path}
-      path={routePath}
-      element={page}
-    />
+    <SpaceProvider>
+      <Suspense fallback={<PageLoader />}>
+        <Outlet />
+      </Suspense>
+    </SpaceProvider>
   )
 }
 
-// Space-scoped modules live under /spaces/:spaceId/…; neutral system surfaces stay top-level.
-const SPACE_MODULES = MODULE_REGISTRY.filter(m => m.perspectiveType === 'space-scoped')
-const TOP_LEVEL_MODULES = MODULE_REGISTRY.filter(m => m.perspectiveType !== 'space-scoped')
+const routes = createRoutesFromElements(
+  <Route element={<SpaceRoutes />}>
+    {/* Public routes stay outside the Shell. */}
+    <Route path="/login" element={<LoginPage />} />
+    <Route path="/register" element={<RegistrationPage />} />
+    <Route path="/invitations/claim" element={<AcceptInvitationPage />} />
+    <Route path="/reset-password" element={<ResetPasswordPage />} />
+
+    {/* AuthenticatedApp matches the rest with its own descendant routes. */}
+    <Route path="*" element={<RequireAuth><ErrorBoundary><AuthenticatedApp /></ErrorBoundary></RequireAuth>} />
+  </Route>,
+)
+
+let browserRouter: ReturnType<typeof createBrowserRouter> | undefined
 
 export default function App() {
+  const router = browserRouter ??= createBrowserRouter(routes, { future: { v7_relativeSplatPath: true } })
   return (
     <ThemeProvider>
-    <AuthProvider>
-      <BrowserRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
-        <SpaceProvider>
-          <TooltipProvider delayDuration={400}>
-            <Routes>
-              {/* Public routes — outside Shell */}
-              <Route path="/login" element={<LoginPage />} />
-              <Route path="/register" element={<RegistrationPage />} />
-              <Route path="/invitations/claim" element={<AcceptInvitationPage />} />
-              <Route path="/reset-password" element={<ResetPasswordPage />} />
-
-              <Route path="/" element={<RequireAuth><Shell /></RequireAuth>}>
-                {/* Default landing → user-scoped Home (not a Space) */}
-                <Route index element={<Navigate to="/home" replace />} />
-                <Route path="home" element={<SuspensePage><HomePage /></SuspensePage>} />
-
-                {/* Neutral, user-level system surfaces — never carry a Space in the URL. */}
-                {TOP_LEVEL_MODULES.map(moduleRoute)}
-                <Route path="settings/security" element={<SecurityPage />} />
-                {/* The Gmail OAuth callback's fixed landing; forwards to the Space's Access page. */}
-                <Route path="sources" element={<GmailCallbackLanding />} />
-
-                {/* Space-scoped workspace — every module here operates on the URL's Space. */}
-                <Route path="spaces/:spaceId">
-                  {/* ADR 0016 D11: the control center is the default home for a Space. */}
-                  <Route index element={<Navigate to="command-center" replace />} />
-                  {SPACE_MODULES.map(moduleRoute)}
-                </Route>
-
-                {/* Unknown paths fall back to Home. */}
-                <Route path="*" element={<Navigate to="/home" replace />} />
-              </Route>
-            </Routes>
-          </TooltipProvider>
-        </SpaceProvider>
-      </BrowserRouter>
-    </AuthProvider>
+      <AuthProvider>
+        <RouterProvider router={router} future={{ v7_startTransition: true }} />
+        <UpdateNotAppliedNotice />
+      </AuthProvider>
     </ThemeProvider>
   )
 }

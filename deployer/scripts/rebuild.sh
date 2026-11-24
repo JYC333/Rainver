@@ -46,6 +46,9 @@ if [[ ! -f "$REPO_ROOT/server/Dockerfile" ]]; then
     echo "       Build on the host instead: ops/scripts/start.sh --$MODE --build" >&2
     exit 1
 fi
+source "$REPO_ROOT/ops/scripts/lib/local-compose.sh"
+MODE_ROOT="$INSTANCE_ROOT"
+local_compose_lock_instance "rebuilding Rainver"
 echo "[rebuild] building $API_SERVICE and $FRONTEND_SERVICE images..."
 RAINVER_MODE_ROOT="$HOST_MODE_ROOT" "${COMPOSE[@]}" build "$API_SERVICE" "$FRONTEND_SERVICE"
 

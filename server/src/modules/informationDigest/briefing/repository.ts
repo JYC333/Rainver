@@ -75,7 +75,7 @@ export class PgBriefingRepository {
   constructor(private readonly db: Queryable) {}
 
   /** Serializes every version decision of one scope (creation, retry, ordering). */
-  async lockScope(scope: BriefingScope): Promise<void> {
+  async lockScope(scope: Pick<BriefingScope, "spaceId" | "key">): Promise<void> {
     await this.db.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [`information-briefing:${scope.spaceId}:${scope.key}`]);
   }
 

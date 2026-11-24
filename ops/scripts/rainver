@@ -61,6 +61,7 @@ local_compose_init prod
 case "$command_name" in
   start)
     [[ $# -eq 0 ]] || die "start takes no arguments"
+    local_compose_lock_instance "starting Rainver"
     for service in postgres server frontend sandbox-runner deployer; do
       [[ -n "$("${COMPOSE[@]}" ps -aq "$service")" ]] || die "$service container is absent; run rainver update to install the stack"
     done
@@ -68,6 +69,7 @@ case "$command_name" in
     ;;
   stop)
     [[ $# -eq 0 ]] || die "stop takes no arguments"
+    local_compose_lock_instance "stopping Rainver"
     exec "${COMPOSE[@]}" stop
     ;;
   restart)
@@ -75,6 +77,7 @@ case "$command_name" in
     if [[ $# -eq 1 ]]; then
       service_allowed "$1" || die "unknown service: $1"
     fi
+    local_compose_lock_instance "restarting Rainver"
     exec "${COMPOSE[@]}" restart "$@"
     ;;
   status)

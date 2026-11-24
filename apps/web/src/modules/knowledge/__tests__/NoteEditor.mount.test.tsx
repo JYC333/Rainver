@@ -60,7 +60,7 @@ vi.mock('../../../components/editor', async () => {
 })
 
 import NoteEditor from '../NoteEditor'
-import { inquiryApi, focusAreasApi, notesApi } from '../../../api/client'
+import { ApiRequestError, inquiryApi, focusAreasApi, notesApi } from '../../../api/client'
 import { publishNoteChanged } from '../../../core/noteEvents'
 import type { Note } from '../../../types/api'
 
@@ -218,6 +218,21 @@ describe('NoteEditor picks up an external write', () => {
     publishNoteChanged({ noteId: 'note-1', projectId: null, reason: 'capture' })
 
     expect(await screen.findByDisplayValue('Portable note (+ capture)')).toBeInTheDocument()
+  })
+
+  it('removes the displayed note when revalidation confirms access was revoked', async () => {
+    vi.mocked(notesApi.get)
+      .mockResolvedValueOnce(makeNote())
+      .mockRejectedValueOnce(Object.assign(new ApiRequestError('Forbidden', 403), { status: 403 }))
+
+    render(
+      <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+        <NoteEditor noteId="note-1" onNoteResolved={vi.fn()} />
+      </MemoryRouter>,
+    )
+    await screen.findByDisplayValue('Portable note')
+    publishNoteChanged({ noteId: 'note-1', projectId: null, reason: 'capture' })
+    await waitFor(() => expect(screen.queryByDisplayValue('Portable note')).toBeNull())
   })
 
   it('ignores a write to some other note, so one capture refetches one editor', async () => {

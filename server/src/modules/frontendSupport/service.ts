@@ -1,4 +1,5 @@
 import type { ServerConfig } from "../../config.js";
+import { proposalChosenOnCardSql } from "../proposals/cardChoice.js";
 import { dbPool, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 import { artifactReadSql, contentOwnerOnlySql, proposalReadSql, runReadSql } from "../access/contentAccessSql.js";
 import { sourceItemReadableClause } from "../sources/sourceItemAccess.js";
@@ -302,6 +303,7 @@ export class PgFrontendSupportService {
           created_by_run_id: string | null;
           visibility: string;
           awaiting_revision: boolean;
+          chosen_on_card: boolean;
           title_payload: Record<string, unknown> | null;
         }> }
       : await this.db.query<{
@@ -317,6 +319,7 @@ export class PgFrontendSupportService {
           created_by_run_id: string | null;
           visibility: string;
           awaiting_revision: boolean;
+          chosen_on_card: boolean;
           title_payload: Record<string, unknown> | null;
         }>(
           `SELECT p.id, p.title, p.proposal_type, p.status, p.risk_level,
@@ -327,6 +330,7 @@ export class PgFrontendSupportService {
                   (p.proposal_type = 'memory_update'
                     AND p.payload_json->>'requires_operator_edit' = 'true'
                     AND p.payload_json->'operator_edit'->>'edited_by_user_id' IS NULL) AS awaiting_revision,
+                  ${proposalChosenOnCardSql("p")} AS chosen_on_card,
                   ${proposalTitlePayloadSql("p")}
              FROM proposals p
              LEFT JOIN runs run_for_instructed
@@ -359,6 +363,7 @@ export class PgFrontendSupportService {
           created_by_run_id: row.created_by_run_id,
           visibility: row.visibility,
           awaiting_revision: Boolean(row.awaiting_revision),
+          chosen_on_card: Boolean(row.chosen_on_card),
         };
       }),
     };

@@ -84,10 +84,8 @@ then refuse.
 ### Effective trust
 
 Effective trust is a property of the execution target the Profile is bound to,
-not of the runtime registry. Current ACP Host-daemon dispatch does not apply
-a vendor subagent-deny declaration, so a declaration that a
-vendor supports a restriction is not proof that this Run received it, and no
-runtime declaration raises a candidate.
+not of the runtime registry. The CLI governs native subagent availability,
+and runtime capability declarations do not raise a candidate’s trust.
 
 | Execution target | Effective trust |
 |---|---|

@@ -6,6 +6,7 @@ export interface Application {
   source: { label: string | null; url: string | null } | null; archived: boolean; revision: number; updated_at: string;
   next_deadline: { kind: string; label: string | null; due_on: string } | null; deadlines: number; materials: { done: number; total: number };
   funding_ids: string[]; applies_to: string[];
+  owned_by_caller?: boolean;
 }
 export interface Detail {
   application: Application & { notes: string | null; created_at: string };

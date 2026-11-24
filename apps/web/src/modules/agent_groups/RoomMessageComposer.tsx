@@ -1,6 +1,7 @@
 import { ComposerSuggestions } from '../conversation/ComposerSuggestions'
 import { skillReferenceRanges, SkillMenuEmptyHint, useAvailableSkills } from '../conversation/conversationSkills'
 import { useAppTranslation } from '../../i18n'
+import { fileReferenceBody } from '../conversation/fileReferenceBody'
 import type { ConversationInputSkillPart } from '@rainver/protocol'
 import { useConversationScope } from '../conversation/ConversationScope'
 import { useEffect, useMemo, useRef, useState } from 'react'
@@ -593,11 +594,10 @@ export function RoomMessageComposer({
     try {
       const content = await projectFoldersApi.file(projectId, file.projectFolderId, file.path, scope)
       if (scope.signal?.aborted) return
-      const bytes = new TextEncoder().encode(content.content)
-      if (bytes.byteLength > CONVERSATION_MAX_FILE_SNAPSHOT_BYTES) throw new Error('file is too large to reference')
-      // The server admits the decoded body it freezes, so the digest is the
-      // body's: `content.sha256` hashes the bytes on disk, a BOM included.
-      const sha256 = await digestHex(bytes)
+      const snapshot = await fileReferenceBody(content, {
+        encoding: t('conversation_ui.input.file_not_utf8'),
+        size: t('conversation_ui.input.file_too_large_error', { max: CONVERSATION_MAX_FILE_SNAPSHOT_BYTES }),
+      })
       if (scope.signal?.aborted) return
       const part: ConversationInputFileReferencePart = {
         kind: 'file_reference',
@@ -606,8 +606,7 @@ export function RoomMessageComposer({
         relative_path: content.path,
         display_name: file.name,
         media_type: 'text/plain',
-        byte_size: bytes.byteLength,
-        sha256,
+        ...snapshot,
       }
       const currentRange = mentionRangeRef.current
       if (!currentRange || currentRange.from !== range.from || currentRange.to !== range.to) {
@@ -720,7 +719,7 @@ export function RoomMessageComposer({
             Message...
           </div>
         )}
-        <EditorContent editor={editor} />
+        <EditorContent editor={editor} className="[&_.tiptap]:max-h-[min(30dvh,10rem)] [&_.tiptap]:overflow-y-auto [&_.tiptap]:break-words" />
         {mentionRange && (
           <ComposerSuggestions anchorRef={suggestionAnchor} onDismiss={() => updateMentionRange(null)}>
             <div className="border-b border-border px-2 py-1 text-[11px] font-medium text-muted-foreground">{mentionRange.trigger === '/' ? t('skill_packages.invoke') : '@ · Agents · Files · Skills'}</div>
@@ -886,11 +885,6 @@ function flattenFileTree(root: FileNode | null, source: ConversationInputFileSou
   }
   visit(root)
   return files
-}
-
-async function digestHex(bytes: Uint8Array): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', bytes.buffer as ArrayBuffer)
-  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')
 }
 
 function docFromText(text: string, roster: Array<{ agent_id: string; label: string }>): JSONContent {

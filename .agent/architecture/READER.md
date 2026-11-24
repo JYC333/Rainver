@@ -175,6 +175,15 @@ navigation, metadata, and domain actions.
   surroundings are identical within the windows is unlocated in another
   version, never placed on the other occurrence. Existing anchors are not
   rewritten.
+- Text index reuse: placement and anchor creation share one text index (the
+  position map and its whitespace-collapsed text) per ProseMirror document
+  object, held in a `WeakMap`. The Reader keeps the same immutable `doc` until it
+  shows other content, so the object is the version: a drag, which fires one
+  selection update per pointer move, and every placement pass of that version
+  reuse it, and a new version always builds its own. The collapsed normalized
+  text is cached by its exact string. Repeated-quote context is compared in
+  place rather than by copying the text before each occurrence; the rules
+  above are unchanged.
 - Selection toolbar: positioned against the visual viewport, preferring below
   the selection on coarse pointers (native copy menus sit above), re-measured on
   scroll/zoom/resize and docked when no side leaves the selection uncovered. A
@@ -309,7 +318,9 @@ features over the unified Reading list (source items only).
   with an explicit retry of the same write — measurement, its time, dwell and
   reset — reported like the original action (a retried reset says whether it
   was set); a pending failed reset is not replaced by a later ordinary
-  failure, and the next stop also retries ordinary reports.
+  failure, and the next stop also retries ordinary reports. A superseded
+  report shows that a newer position was saved. A stale document version
+  asks the person to reopen the document and stops reporting from that version.
   A failed load (not a refusal) shows an error with retry, and nothing is
   saved until the position has loaded. Reports go 1.5 s after scrolling stops,
   again after the dwell, and on `pagehide` / hidden tab / leaving the document
@@ -382,6 +393,15 @@ features over the unified Reading list (source items only).
   budget also warns; memory and functional assertions still fail.
   Decorations are rebuilt only when the document or what they show changes,
   not on selection changes.
+  A second case measures selection, placement and annotation on the same
+  article with 200 stored anchors (unique, context-proved English and Chinese,
+  ambiguous, missing), at 1440×900 with 4× CPU throttle; budgets, declared
+  before measuring, warn only: longest main-thread task during a 40-step drag
+  ≤100 ms, pointer-up to toolbar ≤200 ms, Highlight to painted ≤500 ms, open
+  to placed annotations ≤3 s. It asserts which anchors are placed (all 160
+  provable ones, no ambiguous or missing one) and that the drag becomes one
+  annotation with context; `READER_INTERACTION_OUT` writes the timings and every
+  placement so two builds can be compared.
 
 SourceItem document reads accept `origin=project` alongside `serendipity` and the
 default `library`. Project-origin opens remain private skimmed state and do not
@@ -654,10 +674,10 @@ proposal kinds:
   bodies. A body pointer that moved after preparation is never read
   (`ReaderPreparationStale`, a 409): a range replacement reports `conflict`;
   a position write, whose access and claim checks already passed, reports
-  `not_accepted` and writes no position row (the report was not measured on the
+  `stale_document` and writes no position row (the report was not measured on the
   version the document now has). A lost
   claim writes nothing; an unknown outcome is not repeated. Results are status
-  only (`applied`, `not_accepted`, `conflict`, `invalid`, `unavailable`),
+  only (`applied`, `not_accepted`, `stale_document`, `conflict`, `invalid`, `unavailable`),
   suppressed from generic `/jobs`, and released by
   `GET /reader/write-requests/:jobId` to the requester under current document
   access. Direct pool callers may still prepare first via

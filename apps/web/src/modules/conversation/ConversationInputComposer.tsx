@@ -1,5 +1,6 @@
 import { hasSkillReference, SelectedSkillChips } from './conversationSkills'
 import { useConversationScope } from './ConversationScope'
+import { fileReferenceBody } from './fileReferenceBody'
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type DragEvent, type ClipboardEvent, type ReactNode } from 'react'
 import { FileText, ImagePlus, Loader2, Paperclip, Search, X } from 'lucide-react'
 import type {
@@ -100,6 +101,7 @@ export function useConversationInputSendGuard(): () => boolean {
  */
 export function useConversationInputDraft({
   parts = [],
+  extraAttachment,
   onPartsChange,
   projectId,
   projectFolderId,
@@ -109,6 +111,7 @@ export function useConversationInputDraft({
   resetToken = 0,
 }: {
   parts?: ConversationInputPart[]
+  extraAttachment?: ReactNode
   onPartsChange?: (parts: ConversationInputPart[]) => void
   projectId?: string | null
   projectFolderId?: string | null
@@ -337,13 +340,12 @@ export function useConversationInputDraft({
     setFileError(null)
     try {
       const content = await projectFoldersApi.file(projectId, candidate.projectFolderId, candidate.path, scope)
-      const bytes = new TextEncoder().encode(content.content)
-      if (bytes.byteLength > CONVERSATION_MAX_FILE_SNAPSHOT_BYTES) {
-        throw new Error(t('conversation_ui.input.file_too_large_error', { max: formatBytes(CONVERSATION_MAX_FILE_SNAPSHOT_BYTES) }))
-      }
-      // The server admits the decoded body it freezes, so the digest is the
-      // body's: `content.sha256` hashes the bytes on disk, a BOM included.
-      const sha256 = await digestHex(bytes)
+      if (scope.signal?.aborted) return
+      const snapshot = await fileReferenceBody(content, {
+        encoding: t('conversation_ui.input.file_not_utf8'),
+        size: t('conversation_ui.input.file_too_large_error', { max: formatBytes(CONVERSATION_MAX_FILE_SNAPSHOT_BYTES) }),
+      })
+      if (scope.signal?.aborted) return
       const part: ConversationInputFileReferencePart = {
         kind: 'file_reference',
         project_folder_id: candidate.projectFolderId,
@@ -351,8 +353,7 @@ export function useConversationInputDraft({
         relative_path: content.path,
         display_name: candidate.name,
         media_type: 'text/plain',
-        byte_size: bytes.byteLength,
-        sha256,
+        ...snapshot,
       }
       changeParts([...partsRef.current, part])
       setFileMenuOpen(false)
@@ -362,7 +363,7 @@ export function useConversationInputDraft({
     } finally {
       setFileLoadingPath(null)
     }
-  }, [changeParts, projectId, scope])
+  }, [changeParts, projectId, scope, t])
 
   const discardUpload = useCallback((upload: UploadState) => {
     removePendingUpload(upload)
@@ -379,6 +380,7 @@ export function useConversationInputDraft({
         discardUpload(upload)
         return
       }
+      void conversationInputApi.deletePendingImage(part.media_id, scope).catch(() => undefined)
     }
     changeParts(partsRef.current.filter(candidate => candidate !== part && !samePart(candidate, part)))
   }, [changeParts, discardUpload, scope])
@@ -403,8 +405,13 @@ export function useConversationInputDraft({
   }, [changeParts, removePendingUpload, resetToken, scope])
 
   useEffect(() => () => {
-    uploadsRef.current.forEach(removePendingUpload)
-  }, [removePendingUpload, scope])
+    // Completed uploads belong to the draft. Only explicit removal or reset
+    // discards pending media; expiry handles abandoned drafts.
+    for (const upload of uploadsRef.current) {
+      if (!upload.media) cancelledUploadsRef.current.add(upload.localId)
+      URL.revokeObjectURL(upload.previewUrl)
+    }
+  }, [scope])
 
   const unresolved = uploads.some(upload => !upload.media || Boolean(upload.error))
   return {
@@ -418,6 +425,7 @@ export function useConversationInputDraft({
     ),
     attachments: (
       <ConversationInputAttachments
+        extraAttachment={extraAttachment}
         parts={parts}
         uploads={uploads}
         dragging={dragging}
@@ -499,6 +507,7 @@ export function useConversationInputDraft({
 }
 
 function ConversationInputAttachments({
+  extraAttachment,
   parts,
   uploads,
   dragging,
@@ -508,6 +517,7 @@ function ConversationInputAttachments({
 }: {
   parts: ConversationInputPart[]
   uploads: UploadState[]
+  extraAttachment?: ReactNode
   dragging: boolean
   onRemove: (part: ConversationInputPart) => void
   onRemoveUpload: (upload: UploadState) => void
@@ -515,10 +525,11 @@ function ConversationInputAttachments({
 }) {
   const { t } = useAppTranslation()
   const imageParts = parts.filter((part): part is ConversationInputImagePart => part.kind === 'image')
-  if (imageParts.length === 0 && uploads.length === 0 && !dragging) return null
+  if (imageParts.length === 0 && uploads.length === 0 && !dragging && !extraAttachment) return null
   return (
-    <div className={`flex flex-wrap items-center gap-2 border-b border-border px-3 py-2 ${dragging ? 'bg-accent/50' : 'bg-muted/20'}`} aria-label={t('conversation_ui.input.image_inputs')}>
+    <div data-conversation-attachments className={`flex flex-wrap items-center gap-2 border-b border-border px-3 py-2 ${dragging ? 'bg-accent/50' : 'bg-muted/20'}`} aria-label={t('conversation_ui.input.image_inputs')}>
       {dragging && <span className="w-full text-xs text-muted-foreground">{t('conversation_ui.input.drop_images')}</span>}
+      {extraAttachment}
       {imageParts.map(part => {
         const upload = uploads.find(item => item.media?.media_id === part.media_id)
         return <ImageAttachment key={part.media_id} part={part} upload={upload} onRemove={() => onRemove(part)} />
@@ -677,9 +688,4 @@ function samePart(a: ConversationInputPart, b: ConversationInputPart): boolean {
         && a.relative_path === b.relative_path
   }
   return false
-}
-
-async function digestHex(bytes: Uint8Array): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', bytes.buffer as ArrayBuffer)
-  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')
 }

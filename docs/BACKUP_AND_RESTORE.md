@@ -12,7 +12,7 @@ There is one full-system backup concept and one full-system restore concept.
 |---|---|
 | `BackupService` (`server/src/modules/backups/service.ts`) | **Canonical full-system backup** — scheduled, on-startup, and via API. Produces a manifested archive. |
 | server scheduler registry | Runs backup ticks and exposes manual/list API operations. |
-| `ops/scripts/system/backup.sh` | App-services-stopped full-system backup — same archive format as `BackupService`, for when `frontend`, `server`, and `deployer` are stopped while postgres remains running. |
+| `ops/scripts/system/backup.sh` | App-services-stopped full-system backup — same archive format as `BackupService`, for when `frontend`, `server`, `sandbox-runner`, and `deployer` are stopped while postgres remains running. |
 | `ops/scripts/system/restore.sh` | Full-system restore — restores **both** the database and file data from one archive. |
 | `ops/scripts/db/dump.sh` | DB-only expert tool — `pg_dump` custom-format dump to `db/dumps/`. |
 | `ops/scripts/db/restore.sh` | DB-only expert tool — `pg_restore` from a `.dump` file. |
@@ -21,10 +21,23 @@ A full-system backup archive contains a logical PostgreSQL snapshot **and** the 
 
 **Two-person dogfooding must set `BACKUP_ENABLED=true`** in `.env`. The service defaults to `false` for test safety.
 
-The local compose stack uses the bundled `postgres` service by default. Setting
-`DATABASE_URL` in the mode `.env` points database scripts at another PostgreSQL
-connection, but the bundled `postgres` service remains defined in the local
-compose files until a separate external-db compose profile is added.
+The offline full-system backup and restore scripts use the bundled Compose
+`postgres` service. The DB-only dump and restore scripts also use that service.
+Online backups use `BACKUP_DATABASE_URL`, which Compose defaults to the bundled
+database. For an external database, configure that backup connection explicitly
+and use a recovery procedure for the external database. The verification script
+uses `DATABASE_URL` by default when set. External verification connects from
+the verification host using Python 3 and the libpq shared library (for example,
+`libpq5` on Debian). The host must be able to reach the database and read any
+TLS files named in the URI. The complete URI reaches libpq through standard
+input. Failures identify the client, connection, or query stage without printing
+raw diagnostics. The bundled PostgreSQL service can stay stopped. After an
+offline restore, use `--bundled-postgres` to verify the database that the restore
+script rebuilt.
+
+File backups include only the listed directories under the mode root. Back up a
+custom `ARTIFACT_STORAGE_ROOT` outside those directories separately.
+
 Across dev, test, and prod the client-facing API entrypoint is `server`.
 Dev publishes server at `http://localhost:3000/api/v1`; test publishes it at
 `http://localhost:3100/api/v1`. The test frontend uses server.
@@ -106,7 +119,7 @@ background and does not block readiness or dependent services.
 | `artifacts/` | Artifact storage root |
 | `config/` | Runtime configuration (no secret values) |
 | `workspaces/` | Workspace metadata directories |
-| `logs/` | Only when `BACKUP_INCLUDE_LOGS=true` |
+| `logs/` | If included by the instance backup policy, or selected for an offline backup |
 | `backup_manifest.json` | Archive metadata (see below) |
 
 `backups/`, `cache/`, `sandboxes/`, and the live `db/postgres` directory are never included.
@@ -153,14 +166,15 @@ No raw secret values appear in the manifest. PostgreSQL is the server database.
 
 `BackupService` runs `pg_dump -Fc --no-owner --no-acl` for a consistent custom-format database snapshot using PostgreSQL MVCC — the server does not need to be stopped. The dump is restored with `pg_restore`. **If `BACKUP_DATABASE_URL` is unset or `pg_dump` fails, the backup fails closed**: no archive is produced.
 
-Full-system backup also copies non-credential file data (`storage/`, `artifacts/`, `config/`, `workspaces/`). The database dump and file copies are not one cross-resource transaction, so restore verification should check restored `artifacts.storage_path` rows against files under `storage/artifacts/`. Use `ops/scripts/system/verify-restore.sh` after restore.
+Full-system backup also copies non-credential file data (`storage/`, `artifacts/`, `config/`, `workspaces/`). The database dump and file copies are not one cross-resource transaction. Use `ops/scripts/system/verify-restore.sh` to verify restored `artifacts.storage_path` references against the target storage layout.
 
 ### pg_dump client version (must match the server)
 
 `pg_dump` refuses to dump a server **newer** than the client. The online `BackupService`
-uses the `pg_dump` available to the server runtime; the offline backup script runs
-`pg_dump` inside the postgres container. When the `postgres` server major is upgraded, keep
-the runtime/client image in lockstep. The server never mounts the Docker socket.
+uses the PostgreSQL 18 client installed in the server image. The offline backup
+script runs `pg_dump` inside the postgres container. When the `postgres` server
+major is upgraded, update the client package in `server/Dockerfile` at the same
+time. The server never mounts the Docker socket.
 
 ### Backup safety guard (prod)
 
@@ -178,15 +192,16 @@ log a strong warning. See `server/src/modules/backups/guard.ts`.
 ### API
 
 ```bash
-# Trigger a manual full-system backup (instance administrator session)
-curl -X POST http://localhost:3000/api/v1/system/backups/manual --cookie 'session_id=<admin-session>' -H "Idempotency-Key: $(uuidgen)"
+# Set ADMIN_COOKIE_JAR to the cookie file from an instance administrator login.
+# Trigger a manual full-system backup.
+curl -X POST http://localhost:3000/api/v1/system/backups/manual --cookie "$ADMIN_COOKIE_JAR" -H "Idempotency-Key: $(uuidgen)"
 # A keyed system command: 202 {"status":"succeeded","data":{"id":"<command-id>","status":"pending",...}}.
 # The archive is written after commit; its name is the command's result:
-curl -s http://localhost:3000/api/v1/system/commands/<command-id> --cookie 'session_id=<admin-session>'
+curl -s http://localhost:3000/api/v1/system/commands/<command-id> --cookie "$ADMIN_COOKIE_JAR"
 # Expected once settled: {"status":"succeeded","result":{"status":"ok","backup":"manual-YYYYMMDD-HHMMSS.tar.gz"},...}
 
 # List backups
-curl http://localhost:3000/api/v1/system/backups --cookie 'session_id=<admin-session>'
+curl http://localhost:3000/api/v1/system/backups --cookie "$ADMIN_COOKIE_JAR"
 ```
 
 ---
@@ -197,14 +212,14 @@ When app services are stopped, produce an identical-format archive with:
 
 ```bash
 # Stop writers first; backup starts postgres automatically if needed.
-docker compose --env-file "${RAINVER_ROOT:-$HOME/.rainver-data}/dev/.env" -p rainver-dev -f ops/compose/docker-compose.dev.yml stop frontend server deployer
+docker compose --env-file "${RAINVER_ROOT:-$HOME/.rainver-data}/dev/.env" -p rainver-dev -f ops/compose/docker-compose.dev.yml stop frontend server sandbox-runner deployer
 
 ops/scripts/system/backup.sh --mode dev
 ops/scripts/system/backup.sh --mode prod --include-logs
 ops/scripts/system/backup.sh --mode dev --output /mnt/backups
 ```
 
-This runs `pg_dump` inside the postgres container, copies the file data, writes a `backup_manifest.json` with the same schema as `BackupService` (including `backup_interval_hours` and `backup_retention_count`, read from `BACKUP_INTERVAL_HOURS` / `BACKUP_RETENTION_COUNT` in the mode `.env`, defaulting to `24` / `7`), and produces `system-<timestamp>.tar.gz`. It starts PostgreSQL automatically if needed and stops it afterward only if backup started it. By default, `ops/scripts/system/backup.sh` refuses to run while `frontend`, `server`, or `deployer` are active because file data can change during the backup. Use `BackupService` or `POST /api/v1/system/backups/manual` for online backup while the server is running.
+This runs `pg_dump` inside the postgres container, copies the file data, writes a `backup_manifest.json` with the same schema as `BackupService` (including `backup_interval_hours` and `backup_retention_count`, read from `BACKUP_INTERVAL_HOURS` / `BACKUP_RETENTION_COUNT` in the mode `.env`, defaulting to `24` / `7`), and produces `system-<timestamp>.tar.gz`. It starts PostgreSQL automatically if needed and stops it afterward only if backup started it. By default, `ops/scripts/system/backup.sh` refuses to run while `frontend`, `server`, `sandbox-runner`, or `deployer` are active because file data can change during the backup. Use `BackupService` or `POST /api/v1/system/backups/manual` for online backup while the server is running.
 
 ## Separate sensitive recovery backup
 
@@ -263,13 +278,18 @@ off-host. Periodically rehearse decrypting both and restoring into the test mode
 
 ## Restore (full-system, single command)
 
-Restore rebuilds the database and the file data from one archive. Stop `frontend`, `server`, and `deployer`; restore starts `postgres` automatically if needed and stops it afterward only if restore started it.
+Restore rebuilds the database and the file data from one archive. Stop
+`frontend`, `server`, `sandbox-runner`, and `deployer`. Restore checks for
+running, restarting, and paused containers. It starts `postgres` automatically
+if needed and stops it afterward only if restore started it. The shared
+instance lock keeps packaged startup, migration, update, and restore commands
+from interleaving. Wait for restore to finish before using direct Docker commands.
 
 > **Do not use `ops/scripts/start.sh` as a restore preflight** — it starts the app services (`frontend`, `server`, `deployer`), which `restore.sh` then refuses. Run `ops/scripts/start.sh --<mode>` only *after* the restore succeeds.
 
 ```bash
 # 1. Stop the app (leave postgres running)
-docker compose --env-file "${RAINVER_ROOT:-$HOME/.rainver-data}/dev/.env" -p rainver-dev -f ops/compose/docker-compose.dev.yml stop frontend server deployer
+docker compose --env-file "${RAINVER_ROOT:-$HOME/.rainver-data}/dev/.env" -p rainver-dev -f ops/compose/docker-compose.dev.yml stop frontend server sandbox-runner deployer
 
 # 2. Keep or start postgres only
 docker compose --env-file "${RAINVER_ROOT:-$HOME/.rainver-data}/dev/.env" -p rainver-dev -f ops/compose/docker-compose.dev.yml up -d postgres
@@ -279,26 +299,63 @@ ops/scripts/system/restore.sh ~/.rainver-data/dev/backups/auto-20260101-120000.t
 
 # 4. Start the app after restore succeeds, then verify
 ops/scripts/start.sh --dev
-ops/scripts/system/verify-restore.sh --mode dev
+ops/scripts/system/verify-restore.sh --mode dev --bundled-postgres
 ```
 
-`restore.sh` extracts the archive to a temporary staging directory before any destructive database operation. It validates `backup_manifest.json`, verifies `db/rainver.dump`, checks file-directory overwrite preconditions, refuses to continue while `frontend`, `server`, or `deployer` are running, then runs `pg_restore` (terminate connections → drop → create → restore) against the maintenance database and restores the non-credential file directories into `$RAINVER_ROOT/<mode>/`. After confirmation and before the database is dropped, every file directory is copied next to its target on the same filesystem; a copy failure (for example a full disk) or an interruption stops the restore with the database and all existing directories unchanged, so a restore needs room for one extra copy of the restored file data. `pg_restore` runs with `--exit-on-error` (as does `ops/scripts/db/restore.sh`), so a failing item stops the restore instead of producing a partially populated database; no file directory is touched when it fails. Each prepared directory then replaces its target with one atomic exchange (`atomic_ops.py replace-directory`: Linux `renameat2` `RENAME_EXCHANGE`, macOS `renamex_np` `RENAME_SWAP`), so a target directory never goes missing and is wholly old or wholly restored even if the restore is killed; the previous content is then removed from the staging path. Where the exchange is unavailable (another platform, or a filesystem that refuses it) the restore stops with that directory and the rest unchanged rather than falling back to two renames. This is per directory: the directories together are not swapped atomically. The database and the directories are not one transaction: a failure after the database drop leaves an incomplete database, and the error names the directories already replaced; recover by re-running the restore with the same or an earlier archive (automatic backups are under `$RAINVER_ROOT/<mode>/backups/`). `--force` is required to overwrite existing file directories. It never restores or overwrites `secrets/`; use `restore-credentials.sh` explicitly. The live `db/postgres` directory is never touched — the database is rebuilt logically.
+After checking the archive and the selected server image, `restore.sh` copies
+each file directory beside its target. It then imports the dump with
+`pg_restore --exit-on-error --no-owner --no-acl` into a new
+`rainver_restore_stage_*` database. The selected image reconciles plugin and
+runtime role grants in that staging database. If runtime-role activation is
+enabled, restore checks the configured application and backup roles before
+switching over. A failure in any of these steps leaves the active database name
+and existing file data intact.
+
+PostgreSQL switches both database names in one transaction. If the target
+already exists, it moves to the reported `rainver_restore_before_*` protection
+point with connections disabled. The fully imported database takes the target
+name. The protection point stays on the same PostgreSQL cluster and consumes
+space until an operator explicitly disposes of it after verification. Plan for
+space for the staged database and one additional copy of the restored files.
+
+Once the database switch commits, each prepared directory replaces its target
+atomically. The directories and PostgreSQL use separate operations. If a file
+replacement fails, keep the apps stopped, consult the error for the directories
+already replaced and the preserved database name, and retry the intended
+archive with `--force`. If the connection was lost during the switch, inspect
+both database names before restarting.
+
+Restore cleans up failed staging databases when it can run cleanup. A hard kill
+can leave a `rainver_restore_stage_*` database behind. A retry stages a new one
+without reusing a partial import. Confirm that no restore is running before
+removing a leftover staging database. Use `restore-credentials.sh` separately
+for credential data. Full-system restore leaves the PostgreSQL storage directory
+in place.
 
 During preflight, `restore.sh` reads the manifest **version metadata** (`backup_format`,
 `app_version`, `git_commit`, `schema_migration_version`, `schema_migration_checksum`, `postgres_server_version`, `pg_dump_version`),
 prints the recorded values, and **fails closed before any destructive operation** on a missing
-or unexpected `backup_format`, a PostgreSQL **major-version** mismatch between the backup
-source and the live restore target, a `schema_migration_version` that this build's
-`server/migrations/` chain does not contain, or a `schema_migration_checksum` that differs from
-this build's copy of that migration file. The last two mean the archive came from a newer build,
+or unexpected `backup_format`. When both versions are available, it rejects a PostgreSQL
+**major-version** mismatch between the source and target. Before staging the database it also verifies
+that the selected server image supports the required reconciliation commands. The
+selected image supplies the migration chain used to check the recorded schema version and
+checksum. If the archive provides both, restore rejects an unknown migration version
+or a checksum that differs from the selected image's migration file. The last two mean the archive came from a newer build,
 or an applied migration was edited, or the archive belongs to the previous schema epoch:
 restoring it would produce a database the migration runner refuses to start against. An archive
 from an **older** build within the current epoch is fine — migrations are append-only, and the
-next `start.sh` applies the ones the archive predates. A previous-epoch database has no upgrade
+next `start.sh` applies the ones the archive predates. If restore reports pending
+maintenance migrations, run the documented `start.sh --<mode> --maintenance` path. A previous-epoch database has no upgrade
 path and must be recreated from the new baseline; do not use the override to cross the epoch.
 For other controlled recovery cases you can override this check with
 `--force-incompatible-backup`; `--force` (file overwrite) and `--force-running` (active
-services) do **not** imply it. The metadata is never silently ignored.
+services) do **not** imply it. For archives with incomplete metadata, verify the missing compatibility information before restoring.
+
+In production, restore resolves the configured channel to a commit once and
+uses the verified server image at that commit for inspection and reconciliation.
+For an offline restore or rollback, select the intended `sha-<commit>` in
+`RAINVER_IMAGE_TAG` and ensure that image is already present locally. Use the
+same tag for startup after restore.
 
 For `test` or `prod`, use the matching compose project and file, for example `rainver-test` with `ops/compose/docker-compose.test.yml` or `rainver-prod` with `ops/compose/docker-compose.prod.yml`.
 
@@ -313,20 +370,36 @@ ops/scripts/db/dump.sh --mode dev                       # → db/dumps/dump-<ts>
 ops/scripts/db/restore.sh ~/.rainver-data/dev/db/dumps/dump-<ts>.dump --mode dev
 ```
 
-DB-only dump/restore/reset start `postgres` automatically and stop it afterward only if that script started it. Restore and reset refuse to run while app services are active; stop `frontend`, `server`, and `deployer` first. `ops/scripts/db/restore.sh` validates the dump with `pg_restore --list` before any destructive drop, so an unreadable archive is rejected before the database is touched.
+DB-only dump, restore, and reset start `postgres` automatically and stop it
+afterward if they started it. Stop `frontend`, `server`, `sandbox-runner`,
+and `deployer` before restore or reset. `ops/scripts/db/restore.sh` checks the
+dump with `pg_restore --list` and uses the same staging, role reconciliation,
+transactional cutover, and retained protection point as full-system restore.
+The `postgres`, `template0`, and `template1` databases are reserved for PostgreSQL
+administration. Names beginning with `rainver_restore_` identify restore generations.
 
 ---
 
 ## Restore verification checklist
 
-Use the restore verification script first. It checks the compose `postgres` service,
-server migration rows, core table counts, and artifact file consistency:
+Use the restore verification script first. It checks the Compose `postgres` service,
+server migration rows, core table counts, and Artifact file presence.
 
 ```bash
-ops/scripts/system/verify-restore.sh --mode dev
-ops/scripts/system/verify-restore.sh --mode test
-ops/scripts/system/verify-restore.sh --mode prod
+ops/scripts/system/verify-restore.sh --mode dev --bundled-postgres
+ops/scripts/system/verify-restore.sh --mode test --bundled-postgres
+ops/scripts/system/verify-restore.sh --mode prod --bundled-postgres
 ```
+
+The verifier resolves the server's `ARTIFACT_STORAGE_ROOT` and most specific
+local bind mount from the target Compose configuration. It flags references
+outside the standard offline archive directories even when their files are
+present. Restore external mounts separately and validate their contents
+against your backup manifest. Artifact rows do not record a general content
+checksum, so file presence is the limit of this check. Invalid paths or
+missing mapped files fail verification. Exit status 2 means some paths could
+not be checked, for example with a remote Docker daemon, a named volume, or
+a storage root without a local bind mapping.
 
 For targeted API checks after the verifier passes:
 
@@ -344,11 +417,11 @@ curl -s "http://localhost:3000/api/v1/runs/<run_id>/trace?space_id=personal"   #
 
 ## Rollback strategy
 
-1. Stop writes: `docker compose --env-file "${RAINVER_ROOT:-$HOME/.rainver-data}/dev/.env" -p rainver-dev -f ops/compose/docker-compose.dev.yml stop frontend server deployer`.
+1. Stop writes: `docker compose --env-file "${RAINVER_ROOT:-$HOME/.rainver-data}/dev/.env" -p rainver-dev -f ops/compose/docker-compose.dev.yml stop frontend server sandbox-runner deployer`.
 2. Snapshot current state: `cp -a ~/.rainver-data/dev ~/.rainver-data/dev-pre-rollback-$(date +%Y%m%d-%H%M%S)`.
 3. Restore from the last known-good archive: `ops/scripts/system/restore.sh <archive> --mode dev --force`.
 4. Restart: `ops/scripts/start.sh --dev`.
-5. Verify with `ops/scripts/system/verify-restore.sh --mode dev`.
+5. Verify with `ops/scripts/system/verify-restore.sh --mode dev --bundled-postgres`.
 
 ---
 

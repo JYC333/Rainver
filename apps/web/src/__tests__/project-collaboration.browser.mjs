@@ -78,6 +78,9 @@ async function mockApi(page) {
       { agent_id: 'agent-mine', name: 'My drafting helper', description: null, visibility: 'private', private: true, linked: false },
     ])
     else if (path === `/projects/${project.id}/rooms`) data = roomsIndex
+    else if (path === `/projects/${project.id}/conversations` && url.searchParams.get('limit') === '3') data = pageOf([
+      { ...runningConversation, room_title: mainline.title, is_running: !activity.finished },
+    ])
     else if (path === `/projects/${project.id}/conversations`) data = { items: [{ id: conversation.id, room_id: mainline.id, room_title: mainline.title, room_is_mainline: true,
       room_other_member_names: ['Dana Li'], room_agent_count: 2, title: conversation.title, created_at: now, last_message_at: now, last_message_role: 'user',
       last_message_preview: 'Start with the 2024 surveys', message_count: 3 }], empty_rooms: [], total: 1, limit: 3, offset: 0, viewer_can_write: true }
@@ -88,7 +91,12 @@ async function mockApi(page) {
       data = {status:'succeeded',data:{room_id:mainline.id,space_id:space.id}}
     }
     else if (path === `/rooms/${mainline.id}`) data = detail
-    else if (path === `/rooms/${mainline.id}/conversations`) data = pageOf([conversation, { ...runningConversation, is_running: !activity.finished }])
+    else if (path === `/rooms/${mainline.id}/conversations`) {
+      const status = url.searchParams.get('status')
+      data = pageOf(status === 'deleted'
+        ? [{ ...conversation, id: 'session-deleted', title: 'Deleted literature notes', status, deleted_at: now, purge_after: '2026-12-10T09:00:00.000Z' }]
+        : status === 'archived' ? [] : [conversation, { ...runningConversation, is_running: !activity.finished }])
+    }
     else if (path.endsWith('/messages')) data = { ...pageOf([]), task_group_ids: [], queued: [] }
     else if (path.endsWith('/agent-candidates')) data = { agents: [
       {agent_id:'agent-room-only',name:'Room-authorized Codex',agent_kind:'standard',owner_user_id:'user-collab',visibility:'space_shared',in_room:true,in_project:true,private:true,shared_with_user_ids:['user-collab']},
@@ -120,6 +128,17 @@ after(async () => {
   if (server) await new Promise(resolve => server.httpServer.close(resolve))
 })
 
+async function assertRunningCentered(row, locale) {
+  const spinner = row.getByRole('status', { name: locale === 'en' ? 'Conversation running' : '对话运行中' })
+  await spinner.waitFor()
+  const offset = await spinner.evaluate(element => {
+    const { top, height } = element.getBoundingClientRect()
+    const row = element.parentElement.getBoundingClientRect()
+    return Math.abs(top + height / 2 - (row.top + row.height / 2))
+  })
+  assert.ok(offset <= 0.5, `Running indicator is ${offset}px from the row center`)
+}
+
 const base = `/spaces/${space.id}/projects/${project.id}`
 const surfaces = [
   { name: 'agents', path: `${base}/agents`, ready: '[data-testid="project-agent-agent-reviewer"]', dialog: 'main button:has(svg.lucide-plus)' },
@@ -129,6 +148,100 @@ const surfaces = [
   { name: 'conversation', path: `${base}/rooms?room=${mainline.id}&conversation=${conversation.id}`, ready: '[aria-label="Conversation"]' },
   { name: 'agent-chat', path: `${base}/agents/agent-reviewer/chat`, ready: 'h1:has-text("Critical Reviewer")', noWarning: true },
 ]
+
+for (const [locale, theme, width] of [['en', 'dark', 1280], ['zh-CN', 'light', 390]]) {
+  test(`Long conversation drafts open in an editor (${locale}, ${theme}, ${width})`, async () => {
+    const page = await browser.newPage({ viewport: { width, height: 900 }, serviceWorkers: 'block' })
+    page.setDefaultTimeout(7000)
+    try {
+      await page.context().grantPermissions(['clipboard-read', 'clipboard-write'])
+      await page.addInitScript(([nextLocale, nextTheme]) => {
+        localStorage.setItem('rainver:locale', nextLocale)
+        if (nextTheme === 'light') localStorage.setItem('rainver:theme', 'light')
+      }, [locale, theme])
+      await mockApi(page)
+      await page.route('**/api/v1/agents/agent-reviewer/conversation-backends*', route => route.fulfill({
+        json: { options: [{ runtime_profile_id: 'runtime-1', runtime_key: 'opencode', name: 'Managed', usable: true }], binding: null },
+      }))
+      const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR5sAAAAASUVORK5CYII=', 'base64')
+      await page.route('**/api/v1/conversation-inputs/media', route => route.fulfill({
+        json: { media_id: 'draft-image', filename: 'draft.png', media_type: 'image/png',
+          byte_size: png.length, sha256: 'a'.repeat(64), expires_at: '2099-01-01T00:00:00Z' },
+      }))
+      await page.route('**/api/v1/conversation-inputs/media/draft-image', route => route.fulfill({
+        contentType: 'image/png', body: png,
+      }))
+      const editLabel = locale === 'en' ? 'Edit message draft' : '编辑消息草稿'
+      const text = Array.from({ length: 15 }, (_, index) => `Pasted line ${index + 1}: notes to review before sending.`).join('\n')
+      for (const surface of surfaces.filter(({ name }) => name === 'conversation' || name === 'agent-chat')) {
+        await page.goto(baseUrl + surface.path)
+        const fieldSelector = surface.name === 'conversation' ? '[contenteditable="true"]' : 'textarea:enabled'
+        const composer = page.locator('[data-conversation-input]').filter({ has: page.locator(fieldSelector) })
+        const field = composer.locator(fieldSelector)
+        await field.waitFor()
+        await field.click()
+        if (surface.name === 'conversation') {
+          for (let line = 0; line < 12; line += 1) {
+            await page.keyboard.insertText('Typed line')
+            await page.keyboard.press('Shift+Enter')
+          }
+          const { clientHeight, scrollHeight } = await field.evaluate(element => ({
+            clientHeight: element.clientHeight, scrollHeight: element.scrollHeight,
+          }))
+          assert.ok(clientHeight <= 160 && scrollHeight > clientHeight, 'Room text scrolls inside the capped editor')
+          await field.fill('')
+        }
+        await page.evaluate(value => navigator.clipboard.writeText(value), text)
+        await page.keyboard.press('Control+v')
+
+        const preview = composer.getByRole('button', { name: editLabel })
+        await preview.waitFor()
+        assert.match(await preview.innerText(), /Pasted line 1/)
+        await composer.locator('input[type=file]').setInputFiles({ name: 'draft.png', mimeType: 'image/png', buffer: png })
+        const attachment = composer.getByAltText('draft.png')
+        await attachment.waitFor()
+        await composer.getByRole('button', { name: locale === 'en' ? 'Remove draft.png' : '移除 draft.png' }).waitFor()
+        assert.equal(await composer.locator('[data-conversation-attachments]').getByRole('button', { name: editLabel }).count(), 1)
+        assert.equal(await field.isVisible(), true)
+        await field.click()
+        await page.keyboard.insertText('Separate message')
+        assert.match(await field.evaluate(element => element.value ?? element.innerText), /Separate message/)
+        assert.doesNotMatch(await field.evaluate(element => element.value ?? element.innerText), /Pasted line/)
+        assert.ok(await composer.getByRole('button', { name: locale === 'en' ? 'Send' : '发送', exact: true }).isVisible())
+        await page.screenshot({ path: `${shots}/${surface.name}-long-draft-${locale}-${theme}-${width}.png` })
+
+        await preview.click()
+        const dialog = page.getByRole('dialog', { name: editLabel })
+        const expanded = dialog.locator('textarea, [contenteditable="true"]')
+        await expanded.waitFor()
+        assert.match(await expanded.evaluate(element => element.value ?? element.innerText), /Pasted line 15/)
+        await page.waitForFunction(() => document.activeElement?.matches('[role="dialog"] textarea, [role="dialog"] [contenteditable="true"]'))
+        await page.screenshot({ path: `${shots}/${surface.name}-draft-editor-${locale}-${theme}-${width}.png`, animations: 'disabled' })
+        await page.keyboard.press('Control+End')
+        await page.keyboard.press('Enter')
+        await page.keyboard.insertText('Revised in the dialog')
+        assert.match(await expanded.evaluate(element => element.value ?? element.innerText), /\nRevised in the dialog$/)
+        await dialog.getByRole('button', { name: locale === 'en' ? 'Done' : '完成' }).click()
+        await dialog.waitFor({ state: 'hidden' })
+        await preview.click()
+        await expanded.waitFor()
+        assert.match(await expanded.evaluate(element => element.value ?? element.innerText), /Revised in the dialog$/)
+        await dialog.getByRole('button', { name: locale === 'en' ? 'Done' : '完成' }).click()
+        if (surface.name === 'conversation') {
+          await page.goto(baseUrl + surface.path.replace(conversation.id, runningConversation.id))
+          await field.waitFor()
+          assert.equal(await attachment.count(), 0)
+          await page.goto(baseUrl + surface.path)
+          await attachment.waitFor()
+          await preview.waitFor()
+          assert.match(await field.evaluate(element => element.innerText), /Separate message/)
+        }
+      }
+    } finally {
+      await page.close()
+    }
+  })
+}
 
 for (const locale of ['en', 'zh-CN']) {
   for (const theme of ['dark', 'light']) {
@@ -152,11 +265,20 @@ for (const locale of ['en', 'zh-CN']) {
             }
             const overflow = await page.evaluate(() => ({ viewport: document.documentElement.clientWidth, document: document.documentElement.scrollWidth }))
             assert.ok(overflow.document <= overflow.viewport + 1, JSON.stringify({ surface: surface.name, width, locale, theme, ...overflow }))
+            if (surface.name === 'rooms') {
+              await assertRunningCentered(page.getByRole('link', { name: /Running review/ }), locale)
+            }
+            if (surface.name === 'room-conversations') {
+              await assertRunningCentered(page.getByRole('button', { name: /Running review/ }), locale)
+            }
             await page.screenshot({ path: `${shots}/${surface.name}-${locale}-${theme}-${width}.png`, fullPage: false })
             if (surface.name === 'room-conversations') {
               const rows = page.getByRole('navigation', { name: locale === 'en' ? 'Conversations' : '对话' }).getByRole('button')
               assert.match(await rows.first().innerText(), /Running review/)
-              await rows.first().getByRole('status', { name: locale === 'en' ? 'Conversation running' : '对话运行中' }).waitFor()
+              const cardBounds = await page.getByRole('navigation', { name: locale === 'en' ? 'Conversations' : '对话' })
+                .locator(':scope > div').evaluateAll(cards => cards.map(card => card.getBoundingClientRect().toJSON()))
+              assert.ok(cardBounds.length >= 2)
+              assert.ok(cardBounds[1].top - cardBounds[0].bottom >= 8, 'Conversation cards should have visible spacing')
               assert.equal(await rows.first().getByRole('status').count(), 1)
               assert.equal(await rows.first().getByRole('status', { name: locale === 'en' ? 'Unread conversation' : '对话有未读内容' }).count(), 0)
               activity.finished = true
@@ -165,6 +287,28 @@ for (const locale of ['en', 'zh-CN']) {
               assert.equal(await rows.first().getByRole('status').count(), 1)
               await page.screenshot({ path: `${shots}/completed-unread-${locale}-${theme}-${width}.png`, fullPage: false })
               activity.finished = false
+
+              const tabs = page.getByRole('tablist').getByRole('tab')
+              assert.equal(await tabs.count(), 4)
+              const bounds = await tabs.evaluateAll(elements => elements.map(element => {
+                const { top, right, bottom, left } = element.getBoundingClientRect()
+                return { top, right, bottom, left }
+              }))
+              assert.ok(bounds.every(tab => tab.left >= 0 && tab.right <= width), JSON.stringify(bounds))
+              assert.equal(bounds[0].top, bounds[1].top)
+              assert.equal(bounds[2].top, bounds[3].top)
+              if (width === 390) assert.ok(bounds[2].top >= bounds[0].bottom)
+              else assert.equal(bounds[0].top, bounds[2].top)
+
+              const recycleBin = page.getByRole('tab', { name: locale === 'en' ? 'Recycle bin' : '回收站' })
+              await tabs.nth(1).focus()
+              await page.keyboard.press('ArrowRight')
+              await page.getByText('Deleted literature notes', { exact: true }).waitFor()
+              assert.equal(await recycleBin.getAttribute('aria-selected'), 'true')
+              assert.ok(await recycleBin.evaluate(tab => tab === document.activeElement))
+              await page.screenshot({ path: `${shots}/room-recycle-bin-${locale}-${theme}-${width}.png` })
+              await tabs.first().click()
+              await rows.first().waitFor()
             }
             // An Agent on the Project's list (answered by its single-entry read) gets no "not on the list" notice.
             if (surface.noWarning) assert.equal(await page.getByTestId('not-in-project').count(), 0, `${surface.name} ${locale} ${theme} ${width}`)
@@ -591,6 +735,91 @@ for (const [locale, theme] of [['en', 'dark'], ['zh-CN', 'light']]) {
       await page.getByTestId('project-chat-sidecar').waitFor()
       await fab.waitFor({ state: 'hidden' })
       await page.screenshot({ path: `${shots}/capture-phone-chat-${locale}-${theme}.png` })
+    } finally { await page.close() }
+  })
+}
+
+// An ordinary send the route aims at several active Runs asks which one, in
+// the composer of the Room conversation, and then shows that Run's delivery.
+for (const [locale, theme, width] of [['en', 'dark', 1280], ['zh-CN', 'light', 390]]) {
+  test(`Ordinary send chooses among active Runs and shows the delivery (${locale} ${theme} ${width})`, async () => {
+    const page = await browser.newPage({ viewport: { width, height: 900 }, serviceWorkers: 'block' })
+    page.setDefaultTimeout(7000)
+    try {
+      await page.addInitScript(([locale, theme]) => {
+        localStorage.setItem('rainver:locale', locale)
+        localStorage.setItem('rainver:theme', theme)
+        localStorage.setItem('project.sidecar.project-collab.open', 'false')
+      }, [locale, theme])
+      await mockApi(page)
+      const pin = { agent_id: 'assistant', runtime_profile_id: 'runtime-live', runtime_key: 'codex_cli', runtime_installation: 'codex' }
+      await page.route(`**/api/v1/sessions/${conversation.id}/execution-context`, route => route.fulfill({ json: {
+        summary: { session_id: conversation.id, state: 'initialized', participant_agent_ids: ['assistant'], host: null, runtime: pin, runtimes: [pin],
+          primary: null, attachments: [], dispatch_locked: false, queue_paused_at: null, can_send: true, blocked_reason: null },
+        available_hosts: [], available_runtime_profiles: [], available_primary_locations: [],
+      } }))
+      await page.route(`**/api/v1/runtime-context/room-conversations/${conversation.id}/retrieval`, route => route.fulfill({ json: {
+        work_context_scope_id: null, enabled: false, preferred_domains: [], setup_version: null,
+      } }))
+      await page.route('**/api/v1/agents/*/conversation-backends?*', route => route.fulfill({ json: {
+        options: [{ runtime_profile_id: 'runtime-live', runtime_key: 'codex_cli', name: 'Codex CLI', usable: true, model_name: null, session_config_options: [] }],
+        binding: { runtime_profile_id: 'runtime-live', runtime_key: 'codex_cli' }, session_config: [],
+      } }))
+      const sends = []
+      const saved = { id: 'message-live', space_id: space.id, session_id: conversation.id, user_id: 'user-collab', sender_agent_id: null, role: 'user',
+        content: 'Also check the 2025 preprints', metadata_json: {}, parent_message_id: null, run_id: 'run-parked', created_at: now }
+      await page.route('**/api/v1/actions/room.message.send', route => {
+        sends.push(route.request().postDataJSON())
+        if (sends.length === 1) return route.fulfill({ status: 409, json: { error: { code: 'operation_conflict', domain: 'rooms', message: 'choose', retryable: false, request_id: 'r',
+          metadata: { code: 'live_input_target_choice_required', candidates: [
+            { run_id: 'run-live', agent_id: 'assistant', agent_name: 'Project Assistant', status: 'running', delivery: 'live', delegated: false, started_at: now },
+            { run_id: 'run-parked', agent_id: 'assistant', agent_name: 'Project Assistant', status: 'waiting_for_dependency', delivery: 'with_results', delegated: true, started_at: now },
+            // A second delegated turn started at the same moment: told apart by its place in the list.
+            { run_id: 'run-parked-2', agent_id: 'assistant', agent_name: 'Project Assistant', status: 'waiting_for_dependency', delivery: 'with_results', delegated: true, started_at: now },
+          ] } } } })
+        return route.fulfill({ json: { status: 'succeeded', data: { id: saved.id, space_id: space.id, room_id: mainline.id, session_id: conversation.id,
+          status: 'live_input', run_id: 'run-parked', message_id: saved.id, binding_id: null, delivery_state: 'deferred' } } })
+      })
+      await page.route(`**/api/v1/rooms/${mainline.id}/conversations/${conversation.id}/messages?*`, route => {
+        const one = new URL(route.request().url()).searchParams.get('message_id') === saved.id
+        return route.fulfill({ json: { ...pageOf(one ? [saved] : []), conversation, task_group_ids: [], queued: [] } })
+      })
+      await page.route('**/api/v1/runs/run-parked/live-input?*', route => route.fulfill({ json: { available: false, binding_id: null, delivery_state: 'deferred' } }))
+      await page.route('**/api/v1/runs/run-parked/turn/stream', route => route.fulfill({ contentType: 'text/event-stream', body: '' }))
+      await page.route('**/api/v1/runs/run-parked', route => route.fulfill({ json: { id: 'run-parked', space_id: space.id, status: 'waiting_for_dependency',
+        session_id: conversation.id, agent_id: 'assistant', created_at: now, updated_at: now } }))
+      await page.goto(`${baseUrl}${base}/rooms?room=${mainline.id}&conversation=${conversation.id}`)
+      const field = page.locator('[data-conversation-input] [contenteditable="true"]')
+      await field.waitFor()
+      await field.click()
+      await page.keyboard.insertText('Also check the 2025 preprints')
+      const send = page.getByRole('button', { name: locale === 'en' ? 'Send' : '发送', exact: true })
+      for (let attempt = 0; attempt < 70 && !(await send.isEnabled().catch(() => false)); attempt += 1) await page.waitForTimeout(100)
+      await page.screenshot({ path: `${shots}/live-input-draft-${locale}-${theme}-${width}.png`, animations: 'disabled' })
+      await send.click()
+      const waitingLabel = locale === 'en' ? 'Project Assistant · waiting for results · delegated' : 'Project Assistant · 正在等待结果 · 委派'
+      const parked = page.getByRole('button', { name: new RegExp(`^${waitingLabel} · .* · #1$`) })
+      await parked.waitFor()
+      await parked.click({ trial: true })
+      // Runs that would read alike never share a label.
+      const labels = await page.getByRole('button', { name: new RegExp(`^${waitingLabel}`) }).allInnerTexts()
+      assert.equal(labels.length, 2)
+      assert.equal(new Set(labels).size, 2)
+      assert.equal(sends[0].live_target, 'auto')
+      assert.match(await field.innerText(), /2025 preprints/)
+      const choice = page.getByRole('group', { name: locale === 'en' ? /more than one active run/ : /多个正在进行的运行/ })
+      assert.ok(await choice.evaluate(el => el.scrollWidth <= el.clientWidth + 1), 'choice fits its row')
+      await page.screenshot({ path: `${shots}/live-input-choice-${locale}-${theme}-${width}.png`, animations: 'disabled' })
+      await parked.click()
+      const status = page.getByTestId('live-input-message-live')
+      await status.waitFor()
+      assert.deepEqual(sends[1].live_target, { run_id: 'run-parked' })
+      assert.equal(sends.length, 2)
+      assert.equal(await choice.count(), 0)
+      assert.ok(await status.evaluate(el => el.scrollWidth <= el.clientWidth + 1), 'status fits its row')
+      assert.match(await status.innerText(), /2025 preprints/)
+      assert.equal(await page.getByText('Run turn stream failed', { exact: false }).count(), 0)
+      await page.screenshot({ path: `${shots}/live-input-status-${locale}-${theme}-${width}.png`, animations: 'disabled' })
     } finally { await page.close() }
   })
 }

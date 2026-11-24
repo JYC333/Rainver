@@ -82,10 +82,10 @@ if [[ "$(uname -s)" != "Linux" ]]; then
   echo "This installer currently supports Linux only." >&2
   exit 1
 fi
-for command_name in cmp curl find grep install sha256sum tar systemctl timeout; do
+for command_name in cmp curl find grep install sha256sum tar timeout; do
   command -v "$command_name" >/dev/null 2>&1 || { echo "Required command not found: $command_name" >&2; exit 1; }
 done
-if ! systemctl --user show-environment >/dev/null 2>&1; then
+if [[ "$ensure_adapters" == false ]] && ! systemctl --user show-environment >/dev/null 2>&1; then
   echo "The systemd user manager is unavailable. Log in as the target user and ensure systemd user services are enabled." >&2
   exit 1
 fi
@@ -108,7 +108,12 @@ if [[ "$ensure_adapters" == true && -n "${RAINVER_HOST_ADAPTER_ROOT:-}" && -f "$
 fi
 
 temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/rainver-host-install.XXXXXX")"
-trap 'rm -rf "$temp_dir"' EXIT
+stage_files=()
+cleanup() {
+  rm -rf "$temp_dir"
+  if (( ${#stage_files[@]} )); then rm -f -- "${stage_files[@]}"; fi
+}
+trap cleanup EXIT
 
 configure_auto_update() {
   local installed_script="$1"
@@ -256,51 +261,6 @@ download_and_verify() {
   printf '%s  %s\n' "$expected_hash" "$temp_dir/$asset" | sha256sum --check --status
 }
 
-# A rolling release publishes its build id as a tiny checksummed asset. Check
-# that before downloading Node, the daemon archive, or the optional adapter
-# pack. The full archive still carries BUILD_ID and is checked against this
-# value after extraction.
-if [[ "$ensure_adapters" == false ]]; then
-  download_and_verify "BUILD_ID"
-  latest_build_id="$(tr -d '\r\n' < "$temp_dir/BUILD_ID")"
-  if [[ ! "$latest_build_id" =~ ^[A-Za-z0-9._-]+$ ]]; then
-    echo "Release has an invalid build id." >&2
-    exit 1
-  fi
-
-  installed_build_id=""
-  installed_channel=""
-  if [[ -f "$INSTALL_ROOT/current/BUILD_ID" ]]; then
-    installed_build_id="$(tr -d '\r\n' < "$INSTALL_ROOT/current/BUILD_ID")"
-  fi
-  if [[ -f "$INSTALL_ROOT/channel" ]]; then
-    installed_channel="$(tr -d '\r\n' < "$INSTALL_ROOT/channel")"
-  fi
-
-  if [[ "$update_mode" == true \
-    && "$installed_build_id" == "$latest_build_id" \
-    && "$installed_channel" == "$release_channel" \
-    && -f "$INSTALL_ROOT/current/app/dist/cli.js" \
-    && -x "$BIN_DIR/rainver-host" \
-    && -x "$INSTALL_ROOT/rainver-host-daemon" \
-    && -f "$SYSTEMD_DIR/rainver-host.service" ]]; then
-    ensure_read_only_support "$BIN_DIR/rainver-host"
-    install -m 755 "$temp_dir/install-host.sh" "$INSTALL_ROOT/install-host.sh"
-    if [[ "$auto_update" != "preserve" ]]; then
-      configure_auto_update "$INSTALL_ROOT/install-host.sh"
-    fi
-    echo "Rainver Host ${release_channel} ($latest_build_id) is already up to date."
-    echo "No runtime or release archives were downloaded."
-    echo "Update channel: $release_channel"
-    if [[ "$auto_update" == "enable" ]]; then
-      echo "Automatic latest updates: enabled"
-    elif [[ "$auto_update" == "disable" ]]; then
-      echo "Automatic latest updates: disabled"
-    fi
-    exit 0
-  fi
-fi
-
 # Installs into one root from different processes — a timer update, a manual
 # update, a daemon's adapter request — serialize on one kernel lock, the same
 # way the daemon lease does (daemonLease.ts): a stable lock inode that is never
@@ -333,6 +293,59 @@ install_unlock() {
   if [[ -n "$install_lock_fd" ]]; then flock --unlock "$install_lock_fd"; fi
 }
 
+activation_pending="$INSTALL_ROOT/.activation-pending"
+
+# A rolling release publishes its build id as a tiny checksummed asset. Check
+# that before downloading Node, the daemon archive, or the optional adapter
+# pack. The full archive still carries BUILD_ID and is checked against this
+# value after extraction.
+if [[ "$ensure_adapters" == false ]]; then
+  download_and_verify "BUILD_ID"
+  latest_build_id="$(tr -d '\r\n' < "$temp_dir/BUILD_ID")"
+  if [[ ! "$latest_build_id" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    echo "Release has an invalid build id." >&2
+    exit 1
+  fi
+
+  if [[ "$update_mode" == true ]]; then install_lock; fi
+  installed_build_id=""
+  installed_channel=""
+  if [[ -f "$INSTALL_ROOT/current/BUILD_ID" ]]; then
+    installed_build_id="$(tr -d '\r\n' < "$INSTALL_ROOT/current/BUILD_ID")"
+  fi
+  if [[ -f "$INSTALL_ROOT/channel" ]]; then
+    installed_channel="$(tr -d '\r\n' < "$INSTALL_ROOT/channel")"
+  fi
+
+  if [[ "$update_mode" == true \
+    && "$installed_build_id" == "$latest_build_id" \
+    && "$installed_channel" == "$release_channel" \
+    && ! -e "$activation_pending" \
+    && -f "$INSTALL_ROOT/current/app/dist/cli.js" \
+    && -f "$INSTALL_ROOT/current/app/dist/daemon.js" \
+    && -x "$BIN_DIR/rainver-host" \
+    && -x "$INSTALL_ROOT/rainver-host-daemon" \
+    && -f "$SYSTEMD_DIR/rainver-host.service" ]] \
+    && grep -Fq "/releases/$latest_build_id/app/dist/cli.js" "$BIN_DIR/rainver-host" \
+    && grep -Fq "/releases/$latest_build_id/app/dist/daemon.js" "$INSTALL_ROOT/rainver-host-daemon"; then
+    ensure_read_only_support "$BIN_DIR/rainver-host"
+    install -m 755 "$temp_dir/install-host.sh" "$INSTALL_ROOT/install-host.sh"
+    if [[ "$auto_update" != "preserve" ]]; then
+      configure_auto_update "$INSTALL_ROOT/install-host.sh"
+    fi
+    echo "Rainver Host ${release_channel} ($latest_build_id) is already up to date."
+    echo "No runtime or release archives were downloaded."
+    echo "Update channel: $release_channel"
+    if [[ "$auto_update" == "enable" ]]; then
+      echo "Automatic latest updates: enabled"
+    elif [[ "$auto_update" == "disable" ]]; then
+      echo "Automatic latest updates: disabled"
+    fi
+    exit 0
+  fi
+  install_unlock
+fi
+
 # Puts an unpacked payload at its final directory without the final name ever
 # holding a partial tree. The temporary directory is often another filesystem
 # (tmpfs), where `mv` is a copy that an interruption leaves half done; so the
@@ -352,30 +365,31 @@ place_payload_dir() {
   rmdir "$stage"
 }
 
-install_adapter_pack() {
+prepare_adapter_pack() {
   local asset="rainver-host-adapters-linux-${release_arch}.tar.gz"
   local unpacked="$temp_dir/unpacked-adapters"
   download_and_verify "$asset" "Rainver Host adapters for linux-${release_arch}"
   mkdir -p "$unpacked"
   tar -xzf "$temp_dir/$asset" -C "$unpacked"
-  local payload="$unpacked/rainver-host-adapters"
-  if [[ ! -f "$payload/package.json" || ! -f "$payload/BUILD_ID" ]]; then
+  adapter_payload="$unpacked/rainver-host-adapters"
+  if [[ ! -f "$adapter_payload/package.json" || ! -f "$adapter_payload/BUILD_ID" ]]; then
     echo "Downloaded adapter pack has an invalid layout." >&2
     exit 1
   fi
-  local adapter_build_id
-  adapter_build_id="$(tr -d '\r\n' < "$payload/BUILD_ID")"
+  adapter_build_id="$(tr -d '\r\n' < "$adapter_payload/BUILD_ID")"
   if [[ ! "$adapter_build_id" =~ ^[A-Za-z0-9._-]+$ ]]; then
     echo "Downloaded adapter pack has an invalid build id." >&2
     exit 1
   fi
-  # The pin is fixed for this run and needs no lock. Which build is active is
-  # read only under the install lock, so an update switching `current` while
-  # this request downloaded or waited is seen here and refused, never placed.
-  if [[ -n "$adapter_build_pin" && "$adapter_build_id" != "$adapter_build_pin" ]]; then
+  if [[ "$adapter_build_id" != "$1" ]]; then
     echo "The adapter pack does not match the active Host build. Update this Host." >&2
     exit 1
   fi
+}
+
+install_adapter_pack() {
+  # An on-demand request can wait behind a different activation. Check the
+  # running build again under the lock before placing its downloaded pack.
   install_lock
   if [[ ! -f "$INSTALL_ROOT/current/BUILD_ID" || "$adapter_build_id" != "$(tr -d '\r\n' < "$INSTALL_ROOT/current/BUILD_ID")" ]]; then
     echo "The adapter pack does not match the active Host build. Update this Host." >&2
@@ -392,7 +406,7 @@ install_adapter_pack() {
   fi
   local adapter_dir="$INSTALL_ROOT/adapters/releases/$adapter_build_id"
   if [[ ! -f "$adapter_dir/package.json" || "$(tr -d '\r\n' < "$adapter_dir/BUILD_ID" 2>/dev/null)" != "$adapter_build_id" ]]; then
-    place_payload_dir "$payload" "$adapter_dir"
+    place_payload_dir "$adapter_payload" "$adapter_dir"
   fi
   # An adapter request only adds its own build's version directory, which is
   # all its daemon reads (launchers name adapters/releases/<build>). It never
@@ -417,6 +431,7 @@ install_adapter_pack() {
 }
 
 if [[ "$ensure_adapters" == true ]]; then
+  prepare_adapter_pack "$adapter_build_pin"
   install_adapter_pack
   exit 0
 fi
@@ -506,16 +521,48 @@ fi
 # Fail before switching current, pruning rollback builds or restarting services.
 ensure_read_only_support "$node_command" "$payload/app/dist/cli.js"
 
+# Stage and verify every required payload before changing the active build.
+# Timer updates also check the CLI PATH captured by the daemon's launcher.
+service_env="${XDG_CONFIG_HOME:-$HOME/.config}/rainver-host/service.env"
+detection_path="$PATH"
+if [[ -f "$service_env" ]]; then
+  captured_path="$(set +eu; set -a; source "$service_env" >/dev/null 2>&1; printf '%s' "${PATH:-}")"
+  detection_path="${captured_path:+$captured_path:}$PATH"
+fi
+adapter_payload=""
+if PATH="$detection_path" command -v codex >/dev/null 2>&1 || PATH="$detection_path" command -v claude >/dev/null 2>&1; then
+  prepare_adapter_pack "$build_id"
+fi
+
 # Held to exit: switching current, pruning, the adapter pack and launchers.
 install_lock
-printf '%s\n' "$release_channel" > "$INSTALL_ROOT/channel"
 changed=true
 previous_build_id=""
-if [[ -f "$INSTALL_ROOT/current/BUILD_ID" ]]; then
-  previous_build_id="$(tr -d '\r\n' < "$INSTALL_ROOT/current/BUILD_ID")"
+if [[ -f "$activation_pending" ]]; then
+  previous_build_id="$(cat "$activation_pending")"
+else
+  if [[ -f "$INSTALL_ROOT/current/BUILD_ID" ]]; then
+    previous_build_id="$(tr -d '\r\n' < "$INSTALL_ROOT/current/BUILD_ID")"
+  fi
+  if [[ "$previous_build_id" == "$build_id" ]] \
+    && grep -Fq "/releases/$build_id/app/dist/daemon.js" "$INSTALL_ROOT/rainver-host-daemon" 2>/dev/null; then
+    changed=false
+  fi
+  pending_stage="$(mktemp "$INSTALL_ROOT/.activation-pending.XXXXXX")"
+  stage_files+=("$pending_stage")
+  printf '%s\n' "$previous_build_id" > "$pending_stage"
+  mv -Tf "$pending_stage" "$activation_pending"
 fi
-if [[ -f "$INSTALL_ROOT/current/BUILD_ID" ]] && [[ "$(tr -d '\r\n' < "$INSTALL_ROOT/current/BUILD_ID")" == "$build_id" ]]; then
-  changed=false
+channel_stage="$(mktemp "$INSTALL_ROOT/.channel.XXXXXX")"
+stage_files+=("$channel_stage")
+printf '%s\n' "$release_channel" > "$channel_stage"
+mv -Tf "$channel_stage" "$INSTALL_ROOT/channel"
+if [[ -f "$INSTALL_ROOT/current/BUILD_ID" ]]; then
+  current_build_id="$(tr -d '\r\n' < "$INSTALL_ROOT/current/BUILD_ID")"
+else
+  current_build_id=""
+fi
+if [[ "$current_build_id" == "$build_id" ]]; then
   echo "Rainver Host ${release_channel} ($build_id) is already installed."
 else
   release_dir="$INSTALL_ROOT/releases/$build_id"
@@ -548,26 +595,20 @@ if [[ "$restart_pending" == false ]]; then
   done < <(find "$INSTALL_ROOT/releases" -mindepth 1 -maxdepth 1 -type d -print0)
 fi
 
-# Detect vendor CLIs on the PATH the daemon runs with (the captured
-# service.env, read the way its launcher reads it) as well as this
-# invocation's: a timer-driven update has only systemd's minimal PATH.
-service_env="${XDG_CONFIG_HOME:-$HOME/.config}/rainver-host/service.env"
-detection_path="$PATH"
-if [[ -f "$service_env" ]]; then
-  captured_path="$(set +eu; set -a; source "$service_env" >/dev/null 2>&1; printf '%s' "${PATH:-}")"
-  detection_path="${captured_path:+$captured_path:}$PATH"
-fi
-if PATH="$detection_path" command -v codex >/dev/null 2>&1 || PATH="$detection_path" command -v claude >/dev/null 2>&1; then
+if [[ -n "$adapter_payload" ]]; then
   install_adapter_pack
 fi
 
+cli_stage="$(mktemp "$BIN_DIR/.rainver-host.XXXXXX")"
+stage_files+=("$cli_stage")
 printf '#!/usr/bin/env bash\nexport RAINVER_HOST_INSTALL_ROOT=%q\nexport RAINVER_HOST_UPDATE_CHANNEL=%q\nexport RAINVER_HOST_ADAPTER_ROOT=%q\nexec %q %q "$@"\n' \
   "$INSTALL_ROOT" \
   "$release_channel" \
   "$INSTALL_ROOT/adapters/releases/$build_id" \
   "$node_command" \
-  "$INSTALL_ROOT/releases/$build_id/app/dist/cli.js" > "$BIN_DIR/rainver-host"
-chmod 755 "$BIN_DIR/rainver-host"
+  "$INSTALL_ROOT/releases/$build_id/app/dist/cli.js" > "$cli_stage"
+chmod 755 "$cli_stage"
+mv -Tf "$cli_stage" "$BIN_DIR/rainver-host"
 
 mkdir -p "$(dirname "$service_env")"
 if [[ ! -f "$service_env" ]]; then
@@ -588,6 +629,8 @@ if [[ ! -f "$service_env" ]]; then
 fi
 
 daemon_launcher="$INSTALL_ROOT/rainver-host-daemon"
+daemon_stage="$(mktemp "$INSTALL_ROOT/.rainver-host-daemon.XXXXXX")"
+stage_files+=("$daemon_stage")
 printf '#!/usr/bin/env bash\nset -a\nsource %q\nset +a\nrainver_host_bin_dir=%q\ncase ":${PATH:-}:" in\n  *":$rainver_host_bin_dir:"*) ;;\n  *) export PATH="$rainver_host_bin_dir${PATH:+:$PATH}" ;;\nesac\nunset rainver_host_bin_dir\nexport RAINVER_HOST_INSTALL_ROOT=%q\nexport RAINVER_HOST_UPDATE_CHANNEL=%q\nexport RAINVER_HOST_ADAPTER_ROOT=%q\nexec %q %q\n' \
   "$service_env" \
   "$BIN_DIR" \
@@ -595,8 +638,9 @@ printf '#!/usr/bin/env bash\nset -a\nsource %q\nset +a\nrainver_host_bin_dir=%q\
   "$release_channel" \
   "$INSTALL_ROOT/adapters/releases/$build_id" \
   "$node_command" \
-  "$INSTALL_ROOT/releases/$build_id/app/dist/daemon.js" > "$daemon_launcher"
-chmod 755 "$daemon_launcher"
+  "$INSTALL_ROOT/releases/$build_id/app/dist/daemon.js" > "$daemon_stage"
+chmod 755 "$daemon_stage"
+mv -Tf "$daemon_stage" "$daemon_launcher"
 
 installed_script="$INSTALL_ROOT/install-host.sh"
 install -m 755 "$temp_dir/install-host.sh" "$installed_script"
@@ -630,6 +674,7 @@ elif [[ -f "$CONFIG_DIR/config.json" ]]; then
   rm -f "$CONFIG_DIR/update-restart-requested"
   systemctl --user enable --now rainver-host.service
 fi
+rm -f "$activation_pending"
 
 echo "Rainver Host: $payload_version"
 echo "Update channel: $release_channel"

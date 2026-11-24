@@ -16,6 +16,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/ui/ta
 import { notifyReviewAttentionChanged } from '../../core/reviewAttention'
 import { useAppTranslation } from '../../i18n'
 import { formatDateTime } from '../../i18n/format'
+import { acceptRefusalKey } from '../memory/acceptOutcome'
 import { proposalTitle } from '../memory/proposalTitle'
 
 type InboxTab = 'signals' | 'bundles' | 'evidence' | 'approval'
@@ -108,15 +109,30 @@ export default function EvolutionInboxPage() {
         if (isEgressProposal(proposal)) {
           if (proposal.required_approver_user_id !== userId) throw new Error(t('evolution.inbox_page.granting_user_required'))
           await proposalsApi.approveEgressGrantingUserProposal(proposalId, { grant_id: proposal.grant_id ?? undefined })
-        } else if (proposal?.proposal_type === 'code_patch' && proposal.incomplete_patch) {
-          const skipped = proposal.skipped_count ?? 0
-          const message = skipped > 0
-            ? t('evolution.inbox_page.incomplete_patch_skipped', { count: skipped })
-            : t('evolution.inbox_page.incomplete_patch_unknown')
-          if (!window.confirm(message)) return
-          const out=await proposalsApi.accept(proposalId,{confirmIncompletePatch:true});if(out.result_type==='code_patch_pending'){toast.info(t(`mixed_surfaces.code_patch_${out.result.status === 'pending' ? 'queued' : out.result.status}`));await load();return;}
         } else {
-          const out=await proposalsApi.accept(proposalId);if(out.result_type==='code_patch_pending'){toast.info(t(`mixed_surfaces.code_patch_${out.result.status === 'pending' ? 'queued' : out.result.status}`));await load();return;}
+          const incompletePatch = proposal.proposal_type === 'code_patch' && proposal.incomplete_patch
+          if (incompletePatch) {
+            const skipped = proposal.skipped_count ?? 0
+            const message = skipped > 0
+              ? t('evolution.inbox_page.incomplete_patch_skipped', { count: skipped })
+              : t('evolution.inbox_page.incomplete_patch_unknown')
+            if (!window.confirm(message)) return
+          }
+          const out = incompletePatch
+            ? await proposalsApi.accept(proposalId, { confirmIncompletePatch: true })
+            : await proposalsApi.accept(proposalId)
+          const refusal = acceptRefusalKey(out)
+          if (refusal) {
+            toast.error(t(refusal))
+            notifyReviewAttentionChanged()
+            await load()
+            return
+          }
+          if (out.result_type === 'code_patch_pending') {
+            toast.info(t(`mixed_surfaces.code_patch_${out.result.status === 'pending' ? 'queued' : out.result.status}`))
+            await load()
+            return
+          }
         }
       } else await proposalsApi.reject(proposalId)
       notifyReviewAttentionChanged()

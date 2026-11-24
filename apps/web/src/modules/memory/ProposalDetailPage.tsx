@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { SpaceLink as Link, useSpaceNavigate } from '../../core/spaceNav'
 import { ArrowLeft } from 'lucide-react'
@@ -22,6 +22,8 @@ import { formatDateTime } from '../../i18n/format'
 import { proposalTitle } from './proposalTitle'
 import { useAppTranslation } from '../../i18n'
 import { evolutionAssetPath } from '../evolution/paths'
+import { GmailApplicationExecutionChoice, gmailApplicationExecutionAcceptable, type GmailApplicationExecutionState } from '../sources/gmail/GmailApplicationExecutionChoice'
+import { ApiRequestError } from '../../api/transport'
 
 function fmt(dt: string | null | undefined) {
   return formatDateTime(dt)
@@ -35,6 +37,9 @@ export default function ProposalDetailPage() {
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [acceptedAsset, setAcceptedAsset] = useState<{ proposalId: string; assetId: string } | null>(null)
+  const [execution, setExecution] = useState<GmailApplicationExecutionState | null>(null)
+  const [executionReload, setExecutionReload] = useState(0)
+  const executionScope = useMemo(() => ({ spaceId: activeSpaceId ?? undefined }), [activeSpaceId])
   const { t } = useAppTranslation()
 
   useEffect(() => {
@@ -69,6 +74,11 @@ export default function ProposalDetailPage() {
   const canDecide = !!p && decisionOpenOutsideConversation(p) && !patchBusy
   // A maintenance update waits for the person's revision before it can be accepted.
   const awaitingRevision = Boolean(p?.operator_revision && !p.operator_revision.edited_by_user_id)
+  // ADR 0036: a card whose Agent and model are chosen on it shows the same two-level choice here, for its owner, and is
+  // accepted only on the revision it shows — never before it loaded, while another configuration waits for its model,
+  // nor while a choice is being saved.
+  const choosesExecution = canDecide && p?.chosen_on_card === true && Boolean(userId) && p.owner_user_id === userId
+  const executionBlocked = Boolean(p?.chosen_on_card) && (!choosesExecution || !gmailApplicationExecutionAcceptable(execution))
 
   async function decide(action: 'accept' | 'reject') {
     if (!p) return
@@ -76,8 +86,8 @@ export default function ProposalDetailPage() {
     try {
       if (action === 'accept') {
         const options = codePatchAcceptOptions(p)
-        if (options === null) return
-        const out: ProposalAcceptOut = await proposalsApi.accept(p.id, options)
+        if (options === null || executionBlocked) return
+        const out: ProposalAcceptOut = await proposalsApi.accept(p.id, { ...options, ...(choosesExecution && execution?.revision ? { expectedRevision: execution.revision } : {}) })
         const refusal = acceptRefusalKey(out)
         if (refusal) toast.error(t(refusal))
         else if(out.result_type==='code_patch_pending'){toast.info(t(`mixed_surfaces.code_patch_${out.result.status === 'pending' ? 'queued' : out.result.status}`));}
@@ -119,7 +129,12 @@ export default function ProposalDetailPage() {
       setP(r)
     } catch (e) {
       const message = errMsg(e)
-      if (message.includes('GrantingUserApprovalRequired') || message.includes('egress_granting_user')) {
+      const code = e instanceof ApiRequestError ? (e.payload?.error as { metadata?: { code?: unknown } } | undefined)?.metadata?.code : undefined
+      // A refused acceptance of a card chosen on: show it again as it stands now before anything else is accepted.
+      if (choosesExecution && action === 'accept') { setExecution(null); setExecutionReload(n => n + 1) }
+      if (choosesExecution && action === 'accept' && code === 'proposal_revision_changed') {
+        toast.error(t('gmail_ui.execution.card_changed'))
+      } else if (message.includes('GrantingUserApprovalRequired') || message.includes('egress_granting_user')) {
         toast.error('Granting-user approval is required before this can be applied.')
       } else if (
         message.includes('not_implemented') ||
@@ -189,7 +204,7 @@ export default function ProposalDetailPage() {
               <ContentAccessControl resourceType="proposal" resourceId={p.id} ownerUserId={p.user_id || null} />
               {canDecide && (
                 <>
-                <Button size="sm" variant="success" disabled={busy || awaitingRevision} onClick={() => decide('accept')}>Accept</Button>
+                <Button size="sm" variant="success" disabled={busy || awaitingRevision || executionBlocked} onClick={() => decide('accept')}>Accept</Button>
                 <Button size="sm" variant="destructive" disabled={busy} onClick={() => decide('reject')}>Reject</Button>
                 </>
               )}
@@ -224,12 +239,18 @@ export default function ProposalDetailPage() {
           <p className="text-xs text-muted-foreground">
             review_deadline {fmt(p.review_deadline)} · expires {fmt(p.expires_at)}
           </p>
+          {choosesExecution && (
+            <GmailApplicationExecutionChoice proposalId={p.id} scope={executionScope} onState={setExecution} reloadKey={executionReload} />
+          )}
+          {p.chosen_on_card && canDecide && !choosesExecution && (
+            <p className="text-xs text-muted-foreground">{t('gmail_ui.execution.owner_only')}</p>
+          )}
           {p.operator_revision
             ? <MemoryRevisionEditor proposal={p} onRevised={(revised) => {
               setP(revised)
               if (revised.id !== p.id) navigate(`/proposals/${revised.id}`, { replace: true })
             }} />
-            : <p className="text-sm whitespace-pre-wrap">{p.proposed_content}</p>}
+            : <p className="text-sm whitespace-pre-wrap">{(choosesExecution && execution?.summary) || p.proposed_content}</p>}
           {p.proposal_type === 'retrieval_maintenance_packet' && (
             <div className="rounded-md border border-border bg-muted/30 p-3 text-sm">
               <p className="font-medium">Maintenance packet</p>

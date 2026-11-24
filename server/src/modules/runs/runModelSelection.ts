@@ -1,5 +1,12 @@
 import { RuntimeSessionConfigDroppedSelectionSchema, type RunModelSelection } from "@rainver/protocol";
 
+/** Match a reported ACP choice to its short alias without a server-owned alias map. */
+export function acpModelChoiceNamesAlias(choice: { value: string; name?: string | null }, alias: string): boolean {
+  const wanted = alias.trim().toLowerCase();
+  return Boolean(wanted && (choice.name?.trim().toLowerCase() === wanted
+    || choice.value.toLowerCase().split(/[-_.\s/:]+/).includes(wanted)));
+}
+
 export function runModelSelection(value: unknown, status: string): RunModelSelection {
   const override = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
   const selections = Array.isArray(override.acp_session_config) ? override.acp_session_config : [];

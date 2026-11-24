@@ -17,7 +17,8 @@ import { useGmailScope } from './useGmailScope'
 
 const seg = encodeURIComponent
 
-type Pending = { kind: 'disconnect' | 'forget'; connection: GmailConnection } | { kind: 'revoke_grant'; connection: GmailConnection; grant: GmailAgentReadGrant } | { kind: 'end_digest'; digest: GmailDigest } | null
+type Delegation = NonNullable<GmailConnection['read_delegations']>[number]
+type Pending = { kind: 'disconnect' | 'forget'; connection: GmailConnection } | { kind: 'revoke_grant'; connection: GmailConnection; grant: GmailAgentReadGrant } | { kind: 'revoke_delegation'; delegation: Delegation } | { kind: 'end_digest'; digest: GmailDigest } | null
 
 /**
  * The signed-in person's own Gmail connections in the active Space: connect,
@@ -167,6 +168,19 @@ export function GmailConnectionsCard() {
     if (!clearing) await load()
   }
 
+  const revokeDelegation = async (delegation: Delegation) => {
+    if (busy || !spaceId) return
+    const intent = `revoke_delegation:${delegation.delegation_id}`
+    setBusy(intent); setActionFailure(null)
+    const result = await run(signal => gmailApi.revokeDelegation(delegation.delegation_id, keyFor(intent), { spaceId, signal }))
+    if (!result) return
+    setBusy(null)
+    const clearing = !result.ok && GMAIL_CLEARING_FAILURES.has(gmailFailure(result.error))
+    if (result.ok || clearing) settle(intent)
+    if (!result.ok) refuse(result.error)
+    if (!clearing) await load()
+  }
+
   const edit = timeEdit?.scope === scopeKey ? timeEdit : null
   const saveDigestTime = async () => {
     if (!edit || busy || !spaceId || !edit.time) return
@@ -250,12 +264,37 @@ export function GmailConnectionsCard() {
                 </li>)}
               </ul>}
           </div>}
+          {connection.agent_read_enabled && (connection.read_delegations?.length ?? 0) > 0 && <div className="space-y-1 border-t border-border pt-2">
+            <p className="text-xs font-medium">{t('gmail_ui.connections.delegations.title')}</p>
+            <ul className="space-y-1" aria-label={t('gmail_ui.connections.delegations.title')}>
+              {connection.read_delegations!.map(delegation => <li key={delegation.delegation_id} className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                <span className="min-w-0 break-words">
+                  <span className="font-medium">{delegation.grantee_name}</span>
+                  <span className="text-muted-foreground"> · {delegation.project_name ?? t('gmail_ui.connections.agent_read.grant_unknown_project')} · {t('gmail_ui.connections.delegations.scope', { scope: delegation.query_scope })} · {delegation.last_used_at
+                    ? t('gmail_ui.connections.delegations.used', { count: delegation.read_count, date: formatDateTime(delegation.last_used_at) })
+                    : t('gmail_ui.connections.agent_read.allowed_at', { date: formatDateTime(delegation.created_at) })}</span>
+                </span>
+                <Button size="sm" variant="ghost" disabled={busy !== null} aria-label={t('gmail_ui.connections.delegations.revoke_label', { member: delegation.grantee_name })}
+                  onClick={() => setPending({ kind: 'revoke_delegation', delegation })}>{t('gmail_ui.connections.agent_read.revoke')}</Button>
+              </li>)}
+            </ul>
+          </div>}
         </div>}
         {digests?.scope === scopeKey && digests.items.some(digest => digest.connection_id === connection.id) && (
           <div className="space-y-2 rounded-md border border-border bg-muted/40 p-3">
-            <h3 className="text-sm font-medium">{t('gmail_ui.digests.title')}</h3>
+            <h3 className="text-sm font-medium">{t(digests.items.some(digest => digest.connection_id === connection.id && digest.kind === 'application')
+              ? 'gmail_ui.digests.rules_title' : 'gmail_ui.digests.title')}</h3>
             <ul className="space-y-2">
-              {digests.items.filter(digest => digest.connection_id === connection.id).map(digest => <li key={digest.id} className="space-y-1 border-t border-border pt-2 text-xs">
+              {digests.items.filter(digest => digest.connection_id === connection.id).map(digest => digest.kind === 'application' ? <li key={digest.id} className="flex flex-wrap items-center gap-2 border-t border-border pt-2 text-xs">
+                <span className="font-medium">{t('gmail_ui.digests.application')}</span>
+                <StatusBadge status={digest.status === 'active' ? 'active' : 'inactive'} label={t(`gmail_ui.digests.status.${digest.status}`)} />
+                {digest.project_name && <Button asChild size="sm" variant="outline">
+                  <Link to={`/projects/${seg(digest.project_id)}/plugins/applications/board`}>
+                    {t('gmail_ui.digests.open_project_applications', { project: digest.project_name })}
+                  </Link>
+                </Button>}
+                {digest.status !== 'ended' && <Button size="sm" variant="ghost" disabled={busy !== null} onClick={() => setPending({ kind: 'end_digest', digest })}>{t('gmail_ui.digests.end')}</Button>}
+              </li> : <li key={digest.id} className="space-y-1 border-t border-border pt-2 text-xs">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="font-medium">{t(`gmail_ui.digests.${digest.kind}`)}</span>
                   <StatusBadge status={digest.status === 'active' ? 'active' : 'inactive'} label={t(`gmail_ui.digests.status.${digest.status}`)} />
@@ -275,7 +314,9 @@ export function GmailConnectionsCard() {
                 {digest.last_delivered_at && <p className="text-muted-foreground">{t('gmail_ui.digests.last_delivery', { date: formatDateTime(digest.last_delivered_at) })}</p>}
                 {digest.last_error_code && digest.last_error_code !== 'gmail_digest_reconfirm_required' && <p role="status" className="text-muted-foreground">{t(digest.last_error_code === 'gmail_digest_read_limit' ? 'gmail_ui.digests.read_limit'
                   : digest.last_error_code === 'gmail_digest_window_incomplete' ? 'gmail_ui.digests.incomplete'
-                  : digest.last_error_code === 'gmail_digest_audience_outside_project' ? 'gmail_ui.digests.audience_outside_project' : 'gmail_ui.digests.delivery_issue')}</p>}
+                  : digest.last_error_code === 'gmail_digest_audience_outside_project' ? 'gmail_ui.digests.audience_outside_project'
+                  : digest.last_error_code === 'gmail_digest_audience_not_owner' ? 'gmail_ui.digests.audience_not_owner'
+                  : digest.last_error_code === 'gmail_digest_runtime_changed' ? 'gmail_ui.digests.runtime_changed_paused' : 'gmail_ui.digests.delivery_issue')}</p>}
                 <div className="flex flex-wrap items-center gap-2">
                   {digest.project_name && <Link className="underline" to={digest.room_id
                     ? `/projects/${seg(digest.project_id)}/rooms?room=${seg(digest.room_id)}&conversation=${seg(digest.session_id)}`
@@ -287,9 +328,10 @@ export function GmailConnectionsCard() {
                       setActionFailure(null)
                       setTimeEdit({ scope: scopeKey, digest, time: digest.local_time! })
                     }}>{t('gmail_ui.digests.change_time')}</Button>}
-                    <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => void actOnDigest(digest, digest.status === 'active' ? 'paused' : 'active')}>
+                    {/* A digest paused for a changed Agent, runtime or model resumes only on a new card naming it (ADR 0035 §3). */}
+                    {(digest.status === 'active' || digest.last_error_code !== 'gmail_digest_runtime_changed') && <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => void actOnDigest(digest, digest.status === 'active' ? 'paused' : 'active')}>
                       {t(digest.status === 'active' ? 'gmail_ui.digests.pause' : 'gmail_ui.digests.resume')}
-                    </Button>
+                    </Button>}
                     <Button size="sm" variant="ghost" disabled={busy !== null} onClick={() => setPending({ kind: 'end_digest', digest })}>{t('gmail_ui.digests.end')}</Button>
                   </>}
                 </div>
@@ -333,10 +375,10 @@ export function GmailConnectionsCard() {
     <ConfirmDialog
       open={pending !== null}
       onOpenChange={open => { if (!open) setPending(null) }}
-      title={pending?.kind === 'end_digest' ? t('gmail_ui.digests.end') : pending?.kind === 'revoke_grant' ? t('gmail_ui.connections.agent_read.revoke_title') : pending?.kind === 'forget' ? t('gmail_ui.connections.forget_title') : t('gmail_ui.connections.disconnect_title')}
-      description={pending?.kind === 'end_digest' ? t('gmail_ui.digests.end_body') : pending?.kind === 'revoke_grant' ? t('gmail_ui.connections.agent_read.revoke_body') : pending?.kind === 'forget' ? t('gmail_ui.connections.forget_body') : t('gmail_ui.connections.disconnect_body')}
-      confirmLabel={pending?.kind === 'end_digest' ? t('gmail_ui.digests.end') : pending?.kind === 'revoke_grant' ? t('gmail_ui.connections.agent_read.revoke') : pending?.kind === 'forget' ? t('gmail_ui.connections.forget') : t('gmail_ui.connections.disconnect')}
-      onConfirm={() => { if (!pending) return; if (pending.kind === 'end_digest') void actOnDigest(pending.digest, 'ended'); else if (pending.kind === 'revoke_grant') void revokeGrant(pending.grant); else void act(pending.kind, pending.connection) }}
+      title={pending?.kind === 'end_digest' ? t('gmail_ui.digests.end') : pending?.kind === 'revoke_delegation' ? t('gmail_ui.connections.delegations.revoke_title', { member: pending.delegation.grantee_name }) : pending?.kind === 'revoke_grant' ? t('gmail_ui.connections.agent_read.revoke_title') : pending?.kind === 'forget' ? t('gmail_ui.connections.forget_title') : t('gmail_ui.connections.disconnect_title')}
+      description={pending?.kind === 'end_digest' ? t('gmail_ui.digests.end_body') : pending?.kind === 'revoke_delegation' ? t('gmail_ui.connections.delegations.revoke_body') : pending?.kind === 'revoke_grant' ? t('gmail_ui.connections.agent_read.revoke_body') : pending?.kind === 'forget' ? t('gmail_ui.connections.forget_body') : t('gmail_ui.connections.disconnect_body')}
+      confirmLabel={pending?.kind === 'end_digest' ? t('gmail_ui.digests.end') : pending?.kind === 'revoke_delegation' || pending?.kind === 'revoke_grant' ? t('gmail_ui.connections.agent_read.revoke') : pending?.kind === 'forget' ? t('gmail_ui.connections.forget') : t('gmail_ui.connections.disconnect')}
+      onConfirm={() => { if (!pending) return; if (pending.kind === 'end_digest') void actOnDigest(pending.digest, 'ended'); else if (pending.kind === 'revoke_grant') void revokeGrant(pending.grant); else if (pending.kind === 'revoke_delegation') void revokeDelegation(pending.delegation); else void act(pending.kind, pending.connection) }}
     />
   </Card>
 }

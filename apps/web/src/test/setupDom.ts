@@ -1,6 +1,9 @@
 import '@testing-library/jest-dom/vitest'
 import { afterEach } from 'vitest'
 import { cleanup, configure } from '@testing-library/react'
+// Components render with every UI string, as they do in the signed-in app
+// (AuthenticatedApp installs the full set; the boot chunk has the sign-in subset).
+import '../i18n/authenticated'
 
 // A page can still be on its Suspense fallback because the lazy chunk has
 // not finished transforming. Under parallel load that can take well over

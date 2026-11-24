@@ -2,7 +2,7 @@ import {TurnWorkspaceSummary} from './TurnWorkspaceSummary'
 import { canDecideAuthorization, hasRunAuthorizationPause, useRunActions } from '../runs/useRunActions'
 import { RunQuotaRecoveryControls, runQuotaRecovery } from '../runs/RunQuotaRecoveryControls'
 import { RuntimeFailureNotice } from '../runs/RuntimeFailureNotice'
-import { POLICY_APPROVER_MAX_RISK, POLICY_RISK_LEVEL_VALUES, PolicyRiskLevelEnum } from '@rainver/protocol'
+import { POLICY_APPROVER_MAX_RISK, POLICY_RISK_LEVEL_VALUES, PolicyRiskLevelEnum, RUN_TERMINAL_STATUS_VALUES } from '@rainver/protocol'
 import { ConversationScope, useConversationScope } from './ConversationScope'
 import { createContext, useEffect, useState } from 'react'
 import { Loader2, RefreshCw, Square } from 'lucide-react'
@@ -11,7 +11,7 @@ import type { AuthorizationRequest, Run } from '../../types/api'
 import { Button } from '../../components/ui/button'
 import { useAppTranslation } from '../../i18n'
 
-const TERMINAL_RUN_STATUSES = new Set(['succeeded', 'failed', 'degraded', 'cancelled', 'orphaned'])
+const TERMINAL_RUN_STATUSES = new Set<string>(RUN_TERMINAL_STATUS_VALUES)
 /** Presentation deduplication only; every action still rechecks its own Run. */
 export const PresentedRunDecisions = createContext<ReadonlySet<string>>(new Set())
 

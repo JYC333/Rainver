@@ -22,6 +22,8 @@ import { registerSourceBackfillProposalAppliers } from "../sources/sourceBackfil
 import { registerGmailMonitorProposalApplier } from "../sources/gmail/gmailMonitors.js";
 import { registerGmailPrivateReadProposalApplier } from "../sources/gmail/gmailPrivateReadHandoff.js";
 import { registerGmailDigestProposalApplier } from "../sources/gmail/gmailDigests.js";
+import { registerGmailSetupProposalApplier } from "../sources/gmail/gmailSetupProposal.js";
+import { registerGmailDelegationProposalApplier } from "../sources/gmail/gmailDelegations.js";
 import { registerGmailPrivateCheckProposalApplier } from "../sources/gmail/gmailPrivateCheck.js";
 import { registerProjectSourceProposalAppliers } from "../projects/projectSourceProposalApplier.js";
 import { registerEvolvableAssetPromotionProposalApplier } from "../evolution/assetPromotionProposalApplier.js";
@@ -58,6 +60,8 @@ export interface ProposalApplyContext {
   requester?: OperationActor;
   /** The approver decided directly, on their own (`ProposalAcceptOptions.ownerCardDecision`). */
   ownerCardDecision?: boolean;
+  /** The decision named the revision the approver was shown and it matched the locked row (`ProposalAcceptOptions.expectedRevision`). */
+  revisionConfirmed?: boolean;
 }
 
 export interface ProposalApplyResult {
@@ -139,6 +143,8 @@ export function createDefaultProposalApplierRegistry(
   registerSourceBackfillProposalAppliers(registry);
   registerGmailMonitorProposalApplier(registry);
   registerGmailDigestProposalApplier(registry);
+  registerGmailSetupProposalApplier(registry);
+  registerGmailDelegationProposalApplier(registry);
   registerGmailPrivateReadProposalApplier(registry);
   registerGmailPrivateCheckProposalApplier(registry);
   registerProjectSourceProposalAppliers(registry);

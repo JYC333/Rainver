@@ -223,15 +223,16 @@ an Agent keep its identity, prompt and constraints while selecting an ACP
 runtime, backend mode, execution Host/installation and workspace.
 
 A profile may also be host-bound with `execution_host_id`, a `workspace_mode`,
-and a pinned `runtime_installation`. `location` mode additionally pins
-`workspace_location_id` and requires the Agent's Project context; `managed`
-mode has no Location and lets the daemon derive a private workspace per Agent
+and a pinned `runtime_installation`. `location` mode provides a default
+Folder through `workspace_location_id` and requires the Agent's Project context.
+`managed` mode stores no default Folder and lets the daemon derive a private workspace per Agent
 × Room or direct owner. An ordinary Server Agent Run may also have neither a
 Conversation thread nor a Location: its CLI state uses a stable Agent scope,
 while the daemon gives each Run a private temporary working directory. The
 selected host and installation are
 validated against the caller's ownership and the daemon's reported
-capabilities. Host-bound profiles do not require a server ModelProvider or
+capabilities. A Room conversation or Task with its own workspace uses that
+workspace with an eligible Profile on the same Host. Host-bound profiles do not require a server ModelProvider or
 server runtime-tool installation: the paired host owns the CLI login and
 runtime process. For input admission, an unbound Host-owned ACP profile uses
 the installation's initialize prompt capability as the image authority; a
@@ -265,6 +266,9 @@ Rules:
   runtime/model fallback. A disabled/unavailable Profile fails closed.
 - Editing a Profile affects future route selection only. An initialized
   Conversation/Host thread retains its pinned execution snapshot.
+- Disabled non-Assistant Agents retain Profile read access and allow edits to
+  existing Profiles under the usual Agent permissions. Run admission still
+  requires an active Agent.
 - Public Run creation accepts explicit `runtime_profile_id` when the caller
   owns that choice; it does not accept per-run `adapter_type` or
   AgentVersion model fields as alternate authority.
@@ -308,7 +312,9 @@ the reset to the product default.
 Direct Agent chat and Room chat share the same development-facing controls.
 The first Host-bound direct send creates and pins the Conversation execution
 context; later direct sends resolve the existing Agent × owner Host thread and
-reject a changed Host or workspace pin. Git state is not a send gate: the
+use its pinned workspace when the Profile's default Folder changes on the
+same Host. The backend catalog for the existing conversation shows that
+workspace. A changed Host still needs a new Conversation. Git state is not a send gate: the
 context's initialization-time `git_*` snapshot and the Run-start
 `git_snapshot` are audit inputs, and the CLI reads the checkout itself.
 
@@ -533,7 +539,9 @@ does not auto-apply them.
 Room agents can explicitly wait for other room results through
 `agent.wait_for_results`. A waiting run uses status `waiting_for_dependency`;
 the worker is released, and the lifecycle projector requeues the same run with
-dependency summaries once all declared dependency runs are terminal. Delegation
+dependency summaries once all declared dependency runs are terminal. Additional
+input the person sent the parked run meanwhile is appended to that
+continuation and settled with it ([Rooms](rooms.md#ordinary-send-into-an-active-turn)). Delegation
 completion alone does not create an inferred follow-up run.
 
 The CLI tool route flushes a successful `waiting` receipt before asking that
@@ -588,6 +596,32 @@ the existing FIFO admits compatible readers together and keeps writers
 exclusive. Tool results expose the selected access/concurrency, and
 `agent.list_runs` adds access and current scheduling waits without prompts or
 results. See [execution contracts](../architecture/EXECUTION_MODEL.md#explicit-read-only-review-delegation).
+
+In an isolated Location-backed Room, an explicit code review uses
+`workspace_access: "read"` and `review: {}`.
+The review prompt carries the usual identity, compact review rules, and the
+tool and workspace guidance needed for the review. A follow-up can set
+`review.previous_run_id` to the same reviewer's completed Run under the same
+coordinator Run. Give the old/new commit, remaining findings, changed files
+and relevant document sections in `instruction`. Inspect full sources when
+they bear on the finding. Independently requested reviews start fresh.
+The server checks the previous verified review, the audience, identity,
+configuration, thread and workspace generation, and recorded occupancy before
+requesting native resume. An ineligible source starts with a fresh session.
+The new Run always receives its own Host-verified review basis. Audit
+`model_override_json.delegated_review.session` records dispatch intent and the
+runtime usage records whether it actually resumed.
+
+For the same implementation under the same coordinator Run, use
+`workspace_access: "write"` and `continuation.previous_run_id` to point to the
+same writer's last completed Run. Include remaining changes and checks in the
+instruction. The saved commit and bounded result accompany the follow-up when
+the previous Run is fully readable and its checkpoint belongs to the same open
+batch. A matching session can resume when its recorded context is at most a
+quarter of its window. Other follow-ups start fresh. Independent writes omit
+the continuation field. The ordinary write lease, checkpoint and publication
+rules still apply. `model_override_json.delegated_write.session` records the
+dispatch decision.
 
 The web Agent Rooms surface is the Projects module's `rooms` route
 (`/projects/:projectId/rooms`, `apps/web/src/modules/agent_groups/AgentGroupsPage.tsx`).
@@ -649,6 +683,12 @@ version (the old route silently dropped them).
    the Space Assistant, the Project owner for a Project Assistant). Agent-scope
    asset versions and pins of any other Agent follow `canChangeAgent`; Space
    role alone grants neither.
+
+Project overview **Runtime settings** opens the Project Assistant's reusable
+profiles. The Project owner can add a Host/workspace profile and set its
+default there. Before a new Room conversation is confirmed, each participating
+Agent with multiple eligible profiles can pick one for the selected Host and
+workspace. This choice pins that conversation without changing the Agent default.
 
 **Read endpoints for the config UI:**
    `GET /agents/{id}/current-version` (current `AgentVersionOut` config snapshot),

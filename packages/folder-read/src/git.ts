@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
+import { lstat, realpath } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import type { GitChangedFile } from "./types.js";
 
 export interface CommandResult {
@@ -260,11 +262,51 @@ export async function isGitRepo(path: string): Promise<boolean> {
   }
 }
 
-/** Ensure a writable managed directory has the Git baseline used by status and diff readers. */
+/** Ensure an application-managed directory has a usable, empty initial baseline.
+ * Never stages files or reads/writes the person's index; existing history stays. */
 export async function ensureGitRepository(path: string): Promise<boolean> {
-  if (await isGitRepo(path)) return true;
-  const result = await runGit(["init", "--quiet"], path, 30_000);
-  return result.code === 0;
+  const directory = await lstat(path).catch(() => null);
+  if (!directory?.isDirectory() || directory.isSymbolicLink()) return false;
+  const root = await realpath(path), dotGit = join(root, ".git");
+  let own = await lstat(dotGit).catch(() => null);
+  if (!own) {
+    if ((await runLocationGit(["init", "--quiet"], root, 30_000)).code !== 0) return false;
+    own = await lstat(dotGit).catch(() => null);
+  }
+  // Linked worktrees, redirected Git dirs and corrupt HEADs are not fresh folders.
+  if (!own?.isDirectory() || own.isSymbolicLink()) return false;
+  const prefix = await runLocationGit(["rev-parse", "--show-prefix"], root);
+  const common = await runLocationGit(["rev-parse", "--git-common-dir"], root);
+  if (prefix.code !== 0 || prefix.stdout !== "\n" || common.code !== 0
+    || await realpath(resolve(root, common.stdout.replace(/\n$/, ""))).catch(() => null) !== dotGit) return false;
+  const head = () => runLocationGit(["rev-parse", "--verify", "HEAD^{commit}"], root);
+  if ((await head()).code === 0) return true;
+  const pointer = await lstat(join(dotGit, "HEAD")).catch(() => null);
+  if (!pointer?.isFile() || pointer.isSymbolicLink()) return false;
+  const symbolic = await runLocationGit(["symbolic-ref", "--quiet", "HEAD"], root);
+  const ref = symbolic.stdout.trim();
+  if (symbolic.code !== 0 || !ref.startsWith("refs/heads/")
+    || (await runLocationGit(["check-ref-format", ref], root)).code !== 0) return false;
+  const refs = await runLocationGit(["for-each-ref", "--count=1", "--format=%(refname)"], root);
+  if (refs.code !== 0 || refs.stdout.trim()) return (await head()).code === 0;
+  // A loose dangling or symbolic branch must not be replaced as if it were absent.
+  if (await lstat(join(dotGit, ref)).catch(() => null)) return false;
+  const parts = ref.split("/");
+  for (let i = 1; i < parts.length; i++) {
+    const part = parts.slice(0, i).join("/");
+    const info = await lstat(join(dotGit, part)).catch(() => null);
+    if (info && (!info.isDirectory() || info.isSymbolicLink())) return false;
+  }
+  const tree = await runLocationGit(["mktree"], root, 30_000, { input: "" });
+  if (tree.code !== 0) return false;
+  const commit = await runLocationGit(["commit-tree", "--no-gpg-sign", tree.stdout.trim(), "-m", "Initialize Rainver managed workspace"], root, 30_000,
+    { env: { GIT_AUTHOR_NAME: "Rainver", GIT_AUTHOR_EMAIL: "rainver@localhost", GIT_COMMITTER_NAME: "Rainver", GIT_COMMITTER_EMAIL: "rainver@localhost" } });
+  if (commit.code !== 0) return false;
+  const oid = commit.stdout.trim();
+  await runLocationGit(["update-ref", "--no-deref", ref, oid, "0".repeat(oid.length)], root);
+  // Another initializer may win the create-only ref transaction. Either way,
+  // a real HEAD is required; existing commits and every worktree/index byte stay.
+  return (await head()).code === 0;
 }
 
 /**

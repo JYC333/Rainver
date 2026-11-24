@@ -24,6 +24,9 @@ if [[ ! -f "$COMPOSE_FILE" ]]; then
 fi
 
 COMPOSE=(docker compose --env-file "$INSTANCE_ROOT/.env" -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE")
+source "$REPO_ROOT/ops/scripts/lib/local-compose.sh"
+MODE_ROOT="$INSTANCE_ROOT"
+local_compose_lock_instance "restarting Rainver"
 
 echo "[restart] restarting $API_SERVICE and $FRONTEND_SERVICE..."
 RAINVER_MODE_ROOT="$HOST_MODE_ROOT" "${COMPOSE[@]}" restart "$API_SERVICE" "$FRONTEND_SERVICE"

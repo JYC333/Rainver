@@ -2,13 +2,15 @@ import {contentDecisionFromDb} from '../access/contentAccessQuery.js';
 import type { Queryable, SpaceUserIdentity } from '../routeUtils/common.js';
 import {NoteObjectError} from './noteObjectErrors.js';
 import { assertWritableSpaceObject } from './knowledgeWriteAccess.js';
-import { NOTE_OBJECT_SCHEMAS, type OperationActor, type RegisteredSystemActionDefinition } from '@rainver/protocol';
+import { NOTE_OBJECT_SCHEMAS, isProjectNoteAgentAction, type OperationActor, type RegisteredSystemActionDefinition } from '@rainver/protocol';
 import type { OperationRegistration } from '../systemActions/operations/types.js';
 import { hidden, OperationError } from '../systemActions/operations/errors.js';
 import { PgKnowledgeRepository } from './repository.js';
 import { admitNoteMutation, discoverNoteCreationParent, discoverNoteMutation } from './noteObjectAdmission.js';
 import { assertProjectReadable, assertProjectWriterForMutation } from '../projects/access.js';
 import { noteObjectFailure } from './noteObjectErrors.js';
+import { projectOwningCollection } from './noteProjectFolders.js';
+import { listSpaceObjectProjectShares } from './spaceObjectProjectShares.js';
 import { parseNotesTreeReorder, persistNotesTreeReorder } from './notesTreeReorder.js';
 const person = (a: OperationActor) => ({
   spaceId: a.space_id,
@@ -38,6 +40,13 @@ export function noteObjectRegistrations(defs: ReadonlyMap<string, RegisteredSyst
       const input = raw as Record<string, any>;
       let project: string | null = null;
       if (id === 'knowledge.note.create') project = input.collection_id ? await discoverNoteCreationParent(db, person(actor), input.collection_id) : input.primary_project_id ?? null;
+      if (actor.principal.kind === 'agent' && actor.effective_origin !== 'manual') throw hidden();
+      if (actor.principal.kind === 'agent' && id === 'knowledge.note.create' && !input.collection_id && !project) {
+        project = (await db.query<{project_id: string | null}>(
+          'SELECT project_id FROM runs WHERE space_id=$1 AND id=$2', [actor.space_id, actor.run_id]
+        )).rows[0]?.project_id ?? null;
+      }
+      const admissionInput = id === 'knowledge.note.create' ? {...input, primary_project_id: project} : input;
       return {
         authority: id === 'knowledge.note.create' ? project ? `project:${project}` : `space:${actor.space_id}` : input.note_id ? `note:${input.note_id}` : `note_collections:${actor.space_id}`,
         targets: id === 'knowledge.note.create' ? {
@@ -50,7 +59,7 @@ export function noteObjectRegistrations(defs: ReadonlyMap<string, RegisteredSyst
         resourceType: 'note',
         resourceId: input.note_id ?? null,
         project,
-        admission: await discoverNoteMutation(db, person(actor), id, input)
+        admission: await discoverNoteMutation(db, person(actor), id, admissionInput)
       };
     },
     normalizeInput(raw, scope) {
@@ -85,9 +94,36 @@ export function noteObjectRegistrations(defs: ReadonlyMap<string, RegisteredSyst
         return;
       }
       if (id === 'knowledge.note.create' && input.collection_id && (await discoverNoteCreationParent(db, person(actor), input.collection_id)) !== input.primary_project_id) throw new OperationError('operation_conflict', 409);
-      await admitNoteMutation(db, person(actor), id, input, (scope as typeof scope & {
+      const admission = await admitNoteMutation(db, person(actor), id, input, (scope as typeof scope & {
         admission: unknown;
       }).admission);
+      if (actor.principal.kind !== 'agent') return;
+      if (!isProjectNoteAgentAction(id) || actor.effective_origin !== 'manual') throw hidden();
+      const run = (await db.query<{project_id: string | null}>(
+        'SELECT project_id FROM runs WHERE space_id=$1 AND id=$2', [actor.space_id, actor.run_id]
+      )).rows[0];
+      const project = run?.project_id;
+      if (!project || admission.projects.some(other => other !== project)) throw hidden();
+      await assertProjectWriterForMutation(db, actor.space_id, project, person(actor).userId);
+      const changes = input.changes ?? input;
+      if (id === 'knowledge.note.create' && (input.primary_project_id !== project || input.created_from_activity_id)) throw hidden();
+      if (id === 'knowledge.note.update' &&
+          ['primary_project_id', 'collection_id', 'project_role', 'status'].some(key => Object.hasOwn(changes, key))) throw hidden();
+      if (id === 'knowledge.collection.create' && (!input.parent_id || input.id)) throw hidden();
+      if (id === 'knowledge.collection.update' && (Object.hasOwn(changes, 'parent_id') || Object.hasOwn(changes, 'is_hidden'))) throw hidden();
+      if (id === 'knowledge.note.tree.reorder' && input.kind !== 'notes') throw hidden();
+      const addressedFolders: string[] = id === 'knowledge.note.tree.reorder'
+        ? input.updates.flatMap((row: {from_collection_id: string; collection_id: string}) => [row.from_collection_id, row.collection_id])
+        : [input.collection_id ?? input.parent_id].filter(Boolean);
+      for (const folder of new Set(addressedFolders)) {
+        if (await projectOwningCollection(db, actor.space_id, folder) !== project) throw hidden();
+      }
+      for (const note of admission.noteRows) {
+        if (note.primary_project_id !== project) throw hidden();
+        if ((await listSpaceObjectProjectShares(db, actor.space_id, note.id)).some(share => share.project_id !== project)) throw hidden();
+      }
+      scope.policyFacts = {...scope.policyFacts, gmail_write_project_id: project};
+
     },
     async authorizeResult(db, raw, actor) {
       const output = raw as {

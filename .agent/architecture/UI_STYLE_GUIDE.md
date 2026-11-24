@@ -136,3 +136,11 @@ type/build checks and suitable browser evidence; avoid unit tests that merely
 assert the exact utility class string. Do not run unrelated server/database suites
 for a visual-only change. Full-suite requirements before an authorized commit
 remain in [COMMANDS](../COMMANDS.md).
+
+## Live data on open pages
+
+A page showing data that can change through an Agent, another session or a
+background job must refresh its visible data automatically after committed
+changes. Reuse the owning surface's live invalidation and normal authorized
+read. Keep the current route, selections and unsaved edits during refresh.
+Manual refresh may remain a recovery control.

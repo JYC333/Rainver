@@ -24,8 +24,8 @@ const KNOWLEDGE_PROPOSAL_TYPES = [
   'retrieval_diagnostics_packet',
 ]
 
-export function apiTypesForFilter(type: string): (string | undefined)[] {
-  if (!type) return [undefined]
+export function apiTypesForFilter(type: string): string[] {
+  if (!type) return []
   if (type === 'memory') return ['memory_create', 'memory_update', 'memory_archive']
   if (type === 'knowledge') return KNOWLEDGE_PROPOSAL_TYPES
   return [type]

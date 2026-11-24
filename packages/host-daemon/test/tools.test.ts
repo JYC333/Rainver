@@ -185,9 +185,8 @@ describe("managed installations", () => {
       }
       const manifestPath = join(toolsDir(), "acp_fake", "1.0.0", "manifest.json");
       const originalWrite = fs.promises.writeFile;
-      let writes = 0;
       const fail = vi.spyOn(fs.promises, "writeFile").mockImplementation(async (path, data, options) => {
-        if (path === manifestPath && ++writes === 2) throw new Error("final manifest I/O failure");
+        if (path === manifestPath) throw new Error("final manifest I/O failure");
         return originalWrite(path, data, options);
       });
       syncBuiltinESMExports();

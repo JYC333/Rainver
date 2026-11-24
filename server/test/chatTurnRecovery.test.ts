@@ -436,7 +436,7 @@ describe("terminal Chat Run reconciliation", () => {
 describe("terminal Chat Run whose finalization keeps failing", () => {
   const db = useTestDatabase(import.meta.filename);
 
-  it("releases the conversation with a visible failed completion once the retry bound is reached", async () => {
+  it.each(["materialization", "publication"])("releases the conversation when %s repeatedly fails", async failure => {
     const space = randomUUID();
     const owner = randomUUID();
     const agent = randomUUID();
@@ -464,17 +464,21 @@ describe("terminal Chat Run whose finalization keeps failing", () => {
       }), JSON.stringify({ schema_version: "run_output.v1", status: "succeeded", summary: "Done." })],
     );
     const runs = new PgRunRepository(db.pool);
+    const failureMessage = failure === "materialization" ? "could not materialize the Run output" : "message store rejected the reply";
     const sweep = () => reconcileTerminalChatRuns(
       loadConfig({ SERVER_DATABASE_URL: "postgresql://unused/test" }),
       runs,
       undefined,
-      { async finalizeRun() { return { kind: "activity", status: "succeeded", activity_id: "finalization-1", metadata_json: {} }; } },
+      { async finalizeRun() {
+        if (failure === "materialization") return {kind:"activity", status:"failed", error_code:"finalization_failed", error_message:failureMessage, metadata_json:{}};
+        return { kind: "activity", status: "succeeded", activity_id: "finalization-1", metadata_json: {} };
+      } },
       {
         loadActionPreviews: async () => [],
         resolveAgentActorId: (spaceId, agentId) => resolveAgentActorId(db.pool, spaceId, agentId),
         sessions: {
           async addAssistantMessageForRun() {
-            throw new Error("message store rejected the reply");
+            throw new Error(failureMessage);
           },
         },
       },
@@ -492,7 +496,7 @@ describe("terminal Chat Run whose finalization keeps failing", () => {
     expect(await events()).toEqual(Array.from({ length: MAX_CHAT_FINALIZATION_ATTEMPTS - 1 }, () => expect.objectContaining({
       event_type: "warning",
       error_code: "chat_finalization_failed",
-      error_message: "message store rejected the reply",
+      error_message: failureMessage,
     })));
 
     await sweep();
@@ -501,7 +505,7 @@ describe("terminal Chat Run whose finalization keeps failing", () => {
       event_type: "chat_completed",
       status: "failed",
       error_code: "chat_finalization_failed",
-      error_message: expect.stringContaining("message store rejected the reply"),
+      error_message: expect.stringContaining(failureMessage),
     });
     expect(await runs.listTerminalChatRunsAwaitingCompletion()).toEqual([]);
   });

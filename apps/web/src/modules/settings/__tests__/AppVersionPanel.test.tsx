@@ -22,6 +22,17 @@ describe('application version', () => {
     fireEvent.click(update)
     await waitFor(() => expect(reloadLatestBuild).toHaveBeenCalledOnce())
   })
+  it('returns to a retryable update when the person stays at the unsaved-input prompt', async () => {
+    vi.mocked(fetchLatestBuild).mockResolvedValue({ id: 'build-b', builtAt: '' })
+    vi.mocked(reloadLatestBuild).mockResolvedValue('kept')
+    render(<AppVersionPanel />)
+    fireEvent.click(screen.getByRole('button', { name: 'Check for updates' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Update and reload' }))
+    await screen.findByText(/Reload cancelled\. Your unsaved input is still on this page/)
+    expect(screen.getByRole('button', { name: 'Check for updates' })).toBeEnabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Update and reload' }))
+    await waitFor(() => expect(reloadLatestBuild).toHaveBeenCalledTimes(2))
+  })
   it('does not claim the page is current when the network check fails', async () => {
     vi.mocked(fetchLatestBuild).mockRejectedValue(new Error('offline'))
     render(<AppVersionPanel />)

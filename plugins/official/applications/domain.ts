@@ -28,6 +28,22 @@ export const PROGRESS_STATUSES = ['planning', 'preparing', 'ready', 'under_revie
 export const DECISION_STATUSES = ['submitted', 'accepted', 'declined', 'withdrawn'] as const;
 export const APPLICATION_STATUSES = [...PROGRESS_STATUSES, ...DECISION_STATUSES] as const;
 export type ApplicationStatus = typeof APPLICATION_STATUSES[number];
+/**
+ * External results an institution reports. A Gmail application update (ADR 0034) records one
+ * only forward along this order: an older message never moves a newer status back, an equal
+ * rank (offer against rejected) is left to the person, and a decided application (accepted,
+ * declined, withdrawn) is never changed by mail.
+ */
+export const EXTERNAL_RESULT_STATUSES = ['under_review', 'interview', 'waitlisted', 'offer', 'rejected'] as const;
+export const EXTERNAL_RESULT_RANK: Readonly<Record<string, number>> = {
+  planning: 0, preparing: 0, ready: 0, submitted: 1, under_review: 2, interview: 3, waitlisted: 4, offer: 5, rejected: 5,
+};
+/** Decisions of the person: mail never changes an application in one of these. */
+export const PERSON_DECIDED_STATUSES: readonly ApplicationStatus[] = ['accepted', 'declined', 'withdrawn'];
+/** What a recorded mail fact did: written, already so, or left for the person. */
+export const MAIL_FACT_OUTCOMES = ['recorded', 'unchanged', 'conflict'] as const;
+export const MAIL_FACT_CONFLICTS = ['application_archived', 'revision_conflict', 'status_decided', 'newer_status', 'status_regression', 'no_submission', 'newer_deadline', 'ambiguous_deadline', 'ambiguous_contact'] as const;
+
 /** Statuses after which the application needs no more preparation. */
 export const CLOSED_STATUSES: readonly ApplicationStatus[] = ['rejected', 'accepted', 'declined', 'withdrawn'];
 

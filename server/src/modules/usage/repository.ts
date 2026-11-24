@@ -661,7 +661,7 @@ export class PgUsageRepository {
         : "day";
     const rows = await this.db.query<TimeseriesAggregateRow>(
       `SELECT
-        date_trunc('${bucket}', e.occurred_at)::timestamptz AS bucket_start,
+        date_trunc('${bucket}', e.occurred_at, 'UTC') AS bucket_start,
         ${group.keySql} AS group_key,
         ${group.labelSql} AS group_label,
         ${aggregateSelectSql()}
@@ -1079,8 +1079,8 @@ function rawGroupExpression(groupBy: string): { keySql: string; labelSql: string
       return { keySql: "e.execution_channel", labelSql: "e.execution_channel" };
     case "date":
       return {
-        keySql: "date_trunc('day', e.occurred_at)::date::text",
-        labelSql: "date_trunc('day', e.occurred_at)::date::text",
+        keySql: "(e.occurred_at AT TIME ZONE 'UTC')::date::text",
+        labelSql: "(e.occurred_at AT TIME ZONE 'UTC')::date::text",
       };
     case "session":
       return {

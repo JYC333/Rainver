@@ -253,6 +253,44 @@ describe('Finance ledger package (Plan 7)', () => {
     expect((await ok(query('book.balances', {book_id: book}))).balances).toHaveLength(3);
   });
 
+  it('withholds the shared side of a transaction touching another member\'s private account', async () => {
+    const book = await createBook();
+    const {checkingId, foodId} = await seedLedger(book);
+    const personal = (await ok(action('account.open', {
+      book_id: book, root_type: 'Assets', group: 'Bank', leaf: 'Private', opened_at: '2026-01-01',
+      owner: 'personal', visible_to_space: false,
+    }))).account.id;
+    await ok(txn(book, '2026-07-01', [[checkingId, '-4.00'], [foodId, '4.00']], {post: true}));
+    await ok(txn(book, '2026-07-02', [[personal, '-12.00'], [foodId, '12.00']], {post: true}));
+
+    const ledger = () => query('account.ledger', {book_id: book, account_id: foodId});
+    expect((await ok(ledger())).postings).toHaveLength(2);
+    as(member);
+    expect((await ok(ledger())).postings).toEqual([expect.objectContaining({amount_text: '4.00'})]);
+    expect((await ok(query('book.balances', {book_id: book}))).balances)
+      .toContainEqual(expect.objectContaining({accountName: 'Expenses:Food', positions: ['4.00 USD']}));
+  });
+
+  it('pages owned import summaries, with a stable order for same-time batches', async () => {
+    const book = await createBook();
+    const mine = Array.from({length: 27}, () => randomUUID()).sort();
+    await db.pool.query(
+      `INSERT INTO plugin_finance_ledger.finance_import_sources
+        (id,book_id,space_id,source_type,content_text,imported_by_user_id,created_at)
+       SELECT id,$1,$2,'upload','stored text',$3,'2026-07-01'::timestamptz
+         FROM unnest($4::varchar[]) AS own(id)
+       UNION ALL SELECT $5,$1,$2,'upload','other text',$6,now()`,
+      [book, space, user, mine, randomUUID(), member],
+    );
+    const first = await ok(query('import.list', {book_id: book, offset: 0}));
+    const second = await ok(query('import.list', {book_id: book, offset: first.next_offset}));
+    expect(first.next_offset).toBe(25);
+    expect(first.imports.map((batch: {id: string}) => batch.id)).toEqual(mine.slice(0, 25));
+    expect(second.imports.map((batch: {id: string}) => batch.id)).toEqual(mine.slice(25));
+    expect(second).not.toHaveProperty('next_offset');
+    expect(JSON.stringify(first)).not.toContain('stored text');
+  });
+
   it('imports Beancount as proposed entries that only an approved posting Proposal posts', async () => {
     const book = await createBook();
     const {checkingId} = await seedLedger(book);
@@ -267,7 +305,7 @@ describe('Finance ledger package (Plan 7)', () => {
     expect(lunch).toMatchObject({entry_type: 'transaction', missing_accounts: ['Assets:Cash']});
     expect(await statuses(book)).toEqual(['proposed']);
     expect((await ok(query('account.list', {book_id: book}))).accounts.map((a: {name: string}) => a.name)).toEqual(['Assets:Bank:Checking', 'Expenses:Food']);
-    expect((await ok(query('import.list', {book_id: book}))).imports).toEqual([expect.objectContaining({id: batch, summary: expect.objectContaining({pending_mapping: 1})})]);
+    expect((await ok(query('import.list', {book_id: book, offset: 0}))).imports).toEqual([expect.objectContaining({id: batch, summary: expect.objectContaining({pending_mapping: 1})})]);
     expect(await refused(action('import.map_entry', {book_id: book, import_source_id: batch, entry_id: lunch.id, account_mapping: {'Assets:Cash': 'no-such-account'}}))).toMatchObject({status: 422, reason: 'unknown_account'});
     // Another member cannot read, retry or post the batch.
     as(member);

@@ -1057,13 +1057,15 @@ export type HostCommandOutcome = z.infer<typeof HostCommandOutcomeSchema>;
 
 export const HostServerFrameSchema = z.discriminatedUnion("type", [
   HostSourceExecuteFrameSchema, HostSourceCancelFrameSchema, HostSourceResponseFrameSchema,
-  z.object({ type: z.literal("hello_ack"), host_id: IdSchema, runtime_probes: z.array(RuntimeProbeSchema) }),
+  z.object({ type: z.literal("hello_ack"), host_id: IdSchema, runtime_probes: z.array(RuntimeProbeSchema), run_completion_ack: z.literal(true).optional() }),
   // The catalog can change while a daemon stays connected (for example when
   // an ACP registry agent is enabled), so every acknowledgement refreshes the
   // probes instead of making a reconnect part of installation.
   z.object({ type: z.literal("heartbeat_ack"), runtime_probes: z.array(RuntimeProbeSchema).optional() }),
   z.object({ type: z.literal("error"), detail: z.string() }),
   HostLaunchFrameSchema,
+  z.object({ type: z.literal("run_completion_ack"), run_id: IdSchema, launch_id: IdSchema }),
+  z.object({ type: z.literal("run_reconnect_probe"), run_id: IdSchema, launch_id: IdSchema }),
   /**
    * Stop a Run. With `launch_id`, only that launch attempt — a queued one is
    * taken out of its Location's queue, a running one is signalled — so a stop
@@ -1149,6 +1151,8 @@ export const HostHelloFrameSchema = HostHelloInfoSchema.extend({ type: z.literal
 export const HostHeartbeatFrameSchema = HostHelloInfoSchema.extend({ type: z.literal("heartbeat") });
 
 export const HostDaemonFrameSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("run_reconnect_state"), run_id: IdSchema, launch_id: IdSchema,
+    phase: z.enum(["starting", "waiting_for_workspace", "launched", "missing"]) }),
   HostSourceRequestFrameSchema, HostSourceResultFrameSchema, HostSourceRejectedFrameSchema,
   HostHelloFrameSchema,
   HostHeartbeatFrameSchema,

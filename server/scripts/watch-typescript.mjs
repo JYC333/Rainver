@@ -33,6 +33,8 @@ let buildRunning = false;
 let buildPending = false;
 let stopped = false;
 let activeChild = null;
+let serverChild = null;
+let timer;
 
 async function fingerprintPath(path) {
   const info = await stat(path);
@@ -51,12 +53,38 @@ async function fingerprint() {
 }
 
 function run(command, args, cwd) {
+  if (stopped) return Promise.resolve(1);
   return new Promise(resolveBuild => {
     activeChild = spawn(command, args, { cwd, stdio: "inherit" });
+    activeChild.once("error", error => {
+      console.error(error);
+      activeChild = null;
+      resolveBuild(1);
+    });
     activeChild.once("exit", code => {
       activeChild = null;
       resolveBuild(code ?? 1);
     });
+  });
+}
+
+async function restartServer() {
+  if (serverChild && serverChild.exitCode === null && serverChild.signalCode === null) {
+    await new Promise(resolveExit => {
+      serverChild.once("exit", resolveExit);
+      serverChild.kill("SIGTERM");
+    });
+  }
+  if (stopped) return;
+  const child = spawn(process.execPath, [join(serverRoot, "dist/index.js")], {
+    cwd: serverRoot,
+    stdio: "inherit",
+  });
+  serverChild = child;
+  child.once("error", error => console.error("[typescript-watch] server could not start", error));
+  child.once("exit", (code, signal) => {
+    if (serverChild === child) serverChild = null;
+    if (code && !signal) console.error(`[typescript-watch] server exited with code ${code}`);
   });
 }
 
@@ -71,38 +99,40 @@ async function build() {
     console.log("[typescript-watch] compiling folder-read, outbound-guard, reader-document, protocol, server, and official plugins");
     const folderReadCode = await run(
       join(folderReadRoot, "node_modules/.bin/tsc"),
-      ["-p", "tsconfig.build.json"],
+      ["-p", "tsconfig.build.json", "--noEmitOnError"],
       folderReadRoot,
     );
     const outboundGuardCode = folderReadCode === 0
       ? await run(
         join(outboundGuardRoot, "node_modules/.bin/tsc"),
-        ["-p", "tsconfig.build.json"],
+        ["-p", "tsconfig.build.json", "--noEmitOnError"],
         outboundGuardRoot,
       )
       : folderReadCode;
     const readerDocumentCode = outboundGuardCode === 0
       ? await run(
         join(readerDocumentRoot, "node_modules/.bin/tsc"),
-        ["-p", "tsconfig.build.json"],
+        ["-p", "tsconfig.build.json", "--noEmitOnError"],
         readerDocumentRoot,
       )
       : outboundGuardCode;
     const protocolCode = readerDocumentCode === 0
       ? await run(
       join(protocolRoot, "node_modules/.bin/tsc"),
-      ["-p", "tsconfig.build.json"],
+      ["-p", "tsconfig.build.json", "--noEmitOnError"],
       protocolRoot,
     )
       : readerDocumentCode;
     const serverCode = protocolCode === 0
-      ? await run(join(serverRoot, "node_modules/.bin/tsc"), ["-p", "tsconfig.json"], serverRoot)
+      ? await run(join(serverRoot, "node_modules/.bin/tsc"), ["-p", "tsconfig.json", "--noEmitOnError"], serverRoot)
       : protocolCode;
     const pluginsCode = serverCode === 0
       ? await run(process.execPath, [join(serverRoot, "scripts/build-official-plugins.mjs")], serverRoot)
       : serverCode;
-    if (pluginsCode === 0) console.log("[typescript-watch] compilation complete");
-    else console.error(`[typescript-watch] compilation failed (exit ${pluginsCode}); continuing to watch`);
+    if (pluginsCode === 0) {
+      console.log("[typescript-watch] compilation complete");
+      await restartServer();
+    } else if (!stopped) console.error(`[typescript-watch] compilation failed (exit ${pluginsCode}); continuing to watch`);
   } while (buildPending && !stopped);
   buildRunning = false;
 }
@@ -122,11 +152,11 @@ function stop(signal) {
   stopped = true;
   clearInterval(timer);
   activeChild?.kill(signal);
-  process.exit(0);
+  serverChild?.kill(signal);
 }
 
-previousFingerprint = await fingerprint();
-await build();
-const timer = setInterval(() => void poll(), pollIntervalMs);
 process.once("SIGINT", () => stop("SIGINT"));
 process.once("SIGTERM", () => stop("SIGTERM"));
+previousFingerprint = await fingerprint();
+if (!stopped) await build();
+if (!stopped) timer = setInterval(() => void poll(), pollIntervalMs);

@@ -11,7 +11,7 @@ export const READER_WRITE_JOB='reader_document_write';
 /** The two operations whose body read runs in the Reader write Job. */
 export const READER_JOB_OPERATIONS=['reader.position.write','reader.annotation.range.replace'] as const;
 /** Identity/status only, released by the Reader write-request reader under current document access. */
-export const ReaderWriteJobResultSchema=z.object({outcome:z.enum(['applied','not_accepted','conflict','invalid','unavailable']),annotation_id:id.nullable()}).strict();
+export const ReaderWriteJobResultSchema=z.object({outcome:z.enum(['applied','not_accepted','stale_document','conflict','invalid','unavailable']),annotation_id:id.nullable()}).strict();
 export type ReaderWriteJobResult=z.infer<typeof ReaderWriteJobResultSchema>;
 export const ReaderWriteRequestViewSchema=z.object({job_id:id,status:z.enum(['pending','running','completed','failed','cancelled']),result:ReaderWriteJobResultSchema.nullable()}).strict();
 export type ReaderWriteRequestView=z.infer<typeof ReaderWriteRequestViewSchema>;

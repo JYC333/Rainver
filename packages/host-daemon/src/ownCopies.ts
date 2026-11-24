@@ -48,10 +48,21 @@ const FOUND_TTL_MS = 15 * 60 * 1000;
 const ABSENT_TTL_MS = 5 * 60 * 1000;
 const cache = new Map<string, { at: number; value: OwnCopy | null }>();
 
+const probeGenerations = new Map<string, symbol>();
+
+/** Forget the version of a replaced executable before the next capability report. */
+export function invalidateOwnCopy(runtimeKey: string): void {
+  probeGenerations.set(runtimeKey, Symbol());
+  for (const key of cache.keys()) {
+    if (key.startsWith(`${runtimeKey}:`)) cache.delete(key);
+  }
+}
+
 /** Exported for tests: forget every verified copy. */
 export function __clearOwnCopies(): void {
   cache.clear();
   ownLaunches.clear();
+  probeGenerations.clear();
 }
 
 export async function findOwnCopy(
@@ -63,6 +74,7 @@ export async function findOwnCopy(
   const key = `${runtimeKey}:${JSON.stringify(candidates)}`;
   const cached = cache.get(key);
   if (cached && Date.now() - cached.at < (cached.value ? FOUND_TTL_MS : ABSENT_TTL_MS)) return cached.value;
+  const generation = probeGenerations.get(runtimeKey);
   let found: OwnCopy | null = null;
   for (const launch of resolveCandidates(candidates)) {
     const identity = await verify(launch.command, launch.args);
@@ -73,6 +85,7 @@ export async function findOwnCopy(
     found = { ...launch, version: identity.version };
     break;
   }
+  if (generation !== probeGenerations.get(runtimeKey)) return findOwnCopy(runtimeKey, candidates, log, verify);
   cache.set(key, { at: Date.now(), value: found });
   if (found) ownLaunches.set(runtimeKey, { command: found.command, args: found.args });
   else ownLaunches.delete(runtimeKey);

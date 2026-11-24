@@ -29,7 +29,7 @@ export function runOperationRegistrations(definitions:ReadonlyMap<string,Registe
   async resolve(_db,raw){const i=raw as Input;return {authority:`run:${i.run_id}`,targets:{run_id:i.run_id},resourceType:'run',resourceId:i.run_id};},
   async authorize(db,raw,a){
    const i=raw as Input,runs=new PgRunRepository(db,config);
-   await db.query('SELECT id FROM runs WHERE id=$1 AND space_id=$2 FOR UPDATE',[i.run_id,a.space_id]);
+   await db.query(`SELECT id FROM runs WHERE id=$1 AND space_id=$2 FOR ${id==='run.live_input.submit'?'NO KEY UPDATE':'UPDATE'}`,[i.run_id,a.space_id]);
    try{
     // A resume's waiting state is its first execution's precondition, checked there:
     // after it succeeds the Run is queued, and a same-key replay must still find its receipt.
@@ -56,6 +56,7 @@ export function runOperationRegistrations(definitions:ReadonlyMap<string,Registe
      const run=await authorizeRunCommand(runs,p,i.run_id,'stop');
      if(isHardTerminalRunStatus(run.status))return {...base,status:run.status};
      const marked=await runs.markRunCancelling({run_id:i.run_id,space_id:a.space_id,requested_at:new Date().toISOString(),reason:i.reason??null,requested_by_user_id:p.userId});
+     if(marked)await new PgJobQueueRepository(db).ensureRunCancellationJob(a.space_id,i.run_id);
      return {...base,status:marked?.status??run.status};
     }
     case 'run.abandon':{
@@ -75,7 +76,9 @@ export function runOperationRegistrations(definitions:ReadonlyMap<string,Registe
       ?await runs.resumeRunAfterSupervisorReview({run_id:i.run_id,space_id:a.space_id,resumed_by_user_id:p.userId,resumed_at:grantedAt})
       :await runs.grantRunApprovalAndRequeue({run_id:i.run_id,space_id:a.space_id,granted_by_user_id:p.userId,granted_at:grantedAt});
      if(!requeued)throw new RunCommandRefusal('Run could not be resumed (status may have changed)');
-     await new PgJobQueueRepository(db).ensureAgentRunJob({job_type:'agent_run',space_id:a.space_id,user_id:p.userId,agent_id:authorized.run.agent_id,project_folder_id:authorized.run.project_folder_id,payload:{run_id:i.run_id}});
+     const queue=new PgJobQueueRepository(db);
+     await queue.supersedeAgentRunJobs(a.space_id,i.run_id);
+     await queue.ensureAgentRunJob({job_type:'agent_run',space_id:a.space_id,user_id:p.userId,agent_id:authorized.run.agent_id,project_folder_id:authorized.run.project_folder_id,payload:{run_id:i.run_id}});
      return {...base,status:requeued.status,resumed_at:grantedAt,resume_kind:review?'new_attempt' as const:'same_attempt' as const};
     }
     case 'run.execute':{

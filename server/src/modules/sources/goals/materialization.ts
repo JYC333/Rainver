@@ -10,7 +10,7 @@ import {BASELINE_MAX_PAGES,upstreamContinuation,canEnrichGoalItem} from './selec
 import {trustedSearchMetadataOrigins} from './validation.js';
 import {CustomSourceHandlerOutputSchema,SourcePolicyEnvelopeSchema} from '@rainver/protocol';
 import type {ServerConfig} from '../../../config.js';
-import {HttpError,withDbTransaction,type Pool} from '../../routeUtils/common.js';
+import {HttpError,withDbTransaction,type Pool,type Queryable} from '../../routeUtils/common.js';
 import {CustomSourceMaterializationService} from '../customSources/customSourceMaterializer.js';
 import {PgCustomSourceHandlerRepository} from '../customSources/customSourceHandlerRepository.js';
 import {requireGoal,activeGoalIntent,requireGoalSource,goalSourceFingerprint,type GoalRow} from './access.js';
@@ -19,7 +19,7 @@ import type {GoalBindingRow} from './worker.js';
 import {lockGoal} from './transaction.js';
 /** The canonical Source materializer is the only item writer. The business
  * cursor commits with accepted material; no retry rewrites successful history. */
-export async function materializeGoalBatch(db:Pool,config:ServerConfig,g:GoalRow,b:GoalBindingRow,token:string,runId:string,run:GoalExecutionResult,history=false){
+export async function materializeGoalBatch(db:Pool,config:ServerConfig,g:GoalRow,b:GoalBindingRow,token:string,runId:string,run:GoalExecutionResult,history=false,settle?:(tx:Queryable,stats:{newItems:number;observedItems:number})=>Promise<void>){
  const identity={spaceId:g.space_id,userId:g.owner_user_id};const output=CustomSourceHandlerOutputSchema.parse(run.output);
  return withDbTransaction(db,async tx=>{
   const native=(await tx.query<{id:string}>(`SELECT result_json->>'native_run_id' AS id FROM source_goal_runs WHERE id=$1 AND space_id=$2`,[runId,g.space_id])).rows[0];
@@ -95,6 +95,7 @@ export async function materializeGoalBatch(db:Pool,config:ServerConfig,g:GoalRow
   // Lease must still be live at the final commit decision, not only admission.
   // The binding lock prevents replacement/renewal until this transaction ends.
   await assertLease();
+  if(settle)await settle(tx,{newItems,observedItems:result.itemIds.length});
   return {...result,goal_items_new:newItems,cursor:history?b.cursor_json:cursor};
  });
 }

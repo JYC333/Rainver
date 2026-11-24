@@ -24,7 +24,13 @@ artifact's production context remains unchanged.
 
 - The server owns the client-facing artifact read/export
   routes:
-  - `GET /api/v1/artifacts`
+  - `GET /api/v1/artifacts` (a list first runs an indexed probe on its filters
+    alone; when no row matches, it returns the empty page without planning the
+    read-rule SQL, which only removes rows. Otherwise one statement evaluates
+    the read rules once and returns `total` with the page, so both come from
+    one snapshot, and a page past the end still carries the total. Order is
+    `created_at DESC, id DESC`, so equal timestamps page without repeats or
+    gaps. Run I/O and `/runs/{id}/artifacts` use the same list.)
   - `GET /api/v1/artifacts/{artifact_id}`
   - `GET /api/v1/artifacts/{artifact_id}/export`
 - Artifact reads are scoped by space identity and artifact visibility.
@@ -93,7 +99,7 @@ invariant. The Artifact commits or rolls back with the plugin command
 and metadata are derived from other Space objects.
 `retrieval/artifactRelease.ts` is their one release gate and
 `retrieval/releaseClosure.ts` the one closure it runs (shared with
-`releaseContentRequest` and `lockContentRetrievalRelease`):
+`releaseContentRequest`):
 
 - **Contributions.** A Brief/Explain contributes `item_refs`, `citations`,
   `gap_analysis.stale/thin`, any ref-shaped gap record and `target`, all in

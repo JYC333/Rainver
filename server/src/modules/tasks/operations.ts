@@ -5,7 +5,7 @@ import {resolveAgentActorId} from '../../db/actorResolver.js';
 import {dbPool,type Queryable} from '../routeUtils/common.js';
 import {contentReadSql,contentAccessLevelSql} from '../access/contentAccessSql.js';
 import {contentResourceDefinition} from '../access/contentAccessRegistry.js';
-import {assertProjectWriter,assertProjectWriterForMutation,lockActiveProjectForMutation,ProjectArchivedMutationError} from '../projects/access.js';
+import {assertProjectWriter,assertProjectWriterForMutation,lockActiveProjectForMutation,lockAgentRunProjectBeforeActor,ProjectArchivedMutationError} from '../projects/access.js';
 import {RunBudgetExceededError,RunBudgetSourceReferenceError} from '../runs/budgetEnforcement.js';
 import {RunCreateValidationError} from '../runs/runRepositoryTypes.js';
 import {OperationError,hidden,markedRefusal} from '../systemActions/operations/errors.js';
@@ -71,8 +71,12 @@ export function taskOperationRegistrations(config:ServerConfig,definitions:Reado
   const pool=dbPool(config);
   const repo=()=>new PgTaskRepository(pool,config);
   const taskScope=(id:string):ResolvedOperation=>({authority:`task:${id}`,targets:{task_id:id},resourceType:'task',resourceId:id});
+  // An Agent's Task command acts only in its Run's Project: locked before the core pins person and Run
+  // (Project → person → Run, as the same Run's releases lock); projectGate repeats every check under it.
+  const agentProjectFirst={lockBeforeActor:(db:Queryable,_raw:unknown,a:OperationActor)=>lockAgentRunProjectBeforeActor(db,a)};
   const registrations:Record<Id,Omit<OperationRegistration,'definition'>>={
     'task.create':{
+      ...agentProjectFirst,
       successStatus:201,
       // A person's create is placed by the core (Project Space, or Personal Space without a Project).
       userContentCreation:true,
@@ -124,6 +128,7 @@ export function taskOperationRegistrations(config:ServerConfig,definitions:Reado
       },
     },
     'task.update':{
+      ...agentProjectFirst,
       // One editor for PATCH and the Agent tool. An Agent edits only the text of a
       // Task in its own Run's Project; unavailable targets use the hidden 404.
       async resolve(db,raw,a){
@@ -134,9 +139,14 @@ export function taskOperationRegistrations(config:ServerConfig,definitions:Reado
         if(row.project_id!==project)throw hidden();
         return {...taskScope(id),authority:`task:${id}:run:${a.run_id}`};
       },
-      async authorize(db,raw,a){
+      async authorize(db,raw,a,scope){
         const {task_id,...changes}=raw as Input<'task.update'>;
-        if(a.principal.kind==='agent'&&Object.keys(changes).some(f=>!(TASK_UPDATE_AGENT_FIELDS as readonly string[]).includes(f)))throw invalid();
+        if(a.principal.kind==='agent'){
+          if(Object.keys(changes).some(f=>!(TASK_UPDATE_AGENT_FIELDS as readonly string[]).includes(f)))throw invalid();
+          const project = await runProject(db,a);
+          if((await lockTask(db,a,task_id)).project_id!==project)throw hidden();
+          scope.policyFacts = {...scope.policyFacts, gmail_write_project_id: project};
+        }
         // The canonical writer's closure (it runs again, re-entrantly, in execute); PATCH never places.
         await authorizeTaskClosure(()=>lockTaskWriteClosure(db,person(a),{taskId:task_id,body:{...changes,board_id:undefined,column_id:undefined},writerAuthority:true}));
       },

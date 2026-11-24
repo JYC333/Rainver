@@ -29,6 +29,7 @@ import { setBackgroundServicesStatusSource } from "./runtimeStatus.js";
 import { AutonomyRecoveryService } from "../autonomy/recoveryService.js";
 import { reconcileInformationDigestAutomations } from "../informationDigest/automationProvisioning.js";
 import { RoomConversationTitleService } from "../rooms/conversationTitleService.js";
+import { purgeExpiredRoomConversations } from "../rooms/conversationTrash.js";
 import { readInstanceOperationsPolicy } from "../settings/index.js";
 import { DeploymentService } from "../deployment/service.js";
 import { ConversationInputService } from "../sessions/conversationInputService.js";
@@ -164,6 +165,22 @@ export function startBackgroundServices(
       runOnStart: false,
       run: async () => {
         await refreshBuiltinMergeLocations(getDbPool(config.databaseUrl!), config.workspaceRoot);
+      },
+    });
+
+    tasks.push({
+      // Room conversations past the recycle bin's 30-day window, a bounded
+      // batch per pass (`rooms/conversationTrash.ts`).
+      name: "room_conversation_trash_purge",
+      intervalSeconds: 3600,
+      runOnStart: false,
+      run: async () => {
+        const result = await purgeExpiredRoomConversations(getDbPool(config.databaseUrl!), {
+          onFailure: (sessionId, error) => log?.warn(`[scheduler] room conversation purge failed for ${sessionId}: ${error instanceof Error ? error.message : String(error)}`),
+        });
+        if (result.removed + result.tombstoned > 0) {
+          log?.info(`[scheduler] room conversation trash purged ${result.removed} conversation(s), kept ${result.tombstoned} tombstone(s) for Project records`);
+        }
       },
     });
 
@@ -330,8 +347,13 @@ export function startBackgroundServices(
       name: "custom_source_artifact_retention",
       intervalSeconds: config.customSourceArtifactRetentionIntervalSeconds,
       run: async () => {
-        const pruned = await pruneSupersededCustomSourceHandlerArtifacts(getDbPool(config.databaseUrl!), config);
-        if (pruned > 0) log?.info(`[scheduler] custom_source_artifact_retention pruned ${pruned} artifact(s)`);
+        const completed = await pruneSupersededCustomSourceHandlerArtifacts(
+          getDbPool(config.databaseUrl!), config, undefined, undefined,
+          (count) => log?.warn(
+            `[scheduler] custom_source_artifact_retention finalized ${count} cleanup(s) without unlinking a file (absent, referenced, or file identity could not be verified)`,
+          ),
+        );
+        if (completed > 0) log?.info(`[scheduler] custom_source_artifact_retention completed ${completed} cleanup(s)`);
       },
       runOnStart: false,
     });
@@ -421,7 +443,7 @@ export function startBackgroundServices(
   setBackgroundServicesStatusSource({
     schedulerStatuses: (now) => scheduler.statuses(now),
     workerId: () => worker?.worker_id ?? null,
-    queueDepth: async () => (worker ? worker.queue.countQueueDepth() : null),
+    queueDepth: async () => config.databaseUrl ? PgJobQueueRepository.fromConfig(config).countQueueDepth() : null,
   });
 
   return { worker, scheduler };

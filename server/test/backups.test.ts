@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { chmod, mkdir, mkdtemp, rm, stat, symlink, writeFile } from "node:fs/promises";
+import fsPromises, { chmod, mkdir, mkdtemp, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BackupPolicyError, enforceBackupPolicy } from "../src/modules/backups/guard.js";
@@ -148,6 +149,66 @@ describe("BackupService lock handling", () => {
       await expect(service.pruneOldBackups()).resolves.toEqual([]);
       await expect(pathExists(lockPath)).resolves.toBe(false);
     } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("prevents retention from displacing a lock still being acquired by a local backup", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rainver-backup-concurrent-"));
+    const backupRoot = join(root, "backups");
+    const bin = join(root, "bin");
+    const previousPath = process.env.PATH;
+    let recordLock!: () => void;
+    let resumeBackup!: () => void;
+    const lockWritten = new Promise<void>((resolve) => { recordLock = resolve; });
+    const continueBackup = new Promise<void>((resolve) => { resumeBackup = resolve; });
+    const open = fsPromises.open;
+    let pauseFirstLock = true;
+    let backup: Promise<string> | undefined;
+    try {
+      await mkdir(backupRoot);
+      await mkdir(bin);
+      await writeFile(join(bin, "pg_dump"), "#!/bin/sh\nexit 42\n", { mode: 0o700 });
+      for (const day of [1, 2]) {
+        await writeFile(join(backupRoot, `auto-2020010${day}-000000.tar.gz`), "fixture");
+      }
+      process.env.PATH = `${bin}:${previousPath ?? ""}`;
+      const service = new BackupService(loadConfig({
+        RAINVER_HOME: root,
+        BACKUP_ROOT: backupRoot,
+        BACKUP_DATABASE_URL: "postgresql://fixture@127.0.0.1/fixture",
+        BACKUP_RETENTION_COUNT: "1",
+      }));
+      fsPromises.open = async (...args: Parameters<typeof open>) => {
+        const handle = await open(...args);
+        if (pauseFirstLock && args[0] === join(backupRoot, ".backup.lock")) {
+          pauseFirstLock = false;
+          const close = handle.close.bind(handle);
+          handle.close = async () => {
+            await close();
+            recordLock();
+            await continueBackup;
+          };
+        }
+        return handle;
+      };
+      syncBuiltinESMExports();
+      backup = service.createBackup("manual");
+      const result = backup.catch((error: BackupError) => error.message);
+      await Promise.race([
+        lockWritten,
+        result.then(() => { throw new Error("Backup reached completion before the fixture observed its lock"); }),
+      ]);
+      expect(await service.pruneOldBackups()).toEqual([]);
+      resumeBackup();
+      await expect(result).resolves.toMatch(/pg_dump failed/);
+    } finally {
+      fsPromises.open = open;
+      syncBuiltinESMExports();
+      resumeBackup();
+      await backup?.catch(() => undefined);
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
       await rm(root, { recursive: true, force: true });
     }
   });

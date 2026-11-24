@@ -361,6 +361,7 @@ describe("an identity-less archive the same daemon still runs when the control p
       await upgradedControlPlane();
       await joinConversation(AGENT);
       // The capability and the reconnect are no proof: the daemon's drain waits for that duplicate, so no launch.
+      link.nextDrain("timeout");
       expect(await settleLaunchProfileArchives(db.pool, HOST, conversationProfile)).toEqual(timedOut);
       expect(await unfenced(closed.id)).toBe(true);
       // Had the launch gone ahead, its Run would now be using the profile: the duplicate finishes after the attempt.
@@ -396,6 +397,7 @@ describe("an identity-less archive the same daemon still runs when the control p
       await db.pool.query(`UPDATE host_threads SET archive_include_workspace = false, archive_scope_confirmed = true WHERE id = $1`, [closed.id]);
       await upgradedControlPlane();
       await joinConversation(OTHER_AGENT);
+      link.nextDrain("timeout");
       expect(await settleConversationCwdArchives(db.pool, { hostId: HOST, conversationId: CONVERSATION })).toEqual(timedOut);
       await mkdir(workspace, { recursive: true });
       await writeFile(join(workspace, "b.md"), "B's work, had it started");
@@ -430,6 +432,7 @@ describe("an identity-less archive the same daemon still runs when the control p
       expect(link.sent.at(-1)!.frame).not.toHaveProperty("archive_identity");
       await upgradedControlPlane();
       await joinConversation(AGENT, "location");
+      link.nextDrain("timeout");
       expect(await settleLaunchProfileArchives(db.pool, HOST, workspaceProfile)).toEqual(timedOut);
       const live = await seedProfile(host, AGENT, "a Run that did not start", "workspace", WORKSPACE);
       expect(await link.releaseInFlight()).toEqual([{ ok: true, branch: null, commit: null, error: null }]);
@@ -463,6 +466,7 @@ describe("an identity-less archive the same daemon still runs when the control p
       const running = host.executeManagedWorkspaceOperation({ action: "archive", agent_id: AGENT, container_kind: "conversation", container_id: CONVERSATION, include_workspace: false },
         { beforeLegacyMove: () => gate });
       await db.pool.query(`UPDATE execution_workspaces SET cleanup_json = $2::jsonb WHERE id = $1`, [WORKSPACE, resource("cleaned")]);
+      link.nextDrain("timeout");
       expect(await settleLaunchProfileArchives(db.pool, HOST, conversationProfile)).toEqual(timedOut);
       finish();
       expect(await running).toEqual({ ok: true, changed: true, error: null });

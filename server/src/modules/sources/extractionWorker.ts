@@ -6,9 +6,10 @@ import { monitoringChannelControlClause } from '../projects/monitoringControl.js
 import { contentOwnerOnlySql } from '../access/contentAccessSql.js';
 import { consumeMonitoringBudgets } from "../projects/monitoringControl.js";
 import { createHash, randomUUID } from "node:crypto";
-import { writeFile, mkdir } from "node:fs/promises";
+import { writeFile, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { ServerConfig } from "../../config.js";
+import { tryWithSessionBoundAdvisoryLock } from "../../db/advisoryLock.js";
 import type { Queryable } from "../routeUtils/common.js";
 import { HttpError, withQueryableTransaction } from "../routeUtils/common.js";
 import { SourceBackfillExecutionService } from "./sourceBackfillExecutionService.js";
@@ -126,7 +127,16 @@ const JOB_COLUMNS = `
   job_type, status, metadata_json
 `;
 
+export const ORDINARY_EXTRACTION_JOB_SQL = `
+  COALESCE(metadata_json->>'material_processing', 'false') <> 'true'
+  AND COALESCE(metadata_json->>'implementation', '') <> 'recipe'
+  AND NOT EXISTS (
+    SELECT 1 FROM source_handler_runs shr WHERE shr.extraction_job_id = extraction_jobs.id
+  )
+`;
+
 const CONNECTION_SCAN_CHILD_JOB_LIMIT = 25;
+export const SOURCE_EXTRACTION_LOCK_PREFIX = "source-extraction:";
 
 interface ConnectionWithConnectorRow extends SourceConnectionRow {
   connector_key: string;
@@ -163,6 +173,7 @@ export class SourceExtractionWorker {
      */
     private readonly guard?: OutboundGuard,
     private readonly monitoringOperationId?: string,
+    private readonly sessionSignal?: AbortSignal,
   ) {}
 
   /** Spread into a fetch's options so the worker's guard, if any, reaches it. */
@@ -170,7 +181,26 @@ export class SourceExtractionWorker {
     return this.guard ? { guard: this.guard } : {};
   }
 
+  private readonly assertSession = async (): Promise<void> => {
+    this.sessionSignal?.throwIfAborted();
+  };
+
   async runPendingJob(jobId: string, spaceId: string): Promise<ExtractionJobRow> {
+    // Use the same session for ownership and all writes. A job left running
+    // after connection loss is available to the next worker.
+    const locked = await tryWithSessionBoundAdvisoryLock(
+      this.db,
+      `${SOURCE_EXTRACTION_LOCK_PREFIX}${spaceId}:${jobId}`,
+      (db, signal) => new SourceExtractionWorker(db, this.config, this.guard, this.monitoringOperationId, signal)
+        .runAdmittedJob(jobId, spaceId),
+    );
+    if (!locked.acquired) throw new SourceDispatchBusyError(`ExtractionJob ${jobId} is already running`, jobId);
+    // Children obtain their own lock/session from the original connection pool.
+    if (locked.value.runChildren) await this.runPendingConnectionScanChildren(locked.value.job);
+    return locked.value.job;
+  }
+
+  private async runAdmittedJob(jobId: string, spaceId: string): Promise<{ job: ExtractionJobRow; runChildren: boolean }> {
     const now = new Date().toISOString();
     const claimed = await this.db.query<ExtractionJobRow>(
       `UPDATE extraction_jobs
@@ -178,8 +208,12 @@ export class SourceExtractionWorker {
               started_at = $3
         WHERE id = $1
           AND space_id = $2
-          AND status = 'pending'
-          AND COALESCE(metadata_json->>'material_processing','false')<>'true'
+          AND (status = 'pending' OR (
+            status = 'running'
+            AND $4::text IS NULL
+            AND metadata_json->>'monitoring_operation_id' IS NULL
+          ))
+          AND ${ORDINARY_EXTRACTION_JOB_SQL}
           AND (metadata_json->>'monitoring_operation_id' IS NULL OR metadata_json->>'monitoring_operation_id'=$4::text)
         RETURNING ${JOB_COLUMNS}`,
       [jobId, spaceId, now,this.monitoringOperationId??null],
@@ -189,7 +223,7 @@ export class SourceExtractionWorker {
       const current = await this.getJob(jobId, spaceId);
       if (!current) throw new HttpError(404, "Extraction job not found");
       if (current.status === "running") throw new SourceDispatchBusyError(`ExtractionJob ${jobId} is already running`,jobId);
-      if (["succeeded", "failed", "skipped"].includes(current.status)) return current;
+      if (["succeeded", "failed", "skipped"].includes(current.status)) return { job: current, runChildren: false };
       throw new HttpError(409, `Unexpected or coordinator-owned ExtractionJob status ${current.status}`);
     }
 
@@ -214,13 +248,17 @@ export class SourceExtractionWorker {
       } else if (
         ["normalize_activity", "normalize_artifact", "normalize_run_event"].includes(job.job_type)
       ) {
-        await this.executeInternalNormalization(job);
+        const itemId = await withQueryableTransaction(this.db, (tx) => new SourceExtractionWorker(
+          tx, this.config, this.guard, this.monitoringOperationId,
+        ).executeInternalNormalization(job));
+        await this.reindexItemForRetrieval(job.space_id, itemId, "source_internal_normalization");
       } else {
         throw new HttpError(422, `Unsupported pending job_type: ${job.job_type}`);
       }
       await this.finishJob(jobId, spaceId, "succeeded", null, null);
       runChildrenAfterSuccess = job.job_type === "connection_scan";
     } catch (error) {
+      this.sessionSignal?.throwIfAborted();
       const message = error instanceof Error ? error.message : String(error);
       const code = error instanceof MonitoringAdmissionError ? error.code : error instanceof HttpError ? String(error.statusCode) : "run_error";
       if(error instanceof MonitoringAdmissionError){
@@ -246,13 +284,9 @@ export class SourceExtractionWorker {
     if (job.source_item_id && ['extract_text','snapshot'].includes(job.job_type) && !record(job.metadata_json).deep_project) {
       await (await import('../informationDigest/index.js')).wakeThemeRoundsForItem(this.db, spaceId, job.source_item_id);
     }
-    if (runChildrenAfterSuccess) {
-      await this.runPendingConnectionScanChildren(job);
-    }
-
     const updated = await this.getJob(jobId, spaceId);
     if (!updated) throw new HttpError(404, "Extraction job not found");
-    return updated;
+    return { job: updated, runChildren: runChildrenAfterSuccess };
   }
 
   private async getJob(jobId: string, spaceId: string): Promise<ExtractionJobRow | null> {
@@ -375,12 +409,13 @@ export class SourceExtractionWorker {
       ? await getSourceChannelScanTask(this.db, connection.channel_id)
       : null;
     const cursor = scanCursor(schedulerTask?.metadata_json);
-    const headers: Record<string, string> = {};
-    if (cursor.etag) headers["If-None-Match"] = cursor.etag;
-    if (cursor.last_modified) headers["If-Modified-Since"] = cursor.last_modified;
-
     const handler = sourceConnectorRegistry.get(connection.connector_key);
-    const narrowable = handler.getCapabilities().supports_page_size_narrowing;
+    const capabilities = handler.getCapabilities();
+    const useValidators = !isBackfillJob(job) && capabilities.supports_conditional_requests;
+    const headers: Record<string, string> = {};
+    if (useValidators && cursor.etag) headers["If-None-Match"] = cursor.etag;
+    if (useValidators && cursor.last_modified) headers["If-Modified-Since"] = cursor.last_modified;
+    const narrowable = capabilities.supports_page_size_narrowing;
     // A feed has no server-side historical cursor. Freeze bounded normalized excerpts on the
     // original work row, and put only its pointer/offset on the existing segment.
     const observation = !!record(job.metadata_json).monitoring_operation_id && ['rss','atom'].includes(connection.connector_key);
@@ -437,6 +472,7 @@ export class SourceExtractionWorker {
         maxDownloadBytes,
         backfill: false,
         provider,
+        beforeAttempt: this.assertSession,
         ...this.guardOption,
       });
     }
@@ -464,8 +500,8 @@ export class SourceExtractionWorker {
     const raw = response.text;
     const nextCursor = {
       ...cursor,
-      etag: response.headers.get("etag") ?? cursor.etag,
-      last_modified: response.headers.get("last-modified") ?? cursor.last_modified,
+      etag: useValidators ? response.headers.get("etag") ?? undefined : undefined,
+      last_modified: useValidators ? response.headers.get("last-modified") ?? undefined : undefined,
     };
     let observationItems: NormalizedSourceItem[] | undefined;
     if (observation) {
@@ -586,10 +622,12 @@ export class SourceExtractionWorker {
         headers,
         ...(credentialHeaders ? { credentialHeaders } : {}),
         maxDownloadBytes: input.maxDownloadBytes,
-        ...(operationId ? {beforeAttempt:async()=>{
+        beforeAttempt: async () => {
+          await this.assertSession();
+          if (!operationId) return;
           await consumeMonitoringBudgets(this.db,input.job.space_id,operationId,firstAttempt?{source_requests:1,pages:1,candidates:backfillMaxItems(input.job.metadata_json)}:{source_requests:1});
           firstAttempt=false;
-        }}:{}),
+        },
         backfill: true,
         provider: input.provider,
         timeoutMs,
@@ -1158,7 +1196,7 @@ export class SourceExtractionWorker {
     );
   }
 
-  private async executeInternalNormalization(job: ExtractionJobRow): Promise<void> {
+  private async executeInternalNormalization(job: ExtractionJobRow): Promise<string> {
     const sourceType = job.source_object_type;
     const sourceId = job.source_object_id;
     if (!sourceType || !sourceId) {
@@ -1166,16 +1204,24 @@ export class SourceExtractionWorker {
     }
     const payload = await this.loadInternalSource(job.space_id, sourceType, sourceId);
     const now = new Date().toISOString();
-    const itemId = randomUUID();
-    await this.db.query(
+    const existing = await this.db.query<{ id: string }>(
+      `SELECT id FROM source_items
+        WHERE space_id = $1 AND source_object_type = $2 AND source_object_id = $3
+          AND metadata_json->>'capture_method' = 'internal'
+          AND metadata_json->>'job_id' = $4 AND deleted_at IS NULL
+        ORDER BY created_at ASC, id ASC LIMIT 1`,
+      [job.space_id, sourceType, sourceId, job.id],
+    );
+    const itemId = existing.rows[0]?.id ?? randomUUID();
+    if (!existing.rows[0]) await this.db.query(
       `INSERT INTO source_items (
          id, space_id, project_id, item_type, source_object_type, source_object_id,
          title, excerpt, content_state, retention_policy,
-         metadata_json, created_at, updated_at, owner_user_id, visibility, access_level
+         metadata_json, first_seen_at, last_seen_at, created_at, updated_at, owner_user_id, visibility, access_level
        ) VALUES (
          $1, $2, $12, $3, $3, $4,
          $5, $6, 'excerpt_saved', 'summary_only',
-         $7::jsonb, $8, $8, $9, $10, $11
+         $7::jsonb, $8, $8, $8, $8, $9, $10, $11
        )
        ON CONFLICT DO NOTHING`,
       [
@@ -1238,7 +1284,7 @@ export class SourceExtractionWorker {
         WHERE id = $1 AND space_id = $2`,
       [job.id, job.space_id, itemId],
     );
-    await this.reindexItemForRetrieval(job.space_id, itemId, "source_internal_normalization");
+    return itemId;
   }
 
   private async loadInternalSource(
@@ -1341,7 +1387,7 @@ export class SourceExtractionWorker {
     const maxDownloadBytes = await this.maxDownloadBytes(spaceId);
     const arxivRef = parseArxivReference(sourceUri);
     if (!arxivRef) {
-      const response = await fetchSource(sourceUri, { maxDownloadBytes, ...this.guardOption });
+      const response = await fetchSource(sourceUri, { maxDownloadBytes, beforeSend: this.assertSession, ...this.guardOption });
       if (!response.ok) {
         throw new HttpError(502, `Failed to fetch source URL (${response.status})`);
       }
@@ -1361,7 +1407,7 @@ export class SourceExtractionWorker {
     for (const candidate of candidates) {
       await acquireArxivRequestSlot();
       try {
-        const response = await fetchSource(candidate.url, { maxDownloadBytes, ...this.guardOption });
+        const response = await fetchSource(candidate.url, { maxDownloadBytes, beforeSend: this.assertSession, ...this.guardOption });
         if (!response.ok) {
           throw new HttpError(502, `Failed to fetch source URL (${response.status})`);
         }
@@ -1681,11 +1727,13 @@ export class SourceExtractionWorker {
     const format = exportFormatForMime(input.mimeType);
     const relPath = join(spaceId, `${artifactId}.${format === "html" ? "raw" : format}`);
     const absPath = join(this.config.artifactStorageRoot, relPath);
+    this.sessionSignal?.throwIfAborted();
     await mkdir(join(this.config.artifactStorageRoot, spaceId), { recursive: true });
-    if (typeof input.content === "string") {
-      await writeFile(absPath, input.content, "utf8");
-    } else {
-      await writeFile(absPath, input.content);
+    try {
+      await writeFile(absPath, input.content, { encoding: "utf8", signal: this.sessionSignal });
+    } catch (error) {
+      await rm(absPath, { force: true }).catch(() => undefined);
+      throw error;
     }
     const now = new Date().toISOString();
     await this.db.query(

@@ -34,7 +34,7 @@ export type RestoreState =
   | 'unavailable'
 
 /** Whether the last place reached the server. A keepalive send on leaving is best effort and not reported. */
-export type PositionSync = 'idle' | 'saving' | 'saved' | 'error' | 'denied'
+export type PositionSync = 'idle' | 'saving' | 'saved' | 'superseded' | 'stale' | 'error' | 'denied'
 
 interface PositionDocument {
   space_id: string
@@ -58,6 +58,7 @@ interface Measured {
   epoch: number
   mark: ReaderPositionMark
   at: string
+  sequence: number
 }
 
 type SendResult = 'accepted' | 'not_accepted' | 'failed' | 'denied' | 'skipped'
@@ -117,9 +118,13 @@ export function useReaderPosition({ document, readerRef, shellRef, enabled = tru
     const ident = { spaceId: document.space_id, type: document.document_type, id: document.document_id, content_hash: document.content_hash, structure_hash: structureHash }
     let alive = true
     let revoked = false
+    let stale = false
     let decided = false
     let userMoved = false
     let lastSent = ''
+    let measurementSequence = 0
+    let acceptedSequence = 0
+    let writeSequence = 0
     let confirmed = -1
     let latest: Measured | null = null
     // The whole write that failed (measurement, its time, dwell and reset), retried as it was.
@@ -158,33 +163,49 @@ export function useReaderPosition({ document, readerRef, shellRef, enabled = tru
       const anchor = readerRef.current?.readingAnchor(shell)
       if (!anchor) return null
       const max = shell.scrollHeight - shell.clientHeight
-      return { ...ident, epoch, mark: { anchor, progress: max > 4 ? clamp(shell.scrollTop / max) : 1 }, at: new Date().toISOString() }
+      return { ...ident, epoch, mark: { anchor, progress: max > 4 ? clamp(shell.scrollTop / max) : 1 }, at: new Date().toISOString(), sequence: ++measurementSequence }
     }
     const send = async (measured: Measured, dwelled: boolean, options: { keepalive?: boolean; reset?: boolean } = {}): Promise<SendResult> => {
       // A place from another session is never sent with this one's credentials.
-      if (revoked || measured.epoch !== sessionEpoch()) return 'skipped'
+      if (revoked || stale || measured.epoch !== sessionEpoch()) return 'skipped'
       const body = { content_hash: measured.content_hash, structure_hash: measured.structure_hash, current: measured.mark, dwelled, reset_furthest: options.reset ?? false, client_at: measured.at }
       const signature = JSON.stringify([measured.id, body.content_hash, body.structure_hash, measured.mark.anchor.pm_pos, Math.round(measured.mark.progress * 1000), dwelled])
       if (!options.reset && signature === lastSent) return 'accepted'
       lastSent = signature
+      const write = ++writeSequence
       if (alive && !options.keepalive) setSync('saving')
       try {
         const result = await readerApi.putPosition(measured.spaceId, measured.type, measured.id, body, { keepalive: options.keepalive })
-        if (!valid()) return 'skipped'
+        if (!valid() || stale) return 'skipped'
+        if (result.reason === 'stale_document') {
+          stale = true
+          unsynced = null
+          setSync('stale')
+          return 'not_accepted'
+        }
         confirm(result.position)
-        if (unsynced?.measured === measured) unsynced = null
+        if (result.accepted) acceptedSequence = Math.max(acceptedSequence, measured.sequence)
+        if (unsynced?.measured === measured || (unsynced && !unsynced.reset && unsynced.measured.sequence <= acceptedSequence)) unsynced = null
         // A failed reset still waiting for its retry keeps the state visible.
-        if (!options.keepalive) setSync(unsynced ? 'error' : 'saved')
+        if (!options.keepalive && (write === writeSequence || unsynced)) {
+          if (!result.accepted && write === writeSequence) lastSent = ''
+          setSync(unsynced ? 'error' : result.accepted ? 'saved' : 'superseded')
+        }
         return result.accepted ? 'accepted' : 'not_accepted'
       } catch (error) {
-        if (!valid()) return 'skipped'
+        if (!valid() || stale) return 'skipped'
         if (isReaderAccessError(error)) { revoke(); return 'denied' }
         // An ordinary failure keeps the place for the next chance or an explicit retry.
-        lastSent = ''
+        if (write === writeSequence) lastSent = ''
         if (!options.keepalive) {
           // A failed reset is not replaced by a later ordinary failure: the reset is what the person asked for.
-          if (!unsynced?.reset || options.reset) unsynced = { measured, dwelled, reset: options.reset ?? false }
-          setSync('error')
+          if (options.reset || measured.sequence > acceptedSequence) {
+            const newerPending = unsynced && unsynced.measured.sequence > measured.sequence
+            if (options.reset ? !unsynced?.reset || !newerPending : !unsynced?.reset && !newerPending) {
+              unsynced = { measured, dwelled, reset: options.reset ?? false }
+            }
+            setSync('error')
+          }
         }
         return 'failed'
       }

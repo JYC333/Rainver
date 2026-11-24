@@ -1,7 +1,10 @@
-import {lstat,mkdtemp,readFile,rm,writeFile} from 'node:fs/promises';
+import {copyFile,lstat,mkdtemp,open,readFile,realpath,rename,rm,writeFile} from 'node:fs/promises';
+import {createHash,randomUUID} from 'node:crypto';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {dirname,join} from 'node:path';
 import {runLocationGit} from '@rainver/folder-read';
+import {configDir} from './config.js';
+import {fsyncDirectory,removeDurable,syncExistingDurable,writeJsonDurable} from './durableFile.js';
 
 /** Publication into a checked-out target carries the person's uncommitted edits
  * on overlapping files onto the published content, file by file, the way
@@ -21,9 +24,101 @@ export interface LocalChangeReconciliation {
 }
 interface Entry {mode:string;blob:string}
 interface Plan {path:string;mode:string;theirs:string;index:Entry|null;work:string;workFile:string;mergedIndex:string|null;mergedWork:string|null}
+interface LocalPublicationJournal {root:string;onto:string;task:string;plans:Omit<Plan,'workFile'>[]}
 const MAX_BLOB_BYTES=64*1024*1024;
 
-export async function reconcileLocalChanges(root:string,onto:string,task:string,paths:string[]):Promise<LocalChangeReconciliation>{
+export class LocalPublicationChanged extends Error {
+ constructor(readonly paths: string[]){super('integration_local_recovery_changed');}
+}
+
+async function readIndexEntry(root:string,path:string):Promise<Entry|null|'unmerged'>{
+ const result=await runLocationGit(['ls-files','-z','--stage','--',`:(literal)${path}`],root);
+ if(result.code!==0||result.incomplete)throw new Error('integration_local_index_read_failed');
+ if(!result.stdout)return null;
+ const match=/^(\d{6}) ([0-9a-f]+) 0\t[^\0]+\0$/.exec(result.stdout);
+ return match?{mode:match[1]!,blob:match[2]!}:'unmerged';
+}
+
+/** Use Git's index lock so a concurrent git add either precedes our comparison
+ * or waits for the whole replacement. Update a copy to preserve unrelated entries. */
+async function replaceIndexEntries(root:string,prepare:()=>Promise<Array<{path:string;entry:Entry|null;hashLength:number}>>):Promise<void>{
+ const result=await runLocationGit(['rev-parse','--path-format=absolute','--git-path','index'],root);
+ if(result.code!==0||!result.stdout.endsWith('\n'))throw new Error('integration_local_index_read_failed');
+ const indexPath=result.stdout.slice(0,-1),lockPath=`${indexPath}.lock`;
+ const alternate=join(dirname(indexPath),`.rainver-index-${randomUUID()}`);
+ const lock=await open(lockPath,'wx');
+ let committed=false;
+ try{
+  const entries=await prepare();
+  if(!entries.length)return;
+  await copyFile(indexPath,alternate).catch((error:NodeJS.ErrnoException)=>{if(error.code!=='ENOENT')throw error;});
+  const input=entries.map(({path,entry,hashLength})=>`${entry?`${entry.mode} ${entry.blob}`:`0 ${'0'.repeat(hashLength)}`}\t${path}\0`).join('');
+  const update=await runLocationGit(['update-index','-z','--index-info'],root,60000,{env:{GIT_INDEX_FILE:alternate},input});
+  if(update.code!==0)throw new Error('integration_local_index_update_failed');
+  await copyFile(alternate,lockPath);
+  await lock.sync();
+  await rename(lockPath,indexPath);
+  committed=true;
+  await fsyncDirectory(dirname(indexPath));
+ }finally{
+  await lock.close();
+  if(!committed)await rm(lockPath,{force:true});
+  await rm(alternate,{force:true});
+ }
+}
+
+export function localPublicationJournalPath(gitCommonDir:string,targetRef:string):string{
+ const key=createHash('sha256').update(JSON.stringify([gitCommonDir,targetRef])).digest('hex');
+ return join(configDir(),'local-publications',`${key}.json`);
+}
+
+export async function readLocalPublication(file:string):Promise<LocalPublicationJournal|null>{
+ if(!await syncExistingDurable(file))return null;
+ return JSON.parse(await readFile(file,'utf8')) as LocalPublicationJournal;
+}
+
+/** Finish the exact admitted edit set after a crash. A fresh edit survives and keeps the journal fenced. */
+export async function recoverLocalPublication(file:string,journal:LocalPublicationJournal,published:boolean):Promise<void>{
+ const {root,onto,task,plans}=journal;
+ const git=(args:string[])=>runLocationGit(args,root);
+ const staysAtExpectedHead=async()=>(await git(['rev-parse','HEAD'])).stdout.trim()===(published?task:onto);
+ const validate=async(p:LocalPublicationJournal['plans'][number])=>{
+  const path=join(root,p.path),stat=await lstat(path).catch(()=>null);
+  if(!stat?.isFile()||stat.isSymbolicLink()||(stat.mode&0o111?'100755':'100644')!==p.mode||await realpath(path)!==path)throw new Error('integration_local_recovery_changed');
+  const work=await git(['hash-object','--no-filters','--',p.path]);
+  const index=await readIndexEntry(root,p.path);
+  const expectedIndex=new Set([p.index?.blob,p.theirs,published?p.mergedIndex:undefined]);
+  const expectedWork=new Set([p.work,published?p.theirs:undefined,published?p.mergedWork:undefined]);
+  if(work.code!==0||!expectedWork.has(work.stdout.trim())||index==='unmerged'||
+    (index ? index.mode!==p.mode||!expectedIndex.has(index.blob) : p.index!==null))throw new LocalPublicationChanged([p.path]);
+  return work.stdout.trim();
+ };
+ await replaceIndexEntries(root,async()=>{
+  if(!await staysAtExpectedHead())throw new LocalPublicationChanged(plans.map(p=>p.path));
+  for(const p of plans)await validate(p);
+  return plans.map(p=>({path:p.path,entry:published?{mode:p.mode,blob:p.mergedIndex??p.theirs}:p.index,hashLength:p.theirs.length}));
+ });
+ for(const p of plans){
+  if(!await staysAtExpectedHead())throw new Error('integration_local_recovery_changed');
+  const currentWork=await validate(p);
+  if(published&&p.mergedWork&&currentWork!==p.mergedWork){
+   const out=await runLocationGit(['cat-file','blob',p.mergedWork],root,60000,{outputEncoding:'base64',maxOutputBytes:MAX_BLOB_BYTES});
+   if(out.code!==0||out.incomplete)throw new Error('integration_local_file_write_failed');
+   const path=join(root,p.path),temporary=join(dirname(path),`.rainver-local-${randomUUID()}`);
+   const permissions=(await lstat(path)).mode&0o777;
+   try{
+    const handle=await open(temporary,'wx',0o600);
+    try{await handle.writeFile(Buffer.from(out.stdout,'base64'));await handle.chmod(permissions);await handle.sync();}finally{await handle.close();}
+    await validate(p);
+    await rename(temporary,path);
+    await fsyncDirectory(dirname(path));
+   }finally{await rm(temporary,{force:true});}
+  }
+ }
+ await removeDurable(file);
+}
+
+export async function reconcileLocalChanges(root:string,onto:string,task:string,paths:string[],journalPath:string):Promise<LocalChangeReconciliation>{
  const git=(args:string[],env?:Record<string,string>)=>runLocationGit(args,root,60000,env?{env}:{});
  const scratch=await mkdtemp(join(tmpdir(),'rainver-local-'));
  const blocked:string[]=[],plans:Plan[]=[];
@@ -39,12 +134,6 @@ export async function reconcileLocalChanges(root:string,onto:string,task:string,
   if(out.code!==0||!entry)return null;
   return entry[2]==='blob'?{mode:entry[1]!,blob:entry[3]!}:'tree';
  };
- const indexEntry=async(path:string):Promise<Entry|null|'unmerged'>=>{
-  const out=await git(['ls-files','-z','--stage','--',`./${path}`]);
-  const entry=/^(\d{6}) ([0-9a-f]+) (\d)\t/.exec(out.stdout);
-  if(out.code!==0||!entry)return null;
-  return entry[3]==='0'?{mode:entry[1]!,blob:entry[2]!}:'unmerged';
- };
  /** Three-way merge; the merged content's path in scratch, or null on conflict/binary. */
  const merge3=async(baseBlob:string,oursFile:string,theirsBlob:string):Promise<string|null>=>{
   const base=await blobFile(baseBlob),theirs=await blobFile(theirsBlob);
@@ -56,7 +145,7 @@ export async function reconcileLocalChanges(root:string,onto:string,task:string,
  try{
   for(const path of paths){
    const info=await lstat(join(root,path)).catch(()=>null);
-   const theirs=await treeEntry(task,path),base=await treeEntry(onto,path),index=await indexEntry(path);
+   const theirs=await treeEntry(task,path),base=await treeEntry(onto,path),index=await readIndexEntry(root,path);
    if(!info?.isFile()||info.isSymbolicLink()||!theirs||theirs==='tree'||base==='tree'||index==='unmerged'){blocked.push(path);continue;}
    const mode=info.mode&0o111?'100755':'100644';
    if(mode!==theirs.mode||(index&&index.mode!==theirs.mode)){blocked.push(path);continue;}
@@ -96,15 +185,14 @@ export async function reconcileLocalChanges(root:string,onto:string,task:string,
   if(tree.code!==0||commit.code!==0)throw new Error('integration_local_preimage_failed');
   if((await git(['update-ref',`refs/rainver/local-preimages/${task}${suffix}`,commit.stdout.trim()])).code!==0)throw new Error('integration_local_preimage_failed');
  };
- const stillOnto=async()=>(await git(['rev-parse','HEAD'])).stdout.trim()===onto;
- const cacheinfo=(path:string,mode:string,blob:string)=>git(['update-index','--add','--cacheinfo',`${mode},${blob},${path}`]);
+ const journal=():LocalPublicationJournal=>({root,onto,task,plans:plans.map(({workFile:_,...plan})=>plan)});
  return {
   blocked,
   async stage(){
    try{
     const touched=plans.filter(p=>p.mergedWork||p.mergedIndex||p.work!==p.theirs);
     if(touched.length){
-     for(const p of touched)await writeBlob(p.workFile);
+     for(const p of touched){if(await writeBlob(p.workFile)!==p.work)throw new LocalPublicationChanged([p.path]);}
      await retain('',touched.map(p=>({path:p.path,mode:p.mode,blob:p.work})));
      const staged=touched.filter(p=>p.index&&p.index.blob!==p.work);
      if(staged.length)await retain('-index',staged.map(p=>({path:p.path,mode:p.mode,blob:p.index!.blob})));
@@ -112,27 +200,23 @@ export async function reconcileLocalChanges(root:string,onto:string,task:string,
     for(const p of plans){
      if(p.mergedIndex)p.mergedIndex=await writeBlob(p.mergedIndex);
      if(p.mergedWork)p.mergedWork=await writeBlob(p.mergedWork);
-     if((await cacheinfo(p.path,p.mode,p.theirs)).code!==0)throw new Error('integration_local_index_update_failed');
     }
+    await replaceIndexEntries(root,async()=>{
+     if((await git(['rev-parse','HEAD'])).stdout.trim()!==onto)throw new LocalPublicationChanged(plans.map(p=>p.path));
+     for(const p of plans){
+      const current=await readIndexEntry(root,p.path);
+      if(current==='unmerged'||current?.mode!==p.index?.mode||current?.blob!==p.index?.blob)throw new LocalPublicationChanged([p.path]);
+     }
+     await writeJsonDurable(journalPath,journal());
+     return plans.map(p=>({path:p.path,entry:{mode:p.mode,blob:p.theirs},hashLength:p.theirs.length}));
+    });
    }finally{await rm(scratch,{recursive:true,force:true});}
   },
   async rollback(){
-   // A concurrent ref change is somebody else's work; never undo it.
-   if(!await stillOnto())return;
-   for(const p of plans){
-    const restored=p.index?await cacheinfo(p.path,p.index.mode,p.index.blob):await git(['update-index','--force-remove','--',p.path]);
-    if(restored.code!==0)throw new Error('integration_local_index_restore_failed');
-   }
+   await recoverLocalPublication(journalPath,journal(),false);
   },
   async finish(){
-   for(const p of plans){
-    if(p.mergedIndex&&(await cacheinfo(p.path,p.mode,p.mergedIndex)).code!==0)throw new Error('integration_local_index_update_failed');
-    if(p.mergedWork){
-     const out=await runLocationGit(['cat-file','blob',p.mergedWork],root,60000,{outputEncoding:'base64',maxOutputBytes:MAX_BLOB_BYTES});
-     if(out.code!==0||out.incomplete)throw new Error('integration_local_file_write_failed');
-     await writeFile(p.workFile,Buffer.from(out.stdout,'base64'),{mode:p.mode==='100755'?0o755:0o644});
-    }
-   }
+   await recoverLocalPublication(journalPath,journal(),true);
   },
  };
 }

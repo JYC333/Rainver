@@ -43,6 +43,13 @@ test('incremental preparation validates content, lock identity and missing outpu
     writeFileSync(newSource, 'export const added = 3;');
     utimesSync(newSource, 1, 1);
     assert.match(compile(), /new\.js/);
+    const retained = join(packageRoot, 'dist/asset.js');
+    writeFileSync(retained, '// unpaired build asset');
+    rmSync(newSource);
+    compile();
+    assert.equal(existsSync(join(packageRoot, 'dist/new.js')), false);
+    assert.equal(existsSync(join(packageRoot, 'dist/new.d.ts')), false);
+    assert.ok(existsSync(retained));
     const configTime = statSync(config);
     writeFileSync(config, JSON.stringify({ compilerOptions: { ...options, target: 'ES2020' }, include: ['src'] }));
     utimesSync(config, configTime.atime, configTime.mtime);

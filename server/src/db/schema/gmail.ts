@@ -139,6 +139,8 @@ export const gmailReadAuditEvents = pgTable("gmail_read_audit_events", {
 	/** An Agent read on the owner's behalf (ADR 0032): the Run and Agent that read; null for the owner's own read. */
 	runId: varchar("run_id", { length: 36 }),
 	agentId: varchar("agent_id", { length: 36 }),
+	/** A member's read under the owner's delegation (ADR 0035 §4): the delegation it ran under; the actor is that member. */
+	delegationId: varchar("delegation_id", { length: 36 }),
 	accessedAt: timestamp("accessed_at", { withTimezone: true, mode: 'string' }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [
 	index("ix_gmail_read_audit_owner_accessed").using("btree", table.ownerUserId.asc().nullsLast(), table.spaceId.asc().nullsLast(), table.accessedAt.asc().nullsLast()),
@@ -148,10 +150,11 @@ export const gmailReadAuditEvents = pgTable("gmail_read_audit_events", {
 	foreignKey({ columns: [table.gmailConnectionId], foreignColumns: [gmailConnections.id], name: "gmail_read_audit_events_connection_id_fkey" }).onDelete("set null"),
 	foreignKey({ columns: [table.projectId], foreignColumns: [projects.id], name: "gmail_read_audit_events_project_id_fkey" }).onDelete("set null"),
 	foreignKey({ columns: [table.selectionId], foreignColumns: [gmailProjectThreadSelections.id], name: "gmail_read_audit_events_selection_id_fkey" }).onDelete("set null"),
-	// The owner is always the actor: an Agent reads only on the owner's behalf, recorded with its Run (ADR 0032).
-	check("ck_gmail_read_audit_actor_owner", sql`actor_user_id = owner_user_id`),
-	check("ck_gmail_read_audit_operation", sql`operation IN ('thread_search', 'thread_read', 'agent_read', 'digest_read')`),
-	check("ck_gmail_read_audit_agent_run", sql`(operation IN ('agent_read', 'digest_read')) = (run_id IS NOT NULL) AND (run_id IS NULL) = (agent_id IS NULL)`),
+	// The owner is the actor of their own reads (an Agent reads on the owner's behalf, recorded with its Run, ADR 0032);
+	// a delegated read's actor is the member the owner delegated to, and it names that delegation (ADR 0035 §4).
+	check("ck_gmail_read_audit_actor_owner", sql`(operation = 'delegated_read') = (actor_user_id <> owner_user_id) AND (operation = 'delegated_read') = (delegation_id IS NOT NULL)`),
+	check("ck_gmail_read_audit_operation", sql`operation IN ('thread_search', 'thread_read', 'agent_read', 'digest_read', 'delegated_read')`),
+	check("ck_gmail_read_audit_agent_run", sql`(operation IN ('agent_read', 'digest_read', 'delegated_read')) = (run_id IS NOT NULL) AND (run_id IS NULL) = (agent_id IS NULL)`),
 	check("ck_gmail_read_audit_item_count", sql`item_count >= 0`),
 	check("ck_gmail_read_audit_thread_id", sql`google_thread_id IS NULL OR google_thread_id ~ '^[0-9a-f]{1,64}$'`),
 ]);
@@ -298,22 +301,39 @@ export const gmailDigests = pgTable("gmail_digests", {
 	lastErrorCode: varchar("last_error_code", { length: 64 }),
 	lastDeliveredAt: timestamp("last_delivered_at", { withTimezone: true, mode: 'string' }),
 	endedAt: timestamp("ended_at", { withTimezone: true, mode: 'string' }),
+	/** Application updates (ADR 0034): the external facts the owner allowed, as confirmed on the card. */
+	effects: jsonb("effects"),
+	/**
+	 * The Agent's runtime, model and session configuration the card froze: required for application updates
+	 * (ADR 0034) and for every digest confirmed since ADR 0035 §3 (a summary waits for a new card without one).
+	 */
+	runtimeBinding: jsonb("runtime_binding"),
+	/**
+	 * Application updates enabled from a Room or the Project mainline (ADR 0035 §1): that shared conversation,
+	 * where only structured results on applications shared with the Project are posted. The automation itself
+	 * runs in `session_id`, the owner's private execution conversation. Null when enabled in a private one.
+	 */
+	noticeSessionId: varchar("notice_session_id", { length: 36 }),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [
 	index("ix_gmail_digests_owner_space").using("btree", table.ownerUserId.asc().nullsLast(), table.spaceId.asc().nullsLast()),
 	index("ix_gmail_digests_due").using("btree", table.status.asc().nullsLast(), table.nextRunAt.asc().nullsLast()),
-	unique("uq_gmail_digests_proposal").on(table.proposalId),
+	// One card writes at most one digest of each kind: a combined card (`gmail_setup`, ADR 0035 §2) writes several kinds.
+	unique("uq_gmail_digests_proposal_kind").on(table.proposalId, table.kind),
 	// One live digest of a kind per mailbox and Project; its consent's own unique index says the same.
 	uniqueIndex("uq_gmail_digests_live").on(table.gmailConnectionId, table.projectId, table.kind).where(sql`status <> 'ended'`),
 	foreignKey({ columns: [table.gmailConnectionId, table.spaceId, table.ownerUserId], foreignColumns: [gmailConnections.id, gmailConnections.spaceId, gmailConnections.ownerUserId], name: "gmail_digests_connection_fkey" }).onDelete("cascade"),
 	foreignKey({ columns: [table.projectId, table.spaceId], foreignColumns: [projects.id, projects.spaceId], name: "gmail_digests_project_fkey" }).onDelete("cascade"),
 	foreignKey({ columns: [table.sessionId, table.spaceId], foreignColumns: [sessions.id, sessions.spaceId], name: "gmail_digests_session_fkey" }).onDelete("cascade"),
 	foreignKey({ columns: [table.agentId], foreignColumns: [agents.id], name: "gmail_digests_agent_id_fkey" }).onDelete("cascade"),
-	check("ck_gmail_digests_kind", sql`kind IN ('daily', 'rule')`),
+	foreignKey({ columns: [table.noticeSessionId], foreignColumns: [sessions.id], name: "gmail_digests_notice_session_id_fkey" }).onDelete("set null"),
+	check("ck_gmail_digests_kind", sql`kind IN ('daily', 'rule', 'application')`),
+	check("ck_gmail_digests_application", sql`(kind = 'application') = (effects IS NOT NULL) AND (kind <> 'application' OR runtime_binding IS NOT NULL) AND (kind = 'application' OR notice_session_id IS NULL)`),
+	check("ck_gmail_digests_effects", sql`effects IS NULL OR (jsonb_typeof(effects) = 'array' AND jsonb_array_length(effects) BETWEEN 1 AND 8)`),
 	check("ck_gmail_digests_status", sql`status IN ('active', 'paused', 'ended')`),
 	check("ck_gmail_digests_ended", sql`(status = 'ended') = (ended_at IS NOT NULL)`),
-	check("ck_gmail_digests_local_time", sql`(kind = 'daily' AND local_time IS NOT NULL AND time_zone IS NOT NULL AND local_time ~ '^([01][0-9]|2[0-3]):[0-5][0-9]$') OR (kind = 'rule' AND local_time IS NULL AND time_zone IS NULL)`),
+	check("ck_gmail_digests_local_time", sql`(kind = 'daily' AND local_time IS NOT NULL AND time_zone IS NOT NULL AND local_time ~ '^([01][0-9]|2[0-3]):[0-5][0-9]$') OR (kind IN ('rule', 'application') AND local_time IS NULL AND time_zone IS NULL)`),
 	check("ck_gmail_digests_failures", sql`failure_count >= 0`),
 	check("ck_gmail_digests_error_code", sql`last_error_code IS NULL OR last_error_code ~ '^gmail_[a-z_]{1,58}$'`),
 ]);
@@ -364,6 +384,130 @@ export const gmailDigestItems = pgTable("gmail_digest_items", {
 	index("ix_gmail_digest_items_delivered").using("btree", table.deliveredAt.asc().nullsLast()),
 	foreignKey({ columns: [table.digestId], foreignColumns: [gmailDigests.id], name: "gmail_digest_items_digest_id_fkey" }).onDelete("cascade"),
 	check("ck_gmail_digest_items_message_id", sql`google_message_id ~ '^[0-9a-f]{1,64}$'`),
+]);
+
+/**
+ * Application updates (ADR 0034): every new inbox message the sync recorded for an active
+ * automation since it was confirmed or resumed (`received_at` is Gmail's `internalDate`), and
+ * what became of it. `pending` waits for a delivery (`attempts` counts failed ones; three make it
+ * `failed`, so one message cannot stop the others); `done` was read by a complete delivery;
+ * `review` was kept for the owner by the Agent (`reason`, at most five candidate application
+ * ids). Ids, times and fixed codes only; pruned after 30 days.
+ */
+export const gmailDigestMailItems = pgTable("gmail_digest_mail_items", {
+	digestId: varchar("digest_id", { length: 36 }).notNull(),
+	googleMessageId: varchar("google_message_id", { length: 64 }).notNull(),
+	spaceId: varchar("space_id", { length: 36 }).notNull(),
+	ownerUserId: varchar("owner_user_id", { length: 36 }).notNull(),
+	receivedAt: timestamp("received_at", { withTimezone: true, mode: 'string' }).notNull(),
+	recordedAt: timestamp("recorded_at", { withTimezone: true, mode: 'string' }).notNull(),
+	status: varchar({ length: 16 }).notNull(),
+	reason: varchar({ length: 32 }),
+	candidateApplicationIds: jsonb("candidate_application_ids").default([]).notNull(),
+	attempts: integer().default(0).notNull(),
+	lastDeliveryId: varchar("last_delivery_id", { length: 36 }),
+	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
+}, (table): PgTableExtraConfigValue[] => [
+	primaryKey({ columns: [table.digestId, table.googleMessageId], name: "gmail_digest_mail_items_pkey" }),
+	index("ix_gmail_digest_mail_items_pending").using("btree", table.digestId.asc().nullsLast(), table.status.asc().nullsLast(), table.receivedAt.asc().nullsLast()),
+	index("ix_gmail_digest_mail_items_updated").using("btree", table.updatedAt.asc().nullsLast()),
+	foreignKey({ columns: [table.digestId], foreignColumns: [gmailDigests.id], name: "gmail_digest_mail_items_digest_id_fkey" }).onDelete("cascade"),
+	check("ck_gmail_digest_mail_items_message_id", sql`google_message_id ~ '^[0-9a-f]{1,64}$'`),
+	check("ck_gmail_digest_mail_items_status", sql`status IN ('pending', 'done', 'review', 'failed')`),
+	check("ck_gmail_digest_mail_items_reason", sql`reason IS NULL OR reason IN ('ambiguous_application', 'no_matching_application', 'unclear_fact', 'conflict', 'read_failed', 'not_eligible')`),
+	check("ck_gmail_digest_mail_items_candidates", sql`jsonb_typeof(candidate_application_ids) = 'array' AND jsonb_array_length(candidate_application_ids) <= 5`),
+	check("ck_gmail_digest_mail_items_attempts", sql`attempts >= 0`),
+]);
+
+/**
+ * Application updates enabled from a shared conversation (ADR 0035 §1): one structured result an automation Run
+ * recorded on an application shared with the Project (`project_shared`), kept until a successful delivery's notice
+ * posts it in the automation's shared conversation (`posted_at`, `posted_delivery_id`). A result whose delivery
+ * failed after the fact was committed waits for the next successful delivery; one fact is kept once per automation
+ * (`uq_gmail_application_shared_results_fact`), so a retry neither loses nor repeats it. Application ids, the
+ * application's own label, the effect and the values before and after — never subject, sender or text. Results on
+ * applications only the owner can see are never written here, and one whose application is no longer shared or
+ * no longer exists when its notice is composed — or that was recorded for another destination or card of the
+ * automation — is deleted unposted. Pruned with the automation's settled messages.
+ */
+export const gmailApplicationSharedResults = pgTable("gmail_application_shared_results", {
+	id: varchar({ length: 36 }).primaryKey().notNull(),
+	digestId: varchar("digest_id", { length: 36 }).notNull(),
+	deliveryId: varchar("delivery_id", { length: 36 }).notNull(),
+	spaceId: varchar("space_id", { length: 36 }).notNull(),
+	ownerUserId: varchar("owner_user_id", { length: 36 }).notNull(),
+	projectId: varchar("project_id", { length: 36 }).notNull(),
+	googleMessageId: varchar("google_message_id", { length: 64 }).notNull(),
+	applicationId: varchar("application_id", { length: 64 }).notNull(),
+	applicationLabel: varchar("application_label", { length: 600 }).notNull(),
+	effect: varchar({ length: 32 }).notNull(),
+	// Legacy rows lack a committed fact ID and did not retain the deadline kind.
+	factId: varchar("fact_id", { length: 36 }),
+	deadlineKind: varchar("deadline_kind", { length: 32 }),
+	beforeValue: varchar("before_value", { length: 64 }),
+	afterValue: varchar("after_value", { length: 64 }),
+	recordedAt: timestamp("recorded_at", { withTimezone: true, mode: 'string' }).notNull(),
+	postedAt: timestamp("posted_at", { withTimezone: true, mode: 'string' }),
+	postedDeliveryId: varchar("posted_delivery_id", { length: 36 }),
+	/**
+	 * The destination and rule version the result was recorded under: the automation's shared conversation and its
+	 * accepted card (`proposal_id`) then. Only a notice to that same conversation under that same card posts it; once
+	 * the automation is re-carded (another Room, the mainline, other facts) it is deleted unposted, never carried over.
+	 * Null only on rows posted before migration 0028.
+	 */
+	noticeSessionId: varchar("notice_session_id", { length: 36 }),
+	ruleVersion: varchar("rule_version", { length: 36 }),
+}, (table): PgTableExtraConfigValue[] => [
+	index("ix_gmail_application_shared_results_delivery").using("btree", table.deliveryId.asc().nullsLast(), table.recordedAt.asc().nullsLast()),
+	index("ix_gmail_application_shared_results_recorded").using("btree", table.recordedAt.asc().nullsLast()),
+	index("ix_gmail_application_shared_results_unposted").using("btree", table.digestId.asc().nullsLast(), table.recordedAt.asc().nullsLast()).where(sql`posted_at IS NULL`),
+	unique("uq_gmail_application_shared_results_fact").on(table.digestId, table.factId),
+	foreignKey({ columns: [table.digestId], foreignColumns: [gmailDigests.id], name: "gmail_application_shared_results_digest_id_fkey" }).onDelete("cascade"),
+	foreignKey({ columns: [table.deliveryId], foreignColumns: [gmailDigestDeliveries.id], name: "gmail_application_shared_results_delivery_id_fkey" }).onDelete("cascade"),
+	check("ck_gmail_application_shared_results_message_id", sql`google_message_id ~ '^[0-9a-f]{1,64}$'`),
+	check("ck_gmail_application_shared_results_posted", sql`(posted_at IS NULL) = (posted_delivery_id IS NULL)`),
+	check("ck_gmail_application_shared_results_bound", sql`posted_at IS NOT NULL OR (notice_session_id IS NOT NULL AND rule_version IS NOT NULL)`),
+]);
+
+/**
+ * A member's standing read-only access to the owner's mail in one Project (ADR 0035 §4), given by the owner on
+ * their own card: one mailbox at its generation, one Project, one member, and the Gmail search scope every read
+ * is confined to. The member reads in their own turns of that Project's conversations; each Gmail send and each
+ * release rechecks it. It ends (`revoked`) when the owner revokes it, when either person leaves the Project or
+ * is disabled, and with every ending of the connection's consents (opt-out, disconnect, reconnect,
+ * re-authorization, forget). Nothing revives it. Counts and times only; never query text of a read.
+ */
+export const gmailReadDelegations = pgTable("gmail_read_delegations", {
+	id: varchar({ length: 36 }).primaryKey().notNull(),
+	spaceId: varchar("space_id", { length: 36 }).notNull(),
+	ownerUserId: varchar("owner_user_id", { length: 36 }).notNull(),
+	gmailConnectionId: varchar("gmail_connection_id", { length: 36 }).notNull(),
+	connectionGeneration: integer("connection_generation").notNull(),
+	projectId: varchar("project_id", { length: 36 }).notNull(),
+	granteeUserId: varchar("grantee_user_id", { length: 36 }).notNull(),
+	queryScope: varchar("query_scope", { length: 200 }).notNull(),
+	proposalId: varchar("proposal_id", { length: 36 }).notNull(),
+	status: varchar({ length: 16 }).notNull(),
+	endReason: varchar("end_reason", { length: 64 }),
+	revokedByUserId: varchar("revoked_by_user_id", { length: 36 }),
+	revokedAt: timestamp("revoked_at", { withTimezone: true, mode: 'string' }),
+	lastUsedAt: timestamp("last_used_at", { withTimezone: true, mode: 'string' }),
+	readCount: integer("read_count").default(0).notNull(),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
+}, (table): PgTableExtraConfigValue[] => [
+	index("ix_gmail_read_delegations_grantee").using("btree", table.spaceId.asc().nullsLast(), table.granteeUserId.asc().nullsLast(), table.projectId.asc().nullsLast()),
+	index("ix_gmail_read_delegations_owner").using("btree", table.spaceId.asc().nullsLast(), table.ownerUserId.asc().nullsLast()),
+	unique("uq_gmail_read_delegations_proposal").on(table.proposalId),
+	uniqueIndex("uq_gmail_read_delegations_live").on(table.gmailConnectionId, table.projectId, table.granteeUserId).where(sql`status = 'active'`),
+	foreignKey({ columns: [table.gmailConnectionId, table.spaceId, table.ownerUserId], foreignColumns: [gmailConnections.id, gmailConnections.spaceId, gmailConnections.ownerUserId], name: "gmail_read_delegations_connection_fkey" }).onDelete("cascade"),
+	foreignKey({ columns: [table.projectId, table.spaceId], foreignColumns: [projects.id, projects.spaceId], name: "gmail_read_delegations_project_fkey" }).onDelete("cascade"),
+	foreignKey({ columns: [table.granteeUserId], foreignColumns: [users.id], name: "gmail_read_delegations_grantee_user_id_fkey" }).onDelete("cascade"),
+	check("ck_gmail_read_delegations_status", sql`status IN ('active', 'revoked')`),
+	check("ck_gmail_read_delegations_revoked", sql`(status = 'revoked') = (revoked_at IS NOT NULL)`),
+	check("ck_gmail_read_delegations_grantee", sql`grantee_user_id <> owner_user_id`),
+	check("ck_gmail_read_delegations_scope", sql`length(btrim(query_scope)) > 0`),
+	check("ck_gmail_read_delegations_end_reason", sql`end_reason IS NULL OR end_reason ~ '^gmail_[a-z_]{1,58}$'`),
+	check("ck_gmail_read_delegations_count", sql`read_count >= 0`),
 ]);
 
 /**

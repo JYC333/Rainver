@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentRuntimeProfileOut, Task } from '../../../types/api'
@@ -17,10 +17,11 @@ vi.mock('../TaskWorkTab', () => ({
 vi.mock('../../../components/ContentAccessControl', () => ({ ContentAccessControl: () => null }))
 vi.mock('react-router-dom', async orig => ({
   ...(await orig<typeof import('react-router-dom')>()),
-  useParams: () => ({ taskId: 'task-1', projectId: '' }),
+  useParams: () => ({ taskId: mocked.taskId, projectId: '' }),
 }))
 
 const mocked = vi.hoisted(() => ({
+  taskId: 'task-1',
   navigate: vi.fn(),
   delete: vi.fn(),
   get: vi.fn(),
@@ -82,6 +83,7 @@ function renderPage() {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  mocked.taskId = 'task-1'
   mocked.get.mockResolvedValue(TASK)
   mocked.runs.mockResolvedValue({ items: [] })
   mocked.artifacts.mockResolvedValue({ items: [] })
@@ -92,6 +94,20 @@ beforeEach(() => {
 })
 
 describe('TaskDetailPage — runtime profile on the default path', () => {
+  it('discards the previous task when its response arrives after navigation', async () => {
+    let finishFirst!: (task: Task) => void
+    mocked.get.mockImplementationOnce(() => new Promise<Task>(resolve => { finishFirst = resolve }))
+      .mockResolvedValueOnce({ ...TASK, id: 'task-2', title: 'Task two' })
+    mocked.listRuntimeProfiles.mockResolvedValue([profile({})])
+    const page = renderPage()
+    mocked.taskId = 'task-2'
+    page.rerender(<MemoryRouter><TaskDetailPage /></MemoryRouter>)
+    await screen.findByText('Task two')
+    await act(async () => finishFirst(TASK))
+    expect(screen.queryByText(TASK.title)).toBeNull()
+    expect(screen.getByText('Task two')).toBeVisible()
+  })
+
   it('queues a run with no runtime form and no runtime_profile_id when the Agent has one Profile', async () => {
     // The default path needs no runtime form, and the Run must
     // be recorded as a `default` selection rather than an explicit one.

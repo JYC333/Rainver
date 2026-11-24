@@ -836,6 +836,11 @@ briefings, existing Project briefings and sealed daily editions keep their scope
 and consumers. R3 will consume theme version references, not resend all original
 bodies or relabel an old purpose's output.
 
+Theme admission serializes decisions for one Following and locks its linked
+briefing before its round. This matches the row order used by composition and
+cancellation. Terminal reconciliation for a Following finishes its rounds
+without entering the sealed-day queue used by the personal and Project scopes.
+
 R2 collection coverage (`following_coverage`) remains in the frozen prompt,
 manifest and authorization dependencies, and each round exposes its current
 coverage. It is operational metadata, excluded only from the Following adapter's

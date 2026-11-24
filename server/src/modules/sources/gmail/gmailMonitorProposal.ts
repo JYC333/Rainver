@@ -76,8 +76,9 @@ export async function proposeGmailMonitor(db: Queryable, runId: string, spaceId:
   const criteria = GmailMonitorCriteriaSchema.safeParse({ from_any: input.from_any ?? [], subject_any: input.subject_any ?? [], label_any: input.label_any ?? [] });
   return withQueryableTransaction(db, async (tx) => {
     try { await lockActivePerson(tx, spaceId, owner); } catch { return refusal("gmail_monitor_private_turn_required", "The mailbox owner is no longer an active member here."); }
-    await lockGmailOwnerSpace(tx, { spaceId, userId: owner });
+    // Person → Run → mutex, as every Gmail release of this same Run takes them (never the mutex first).
     const run = (await tx.query<StoredRun>(`SELECT ${RUN_COLUMNS} FROM runs WHERE id=$1 AND space_id=$2 FOR SHARE`, [runId, spaceId])).rows[0];
+    await lockGmailOwnerSpace(tx, { spaceId, userId: owner });
     if (!run || run.instructed_by_user_id !== owner || !(await gmailMonitorScenarioAllowed(tx, run))) return refusal("gmail_monitor_private_turn_required", PRIVATE_TURN_MESSAGE);
     if (idempotencyKey) {
       const existing = (await tx.query<{ id: string; status: string }>(

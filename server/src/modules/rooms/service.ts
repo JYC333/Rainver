@@ -13,19 +13,23 @@ import type { AgentRunRecord } from "../runs/repository.js";
 import { visibleRoomTranscriptSql } from "../sessions/messagePath.js";
 import {
   assertProjectWriter,
+  assertProjectWriterForMutation,
   assertProjectReadableLocked,
-  lockActiveProjectForMutation, canWriteProject, assertProjectReadable } from "../projects/access.js";
+  lockActiveProjectForMutation, lockProjectAudience, canWriteProject, assertProjectReadable } from "../projects/access.js";
 import { PgProjectFolderRepository } from "../projectFolders/repository.js";
 import {
   ConversationTurnInProgressError,
   PgConversationRuntimeSessionRepository,
 } from "../sessions/conversationRuntimeSessionRepository.js";
-import { PgRoomRepository, ROOM_AUDIENCE_SQL, conversationHasUnfinishedAgentsSql, type RoomRecord } from "./repository.js";
+import { PgRoomRepository, ROOM_AUDIENCE_SQL, conversationHasUnfinishedAgentsSql, type RoomConversationListStatus, type RoomRecord } from "./repository.js";
+import { restoreConversationFromTrash } from "./conversationTrash.js";
 import { RoomReferenceService } from "./referenceService.js";
 import { ProjectOverviewService } from "../projects/overviewService.js";
 import { SpaceAssistantService, type ManagedAssistantPreparation } from "../agents/spaceAssistantService.js";
 import type { UnattendedTurn } from "../agents/chatOperations.js";
-import type { ConversationInputPart, RoomAgentPresetRequest, RoomDetail, RuntimeSessionConfigSelection, ThreadReferencePick } from "@rainver/protocol";
+import type { ConversationInputPart, RoomAgentPresetRequest, RoomDetail, RoomLiveTarget, RuntimeSessionConfigSelection, ThreadReferencePick } from "@rainver/protocol";
+import { liveInputRecipient, liveTargetUnavailable, recordRoomLiveInput, roomLiveInputCandidates, type RoomLiveInputReceipt } from "./liveInputRouting.js";
+import { LiveInputRefusal } from "../runs/liveInputService.js";
 import { contentReadSql } from "../access/contentAccessSql.js";
 import { RoomRosterService, lockConversationAgentThread } from "./rosterService.js";
 import { requestRoomConversationTitle } from "./conversationTitleService.js";
@@ -496,14 +500,22 @@ export class RoomService {
   async listConversations(identity: RoomIdentity, roomId: string, input: {
     limit: number;
     offset: number;
+    archived?: boolean;
+    status?: RoomConversationListStatus;
   }) {
+    const status = input.status ?? (input.archived ? "archived" : "active");
     const repository = new PgRoomRepository(this.pool);
-    await requireRoom(repository, identity, roomId);
+    const room = await requireRoom(repository, identity, roomId);
+    // The recycle bin is shown only to someone who could delete or restore here.
+    if (status === "deleted") {
+      await assertProjectWriter(this.pool, identity.spaceId, room.project_id, identity.userId, { allowArchived: true });
+    }
     const result = await repository.listConversations({
       space_id: identity.spaceId,
       room_id: roomId,
       limit: input.limit,
       offset: input.offset,
+      status,
     });
     return { ...result, limit: input.limit, offset: input.offset };
   }
@@ -537,6 +549,66 @@ export class RoomService {
         title: "New conversation",
         metadata: { execution_setup_started: true },
       });
+    });
+  }
+
+  async setConversationArchived(identity: RoomIdentity, roomId: string, sessionId: string, archive: boolean) {
+    return withQueryableTransaction(this.pool, async (client) => {
+      await lockRoomConversationQueue(client, identity.spaceId, sessionId);
+      const rooms = new PgRoomRepository(client);
+      const visible = await requireRoom(rooms, identity, roomId);
+      await assertProjectWriter(client, identity.spaceId, visible.project_id, identity.userId);
+      await lockActiveProjectForMutation(client, identity.spaceId, visible.project_id);
+      await assertProjectWriterForMutation(client, identity.spaceId, visible.project_id, identity.userId);
+      await requireRoom(rooms, identity, roomId, true);
+      await new PgConversationRuntimeSessionRepository(client).lockConversation(identity.spaceId, sessionId);
+      const result = await rooms.setConversationArchived(identity.spaceId, roomId, sessionId, archive);
+      if (result === "missing") throw new HttpError(404, "Room conversation not found");
+      if (result === "busy") throw new RoomMutationError(409, "Finish running or queued work and pause scheduled Gmail digests before archiving");
+    });
+  }
+
+  /** Return a conversation from the recycle bin to the list it was deleted from. */
+  async restoreDeletedConversation(identity: RoomIdentity, roomId: string, sessionId: string) {
+    return withQueryableTransaction(this.pool, async (client) => {
+      await lockRoomConversationQueue(client, identity.spaceId, sessionId);
+      const rooms = new PgRoomRepository(client);
+      const visible = await requireRoom(rooms, identity, roomId);
+      await assertProjectWriter(client, identity.spaceId, visible.project_id, identity.userId);
+      await lockActiveProjectForMutation(client, identity.spaceId, visible.project_id);
+      await assertProjectWriterForMutation(client, identity.spaceId, visible.project_id, identity.userId);
+      await requireRoom(rooms, identity, roomId, true);
+      await new PgConversationRuntimeSessionRepository(client).lockConversation(identity.spaceId, sessionId);
+      const result = await restoreConversationFromTrash(client, identity.spaceId, roomId, sessionId);
+      if (result === "missing") throw new HttpError(404, "Deleted Room conversation not found");
+      if (result === "expired") throw new RoomMutationError(409, "This conversation is past its restore window and is being permanently removed");
+    });
+  }
+
+  async deleteEmptyConversation(identity: RoomIdentity, roomId: string, sessionId: string) {
+    return this.deleteConversation(identity, roomId, sessionId, true);
+  }
+
+  async deleteConversation(identity: RoomIdentity, roomId: string, sessionId: string, emptyOnly = false) {
+    return withQueryableTransaction(this.pool, async (client) => {
+      await lockRoomConversationQueue(client, identity.spaceId, sessionId);
+      const rooms = new PgRoomRepository(client);
+      const visible = await requireRoom(rooms, identity, roomId);
+      await assertProjectWriter(client, identity.spaceId, visible.project_id, identity.userId);
+      await lockActiveProjectForMutation(client, identity.spaceId, visible.project_id);
+      await assertProjectWriterForMutation(client, identity.spaceId, visible.project_id, identity.userId);
+      await requireRoom(rooms, identity, roomId, true);
+      await new PgConversationRuntimeSessionRepository(client).lockConversation(identity.spaceId, sessionId);
+      if (emptyOnly) {
+        await requireConversation(rooms, identity, roomId, sessionId);
+        if (!await rooms.deleteEmptyConversation(identity.spaceId, roomId, sessionId)) {
+          throw new RoomMutationError(409, "Only an unused Room conversation can be deleted");
+        }
+        return;
+      }
+      const result = await rooms.deleteConversation(identity.spaceId, roomId, sessionId);
+      if (result === "missing") throw new HttpError(404, "Room conversation not found");
+      if (result === "busy") throw new RoomMutationError(409, "Finish running or queued work and pause scheduled Gmail digests before deleting");
     });
   }
 
@@ -631,6 +703,48 @@ export class RoomService {
         if (!isTurnTaken(error)) throw error;
         await client.query("ROLLBACK TO SAVEPOINT room_send");
         return enqueue();
+      }
+    });
+  }
+
+  /**
+   * An ordinary send that adds to the one active Run its route reaches
+   * (`modules/rooms.md`, "Ordinary send into an active turn"). With `auto`,
+   * null when no Run can take it now, or messages are already waiting for the
+   * turn (one never overtakes them): the caller then sends or queues it as
+   * before. A Run the person chose (`{ run_id }`) is never answered by an
+   * ordinary send: any of those cases refuses it instead, recording nothing.
+   */
+  async sendIntoActiveRun(identity: RoomIdentity, roomId: string, sessionId: string, input: RoomSendInput & { live_target: RoomLiveTarget }): Promise<RoomLiveInputReceipt | null> {
+    const target = input.live_target;
+    const explicit = typeof target === "object";
+    return withQueryableTransaction(this.pool, async (client) => {
+      await lockRoomConversationQueue(client, identity.spaceId, sessionId);
+      const rooms = new PgRoomRepository(client);
+      const visible = await requireRoom(rooms, identity, roomId);
+      await lockProjectAudience(client, identity.spaceId, visible.project_id);
+      await rooms.lockRoomForTurn(identity.spaceId, roomId);
+      const room = await requireRoom(rooms, identity, roomId);
+      const conversation = await requireConversation(rooms, identity, roomId, sessionId);
+      const ordinary = () => { if (explicit) throw liveTargetUnavailable(); return null; };
+      if (await hasQueuedRoomMessage(client, identity.spaceId, conversation.id)) return ordinary();
+      const members = (await rooms.listAgentMembers(identity.spaceId, room.id, identity.userId)).filter(member => member.status === "active");
+      const agentId = liveInputRecipient(input, members.find(member => member.role === "manager")?.agent_id ?? null);
+      if (!agentId || !members.some(member => member.agent_id === agentId)) return ordinary();
+      await client.query("SAVEPOINT room_live_input");
+      try {
+        return await recordRoomLiveInput(client, this.config, identity, {
+          roomId: room.id, sessionId: conversation.id, agentId, target: input.live_target, content: input.content.trim(),
+        });
+      } catch (error) {
+        // The live channel refused before recording anything: an ordinary send follows, unless the person chose this Run.
+        if (!(error instanceof LiveInputRefusal)) throw error;
+        await client.query("ROLLBACK TO SAVEPOINT room_live_input");
+        if (typeof target === "object") {
+          const candidates = await roomLiveInputCandidates(client, identity, room.id, conversation.id, agentId);
+          throw liveTargetUnavailable(candidates.filter(candidate => candidate.run_id !== target.run_id));
+        }
+        return null;
       }
     });
   }

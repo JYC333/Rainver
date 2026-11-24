@@ -3,6 +3,7 @@ import {CodePatchDecisionRefusal} from '../projectFolders/codePatchDecisionError
 import {codePatchDecisionAudit,codePatchEffectReceipt} from '../projectFolders/codePatchEffectContext.js';
 import {assertCurrentActor,sessionActor} from '../systemActions/operations/actor.js';
 import {assertProposalTransaction,withCheckpointDecisionOwner,lockProposalTransitions} from '../systemActions/operations/proposalTransitions.js';
+import { proposalRevisionSql } from "./proposalRevision.js";
 import {OperationError} from '../systemActions/operations/errors.js';
 import {pluginProposalContributor} from '../plugins/proposalContributions.js';
 import {operationProposalService,durablyLinked} from "../systemActions/operations/approvals.js";
@@ -151,6 +152,11 @@ interface ProposalAcceptOptions {
    * `assertOwnerCardDecision`.
    */
   ownerCardDecision?: boolean;
+  /**
+   * The revision the decider was shown (`proposalRevisionSql`): checked against the locked row, refused once the
+   * Proposal changed since. A card whose choice is made on it requires one (`ProposalApplyContext.revisionConfirmed`).
+   */
+  expectedRevision?: string;
 }
 
 type ProposalTransactionCallback = () => Promise<void>;
@@ -401,6 +407,12 @@ export class PgProposalApplyService {
       // already committed its own `expired` receipt; an unlinked Proposal has no request to commit,
       // and an `operation_failure` receipt would claim a link, so it is refused outright.
       if (proposal.expired) throw new OperationError('operation_approval_expired', 409);
+      // What the decider was shown, compared under the row lock: a card changed since (another tab, a choice saved
+      // in between) is refused, so exactly the shown revision is what applies.
+      const revisionConfirmed = options.expectedRevision !== undefined;
+      if (revisionConfirmed && await proposalRevision(client, proposal.space_id, proposal.id) !== options.expectedRevision) {
+        throw new ProposalApplyHttpError(409, { code: "proposal_revision_changed", message: "This card changed since it was shown to you. Review it again, then accept." });
+      }
       if (reportDependencyKey(proposal.proposal_type, proposal.payload_json) !== reportDependencies) {
         throw new ProposalApplyHttpError(409, "The report this proposal derives from changed; review it again");
       }
@@ -440,6 +452,7 @@ export class PgProposalApplyService {
         userId: identity.userId,
         requester,
         ownerCardDecision: options.ownerCardDecision === true,
+        revisionConfirmed,
       });};
       if(decided&&typeof decided==='object')result=decided;
       else try { result = this.decisionHooks?.runApply ? await this.decisionHooks.runApply(client,proposalId,apply) : await apply(); } catch(error) {
@@ -1200,6 +1213,11 @@ function skippedChangesForDetail(payload: Record<string, unknown>): unknown[] {
   if (Array.isArray(payload.skipped_changes)) return payload.skipped_changes;
   if (Array.isArray(payload.skipped)) return payload.skipped;
   return [];
+}
+
+async function proposalRevision(client: Queryable, spaceId: string, proposalId: string): Promise<string | null> {
+  return (await client.query<{ revision: string }>(`SELECT ${proposalRevisionSql("p")} AS revision FROM proposals p WHERE p.id=$1 AND p.space_id=$2`,
+    [proposalId, spaceId])).rows[0]?.revision ?? null;
 }
 
 function recordValue(value: unknown): Record<string, unknown> {

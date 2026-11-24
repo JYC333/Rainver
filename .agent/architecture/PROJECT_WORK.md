@@ -509,6 +509,25 @@ Project's mainline Room; the Agent they talk to is bound by the same rule
 soft-deleted Project cannot be edited by anyone, because writer authority is
 checked against a live Project.
 
+**Lock order of an Agent's Task command.** An Agent's `task.create`,
+`task.update`, the six Task-addressed actions, `board.configure` and
+`task.move_to_column` act only in their Run's Project, and take that Project
+`FOR UPDATE` with its audience in the registration's `lockBeforeActor`, which
+the operation core runs for an Agent after the idempotency reservation and
+before it pins the person and the Run (`lockAgentRunProjectBeforeActor`,
+`projects/access.ts`); `authorize` then repeats the writer gate under it. After
+the reservation, so a concurrent request with the same key is still refused as
+`idempotency_in_progress` instead of queuing behind the Project. This
+is the order of every Agent release of a Project-bound plugin result and of
+the Gmail reads' releases (Project `FOR SHARE` → person → Run `FOR UPDATE`):
+pinned first, a Task command held the Run `FOR SHARE` while it waited for the
+Project such a release of the same Run held while it waited for the Run — a
+deadlock. The lock refuses nothing (the hidden 404, a lost writer role or an
+archived Project are still `resolve`'s and `authorize`'s answers); a person's
+command holds no Run and keeps the core's order. `task.create_batch` already
+takes the Project first and pins no Run. Regression:
+`server/test/applicationsAgentToolsDb.test.ts`.
+
 ## Who a work surface answers to
 
 Every Run-derived row a Project surface shows goes through the shared read
@@ -672,7 +691,8 @@ Task domain resolution retains its Run/Agent/grant, membership and Project
 writer checks. Missing targets no longer trigger an inline discovery query
 or acquire a Project lock to build a list that the formatter would discard.
 The Agent formatter now normalizes every missing/hidden object failure to the
-same 404 message with no inline Task catalogue or existence-dependent hint.
+same 404 message for a given action with no inline Task catalogue or existence-dependent hint.
+Status changes direct the Agent to the current Project list and Board edit access.
 An Agent must explicitly read the current authorized list and visible objects;
 it must not guess another id, replay a write or promise an unverified repair.
 Human requests remain hidden. Revoked tool grants are explicit 403 refusals,
@@ -698,6 +718,40 @@ accepted input/fingerprint field, not a persisted ProjectWork event reason,
 matching the pre-migration human writer. The existing Agent event reason is
 still recorded. No new human attribution or event mechanism is introduced.
 
+When a person explicitly asks to cancel a duplicate, their Agent may use
+`task.set_status` with `status: "cancelled"` and the exact reason `Duplicate task`.
+The request supplies the cancellation intent and the existing Project-writer
+check supplies authority. The reason only limits event text. The server has no
+Task-specific cancellation intent to verify and performs no duplicate check.
+
+For a manual Run holding verified on-demand Gmail reads, including a peer's
+read inherited in the same conversation, the egress exception requires a
+`space_shared` Task in that same Project. The lifecycle registration holds
+the Task row lock from authorization through the status write. It allows
+`inbox` or `ready` only, with no completion or cancellation timestamp, recorded
+prior work, Task Run, Task Artifact, execution workspace, merge or outstanding
+branch cleanup, settlement or merge job. Run admission and status writes use
+the same Task lock. Moving a worked Task back to
+`inbox` or `ready` therefore does not make it eligible. The core also rechecks
+every original mailbox owner's live Project consent. Other plugin reads,
+unresolved provenance and unrelated restricted context keep the outward gate.
+When that gate refuses an Agent status change after full Task access and
+Project write authority have been verified, the response is a nonretryable
+409 with fixed guidance for the applicable blocker. It distinguishes the
+requested status or reason, private visibility, current lifecycle state,
+and prior work or execution dependencies. If those Task checks pass but the
+context remains restricted, it directs the person to the Board without
+identifying any source, mailbox or consent. Unknown and inaccessible Tasks
+retain the uniform status-change 404.
+
+The Task writer records `task.flow_changed` with the fixed reason, status
+values and normal Agent/Run attribution. The eligibility checks exclude the
+existing dependencies that could trigger branch deletion or merge withdrawal.
+The command adds no recipient, attachment, content link or visibility grant.
+A replay after the Task is cancelled fails the current-state egress check.
+Free-form reasons, completion, review requests and other statuses retain the
+sensitive-read gate.
+
 ## Live Project read invalidation
 
 `projects/liveUpdates.ts` serves an authenticated, Project-reader SSE at
@@ -722,7 +776,11 @@ Apply the appended migration through the normal migration runner; no startup
 DDL or independent writer path is introduced.
 
 `useProjectLiveRefresh` shares one browser SSE connection per session epoch,
-Space and Project between navigation attention, Pulse, Board and workspaces.
+Space and Project between navigation attention, Pulse, Board, workspaces and
+open Applications views. The plugin host exposes the invalidation as a revision
+so bundled views reread through the scoped operation port without remounting.
+Applications durable commands emit the same invalidation in their operation
+transaction, including when the Agent turn itself has no Project field.
 Bursts collapse into one read per subscriber; overlapping invalidations queue
 one catch-up read. Hidden tabs disconnect, return/focus revalidate, failures
 reconnect with capped jittered backoff and authorization refusals stop retry.

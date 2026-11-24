@@ -128,6 +128,8 @@ export interface HomePendingProposalItem {
   visibility: string;
   /** Accept is refused until the person saves their revision (maintenance updates). */
   awaiting_revision: boolean;
+  /** Accepted only where the choice made on its card is shown (`proposalChosenOnCard`, ADR 0036). */
+  chosen_on_card: boolean;
 }
 
 export interface HomeArtifactSummaryItem {

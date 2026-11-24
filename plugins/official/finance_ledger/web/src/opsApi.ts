@@ -42,7 +42,7 @@ export function financeOpsApi(ops: PluginViewOps, newKey: () => string = () => c
     getBalances: (book_id, scope) => read('book.balances', { book_id, ...(scope ? { scope } : {}) }),
     validateBook: (book_id) => read('book.validate', { book_id }),
     importBeancount: (book_id, input) => write('import.beancount', { book_id, ...input }),
-    listImports: (book_id) => read('import.list', { book_id }),
+    listImports: (book_id, offset = 0) => read('import.list', { book_id, offset }),
     getImport: (book_id, import_source_id) => read('import.get', { book_id, import_source_id }),
     retryImport: (book_id, import_source_id) => write('import.retry', { book_id, import_source_id }),
     mapImportEntry: (book_id, import_source_id, entry_id, account_mapping) => write('import.map_entry', { book_id, import_source_id, entry_id, account_mapping }),

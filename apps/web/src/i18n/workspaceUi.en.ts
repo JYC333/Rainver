@@ -178,6 +178,7 @@ export const workspaceUiEn = {
     "reclaim_now": "Reclaim now",
     "hold": "Keep 7 more days",
     "release_hold": "Stop keeping",
+    quarantine_attention: 'An old workspace folder is protected. Dependency remnants are checked automatically; other contents need inspection before removal.',
     "retry": "Retry cleanup",
     "acknowledge_missing": "Close missing records",
     "acknowledge_missing_description": "Closes the unfinished records of this removed branch as kept without merging. Nothing is marked merged and the audit history stays.",

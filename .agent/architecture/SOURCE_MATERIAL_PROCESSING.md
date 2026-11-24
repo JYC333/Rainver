@@ -126,7 +126,7 @@ silent annotation reset. Collection deduplication may fill a missing body, but
 does not replace an already saved body during ordinary repeated collection.
 
 The existing terminal Run reconciler saves completed work even after Reader is
-closed. Opening Reader also reconciles/reports the latest owned operation. Queue
+closed. Opening Reader reads the latest owned operation. Queue
 waiting does not consume execution time; an overdue dispatched operation is
 cancelled through canonical Run orchestration. Cancellation or real action
 refusal prevents a stored submission from being applied. Only field corrections

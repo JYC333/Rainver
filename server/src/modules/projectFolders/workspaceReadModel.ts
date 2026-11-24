@@ -78,10 +78,13 @@ export async function readVisibleWorkspaceChanges(db:Queryable,spaceId:string,us
   }
   const project=String(project_id);
   if(!writable.has(project))writable.set(project,await canWriteProject(db,spaceId,project,userId));
-  const cleanup_errors=Object.values((cleanup_json??{}) as Record<string,{error?:string}>).map(r=>r.error).filter((e):e is string=>typeof e==='string').slice(0,5);
+  const resources=Object.values((cleanup_json??{}) as Record<string,{state?:string;error?:string}>);
+  const reconciliationError=(publicView.inventory as Record<string,unknown>|null)?.reconciliation_error;
+  const cleanup_retryable=resources.some(r=>r.state==='blocked')||typeof reconciliationError==='string'&&reconciliationError!=='workspace_checkpoint_blocked';
+  const cleanup_errors=resources.filter(r=>r.state!=='cleaned').map(r=>r.error).filter((e):e is string=>typeof e==='string').slice(0,5);
   if((publicView.inventory as Record<string,unknown>|null)?.checkpoint_reconciliation_failed_at||(publicView.inventory as Record<string,unknown>|null)?.reconciliation_error==='workspace_checkpoint_blocked')cleanup_errors.unshift('workspace_checkpoint_blocked');
   const retention=currentRetention(retentionView(retention_json).retention,publicView.state==='open'?String(change_updated_at):null);
-  entries.push({change:WorkspaceChangeViewSchema.parse({...publicView,cleanup_errors,...(retention?{retention}:{}),can_manage:writable.get(project)}),run:{id:String(originating_run_id),status:run_status,agent_id:run_agent_id}});
+  entries.push({change:WorkspaceChangeViewSchema.parse({...publicView,cleanup_errors,cleanup_retryable,...(retention?{retention}:{}),can_manage:writable.get(project)}),run:{id:String(originating_run_id),status:run_status,agent_id:run_agent_id}});
  }
  const last=rows.length>limit?rows[limit-1]:undefined;
  return {entries,next_cursor:last?encodeKeyset([last.page_created,String(last.workspace_id),String(last.sequence),String(last.change_set_id)]):null};

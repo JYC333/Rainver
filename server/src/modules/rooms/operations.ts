@@ -1,13 +1,13 @@
 import {assertDirectSettingsActor} from '../systemActions/operations/actor.js';
 import { PgConversationBackendRepository } from "../sessions/conversationBackendRepository.js";
 import { PgConversationExecutionContextRepository } from "../sessions/executionContextRepository.js";
-import {ROOM_OPERATION_SCHEMAS,type OperationActor,type RegisteredSystemActionDefinition} from '@rainver/protocol';
+import {ROOM_OPERATION_SCHEMAS,type OperationActor,type RegisteredSystemActionDefinition,type RoomLiveTarget} from '@rainver/protocol';
 import type {ServerConfig} from '../../config.js';
 import {getDbPool} from '../../db/pool.js';
 import type {Queryable} from '../routeUtils/common.js';
 import type {OperationRegistration} from '../systemActions/operations/types.js';
 import {hidden,markedRefusal} from '../systemActions/operations/errors.js';
-import {assertProjectWriter} from '../projects/access.js';
+import {assertProjectWriter,canWriteProject,ProjectArchivedMutationError} from '../projects/access.js';
 import {AgentGroupRefusal,HostDispatchRefusal} from '../agentGroups/hostDispatchErrors.js';
 import {ConversationExecutionContextError} from '../sessions/executionContextService.js';
 import {ConversationTurnInProgressError} from '../sessions/conversationRuntimeSessionRepository.js';
@@ -20,14 +20,17 @@ import {RoomService} from './service.js';
 import {RoomRosterService,archiveManagedConversationWorkspaces,hasRoomCommandStanding} from './rosterService.js';
 import {RoomDiscussionService,heldClosingRunRefs} from './discussionService.js';
 import {RoomMutationError} from './roomMutationError.js';
+import {lockRoomConversationWriter} from './conversationWriter.js';
 import {continueHeldRuns} from './quotaGate.js';
 import {RoomMessageQueue} from './messageQueue.js';
+import {deliverRunLiveInput} from '../runs/liveInputService.js';
 import {enqueueRoomAgentWorkspaceRestore} from './workspaceRestoreJob.js';
 
 type Id=keyof typeof ROOM_OPERATION_SCHEMAS;
 type Input=Record<string,unknown>&{room_id?:string;session_id?:string;agent_id?:string;user_id?:string;invitation_id?:string;queued_id?:string;discussion_id?:string;project_id?:string};
 const person=(a:OperationActor)=>({spaceId:a.space_id,userId:a.on_behalf_of_user_id!});
 const CREATED=new Set<Id>(['room.create','room.agent.add','room.agent.add_preset','room.invitation.create','room.conversation.create','room.conversation.attach_references','room.message.send','room.message.continue_after_proposal','room.discussion.start']);
+const CONVERSATION_LIFECYCLE = new Set<Id>(['room.conversation.archive', 'room.conversation.restore', 'room.conversation.restore_deleted', 'room.conversation.delete_empty', 'room.conversation.delete']);
 const ACCEPTED=new Set<Id>(['room.message.retry']);
 /** Discussion steering closes or extends held closing Runs; the host admits that Run set first. */
 const RUN_OWNERS=new Set<Id>(['room.discussion.start','room.discussion.stop','room.discussion.extend']);
@@ -37,6 +40,17 @@ const strip=(raw:unknown,...keys:string[])=>{const value={...raw as Record<strin
 async function visibleRoom(db:Queryable,a:OperationActor,roomId:string){
  const room=await new PgRoomRepository(db).getVisibleRoom(a.space_id,a.on_behalf_of_user_id!,roomId);
  if(!room)throw hidden();
+ return room;
+}
+/**
+ * Archive, restore, delete and recycle-bin restore: Room visibility and Project
+ * writer authority, read now, both when the command is first admitted and when
+ * its receipt is replayed. An archived Project still passes here so the
+ * service reports its explicit 409.
+ */
+async function lifecycleWriter(db:Queryable,a:OperationActor,roomId:string){
+ const room=await visibleRoom(db,a,roomId);
+ if(!await canWriteProject(db,a.space_id,room.project_id,a.on_behalf_of_user_id!))throw hidden();
  return room;
 }
 type Standing=Parameters<typeof hasRoomCommandStanding>[3];
@@ -79,6 +93,7 @@ export function roomOperationRegistrations(definitions:ReadonlyMap<string,Regist
   normalizeInput(raw,scope){return id==='room.settings.read'?{...raw as object,room_id:(scope.targets as {room_id:string}).room_id}:raw;},
   async authorize(db,raw,a){const i=raw as Input;
    if(id==='room.defaults.save')await assertDirectSettingsActor(db,a);
+   if(CONVERSATION_LIFECYCLE.has(id) && a.principal.kind!=='user')throw hidden();
    if(a.principal.kind==='agent'){
     const run=(await db.query<{room_id:string|null;session_id:string|null}>(`SELECT g.room_id,r.session_id FROM runs r JOIN agent_run_groups g ON g.id=r.run_group_id AND g.space_id=r.space_id WHERE r.id=$1 AND r.space_id=$2`,[a.run_id,a.space_id])).rows[0];
     if(!run || run.room_id!==i.room_id || i.session_id&&run.session_id!==i.session_id || a.effective_origin!=='manual')throw hidden();
@@ -86,12 +101,18 @@ export function roomOperationRegistrations(definitions:ReadonlyMap<string,Regist
    if(id==='room.create'){await assertProjectWriter(db,a.space_id,i.project_id!,a.on_behalf_of_user_id!);return;}
    const special=specialStanding(id,i.invitation_id);
    if(special){await visibleOrStanding(db,a,i.room_id!,special);return;}
+   if(CONVERSATION_LIFECYCLE.has(id)){
+    await lifecycleWriter(db,a,i.room_id!);
+    if(id==='room.conversation.delete_empty'&&i.session_id)await visibleConversation(db,a,i.room_id!,i.session_id);
+    return;
+   }
    if(i.session_id)await visibleConversation(db,a,i.room_id!,i.session_id);else await visibleRoom(db,a,i.room_id!);
   },
   async authorizeResult(db,raw,a){
    if(id==='room.settings.read'){await visibleRoom(db,a,(raw as {room_id:string}).room_id);return;}
    const out=raw as {space_id:string;room_id:string;session_id?:string;invitation_id?:string};
    if(out.space_id!==a.space_id)throw hidden();
+   if(CONVERSATION_LIFECYCLE.has(id)){await lifecycleWriter(db,a,out.room_id);return;}
    // A replay is re-authorized by the same relation that admitted the command, read now.
    const special=specialStanding(id,out.invitation_id);
    if(special){await visibleOrStanding(db,a,out.room_id,special);return;}
@@ -105,7 +126,7 @@ export function roomOperationRegistrations(definitions:ReadonlyMap<string,Regist
      const room=await visibleRoom(db,a,i.room_id!),agents: {agent_id:string;agent_name:string;role:'manager'|'member';options:import('@rainver/protocol').ConversationBackendOption[]}[]=[];
      const roster=await new PgRoomRepository(db).listAgentMembers(a.space_id,room.id,p.userId);
      const access=new PgConversationExecutionContextRepository(db);
-     for(const member of roster) if(await access.canAgentParticipate({id:'',space_id:a.space_id,room_id:room.id,project_id:room.project_id,project_folder_id:room.project_folder_id},member.agent_id,p.userId)) agents.push({agent_id:member.agent_id,agent_name:member.agent_name,role:member.role,options:await new PgConversationBackendRepository(db).listOptions(a.space_id,p.userId,member.agent_id,room.project_id)});
+     for(const member of roster) if(await access.canAgentParticipate({id:'',space_id:a.space_id,room_id:room.id,project_id:room.project_id,project_folder_id:room.project_folder_id},member.agent_id,p.userId)) agents.push({agent_id:member.agent_id,agent_name:member.agent_name,role:member.role,options:await new PgConversationBackendRepository(db).listOptions(a.space_id,p.userId,member.agent_id,room.project_id,"room-runtime")});
      const sessionId=a.run_id?(await db.query<{session_id:string|null}>('SELECT session_id FROM runs WHERE id=$1 AND space_id=$2',[a.run_id,a.space_id])).rows[0]?.session_id??null:null;
      return {room_id:i.room_id!,session_id:sessionId,revision:room.roster_revision,defaults:(room.conversation_defaults_json??[]).filter(item=>agents.some(agent=>agent.agent_id===item.agent_id)),agents};
     }
@@ -127,13 +148,23 @@ export function roomOperationRegistrations(definitions:ReadonlyMap<string,Regist
     case 'room.member.remove':await service.removeUser(p,i.room_id!,i.user_id!);return {...base,id:i.room_id!,user_id:i.user_id!};
     case 'room.owner.transfer':await service.transferOwner(p,i.room_id!,i.user_id!);return {...base,id:i.room_id!};
     case 'room.owner.claim':await service.claimOwner(p,i.room_id!);return {...base,id:i.room_id!};
+    case 'room.conversation.archive':
+    case 'room.conversation.restore':
+     await service.setConversationArchived(p,i.room_id!,i.session_id!,id==='room.conversation.archive');
+     return {...base,id:i.session_id!,session_id:i.session_id!};
+    case 'room.conversation.delete':await service.deleteConversation(p,i.room_id!,i.session_id!);return {...base,id:i.session_id!,session_id:i.session_id!};
+    case 'room.conversation.restore_deleted':await service.restoreDeletedConversation(p,i.room_id!,i.session_id!);return {...base,id:i.session_id!,session_id:i.session_id!};
+    case 'room.conversation.delete_empty':await service.deleteEmptyConversation(p,i.room_id!,i.session_id!);return {...base,id:i.session_id!,session_id:i.session_id!};
     case 'room.conversation.create':{const out=await service.createConversationDraft(p,i.room_id!) as {id:string};return {...base,id:out.id,session_id:out.id};}
     case 'room.conversation.attach_references':{
      const out=await service.attachConversationReferences(p,i.room_id!,i.session_id!,strip(raw,'room_id','session_id') as never);
      return {...base,id:i.session_id!,session_id:i.session_id!,attached:out.attached};
     }
     case 'room.message.send':{
-     const {queue,...send}=strip(raw,'room_id','session_id') as {queue?:boolean}&Record<string,unknown>;
+     const {queue,...send}=strip(raw,'room_id','session_id') as {queue?:boolean;live_target?:RoomLiveTarget|null}&Record<string,unknown>;
+     // An ordinary send the person's route already aims at one active Run goes into that Run; otherwise as before.
+     const live=send.live_target?await service.sendIntoActiveRun(p,i.room_id!,i.session_id!,send as never):null;
+     if(live)return {...base,id:live.message_id,session_id:i.session_id!,status:'live_input' as const,run_id:live.run_id,message_id:live.message_id,binding_id:live.binding_id,delivery_state:live.delivery_state};
      const out=queue?await service.sendOrQueueMessage(p,i.room_id!,i.session_id!,send as never):await service.sendMessage(p,i.room_id!,i.session_id!,send as never);
      if('queued' in out)return {...base,id:out.queued.id,session_id:i.session_id!,status:'queued' as const,queued_id:out.queued.id};
      return {...base,id:out.message.id,session_id:i.session_id!,status:'sent' as const,message_id:out.message.id,task_group_ids:out.task_group_ids,run_ids:out.run_ids};
@@ -146,9 +177,8 @@ export function roomOperationRegistrations(definitions:ReadonlyMap<string,Regist
     }
     case 'room.quota.continue':{
      // Continuing past the quota is a decision to spend: Project writer authority, as for adding rounds.
-     const room=await new PgRoomRepository(db).getVisibleRoom(a.space_id,p.userId,i.room_id!,true);
+     const room=await lockRoomConversationWriter(db,p,i.room_id!,i.session_id!);
      if(!room)throw hidden();
-     await assertProjectWriter(db,a.space_id,room.project_id,p.userId);
      if(!await new PgRoomRepository(db).getConversation(a.space_id,room.id,i.session_id!))throw hidden();
      await continueHeldRuns(db,{spaceId:a.space_id,sessionId:i.session_id!,userId:p.userId});
      return {...base,id:i.session_id!,session_id:i.session_id!};
@@ -161,6 +191,12 @@ export function roomOperationRegistrations(definitions:ReadonlyMap<string,Regist
     case 'room.discussion.extend':await new RoomDiscussionService(config,db as never).extend(p,i.room_id!,i.session_id!,i.discussion_id!,Number((raw as {rounds:number}).rounds));return {...base,id:i.discussion_id!,session_id:i.session_id!,discussion_id:i.discussion_id!};
    }
   },
+  // Delivery into the live process is the recorded input's Job (first attempt here), never the send's transaction.
+  ...(id==='room.message.send'?{async afterCommit(raw:unknown,a:OperationActor){
+   const out=raw as {status:string;run_id?:string;binding_id?:string|null;message_id?:string;delivery_state?:string};
+   if(out.status!=='live_input'||out.delivery_state!=='pending'||!out.binding_id)return;
+   await deliverRunLiveInput(getDbPool(config.databaseUrl!),config,person(a),out.run_id!,out.binding_id,out.message_id!);
+  }}:{}),
   ...(id==='room.agent.remove'?{async afterCommit(raw:unknown,a:OperationActor){
    // Host work is never this transaction's. The archive's durable `pending_archive_at`
    // intent committed; this is only its first attempt, and the host-archive recovery retries it.
@@ -174,7 +210,7 @@ export function roomOperationRegistrations(definitions:ReadonlyMap<string,Regist
    await archiveManagedConversationWorkspaces(pool,pending.rows.map(row=>({threadId:row.id,hostId:row.execution_host_id,agentId:out.agent_id,conversationId:row.session_id})));
   }}:{}),
   classifyError(e){
-   if(e instanceof RoomMutationError||e instanceof HostDispatchRefusal||e instanceof AgentGroupRefusal||e instanceof ConversationTurnInProgressError||e instanceof ConversationInputError||e instanceof ConversationBackendError||e instanceof ConversationSessionConfigError||e instanceof RunCreateValidationError||e instanceof ConversationExecutionContextError)
+   if(e instanceof ProjectArchivedMutationError||e instanceof RoomMutationError||e instanceof HostDispatchRefusal||e instanceof AgentGroupRefusal||e instanceof ConversationTurnInProgressError||e instanceof ConversationInputError||e instanceof ConversationBackendError||e instanceof ConversationSessionConfigError||e instanceof RunCreateValidationError||e instanceof ConversationExecutionContextError)
     return markedRefusal(e as Error&{statusCode:number;responseBody?:unknown},'rooms');
    return undefined;
   },

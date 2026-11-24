@@ -16,7 +16,17 @@ Sources list/detail pages do not author Sources; they open the Following setup.
 Custom Source repair/rollback are backend-only; credentialed sources have only
 the `/sources/access` credential-creation page. Rate limiting,
 artifact retention, and an observability read model exist. There is no
-browser or Python handler evaluation.
+browser or Python handler evaluation. Legacy handler Artifact retention protects
+the newest superseded version for each connection. For older versions, the
+database transaction records the file generation on the audit version while
+detaching and deleting its Artifact row. The scheduler uses separate bounded
+batches for existing intents and newly eligible Artifacts. It retries unattempted
+intents first, then those whose last failure is oldest, and retires intents whose
+file is absent, replaced, or referenced again. Filesystem failures stay pending
+and trigger the existing scheduler alert. The linked server log reports failed
+and completed counts without file paths. The scheduler also logs a count when
+it finalizes a cleanup without unlinking a file. A backup restored onto a different file generation may
+require manual review of leftover files.
 
 
 Goal orchestration is implemented in `sources/goals/`, with topic setup in
@@ -90,6 +100,8 @@ scope.
   Channel is an internal execution boundary, not a required user-facing term.
   Scheduler cursor/watermark/
   conditional-fetch state is stored in the Channel's `scheduler_tasks.metadata_json`.
+  Only ordinary scans for connectors that support validators send them. A fresh
+  response replaces both validators, including clearing ones no longer supplied.
 - `SourceChannelItemLink`, which preserves every channel hit for a globally
   deduplicated `SourceItem`.
 - `SourceItem` candidate records.
@@ -498,6 +510,17 @@ Project Research screening review reads its items as the reviewer, so a
 reviewer's own subscription is what makes a connected item readable there.
 
 ### Reader and structured extraction
+
+The ordinary extraction scheduler revisits pending and interrupted running
+jobs. Every ordinary execution holds a PostgreSQL session lock for its Space
+and extraction job ID, and writes through that same session. When the session
+ends, its old worker cannot finish against a second connection. The scheduler
+skips held jobs before applying its batch limit, then takes each lock before
+execution. Previously queued `source_extraction` jobs can still run and defer
+without spending an attempt when ordinary extraction is already in progress.
+Internal normalization reuses the source item already created for its job.
+Material-processing, monitoring, Recipe and Custom Source jobs retain their
+own recovery paths.
 
 `extract_text` and the extracted side of `snapshot` jobs fetch source HTML and
 materialize an `source_reader_document` artifact. This artifact is JSON
@@ -1457,6 +1480,11 @@ canonical normalizers, derived-import consent and managed Agent writers remain
 owners. The managed Agent prompt writer has an explicit transaction port so
 Agent/version, rule/schedule, policy audit and receipt commit together.
 
+The `local_day` rule window uses the configured zone's current date and the
+shared scheduler calendar. Candidate timestamps include the first instant of
+that date and exclude the first instant of the next date, including clock
+changes at midnight or by less than an hour.
+
 Dispatch returns a required Job receipt (`pending`), not a completed processing
 Run/extraction. Rule run/drain execute through the existing post-processing worker;
 manual extraction uses the same existing repository/Recipe/Custom Source/worker
@@ -1716,17 +1744,12 @@ retired in V2. An Agent reads mail only through the on-demand read below
 a Project (the owner's private one, a Room or the mainline), in the owner's own
 turn, after their opt-in and their one standing consent for that Project and
 mailbox, on the conversation's own runtime — and through the scheduled digest
-read of a confirmed digest. No delegated or system path reads mail, and an
+read of a confirmed digest (including an automatic application-update automation,
+"Automatic application updates" below). No delegated or system path reads mail, and an
 Agent otherwise only drafts a monitor as the owner's private proposal. Code: `server/src/modules/sources/gmail/`, schema
-`server/src/db/schema/gmail.ts` (migrations `0020_gmail_oauth_connections`;
-`0021_gmail_revocation_obligations` added an automatic-revocation table that
-`0022_gmail_drop_remote_revocation` drops again with
-`gmail_connections.revocation_status`; `0023_gmail_thread_selections_read_audit`;
-`0031_gmail_agent_read` adds the opt-in and the Agent read audit columns;
-`0033_gmail_project_agent_read_consent` adds the Project consent binding to
-`plugin_data_grants` and ends earlier per-Run Gmail consents;
-`0034_gmail_consent_binding_and_shape` freezes the consent on its request and
-closes the shape check's NULL holes),
+`server/src/db/schema/gmail.ts` (migration `0020_gmail_integration.sql` contains
+the final connection, selection, Agent-read audit, monitoring and digest
+tables, plus the Project consent and request-binding constraints),
 DTOs `packages/protocol/src/gmail.ts`.
 
 - **No automatic remote revocation.** Google revokes per grant (client +
@@ -1757,7 +1780,11 @@ DTOs `packages/protocol/src/gmail.ts`.
   row) → attempts → connection → credential. Disconnect/forget take the mutex and
   the connection row `FOR UPDATE` in `authorize`, so no `SHARE` lock is upgraded
   later and two commands with different idempotency keys serialize instead of
-  deadlocking.
+  deadlocking. A transaction that also holds an Agent Run takes it after the
+  person and before the mutex (person → Run → mutex), as every Gmail release
+  does: the conversation tools that draft a monitor, digest or application
+  automation, and the automation's fact gate (Run `FOR SHARE` from the actor pin;
+  its taint is read `FOR SHARE`, never upgraded).
 - **Configuration.** Optional `GMAIL_OAUTH_CLIENT_ID/SECRET/REDIRECT_URI`
   (all or none; the redirect URI must be the instance origin plus exactly
   `/api/v1/sources/gmail/oauth/callback`; https in prod unless loopback). Server process only.
@@ -1833,8 +1860,7 @@ DTOs `packages/protocol/src/gmail.ts`.
   consents and pending consent requests, and the deletion cascades its
   attempts, thread selections, monitors, matches and sync cursor. Ended
   consents and approved requests stay as evidence: a consent names its
-  connection only as a snapshot (no foreign key since migration
-  `0035_gmail_consent_history_and_request_end`), so history never blocks
+  connection only as a snapshot (no foreign key), so history never blocks
   Forget and never admits again.
 - **Transport.** `gmailOAuthTransport.ts` sends the token exchange and refresh
   POSTs through `fetchGuarded`: HTTPS, exactly the fixed
@@ -1881,10 +1907,14 @@ DTOs `packages/protocol/src/gmail.ts`.
 - **Page deadline and bounded transactions** (`gmailReadDeadline.ts`). Each
   search or read page has one signal: the client's disconnect plus
   `GMAIL_READ_LIMITS.pageDeadlineMs` (60 s, the whole page — not 21 × 15 s; the
-  broker's 15 s per send sits inside it). Every database step of the page runs
+  broker's 15 s per send sits inside it). Agent Gmail reads have a 65 s HTTP
+  deadline and a 70 s local Host bridge deadline to allow release after the
+  server page finishes. Losing the tool HTTP client aborts either Gmail read.
+  Every database step of the page runs
   in `withGmailReadTransaction` under that signal: the selection route lookup,
   admission, each per-send authority check (with the broker's narrower per-send
-  signal), token refresh (all three steps; its lease wait also stops on abort),
+  signal), including Agent Run consent and digest audience checks, token
+  refresh (all three steps; its lease wait also stops on abort),
   quota admission and cooldown (the broker receives the page's runner instead
   of the pool) and the final release. Pool acquisition gives up on abort and
   releases a client that arrives later unused (the pool's own 5 s connect
@@ -1972,7 +2002,7 @@ DTOs `packages/protocol/src/gmail.ts`.
   administrator configures the server and offers no secret field. Disconnect
   confirms that it is local only and then links `GMAIL_MANUAL_REVOCATION_URL`;
   forget is offered for non-active rows. The callback's `/sources?gmail=<code>`
-  lands on `GmailCallbackLanding` (route in `App.tsx`), which forwards only a
+  lands on `GmailCallbackLanding` (route in `AuthenticatedApp.tsx`), which forwards only a
   known result code to the preferred Space's Access page; the card shows it
   once and removes it from the URL. *Monitoring*:
   `modules/sources/gmail/GmailMonitorsCard.tsx` below the connections card:
@@ -2024,8 +2054,7 @@ wake-up, retention), `gmailMonitorProposal.ts` (Agent tool),
 reconnect resume), `gmailSyncContract.ts` (sync allowlist),
 `gmailMonitorCriteria.ts` (matching), `gmailWatch.ts` (`users.watch`),
 `gmailPush.ts` (push intake), `gmailSyncJob.ts` (Job); schema in
-`db/schema/gmail.ts` (migrations `0027_gmail_new_mail_monitoring`,
-`0028_gmail_sync_progress_and_retry`).
+`db/schema/gmail.ts` and migration `0020_gmail_integration.sql`.
 
 - **Rows.** `gmail_monitor_rules`: owner, Space, connection (FK cascade),
   optional `project_id` (SET NULL; a context label, never an audience), purpose
@@ -2103,7 +2132,7 @@ reconnect resume), `gmailSyncContract.ts` (sync allowlist),
 - **Sync** (`syncGmailMailbox`, Job `gmail_mailbox_sync`, payload = connection
   id). Claim → fetch → settle, lock order person → owner + Space mutex →
   connection → cursor. Claim takes a 3 min lease only for an active owner,
-  active connection and ≥ 1 active monitor (else records
+  active connection and ≥ 1 active monitor or active application-update automation (ADR 0034; else records
   `gmail_authority_revoked | gmail_connection_inactive | gmail_reauth_required`
   and parks without any Google call, cursor kept). Fetch outside transactions
   through a Sources broker built from `gmailSyncRequestPolicy`: `history.list`
@@ -2123,15 +2152,15 @@ reconnect resume), `gmailSyncContract.ts` (sync allowlist),
   forward only) in one transaction — committed before any watch renewal. If any active monitor's id + version
   differs from the claim (accepted, or paused and resumed meanwhile), the
   cursor and record progress stay where they were and a follow-up reads the
-  range again with the current versions. A sync that reaches the message
-  bound stops at the last fully processed history record and requests a
+  range again with the current versions. A sync that reaches its message or
+  time bound stops at the last fully processed history record and requests a
   follow-up; when the bound falls inside one record (a record can hold more
   new mail than one sync reads), the record's messages are taken in sorted-id
   order, the position reached is persisted as in-record progress beside the
   unchanged cursor, and the follow-up resumes from it — the cursor passes the
   record only once all of it is checked; a failed retry keeps both and the
   ledger absorbs any overlap. Google
-  404 for the cursor → `recovering` from the last success minus 10 min (never
+  404 for the cursor → `recovering` from the last fully caught-up sync minus 10 min (never
   before the oldest active `active_since`, ≤ 7 days); a further page or older
   gap is `recovery_partial`. Failures keep the cursor and set the durable
   retry floor `retry_not_before` (exponential, or the quota/cooldown retry
@@ -2221,7 +2250,9 @@ owner-sent sharing are under "Private Gmail summaries".
   keeps the conversation's own selected runtime — CLI, Host (built-in or
   paired), native CLI login or ModelProvider, model — and is never selected
   for the model-only channel (`runPinsSensitivePluginTool`,
-  `runPinsCoreDataTool` and `pluginDataFacts` skip Project-bound pins); and
+  `runPinsCoreDataTool` and `pluginDataFacts` skip Project-bound pins) —
+  except the Run of a provider-bound application-update automation, which
+  launches on it and reads mail only from such a launch (ADR 0036 §9); and
   (2) admit a shared audience (`pluginDataEligibility`: the owner's own
   `manual` turn, or a digest's `scheduled` Run), but only while every reader
   of the Run reads the consent's Project (`audienceWithinProject`, at call
@@ -2237,19 +2268,31 @@ owner-sent sharing are under "Private Gmail summaries".
   (`directTurnVisibility`); its own Conversation container already isolates
   host state per Session, so no Project shares host state with another.
 - **Tool** `source.gmail.mail.read` (`gmailAgentReadOperation.ts`,
-  operation-core query): `{query?, max_messages? ≤ 5, mailbox_email?}` →
-  `{mailbox_email, source: recent_inbox|search, items[], truncated}`; each
+  operation-core query): `{query?, max_messages?, page_token?, mailbox_email?}` →
+  `{mailbox_email, source: recent_inbox|search, items[], next_page_token, truncated}`; each
   item is the message id, date, Subject/From/To/Cc/Date headers and plain-text
-  body (32 KiB, `normalizeMessageBody`). No query lists `labelIds=INBOX`; a
+  body. Page size defaults to five, accepts Gmail’s maximum of 500, and
+  continues with the returned token in the same turn. If the transport byte
+  budget stops a page early, a signed cursor retains the unread message IDs
+  and the subsequent Gmail page token. Resume uses the same mailbox, query
+  and page size under the same Project consent. No query lists `labelIds=INBOX`; a
   query is sent as Gmail `q` with `-in:drafts -in:chats -in:spam -in:trash`,
   and any listed message labelled DRAFT/CHAT/SPAM/TRASH is dropped. Requests:
   `gmailAgentReadContract.ts` allowlist (`messages.list` with exactly those
-  parameters, `messages.get format=full`), no redirects, six sends, the
-  existing broker, quota groups, token refresh and authority recheck per send
+  parameters, `messages.get format=full`), no redirects, one list and up to the requested number of message fetches, the
+  existing broker, Google Retry-After cooldown, token refresh and authority recheck per send
   (`pageTransport` in `gmailMailReads.ts`), plus a per-send check that the
   consent is active, the owner is an active person who still reads its
-  Project, and the Run is still running. Ten released reads per Run → 429
-  `gmail_agent_read_limit`.
+  Project, and the Run is still running. On-demand Agent reads do not debit
+  or enforce local request windows; other Gmail paths retain their policies.
+- **Failed tool calls.** Temporary errors include a fixed Gmail error code
+  and the stage when known (admission, first-page listing, next-page listing,
+  or message fetch). The tool result and Run diagnostics distinguish a Google
+  HTTP response (with its status and an allowlisted reason when available), a
+  network failure or refusal, a timeout, an unreadable response, and a repeated
+  page token. Google response text, queries, page tokens, message IDs, and
+  credentials stay out of the diagnostic. Consent and visibility denials
+  retain their existing responses.
 - **Consent** (`gmailAgentReadGrants.ts`). The call first checks the
   conversation's audience against the Project (below), then picks its mailbox
   (several opted-in → 409 `gmail_agent_read_mailbox_ambiguous`, listing the
@@ -2261,7 +2304,7 @@ owner-sent sharing are under "Private Gmail summaries".
   `authorization.request` and the turn waits (`waiting_for_review`). The
   request freezes owner, the conversation's Project, that connection, its
   generation and the purpose (`authorization_requests.consent_*`, migration
-  `0034_gmail_consent_binding_and_shape`). A core data tool's request exists
+  `0020_gmail_integration.sql`). A core data tool's request exists
   only for the mailbox owner, in any conversation: listed
   (`GET /api/v1/runs/:id/authorization-requests`) and decidable by them alone;
   anyone else — other Room members, a Space owner with oversight — gets no row
@@ -2337,6 +2380,14 @@ owner-sent sharing are under "Private Gmail summaries".
   this Project (its private conversations, Rooms and mainline)". The
   call's arguments and result never enter the Run's event logs
   (`PRIVATE_TOOL_CALL_ACTIONS`).
+- **Cancelling a shared, unstarted Task.** A Project writer in the same
+  conversation may explicitly ask the Agent to cancel a duplicate. The egress
+  exception checks that the locked Task is shared, belongs to the same
+  Project, is still unstarted and has no execution or publication dependency.
+  It also checks the original mailbox owners' live Project consents. The
+  `Duplicate task` reason bounds the event text. The person's request supplies
+  the intent and the server performs no duplicate check.
+  See [Core Task lifecycle boundary](../architecture/PROJECT_WORK.md#core-task-lifecycle-boundary).
 - **Management.** The connection list carries `agent_read_grants` (Project,
   name while the owner reads it, created, last use); the Access page card
   lists them with a confirmed revoke (`plugin_data_grant.revoke`). A
@@ -2375,7 +2426,8 @@ owner-sent sharing are under "Private Gmail summaries".
   shows the frozen mailbox and Project to its owner and states the scope
   (every conversation of that Project, answers visible to the conversation's
   readers). Owner-only Gmail cards (`source.gmail.*`) never show the generic
-  "continue to next step" (`ActionPreviewCard.tsx`).
+  "continue to next step". Accepting or rejecting these cards completes the decision
+  without dispatching a follow-up conversation turn (`ActionPreviewCard.tsx`).
 - **Limits.** Whether the Agent recognizes a Gmail need is the model's
   judgment. The conversation's CLI and its model provider process what the
   Agent reads; that is the owner's stated choice on the card, separate from
@@ -2500,3 +2552,404 @@ all Project readers. The share action requires that version, rechecks the
 current audience within the posting transaction, and records provenance.
 If the audience changed, the owner reviews the refreshed list and clicks Post
 again. Sharing starts no Agent work.
+
+### Automatic application updates (ADR 0034)
+
+Decision: [ADR 0034](../decisions/0034-gmail-application-updates.md). Code:
+`sources/gmail/gmailApplicationUpdates.ts` (Agent tools, the fact gate),
+`gmailApplicationUpdateRuns.ts` (Run tools, instruction, pinned runtime, sync wake-up), the
+`application` branches of `gmailDigests.ts`, `gmailMailboxSync.ts` and
+`gmailDigestReadOperation.ts`; table `gmail_digest_mail_items` and the `gmail_digests` columns
+`effects` and `runtime_binding` (migration `0021_application_correspondence_and_workspace`); the package side in
+[Application management package](../architecture/OFFICIAL_OPTIONAL_MODULES.md#application-management-package) (*Gmail application updates*).
+
+- **Setting up in conversation.** `source.gmail.application_updates.propose` (conversation allowance)
+  drafts the owner-only `gmail_digest_create` card (`kind: application`, `effects`, `runtime_binding`)
+  in the mailbox owner's own `manual` turn of a conversation of the Project whose readers all read it —
+  their private conversation, or a Room or the mainline (ADR 0035 §1, below: the card then names its
+  `audience` and the automation runs in the owner's private execution conversation) — when Application management is enabled for them, bound to the Project and they can edit it.
+  Use this tool to update an existing automation for the same Project and mailbox on its
+  existing connection. The owner confirms `contact` along with the allowed effects on the
+  same card. Both incoming and outgoing correspondence can then create an email event for
+  the matching application. `source.gmail.monitor.propose` drafts standalone keyword or
+  label monitors. `source.gmail.setup.propose` can combine application updates with other
+  Gmail options requested together.
+  What it runs on is chosen on the card in two levels (ADR 0036, below): it never refuses on the asking
+  conversation's binding. A binding names the model chosen (`pinned_model`: the ModelProvider's model as its lease resolves it, or the
+  value of the conversation's model option — a full id, an alias or `default` — or `default` for the runtime's own
+  default without a picker; ADR 0037). No configuration is refused for what it cannot prove; a binding frozen before
+  cards said it launches as the conversation does (no `conversation_launch`, whatever its backend: a ModelProvider then
+  isolated to its lease, or a runtime-native one whose mail was released only on proof of the answering model) is
+  refused at acceptance by the card's own check (`gmail_digest_execution_unavailable`), an automation frozen on one is
+  paused (`gmail_digest_launch_reconfirm_required`) until a new card is accepted, and every Run of it — queued, running
+  or settling, with or without `model_channel` in its contract — is of an earlier rule (`applicationRunUnderCurrentRule`,
+  `APPLICATION_RUN_CURRENT_SQL`): never claimed, read for, recorded from or settled (ADR 0037 §6). The card shows the mailbox, the facts it may
+  record and the Agent and model. Acceptance (owner deciding directly) writes or changes the one
+  automation of that mailbox and Project with a `core:gmail_digest` consent of purpose
+  `application_update` on the already opted-in connection, ensures the sync cursor (baseline when no
+  other monitor or automation runs on the connection) and requests a sync. `.list` returns the owner's
+  automations of this Project content-free with per-message outcomes and Gmail links; `.set_status`
+  pauses or ends one (ending revokes its consent). Resuming is a new card: the generic
+  `source.gmail.digest.set_status` refuses `active` for this kind (409) and the Gmail card offers no
+  Resume for it. These and the Run's flag are allowed after the
+  conversation read mail (`egress.ts` `TAINTED_RUN_WRITES`); the Applications writes are not. `.list`
+  records a `core:gmail_digest` sensitive read of the owner in the Run's taint (`recordGmailDerivedRead`,
+  Run taken `FOR UPDATE` before the Gmail mutex, never upgraded).
+- **Project status.** The Applications board shows the signed-in mailbox owner's
+  application automation for that Project using the existing owner-scoped Gmail
+  digest API. It shows processing status, counts, the last delivery or error,
+  Pause, and a link to the private execution conversation for records or changes.
+  Sources → Access and Gmail keeps the mailbox connection, revocation and a
+  compact link back to the Project's Applications board.
+- **Recording new mail.** The sync claims active automations with an active consent beside the
+  monitors (version = accepted card and `covered_until`), records new INBOX messages and, if the
+  existing application card confirmed it, SENT messages from their recorded confirmation time.
+  SENT takes precedence for mail with both labels. SPAM, TRASH, DRAFT and CHAT are always excluded.
+  A `pending` item stores ids and `received_at` only. The sync
+  counts new items as matches so the Job starts due digests for the connection. The heartbeat, push
+  intake and reconnect resume treat an active automation like an active monitor
+  (`gmailSyncWantedSql`).
+- **Delivery.** `startGmailDigestDelivery` for this kind needs pending items and a passed
+  `next_run_at` (10 minutes after the previous delivery), refuses a conversation other than the owner's
+  private one (`gmail_digest_audience_not_owner`), a changed binding or a model that no longer resolves to
+  the confirmed `pinned_model`, or a binding frozen without one (`gmail_digest_runtime_changed`), pauses a
+  binding confirmed before cards said it launches as the conversation does (`gmail_digest_launch_reconfirm_required`, ADR 0037),
+  refuses a confirmed model the runtime no longer offers (`gmail_digest_model_unavailable`; Claude Code leaves a
+  saved model missing from the Host's possibly stale cached picker to the strict live session, which fails
+  the turn if it does not apply it) as a visible retry,
+  freezes at most 20 pending ids oldest first and queues the owner's private turn in that conversation
+  with the confirmed session options applied strictly (`UnattendedTurn.pinnedSessionConfig`; no fallback
+  to the runtime's default), workflow input `gmail_digest.kind = application` and
+  `gmail_digest.rule_version` (the accepted card in force) and `gmail_digest.pinned_model`, and only the tools of
+  `APPLICATION_UPDATE_RUN_TOOLS` (also after a Work Context rebind, `gmailDigestRunTools`). The read
+  pages through the frozen ids like a rule digest, and is released only to a Run on the frozen runtime,
+  session options and provider with nothing dropped, and only while its runtime reported no fallback
+  (`applicationUpdateRunState`: the frozen configuration as a daily digest checks it, `digestRunOnConfirmedRuntime`,
+  including the launch-bound provider model; no proof of which model answered is read or awaited, ADR 0037). All of it is judged for the launch the tool request came from
+  (`runs/runToolRequest.ts`: each launch generates its nonce first and issues its token with it, stored on
+  the token's row in the same statement, `run_tool_identities.launch_id`; the Run tool route resolves a token
+  only together with that launch, never the one the attempt names when the request arrives, and a row
+  without one does not resolve) and only while that launch is still current: a request of an earlier launch,
+  or of a new launch whose nonce is not bound on the attempt yet, is refused before its next Gmail send or
+  withheld at release, and the release gate, fact and
+  flag hold that attempt `FOR SHARE` until commit, so a relaunch waits. The release is logged for that
+  launch (`agent_data_read_logs.launch_id`), and a fact or flag cites only a message released to its own
+  request's launch: after a relaunch, mail an earlier launch read is no evidence for the new one. The Gmail page and the release share one end-to-end budget from the request's arrival
+  (`GMAIL_DIGEST_READ_BUDGET_MS`, 55 s, inside the CLI/Host tool timeout of 65 s; the page deadline is
+  whichever comes first, its own 60 s or the budget, and a page it ends is 504 `gmail_upstream_timeout`;
+  the release transaction holds the budget's absolute deadline up to its commit boundary: every statement
+  starts with `lock_timeout`/`statement_timeout` cut to what is left at that moment, so successive lock waits
+  never add up past it, no statement is sent once it passed; at the deadline, or on the caller's abort —
+  also one that arrived while its backend marker was read — the statement in progress is cancelled through
+  the Gmail read control pool, a cancel unanswered within 2 s discards the connection instead of pooling it,
+  and it commits no taint, read log, audit row or read progress once either ended); the release gate and each fact recheck it exactly; a
+  provider-bound Run's lease is built only for exactly the contract's `pinned_model` and pinned to it. Once the runtime explicitly reports a fallback
+  (`model_override_json.runtime_model_fallback`, ADR 0037) the read refuses with `gmail_digest_model_fallback` and every
+  further send, release, fact and flag is refused; settlement then posts neither the reply nor the delivery's shared
+  results, fails the delivery with that code (no attempt counted, no message `done`, the failure count pausing it after
+  three) and delivers one notice into the private execution conversation saying what had been handed out and cannot be
+  taken back (`settleFallback`); a retried settlement of that delivery (the finalizer's retry) returns the same notice,
+  unique per Run and keyed on the delivery's own code (not on the report still being readable), and changes nothing else. The report stops the round from its receipt (`runtime-adapters.md`):
+  a release, fact or flag holds the Run row from its check to its commit and is rolled back at its commit boundary when
+  this process received the report meanwhile (`stopAtCommitOnModelFallback`, ADR 0037 §11); one that committed first has
+  handed out its result, which stays and is counted in the notice. Before
+  the round is queued, a retained vendor session of the execution conversation that its last turn left on another model
+  (a change to or from a configuration without a picker included) is switched in place when the conversation's rule
+  allows it (`canSwitchRetainedSessionModel`) and otherwise reopened; one whose last turn reported a fallback is reopened,
+  picker or not (ADR 0037 §12). Reopening is the owner's own context reset
+  (`reopenRetainedSessionForChoice`: the thread locked, never while a dispatch holds it or on another person's Host,
+  `resetConversationAgent` of that session), so no round fails on a held model switch; a picker alias the session
+  already resolved is resumed as it is by the launch, full or not. Every read, send, fact, flag and settlement
+  requires the Run's `rule_version` to be the automation's current card; accepting a new card fails a
+  running delivery of the earlier version (`gmail_digest_rule_changed`) and leaves its messages pending.
+  Settlement of a successful, fully read delivery
+  stores the reply and marks `done` the pending items released to the Run's final launch
+  (`applicationMailReleasedToRun`); one only an earlier launch read stays pending for the next delivery.  A
+  frozen message carrying SPAM, TRASH, DRAFT, CHAT or SENT outside the card's coverage when the read
+  fetches it is withheld from the Agent and settled by that
+  release as examined and not eligible (`done`, reason `not_eligible`, shown without a reason), outside the
+  Agent-read log, so no fact or flag can cite it and no delivery waits on it again. A frozen message
+  Gmail answers with an explicit 404 (deleted for good) is skipped by the read (`goneIds`), never shown or
+  released, and given up by that release (`failed`, `read_failed`, no attempt counted), so it cannot be
+  cited, keeps no later batch waiting and never drives the automation to its pause; the same Run's other
+  mail is read as usual. Only that 404 is final: a 5xx, 429 or malformed answer still fails the page,
+  releases and settles nothing and is retried, and daily and rule digests still fail their page on a 404. A
+  failed one counts an attempt only on each pending item actually released to a launch of the Run and gives one up at three (`failed`, `read_failed`); a launch that never started,
+  or failed before it read that message, counts no attempt on it, only the automation's failure count.  A delivery ended by its rule
+  (`gmail_digest_rule_changed`, `applicationRunUnderCurrentRule`: a new card, a Run whose contract carries
+  no or another version or not the binding's chosen model, as after an upgrade, or one started for an isolated
+  launch, `model_channel` in its contract, ADR 0037) counts no attempt and no failure, and this is judged before the consent,
+  so a disconnect meanwhile does not turn it into a failure; such a Run is not claimed
+  (`gmailDigestRunAdmits`), the next start ends such a delivery still running (`stopDigestDelivery` keeping
+  only `APPLICATION_RUN_CURRENT_SQL`) and the scheduler does not wait for it (`startDueGmailDigests` judges a
+  running delivery by that same SQL, which also excludes a Run started for an isolated launch). A Run the previous
+  release started (no `conversation_launch` in its contract; an ordinary update stops that server mid-round, no
+  maintenance drain) is first settled with that release's repair, `requeueLegacyUnisolatedReviewFlags`: review flags an
+  unisolated ModelProvider launch made go back to `pending` (ADR 0036 §11, ADR 0037 §10). A path that ends such a Run's
+  delivery before it settles — a start, a new card, a pause, an end, all through `stopDigestDelivery` — applies the
+  repair in that same transaction, since the later settlement finds the delivery failed and settles nothing (ADR 0037 §14).
+- **Writes.** Only `plugin.applications.mail_fact.apply`, through `gmailApplicationFactAdmitted` in both
+  the operation host's `authorize` and the egress check: the running delivery's Run, the targeted
+  Project, live consent and owner-only audience, the pinned runtime and current rule version, a frozen
+  message released to the request's own launch (`agent_data_read_logs.launch_id`) with exactly its `received_at`, an allowed effect,
+  verified direction for correspondence and received mail as the source for institutional facts,
+  and no sensitive read besides the owner's own mail of this Project (`onlyOwnProjectMail`: an on-demand
+  read inherited from the same private conversation counts only with its verified `gmail_scope` and a
+  live `core:gmail` consent; anything unknown, foreign or unscoped refuses). Lock order — the one of the
+  digest read's release, so a fact of one page and the next page's release of the same Run never deadlock:
+  the Project `FOR UPDATE` and its audience, taken in the registration's `resolve` before the operation
+  core's actor pin (`lockAgentProjectBeforeActor`; a refusal is left to `authorize`, a database error is
+  rethrown) → the pin (person, Run `FOR SHARE`) → the request's
+  launch attempt `FOR SHARE` → owner + Space mutex → connection `FOR SHARE` → digest `FOR SHARE`
+  (`lockedAutomationDelivery`, also for the flag), taint read `FOR SHARE`. The release takes Project
+  `FOR SHARE` → person → Run `FOR UPDATE` → attempt → mutex → connection → consent. So does every Agent
+  release of a Project-bound plugin result — `application.list`/`.get` of the same Run among them — whose
+  gate takes the Project with the person's member row before people and the Run
+  (`plugins/operationRegistry.ts`). Every other Project-bound command of an Agent (`application.update` and
+  the rest of the package) takes its Project in `resolve` the same way, so an ordinary write never holds the
+  Run `FOR SHARE` while it waits for the Project such a release (or the owner's on-demand mail read's) holds
+  `FOR SHARE` while it waits for the Run; the core Task and Board commands of an Agent (`task.create`,
+  `task.update`, `task.report` and the other Task-addressed actions, `board.configure`,
+  `task.move_to_column`) take their Run's Project before the pin the same way, after the idempotency
+  reservation (`lockBeforeActor`, `PROJECT_WORK.md`). A person's
+  command holds no Run and a query no lock before its release. The ledger
+  `plugin.applications.mail_fact.list` answers the owner directly, or an Agent only in a Run of the
+  owner's private conversation of that Project (`gmailApplicationFactsAudienceAdmitted` in the operation
+  host's `authorize` and again in the release gate); its release records a `core:gmail_digest` sensitive
+  read of the owner in the Run's taint, so a Run that read only the ledger still makes no outward write,
+  and its call is reduced in event logs like `.list` (`PRIVATE_TOOL_CALL_ACTIONS`).
+  `source.gmail.application_updates.flag` keeps a released message for review (`review`, a fixed reason,
+  at most five candidate application ids) under the fact's checks of runtime, model, launch, consent and
+  audience, so a Run that fell back to another model cannot stop a message from being retried.
+- **Mail processing records** contain ids, times and codes. Settled items are pruned after 30 days.
+  Recorded email events use the Applications contact history. Mail bodies and subjects stay out of
+  that history and shared notices. Tests: `server/test/gmailApplicationUpdatesDb.test.ts`.
+
+### Agent and model chosen on the card (ADR 0036)
+
+Decision: [ADR 0036](../decisions/0036-gmail-application-execution-choice.md). Code:
+`sources/gmail/gmailApplicationExecution.ts`. It amends the drafting, acceptance and private-conversation rules
+in the two sections around this one; where they say the card freezes or refuses the asking conversation's binding,
+or that a private card runs in the conversation it was asked in, this section is current.
+
+- **Two levels** (`applicationExecutionConfigurations`): a *configuration* is an Agent with one runtime profile; its
+  *models* follow. Agents: the Project's Assistant first (so always on the first page), then the Agents on the
+  Project's list that the owner can read, by link order; per Agent, each runtime profile `listOptions` offers the
+  owner. A configuration that cannot run it at all carries its one reason and no models — judged once for it: first
+  what holds for any model (for a ModelProvider configuration the checks below, `model_unresolved` among them), then the owner's own private conversation (`host_not_owner`,
+  `host_offline`, `runtime_unavailable`); inactive Agent `agent_unavailable`, no profile `no_runtime` (a configuration
+  without a profile). An available configuration's models (ADR 0037): a ModelProvider configuration's lease model, or every value
+  of the conversation's model picker in its order with the runtime's own name (a full id, an alias or `default`) plus a
+  model saved for it in the asking conversation, or — without a picker — the runtime's own default (`default`, no model
+  option); every listed model can be chosen. Models are listed 200 at a time:
+  `omitted_models` counts the rest and `models_cursor` (`index.base64url(model listed last)`) lists them through the
+  query's `models_of` (`agent_id`, `runtime_profile_id`, `models_cursor`; that configuration alone, checked by itself,
+  `next_cursor` null) — keyed by the model listed last, so a model removed from the picker meanwhile skips nothing. The
+  saved model (`selected`, and a selection's answer) is always listed first with its configuration when it falls past
+  the first 200 (one more). When the model a cursor continued after is itself gone, no place is known to follow what
+  was shown, so the answer lists that configuration's models from the first again (with the saved one) and says so
+  (`models_restarted: true`); the card replaces that configuration's models instead of appending, so nothing is skipped
+  (ADR 0036 §10). Nothing is collected or called for this: the picker is the Host's existing runtime options.
+- **ModelProvider configurations (ADR 0036 §9)** are checked as production checks them (`providerConfiguration`):
+  Profile admission `assertBackendModeBinding` (`provider_unsupported` when the runtime's catalog does not allow
+  `model_provider` — Claude Code, Codex CLI and Gemini CLI are `cli_profile` only, so today only OpenCode qualifies —
+  `model_unresolved` without an explicit model); the Provider's eligibility for the owner as conversations and routing
+  judge it (`isProviderEligibleForUser`: enabled, granted to the Space, not someone's subscription, a usable key;
+  `provider_unavailable`); the lease's own target, read as the lease reads the Provider (`providerLeaseTarget` in
+  `runs/remoteProviderBinding.ts`, shared with `buildRemoteProviderBinding`: `provider_protocol_unsupported`,
+  `provider_endpoint_missing` for a missing Claude-/OpenAI-compatible URL, the lease's resolved model). Since ADR 0037 it
+  launches as the conversation launches it (no model-only channel, any Host and workspace mode the conversation can
+  use); the credential-spend policy decision, the lease's own model and the resumed vendor session remain launch-time
+  gates.
+  The list is paged in that one order: at most 200 rows (a configuration and each listed model one each) and 50
+  Agents a page, a configuration never split (a page always takes at least one), `next_cursor`
+  (`phase.key.agent.row`: the next Agent's sort key — 0 Assistant / 1 Project Agent, its creation or first active link
+  as 20-digit UTC microseconds, its base64url id — and its configuration index) continuing it through the query's
+  `cursor`. Keyed, not an offset: an Agent removed from an earlier page between pages skips nothing after it; when the
+  named Agent itself is gone the next one starts at its first configuration; the first page also shows the chosen
+  configuration when it lies on a later page. The card's "Show more" appends pages.
+- **One check** (`applicationExecutionCheck`): the default, the echo of the saved choice (`selected`), a selection and
+  acceptance all ask it, for that one Agent by itself (never by its place in the list): the configuration's reason, else
+  the model's, else `not_offered` (no longer offered, or — for a saved binding — no longer exactly that binding,
+  `applicationBindingKey`). A card shows a saved choice only when acceptance would accept it.
+- **Drafting** never refuses on the asking conversation's binding. Default: the existing automation's binding,
+  else that conversation's, when it is still offered exactly (`applicationExecutionCheck`), else the first available
+  model of a Project Agent on the first page, else the Assistant's, else none (`runtime_binding: null`). The tool result carries
+  `execution` (preselected Agent name and model, `available_choices` models, `unavailable_choices` configurations,
+  `more_on_card` when the list continues) and the card text says what runs, what is read, what may
+  change and where results go. The card freezes the rule it changes: `replaces_digest_id` / `replaces_proposal_id`
+  (the live automation and its accepted card, or null for a new one — "none" is a version too, see acceptance).
+- **Choosing** (owner, pending and unexpired card only, while they read the Project — also for a replayed choice;
+  anyone else 404): `source.gmail.application_updates.execution_options` (query: scope, `configurations`, `selected`,
+  `next_cursor`, the card's text, `card_revision`) and `.select_execution` (command: configuration and model rechecked, card
+  redrawn in place through `lockProposalTransitions` + `revisePendingPayload`; 409
+  `gmail_digest_execution_unavailable` with `reason`, `gmail_card_not_pending`, `gmail_card_outdated` for a combined
+  card drafted before parts kept `card_summary`). Both recheck that the owner can still edit the Project
+  (`gmail_digest_applications_unavailable`) and that the asking conversation still has only the readers the card
+  names (`gmail_digest_audience_changed`). Two choices racing on one card are taken one at a time (the second may be
+  refused retryable, `idempotency_in_progress`); only the revision now on the card is accepted. Web:
+  `GmailApplicationExecutionChoice.tsx`, one control for every decision entry: first "Agent and runtime" (available
+  configurations; unavailable ones listed once below with their reason), then "Model" for the configuration shown (its
+  unavailable models with their reason under it only). The saved choice is echoed on both levels. Picking another
+  configuration posts nothing, clears the model and keeps Accept disabled (`gmailApplicationExecutionAcceptable`)
+  until one of its models is saved and the card answers with its revision; Accept is also disabled before the card
+  loads, while a choice is saved and while a further page or a configuration's further models load; only the latest
+  request's answer is shown (a late load or a refused save reloads the card as it stands). A further page answering for
+  another revision (a choice saved in another tab) adds its configurations and brings the card's revision, saved choice
+  and text as they stand — adding the first page when that saved choice is not listed yet — and never undoes the
+  owner's unsaved switch of configuration, judged when the answer is applied (a switch made while that first page
+  loads is kept too); a saved choice counts as shown only while its model is listed; Accept sends `expected_revision`, and a refused accept reloads the card. Every decision
+  entry: a Room or Project conversation card; the direct Agent chat (`ChatPanel.tsx`, no decision handler), where the
+  application card is decided on the card itself like a standalone owner card; the Proposal detail
+  (`ProposalDetailPage.tsx`), which shows the same choice to the owner and sends its revision. The Proposal list and
+  Today offer no Accept for such a card (`chosen_on_card` on the Proposal DTO and the home summary,
+  `proposals/cardChoice.ts`) and link to its detail instead; an ordinary summary card keeps its own confirmation.
+- **Acceptance** requires the shown revision (`gmail_card_revision_required` without one; the proposal service
+  refuses another with `proposal_revision_changed`), refuses `gmail_digest_applications_unavailable` (owner no longer
+  edits the Project), `gmail_digest_changed` (the frozen rule is no longer the live one: another card changed it, the
+  owner ended it, or one was created since a card for a new one; a card that changes none — a first card, or one
+  drafted before the freeze — is accepted only if no automation of the mailbox and Project was live when it was
+  drafted or since, so of two first cards the second never starts the rule again after the first was accepted and
+  ended, while a card drafted after the end does), `gmail_digest_execution_unselected` (nothing chosen) and
+  `gmail_digest_execution_unavailable` (`applicationExecutionCheck`, with its `reason`; also a card that froze a
+  ModelProvider configuration as isolated to its lease, ADR 0037), then binds the owner's private execution conversation to the choice for
+  every card (private, Room or mainline) and requires the exact frozen binding. The asking conversation's later
+  settings never affect the automation; its own execution conversation's do (`gmail_digest_runtime_changed`).
+- **Running** (`queueUnattendedPrivateTurn` `projectAdmission: "project_now"`): the server-started turn of an
+  application automation admits the Project's own Assistant (only that Project's; the person's own chat stays closed
+  to it, `getProjectAssistantForUnattendedTurn`, Run created with `allow_system_assistant`), and requires the Agent on
+  the Project's list now — never the private chat's rule that an earlier turn keeps an Agent admitted. Its start, its
+  claim, every Gmail send (`gmailDigestRunAdmits`) and its release (link held `FOR SHARE`) check
+  `gmailDigestAgentAdmitted`; refused: `gmail_digest_agent_not_in_project`. A private daily or rule digest runs on
+  its conversation's own Agent with `projectAdmission: "conversation"` — that conversation's admission, exactly as it
+  is drafted and accepted there (an earlier turn keeps a removed Agent admitted; no Assistant).
+- **Combined card**: each part keeps its line (`card_summary`); the application part's choice redraws the whole
+  card (`gmailSetupSummary`). An automation is reused while its execution conversation still binds its confirmed
+  configuration, wherever it was asked, and only when its binding carries `conversation_launch`: an earlier one
+  awaiting a new card is drafted again and changed in place (ADR 0037 §13).
+- **A non-Claude configuration** (ADR 0037): any configuration the owner's conversation can run is offered and runs —
+  Codex CLI on its own login with its picker's models, or an OpenCode profile bound to a ModelProvider (admitted through
+  the public Provider and Profile commands) with its lease model. Its Run is an ordinary unattended private turn of the
+  execution conversation, launched as that conversation launches its turns: no model-only channel is selected for it
+  (`selectModelChannelLaunch` serves only ADR 0030 §4a's sensitive plugin pins), and its mail is released to the
+  current launch on the frozen configuration — for a ModelProvider binding, the launch whose lease bound exactly that
+  model (`model_override_json` `source: runtime_profile`); a lease for another model is refused before it exists
+  (`gmail_application_model_required`). The ADR 0036 §11–§16 vendor-session safety stays for every conversation: a
+  vendor session an isolated launch held (`vendorSessionHeldIsolated`) is never resumed with network (admission retires
+  it, `prepareHostConversationDispatch`; the launch refuses one admitted otherwise, `isolated_session_resume_refused`);
+  a launch with network resumes only on the record, read in one statement (`networkedResumeVerdict`: an open thread's
+  current pointer, or its Run's own parked session on the copy of its reporting launch's record, in this launch's own
+  directory), judged again under the thread row's share lock when the launch is bound
+  (`bindAttemptLaunchAfterResumeCheck`); Host resets retire parked sessions and fence late reports by generation, with
+  parks serialized under the reset's advisory lock; isolated and networked launches keep separate CLI directories
+  (`<provider>.isolated`, `<provider>.network`). Codex CLI cannot be bound to a ModelProvider
+  (refused by Profile admission; a row written around admission is listed `provider_unsupported`); its native login is
+  offered like any other. Before ADR 0037 a ModelProvider automation ran isolated to its lease on the built-in strict
+  Host only (ADR 0036 §9–§11); one confirmed then waits for a new card (`gmail_digest_launch_reconfirm_required`).
+- **Explicit fallback** (ADR 0037): the runtime's own fallback notice, as its adapter catalog declares it
+  (`model.model_fallback_notice`), recorded on the Run (`runtime_model_fallback`), stops the round: later reads
+  (`gmail_digest_model_fallback`), sends, releases, facts and flags are refused, and settlement (`settleFallback`) posts
+  neither the reply nor the delivery's shared results, counts no attempt on the mail and delivers one notice into the
+  private execution conversation naming what had been handed out and cannot be taken back; three such rounds in a row
+  pause the automation. Nothing else is read as a fallback.
+- Tests: `gmailApplicationUpdatesDb.test.ts` (`ADR 0036`, `ADR 0036 review`, `two levels`, `ADR 0036 §9: past 200
+  models`, `a non-Claude configuration admitted through the public paths` — now on the conversation's own launch — and the
+  `ADR 0037` cases: the conversation's picker with aliases, `default` and no picker; Codex CLI on its own login end to
+  end; a model switched on a new card; an explicit fallback after mail and a fact were handed out, rounds until the
+  pause; a legacy isolated ModelProvider automation paused and re-carded; `ADR 0037 §10`–`§12` and `§7 review` (commit
+  boundary, alias and picker-less reopen through the Host adapter, previous-release settlement, combined card); through the Host adapter `ADR 0036 §11`
+  (an ordinary launch never resumes an isolated session) and `§13`–`§15`), `sensitiveRuntimeProfileDb.test.ts`,
+  `agentHostStateResetDb.test.ts`, `pluginDataAccessDb.test.ts`, `gmailMonitorSyncDb.test.ts`, `acpModelFallback.test.ts`
+  (fallback notices only from the catalog, never inferred), `remoteHostCliAdapter.test.ts` (a notice frame recorded for
+  its launch), web `gmailApplicationExecutionCard.test.tsx` (two levels, switching, saving, late answers, paging, more
+  models, an alias offered under its runtime name, the direct chat), `GmailConnectionsCard.test.tsx`,
+  `ProposalDetailPage.test.tsx`, `ProposalsPage.test.tsx`, Chromium `conversation-layout.browser.mjs` (Room card
+  unchosen / configuration / chosen / switched, both themes and locales, 390 and 1280 px; Proposal detail and private
+  chat echo both levels).
+- Not verified live: no real Codex CLI, OpenCode or Claude Code process, Host daemon, ModelProvider upstream or Google
+  mailbox ran, and no real fallback notice was observed (its titles come from the pinned adapter sources). The Host side
+  is synthetic in tests: its reported installations and picker options, the launch binding (written as
+  `bindAttemptLaunch` writes it for the adapter), option echoes and fallback reports. Whether a live runtime's fallback
+  notice keeps the declared title is unconfirmed.
+
+### Shared Project scope (ADR 0035)
+
+Decision: [ADR 0035](../decisions/0035-gmail-shared-project-scope.md). One authorization per Project that the
+team can use where it works, without re-asking for what is allowed.
+
+- **Application updates from a Room or the mainline** (`gmailApplicationSharedConversation.ts`). Drafting in
+  the owner's turn there freezes `payload.audience` (readers now, Room or mainline; the card says later
+  readers of the history read what is posted). Acceptance refuses a reader added since
+  (`gmail_digest_audience_changed`), creates or reuses the owner's private execution conversation
+  (`metadata_json.gmail_application_execution`), resolves its binding as the owner's own
+  (`ensureApplicationExecutionConversation` → `resolveBinding` with the card's profile, then
+  `saveSessionConfig`; a Room-only Host is `gmail_digest_runtime_unavailable`) and requires it to equal the
+  card's binding. The digest's `session_id` is that private conversation (every ADR 0034 gate unchanged);
+  `notice_session_id` is the enabling conversation. `operationRegistry.ts` records, after
+  `mail_fact.apply` in the same transaction, a recorded non-replayed fact on a `project_shared` application
+  into `gmail_application_shared_results` (label, effect, before/after, deadline kind; unique per automation and committed Applications fact ID), bound
+  to the destination and card it was recorded under (`notice_session_id`, `rule_version` = the digest's
+  `proposal_id`, which the Run's contract `rule_version` must equal; migration `0028_gmail_shared_result_binding`);
+  settlement of a successful delivery posts up to 50 waiting results in a Room system notice
+  (`postGmailApplicationNotice`) under the current `notice_session_id` and `proposal_id` — including one a failed
+  delivery of the same card committed — and deletes unposted rows recorded for another conversation or card (a
+  re-carded automation never carries them into its new Room), while the notice
+  conversation's readers all read the Project (live, under the Session lock; start also checks it), and marks
+  them posted (`posted_at`, `posted_delivery_id`, migration `0027_gmail_shared_result_posting`). Each row's
+  application is reread and locked through the Applications package role when the notice is composed: one made private or
+  removed since is deleted unposted and the label is the current one. Settlement and continuation both require
+  Applications to remain effectively enabled for the active owner and bound to the Project. Plugin scope locks
+  precede the Gmail mutex, and the binding stays locked through publication. On disablement or unbind, pending
+  results wait for a later tick on the existing batch interval. The scheduler continues eligible rows in batches
+  of 50, rechecking live authorization and audience even without new mail. It requires a surviving Run of the
+  current card for the last successful delivery and uses that delivery's settlement time as the cutoff.
+  A tick that advances the settled backlog uses the batch interval before taking more mail. If publication
+  is blocked, pending mail follows its normal admission path. Migration `0029_gmail_shared_result_fact_identity` preserves
+  historical rows and their posting markers. A legacy deadline with no stored kind keeps the generic label. `.list` in a conversation someone else reads omits the
+  mailbox, per-message outcomes and links and records no derived read; `.set_status` works there too. Rows
+  are pruned after 30 days.
+- **One card** (`gmailSetupProposal.ts`, `source.gmail.setup.propose`, proposal `gmail_setup`). Each part is
+  drafted by `proposeGmailDigest` / `proposeGmailApplicationUpdates` in draft-only mode and accepted by
+  `applyGmailDigestCard` (and, for reading, the `core:gmail` `on_demand_read` consent after the approval's
+  rechecks), all in one transaction; live parts are `reused` and none is asked again; nothing new → no card.
+  A daily or rule digest is reused only when it delivers into this conversation by this Agent, at the asked
+  time and time zone, and `digestRuntimeMatches` still holds; otherwise its part carries `replaces_digest_id`
+  with the version it was drafted against (`replaces_proposal_id`, `replaces_local_time`), says what the digest is
+  now, and acceptance locks that digest (`FOR UPDATE`) and changes it in place (time, time zone, session, Agent,
+  binding, new consent; coverage and deliveries kept; a running delivery ended), or refuses 409
+  `gmail_digest_changed` once it ended or its card or time differs from the frozen version — so of two such cards
+  accepted in either order the stale one never overwrites the newer setting, also not through re-confirmation. `gmail_digests` is unique per (`proposal_id`, `kind`).
+- **Digest configuration** (`digestRuntimeMatches`). Daily and rule cards freeze `runtime_binding` and say
+  what they run on; acceptance refuses a changed binding; start pauses a changed or legacy digest with
+  `gmail_digest_runtime_changed` before any Run or Gmail request; the generic resume refuses it
+  (`setGmailDigestStatusIn`); a new card in its conversation reactivates it in place
+  (`GMAIL_DIGEST_RECONFIRM_CODES`, replacing its consent). Every digest turn passes `pinnedSessionConfig`
+  (private turns in `queueUnattendedPrivateTurn`, Room and mainline turns in `prepareRoomConversationBackends`),
+  so a live session that does not apply the confirmed options fails the turn. `digestRunOnConfirmedRuntime`
+  checks the Run itself: at start right after it is created (conversation backend, profile; a mismatch rolls
+  the turn back and pauses), and before every Gmail send, at release and at settlement (runtime, profile
+  snapshot, Provider, launch-bound model, applied options not dropped, saved-and-droppable or switched). A
+  mismatch is `gmail_digest_runtime_changed`: no mail, no reply, the digest paused for a new card. A summary Run's
+  contract also names `gmail_digest.kind` and `pinned_model`; a provider-bound one gets a lease only for exactly that
+  model and pinned to it for the lease's whole life (`remoteProviderBinding.ts`, else `gmail_digest_model_required`
+  before a lease), so the proxy refuses every later request of the Run — after mail was read — naming another model.
+- **Member delegation** (`gmailDelegations.ts`, `gmailDelegatedReadOperation.ts`; table
+  `gmail_read_delegations`). Card `gmail_read_delegation` from the owner's turn names member (display name or
+  email among the Project's readers), mailbox, Project and `query_scope` (balanced, no braces, ≤ 100 chars).
+  `source.gmail.delegated.read` is offered (`runToolGrants.ts`) only where a live delegation exists for the
+  conversation's Project, admitted in the member's own `manual` turn whose readers — the Run's audience plus a
+  Room's active roster (`delegatedReadAudienceAdmits`) — all read the Project, and rechecked in full before every
+  send (`authorizeSend` → `delegatedReadAdmits`, so a reader outside the Project joining the Room between two
+  sends stops the read) and at release (Project → people → Run → mutex → connection → delegation). Queries are `(<scope>) (<words>)` with no parentheses or braces in the words; the taint is the
+  owner's `core:gmail` read with `gmail_scope.grant_id` = delegation id; audit `delegated_read` (actor = member)
+  and the delegation's `read_count`/`last_used_at`. Ends: `source.gmail.delegation.end` / `.revoke` and the
+  Access page (`read_delegations` on the connection DTO), `endGmailAgentReadGrants` (opt-out, disconnect,
+  reconnect, re-authorization), `endProjectDataConsents` (leaving the Project, account disable).
+- Tests: `gmailApplicationUpdatesDb.test.ts` (`ADR 0035 §1/§2/§4`), `gmailMonitorSyncDb.test.ts` (`ADR 0035 §3`),
+  `gmailRoomReadAcceptanceDb.test.ts` (strict options in a Room digest turn), `gmailMailReadDb.test.ts` (read
+  actions), web `GmailConnectionsCard.test.tsx`.
+
+Application mail contact facts reuse an exact address already linked to the
+application or link the owner's uniquely matched private contact. The shared
+Agent instructions ask for the contact fact alongside any independent allowed
+status or deadline fact. Ambiguous matches go to owner review.

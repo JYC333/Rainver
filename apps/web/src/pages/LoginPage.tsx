@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { useNavigate, useSearchParams, useLocation } from 'react-router-dom'
-import { authApi } from '../api/client'
+import { ApiRequestError, authApi } from '../api/client'
 import { useAuth } from '../contexts/AuthContext'
+import { preloadAuthenticatedApp } from '../core/loadAuthenticatedApp'
 import { Button } from '../components/ui/button'
 import { useAuthConfiguration } from '../hooks/useAuthConfiguration'
 import { useAppTranslation } from '../i18n'
@@ -61,6 +62,7 @@ export default function LoginPage() {
     if (!registrationId || attemptedRegistration.current === registrationId) return
     attemptedRegistration.current = registrationId
     setRegistrationCompleting(true)
+    preloadAuthenticatedApp()
     void authApi.completeRegistration({ intent_id: registrationId })
       .then(async () => { await reloadUser(); navigate(from, { replace: true }) })
       .catch(() => {
@@ -82,10 +84,10 @@ export default function LoginPage() {
     try {
       await authApi.passwordLogin({ email, password, rememberMe })
       await reloadUser()
+      // Stays busy: this page remains while the signed-in app finishes loading.
       navigate(from, { replace: true })
-    } catch {
-      setFormError('login.invalid_credentials')
-    } finally {
+    } catch (error) {
+      setFormError(error instanceof ApiRequestError && error.code === 'logout_pending' ? 'login.logout_pending' : 'login.invalid_credentials')
       setBusy(false)
     }
   }
@@ -118,7 +120,7 @@ export default function LoginPage() {
           <div className="w-full text-sm px-3 py-2.5 rounded-lg border text-destructive">{formError ? t(formError) : errorMsg}</div>
         )}
 
-        <form onSubmit={signIn} className="w-full space-y-3">
+        <form onSubmit={signIn} onFocus={preloadAuthenticatedApp} onPointerDown={preloadAuthenticatedApp} className="w-full space-y-3">
           <input value={email} onChange={event => setEmail(event.target.value)} type="email" autoComplete="email" required placeholder={t('login.email')} className="w-full h-10 px-3 rounded-lg border border-border bg-background text-sm" />
           <input value={password} onChange={event => setPassword(event.target.value)} type="password" autoComplete="current-password" required placeholder={t('login.password')} className="w-full h-10 px-3 rounded-lg border border-border bg-background text-sm" />
           <label className="flex items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" checked={rememberMe} onChange={event => setRememberMe(event.target.checked)} /> {t('login.remember')}</label>
@@ -134,7 +136,10 @@ export default function LoginPage() {
           <Button
             type="button"
             variant="outline"
-            onClick={() => authApi.googleLogin(params.get('redirect') ?? undefined)}
+            onClick={() => {
+              setFormError('')
+              void authApi.googleLogin(params.get('redirect') ?? undefined).catch(() => setFormError('login.logout_pending'))
+            }}
             className="w-full h-10 gap-3 text-foreground"
           >
             <GoogleIcon />

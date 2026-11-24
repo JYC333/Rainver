@@ -1,10 +1,13 @@
+import { enqueueDelegatedAutomaticHandoff } from "../agentGroups/autoHandoff.js";
 import type {ServerConfig} from '../../config.js';
 import {canManageHost} from '../hosts/hostCommands.js';
 import type { QuotaRecovery, RoomConversationQuota, SubscriptionQuotaHold, SubscriptionQuotaWindow } from "@rainver/protocol";
 import type { RunRecord } from "../runs/repository.js";
 import { nextQuotaRecoveryCheck, quotaRecoveryAccountFree, quotaRecoveryPauseReason, quotaRecoveryReady } from "./quotaRecovery.js";
+import { quotaModelSwitchReady } from "./quotaModelSwitch.js";
 import type { Pool } from "../../db/pool.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
+import { currentAgentRunJobSql } from "../jobs/agentRunGeneration.js";
 import { readSubscriptionQuotaPolicy } from "../providers/subscriptionQuotaPolicy.js";
 import { withDbTransaction, type Queryable } from "../routeUtils/common.js";
 import { conversationTurnTaken, PgConversationRuntimeSessionRepository } from "../sessions/conversationRuntimeSessionRepository.js";
@@ -115,6 +118,7 @@ export async function admitAgentOriginRun(
     `SELECT 1 FROM jobs
       WHERE space_id = $1 AND job_type = 'agent_run' AND payload_json->>'run_id' = $2
         AND status IN ('pending', 'claimed', 'running')
+        AND ${currentAgentRunJobSql()}
       LIMIT 1`,
     [input.spaceId, input.runId],
   );
@@ -341,7 +345,8 @@ export async function releaseHeldRuns(
           if (reason) {
             marker.recovery.auto_continue = false;
             marker.recovery.pause_reason = reason;
-          } else if (quotaRecoveryReady(marker, reading, now, policy.reserve_pct)) {
+          } else if (quotaRecoveryReady(marker, reading, now, policy.reserve_pct)
+            && (!marker.recovery.switched_model || await quotaModelSwitchReady(client, runRow))) {
             if (!await quotaRecoveryAccountFree(client, marker, run.id)) return false;
             return admitHeldRun(client, run.space_id, run.id, true);
           }
@@ -408,10 +413,9 @@ async function refreshHold(
  * stays held: whose subscription it is decides whether its reserve is spent.
  * On a discussion that had such a Run held it is recorded — who, and when —
  * and its later Agent-triggered turns on that person's logins are not held
- * again.
+ * again. The Room operation already holds the queue, Project and Room locks.
  */
 export async function continueHeldRuns(client: Queryable, input: { spaceId: string; sessionId: string; userId: string }): Promise<number> {
-  await lockRoomConversationQueue(client, input.spaceId, input.sessionId);
   await new PgConversationRuntimeSessionRepository(client).lockConversation(input.spaceId, input.sessionId);
   const candidates = (await client.query<{ id: string; discussion_id: string | null; marker: WaitingForQuota }>(
     `SELECT run.id, grp.discussion_id, run.output_json->'waiting_for_quota' AS marker
@@ -551,13 +555,15 @@ async function admitHeldRun(client: Queryable, spaceId: string, runId: string, r
     `SELECT output_json->'waiting_for_quota' AS marker, run_group_id
        FROM runs
       WHERE space_id = $1 AND id = $2 AND status = 'queued' AND output_json ? 'waiting_for_quota'
-      FOR UPDATE`,
+      FOR NO KEY UPDATE`,
     [spaceId, runId],
   )).rows[0];
   if (!row) return false;
   if (row.marker.recovery && (!recoveryReady || !row.marker.recovery.auto_continue)) return false;
   if (sessionId && await conversationTurnTaken(client, spaceId, sessionId, { admitting: { runId, groupId: row.run_group_id } })) return false;
   if (!await reclaimDispatchLock(client, spaceId, runId)) return false;
+  // Older persisted quota holds can still have an unmarked predecessor.
+  if (row.marker.recovery) await new PgJobQueueRepository(client).supersedeAgentRunJobs(spaceId, runId);
   await client.query(
     `UPDATE runs SET output_json = output_json - 'waiting_for_quota', updated_at = now() WHERE space_id = $1 AND id = $2`,
     [spaceId, runId],
@@ -587,9 +593,12 @@ async function releaseDispatchLock(db: Queryable, spaceId: string, runId: string
              WHERE job.space_id = run.space_id AND job.job_type = 'agent_run'
                AND job.payload_json->>'run_id' = run.id
                AND job.status IN ('pending', 'claimed', 'running')
+               AND ${currentAgentRunJobSql("job")}
           )))
         ))
         AND thread.id = run.host_task_thread_id
+        -- A replacement Run owns the staged summary until it settles.
+        AND run.model_override_json->'host_thread'->>'handoff_candidate' IS NULL
         AND thread.dispatch_lock_id = run.id`,
     [spaceId, runId],
   );
@@ -645,6 +654,8 @@ async function enqueueRunJob(client: Queryable, spaceId: string, job: AgentRunJo
       [spaceId, job.payload.run_id],
     );
   }
+  if (!newAttempt && job.payload.trigger_origin === "delegation" && typeof job.payload.run_id === "string"
+    && await enqueueDelegatedAutomaticHandoff(client, spaceId, job.payload.run_id, job.payload)) return;
   const queue = new PgJobQueueRepository(client);
   const input = {
     job_type: "agent_run" as const,
@@ -654,12 +665,8 @@ async function enqueueRunJob(client: Queryable, spaceId: string, job: AgentRunJo
     project_folder_id: job.project_folder_id,
     payload: job.payload,
   };
-  // A recovery starts the Supervisor's next physical attempt. The failed
-  // attempt's job can still be unwinding, so run-level job deduplication
-  // would consume that old job and strand the admitted successor. The held
-  // Run's row lock and marker removal already make this enqueue idempotent.
-  if (newAttempt) await queue.enqueue(input);
-  else await queue.ensureAgentRunJob(input);
+  // The Supervisor already superseded the preceding dispatch when it held the Run.
+  await queue.ensureAgentRunJob(input);
 }
 
 interface RunContext {

@@ -93,7 +93,6 @@ export interface RouteCandidate {
   supports_dry_run: boolean;
   baseline_trust_level: RouteTrustLevel;
   effective_trust_level: RouteTrustLevel;
-  subagent_disable_mechanism: "not_applicable" | "runtime_config" | "unsupported" | "unknown";
   estimated_cost_usd: number | null;
   estimated_latency_ms: number | null;
   historical_verification_pass_rate: number | null;

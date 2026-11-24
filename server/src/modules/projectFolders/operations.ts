@@ -9,7 +9,8 @@ import { ProjectFolderMutationError,projectFolderRefusal } from './operationErro
 import {lockProjectFileDraftQuota} from './draftRepository.js';
 import {PgJobQueueRepository} from '../jobs/repository.js';
 import {PROJECT_FOLDER_FORGET_JOB} from './forgetWorkspaceJob.js';
-type Input = { project_id: string; folder_id: string; location_id?: string; validation_recipe_id?: string | null; workspace_location_id?:string|null;draft_id?:string;draft_version?:number };
+import {closeFailedFolderSave,FolderIoRefusal} from './ioIntentRepository.js';
+type Input = { project_id: string; folder_id: string; location_id?: string; validation_recipe_id?: string | null; workspace_location_id?:string|null;draft_id?:string;draft_version?:number;intent_id?:string };
 export function projectFolderRegistrations(definitions: ReadonlyMap<string, RegisteredSystemActionDefinition>, config: ServerConfig): OperationRegistration[] {
   return Object.keys(PROJECT_FOLDER_SCHEMAS).map(id => ({
     definition: definitions.get(id)!, successStatus: id === 'project.folder.execution_config.create' ? 201 : 200,
@@ -56,6 +57,12 @@ export function projectFolderRegistrations(definitions: ReadonlyMap<string, Regi
           return {id:result.id,space_id:actor.space_id,project_id:input.project_id,folder_id:input.folder_id,workspace_location_id:result.workspace_location_id,version:result.version};
         }
         case 'project.folder.draft.discard':await folders.discardDraft(identity,input.project_id,input.folder_id,body);targetId=input.draft_id!;break;
+        case 'project.folder.draft.close_save':{
+          targetId=input.intent_id!;
+          try{await closeFailedFolderSave(db,{id:targetId,space:actor.space_id,project:input.project_id,folder:input.folder_id,user:identity.userId});}
+          catch(error){if(error instanceof FolderIoRefusal){if(error.code==='operation_not_found')throw hidden();throw new OperationError('operation_conflict',409,false,'project_folders');}throw error;}
+          break;
+        }
         case 'project.folder.unregister':{
           if(!(await db.query('SELECT id FROM project_folders WHERE id=$1 AND space_id=$2 AND project_id=$3',[input.folder_id,actor.space_id,input.project_id])).rows.length)throw hidden();
           const locations=await db.query<{id:string;execution_host_id:string}>("SELECT id,execution_host_id FROM workspace_locations WHERE space_id=$1 AND project_folder_id=$2 AND execution_host_kind='remote' ORDER BY id FOR UPDATE",[actor.space_id,input.folder_id]);

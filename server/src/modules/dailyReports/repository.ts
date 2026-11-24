@@ -120,8 +120,13 @@ export class PgDailyReportSettingsRepository {
     return withQueryableTransaction(this.db,tx=>new PgDailyReportSettingsRepository(tx).updateLocked(spaceId,userId,body));
   }
 
-  private async updateLocked(spaceId:string,userId:string,body:Record<string,unknown>):Promise<DailyReportSettingRow>{
+  // The caller must hold a transaction through admission and slot advance.
+  async lockSchedule(spaceId: string, userId: string): Promise<void> {
     await this.db.query('SELECT pg_advisory_xact_lock(hashtext($1))',[`daily_capture_report_settings:${spaceId}:${userId}`]);
+  }
+
+  private async updateLocked(spaceId:string,userId:string,body:Record<string,unknown>):Promise<DailyReportSettingRow>{
+    await this.lockSchedule(spaceId, userId);
     const row = await this.getOrCreate(spaceId, userId);
     const now = new Date().toISOString();
     const enabled =

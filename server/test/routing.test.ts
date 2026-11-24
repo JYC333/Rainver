@@ -27,7 +27,6 @@ function candidate(overrides: Partial<RouteCandidate> = {}): RouteCandidate {
     supports_dry_run: true,
     baseline_trust_level: "high",
     effective_trust_level: "high",
-    subagent_disable_mechanism: "not_applicable",
     estimated_cost_usd: 1,
     estimated_latency_ms: 500,
     historical_verification_pass_rate: 0.9,

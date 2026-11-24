@@ -15,6 +15,7 @@ import { DEFAULT_APP_ROLE, DEFAULT_BACKUP_ROLE, grantPluginRuntimeMemberships, i
 
 const appRole = () => process.env.RAINVER_DB_APP_ROLE?.trim() || DEFAULT_APP_ROLE;
 const backupRole = () => process.env.RAINVER_DB_BACKUP_ROLE?.trim() || DEFAULT_BACKUP_ROLE;
+const COMMANDS = "up, status, pending, maintenance-pending, plugin-install, plugin-reconcile, runtime-roles-plan, runtime-roles-reconcile";
 
 function migrationsDir(): string {
   const override = process.env.SERVER_MIGRATIONS_DIR?.trim();
@@ -25,6 +26,10 @@ function migrationsDir(): string {
 
 async function main(): Promise<void> {
   const command = (process.argv[2] ?? "up").toLowerCase();
+  if (command === "--help" || command === "-h") {
+    console.log(`Commands: ${COMMANDS}`);
+    return;
+  }
   const config = loadConfig();
   if (!config.databaseUrl) {
     console.error("SERVER_DATABASE_URL is required to run migrations");
@@ -119,7 +124,7 @@ async function main(): Promise<void> {
       );
       return;
     }
-    console.error(`unknown command: ${command} (expected "up", "status", "pending", "maintenance-pending", "plugin-install", "plugin-reconcile", "runtime-roles-plan" or "runtime-roles-reconcile")`);
+    console.error(`unknown command: ${command} (expected one of: ${COMMANDS})`);
     process.exitCode = 2;
   } finally {
     await pool.end();

@@ -631,11 +631,11 @@ function TokenUsageDashboard() {
           <Field label={t('workspace_ui.usage.field.view')}>
             <ViewSelector value={view} onChange={setView} />
           </Field>
-          <Field label={t('workspace_ui.usage.field.from')}>
-            <Input aria-label={t('workspace_ui.usage.field.from')} type="date" value={fromDate} onChange={event => setFromDate(event.target.value)} />
+          <Field label={`${t('workspace_ui.usage.field.from')} (UTC)`}>
+            <Input aria-label={`${t('workspace_ui.usage.field.from')} (UTC)`} type="date" value={fromDate} onChange={event => setFromDate(event.target.value)} />
           </Field>
-          <Field label={t('workspace_ui.usage.field.to')}>
-            <Input aria-label={t('workspace_ui.usage.field.to')} type="date" value={toDate} onChange={event => setToDate(event.target.value)} />
+          <Field label={`${t('workspace_ui.usage.field.to')} (UTC)`}>
+            <Input aria-label={`${t('workspace_ui.usage.field.to')} (UTC)`} type="date" value={toDate} onChange={event => setToDate(event.target.value)} />
           </Field>
           <Field label={t('workspace_ui.usage.field.group_by')}>
             <Select ariaLabel={t('workspace_ui.usage.field.group_by')} options={groupOptions()} value={groupBy} onChange={setGroupBy} />

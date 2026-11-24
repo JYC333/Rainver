@@ -1,3 +1,4 @@
+import { DEFAULT_RETENTION_DAYS, DEFAULT_MAX_COUNT } from "./snapshotRetention.js";
 import { randomUUID } from "node:crypto";
 import type { Pool } from "../../db/pool.js";
 import { withTransaction } from "../../db/tx.js";
@@ -22,8 +23,6 @@ interface ProjectFileRevision extends ProjectFileRevisionOut {
   before_content: string | null;
 }
 
-const DEFAULT_RETENTION_DAYS = 7;
-const DEFAULT_MAX_COUNT = 20;
 
 export class PgProjectFileRevisionStore {
   constructor(private readonly db: Queryable) {}

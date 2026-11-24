@@ -47,6 +47,7 @@ import {
 import { ReconnectableFrameSink } from "../reconnectableFrameSink.js";
 import { OWN_INSTALLATION, installTool, managedInstallationId, rollbackTool, uninstallTool } from "../tools.js";
 import { manageCli } from "../managedCli.js";
+import { invalidateOwnCopy } from "../ownCopies.js";
 import { updateOwnAntigravity, updateOwnTool } from "../ownToolUpdate.js";
 import { handleOrdinaryToolAction } from "../ordinaryTools.js";
 import { closeAllOrdinaryAccountSessions, closeOrdinaryAccountSession, handleOrdinaryAccountRequest, openOrdinaryAccountSession } from "../ordinaryToolAccounts.js";
@@ -363,8 +364,9 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
     // `sharedHostConnectionRegistry` — a frame sent on this socket before
     // that would be rejected server-side as unauthenticated anyway.
     const sendOnThisConnection = (payload: HostDaemonFrame) => {
-      if (socket.readyState !== WebSocket.OPEN) return;
+      if (socket.readyState !== WebSocket.OPEN) return false;
       socket.send(JSON.stringify(payload));
+      return true;
     };
     const currentWorkspaces = async () => (await loadConfig())?.workspaces ?? workspaces;
     let sweepRunning=false;
@@ -482,6 +484,7 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
      * frame through this same switch with a capturing sink, so the effect a
      * receipt records is exactly the ordinary one.
      */
+    const liveSink = sink;
     const dispatchFrame = (frame: HostServerFrame, sink: Pick<ReconnectableFrameSink, "send" | "bind" | "unbindIfCurrent">): void => {
       switch (frame.type) {
         case "host_command": {
@@ -501,7 +504,7 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
           sourceChannel.handle(frame); return;
         case "hello_ack": {
           helloAcked = true;
-          sink.bind(sendOnThisConnection);
+          sink.bind(sendOnThisConnection, frame.run_completion_ack === true);
           log(`connected as host ${frame.host_id}`);
           // The hello went out before the server could say how to ask each
           // runtime for its options, so report them now rather than a
@@ -539,8 +542,15 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
         case "error":
           log(`server error: ${frame.detail}`);
           return;
+        case "run_completion_ack":
+          liveSink.acknowledgeCompletion(frame.run_id, frame.launch_id);
+          return;
+        case "run_reconnect_probe":
+          liveSink.reconcileLaunch(frame.run_id, frame.launch_id);
+          return;
         case "launch": {
           const launchFrame = toLaunchFrame(frame);
+          liveSink.beginLaunch(launchFrame.run_id, launchFrame.launch_id);
           log(`launch run ${launchFrame.run_id}`);
           // Always routed through `sink`, never `sendOnThisConnection`
           // directly — this run's `complete` frame may need to go out on a
@@ -832,6 +842,7 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
             }
             return updateOwnTool(frame.runtime_key);
           }).then((outcome) => {
+            invalidateOwnCopy(frame.runtime_key);
             clearRuntimeOptionsCache(frame.runtime_key, OWN_INSTALLATION);
             sendHeartbeat();
             sink.send({ type: "tool_result", request_id: frame.request_id, ok: true, error: null, installation: OWN_INSTALLATION, ...outcome });
@@ -887,7 +898,7 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
                 log(`install ${frame.runtime_key} ${managedInstallationId(frame.version)}`);
                 const bridge = frame.runtime_key === "codex_cli" ? "codex-acp" : frame.runtime_key === "claude_code" ? "claude-agent-acp" : null;
                 if (bridge && !(await ensurePackagedAdapter(bridge))) throw new Error("The Host adapter pack is unavailable");
-                const manifest = await installTool(frame, log);
+                const manifest = await installTool(frame, log, undefined, journaledFrames.get(frame));
                 log(`installed ${frame.runtime_key} ${managedInstallationId(frame.version)} → ${manifest.command}`);
                 return managedInstallationId(frame.version);
               })
@@ -1058,7 +1069,8 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
       if (taskWorktreeSweepTimer) clearInterval(taskWorktreeSweepTimer);
       stopSweepWake();
       if(sweepContinuation)clearTimeout(sweepContinuation);
-      helloAcked=false;
+      const wasAcked = helloAcked;
+      helloAcked = false;
       if (updateRestartTimer) clearInterval(updateRestartTimer);
       sourceChannel.disconnect();
       for (const controller of folderReadControllers.values()) controller.abort();
@@ -1083,7 +1095,7 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
       if (restartForUpdate && !hasInFlightRuns()) {
         void rm(updateRequestPath, { force: true }).then(() => resolve("update"), reject);
       }
-      else if (helloAcked) resolve("disconnected");
+      else if (wasAcked) resolve("disconnected");
       else {
         const reason = event.reason ? `, reason ${event.reason}` : "";
         reject(new Error(`connection closed before hello was acknowledged (code ${event.code}${reason})`));

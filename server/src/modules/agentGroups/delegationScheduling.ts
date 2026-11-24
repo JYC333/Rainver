@@ -4,6 +4,7 @@ import { attentionResourceWait, attentionWorkspaceWait } from "../runs/attention
 import { isHardTerminalRunStatus } from "../runs/orchestrationResults.js";
 import type { RunRecord } from "../runs/repository.js";
 import type { RunTurn } from "@rainver/protocol";
+import { currentAgentRunJobSql } from "../jobs/agentRunGeneration.js";
 
 export async function readDelegationQueueWait(
   db: Queryable,
@@ -15,7 +16,8 @@ export async function readDelegationQueueWait(
             EXISTS (SELECT 1 FROM run_execution_locks l WHERE l.run_id = parent.id) AS parent_executing,
             EXISTS (SELECT 1 FROM jobs j WHERE j.space_id = $1 AND j.job_type = 'agent_run'
                       AND j.payload_json->>'run_id' = $2
-                      AND j.status IN ('pending', 'claimed', 'running')) AS admitted
+                      AND j.status IN ('pending', 'claimed', 'running')
+                      AND ${currentAgentRunJobSql("j")}) AS admitted
        FROM runs parent WHERE parent.space_id = $1 AND parent.id = $3`,
     [run.space_id, run.id, run.parent_run_id],
   )).rows[0];

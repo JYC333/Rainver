@@ -1,3 +1,4 @@
+import {workspaceSensitiveReadBlocker} from '../../projectFolders/workspaceSensitiveReadBlocker.js';
 import {assertDaemonWorkspaceActor} from '../../hosts/workspaceActor.js';
 import {safeInputErrors} from '../inputErrors.js';
 import {assertCurrentPerson,personalReceiptSpace} from './personAdmission.js';
@@ -9,17 +10,25 @@ import { getOperationAuditPool } from "../../../db/pool.js";
 import { ContentAccessAuditService } from "../../contentAccess/audit.js";
 import type { Pool } from '../../../db/pool.js';
 import type { OperationActor, OperationResponse, OperationOutcome } from '@rainver/protocol';
-import { OperationActorSchema, type PolicyCheckRequest } from '@rainver/protocol';
+import { DUPLICATE_TASK_CANCELLATION_REASON, OperationActorSchema, type PolicyCheckRequest } from '@rainver/protocol';
 import type { ServerConfig } from '../../../config.js';
 import { withTransaction } from '../../../db/tx.js';
 import { operationTransaction, runOperationWork } from '../../../db/operationTransaction.js';
 import { enforce } from '../../policy/service.js';
 import { loadActionRegistry } from '../../policy/actionRegistry.js';
 import { assertCurrentActor, assertOperationGrant } from './actor.js';
-import { OperationError, OperationInputError, OperationBusinessError, hidden } from './errors.js';
+import { OperationError, OperationInputError, OperationBusinessError, OperationRefusal, hidden } from './errors.js';
 import { reserve, record, reconcile, requestScope, fingerprint } from './repository.js';
 import type { OperationRegistration } from './types.js';
 import { classifyRegisteredError, executeRegistered, registeredPolicyRequest, resolveRegisteredInput } from './registrationSteps.js';
+
+const taskStatusSensitiveReadMessages = new Map([
+  ['task_status_not_cancellation', 'Only eligible duplicate-task cancellations can change Task status from this conversation after a restricted data read. Review the status change on the Project Board.'],
+  ['task_cancellation_requires_fixed_reason', `For an eligible duplicate Task, cancel with the exact reason "${DUPLICATE_TASK_CANCELLATION_REASON}" and omit extra details.`],
+  ['task_not_shared', 'This Task is private. Cancellation from this conversation after a restricted data read is limited to shared Project Tasks. Review the Task on the Project Board.'],
+  ['task_already_started_or_closed', 'This Task is outside its initial pending statuses or has already been closed. Review its current status on the Project Board before changing it.'],
+  ['task_has_work_history', 'This Task has work history or execution or publication dependencies. Review its activity on the Project Board before cancelling it.'],
+]);
 
 /** Stateless per invocation; registry/executors are composed once and retain no caller. */
 export class OperationExecutor {
@@ -69,7 +78,7 @@ export class OperationExecutor {
       return {ok: false, response: {http_status: e.httpStatus, request_id: requestId, replayed: false, policy_decision_record_id: null, body: e.body(requestId)}};
     }
   }
-  async execute(id: string, raw: unknown, actor: OperationActor, requestId: string, key?: string, version?: number): Promise<OperationResponse> {
+  async execute(id: string, raw: unknown, actor: OperationActor, requestId: string, key?: string, version?: number, signal?: AbortSignal): Promise<OperationResponse> {
     let decisionId: string | null = null;
     let failureAudit: PolicyCheckRequest | undefined;
     let notification: (() => Promise<void>) | undefined;
@@ -114,6 +123,7 @@ export class OperationExecutor {
             const current = await resolveUserCreationActor(tx.db, input, requestActor,id);
             if (current.space_id !== actor.space_id) throw new OperationError('operation_conflict', 409);
           }
+          if(item.lockBeforeActor&&actor.principal.kind==='agent')await runOperationWork(()=>item.lockBeforeActor!(tx.db,input,actor,scope));
           if(item.domainAuthorizationFirst){
             if(item.approval||placing||item.runTerminalOwner)throw new OperationError('operation_internal_error',500);
             await assertActor(tx.db);
@@ -144,6 +154,21 @@ export class OperationExecutor {
           decisionId = policy.policy_decision_record_id ?? null;
           // A missing data-owner consent is requestable through authorization.request (ADR 0030).
           if (policy.decision?.decision === 'deny' && policy.decision.policy_rule_id === 'plugin_data_consent_required') throw new OperationError('operation_consent_required', 403);
+          if ((id === 'workspace.change.complete' || id === 'workspace.integration.retry')
+            && policy.decision?.decision === 'deny'
+            && policy.decision.policy_rule_id === 'hard_invariant_sensitive_plugin_read_egress') {
+            throw new OperationRefusal(409, 'workspaces', workspaceSensitiveReadBlocker.message, {code: workspaceSensitiveReadBlocker.code});
+          }
+          if (id === 'task.set_status' && actor.principal.kind === 'agent'
+            && policy.decision?.decision === 'deny'
+            && policy.decision.policy_rule_id === 'hard_invariant_sensitive_plugin_read_egress') {
+            // Authorization already established full access and Project write authority.
+            const blocker = scope.policyFacts?.task_status_sensitive_read_blocker;
+            const message = typeof blocker === 'string' ? taskStatusSensitiveReadMessages.get(blocker) : undefined;
+            throw new OperationRefusal(409, 'tasks',
+              message ?? 'This conversation cannot change the Task status under its current data-access restrictions. Review the Task on the Project Board.',
+              {code: message ? blocker : 'task_status_restricted_context'});
+          }
           if (policy.decision?.decision === 'deny') throw hidden();
           if (policy.status === 'error' || !decisionId) throw new OperationError('operation_audit_unavailable', 503, true);
           const hash = fingerprint(version ?? d.version, item.fingerprintInput ? await runOperationWork(async()=>item.fingerprintInput!(input)) : input, scope.targets);
@@ -193,7 +218,7 @@ export class OperationExecutor {
           }
           if (command) await client.query('SAVEPOINT operation_work');
           try {
-            const {output, data} = await executeRegistered(item, tx.db, input, actor, Object.freeze({requestId,idempotencyKey:key??null}));
+            const {output, data} = await executeRegistered(item, tx.db, input, actor, Object.freeze({requestId,idempotencyKey:key??null,...(signal?{signal}:{})}));
             const releaseFacts = item.releaseGate ? item.releaseFacts?.(output) ?? null : undefined;
             if (!command && item.readAudit) await withTransaction(getOperationAuditPool(this.config.databaseUrl!), audit => item.readAudit!({
               hostTransaction: audit,

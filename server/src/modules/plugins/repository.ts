@@ -143,12 +143,13 @@ export const pluginRepository = {
       pluginVersion: string;
       migrationId: string;
       checksum: string | null;
+      appliedAt?: string;
     },
   ): Promise<PluginMigrationRow> {
     const result = await db.query<PluginMigrationRow>(
       `INSERT INTO plugin_migrations
-         (id, plugin_id, plugin_version, migration_id, checksum, status)
-       VALUES ($1, $2, $3, $4, $5, 'applied')
+         (id, plugin_id, plugin_version, migration_id, checksum, status, applied_at)
+       VALUES ($1, $2, $3, $4, $5, 'applied', coalesce($6::timestamptz, now()))
        RETURNING *`,
       [
         randomUUID(),
@@ -156,6 +157,7 @@ export const pluginRepository = {
         input.pluginVersion,
         input.migrationId,
         input.checksum,
+        input.appliedAt ?? null,
       ],
     );
     return result.rows[0]!;

@@ -51,6 +51,7 @@ export interface ToolManifest {
   login_command: string[] | null;
   login: ToolLoginSpec | null;
   installed_at: string;
+  install_command_id?: string;
 }
 
 type ToolDistribution = RuntimeDistribution;
@@ -225,10 +226,8 @@ export function managedVersionsFor(runtimeKey: string): ToolManifest[] {
   return versions
     .flatMap((directory) => {
       const manifest = readToolManifestSync(runtimeKey, managedInstallationId(directory));
-      // Keyed by the directory it was found in, not by what the file claims:
-      // a manifest whose `version` disagrees would otherwise make a rollback
-      // delete another directory. Unknown installation times sort last.
-      return manifest ? [{ ...manifest, version: directory, installed_at: manifest.installed_at ?? "" }] : [];
+      // Staged and backed-up trees are not installed copies. Unknown times sort last.
+      return manifest && manifest.version === directory ? [{ ...manifest, installed_at: manifest.installed_at ?? "" }] : [];
     })
     .sort((a, b) => b.installed_at.localeCompare(a.installed_at));
 }
@@ -264,6 +263,7 @@ export async function installTool(
   frame: InstallToolFrame,
   log: (line: string) => void,
   downloadDependencies?: RuntimeArtifactDownloadDependencies,
+  commandId?: string,
 ): Promise<ToolManifest> {
   const finalDir = toolDir(frame.runtime_key, frame.version);
   const home = managedToolHome(frame.runtime_key);
@@ -318,12 +318,8 @@ export async function installTool(
       login_command: renderManagedLoginCommand(stagingDir, frame.login),
       login: frame.login,
       installed_at: new Date().toISOString(),
+      ...(commandId ? { install_command_id: commandId } : {}),
     };
-    await writeFile(join(stagingDir, "manifest.json"), JSON.stringify(manifest, null, 2), { mode: 0o600 });
-    if (!inPlace) {
-      await rm(finalDir, { recursive: true, force: true });
-      await rename(stagingDir, finalDir);
-    }
     // The launch was resolved against the staging path; rewrite every
     // string of it against the final one.
     const relocate = (value: string) => value.split(stagingDir).join(finalDir);
@@ -333,7 +329,11 @@ export async function installTool(
     manifest.env = Object.fromEntries(Object.entries(manifest.env).map(([key, value]) => [key, relocate(value)]));
     manifest.home = relocate(manifest.home);
     manifest.login_command = manifest.login_command?.map(relocate) ?? null;
-    await writeFile(join(finalDir, "manifest.json"), JSON.stringify(manifest, null, 2), { mode: 0o600 });
+    await writeFile(join(stagingDir, "manifest.json"), JSON.stringify(manifest, null, 2), { mode: 0o600 });
+    if (!inPlace) {
+      await rm(finalDir, { recursive: true, force: true });
+      await rename(stagingDir, finalDir);
+    }
   } catch (error) {
     if (stagingStarted) await rm(stagingDir, { recursive: true, force: true });
     if (asideDir && movedAside) {
@@ -361,6 +361,20 @@ export async function installTool(
     log(`Runtime installed; old-version cleanup failed: ${String(error)}`);
   }
   return manifest;
+}
+
+/** Prove promotion by the same command, without reinstalling or touching the rollback copy. */
+export async function confirmedManagedInstall(frame: InstallToolFrame, commandId: string): Promise<boolean> {
+  const current = managedVersionsFor(frame.runtime_key)[0];
+  if (!current || current.version !== frame.version || current.install_command_id !== commandId
+    || current.health_check_protocol !== "acp") return false;
+  const healthy = await probeAcpHealth(
+    current.command, [...(current.entry_args ?? []), ...current.args],
+    { ...current.env, ...managedHomeEnvironment(current.home) },
+    toolDir(frame.runtime_key, frame.version),
+  );
+  const stillCurrent = managedVersionsFor(frame.runtime_key)[0];
+  return healthy && stillCurrent?.version === frame.version && stillCurrent.install_command_id === commandId;
 }
 
 /** A version label is useful metadata, but failure to print it must not abort a valid install. */

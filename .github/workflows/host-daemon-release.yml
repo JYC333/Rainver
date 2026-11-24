@@ -26,6 +26,7 @@ on:
       - packages/folder-read/**
       - packages/outbound-guard/**
       - packages/protocol/**
+      - tools/typescript/**
       - package.json
       - pnpm-lock.yaml
       - pnpm-workspace.yaml
@@ -117,6 +118,7 @@ jobs:
       - name: Typecheck and test daemon packages
         run: |
           pnpm --filter @rainver/protocol build
+          pnpm --filter @rainver/protocol test
           pnpm --filter @rainver/agent-cli typecheck
           pnpm --filter @rainver/agent-cli test
           pnpm --filter @rainver/folder-read typecheck

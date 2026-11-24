@@ -1,3 +1,4 @@
+import { ConversationSubagents } from './ConversationSubagents'
 import { ConversationFilePreview } from "./ConversationFilePreview"
 import { RunModelLabel } from './RunModelLabel'
 import { AlertTriangle, ChevronRight, CircleHelp, Info, ListChecks } from 'lucide-react'
@@ -49,6 +50,7 @@ export function ConversationTurn({
   turn,
   runHref,
   className,
+  paused = false,
 }: {
   turn: RunTurn
   /**
@@ -58,6 +60,8 @@ export function ConversationTurn({
    */
   runHref?: string
   className?: string
+  /** The Room is already showing the dependency wait above this turn. */
+  paused?: boolean
 }) {
   const presentedParts = presentConversationParts(turn.parts)
   const { t } = useAppTranslation()
@@ -67,7 +71,19 @@ export function ConversationTurn({
     setDisclosure(current => ({ ...current, tools: { ...current.tools, [id]: open } }))
   }
   const debugText = [...new Set(turn.parts.filter(isDebugDiagnostic).flatMap(part => part.type === 'diagnostic' ? part.text.split('\n') : []))].join('\n')
-  const steps = presentedParts.filter(isStep)
+  const subagents = presentedParts.filter(part => part.type === 'subagent')
+  const childTools = new Map<string, Extract<TurnPart, { type: 'tool_call' }>[]>()
+  for (const part of presentedParts) {
+    if (part.type !== 'tool_call' || !part.details?.subagent_key) continue
+    const key = part.details.subagent_key
+    const tools = childTools.get(key) ?? []
+    tools.push(part)
+    childTools.set(key, tools)
+  }
+  const childKeys = new Set(subagents.map(part => part.key))
+  const parentParts = presentedParts.filter(part => part.type !== 'tool_call'
+    || !part.details?.subagent_key || !childKeys.has(part.details.subagent_key))
+  const steps = parentParts.filter(isStep)
   const progress = progressTextIndexes(turn.parts)
   const workCount = steps.length + progress.size
   const working = turn.state === 'working'
@@ -100,7 +116,7 @@ export function ConversationTurn({
         )}
 
         <div className="flex flex-col gap-0.5">
-          {conversationWorkItems(presentedParts).map(item => {
+          {conversationWorkItems(parentParts).map(item => {
             if (item.type === 'tools') return stepsOpen ? <ConversationToolGroup key={item.id} id={item.id} parts={item.parts} expanded={expanded} onExpand={onExpand} settled={turn.state === 'done' || turn.state === 'failed'} /> : null
             const { part } = item
             if (part.type === 'text') {
@@ -115,6 +131,11 @@ export function ConversationTurn({
             if (part.type === 'action_preview' || part.type === 'reasoning') return null
             const attention = part.type === 'diagnostic' && (part.level === 'warning' || part.level === 'error')
             if (!stepsOpen && !attention) return null
+            if (part.type === 'subagent') {
+              return part === subagents[0] && <ConversationSubagents key={part.index}
+                parts={subagents} toolsByChild={childTools} expanded={expanded} onExpand={onExpand}
+                settled={!working && !blocked} />
+            }
             if (part.type === 'tool_call') return <ConversationToolStep key={part.call_id ?? part.index} part={part} expanded={expanded} onExpand={onExpand} settled={turn.state === 'done' || turn.state === 'failed'} />
             return <TurnStep key={part.index} part={part} />
           })}
@@ -155,7 +176,7 @@ export function ConversationTurn({
           said anything: a reply that has stopped growing and a reply that is
           still arriving look identical without it.
         */}
-        {working && <Shimmer className="text-sm">{t('conversation_ui.turn.working')}</Shimmer>}
+        {working && !paused && <Shimmer className="text-sm">{t('conversation_ui.turn.working')}</Shimmer>}
         {debugText && <div className="min-w-0">
           <Button variant="ghost" size="sm" data-conversation-disclosure className="h-auto px-1.5 py-1 text-xs text-muted-foreground" aria-expanded={showDiagnostics} onClick={() => setDisclosure(current => ({ ...current, diagnostics: !current.diagnostics }))}>
             <ChevronRight className={cn('size-3 transition-transform', showDiagnostics && 'rotate-90')} />{t('conversation_ui.turn.diagnostics')}
@@ -182,13 +203,13 @@ export function AwaitingAnswerMarker() {
 }
 
 /** A part that is work rather than what the Agent said. */
-type StepPart = Extract<TurnPart, { type: 'tool_call' | 'plan' | 'diagnostic' }>
+type StepPart = Extract<TurnPart, { type: 'tool_call' | 'plan' | 'diagnostic' | 'subagent' }>
 
 function isStep(part: TurnPart): part is StepPart {
-  return part.type === 'tool_call' || part.type === 'plan' || part.type === 'diagnostic'
+  return part.type === 'tool_call' || part.type === 'plan' || part.type === 'diagnostic' || part.type === 'subagent'
 }
 
-function TurnStep({ part }: { part: Exclude<StepPart, { type: 'tool_call' }> }) {
+function TurnStep({ part }: { part: Exclude<StepPart, { type: 'tool_call' | 'subagent' }> }) {
   const { t } = useAppTranslation()
   if (part.type === 'plan') {
     return (

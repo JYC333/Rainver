@@ -36,9 +36,6 @@ jobs:
       - name: Install workspace dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Test test infrastructure
-        run: node --test tools/vitest/budgetReporter.test.mjs tools/typescript/prepareIncremental.test.mjs
-
       - name: Resolve current stable ACP candidates
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: |
@@ -48,6 +45,14 @@ jobs:
 
       - name: Build protocol
         run: pnpm --filter @rainver/protocol build
+
+      # Loads the real package configs; the web config imports the built
+      # protocol, which must already include any resolved ACP candidates.
+      - name: Test test infrastructure
+        run: node --test tools/vitest/budgetReporter.test.mjs tools/typescript/prepareIncremental.test.mjs
+
+      - name: Test protocol
+        run: pnpm --filter @rainver/protocol test
 
       # The command a dispatched agent calls Rainver back with. Built as well
       # as tested: the server stages the built entry, so a green run that only
@@ -140,9 +145,14 @@ jobs:
       - name: Test web
         run: pnpm --filter @rainver/web test
 
+      - name: Check browser layouts and journeys
+        if: github.event_name == 'workflow_dispatch'
+        continue-on-error: true
+        run: pnpm --filter @rainver/web test:layout
+
   # Production deploys pull these images instead of building on the host, so
   # the artifact that reaches a prod machine is the one this run verified.
-  # dev → edge, master → stable, every push → an immutable sha-<commit> tag.
+  # Publish the immutable images first. The channel moves only when all are available.
   # Pushing with GITHUB_TOKEN links each GHCR package to this repository, so
   # it inherits the repository's visibility (public here) without manual setup.
   publish-images:
@@ -153,6 +163,9 @@ jobs:
     permissions:
       contents: read
       packages: write
+    concurrency:
+      group: rainver-commit-image-${{ github.sha }}-${{ matrix.name }}
+      cancel-in-progress: false
     strategy:
       fail-fast: false
       matrix:
@@ -212,15 +225,31 @@ jobs:
         with:
           images: ${{ steps.image.outputs.name }}
           tags: |
-            type=raw,value=stable,enable=${{ github.ref_name == 'master' }}
-            type=raw,value=edge,enable=${{ github.ref_name == 'dev' }}
             type=sha,prefix=sha-,format=long
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
             com.rainver.deployment-surface=${{ steps.surface.outputs.value }}
 
+      - name: Check whether this commit image was published
+        id: commit-image
+        shell: bash
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}:sha-${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if output="$(docker buildx imagetools inspect "$IMAGE" 2>&1)"; then
+            echo "$IMAGE already exists. Keeping the published image."
+            echo "missing=false" >> "$GITHUB_OUTPUT"
+          elif grep -Eiq 'manifest unknown|404 Not Found|: not found$' <<<"$output"; then
+            echo "missing=true" >> "$GITHUB_OUTPUT"
+          else
+            printf '%s\n' "$output" >&2
+            exit 1
+          fi
+
       - name: Build and push
+        if: steps.commit-image.outputs.missing == 'true'
         uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.context }}
@@ -235,10 +264,47 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.name }}
 
+  promote-image-channel:
+    needs: publish-images
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: rainver-images-${{ github.ref_name }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Advance the image channel
+        shell: bash
+        env:
+          CHANNEL: ${{ github.ref_name == 'master' && 'stable' || 'edge' }}
+        run: |
+          set -euo pipefail
+          git fetch origin "$GITHUB_REF_NAME"
+          if [[ "$(git rev-parse FETCH_HEAD)" != "$GITHUB_SHA" ]]; then
+            echo "Channel already has a newer branch candidate."
+            exit 0
+          fi
+          registry="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/rainver"
+          # The server tag is the channel pointer used by the deployment scripts.
+          for service in frontend sandbox-runner deployer server; do
+            image="$registry-$service"
+            docker buildx imagetools create --tag "$image:$CHANNEL" "$image:sha-$GITHUB_SHA"
+          done
+
   # A production host needs only this bundle and the images above, not a Git
   # checkout. Publish only after every image at this commit was pushed.
   publish-prod-bundle:
-    needs: [verify, publish-images]
+    needs: [verify, promote-image-channel]
     if: github.event_name == 'push' && github.ref_name == 'master'
     runs-on: ubuntu-latest
     timeout-minutes: 10

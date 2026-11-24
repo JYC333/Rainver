@@ -101,9 +101,14 @@ function agentDelegateToolDefinition(targets: readonly AgentDelegationTarget[]):
             description: [
               "The concrete task for the target agent.",
               "Refer to material the target can already read — files in the shared workspace, earlier results by run id — by path or reference instead of copying it in.",
+              "For a follow-up review, give the previous review Run, the previous and current commit, the remaining findings, and changed files or document sections. Ask each reviewer to check that delta and follow any affected dependency; request a fresh full review when the scope changes or an independent reassessment is needed.",
               "Do not write hand-over files into the workspace or /tmp for this: a read-only target cannot see /tmp, and the workspace is the person's own.",
               `Text that exists only in your own work may be written here; past ${DELEGATION_INLINE_INSTRUCTION_CHARS.toLocaleString("en-US")} characters Rainver stores the whole task and hands the target its beginning and a link to read the rest.`,
             ].join(" "),
+          },
+          review: {
+            ...(schema.properties as Record<string, Record<string, unknown>>).review,
+            description: "For a read-only code review, pass {} for an independent review or previous_run_id for this reviewer's completed Run in the same task. A follow-up may resume its session after server verification.",
           },
           reason: {
             type: "string",
@@ -249,6 +254,13 @@ export async function runAgentRoomToolCall(
         },
       };
     }
+    const isolated = run.workspace_location_id
+      && (run.contract_snapshot_json as { execution_workspace_version?: number })?.execution_workspace_version === 1;
+    const message = params.continuation
+      ? "Child Run created for the requested write continuation. The Host checks whether it can resume the previous session in its assigned worktree. Yield with agent.wait_for_results so the child can start."
+      : isolated
+        ? "Child run created in an independent workspace. After the parent yields and saves its checkpoint, independent children can execute together subject to dependencies, Host capacity and existing quotas. Yield with agent.wait_for_results; successful child integration is adopted by the parent before it resumes. Do not fabricate child results."
+        : "Child run created. It starts after the parent yields or finishes, subject to FIFO, Host capacity and workspace access. Delegate all independent readers with workspace_access=read, then call agent.wait_for_results to yield; keeping the parent running does not start its children. Use agent.list_runs to inspect scheduling waits. Do not fabricate child results.";
     return {
       modelResult: {
         ok: true,
@@ -259,8 +271,8 @@ export async function runAgentRoomToolCall(
         child_run_id: result.child_run_id,
         status: result.delegation.status,
         workspace_access: params.workspace_access,
-        workspace_concurrency: run.workspace_location_id&&(run.contract_snapshot_json as {execution_workspace_version?:number})?.execution_workspace_version===1?"isolated_workspace":params.workspace_access === "read" ? "shared_read" : "exclusive_write",
-        message: run.workspace_location_id&&(run.contract_snapshot_json as {execution_workspace_version?:number})?.execution_workspace_version===1?"Child run created in an independent workspace. After the parent yields and saves its checkpoint, independent children can execute together subject to dependencies, Host capacity and existing quotas. Yield with agent.wait_for_results; successful child integration is adopted by the parent before it resumes. Do not fabricate child results.":"Child run created. It starts after the parent yields or finishes, subject to FIFO, Host capacity and workspace access. Delegate all independent readers with workspace_access=read, then call agent.wait_for_results to yield; keeping the parent running does not start its children. Use agent.list_runs to inspect scheduling waits. Do not fabricate child results.",
+        workspace_concurrency: isolated ? "isolated_workspace" : params.workspace_access === "read" ? "shared_read" : "exclusive_write",
+        message,
       },
       summary: {
         tool_name: call.name,
@@ -306,6 +318,8 @@ export function agentDelegatePolicyInput(call: CanonicalToolCall, binding: Agent
     budget_json: params.budget,
     context_policy_json: params.context,
     workspace_access: params.workspace_access,
+    ...(params.review ? { review: params.review } : {}),
+    ...(params.continuation ? { continuation: params.continuation } : {}),
     tool_call_id: call.id,
   };
   return { params, identity, input };
@@ -487,6 +501,8 @@ function parseAgentDelegateArguments(
   budget: Record<string, unknown>;
   context: Record<string, unknown>;
   workspace_access: "read" | "write";
+  review?: { previous_run_id?: string };
+  continuation?: { previous_run_id: string };
 } {
   let raw: unknown;
   try {
@@ -509,6 +525,8 @@ function parseAgentDelegateArguments(
     budget: recordValue(record.budget),
     context: recordValue(record.context),
     workspace_access: record.workspace_access,
+    ...(record.review ? { review: record.review } : {}),
+    ...(record.continuation ? { continuation: record.continuation } : {}),
   };
 }
 

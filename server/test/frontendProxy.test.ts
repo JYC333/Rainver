@@ -7,7 +7,8 @@ import { describe, expect, it } from "vitest";
 // as much as a routing table. The daemon's WebSocket path must be forwarded.
 // Do not let it fall through to the SPA fallback. Pairing would die with a
 // 1006 before hello.
-const webDir = join(import.meta.dirname, "..", "..", "apps", "web");
+const repoRoot = join(import.meta.dirname, "..", "..");
+const webDir = join(repoRoot, "apps", "web");
 const nginxConf = readFileSync(join(webDir, "nginx.conf"), "utf8");
 const securityHeaders = readFileSync(join(webDir, "security-headers.conf"), "utf8");
 const HEADERS_INCLUDE = "include /etc/nginx/security-headers.conf;";
@@ -36,6 +37,29 @@ describe("production nginx proxy", () => {
     expect(locationBlock("= /index.html")).toContain('add_header Cache-Control "no-cache";');
     expect(locationBlock("= /sw.js")).toContain("no-store");
     expect(locationBlock("/assets/")).toContain("immutable");
+  });
+
+  it("serves a missing hashed asset from the previous build only, never the app shell", () => {
+    expect(locationBlock("/assets/")).toContain("try_files $uri @previous_build_assets;");
+    const previous = locationBlock("@previous_build_assets");
+    expect(previous).toContain("root /run/rainver-web/previous;");
+    expect(previous).toContain("try_files $uri =404;");
+    expect(previous).toContain("immutable");
+    for (const mode of ["test", "prod"]) {
+      const compose = readFileSync(join(repoRoot, "ops", "compose", `docker-compose.${mode}.yml`), "utf8");
+      const frontend = compose.slice(compose.indexOf("\n  frontend:"), compose.indexOf("\n  deployer:"));
+      expect(frontend, mode).toContain("- frontend-previous-assets:/var/cache/rainver-web");
+    }
+    expect(readFileSync(join(webDir, "Dockerfile"), "utf8")).toContain("/docker-entrypoint.d/40-rainver-retain-previous-assets.sh");
+  });
+
+  it("compresses static text but never a proxied server response", () => {
+    const server = nginxConf.slice(0, nginxConf.indexOf("    location "));
+    expect(server).toContain("gzip on;");
+    expect(server).toMatch(/gzip_types[^;]*application\/javascript[^;]*;/);
+    expect(server).toMatch(/gzip_types[^;]*text\/css[^;]*;/);
+    // Authenticated responses that reflect request input stay uncompressed (BREACH).
+    for (const location of ["/api/", "= /internal/hosts/ws"]) expect(locationBlock(location), location).toContain("gzip off;");
   });
 
   it("exposes nothing else under /internal", () => {

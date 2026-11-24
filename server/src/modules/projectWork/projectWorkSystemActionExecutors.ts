@@ -1,3 +1,5 @@
+import { canWriteGmailDerivedProjectContent } from "../plugins/egress.js";
+import { hasSensitivePluginRead, readRunContextTaint } from "../runs/contextTaint.js";
 import { getProjectBoard } from "./boardReadModel.js";
 import { columnForTask, readProjectColumns } from "../tasks/boardColumns.js";
 import { contentReadSql } from "../access/contentAccessSql.js";
@@ -114,6 +116,12 @@ export function registerProjectWorkSystemActionExecutors(
       await lockActiveProjectForMutation(tx, run.space_id, run.project_id!);
       await assertProjectWriterForMutation(tx, run.space_id, run.project_id!, identity.userId);
       await lockTurnFanOutForTransaction(tx, run.id);
+      if (hasSensitivePluginRead(await readRunContextTaint(tx, run.space_id, run.id, {forUpdate: true})) &&
+        !await canWriteGmailDerivedProjectContent(tx, {
+          space_id: run.space_id, run_id: run.id, effective_origin: trigger.origin, on_behalf_of_user_id: identity.userId,
+        }, "task.create_batch", {project_id: run.project_id}, {tasks})) {
+        throw new HttpError(403, "Gmail-derived tasks require live consent for this Project and no linked writes");
+      }
       const results: Array<{ task_id: string; title: string; status: string; created: boolean }> = [];
       for (const [index, item] of tasks.entries()) {
         // The Project lock serializes ordinary creates and other batches.

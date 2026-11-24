@@ -52,7 +52,7 @@ function monitorDto(row: MonitorRow): GmailMonitor | null {
  * monitor, monitoring (re)starts from `baseline`: the current mailbox position
  * plus only mail received since `activeSince`, never the inbox's history.
  */
-async function ensureSyncState(db: Queryable, input: { connectionId: string; spaceId: string; ownerUserId: string; restart: boolean; now: string }): Promise<void> {
+export async function ensureGmailSyncState(db: Queryable, input: { connectionId: string; spaceId: string; ownerUserId: string; restart: boolean; now: string }): Promise<void> {
   await db.query(
     `INSERT INTO gmail_mailbox_sync_states (gmail_connection_id,space_id,owner_user_id,history_id,state,recovery_after,recovery_partial,
        sync_requested_at,next_poll_at,failure_count,created_at,updated_at)
@@ -69,7 +69,9 @@ async function ensureSyncState(db: Queryable, input: { connectionId: string; spa
 }
 
 async function otherActiveMonitors(db: Queryable, connectionId: string, exceptId: string | null): Promise<boolean> {
-  return (await db.query(`SELECT 1 FROM gmail_monitor_rules WHERE gmail_connection_id=$1 AND status='active' AND ($2::varchar IS NULL OR id<>$2) LIMIT 1`,
+  // An active application-update automation (ADR 0034) keeps the same cursor going.
+  return (await db.query(`SELECT 1 FROM gmail_monitor_rules WHERE gmail_connection_id=$1 AND status='active' AND ($2::varchar IS NULL OR id<>$2)
+      UNION ALL SELECT 1 FROM gmail_digests WHERE gmail_connection_id=$1 AND kind='application' AND status='active' LIMIT 1`,
     [connectionId, exceptId])).rows.length > 0;
 }
 
@@ -102,7 +104,7 @@ export async function setGmailMonitorStatusIn(db: Queryable, identity: Identity,
       if (connection?.status !== "active") throw new OperationError("operation_conflict", 409);
       const restart = !(await otherActiveMonitors(db, row.gmail_connection_id, row.id));
       await db.query(`UPDATE gmail_monitor_rules SET status='active',active_since=$2,updated_at=$2 WHERE id=$1`, [row.id, now]);
-      await ensureSyncState(db, { connectionId: row.gmail_connection_id, spaceId: row.space_id, ownerUserId: row.owner_user_id, restart, now });
+      await ensureGmailSyncState(db, { connectionId: row.gmail_connection_id, spaceId: row.space_id, ownerUserId: row.owner_user_id, restart, now });
       await requestGmailMailboxSync(db, row.gmail_connection_id, "monitor");
     } else {
       await db.query(`UPDATE gmail_monitor_rules SET status='paused',updated_at=$2 WHERE id=$1`, [row.id, now]);
@@ -149,7 +151,7 @@ export function registerGmailMonitorProposalApplier(registry: ProposalApplierReg
          match_count,last_matched_at,created_at,updated_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,'active',$8,$9,0,NULL,$8,$8)`,
       [id, identity.spaceId, userId, connection.id, projectId, payload.purpose.trim(), JSON.stringify(payload.criteria), now, proposal.id]);
-    await ensureSyncState(db, { connectionId: connection.id, spaceId: identity.spaceId, ownerUserId: userId, restart, now });
+    await ensureGmailSyncState(db, { connectionId: connection.id, spaceId: identity.spaceId, ownerUserId: userId, restart, now });
     await requestGmailMailboxSync(db, connection.id, "monitor");
     return { result_type: "gmail_monitor", result: { monitor_id: id, connection_id: connection.id } };
   });

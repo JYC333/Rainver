@@ -30,9 +30,31 @@ export const sessions = pgTable("sessions", {
 	// broken pointer fails the write instead of quietly rendering the
 	// conversation as empty.
 	headMessageId: varchar("head_message_id", { length: 36 }),
+	// Room conversation recycle bin (`.agent/modules/rooms.md`, "Conversation
+	// recycle bin"). Deletion records when it happened and which list the
+	// conversation came from, so a restore within the retention window returns
+	// it there. `purged_at` marks a tombstone whose exclusive content the
+	// purge already removed while Project records still reference the row.
+	// A legacy `deleted` row has none of these: it predates the bin and is
+	// neither listed, restored nor purged automatically. A purge pass that
+	// fails counts the attempt and backs off until `purge_retry_at`, so a
+	// conversation that keeps failing never holds the batch for later ones.
+	deletedAt: timestamp("deleted_at", { withTimezone: true, mode: 'string' }),
+	deletedFromStatus: varchar("deleted_from_status", { length: 32 }),
+	purgedAt: timestamp("purged_at", { withTimezone: true, mode: 'string' }),
+	purgeAttempts: integer("purge_attempts").default(0).notNull(),
+	purgeRetryAt: timestamp("purge_retry_at", { withTimezone: true, mode: 'string' }),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [
+	index("ix_sessions_trash_purge").on(table.deletedAt, table.id)
+		.where(sql`status = 'deleted' AND deleted_at IS NOT NULL AND purged_at IS NULL`),
+	check("ck_sessions_trash_state", sql`
+		(deleted_at IS NULL AND deleted_from_status IS NULL AND purged_at IS NULL
+			AND purge_attempts = 0 AND purge_retry_at IS NULL)
+		OR (status = 'deleted' AND deleted_at IS NOT NULL
+			AND deleted_from_status IS NOT NULL AND deleted_from_status IN ('active', 'archived'))
+	`),
 	index("ix_sessions_agent_id").using("btree", table.agentId.asc().nullsLast()),
 	index("ix_sessions_space_id").using("btree", table.spaceId.asc().nullsLast()),
 	index("ix_sessions_status").using("btree", table.status.asc().nullsLast()),

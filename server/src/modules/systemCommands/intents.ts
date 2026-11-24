@@ -88,6 +88,7 @@ export async function admitSystemCommand(db:Queryable,input:{
   spaceId:string;userId:string;kind:SystemCommandKind;scope:unknown;frozen:Record<string,unknown>;
 }):Promise<SystemCommandReceipt>{
   const scope=scopeKey({kind:input.kind,scope:input.scope});
+  await db.query("SELECT pg_advisory_xact_lock(hashtextextended('system-command:' || $1::text, 0))",[scope]);
   const active=(await db.query<SystemCommandIntent>(
     `SELECT * FROM system_command_intents WHERE scope_key=$1 AND status IN ('pending','dispatched') FOR UPDATE`,[scope])).rows[0];
   if(active&&ACTIVE_SYSTEM_COMMAND_STATUSES.includes((await settleStaleSystemCommand(db,active)).status as 'pending')){

@@ -90,8 +90,10 @@ Automatic updates are opt-in. They check the selected release channel every
 six hours. The updater first verifies the channel's small `BUILD_ID` asset and
 verifies local read-only protection when that build is already active, without downloading the
 Node runtime, daemon release archive, or adapter pack. For a new build it
-verifies every downloaded asset's SHA-256 checksum, switches the installed
-version atomically, and asks the daemon to restart only after all launching,
+verifies the daemon archive and any required adapter pack before switching its
+installed version. It records incomplete activation so the next update can
+finish installing the launchers and requesting the restart. The daemon
+restarts only after all launching,
 running, and uploading Runs have finished.
 The active and previous builds are retained; older rolling builds are removed.
 

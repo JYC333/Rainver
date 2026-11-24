@@ -16,9 +16,9 @@ Conversation messages. See [Hosts](../modules/hosts.md).
 
 ## Additional input during a turn
 
-The Run owner/instructor can use **Add instruction** beside Stop when the
-active wrapper advertises a supported idle-safe steering contract. It targets
-the current physical Delivery only. The server saves a canonical user message
+An authorized Room sender can use the ordinary composer to add input to a
+compatible active turn. The live input command targets the current physical
+Delivery only when the active wrapper supports idle-safe steering. The server saves a canonical user message
 in the current conversation (linked to the same Run), appends a pending
 `run.live_input` command event and compiles a fresh Runtime Context Delivery.
 Only that pending command, original binding and current attempt can authorize
@@ -28,6 +28,17 @@ apply. Skill mounts/tool grants cannot expand on an already running process.
 Acknowledgement and outcome are recorded; unconfirmed input is never retried
 automatically. Ended turns refuse injection and ordinary Room FIFO stays intact.
 The process-local channel shares cancellation's worker-affinity requirement.
+
+In a Room, ordinary Send uses this channel when
+the message's existing route reaches exactly one active Run that the sender
+may steer and that can take text. That Run may be running or parked on
+`agent.wait_for_results`, and may be a Rainver-delegated child. A parked Run
+keeps the input (`deferred`) and receives it with the waited results when it
+resumes (`delivered_with_results`), after its sender's standing is checked
+again. Several matches ask the person to choose; a chosen Run that can no
+longer take it is refused, never silently sent ordinarily; no match keeps the
+ordinary send or queue. See
+[Rooms](../modules/rooms.md#ordinary-send-into-an-active-turn).
 
 Runtime auth/compaction/native retry and declared native subagent transitions
 appear as localized informational activity. Account details are omitted. Native
@@ -73,6 +84,20 @@ Room fan-out case, written only onto the dispatching message — a person's
 message, or the system row a continuation writes — when one send addressed
 several Agents.
 
+## Long message drafts
+
+A paste of at least 500 characters or seven lines appears in the attachment
+area next to images, with a dialog for editing and an explicit remove action.
+The inline editor stays available for instructions and mentions. On send,
+the pasted text follows the typed text and, for directly addressed Room
+messages, extends the final addressed segment. Draft storage keeps the pasted
+text separately. The inline Room editor grows to 30% of the dynamic viewport
+height or 10rem, whichever is smaller, and then scrolls within its text area.
+
+Reuse / Dependency Check: reuse the shared attachment area, draft storage
+and Radix Dialog and Textarea controls. Sending still uses the existing
+message text and recipient segments. No dependency or wire type was added.
+
 ## Explicit Skill inputs
 
 Both direct and Room composers support `/` and `@` Skill selection. The typed
@@ -93,6 +118,16 @@ recipient of the effective route — the addressed Agents, or the manager when
 the message is handed to it to arrange — is checked against the effective
 package binding before send.
 Retries reuse the original message selections and revalidate current authority.
+
+A successful send clears the draft for its destination. A Room preflight
+that allocates the first Session may also consume the new-conversation draft.
+Leaving a conversation releases local previews and cancels unfinished uploads.
+Completed uploads stay available to the draft until sent, removed or expired.
+The authenticated media endpoint lets only the uploader in the original Space
+retrieve pending, unexpired bytes. Claimed media follows the message audience.
+Draft text can be saved while attachment checks are pending. An attachment
+that could not be verified because of a temporary read failure stays in the
+draft and remains subject to the ordinary send-time checks.
 
 Browser drafts persist only opaque references; asynchronous attachment
 validation restores each untouched field without replacing new text or Skill
@@ -238,7 +273,9 @@ Two clients need a settled turn from a saved reply, and both go through
   Completed turns fold earlier prose followed by tools or plans into the existing
   work disclosure. The last prose block always stays visible, including when no
   closing reply followed the work. Active, failed and blocked turns keep progress
-  visible. Tool details default to collapsed while live prose stays visible; opening
+  visible. A Room turn parked on other Agents shows its waiting status and a
+  collapsed disclosure of the available earlier turn, using the shared renderer.
+  Tool details default to collapsed while live prose stays visible; opening
   a tool does not open the completed turn’s work disclosure. On successful
   completion, earlier prose and tools fold even if a tool was opened while working.
   This presentation never infers message boundaries from sentence text,
@@ -406,10 +443,10 @@ Dialog/Tabs and shared Select/Button; keep draft state in the existing React
 lifetimes and extend the built-app Chromium fixture. No new dependency, backend
 writer or global save transaction.
 Creating a draft keeps the settings dialog open.
-Active execution locks edits without changing its frozen snapshot; refresh and
-new-conversation navigation remain available. Queued Run snapshots are already
-frozen, so a settings save affects later Runs and does not freeze navigation or
-rewrite the queued Run. Worker/viewer
+During execution, authorized users can save per-Agent session options for new
+work, including future delegated Runs. Running and queued Runs keep their
+frozen selections. Participant and environment mutations remain locked during
+dispatch; refresh and new-conversation navigation remain available. Worker/viewer
 identities cannot edit. A missing or refused catalog explains why and never inherits
 another participant's configuration. Draft messages survive settings and recovery.
 Initialized Host/Primary are explicitly immutable; reconnect or start a new
@@ -464,9 +501,11 @@ Nothing about a Run appears under the person's message. Run links are not part
 of the shared conversation rendering.
 
 An initialized Conversation restores execution from its persisted
-Conversation × Agent binding and Host thread. The current runtime-profile
-catalog remains the chooser for a new Conversation, not the authority for
-whether an existing pin survived a server or daemon restart. Current Host
+Conversation × Agent binding and Host thread. A Room conversation can select
+any ready Project Location available on the selected Profile's Host. The
+Profile's workspace can suggest a default for a new Conversation. Editing it
+keeps the existing thread's Primary Workspace for preflight, backend selection,
+and routing. Current Host
 heartbeat, installation and workspace readiness are still checked before a
 send. A native copy with no signed-in account remains usable when its ACP
 `session/new` probe succeeded. Newly discovered choices and persisted runtime
@@ -656,11 +695,9 @@ captured once per destination, a new request lifetime only re-validates, and
 parent re-renders (such as a freshly derived Folder source list) do not
 restart validation.
 
-Neither surface currently injects a message into an executing vendor turn.
-The pinned Claude and Codex ACP adapters support a steering extension, but
-Rainver's input, Run and controller lifecycle does not expose it and no
-configuration switch enables it. The fixed-version behavior and ended-turn
-differences are recorded in [runtime adapters](../modules/runtime-adapters.md).
+The Room composer supports additional input for compatible running turns. The
+pinned Claude and Codex ACP adapters expose the idle-safe steering contract
+described in [runtime adapters](../modules/runtime-adapters.md).
 
 `action_preview` parts are deliberately not rendered. Both surfaces show a
 Proposal from the assistant message's own record instead, which is what

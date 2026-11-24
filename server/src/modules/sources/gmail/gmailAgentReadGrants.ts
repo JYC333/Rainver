@@ -79,11 +79,12 @@ export async function liveGmailAgentReadConsents(db: Queryable, input: {
 }
 
 /** Whether a consent still admits a physical Gmail send now (checked before every send). */
-export async function gmailAgentReadConsentLive(db: Queryable, input: { spaceId: string; ownerUserId: string; grantId: string }): Promise<boolean> {
+export async function gmailAgentReadConsentLive(db: Queryable, input: { spaceId: string; ownerUserId: string; grantId: string; projectId?: string }): Promise<boolean> {
   return (await db.query(
     `SELECT 1 FROM plugin_data_grants g JOIN gmail_connections c ON c.id=g.connection_id AND c.space_id=g.space_id AND c.owner_user_id=g.data_owner_user_id
-      WHERE ${LIVE_SQL} AND g.id=$3`,
-    [input.spaceId, input.ownerUserId, input.grantId],
+      WHERE ${LIVE_SQL} AND g.id=$3 AND ($4::text IS NULL OR g.project_id=$4)
+      ${input.projectId ? "FOR SHARE OF c, g" : ""}`,
+    [input.spaceId, input.ownerUserId, input.grantId, input.projectId ?? null],
   )).rows.length > 0;
 }
 
@@ -167,6 +168,9 @@ export async function endGmailAgentReadGrants(db: Queryable, input: { spaceId: s
   await db.query(`UPDATE gmail_digests SET status='ended',ended_at=now(),next_run_at=NULL,last_error_code='gmail_digest_consent_ended',updated_at=now()
       WHERE space_id=$1 AND owner_user_id=$2 AND gmail_connection_id=$3 AND status<>'ended'`, [input.spaceId, input.ownerUserId, input.connectionId]);
   await endPendingCoreConsentRequests(db, { spaceId: input.spaceId, ownerUserId: input.ownerUserId, connectionId: input.connectionId });
+  // Read delegations of this mailbox end with them (ADR 0035 §4); nothing revives them.
+  const { endGmailConnectionDelegations } = await import("./gmailDelegations.js");
+  await endGmailConnectionDelegations(db, input);
 }
 
 /** The owner's active consents by connection, for the Gmail management card. Content-free. */

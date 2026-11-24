@@ -1,3 +1,4 @@
+import {PROJECT_NOTE_AGENT_ACTIONS} from '@rainver/protocol';
 import type { PluginOperationId, SystemActionId } from "@rainver/protocol";
 
 /** A scenario allowance entry: a core action, or a plugin operation named one by one. */
@@ -87,11 +88,27 @@ export const CONVERSATION_TOOL_ALLOWANCE: readonly SystemActionId[] = [
   // accepts, only in their own turn of a conversation of a Project (private, a Room or the mainline,
   // every reader inside the Project) that it then delivers into; it reads no mail.
   "source.gmail.digest.propose",
+  // The owner's automatic application updates from Gmail (ADR 0034): drafting the one owner-only card,
+  // listing (content-free) and pausing or ending it. Each executor admits only the mailbox owner's own
+  // turn in a conversation of a Project that only they read; none reads mail.
+  "source.gmail.application_updates.propose",
+  "source.gmail.application_updates.list",
+  "source.gmail.application_updates.set_status",
   // On-demand reading and searching of the owner's own mail (ADR 0032, ADR 0033 §6). Listing it here only
   // makes it a candidate: the snapshot admits it in an ordinary conversation of a Project after the owner's
   // opt-in, on the conversation's own runtime; every read needs the owner's own turn, their standing
   // consent for that Project (confirmed once in place) and an audience inside that Project.
   "source.gmail.mail.read",
+  // ADR 0035: one owner-only card for several Gmail purposes, and the owner's read delegations to Project
+  // members (drafting, listing, ending). Each executor admits only the mailbox owner's own turn in a
+  // conversation of the Project whose readers all work in it; none reads mail.
+  "source.gmail.setup.propose",
+  "source.gmail.delegation.propose",
+  "source.gmail.delegation.list",
+  "source.gmail.delegation.end",
+  // A member's read of mail delegated to them (ADR 0035 §4): offered only where such a delegation exists for
+  // the conversation's Project; every read is confined to the owner's scope and rechecked at release.
+  "source.gmail.delegated.read",
 ];
 
 /** Added only for a turn whose persisted message owns text resources. */
@@ -101,6 +118,7 @@ export const INPUT_RESOURCE_TOOL_ALLOWANCE: readonly SystemActionId[] = [
 ];
 
 const ROOM_PROJECT_TOOL_ALLOWANCE: readonly SystemActionId[] = [
+  ...PROJECT_NOTE_AGENT_ACTIONS,
   "project.propose_definition",
   "inquiry.list_threads",
   "inquiry.read_problem",
@@ -177,11 +195,12 @@ const ROOM_PROJECT_TOOL_ALLOWANCE: readonly SystemActionId[] = [
  *   reach a Project only through that Project's `bound` binding, the Run's own
  *   Project and the Agent's access Project (`assertPluginProjectTarget`, B53), so a
  *   Run never reaches another Project's records;
- * - the person-only operations (recording a reviewed version, generating, previewing
- *   and saving a material draft) are absent here and declared `actors: ['user']`;
- * - contacts are personal data (ADR 0030): they are candidates only, admitted per
- *   Run by `admitPluginDataTools` with the Space owner's consent and an owner-only
- *   audience, and a decision is still only a proposal.
+ * - sharing legacy private records and recording human review are person-only;
+ * - a manual Room turn can start or save a private draft. Only a solo Run can
+ *   preview the draft;
+ * - shared contacts use the bound Project's read and write authority. The
+ *   private contact records of a solo Run still need standing read consent
+ *   (ADR 0030). A decision still goes through a proposal.
  *
  * `applicationsAgentToolsDb.test.ts` keeps this list equal to the package manifest's
  * Agent-eligible operations.
@@ -193,6 +212,7 @@ export const PROJECT_APPLICATIONS_TOOL_ALLOWANCE: readonly PluginOperationId[] =
   "plugin.applications.application.create",
   "plugin.applications.application.update",
   "plugin.applications.application.update_status",
+  "plugin.applications.application.record_submission",
   "plugin.applications.application.propose_status",
   "plugin.applications.funding.link",
   "plugin.applications.funding.unlink",
@@ -206,6 +226,9 @@ export const PROJECT_APPLICATIONS_TOOL_ALLOWANCE: readonly PluginOperationId[] =
   "plugin.applications.material.add_source",
   "plugin.applications.material.remove_source",
   "plugin.applications.material.read_note",
+  "plugin.applications.material.generate",
+  "plugin.applications.material.get_generation",
+  "plugin.applications.material.apply_generation",
   "plugin.applications.library.list",
   "plugin.applications.library.add",
   "plugin.applications.library.update",
@@ -215,6 +238,10 @@ export const PROJECT_APPLICATIONS_TOOL_ALLOWANCE: readonly PluginOperationId[] =
   "plugin.applications.contact.create",
   "plugin.applications.contact.update",
   "plugin.applications.contact.log_event",
+  // What the owner's Gmail application updates recorded (their own rows). The command that records such a
+  // fact, `plugin.applications.mail_fact.apply`, is never offered here: only the automation's own Run has it
+  // (ADR 0034, `APPLICATION_UPDATE_RUN_TOOLS`), and the host refuses it to every other caller.
+  "plugin.applications.mail_fact.list",
 ];
 
 /**

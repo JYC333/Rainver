@@ -6,14 +6,11 @@ import { readRunFilePreview } from "./filePreview.js";
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
-import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
 import { checkInternalToken } from "../../gateway/internalAuth.js";
-import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext.js";
-import { introspectIdentity } from "../auth/identity.js";
 import { PgActivityRepository } from "../activity/repository.js";
 import { PgArtifactRepository } from "../artifacts/repository.js";
 import { PgProposalRepository } from "../proposals/repository.js";
-import { dbPool, page, sendRouteError } from "../routeUtils/common.js";
+import { resolveIdentity as resolveRouteIdentity, dbPool, page, sendRouteError } from "../routeUtils/common.js";
 import { PgRunRepository, type AgentRunRecord, type VisibleRunRecord } from "./repository.js";
 import { bodyWithheld } from "../access/contentAccessTypes.js";
 import { authorizeRunCommand } from "./runCommandAuthority.js";
@@ -99,28 +96,7 @@ async function resolveIdentity(
       ? identityOverride(request)
       : identityOverride;
   }
-  const requestId = resolveRequestId(request);
-  reply.header(REQUEST_ID_HEADER, requestId);
-  const identity = await introspectIdentity(context.config, request, reply);
-  if (identity.ok) return { spaceId: identity.spaceId, userId: identity.userId };
-  if (identity.reason === "denied") {
-    reply.code(identity.statusCode);
-    reply.header("content-type", "application/json");
-    reply.send(identity.body);
-    return null;
-  }
-  await sendErrorEnvelope(
-    reply,
-    502,
-    errorEnvelope(
-      identity.reason === "contract_violation"
-        ? "introspect_contract_violation"
-        : "identity_unavailable",
-      "Identity introspection failed",
-      requestId,
-    ),
-  );
-  return null;
+  return resolveRouteIdentity(context.config, request, reply);
 }
 
 /** Exported for the hosts module's dispatch endpoint, which executes a Run through the same orchestration wiring as every other Run entrypoint. */
@@ -182,7 +158,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   async function runToolRequest(
     request: FastifyRequest,
     reply: FastifyReply,
-  ): Promise<{ run: AgentRunRecord; transport: CliAgentToolTransport } | null> {
+  ): Promise<{ run: AgentRunRecord; transport: CliAgentToolTransport; launchId: string | null; startedAt: number } | null> {
+    const startedAt = Date.now();
     const runId = params(request).runId ?? "";
     const authorization = request.headers.authorization ?? "";
     const token = authorization.startsWith("Bearer ") ? authorization.slice(7).trim() : "";
@@ -198,7 +175,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       await reply.code(403).send({ detail: "Run tool identity is no longer active" });
       return null;
     }
-    return { run, transport: new CliAgentToolTransport(context.config) };
+    return { run, transport: new CliAgentToolTransport(context.config), launchId: identity.launch_id, startedAt };
   }
 
   // Under `/api/v1`, not `/internal`, because a Run's children call it from
@@ -247,12 +224,14 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     // while answering `ok: true`.
     const idempotencyKey = stringValue(request.headers["idempotency-key"]) ?? randomUUID();
     const executionChannel = liveInputChannel(scope.run.id);
+    const client = new AbortController();
+    reply.raw.once("close", () => { if (!reply.raw.writableFinished) client.abort(); });
     try {
       const result = await scope.transport.call(scope.run, {
         id: idempotencyKey,
         name: actionId,
         arguments: jsonBody(request),
-      });
+      }, client.signal, { launchId: scope.launchId, startedAt: scope.startedAt });
       if(result instanceof OperationToolResponse)return reply.code(result.httpStatus).send(result.body);
       const receipt = result as { ok?: boolean; status?: string } | null;
       if (actionId === "agent.wait_for_results" && receipt?.ok === true && receipt.status === "waiting") {
@@ -340,26 +319,22 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const result = await visibleRun(context, request, reply);
     if (!result) return reply;
     const { repository, run } = result;
+    const summaryOnly = bodyWithheld(run.effective_access_level);
     const [events, artifacts] = await Promise.all([
-      repository.listRunEvents(run.space_id, run.id),
+      summaryOnly ? [] : repository.listRunEvents(run.space_id, run.id, [...LOGICAL_RUNTIME_EVENT_TYPES]),
       PgArtifactRepository.fromConfig(context.config).listVisible(
         run.space_id,
         result.identity.userId,
         { runId: run.id, limit: 200, offset: 0 },
       ),
     ]);
-    const summaryOnly = bodyWithheld(run.effective_access_level);
     const output = recordValue(run.output_json);
     return reply.send({
       schema_version: "run_io.v1",
       run_id: run.id,
       input: summaryOnly ? null : logicalRunInput(assembleRunInputEnvelope(run)),
       output: summaryOnly || output.schema_version !== "run_output.v1" ? null : output,
-      events: summaryOnly
-        ? []
-        : events
-          .filter((event) => LOGICAL_RUNTIME_EVENT_TYPES.has(event.event_type))
-          .map((event) => runEventToOut(event, run.effective_access_level)),
+      events: events.map((event) => runEventToOut(event, run.effective_access_level)),
       artifact_refs: artifacts.items.map((artifact) => ({
         id: artifact.id,
         artifact_type: artifact.artifact_type,
@@ -432,7 +407,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const [steps, events, artifacts, proposals, children, invocationSnapshots, finalization] = await Promise.all([
       repository.listRunSteps(run.space_id, run.id),
       repository.listRunEvents(run.space_id, run.id),
-      repository.listArtifactSummaries(run.space_id, run.id, identity.userId),
+      traceArtifacts(context, run, identity.userId),
       repository.listProposalSummaries(run.space_id, run.id, identity.userId),
       repository.listChildRuns(run.space_id, run.id, identity.userId),
       new InvocationSnapshotService(dbPool(context.config))
@@ -447,7 +422,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       invocation_snapshots: invocationSnapshots,
       steps: steps.map((step) => runStepToOut(step, run.effective_access_level)),
       events: events.map((event) => runEventToOut(event, run.effective_access_level)),
-      artifacts: artifacts.map(artifactSummaryToOut),
+      artifacts,
       proposals: proposals.map((proposal) => proposalSummaryToOut(proposal)),
       finalization: finalization ? runFinalizationToOut(finalization, run.effective_access_level) : null,
       parent: null,
@@ -655,4 +630,18 @@ function boundedInt(
   const parsed = Number.parseInt(value, 10);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.min(Math.max(parsed, min), max);
+}
+
+/**
+ * The Run's Artifacts as the Artifact collection releases them to this
+ * viewer: its content, Room and Source-derived row gates and its withheld
+ * titles. System archives stay listed here, oldest first, as before.
+ */
+async function traceArtifacts(context: ModuleContext, run: { space_id: string; id: string }, userId: string): Promise<Record<string, unknown>[]> {
+  const artifacts = PgArtifactRepository.fromConfig(context.config);
+  const items = await artifacts.listVisibleForRun(run.space_id, userId, run.id);
+  return items.map((item) => artifactSummaryToOut({
+    id: item.id, space_id: item.space_id, run_id: item.run_id, proposal_id: item.proposal_id, artifact_type: item.artifact_type,
+    title: item.title, mime_type: item.mime_type, visibility: item.visibility, created_at: item.created_at,
+  }));
 }

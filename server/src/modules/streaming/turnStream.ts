@@ -53,6 +53,7 @@ export async function streamRunTurn(
   config: ServerConfig,
   request: FastifyRequest,
   reply: FastifyReply,
+  shutdown: AbortSignal,
 ): Promise<FastifyReply | void> {
   const runId = (request.params as { runId?: string }).runId;
   const requestId = resolveRequestId(request);
@@ -90,13 +91,19 @@ export async function streamRunTurn(
       ? sendErrorEnvelope(reply, 401, errorEnvelope("authentication_required", "Authentication required", requestId))
       : sendErrorEnvelope(reply, 404, errorEnvelope("run_not_found", "Run not found", requestId));
   }
+  if (reply.raw.destroyed) return;
+  if (shutdown.aborted) {
+    return sendErrorEnvelope(reply, 503, errorEnvelope("turn_stream_unavailable", "Run turn stream is unavailable", requestId));
+  }
 
   let modelSelection = JSON.stringify(snapshot.model_selection);
   let closed = false;
   // Woken early by a delta or a disconnect; otherwise the loop sleeps until
   // its next poll or text flush.
   let wake: (() => void) | null = null;
-  reply.raw.on("close", () => { closed = true; wake?.(); });
+  const stopPolling = () => { closed = true; wake?.(); };
+  reply.raw.once("close", stopPolling);
+  shutdown.addEventListener("abort", stopPolling, { once: true });
 
   const raw = startSse(reply, requestId);
   send(raw, SNAPSHOT_EVENT, { type: "turn.snapshot", turn: snapshot } satisfies TurnStreamFrame);
@@ -153,10 +160,12 @@ export async function streamRunTurn(
   let nextPollAt = Date.now() + pollMs;
   // The opening read above is the first check.
   let lastCheckAt = Date.now();
-  const unavailable = () => send(raw, STREAM_ERROR_EVENT, {
-    error: "turn_stream_unavailable",
-    message: "Run turn stream is unavailable",
-  } satisfies TurnStreamError);
+  const unavailable = () => {
+    if (!closed) send(raw, STREAM_ERROR_EVENT, {
+      error: "turn_stream_unavailable",
+      message: "Run turn stream is unavailable",
+    } satisfies TurnStreamError);
+  };
 
   try {
     while (!closed && !raw.destroyed) {
@@ -185,6 +194,7 @@ export async function streamRunTurn(
           unavailable();
           break;
         }
+        if (closed || raw.destroyed) break;
       }
       // Deltas arriving while the check runs wait for the next one.
       const text = liveText;
@@ -266,8 +276,11 @@ export async function streamRunTurn(
       if (state !== "working" && state !== "blocked") break;
     }
   } finally {
+    shutdown.removeEventListener("abort", stopPolling);
+    raw.off("close", stopPolling);
     unsubscribe();
-    raw.end();
+    if (shutdown.aborted && raw.writableNeedDrain) raw.destroy();
+    else raw.end();
   }
 }
 

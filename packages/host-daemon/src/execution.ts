@@ -10,7 +10,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { killProcessGroup, settleProcessGroup } from "./processGroup.js";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
 import { existsSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -24,6 +24,7 @@ import { admitRepositories, REPOSITORY_RECOVERY_REQUIRED } from "./branchAlignSt
 import { acquireLocationLeases, cancelAllLeaseWaits, cancelLeaseWaits, hasLeaseWaiters, releaseLocationLeases } from "./locationLease.js";
 import { checkLocationRepository, hasTaskWorktreeMaintenance, isTaskWorktreeInUse, prepareTaskWorktree, ownEntry, taskLeaseKey, touchTaskRecord, validTaskWorktreeIds, type LocationRepository, type TaskWorktree } from "./taskWorktree.js";
 import { mergeResolutionWorktree } from "./taskMerge.js";
+import { fsyncDirectory, writeJsonDurable } from "./durableFile.js";
 import { collectOutputFiles } from "./outputFiles.js";
 import { clearStateRootEnv, clearVendorCredentialEnv, filterAmbientEnv, materializeProviderBinding, sweepOrphanedRunDirectories } from "./providerBinding.js";
 import { applyRunOrdinaryToolsEnv, prepareRunOrdinaryTools, type RunOrdinaryTools } from "./ordinaryToolRunAccess.js";
@@ -1544,6 +1545,14 @@ async function launchRun(
 
   const outputsDir = runOutputsDir(frame.run_id);
   await mkdir(outputsDir, { recursive: true });
+  if ((await readdir(outputsDir)).length > 0) {
+    send({
+      type: "complete", run_id: frame.run_id, launch_id: frame.launch_id,
+      exit_code: 1, timed_out: false,
+      error: "An earlier attempt has undelivered output on this Host. Recover those files before retrying.",
+    });
+    return;
+  }
 
   // Two different rules, told apart by `credential_source`.
   //
@@ -1994,9 +2003,13 @@ async function launchRun(
         // nothing after this reads it. In a `finally` so no path keeps it.
         releaseHeldLeases(frame, hold);
       }
+      let deliveryFailed = false;
+      let failedDiff: Parameters<typeof uploadRunDiff>[3] | null = null;
+      let outputFailed = false;
+      let outputFiles: Awaited<ReturnType<typeof collectOutputFiles>> | null = null;
       try {
         if ((!reviewRef || namespaceReady) && (diff !== null || gitAfter)) {
-          await uploadRunDiff(config.server_url, config.token, frame.run_id, {
+          failedDiff = {
             launch_id: frame.launch_id,
             diff,
             truncated: false,
@@ -2004,15 +2017,19 @@ async function launchRun(
             ...(gitAfter ? { git_after: gitAfter } : {}),
             // The version a review read: the whole directory as it started.
             ...(!taskWorktree && baselineTree && /^[0-9a-f]{40,64}$/.test(baselineTree) ? { workspace_tree_before: baselineTree } : {}),
-          });
+          };
+          await uploadRunDiff(config.server_url, config.token, frame.run_id, failedDiff);
+          failedDiff = null;
         }
       } catch (error) {
+        deliveryFailed = true;
         log(`run ${frame.run_id}: diff upload failed: ${error instanceof Error ? error.message : String(error)}`);
       }
       try {
-        const files = await collectOutputFiles(outputsDir);
-        await uploadRunOutputs(config.server_url, config.token, frame.run_id, { launch_id: frame.launch_id, files });
+        outputFiles = await collectOutputFiles(outputsDir);
+        await uploadRunOutputs(config.server_url, config.token, frame.run_id, { launch_id: frame.launch_id, files: outputFiles });
       } catch (error) {
+        deliveryFailed = outputFailed = true;
         log(`run ${frame.run_id}: output upload failed: ${error instanceof Error ? error.message : String(error)}`);
       }
       // The whole directory: its work surface carried this run's Skill. The
@@ -2023,8 +2040,30 @@ async function launchRun(
       // in `finishingRuns` for this daemon's lifetime.
       const superseded = activeRuns.has(frame.run_id) || isLaunching(frame.run_id);
       const keptForRecovery = runKeptForRecovery(frame.run_id);
-      if (superseded) {
+      let recoveryFailed = false;
+      if (deliveryFailed) {
+        try {
+          const recoveryRoot = join(configDir(), "run-delivery-recovery");
+          await mkdir(recoveryRoot, { recursive: true, mode: 0o700 });
+          const recovery = await mkdtemp(join(recoveryRoot, "attempt-"));
+          await writeJsonDurable(join(recovery, "receipt.json"), { run_id: frame.run_id, launch_id: frame.launch_id, diff: failedDiff, files: outputFailed ? outputFiles : null });
+          if (outputFailed && !activeRuns.has(frame.run_id) && !isLaunching(frame.run_id)) {
+            await rename(outputsDir, join(recovery, "outputs")).catch((error: NodeJS.ErrnoException) => {
+              if (error.code !== "ENOENT") throw error;
+            });
+            await fsyncDirectory(recovery);
+            await fsyncDirectory(runDir(frame.run_id));
+          }
+          log(`run ${frame.run_id}: delivery recovery data saved in ${recovery}`);
+        } catch (error) {
+          recoveryFailed = true;
+          log(`run ${frame.run_id}: could not preserve delivery recovery data: ${String(error)}`);
+        }
+      }
+      if (superseded || activeRuns.has(frame.run_id) || isLaunching(frame.run_id)) {
         log(`run ${frame.run_id}: a newer attempt owns the run directory; leaving it in place`);
+      } else if (recoveryFailed) {
+        log(`run ${frame.run_id}: leaving the run directory after failed delivery recovery`);
       } else if (keptForRecovery) {
         log(`run ${frame.run_id}: an earlier attempt's directory is kept for recovery; leaving it in place`);
       } else {
@@ -2051,7 +2090,7 @@ async function launchRun(
         type: "complete",
         run_id: frame.run_id,
         launch_id: frame.launch_id,
-        exit_code: code ?? 1,
+        exit_code: deliveryFailed ? 1 : (code ?? 1),
         timed_out: active.timedOut,
         ...(executionTimeZone.length <= 128 ? { time_zone: executionTimeZone } : {}),
         ...(nativeRuntimeVersion ? { native_runtime_version: nativeRuntimeVersion } : {}),
@@ -2059,7 +2098,7 @@ async function launchRun(
         ...(taskWorktree && !executionRef ? { task_worktree: { branch: taskWorktree.branch, start_commit: taskWorktree.startCommit } } : {}),
         ...((hold.attachedWorktrees?.length??0)>0?{execution_workspace_reports:attachmentReports(hold.attachedWorktrees!)}:{}),
         ...(taskWorktree && executionRef ? {execution_workspace:{id:executionRef.id,generation:executionRef.generation,branch:taskWorktree.branch,start_commit:taskWorktree.startCommit,target_ref:taskWorktree.targetRef??executionRef.target_ref??null,baseline_kind:taskWorktree.baselineKind as "committed"|"snapshot"|undefined,snapshot_head:taskWorktree.snapshotHead??null,baseline_tree:taskWorktree.baselineTree??null,launch_sequence:taskWorktree.launchSequence}}:{}),
-        error: reviewRef && !namespaceReady && !active.timedOut && !active.terminationRequested ? "execution_workspace_review_namespace_unavailable" : launchFailureMessage({
+        error: deliveryFailed ? "Run output or diff delivery failed; check the Host recovery log." : reviewRef && !namespaceReady && !active.timedOut && !active.terminationRequested ? "execution_workspace_review_namespace_unavailable" : launchFailureMessage({
           namespaceReady,
           timedOut: active.timedOut,
           terminationRequested: active.terminationRequested,

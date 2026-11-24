@@ -138,7 +138,7 @@ export const WorkspaceChangeViewSchema=z.object({
  workspace_location_id:IdSchema,parent_workspace_id:IdSchema.nullable(),target_ref:z.string().nullable(),
  state:z.enum(['open','ready','integrating','blocked','integrated','no_changes','abandoned']),summary:z.string().nullable(),
  base_commit:z.string().nullable(),source_commit:z.string().nullable(),workspace_state:z.string(),baseline_mode:z.string().nullable(),
- cleanup_state:z.enum(['pending','running','retry_wait','blocked','cleaned']),cleanup_errors:z.array(z.string()),retention:WorkspaceRetentionSchema.optional(),native_integration:z.boolean().optional(),inventory:z.record(z.unknown()).optional(),can_manage:z.boolean(),
+ cleanup_state:z.enum(['pending','running','retry_wait','blocked','cleaned']),cleanup_errors:z.array(z.string()),cleanup_retryable:z.boolean().optional(),retention:WorkspaceRetentionSchema.optional(),native_integration:z.boolean().optional(),inventory:z.record(z.unknown()).optional(),can_manage:z.boolean(),
  integration_id:IdSchema.nullable(),integration_revision:z.number().int().positive().nullable(),integration_status:z.string().nullable(),attempt_id:IdSchema.nullable(),
  resolution_run_id:IdSchema.nullable().optional(),
  onto_commit:z.string().nullable(),candidate_commit:z.string().nullable(),merged_commit:z.string().nullable(),integration_detail:z.record(z.unknown()).nullable(),

@@ -54,6 +54,10 @@ export function roomOperationRoutes(context: ModuleContext): readonly OperationA
     { method: "DELETE", url: "/api/v1/rooms/:roomId/members/:userId", operation: "room.member.remove", params: { ...room, userId: "user_id" } },
     { method: "POST", url: "/api/v1/rooms/:roomId/owner-transfer", operation: "room.owner.transfer", params: room },
     { method: "POST", url: "/api/v1/rooms/:roomId/owner-claim", operation: "room.owner.claim", params: room },
+    { method: "POST", url: "/api/v1/rooms/:roomId/conversations/:sessionId/archive", operation: "room.conversation.archive", params: conversation },
+    { method: "POST", url: "/api/v1/rooms/:roomId/conversations/:sessionId/restore", operation: "room.conversation.restore", params: conversation },
+    { method: "POST", url: "/api/v1/rooms/:roomId/conversations/:sessionId/restore-deleted", operation: "room.conversation.restore_deleted", params: conversation },
+    { method: "DELETE", url: "/api/v1/rooms/:roomId/conversations/:sessionId", operation: "room.conversation.delete", params: conversation },
     { method: "POST", url: "/api/v1/rooms/:roomId/conversations", operation: "room.conversation.create", params: room },
     {
       method: "POST", url: "/api/v1/rooms/:roomId/conversations/:sessionId/references", operation: "room.conversation.attach_references", params: conversation,
@@ -196,7 +200,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         await service(context).listConversations(
           identity,
           roomId(request),
-          parsePage(query(request), 50),
+          { ...parsePage(query(request), 50), ...conversationListStatus(query(request).status) },
         ),
       );
     } catch (error) {
@@ -234,6 +238,11 @@ function roomId(request: FastifyRequest): string {
 
 function sessionId(request: FastifyRequest): string {
   return params(request).sessionId ?? "";
+}
+
+/** `?status=archived` or `?status=deleted` (the recycle bin); anything else is the active list. */
+function conversationListStatus(value: unknown): { status?: "archived" | "deleted" } {
+  return value === "archived" || value === "deleted" ? { status: value } : {};
 }
 
 function sendRoomError(reply: Parameters<typeof sendRouteError>[0], error: unknown) {

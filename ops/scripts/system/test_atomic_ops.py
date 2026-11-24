@@ -116,6 +116,15 @@ class AtomicOpsTests(unittest.TestCase):
         self.assert_wholly(target, "old")
         self.assert_wholly(new, "new")
 
+    def test_directory_probe_checks_exchange_without_touching_live_data(self) -> None:
+        target, new = self.pair()
+        with patch.object(atomic_ops, "_libc", side_effect=OSError("no libc")):
+            with self.assertRaises(atomic_ops.ExchangeUnsupported):
+                atomic_ops.check_directory_replace(str(new), str(target))
+        self.assert_wholly(target, "old")
+        self.assert_wholly(new, "new")
+        self.assertEqual(list(target.parent.glob(".restore-probe-*")), [])
+
     def test_cli_reports_an_unsupported_platform_without_changing_anything(self) -> None:
         target, new = self.pair()
         script = (

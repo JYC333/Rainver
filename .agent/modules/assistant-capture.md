@@ -4,7 +4,9 @@
 **IMPLEMENTED** — capture entry and four destinations
 (`server/src/modules/capture/`, `apps/web/src/components/FloatingQuickCapture.tsx`).
 The Capture page and `POST /api/v1/activity/upload` store a file or a voice memo
-as an Activity record (`file_capture` / `voice_capture`). The floating composer
+as an Activity record (`file_capture` / `voice_capture`). The voice recorder
+accepts one microphone request at a time and releases any stream granted
+after the page closes. The floating composer
 does not accept a dropped file; that path stays text and URL. There is no
 browser-extension capture.
 
@@ -49,7 +51,7 @@ URL and `user_capture` otherwise.
 
 ## Destinations
 
-One floating composer serves every page and posts to `POST /api/v1/captures`.
+One floating composer serves every page and calls `POST /api/v1/actions/capture.create`.
 Outside a Project the only destination is the personal inbox; inside one there
 are three, plus `object_marginalia` when the composer has a target object. Ownership and pipeline are separate axes (ADR 0013 decision 4):
 
@@ -64,6 +66,10 @@ The default is inferred from **where the text came from**, not what it says: a
 paste event or a URL defaults to Project raw material, hand-typed text to
 marginalia. Both are deterministic, both are overridable in one click, and the
 choice is never remembered across captures (ADR 0013 decision 2).
+
+The floating composer keeps unsent input in memory by Space, Project and focused
+object. Navigating to a different target opens that target's draft. Returning
+restores the original input and its destination choice.
 
 Marginalia lands in a per-user, per-target `private` note — the Project-level
 one bound by `notes.marginalia_project_id` / `marginalia_owner_user_id`, the
@@ -86,6 +92,8 @@ Record stays `raw`, awaiting processing
 
 Consolidation and proposal creation are owned by the activity / memory
 modules, not by this capture entry.
+The View action follows the capture receipt to its note or exact Activity record.
+The dedicated Capture page uploads a recording only after Stop & save.
 
 ## Invariants
 - Capture always creates an ActivityRecord first — never writes directly to

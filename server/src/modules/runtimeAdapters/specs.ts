@@ -86,7 +86,6 @@ export type RuntimeExecutorFamily = "native" | "local_cli" | "custom";
 export type ImplementationStatus = "implemented" | "planned" | "disabled";
 export type CredentialMode = "none" | "cli_profile" | "cli_profile_or_model_provider";
 export type CredentialReleaseChannel = "server_runtime_host";
-type RuntimeConfigValue = string | number | boolean | Record<string, string>;
 
 export interface RuntimeAdapterSpec {
   /** A builtin type, or a dynamic adapter's own id (`acp_<registry id>`). */
@@ -97,18 +96,6 @@ export interface RuntimeAdapterSpec {
   implementation_status: ImplementationStatus;
   enabled_by_default: boolean;
   subagent_support: "none" | "runtime_internal" | "unknown";
-  subagent_disable_mechanism: "not_applicable" | "runtime_config" | "unsupported" | "unknown";
-  subagent_disable_config?: {
-    relative_path: string;
-    deny_path: string[];
-    denied_value: RuntimeConfigValue;
-    required_values?: Array<{
-      path: string[];
-      value: RuntimeConfigValue;
-      value_mode?: "array_contains" | "exact";
-    }>;
-  };
-  delegation_controllability: "none" | "server_policy" | "runtime_config" | "unknown";
   structured_output: "none" | "provider_response" | "native_event_stream" | "unknown";
   checkpoint_resume: "none" | "runtime_session" | "unknown";
   cancellation_reliability: "confirmed" | "best_effort" | "unknown";
@@ -201,6 +188,14 @@ export interface RuntimeAdapterSpec {
     supports_model_override: boolean;
     /** ACP accepts model aliases outside the picker and returns the canonical selection. */
     acp_model_aliases?: boolean;
+    /**
+     * How the runtime's ACP adapter itself reports that a response came from another model than the one the
+     * session was set to (a refusal retried on a fallback model, a reroute): a main-session `notice` whose title
+     * matches `notice_title` (a regular expression). Only an explicit report counts; a missing, echoed or
+     * differently spelled model is never read as a fallback (`runs/runtimeModelFallback.ts`, ADR 0037).
+     * Declared only for a runtime whose adapter is known to send one.
+     */
+    model_fallback_notice?: { notice_title: string };
     model_arg_template?: string[];
     model_config_behavior: "uses_model" | "not_applicable" | "unsupported";
     /**
@@ -323,8 +318,6 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeA
     implementation_status: "planned",
     enabled_by_default: false,
     subagent_support: "none",
-    subagent_disable_mechanism: "not_applicable",
-    delegation_controllability: "none",
     structured_output: "none",
     checkpoint_resume: "none",
     cancellation_reliability: "unknown",
@@ -356,13 +349,6 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeA
     implementation_status: "implemented",
     enabled_by_default: true,
     subagent_support: "runtime_internal",
-    subagent_disable_mechanism: "runtime_config",
-    subagent_disable_config: {
-      relative_path: ".claude/settings.json",
-      deny_path: ["permissions", "deny"],
-      denied_value: "Task",
-    },
-    delegation_controllability: "runtime_config",
     structured_output: "native_event_stream",
     // Claude's opaque ACP session id is resumed by
     // the general AcpController, not by vendor-specific `--resume` argv.
@@ -414,6 +400,9 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeA
       supports_model_override: true,
       model_arg_template: ["--model", "{model}"],
       acp_model_aliases: true,
+      // `claude-agent-acp` announces a `model_refusal_fallback` as a warning notice titled "<model> declined this
+      // request…; retried with <model>. …", or "Model fallback" when that summary is too long for a title.
+      model_fallback_notice: { notice_title: "^(?:Model fallback$|.+ declined this request.*; retried with )" },
       model_config_behavior: "uses_model",
       provider_api: "claude_compatible",
     },
@@ -449,7 +438,7 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeA
         "usage limit reached",
         // Not the Opus limit: that one falls back to another model, it does not refuse.
         "(5-hour|five-hour|weekly) limit reached",
-        "you['’]ve hit your (usage |session )?limit",
+        "you['’]ve hit your (usage |session |5-hour |five-hour |weekly )?limit\\b",
       ],
       quota_reset_patterns: [
         "usage limit reached\\|(?<epoch>\\d{10})",
@@ -469,8 +458,6 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeA
     implementation_status: "implemented",
     enabled_by_default: true,
     subagent_support: "runtime_internal",
-    subagent_disable_mechanism: "unknown",
-    delegation_controllability: "unknown",
     structured_output: "unknown",
     // Codex resumes an opaque session id through
     // `session/resume` — the general AcpController, not a bespoke
@@ -523,6 +510,8 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeA
     strict_session_config: [{ id: "mode", type: "select", value: "agent-full-access", category: "mode" }],
     model: {
       supports_model_override: false,
+      // `codex-acp` turns Codex's `model/rerouted` into a notice titled "Model rerouted" ("Switched from <model> to <model>").
+      model_fallback_notice: { notice_title: "^Model rerouted$" },
       model_config_behavior: "not_applicable",
       provider_api: "openai_compatible",
     },
@@ -562,8 +551,6 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeA
     implementation_status: "implemented",
     enabled_by_default: false,
     subagent_support: "runtime_internal",
-    subagent_disable_mechanism: "runtime_config",
-    delegation_controllability: "runtime_config",
     structured_output: "native_event_stream",
     checkpoint_resume: "runtime_session",
     cancellation_reliability: "best_effort",
@@ -571,19 +558,6 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeA
     side_effect_level: "workspace",
     data_exposure: "provider",
     baseline_trust_level: "low",
-    subagent_disable_config: {
-      relative_path: "opencode.json",
-      deny_path: ["agent", "rainver-locked", "permission", "task"],
-      denied_value: { "*": "deny" },
-      required_values: [
-        { path: ["default_agent"], value: "rainver-locked", value_mode: "exact" },
-        { path: ["subagent_depth"], value: 0, value_mode: "exact" },
-        { path: ["agent", "rainver-locked", "mode"], value: "primary", value_mode: "exact" },
-        { path: ["agent", "rainver-locked", "permission", "edit"], value: { "*": "allow" } },
-        { path: ["agent", "rainver-locked", "permission", "bash"], value: { "*": "allow" } },
-        { path: ["agent", "rainver-locked", "permission", "webfetch"], value: "deny", value_mode: "exact" },
-      ],
-    },
     executable: { command: "opencode", allow_path_override: true },
     distribution: { registry_id: "opencode" },
     invocation: {
@@ -646,8 +620,6 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeA
     implementation_status: "planned",
     enabled_by_default: false,
     subagent_support: "unknown",
-    subagent_disable_mechanism: "unsupported",
-    delegation_controllability: "unknown",
     structured_output: "unknown",
     checkpoint_resume: "none",
     cancellation_reliability: "unknown",
@@ -686,8 +658,6 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeA
     implementation_status: "planned",
     enabled_by_default: false,
     subagent_support: "unknown",
-    subagent_disable_mechanism: "unknown",
-    delegation_controllability: "unknown",
     structured_output: "unknown",
     checkpoint_resume: "unknown",
     cancellation_reliability: "unknown",

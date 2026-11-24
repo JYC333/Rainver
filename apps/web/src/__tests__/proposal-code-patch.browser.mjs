@@ -16,7 +16,11 @@ for(const [locale,theme,width] of [['en','dark',1280],['zh-CN','light',390]])tes
  else if(path==='/me/spaces')data=[{id:space,name:'Review Space',type:'personal',role:'owner'}];
  else if(path==='/plugins/effective')data={plugins:{}};
  else if(path==='/proposals')data={items:[proposal],total:1,limit:80,offset:0};
- else if(path===`/proposals/${proposal.id}/accept`){accepted++;state='pending';data={proposal,result_type:'code_patch_pending',result:receipt()};}
+ else if(path===`/proposals/${proposal.id}/accept`){
+  assert.ok(route.request().headers()['idempotency-key'])
+  assert.deepEqual(route.request().postDataJSON(),{confirm_incomplete_patch:false})
+  accepted++;state='pending';data={status:'succeeded',data:{proposal,result_type:'code_patch_pending',result:receipt()}};
+ }
  else if(path===`/proposals/${proposal.id}`)data={...proposal,...(state?{code_patch_decision:receipt()}:{}),status:state==='succeeded'?'accepted':'pending'};
  else if(path==='/me/agent-attention/snapshot')data={type:'attention.snapshot',seq:1,version:'patch',unread_count:0,page:{items:[],total:0,limit:100,offset:0},notices:[]};
  else if(path==='/me/agent-attention/stream')return route.fulfill({status:503,body:''});

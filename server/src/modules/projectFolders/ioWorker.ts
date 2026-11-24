@@ -21,7 +21,7 @@ import {terminalFolderIoProjection} from './ioTerminalProjection.js';
 type CurrentFile={exists:boolean;file:FileContent|null};
 interface Effect{
   import?:FolderImportPlan;before?:CurrentFile;observed?:CurrentFile;desired?:{content:string;sha256:string};
-  canonical_root?:string;write_started?:boolean;applied?:boolean;terminal_refusal?:boolean;compensated?:boolean;
+  canonical_root?:string;write_started?:boolean;applied?:boolean;terminal_refusal?:boolean;compensated?:boolean;exact_retry?:boolean;
   refusal_code?:string;error_metadata?:Record<string,unknown>;
 }
 const payload=z.object({intent_id:z.string().min(1).max(36)}).strict();
@@ -108,7 +108,10 @@ export async function executeProjectFolderIo(config:ServerConfig,id:string,job:J
             const before=await repo.readCurrentFileForDraft(frozen.folder!,intent.user_id,location!,frozen.draft!.relative_path);
             assertSaveBaseline(intent,before);effect.before=before;effect.desired=savedDraftBytes(frozen.draft!);await save('prepared');
           }
-          if(!effect.applied){
+          if(effect.applied&&!effect.exact_retry){
+            const current=await repo.readCurrentFileForDraft(frozen.folder!,intent.user_id,location!,frozen.draft!.relative_path);
+            if(!current.exists||current.file?.sha256!==effect.desired!.sha256)throw new FolderIoRefusal('folder_file_needs_attention');
+          }else{
             const current=await repo.readCurrentFileForDraft(frozen.folder!,intent.user_id,location!,frozen.draft!.relative_path);
             if(current.exists&&current.file?.sha256===effect.desired!.sha256){effect.applied=true;await save('applied');}
             else if(current.exists===effect.before.exists&&current.file?.sha256===effect.before.file?.sha256){
@@ -132,7 +135,7 @@ export async function executeProjectFolderIo(config:ServerConfig,id:string,job:J
         if(error instanceof JobDeferredError)throw error;
         if(error instanceof ProjectFolderFileRefusal&&['host_offline','host_timeout'].includes(error.safeCode))throw new JobDeferredError('Folder read is waiting for its Host',30000);
         if(error instanceof FolderIoLeaseLost){
-          const attention=Boolean(effect.write_started||effect.import?.directoryStarted),projection=attention?{frozen,effect}:terminalFolderIoProjection(intent,effect as Record<string,unknown>);
+          const attention=Boolean(effect.exact_retry||effect.write_started||effect.import?.directoryStarted),projection=attention?{frozen,effect}:terminalFolderIoProjection(intent,effect as Record<string,unknown>);
           await pool.query("UPDATE project_folder_io_intents SET status=$3,error_code='folder_job_cancelled',effect_json=$4::jsonb,frozen_json=$6::jsonb,updated_at=now() WHERE id=$1 AND space_id=$2 AND status<>'succeeded' AND job_id=$5 AND EXISTS(SELECT 1 FROM jobs WHERE id=$5 AND status='cancelled')",[id,intent.space_id,attention?'needs_attention':'failed',JSON.stringify(projection.effect),job.job_id,JSON.stringify(projection.frozen)]);
           throw error;
         }
@@ -140,10 +143,11 @@ export async function executeProjectFolderIo(config:ServerConfig,id:string,job:J
         if(error instanceof FolderIoRefusal&&error.code==='operation_audit_unavailable'||error instanceof ProjectFolderFileRefusal&&error.safeCode==='operation_audit_unavailable')throw error;
         const known=error instanceof FolderIoRefusal||error instanceof OperationError||error instanceof ProjectFolderFileRefusal||error instanceof FolderWriteError&&error.code!=='write_failed';
         if(!known){
-          if(job.attempts>=job.max_attempts)await terminal('operation_internal_error',Boolean(effect.write_started||effect.import?.directoryStarted));
+          if(job.attempts>=job.max_attempts)await terminal('operation_internal_error',Boolean(effect.exact_retry||effect.write_started||effect.import?.directoryStarted));
           throw error;
         }
         const code=error instanceof FolderIoRefusal?error.code:error instanceof OperationError?error.code:error instanceof ProjectFolderFileRefusal?error.safeCode:(error as FolderWriteError).code;
+        if(effect.exact_retry)return terminal(code,true,error instanceof FolderIoRefusal?error.metadata:{});
         if(effect.applied){
           effect.terminal_refusal=true;effect.refusal_code=code;await save('applied');
           try{await compensate();}catch{return terminal(code,true);}

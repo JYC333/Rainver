@@ -104,7 +104,14 @@ it('creates an evaluation case, evaluates and previews a workflow only from a Ru
 
 it('refuses a member who sees another person\'s Run only at summary level, and still allows the owner',async()=>{
  const summary=await sourceRun({first:true,accessLevel:'summary'});
+ await db.pool.query("UPDATE runs SET error_message=$2 WHERE id=$1",[summary,BODY]);
  as(member);
+ const detail=await app.inject({method:'GET',url:`/api/v1/runs/${summary}`});
+ expect(detail.statusCode,detail.body).toBe(200);
+ expect(detail.json()).toMatchObject({effective_access_level:'summary',error_message:null});
+ const status=await app.inject({method:'GET',url:`/api/v1/runs/${summary}/status`});
+ expect(status.statusCode,status.body).toBe(200);
+ expect(status.json()).toMatchObject({effective_access_level:'summary',error_message:null});
  const {asset,base}=await assetWithCandidate();
  const refused=await rest(`/api/v1/evolution/assets/${asset}/evaluation-cases/from-run`,caseBody(base,summary));
  expect(refused.statusCode,refused.body).toBe(422);

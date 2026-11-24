@@ -56,6 +56,16 @@ it.each([
     }
   })
   vi.mocked(callPluginOperation).mockRejectedValue(new Error('Save unavailable'))
+  // An editor's background autosave (diary: 1.5s after typing) is not what this
+  // test watches, and a loaded machine can take that long to reach the refresh.
+  // Hold such timers; a held timer keeps a truthy id, so a remount still sends
+  // its pending save on unmount and fails the no-write check below. Testing
+  // Library's own polling and timeouts run as usual.
+  const realSetTimeout = globalThis.setTimeout
+  vi.spyOn(globalThis, 'setTimeout').mockImplementation(((handler: TimerHandler, delay?: number, ...args: unknown[]) =>
+    delay !== undefined && delay >= 1_000 && delay <= 5_000
+      ? (-1 as unknown as ReturnType<typeof setTimeout>)
+      : realSetTimeout(handler as () => void, delay, ...args)) as typeof setTimeout)
 
   render(<StrictMode><MemoryRouter><PluginSlot pluginId={pluginId} entryId={entryId} /></MemoryRouter></StrictMode>)
   if (pluginId === 'finance_ledger') fireEvent.click(await screen.findByRole('button', { name: '+ New book' }))

@@ -188,22 +188,24 @@ export function DiffViewer({ diff }: { diff: string }) {
       </div>
     )
   }
+  let inHunk = false
+  function lineStyle(line: string): string {
+    if (line.startsWith('diff ')) inHunk = false
+    if (line.startsWith('@@')) {
+      inHunk = true
+      return 'bg-primary/5 text-accent-foreground'
+    }
+    if (inHunk && line.startsWith('+')) return 'bg-success/10 text-success'
+    if (inHunk && line.startsWith('-')) return 'bg-destructive/10 text-destructive'
+    if (!inHunk && /^(diff |index |--- |\+\+\+ )/.test(line)) return 'text-muted-foreground font-bold'
+    return 'text-muted-foreground'
+  }
   return (
     <pre className="text-xs font-mono leading-5 overflow-auto h-full p-4">
       {lines.map((line, i) => (
         <div
           key={i}
-          className={
-            line.startsWith('+') && !line.startsWith('+++')
-              ? 'bg-emerald-500/10 text-emerald-400'
-              : line.startsWith('-') && !line.startsWith('---')
-              ? 'bg-red-500/10 text-red-400'
-              : line.startsWith('@@')
-              ? 'text-blue-400 bg-blue-500/5'
-              : line.startsWith('diff ') || line.startsWith('index ') || line.startsWith('---') || line.startsWith('+++')
-              ? 'text-muted-foreground font-bold'
-              : 'text-muted-foreground'
-          }
+          className={lineStyle(line)}
         >
           {line || ' '}
         </div>

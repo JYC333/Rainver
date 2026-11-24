@@ -165,6 +165,14 @@ Proposals are the product review and application boundary for durable mutations.
   immutable `AgentVersion`. No route creates `agent_config_update` proposals,
   and there is no direct `POST /agents/{agent_id}/versions`.
 - Rejected, accepted, expired, or superseded proposals cannot be applied again.
+- An accept may name the revision the decider was shown (`expected_revision`, a digest of payload and summary,
+  `server/src/modules/proposals/proposalRevision.ts`); it is compared under the row lock and refused (409
+  `proposal_revision_changed`) once the Proposal changed. Appliers see `revisionConfirmed`; a card whose
+  choice is made on it (Gmail application updates, ADR 0036) refuses an accept without one; such a Proposal carries
+  `chosen_on_card` (`proposals/cardChoice.ts`), and entries that cannot show the choice (the list, Today) link to its
+  detail instead of offering Accept. The detail offers the choice only to the DTO's `owner_user_id`, which is the row's
+  canonical owner (`proposals.owner_user_id`; a payload `owner_user_id` is only the fallback for rows without one), so
+  strict Gmail payloads, which carry no owner field, still name theirs.
 - Expiry is derived (`pending` past `expires_at`), not a stored status, and the
   canonical apply service refuses to decide it on every entry. An operation-linked
   Proposal's first accept commits its request `expired` and returns the

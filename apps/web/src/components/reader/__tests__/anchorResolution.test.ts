@@ -3,7 +3,7 @@ import { getSchema } from '@tiptap/core'
 import StarterKit from '@tiptap/starter-kit'
 import { Node as ProseMirrorNode } from '@tiptap/pm/model'
 import { markdownToReaderDocument } from '@rainver/reader-document'
-import { resolveAnnotationAnchors } from '../anchorResolution'
+import { anchorForSelection, resolveAnnotationAnchors } from '../anchorResolution'
 import type { ReaderAnnotation } from '../../../types/api'
 
 const schema = getSchema([StarterKit])
@@ -131,5 +131,36 @@ describe('resolveAnnotationAnchors: proofs for repeated quotes and old anchors',
     const doc = docFrom('# Title\n\nThe **unique phrase** stays.')
     const placement = resolveAnnotationAnchors(doc, [annotation('a', 'unique phrase', { before_context: '# Title The **', after_context: '** stays.' })], { contentHash: 'x' }).get('a')
     expect(textAt(doc, placement)).toBe('unique phrase')
+  })
+
+  it('requires a context side to sit at the occurrence, across exactly one separating space', () => {
+    // `a b` occurs three times in `x a b y a b xy a b`; only the whole stored context, right beside an occurrence, proves one.
+    const doc = docFrom('x a b\n\ny a b\n\nxy a b')
+    const placed = (before: string, after: string) => resolveAnnotationAnchors(doc, [annotation('a', 'a b', { before_context: before, after_context: after })], { contentHash: 'x' }).get('a')
+    expect(placed('x', 'y a b xy a b')).toEqual({ state: 'located', from: 3, to: 6, by: 'text' })
+    expect(placed('y', ' xy a b')).toEqual({ state: 'located', from: 10, to: 13, by: 'text' })
+    // An empty side is the document edge: only the last occurrence ends it.
+    expect(placed('y', '')).toEqual({ state: 'located', from: 18, to: 21, by: 'text' })
+    // A stored context longer than everything before an occurrence supports none of them.
+    expect(placed('before x', 'y a b xy a b')).toEqual({ state: 'unlocated', reason: 'ambiguous' })
+    expect(placed('x', 'y a b xy a b and more')).toEqual({ state: 'unlocated', reason: 'ambiguous' })
+  })
+})
+
+describe('text index reuse', () => {
+  it('places against each document version it is given, never a previous version of the same text', () => {
+    const annotations = [annotation('a', 'moved words')]
+    const first = docFrom('moved words then more.')
+    const second = docFrom('Now a heading\n\nthen moved words.')
+    const placeFirst = resolveAnnotationAnchors(first, annotations, { contentHash: 'v1' }).get('a')
+    expect(placeFirst).toMatchObject({ state: 'located', from: 1 })
+    const placeSecond = resolveAnnotationAnchors(second, annotations, { contentHash: 'v2' }).get('a')
+    expect(textAt(second, placeSecond)).toBe('moved words')
+    expect(placeSecond).not.toEqual(placeFirst)
+    // The first version, asked again (as on a selection update), is unchanged.
+    expect(resolveAnnotationAnchors(first, annotations, { contentHash: 'v1' }).get('a')).toEqual(placeFirst)
+    const selected = anchorForSelection(second, 1, 14, 'Now a heading then moved words.')
+    expect(selected).toEqual({ quoteText: 'Now a heading', textRange: { start: 0, end: 13 }, before: '', after: ' then moved words.' })
+    expect(anchorForSelection(second, 1, 14, 'A different stored text.')?.textRange).toBeNull()
   })
 })

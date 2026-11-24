@@ -176,9 +176,12 @@ for(const locale of ['en','zh-CN'])for(const theme of ['dark','light'])for(const
    const card=await openSummary(page);await card.evaluate(element=>element.scrollIntoView({block:'start'}));
    assert.equal(await card.getByRole('button',{name:locale==='en'?'Finish changes':'完成修改',exact:true}).isDisabled(),true);
    assert.equal(await page.getByText('execution_workspace_host_upgrade_required',{exact:true}).count(),0);
+   await page.getByRole('button',{name:locale==='en'?/^Conversation settings/:/^对话设置/}).click();
+   await page.getByRole('tab',{name:locale==='en'?'Runtime environment':'运行环境',exact:true}).click();
    await page.getByTestId('execution-preflight').waitFor();
    await capture(page,`blocked-preflight-${locale}-${theme}-${width}`);
-   await page.getByRole('button',{name:locale==='en'?'Collapse execution context':'收起执行上下文',exact:true}).click();
+   await page.keyboard.press('Escape');
+   await page.getByRole('dialog').waitFor({state:'hidden'});
    await card.evaluate(element=>element.scrollIntoView({block:'start'}));
    await capture(page,`blocked-entry-${locale}-${theme}-${width}`);
    await card.getByRole('button',{name:locale==='en'?'Keep without merging':'保留成果，不合并',exact:true}).click();

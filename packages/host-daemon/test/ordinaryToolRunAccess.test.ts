@@ -100,6 +100,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   closeAllOrdinaryAccountSessions();
   process.env = savedEnv;
   await rm(root, { recursive: true, force: true });
@@ -223,6 +224,7 @@ describe("ordinary tools in a Run", () => {
   });
 
   it("holds the account for a trusted Run until its process exits", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("{}"));
     const elsewhere = join(root, "opt");
     await mkdir(elsewhere);
     await writeFile(join(elsewhere, "lark-cli"), FAKE_LARK);

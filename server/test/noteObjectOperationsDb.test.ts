@@ -298,7 +298,7 @@ it('keeps private/summary/oversight and cross-Space Notes hidden, including repl
   await db.pool.query('UPDATE space_objects SET owner_user_id=$2 WHERE id=$1', [note, peer]);
   expect((await call('knowledge.note.update', input, key)).statusCode).toBe(404);
 });
-it('does not widen the human creation port or allow a real granted Agent Run', async () => {
+it('lets a granted Agent write only in its current Project', async () => {
   const {
     runActor,
     assertCurrentActor
@@ -319,7 +319,7 @@ it('does not widen the human creation port or allow a real granted Agent Run', a
   await db.pool.query("UPDATE runs SET status='running',instructed_by_user_id=$2,permission_snapshot_json=$3::jsonb WHERE id=$1", [run, owner, JSON.stringify({
     tool_grants: [{
       action_id: 'knowledge.note.create'
-    }]
+    }, {action_id: 'knowledge.note.update'}, {action_id: 'knowledge.collection.create'}]
   })]);
   const row = (await db.pool.query<import('../src/modules/runs/repository.js').RunRecord>('SELECT * FROM runs WHERE id=$1', [run])).rows[0]!;
   const actor = await runActor(db.pool, row);
@@ -333,6 +333,20 @@ it('does not widen the human creation port or allow a real granted Agent Run', a
   }, actor, randomUUID(), randomUUID());
   expect(result.http_status).toBe(404);
   expect(await counts()).toEqual(before);
+  await db.pool.query('UPDATE runs SET project_id=$2 WHERE id=$1', [run, project]);
+  const invoke = (id: string, input: object) => runtime.execute(id, input, actor, randomUUID(), randomUUID());
+  const created = await invoke('knowledge.note.create', {title: 'Project working note', plain_text: 'first'});
+  expect(created.http_status).toBe(201);
+  if (!('data' in created.body)) throw new Error('missing Note receipt');
+  const noteId = (created.body.data as {id: string}).id;
+  expect((await invoke('knowledge.note.update', {note_id: noteId, changes: {title: 'Updated'}})).http_status).toBe(200);
+  expect((await invoke('knowledge.note.update', {note_id: note, changes: {title: 'Denied'}})).http_status).toBe(404);
+  expect((await invoke('knowledge.note.create', {title: 'Denied', collection_id: folder})).http_status).toBe(404);
+  const projectFolder = await repo.ensureProjectNotesCollection({spaceId: space, userId: owner}, project);
+  expect((await invoke('knowledge.collection.create', {name: 'Working', parent_id: projectFolder.id})).http_status).toBe(201);
+  expect((await invoke('knowledge.note.update', {note_id: noteId, changes: {primary_project_id: null}})).http_status).toBe(404);
+  expect((await repo.getNote({spaceId: space, userId: owner}, noteId))?.title).toBe('Updated');
+
 });
 it('holds one key before a Note row wait; a different-key restore and placement keep both canonical effects', async () => {
   const second = String((await repo.createNoteCollection({

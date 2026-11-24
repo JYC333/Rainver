@@ -157,12 +157,18 @@ place every time:
 | `/projects/:projectId/sources?tab=raw` (Raw material; `/projects/:projectId/raw` redirects here) | pinned to that Project |
 
 One queue, one implementation: both render `ActivityQueue`, which owns the
-filters, the records and the review/archive actions. A second implementation
+filters, the records and the review/archive actions. If a successful load
+finds an empty page after a queue change, it goes back one page with the same
+Space, status and Project filter. A second implementation
 would be free to drift on what "reviewed" does, which is the entire content of
 the pipeline — so a Project surface that needs different framing adds a header,
 not a queue. The pinned mounting takes its Project from the route and ignores
 `?project_id=`, so the address bar cannot retarget a Project's page at another
 Project's material.
+
+Both mountings page over authorized records in the same order. Quick Capture's
+View action opens the exact Activity receipt in its recorded Space when there
+is no note to open.
 
 Space-wide rows carry a Project tag so a capture made inside a Project is not
 read as having been filed somewhere the user did not choose; the pinned

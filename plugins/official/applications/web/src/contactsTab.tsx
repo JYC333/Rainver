@@ -5,13 +5,14 @@ import { recordName, tabOf, type Application, type Contact, type ContactEvent, t
 import { CONTACT_CHANNELS, CONTACT_DIRECTIONS, CONTACT_RESPONSES, CONTACT_ROLES } from '../../domain';
 
 /**
- * Supervisors, referees and other contacts of this person in the Project, each linked
+ * Supervisors, referees and other contacts in the Project, each linked
  * to any number of applications (program or funding) or none (Project level), with the
  * recorded contact history. Contact details are personal data (ADR 0030). A contact whose
  * every linked application is archived is read-only until it is linked to an active one,
  * made Project-level, or an application is restored.
  */
 export function ContactsTab({ ctx, focus, onOpen }: { ctx: Ctx; focus: string | null; onOpen: Open }) {
+  const canEdit = ctx.projectCanWrite !== false;
   const { ui } = ctx, { Button, Input, Textarea, Select, Badge, t, formatDay } = ui;
   const { query, command, reason } = useOperations(ctx);
   const [contacts, setContacts] = useState<Contact[] | null>(null), [failed, setFailed] = useState(false);
@@ -34,14 +35,15 @@ export function ContactsTab({ ctx, focus, onOpen }: { ctx: Ctx; focus: string | 
   const loadEvents = useCallback(async (contactId: string) => {
     try { setEvents((await query<{ items: ContactEvent[] }>('contact.list_events', { contact_id: contactId })).items); } catch { setEvents([]); }
   }, [query]);
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { void load(); }, [load, ctx.projectRevision]);
   // Opened from an application: show that contact's history and bring it into view.
   const loaded = contacts !== null;
   useEffect(() => {
     if (!focus || !loaded) return;
-    setOpen(focus); void loadEvents(focus);
+    setOpen(focus);
     document.getElementById(`plugin-applications-contact-${focus}`)?.scrollIntoView({ block: 'nearest' });
-  }, [focus, loadEvents, loaded]);
+  }, [focus, loaded]);
+  useEffect(() => { if (open) void loadEvents(open); }, [open, loadEvents, ctx.projectRevision]);
   const run = async (name: string, input: Record<string, unknown>) => {
     setBusy(true); setError(''); setNotice('');
     try { await command(name, input); setNotice(t(k('saved'))); await load(); return true; } catch (e) { setError(reason(e)); await load(); return false; } finally { setBusy(false); }
@@ -73,8 +75,8 @@ export function ContactsTab({ ctx, focus, onOpen }: { ctx: Ctx; focus: string | 
             <span className="min-w-0 break-words"><span className="font-medium">{c.name}</span> <span className="text-xs text-muted-foreground">{t(k(`role.${c.role}`))}{c.affiliation ? ` · ${c.affiliation}` : ''}</span>{c.email && <span className="block text-xs text-muted-foreground">{c.email}</span>}</span>
             <div className="flex flex-wrap items-center gap-2">
               {c.last_event ? <Badge variant={c.last_event.response === 'positive' ? 'success' : c.last_event.response === 'negative' ? 'destructive' : c.last_event.response === 'awaiting' ? 'warning' : 'muted'}>{t(k(`response.${c.last_event.response}`))} · {formatDay(c.last_event.occurred_on)}</Badge> : <Badge variant="muted">{t(k('not_contacted'))}</Badge>}
-              <Button className={touch} size="sm" variant="ghost" aria-expanded={editing?.id === c.id} aria-label={t(k('edit_contact'), { name: c.name })} disabled={busy} onClick={() => setEditing(e => e?.id === c.id ? null : { id: c.id, name: c.name, role: c.role, email: c.email ?? '', affiliation: c.affiliation ?? '', note: c.note ?? '', application_ids: c.application_ids })}>{t(k('edit'))}</Button>
-              <Button className={touch} size="sm" variant="ghost" aria-expanded={open === c.id} onClick={() => { const next = open === c.id ? null : c.id; setOpen(next); if (next) void loadEvents(next); }}>{open === c.id ? t(k('hide_history')) : t(k('history'), { count: c.events })}</Button>
+              {canEdit && <Button className={touch} size="sm" variant="ghost" aria-expanded={editing?.id === c.id} aria-label={t(k('edit_contact'), { name: c.name })} disabled={busy} onClick={() => setEditing(e => e?.id === c.id ? null : { id: c.id, name: c.name, role: c.role, email: c.email ?? '', affiliation: c.affiliation ?? '', note: c.note ?? '', application_ids: c.application_ids })}>{t(k('edit'))}</Button>}
+              <Button className={touch} size="sm" variant="ghost" aria-expanded={open === c.id} onClick={() => setOpen(open === c.id ? null : c.id)}>{open === c.id ? t(k('hide_history')) : t(k('history'), { count: c.events })}</Button>
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">{c.application_ids.length === 0 ? <span>{t(k('project_level'))}</span>
@@ -82,17 +84,17 @@ export function ContactsTab({ ctx, focus, onOpen }: { ctx: Ctx; focus: string | 
           {c.note && <p className="whitespace-pre-wrap break-words text-xs text-muted-foreground">{c.note}</p>}
           {c.last_event?.next_step && <p className="text-xs text-muted-foreground">{t(k('next_step'))}: {c.last_event.next_step}</p>}
           {locked && <p className="text-xs text-muted-foreground">{t(k('contact_archived'))}</p>}
-          {editing?.id === c.id && <div className="space-y-3 border-t border-border pt-3">
+          {canEdit && editing?.id === c.id && <div className="space-y-3 border-t border-border pt-3">
             {details(editing, patch => setEditing(x => x && { ...x, ...patch }))}
             <div className="flex flex-wrap gap-2">
-              <Button className={touch} size="sm" disabled={busy || !editing.name.trim()} onClick={async () => { if (await run('contact.update', { contact_id: c.id, ...fields(editing) })) setEditing(null); }}>{t(k('save'))}</Button>
+              <Button className={touch} size="sm" disabled={busy || !editing.name.trim() || frozen(editing.application_ids)} onClick={async () => { if (await run('contact.update', { contact_id: c.id, ...fields(editing) })) setEditing(null); }}>{t(k('save'))}</Button>
               <Button className={touch} size="sm" variant="ghost" disabled={busy} onClick={() => setEditing(null)}>{t(k('cancel'))}</Button>
             </div>
           </div>}
           {open === c.id && <div className="space-y-3 border-t border-border pt-3">
             {events.length ? <ol className="space-y-2">{events.map(e => <li key={e.id} className="rounded-md bg-muted p-2 text-xs"><span className="font-medium">{formatDay(e.occurred_on)} · {t(k(`channel.${e.channel}`))} · {t(k(`direction.${e.direction}`))} · {t(k(`response.${e.response}`))}</span><span className="mt-1 block whitespace-pre-wrap break-words text-sm">{e.summary}</span>{e.next_step && <span className="mt-1 block text-muted-foreground">{t(k('next_step'))}: {e.next_step}</span>}</li>)}</ol>
               : <p className="text-xs text-muted-foreground">{t(k('no_events'))}</p>}
-            {!locked && <>
+            {canEdit && !locked && <>
               <p className="text-xs text-muted-foreground">{t(k('log_hint'))}</p>
               <div className="grid gap-3 md:grid-cols-4">
                 <Field label={t(k('occurred_on'))}><Input className={touch} type="date" value={entry.occurred_on} onChange={e => setEntry(v => ({ ...v, occurred_on: e.target.value }))} /></Field>
@@ -111,12 +113,12 @@ export function ContactsTab({ ctx, focus, onOpen }: { ctx: Ctx; focus: string | 
           </div>}
         </li>;
       })}</ul>}
-    {adding ? <div className="space-y-3 rounded-md border border-border p-3">
+    {canEdit && (adding ? <div className="space-y-3 rounded-md border border-border p-3">
       {details(form, patch => setForm(f => ({ ...f, ...patch })))}
       <div className="flex flex-wrap gap-2">
         <Button className={touch} size="sm" disabled={busy || !form.name.trim()} onClick={async () => { if (await run('contact.create', fields(form))) { setAdding(false); setForm(empty); } }}>{t(k('save'))}</Button>
         <Button className={touch} size="sm" variant="ghost" onClick={() => setAdding(false)}>{t(k('cancel'))}</Button>
       </div>
-    </div> : <Button className={touch} size="sm" variant="outline" onClick={() => { setForm(empty); setAdding(true); }}>{t(k('add_contact'))}</Button>}
+    </div> : <Button className={touch} size="sm" variant="outline" onClick={() => { setForm(empty); setAdding(true); }}>{t(k('add_contact'))}</Button>)}
   </section>;
 }

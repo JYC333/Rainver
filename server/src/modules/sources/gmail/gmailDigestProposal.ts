@@ -28,12 +28,15 @@ import type { SystemActionExecutor } from "../../systemActions/gateway.js";
 import { lockGmailOwnerSpace } from "./gmailConnections.js";
 import { gmailMonitorScenarioAllowed } from "./gmailMonitorProposal.js";
 import { validGmailDigestTimeZone } from "./gmailDigestSchedule.js";
-import { GMAIL_DIGEST_RECONFIRM_CODE, gmailDigestConversationAdmits } from "./gmailDigests.js";
+import { GMAIL_DIGEST_RECONFIRM_CODES, GMAIL_DIGEST_RUNTIME_CHANGED_CODE, gmailDigestConversationAdmits } from "./gmailDigests.js";
+import { currentApplicationUpdateRuntime } from "./gmailApplicationUpdateRuns.js";
+import { gmailCardAudience, gmailCardAudienceText } from "./gmailApplicationSharedConversation.js";
+import type { GmailCardAudience } from "@rainver/protocol";
 import { effectiveRunTrigger } from "../../systemActions/effectiveRunTrigger.js";
 import { scenarioOrigin } from "../../plugins/dataAccess.js";
 
 const TOOL = "source.gmail.digest.propose" as const;
-type Refusal = "gmail_digest_private_turn_required" | "gmail_digest_audience_outside_project" | "gmail_not_connected" | "gmail_digest_mailbox_ambiguous" | "gmail_digest_time_zone_invalid" | "gmail_digest_exists" | "gmail_digest_reconfirm_elsewhere";
+type Refusal = "gmail_digest_private_turn_required" | "gmail_digest_audience_outside_project" | "gmail_not_connected" | "gmail_digest_mailbox_ambiguous" | "gmail_digest_time_zone_invalid" | "gmail_digest_exists" | "gmail_digest_reconfirm_elsewhere" | "gmail_digest_runtime_unresolved";
 
 const refusal = (code: Refusal, message: string, extra: Record<string, unknown> = {}) => ({
   modelResult: { ok: false, error: code, message, ...extra },
@@ -48,28 +51,45 @@ interface StoredRun {
   instructed_by_user_id: string | null; parent_run_id: string | null;
 }
 
-export async function proposeGmailDigest(db: Queryable, runId: string, spaceId: string, input: GmailDigestProposeInput, idempotencyKey: string | null) {
+export async function proposeGmailDigest(db: Queryable, runId: string, spaceId: string, input: GmailDigestProposeInput, idempotencyKey: string | null,
+  options: {
+    draftOnly?: (part: { payload: Record<string, unknown>; summary: string; change: boolean }) => void;
+    /**
+     * Combined card only (ADR 0035 §2): the live digest of this kind whose time, time zone, conversation or
+     * configuration differs from what the owner asked for here, changed in place on acceptance (`replaces_digest_id`);
+     * `note` says what it is now. Its version — the accepted card in force and its time — is frozen with the card
+     * (`replaces_proposal_id`, `replaces_local_time`), so a card drafted against an earlier version never applies.
+     */
+    replace?: { digestId: string; proposalId: string; localTime: string | null; note: string };
+  } = {}) {
   const owner = (await db.query<{ instructed_by_user_id: string | null }>(`SELECT instructed_by_user_id FROM runs WHERE id=$1 AND space_id=$2`, [runId, spaceId])).rows[0]?.instructed_by_user_id ?? null;
   if (!owner) return refusal("gmail_digest_private_turn_required", PRIVATE);
   return withQueryableTransaction(db, async (tx) => {
     try { await lockActivePerson(tx, spaceId, owner); } catch { return refusal("gmail_digest_private_turn_required", "The mailbox owner is no longer an active member here."); }
-    await lockGmailOwnerSpace(tx, { spaceId, userId: owner });
+    // Person → Run → mutex, as every Gmail release of this same Run takes them (never the mutex first).
     const run = (await tx.query<StoredRun>(`SELECT id,space_id,agent_id,project_id,visibility,owner_user_id,session_id,trigger_origin,delegation_id,instructed_by_agent_id,
         instructed_by_user_id,parent_run_id FROM runs WHERE id=$1 AND space_id=$2 FOR SHARE`, [runId, spaceId])).rows[0];
+    await lockGmailOwnerSpace(tx, { spaceId, userId: owner });
     if (!run || run.instructed_by_user_id !== owner || !run.agent_id || !run.session_id) return refusal("gmail_digest_private_turn_required", PRIVATE);
     // The conversation the digest delivers into: an ordinary conversation of a Project the owner reads.
     const session = (await tx.query<{ project_id: string | null; room_id: string | null }>(
       `SELECT project_id,room_id FROM sessions WHERE id=$1 AND space_id=$2 AND status='active' AND project_id IS NOT NULL AND (room_id IS NOT NULL OR user_id=$3)`,
       [run.session_id, spaceId, owner])).rows[0];
     if (!session?.project_id || !await canReadProject(tx, spaceId, session.project_id, owner)) return refusal("gmail_digest_private_turn_required", PRIVATE);
+    let audience: GmailCardAudience | null = null;
     if (session.room_id) {
       // A Room or mainline: the owner's own turn, and every reader of the conversation works in its Project.
       const effective = await effectiveRunTrigger(tx, run);
       if (scenarioOrigin(run, effective.origin) !== "manual" || effective.instructedByUserId !== owner) return refusal("gmail_digest_private_turn_required", PRIVATE);
-      if (!await gmailDigestConversationAdmits(tx, { spaceId, ownerUserId: owner, projectId: session.project_id, sessionId: run.session_id, runId: run.id }))
-        return refusal("gmail_digest_audience_outside_project", OUTSIDE);
+      const conversation = await gmailDigestConversationAdmits(tx, { spaceId, ownerUserId: owner, projectId: session.project_id, sessionId: run.session_id, runId: run.id });
+      if (!conversation) return refusal("gmail_digest_audience_outside_project", OUTSIDE);
+      // The card names who reads the digest now and that later readers of the conversation's history read it too (ADR 0035 §1).
+      audience = await gmailCardAudience(tx, { spaceId, sessionId: run.session_id, readers: conversation.readers, isMainline: conversation.isMainline });
     } else if (!(await gmailMonitorScenarioAllowed(tx, run))) return refusal("gmail_digest_private_turn_required", PRIVATE);
-    if (idempotencyKey) {
+    // The Agent, runtime, model and session options the digest will run on, shown on the card and kept (ADR 0035 §3).
+    const binding = await currentApplicationUpdateRuntime(tx, { spaceId, sessionId: run.session_id, agentId: run.agent_id });
+    if (!binding) return refusal("gmail_digest_runtime_unresolved", "This conversation has no confirmed Agent runtime yet, so the card could not name what the digest runs on. Ask the owner to send a message here first, then try again.");
+    if (idempotencyKey && !options.draftOnly) {
       const existing = (await tx.query<{ id: string; status: string }>(
         `SELECT id,status FROM proposals WHERE space_id=$1 AND created_by_run_id=$2 AND proposal_type='gmail_digest_create' AND action_idempotency_key=$3`,
         [spaceId, run.id, idempotencyKey])).rows[0];
@@ -84,27 +104,41 @@ export async function proposeGmailDigest(db: Queryable, runId: string, spaceId: 
     // The reply reaches the whole conversation: the owner's addresses are listed only in their private one.
     if (chosen.length > 1) return refusal("gmail_digest_mailbox_ambiguous", session.room_id ? "Ask the owner which mailbox, then pass mailbox_email." : "Ask which mailbox, then pass mailbox_email.", session.room_id ? {} : { mailboxes: chosen.map((row) => row.mailbox_email) });
     const connection = chosen[0]!;
+    // A digest paused because its Agent, runtime or model changed is confirmed again on a new card in its conversation (below).
     if ((await tx.query(`SELECT 1 FROM gmail_digests d JOIN plugin_data_grants g ON g.id=d.grant_id
-      WHERE d.gmail_connection_id=$1 AND d.project_id=$2 AND d.kind=$3 AND d.status<>'ended' AND g.status='active' AND g.connection_generation=$4`, [connection.id, session.project_id, input.kind, connection.generation])).rows.length)
+      WHERE d.gmail_connection_id=$1 AND d.project_id=$2 AND d.kind=$3 AND d.status<>'ended' AND g.status='active' AND g.connection_generation=$4
+        AND NOT (d.status='paused' AND d.last_error_code=$5 AND d.session_id=$6)
+        AND NOT (d.id=$7 AND d.status='active')`, [connection.id, session.project_id, input.kind, connection.generation, GMAIL_DIGEST_RUNTIME_CHANGED_CODE, run.session_id,
+      options.draftOnly && options.replace ? options.replace.digestId : ""])).rows.length)
       return refusal("gmail_digest_exists", "A digest of this kind already exists for this mailbox and Project. The owner pauses, resumes or ends it under Sources → Access and Gmail.");
     // A digest of this kind paused for re-confirmation (migration 0040) is confirmed again only in its own
     // conversation, where it resumes in place with its history; a card drafted elsewhere could only conflict.
-    if ((await tx.query(`SELECT 1 FROM gmail_digests WHERE gmail_connection_id=$1 AND project_id=$2 AND kind=$3 AND status='paused' AND last_error_code=$4 AND session_id<>$5`,
-      [connection.id, session.project_id, input.kind, GMAIL_DIGEST_RECONFIRM_CODE, run.session_id])).rows.length)
+    if ((await tx.query(`SELECT 1 FROM gmail_digests WHERE gmail_connection_id=$1 AND project_id=$2 AND kind=$3 AND status='paused' AND last_error_code=ANY($4::text[]) AND session_id<>$5`,
+      [connection.id, session.project_id, input.kind, [...GMAIL_DIGEST_RECONFIRM_CODES], run.session_id])).rows.length)
       return refusal("gmail_digest_reconfirm_elsewhere", "This mailbox already has a digest of this kind in this Project, paused until the owner confirms it again in the conversation where it was set up. Ask them to set it up again there (it resumes with its history), or to end it under Sources → Access and Gmail first.");
     const kindTitle = input.kind === "daily" ? "Daily Gmail digest" : "Gmail monitor-match digest";
     const localTime = input.kind === "daily" ? input.local_time : null;
     const timeZone = input.kind === "daily" ? input.time_zone : null;
+    const replace = options.draftOnly ? options.replace ?? null : null;
+    const summary = (replace ? `Changes your existing ${input.kind === "daily" ? "daily" : "monitor-match"} digest (${replace.note}) in place, keeping its history, to: ` : "")
+      + digestCardSummary({ kind: input.kind, mailbox_email: connection.mailbox_email, local_time: localTime, time_zone: timeZone, shared: !!session.room_id,
+        agent_name: binding.agent_name, model_label: binding.model_label, audience });
+    const payload = {
+      proposal_type: "gmail_digest_create", action_id: TOOL, kind: input.kind, connection_id: connection.id, connection_generation: connection.generation,
+      mailbox_email: connection.mailbox_email, project_id: session.project_id, session_id: run.session_id, agent_id: run.agent_id,
+      local_time: localTime, time_zone: timeZone, shared_conversation: !!session.room_id, runtime_binding: binding, ...(audience ? { audience } : {}),
+      ...(replace ? { replaces_digest_id: replace.digestId, replaces_proposal_id: replace.proposalId, replaces_local_time: replace.localTime } : {}),
+    };
+    if (options.draftOnly) {
+      options.draftOnly({ payload, summary, change: false });
+      return { modelResult: { ok: true as const }, summary: { tool_name: TOOL, ok: true } };
+    }
     const proposal = await insertProposalRow(tx, {
       spaceId, proposalType: "gmail_digest_create",
       title: `${kindTitle} · ${connection.mailbox_email}${localTime ? ` · ${localTime} ${timeZone}` : ""}`,
-      summary: digestCardSummary({ kind: input.kind, mailbox_email: connection.mailbox_email, local_time: localTime, time_zone: timeZone, shared: !!session.room_id }),
+      summary,
       rationale: `Drafted from the mailbox owner's request. Accepting allows this Agent to read this mailbox for this digest only, on this conversation's own runtime (its CLI and model process the mail), and to post the summary only into this ${session.room_id ? "conversation, where every member reads it" : "private conversation"}. Pause or end it any time under Sources → Access and Gmail.`,
-      payload: {
-        proposal_type: "gmail_digest_create", action_id: TOOL, kind: input.kind, connection_id: connection.id, connection_generation: connection.generation,
-        mailbox_email: connection.mailbox_email, project_id: session.project_id, session_id: run.session_id, agent_id: run.agent_id,
-        local_time: localTime, time_zone: timeZone, shared_conversation: !!session.room_id,
-      },
+      payload,
       createdByUserId: null, createdByAgentId: run.agent_id, createdByRunId: run.id, ownerUserId: owner,
       visibility: "private", riskLevel: "high", projectId: null, actionIdempotencyKey: idempotencyKey,
     });
@@ -113,12 +147,19 @@ export async function proposeGmailDigest(db: Queryable, runId: string, spaceId: 
 }
 
 /** What the one card tells the owner before they decide (shown only to them). */
-export function digestCardSummary(payload: { kind: string; mailbox_email: string; local_time: string | null; time_zone: string | null; shared?: boolean }): string {
+export function digestCardSummary(payload: {
+  kind: string; mailbox_email: string; local_time: string | null; time_zone: string | null; shared?: boolean;
+  agent_name?: string; model_label?: string; audience?: GmailCardAudience | null;
+}): string {
   const what = payload.kind === "daily"
     ? "every day, a summary of your inbox since the previous digest (one daily window, including daylight-saving changes; no search words)"
     : "a summary when your Gmail monitors match new mail (each message once)";
   const where = payload.shared ? "delivered only into this conversation, where every member (all of them in this Project) reads it" : "delivered only into this private conversation";
-  return `Mailbox ${payload.mailbox_email}: ${what}${payload.kind === "daily" ? `, at ${payload.local_time} (${payload.time_zone})` : ""}, ${where}.`;
+  // ADR 0035 §3: what it runs on, and that a change pauses it instead of switching silently.
+  const runtime = payload.agent_name && payload.model_label
+    ? ` Runs on ${payload.agent_name} with ${payload.model_label}; if this conversation's Agent, runtime or model changes, the digest pauses until you confirm a new card here.`
+    : "";
+  return `Mailbox ${payload.mailbox_email}: ${what}${payload.kind === "daily" ? `, at ${payload.local_time} (${payload.time_zone})` : ""}, ${where}.${runtime}${payload.audience ? ` ${gmailCardAudienceText(payload.audience)}` : ""}`;
 }
 
 function accepted(proposalId: string, status: string) {

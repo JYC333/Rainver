@@ -108,10 +108,11 @@ describe("researchGeneralizationGuard", () => {
         "apps/web/src/modules/projects/ResearchSetupSummary.tsx",
         "apps/web/src/modules/projects/researchArea/ResearchRunsTab.tsx",
         "apps/web/src/modules/projects/researchArea/ReadingListView.tsx",
-        // The Research Area page composes standing and focus. useProjectResearch
-        // holds the Research state. Do not mount it on the Project Overview.
+        // The Inquiry Research workspace owns the focused entry. This route
+        // remains as the old deep-link adapter.
         "apps/web/src/modules/projects/ResearchAreaPage.tsx",
-        "apps/web/src/modules/projects/ResearchSettingsCard.tsx",
+        "apps/web/src/modules/projects/ResearchSetupDialog.tsx",
+        "apps/web/src/modules/projects/problemWorkspace/ProblemResearch.tsx",
         "apps/web/src/modules/projects/useProjectResearch.ts",
         "apps/web/src/modules/projects/ProjectResearchStandingPanel.tsx",
         "apps/web/src/modules/projects/ProjectDetailPage.tsx",

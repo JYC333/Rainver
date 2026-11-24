@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
-import { seedAgentWithVersion, seedSpaceOwnerProject } from "./support/domainSeeds.js";
+import { seedAgentWithVersion, seedRun, seedSpaceOwnerProject } from "./support/domainSeeds.js";
 import { buildModuleServer } from "./support/moduleServer.js";
 import { hostCommandHarness } from "./support/hostCommandHarness.js";
 import { hostsModule } from "../src/modules/hosts/index.js";
@@ -14,6 +14,8 @@ import { sharedHostConnectionRegistry } from "../src/modules/hosts/connectionReg
 import { agentHostResetFence } from "../src/modules/hosts/hostCommands.js";
 import { wakeHostCommandsForHost } from "../src/modules/hosts/hostCommandWorker.js";
 import { withQueryableTransaction } from "../src/modules/routeUtils/common.js";
+import { PgRunRepository } from "../src/modules/runs/repository.js";
+import { networkedResumeVerdict } from "../src/modules/runs/sensitiveRuntimeProfile.js";
 
 /**
  * `agent.host_state.reset` (`POST /api/v1/agents/:agentId/host-state/reset`),
@@ -205,6 +207,248 @@ describe("clearing an Agent's host state", () => {
     // Once the Run has settled the guard admits the reset.
     await db.pool.query(`UPDATE runs SET status = 'succeeded' WHERE id = $1`, [runId]);
     expect((await reset(AGENT, { host_id: HOST })).statusCode).toBe(202);
+  });
+
+  describe("a Task Run of this Agent waiting for review on a shared Location thread (ADR 0036 §15)", () => {
+    const OTHER_AGENT = "99999999-9999-4999-8999-999999999999";
+    const OTHER_VERSION = "88888888-8888-4888-8888-888888888888";
+    const PROFILE_KEY = (agent: string) => `agents/${agent}/location/loc/claude_code/ambient`;
+    let tick = 0;
+    /** A Location Task thread on this Host. */
+    const locationThread = async () => {
+      const now = new Date().toISOString();
+      const folder = randomUUID(), location = randomUUID(), task = randomUUID();
+      await db.pool.query(`INSERT INTO project_folders (id, space_id, project_id, name, kind, status, protected, system_managed, created_at, updated_at)
+        VALUES ($1, $2, $3, 'repo', 'code', 'active', false, false, $4, $4)`, [folder, SPACE, PROJECT, now]);
+      await db.pool.query(`INSERT INTO workspace_locations (id, space_id, project_folder_id, execution_host_id, execution_host_kind,
+          display_path, execution_ready, status, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, 'remote', '/workspace/repo', true, 'active', $5, $5)`, [location, SPACE, folder, HOST, now]);
+      await db.pool.query(`INSERT INTO tasks (id, space_id, project_id, project_folder_id, title, status, created_by_user_id, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, 'Test task', 'ready', $5, $6, $6)`, [task, SPACE, PROJECT, folder, OWNER, now]);
+      return (await new PgHostThreadRepository(db.pool).create({
+        executionHostId: HOST, workspaceLocationId: location, taskId: task, runtimeKey: "claude_code", createdByUserId: OWNER,
+      })).id;
+    };
+    /** A Task Run on the thread, created in order, whose open attempt was launched through the real bind. */
+    const launchedRun = async (thread: string, agent: string, version: string, resumes: string | null) => {
+      const id = randomUUID();
+      tick += 1;
+      await seedRun(db.pool, { id, space: SPACE, owner: OWNER, agent, version, existingAgent: true,
+        now: new Date(Date.UTC(2026, 10, 23, 0, 0, tick)).toISOString() });
+      await db.pool.query(`UPDATE runs SET status='running', host_task_thread_id=$2,
+          model_override_json=jsonb_build_object('host_thread', jsonb_build_object('schema_version','host_thread.v1','runtime_session_id',$3::text))
+        WHERE id=$1`, [id, thread, resumes]);
+      await db.pool.query(`INSERT INTO run_attempts (id, space_id, run_id, attempt_number, status, started_at, created_at, updated_at)
+        VALUES ($1, $2, $3, 1, 'running', now(), now(), now())`, [randomUUID(), SPACE, id]);
+      const launch = randomUUID();
+      expect(await new PgRunRepository(db.pool).bindAttemptLaunch({ space_id: SPACE, run_id: id, launch_id: launch,
+        isolation: { host_id: HOST, host_kind: "remote", egress_profile: "default", sandbox_mode: "read_write", profile_key: PROFILE_KEY(agent) } })).toBe(true);
+      return { id, launch };
+    };
+    /** `authorization.request` paused the Run (and its attempt) while its launch is still reporting. */
+    const pause = (runId: string) => db.pool.query(
+      `WITH r AS (UPDATE runs SET status='waiting_for_review' WHERE id=$1 RETURNING id) UPDATE run_attempts SET status='waiting_for_review' WHERE run_id IN (SELECT id FROM r)`, [runId]);
+    /** The orchestrator records the session the launch reported, once its adapter returns. */
+    const park = (runId: string, session: string, launch: string) =>
+      new PgRunRepository(db.pool).recordParkedHostThreadSession({ run_id: runId, space_id: SPACE, vendor_session_id: session, launch_id: launch });
+    const verdict = (thread: string, runId: string, session: string, agent = AGENT) =>
+      networkedResumeVerdict(db.pool, { threadId: thread, runId, vendorSessionId: session, profileKey: PROFILE_KEY(agent) });
+    const retired = async (thread: string) => (await db.pool.query<{ ids: string[] }>(
+      "SELECT retired_vendor_session_ids AS ids FROM host_threads WHERE id=$1", [thread])).rows[0].ids;
+
+    it("locks and checks the thread although its latest Run is another Agent's, and a park reported after the reset never resumes", async (ctx) => {
+      if (!db.available) return ctx.skip();
+      await seedAgentWithVersion(db.pool, { agent: OTHER_AGENT, version: OTHER_VERSION, space: SPACE, owner: OWNER });
+      const thread = await locationThread();
+      // This Agent's Task Run launched, resuming the session it was created with, and was paused for review.
+      const waiting = await launchedRun(thread, AGENT, VERSION, "vendor-early");
+      await pause(waiting.id);
+      // Another Agent ran on the same Location thread after it and parked too: its latest Run is not this Agent's.
+      const foreign = await launchedRun(thread, OTHER_AGENT, OTHER_VERSION, null);
+      await pause(foreign.id);
+      await park(foreign.id, "vendor-foreign", foreign.launch);
+
+      // Resumed (queued again) the waiting Run is in flight on that thread: the reset is refused there too.
+      await db.pool.query("UPDATE runs SET status='queued' WHERE id=$1", [waiting.id]);
+      const refused = await reset(AGENT, { host_id: HOST });
+      expect(refused.statusCode).toBe(409);
+      expect(refused.json().error.message).toMatch(/in flight/i);
+      await db.pool.query("UPDATE runs SET status='waiting_for_review' WHERE id=$1", [waiting.id]);
+
+      // Waiting for review, it is admitted; the session that Run was frozen to is retired and counted.
+      const accepted = await reset(AGENT, { host_id: HOST });
+      expect(accepted.statusCode).toBe(202);
+      expect((await db.pool.query("SELECT frozen_json->>'sessions_retired' AS n FROM host_command_intents WHERE kind='agent_host_state_reset'")).rows[0].n).toBe("1");
+      expect(await retired(thread)).toEqual(["vendor-early"]);
+
+      // Only now does the paused launch's report arrive and the orchestrator park the Run in the session it named.
+      await park(waiting.id, "vendor-late", waiting.launch);
+      expect((await db.pool.query("SELECT model_override_json#>>'{host_thread,runtime_session_id}' AS s FROM runs WHERE id=$1", [waiting.id])).rows[0].s).toBe("vendor-late");
+      // Its launch predates the reset: the session is retired and its resume refused before any frame.
+      expect(await retired(thread)).toEqual(["vendor-early", "vendor-late"]);
+      expect(await verdict(thread, waiting.id, "vendor-late")).toBe("unconfirmed");
+      // Even had the retirement been lost, the frozen record alone refuses it.
+      await db.pool.query("UPDATE host_threads SET retired_vendor_session_ids='[]'::jsonb WHERE id=$1", [thread]);
+      expect(await verdict(thread, waiting.id, "vendor-late")).toBe("unconfirmed");
+      // The other Agent's parked session is untouched by this Agent's reset.
+      expect(await verdict(thread, foreign.id, "vendor-foreign", OTHER_AGENT)).toBe("resumable");
+    });
+
+    it("a launch bound after the reset parks and resumes as before; a late outcome of an earlier launch never becomes the pointer", async (ctx) => {
+      if (!db.available) return ctx.skip();
+      const thread = await locationThread();
+      const before = await launchedRun(thread, AGENT, VERSION, null);
+      await db.pool.query("UPDATE runs SET status='cancelled' WHERE id=$1", [before.id]);
+      expect((await reset(AGENT, { host_id: HOST })).statusCode).toBe(202);
+      // A Run launched after the reset (its record holds the new generation) parks and resumes legitimately.
+      const after = await launchedRun(thread, AGENT, VERSION, null);
+      expect((await db.pool.query("SELECT launch_isolation_json->>'host_reset_generation' AS g FROM run_attempts WHERE run_id=$1", [after.id])).rows[0].g).toBe("1");
+      await pause(after.id);
+      await park(after.id, "vendor-after", after.launch);
+      expect(await verdict(thread, after.id, "vendor-after")).toBe("resumable");
+      expect(await retired(thread)).toEqual([]);
+      // The cancelled earlier launch reports late: its session is retired, not recorded as the pointer.
+      const threads = new PgHostThreadRepository(db.pool);
+      await threads.recordRunOutcome(thread, { lastRunId: before.id, vendorSessionId: "vendor-before", sessionReset: false });
+      expect((await db.pool.query("SELECT vendor_session_id FROM host_threads WHERE id=$1", [thread])).rows[0].vendor_session_id).toBeNull();
+      expect(await retired(thread)).toEqual(["vendor-before"]);
+      // Once the Host settled the first reset, a second one makes that park stale in turn.
+      await db.pool.query(`UPDATE host_command_intents SET status='succeeded', effect_json=effect_json||'{"receipt":{"at":"now"}}'::jsonb`);
+      expect((await reset(AGENT, { host_id: HOST })).statusCode).toBe(202);
+      expect(await verdict(thread, after.id, "vendor-after")).toBe("unconfirmed");
+    });
+
+    describe("serialized with the reset (ADR 0036 §16)", () => {
+      /** Polls until a backend of this test database waits on a heavyweight lock of `kind`, or `done` settles first. */
+      const waitsOnLock = async (kind: "advisory" | "row", done: Promise<unknown>) => {
+        let settled = false;
+        void done.then(() => { settled = true; }, () => { settled = true; });
+        const events = kind === "advisory" ? ["advisory"] : ["tuple", "transactionid"];
+        for (let i = 0; i < 300 && !settled; i += 1) {
+          const waiting = await db.pool.query(
+            `SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND wait_event = ANY($1::text[])`,
+            [events]);
+          if (waiting.rowCount) return true;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        return false;
+      };
+
+      it("a park arriving after the reset's scan but before its commit waits for it, is retired, and is never imported", async (ctx) => {
+        if (!db.available) return ctx.skip();
+        const thread = await locationThread();
+        const waiting = await launchedRun(thread, AGENT, VERSION, "vendor-early");
+        await pause(waiting.id);
+        // The reset admission, through its real route, scans this Agent's parked sessions; the paused launch's report
+        // arrives right after that scan, while the reset's transaction is still open.
+        const original = PgHostThreadRepository.prototype.retireAgentSessionsOnHost;
+        let parked: Promise<void> | null = null;
+        let parkBlocked = false;
+        vi.spyOn(PgHostThreadRepository.prototype, "retireAgentSessionsOnHost").mockImplementation(
+          async function (this: PgHostThreadRepository, agentId: string, hostId: string) {
+            const count = await original.call(this, agentId, hostId);
+            parked = park(waiting.id, "vendor-late", waiting.launch);
+            parkBlocked = await waitsOnLock("advisory", parked);
+            return count;
+          });
+        expect((await reset(AGENT, { host_id: HOST })).statusCode).toBe(202);
+        await parked;
+        // The park did not commit inside the reset's window: it waited on the fence and ran after the intent.
+        expect(parkBlocked).toBe(true);
+        expect((await db.pool.query("SELECT model_override_json#>>'{host_thread,runtime_session_id}' AS s FROM runs WHERE id=$1", [waiting.id])).rows[0].s).toBe("vendor-late");
+        expect(await retired(thread)).toEqual(["vendor-early", "vendor-late"]);
+        expect(await verdict(thread, waiting.id, "vendor-late")).toBe("unconfirmed");
+        // Ambient import treats it as the Agent's session, not the owner's history.
+        const location = (await db.pool.query<{ id: string }>("SELECT workspace_location_id AS id FROM host_threads WHERE id=$1", [thread])).rows[0].id;
+        const listed = () => new PgHostThreadRepository(db.pool).listVendorSessionIds({ workspaceLocationId: location, runtimeKey: "claude_code", runtimeInstallation: "own" });
+        expect(await listed()).toContain("vendor-late");
+        // Even were its retirement lost, the Run's own parked session is excluded from import.
+        await db.pool.query("UPDATE host_threads SET retired_vendor_session_ids='[]'::jsonb WHERE id=$1", [thread]);
+        expect(await listed()).toContain("vendor-late");
+      });
+
+      it("a park after the reset with no trusted launch record is retired too", async (ctx) => {
+        if (!db.available) return ctx.skip();
+        const thread = await locationThread();
+        const waiting = await launchedRun(thread, AGENT, VERSION, null);
+        await pause(waiting.id);
+        expect((await reset(AGENT, { host_id: HOST })).statusCode).toBe(202);
+        await new PgRunRepository(db.pool).recordParkedHostThreadSession({ run_id: waiting.id, space_id: SPACE, vendor_session_id: "vendor-unrecorded", launch_id: null });
+        expect(await retired(thread)).toEqual(["vendor-unrecorded"]);
+        expect(await verdict(thread, waiting.id, "vendor-unrecorded")).toBe("unconfirmed");
+      });
+
+      it("a launch recorded before generations is judged on its attempt's creation, not a re-claim's start after approval", async (ctx) => {
+        if (!db.available) return ctx.skip();
+        const thread = await locationThread();
+        const legacy = await launchedRun(thread, AGENT, VERSION, null);
+        // A record bound before generations were kept, on an attempt created a minute ago.
+        await db.pool.query(`UPDATE run_attempts SET launch_isolation_json = launch_isolation_json - 'host_reset_generation',
+            created_at = now() - interval '1 minute', started_at = now() - interval '1 minute' WHERE run_id=$1`, [legacy.id]);
+        await pause(legacy.id);
+        await park(legacy.id, "vendor-legacy", legacy.launch);
+        expect(await verdict(thread, legacy.id, "vendor-legacy")).toBe("resumable");
+        expect((await reset(AGENT, { host_id: HOST })).statusCode).toBe(202);
+        // Judged on the record alone: drop what the reset retired.
+        await db.pool.query("UPDATE host_threads SET retired_vendor_session_ids='[]'::jsonb WHERE id=$1", [thread]);
+        expect(await verdict(thread, legacy.id, "vendor-legacy")).toBe("unconfirmed");
+        // The approval puts the same attempt back in the queue and the real claim takes it again, rewriting its start.
+        const attempt = (await db.pool.query<{ id: string }>("SELECT id FROM run_attempts WHERE run_id=$1", [legacy.id])).rows[0].id;
+        await db.pool.query(`WITH r AS (UPDATE runs SET status='queued' WHERE id=$1 RETURNING id)
+          UPDATE run_attempts SET status='queued' WHERE run_id IN (SELECT id FROM r)`, [legacy.id]);
+        const reclaimedAt = new Date(Date.now() + 60_000).toISOString();
+        expect((await new PgRunRepository(db.pool).claimRunExecution({ space_id: SPACE, run_id: legacy.id, started_at: reclaimedAt })).outcome).toBe("started");
+        const after = (await db.pool.query<{ id: string; later: boolean }>(
+          `SELECT a.id, a.started_at > (SELECT max(created_at) FROM host_command_intents) AS later FROM run_attempts a WHERE a.run_id=$1`, [legacy.id])).rows;
+        expect(after).toEqual([{ id: attempt, later: true }]);
+        // Still the launch from before the reset: its parked session and its late outcome are refused.
+        expect(await verdict(thread, legacy.id, "vendor-legacy")).toBe("unconfirmed");
+        await db.pool.query("UPDATE runs SET status='cancelled' WHERE id=$1", [legacy.id]);
+        await new PgHostThreadRepository(db.pool).recordRunOutcome(thread, { lastRunId: legacy.id, vendorSessionId: "vendor-legacy-outcome", sessionReset: false });
+        expect((await db.pool.query("SELECT vendor_session_id FROM host_threads WHERE id=$1", [thread])).rows[0].vendor_session_id).toBeNull();
+        expect(await retired(thread)).toContain("vendor-legacy-outcome");
+      });
+
+      it("locks the threads it covers in id order, so two Agents' resets over shared Location threads cannot deadlock", async (ctx) => {
+        if (!db.available) return ctx.skip();
+        await seedAgentWithVersion(db.pool, { agent: OTHER_AGENT, version: OTHER_VERSION, space: SPACE, owner: OWNER });
+        const LOW = "00000000-0000-4000-8000-000000000001", HIGH = "ffffffff-ffff-4fff-8fff-fffffffffff1";
+        const first = await locationThread(), second = await locationThread();
+        // The higher id written first, so a scan in physical order meets it before the lower one.
+        await db.pool.query("UPDATE host_threads SET id=$2 WHERE id=$1", [first, HIGH]);
+        await db.pool.query("UPDATE host_threads SET id=$2 WHERE id=$1", [second, LOW]);
+        for (const thread of [HIGH, LOW]) {
+          for (const [agent, version] of [[AGENT, VERSION], [OTHER_AGENT, OTHER_VERSION]] as const) {
+            const run = await launchedRun(thread, agent, version, null);
+            await pause(run.id);
+          }
+        }
+        // Another writer holds the higher thread: the reset must already hold the lower one while it waits.
+        const blocker = await db.pool.connect();
+        try {
+          await blocker.query("BEGIN");
+          await blocker.query("SELECT 1 FROM host_threads WHERE id=$1 FOR UPDATE", [HIGH]);
+          const pending = reset(AGENT, { host_id: HOST });
+          expect(await waitsOnLock("row", pending)).toBe(true);
+          const probe = await db.pool.connect();
+          try {
+            await probe.query("BEGIN");
+            await expect(probe.query("SELECT 1 FROM host_threads WHERE id=$1 FOR UPDATE NOWAIT", [LOW])).rejects.toMatchObject({ code: "55P03" });
+          } finally {
+            await probe.query("ROLLBACK");
+            probe.release();
+          }
+          await blocker.query("ROLLBACK");
+          expect((await pending).statusCode).toBe(202);
+        } finally {
+          blocker.release();
+        }
+        // Both Agents' resets, at once, over the same two threads: each is admitted.
+        await db.pool.query(`UPDATE host_command_intents SET status='succeeded', effect_json=effect_json||'{"receipt":{"at":"now"}}'::jsonb`);
+        const both = await Promise.all([reset(AGENT, { host_id: HOST }, "again-a"), reset(OTHER_AGENT, { host_id: HOST }, "again-b")]);
+        expect(both.map((response) => response.statusCode)).toEqual([202, 202]);
+      });
+    });
   });
 
   it("refuses while a Room re-add restore of this Agent on this Host is unfinished, and admits once it settles", async (ctx) => {

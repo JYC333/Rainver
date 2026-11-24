@@ -13,7 +13,7 @@ let app:ReturnType<typeof buildModuleServer>;
 beforeEach(async()=>{
  if(!db.available)return;
  await seedSpaceOwnerProject(db.pool,{space,owner:user,project:randomUUID()});
- app=buildModuleServer(loadConfig({...process.env,SERVER_DATABASE_URL:db.connectionUri}),[captureModule]);
+ app=buildModuleServer(loadConfig({SERVER_DATABASE_URL:db.connectionUri}),[captureModule]);
  __setAuthIdentityForTests({spaceId:space,userId:user});
 });
 afterEach(async()=>{__setAuthIdentityForTests(null);await app?.close();});

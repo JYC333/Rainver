@@ -130,8 +130,10 @@ export function childBranchPath(input: {
  * The dispatch Run is durable acceptance evidence; a drafted/failed send has none.
  */
 export function openHumanQuestionSql(message: string, run: string): string {
-  return `COALESCE((${message}.metadata_json->>'awaiting_answer')='true'
-    AND ${run}.delegation_id IS NULL AND NOT EXISTS (
+  // CASE guards the lookup: PostgreSQL can evaluate an AND's subquery before
+  // its other operands and search for answers to ordinary assistant replies.
+  return `CASE WHEN (${message}.metadata_json->>'awaiting_answer')='true'
+    AND ${run}.delegation_id IS NULL THEN NOT EXISTS (
       SELECT 1 FROM messages reply
       JOIN runs dispatched ON dispatched.space_id=reply.space_id
         AND dispatched.session_id=reply.session_id AND dispatched.agent_id=${run}.agent_id
@@ -139,5 +141,5 @@ export function openHumanQuestionSql(message: string, run: string): string {
       WHERE reply.space_id=${message}.space_id AND reply.session_id=${message}.session_id
         AND reply.role='user' AND reply.user_id IS NOT NULL AND reply.path_depth>${message}.path_depth
         AND ${visibleRoomTranscriptSql({alias:"reply",spaceParam:`${message}.space_id`,sessionParam:`${message}.session_id`})}
-    ),false)`;
+    ) ELSE false END`;
 }

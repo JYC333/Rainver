@@ -17,7 +17,7 @@ import {PgActivityRepository} from '../src/modules/activity/repository.js';
 import {__setAuthIdentityForTests} from '../src/modules/auth/identity.js';
 const db=useTestDatabase(import.meta.filename),space=randomUUID(),user=randomUUID(),project=randomUUID();
 let app:ReturnType<typeof buildModuleServer>,activity:string;
-const config=()=>loadConfig({...process.env,SERVER_DATABASE_URL:db.connectionUri,RAINVER_HOME:'/tmp/rainver-activity-operation-test'});
+const config=()=>loadConfig({SERVER_DATABASE_URL:db.connectionUri,RAINVER_HOME:'/tmp/rainver-activity-operation-test'});
 const settings='/api/v1/daily-capture-report/settings';
 const send=(method:'PATCH'|'PUT',url:string,payload:Record<string,unknown>={},key=randomUUID())=>app.inject({method,url,payload,headers:{'idempotency-key':key}});
 beforeEach(async()=>{
@@ -25,7 +25,7 @@ beforeEach(async()=>{
  await resetTables(db.pool,['spaces','users'],{cascade:true});
  await seedSpaceOwnerProject(db.pool,{space,owner:user,project});
  activity=String((await new PgActivityRepository(db.pool).create({spaceId:space,userId:user},{source_type:'user_capture',content:'Private thought'})).id);
- app=buildModuleServer(loadConfig({...process.env,SERVER_DATABASE_URL:db.connectionUri,RAINVER_HOME:'/tmp/rainver-activity-operation-test'}),[activityModule,captureModule,dailyReportsModule,systemActionsModule]);
+ app=buildModuleServer(config(),[activityModule,captureModule,dailyReportsModule,systemActionsModule]);
  __setAuthIdentityForTests({spaceId:space,userId:user});
 });
 afterEach(async()=>{__setAuthIdentityForTests(null);await app?.close();});

@@ -67,6 +67,13 @@ describe("conversation input persistence on real Postgres", () => {
       mediaType: "image/png",
       stream: Readable.from([pngBytes()]),
     });
+    await expect(service.getVisibleMedia(ids.spaceId, ids.userId, media.media_id)).resolves.toMatchObject({
+      media_id: media.media_id, lifecycle: "pending", message_id: null,
+    });
+    await expect(service.getVisibleMedia(ids.spaceId, ids.outsiderId, media.media_id)).resolves.toBeNull();
+    await db.pool.query("UPDATE conversation_input_media SET expires_at = now() WHERE id = $1", [media.media_id]);
+    await expect(service.getVisibleMedia(ids.spaceId, ids.userId, media.media_id)).resolves.toBeNull();
+
     await db.pool.query(
       `UPDATE conversation_input_media
           SET lifecycle = 'claimed', message_id = $2, claimed_at = now()

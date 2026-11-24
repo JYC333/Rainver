@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readFile, readdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { HostCommandFrame, HostCommandInnerFrame, HostDaemonFrame, HostDaemonFrameOf } from "@rainver/protocol";
+import { confirmedManagedInstall, managedInstallationId } from "./tools.js";
 import { configDir } from "./config.js";
 import { syncExistingDurable, writeJsonDurable } from "./durableFile.js";
 
@@ -55,11 +56,11 @@ export interface FrameSinkLike {
 type Execute = (inner: HostCommandInnerFrame, sink: FrameSinkLike) => void;
 type ResultFrame = HostDaemonFrameOf<"host_command_result">;
 
-const running = new Map<string, Promise<ResultFrame>>();
+const running = new Map<string, { fingerprint: string; work: Promise<ResultFrame> }>();
 /** Commands this process finished whose `done` receipt is not yet durable, by command id. */
 const unrecorded = new Map<string, Receipt>();
 /** Inner frames this journal is running: their handlers know they carry an identity. */
-export const journaledFrames = new WeakSet<object>();
+export const journaledFrames = new WeakMap<object, string>();
 
 export const hostCommandsDir = () => join(configDir(), "host-commands");
 const receiptPath = (commandId: string) => join(hostCommandsDir(), `${createHash("sha256").update(commandId).digest("hex")}.json`);
@@ -94,9 +95,9 @@ async function durablyVisible(commandId: string): Promise<string | null> {
 }
 
 /** Runs the inner command through the ordinary handler and captures its own answer. */
-function capture(inner: HostCommandInnerFrame, execute: Execute, outer: FrameSinkLike): Promise<Record<string, unknown>> {
+function capture(inner: HostCommandInnerFrame, execute: Execute, outer: FrameSinkLike, commandId: string): Promise<Record<string, unknown>> {
   return new Promise((resolve) => {
-    journaledFrames.add(inner);
+    journaledFrames.set(inner, commandId);
     execute(inner, {
       send(frame) {
         if (RESULT_TYPES.has(frame.type) && (frame as { request_id?: string }).request_id === inner.request_id) resolve(frame as unknown as Record<string, unknown>);
@@ -111,7 +112,10 @@ export function runJournaledHostCommand(frame: HostCommandFrame, execute: Execut
     ({ type: "host_command_result", request_id: frame.request_id, command_id: frame.command_id, outcome, replayed, result, error });
   const live = running.get(frame.command_id);
   // The same command, repeated while this process still runs it (a lost answer, a reconnect).
-  if (live) return live.then((done) => ({ ...done, request_id: frame.request_id, replayed: true }));
+  if (live) {
+    if (live.fingerprint !== frame.fingerprint) return Promise.resolve(answer("mismatch", false, null, null));
+    return live.work.then((done) => ({ ...done, request_id: frame.request_id, replayed: true }));
+  }
   const notRecorded = (error: string) => answer("unrecorded", true, null, `host_command_outcome_not_recorded: ${error}`);
   const work = (async (): Promise<ResultFrame> => {
     // Finished by this process, its outcome not yet durable: record it now, never run it again.
@@ -133,6 +137,17 @@ export function runJournaledHostCommand(frame: HostCommandFrame, execute: Execut
     }
     if (receipt?.status === "interrupted") return answer("interrupted", true, null, null);
     if (receipt?.status === "in_progress" && !REPEATABLE.has(frame.command.type)) {
+      const command = frame.command;
+      if (command.type === "install_tool" && await confirmedManagedInstall(command, frame.command_id).catch(() => false)) {
+        const result = { type: "tool_result", request_id: command.request_id, ok: true, error: null, installation: managedInstallationId(command.version) };
+        const done: Receipt = { ...receipt, status: "done", result, updated_at: new Date().toISOString() };
+        const failure = await recordDone(done);
+        if (failure !== null) {
+          unrecorded.set(frame.command_id, done);
+          return notRecorded(failure);
+        }
+        return answer("completed", true, result, null);
+      }
       // An earlier process started this and stopped before its outcome: what it changed is unknown.
       await writeReceipt({ ...receipt, status: "interrupted" }).catch(() => undefined);
       return answer("interrupted", true, null, null);
@@ -144,7 +159,7 @@ export function runJournaledHostCommand(frame: HostCommandFrame, execute: Execut
     // Recorded before the effect starts, or the effect does not start.
     try { await writeReceipt(next); }
     catch (error) { return answer("refused", false, null, `host_command_not_recorded: ${errorText(error)}`); }
-    const result = await capture(frame.command, execute, outer);
+    const result = await capture(frame.command, execute, outer, frame.command_id);
     // Recorded before the answer, or the answer is not `completed`: the control plane repeats the
     // command, and the repeat records the outcome this process holds instead of running it again.
     const done: Receipt = { ...next, status: "done", result };
@@ -156,8 +171,9 @@ export function runJournaledHostCommand(frame: HostCommandFrame, execute: Execut
     void pruneSettledReceipts().catch(() => undefined);
     return answer("completed", receipt !== null, result, null);
   })();
-  running.set(frame.command_id, work);
-  void work.finally(() => { if (running.get(frame.command_id) === work) running.delete(frame.command_id); });
+  running.set(frame.command_id, { fingerprint: frame.fingerprint, work });
+  const clear = () => { if (running.get(frame.command_id)?.work === work) running.delete(frame.command_id); };
+  void work.then(clear, clear);
   return work;
 }
 

@@ -1,8 +1,9 @@
+import { RUN_TERMINAL_STATUS_VALUES } from '@rainver/protocol'
 import type { RoomMessage, Run } from '../../types/api'
 
 /** Settled for display; `waiting_for_review` is listed but still awaits a person. */
 export function isTerminalRunStatus(status: string): boolean {
-  return ['succeeded', 'failed', 'degraded', 'cancelled', 'orphaned', 'waiting_for_review'].includes(status)
+  return status === 'waiting_for_review' || (RUN_TERMINAL_STATUS_VALUES as readonly string[]).includes(status)
 }
 
 /**

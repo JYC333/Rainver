@@ -3,7 +3,8 @@ import { lazy, Suspense } from 'react'
 import {spacePath} from '../../core/navigation'
 import {useParams} from 'react-router-dom'
 import {researchPageDestination} from './problemWorkspace/researchLinks'
-import { Routes, Route, Navigate, useSearchParams } from 'react-router-dom'
+import { Routes, Route, Navigate, useOutletContext, useSearchParams } from 'react-router-dom'
+import type { ProjectAreaOutletContext } from './ProjectAreaLayout'
 import { Skeleton } from '../../components/ui/skeleton'
 
 // Each project sub-route is its own page. The research Area pulls in a
@@ -14,7 +15,6 @@ import { Skeleton } from '../../components/ui/skeleton'
 const GoalPage=lazy(()=>import('../sources/SourceGoalPage'))
 const GoalList=lazy(()=>import('../sources/SourceGoalsList'))
 const ProjectsPage = lazy(() => import('./ProjectsPage'))
-const ProjectDetailPage = lazy(() => import('./ProjectDetailPage'))
 const SourcesAreaPage = lazy(() => import('./SourcesAreaPage'))
 const ProjectFilesPage = lazy(() => import('../project_files/ProjectFilesPage'))
 const ProjectFolderSettingsPage = lazy(() => import('../project_files/ProjectFolderSettingsPage'))
@@ -45,12 +45,18 @@ function PageFallback() {
   )
 }
 
+/** The Project's index page, already loaded by `ProjectAreaLayout`. */
+function ProjectOverviewRoute() {
+  const { OverviewPage } = useOutletContext<ProjectAreaOutletContext>()
+  return <OverviewPage />
+}
+
 export default function ProjectsModule() {
   return (
     <Routes>
       <Route index element={<Suspense fallback={<PageFallback />}><ProjectsPage /></Suspense>} />
       <Route path=":projectId" element={<Suspense fallback={<PageFallback />}><ProjectAreaLayout /></Suspense>}>
-        <Route index element={<Suspense fallback={<PageFallback />}><ProjectDetailPage /></Suspense>} />
+        <Route index element={<ProjectOverviewRoute />} />
         <Route path="plugins/:pluginId/:entryId" element={<ProjectPluginPage/>} />
         <Route path="sources/goals" element={<Suspense fallback={<PageFallback />}><GoalList /></Suspense>} />
         <Route path="sources/goals/:goalId" element={<Suspense fallback={<PageFallback />}><GoalPage /></Suspense>} />

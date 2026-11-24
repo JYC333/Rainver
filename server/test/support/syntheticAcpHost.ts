@@ -36,6 +36,7 @@ export class SyntheticAcpHost {
     private readonly hostId: string,
     /** What the agent does with a prompt: reply with text, or fail the turn with a JSON-RPC error. */
     public answer: (prompt: SyntheticAcpPrompt) => Promise<SyntheticAcpAnswer> | SyntheticAcpAnswer = () => ({ text: "Done." }),
+    private readonly sessionConfigOptions?: readonly Record<string, unknown>[],
   ) {
     this.sink = { send: (frame) => this.receive(frame), close: () => undefined };
   }
@@ -101,13 +102,14 @@ export class SyntheticAcpHost {
   private async respond(runId: string, launchId: string, request: { id: number | string; method?: string; params?: Record<string, unknown> }): Promise<void> {
     const reply = (result: Record<string, unknown>) => this.out(runId, launchId, { jsonrpc: "2.0", id: request.id, result });
     if (request.method === "initialize") return reply({ protocolVersion: 1 });
+    const sessionConfig = this.sessionConfigOptions ? { configOptions: this.sessionConfigOptions } : {};
     if (request.method === "session/new") {
       this.sessionMethods.set(runId, "session/new");
-      return reply({ sessionId: `synthetic-session-${this.nextSession++}` });
+      return reply({ sessionId: `synthetic-session-${this.nextSession++}`, ...sessionConfig });
     }
     if (request.method === "session/resume") {
       this.sessionMethods.set(runId, "session/resume");
-      return reply({});
+      return reply(sessionConfig);
     }
     if (request.method === "session/prompt") {
       const sessionId = String(request.params?.sessionId ?? "");

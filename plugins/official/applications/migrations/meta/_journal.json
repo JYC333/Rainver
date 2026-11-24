@@ -1,48 +1,13 @@
 {
-  "version": "7",
-  "dialect": "postgresql",
   "entries": [
     {
       "idx": 0,
+      "tag": "0000_applications_and_mail_facts",
       "version": "7",
-      "when": 1794978133505,
-      "tag": "0000_application_records",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "7",
-      "when": 1794985373175,
-      "tag": "0001_material_notes",
-      "breakpoints": true
-    },
-    {
-      "idx": 2,
-      "version": "7",
-      "when": 1794987500083,
-      "tag": "0002_material_generations",
-      "breakpoints": true
-    },
-    {
-      "idx": 3,
-      "version": "7",
-      "when": 1795022131111,
-      "tag": "0003_funding_library_contact_links",
-      "breakpoints": true
-    },
-    {
-      "idx": 4,
-      "version": "7",
-      "when": 1795026087769,
-      "tag": "0004_submission_recorded",
-      "breakpoints": true
-    },
-    {
-      "idx": 5,
-      "version": "7",
-      "when": 1795027969425,
-      "tag": "0005_narrow_submission_history",
+      "when": 1795301181621,
       "breakpoints": true
     }
-  ]
+  ],
+  "version": "7",
+  "dialect": "postgresql"
 }

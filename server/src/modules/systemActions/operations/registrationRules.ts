@@ -7,7 +7,7 @@ import type {OperationRegistration} from './types.js';
 const DURABLE_PLACEMENT_COMMANDS = new Set(['activity.upload','activity.create','capture.create','source.channel.create', 'source.item.save_url', 'source.evidence.create', 'source.custom.draft.create', 'source.goal.setup.begin', 'source.goal.create', 'agent.create', 'agent.template.instantiate', 'agent.run.create', 'agent.chat.send', 'session.create', 'board.create', 'task.create']);
 /** One create shared by a person's REST call and an Agent Run tool: placement applies to the person
  * principal only; an Agent keeps its Run's Space and Project. */
-const PERSON_PLACEMENT_SHARED_COMMANDS = new Set(['task.create']);
+const PERSON_PLACEMENT_SHARED_COMMANDS = new Set(['task.create', 'knowledge.note.create']);
 // Proposal submission retains the access-owned placement of the old REST create
 // entry, without enabling an approval execution mapping. No other proposal may
 // resolve a caller into another Space.

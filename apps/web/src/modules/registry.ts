@@ -90,7 +90,7 @@ export interface Module {
 /**
  * Central app + module registry.
  *
- * Every entry is a React Router route (`App.tsx`: path, component, hasSubRoutes).
+ * Every entry is a React Router route (`AuthenticatedApp.tsx`: path, component, hasSubRoutes).
  * Enabled official plugins also appear on the Global Rail (`Shell.tsx`).
  * Navigation tiers live in `core/navigation.tsx`. There is no home gallery.
  *
@@ -98,18 +98,13 @@ export interface Module {
  * To add a new BUILT-IN app:
  *   1. Create src/modules/<id>/<PageName>.tsx
  *   2. Add an entry below with source: 'built_in'
- *   3. Route auto-registers in App.tsx
+ *   3. Route auto-registers in AuthenticatedApp.tsx
  *
  * To add an OFFICIAL OPTIONAL MODULE entry (bundled in repo, opt-in per space/user):
  *   1. Create the plugin frontend entry under plugins/official/<pluginId>/web/src/
- *   2. Add an entry below with source: 'official_plugin', pluginId: '<plugin_id>'
- *   3. Set enabled: false, visible: true as static defaults
- *   4. useEffectivePlugins overlays runtime enabled/visible from the backend
- *   5. Register the descriptor in server/src/modules/plugins/official/<pluginId>.ts
- *   6. If it contributes backend behavior, add a bundled plugin package under
- *      plugins/official/<pluginId>/; server loads its build artifact via
- *      server/src/modules/plugins/builtInPlugins.ts
- *   7. Add an app-owned adapter under src/plugins/<pluginId>/ that injects frontend host APIs
+ *   2. Declare its placements in operationManifest.ts and export matching views from web/src/operationViews.tsx
+ *   3. manifestCatalog creates disabled, hidden navigation entries at build time
+ *   4. useEffectivePlugins overlays runtime enabled/visible from the backend and PluginSlot injects host APIs
  *
  * Third-party plugin packages are not loaded here. Do not implement
  * third-party plugin loading in this registry.

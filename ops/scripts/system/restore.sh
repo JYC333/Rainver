@@ -6,22 +6,24 @@
 # Restore sequence (single command):
 #   1. Extract to staging and validate archive/file restore preconditions.
 #   2. Refuse active app services unless --force-running is supplied.
-#   3. Restore the database from db/rainver.dump via pg_restore
-#      (terminate connections, drop, create, restore).
+#   3. Import and reconcile db/rainver.dump in a staging database, then switch
+#      it in with a transactional rename that preserves the previous database.
 #   4. Restore non-credential file data (config/ storage/ artifacts/ workspaces/, and
 #      logs/ if present) into $RAINVER_ROOT/<mode>/.
 #
 # Failure safety: after confirmation and before the database is touched, every
 # file directory is first copied next to its target on the same filesystem; a
 # copy failure (disk full, interruption) stops the restore with the database
-# and every existing directory unchanged. pg_restore runs with --exit-on-error.
+# and every existing directory unchanged. pg_restore runs with --exit-on-error
+# on the staging database, so an unsuccessful import cannot replace the active database.
 # Each directory is then swapped in with one atomic exchange (atomic_ops.py
 # replace-directory: renameat2 RENAME_EXCHANGE / macOS renamex_np RENAME_SWAP;
 # where unavailable it stops with that directory unchanged), so a directory is
 # never missing and is either wholly old or wholly restored, even if killed.
-# The database and the set of directories are NOT one transaction: a failure
-# after the database drop leaves an incomplete database, and the message names
-# which directories were already replaced. Recover by re-running this restore
+# The database and the set of directories are separate operations. A file
+# replacement failure leaves the prior database generation available as a
+# protection point, and the message names which directories were already replaced.
+# Recover by re-running this restore
 # with the same (or an earlier) archive; the server's automatic backups live in
 # $RAINVER_ROOT/<mode>/backups. Restoring needs free space for one extra copy
 # of the restored file data until each swap completes.
@@ -48,6 +50,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../lib/local-compose.sh
 source "$SCRIPT_DIR/../lib/local-compose.sh"
+source "$SCRIPT_DIR/../lib/restore-database.sh"
 
 MODE="${RAINVER_MODE:-dev}"
 ARCHIVE=""
@@ -89,41 +92,13 @@ PGUSER="$(local_compose_setting_or_default POSTGRES_USER rainver)"
 
 local_compose_validate_pg_identifier "POSTGRES_DB" "$PGDB"
 local_compose_validate_pg_identifier "POSTGRES_USER" "$PGUSER"
+restore_database_check_target
 
 preflight_error() {
   echo "ERROR: preflight failed before destructive DB operation started: $*" >&2
   exit 1
 }
 
-require_app_services_stopped() {
-  local running_services=""
-  local running=()
-  local service
-
-  if ! running_services="$("${COMPOSE[@]}" ps --services --filter status=running 2>/dev/null)"; then
-    preflight_error "unable to inspect running compose services for mode '$MODE'"
-  fi
-
-  for service in "$@"; do
-    if [[ $'\n'"$running_services"$'\n' == *$'\n'"$service"$'\n'* ]]; then
-      running+=("$service")
-    fi
-  done
-
-  if (( ${#running[@]} == 0 )); then
-    return 0
-  fi
-
-  if [[ "$FORCE_RUNNING" == "true" ]]; then
-    echo "WARNING: app service(s) still running during restore: ${running[*]}" >&2
-    return 0
-  fi
-
-  echo "ERROR: app service(s) still running for mode '$MODE': ${running[*]}" >&2
-  echo "       Stop app services first; restore will manage postgres as needed." >&2
-  echo "       $COMPOSE_HINT stop frontend server deployer" >&2
-  exit 1
-}
 
 echo "[restore] archive: $ARCHIVE"
 echo "[restore] mode:    $MODE"
@@ -151,18 +126,21 @@ report_failure() {
       echo "       Nothing was changed: database '$PGDB' and every directory in $MODE_ROOT are as before." >&2
       ;;
     database)
-      echo "ERROR: database restore failed; database '$PGDB' is incomplete. File data was not changed." >&2
+      echo "ERROR: database restore failed. The previous database was preserved. File data was not changed." >&2
       echo "       Re-run this restore with the same archive or an earlier one (automatic backups: $MODE_ROOT/backups)." >&2
       ;;
     files)
       echo "ERROR: file restore stopped. Database '$PGDB' is restored; directories already replaced: ${REPLACED[*]:-none}." >&2
+      echo "       If '$PGDB' previously existed, its protection point is '$RESTORE_DB_PREVIOUS'." >&2
       echo "       Every other directory is wholly previous or (the one being swapped when it stopped) wholly restored." >&2
       echo "       Re-run this restore with --force to finish." >&2
       ;;
   esac
   return 0
 }
-trap 'report_failure; cleanup_prepared; local_compose_stop_postgres_if_started "restore"; rm -rf "$STAGING"' EXIT
+trap 'report_failure; restore_database_cleanup; cleanup_prepared; local_compose_stop_postgres_if_started "restore"; rm -rf "$STAGING"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 if ! python3 "$SCRIPT_DIR/safe_extract.py" "$ARCHIVE" "$STAGING" \
   db storage artifacts config workspaces logs backup_manifest.json; then
   preflight_error "archive failed safe extraction: $ARCHIVE"
@@ -190,6 +168,7 @@ fi
 if ! install -d -m 700 "$MODE_ROOT"; then
   preflight_error "cannot create target root: $MODE_ROOT"
 fi
+local_compose_lock_instance "restoring the instance"
 
 FILE_DIRS=()
 for d in config storage artifacts workspaces logs; do
@@ -200,7 +179,7 @@ for d in config storage artifacts workspaces logs; do
   fi
 done
 
-require_app_services_stopped frontend server deployer
+local_compose_require_stopped_applications "full-system restore" "$FORCE_RUNNING"
 
 # ── PostgreSQL must be ready for pg_restore ────────────────────────────────────
 if ! local_compose_ensure_postgres_ready "restore" "$PGUSER"; then
@@ -210,6 +189,9 @@ fi
 if ! "${COMPOSE[@]}" exec -T postgres pg_restore --list < "$DUMP_FILE" >/dev/null; then
   preflight_error "db/rainver.dump is not a readable pg_restore custom-format dump"
 fi
+local_compose_prepare_prod_server_image || preflight_error "could not prepare the selected server image"
+MIGRATION_INVENTORY="$(local_compose_restore_preflight "$PGDB")" ||
+  preflight_error "the selected server image could not verify migrations and restore commands"
 
 # ── Manifest version metadata (read + validate; fail closed on mismatch) ───────
 # Manifest fields are never silently ignored: each is reported, and an incompatible
@@ -268,45 +250,30 @@ if [[ -n "$BK_PG_MAJOR" && -n "$LIVE_PG_MAJOR" && "$BK_PG_MAJOR" != "$LIVE_PG_MA
   incompatible_backup "backup PostgreSQL major ($BK_PG_MAJOR) != live server major ($LIVE_PG_MAJOR); restoring a custom-format dump across major versions can fail or misbehave."
 fi
 
-# Migrations are append-only (server/migrations/README.md): the manifest records
-# the latest migration the backup's database had applied and that file's
-# checksum. This build must carry the same file with the same content — then a
-# restore followed by the normal migrate step brings the data forward through
-# any later migrations. A version this build does not know means the archive
-# came from a newer build; a different checksum means an applied migration was
-# edited, which the runner refuses at the next start. Say so here, where the
-# operator can still choose a different archive.
-MIGRATIONS_DIR="$SCRIPT_DIR/../../../server/migrations"
-if [[ -n "$BK_SCHEMA_MIGRATION_VERSION" && -n "$BK_SCHEMA_MIGRATION_CHECKSUM" && -d "$MIGRATIONS_DIR" ]]; then
-  BK_MIGRATION_FILE="$(find "$MIGRATIONS_DIR" -maxdepth 1 -name "${BK_SCHEMA_MIGRATION_VERSION}_*.sql" | head -n 1)"
-  if [[ -z "$BK_MIGRATION_FILE" ]]; then
-    incompatible_backup "backup schema version ${BK_SCHEMA_MIGRATION_VERSION} is not in this build's migration chain; the archive was taken on a newer build. Restore into a build that carries that migration."
-  else
-    LIVE_SCHEMA_CHECKSUM="$(sha256sum "$BK_MIGRATION_FILE" | cut -d' ' -f1)"
-    if [[ "$BK_SCHEMA_MIGRATION_CHECKSUM" != "$LIVE_SCHEMA_CHECKSUM" ]]; then
-      incompatible_backup "backup checksum for migration ${BK_SCHEMA_MIGRATION_VERSION} (${BK_SCHEMA_MIGRATION_CHECKSUM:0:12}...) != this build's $(basename "$BK_MIGRATION_FILE") (${LIVE_SCHEMA_CHECKSUM:0:12}...); the migration runner will refuse to start against the restored database."
+# Check the chain inside the image that will reconcile the restored DB.
+if [[ -n "$BK_SCHEMA_MIGRATION_VERSION" && -n "$BK_SCHEMA_MIGRATION_CHECKSUM" ]]; then
+  backup_migration="" backup_checksum="" latest_migration="" pending_maintenance=""
+  while IFS=$'\t' read -r version name checksum policy; do
+    latest_migration="${version}_${name}.sql"
+    if [[ "$version" == "$BK_SCHEMA_MIGRATION_VERSION" ]]; then
+      backup_migration="$latest_migration"
+      backup_checksum="$checksum"
+    elif [[ -n "$backup_migration" && "$policy" == maintenance ]]; then
+      pending_maintenance="$pending_maintenance $latest_migration"
     fi
-    LATEST_MIGRATION_FILE="$(find "$MIGRATIONS_DIR" -maxdepth 1 -name '[0-9]*_*.sql' | sort | tail -n 1)"
-    if [[ "$(basename "$LATEST_MIGRATION_FILE")" != "$(basename "$BK_MIGRATION_FILE")" ]]; then
-      echo "[restore] backup is at migration ${BK_SCHEMA_MIGRATION_VERSION}; this build continues to $(basename "$LATEST_MIGRATION_FILE"). start.sh will apply the remaining migrations."
-      # Any migration after the backup's own that is marked for an offline
-      # upgrade makes the ordinary start refuse; say so here rather than
-      # letting the operator meet it as a failure after the restore.
-      pending_maintenance=""
-      while IFS= read -r m; do
-        [[ "$(basename "$m")" > "$(basename "$BK_MIGRATION_FILE")" ]] || continue
-        # Same contract as `requiresMaintenance` in server/src/db/migrator.ts:
-        # a line of its own, trimmed, within the first 20 lines. A looser test
-        # here would either miss a marker under a header comment or fire on
-        # prose that merely names it.
-        if head -n 20 "$m" | grep -qx -- '[[:space:]]*-- rainver:maintenance[[:space:]]*'; then
-          pending_maintenance="$pending_maintenance $(basename "$m")"
-        fi
-      done < <(find "$MIGRATIONS_DIR" -maxdepth 1 -name '[0-9]*_*.sql' | sort)
-      if [[ -n "$pending_maintenance" ]]; then
-        echo "[restore] these require an offline maintenance upgrade (ADR 0016 section 10):${pending_maintenance}"
-        echo "[restore]   an ordinary start will refuse. Resume with: ops/scripts/start.sh --$MODE --maintenance"
-      fi
+  done <<< "$MIGRATION_INVENTORY"
+  if [[ -z "$backup_migration" ]]; then
+    incompatible_backup "backup schema version ${BK_SCHEMA_MIGRATION_VERSION} is not in the selected server image's migration chain. Restore into a build that carries that migration."
+  else
+    if [[ "$BK_SCHEMA_MIGRATION_CHECKSUM" != "$backup_checksum" ]]; then
+      incompatible_backup "backup checksum for migration ${BK_SCHEMA_MIGRATION_VERSION} (${BK_SCHEMA_MIGRATION_CHECKSUM:0:12}...) differs from the selected image's $backup_migration (${backup_checksum:0:12}...)."
+    fi
+    if [[ "$latest_migration" != "$backup_migration" ]]; then
+      echo "[restore] backup is at migration ${BK_SCHEMA_MIGRATION_VERSION}; the selected build continues to $latest_migration."
+    fi
+    if [[ -n "$pending_maintenance" ]]; then
+      echo "[restore] these require an offline maintenance upgrade (ADR 0016 section 10):${pending_maintenance}"
+      echo "[restore]   Resume with: ops/scripts/start.sh --$MODE --maintenance"
     fi
   fi
 fi
@@ -325,41 +292,13 @@ for d in "${FILE_DIRS[@]}"; do
   prepared="$(mktemp -d "$MODE_ROOT/.restore-new-$d-XXXXXX")"
   PREPARED+=("$prepared")
   cp -a "$STAGING/$d/." "$prepared/"
+  python3 "$SCRIPT_DIR/atomic_ops.py" check-directory-replace "$prepared" "$MODE_ROOT/$d"
 done
 
-# ── Restore database (maintenance DB 'postgres' for terminate/drop/create) ─────
+# ── Stage and switch the restored database ───────────────────────────────────
+local_compose_require_stopped_applications "full-system restore" "$FORCE_RUNNING"
 RESTORE_STAGE="database"
-echo "[restore] terminating active connections to '$PGDB'..."
-"${COMPOSE[@]}" exec -T postgres \
-  psql -U "$PGUSER" -d postgres -c \
-  "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '$PGDB' AND pid <> pg_backend_pid();" >/dev/null
-
-echo "[restore] recreating database '$PGDB'..."
-"${COMPOSE[@]}" exec -T postgres \
-  psql -U "$PGUSER" -d postgres -c "DROP DATABASE IF EXISTS \"$PGDB\";" >/dev/null
-"${COMPOSE[@]}" exec -T postgres \
-  psql -U "$PGUSER" -d postgres -c "CREATE DATABASE \"$PGDB\";" >/dev/null
-
-echo "[restore] restoring database from $(basename "$DUMP_FILE")..."
-"${COMPOSE[@]}" exec -T postgres \
-  pg_restore -U "$PGUSER" --exit-on-error --clean --if-exists --no-owner --no-acl -d "$PGDB" \
-  < "$DUMP_FILE"
-
-# pg_restore --no-owner --no-acl strips operation-package ownership and grants.
-# Explicit stopped-service host reconciliation; never run plugin migrations here.
-# The owner URL carries its password: inherited by name (`-e NAME`), never on argv.
-SERVER_DATABASE_URL="$(local_compose_server_owner_database_url)" "${COMPOSE[@]}" run --rm -T --no-deps \
-  -e SERVER_DATABASE_URL \
-  server node dist/db/migrateCli.js plugin-reconcile
-
-# ADR 0031: --no-acl also drops the runtime/backup role grants. Re-grant them
-# only when those roles were provisioned; this never creates or activates them.
-SERVER_DATABASE_URL="$(local_compose_server_owner_database_url)" \
-RAINVER_DB_APP_ROLE="$(local_compose_setting_or_default RAINVER_DB_APP_ROLE rainver_app)" \
-RAINVER_DB_BACKUP_ROLE="$(local_compose_setting_or_default RAINVER_DB_BACKUP_ROLE rainver_backup)" \
-  "${COMPOSE[@]}" run --rm -T --no-deps -e SERVER_DATABASE_URL -e RAINVER_DB_APP_ROLE -e RAINVER_DB_BACKUP_ROLE \
-  server node dist/db/migrateCli.js runtime-roles-reconcile --if-present
-
+restore_database "$DUMP_FILE" "full-system restore" "$FORCE_RUNNING"
 
 # ── Restore file data ──────────────────────────────────────────────────────────
 RESTORE_STAGE="files"
@@ -376,17 +315,20 @@ done
 
 echo "[restore] complete."
 echo "[restore] resume the app, then verify the restored instance:"
-echo "          ops/scripts/start.sh --$MODE"
+if [[ "$MODE" == prod ]]; then
+  echo "          RAINVER_IMAGE_TAG=$RAINVER_IMAGE_TAG ops/scripts/start.sh --prod"
+else
+  echo "          ops/scripts/start.sh --$MODE"
+fi
+echo "          ops/scripts/system/verify-restore.sh --mode $MODE --bundled-postgres"
 case "$MODE" in
   dev)
-    echo "          ops/scripts/system/verify-restore.sh --mode dev"
     echo "          # API health URL: http://localhost:3000/api/v1/server/health"
     ;;
   test)
-    echo "          ops/scripts/system/verify-restore.sh --mode test"
     echo "          # API health URL: http://localhost:3100/api/v1/server/health"
     ;;
   prod)
-    echo "          ops/scripts/system/verify-restore.sh --mode prod --api-base-url <production-api-url>"
+    echo "          # Check /api/v1/server/health on the production frontend."
     ;;
 esac

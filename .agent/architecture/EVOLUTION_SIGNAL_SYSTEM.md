@@ -113,7 +113,8 @@ visible-pending read model, so memory, code-patch, workflow-save, and other
 reviewable proposal types are not hidden behind an evolution-specific prefix.
 Incomplete `code_patch` proposals and granting-user `egress_review` proposals
 are intentionally not bundleable: their confirmation/approval flows must stay
-on their dedicated server endpoints.
+on their dedicated server endpoints. The Inbox uses the shared Proposal acceptance
+result to display expired or superseded approvals as refusals.
 `POST /api/v1/evolution/bundles` is the keyed core command
 `evolution.bundle.create`; it locks every named Proposal, then checks
 membership, in the operation transaction. Deciding (`/decide`, `/approve`,

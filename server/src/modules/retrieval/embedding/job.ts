@@ -2,9 +2,10 @@ import type { ServerConfig } from "../../../config.js";
 import { getDbPool } from "../../../db/pool.js";
 import { PgJobQueueRepository } from "../../jobs/repository.js";
 import { writePolicyAudit } from "../../policy/auditWriter.js";
-import type { JobHandlerRegistry } from "../../jobs/handlerRegistry.js";
+import { JobDeferredError, type JobHandlerRegistry } from "../../jobs/handlerRegistry.js";
 import { resolveProviderCommandStore } from "../../providers/commands/store.js";
 import { RetrievalEmbeddingStore } from "../index.js";
+import { clampEmbeddingBatchLimit } from "../embeddingStore.js";
 import { readSpaceRetrievalSettings } from "../settings.js";
 import { loadViewerSpaceRole } from "../sourcePolicy.js";
 import {
@@ -109,7 +110,7 @@ export function registerRetrievalEmbeddingHandler(
     if (payloadSpaceId && payloadSpaceId !== spaceId) {
       throw new Error(`${RETRIEVAL_EMBEDDING_JOB} payload space_id does not match envelope space_id`);
     }
-    const batchLimit = numberValue(job.payload.batch_limit) ?? DEFAULT_EMBED_BATCH;
+    const batchLimit = clampEmbeddingBatchLimit(numberValue(job.payload.batch_limit) ?? DEFAULT_EMBED_BATCH);
     const userId = job.user_id;
     if (!userId) throw new Error(`${RETRIEVAL_EMBEDDING_JOB} missing envelope user_id`);
     const retrievalSettings = await readSpaceRetrievalSettings(db, spaceId);
@@ -164,6 +165,12 @@ export function registerRetrievalEmbeddingHandler(
       // Skip provider egress entirely when the space disables it.
       externalEgressEnabled: retrievalSettings.externalEgressEnabled,
     });
+    // A full batch may leave eligible chunks. Yield to the Job worker and
+    // resume the same durable Job without spending a failure attempt. Blocked
+    // chunks and invalid vectors still advance via the store's policy and cap.
+    if (result.scanned === batchLimit) {
+      throw new JobDeferredError("Embedding backfill has another batch to scan", 100);
+    }
     return result as unknown as Record<string, unknown>;
   });
 }

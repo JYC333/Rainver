@@ -572,6 +572,48 @@ it('native search previews asynchronously through canonical Run, restores and ma
  await runSourceGoalTick(db.pool,config,goalId,identity.spaceId,new SourceGoalExecutor(db.pool,config));read=await recoverNativeThenRead(real,identity,goalId);const live=read.native_runs.find(r=>r.id!==run)!;expect(live.status).toBe('queued');expect((await db.pool.query('SELECT count(*)::int n FROM source_items')).rows[0].n).toBe(0);await finishNative(live.id);await recoverNativeThenRead(real,identity,goalId);expect((await db.pool.query('SELECT count(*)::int n FROM source_items')).rows[0].n).toBe(1);
  await recoverNativeThenRead(real,identity,goalId);expect((await db.pool.query('SELECT count(*)::int n FROM source_items')).rows[0].n).toBe(1);
 });
+it('leaves the successor native materialization intact when the first claim expires in flight', async ctx => {
+ if(!db.available)return ctx.skip();
+ const {real,v}=await nativePlan();
+ await real.follow(identity,goalId,{version_id:v.id,idempotency_key:'live-native'});
+ await runSourceGoalTick(db.pool,config,goalId,identity.spaceId,new SourceGoalExecutor(db.pool,config));
+ const run=(await real.read(identity,goalId)).native_runs[0].id;
+ await finishNative(run);
+ const {reconcileNativeSearch}=await import('../src/modules/sources/goals/nativeSearchResults.js');
+ let reached!:()=>void, release!:()=>void;
+ const blocked=new Promise<void>(resolve=>{reached=resolve});
+ const resumed=new Promise<void>(resolve=>{release=resolve});
+ let intercepted=false;
+ const firstPool=new Proxy(db.pool,{
+  get(pool,key){
+   if(key==='query')return async (sql:string,args?:unknown[])=>{
+    if(!intercepted&&sql==='SELECT * FROM source_goal_bindings WHERE id=$1'){
+     intercepted=true;
+     reached();
+     await resumed;
+    }
+    return pool.query(sql,args);
+   };
+   const value=Reflect.get(pool,key,pool);
+   return typeof value==='function'?value.bind(pool):value;
+  },
+ });
+ const first=reconcileNativeSearch(firstPool,config,goalId);
+ try{
+  await Promise.race([blocked,first.then(()=>{throw new Error('First claim did not reach materialization')})]);
+  await db.pool.query(`UPDATE source_goal_runs SET result_json=result_json||jsonb_build_object(
+    'materialization_lease_until',now()-interval '1 second') WHERE result_json->>'native_run_id'=$1`,[run]);
+  await reconcileNativeSearch(db.pool,config,goalId);
+ }finally{
+  release();
+  await first;
+ }
+ const result=await db.pool.query(`SELECT r.status,b.status AS binding_status,r.result_json->>'error' AS error
+  FROM source_goal_runs r JOIN source_goal_bindings b ON b.id=r.binding_id
+  WHERE r.result_json->>'native_run_id'=$1`,[run]);
+ expect(result.rows[0]).toEqual({status:'succeeded',binding_status:'active',error:null});
+ expect((await db.pool.query('SELECT count(*)::int n FROM source_items')).rows[0].n).toBe(1);
+});
 it('native search fails closed without the bound action submission; chat text cannot satisfy the preview',async ctx=>{
  if(!db.available)return ctx.skip();const {real,v}=await nativePlan();await previewNow(real,identity,goalId,v.id,AbortSignal.timeout(10000));let read=await recoverNativeThenRead(real,identity,goalId);await finishNative(read.native_runs[0].id,false);read=await recoverNativeThenRead(real,identity,goalId);expect(read.previews[0].status).toBe('partial');expect(read.previews[0].result_json.contributions[0].error).toBe('source_material_submission_missing');expect((await db.pool.query('SELECT count(*)::int n FROM source_items')).rows[0].n).toBe(0);
 });
@@ -609,6 +651,18 @@ it('API search cannot silently replace Agent-native selection or use a model cre
 async function freshCheckOnly(){await db.pool.query("UPDATE source_goal_previews SET expires_at=now()-interval '1 second' WHERE goal_id=$1",[goalId]);}
 async function readyNative(){const n=await nativePlan();await previewNow(n.real,identity,goalId,n.v.id,AbortSignal.timeout(10000));let d=await recoverNativeThenRead(n.real,identity,goalId);await finishNative(d.native_runs[0].id);d=await recoverNativeThenRead(n.real,identity,goalId);await freshCheckOnly();await n.real.follow(identity,goalId,{version_id:n.v.id,idempotency_key:'native-confirm'});return n;}
 async function nativeTick(real:SourceGoalService){await runSourceGoalTick(db.pool,config,goalId,identity.spaceId,new SourceGoalExecutor(db.pool,config));return (await recoverNativeThenRead(real,identity,goalId)).native_runs.find(r=>r.status==='queued')!.id;}
+it('repairs a native collection left between its cursor commit and terminal audit',async ctx=>{
+ if(!db.available)return ctx.skip();
+ const {real}=await readyNative(),run=await nativeTick(real);
+ await finishNative(run);
+ await recoverNativeThenRead(real,identity,goalId);
+ const before=(await db.pool.query('SELECT cursor_json FROM source_goal_bindings WHERE goal_id=$1',[goalId])).rows[0].cursor_json;
+ await db.pool.query(`UPDATE source_goal_runs SET status='accepted',ended_at=NULL WHERE result_json->>'native_run_id'=$1`,[run]);
+ await recoverNativeThenRead(real,identity,goalId);
+ expect((await db.pool.query(`SELECT status,result_json FROM source_goal_runs WHERE result_json->>'native_run_id'=$1`,[run])).rows[0]).toMatchObject({status:'succeeded',result_json:{goal_items_new:1,items_observed:1}});
+ expect((await db.pool.query('SELECT cursor_json FROM source_goal_bindings WHERE goal_id=$1',[goalId])).rows[0].cursor_json).toEqual(before);
+ expect((await db.pool.query('SELECT count(*)::int n FROM source_items')).rows[0].n).toBe(1);
+});
 it('native normal empty polling remains active and commits no fabricated item',async ctx=>{
  if(!db.available)return ctx.skip();const {real}=await readyNative();const run=await nativeTick(real);await finishNative(run,true,[]);await recoverNativeThenRead(real,identity,goalId);expect((await db.pool.query('SELECT status,failures,retry_at FROM source_goal_bindings')).rows[0]).toEqual({status:'active',failures:0,retry_at:null});expect((await db.pool.query('SELECT count(*)::int n FROM source_items')).rows[0].n).toBe(0);
 });

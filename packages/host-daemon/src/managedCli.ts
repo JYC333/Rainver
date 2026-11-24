@@ -32,6 +32,8 @@ async function verify(tool: ToolManifest, key: OwnCliUpdateRuntimeKey): Promise<
       HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: home, XDG_DATA_HOME: home,
       XDG_STATE_HOME: home, CODEX_HOME: join(home, ".codex"), CLAUDE_CONFIG_DIR: join(home, ".claude"),
       CLAUDE_SECURESTORAGE_CONFIG_DIR: join(home, ".claude"), DISABLE_AUTOUPDATER: "1" };
+    // Codex app-server requires an explicit CODEX_HOME to exist before startup.
+    await mkdir(key === "codex_cli" ? env.CODEX_HOME : env.CLAUDE_CONFIG_DIR, { mode: 0o700 });
     const result = await probeAcpIdentity(process.execPath, [entry], env, home);
     if (!result) throw new Error("The CLI did not pass the installed ACP adapter's health check");
   } finally { await rm(home, { recursive: true, force: true }); }

@@ -268,7 +268,7 @@ export function Select({ options, value, onChange, className, size = 'md', dropU
           h,
         )}
       >
-        <span className="truncate">{selected?.label ?? value}</span>
+        <span className="truncate" title={selected?.label ?? value}>{selected?.label ?? value}</span>
         {showChevron && <ChevronDown size={13} className="shrink-0 text-muted-foreground" />}
       </button>
   )

@@ -70,7 +70,8 @@ const mount = () => render(<StrictMode><MemoryRouter initialEntries={['/spaces/s
 beforeEach(() => {
   vi.resetAllMocks();
   vi.mocked(projectsApi.get).mockResolvedValue({
-    current_user_can_read: true
+    current_user_can_read: true,
+    current_user_can_write: true
   } as never);
   captured.context = null;
   captured.fail = false;
@@ -103,8 +104,9 @@ it('hosts a declared local component in StrictMode with only scoped ops/ui ports
   mount();
   await screen.findByText('Bundled records');
   const ctx = captured.context!;
-  expect(Object.keys(ctx).sort()).toEqual(['ops', 'projectId', 'spaceId', 'ui']);
+  expect(Object.keys(ctx).sort()).toEqual(['ops', 'projectCanWrite', 'projectId', 'spaceId', 'ui']);
   expect(ctx.projectId).toBe('project');
+  expect(ctx.projectCanWrite).toBe(true);
   await expect(ctx.ops.query('plugin.operation_probe.record.list', {})).resolves.toEqual({
     status: 'succeeded',
     data: {

@@ -7,6 +7,17 @@ export const TOOL_REQUEST_LIMIT = 4 * 1024 * 1024;
 export const TOOL_RESPONSE_LIMIT = 8 * 1024 * 1024;
 
 /**
+ * Gmail reads: an on-demand page has a 60-second server deadline, and a digest read one 55-second budget for
+ * its model-proof wait, page and release together (`GMAIL_DIGEST_READ_BUDGET_MS`), plus time to release the
+ * result.
+ */
+export function toolHttpTimeoutMs(request: ToolRequest): number {
+  const action = decodeURIComponent(request.path);
+  return request.method === "POST" && (action === "tools/source.gmail.mail.read" || action === "tools/source.gmail.digest.read")
+    ? 65_000 : 30_000;
+}
+
+/**
  * `tools` or `tools/<one action segment>`. A dot segment (`.`, `..`, or a
  * percent-encoded `%2e`) or an encoded separator would be normalized by the
  * URL parser into a different Run route still carrying the Run bearer.
@@ -48,7 +59,7 @@ export async function toolHttpRequest(identity: ToolIdentity, input: ToolRequest
     const response = await fetch(url, {
       method: request.method,
       redirect: "error",
-      signal: AbortSignal.any([AbortSignal.timeout(30_000), ...(signal ? [signal] : [])]),
+      signal: AbortSignal.any([AbortSignal.timeout(toolHttpTimeoutMs(request)), ...(signal ? [signal] : [])]),
       headers: {
         authorization: `Bearer ${identity.token}`,
         ...(request.body === undefined ? {} : { "content-type": "application/json", "idempotency-key": request.idempotency_key ?? request.id }),

@@ -20,8 +20,8 @@
  *   once on the card in this same conversation (`authorization.request`,
  *   data-owner approver) and the waiting turn continues; the consent then
  *   serves every conversation of that Project — never another Project's —
- *   until revoked, turned off or the connection changes. One Run makes at
- *   most `GMAIL_AGENT_READ_LIMITS.readsPerRun` reads.
+ *   until revoked, turned off or the connection changes. The same Run can
+ *   read multiple pages.
  * - **Execute**: the bounded Gmail read (`gmailAgentReads.ts`) with the
  *   consent, the owner's current Project access, connection generation and
  *   running Run rechecked before every physical send.
@@ -37,7 +37,7 @@
  * event logs carry neither arguments nor result (`privateToolCalls.ts`). The
  * reply the Agent writes from it belongs to the conversation and its audience.
  */
-import { GMAIL_AGENT_READ_LIMITS, type GmailAgentReadInput, type GmailAgentReadOutput, type OperationActor, type RegisteredSystemActionDefinition } from "@rainver/protocol";
+import { GMAIL_AGENT_PAGE_SIZE, type GmailAgentReadInput, type GmailAgentReadOutput, type OperationActor, type RegisteredSystemActionDefinition } from "@rainver/protocol";
 import type { ServerConfig } from "../../../config.js";
 import { getDbPool } from "../../../db/pool.js";
 import { runHostWorkOutsideOperation } from "../../../db/operationTransaction.js";
@@ -77,7 +77,6 @@ const withheld = () => new OperationError("operation_audit_unavailable", 503, tr
 const MESSAGES: Partial<Record<string, string>> = {
   gmail_agent_read_unavailable: "Gmail reading is not available in this conversation any more (the owner revoked it or turned it off, or the connection changed).",
   gmail_agent_read_audience_outside_project: "Someone who can read this conversation does not work in this Project, so mail is not read here. Ask in a conversation of the Project whose readers all work in it.",
-  gmail_agent_read_limit: "This turn has made the maximum number of mail reads; answer with what was read, and the owner can ask again in a new message.",
   gmail_agent_read_mailbox_ambiguous: "The owner has several Gmail connections that allow Agent reads; ask which mailbox and pass mailbox_email.",
   gmail_not_connected: "No Gmail connection here allows Agent reads. The owner connects Gmail and turns on Agent reads under Sources → Gmail.",
 };
@@ -86,12 +85,38 @@ function refuse(status: 409 | 422 | 429, code: string, extra: Record<string, unk
   return new OperationRefusal(status, "sources", MESSAGES[code] ?? code.replaceAll("_", " "), { code, ...extra });
 }
 
-/** A fixed-code refusal the model may see; never a query, id, header, body or upstream text. */
+function gmailReadFailureMessage(error: GmailReadError): string {
+  const { stage, cause, upstream_status, upstream_reason } = error.diagnostic;
+  const details = [
+    stage?.replaceAll("_", " "), error.code, cause?.replaceAll("_", " "),
+    upstream_status === undefined ? undefined : `Google HTTP ${upstream_status}`, upstream_reason,
+  ].filter(Boolean);
+  return `Gmail read failed (${details.join(", ")}).`;
+}
+
+class GmailAgentReadUnavailable extends OperationError {
+  constructor(private readonly failure: GmailReadError) {
+    super("operation_temporarily_unavailable", 503, true, "sources");
+  }
+
+  override body(requestId: string) {
+    const body = super.body(requestId);
+    body.error.message = gmailReadFailureMessage(this.failure);
+    body.error.metadata = { code: this.failure.code, ...this.failure.diagnostic };
+    return body;
+  }
+}
+
+/** Only fixed codes and allowlisted fields reach the tool result and Run log. */
 function fromGmailError(error: GmailReadError): OperationError {
   if (error.code === "gmail_not_found") return hidden();
-  if (error.status === 429) return refuse(429, error.code, error.retryAt ? { retry_at: error.retryAt } : {});
+  if (error.status === 429) {
+    return new OperationRefusal(429, "sources", gmailReadFailureMessage(error), {
+      code: error.code, ...error.diagnostic, ...(error.retryAt ? { retry_at: error.retryAt } : {}),
+    });
+  }
   if (error.status === 409 || error.status === 422) return refuse(error.status, error.code);
-  return new OperationError("operation_temporarily_unavailable", 503, true, "sources");
+  return new GmailAgentReadUnavailable(error);
 }
 
 async function runSession(db: Queryable, actor: OperationActor): Promise<string | null> {
@@ -126,12 +151,6 @@ async function chooseConnection(db: Queryable, actor: OperationActor, input: Gma
     throw refuse(409, "gmail_agent_read_mailbox_ambiguous", ownerOnly ? { mailboxes: chosen.map((row) => row.mailbox_email) } : {});
   }
   return chosen[0]!;
-}
-
-/** Released reads of this Run (the per-Run bound stays under a standing consent). */
-async function readsUsed(db: Queryable, actor: OperationActor): Promise<number> {
-  return (await db.query<{ n: number }>(`SELECT count(*)::int AS n FROM agent_data_read_logs WHERE space_id=$1 AND run_id=$2 AND action_id=$3`,
-    [actor.space_id, actor.run_id, GMAIL_AGENT_READ_ACTION])).rows[0]?.n ?? 0;
 }
 
 export function gmailAgentReadRegistration(definitions: ReadonlyMap<string, RegisteredSystemActionDefinition>, config: ServerConfig): OperationRegistration {
@@ -184,16 +203,16 @@ export function gmailAgentReadRegistration(definitions: ReadonlyMap<string, Regi
       const grantId = facts.grantId;
       const projectId = await gmailAgentReadConsentProject(db, { spaceId: actor.space_id, grantId });
       if (!projectId) throw hidden();
-      if (await readsUsed(db, actor) >= GMAIL_AGENT_READ_LIMITS.readsPerRun) throw refuse(429, "gmail_agent_read_limit");
       let result: Awaited<ReturnType<typeof readGmailForAgent>>;
       try {
         // The Gmail read owns its own bounded transactions and sends, outside the query's transaction.
         result = await runHostWorkOutsideOperation(async () => {
           const pool = getDbPool(config.databaseUrl!);
           return readGmailForAgent(config, pool, {
-            spaceId: actor.space_id, ownerUserId: person, connectionId: connection.id,
-            query: input.query ?? null, max: input.max_messages ?? GMAIL_AGENT_READ_LIMITS.messagesPerCall,
-            signal: new AbortController().signal,
+            spaceId: actor.space_id, ownerUserId: person, connectionId: connection.id, projectId,
+            query: input.query ?? null, max: input.max_messages ?? GMAIL_AGENT_PAGE_SIZE.default,
+            pageToken: input.page_token,
+            signal: invocation?.signal ?? new AbortController().signal,
             // Revocation, the opt-out, a changed connection, the owner losing the Project or the Run ending
             // stops the read before its next send. Order: each of those takes effect when its transaction
             // commits; every physical send is admitted by a fresh read of committed state immediately before
@@ -201,9 +220,9 @@ export function gmailAgentReadRegistration(definitions: ReadonlyMap<string, Regi
             // refuses the send; a send admitted just before such a commit may complete at Google, but its
             // result never leaves: the release gate below rechecks under locks that the change's writer also
             // takes, so it withholds it.
-            authorizeSend: async () => {
-              const running = (await pool.query(`SELECT 1 FROM runs WHERE id=$1 AND space_id=$2 AND status='running'`, [actor.run_id, actor.space_id])).rows.length > 0;
-              if (!running || !await gmailAgentReadConsentLive(pool, { spaceId: actor.space_id, ownerUserId: person, grantId })) throw new GmailReadError(409, "gmail_agent_read_unavailable");
+            authorizeSend: async (db) => {
+              const running = (await db.query(`SELECT 1 FROM runs WHERE id=$1 AND space_id=$2 AND status='running'`, [actor.run_id, actor.space_id])).rows.length > 0;
+              if (!running || !await gmailAgentReadConsentLive(db, { spaceId: actor.space_id, ownerUserId: person, grantId })) throw new GmailReadError(409, "gmail_agent_read_unavailable");
             },
           });
         });
@@ -257,14 +276,14 @@ export async function releaseGmailAgentRead(db: Queryable, config: ServerConfig,
   const consent = await pluginDataFacts(db, config, actor, GMAIL_AGENT_READ_ACTION, true, facts.snapshot.connectionId);
   if (!consent || consent === "pin_mismatch" || !consent.consent || consent.grantId !== facts.grantId) throw withheld();
   if (await gmailAgentReadConsentProject(db, { spaceId: actor.space_id, grantId: facts.grantId }) !== facts.projectId) throw withheld();
-  if (await readsUsed(db, actor) >= GMAIL_AGENT_READ_LIMITS.readsPerRun) throw withheld();
   // The read stays this Run's input: outward writes of the Run are refused (mail is untrusted data) and no
   // artifact, proposal or memory is derived from its output. Later turns of this Project conversation keep
   // its runtime: the Project-bound read does not mark the conversation for isolation.
   await persistRunContextTaint(db, {
     runId: run.id, spaceId: actor.space_id, instructingUserId: person, runVisibility: run.visibility,
     items: [{ ownerUserId: person, visibility: "private" }],
-    pluginReads: [{ plugin_id: CONSENT_ID, data_class: "sensitive", owner_user_id: person }],
+    pluginReads: [{ plugin_id: CONSENT_ID, data_class: "sensitive", owner_user_id: person,
+      gmail_scope: { project_id: facts.projectId, grant_id: facts.grantId } }],
   });
   await recordAgentDataRead(db, {
     spaceId: actor.space_id, ownerUserId: person, runId: run.id, agentId: actor.agent_id, actionId: GMAIL_AGENT_READ_ACTION,

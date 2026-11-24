@@ -1,6 +1,6 @@
 import { lockReaderWriteTarget } from "./writeAuthority.js";
 import { randomUUID } from "node:crypto";
-import { ReaderAppearanceSchema, ReaderPositionWriteSchema, type ReaderAppearance, type ReaderPosition, type ReaderPositionMark } from "@rainver/protocol";
+import { ReaderAppearanceSchema, ReaderPositionWriteSchema, type ReaderAppearance, type ReaderPosition, type ReaderPositionMark, type ReaderPositionResult } from "@rainver/protocol";
 import { HttpError, withQueryableTransaction, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 import { ScopedSettingsStore, defineScopedSetting } from "../settings/scopedSettings.js";
 import { PgReaderRepository, ReaderPreparationStale, assertDocumentReadable, readerFilesOutsideTransaction, type ReaderFilePreparation } from "./repository.js";
@@ -52,7 +52,7 @@ export class ReaderPositionStore {
     return out(result.rows[0]);
   }
 
-  async write(identity: SpaceUserIdentity, documentType: string, documentId: string, body: unknown, prepared?: ReaderFilePreparation): Promise<{ position: ReaderPosition | null; accepted: boolean }> {
+  async write(identity: SpaceUserIdentity, documentType: string, documentId: string, body: unknown, prepared?: ReaderFilePreparation): Promise<ReaderPositionResult> {
     const parsed = ReaderPositionWriteSchema.safeParse(body);
     if (!parsed.success) throw new HttpError(422, parsed.error.issues[0]?.message ?? "Invalid reading position");
     const input = parsed.data;
@@ -79,11 +79,11 @@ export class ReaderPositionStore {
       // has now, so it changes nothing (current access and lock already held).
       const document = await new PgReaderRepository(tx, config,files).getDocument(identity, documentType, documentId, { recordOpen: false })
         .catch((error: unknown) => { if (error instanceof ReaderPreparationStale) return "stale" as const; throw error; });
-      if (document === "stale") return { position: out((await select()).rows[0]), accepted: false };
+      if (document === "stale") return { position: out((await select()).rows[0]), accepted: false, reason: "stale_document" };
       if (!document) throw new HttpError(404, "Document not found");
       const onCurrentVersion = document.content_hash === input.content_hash && document.structure_hash === input.structure_hash;
       // A report measured on a version the document no longer has (an old tab) changes nothing, however late its time.
-      if (!onCurrentVersion) return { position: out((await select()).rows[0]), accepted: false };
+      if (!onCurrentVersion) return { position: out((await select()).rows[0]), accepted: false, reason: "stale_document" };
       const fresh = (dwelled: boolean) => dwelled || input.reset_furthest ? input.current : null;
       const furthest = fresh(input.dwelled);
       const inserted = await tx.query<PositionRow>(

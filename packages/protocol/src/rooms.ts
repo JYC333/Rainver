@@ -248,8 +248,12 @@ export const RoomConversationSchema = z.object({
   status: z.string(),
   created_at: ISODateTimeSchema,
   updated_at: ISODateTimeSchema,
+  can_delete_empty: z.boolean().optional(),
   last_message_at: ISODateTimeSchema.nullable().optional(),
   is_running: z.boolean().optional(),
+  /** Recycle bin list only: when it was deleted and when it stops being restorable. */
+  deleted_at: ISODateTimeSchema.optional(),
+  purge_after: ISODateTimeSchema.optional(),
   ...SecretResponseGuards,
 }).strict();
 export type RoomConversation = z.infer<typeof RoomConversationSchema>;
@@ -434,6 +438,37 @@ export type RoomMessageFocusRef = z.infer<typeof RoomMessageFocusRefSchema>;
 /** Agents one message may ask the manager to arrange work with. */
 export const ROOM_MESSAGE_MAX_COORDINATION_TARGETS = 20;
 
+/**
+ * An ordinary send's request to reach the active Run its route already
+ * targets (`modules/rooms.md`, "Ordinary send into an active turn"): `auto`
+ * when exactly one can take the text, or the Run the person chose among
+ * several. Omitted, the message is sent or queued as before.
+ */
+export const RoomLiveTargetSchema = z.union([z.literal("auto"), z.object({ run_id: IdSchema }).strict()]);
+export type RoomLiveTarget = z.infer<typeof RoomLiveTargetSchema>;
+/** The 409 refusal code naming several Runs a message could go to; nothing was recorded. */
+export const ROOM_LIVE_INPUT_CHOICE_REQUIRED = "live_input_target_choice_required";
+/**
+ * The 409 refusal of a Run the person explicitly chose that can no longer take
+ * this message (it moved on, or the draft became one a running turn cannot
+ * carry). Nothing was recorded or sent; `candidates` lists the Runs that still
+ * can, possibly none. Never answered by a silent ordinary send.
+ */
+export const ROOM_LIVE_INPUT_TARGET_UNAVAILABLE = "live_input_target_unavailable";
+/** One active Run an ordinary send could be added to, as the choice refusal lists it. */
+export const RoomLiveInputCandidateSchema = z.object({
+  run_id: IdSchema,
+  agent_id: IdSchema,
+  agent_name: z.string().nullable(),
+  status: z.enum(["running", "waiting_for_dependency"]),
+  /** `live`: into the running turn now; `with_results`: handed over when the parked turn resumes. */
+  delivery: z.enum(["live", "with_results"]),
+  /** Rainver delegated this Run to the Agent rather than the person addressing it. */
+  delegated: z.boolean(),
+  started_at: z.string().nullable(),
+}).strict();
+export type RoomLiveInputCandidate = z.infer<typeof RoomLiveInputCandidateSchema>;
+
 export const SendRoomMessageRequestSchema = z.object({
   content: z.string().trim().max(8000).default(""),
   input_parts: ConversationInputPartsSchema.default([]),
@@ -447,6 +482,7 @@ export const SendRoomMessageRequestSchema = z.object({
    * queued.
    */
   queue: z.boolean().default(false),
+  live_target: RoomLiveTargetSchema.nullish(),
   routing_mode: AgentRunMessageRoutingModeSchema.default("direct"),
   recipient_segments: z.array(AgentRunMessageRecipientSegmentSchema).min(1).nullish(),
   /**

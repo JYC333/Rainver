@@ -133,7 +133,7 @@ function ProposalStatusCard({ proposals, onDecide }: { proposals: HomePendingPro
   // A maintenance update waiting for its revision is decided on its own page,
   // where it can be revised; a quick accept here would only be refused.
   const { t } = useAppTranslation()
-  const canQuick = (p: HomePendingProposalItem) => (p.proposal_type === 'memory_update' || p.proposal_type === 'code_patch') && decisionOpen(p) && !p.awaiting_revision
+  const canQuick = (p: HomePendingProposalItem) => (p.proposal_type === 'memory_update' || p.proposal_type === 'code_patch') && decisionOpen(p) && !p.awaiting_revision && !p.chosen_on_card
   return (
     <div className="bg-card border border-border rounded-lg p-4 flex flex-col gap-3">
       <div className="flex items-baseline justify-between">

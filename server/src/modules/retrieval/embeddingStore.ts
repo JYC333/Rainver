@@ -97,7 +97,7 @@ export class RetrievalEmbeddingStore {
                   retrieval_chunks.embedding_claim_id,
                   ro.source_connection_ids_json`,
       [
-        spaceId, clampLimit(limit), claimId, staleBefore.toISOString(), Math.max(1, Math.floor(maxAttempts)),
+        spaceId, clampEmbeddingBatchLimit(limit), claimId, staleBefore.toISOString(), Math.max(1, Math.floor(maxAttempts)),
         policyGeneration.frame, JSON.stringify(policyGeneration.connectionDigests),
       ],
     );
@@ -254,7 +254,7 @@ export function toVectorLiteral(vector: number[]): string {
   return `[${vector.join(",")}]`;
 }
 
-function clampLimit(limit: number): number {
+export function clampEmbeddingBatchLimit(limit: number): number {
   const n = Math.floor(limit);
   if (!Number.isFinite(n) || n <= 0) return 1;
   return Math.min(n, MAX_BATCH);

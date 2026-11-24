@@ -22,7 +22,7 @@ import { startProviderProxyServer } from "./modules/providers/proxy/server.js";
 import { PluginHost } from "./modules/plugins/host/index.js";
 import { BUILT_IN_PLUGINS } from "./modules/plugins/builtInPlugins.js";
 import { runBuiltInSeeds } from "./db/seeds.js";
-import { getDbPool } from "./db/pool.js";
+import { closeDbPool, getDbPool } from "./db/pool.js";
 import { assertLeastPrivilegeRuntimeRole } from "./db/runtimeRoles.js";
 import { PgWorkspaceLocationRepository } from "./modules/projectFolders/workspaceLocations.js";
 import { publishBuiltinHostCredential } from "./modules/hosts/builtinRegistration.js";
@@ -92,6 +92,7 @@ async function main(): Promise<void> {
       await providerProxy.close();
     }
     await app.close();
+    if (config.databaseUrl) await closeDbPool(config.databaseUrl);
     process.exit(0);
   };
   process.on("SIGINT", () => void shutdown("SIGINT"));

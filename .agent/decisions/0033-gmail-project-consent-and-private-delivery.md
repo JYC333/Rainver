@@ -9,6 +9,13 @@ Project, digest setup and delivery in the owner's private conversation, a Room
 or the mainline on that conversation's runtime, the later-turn Project
 constraint, the cutover of earlier consents and explicit owner sharing to a Room
 or its Project mainline. Live Google acceptance remains outstanding.
+[ADR 0034](0034-gmail-application-updates.md) adds a third digest kind, `application`
+(automatic Application updates), on the same card, consent shape and scheduler, with an
+owner-only conversation and a pinned Agent and model.
+[ADR 0035](0035-gmail-shared-project-scope.md) adds one combined card for several purposes, pins digests to
+the configuration their card shows (a change pauses them until a new card), and a standing read-only
+delegation to named Project members that is a separate authority; §2's rule that members never use the
+owner's consent stands.
 
 ## Context
 
@@ -50,8 +57,8 @@ privately, and — later — unattended daily and rule-matched summaries.
    system Runs never use it. A conversation outside every Project is not
    offered the tool. A Project private chat that may read is created
    owner-only (`visibility = private`) instead of Space-shared.
-3. **Per-Run bounds stay.** Five messages per call, 32 KiB per message, ten
-   released reads per Run; the consent, the owner's current Project access,
+3. **Paginated reads.** Agent reads use Gmail page sizes and continuation tokens.
+   The consent, the owner's current Project access,
    the connection generation and the running Run are rechecked at admission,
    before every Gmail send and at release. The release takes the Project
    lock first, as the Project membership writer does.
@@ -95,7 +102,7 @@ privately, and — later — unattended daily and rule-matched summaries.
    or navigation, output for the conversation's audience, and nothing
    inherited by another Project. So:
    - **Where and who.** `source.gmail.mail.read` (the newest inbox messages or
-     a Gmail search, at most five per call, with plain-text bodies) is offered
+     a Gmail search, with paginated plain-text results) is offered
      in every ordinary conversation of a Project — the person's own private
      conversation, a Room or the Project mainline — in the mailbox owner's own
      `manual` turn, when their connection allows Agent reads. Chats outside a

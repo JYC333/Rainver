@@ -207,11 +207,17 @@ describe('Application materials in Notes', () => {
     await db.pool.query(`UPDATE notes SET status='deleted' WHERE object_id=$1`, [mine]);
     expect(reason(await read('material.read_note', {material_id: cv, note_id: mine}))).toBe('note_unavailable');
     expect(reason(await command('material.mark_reviewed', {material_id: cv, note_id: mine, note_version: 1}))).toBe('note_unavailable');
-    // A viewer writes nothing in the Project; another member never sees this person's material.
+    // A viewer cannot edit the Project. A member can use the shared checklist,
+    // while the previous private Note still follows its own ACL.
     as(viewer);
     expect((await command('material.link_note', {material_id: cv, note_id: unrelated})).statusCode).toBe(404);
     as(member);
-    expect(reason(await read('material.read_note', {material_id: cv, note_id: mine}))).toBe('note_not_linked');
+    expect(reason(await read('material.read_note', {material_id: cv, note_id: mine}))).toBe('note_unavailable');
+    const shared = await note('Project draft', 'Team version', {project: projectA, visibility: 'space_shared'});
+    await ok(command('material.link_note', {material_id: cv, note_id: shared}));
+    const {source_id} = await ok(command('material.add_source', {material_id: cv, note_id: shared}));
+    await ok(command('material.mark_reviewed', {material_id: cv, note_id: shared, note_version: 1}));
+    await ok(command('material.remove_source', {source_id}));
   });
 
   it('removing a source reference, and removing the material, leaves every Note untouched', async () => {

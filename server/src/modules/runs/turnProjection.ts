@@ -7,9 +7,10 @@ import type {
   TurnPartSource,
   TurnState,
 } from "@rainver/protocol";
-import { ToolCallDetailsSchema } from "@rainver/protocol";
+import { SubagentObservationSchema, ToolCallDetailsSchema } from "@rainver/protocol";
 import { stripVTControlCharacters } from "node:util";
 
+import { ACP_SUBAGENT_STATUS } from "../hosts/acpSubagentObservations.js";
 import { RUN_QUIET_STATUS } from "./stallTimeout.js";
 
 /**
@@ -88,6 +89,7 @@ interface TurnProjection {
 export function projectHostThreadTurn(rows: readonly HostThreadEventRow[], input: { replyText?: string | null } = {}): TurnProjection {
   const parts: TurnPart[] = [];
   const toolIndexByCallId = new Map<string, number>();
+  const subagentIndexes = new Map<string, number>();
   let openText: { kind: "text" | "reasoning"; index: number } | null = null;
   let state: TurnState = "working";
   let cursor = 0;
@@ -133,7 +135,7 @@ export function projectHostThreadTurn(rows: readonly HostThreadEventRow[], input
           if (details) existing.details = { ...existing.details, ...details };
           break;
         }
-        openText = null;
+        if (!details?.subagent_key) openText = null;
         const index = append({
           type: "tool_call",
           call_id: row.tool_call_id,
@@ -153,7 +155,7 @@ export function projectHostThreadTurn(rows: readonly HostThreadEventRow[], input
           // A finish with no matching start stays the recorded terminal update.
           // Do not turn incomplete trace metadata into a user-facing tool
           // failure. New rows carry a start and an id.
-          openText = null;
+          if (!details?.subagent_key) openText = null;
           const missingIndex = append({
             type: "tool_call",
             call_id: row.tool_call_id,
@@ -202,6 +204,21 @@ export function projectHostThreadTurn(rows: readonly HostThreadEventRow[], input
         break;
       }
       case "status": {
+        if (row.status === ACP_SUBAGENT_STATUS && row.text) {
+          try {
+            const parsed = SubagentObservationSchema.safeParse(JSON.parse(row.text));
+            if (parsed.success) {
+              const observation = parsed.data;
+              const index = subagentIndexes.get(observation.key);
+              if (index === undefined) {
+                subagentIndexes.set(observation.key, append({ type: "subagent", ...observation, state: observation.state ?? "unknown" }));
+              } else {
+                Object.assign(parts[index], observation);
+              }
+            }
+          } catch { /* A malformed observation does not discard the turn. */ }
+          break;
+        }
         if (row.status === "runtime_notice" && row.text) {
           try {
             const notice = JSON.parse(row.text);

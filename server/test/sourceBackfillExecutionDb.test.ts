@@ -6,12 +6,13 @@ import { seedSpaceOwnerProject } from "./support/domainSeeds.js";
 import { resetTables } from "./support/resetTables.js";
 import { SourceBackfillExecutionService } from "../src/modules/sources/sourceBackfillExecutionService.js";
 import { consumeConnectionQuota } from "../src/modules/sources/sourceQuotaBucket.js";
-import { reconcileSourceBackfills } from "../src/modules/scheduler/sourceTasks.js";
-import { SourceExtractionWorker } from "../src/modules/sources/extractionWorker.js";
+import { buildSourceSchedulerTasks, reconcileSourceBackfills } from "../src/modules/scheduler/sourceTasks.js";
+import { SOURCE_EXTRACTION_LOCK_PREFIX, SourceExtractionWorker } from "../src/modules/sources/extractionWorker.js";
 import { __setArxivThrottleForTests } from "../src/modules/sources/connectors/arxivThrottle.js";
 import { loadConfig } from "../src/config.js";
 import type { Queryable } from "../src/modules/routeUtils/common.js";
 import { publicAddressGuard } from "./support/outboundGuard.js";
+import { retainReaderBody } from "./support/readingMaterial.js";
 
 // Real-Postgres coverage for the shared item budget across sibling
 // Project Research backfill plans (one plan per selected Source Monitor,
@@ -92,6 +93,131 @@ async function seedSegment(id: string, planId: string, status: string, windowJso
 }
 
 describe("SourceBackfillExecutionService shared project budget (real Postgres)", () => {
+  it("resumes a running ordinary extraction after its worker disappears without repeating materialization", async () => {
+    if (!db.available) return;
+    const artifactId = await retainReaderBody(db.pool, {
+      space: SPACE, owner: OWNER, item: randomUUID(), attach: false, text: "Retained recovery fixture",
+    });
+    const jobId = randomUUID(), monitoringJob = randomUUID();
+    await db.pool.query(
+      `INSERT INTO extraction_jobs (id,space_id,source_object_type,source_object_id,job_type,status,metadata_json,created_at)
+       VALUES ($1,$2,'artifact',$3,'normalize_artifact','pending','{}',now()),
+              ($4,$2,'artifact',$3,'normalize_artifact','running','{"monitoring_operation_id":"coordinator"}',now())`,
+      [jobId, SPACE, artifactId, monitoringJob],
+    );
+    const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri });
+    const worker = new SourceExtractionWorker(db.pool, config);
+    const materialized = await worker.runPendingJob(jobId, SPACE);
+    expect((await db.pool.query("SELECT status,error_message FROM extraction_jobs WHERE id=$1", [jobId])).rows[0]).toEqual({
+      status: "succeeded", error_message: null,
+    });
+    expect(materialized.source_item_id).toBeTruthy();
+    // Keep the durable output, but represent a process gone before the job
+    // had recorded its final status and output link.
+    await db.pool.query("UPDATE extraction_jobs SET status='running',source_item_id=NULL,completed_at=NULL WHERE id=$1", [jobId]);
+    const scheduler = buildSourceSchedulerTasks(config).find((task) => task.name === "source_extraction_scheduler")!;
+    const lease = await db.pool.connect();
+    try {
+      await lease.query("SELECT pg_advisory_lock(hashtextextended($1::text, 0))", [`source-extraction:${SPACE}:${jobId}`]);
+      await scheduler.run();
+      expect((await db.pool.query("SELECT status FROM extraction_jobs WHERE id=$1", [jobId])).rows[0].status).toBe("running");
+    } finally {
+      lease.release(true);
+    }
+
+    await scheduler.run();
+    const jobs = await db.pool.query("SELECT id,status,source_item_id FROM extraction_jobs WHERE id=ANY($1)", [[jobId, monitoringJob]]);
+    expect(jobs.rows).toEqual(expect.arrayContaining([
+      { id: jobId, status: "succeeded", source_item_id: materialized.source_item_id },
+      { id: monitoringJob, status: "running", source_item_id: null },
+    ]));
+    expect((await db.pool.query("SELECT id FROM source_items WHERE metadata_json->>'job_id'=$1", [jobId])).rows).toEqual([
+      { id: materialized.source_item_id },
+    ]);
+    expect((await db.pool.query(
+      "SELECT jsonb_array_length(metadata_json->'evidence_observations') AS observations FROM extracted_evidence WHERE extraction_job_id=$1",
+      [jobId],
+    )).rows).toEqual([{ observations: 1 }]);
+  });
+
+  it("preserves a successor's extraction result when the old locking session disconnects", async () => {
+    const artifactId = await retainReaderBody(db.pool, {
+      space: SPACE, owner: OWNER, item: randomUUID(), attach: false, text: "Session recovery fixture",
+    });
+    const jobId = randomUUID();
+    await db.pool.query(
+      `INSERT INTO extraction_jobs (id,space_id,source_object_type,source_object_id,job_type,status,created_at)
+       VALUES ($1,$2,'artifact',$3,'normalize_artifact','pending',now())`, [jobId, SPACE, artifactId],
+    );
+    const worker = new SourceExtractionWorker(db.pool, loadConfig({ SERVER_DATABASE_URL: db.connectionUri }));
+    let entered!: () => void, resume!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const blocked = new Promise<void>((resolve) => { resume = resolve; });
+    const attempt = vi.spyOn(SourceExtractionWorker.prototype as unknown as {
+      executeInternalNormalization(job: unknown): Promise<string>;
+    }, "executeInternalNormalization").mockImplementationOnce(async () => {
+      entered();
+      await blocked;
+      throw new Error("The old operation failed after reconnect");
+    });
+    const oldOutcome = worker.runPendingJob(jobId, SPACE).catch((error: unknown) => error);
+    try {
+      await Promise.race([started, oldOutcome.then((outcome) => {
+        if (outcome instanceof Error) throw outcome;
+        throw new Error("The old extraction completed before reaching the pause");
+      })]);
+      const holder = (await db.pool.query<{ pid: number }>(
+        `SELECT pid FROM pg_locks
+          WHERE locktype='advisory' AND objsubid=1 AND granted
+            AND database=(SELECT oid FROM pg_database WHERE datname=current_database())
+            AND ((classid::bigint << 32) | objid::bigint) = hashtextextended($1, 0)`,
+        [`${SOURCE_EXTRACTION_LOCK_PREFIX}${SPACE}:${jobId}`],
+      )).rows[0]!;
+      const terminated = await db.pool.query<{ stopped: boolean }>("SELECT pg_terminate_backend($1, 5000) AS stopped", [holder.pid]);
+      expect(terminated.rows[0]?.stopped).toBe(true);
+      const recovered = await worker.runPendingJob(jobId, SPACE);
+      expect(recovered).toMatchObject({ status: "succeeded", source_item_id: expect.any(String) });
+      resume();
+      expect(await oldOutcome).toBeInstanceOf(Error);
+      expect((await db.pool.query("SELECT status,source_item_id,error_message FROM extraction_jobs WHERE id=$1", [jobId])).rows[0])
+        .toEqual({ status: "succeeded", source_item_id: recovered.source_item_id, error_message: null });
+    } finally {
+      resume();
+      await oldOutcome;
+      attempt.mockRestore();
+    }
+  });
+
+  it("fills its batch even when the ten oldest extraction jobs have live owners", async () => {
+    const artifactId = await retainReaderBody(db.pool, {
+      space: SPACE, owner: OWNER, item: randomUUID(), attach: false, text: "Extraction scheduling fixture",
+    });
+    const busy = Array.from({ length: 10 }, () => randomUUID());
+    const pending = randomUUID();
+    await db.pool.query(
+      `INSERT INTO extraction_jobs (id,space_id,source_object_type,source_object_id,job_type,status,created_at)
+       SELECT id,$1,'artifact',$2,'normalize_artifact','running',now()-interval '1 minute'
+         FROM unnest($3::varchar[]) AS busy(id)
+       UNION ALL SELECT $4,$1,'artifact',$2,'normalize_artifact','pending',now()`,
+      [SPACE, artifactId, busy, pending],
+    );
+    const lease = await db.pool.connect();
+    try {
+      for (const id of busy) {
+        await lease.query("SELECT pg_advisory_lock(hashtextextended($1, 0))", [`${SOURCE_EXTRACTION_LOCK_PREFIX}${SPACE}:${id}`]);
+      }
+      const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri });
+      await buildSourceSchedulerTasks(config).find((task) => task.name === "source_extraction_scheduler")!.run();
+      const states = (await db.pool.query<{ id: string; status: string }>(
+        "SELECT id,status FROM extraction_jobs WHERE id = ANY($1::varchar[])", [[...busy, pending]],
+      )).rows;
+      expect(states.filter((row) => row.status === "running")).toHaveLength(10);
+      expect(states.find((row) => row.id === pending)?.status).toBe("succeeded");
+    } finally {
+      lease.release(true);
+    }
+  });
+
   it("caps a sibling plan's next page at the project's remaining budget, not its own full max_items", async () => {
     if (!db.available) return;
     await seedPlan(PLAN_A, CHANNEL_A, 100, 7, "completed");

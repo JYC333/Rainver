@@ -3,15 +3,13 @@ import { conversationModelSwitchAllowed } from "../sessions/conversationQuotaPol
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import * as protocol from "@rainver/protocol";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
-import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
-import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext.js";
-import { introspectIdentity } from "../auth/identity.js";
 import { PgSessionRepository } from "../sessions/repository.js";
 import { PgConversationBackendRepository } from "../sessions/conversationBackendRepository.js";
 import { PgRunRepository } from "../runs/repository.js";
 import { runToOut } from "../runs/runReadModel.js";
 import { resolveRunRemoteness } from "../runs/runRemoteness.js";
 import {
+  resolveIdentity as resolveRouteIdentity,
   dbPool,
   parsePage,
   query as routeQuery,
@@ -320,7 +318,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
     const repository = new PgConversationBackendRepository(dbPool(context.config));
     const [options, binding, sessionConfig] = await Promise.all([
-      repository.listOptions(identity.spaceId, identity.userId, agentId, projectId),
+      repository.listOptionsForSession(identity.spaceId, identity.userId, agentId, projectId, sessionId),
       sessionId
         ? repository.findBinding(identity.spaceId, identity.userId, sessionId, agentId)
         : Promise.resolve(null),
@@ -409,28 +407,7 @@ async function resolveIdentity(
       ? identityOverride(request)
       : identityOverride;
   }
-  const requestId = resolveRequestId(request);
-  reply.header(REQUEST_ID_HEADER, requestId);
-  const identity = await introspectIdentity(context.config, request, reply);
-  if (identity.ok) return { spaceId: identity.spaceId, userId: identity.userId };
-  if (identity.reason === "denied") {
-    reply.code(identity.statusCode);
-    reply.header("content-type", "application/json");
-    reply.send(identity.body);
-    return null;
-  }
-  await sendErrorEnvelope(
-    reply,
-    502,
-    errorEnvelope(
-      identity.reason === "contract_violation"
-        ? "introspect_contract_violation"
-        : "identity_unavailable",
-      "Identity introspection failed",
-      requestId,
-    ),
-  );
-  return null;
+  return resolveRouteIdentity(context.config, request, reply);
 }
 
 /** The Assistant a settings request is about, from its explicit `project_id` query. */

@@ -10,6 +10,7 @@
  */
 export const API_CACHE_NAME = 'api-cache'
 export const API_KEY_STORAGE = 'rainver:api-key'
+const PENDING_LOGOUT = 'rainver:pending-logout'
 
 /**
  * Keys that survive a logout, because they describe the browser rather than
@@ -17,6 +18,7 @@ export const API_KEY_STORAGE = 'rainver:api-key'
  * names a Space, a Project, a note, or anything a person wrote.
  */
 const KEEP_LOCAL_EXACT = [
+  PENDING_LOGOUT,
   'rainver:theme',
   'rainver:locale',
   'rainver:rail-expanded',
@@ -80,6 +82,41 @@ export function registerInMemoryResidue(clear: () => void): () => void {
 // an earlier session compares its epoch and changes nothing afterwards.
 let epoch = 0
 export function sessionEpoch(): number { return epoch }
+
+let unstoredLogout: string | null = null
+let logoutRequest: Promise<void> | null = null
+
+function pendingLogout(): string | null {
+  try { return localStorage.getItem(PENDING_LOGOUT) ?? unstoredLogout } catch { return unstoredLogout }
+}
+
+export function hasPendingLogout(): boolean { return pendingLogout() !== null }
+
+export function beginPendingLogout(): void {
+  const intent = crypto.getRandomValues(new Uint32Array(4)).join('-')
+  try { localStorage.setItem(PENDING_LOGOUT, intent) } catch { unstoredLogout = intent }
+}
+
+/** Retry the cookie-backed sign-out before any new session can be opened. */
+export function finishPendingLogout(send: () => Promise<unknown>): Promise<void> {
+  if (logoutRequest) return logoutRequest
+  if (!hasPendingLogout()) return Promise.resolve()
+
+  async function finish() {
+    const intent = pendingLogout()
+    if (intent === null) return
+    await send()
+    if (pendingLogout() !== intent) return
+    try { localStorage.removeItem(PENDING_LOGOUT) } catch { /* private mode */ }
+    if (unstoredLogout === intent) unstoredLogout = null
+  }
+
+  // Another tab can retry the same cookie-backed request. Serialize those retries
+  // so a slow duplicate response cannot clear the cookie after the next sign-in.
+  const request = navigator.locks ? navigator.locks.request(PENDING_LOGOUT, finish) : finish()
+  logoutRequest = request.finally(() => { logoutRequest = null })
+  return logoutRequest
+}
 
 export function clearSessionResidue(): void {
   epoch += 1

@@ -16,6 +16,7 @@ import {systemActionsModule} from '../src/modules/systemActions/index.js';
 import {runsModule} from '../src/modules/runs/index.js';
 import {__setAuthIdentityForTests} from '../src/modules/auth/identity.js';
 import {CliAgentToolTransport} from '../src/modules/runs/cliToolTransport.js';
+import {SystemActionDispatcher} from '../src/modules/systemActions/systemActionDispatcher.js';
 import {PgRunRepository, type AgentRunRecord} from '../src/modules/runs/repository.js';
 import type {OperationToolResponse} from '../src/modules/systemActions/operations/agentResult.js';
 import {PROJECT_APPLICATIONS_TOOL_ALLOWANCE, conversationToolGrantInput, dispatchToolAllowance} from '../src/modules/systemActions/scenarioToolAllowance.js';
@@ -116,13 +117,13 @@ const listed = async (run: AgentRunRecord) => (await transport().list(run)).map(
 const call = async (run: AgentRunRecord, name: string, args: Record<string, unknown>) =>
   (await transport().call(run, {id: randomUUID(), name: opId(name), arguments: args})) as OperationToolResponse;
 const phd = {institution: 'ETH Zurich', program: 'PhD in Computer Science'};
-const agentEligible = () => plugin.operationManifest!.operations.filter(o => !o.actors).map(o => o.id).sort();
-const nonPersonal = () => plugin.operationManifest!.operations.filter(o => !o.actors && o.data_class === 'non_sensitive').map(o => o.id).sort();
+/** Agent-eligible operations an ordinary Run carries: all but the Gmail fact command, which only the owner's automation Run has (ADR 0034). */
+const agentEligible = () => plugin.operationManifest!.operations.filter(o => !o.actors && o.id !== opId('mail_fact.apply')).map(o => o.id).sort();
 
 describe('Application tools in the Runs Rainver creates', () => {
   it('the allowance names exactly the package\'s Agent-eligible operations, never a person-only one', () => {
     expect([...PROJECT_APPLICATIONS_TOOL_ALLOWANCE].sort()).toEqual(agentEligible());
-    for (const name of ['material.mark_reviewed', 'material.generate', 'material.get_generation', 'material.apply_generation']) {
+    for (const name of ['material.mark_reviewed', 'application.share', 'mail_fact.apply']) {
       expect(PROJECT_APPLICATIONS_TOOL_ALLOWANCE).not.toContain(opId(name));
     }
     // Only a Run with a Project carries them: a direct chat outside a Project and a Project-less Room do not.
@@ -137,22 +138,113 @@ describe('Application tools in the Runs Rainver creates', () => {
 
   it('a direct Project chat lists and calls them in its own bound Project only', async () => {
     const run = await startRun(conversationToolGrantInput({project_id: projectA}), projectA);
-    // Personal contacts need the Space owner's consent; person-only operations are never listed.
-    expect(await listed(run)).toEqual(nonPersonal());
-    const created = await call(run, 'application.create', {project_id: projectA, ...phd, deadlines: [{kind: 'application', due_on: '2027-01-15'}]});
+    expect(await listed(run)).toEqual(agentEligible());
+    const tools = await transport().list(run);
+    expect(tools.find(tool => tool.name === opId('application.create'))?.input_schema).toMatchObject({required: ['institution', 'program']});
+    expect(tools.find(tool => tool.name === opId('application.list'))?.input_schema).toMatchObject({required: []});
+    const publicCreate = await action(opId('application.create'), phd);
+    expect(publicCreate.statusCode).toBe(422);
+    const create = {id: randomUUID(), name: opId('application.create'), arguments: {...phd, deadlines: [{kind: 'application', due_on: '2027-01-15'}]}};
+    const created = await transport().call(run, create) as OperationToolResponse;
     expect(created.httpStatus, JSON.stringify(created.body)).toBe(200);
     const {application_id} = (created.body as {data: {application_id: string}}).data;
+    const replay = await transport().call(run, {...create, arguments: {...create.arguments, project_id: projectA}}) as OperationToolResponse;
+    expect(replay.body).toMatchObject({replayed: true, data: {application_id}});
     expect((await db.pool.query(`SELECT user_id,project_id FROM plugin_applications.applications WHERE id=$1`, [application_id])).rows).toEqual([{user_id: owner, project_id: projectA}]);
-    const read = await call(run, 'application.list', {project_id: projectA});
+    const read = await call(run, 'application.list', {});
     expect((read.body as {data: {items: {id: string}[]}}).data.items.map(i => i.id)).toEqual([application_id]);
-    // Never another Project: the Run's own Project decides, and the other one is not even bound.
+    const dispatcher = await SystemActionDispatcher.create(config, run, {actionEventSink: async () => {}});
+    const managed = await dispatcher.dispatch({id: randomUUID(), name: opId('application.list'), arguments_json: '{}'});
+    expect(managed.modelResult).toMatchObject({status: 'succeeded', data: {items: [{id: application_id}]}});
+    expect((await call(run, 'application.list', {project_id: null})).httpStatus).toBe(422);
+    expect((await action('official_plugin.project_binding.bind', {plugin_id: pid, project_id: projectB})).statusCode).toBe(200);
     const across = await call(run, 'application.create', {project_id: projectB, ...phd});
-    expect(across.httpStatus).not.toBe(200);
-    // A person-only operation is not callable by name either.
+    expect(across.httpStatus).toBe(404);
+    // A draft cannot be generated for a missing material.
     const generated = await call(run, 'material.generate', {project_id: projectA, material_id: randomUUID(), requirements: 'x'});
     expect(generated.httpStatus).not.toBe(200);
     expect((await db.pool.query(`SELECT count(*)::int AS n FROM plugin_applications.applications WHERE space_id=$1`, [space])).rows[0].n).toBe(1);
   });
+
+  // Interleaved deterministically: a reader holds the Run FOR SHARE, so the first call's release (Project FOR SHARE
+  // → person → Run FOR UPDATE) waits for the Run while holding the Project; then the write starts. Pinning person
+  // and Run before its Project, the write would hold the Run FOR SHARE and wait for that Project FOR UPDATE: a
+  // deadlock once the reader ends. Taking the Project first, it queues behind the release and both succeed.
+  const lockWaiters = async () => (await db.pool.query<{n: number}>(`SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock'`)).rows[0]!.n;
+  async function until(condition: () => Promise<boolean>, what: string) {
+    for (const end = Date.now() + 5000; Date.now() < end; await new Promise(r => setTimeout(r, 20))) if (await condition()) return;
+    throw new Error(`Timed out waiting for ${what}`);
+  }
+  async function raceReleaseAgainstUpdate(first: (run: AgentRunRecord, ids: string[]) => Promise<OperationToolResponse>) {
+    const run = await startRun(conversationToolGrantInput({project_id: projectA}), projectA);
+    const ids: string[] = [];
+    for (const program of ['PhD in Computer Science', 'MSc in Robotics']) {
+      const created = await call(run, 'application.create', {project_id: projectA, institution: 'ETH Zurich', program});
+      expect(created.httpStatus, JSON.stringify(created.body)).toBe(200);
+      ids.push((created.body as {data: {application_id: string}}).data.application_id);
+    }
+    const blocker = await db.pool.connect();
+    try {
+      await blocker.query('BEGIN');
+      await blocker.query('SELECT id FROM runs WHERE id=$1 FOR SHARE', [run.id]);
+      const released = first(run, ids);
+      await until(async () => await lockWaiters() >= 1, "the first call's release to wait for the Run");
+      const update = call(run, 'application.update', {project_id: projectA, application_id: ids[1], revision: 1, notes: 'Ask about funding'});
+      await until(async () => await lockWaiters() >= 2, 'the update to wait');
+      await blocker.query('COMMIT');
+      const [one, two] = await Promise.all([released, update]);
+      expect([one.httpStatus, two.httpStatus], JSON.stringify([one.body, two.body])).toEqual([200, 200]);
+    } finally {
+      await blocker.query('ROLLBACK').catch(() => undefined);
+      blocker.release();
+    }
+    expect((await db.pool.query(`SELECT notes,revision FROM plugin_applications.applications WHERE id=$1`, [ids[1]])).rows[0]).toMatchObject({notes: 'Ask about funding', revision: 2});
+    return ids;
+  }
+
+  it('application.update takes its Project before the Run, as application.list\'s release does: concurrent in one Run, no deadlock', async () => {
+    await raceReleaseAgainstUpdate((run) => call(run, 'application.list', {project_id: projectA}));
+  });
+
+  it('two application.update calls of one Run, one releasing while the other starts, never deadlock', async () => {
+    const ids = await raceReleaseAgainstUpdate((run, [eth]) => call(run, 'application.update', {project_id: projectA, application_id: eth, revision: 1, notes: 'Deadline moved'}));
+    expect((await db.pool.query(`SELECT notes FROM plugin_applications.applications WHERE id=$1`, [ids[0]])).rows[0]).toMatchObject({notes: 'Deadline moved'});
+  });
+
+  // The core Task commands an Agent calls in its Run's Project take that Project before the core pins person and
+  // Run too. Interleaved as above: application.list's release holds the Project FOR SHARE and waits for the Run;
+  // pinned first, the Task command would hold the Run FOR SHARE and wait for the Project FOR UPDATE — a deadlock
+  // once the reader ends (tasks/operations.ts, projectWork/taskLifecycleOperations.ts).
+  const core = async (run: AgentRunRecord, name: string, args: Record<string, unknown>) =>
+    (await transport().call(run, {id: randomUUID(), name, arguments: args})) as OperationToolResponse;
+  it.each([
+    ['task.create', async () => ({title: 'Ask ETH about funding'})],
+    ['task.update', async (run: AgentRunRecord) => ({task_id: await agentTask(run), title: 'Ask ETH about funding, again'})],
+    ['task.report', async (run: AgentRunRecord) => ({task_id: await agentTask(run), summary: 'Funding asked'})],
+  ] as const)('%s takes its Project before the Run, as application.list\'s release does: concurrent in one Run, no deadlock', async (name, args) => {
+    const run = await startRun(conversationToolGrantInput({project_id: projectA}), projectA);
+    const input = await args(run);
+    const blocker = await db.pool.connect();
+    try {
+      await blocker.query('BEGIN');
+      await blocker.query('SELECT id FROM runs WHERE id=$1 FOR SHARE', [run.id]);
+      const released = call(run, 'application.list', {project_id: projectA});
+      await until(async () => await lockWaiters() >= 1, "application.list's release to wait for the Run");
+      const command = core(run, name, input);
+      await until(async () => await lockWaiters() >= 2, `${name} to wait`);
+      await blocker.query('COMMIT');
+      const [one, two] = await Promise.all([released, command]);
+      expect([one.httpStatus, two.httpStatus], JSON.stringify([one.body, two.body])).toEqual([200, name === 'task.create' ? 201 : 200]);
+    } finally {
+      await blocker.query('ROLLBACK').catch(() => undefined);
+      blocker.release();
+    }
+  });
+  async function agentTask(run: AgentRunRecord) {
+    const created = await core(run, 'task.create', {title: 'Ask ETH about funding'});
+    expect(created.httpStatus, JSON.stringify(created.body)).toBe(201);
+    return (created.body as {data: {task_id: string}}).data.task_id;
+  }
 
   it('a Room message, its delegated child and Task dispatch to a built-in or a paired Host carry them from their real entries', async () => {
     const now = new Date().toISOString();
@@ -180,7 +272,11 @@ describe('Application tools in the Runs Rainver creates', () => {
       runtime: {agent_id: manager, runtime_profile_id: managerProfile, runtime_key: 'claude_code', runtime_installation: 'managed:1.0.0'},
     });
     const identity = {spaceId: space, userId: owner};
-    // The Room message, as the person sends it.
+    const reader = randomUUID();
+    await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at,email,registration_source) VALUES ($1,'Reader','active',now(),now(),lower(gen_random_uuid()::text||'@test.invalid'),'system')`, [reader]);
+    await db.pool.query(`INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'member','active',now(),now())`, [randomUUID(), space, reader]);
+    await db.pool.query(`INSERT INTO project_members (id,space_id,project_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'viewer','active',now(),now())`, [randomUUID(), space, projectA, reader]);
+    // The person sends a message in the shared mainline Room.
     const sent = await new RoomService(config, db.pool).sendMessage(identity, room, conversation.id, {content: 'Track my ETH application.'});
     const roomRun = await started(sent.run_ids[0]!);
     // Its delegation, as the manager's `agent.delegate` call reaches the group service.
@@ -205,21 +301,38 @@ describe('Application tools in the Runs Rainver creates', () => {
       await db.pool.query(`INSERT INTO tasks (id,space_id,project_id,project_folder_id,title,status,created_by_user_id,owner_user_id,created_at,updated_at) VALUES ($1,$2,$3,$4,'Fill in the ETH application','ready',$5,$5,$6,$6)`, [taskId, space, projectA, folder, owner, now]);
       const profile = randomUUID();
       await db.pool.query(`INSERT INTO agent_runtime_profiles (id,space_id,agent_id,name,runtime_key,backend_mode,execution_host_id,workspace_location_id,workspace_mode,runtime_installation,runtime_config_json,runtime_policy_json,enabled,is_default,created_at,updated_at)
-        VALUES ($1,$2,$3,$9,'claude_code','runtime_native',$4,$5,$6,$7,'{}','{}',true,false,$8,$8)`,
-      [profile, space, dispatchAgent, kind === 'remote' ? pairedHost : serverHost, location, location ? 'location' : 'managed', kind === 'remote' ? 'own' : 'managed:1.0.0', now, `Task ${kind ?? 'none'}`]);
-      const created = await action('task.run.create', {task_id: taskId, agent_id: dispatchAgent, runtime_profile_id: profile, prompt: 'Fill it in.'});
+        VALUES ($1,$2,$3,$7,'claude_code','runtime_native',$4,NULL,'managed',$5,'{}','{}',true,false,$6,$6)`,
+      [profile, space, dispatchAgent, kind === 'remote' ? pairedHost : serverHost, kind === 'remote' ? 'own' : 'managed:1.0.0', now, `Task ${kind ?? 'none'}`]);
+      const created = await action('task.run.create', {task_id: taskId, agent_id: dispatchAgent, runtime_profile_id: profile});
       expect(created.statusCode, created.body).toBe(201);
       return (await db.pool.query<AgentRunRecord>('SELECT * FROM runs WHERE id=$1', [created.json().data.run_id])).rows[0]!;
     };
     const localTask = await task('server'), pairedTask = await task('remote'), noLocationTask = await task(null);
     expect([localTask.trust_mode, pairedTask.trust_mode]).toEqual(['sandboxed', 'trusted_host']);
+    for (const taskRun of [localTask, pairedTask]) {
+      const routed = await new PgRouteDecisionRepository(db.pool).routeRun(taskRun);
+      expect(routed.runtime_profile_snapshot_json).toMatchObject({
+        workspace_mode: 'location',
+        workspace_location_id: taskRun.workspace_location_id,
+      });
+    }
+    expect((await db.pool.query("SELECT execution_host_id FROM host_threads WHERE id=$1",
+      [pairedTask.host_task_thread_id])).rows).toEqual([{execution_host_id: pairedHost}]);
+    // Older Task threads stored only the Location. A retry still uses its Host.
+    await db.pool.query("UPDATE host_threads SET execution_host_id=NULL WHERE id=$1", [pairedTask.host_task_thread_id]);
+    const retried = await new PgRouteDecisionRepository(db.pool).routeRun(pairedTask);
+    expect(retried.runtime_profile_snapshot_json).toMatchObject({
+      execution_host_id: pairedHost,
+      workspace_mode: 'location',
+      workspace_location_id: pairedTask.workspace_location_id,
+    });
 
     const runs = {room: roomRun, delegated: childRun, local_task: await started(localTask.id), paired_task: await started(pairedTask.id)};
     for (const [kind, run] of Object.entries(runs)) {
       // The snapshot the entry issued names them, pinned, and `rainver list` shows exactly those.
-      expect(snapshotTools(run), kind).toEqual(nonPersonal());
-      expect(Object.keys((run.permission_snapshot_json as Snapshot).plugin_tool_pins ?? {}).sort(), kind).toEqual(nonPersonal());
-      expect(await listed(run), kind).toEqual(nonPersonal());
+      expect(snapshotTools(run), kind).toEqual(agentEligible());
+      expect(Object.keys((run.permission_snapshot_json as Snapshot).plugin_tool_pins ?? {}).sort(), kind).toEqual(agentEligible());
+      expect(await listed(run), kind).toEqual(agentEligible());
       const created = await call(run, 'application.create', {project_id: projectA, ...phd, program: `PhD via ${kind}`});
       expect(created.httpStatus, `${kind}: ${JSON.stringify(created.body)}`).toBe(200);
       // Still never another Project, nor a person-only operation.
@@ -227,18 +340,31 @@ describe('Application tools in the Runs Rainver creates', () => {
       expect((await call(run, 'material.generate', {project_id: projectA, material_id: randomUUID(), requirements: 'x'})).httpStatus, kind).not.toBe(200);
     }
     expect((await db.pool.query(`SELECT count(*)::int AS n FROM plugin_applications.applications WHERE space_id=$1`, [space])).rows[0].n).toBe(4);
-    // A shared Run's audience is live: once another person reads the Project, the Room Run's output
-    // reaches them too, so a read returns only rows every reader reads themselves (none of the owner's).
-    expect(((await call(roomRun, 'application.list', {project_id: projectA})).body as {data: {items: unknown[]}}).data.items).toHaveLength(4);
-    const reader = randomUUID();
-    await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at,email,registration_source) VALUES ($1,'Reader','active',now(),now(),lower(gen_random_uuid()::text||'@test.invalid'),'system')`, [reader]);
-    await db.pool.query(`INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'member','active',now(),now())`, [randomUUID(), space, reader]);
-    await db.pool.query(`INSERT INTO project_members (id,space_id,project_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'viewer','active',now(),now())`, [randomUUID(), space, projectA, reader]);
+    // A Project reader can see the Project's shared applications.
     for (const run of [roomRun, childRun]) {
-      const shared = await call(run, 'application.list', {project_id: projectA});
+      const shared = await call(run, 'application.list', {});
       expect(shared.httpStatus).toBe(200);
-      expect((shared.body as {data: {items: unknown[]}}).data.items).toEqual([]);
+      expect((shared.body as {data: {items: unknown[]}}).data.items).toHaveLength(4);
     }
+    const {id: applicationId} = (await db.pool.query<{id: string}>(
+      `SELECT id FROM plugin_applications.applications WHERE space_id=$1 AND program='PhD via room'`, [space],
+    )).rows[0]!;
+    const project_id = projectA;
+    const supervisor = await call(roomRun, 'contact.create', {project_id, application_ids: [applicationId], name: 'Example Supervisor', role: 'supervisor'});
+    expect(supervisor.httpStatus, JSON.stringify(supervisor.body)).toBe(200);
+    const {contact_id} = supervisor.body.data as {contact_id: string};
+    expect(supervisor.body.data).toEqual({contact_id: expect.any(String)});
+    expect((await call(roomRun, 'contact.update', {project_id, contact_id, affiliation: 'Example University'})).httpStatus).toBe(200);
+    expect((await call(roomRun, 'contact.log_event', {project_id, contact_id, occurred_on: '2026-11-20', channel: 'meeting', direction: 'outbound', summary: 'Discussed research', response: 'positive'})).httpStatus).toBe(200);
+    expect((await call(roomRun, 'contact.list', {project_id})).body.data).toMatchObject({items: [{id: contact_id, application_ids: [applicationId]}]});
+    expect((await call(roomRun, 'contact.list_events', {project_id, contact_id})).body.data).toMatchObject({items: [{summary: 'Discussed research'}]});
+    expect((await call(roomRun, 'contact.update', {project_id: projectB, contact_id, name: 'Denied'})).httpStatus).toBe(404);
+    const funding = await call(roomRun, 'application.create', {
+      project_id, track: 'funding', submission: 'separate', institution: phd.institution, program: 'Doctoral scholarship', applies_to: [applicationId],
+    });
+    expect(funding.httpStatus, JSON.stringify(funding.body)).toBe(200);
+    const sharedFunding = await call(roomRun, 'application.list', {project_id, track: 'funding'});
+    expect(sharedFunding.body.data).toMatchObject({items: [{id: (funding.body.data as {application_id: string}).application_id, applies_to: [applicationId]}]});
     // A Task with no Workspace Location keeps the default: it declares nothing, so it is given no Rainver tool.
     expect(noLocationTask.capabilities_json).toEqual([]);
     expect((noLocationTask.permission_snapshot_json as Snapshot).tool_grants).toEqual([]);
@@ -249,16 +375,22 @@ describe('Application tools in the Runs Rainver creates', () => {
 
   it('a dispatched Task Run in an unbound Project lists them but reaches nothing there', async () => {
     const unbound = await startRun({capabilities_json: dispatchToolAllowance(), scenario_tool_allowance: dispatchToolAllowance()}, projectB);
-    expect((await call(unbound, 'application.list', {project_id: projectB})).httpStatus).not.toBe(200);
+    expect((await call(unbound, 'application.list', {})).httpStatus).toBe(404);
   });
 
-  it('contacts stay personal: listed for reading only after the Space owner\'s consent, never as an Agent write', async () => {
+  it('only the personal read consent adds legacy private contacts to a solo Agent Run', async () => {
+    const input = encodeURIComponent(JSON.stringify({plugin_id: pid}));
+    const options = await app.inject({method: 'GET', url: `/api/v1/queries/plugin_data_grant.list?input=${input}`});
+    expect(options.statusCode, options.body).toBe(200);
+    expect(options.json().data.consentable.map((option: {toolset: string}) => option.toolset)).toEqual(['read']);
+    const legacyContact = randomUUID();
+    await db.pool.query(`INSERT INTO plugin_applications.application_contacts(space_id,user_id,project_id,id,name,role) VALUES ($1,$2,$3,$4,'Legacy private contact','supervisor')`,
+      [space, owner, projectA, legacyContact]);
+    const before = await startRun(conversationToolGrantInput({project_id: projectA}), projectA);
+    expect((await call(before, 'contact.list', {project_id: projectA})).body.data).toEqual({items: []});
     const consent = await action('plugin_data_grant.create', {plugin_id: pid, toolset: 'read', data_class: 'personal', scope: 'space', authority_hash: operationPackageIdentity(plugin)});
     expect(consent.statusCode, consent.body).toBe(201);
     const run = await startRun(conversationToolGrantInput({project_id: projectA}), projectA);
-    const tools = await listed(run);
-    expect(tools).toEqual(expect.arrayContaining([opId('contact.list'), opId('contact.list_events')]));
-    for (const name of ['contact.create', 'contact.update', 'contact.log_event']) expect(tools).not.toContain(opId(name));
-    expect((await call(run, 'contact.list', {project_id: projectA})).httpStatus).toBe(200);
+    expect((await call(run, 'contact.list', {project_id: projectA})).body.data).toMatchObject({items: [{id: legacyContact}]});
   });
 });

@@ -11,6 +11,7 @@ import os
 import pathlib
 import shutil
 import sys
+import tempfile
 
 
 def publish_no_clobber(temp_path: str, desired_path: str) -> str:
@@ -104,6 +105,21 @@ def replace_directory(new_path: str, target_path: str) -> None:
     _remove(new)
 
 
+def check_directory_replace(new_path: str, target_path: str) -> None:
+    """Probe directory exchange beside the target without moving live files."""
+    target = pathlib.Path(target_path)
+    if not (target.exists() or target.is_symlink()):
+        return
+    new_device = os.stat(new_path).st_dev
+    if os.lstat(target).st_dev != new_device or os.path.ismount(target):
+        raise OSError(errno.EXDEV, "target is on a separate filesystem", target_path)
+    with tempfile.TemporaryDirectory(dir=target.parent, prefix=".restore-probe-") as probe:
+        first, second = pathlib.Path(probe) / "first", pathlib.Path(probe) / "second"
+        first.mkdir()
+        second.mkdir()
+        exchange(str(first), str(second))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -113,13 +129,19 @@ def main() -> None:
     replace = subparsers.add_parser("replace-directory")
     replace.add_argument("new_path")
     replace.add_argument("target_path")
+    check = subparsers.add_parser("check-directory-replace")
+    check.add_argument("new_path")
+    check.add_argument("target_path")
     args = parser.parse_args()
     if args.command == "publish":
         print(publish_no_clobber(args.temp_path, args.desired_path))
     else:
         try:
-            replace_directory(args.new_path, args.target_path)
-        except ExchangeUnsupported as error:
+            operation = check_directory_replace if args.command == "check-directory-replace" else replace_directory
+            operation(args.new_path, args.target_path)
+        except OSError as error:
+            if args.command != "check-directory-replace" and not isinstance(error, ExchangeUnsupported):
+                raise
             raise SystemExit(f"ERROR: {error}; {args.target_path} and {args.new_path} are unchanged") from None
 
 

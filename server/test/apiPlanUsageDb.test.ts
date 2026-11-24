@@ -261,4 +261,15 @@ describe("the refresh command releases the quota only to a session that still ho
       expect(b.body).not.toContain("used_pct");
     } finally { await app.close(); }
   });
+  it("admits one of two concurrent commands for the same scope and refuses the other", async () => {
+    const app = buildModuleServer(routeConfig(), [providersModule, systemCommandsModule]);
+    try {
+      const { headers } = await signIn();
+      const replies = await Promise.all([submit(app, headers), submit(app, headers)]);
+      const [accepted, busy] = replies.sort((a, b) => a.statusCode - b.statusCode);
+      const receipt = succeeded<{ id: string }>(accepted!, 202);
+      expect(refused(busy!, 409)).toBe("operation_conflict");
+      expect(busy!.json().error.metadata).toEqual({ code: "system_command_busy", command_id: receipt.id });
+    } finally { await app.close(); }
+  });
 });

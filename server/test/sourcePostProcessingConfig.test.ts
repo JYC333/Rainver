@@ -152,6 +152,18 @@ describe("source post-processing config", () => {
     expect(localDayRange("UTC", new Date("2026-06-15T12:00:00.000Z"))).toEqual({ start: "2026-06-15T00:00:00.000Z", end: "2026-06-16T00:00:00.000Z" });
   });
 
+  it.each([
+    ["America/Santiago", "2026-09-06T04:00:00.000Z", "2026-09-07T03:00:00.000Z"],
+    ["America/Havana", "2026-03-08T05:00:00.000Z", "2026-03-09T04:00:00.000Z"],
+    ["Australia/Lord_Howe", "2026-10-03T13:30:00.000Z", "2026-10-04T13:00:00.000Z"],
+  ])("joins adjacent days across clock changes in %s", (timezone, start, end) => {
+    const previous = new Date(Date.parse(start) - 1);
+    expect(localDayRange(timezone, previous).end).toBe(start);
+    expect(localDayRange(timezone, new Date(start))).toEqual({ start, end });
+    expect(localDayRange(timezone, new Date(Date.parse(end) - 1))).toEqual({ start, end });
+    expect(localDayRange(timezone, new Date(end)).start).toBe(end);
+  });
+
   it("omits relevance_profile when absent", () => {
     const config = normalizeInputConfig({});
     expect(config.relevance_profile).toBeUndefined();

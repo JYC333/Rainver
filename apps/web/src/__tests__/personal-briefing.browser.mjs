@@ -41,7 +41,12 @@ test('Personal briefing above Reading: generate, follow progress, open the cited
       const path = url.pathname.replace('/api/v1', '')
       const method = route.request().method()
       const json = data => route.fulfill({ json: data })
-      if (path === `/spaces/${spaceId}/information-briefings/personal` && method === 'POST') { writes.push(path); latest = queued; reads = 0; return json({ created: true, briefing: queued }) }
+      if (path === '/actions/briefing.personal.request' && method === 'POST') {
+        assert.ok(route.request().headers()['idempotency-key'])
+        assert.deepEqual(route.request().postDataJSON(), { space_id: spaceId })
+        writes.push(path); latest = queued; reads = 0
+        return json({ status: 'succeeded', data: { created: true, briefing: queued } })
+      }
       if (path === `/spaces/${spaceId}/information-briefings/personal`) {
         if (latest?.status === 'queued' && ++reads >= 2) latest = ready
         return json({ can_generate: true, limits: { runs_per_day: 6, runs_in_last_day: 2, attempts_per_version: 3, run_seconds: 900, news_inputs: 40, background_families: 12, request_chars: 48000, carried_items: 200, token_cap: null, cost_cap: null }, daily_enabled: false, latest, latest_briefing: latest?.outcome === 'briefing' ? latest : null, history: latest ? [summary(latest)] : [] })
@@ -79,7 +84,7 @@ test('Personal briefing above Reading: generate, follow progress, open the cited
     await panel.getByRole('button', { name: 'Generate briefing', exact: true }).click()
     await panel.getByText('Synthesizing… (Run running)', { exact: true }).waitFor()
     await panel.getByText(ready.overview.text).waitFor({ timeout: 15000 })
-    assert.deepEqual(writes, [`/spaces/${spaceId}/information-briefings/personal`])
+    assert.deepEqual(writes, ['/actions/briefing.personal.request'])
     // Collapsed: the list stays within reach right under it.
     assert.equal(await panel.getByText('Fixture gripper launch', { exact: true }).count(), 0)
     await page.getByRole('link', { name: 'Synthetic reading item 1' }).waitFor()

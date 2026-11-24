@@ -216,7 +216,14 @@ export default function HostAgents({
   const updateOwn = (adapter: HostRuntimeDefinitionOption) => withBusy(`${adapter.runtime_key}:own-update`, async () => {
     const result = await hostsApi.updateOwnRuntime(host.id, adapter.runtime_key)
     if (!result.ok) throw new Error(result.error ?? 'Own CLI update failed')
-    toast.success(`${adapter.display_name} own installation updated on ${host.name}`)
+    const details = { agent: adapter.display_name, host: host.name, version: result.to_version }
+    if (!result.from_version || !result.to_version) {
+      toast.info(t('management_ui.host_catalog.own_update_unverified', details))
+    } else if (result.from_version === result.to_version) {
+      toast.info(t('management_ui.host_catalog.own_update_unchanged', details))
+    } else {
+      toast.success(t('management_ui.host_catalog.own_update_confirmed', details))
+    }
   })
 
   async function installFromRegistry(entry: AcpRegistryEntry) {

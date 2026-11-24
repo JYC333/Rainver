@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import type { ReactNode } from 'react'
 import { describe, expect, it, vi } from 'vitest'
@@ -34,6 +34,34 @@ function proposal(id: string, overrides: Partial<Proposal>): Proposal {
 }
 
 describe('ProposalsPage', () => {
+  it('requests a whole Knowledge page in review priority order and can reach the next page', async () => {
+    const critical = proposal('critical', { proposal_type: 'claim_create', urgency: 'critical' })
+    const low = proposal('low', { proposal_type: 'knowledge_create', urgency: 'low' })
+    mocked.list.mockImplementation(async ({ offset }: { offset: number }) => ({ items: offset ? [low] : [critical], total: 81, limit: 80, offset }))
+    render(<MemoryRouter initialEntries={['/proposals?type=knowledge']}><ProposalsPage /></MemoryRouter>)
+
+    expect(await screen.findByText('Proposal critical')).toBeVisible()
+    expect(mocked.list).toHaveBeenLastCalledWith(expect.objectContaining({ types: expect.arrayContaining(['claim_create', 'knowledge_create']), offset: 0 }), expect.objectContaining({ spaceId: 'space-1' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Next page' }))
+    expect(await screen.findByText('Proposal low')).toBeVisible()
+    expect(screen.queryByText('Proposal critical')).not.toBeInTheDocument()
+    expect(mocked.list).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 80 }), expect.any(Object))
+  })
+
+  it('does not restore an older filter when its slower result arrives', async () => {
+    let release!: (value: unknown) => void
+    const stale = new Promise(resolve => { release = resolve })
+    mocked.list.mockImplementation(({ type }: { type?: string }) => type === 'code_patch'
+      ? Promise.resolve({ items: [proposal('code', { proposal_type: type })], total: 1 })
+      : stale)
+    render(<MemoryRouter><ProposalsPage /></MemoryRouter>)
+    fireEvent.click(screen.getByRole('button', { name: 'Code' }))
+    expect(await screen.findByText('Proposal code')).toBeVisible()
+    await act(async () => release({ items: [proposal('stale', {})], total: 1 }))
+    expect(screen.queryByText('Proposal stale')).not.toBeInTheDocument()
+    expect(screen.getByText('Proposal code')).toBeVisible()
+  })
+
   it('sends a maintenance update that still needs its revision to be revised, not accepted', async () => {
     mocked.list.mockResolvedValue({
       items: [
@@ -46,6 +74,21 @@ describe('ProposalsPage', () => {
 
     expect(await screen.findByRole('link', { name: 'Revise' })).toHaveAttribute('href', '/proposals/unrevised')
     expect(screen.getAllByRole('button', { name: 'Accept' })).toHaveLength(1)
+  })
+
+  it('sends a card whose Agent and model are chosen on it to where the choice is shown; an ordinary summary card keeps Accept', async () => {
+    mocked.list.mockResolvedValue({
+      items: [
+        proposal('apps', { proposal_type: 'gmail_digest_create', visibility: 'private', owner_user_id: 'user-owner', chosen_on_card: true }),
+        proposal('daily', { proposal_type: 'gmail_digest_create', visibility: 'private', owner_user_id: 'user-owner' }),
+      ],
+      total: 2, limit: 80, offset: 0,
+    })
+    render(<MemoryRouter><ProposalsPage /></MemoryRouter>)
+
+    expect(await screen.findByRole('link', { name: 'Choose Agent and model' })).toHaveAttribute('href', '/proposals/apps')
+    expect(screen.getAllByRole('button', { name: 'Accept' })).toHaveLength(1)
+    expect(screen.getAllByRole('button', { name: 'Reject' })).toHaveLength(2)
   })
 
   it('offers no decision on an expired proposal, which stays pending', async () => {

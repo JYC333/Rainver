@@ -53,6 +53,9 @@ export async function endProjectDataConsents(db: Queryable, input: {spaceId?: st
     [input.spaceId ?? null, input.projectId ?? null, input.userId, input.endedByUserId]);
   // A pending card asking for such a consent ends with it, so being re-admitted never lets it be approved.
   await endPendingCoreConsentRequests(db, {ownerUserId: input.userId, spaceId: input.spaceId, projectId: input.projectId});
+  // Gmail read delegations this person gave or received there end too (ADR 0035 §4).
+  const {endPersonGmailDelegations} = await import('../sources/gmail/gmailDelegations.js');
+  await endPersonGmailDelegations(db, input);
 }
 
 /**

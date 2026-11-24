@@ -12,6 +12,10 @@ export async function workspaceRecoveryDiagnostics(db:Queryable,workspaceId:stri
    FROM execution_workspaces w CROSS JOIN LATERAL jsonb_each(w.cleanup_json) r
    WHERE w.id=$1 AND r.value->>'state'<>'cleaned'
   UNION ALL
+  SELECT 'cleanup','blocked','workspace_quarantined',NULL,0,false,true,false
+   FROM execution_workspaces w WHERE w.id=$1 AND COALESCE((w.inventory_json->>'quarantined_whole')::int,0)>0
+    AND NOT EXISTS(SELECT 1 FROM jsonb_each(w.cleanup_json) r WHERE r.value->>'state'='blocked')
+  UNION ALL
   SELECT 'checkpoint',COALESCE(NULLIF(b.checkpoint_recovery_json->>'state',''),b.checkpoint_state),
    COALESCE(b.checkpoint_recovery_json->>'error',CASE WHEN c.source_commit IS NULL THEN 'workspace_source_unconfirmed' END),
    NULL,0, b.change_set_id=$2 AND c.generation=w.generation AND b.checkpoint_state<>'blocked' AND ${unlaunchedCheckpointSql('b','r')},b.change_set_id=$2,COALESCE(${closedCheckpointHistorySql('w')},false)
@@ -35,7 +39,7 @@ export async function workspaceRecoveryDiagnostics(db:Queryable,workspaceId:stri
    :r.kind==='checkpoint'
    ?'Recover the terminal checkpoint. Only Host-confirmed exit and unchanged-tree or complete-absence evidence can settle it; unknown files remain preserved.'
    :'Recover the existing cleanup request with its original journal identity. Read the result after its receipt; do not replace it with a new discard.';
-  return {...r,reason,recovery_mode:recoverable?mode:null,recovery_action:recoverable?'workspace.retention.update' as const:null,guidance:historical?'Historical checkpoint failure: this abandoned source was confirmed absent by its Host. The failure remains in the audit history; no cleanup or checkpoint retry is required.':!selected?'Preserve the files. This checkpoint requires recovery authorized for its own batch; recovery of the selected batch does not process it.':recoverable?guidance
+  return {...r,reason,recovery_mode:recoverable?mode:null,recovery_action:recoverable?'workspace.retention.update' as const:null,guidance:r.reason==='workspace_quarantined'&&!eligible?'A preserved workspace directory has no failed cleanup task to retry. Host maintenance classifies dependency-only remnants; unknown contents require owner inspection before removal.':historical?'Historical checkpoint failure: this abandoned source was confirmed absent by its Host. The failure remains in the audit history; no cleanup or checkpoint retry is required.':!selected?'Preserve the files. This checkpoint requires recovery authorized for its own batch; recovery of the selected batch does not process it.':recoverable?guidance
    :r.kind==='cleanup'?'Preserve the evidence. Inspect this exact resource after the active Run or checkpoint settles; an old generation cannot be retried as the current one.'
    :'Preserve the files. A blocked or launched checkpoint requires its canonical checkpoint recovery and current owner; generic unlaunched recovery is not evidence of an empty Run.'};
  });

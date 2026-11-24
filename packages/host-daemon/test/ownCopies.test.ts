@@ -2,7 +2,7 @@ import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { __clearOwnCopies, findOnPath, findOwnCopy, ownLaunchFor, resolveCandidates } from "../src/ownCopies.js";
+import { __clearOwnCopies, invalidateOwnCopy, findOnPath, findOwnCopy, ownLaunchFor, resolveCandidates } from "../src/ownCopies.js";
 import { detectCapabilities } from "../src/capabilities.js";
 import { resolveAcpLaunch } from "../src/execution.js";
 import { npmGlobalRoots, userToolDirectories } from "../src/userPath.js";
@@ -59,6 +59,17 @@ describe("own copies of registry agents", () => {
     // with the registry's arguments, not the runtime key the template names.
     expect(ownLaunchFor("acp_goose")).toEqual({ command: path, args: ["acp"] });
     expect(resolveAcpLaunch("acp_goose", [], "own", "acp_goose")).toEqual({ command: path, args: ["acp"], env: {} });
+  });
+
+  it("reprobes the replaced own copy without waiting for its cached version to expire", async () => {
+    await install("goose", ACP_AGENT);
+    const lookup = { runtime_key: "acp_goose", runtime: null, own_candidates: [{ kind: "binary" as const, command: "goose", args: ["acp"] }], login: null };
+    const version = async () => (await detectCapabilities(undefined, [lookup])).installations.acp_goose?.[0]?.version;
+    expect(await version()).toBe("9.9.9");
+    await install("goose", ACP_AGENT.replace("9.9.9", "10.0.0"));
+    expect(await version()).toBe("9.9.9");
+    invalidateOwnCopy(lookup.runtime_key);
+    expect(await version()).toBe("10.0.0");
   });
 
   it("does not mistake a same-named binary that is not an ACP agent for a copy", async () => {

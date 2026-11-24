@@ -33,6 +33,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 local_compose_init "$MODE"
+[[ -d "$MODE_ROOT" ]] || install -d -m 700 "$MODE_ROOT"
+local_compose_lock_instance "taking a database dump"
 
 PGDB="$(local_compose_setting_or_default POSTGRES_DB rainver)"
 PGUSER="$(local_compose_setting_or_default POSTGRES_USER rainver)"

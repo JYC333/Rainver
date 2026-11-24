@@ -19,8 +19,7 @@ const source = pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), "..",
  * Runs `body` in a child process with `acquireFolderWriteLock` imported from
  * the TypeScript source. With `slowTakeover`, the first removal the lock code
  * makes of a lock (or of a holder entry in it) — the takeover of a dead
- * holder — first says "pausing" and waits 300 ms, so another process can judge
- * the same holder dead and take the lock inside that window.
+ * holder — first says "pausing" and waits for the parent to let it continue.
  */
 function child(body: string, args: string[] = [], slowTakeover = false): ChildProcess {
   const script = `
@@ -35,7 +34,8 @@ function child(body: string, args: string[] = [], slowTakeover = false): ChildPr
         if (paused || !lockOrHolder) return;
         paused = true;
         console.log("pausing");
-        await new Promise((resolve) => setTimeout(resolve, 300));
+        await new Promise((resolve) => process.stdin.once("data", resolve));
+        process.stdin.pause();
       };
       export async function rm(path, options) { await pause(path); return real.rm(path, options); }
       export async function unlink(path) { await pause(path); return real.unlink(path); }
@@ -50,7 +50,7 @@ function child(body: string, args: string[] = [], slowTakeover = false): ChildPr
     ${body}
   `;
   return spawn(process.execPath, ["--experimental-transform-types", "--no-warnings", "--input-type=module", "-e", script, ...args], {
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: ["pipe", "pipe", "pipe"],
   });
 }
 
@@ -78,6 +78,7 @@ const critical = (ms: number) => `
   const { appendFileSync } = await import("node:fs");
   const release = await acquireFolderWriteLock(key);
   appendFileSync(log, process.pid + " enter\\n");
+  console.log("entered");
   await new Promise((resolve) => setTimeout(resolve, ${ms}));
   appendFileSync(log, process.pid + " exit\\n");
   await release();
@@ -112,6 +113,8 @@ describe.runIf(process.platform === "linux")("Folder write lock across processes
     await said(slow, "pausing");
     const fast = child(critical(700), [key, log]);
     running.push(fast);
+    await said(fast, "entered");
+    slow.stdin!.end("continue\n");
     expect(await Promise.all([exited(slow), exited(fast)])).toEqual([0, 0]);
     const lines = (await readFile(log, "utf8")).trim().split("\n");
     expect(lines).toEqual([`${fast.pid} enter`, `${fast.pid} exit`, `${slow.pid} enter`, `${slow.pid} exit`]);

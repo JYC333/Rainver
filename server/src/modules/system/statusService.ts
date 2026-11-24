@@ -15,6 +15,7 @@
 
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
+import { PgJobQueueRepository } from "../jobs/repository.js";
 import type { Queryable } from "../routeUtils/common.js";
 import {
   getBackgroundServicesStatusSource,
@@ -97,7 +98,10 @@ export async function buildStatusBody(
   components.push(schedulerComponent(source !== null && source !== undefined, tasks));
 
   const workerId = source?.workerId() ?? null;
-  const depth = source ? await safeQueueDepth(source) : null;
+  const depth = options.databaseOk
+    ? await safeQueueDepth(source?.queueDepth ?? (async () =>
+        config.databaseUrl ? PgJobQueueRepository.fromConfig(config).countQueueDepth() : null))
+    : null;
   components.push(workerComponent(workerId, depth));
   components.push(queueComponent(workerId, depth));
 
@@ -176,10 +180,10 @@ function queueComponent(
 }
 
 async function safeQueueDepth(
-  source: BackgroundServicesStatusSource,
+  read: BackgroundServicesStatusSource["queueDepth"],
 ): Promise<{ pending: number; running: number } | null> {
   try {
-    return await source.queueDepth();
+    return await read();
   } catch {
     return null;
   }

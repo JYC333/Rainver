@@ -24,8 +24,3 @@ export {
   listAgentRuntimeDefinitions,
   supportsRuntimeBackendMode,
 } from "./runtimeDefinitions.js";
-export {
-  assertRuntimeSubagentsDisabled,
-  ensureRuntimeSubagentsDisabled,
-  RuntimeSubagentConfigError,
-} from "./subagentConfig.js";

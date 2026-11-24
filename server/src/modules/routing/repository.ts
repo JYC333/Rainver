@@ -86,14 +86,12 @@ export class PgRouteDecisionRepository {
     // with an empty candidate set.
     const hostBoundRun = hostThread.schema_version === "host_thread.v1";
     // Conversation-bound Room Runs also retain the generic thread FK for
-    // continuity/event projection. The host_thread override identifies that
-    // shared Conversation thread; only a Run without that host-bound pin is
-    // required to reference a Task-owned thread here.
-    const taskThreadRun = !hostBoundRun && Boolean(run.host_task_thread_id);
+    // continuity/event projection. The stored thread distinguishes a
+    // Conversation from a Task when both use the host_thread override.
     const integrationContract=contractRecord(run.contract_snapshot_json);
     const integrationId=typeof integrationContract.workspace_integration_id==='string'?integrationContract.workspace_integration_id:null;
     const integrationAttempt=typeof integrationContract.workspace_integration_attempt_id==='string'?integrationContract.workspace_integration_attempt_id:null;
-    const pinnedHostThread = hostBoundRun || taskThreadRun
+    const pinnedHostThread = hostBoundRun || run.host_task_thread_id
       ? (await this.db.query<{
           execution_host_id: string;
           workspace_mode: "location" | "managed";
@@ -105,10 +103,26 @@ export class PgRouteDecisionRepository {
           container_user_id: string | null;
           session_id: string | null;
           task_id: string | null;
+          matches_conversation_workspace: boolean;
         }>(
-          `SELECT execution_host_id, workspace_mode, workspace_location_id,
+          `SELECT COALESCE(execution_host_id, CASE WHEN task_id IS NOT NULL THEN (
+                    SELECT location.execution_host_id FROM workspace_locations location
+                     WHERE location.id = host_threads.workspace_location_id AND location.space_id = $2
+                  ) END) AS execution_host_id,
+                  workspace_mode, workspace_location_id,
                   runtime_key, runtime_installation, status,
-                  container_kind, container_user_id, session_id, task_id
+                  container_kind, container_user_id, session_id, task_id,
+                  EXISTS (
+                    SELECT 1 FROM conversation_execution_contexts context
+                    JOIN session_conversation_backends binding
+                      ON binding.space_id = context.space_id AND binding.session_id = context.session_id
+                     AND binding.agent_id = host_threads.agent_id AND binding.runtime_profile_id = $9
+                    WHERE context.space_id = $2 AND context.session_id = $3 AND context.state = 'initialized'
+                      AND context.execution_host_id = host_threads.execution_host_id
+                      AND context.primary_workspace_mode = host_threads.workspace_mode
+                      AND context.primary_workspace_location_id IS NOT DISTINCT FROM host_threads.workspace_location_id
+                      AND host_threads.agent_id = $10
+                  ) AS matches_conversation_workspace
              FROM host_threads
             WHERE id = $1
               AND (
@@ -137,14 +151,17 @@ export class PgRouteDecisionRepository {
                     JOIN tasks task ON task.id = task_run.task_id
                    WHERE task_run.run_id = $5
                      AND task_run.task_id = host_threads.task_id
+                     AND task_run.space_id = $2
                      AND task.space_id = $2
                 ))
               )
             LIMIT 1`,
           [run.host_task_thread_id ?? hostThread.thread_id, run.space_id, run.session_id,
-            run.owner_user_id ?? run.instructed_by_user_id ?? null, run.id,integrationId,integrationAttempt,run.project_id],
+            run.owner_user_id ?? run.instructed_by_user_id ?? null, run.id,integrationId,integrationAttempt,run.project_id,
+            run.requested_runtime_profile_id,run.agent_id],
         )).rows[0] ?? null
       : null;
+    const taskThreadRun = Boolean(pinnedHostThread?.task_id || (!hostBoundRun && run.host_task_thread_id));
     const pinnedThreadUnavailable = !pinnedHostThread || pinnedHostThread.status === "closed";
     if ((hostBoundRun || taskThreadRun) && pinnedThreadUnavailable) {
       throw new RouteSelectionError(
@@ -210,10 +227,52 @@ export class PgRouteDecisionRepository {
     // integration-attempt owner above. Its authorized candidate Location may
     // differ from the original Profile's primary (for example an attachment).
     const repairThread=Boolean(integrationId&&integrationAttempt&&pinnedHostThread&&pinnedHostThread.container_kind===null&&!pinnedHostThread.task_id);
-    const scopedCandidates=repairThread?rawCandidates.map(candidate=>
-      candidate.runtime_profile_id===run.requested_runtime_profile_id
-        &&candidate.execution_host_id===pinnedHostThread!.execution_host_id
-        ?{...candidate,workspace_mode:pinnedHostThread!.workspace_mode,workspace_location_id:pinnedHostThread!.workspace_location_id}:candidate):rawCandidates;
+    if (taskThreadRun && (
+      !pinnedHostThread?.task_id
+      || pinnedHostThread.workspace_mode !== "location"
+      || pinnedHostThread.workspace_location_id !== run.workspace_location_id
+    )) {
+      throw new RouteSelectionError(
+        "task_runtime_location_mismatch",
+        "The Task Run Workspace Location does not match its pinned runtime thread.",
+      );
+    }
+    const preserveWorkspace = pinnedHostThread && (repairThread || taskThreadRun || (
+      hostBoundRun && pinnedHostThread.container_kind !== null && pinnedHostThread.matches_conversation_workspace
+    ));
+    // Built-in Host Task dispatch has no Host thread. The Run's authorized
+    // placement was recorded alongside its canonical Task link at admission.
+    const taskWorkspace = !pinnedHostThread && run.workspace_location_id
+      ? (await this.db.query<{ execution_host_id: string | null; workspace_location_id: string | null }>(
+          `SELECT host.id AS execution_host_id,
+                  CASE WHEN host.id IS NOT NULL THEN location.id END AS workspace_location_id
+             FROM task_runs link
+             LEFT JOIN project_folders folder
+               ON folder.id = $3 AND folder.space_id = link.space_id AND folder.project_id = $4
+             LEFT JOIN workspace_locations location
+               ON location.id = $5 AND location.project_folder_id = folder.id AND location.space_id = link.space_id
+             LEFT JOIN hosts host ON host.id = location.execution_host_id AND host.kind = 'server'
+            WHERE link.run_id = $1 AND link.space_id = $2
+              AND link.role IN ('primary', 'merge')
+            LIMIT 1`,
+          [run.id, run.space_id, run.project_folder_id, run.project_id, run.workspace_location_id],
+        )).rows[0] ?? null
+      : null;
+    const scopedCandidates = preserveWorkspace ? rawCandidates.map(candidate =>
+      candidate.runtime_profile_id === run.requested_runtime_profile_id
+        && candidate.execution_host_id === pinnedHostThread.execution_host_id
+        && (repairThread || (candidate.runtime_key === pinnedHostThread.runtime_key
+          && candidate.runtime_installation === pinnedHostThread.runtime_installation))
+        ? {...candidate, workspace_mode: pinnedHostThread.workspace_mode, workspace_location_id: pinnedHostThread.workspace_location_id}
+        : candidate) : taskWorkspace
+      ? rawCandidates.filter(candidate => candidate.execution_host_id === taskWorkspace.execution_host_id
+          && taskWorkspace.workspace_location_id !== null)
+        .map(candidate => ({
+          ...candidate,
+          workspace_mode: "location" as const,
+          workspace_location_id: taskWorkspace.workspace_location_id,
+        }))
+      : rawCandidates;
     const allCandidates = conversationSnapshot
       ? scopedCandidates.map((candidate) => candidate.runtime_profile_id === conversationSnapshot.runtime_profile_id
           ? applyConversationSnapshot(
@@ -223,15 +282,6 @@ export class PgRouteDecisionRepository {
             )
           : candidate)
       : scopedCandidates;
-    if (taskThreadRun && (
-      !pinnedHostThread?.task_id
-      || pinnedHostThread.workspace_location_id !== run.workspace_location_id
-    )) {
-      throw new RouteSelectionError(
-        "task_runtime_location_mismatch",
-        "The Task Run Workspace Location does not match its pinned runtime thread.",
-      );
-    }
     // An unpinned Run needs a complete execution target. A Profile whose
     // deployment authority names a paired Host stays admissible.
     // `host_dispatch_permitted`, not this filter, decides whether the
@@ -707,7 +757,6 @@ function candidateFromRow(
     supports_dry_run: runtimeConfig.supports_dry_run !== false,
     baseline_trust_level: trustLevel(spec?.baseline_trust_level),
     effective_trust_level: effectiveTrustLevel(spec, row.execution_host_kind, hostDispatchPermitted),
-    subagent_disable_mechanism: spec?.subagent_disable_mechanism ?? "unknown",
     estimated_cost_usd: numberOrNull(row.estimated_cost_usd),
     estimated_latency_ms: numberOrNull(row.estimated_latency_ms),
     historical_verification_pass_rate: numberOrNull(row.historical_verification_pass_rate),
@@ -888,7 +937,6 @@ function trustLevel(value: unknown): "low" | "medium" | "high" { return value ==
  * thing that enforces them is the execution target, not the runtime registry.
  * A registry declaration that a vendor supports a setting is not evidence that
  * this Run received it. A runtime's own declarations never raise trust.
- * Do not treat a vendor's declared subagent-deny as applied on the daemon path.
  *
  * What is enforced is the built-in strict Server Host: every Run it accepts
  * runs in a fresh rootless bubblewrap namespace built from an empty root and

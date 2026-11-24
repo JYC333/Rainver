@@ -292,21 +292,31 @@ export default function NoteEditor({ noteId, onNoteResolved }: NoteEditorProps) 
     setRevisions(null)
   }, [setSaveState])
 
+  const loadSeqRef = useRef(0)
+
   const loadHistory = useCallback(async (id: string) => {
+    const seq = loadSeqRef.current
+    const isCurrent = () => seq === loadSeqRef.current && noteRef.current?.id === id
     try {
-      setRevisions(await notesApi.revisions(id))
+      const history = await notesApi.revisions(id)
+      if (isCurrent()) setRevisions(history)
     } catch (e) {
-      toast.error(errMsg(e))
+      if (isCurrent()) toast.error(errMsg(e))
     }
   }, [])
 
-  const rollback = useCallback(async (toVersion: number) => {
-    const current = noteRef.current
-    if (!current) return
+  const rollback = useCallback(async (id: string, toVersion: number) => {
+    if (noteRef.current?.id !== id) return
+    const seq = loadSeqRef.current
+    const isCurrent = () => seq === loadSeqRef.current && noteRef.current?.id === id
     if (saveStateRef.current !== 'saved' && !window.confirm('You have an unsaved edit. Restoring a version will discard it. Continue?')) return
     setHistoryBusy(true)
     try {
-      const restored = await notesApi.rollback(current.id, toVersion)
+      const restored = await notesApi.rollback(id, toVersion)
+      if (!isCurrent()) {
+        noteCacheRef.current.delete(id)
+        return
+      }
       onNoteResolved(restored)
       noteCacheRef.current.set(restored.id, restored)
       seedFromNote(restored)
@@ -315,7 +325,7 @@ export default function NoteEditor({ noteId, onNoteResolved }: NoteEditorProps) 
     } catch (e) {
       toast.error(errMsg(e))
     } finally {
-      setHistoryBusy(false)
+      if (isCurrent()) setHistoryBusy(false)
     }
   }, [onNoteResolved, seedFromNote, loadHistory])
 
@@ -323,12 +333,23 @@ export default function NoteEditor({ noteId, onNoteResolved }: NoteEditorProps) 
   // when it's safe — same note, no pending local edits — and only touches the
   // editor body if the content actually changed (to avoid resetting the cursor).
   const revalidate = useCallback(async (id: string) => {
+    const seq = loadSeqRef.current
     let fresh: Note
     try {
       fresh = await notesApi.get(id)
-    } catch {
+    } catch (error) {
+      if (seq !== loadSeqRef.current) return
+      if (!isNotFoundError(error) && !(error instanceof ApiRequestError && error.status === 403)) return
+      noteCacheRef.current.delete(id)
+      if (noteRef.current?.id !== id) return
+      noteRef.current = null
+      setEditorDocument(emptyRichTextDocument())
+      setTitle('')
+      setNotFound(true)
+      setNote(null)
       return
     }
+    if (seq !== loadSeqRef.current || noteRef.current?.id !== id) return
     noteCacheRef.current.set(fresh.id, fresh)
     if (noteRef.current?.id !== fresh.id || saveStateRef.current !== 'saved') return
     onNoteResolved(fresh)
@@ -342,7 +363,6 @@ export default function NoteEditor({ noteId, onNoteResolved }: NoteEditorProps) 
 
   // Only the latest load applies. The editor stays mounted across a switch.
   // A slow read for the note left behind must not replace the one switched to.
-  const loadSeqRef = useRef(0)
   const load = useCallback(async () => {
     const seq = ++loadSeqRef.current
     const isCurrent = () => seq === loadSeqRef.current
@@ -352,6 +372,7 @@ export default function NoteEditor({ noteId, onNoteResolved }: NoteEditorProps) 
       return
     }
     setPanel(null)
+    setHistoryBusy(false)
     // Clear the previous note's links so stale counts don't linger mid-switch.
     setLinks([])
     setBacklinks([])
@@ -611,7 +632,7 @@ export default function NoteEditor({ noteId, onNoteResolved }: NoteEditorProps) 
           />
           {note.updated_by_run_id && note.version > 1 && saveState === 'saved' && (
             <div className="mt-4">
-              <AiEditBanner runId={note.updated_by_run_id} busy={historyBusy} onUndo={() => void rollback(note.version - 1)} />
+              <AiEditBanner runId={note.updated_by_run_id} busy={historyBusy} onUndo={() => void rollback(note.id, note.version - 1)} />
             </div>
           )}
           <RichTextEditor
@@ -770,7 +791,7 @@ export default function NoteEditor({ noteId, onNoteResolved }: NoteEditorProps) 
                 revisions={revisions}
                 currentVersion={note.version}
                 busy={historyBusy}
-                onRollback={toVersion => void rollback(toVersion)}
+                onRollback={toVersion => void rollback(note.id, toVersion)}
               />
             </div>
           </StatusPanelShell>

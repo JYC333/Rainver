@@ -15,7 +15,7 @@ import { ConversationBackendSetupCard } from '../agent_groups/conversation/Conve
  * new Conversation when its Host/Workspace target is available; confirmation
  * still owns the immutable Conversation pin.
  */
-export default function ProjectConversationBackendCard({ projectId }: { projectId: string }) {
+export default function ProjectConversationBackendCard({ projectId, canConfigure }: { projectId: string; canConfigure: boolean }) {
   const [assistant, setAssistant] = useState<AgentOut | null>(null)
   const [profiles, setProfiles] = useState<AgentRuntimeProfileOut[]>([])
   const [loading, setLoading] = useState(true)
@@ -24,6 +24,7 @@ export default function ProjectConversationBackendCard({ projectId }: { projectI
   const [hostSelection, setHostSelection] = useState<HostExecutionSelection | null>(null)
 
   const reload = useCallback(async () => {
+    if (!canConfigure) return
     setLoading(true)
     try {
       const { assistant: found } = await agentsApi.getSystemAssistant(projectId)
@@ -34,7 +35,7 @@ export default function ProjectConversationBackendCard({ projectId }: { projectI
     } finally {
       setLoading(false)
     }
-  }, [projectId])
+  }, [projectId, canConfigure])
 
   useEffect(() => { void reload() }, [reload])
 
@@ -73,16 +74,15 @@ export default function ProjectConversationBackendCard({ projectId }: { projectI
     }
   }
 
+  if (!canConfigure) return <p className="text-xs text-muted-foreground">Only the Project owner can change the Assistant’s default CLI.</p>
   if (loading) return <p className="text-xs text-muted-foreground flex items-center gap-1.5"><Loader2 className="size-3 animate-spin" /> Loading conversation backend…</p>
   if (!assistant) {
     return (
       <div className="space-y-2">
         <div>
-          <Label>Runtime &amp; workspace</Label>
+          <Label>Project Assistant runtime</Label>
           <p className="mt-1 text-xs text-muted-foreground">
-            Configure the available runtime suggestions here; each
-            Conversation confirms its Host, CLI, and workspace explicitly
-            before the first message.
+            Configure the Project Assistant’s runtime here. New conversations display the runtime for the selected Host and workspace.
           </p>
         </div>
         <ConversationBackendSetupCard />
@@ -93,8 +93,8 @@ export default function ProjectConversationBackendCard({ projectId }: { projectI
   return (
     <div className="space-y-2">
       <div>
-        <Label>Runtime &amp; workspace</Label>
-        <p className="mt-1 text-xs text-muted-foreground">These profiles are suggestions for new Conversations; initialized Conversations keep their own pins.</p>
+        <Label>Project Assistant runtime</Label>
+        <p className="mt-1 text-xs text-muted-foreground">New conversations use the configured runtime for their Host and workspace. Existing conversations keep their runtime binding.</p>
       </div>
       <div className="space-y-1">
         {profiles.map(profile => (

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { FolderKanban, Newspaper, X } from 'lucide-react'
@@ -17,6 +17,7 @@ import { formatDateTime } from '../../i18n/format'
 
 type StatusFilter = ActivityStatus | 'all'
 const STATUS_FILTERS: StatusFilter[] = ['all', 'raw', 'proposals_generated', 'processed', 'failed', 'archived']
+const PAGE_SIZE = 50
 
 const SOURCE_COLORS: Record<ActivitySourceType, string> = {
   user_capture: 'default',
@@ -151,44 +152,46 @@ export function ActivityQueue({ projectId }: ActivityQueueProps) {
   const projectFilter = projectId ?? searchParams.get('project_id') ?? ''
   const pinned = projectId !== undefined
 
-  const [records, setRecords]   = useState<ActivityInboxRecord[]>([])
   // Status filter is URL-driven so the Inbox scene sidebar and the header toggles stay in sync.
   const filter = (searchParams.get('status') as StatusFilter | null) ?? 'raw'
   const setFilter = (next: StatusFilter) => setSearchParams(p => { p.set('status', next); return p }, { replace: true })
-  const [loading, setLoading]   = useState(false)
   const [busy, setBusy]         = useState<string | null>(null)
   // Project names for the ownership tag below. A record carries `project_id`
   // but no name, and an id is not something a reader can recognise.
   const [projectNames, setProjectNames] = useState<Map<string, string>>(() => new Map())
-  // The filter buttons highlight the new filter at once; the list must not
-  // keep showing the previous filter's records behind it.
-  const listRequest = useRef(0)
+  const [position, setPosition] = useState({ filterKey: '', offset: 0 })
+  const [revision, refresh] = useState(0)
+  const [result, setResult] = useState<{ key: string; rows: ActivityInboxRecord[]; hasMore: boolean; failed?: boolean }>()
+  const filterKey = JSON.stringify([activeSpaceId, filter, projectFilter])
+  const offset = filterKey === position.filterKey ? position.offset : 0
+  const requestKey = JSON.stringify([filterKey, offset, revision])
+  const current = result?.key === requestKey ? result : undefined
+  const records = current?.rows ?? []
+  const loading = Boolean(activeSpaceId && !current)
+  const reload = () => refresh(value => value + 1)
 
-  const load = useCallback(async () => {
-    if (!activeSpaceId) {
-      setRecords([])
-      setLoading(false)
-      return
-    }
-    const request = ++listRequest.current
-    setLoading(true)
-    try {
-      const items = await activityApi.list({
-        status: filter === 'all' ? undefined : filter,
-        project_id: projectFilter || undefined,
-      })
-      if (request !== listRequest.current) return
-      setRecords(items)
-    } catch (e) {
-      if (request !== listRequest.current) return
-      toast.error(errMsg(e))
-      setRecords([])
-    } finally {
-      if (request === listRequest.current) setLoading(false)
-    }
-  }, [filter, projectFilter, activeSpaceId])
-
-  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    if (!activeSpaceId) return
+    const controller = new AbortController()
+    void activityApi.list({
+      status: filter === 'all' ? undefined : filter,
+      project_id: projectFilter || undefined,
+      limit: PAGE_SIZE + 1,
+      offset,
+    }, { spaceId: activeSpaceId, signal: controller.signal }).then(items => {
+      if (controller.signal.aborted) return
+      if (items.length === 0 && offset > 0) {
+        setPosition({ filterKey, offset: offset - PAGE_SIZE })
+        return
+      }
+      setResult({ key: requestKey, rows: items.slice(0, PAGE_SIZE), hasMore: items.length > PAGE_SIZE })
+    }).catch(error => {
+      if (controller.signal.aborted) return
+      setResult({ key: requestKey, rows: [], hasMore: false, failed: true })
+      toast.error(errMsg(error))
+    })
+    return () => controller.abort()
+  }, [filter, filterKey, projectFilter, activeSpaceId, offset, requestKey])
 
   useEffect(() => {
     // Pinned to one Project, every row carries the same name and none is shown.
@@ -219,7 +222,7 @@ export function ActivityQueue({ projectId }: ActivityQueueProps) {
     try {
       await activityApi.review(id)
       toast.success(t('activity_ui.queue.marked_reviewed'))
-      await load()
+      reload()
     } catch (e) { toast.error(errMsg(e)) }
     finally { setBusy(null) }
   }
@@ -229,7 +232,7 @@ export function ActivityQueue({ projectId }: ActivityQueueProps) {
     try {
       await activityApi.archive(id)
       toast.success(t('activity_ui.queue.archived_toast'))
-      await load()
+      reload()
     } catch (e) { toast.error(errMsg(e)) }
     finally { setBusy(null) }
   }
@@ -237,7 +240,7 @@ export function ActivityQueue({ projectId }: ActivityQueueProps) {
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex gap-1.5">
+        <div className="flex flex-wrap gap-1.5">
           {STATUS_FILTERS.map(s => (
             <Button key={s} size="sm" variant={filter === s ? 'default' : 'ghost'} onClick={() => setFilter(s)}>
               {t(`activity_ui.status.${s}`)}
@@ -259,7 +262,11 @@ export function ActivityQueue({ projectId }: ActivityQueueProps) {
         <Card><p className="text-muted-foreground text-center py-10 text-sm">{t('activity_ui.queue.loading')}</p></Card>
       )}
 
-      {!loading && records.length === 0 && (
+      {current?.failed && (
+        <Button size="sm" variant="outline" onClick={reload}>{t('pagination.retry')}</Button>
+      )}
+
+      {!loading && !current?.failed && records.length === 0 && (
         !activeSpaceId ? (
           <EmptyState
             title={t('activity_ui.queue.no_space_title')}
@@ -401,6 +408,12 @@ export function ActivityQueue({ projectId }: ActivityQueueProps) {
           </Card>
         )
       })}
+      {current && (offset > 0 || current.hasMore) && (
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" variant="outline" disabled={offset === 0} onClick={() => setPosition({ filterKey, offset: offset - PAGE_SIZE })}>{t('pagination.previous')}</Button>
+          <Button size="sm" variant="outline" disabled={!current.hasMore} onClick={() => setPosition({ filterKey, offset: offset + PAGE_SIZE })}>{t('pagination.next')}</Button>
+        </div>
+      )}
     </div>
   )
 }

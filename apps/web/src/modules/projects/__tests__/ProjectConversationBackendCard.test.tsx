@@ -29,7 +29,7 @@ vi.mock('../../../contexts/SpaceContext', () => ({
 }))
 
 function renderCard() {
-  return render(<MemoryRouter><ProjectConversationBackendCard projectId="project-1" /></MemoryRouter>)
+  return render(<MemoryRouter><ProjectConversationBackendCard projectId="project-1" canConfigure /></MemoryRouter>)
 }
 
 describe('ProjectConversationBackendCard', () => {

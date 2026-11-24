@@ -7,7 +7,9 @@
 // and a minimal ACP agent behind them; it calls no model. The parent drives
 // it over IPC and is told every frame the server sent.
 import { loadConfig } from "../../dist/config.js";
+import { getDbPool } from "../../dist/db/pool.js";
 import { sharedHostConnectionRegistry as registry } from "../../dist/modules/hosts/connectionRegistry.js";
+import { PgHostRepository } from "../../dist/modules/hosts/repository.js";
 import { startJobsWorker } from "../../dist/modules/jobs/workerRuntime.js";
 import { buildRunOrchestration } from "../../dist/modules/runs/orchestrationFactory.js";
 import { buildServer } from "../../dist/server.js";
@@ -84,13 +86,21 @@ const sink = {
   close() {},
 };
 
-registry.registerConnection(hostId, sink);
 // As `index.ts` does: the server registers every module (Run settlement
 // reconcilers included) — it is never told to listen here — and the
 // background services start the jobs worker. The rest of the scheduler is
 // not started: no briefing path depends on it.
 const app = buildServer(config);
 await app.ready();
+const db = getDbPool(config.databaseUrl);
+const hosts = new PgHostRepository(db);
+let connected = true;
+const refreshHeartbeat = async () => {
+  if (connected && !(await hosts.recordHeartbeat(hostId, {}))) throw new Error("Synthetic Host cannot record a heartbeat");
+};
+await refreshHeartbeat();
+registry.registerConnection(hostId, sink);
+const heartbeatTimer = setInterval(refreshHeartbeat, 15_000).unref();
 const worker = startJobsWorker(config);
 const orchestration = buildRunOrchestration(config).orchestration;
 
@@ -105,15 +115,17 @@ process.on("message", async (message) => {
   } else if (message.cmd === "complete") {
     registry.receiveComplete(hostId, message.runId, { exit_code: message.exitCode, timed_out: false, error: null }, message.launchId);
   } else if (message.cmd === "disconnect") {
+    connected = false;
     registry.unregisterConnection(hostId, sink);
   } else if (message.cmd === "reconnect") {
+    connected = true;
     registry.registerConnection(hostId, sink);
+    await refreshHeartbeat();
   } else if (message.cmd === "cancel_deep") {
     // Execute the actual domain cancellation beside this worker's Host registry,
     // matching production's co-located API/worker composition.
     const {cancelDeepReading}=await import("../../dist/modules/sources/deepReading/service.js");
-    const {getDbPool}=await import("../../dist/db/pool.js");
-    const result=await cancelDeepReading(getDbPool(config.databaseUrl),config,{spaceId:message.spaceId,userId:message.userId},message.projectId,message.operationId);
+    const result=await cancelDeepReading(db,config,{spaceId:message.spaceId,userId:message.userId},message.projectId,message.operationId);
     report({type:"cancelled",result});
   } else if (message.cmd === "cancel") {
     const result = await orchestration.cancelRun({ run_id: message.runId, space_id: message.spaceId, requested_by_user_id: message.userId });
@@ -122,6 +134,7 @@ process.on("message", async (message) => {
     // IPC is ordered: every command sent before this one has been handled.
     report({ type: "pong", seq: message.seq });
   } else if (message.cmd === "stop") {
+    clearInterval(heartbeatTimer);
     await worker?.stop();
     await app.close();
     report({ type: "stopped" });

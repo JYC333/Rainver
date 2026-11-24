@@ -37,7 +37,12 @@ point in time.
 ### `source_items`
 **Role: Sources candidate**
 Raw ingested units (one per document, chunk, or API record) before semantic
-extraction. Created by `source_extraction` jobs. A durable ingest record: it is
+extraction. Created by Sources extraction and materialization. Ordinary
+extractions share one PostgreSQL session for the job lock and writes, so a
+worker whose session ends cannot overwrite a successor's result. The scheduler
+skips observed live locks before filling its batch and independently claims each
+candidate. Legacy queued `source_extraction` jobs share the same worker and
+defer while another session owns their extraction. A durable ingest record is
 soft-deleted through `deleted_at`, kept per its `retention_policy` /
 `content_state`, and is a join target when `provenance_links` resolve a
 connection id. Projected into retrieval as `source_item` through the Sources

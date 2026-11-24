@@ -18,6 +18,11 @@
  * only output.
  */
 export const PRIVATE_TOOL_CALL_ACTIONS: readonly string[] = Object.freeze(["source.gmail.monitor.propose", "source.gmail.mail.read", "source.gmail.digest.propose", "source.gmail.digest.read", "source.gmail.private_check.request",
+  // ADR 0034: the owner's application-update automation and the facts its Run records from their mail.
+  "source.gmail.application_updates.propose", "source.gmail.application_updates.list", "source.gmail.application_updates.flag", "plugin.applications.mail_fact.apply",
+  "plugin.applications.mail_fact.list",
+  // ADR 0035: the combined card, the owner's delegations and a member's delegated read of the owner's mail.
+  "source.gmail.setup.propose", "source.gmail.delegation.propose", "source.gmail.delegation.list", "source.gmail.delegated.read",
   // Withdrawn (ADR 0033 §6); a model that still names it stays reduced.
   "source.gmail.private_read.request"]);
 

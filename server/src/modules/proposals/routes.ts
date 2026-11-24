@@ -1,9 +1,7 @@
+import { resolveIdentity as resolveRouteIdentity } from "../routeUtils/common.js";
 import {registerOperationAdapters} from '../systemActions/operations/routeAdapter.js';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
-import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
-import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext.js";
-import { introspectIdentity } from "../auth/identity.js";
 import { PgProposalRepository, type ProposalListFilters } from "./repository.js";
 import {
   PgProposalApplyService,
@@ -103,28 +101,7 @@ async function resolveIdentity(
       ? identityOverride(request)
       : identityOverride;
   }
-  const requestId = resolveRequestId(request);
-  reply.header(REQUEST_ID_HEADER, requestId);
-  const identity = await introspectIdentity(context.config, request, reply);
-  if (identity.ok) return { spaceId: identity.spaceId, userId: identity.userId };
-  if (identity.reason === "denied") {
-    reply.code(identity.statusCode);
-    reply.header("content-type", "application/json");
-    reply.send(identity.body);
-    return null;
-  }
-  await sendErrorEnvelope(
-    reply,
-    502,
-    errorEnvelope(
-      identity.reason === "contract_violation"
-        ? "introspect_contract_violation"
-        : "identity_unavailable",
-      "Identity introspection failed",
-      requestId,
-    ),
-  );
-  return null;
+  return resolveRouteIdentity(context.config, request, reply);
 }
 
 function parseListFilters(
@@ -147,10 +124,16 @@ function parseListFilters(
   if (q.expired !== undefined && expired === null) {
     return { error: `Invalid expired ${JSON.stringify(q.expired)}` };
   }
+  const proposalTypes = typeof q.types === 'string' ? q.types.split(',').map(type => type.trim()) : null;
+  if (q.types !== undefined && (q.type !== undefined || !proposalTypes || proposalTypes.length > 20
+    || proposalTypes.some(type => !/^[a-z][a-z0-9_]{0,79}$/u.test(type)))) {
+    return { error: 'types must contain 1 to 20 comma-separated proposal types and cannot be combined with type' };
+  }
   return {
     filters: {
       status,
       proposalType: q.type ?? null,
+      ...(proposalTypes ? { proposalTypes } : {}),
       urgency: urgency ?? null,
       expired,
       projectId: q.project_id ?? null,

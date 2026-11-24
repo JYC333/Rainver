@@ -461,7 +461,7 @@ describe("Conversation execution schema", () => {
     )).rejects.toMatchObject({ statusCode: 409 });
   });
 
-  it.for(['installation','cli'] as const)('continues an existing Conversation after changing its %s, without resuming the old CLI session',async(kind,ctx)=>{
+  it.for(['installation','cli','installation and workspace default'] as const)('continues an existing Conversation after changing its %s, without resuming the old CLI session',async(kind,ctx)=>{
     if(!db.available)return ctx.skip();
     const service=new ConversationExecutionContextService(db.pool),identity={spaceId:SPACE,userId:OWNER};
     await service.initialize(identity,SESSION,{selection:{execution_host_id:HOST,primary:{kind:'managed'}},runtime:{agent_id:AGENT,runtime_profile_id:RUNTIME,runtime_key:'claude_code',runtime_installation:'managed:1.0.0'}});
@@ -474,13 +474,16 @@ describe("Conversation execution schema", () => {
     const runtime=kind==='cli'?'codex_cli':'claude_code';
     await db.pool.query("UPDATE hosts SET capabilities_json=capabilities_json||$2::jsonb WHERE id=$1",[HOST,JSON.stringify({installations:{[runtime]:[{id:'own',logged_in:true}]}})]);
     await db.pool.query("UPDATE agent_runtime_profiles SET runtime_key=$2,runtime_installation='own' WHERE id=$1",[RUNTIME,runtime]);
+    if (kind === 'installation and workspace default') {
+      await db.pool.query("UPDATE agent_runtime_profiles SET workspace_mode='location', workspace_location_id=$2 WHERE id=$1", [RUNTIME, LOCATION]);
+    }
     const preflight=await service.preflight(identity,SESSION);
     expect(preflight.summary).toMatchObject({can_send:true,blocked_reason:null,runtime:{runtime_key:runtime,runtime_installation:'own'}});
     expect(preflight.summary.runtimes[0]).toMatchObject({runtime_key:runtime,runtime_installation:'own',context_tokens:null});
     expect((await threads.getForConversationAgent(SPACE,SESSION,AGENT))?.id).toBe(old!.id);
     const input={space_id:SPACE,user_id:OWNER,session_id:SESSION,agent_id:AGENT};
     const backend=await new PgConversationBackendRepository(db.pool).resolveBinding(input);
-    expect(backend).toMatchObject({runtime_key:runtime,runtime_installation:'own'});
+    expect(backend).toMatchObject({runtime_key:runtime,runtime_installation:'own',workspace_mode:'managed',workspace_location_id:null});
     const next=await threads.getForConversationAgent(SPACE,SESSION,AGENT);
     expect(next!.id).not.toBe(old!.id);expect(next).toMatchObject({runtime_key:runtime,runtime_installation:'own',vendor_session_id:null});
     expect((await db.pool.query('SELECT status,vendor_session_id FROM host_threads WHERE id=$1',[old!.id])).rows[0]).toEqual({status:'closed',vendor_session_id:'old-native-session'});
@@ -552,7 +555,7 @@ describe("Conversation execution schema", () => {
     expect(blocked.summary).toMatchObject({ can_send: false, blocked_reason: expect.stringContaining("no signed-in account or available ACP session") });
   });
 
-  it("offers a newly discovered CLI with an anonymous ACP session as a selectable installation", async (ctx) => {
+  it("does not offer a Host-discovered CLI as a Room runtime", async (ctx) => {
     if (!db.available) return ctx.skip();
     const report = async (sessionAvailable: boolean) => db.pool.query(
       "UPDATE hosts SET last_heartbeat_at = now(), capabilities_json = $2::jsonb WHERE id = $1",
@@ -564,22 +567,17 @@ describe("Conversation execution schema", () => {
     const service = new ConversationExecutionContextService(db.pool);
     await report(false);
     const unavailable = await service.preflight({ spaceId: SPACE, userId: OWNER }, SESSION);
-    expect(unavailable.available_runtime_profiles).toEqual(expect.arrayContaining([
-      expect.objectContaining({ runtime_key: "opencode", runtime_profile_id: null, usable: false }),
-    ]));
+    expect(unavailable.available_runtime_profiles.some(profile => profile.runtime_profile_id === null)).toBe(false);
     await report(true);
     const ready = await service.preflight({ spaceId: SPACE, userId: OWNER }, SESSION);
-    expect(ready.available_runtime_profiles).toEqual(expect.arrayContaining([
-      expect.objectContaining({ runtime_key: "opencode", runtime_profile_id: null, usable: true }),
-    ]));
-    const initialized = await service.initialize({ spaceId: SPACE, userId: OWNER }, SESSION, {
+    expect(ready.available_runtime_profiles.some(profile => profile.runtime_profile_id === null)).toBe(false);
+    await expect(service.initialize({ spaceId: SPACE, userId: OWNER }, SESSION, {
       selection: { execution_host_id: HOST, primary: { kind: "managed" } },
       runtime: { agent_id: AGENT, runtime_profile_id: null, runtime_key: "opencode", runtime_installation: "managed:1.18.31" },
-    });
-    expect(initialized).toMatchObject({ state: "initialized", runtime: { runtime_key: "opencode", runtime_installation: "managed:1.18.31" } });
+    })).rejects.toThrow("Configure the Agent runtime before starting a Room conversation");
   });
 
-  it("uses Host-reported CLIs directly and reuses or creates the Agent profile in the same initialization", async (ctx) => {
+  it("pins the saved Agent profile for the selected Project Folder", async (ctx) => {
     if (!db.available) return ctx.skip();
     await db.pool.query(
       `UPDATE hosts
@@ -669,15 +667,6 @@ describe("Conversation execution schema", () => {
         runtime_installation: "own",
         usable: true,
       }),
-      expect.objectContaining({
-        agent_id: AGENT,
-        runtime_profile_id: null,
-        execution_host_id: OTHER_HOST,
-        workspace_location_id: REMOTE_LOCATION,
-        runtime_key: "codex_cli",
-        runtime_installation: "own",
-        usable: true,
-      }),
     ]));
 
     const initialized = await service.initialize(
@@ -687,8 +676,8 @@ describe("Conversation execution schema", () => {
         selection: { execution_host_id: OTHER_HOST, primary: { kind: "location", workspace_location_id: REMOTE_LOCATION } },
         runtime: {
           agent_id: AGENT,
-          runtime_profile_id: null,
-          runtime_key: "codex_cli",
+          runtime_profile_id: existing,
+          runtime_key: "claude_code",
           runtime_installation: "own",
         },
       },
@@ -697,17 +686,8 @@ describe("Conversation execution schema", () => {
       state: "initialized",
       host: { host_id: OTHER_HOST },
       primary: { kind: "location", workspace_location_id: REMOTE_LOCATION },
-      runtime: { agent_id: AGENT, runtime_key: "codex_cli", runtime_installation: "own" },
+      runtime: { agent_id: AGENT, runtime_profile_id: existing, runtime_key: "claude_code", runtime_installation: "own" },
     });
-    const profiles = await db.pool.query<{ id: string }>(
-      `SELECT id FROM agent_runtime_profiles
-        WHERE space_id = $1 AND agent_id = $2 AND execution_host_id = $3
-          AND workspace_location_id = $4 AND runtime_key = 'codex_cli'
-          AND runtime_installation = 'own'`,
-      [SPACE, AGENT, OTHER_HOST, REMOTE_LOCATION],
-    );
-    expect(profiles.rows).toHaveLength(1);
-    expect(initialized.runtime?.runtime_profile_id).toBe(profiles.rows[0]!.id);
   });
 
   it("routes with the initialization-time config snapshot, stripping legacy credentials after profile edits", async (ctx) => {
@@ -1019,12 +999,75 @@ describe("Conversation execution schema", () => {
     expect(draft.available_primary_locations).toEqual([
       expect.objectContaining({ workspace_location_id: replacementLocation }),
     ]);
-    // The stale pinned Location is what this is about; the host's own
-    // profile-less candidates carry no Location pin and are covered elsewhere.
-    expect(draft.available_runtime_profiles.filter((entry) => entry.runtime_profile_id !== null)).toEqual([
-      expect.objectContaining({ runtime_profile_id: RUNTIME, usable: false }),
+    expect(draft.available_runtime_profiles).toEqual([
+      expect.objectContaining({ runtime_profile_id: RUNTIME, usable: true }),
     ]);
-    expect(draft.summary).toMatchObject({ state: "draft", can_send: false });
+    expect(draft.summary).toMatchObject({
+      state: "draft",
+      can_send: true,
+      primary: { kind: "location", workspace_location_id: replacementLocation },
+    });
+    const runtime = {agent_id: AGENT, runtime_profile_id: RUNTIME, runtime_key: "claude_code", runtime_installation: "managed:1.0.0"};
+    await expect(service.initialize({spaceId: SPACE, userId: OWNER}, draftSession, {
+      selection: {execution_host_id: HOST, primary: {kind: "location", workspace_location_id: LOCATION}},
+      runtime,
+    })).rejects.toThrow("Primary Workspace Location is unavailable");
+    const replacement = await service.initialize({spaceId: SPACE, userId: OWNER}, draftSession, {
+      selection: {execution_host_id: HOST, primary: {kind: "location", workspace_location_id: replacementLocation}},
+      runtime,
+    });
+    expect(replacement).toMatchObject({
+      state: "initialized",
+      primary: {kind: "location", workspace_location_id: replacementLocation},
+      runtime,
+    });
+  });
+
+  it("sends and routes an existing Room Conversation after its Agent default is changed to a managed workspace", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const identity = {spaceId: SPACE, userId: OWNER};
+    const service = new ConversationExecutionContextService(db.pool);
+    const runtime = {agent_id: AGENT, runtime_profile_id: RUNTIME, runtime_key: "claude_code", runtime_installation: "managed:1.0.0"};
+    await db.pool.query(
+      "UPDATE agent_runtime_profiles SET workspace_mode='location', workspace_location_id=$1 WHERE id=$2",
+      [LOCATION, RUNTIME],
+    );
+    await service.initialize(identity, SESSION, {
+      selection: {execution_host_id: HOST, primary: {kind: "location", workspace_location_id: LOCATION}}, runtime,
+    });
+    const threads = new PgHostThreadRepository(db.pool);
+    const thread = (await threads.getForConversationAgent(SPACE, SESSION, AGENT))!;
+    await db.pool.query("UPDATE agent_runtime_profiles SET workspace_mode='managed', workspace_location_id=NULL WHERE id=$1", [RUNTIME]);
+
+    const preflight = await service.preflight(identity, SESSION);
+    expect(preflight.summary).toMatchObject({
+      can_send: true, blocked_reason: null, primary: {kind: "location", workspace_location_id: LOCATION}, runtime,
+    });
+    expect(preflight.available_runtime_profiles).toEqual(expect.arrayContaining([
+      expect.objectContaining({runtime_profile_id: RUNTIME, usable: true, workspace_mode: "location", workspace_location_id: LOCATION}),
+    ]));
+    const backends = new PgConversationBackendRepository(db.pool);
+    expect(await backends.listOptionsForSession(SPACE, OWNER, AGENT, PROJECT, SESSION)).toEqual([
+      expect.objectContaining({runtime_profile_id: RUNTIME, workspace_location_id: LOCATION, project_folder_id: FOLDER}),
+    ]);
+    expect(await backends.listOptions(SPACE, OWNER, AGENT, PROJECT)).toEqual([
+      expect.objectContaining({runtime_profile_id: RUNTIME, workspace_mode: "managed", workspace_location_id: null}),
+    ]);
+    const {RoomService} = await import("../src/modules/rooms/service.js");
+    const roomId = (await db.pool.query<{room_id: string}>("SELECT room_id FROM sessions WHERE id=$1", [SESSION])).rows[0]!.room_id;
+    const config = loadConfig({SERVER_DATABASE_URL: db.connectionUri});
+    const sent = await new RoomService(config, db.pool).sendMessage(identity, roomId, SESSION, {content: "Continue in the original folder."});
+    const runs = new PgRunRepository(db.pool, config);
+    const run = (await runs.getAgentRun(SPACE, sent.run_ids[0]!))!;
+    expect(run).toMatchObject({host_task_thread_id: thread.id, workspace_location_id: LOCATION, project_folder_id: FOLDER});
+    const routed = await new PgRouteDecisionRepository(db.pool).routeRun(run);
+    expect(routed.runtime_profile_snapshot_json).toMatchObject({execution_host_id: HOST, workspace_mode: "location", workspace_location_id: LOCATION});
+    expect((await threads.getForConversationAgent(SPACE, SESSION, AGENT))?.id).toBe(thread.id);
+
+    await db.pool.query("UPDATE workspace_locations SET execution_ready=false WHERE id=$1", [LOCATION]);
+    expect((await service.preflight(identity, SESSION)).summary).toMatchObject({
+      can_send: false, blocked_reason: expect.stringContaining("Workspace Location is not ready"),
+    });
   });
 
   it("derives the Host from the sole usable runtime when several Hosts are online", async (ctx) => {
@@ -1090,12 +1133,18 @@ describe("Reusable Agent Project execution (real PostgreSQL)", () => {
     await db.pool.query("INSERT INTO workspace_locations(id,space_id,project_folder_id,execution_host_id,execution_host_kind,root_path,execution_ready,status,created_at,updated_at) VALUES($1,$2,$3,$4,'server','/workspace/second',true,'active',now(),now())", [locationB, SPACE, folderB, HOST]);
     await db.pool.query("INSERT INTO sessions(id,space_id,project_id,user_id,agent_id,status,created_at,updated_at) VALUES($1,$2,$3,$4,$5,'active',now(),now())", [sessionB, SPACE, projectB, OWNER, AGENT]);
     await db.pool.query("UPDATE hosts SET capabilities_json=jsonb_set(capabilities_json,'{installations,codex_cli}',$2::jsonb,true) WHERE id=$1", [HOST, JSON.stringify([{id:'managed:1.0.0',version:'1.0.0',logged_in:true,health_check_protocol:'acp'}])]);
-    const service = new ConversationExecutionContextService(db.pool);
-    const initialize = (sessionId: string, locationId: string, runtimeKey: string) => service.initialize({spaceId: SPACE, userId: OWNER}, sessionId, {
-      selection: {execution_host_id: HOST, primary: {kind: 'location', workspace_location_id: locationId}},
-      runtime: {agent_id: AGENT, runtime_profile_id: null, runtime_key: runtimeKey, runtime_installation: 'managed:1.0.0'},
+    const agents = new PgAgentRepository(db.pool);
+    const roomRuntime = await agents.ensureHostRuntimeProfile({
+      spaceId: SPACE, projectId: PROJECT, actorUserId: OWNER, agentId: AGENT,
+      executionHostId: HOST, workspaceLocationId: LOCATION, workspaceMode: 'location',
+      runtimeKey: 'claude_code', runtimeInstallation: 'managed:1.0.0',
     });
-    await initialize(SESSION, LOCATION, 'claude_code');
+    const service = new ConversationExecutionContextService(db.pool);
+    const initialize = (sessionId: string, locationId: string, runtimeKey: string, runtimeProfileId: string | null = null) => service.initialize({spaceId: SPACE, userId: OWNER}, sessionId, {
+      selection: {execution_host_id: HOST, primary: {kind: 'location', workspace_location_id: locationId}},
+      runtime: {agent_id: AGENT, runtime_profile_id: runtimeProfileId, runtime_key: runtimeKey, runtime_installation: 'managed:1.0.0'},
+    });
+    await initialize(SESSION, LOCATION, 'claude_code', roomRuntime.id);
     const first = (await db.pool.query("SELECT * FROM session_conversation_backends WHERE session_id=$1", [SESSION])).rows[0];
     await initialize(sessionB, locationB, 'codex_cli');
     expect((await db.pool.query("SELECT * FROM session_conversation_backends WHERE session_id=$1", [SESSION])).rows[0]).toEqual(first);
@@ -1128,7 +1177,6 @@ describe("Reusable Agent Project execution (real PostgreSQL)", () => {
     await expect(new PgAgentRepository(db.pool).ensureHostRuntimeProfile({spaceId: SPACE, projectId: PROJECT, actorUserId: VIEWER, agentId: AGENT, executionHostId: OTHER_HOST, workspaceLocationId: null, workspaceMode: 'managed', runtimeKey: 'claude_code', runtimeInstallation: 'managed:1.0.0'})).rejects.toMatchObject({statusCode: 403});
     // Another Project setup does not replace the Agent's default deployment.
     expect((await db.pool.query("SELECT id FROM agent_runtime_profiles WHERE agent_id=$1 AND is_default", [AGENT])).rows).toEqual([{id: RUNTIME}]);
-    const agents = new PgAgentRepository(db.pool);
     await expect(agents.ensureHostRuntimeProfile({spaceId: SPACE, projectId: PROJECT, actorUserId: OWNER, agentId: AGENT, executionHostId: HOST, workspaceLocationId: locationB, workspaceMode: 'location', runtimeKey: 'codex_cli', runtimeInstallation: 'managed:1.0.0'})).rejects.toThrow('execution Project');
     await expect(agents.ensureHostRuntimeProfile({spaceId: SPACE, projectId: null, actorUserId: OWNER, agentId: AGENT, executionHostId: HOST, workspaceLocationId: LOCATION, workspaceMode: 'location', runtimeKey: 'claude_code', runtimeInstallation: 'managed:1.0.0'})).rejects.toThrow('execution Project');
     await db.pool.query("UPDATE project_agent_links SET status='removed',removed_at=now() WHERE project_id=$1 AND agent_id=$2", [projectB, AGENT]);
@@ -1217,6 +1265,12 @@ describe('Room conversation participant snapshots (real PostgreSQL)',()=>{
     await db.pool.query(`INSERT INTO sessions(id,space_id,room_id,project_id,status,created_at,updated_at) SELECT $1,space_id,room_id,project_id,'active',now(),now() FROM sessions WHERE id=$2`,[otherSession,SESSION]);
     const forbidden=await runtime.execute('conversation.execution.initialize',{...request,session_id:otherSession},actor,randomUUID(),randomUUID());
     expect(forbidden.http_status).toBe(404);
+    await db.pool.query('UPDATE runs SET context_taint_json=$2::jsonb WHERE id=$1', [run.id, JSON.stringify({
+      schema_version: 1, narrowest_visibility: 'private',
+      plugin_reads: [{plugin_id: 'core:gmail', data_class: 'sensitive', owner_user_id: OWNER}],
+    })]);
+    const invalidConfig=await runtime.execute('conversation.session_config.save',{session_id:SESSION,agent_id:AGENT,runtime_profile_id:RUNTIME,session_config:modelConfig('unadvertised')},actor,randomUUID(),randomUUID());
+    expect(invalidConfig.http_status).toBe(422);
     const saved=await runtime.execute('conversation.session_config.save',{session_id:SESSION,agent_id:AGENT,runtime_profile_id:RUNTIME,session_config:modelConfig('b')},actor,randomUUID(),randomUUID());
     expect(saved.http_status,JSON.stringify(saved.body)).toBe(200);
     await service.initialize(identity,SESSION,{...request,participants_revision:(await service.preview(identity,SESSION)).summary.participants_revision,participant_agent_ids:[AGENT,optional.agent_id],additional_runtimes:[optional]});
@@ -1513,7 +1567,7 @@ describe('Room conversation participant snapshots (real PostgreSQL)',()=>{
     }finally{await holder.query('ROLLBACK');holder.release();await pending;}
   });
 
-  it('keeps stale defaults on the selected Host and reconciles withdrawn models without copying foreign profile settings',async()=>{
+  it('keeps defaults on the selected Host for live CLI validation without copying foreign profile settings',async()=>{
     const optional=await specialist(),compatible=randomUUID();
     await db.pool.query(`INSERT INTO agent_runtime_profiles SELECT (jsonb_populate_record(NULL::agent_runtime_profiles,to_jsonb(p)||$2::jsonb)).* FROM agent_runtime_profiles p WHERE id=$1`,[optional.runtime_profile_id,JSON.stringify({id:compatible,name:'Compatible CLI',is_default:false})]);
     await db.pool.query('UPDATE agent_runtime_profiles SET execution_host_id=$2 WHERE id=$1',[optional.runtime_profile_id,OTHER_HOST]);
@@ -1523,7 +1577,7 @@ describe('Room conversation participant snapshots (real PostgreSQL)',()=>{
     const service=new ConversationExecutionContextService(db.pool),summary=await service.initialize(identity,SESSION,request);
     expect(summary.host!.host_id).toBe(HOST);
     expect(summary.runtimes.find(pin=>pin.agent_id===optional.agent_id)!.runtime_profile_id).toBe(compatible);
-    expect(await new PgConversationBackendRepository(db.pool).sessionConfig(SPACE,SESSION,AGENT)).toEqual([]);
+    expect(await new PgConversationBackendRepository(db.pool).sessionConfig(SPACE,SESSION,AGENT)).toEqual(stale);
     expect(await new PgConversationBackendRepository(db.pool).sessionConfig(SPACE,SESSION,optional.agent_id)).toEqual([]);
     expect((await service.preview(identity,SESSION)).summary.can_send).toBe(true);
   });

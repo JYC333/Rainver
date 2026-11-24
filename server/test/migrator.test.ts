@@ -41,18 +41,20 @@ describe("server migration runner", () => {
     const suffix = randomBytes(4).toString("hex"), app = `mo_app_${suffix}`, backup = `mo_backup_${suffix}`;
     const appPassword = randomBytes(18).toString("base64url");
     const real = join(import.meta.dirname, "..", "migrations");
-    const runtime = new pg.Client({ connectionString: (() => { const u = new URL(db.connectionUri); u.username = app; u.password = appPassword; return u.toString(); })() });
+    const runtime = new pg.Pool({ connectionString: (() => { const u = new URL(db.connectionUri); u.username = app; u.password = appPassword; return u.toString(); })() });
     runtime.on("error", () => {});
     try {
       await withTransaction(db.pool, (tx) => reconcileRuntimeRoles(tx, { appRole: app, backupRole: backup, appPassword }));
       // Parent negative control: the runner alone, after reconcile, leaves the journal writable through default privileges.
       expect((await migrate(db.pool, real)).applied.length).toBeGreaterThan(0);
-      await runtime.connect();
       expect((await runtime.query(`SELECT has_table_privilege(current_user,'public.server_schema_migrations','INSERT') AS can`)).rows[0].can).toBe(true);
       await expect(assertLeastPrivilegeRuntimeRole(runtime)).rejects.toThrow(/INSERT on the migration journal/);
       // The CLI's real `up` sequence re-protects it; the app still writes data tables.
       expect((await migrateUp(db.pool, real, app)).applied).toEqual([]);
       await assertLeastPrivilegeRuntimeRole(runtime);
+      const runtimeStatus = await status(runtime, real);
+      expect(runtimeStatus.length).toBeGreaterThan(0);
+      expect(runtimeStatus.every((entry) => entry.applied)).toBe(true);
       await expect(runtime.query(`INSERT INTO server_schema_migrations (version,name,checksum,applied_at) VALUES ('9999','x','x',now())`)).rejects.toThrow(/permission denied/);
       await runtime.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'After up','team',now(),now())`, [randomUUID()]);
       expect(await runtimeRoleSuperset(db.pool, backup, "backup")).toEqual([]);
@@ -69,6 +71,9 @@ describe("server migration runner", () => {
     if (!db.available) return;
     writeMigration("0001", "alpha", "CREATE TABLE alpha (id int PRIMARY KEY);");
     writeMigration("0002", "beta", "CREATE TABLE beta (id int PRIMARY KEY);");
+
+    expect((await status(db.pool, dir)).map((entry) => entry.applied)).toEqual([false, false]);
+    expect((await db.pool.query("SELECT to_regclass('public.server_schema_migrations') AS journal")).rows[0].journal).toBeNull();
 
     const first = await migrate(db.pool, dir);
     expect(first.applied).toEqual(["0001", "0002"]);

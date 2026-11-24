@@ -30,12 +30,16 @@ const SAFE_PROVIDER_USAGE_KEYS = new Set([
   "output_tokens",
   "prompt_tokens_details",
   "completion_tokens_details",
+  "input_tokens_details",
+  "output_tokens_details",
   "input_token_details",
   "output_token_details",
   "cached_tokens",
   "audio_tokens",
   "image_tokens",
   "reasoning_tokens",
+  "cache_creation",
+  "ephemeral_1h_input_tokens",
   "cache_creation_input_tokens",
   "cache_creation_1h_input_tokens",
   "cache_read_input_tokens",
@@ -178,8 +182,8 @@ export function normalizeUsageDetails(
 
   if (Object.keys(details).length === 0) {
     addKnownBuckets(details, providerUsage);
-    addOpenAiDetails(details, providerUsage);
     addAnthropicDetails(details, providerUsage);
+    addOpenAiDetails(details, providerUsage);
     addNestedUsageDetails(details, providerUsage);
   }
 
@@ -253,10 +257,10 @@ function addKnownBuckets(target: UsageDetails, source: Record<string, unknown>):
 }
 
 function addOpenAiDetails(target: UsageDetails, usage: Record<string, unknown>): void {
-  const prompt = intFrom(usage.prompt_tokens);
-  const completion = intFrom(usage.completion_tokens);
-  const promptDetails = objectValue(usage.prompt_tokens_details);
-  const completionDetails = objectValue(usage.completion_tokens_details);
+  const promptDetails = objectValue(usage.prompt_tokens_details) ?? objectValue(usage.input_tokens_details);
+  const completionDetails = objectValue(usage.completion_tokens_details) ?? objectValue(usage.output_tokens_details);
+  const prompt = intFrom(usage.prompt_tokens) ?? (promptDetails ? intFrom(usage.input_tokens) : undefined);
+  const completion = intFrom(usage.completion_tokens) ?? (completionDetails ? intFrom(usage.output_tokens) : undefined);
   const cached = intFrom(promptDetails?.cached_tokens) ?? 0;
   const audioInput = intFrom(promptDetails?.audio_tokens) ?? 0;
   const reasoning = intFrom(completionDetails?.reasoning_tokens) ?? 0;
@@ -276,7 +280,8 @@ function addOpenAiDetails(target: UsageDetails, usage: Record<string, unknown>):
 
 function addAnthropicDetails(target: UsageDetails, usage: Record<string, unknown>): void {
   const cacheCreation = intFrom(usage.cache_creation_input_tokens);
-  const cacheCreation1h = intFrom(usage.cache_creation_1h_input_tokens);
+  const cacheCreation1h = intFrom(usage.cache_creation_1h_input_tokens)
+    ?? intFrom(objectValue(usage.cache_creation)?.ephemeral_1h_input_tokens);
   const cacheRead = intFrom(usage.cache_read_input_tokens);
   const input = intFrom(usage.input_tokens);
   const output = intFrom(usage.output_tokens);

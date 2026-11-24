@@ -1,6 +1,11 @@
 /** UI copy: Prompts, Skills, plugins, project files, network profiles and the job queue. */
 export const managementUiZhCN = {
   management_ui: {
+    project_load: {
+      error_title: "无法加载项目",
+      error_help: "请检查网络连接后重试。",
+      retry: "重试",
+    },
     project_members: {
       "loading_project": "正在加载项目…",
       "title": "成员",
@@ -39,6 +44,9 @@ export const managementUiZhCN = {
       "link": "{{email}} 的注册邀请"
 },
     host_catalog: {
+      provider_count: "{{count}} 家供应商",
+      provider_details: "供应商与 CLI 账户详情",
+      no_cli_accounts: "无 CLI 登录账户",
       "more_label": "{{host}} 上 {{name}} 的更多操作",
       "upgrade_host_required": "请先更新执行环境，再管理 CLI 版本。",
       "version_management": "版本管理",
@@ -68,6 +76,9 @@ export const managementUiZhCN = {
       "managed_copy_label": "在 {{host}} 上安装 {{name}} 的受管副本",
       "install_label": "在 {{host}} 上安装 {{name}}",
       "enable_install_label": "在 {{host}} 上启用并安装 {{name}}",
+      "own_update_confirmed": "{{host}} 上的 {{agent}} 已更新到 {{version}}。",
+      "own_update_unchanged": "{{host}} 上的 {{agent}} 仍为 {{version}}，版本未变化。",
+      "own_update_unverified": "{{host}} 上的 {{agent}} 更新操作已结束，暂无法确认版本是否变化。",
       "operation_in_progress": "这个 CLI 已有操作正在进行，请等待完成。",
       "upgrading": "正在升级…",
       "installing": "正在安装…",
@@ -150,6 +161,10 @@ export const managementUiZhCN = {
       normalize_description: "保存时会将此文件的混合换行符统一为 LF，这会改变整个文件的行分隔符。",
       normalize_confirm: "统一并保存",
       file_path: "文件路径",
+      retry_save: "重试保存到文件夹",
+      close_failed_save: "关闭失败的保存",
+      close_failed_save_title: "关闭这次失败的保存？",
+      close_failed_save_description: "关闭后会解除这次保存对路径的占用，并保留草稿与文件夹中的当前文件。再次保存前，请先重新加载文件。",
       history: "历史",
       cancel: "取消",
       discard: "丢弃",
@@ -382,6 +397,9 @@ export const managementUiZhCN = {
       placeholder: '时间记录功能计划中，尚不可用。这里不会记录或保存任何时间。',
     },
     host_target: {
+      default_folder: '默认目录（可选）',
+      no_default_folder: '不设置默认目录',
+      choose_default_folder: '默认使用项目目录',
       sign_in: '在指挥中心登录',
       acp_models_hint: 'ACP 报告的模型可能无需账户也能使用；请在对话中选择。',
       managed_hint: '托管工作区归主机所有，每个 Agent 相互隔离；Project 位置仍是可选的。',

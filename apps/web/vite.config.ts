@@ -1,7 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { resolve } from 'node:path'
-import type { PreRenderedChunk } from 'rollup'
-import { defineConfig } from 'vite'
+import { defineConfig, type PluginOption } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { VitePWA } from 'vite-plugin-pwa'
@@ -16,38 +15,114 @@ const appBuild = { id: `${new Date().toISOString().replace(/[-:.]/g, '')}-${rand
 const projectRoot = process.cwd()
 const repoRoot = resolve(projectRoot, '../..')
 
-const graphWebglPackages = [
-  '/node_modules/@antv/g-webgl/',
-  '/node_modules/@antv/g-plugin-device-renderer/',
-  '/node_modules/@antv/g-device-api/',
-  '/node_modules/@antv/g-shader-components/',
-] as const
+function pwaPlugins(): PluginOption[] {
+  const shellFiles = new Set(['index.html'])
+  return [
+    {
+      name: 'rainver-pwa-shell',
+      apply: 'build',
+      generateBundle: { order: 'post', handler(_options, bundle) {
+        const entry = Object.values(bundle).find(file => file.type === 'chunk' && file.isEntry && file.name === 'app')
+        if (!entry) this.error('The PWA main entry is missing from the build output')
 
-function chunkFileName(chunk: PreRenderedChunk): string {
-  const moduleIds = chunk.moduleIds.map(id => id.replaceAll('\\', '/'))
-  if (moduleIds.some(id => graphWebglPackages.some(packagePath => id.includes(packagePath)))) {
-    return 'assets/graph-webgl-[hash].js'
-  }
-  if (moduleIds.some(id => (
-    id.includes('/node_modules/@antv/')
-    || id.includes('/src/components/graph/')
-  ))) {
-    return 'assets/graph-engine-[hash].js'
-  }
-  return 'assets/[name]-[hash].js'
+        const pending = [entry.fileName]
+        for (const name of pending) {
+          if (shellFiles.has(name)) continue
+          const chunk = bundle[name]
+          if (chunk?.type !== 'chunk') continue
+          shellFiles.add(name)
+          // Rollup's static imports and Vite's generated CSS/assets reach the
+          // browser at boot. Dynamic imports wait for their feature to open.
+          pending.push(...chunk.imports)
+          for (const asset of chunk.viteMetadata?.importedCss ?? []) shellFiles.add(asset)
+          for (const asset of chunk.viteMetadata?.importedAssets ?? []) {
+            // Other Inter subsets are selected by CSS unicode-range as needed.
+            // The offline shell can fall back to system fonts for those glyphs.
+            if (/^assets\/inter-(?!latin-wght-normal-).*\.woff2$/.test(asset)) continue
+            shellFiles.add(asset)
+          }
+        }
+      } },
+    },
+    VitePWA({
+      registerType: 'prompt',
+      injectRegister: false,
+      includeAssets: ['theme.js', 'icons/*.png', 'icons/*.svg'],
+      manifest: {
+        name: 'Rainver',
+        short_name: 'Rainver',
+        description: 'Agent-first memory system',
+        theme_color: '#0f1117',
+        background_color: '#0f1117',
+        display: 'standalone',
+        orientation: 'portrait',
+        start_url: '/',
+        icons: [
+          { src: '/icons/icon-192.png', sizes: '192x192', type: 'image/png' },
+          { src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png' },
+          { src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+        ],
+      },
+      workbox: {
+        // A waiting worker must leave the current tab's drafts and recordings
+        // intact. Settings explicitly asks it to activate before reloading.
+        // A full-page navigation to /api/... (the Google sign-in start and
+        // callback are top-level redirects, not fetches) must reach the
+        // server. Do not fall through to the SPA fallback. It serves the cached
+        // index.html for it, the app loads at that URL, sees a 401 from /me,
+        // and bounces to /login without ever leaving the browser.
+        navigateFallbackDenylist: [/^\/api\//, /^\/version\.json$/, /^\/viewport-test(?:\/|$)/],
+        globPatterns: ['index.html', 'assets/**/*'],
+        manifestTransforms: [(entries) => {
+          const manifest = entries.filter(entry => shellFiles.has(entry.url))
+          const included = new Set(manifest.map(entry => entry.url))
+          const missing = [...shellFiles].filter(file => !included.has(file))
+          if (missing.length) throw new Error(`Missing PWA shell assets: ${missing.join(', ')}`)
+          return { manifest, warnings: [] }
+        }],
+        runtimeCaching: [
+          { urlPattern: /\/version\.json(?:\?|$)/, handler: 'NetworkOnly' },
+          // POST/PATCH/DELETE mutations must never be served from cache.
+          // Some operations (quota PTY refresh, workspace console runs) take
+          // 20-30 s; the timeout below would cause a null response and a
+          // TypeError in the client — so use NetworkOnly for all writes.
+          {
+            urlPattern: ({ request }) => request.method !== 'GET',
+            handler: 'NetworkOnly',
+          },
+          // Authenticated GET bodies must never land in Cache Storage: the
+          // cache key is not per-user, and a later visitor (or an offline
+          // reopen after logout) would otherwise read the previous session.
+          {
+            urlPattern: /^.*\/api\/v1\/.*/i,
+            handler: 'NetworkOnly',
+            options: { cacheName: 'api-cache' },
+          },
+          // Cache immutable Vite assets on first use, including lazy feature
+          // JavaScript, CSS and fonts. Only same-origin hashed files qualify.
+          {
+            urlPattern: ({ sameOrigin, url }) => sameOrigin && !url.search
+              && /^\/assets\/[^/]+-[\w-]{8}\.(?:js|css|woff2?)$/.test(url.pathname),
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'hashed-static-v1',
+              cacheableResponse: { statuses: [200] },
+              expiration: {
+                maxEntries: 120,
+                maxAgeSeconds: 30 * 24 * 60 * 60,
+              },
+            },
+          },
+        ],
+      },
+    }),
+  ]
 }
 
 export default defineConfig(({ mode }) => ({
-  define: { __APP_BUILD__: JSON.stringify(appBuild) },
   build: {
     rollupOptions: {
       input: { app: resolve(projectRoot, 'index.html'), viewportTest: resolve(projectRoot, 'viewport-test/index.html') },
-      output: {
-        // Stable prefixes let Workbox keep the optional graph engine out of
-        // the application shell without changing Rollup's natural ownership
-        // of shared dependencies.
-        chunkFileNames: chunkFileName,
-      },
     },
   },
   resolve: {
@@ -84,6 +159,14 @@ export default defineConfig(({ mode }) => ({
     {
       name: 'rainver-build-version',
       generateBundle() { this.emitFile({ type: 'asset', fileName: 'version.json', source: JSON.stringify(appBuild) }) },
+      // The build identity lives only in the uncached HTML and version.json
+      // (appVersion.ts reads these tags). Inlined into JavaScript, it changed
+      // one chunk on every build and, through import names, renamed most
+      // hashed assets even when no source had changed.
+      transformIndexHtml: () => [
+        { tag: 'meta', attrs: { name: 'rainver-build-id', content: appBuild.id }, injectTo: 'head' },
+        { tag: 'meta', attrs: { name: 'rainver-build-at', content: appBuild.builtAt }, injectTo: 'head' },
+      ],
       configureServer(server) {
         server.middlewares.use('/version.json', (_req, res) => {
           res.setHeader('Content-Type', 'application/json')
@@ -117,71 +200,7 @@ export default defineConfig(({ mode }) => ({
     },
     react(),
     tailwindcss(),
-    VitePWA({
-      registerType: 'autoUpdate',
-      includeAssets: ['icons/*.png', 'icons/*.svg'],
-      manifest: {
-        name: 'Rainver',
-        short_name: 'Rainver',
-        description: 'Agent-first memory system',
-        theme_color: '#0f1117',
-        background_color: '#0f1117',
-        display: 'standalone',
-        orientation: 'portrait',
-        start_url: '/',
-        icons: [
-          { src: '/icons/icon-192.png', sizes: '192x192', type: 'image/png' },
-          { src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png' },
-          { src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
-        ],
-      },
-      workbox: {
-        // A full-page navigation to /api/... (the Google sign-in start and
-        // callback are top-level redirects, not fetches) must reach the
-        // server. Do not fall through to the SPA fallback. It serves the cached
-        // index.html for it, the app loads at that URL, sees a 401 from /me,
-        // and bounces to /login without ever leaving the browser.
-        navigateFallbackDenylist: [/^\/api\//, /^\/version\.json$/, /^\/viewport-test(?:\/|$)/],
-        globPatterns: ['**/*.{js,css,html}'],
-        globIgnores: [
-          '**/GraphView-*.js',
-          '**/graph-engine-*.js',
-          '**/graph-webgl-*.js',
-        ],
-        runtimeCaching: [
-          { urlPattern: /\/version\.json(?:\?|$)/, handler: 'NetworkOnly' },
-          // POST/PATCH/DELETE mutations must never be served from cache.
-          // Some operations (quota PTY refresh, workspace console runs) take
-          // 20-30 s; the timeout below would cause a null response and a
-          // TypeError in the client — so use NetworkOnly for all writes.
-          {
-            urlPattern: ({ request }) => request.method !== 'GET',
-            handler: 'NetworkOnly',
-          },
-          // Authenticated GET bodies must never land in Cache Storage: the
-          // cache key is not per-user, and a later visitor (or an offline
-          // reopen after logout) would otherwise read the previous session.
-          {
-            urlPattern: /^.*\/api\/v1\/.*/i,
-            handler: 'NetworkOnly',
-            options: { cacheName: 'api-cache' },
-          },
-          // Graph rendering is optional and large. Cache its chunks after the
-          // first online visit instead of adding them to every PWA install.
-          {
-            urlPattern: /\/assets\/(?:GraphView|graph-engine|graph-webgl)-[^/]+\.js$/,
-            handler: 'CacheFirst',
-            options: {
-              cacheName: 'graph-runtime-v1',
-              expiration: {
-                maxEntries: 12,
-                maxAgeSeconds: 30 * 24 * 60 * 60,
-              },
-            },
-          },
-        ],
-      },
-    }),
+    ...pwaPlugins(),
   ],
   server: {
     port: 5173,

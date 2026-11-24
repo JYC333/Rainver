@@ -8,6 +8,28 @@ export class ConversationSessionConfigError extends Error {
   constructor(message: string, readonly statusCode: number) { super(message); }
 }
 
+// Rainver's native Claude conversation default. The Host's reported current
+// value may come from another application using the same Claude installation.
+export const CLAUDE_CONVERSATION_DEFAULT_MODEL = "opus";
+
+export function conversationConfigOptions(
+  runtimeKey: string,
+  options: RuntimeSessionConfigOption[],
+): RuntimeSessionConfigOption[] {
+  if (runtimeKey !== "claude_code") return options;
+  return options.map(option => {
+    if (option.category !== "model" || option.type !== "select") return option;
+    const preferred = option.options.find(choice => choice.value === CLAUDE_CONVERSATION_DEFAULT_MODEL);
+    if (!preferred) return option;
+    return {
+      ...option,
+      current_value: preferred.value,
+      options: option.options.map(choice => choice.value === "default"
+        ? { ...choice, description: preferred.name } : choice),
+    };
+  });
+}
+
 /**
  * Validates a selection the person asked for in this request. Strict: an
  * option or value the backend no longer advertises is refused with 422, so
@@ -34,11 +56,13 @@ export function validateSessionConfig(
  * saved; failing every later turn and delegation on that would hold the
  * conversation hostage to a setting the person did not touch. The stale entry
  * is dropped instead — the runtime keeps its own default for it — and named in
- * `dropped`, which the Run records so the conversation can say so.
+ * `dropped`, which the Run records so the conversation can say so. Native
+ * Claude conversation model choices are instead preserved for live validation.
  */
 export function reconcileSavedSessionConfig(
   saved: unknown,
   advertised: RuntimeSessionConfigOption[],
+  runtimeKey?: string,
 ): { selections: RuntimeSessionConfigSelection[]; dropped: RuntimeSessionConfigDroppedSelection[] } {
   const selections: RuntimeSessionConfigSelection[] = [];
   const dropped: RuntimeSessionConfigDroppedSelection[] = [];
@@ -48,7 +72,9 @@ export function reconcileSavedSessionConfig(
     if (!selection || seen.has(selection.id)) continue;
     seen.add(selection.id);
     const problem = selectionProblem(selection, advertised);
-    if (problem) {
+    // Let the live Claude session confirm a saved model, including an
+    // already-current model missing from the Host's cached picker.
+    if (problem && !(runtimeKey === "claude_code" && selection.category === "model")) {
       dropped.push({ id: selection.id, category: selection.category, value: selection.value, reason: problem.reason });
     } else {
       selections.push(selection);
@@ -74,9 +100,29 @@ export async function resolveSessionConfig(
   requested: RuntimeSessionConfigSelection[] | null | undefined,
   saved: () => Promise<unknown>,
   advertised: RuntimeSessionConfigOption[],
+  runtimeKey?: string,
 ): Promise<ResolvedSessionConfig> {
   if (requested) return { selections: validateSessionConfig(requested, advertised), dropped: [], source: "request" };
-  return { ...reconcileSavedSessionConfig(await saved(), advertised), source: "saved" };
+  return { ...reconcileSavedSessionConfig(await saved(), advertised, runtimeKey), source: "saved" };
+}
+
+/**
+ * A server-started turn pinned to the session options its owner confirmed (ADR 0034: the Agent's model
+ * for automatic application updates). The saved selection is applied only when it is still exactly the
+ * confirmed one and nothing of it would be dropped; it is then strict (`source: "request"`), so the ACP
+ * controller fails the turn instead of keeping the runtime's default when the live session does not
+ * offer or apply it. Otherwise the turn is refused before it exists.
+ */
+export function pinnedSessionConfig(
+  resolved: ResolvedSessionConfig,
+  pinned: readonly RuntimeSessionConfigSelection[],
+): ResolvedSessionConfig {
+  const key = (items: readonly RuntimeSessionConfigSelection[]) => JSON.stringify([...items]
+    .map((item) => [item.id, item.type, item.value, item.category ?? null]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))));
+  if (resolved.dropped.length || key(resolved.selections) !== key(pinned)) {
+    throw new ConversationSessionConfigError("The confirmed model or session options are not available on this runtime now", 409);
+  }
+  return { selections: resolved.selections, dropped: [], source: "request" };
 }
 
 /**

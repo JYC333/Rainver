@@ -4,6 +4,7 @@
   "description": "Shared, framework-free wire contracts (DTOs, command + event envelopes) for rainver consumers. Schemas and types only — no handlers, no transport, no authority.",
   "private": true,
   "type": "module",
+  "sideEffects": false,
   "engines": {
     "node": ">=24 <25"
   },

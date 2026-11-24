@@ -115,7 +115,10 @@ export async function reconcileExecutionWorkspaces(db:Queryable,workspaceRoot:st
    const observed=seen?.ok?seen.inventory:undefined;
    if(observed)await withQueryableTransaction(db,async tx=>{
     if(await recordClosedCheckpointHistory(tx,w,observed))return;
-    if(await lockUnchangedIdleWorkspace(tx,w))await tx.query('UPDATE execution_workspaces SET inventory_json=$2::jsonb WHERE id=$1',[w.id,JSON.stringify(observed)]);
+    if(await lockUnchangedIdleWorkspace(tx,w)){
+     await tx.query('UPDATE execution_workspaces SET inventory_json=$2::jsonb WHERE id=$1',[w.id,JSON.stringify(observed)]);
+     await refreshCleanupSummary(tx,w.id);
+    }
    });
   }
   // Retention: a proven-closed source (retired or not) is offered for release
@@ -133,13 +136,14 @@ export async function reconcileExecutionWorkspaces(db:Queryable,workspaceRoot:st
   await withQueryableTransaction(db,async tx=>{
    if(!await lockUnchangedIdleWorkspace(tx,w))return;
    await tx.query('UPDATE execution_workspaces SET inventory_json=$2::jsonb WHERE id=$1',[w.id,JSON.stringify(inventory)]);
+   // Recompute from this inspection as well as recorded jobs: a resolved
+   // quarantine must not leave a stale blocked summary behind.
+   await refreshCleanupSummary(tx,w.id);
    if(w.inventory_json?.reconciliation_error){
-    await refreshCleanupSummary(tx,w.id);
     if(inventory.worktree||inventory.registration||inventory.run_record||inventory.merge_record){
      await tx.query("UPDATE execution_workspaces SET cleanup_state='pending' WHERE id=$1 AND cleanup_state='cleaned'",[w.id]);
     }
    }
-   if(inventory.quarantined_whole>0)await tx.query("UPDATE execution_workspaces SET cleanup_state='blocked' WHERE id=$1",[w.id]);
 
    const owed=(await tx.query("SELECT 1 FROM workspace_change_sets WHERE workspace_id=$1 AND state IN ('open','ready','integrating','blocked') LIMIT 1",[w.id])).rowCount;
    if((w.idle||w.closed_owner&&!owed)&&inspection.commit&&(inventory.worktree||inventory.registration)&&!inventory.run_record&&!inventory.active){

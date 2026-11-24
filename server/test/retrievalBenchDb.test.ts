@@ -525,3 +525,29 @@ describe("Retrieval bench: cross-space / visibility leak fuzz (real Postgres)", 
     expect(leaks).toEqual([]);
   });
 });
+
+describe("Retrieval bench: sparse visibility recall (real Postgres)", () => {
+  it("finds the viewer's readable matches behind a window full of stronger matches they cannot read", async () => {
+    if (!db.available) return;
+    // 60 stronger matches private to another member fill a whole arm window
+    // (50 rows at maxResults 5); the viewer's 3 readable notes mention the term once.
+    for (let i = 0; i < 60; i++) {
+      await seed({ id: `hidden-${i}`, title: `Tidal energy 潮汐能 ${i}`, content: `Tidal energy. Tidal energy tidal energy 潮汐能 ${i}.`, visibility: "private", owner: OTHER });
+    }
+    for (let i = 0; i < 3; i++) {
+      await seed({ id: `readable-${i}`, title: `Weekly note ${i}`, content: `Routine items; one line mentions tidal energy. 第${i}周。` });
+    }
+    await reindex();
+    const result = await knowledgeSearch().search({
+      spaceId: SPACE, viewerUserId: VIEWER, query: "tidal energy", objectTypes: ["knowledge_item"], mode: "lexical", maxResults: 5,
+    });
+    const ids = result.items.map((item) => item.object_id);
+    expect(ids.filter((id) => id.startsWith("hidden-"))).toEqual([]);
+    expect(new Set(ids)).toEqual(new Set(["readable-0", "readable-1", "readable-2"]));
+    // The other member, who reads the hidden notes, still gets the strongest matches first.
+    const owner = await knowledgeSearch().search({
+      spaceId: SPACE, viewerUserId: OTHER, query: "tidal energy", objectTypes: ["knowledge_item"], mode: "lexical", maxResults: 5,
+    });
+    expect(owner.items.map((item) => item.object_id).every((id) => id.startsWith("hidden-"))).toBe(true);
+  });
+});

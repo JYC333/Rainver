@@ -1,6 +1,7 @@
-import {executeSourceDispatch} from './sourceDispatchExecution.js';
+import {executeSourceDispatch, SourceDispatchBusyError} from './sourceDispatchExecution.js';
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
+import { JobDeferredError } from "../jobs/handlerRegistry.js";
 import type { JobHandlerRegistry } from "../jobs/handlerRegistry.js";
 import { SourceExtractionWorker } from "./extractionWorker.js";
 
@@ -15,13 +16,17 @@ export function registerSourceExtractionHandler(
     const {PgSourcesRepository}=await import('./repository.js');
     const db=getDbPool(config.databaseUrl!);return executeSourceDispatch(db,job,async()=>{const result=await new PgSourcesRepository(db,config).runJob({spaceId:job.space_id,userId:user},id);return {extraction_job_id:result.id,status:result.status,job_type:result.job_type};});
   });
+  // Previously enqueued automatic Jobs still use the ordinary extraction owner.
   registry.register("source_extraction", async (job) => {
     const extractionJobId = stringValue(job.payload.extraction_job_id);
     if (!extractionJobId) {
       throw new Error("source_extraction job payload requires extraction_job_id");
     }
     const worker = new SourceExtractionWorker(getDbPool(config.databaseUrl!), config);
-    const result = await worker.runPendingJob(extractionJobId, job.space_id);
+    const result = await worker.runPendingJob(extractionJobId, job.space_id).catch((error: unknown) => {
+      if (error instanceof SourceDispatchBusyError) throw new JobDeferredError("Source extraction is already claimed", 1000);
+      throw error;
+    });
     const db=getDbPool(config.databaseUrl!);const goals=(await db.query<{goal_id:string}>(`SELECT DISTINCT gi.goal_id FROM source_goal_items gi JOIN extraction_jobs e ON e.space_id=gi.space_id AND e.source_item_id=gi.source_item_id WHERE e.id=$1 AND e.space_id=$2`,[extractionJobId,job.space_id])).rows;for(const g of goals)await (await import('../informationDigest/index.js')).wakeThemeRounds(db,job.space_id,g.goal_id);
     return {
       extraction_job_id: result.id,

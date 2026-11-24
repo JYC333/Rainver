@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useLocation, useNavigate } from 'react-router-dom';
 import { pluginFrontendEntries, type OfficialPluginListItem } from '@rainver/protocol';
 import { pluginsApi, projectsApi, queryPluginOperation, callPluginOperation, queryOperation } from '../../api/client';
 import { useSpace } from '../../contexts/SpaceContext';
@@ -17,8 +17,10 @@ import { Card, CardHeader, CardTitle, CardContent } from '../../components/ui/ca
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../../components/ui/tabs';
 import { bundledPlugin, bundledOperationPlugins } from './manifestCatalog';
 import type { PluginOps, PluginSlotComponent, PluginSlotContext } from './slotTypes';
+import { ProjectGmailUpdates } from '../sources/gmail/ProjectGmailUpdates';
 import { useProjectPluginReach } from './ProjectPluginNavigation';
 import { onProjectPluginBindingsChanged } from './useProjectPluginBindings';
+import { useProjectLiveRefresh } from '../../hooks/useProjectLiveRefresh';
 import { onPluginStateChanged } from './pluginStateEvents';
 type Placement = 'navigation' | 'project.area' | 'project.overview.card';
 export function PluginSlot({
@@ -91,6 +93,7 @@ function ScopedSlot({
   const [View, setView] = useState<PluginSlotComponent | null>(null),
     [version, setVersion] = useState(0);
   const [catalog, setCatalog] = useState<OfficialPluginListItem | null>(null);
+  const [projectCanWrite, setProjectCanWrite] = useState<boolean>();
   const denied = useCallback(() => {
     ++lifetime.current.generation;
     lifetime.current.controller.abort();
@@ -137,6 +140,7 @@ function ScopedSlot({
         if (Object.keys(components).sort().join() !== bundle.manifest.web?.entries.map(e => e.id).sort().join() || !components[entryId]) throw new Error('Declared/registered view mismatch');
         if (!live || epoch !== sessionEpoch() || current !== sequence) return;
         setCatalog(item);
+        setProjectCanWrite(project?.current_user_can_write);
         setView(() => components[entryId]!);
         setState('enabled');
       } catch (error) {
@@ -170,6 +174,10 @@ function ScopedSlot({
       unsubscribe();
     };
   }, [scope, version, bundle, entry, spaceId, projectId, pluginId, entryId, denied]);
+  const [projectRevision, setProjectRevision] = useState(0);
+  useProjectLiveRefresh(projectId ?? '', () => setProjectRevision(revision => revision + 1), state === 'enabled');
+  const { search } = useLocation();
+  const navigate = useNavigate();
   const ctx = useMemo<PluginSlotContext>(() => {
     const epoch = sessionEpoch(),
       bindingGeneration = lifetime.current.generation;
@@ -192,6 +200,7 @@ function ScopedSlot({
             denied();
             throw new Error('Project access revoked');
           }
+          setProjectCanWrite(project.current_user_can_write);
         }
         if (!life.active || bindingGeneration !== life.generation || epoch !== sessionEpoch()) throw new DOMException('Expired view', 'AbortError');
         const result = kind === 'query' ? await queryPluginOperation(id, parsed, {
@@ -214,6 +223,8 @@ function ScopedSlot({
     return {
       spaceId,
       projectId,
+      projectCanWrite,
+      projectRevision,
       ops: {
         query: ((id, input) => invoke('query', id, input)) as PluginOps['query'],
         command: ((id, input, key) => invoke('command', id, input, key)) as PluginOps['command']
@@ -242,13 +253,15 @@ function ScopedSlot({
           noteId,
           children
         }) => <Button className="max-md:min-h-[44px]" asChild variant="outline" size="sm"><Link to={spacePath(spaceId, `/knowledge/notes/${encodeURIComponent(noteId)}`)}>{children}</Link></Button>,
+        entrySearch: search,
+        setEntrySearch: value => navigate({search: value}),
         EntryLink: ({
-          entry: target,
+          entry: target, search: targetSearch,
           children
-        }) => projectId && bundle?.manifest.web?.entries.some(e => e.id === target && e.placements.includes('project.area')) ? <Button className="max-md:min-h-[44px]" asChild variant="outline" size="sm"><Link to={spacePath(spaceId, `/projects/${encodeURIComponent(projectId)}/plugins/${encodeURIComponent(pluginId)}/${encodeURIComponent(target)}`)}>{children}</Link></Button> : null
+        }) => projectId && bundle?.manifest.web?.entries.some(e => e.id === target && e.placements.includes('project.area')) ? <Link className="inline-flex max-md:min-h-[44px] items-center hover:underline focus-visible:underline underline-offset-4" to={{pathname: spacePath(spaceId, `/projects/${encodeURIComponent(projectId)}/plugins/${encodeURIComponent(pluginId)}/${encodeURIComponent(target)}`), search: targetSearch}}>{children}</Link> : null
       }
     };
-  }, [bundle, state, catalog, spaceId, projectId, pluginId, t, denied]);
+  }, [bundle, state, catalog, spaceId, projectId, projectCanWrite, projectRevision, pluginId, t, denied, search, navigate]);
   const { t: translate } = useAppTranslation();
   const title = entry ? translate(`modules.plugin.${pluginId}.${entry.id}`, { defaultValue: entry.title }) : t('plugin_ui.title');
   return <section className={placement === 'project.overview.card' ? 'space-y-3' : 'p-4 space-y-3'} aria-label={title}>
@@ -256,6 +269,8 @@ function ScopedSlot({
   {state === 'loading' && <p role="status" className="text-sm text-muted-foreground">{t('plugin_ui.loading')}</p>}
   {state === 'disabled' && <p role="status" className="text-sm text-muted-foreground">{t('plugin_ui.disabled')}</p>}
   {state === 'error' && <Card><CardContent className="space-y-3"><p role="alert">{t('plugin_ui.error')}</p><Button className="max-md:min-h-[44px]" variant="outline" onClick={() => setVersion(v => v + 1)}>{t('plugin_ui.retry')}</Button></CardContent></Card>}
+  {state === 'enabled' && View && placement === 'project.area' && pluginId === 'applications' && entryId === 'board' && projectId &&
+    <ProjectGmailUpdates projectId={projectId} spaceId={spaceId} scopeKey={scope} />}
   {state === 'enabled' && View && <ErrorBoundary key={`${scope}:${version}`} fallback={retry => <Card><CardContent className="space-y-3"><p role="alert">{t('plugin_ui.error')}</p><Button className="max-md:min-h-[44px]" variant="outline" onClick={retry}>{t('plugin_ui.retry')}</Button></CardContent></Card>}><View ctx={ctx} /></ErrorBoundary>}
  </section>;
 }

@@ -1,4 +1,4 @@
-import { useState, useEffect, useId } from 'react'
+import { useState, useEffect, useId, useRef } from 'react'
 import { Archive, Clock, Loader2, Pause, Play, Plus, ShieldCheck } from 'lucide-react'
 import { toast } from 'sonner'
 import { AUTOMATION_TARGET_TYPES, automationTargetDefinition, type JsonValue } from '@rainver/protocol'
@@ -330,6 +330,7 @@ function AutomationCard({ auto, agentName, projectName, projects, onChanged }: {
 }) {
   const { t } = useAppTranslation()
   const [busy, setBusy] = useState(false)
+  const fireWait = useRef<AbortController | null>(null)
   const [projectDraft, setProjectDraft] = useState(auto.project_id ?? '')
   const [savingProject, setSavingProject] = useState(false)
   const [executions, setExecutions] = useState<WorkflowExecutionSummary[]>([])
@@ -342,6 +343,8 @@ function AutomationCard({ auto, agentName, projectName, projects, onChanged }: {
   // pause or archive it, and see nothing of what it runs.
   const isOwner = currentUser?.id === auto.owner_user_id
   const opsOnly = auto.access === 'ops'
+
+  useEffect(() => () => fireWait.current?.abort(), [auto.id, auto.space_id])
 
   useEffect(() => {
     setProjectDraft(auto.project_id ?? '')
@@ -455,6 +458,8 @@ function AutomationCard({ auto, agentName, projectName, projects, onChanged }: {
         <div className="flex gap-2">
           {!opsOnly && <Button size="sm" variant="outline" disabled={busy}
             onClick={async () => {
+              const wait = new AbortController()
+              fireWait.current = wait
               setBusy(true)
               try {
                 // Nothing supplied: "Run now" runs the automation's own
@@ -462,14 +467,18 @@ function AutomationCard({ auto, agentName, projectName, projects, onChanged }: {
                 // automation. Sending a copy of it here would make the Run
                 // read as this person asking for it, and ADR 0003 §5 decides
                 // a persona write on exactly that difference.
-                const result = await automationsApi.fire(auto.id)
+                const result = await automationsApi.fire(auto.id, undefined, undefined, { spaceId: auto.space_id, signal: wait.signal })
+                if (wait.signal.aborted) return
                 if (result.skipped) toast.info(result.skip_reason ? `Skipped — ${result.skip_reason}` : 'Skipped')
                 else toast.success(spawnsRuns(target) ? t('management_ui.automations.run_queued') : t('management_ui.automations.completed'))
                 onChanged()
               } catch (err) {
-                toast.error(errMsg(err))
+                if (!wait.signal.aborted) toast.error(errMsg(err))
               } finally {
-                setBusy(false)
+                if (fireWait.current === wait) {
+                  fireWait.current = null
+                  if (!wait.signal.aborted) setBusy(false)
+                }
               }
             }}>
             <Play className="size-3.5 mr-1" /> {t('management_ui.automations.run_now')}

@@ -264,7 +264,13 @@ its primary Location (`projectFolders/delegatedWorkspacePlacement.ts`):
   writing sibling of the same coordinator Run exists. Mutual exclusion is the
   Host's exclusive worktree lease (every writer of that worktree key, including
   later conversation turns) plus these server checks under the conversation
-  workspace's advisory lock. The child keeps its own vendor session; it may
+  workspace's advisory lock. Each independent write has its own vendor session.
+  An explicit `continuation.previous_run_id` may request the same writer's
+  completed native session in this coordinator Run. A saved checkpoint in the
+  same open batch, matching Agent identity, audience, runtime and a known
+  context within a quarter of its window qualify the session. Host placement
+  rechecks the actual worktree and its generation. An ineligible session starts
+  fresh, with a bounded report and saved commit when authorized. The child may
   save (Git commit or `checkpoint`) but `prepare`/`publish`/`reconcile`,
   retry, abandon and conversation recovery reach are refused for it: the
   coordinator alone publishes. Every Run that checkpoints or prepares into a
@@ -290,7 +296,13 @@ its primary Location (`projectFolders/delegatedWorkspacePlacement.ts`):
   review reference (`execution_workspace_reviews`: workspace, generation,
   Location, `expected_commit`); every replay of that Run reuses it verbatim,
   so a retry after the coordinator moved is neither re-placed nor forked and
-  the Host refuses the stale basis instead. Expected and observed stay apart:
+  the Host refuses the stale basis instead. A separate follow-up Run can request
+  the earlier reviewer's vendor session through `review.previous_run_id`. The
+  new Run captures its own frozen review reference and the Host verifies that commit at
+  launch. Session reuse requires the same coordinator Run, reviewer version,
+  audience, pinned runtime and workspace generation, with a settled, verified
+  prior Run and a live session whose known context is at most a quarter of its
+  window. Otherwise the follow-up starts fresh. Expected and observed stay apart:
   the review is `verified` only when the Host's read-only basis report (sent
   only for a review it verified and started) names exactly the expected
   commit; a Host refusal or another HEAD is `refused`, an unreadable HEAD

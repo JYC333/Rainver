@@ -15,9 +15,9 @@ const RUN_BACKED=['agent_run','provider_task_run','daily_capture_report'];
 class JobNotCancellable extends OperationBusinessError {constructor(){super('operation_conflict',409,'jobs');}}
 
 /** The Job's own requesting person in this Space; other Jobs are indistinguishable from absent ones. */
-async function ownJob(db:Queryable,a:OperationActor,jobId:string,lock=false){
+async function ownJob(db:Queryable,a:OperationActor,jobId:string){
   const row=(await db.query<{id:string;status:string;job_type:string;run_id:string|null}>(`SELECT id,status,job_type,payload_json->>'run_id' AS run_id FROM jobs
-    WHERE id=$1 AND space_id=$2 AND user_id=$3${lock?' FOR UPDATE':''}`,[jobId,a.space_id,a.on_behalf_of_user_id])).rows[0];
+    WHERE id=$1 AND space_id=$2 AND user_id=$3`,[jobId,a.space_id,a.on_behalf_of_user_id])).rows[0];
   if(!row)throw hidden();
   return row;
 }
@@ -35,11 +35,11 @@ export function jobOperationRegistrations(config:ServerConfig,definitions:Readon
       return job?[{space_id:a.space_id,id:job.id}]:[];
     }},
     async resolve(db,raw,a){const id=(raw as Input).job_id;await ownJob(db,a,id);return {authority:`job:${id}`,targets:{job_id:id},resourceType:'job',resourceId:id};},
-    async authorize(db,raw,a){await ownJob(db,a,(raw as Input).job_id,true);},
+    async authorize(db,raw,a){await ownJob(db,a,(raw as Input).job_id);},
     async authorizeResult(db,raw,a){await ownJob(db,a,(raw as {job_id:string}).job_id);},
     async execute(db,raw,a){
       const id=(raw as Input).job_id,queue=new PgJobQueueRepository(db);
-      if(!(CANCELLABLE as readonly string[]).includes((await ownJob(db,a,id,true)).status))throw new JobNotCancellable();
+      if(!(CANCELLABLE as readonly string[]).includes((await ownJob(db,a,id)).status))throw new JobNotCancellable();
       // Guarded by status in the cancelling statement itself; a Run behind it ends in the same transaction.
       if(!(await queue.cancelJob(id,null,new Date(),CANCELLABLE)))throw new JobNotCancellable();
       await queue.appendJobEvent({job_id:id,event_type:'status_change',message:'Job cancelled by user'});

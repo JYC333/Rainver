@@ -28,7 +28,8 @@ narrow widths, phone drawer and shortcuts, and
 `src/__tests__/reader-journeys.browser.mjs` for the Reader's end-to-end
 journeys over an in-memory fixture server and its long-document performance
 budget, measured under 4× CPU throttling as a low-end proxy; set
-`READER_PERF_OUT` to write the measurements). It uses Playwright
+`READER_PERF_OUT` to write the measurements, and `READER_INTERACTION_OUT` for
+the drag-selection, anchor-placement and highlighting case). It uses Playwright
 Core with browser-local API fixtures to protect Room and Agent Work geometry,
 clipping ancestors and Streamdown CSS integration; jsdom cannot measure these.
 Browser setup and an optional hosted-build target are in COMMANDS.
@@ -140,9 +141,11 @@ reset; tests must not depend on sequence values.
 `wal_level=minimal`, a one-hour checkpoint horizon, `max_locks_per_transaction=512`
 (applying the baseline in one transaction takes thousands of lock slots, and the
 default 64 runs the shared lock table out when migration-chain tests overlap),
-and the PostgreSQL 18 tmpfs mount at `/var/lib/postgresql`. Local runs reuse the container and its migrated
-template across invocations; `TESTCONTAINERS_REUSE_ENABLE=false` disables reuse
-and tears down on exit. Per-file databases are always recreated, and setup
+and the PostgreSQL 18 tmpfs mount at `/var/lib/postgresql`. Local runs on the
+same migration fingerprint reuse the container and its migrated template across
+invocations. The fingerprint is part of the container reuse key, so worktrees
+on different baselines use distinct containers. Setup leaves templates in
+place. `TESTCONTAINERS_REUSE_ENABLE=false` disables reuse and tears down on exit. Per-file databases are always recreated, and setup
 reclaims databases left by runs killed before teardown once they are older than
 two hours (younger ones may belong to a concurrent run).
 

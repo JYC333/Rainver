@@ -4,7 +4,7 @@ import {resolveAgentActorId} from '../../db/actorResolver.js';
 import {dbPool,HttpError,type Queryable} from '../routeUtils/common.js';
 import {contentReadSql,contentAccessLevelSql} from '../access/contentAccessSql.js';
 import {contentResourceDefinition} from '../access/contentAccessRegistry.js';
-import {assertProjectWriter,assertProjectWriterForMutation,lockActiveProjectForMutation} from '../projects/access.js';
+import {assertProjectWriter,assertProjectWriterForMutation,lockActiveProjectForMutation,lockAgentRunProjectBeforeActor} from '../projects/access.js';
 import {PgTaskRepository} from '../tasks/repository.js';
 import {BoardMutationError,readProjectColumns,selectBoardColumn} from '../tasks/boardColumns.js';
 import {OperationError,OperationBusinessError,hidden} from '../systemActions/operations/errors.js';
@@ -48,6 +48,8 @@ export function boardOperationRegistrations(config:ServerConfig,definitions:Read
   const pool=dbPool(config);
   return (['board.configure','task.move_to_column'] as const).map(id=>({
     definition:definitions.get(id)!,
+    // An Agent's Project (its Run's) is locked before the core pins person and Run, as its releases lock.
+    lockBeforeActor:(db,_raw,actor)=>lockAgentRunProjectBeforeActor(db,actor),
     async resolve(db,raw,actor){
       const input=raw as Configure|Move,p=await project(db,input,actor);
       return {authority:actor.run_id?`project:${p}:run:${actor.run_id}`:`project:${p}`,targets:{project_id:p,...('task_id' in input?{task_id:input.task_id}:{})},resourceType:id==='board.configure'?'project':'task',resourceId:'task_id' in input?input.task_id:p};

@@ -57,6 +57,15 @@ three children in a row without a result and spend gates still end it. Keep an a
 collaboration fixed; once its Task is done or cancelled, a completion turn may
 declare a new open Task and fixed participants in the same container. Do not delegate merely because a task is broad.
 Room delegation is bounded by the server and remains auditable.
+Own the authorized work through delivery. On every child completion, verify
+the result and the version it covers, then take the next authorized step:
+integrate, review, send findings back for fixes, or verify the revised result.
+Queue independent reviews of the same saved version and wait for results in
+the current turn. If a child fails, diagnose the failure, use any supported
+recovery, and continue unaffected work. Do not repeat an unchanged failed
+handoff. Give the final report after the requested checks and reviews finish,
+or explain the exact remaining blocker when no authorized step can advance
+the work. Ask the person only for a decision or permission the work requires.
 
 Project work is recorded, not described. Listing a decomposition in a reply
 does not create anything: use task.create for a single Task or task.create_batch

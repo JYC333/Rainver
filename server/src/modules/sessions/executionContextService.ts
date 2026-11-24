@@ -25,7 +25,7 @@ import { assertProjectWriter, lockProjectAudience } from "../projects/access.js"
 import { PgHostRepository } from "../hosts/repository.js";
 import {locationIsOnline,runtimeAvailability,hostInstallationAvailability} from "./executionRuntimeAvailability.js";
 export {locationIsOnline} from "./executionRuntimeAvailability.js";
-import {rebindConversationRuntime,matchesConversationWorkspace} from "../hosts/conversationRuntimeBindings.js";
+import {rebindConversationRuntime,profileForConversationWorkspace} from "../hosts/conversationRuntimeBindings.js";
 import { PgHostThreadRepository } from "../hosts/threadRepository.js";
 import { getRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
 import { PgWorkspaceLocationRepository } from "../projectFolders/workspaceLocations.js";
@@ -212,6 +212,9 @@ export class ConversationExecutionContextService {
       if (!initializedGit) {
         throw new ConversationExecutionContextError(409, "The selected Git workspace is unavailable; refresh and try again");
       }
+      if (session.room_id && requestedRuntimes.some(runtime => runtime.runtime_profile_id === null)) {
+        throw new ConversationExecutionContextError(409, "Configure the Agent runtime before starting a Room conversation");
+      }
       const profile = await this.resolveRuntime(repository, client, session, host, primary, request.runtime, identity.userId);
       const participantAgentIds = request.participant_agent_ids ?? await repository.listConversationParticipantAgentIds(session);
       for (const runtime of requestedRuntimes) {
@@ -236,21 +239,22 @@ export class ConversationExecutionContextService {
           throw new ConversationExecutionContextError(403, "A participant Agent in this Conversation is not accessible to you");
         }
         const defaultProfileId = defaults.find(item=>item.agent_id===agentId)?.runtime_profile_id;
-        const candidates = (await repository.listRuntimeProfiles(identity.spaceId, agentId, session.project_id)).filter((candidate) =>
+        const candidates = (await repository.listRuntimeProfiles(identity.spaceId, agentId, session.project_id, Boolean(session.room_id))).filter((candidate) =>
           candidate.execution_host_id === host.id
-          && candidate.workspace_mode === primary.kind
-          && (primary.kind !== "location" || candidate.workspace_location_id === primary.locationId)
+          && candidate.workspace_mode !== null
           && hostInstallationAvailability(host, candidate.runtime_key, candidate.runtime_installation).usable,
         );
-        const preferred = candidates.find(candidate=>candidate.id===defaultProfileId);
-        if (preferred) candidates.splice(0,candidates.length,preferred);
-        if (candidates.length !== 1) {
+        const preferred = defaultProfileId
+          ? candidates.find(candidate => candidate.id === defaultProfileId)
+          : candidates.find(candidate => candidate.is_default);
+        const candidate = preferred ?? (candidates.length === 1 ? candidates[0] : undefined);
+        if (!candidate) {
           throw new ConversationExecutionContextError(
             409,
             `Agent '${agentId}' needs an explicit usable CLI runtime on the selected Host before this Conversation can start`,
           );
         }
-        participantProfiles.push(candidates[0]!);
+        participantProfiles.push(candidate);
       }
       const initialized = await repository.initialize({
         spaceId: identity.spaceId,
@@ -287,8 +291,13 @@ export class ConversationExecutionContextService {
         const initialDefault = defaults.find(item=>item.agent_id===participant.agent_id && item.runtime_profile_id===participant.id);
         if (initialDefault) {
           const backends = new PgConversationBackendRepository(client);
-          const option=(await backends.listOptions(identity.spaceId,identity.userId,participant.agent_id,session.project_id)).find(option=>option.runtime_profile_id===participant.id);
-          await backends.saveSessionConfig(identity.spaceId,session.id,participant.agent_id,reconcileSavedSessionConfig(initialDefault.session_config,option?.session_config_options??[]).selections);
+          const option = (await backends.listOptions(identity.spaceId, identity.userId, participant.agent_id, session.project_id, {
+            runtime_profile_id: participant.id,
+            execution_host_id: host.id,
+            workspace_mode: primary.kind,
+            workspace_location_id: primary.locationId,
+          })).find(option => option.runtime_profile_id === participant.id);
+          await backends.saveSessionConfig(identity.spaceId,session.id,participant.agent_id,reconcileSavedSessionConfig(initialDefault.session_config,option?.session_config_options??[],option?.runtime_key).selections);
         }
         const thread = await threads.getOrCreateForConversationAgent({
           executionHostId: host.id,
@@ -482,21 +491,31 @@ export class ConversationExecutionContextService {
     // Keep the roster intact so an inaccessible participant blocks setup, but
     // never expose that Agent's private runtime profiles in preflight.
     const visibleParticipantAgentIds: string[] = [];
+    const workspaceIndependent = Boolean(session.room_id);
     for (const agentId of participantAgentIds) {
       if (await repository.canAgentParticipate(session, agentId, identity.userId)) {
         visibleParticipantAgentIds.push(agentId);
       }
     }
     const rawRuntimeProfiles = (await Promise.all(
-      visibleParticipantAgentIds.map((agentId) => repository.listRuntimeProfiles(identity.spaceId, agentId, session.project_id)),
+      visibleParticipantAgentIds.map((agentId) => repository.listRuntimeProfiles(identity.spaceId, agentId, session.project_id, workspaceIndependent)),
     )).flat();
     const retainedBindings = new Map<string,string>();
     const retainedThreads = new Set<string>();
+    const pinnedProfiles = new Set<string>();
     if (context.state==='initialized') for (const agentId of visibleParticipantAgentIds) {
       const binding = await repository.getBinding(identity.spaceId,session.id,agentId);
       if (binding) {
         retainedBindings.set(agentId,binding.runtime_profile_id);
-        if (await repository.getConversationThread(identity.spaceId,session.id,agentId)) retainedThreads.add(agentId);
+        const thread = await repository.getConversationThread(identity.spaceId,session.id,agentId);
+        if (!thread) continue;
+        retainedThreads.add(agentId);
+        const index = rawRuntimeProfiles.findIndex(profile => profile.agent_id === agentId && profile.id === binding.runtime_profile_id);
+        const original = rawRuntimeProfiles[index] ?? await repository.getRuntimeProfile(identity.spaceId,agentId,binding.runtime_profile_id);
+        const pinned = original && profileForConversationWorkspace(original,thread,context);
+        if (pinned) pinnedProfiles.add(pinned.id);
+        if (pinned && index >= 0) rawRuntimeProfiles[index] = pinned;
+        else if (pinned) rawRuntimeProfiles.push(pinned);
       }
     }
     const availableRuntimeProfiles: ConversationExecutionRuntimeProfile[] = rawRuntimeProfiles.map((profile) => {
@@ -507,6 +526,7 @@ export class ConversationExecutionContextService {
         ? locations.find((candidate) => candidate.id === profile.workspace_location_id) ?? null
         : null;
       const availability = runtimeAvailability(profile, host, location, {
+        ignoreDefaultLocation: workspaceIndependent && !pinnedProfiles.has(profile.id),
         allowStaleLocation: context.state === "initialized"
           && context.primary_workspace_location_id === location?.id,
       });
@@ -518,7 +538,7 @@ export class ConversationExecutionContextService {
         runtime_installation: profile.runtime_installation,
         execution_host_id: profile.execution_host_id,
         workspace_mode: profile.workspace_mode,
-        workspace_location_id: profile.workspace_location_id,
+        workspace_location_id: location?.id ?? null,
         retained_binding: retainedBindings.get(profile.agent_id)===profile.id,
         preferred: roomDefaults.find(item=>item.agent_id===profile.agent_id)?.runtime_profile_id ? roomDefaults.find(item=>item.agent_id===profile.agent_id)?.runtime_profile_id===profile.id : profile.is_default,
         usable: availability.usable,
@@ -527,12 +547,14 @@ export class ConversationExecutionContextService {
     });
     // A disabled reusable profile must not hide a still-valid installation
     // reported by the Host; initialization may materialize a fresh enabled one.
-    const existingTargets = new Set(rawRuntimeProfiles.filter((profile) => profile.enabled).map(runtimeTargetKey));
+    const existingTargets = new Set(rawRuntimeProfiles.filter((profile) => profile.enabled)
+      .map(profile => runtimeTargetKey(profile, workspaceIndependent)));
     const hostTargets = await new PgWorkspaceLocationRepository(this.pool)
       .listHostExecutionTargets(identity.spaceId, session.project_id, identity.userId);
-    for (const participant of participantAgents) {
+    for (const participant of session.room_id && context.state !== "initialized" ? [] : participantAgents) {
       if (!visibleParticipantAgentIds.includes(participant.agent_id)) continue;
       for (const target of hostTargets) {
+        if (session.room_id && target.host_id !== context.execution_host_id) continue;
         const reportedHost = hosts.find((host) => host.id === target.host_id) ?? null;
         for (const runtime of target.runtimes) {
           for (const installation of runtime.installations) {
@@ -550,6 +572,8 @@ export class ConversationExecutionContextService {
               })),
             ];
             for (const workspace of workspaceChoices) {
+              if (session.room_id && (workspace.mode !== context.primary_workspace_mode
+                || workspace.locationId !== context.primary_workspace_location_id)) continue;
               const candidateKey = runtimeTargetKey({
                 agent_id: participant.agent_id,
                 execution_host_id: target.host_id,
@@ -557,7 +581,7 @@ export class ConversationExecutionContextService {
                 workspace_location_id: workspace.locationId,
                 runtime_key: runtime.runtime_key,
                 runtime_installation: installation.id,
-              });
+              }, workspaceIndependent);
               if (existingTargets.has(candidateKey)) continue;
               const usable = target.host_online && workspace.ready && availability.usable;
               availableRuntimeProfiles.push({
@@ -582,9 +606,12 @@ export class ConversationExecutionContextService {
         }
       }
     }
+    const executableLocations = activeLocations.filter((location) => location.execution_ready && locationIsOnline(location));
+    const preferredHostId = request.selection?.execution_host_id;
     const agentId = request.runtime?.agent_id ?? await repository.resolveConversationAgent(identity.spaceId, session.id, session.project_id);
     const usableRuntimeCandidates = availableRuntimeProfiles.filter((candidate) =>
-      candidate.agent_id === agentId && candidate.usable);
+      candidate.agent_id === agentId && candidate.usable
+      && (!preferredHostId || candidate.execution_host_id === preferredHostId));
     const preferredRuntimeCandidates = usableRuntimeCandidates.filter((candidate) => candidate.preferred);
     const persistedRuntimeCandidates = usableRuntimeCandidates.filter((candidate) => candidate.runtime_profile_id !== null);
     const suggestedRuntimeCandidate = preferredRuntimeCandidates.length === 1
@@ -625,34 +652,37 @@ export class ConversationExecutionContextService {
           if (!profile || !thread) {
             return { agentName, usable: false, reason: "The persisted runtime binding or Host thread is missing" };
           }
-          const stillPinned = matchesConversationWorkspace(thread,context)&&matchesConversationWorkspace(profile,context);
+          const pinned = profileForConversationWorkspace(profile,thread,context);
+          if (!pinned) {
+            return { agentName, usable: false, reason: "The runtime profile no longer matches the pinned Host, CLI, or Primary Workspace" };
+          }
           const pinnedHost = hosts.find((host) => host.id === thread.execution_host_id) ?? null;
           const pinnedLocation = thread.workspace_location_id
             ? locations.find((location) => location.id === thread.workspace_location_id) ?? null
             : null;
-          const availability = runtimeAvailability(profile, pinnedHost, pinnedLocation, {
+          const availability = runtimeAvailability(pinned, pinnedHost, pinnedLocation, {
             allowStaleLocation: context.primary_workspace_location_id === pinnedLocation?.id,
           });
-          return stillPinned
-            ? { agentName, usable: availability.usable, reason: availability.reason }
-            : { agentName, usable: false, reason: "The runtime profile no longer matches the pinned Host, CLI, or Primary Workspace" };
+          return { agentName, usable: availability.usable, reason: availability.reason };
         }))
       : [];
-    const executableLocations = activeLocations.filter((location) => location.execution_ready && locationIsOnline(location));
     const requestedPrimary = context.state === "initialized" ? primarySelection(context) : request.selection?.primary ?? null;
-    const suggestedPrimary = suggestedRuntimeCandidate?.workspace_mode === "location" && suggestedRuntimeCandidate.workspace_location_id
-      ? { kind: "location" as const, workspace_location_id: suggestedRuntimeCandidate.workspace_location_id }
+    const suggestedLocation = executableLocations.find(location => location.id === suggestedRuntimeCandidate?.workspace_location_id
+      && (!preferredHostId || location.execution_host_id === preferredHostId));
+    const suggestedPrimary = suggestedLocation
+      ? { kind: "location" as const, workspace_location_id: suggestedLocation.id }
       : suggestedRuntimeCandidate?.workspace_mode === "managed"
         ? { kind: "managed" as const }
         : null;
-    const defaultPrimary = requestedPrimary ?? suggestedPrimary ?? (executableLocations.length === 1
-      ? { kind: "location" as const, workspace_location_id: executableLocations[0]!.id }
-      : executableLocations.length === 0
+    const compatibleLocations = executableLocations.filter(location => !preferredHostId || location.execution_host_id === preferredHostId);
+    const defaultPrimary = requestedPrimary ?? suggestedPrimary ?? (compatibleLocations.length === 1
+      ? { kind: "location" as const, workspace_location_id: compatibleLocations[0]!.id }
+      : compatibleLocations.length === 0
         ? { kind: "managed" as const }
         : null);
     const selectedHostId = context.state === "initialized"
       ? context.execution_host_id
-      : request.selection?.execution_host_id
+      : preferredHostId
         ?? (suggestedRuntimeCandidate ? suggestedRuntimeCandidate.execution_host_id
           : executableLocations.length === 1 ? executableLocations[0]!.execution_host_id
             : hosts.filter((candidate) => hostIsOnline(candidate)).length === 1 ? hosts.find((candidate) => hostIsOnline(candidate))?.id ?? null
@@ -676,7 +706,7 @@ export class ConversationExecutionContextService {
     const summary = {...await repository.participationSnapshot(session), ...this.summaryFromParts(context, session.id, host ? hostSummary(host, session.id) : null, pinnedRuntimeChoice(runtime), primary, git, await repository.listAttachments(identity.spaceId, session.id), runtimes)};
     const blockedReason = primary?.kind==='location'&&summary.host?.isolated_workspaces_available===false?'execution_workspace_host_upgrade_required':context.state === "initialized"
       ? initializedBlockReason(summary, initializedRuntimeAvailability)
-      : draftBlockReason(host, defaultPrimary, primaryLocation, runtime, hosts, executableLocations, usableRuntimeCandidates);
+      : draftBlockReason(host, defaultPrimary, primaryLocation, runtime, hosts, usableRuntimeCandidates, workspaceIndependent);
     let dirtyAttachment=false;
     for(const a of summary.attachments)if(a.status==='active'&&a.git_dirty&&!await repository.hasOpenIsolatedWorkspace(identity.spaceId,session.id,a.workspace_location_id))dirtyAttachment=true;
     const needsBaseline=Boolean(!context.workspace_baseline&&((git?.dirty&&primary?.kind==='location'
@@ -770,7 +800,7 @@ export class ConversationExecutionContextService {
     const thread = await repository.getConversationThread(identity.spaceId, session.id, agentId);
     if (!binding || !thread) return null;
     const profile=await repository.getRuntimeProfile(identity.spaceId,agentId,binding.runtime_profile_id);
-    const target=profile&&matchesConversationWorkspace(profile,context)?profile:thread;
+    const target=(profile&&profileForConversationWorkspace(profile,thread,context))||thread;
     return {
       agent_id: agentId,
       runtime_profile_id: binding.runtime_profile_id,
@@ -792,10 +822,12 @@ export class ConversationExecutionContextService {
       const thread = await repository.getConversationThread(identity.spaceId, session.id, binding.agent_id);
       if (!thread) continue;
       const profile=await repository.getRuntimeProfile(identity.spaceId,binding.agent_id,binding.runtime_profile_id);
-      const target=profile&&context&&matchesConversationWorkspace(profile,context)?profile:thread;
+      const target=(profile&&context&&profileForConversationWorkspace(profile,thread,context))||thread;
       const changed=target.runtime_key!==thread.runtime_key||target.runtime_installation!==thread.runtime_installation;
       const backends = new PgConversationBackendRepository(repository.db);
-      const options = (await backends.listOptions(identity.spaceId,identity.userId,binding.agent_id,session.project_id))
+      const options = (await backends.listOptions(identity.spaceId,identity.userId,binding.agent_id,session.project_id,{
+        ...target, runtime_profile_id: binding.runtime_profile_id,
+      }))
         .find(option=>option.runtime_profile_id===binding.runtime_profile_id)?.session_config_options??[];
       const effectiveConfig = reconcileSavedSessionConfig(await backends.sessionConfig(identity.spaceId,session.id,binding.agent_id),options);
       runtimes.push({
@@ -909,8 +941,8 @@ export class ConversationExecutionContextService {
     }
     const installation = hostInstallationAvailability(host, profile.runtime_key, profile.runtime_installation);
     if (!installation.usable) throw new ConversationExecutionContextError(409, installation.reason!);
-    if (profile.workspace_mode !== primary.kind
-      || (primary.kind === "location" && profile.workspace_location_id !== primary.locationId)) {
+    if (!session.room_id && (profile.workspace_mode !== primary.kind
+      || (primary.kind === "location" && profile.workspace_location_id !== primary.locationId))) {
       throw new ConversationExecutionContextError(409, "Selected CLI runtime and Primary Workspace do not describe the same execution directory");
     }
     return profile;
@@ -965,12 +997,11 @@ function pinnedRuntimeChoice(choice: ConversationRuntimeChoice | null): Conversa
 function runtimeTargetKey(target: Pick<
   RuntimeProfileRow,
   "agent_id" | "execution_host_id" | "workspace_mode" | "workspace_location_id" | "runtime_key" | "runtime_installation"
->): string {
+>, workspaceIndependent: boolean): string {
   return [
     target.agent_id,
     target.execution_host_id ?? "",
-    target.workspace_mode ?? "",
-    target.workspace_location_id ?? "",
+    ...(workspaceIndependent ? [] : [target.workspace_mode ?? "", target.workspace_location_id ?? ""]),
     target.runtime_key,
     target.runtime_installation ?? "",
   ].join("\u0000");
@@ -999,27 +1030,28 @@ function draftBlockReason(
   primaryLocation: ExecutionLocationRow | null,
   runtime: ConversationRuntimeChoice | null,
   hosts: ExecutionHostRow[],
-  executableLocations: ExecutionLocationRow[],
   usableRuntimes: ConversationExecutionRuntimeProfile[],
+  workspaceIndependent: boolean,
 ): string | null {
   if (!host) return hosts.filter(hostIsOnline).length > 1 ? "Choose an execution Host" : "No usable execution Host is configured";
   if (!hostIsOnline(host)) return "Execution Host is offline; reconnect it before sending";
   if (!primary) return "Choose a Primary Folder or managed workspace";
-  if (primary.kind === "location" && (!primaryLocation || !primaryLocation.execution_ready)) return "Choose a ready Primary Workspace Location";
+  if (primary.kind === "location" && (!primaryLocation || primaryLocation.status !== "active"
+    || !primaryLocation.execution_ready || !locationIsOnline(primaryLocation))) return "Choose a ready Primary Workspace Location";
   if (primaryLocation && primaryLocation.execution_host_id !== host.id) return "Primary Workspace and Host must be on the same execution Host";
   if (!runtime) return usableRuntimes.length > 1 ? "Choose a CLI installation" : "The selected Host reports no usable CLI installation";
   if (runtime.agent_id === "") return "Choose an Agent";
   const selectedRuntime = usableRuntimes.find((candidate) =>
     candidate.agent_id === runtime.agent_id
+    && candidate.execution_host_id === host.id
     && candidate.runtime_key === runtime.runtime_key
     && candidate.runtime_installation === runtime.runtime_installation
     && (runtime.runtime_profile_id === null || candidate.runtime_profile_id === runtime.runtime_profile_id));
   if (!selectedRuntime || selectedRuntime.runtime_key !== runtime.runtime_key || selectedRuntime.runtime_installation !== runtime.runtime_installation) {
     return "The selected CLI installation is unavailable";
   }
-  if (selectedRuntime.execution_host_id !== host.id) return "CLI installation and Host must be on the same execution Host";
-  if (selectedRuntime.workspace_mode !== primary.kind
-    || (primary.kind === "location" && selectedRuntime.workspace_location_id !== primary.workspace_location_id)) {
+  if (!workspaceIndependent && (selectedRuntime.workspace_mode !== primary.kind
+    || (primary.kind === "location" && selectedRuntime.workspace_location_id !== primary.workspace_location_id))) {
     return "CLI installation and Primary Workspace must describe the same execution directory";
   }
   return null;

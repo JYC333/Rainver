@@ -726,7 +726,7 @@ describe('ADR 0030 plugin data access', () => {
     expect(isolated.frame.provider_binding.env.ANTHROPIC_BASE_URL).toBe(`http://127.0.0.1:18790/anthropic/${leaseId}`);
     expect(JSON.stringify(isolated.frame)).not.toContain(upstreamMarker);
     expect(JSON.stringify(isolated.frame.argv)).not.toContain(isolated.frame.provider_binding.env.ANTHROPIC_AUTH_TOKEN);
-    expect(isolated.record.launch_isolation_json).toEqual({launch_id: isolated.frame.launch_id, host_id: strictHost, host_kind: 'server', egress_profile: 'none', sandbox_mode: 'read_write', model_channel: 'provider_lease', profile_key: isolated.frame.provider_binding.profile_key});
+    expect(isolated.record.launch_isolation_json).toEqual({launch_id: isolated.frame.launch_id, host_id: strictHost, host_kind: 'server', egress_profile: 'none', sandbox_mode: 'read_write', model_channel: 'provider_lease', profile_key: isolated.frame.provider_binding.profile_key, host_reset_generation: 0});
     expect(isolated.read.httpStatus, JSON.stringify(isolated.read.body)).toBe(200);
     expect((isolated.read.body.data as {items: {value: string}[]}).items[0]!.value).toBe('secret diary text');
     // The lease (the channel's only destination) lives while the Run runs and is revoked when it ends.
@@ -740,6 +740,12 @@ describe('ADR 0030 plugin data access', () => {
     expect(ordinary.frame.isolation).toMatchObject({egress_profile: 'default'});
     expect(ordinary.frame.model_channel).toBeUndefined();
     expect(ordinary.policy).toBeNull();
+    // One backend keeps its CLI state apart by channel (ADR 0036 §11): the isolated launch in its own directory, an
+    // ordinary-egress launch (also the older daemon's) in the networked one — never the channel-less one both shared.
+    const backendOf = (frame: Record<string, any>) => String(frame.provider_binding.profile_key).split('/').slice(-2).join('/');
+    expect(backendOf(isolated.frame)).toBe('claude_code/prov-1.isolated');
+    expect(backendOf(ordinary.frame)).toBe('claude_code/prov-1.network');
+    expect(backendOf(old.frame)).toBe('claude_code/prov-1.network');
     // A paired Host claiming the capability is never selected; its Run gets no channel and no release.
     const paired = await host('remote');
     await db.pool.query(`UPDATE hosts SET capabilities_json='{"model_channel":1}'::jsonb WHERE id=$1`, [paired]);

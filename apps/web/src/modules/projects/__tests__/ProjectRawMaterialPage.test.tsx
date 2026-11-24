@@ -2,7 +2,7 @@ import { render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
 import { MemoryRouter, Link, Route, Routes } from 'react-router-dom'
-import ProjectRawMaterialPage from '../ProjectRawMaterialPage'
+import SourcesAreaPage from '../SourcesAreaPage'
 import { activityApi, projectsApi } from '../../../api/client'
 import type { ActivityInboxRecord } from '../../../types/api'
 
@@ -24,6 +24,11 @@ vi.mock('../../../api/client', () => ({
   activityApi: { list: vi.fn(), review: vi.fn(), archive: vi.fn() },
   projectsApi: { list: vi.fn() },
 }))
+
+vi.mock('../sourcesArea/MonitoringPanel', () => ({ default: () => null }))
+vi.mock('../ProjectSourcesPage', () => ({ default: () => null }))
+vi.mock('../reading/ProjectReadingPage', () => ({ default: () => null }))
+vi.mock('../sourcesArea/gmail/ProjectGmailThreads', () => ({ ProjectGmailThreads: () => null }))
 
 function activityRecord(overrides: Partial<ActivityInboxRecord> = {}): ActivityInboxRecord {
   return {
@@ -49,11 +54,11 @@ function activityRecord(overrides: Partial<ActivityInboxRecord> = {}): ActivityI
   }
 }
 
-function renderPage(entry = '/projects/project-1/raw') {
+function renderPage(entry = '/projects/project-1/sources?tab=raw') {
   return render(
     <MemoryRouter initialEntries={[entry]}>
       <Routes>
-        <Route path="/projects/:projectId/raw" element={<ProjectRawMaterialPage />} />
+        <Route path="/projects/:projectId/sources" element={<SourcesAreaPage />} />
       </Routes>
     </MemoryRouter>,
   )
@@ -75,15 +80,17 @@ describe('ProjectRawMaterialPage', () => {
 
     await waitFor(() => expect(activityApi.list).toHaveBeenCalledWith(
       expect.objectContaining({ project_id: 'project-1', status: 'raw' }),
+      expect.objectContaining({ spaceId: 'space-1' }),
     ))
     expect(await screen.findByText('Captured in the project')).toBeInTheDocument()
   })
 
   it('ignores a project_id in the URL rather than letting it retarget the page', async () => {
-    renderPage('/projects/project-1/raw?project_id=project-2')
+    renderPage('/projects/project-1/sources?tab=raw&project_id=project-2')
 
     await waitFor(() => expect(activityApi.list).toHaveBeenCalledWith(
       expect.objectContaining({ project_id: 'project-1' }),
+      expect.objectContaining({ spaceId: 'space-1' }),
     ))
   })
 

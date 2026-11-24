@@ -1,3 +1,5 @@
+import { TurnPartSchema } from "@rainver/protocol";
+import { createThreadEventNormalizer } from "../src/modules/hosts/threadEventNormalization.js";
 import { describe, expect, it } from "vitest";
 import {
   appendActionPreviewParts,
@@ -19,6 +21,58 @@ function runRow(row: Partial<RunEventRow> & { event_index: number; event_type: s
 }
 
 describe("turn projection", () => {
+  it("keeps interleaved native subagent results and tools attributable through replay", () => {
+    const normalizer = createThreadEventNormalizer();
+    const send = (sessionId: string, update: Record<string, unknown>) => normalizer.pushAcpProtocolEvent({
+      method: "session/update", params: { sessionId, _rainverChildSession: sessionId !== "parent", update },
+    });
+    const announce = (id: string, state: Record<string, unknown>) =>
+      send("parent", { sessionUpdate: "subagent_update", sessionId: id, title: id, state });
+    const chunk = (id: string, text: string) =>
+      send(id, { sessionUpdate: "agent_message_chunk", content: { type: "text", text } });
+    const events = [
+      ...announce("A", { state: "running" }),
+      ...announce("B", { state: "running" }),
+      ...send("A", { sessionUpdate: "session_message", recipientSessionId: "A", content: [{ type: "text", text: "Calculate" }] }),
+      ...chunk("A", "4"), ...chunk("B", "PC"), ...chunk("A", "2"),
+      ...send("A", { sessionUpdate: "tool_call", toolCallId: "A:read", title: "Read", kind: "read" }),
+      ...send("B", { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "hidden" } }),
+      ...announce("A", { state: "idle", stopReason: "end_turn" }),
+      ...chunk("B", "A"), ...announce("B", { state: "idle" }),
+      ...normalizer.pushAcpTextDelta("Parent reply"), ...normalizer.finish(),
+    ];
+    const { parts } = projectHostThreadTurn(events.map((row, event_index) => hostRow({ ...row, event_index })));
+    const children = parts.filter(part => part.type === "subagent");
+    expect(children).toMatchObject([
+      { title: "A", task: "Calculate", state: "completed", output: "42" },
+      { title: "B", state: "ended", output: "PCA" },
+    ]);
+    expect(parts.find(part => part.type === "tool_call")).toMatchObject({ details: { subagent_key: children[0]?.key } });
+    expect(parts.filter(part => part.type === "text" || part.type === "reasoning"))
+      .toEqual([{ type: "text", index: 3, text: "Parent reply" }]);
+    expect(parts.every(part => TurnPartSchema.safeParse(part).success)).toBe(true);
+  });
+
+  it("keeps parent prose whole and preserves earlier child output across follow-up tasks", () => {
+    const normalizer = createThreadEventNormalizer();
+    const send = (sessionId: string, update: Record<string, unknown>) => normalizer.pushAcpProtocolEvent({
+      method: "session/update", params: { sessionId, _rainverChildSession: sessionId === "child", update },
+    });
+    const events = [
+      ...normalizer.pushAcpTextDelta("Parent "),
+      ...send("root", { sessionUpdate: "subagent_update", sessionId: "child", state: { state: "running" } }),
+      ...send("child", { sessionUpdate: "agent_message_chunk", messageId: "a", content: { type: "text", text: "42" } }),
+      ...send("child", { sessionUpdate: "session_message", recipientSessionId: "child", content: [{ type: "text", text: "Follow-up" }] }),
+      ...send("child", { sessionUpdate: "tool_call", toolCallId: "child:read", title: "Read" }),
+      ...send("child", { sessionUpdate: "agent_message_chunk", messageId: "b", content: { type: "text", text: "PCA" } }),
+      ...normalizer.pushAcpTextDelta("reply"),
+      ...normalizer.finish(),
+    ];
+    const { parts } = projectHostThreadTurn(events.map((row, event_index) => hostRow({ ...row, event_index })), { replyText: "Parent reply" });
+    expect(parts.filter(part => part.type === "text")).toEqual([{ type: "text", index: 0, text: "Parent reply" }]);
+    expect(parts.find(part => part.type === "subagent")).toMatchObject({ task: "Follow-up", output: "42\n\nPCA" });
+  });
+
   it("coalesces consecutive prose into one part, and keeps reasoning separate", () => {
     const { parts } = projectHostThreadTurn([
       hostRow({ event_index: 0, event_type: "assistant_thought", text: "Let me look." }),

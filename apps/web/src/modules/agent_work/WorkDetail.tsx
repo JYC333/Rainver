@@ -152,10 +152,13 @@ function DetailContent({ item, childPage, onConflict, onUnread, onChanged, onRea
   const [historyOpen, setHistoryOpen] = useState(false)
   const allRuns = [...item.runs, ...(childPage?.runs ?? [])]
   // Keep the selected result stable while child windows/background refreshes arrive.
-  const [primaryId] = useState(() => item.runs.find(run => !run.retry_superseded && item.reasons.some(reason => 'run_id' in reason && reason.run_id === run.run_id))?.run_id
-    ?? [...item.runs].filter(run => !run.retry_superseded).sort((a, b) => (b.ended_at ?? b.started_at ?? '').localeCompare(a.ended_at ?? a.started_at ?? ''))[0]?.run_id)
-  const primary = allRuns.find(run => run.run_id === primaryId)
-  const history = allRuns.filter(run => run.run_id !== primaryId)
+  const [primaryId, setPrimaryId] = useState<string>()
+  const eligible = item.runs.filter(run => !run.retry_superseded)
+  const primary = allRuns.find(run => run.run_id === primaryId && !run.retry_superseded)
+    ?? eligible.find(run => item.reasons.some(reason => 'run_id' in reason && reason.run_id === run.run_id))
+    ?? eligible.sort((a, b) => (b.ended_at ?? b.started_at ?? '').localeCompare(a.ended_at ?? a.started_at ?? ''))[0]
+  useEffect(() => setPrimaryId(primary?.run_id), [primary?.run_id])
+  const history = allRuns.filter(run => run.run_id !== primary?.run_id)
   const runRevision = useMemo(() => ({ item, childPage }), [item, childPage])
   const links = [
     ...item.operations.filter(operation => operation.kind === 'open_task').map(operation => ({ key: operation.task_id, to: `/tasks/${operation.task_id}`, label: t('agent_work.open_task') })),

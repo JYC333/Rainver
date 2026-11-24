@@ -543,7 +543,7 @@ describe('formal relocation receipts with current cross-Space authority',()=>{
   const {captureModule}=await import('../src/modules/capture/index.js');
   const {loadConfig}=await import('../src/config.js');
   __setAuthIdentityForTests({spaceId:space,userId:user});
-  const app=buildModuleServer(loadConfig({...process.env,SERVER_DATABASE_URL:db.connectionUri}),[captureModule]);
+  const app=buildModuleServer(loadConfig({SERVER_DATABASE_URL:db.connectionUri}),[captureModule]);
   return {app,close:async()=>{__setAuthIdentityForTests(null);await app.close();}};
  }
  it('copies owned content across Spaces without widening copy-out and rejects revoked source membership replay',async()=>{

@@ -15,6 +15,10 @@ describe("dbMigrationOps", () => {
   }
 
   describe("database migration ops scripts", () => {
+    const fakeHostBackupRunner = `if [ "$1" = --input-type=module ] && [ "$2" = -e ]; then
+  exec pg_dump > "$4"
+fi`;
+
     it("verifies the pre-migration dump by streaming it, never by a path inside the container", () => {
       const migrate = readRepoFile("ops/scripts/db/migrate.sh");
       const restore = readRepoFile("ops/scripts/db/restore.sh");
@@ -43,6 +47,8 @@ describe("dbMigrationOps", () => {
       try {
         const bin = join(dir, "bin");
         mkdirSync(bin);
+        mkdirSync(join(dir, "server"));
+        writeFileSync(join(bin, "node"), `#!/bin/sh\n${fakeHostBackupRunner}\nexit 97\n`, { mode: 0o755 });
         writeFileSync(join(bin, "pg_dump"), "#!/bin/sh\nprintf 'PGDMP partial archive'\nexit 1\n", { mode: 0o755 });
         writeFileSync(join(bin, "pg_restore"), "#!/bin/sh\ncat >/dev/null 2>&1 || true\nexit 0\n", { mode: 0o755 });
         const script = join(repoRoot, "ops/scripts/db/migrate.sh");
@@ -54,10 +60,11 @@ describe("dbMigrationOps", () => {
           "echo MIGRATING",
         ].join("\n");
         const result = spawnSync("bash", ["-c", harness], {
-          env: { PATH: `${bin}:${process.env.PATH ?? ""}`, MODE_ROOT: dir, RUN_MODE: "host", MODE: "prod" },
+          env: { PATH: `${bin}:${process.env.PATH ?? ""}`, MODE_ROOT: dir, REPO_ROOT: dir, RUN_MODE: "host", MODE: "prod" },
           encoding: "utf8",
         });
         expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain("pg_dump exited 1");
         expect(result.stdout).not.toContain("MIGRATING");
         expect(result.stdout).not.toContain("pre-migration backup written");
       } finally {
@@ -78,7 +85,7 @@ describe("dbMigrationOps", () => {
         const bin = join(dir, "bin");
         mkdirSync(bin);
         mkdirSync(join(dir, "server"));
-        writeFileSync(join(bin, "node"), `#!/bin/sh\nprintf '0002\\n0003_next\\n'\nexit ${exit}\n`, { mode: 0o755 });
+        writeFileSync(join(bin, "node"), `#!/bin/sh\n${fakeHostBackupRunner}\n[ "$2" = pending ] || exit 97\nprintf '0002\\n0003_next\\n'\nexit ${exit}\n`, { mode: 0o755 });
         writeFileSync(join(bin, "pg_dump"), "#!/bin/sh\nprintf 'PGDMP archive'\n", { mode: 0o755 });
         writeFileSync(join(bin, "pg_restore"), "#!/bin/sh\ncat >/dev/null 2>&1 || true\nexit 0\n", { mode: 0o755 });
         const script = join(repoRoot, "ops/scripts/db/migrate.sh");

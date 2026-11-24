@@ -34,6 +34,7 @@ export function runToOut(
   return {
     id: run.id,
     space_id: run.space_id,
+    effective_access_level: run.effective_access_level,
     agent_id: run.agent_id,
     agent_version_id: run.agent_version_id,
     execution_kind: run.execution_kind,
@@ -133,6 +134,7 @@ function runUsageToOut(usage: RunRecord["usage"]): Record<string, unknown> | nul
 export function runStatusToOut(run: VisibleRunRecord): Record<string, unknown> {
   return {
     id: run.id,
+    effective_access_level: run.effective_access_level,
     model_selection: runModelSelection(run.model_override_json, run.status),
     status: run.status,
     mode: run.mode,

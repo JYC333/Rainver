@@ -48,14 +48,20 @@ run_package packages/reader-document pnpm run build
 echo "==> Database schema"
 run_package server pnpm run schema:check
 
+echo "==> Prepare the web build for server browser tests"
+if ! run_package apps/web node --input-type=module -e 'import { accessSync } from "node:fs"; import { chromium } from "playwright-core"; accessSync(chromium.executablePath());'; then
+  echo "Install Chromium before running the product gate: pnpm --filter @rainver/web exec playwright-core install chromium" >&2
+  exit 2
+fi
+run_package apps/web pnpm run build
+
 echo "==> Server"
 run_package server pnpm run typecheck
-run_package server pnpm test
+REQUIRE_TEST_POSTGRES=true run_package server pnpm test
 run_package server pnpm run build
 
 echo "==> Web"
 run_package apps/web pnpm run typecheck
 run_package apps/web pnpm test
-run_package apps/web pnpm run build
 
 echo "Product acceptance deterministic gate passed."

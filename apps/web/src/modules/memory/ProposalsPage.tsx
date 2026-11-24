@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { FileCheck, FolderKanban, X } from 'lucide-react'
@@ -28,6 +28,7 @@ import { useAppTranslation } from '../../i18n'
 import { proposalTitle } from './proposalTitle'
 
 function fmt(dt: string | null | undefined) { return dt ? new Date(dt).toLocaleString() : '—' }
+const PAGE_SIZE = 80
 
 const RISK_VARIANT: Record<string, 'default' | 'secondary' | 'muted' | 'destructive'> = {
   low:      'muted',
@@ -58,16 +59,24 @@ export default function ProposalsPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const projectFilter = searchParams.get('project_id') ?? ''
 
-  const [proposals, setProposals] = useState<Proposal[]>([])
   const [filterStatus, setFilterStatus]       = useState('pending')
   const [filterUrgency, setFilterUrgency]     = useState('')
   const [filterExpired, setFilterExpired]     = useState<string>('')
   const [approvingId, setApprovingId] = useState<string | null>(null)
+  const [position, setPosition] = useState({ filterKey: '', offset: 0 })
+  const [revision, refresh] = useState(0)
+  const [result, setResult] = useState<{ key: string; items: Proposal[]; total: number; failed?: boolean }>()
 
   // Proposal type grouping is local to this page; the Review sidebar only switches
   // between real review surfaces (Proposals and Memory).
   const rawUrlType = searchParams.get('type') ?? ''
   const urlType = rawUrlType === 'task_create' ? 'follow_up_task' : rawUrlType
+  const filterKey = JSON.stringify([activeSpaceId, userId, filterStatus, urlType, filterUrgency, filterExpired, projectFilter])
+  const offset = position.filterKey === filterKey ? position.offset : 0
+  const requestKey = JSON.stringify([filterKey, offset, revision])
+  const current = result?.key === requestKey ? result : undefined
+  const proposals = current?.items ?? []
+  const reload = () => refresh(value => value + 1)
 
   function setTypeFilter(type: ProposalTypeFilter) {
     setSearchParams(prev => {
@@ -78,36 +87,40 @@ export default function ProposalsPage() {
     })
   }
 
-  const load = useCallback(async () => {
-    if (!activeSpaceId) {
-      setProposals([])
-      return
-    }
-    try {
-      const pages = await Promise.all(apiTypesForFilter(urlType).map(type =>
-        proposalsApi.list({
-          status: filterStatus === '' ? 'all' : filterStatus,
-          type,
-          urgency: filterUrgency || undefined,
-          expired: filterExpired === '' ? undefined : filterExpired === 'true',
-          project_id: projectFilter || undefined,
-          limit: 80,
-        }),
-      ))
-      const items = pages.flatMap(page => page.items)
-      setProposals(items.filter(p => proposalMatchesTypeFilter(p, urlType)))
-    } catch (e) { toast.error(errMsg(e)) }
-  }, [filterStatus, urlType, filterUrgency, filterExpired, projectFilter, activeSpaceId])
-
-  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    if (!activeSpaceId) return
+    const controller = new AbortController()
+    const types = apiTypesForFilter(urlType)
+    void proposalsApi.list({
+      status: filterStatus || 'all',
+      ...(types.length > 1 ? { types } : { type: types[0] }),
+      urgency: filterUrgency || undefined,
+      expired: filterExpired === '' ? undefined : filterExpired === 'true',
+      project_id: projectFilter || undefined,
+      limit: PAGE_SIZE,
+      offset,
+    }, { spaceId: activeSpaceId, signal: controller.signal }).then(page => {
+      if (controller.signal.aborted) return
+      if (offset > 0 && offset >= page.total) {
+        setPosition({ filterKey, offset: Math.max(0, Math.floor((page.total - 1) / PAGE_SIZE) * PAGE_SIZE) })
+        return
+      }
+      setResult({ key: requestKey, items: page.items, total: page.total })
+    }).catch(error => {
+      if (controller.signal.aborted) return
+      setResult({ key: requestKey, items: [], total: 0, failed: true })
+      toast.error(errMsg(error))
+    })
+    return () => controller.abort()
+  }, [activeSpaceId, filterExpired, filterKey, filterStatus, filterUrgency, offset, projectFilter, requestKey, urlType])
 
   async function decide(id: string, action: 'accept' | 'reject') {
     try {
       if (action === 'accept') {
-        const proposal = proposals.find(p => p.id === id) ?? await proposalsApi.get(id)
+        const proposal = proposals.find(p => p.id === id) ?? await proposalsApi.get(id, { spaceId: activeSpaceId ?? undefined })
         const options = codePatchAcceptOptions(proposal)
-        if (options === null) return
-        const out: ProposalAcceptOut = await proposalsApi.accept(id, options)
+        if (options === null || proposal.chosen_on_card) return
+        const out: ProposalAcceptOut = await proposalsApi.accept(id, { ...options, spaceId: activeSpaceId ?? undefined })
         const refusal = acceptRefusalKey(out)
         if (refusal) toast.error(t(refusal))
         else if(out.result_type==='code_patch_pending'){toast.info(t(`mixed_surfaces.code_patch_${out.result.status === 'pending' ? 'queued' : out.result.status}`));}
@@ -131,11 +144,11 @@ export default function ProposalsPage() {
           toast.success('Proposal accepted.')
         }
       } else {
-        await proposalsApi.reject(id)
+        await proposalsApi.reject(id, { spaceId: activeSpaceId ?? undefined })
         toast.success('Proposal rejected.')
       }
       notifyReviewAttentionChanged()
-      await load()
+      reload()
     } catch (e) {
       const message = errMsg(e)
       if (message.includes('GrantingUserApprovalRequired') || message.includes('egress_granting_user')) {
@@ -151,17 +164,17 @@ export default function ProposalsPage() {
         toast.error(message)
       }
       // A refused decision (e.g. 404 after expiry) shows the live list rather than stale buttons.
-      await load()
+      reload()
     }
   }
 
   async function approveEgress(p: Proposal) {
     setApprovingId(p.id)
     try {
-      await proposalsApi.approveEgressGrantingUserProposal(p.id, { grant_id: p.grant_id ?? undefined })
+      await proposalsApi.approveEgressGrantingUserProposal(p.id, { grant_id: p.grant_id ?? undefined }, { spaceId: activeSpaceId ?? undefined })
       toast.success('Egress review approval recorded')
       notifyReviewAttentionChanged()
-      await load()
+      reload()
     } catch (e) {
       toast.error(errMsg(e))
     } finally {
@@ -274,7 +287,11 @@ export default function ProposalsPage() {
         })}
       </div>
 
-      {proposals.length === 0
+      {current?.failed ? (
+        <Button size="sm" variant="outline" onClick={reload}>{t('pagination.retry')}</Button>
+      ) : activeSpaceId && !current ? (
+        <p role="status" className="text-sm text-muted-foreground">{t('pagination.loading')}</p>
+      ) : proposals.length === 0
         ? <Card><p className="text-muted-foreground text-center py-10 text-sm">
             {activeSpaceId ? 'No proposals for these filters.' : 'Select an operational space to browse proposals.'}
           </p></Card>
@@ -288,7 +305,10 @@ export default function ProposalsPage() {
                 <div className="flex gap-1.5 shrink-0">
                   {awaitingRevision(p)
                     ? <Button size="sm" variant="outline" asChild><Link to={`/proposals/${p.id}`}>{t('knowledge_ui.memory_revision.revise_link')}</Link></Button>
-                    : <Button size="sm" variant="success" onClick={() => decide(p.id, 'accept')}>Accept</Button>}
+                    // Its Agent and model are chosen on the card (ADR 0036): accepted where the choice is shown.
+                    : p.chosen_on_card
+                      ? <Button size="sm" variant="outline" asChild><Link to={`/proposals/${p.id}`}>{t('gmail_ui.execution.choose_link')}</Link></Button>
+                      : <Button size="sm" variant="success" onClick={() => decide(p.id, 'accept')}>Accept</Button>}
                   <Button size="sm" variant="destructive" onClick={() => decide(p.id, 'reject')}>Reject</Button>
                 </div>
               )}
@@ -332,6 +352,12 @@ export default function ProposalsPage() {
             </p>
           </Card>
         ))}
+      {current && (offset > 0 || offset + PAGE_SIZE < current.total) && (
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" variant="outline" disabled={offset === 0} onClick={() => setPosition({ filterKey, offset: offset - PAGE_SIZE })}>{t('pagination.previous')}</Button>
+          <Button size="sm" variant="outline" disabled={offset + PAGE_SIZE >= current.total} onClick={() => setPosition({ filterKey, offset: offset + PAGE_SIZE })}>{t('pagination.next')}</Button>
+        </div>
+      )}
     </div>
   )
 }

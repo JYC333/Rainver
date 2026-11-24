@@ -1,6 +1,7 @@
 import {admitDelegatedExecutionWorkspace} from '../projectFolders/workspaceAdmission.js';
 import {checkpointWorkspaceRun} from "../hosts/workspaceCheckpoints.js";
 import {ExecutionWorkspaceRefSchema} from "@rainver/protocol";
+import { pendingAutomaticSummaryId } from "../agentGroups/autoHandoff.js";
 import { readOnlyWorkspaceHostRefusal } from "./workspaceAccessPolicy.js";
 import { isAbsolute, relative as relativePath, resolve, sep } from "node:path";
 import type {
@@ -26,7 +27,7 @@ import { AgentGroupRunLifecycleProjector } from "../agentGroups/lifecycleProject
 import type { CliProcessRegistry } from "./localCliExecution.js";
 import { PgRunRepository } from "./repository.js";
 import { RunExecutionControl } from "./executionControl.js";
-import { EXECUTION_CONTROLLER_LOST } from "./retryPolicy.js";
+import { EXECUTION_CONTROLLER_LOST, TASK_DRY_RUN_UNSUPPORTED } from "./retryPolicy.js";
 import { runAssignedTask } from "./runAssignedTask.js";
 import { JobDeferredError } from "../jobs/handlerRegistry.js";
 import { dispatchesToHostDaemon } from "./runRemoteness.js";
@@ -184,6 +185,8 @@ export interface RunExecutionRepositoryPort {
     run_id: string;
     space_id: string;
     vendor_session_id: string;
+    /** The nonce of the launch that reported it, as the adapter's result names it. */
+    launch_id?: string | null;
   }): Promise<void>;
   /**
    * The Run's own event history. Optional because only the terminal-status
@@ -717,8 +720,9 @@ export class RunOrchestrationService {
     // An Agent Run whose execution authorization no longer holds ends failed
     // before dispatch: at the first check, and when the final recheck under
     // claimRunExecution's locks refuses a Run still queued (ADR 0033 §6).
-    const rejectUnauthorizedExecution = async (
+    const rejectBeforeDispatch = async (
       authorization: { error_code?: string; error_message?: string },
+      skipReason = "execution_authorization_revoked",
     ): Promise<RunJobResult> => {
       const rejected = await this.repository.publishRunTerminal({
         run_id: run.id,
@@ -757,7 +761,7 @@ export class RunOrchestrationService {
         run_id: run.id,
         status: protocolRunStatus(rejected?.status ?? "failed"),
         skipped: true,
-        skip_reason: "execution_authorization_revoked",
+        skip_reason: skipReason,
         error_code:
           authorization.error_code
           ?? "run_execution_authorization_revoked",
@@ -774,6 +778,12 @@ export class RunOrchestrationService {
         if (!stopped.confirmed_exit) throw new JobDeferredError("Waiting for the interrupted Run attempt to confirm exit", 30_000);
         interruptedAttemptNumber = stopped.attempt_number;
         throw new RunPreparationError(EXECUTION_CONTROLLER_LOST, "The previous worker lost this Run's execution controller; its Host attempt has stopped.");
+      }
+      if (run.mode === "dry_run" && run.run_type === "agent" && recordValue(recordValue(run.contract_snapshot_json).source).kind === "task") {
+        return await rejectBeforeDispatch({
+          error_code: TASK_DRY_RUN_UNSUPPORTED,
+          error_message: "Task execution does not support dry runs.",
+        }, TASK_DRY_RUN_UNSUPPORTED);
       }
       let effectiveBindings = this.workContextResolver
         ? await this.workContextResolver(run)
@@ -808,7 +818,7 @@ export class RunOrchestrationService {
       const currentAuthorization =
         await this.repository.checkRunExecutionAuthorization?.(proposedContextBoundRun)
         ?? { allowed: true };
-      if (!currentAuthorization.allowed) return rejectUnauthorizedExecution(currentAuthorization);
+      if (!currentAuthorization.allowed) return await rejectBeforeDispatch(currentAuthorization);
       if (effectiveBindings?.workContextSetupRef && !effectiveBindings.agentId) {
         throw new RunPreparationError(
           "work_context_agent_required",
@@ -922,7 +932,7 @@ export class RunOrchestrationService {
       // that decision, as the first check does. Rechecking here, after the
       // locks, could see a permission restored meanwhile and leave the Run
       // queued behind a completed job (ADR 0033 §6).
-      if (claim.outcome === "authorization_rejected") return rejectUnauthorizedExecution(claim);
+      if (claim.outcome === "authorization_rejected") return await rejectBeforeDispatch(claim);
       if (claim.outcome !== "started") {
         // Stopped after this worker took the lock: the public cancel could not
         // publish under it, so the Run is `cancelling`, never ran, and only
@@ -1206,6 +1216,7 @@ export class RunOrchestrationService {
             run_id: running.id,
             space_id: running.space_id,
             vendor_session_id: parkedSession,
+            launch_id: stringConfigValue(recordValue(adapterResult.metadata_json).launch_id) ?? null,
           });
         }
       }
@@ -1788,6 +1799,17 @@ export class RunOrchestrationService {
         skipped: true,
         skip_reason: "run_already_terminal",
       };
+    }
+
+    const summaryId = pendingAutomaticSummaryId(
+      await this.repository.getRun(run.space_id, run.id) ?? run,
+    );
+    if (summaryId) {
+      const summary = await this.repository.getRun(run.space_id, summaryId);
+      if (summary && recordValue(summary.model_override_json).automatic_handoff_for === run.id) {
+        const stopped = await this.cancelRun({ ...input, run_id: summary.id });
+        if (stopped.status === "cancelling") return { ...stopped, run_id: run.id };
+      }
     }
 
     // Cancellation is a two-phase state transition. The run remains

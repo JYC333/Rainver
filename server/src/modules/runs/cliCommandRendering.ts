@@ -1,8 +1,4 @@
-import {
-  assertRuntimeSubagentsDisabled,
-  RuntimeSubagentConfigError,
-  type LocalCliRuntimeAdapterSpec,
-} from "../runtimeAdapters/index.js";
+import type { LocalCliRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
 
 export interface RenderedCliCommand {
   argv: string[];
@@ -33,33 +29,10 @@ export async function renderCliCommand(
     risk_level: string;
     project_folder_id: string | null;
     sandbox_cwd: string | null;
-    context_cwd?: string | null;
     resume_session_id?: string | null;
     required_sandbox_level?: string | null;
-    /**
-     * A remote execution host has no server-local sandbox path for this check
-     * to inspect. The deny-config it verifies has to live in the daemon's
-     * actual workspace, not a path the server can see or write. Do not write
-     * a compliant-looking file server-side and pass its path here. That
-     * proves nothing about what the remote CLI process honors. Remote callers
-     * set this. It defaults to false, so a server-host caller still runs the
-     * check.
-     */
-    skip_subagent_disable_check?: boolean;
   },
 ): Promise<RenderedCliCommand> {
-  if (!input.skip_subagent_disable_check) {
-    try {
-      await assertRuntimeSubagentsDisabled(spec, input.context_cwd ?? input.sandbox_cwd);
-    } catch (error) {
-      throw new CliRenderError(
-        "runtime_subagents_not_disabled",
-        error instanceof RuntimeSubagentConfigError
-          ? error.message
-          : "Runtime subagent disablement could not be verified.",
-      );
-    }
-  }
   const template = input.resume_session_id && spec.invocation.resume_command_template
     ? spec.invocation.resume_command_template
     : input.mode === "interactive" && spec.invocation.interactive_command_template

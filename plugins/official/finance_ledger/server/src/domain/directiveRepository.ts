@@ -1,5 +1,6 @@
 import type { Queryable } from "@rainver/protocol";
 import type { DirectiveStatus } from "./directives.js";
+import type { ImportEntryStatus } from "./importEntries.js";
 
 export interface FinanceImportSourceRow {
   id: string;
@@ -13,6 +14,8 @@ export interface FinanceImportSourceRow {
   metadata_json: Record<string, unknown>;
   created_at: string;
 }
+
+export type FinanceImportSourceSummary = Pick<FinanceImportSourceRow, "id" | "source_type" | "source_name" | "content_hash" | "created_at">;
 
 export interface FinanceExportRow {
   id: string;
@@ -203,13 +206,30 @@ export const financeDirectiveRepository = {
     spaceId: string,
     bookId: string,
     userId: string,
-  ): Promise<FinanceImportSourceRow[]> {
-    const result = await db.query<FinanceImportSourceRow>(
-      `SELECT ${IMPORT_SOURCE_COLUMNS}
-         FROM finance_import_sources
-        WHERE space_id = $1 AND book_id = $2 AND imported_by_user_id = $3
-        ORDER BY created_at DESC, id ASC`,
-      [spaceId, bookId, userId],
+    limit: number,
+    offset: number,
+  ): Promise<Array<FinanceImportSourceSummary & { counts: Partial<Record<ImportEntryStatus, number>> | null }>> {
+    const result = await db.query<FinanceImportSourceSummary & { counts: Partial<Record<ImportEntryStatus, number>> | null }>(
+      `SELECT s.id, s.source_type, s.source_name, s.content_hash, s.created_at::text,
+              totals.counts
+         FROM (
+           SELECT id, space_id, source_type, source_name, content_hash, created_at
+             FROM finance_import_sources
+            WHERE space_id = $1 AND book_id = $2 AND imported_by_user_id = $3
+            ORDER BY created_at DESC, id ASC
+            LIMIT $4 OFFSET $5
+         ) s
+         LEFT JOIN LATERAL (
+           SELECT jsonb_object_agg(status, entry_count) AS counts
+             FROM (
+               SELECT status, count(*) AS entry_count
+                 FROM finance_import_entries
+                WHERE space_id = s.space_id AND import_source_id = s.id
+                GROUP BY status
+             ) grouped
+         ) totals ON true
+        ORDER BY s.created_at DESC, s.id ASC`,
+      [spaceId, bookId, userId, limit, offset],
     );
     return result.rows;
   },

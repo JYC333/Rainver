@@ -463,13 +463,13 @@ it("executes an owner-authorized reused Agent for a B-only member without A cont
   await roster.inviteUser(identityB, roomB, {user_id: w.owner});
   const manager = randomUUID();
   await seedAgentWithVersion(db.pool, {space: w.space, owner: userB, agent: manager, version: randomUUID(), systemPrompt: "B manager", seedDefaultRuntimeProfile: false});
-  await w.profileFor(manager);
+  const managerProfile = await w.profileFor(manager);
   await seedRoomManager(db.pool, {space: w.space, room: roomB, agent: manager});
   const conversationB = await new PgSessionRepository(db.pool).createRoomConversation({space_id: w.space,room_id:roomB,project_id:projectB,project_folder_id:null,title:"B conversation",metadata:{}});
   const execution = new ConversationExecutionContextService(db.pool);
   const selection = {execution_host_id:w.hostId,primary:{kind:"managed" as const}};
   // Initialize before the specialist joins; a dynamic add must work too.
-  await execution.initialize(identityB, conversationB.id, {selection, runtime:{agent_id:manager,runtime_profile_id:null,runtime_key:"opencode",runtime_installation:"managed:1.0.0"}});
+  await execution.initialize(identityB, conversationB.id, {selection, runtime:{agent_id:manager,runtime_profile_id:managerProfile,runtime_key:"opencode",runtime_installation:"managed:1.0.0"}});
   expect(await canReadProject(db.pool, w.space, w.project, userB)).toBe(false);
   expect(await contentDecisionFromDb(db.pool, identityB, "agent", w.agent)).toBe("deny");
   expect((await new PgRoomRosterRepository(db.pool).listAgentCandidates({space_id:w.space,user_id:w.owner,room_id:roomB,limit:100,offset:0})).items.find(a=>a.agent_id===w.agent)).toMatchObject({private:true});

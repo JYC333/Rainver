@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { assertDate } from "../src/modules/informationDigest/service.js";
 import { latestCompleteDigestDate, scheduledDigestDate } from "../src/modules/informationDigest/digestPeriod.js";
-import { isLocalDayComplete, localDayUtcBounds, previousLocalDate, reportDateForSlot } from "../src/modules/scheduler/localDay.js";
+import { isLocalDayComplete, localDayUtcBounds, previousLocalDate, reportDateForSlot, zonedLocalToUtc } from "../src/modules/scheduler/localDay.js";
 
 describe("information digest calendar dates", () => {
   it.each(["2024-02-29", "2026-08-08", "9999-12-31"])("accepts %s", (value) => {
@@ -14,6 +14,17 @@ describe("information digest calendar dates", () => {
       expect(() => assertDate(value)).toThrow(`Invalid digest date ${JSON.stringify(value)}`);
     },
   );
+});
+
+describe("local wall-clock times at DST transitions", () => {
+  it.each([
+    ["Chatham before the April rollback", "Pacific/Chatham", 4, 5, 0, "2026-04-04T12:15:00.000Z"],
+    ["Chatham before the September jump", "Pacific/Chatham", 9, 27, 0, "2026-09-26T13:15:00.000Z"],
+    ["Auckland spring gap shifted to 03:30", "Pacific/Auckland", 9, 27, 30, "2026-09-26T14:30:00.000Z"],
+    ["Auckland autumn overlap at its first 02:30", "Pacific/Auckland", 4, 5, 30, "2026-04-04T13:30:00.000Z"],
+  ])("resolves %s", (_label, timezone, month, day, minute, expectedUtc) => {
+    expect(zonedLocalToUtc({ year: 2026, month, day, hour: 2, minute }, timezone).toISOString()).toBe(expectedUtc);
+  });
 });
 
 describe("the complete local day a scheduled slot reports on", () => {
@@ -59,6 +70,13 @@ describe("the complete local day a scheduled slot reports on", () => {
       endUtcIso: "2026-09-07T03:00:00.000Z",
     });
     expect(localDayUtcBounds("2026-09-05", "America/Santiago").endUtcIso).toBe("2026-09-06T04:00:00.000Z");
+  });
+
+  it("starts at the first midnight when Havana repeats midnight", () => {
+    expect(localDayUtcBounds("2026-11-01", "America/Havana")).toEqual({
+      startUtcIso: "2026-11-01T04:00:00.000Z",
+      endUtcIso: "2026-11-02T05:00:00.000Z",
+    });
   });
 
   it("treats a day as complete only once its last instant has passed in the configured timezone", () => {

@@ -137,8 +137,9 @@ it('renders the real Project entry and bundled slot against actual PG/HTTP/propo
         height: 900
       }
     });
-    page.setDefaultTimeout(15000);
-    page.setDefaultNavigationTimeout(30000);
+    // Full verification runs this browser beside the database suites.
+    page.setDefaultTimeout(60000);
+    page.setDefaultNavigationTimeout(60000);
     const pageErrors: string[] = [];
     page.on('pageerror', (e: Error) => {
       pageErrors.push(e.message);
@@ -181,11 +182,7 @@ it('renders the real Project entry and bundled slot against actual PG/HTTP/propo
     const pulse = `${base}/spaces/${space}/projects/${project}`,
       slot = `${pulse}/plugins/operation_probe/records`;
     await page.goto(pulse);
-    await expect.poll(() => page.getByText('Operation platform', {
-      exact: true
-    }).count(), {
-      timeout: 30000
-    }).toBeGreaterThan(0);
+    await page.getByText('Operation platform', { exact: true }).first().waitFor();
     expect(await page.getByRole('link', {
       name: 'Records',
       exact: true

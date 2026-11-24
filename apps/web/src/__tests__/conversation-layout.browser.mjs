@@ -103,6 +103,61 @@ after(async () => {
   if (server) await new Promise(resolve => server.httpServer.close(resolve))
 })
 
+test('Project Files closes a failed save from the editor toolbar across locales, themes and widths', async () => {
+  const path = 'README.md'
+  const hash = 'a'.repeat(64)
+  const intentId = 'failed-save'
+  const screenshots = process.env.FOLDER_SAVE_RECOVERY_SHOTS
+  if (screenshots) mkdirSync(screenshots, { recursive: true })
+  let closed = 0
+  const labels = {
+    en: { save: 'Save to Folder', close: 'Close failed save', title: 'Close this failed save?' },
+    'zh-CN': { save: '保存到文件夹', close: '关闭失败的保存', title: '关闭这次失败的保存？' },
+  }
+  for (const locale of ['en', 'zh-CN']) for (const theme of ['dark', 'light']) for (const width of [390, 1280]) {
+    const page = await browser.newPage({ viewport: { width, height: 900 }, serviceWorkers: 'block' })
+    try {
+      await page.addInitScript(({ locale, theme }) => {
+        localStorage.setItem('rainver:locale', locale)
+        localStorage.setItem('rainver:theme', theme)
+      }, { locale, theme })
+      await mockApi(page)
+      await page.route('**/api/v1/**/file?*', route => route.fulfill({ json: {
+        path, content: 'Original file\n', size: 14, line_count: 2, sha256: hash, encoding: 'utf8', line_ending_mode: 'lf', writable: true,
+      } }))
+      await page.route('**/api/v1/**/file/draft?*', route => route.fulfill({ json: {
+        id: 'draft-layout', space_id: room.space_id, project_id: project.id, project_folder_id: folder.id,
+        owner_user_id: 'user-layout', workspace_location_id: 'location-layout', target_kind: 'existing', relative_path: path,
+        version: 2, content: 'Keep this private draft\n', byte_size: 24, content_sha256: 'b'.repeat(64),
+        base_exists: true, base_sha256: hash, source_encoding: 'utf8', preserve_bom: false, line_ending_mode: 'lf', updated_at: now, expires_at: now,
+      } }))
+      await page.route('**/api/v1/actions/project.folder.draft.save', route => route.fulfill({ status: 409, json: {
+        status: 'refused', error: { code: 'operation_conflict', metadata: { code: 'folder_io_needs_attention', intent_id: intentId } },
+      } }))
+      await page.route('**/api/v1/actions/project.folder.draft.close_save', route => {
+        assert.equal(route.request().postDataJSON().intent_id, intentId)
+        closed += 1
+        return route.fulfill({ json: { status: 'succeeded', data: { id: intentId } } })
+      })
+      await page.goto(`${baseUrl}/spaces/${room.space_id}/projects/${project.id}/files?folder=${folder.id}&path=${path}`)
+      await page.getByRole('button', { name: labels[locale].save, exact: true }).click()
+      const close = page.getByRole('button', { name: labels[locale].close, exact: true })
+      await close.waitFor()
+      if (screenshots) await page.screenshot({ path: `${screenshots}/${locale}-${theme}-${width}-toolbar.png`, animations: 'disabled' })
+      await close.click()
+      const dialog = page.getByRole('dialog', { name: labels[locale].title })
+      await dialog.waitFor()
+      if (screenshots) await page.screenshot({ path: `${screenshots}/${locale}-${theme}-${width}-dialog.png`, animations: 'disabled' })
+      await dialog.getByRole('button', { name: labels[locale].close, exact: true }).click()
+      await close.waitFor({ state: 'hidden' })
+      assert.ok(await page.locator('.cm-content').getByText('Keep this private draft').isVisible())
+    } finally {
+      await page.close()
+    }
+  }
+  assert.equal(closed, 8)
+})
+
 for (const surface of ['Room', 'Agent Work']) {
   test(`${surface} keeps list lines visible across responsive breakpoints`, async () => {
     const page = await browser.newPage({ viewport: { width: 800, height: 1000 }, serviceWorkers: 'block' })
@@ -1000,6 +1055,206 @@ test('Room shows a withdrawn Gmail check card to its owner only, as history with
   }
 })
 
+// ADR 0036: the owner's application-update card in the Room where they asked, with its scope and what it runs on chosen
+// on the card in two levels — an Agent with one runtime profile, then that configuration's model: an unavailable
+// configuration names why once, every model its picker offers is listed under it, accepting waits for a
+// saved model, choosing another configuration clears it again, and it fits a phone.
+test('Room application-update card shows its scope, explains unavailable configurations once and accepts only after a configuration and its model are saved', async () => {
+  const shots = process.env.ROOM_LAYOUT_SHOTS ?? '/tmp/rainver-room-gmail-execution-shots'
+  mkdirSync(shots, { recursive: true })
+  const card = { action_id: 'source.gmail.application_updates.propose', proposal_id: 'card-apps', proposal_type: 'gmail_digest_create', status: 'proposed',
+    title: 'Automatic application updates from Gmail · layout@example.test',
+    summary: 'Mailbox layout@example.test: in the background, the Agent and model you choose on this card checks new inbox and sent mail from acceptance and records facts on the matching application — interviews, deadlines and correspondence. No Agent and model is chosen yet: choose one that can run it before accepting.',
+    risk_level: 'high', decidable_by_user_id: 'user-layout', scope: { project_id: project.id } }
+  const reply = { ...message, id: 'message-apps', sender_agent_id: 'agent-layout', content: 'I drafted the card for automatic application updates.' }
+  const configuration = (extra) => ({ agent_id: 'agent-layout', agent_name: 'Layout Agent', agent_kind: 'standard', runtime_profile_id: 'profile-codex', profile_name: 'Codex on Laptop',
+    runtime_key: 'codex_cli', backend_mode: 'runtime_native', available: false, reason: 'host_offline', models: [], omitted_models: 0, models_cursor: null, ...extra })
+  const saved = { agent_id: 'assistant', runtime_profile_id: 'profile-provider', model: 'provider-large-2026' }
+  const options = (selected, summary) => ({ status: 'succeeded', data: { proposal_id: 'card-apps', applies: true, selected, summary, next_cursor: null, card_revision: (selected ? 'b' : 'a').repeat(64),
+    scope: { mailbox_email: 'layout@example.test', include_sent: true, effects: ['interview', 'deadline', 'contact'], results_to: 'room', room_title: 'Admissions planning', reader_names: ['Layout User', 'Peer Reviewer'], reader_count: 2 },
+    configurations: [
+      configuration({}),
+      configuration({ agent_id: 'agent-other', agent_name: 'Research Agent', runtime_profile_id: 'profile-other', profile_name: 'Shared Host', runtime_key: 'claude_code', reason: 'host_not_owner' }),
+      configuration({ agent_id: 'agent-paired', agent_name: 'Paired Agent', runtime_profile_id: 'profile-paired', profile_name: 'Provider on Laptop', runtime_key: 'opencode', backend_mode: 'model_provider', reason: 'provider_unsupported' }),
+      configuration({ agent_id: 'agent-folder', agent_name: 'Folder Agent', runtime_profile_id: 'profile-folder', profile_name: 'Provider in Project folder', runtime_key: 'opencode', backend_mode: 'model_provider', reason: 'provider_endpoint_missing' }),
+      configuration({ agent_id: 'assistant', agent_name: 'Project Assistant', agent_kind: 'system_assistant', runtime_profile_id: 'profile-provider', profile_name: 'Team provider',
+        runtime_key: 'opencode', backend_mode: 'model_provider', available: true, reason: null, models: [{ model: 'provider-large-2026', name: null }] }),
+      configuration({ agent_id: 'agent-writer', agent_name: 'Writer', runtime_profile_id: 'profile-writer', profile_name: 'My laptop', runtime_key: 'claude_code', available: true, reason: null,
+        models: [{ model: 'synthetic-full-model-a', name: null }, { model: 'opus', name: 'Opus' }], omitted_models: 3, models_cursor: '2.b3B1cw' }),
+    ] } })
+  for (const [width, locale, theme] of [[1280, 'en', 'light'], [390, 'zh-CN', 'dark'], [390, 'en', 'light'], [1280, 'zh-CN', 'dark']]) {
+    const page = await browser.newPage({ viewport: { width, height: 1000 }, serviceWorkers: 'block' })
+    try {
+      await page.addInitScript(([locale, theme]) => {
+        localStorage.setItem('rainver:locale', locale)
+        localStorage.setItem('rainver:theme', theme)
+      }, [locale, theme])
+      await mockApi(page)
+      const posts = []
+      let chosen = false
+      await page.route('**/api/v1/**', async route => {
+        const request = route.request(), path = new URL(request.url()).pathname.replace('/api/v1', '')
+        if (request.method() !== 'GET') posts.push(path)
+        if (path.endsWith('/messages')) return route.fulfill({ json: { ...pageOf([{ ...reply, metadata_json: { action_previews: [card] } }]), queued: [] } })
+        if (path === '/proposals/card-apps') return route.fulfill({ json: { id: 'card-apps', status: 'pending', expired: false } })
+        if (path === '/queries/source.gmail.application_updates.execution_options') return route.fulfill({ json: options(chosen ? saved : null, card.summary) })
+        if (path === '/actions/source.gmail.application_updates.select_execution') {
+          chosen = true
+          return route.fulfill({ json: options(saved,
+            card.summary.replace('the Agent and model you choose on this card', 'Project Assistant on provider-large-2026 (Team provider)').replace(' No Agent and model is chosen yet: choose one that can run it before accepting.', '')) })
+        }
+        return route.fallback()
+      })
+      await page.goto(`${baseUrl}/spaces/${room.space_id}/projects/${project.id}/rooms?room=${room.id}&conversation=${session.id}`)
+      await page.getByText('I drafted the card for automatic application updates.').waitFor()
+      const previews = page.getByTestId('previews-message-apps')
+      const box = previews.getByTestId('gmail-application-execution')
+      await box.waitFor()
+      const en = locale === 'en'
+      await box.getByText(en ? 'Mailbox: layout@example.test' : '邮箱：layout@example.test', { exact: true }).waitFor()
+      await box.getByText(en ? /new inbox and sent mail/ : /新收到和新发送的邮件/).waitFor()
+      await box.getByText(en ? /application email correspondence/ : /申请邮件联络记录/).waitFor()
+      await box.getByText(en ? /Layout Agent · Codex on Laptop: its execution Host is offline/ : /Layout Agent · Codex on Laptop：其执行 Host 离线/).waitFor()
+      await box.getByText(en ? /Research Agent · Shared Host: its runtime is on another person/ : /Research Agent · Shared Host：其运行时在他人的 Host 上/).waitFor()
+      await box.getByText(en ? /Paired Agent · Provider on Laptop: this runtime cannot be bound to a ModelProvider/ : /Paired Agent · Provider on Laptop：该运行时不能绑定 ModelProvider/).waitFor()
+      await box.getByText(en ? /Folder Agent · Provider in Project folder: its ModelProvider has no compatible endpoint/ : /Folder Agent · Provider in Project folder：其 ModelProvider 没有该运行时所需的兼容端点/).waitFor()
+      // Each unavailable configuration is named once; no model level is shown before a configuration is chosen.
+      assert.equal(await box.getByText(en ? /its runtime is on another person/ : /其运行时在他人的 Host 上/).count(), 1)
+      const configLevel = box.getByRole('button', { name: en ? 'Agent and runtime' : 'Agent 与运行配置', exact: true })
+      const modelLevel = box.getByRole('button', { name: en ? 'Model' : '模型', exact: true })
+      assert.equal(await modelLevel.count(), 0)
+      const accept = previews.getByRole('button', { name: en ? 'Accept' : '接受', exact: true })
+      assert.equal(await accept.isDisabled(), true)
+      await page.evaluate(() => document.fonts.ready)
+      const fits = async () => {
+        const fit = await previews.evaluate(el => ({ right: el.getBoundingClientRect().right, scroll: el.scrollWidth, client: el.clientWidth, viewport: innerWidth }))
+        assert.ok(fit.right <= fit.viewport + 1 && fit.scroll <= fit.client + 1, JSON.stringify(fit))
+      }
+      await fits()
+      await previews.screenshot({ path: `${shots}/${locale}-${theme}-${width}-unchosen.png` })
+      // First level: a configuration. Nothing is saved yet, and the card still cannot be accepted.
+      await configLevel.click()
+      await page.getByRole('option', { name: en ? 'Project Assistant (Assistant) · Team provider' : 'Project Assistant（系统助手） · Team provider' }).click()
+      await modelLevel.waitFor()
+      assert.equal(await accept.isDisabled(), true)
+      await fits()
+      await previews.screenshot({ path: `${shots}/${locale}-${theme}-${width}-configuration.png` })
+      // Second level: its model, saved on the card; then it can be accepted.
+      await modelLevel.click()
+      await page.getByRole('option', { name: 'provider-large-2026', exact: true }).click()
+      await previews.getByText(/Project Assistant on provider-large-2026 \(Team provider\)/).waitFor()
+      await page.waitForFunction(() => { const b = [...document.querySelectorAll('[data-testid="previews-message-apps"] button')].find(x => /^(Accept|接受)$/.test(x.textContent?.trim() ?? '')); return b && !b.disabled })
+      await fits()
+      await previews.screenshot({ path: `${shots}/${locale}-${theme}-${width}-chosen.png` })
+      await page.screenshot({ path: `${shots}/${locale}-${theme}-${width}-room.png` })
+      // Another configuration clears the model shown and blocks accepting again.
+      await configLevel.click()
+      await page.getByRole('option', { name: 'Writer · My laptop' }).click()
+      assert.match((await modelLevel.textContent()) ?? '', en ? /Choose a model/ : /选择模型/)
+      assert.equal(await accept.isDisabled(), true)
+      // Its further models are counted and reachable from here.
+      await box.getByText(en ? '3 more models of this runtime are not shown yet.' : '该运行配置另有 3 个模型尚未显示。', { exact: true }).waitFor()
+      await box.getByRole('button', { name: en ? 'Show more models' : '显示更多模型', exact: true }).waitFor()
+      await fits()
+      await previews.screenshot({ path: `${shots}/${locale}-${theme}-${width}-switched.png` })
+      assert.deepEqual(posts.filter(path => path !== '/me/agent-attention/views'), ['/actions/source.gmail.application_updates.select_execution'])
+    } finally { await page.close() }
+  }
+})
+
+test('Proposal detail and the private Agent chat offer the application-update choice to its owner only, on standalone and combined cards', async () => {
+  const shots = process.env.ROOM_LAYOUT_SHOTS ?? '/tmp/rainver-proposal-gmail-execution-shots'
+  mkdirSync(shots, { recursive: true })
+  const summary = 'Mailbox layout@example.test: in the background, Project Assistant on provider-large-2026 (Team provider) checks new inbox and sent mail from acceptance and records facts on the matching application — interviews, deadlines and correspondence.'
+  // What GET /proposals/:id returns for a strict Gmail card: no owner in its payload, so owner_user_id is the row's own.
+  const dto = (id, proposalType, owner) => ({
+    id, space_id: room.space_id, user_id: owner, project_folder_id: null, source_session_id: null, source_task_id: null, source_run_id: 'run-apps',
+    created_by_run_id: 'run-apps', proposal_type: proposalType, target_scope: '', target_namespace: '', memory_type: '',
+    proposed_title: proposalType === 'gmail_setup' ? 'Gmail for this Project · layout@example.test' : 'Automatic application updates from Gmail · layout@example.test',
+    title_parts: null, proposed_content: '', rationale: '', status: 'pending', risk_level: 'high', urgency: 'normal', visibility: 'private', preview: false,
+    review_deadline: null, expires_at: null, expired: false, created_at: now, decided_at: null, resulting_memory_id: null, owner_user_id: owner,
+    subject_user_id: null, sensitivity_level: null, access_level: null, provenance_entries: null, source_activity_id: null, grant_id: null,
+    required_approver_user_id: null, required_approver_user_ids: null, requires_approval_type: null, egress_approval_status: null, egress_approval_id: null,
+    project_id: project.id, target_memory_id: null, chosen_on_card: true,
+  })
+  const options = id => ({ status: 'succeeded', data: { proposal_id: id, applies: true, selected: { agent_id: 'assistant', runtime_profile_id: 'profile-provider', model: 'provider-large-2026' },
+    summary, next_cursor: null, card_revision: 'c'.repeat(64),
+    scope: { mailbox_email: 'layout@example.test', include_sent: true, effects: ['interview', 'deadline', 'contact'], results_to: 'private', room_title: null, reader_names: [], reader_count: 0 },
+    configurations: [{ agent_id: 'assistant', agent_name: 'Project Assistant', agent_kind: 'system_assistant', runtime_profile_id: 'profile-provider', profile_name: 'Team provider',
+      runtime_key: 'opencode', backend_mode: 'model_provider', available: true, reason: null, models: [{ model: 'provider-large-2026', name: null }], omitted_models: 0, models_cursor: null }] } })
+  const cards = { 'card-apps': dto('card-apps', 'gmail_digest_create', 'user-layout'), 'card-setup': dto('card-setup', 'gmail_setup', 'user-layout'),
+    'card-other': dto('card-other', 'gmail_digest_create', 'user-other') }
+  const chatSession = { ...session, id: 'session-private', room_id: null, title: 'Private chat' }
+  const chatCard = { action_id: 'source.gmail.application_updates.propose', proposal_id: 'card-apps', proposal_type: 'gmail_digest_create', status: 'proposed',
+    title: cards['card-apps'].proposed_title, summary, risk_level: 'high', decidable_by_user_id: 'user-layout', scope: { project_id: project.id } }
+  const chatReply = { ...message, id: 'message-private-apps', session_id: chatSession.id, sender_agent_id: 'agent-layout', content: 'I drafted the card for automatic application updates.',
+    metadata_json: { action_previews: [chatCard] } }
+  const agent = { id: 'agent-layout', space_id: room.space_id, name: 'Layout Agent', agent_kind: 'standard', status: 'active', description: null, created_at: now, updated_at: now }
+  const fits = async locator => {
+    const fit = await locator.evaluate(el => ({ right: el.getBoundingClientRect().right, scroll: el.scrollWidth, client: el.clientWidth, viewport: innerWidth }))
+    assert.ok(fit.right <= fit.viewport + 1 && fit.scroll <= fit.client + 1, JSON.stringify(fit))
+  }
+  for (const [width, locale, theme] of [[1280, 'en', 'light'], [390, 'zh-CN', 'dark']]) {
+    const page = await browser.newPage({ viewport: { width, height: 1000 }, serviceWorkers: 'block' })
+    const en = locale === 'en'
+    try {
+      await page.addInitScript(([locale, theme]) => {
+        localStorage.setItem('rainver:locale', locale)
+        localStorage.setItem('rainver:theme', theme)
+      }, [locale, theme])
+      await mockApi(page)
+      const queried = []
+      await page.route('**/api/v1/**', async route => {
+        const url = new URL(route.request().url()), path = url.pathname.replace('/api/v1', '')
+        const card = path.startsWith('/proposals/') ? cards[path.slice('/proposals/'.length)] : null
+        if (card) return route.fulfill({ json: card })
+        if (path === '/queries/source.gmail.application_updates.execution_options') {
+          const id = JSON.parse(url.searchParams.get('input') ?? '{}').proposal_id
+          queried.push(id)
+          return route.fulfill({ json: options(id) })
+        }
+        if (path === `/agents/${agent.id}`) return route.fulfill({ json: agent })
+        if (path === `/projects/${project.id}/agents/${agent.id}`) return route.fulfill({ json: { agent_id: agent.id, project_id: project.id, status: 'active' } })
+        if (path === `/sessions/${chatSession.id}/messages`) return route.fulfill({ json: [chatReply] })
+        if (path === `/sessions/${chatSession.id}`) return route.fulfill({ json: chatSession })
+        if (path.startsWith(`/agents/${agent.id}/conversation-backends`)) return route.fulfill({ json: { options: [], selected_runtime_profile_id: null, session_config: [] } })
+        if (path === '/hosts') return route.fulfill({ json: { items: [] } })
+        return route.fallback()
+      })
+      for (const id of ['card-apps', 'card-setup']) {
+        await page.goto(`${baseUrl}/spaces/${room.space_id}/proposals/${id}`)
+        const box = page.getByTestId('gmail-application-execution')
+        await box.waitFor()
+        await page.getByText(summary).first().waitFor()
+        await box.getByText(en ? /application email correspondence/ : /申请邮件联络记录/).waitFor()
+        // The same control as in conversation: the saved choice is echoed on both levels.
+        assert.match((await box.getByRole('button', { name: en ? 'Agent and runtime' : 'Agent 与运行配置', exact: true }).textContent()) ?? '', /Project Assistant.*Team provider/)
+        assert.match((await box.getByRole('button', { name: en ? 'Model' : '模型', exact: true }).textContent()) ?? '', /provider-large-2026/)
+        await page.waitForFunction(() => { const b = [...document.querySelectorAll('button')].find(x => /^(Accept|接受)$/.test(x.textContent?.trim() ?? '')); return b && !b.disabled })
+        await page.evaluate(() => document.fonts.ready)
+        await fits(page.locator('main').first())
+        await page.screenshot({ path: `${shots}/${locale}-${theme}-${width}-detail-${id}.png`, animations: 'disabled', fullPage: true })
+      }
+      await page.goto(`${baseUrl}/spaces/${room.space_id}/proposals/card-other`)
+      await page.getByText(en ? /Only the mailbox owner chooses the Agent and model/ : /只有邮箱所有者/).waitFor()
+      assert.equal(await page.getByTestId('gmail-application-execution').count(), 0)
+      // The detail page's decision buttons are not translated yet.
+      assert.equal(await page.getByRole('button', { name: 'Accept', exact: true }).isDisabled(), true)
+      await page.screenshot({ path: `${shots}/${locale}-${theme}-${width}-detail-not-owner.png`, animations: 'disabled', fullPage: true })
+      assert.deepEqual(queried, ['card-apps', 'card-setup'])
+      await page.goto(`${baseUrl}/spaces/${room.space_id}/projects/${project.id}/agents/${agent.id}/chat?session=${chatSession.id}`)
+      await page.getByText('I drafted the card for automatic application updates.').waitFor()
+      const chatBox = page.getByTestId('gmail-application-execution')
+      await chatBox.waitFor()
+      await chatBox.getByText(en ? /application email correspondence/ : /申请邮件联络记录/).waitFor()
+      await page.waitForFunction(() => { const b = [...document.querySelectorAll('[data-testid="gmail-application-execution"]')].length && [...document.querySelectorAll('button')].find(x => /^(Accept|接受)$/.test(x.textContent?.trim() ?? '')); return b && !b.disabled })
+      await page.evaluate(() => document.fonts.ready)
+      await fits(chatBox)
+      await page.screenshot({ path: `${shots}/${locale}-${theme}-${width}-private-chat.png`, animations: 'disabled' })
+    } finally { await page.close() }
+  }
+})
+
 test('Room fills the desktop area and scrolls long conversation lists internally', async () => {
   const shots = process.env.ROOM_LAYOUT_SHOTS ?? '/tmp/rainver-room-height-shots'
   mkdirSync(shots, { recursive: true })
@@ -1137,6 +1392,7 @@ test('Conversation settings unify Room sidecar and Agent Work with strict HTTP a
       const members=[manager,...Array.from({length:24},(_,i)=>({agent_id:'joined-'+i,agent_name:'Participant '+String(i).padStart(2,'0'),agent_kind:'standard',role:'member',status:'active'})),optional]
       const runtime={agent_id:manager.agent_id,runtime_profile_id:'runtime-layout',runtime_key:'claude_code',runtime_installation:'own',session_config:[{id:'model',type:'select',category:'model',value:'current-model'}]}
       let joined=false,retained=false,saves=0,refuseNext=true,revision=1,model='current-model',failRefresh=false,firstPreflight=true,offline=false,showAttachment=false
+      let dispatchLocked = false
       let releasePreflight
       const initialPreflight=new Promise(resolve=>{releasePreflight=resolve})
       const detail={room,viewer_can_write:true,other_member_names:[],agent_count:members.length,agent_members:members,user_members:[]}
@@ -1151,7 +1407,7 @@ test('Conversation settings unify Room sidecar and Agent Work with strict HTTP a
         if(path.endsWith('/execution-context')){
           if(firstPreflight){firstPreflight=false;await initialPreflight}
           if(failRefresh){failRefresh=false;return route.fulfill({status:503,json:{detail:'Synthetic preflight outage'}})}
-          return route.fulfill({json:{summary:{participant_agent_ids:[...members.filter(m=>m!==optional).map(m=>m.agent_id),'hidden-layout',...(joined?[optional.agent_id]:[])],participants_revision:String(revision),session_id:session.id,state:'initialized',host:{host_id:'host-layout',host_name:'Laptop',host_kind:'remote',online:!offline,managed_workspace_available:true,daemon_last_heartbeat_at:now},runtime:joined?{...runtime,agent_id:optional.agent_id,runtime_profile_id:profiles.at(-1).runtime_profile_id}:runtime,runtimes:profiles.filter(p=>p.agent_id!==optional.agent_id||joined).map(p=>({...runtime,...p,session_config:p.agent_id===manager.agent_id?[{id:'model',type:'select',category:'model',value:model}]:[]})),primary:{kind:'managed',managed_workspace_id:session.id,display_path:null},attachments:showAttachment?[{id:'attachment-layout',workspace_location_id:'docs-layout',folder_name:'Shared docs',display_path:'/work/shared/research-documents',access_mode:'read',status:'active'}]:[],dispatch_locked:false,queue_paused_at:null,can_send:!offline,blocked_reason:offline?'Device offline':null},available_hosts:[],available_runtime_profiles:profiles.map(p=>({...p,retained_binding:p.agent_id===optional.agent_id?retained:true})),available_primary_locations:[]}})
+          return route.fulfill({json:{summary:{participant_agent_ids:[...members.filter(m=>m!==optional).map(m=>m.agent_id),'hidden-layout',...(joined?[optional.agent_id]:[])],participants_revision:String(revision),session_id:session.id,state:'initialized',host:{host_id:'host-layout',host_name:'Laptop',host_kind:'remote',online:!offline,managed_workspace_available:true,daemon_last_heartbeat_at:now},runtime:joined?{...runtime,agent_id:optional.agent_id,runtime_profile_id:profiles.at(-1).runtime_profile_id}:runtime,runtimes:profiles.filter(p=>p.agent_id!==optional.agent_id||joined).map(p=>({...runtime,...p,session_config:p.agent_id===manager.agent_id?[{id:'model',type:'select',category:'model',value:model}]:[]})),primary:{kind:'managed',managed_workspace_id:session.id,display_path:null},attachments:showAttachment?[{id:'attachment-layout',workspace_location_id:'docs-layout',folder_name:'Shared docs',display_path:'/work/shared/research-documents',access_mode:'read',status:'active'}]:[],dispatch_locked:dispatchLocked,queue_paused_at:null,can_send:!offline,blocked_reason:offline?'Device offline':null},available_hosts:[],available_runtime_profiles:profiles.map(p=>({...p,retained_binding:p.agent_id===optional.agent_id?retained:true})),available_primary_locations:[]}})
         }
         if(path.endsWith('/conversation-backends')){
           const id=path.split('/')[2],p=profiles.find(p=>p.agent_id===id)
@@ -1226,6 +1482,16 @@ test('Conversation settings unify Room sidecar and Agent Work with strict HTTP a
       }
       await page.screenshot({animations:'disabled',path:`${shots}/${surface}-${locale}-${theme}-${width}-compact.png`})
       const firstAgent=dialog.locator('[data-agent-settings]').filter({has:page.getByText('Assistant',{exact:true})})
+      dispatchLocked = true
+      await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+      const switchNotice = dialog.getByText(locale === 'en' ? /Running and queued work keeps its model/ : /正在执行和已排队的工作沿用原模型/).first()
+      await switchNotice.waitFor()
+      assert.ok(await add.isDisabled())
+      await firstAgent.getByRole('button', {name:'Model',exact:true}).click({trial:true})
+      await page.screenshot({animations:'disabled',path:`${shots}/${surface}-${locale}-${theme}-${width}-running.png`})
+      dispatchLocked = false
+      await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+      await switchNotice.waitFor({state:'hidden'})
       const disclosure=firstAgent.getByRole('button',{name:/Other parameters|其他参数/})
       await firstAgent.getByText('Assistant',{exact:true}).click()
       assert.equal(await disclosure.getAttribute('aria-expanded'),'true')
@@ -2330,4 +2596,22 @@ test('Collaboration threshold reminder stays above the composer and dismisses on
   } finally {
     await page.close()
   }
+})
+
+test('Project Runtime settings opens the Assistant defaults on a phone', async () => {
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 }, serviceWorkers: 'block' })
+  try {
+    await mockApi(page)
+    await page.route(`**/api/v1/projects/${project.id}`, route => route.fulfill({ json: { ...project, owner_user_id: 'user-layout' } }))
+    await page.route('**/api/v1/agents/system-assistant?*', route => route.fulfill({ json: { assistant: { id: 'project-assistant' } } }))
+    await page.route('**/api/v1/agents/project-assistant/runtime-profiles', route => route.fulfill({ json: [
+      { id: 'default-cli', name: 'Claude on Host', runtime_key: 'claude_code', is_default: true },
+      { id: 'other-cli', name: 'Codex on Host', runtime_key: 'codex_cli', is_default: false },
+    ] }))
+    await page.goto(`${baseUrl}/spaces/${room.space_id}/projects/${project.id}?settings=runtime`)
+    const dialog = page.getByRole('dialog', { name: 'Runtime settings' })
+    await dialog.getByRole('radio', { name: /Claude on Host/ }).waitFor()
+    assert.equal(await dialog.getByRole('radio', { name: /Claude on Host/ }).isChecked(), true)
+    await page.screenshot({ path: `/tmp/rainver-project-assistant-runtime-390.png` })
+  } finally { await page.close() }
 })

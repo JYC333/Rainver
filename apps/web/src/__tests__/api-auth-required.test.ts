@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ApiRequestError, artifactsApi, authApi, notesApi, setAuth } from '../api/client'
+import { ApiRequestError, artifactsApi, authApi, notesApi } from '../api/client'
+import { request } from '../api/transport'
+import { beginPendingLogout, clearSessionResidue } from '../lib/sessionResidue'
 
 function jsonResponse(body: unknown, status: number): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
@@ -29,7 +31,7 @@ describe('artifact downloads belong to the requesting session', () => {
   }
 
   it.each(['response', 'body'])('does not save a download whose %s arrives after cookie logout', async stage => {
-    setAuth(null)
+    clearSessionResidue()
     const downloads = captureDownloads()
     let release!: () => void
     const pending = new Promise<void>(resolve => { release = resolve })
@@ -45,7 +47,7 @@ describe('artifact downloads belong to the requesting session', () => {
     const outcome = artifactsApi.export('artifact-1').catch(error => error)
     // Let the successful response enter blob reading in the body variant.
     await Promise.resolve()
-    setAuth(null)
+    clearSessionResidue()
     release()
     expect(await outcome).toMatchObject({ name: 'AbortError' })
     expect(downloads.createObjectURL).not.toHaveBeenCalled()
@@ -72,6 +74,22 @@ describe('artifact downloads belong to the requesting session', () => {
 })
 
 describe('a 401 from the API', () => {
+  it('does not send a password sign-in until pending sign-out succeeds', async () => {
+    beginPendingLogout()
+    const fetch = vi.fn()
+      .mockRejectedValueOnce(new TypeError('offline'))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+      .mockResolvedValueOnce(jsonResponse({ user: { id: 'new-user' } }, 200))
+    vi.stubGlobal('fetch', fetch)
+    const credentials = { email: 'new@example.test', password: 'password', rememberMe: false }
+    await expect(authApi.passwordLogin(credentials)).rejects.toMatchObject({ code: 'logout_pending' })
+    expect(fetch.mock.calls.map(([url]) => url)).toEqual(['/api/v1/auth/logout'])
+    await expect(authApi.passwordLogin(credentials)).resolves.toEqual({ user: { id: 'new-user' } })
+    expect(fetch.mock.calls.map(([url]) => url)).toEqual([
+      '/api/v1/auth/logout', '/api/v1/auth/logout', '/api/v1/auth/sign-in/email',
+    ])
+  })
+
   it('signs the browser out when the session is missing', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ code: 'authentication_required', message: 'Authentication required' }, 401)))
     const { heard, stop } = listenForSignOut()
@@ -93,5 +111,52 @@ describe('a 401 from the API', () => {
     } finally {
       stop()
     }
+  })
+
+  it('leaves any existing session alone when password sign-in is refused', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ code: 'invalid_credentials', message: 'Invalid email or password' }, 401)))
+    const { heard, stop } = listenForSignOut()
+    try {
+      await expect(authApi.passwordLogin({ email: 'owner@example.test', password: 'incorrect', rememberMe: false }))
+        .rejects.toMatchObject({ status: 401, code: 'invalid_credentials' })
+      expect(heard).not.toHaveBeenCalled()
+    } finally {
+      stop()
+    }
+  })
+})
+
+describe('HTTP error responses', () => {
+  it.each([
+    ['Gateway timed out', 'text/plain', 'Gateway timed out'],
+    ['<html>Gateway timed out</html>', 'text/html', '504 Gateway Timeout'],
+    ['', 'text/plain', '504 Gateway Timeout'],
+  ])('formats a gateway response with body %j', async (body, contentType, message) => {
+    vi.stubGlobal('fetch', async () => new Response(body, {
+      status: 504,
+      statusText: 'Gateway Timeout',
+      headers: { 'Content-Type': contentType, 'X-Request-Id': 'proxy-id' },
+    }))
+    await expect(request('GET', '/test')).rejects.toMatchObject({
+      message: `${message} (request id: proxy-id)`,
+      requestId: 'proxy-id',
+    })
+  })
+
+  it.each([
+    [{ request_id: 'body-id', message: 'Refused', code: 'refusal' }, 'body-id'],
+    [{ request_id: 'body-id', error: { request_id: 'operation-id', message: 'Refused', code: 'refusal' } }, 'operation-id'],
+  ])('preserves error correlation and payload for %j', async (body, requestId) => {
+    vi.stubGlobal('fetch', async () => new Response(JSON.stringify(body), {
+      status: 409,
+      headers: { 'Content-Type': 'application/json', 'X-Request-Id': 'proxy-id' },
+    }))
+    await expect(request('GET', '/test')).rejects.toMatchObject({
+      status: 409,
+      code: 'refusal',
+      message: `Refused (request id: ${requestId})`,
+      payload: body,
+      requestId,
+    })
   })
 })

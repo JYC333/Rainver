@@ -135,3 +135,16 @@ export const NOTE_OBJECT_TITLES:Record<keyof typeof NOTE_OBJECT_SCHEMAS,string>=
  'knowledge.collection.create':'Create a Note folder','knowledge.collection.update':'Edit a Note folder','knowledge.collection.delete':'Delete a Note folder','knowledge.collection.ensure_project':'Open the Project Notes folder',
  'knowledge.note.placement.add':'Add a Note placement','knowledge.note.placement.remove':'Remove a Note placement','knowledge.note.share.revoke':'Revoke a Note Project share','knowledge.note.tree.reorder':'Reorder the Notes tree'
 };
+
+/** Working changes confined to the current Run's Project. */
+export const PROJECT_NOTE_AGENT_ACTIONS = [
+  'knowledge.note.create',
+  'knowledge.note.update',
+  'knowledge.collection.create',
+  'knowledge.collection.update',
+  'knowledge.note.tree.reorder',
+] as const;
+
+export function isProjectNoteAgentAction(id: string): boolean {
+  return PROJECT_NOTE_AGENT_ACTIONS.some(action => action === id);
+}

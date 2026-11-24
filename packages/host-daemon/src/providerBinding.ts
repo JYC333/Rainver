@@ -444,6 +444,20 @@ export async function sweepOrphanedRunDirectories(runsRoot: string, activeRunIds
   for (const runId of entries) {
     if (activeRunIds.has(runId)) continue;
     try {
+      // A previous attempt may have failed to move these files to recovery.
+      // Keep its output directory even across daemon restarts, while removing
+      // the transient work surface (including live credentials) around it.
+      const dir = join(runsRoot, runId);
+      const outputs = await readdir(join(dir, "outputs")).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT" || error.code === "ENOTDIR") return [];
+        throw error;
+      });
+      if (outputs.length > 0) {
+        for (const entry of await readdir(dir)) {
+          if (entry !== "outputs") await rm(join(dir, entry), { recursive: true, force: true });
+        }
+        continue;
+      }
       await rm(join(runsRoot, runId), { recursive: true, force: true });
       removed += 1;
     } catch {

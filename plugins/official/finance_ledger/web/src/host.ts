@@ -186,7 +186,7 @@ export interface FinanceApi {
   getBalances(bookId: string, scope?: FinanceBalanceScope): Promise<{ balances: FinanceBalancePosition[] }>
   validateBook(bookId: string): Promise<{ errors: FinanceValidationError[] }>
   importBeancount(bookId: string, input: { text: string }): Promise<FinanceImportResult>
-  listImports(bookId: string): Promise<{ imports: FinanceImportBatch[] }>
+  listImports(bookId: string, offset?: number): Promise<{ imports: FinanceImportBatch[]; next_offset?: number }>
   getImport(bookId: string, importSourceId: string): Promise<FinanceImportResult>
   retryImport(bookId: string, importSourceId: string): Promise<FinanceImportResult>
   mapImportEntry(bookId: string, importSourceId: string, entryId: string, accountMapping: Record<string, string>): Promise<FinanceImportResult>

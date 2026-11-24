@@ -10,7 +10,7 @@ import {hidden,markedRefusal} from '../systemActions/operations/errors.js';
 import {assertProjectWriter} from '../projects/access.js';
 import {getRuntimeAdapterSpec} from '../runtimeAdapters/index.js';
 import {managedHostEgressTransport,readInstanceOperationsPolicyIn} from '../settings/index.js';
-import {TERMINAL_RUN_STATUSES} from '../runs/orchestrationResults.js';
+import {HARD_TERMINAL_RUN_STATUSES,TERMINAL_RUN_STATUSES} from '../runs/orchestrationResults.js';
 import {acpRuntimeProbe} from './runtimeProbes.js';
 import {hasSubscriptionQuota} from './usageService.js';
 import {hostInstallationIds,normalizeHostCapabilities} from './capabilities.js';
@@ -153,16 +153,26 @@ async function admission(db:Queryable,config:ServerConfig,id:CommandId,input:Inp
       // Moving profiles needs a journal: an unjournaled late copy could rename a profile under a later Run.
       if(!hostReportsReceipts(host))throw refuse(409,"Update this Host's rainver-host before clearing an Agent's CLI state.",'host_update_required');
       await lockAgentHostResetAdmission(db,host.id,agentId);
-      // The Agent's threads on this Host, held until commit: a dispatch claiming its lock blocks on them,
-      // and a Task/Automation thread is asked whether a Run is still writing into the profile.
+      // Every thread this reset retires something on (`retireAgentSessionsOnHost`), held until commit: the
+      // Agent's own threads — a Conversation's, or a Location's whose latest Run is the Agent's — and a Location
+      // thread whose latest Run is another Agent's but where a Run of this Agent that may still launch is parked.
+      // A dispatch claiming its lock blocks on them, and each is asked whether a Run is still writing into this
+      // Agent's profile: any Run on its own thread, only this Agent's Run on another Agent's (ADR 0036 §15).
+      // Locked in thread id order (ADR 0036 §16): resets of two Agents on the same Host take different advisory
+      // locks and may both reach one shared Location thread, so both take their rows in the one order every other
+      // multi-row thread lock uses.
       const threads=await db.query<{id:string;dispatch_lock_id:string|null;run_in_flight:boolean}>(
         `SELECT thread.id,thread.dispatch_lock_id,
-                EXISTS(SELECT 1 FROM runs r WHERE r.host_task_thread_id=thread.id AND r.status<>ALL($3::text[])) AS run_in_flight
+                EXISTS(SELECT 1 FROM runs r WHERE r.host_task_thread_id=thread.id AND r.status<>ALL($3::text[])
+                        AND (owned.own OR r.agent_id=$1)) AS run_in_flight
            FROM host_threads thread
+           CROSS JOIN LATERAL (SELECT COALESCE(thread.agent_id=$1 OR (thread.agent_id IS NULL
+                  AND (SELECT r.agent_id FROM runs r WHERE r.host_task_thread_id=thread.id ORDER BY r.created_at DESC LIMIT 1)=$1),false) AS own) owned
           WHERE COALESCE(thread.execution_host_id,(SELECT wl.execution_host_id FROM workspace_locations wl WHERE wl.id=thread.workspace_location_id))=$2
             AND thread.status IN ('active','session_reset')
-            AND (thread.agent_id=$1 OR (thread.agent_id IS NULL AND (SELECT r.agent_id FROM runs r WHERE r.host_task_thread_id=thread.id ORDER BY r.created_at DESC LIMIT 1)=$1))
-          FOR UPDATE OF thread`,[agentId,host.id,[...TERMINAL_RUN_STATUSES]]);
+            AND (owned.own OR EXISTS(SELECT 1 FROM runs r WHERE r.host_task_thread_id=thread.id AND r.agent_id=$1 AND r.status<>ALL($4::text[])))
+          ORDER BY thread.id
+          FOR UPDATE OF thread`,[agentId,host.id,[...TERMINAL_RUN_STATUSES],[...HARD_TERMINAL_RUN_STATUSES]]);
       if(threads.rows.some(t=>t.dispatch_lock_id))throw refuse(409,'The Agent is handling a message; try again when it finishes');
       if(threads.rows.some(t=>t.run_in_flight))throw refuse(409,'The Agent has a Run in flight on this Host; try again when it finishes');
       // A Room re-add restore of this Agent's state on this Host that is not finished would interleave with

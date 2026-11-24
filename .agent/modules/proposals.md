@@ -29,6 +29,7 @@ Proposal:
     provenance_entries  — required for memory_create/update; links to source ActivityRecord, Run, etc.
     source_evidence, sensitivity_level
     owner_user_id, subject_user_id, content_access_grants
+    (the DTO's owner_user_id is the row's owner_user_id first; this payload field is only its fallback)
 
 ProposalApproval:
   id, proposal_id, approval_type ('egress_granting_user'|'action_grant')
@@ -330,7 +331,10 @@ receipt and Job composition; this port alone does not migrate a route to core.
 
 Proposal dispatch schemas reject undeclared fields. HTTP decision bodies share
 those schemas with authenticated identity fields omitted: accept permits only
-`confirm_incomplete_patch`, egress consent permits only `grant_id`, and reject
+`confirm_incomplete_patch` and `expected_revision` (the revision the decider was
+shown, `proposalRevision.ts`: a digest of payload and summary, compared under the
+row lock; 409 `proposal_revision_changed` once it differs, and appliers receive
+`revisionConfirmed`), egress consent permits only `grant_id`, and reject
 and code-patch rollback accept an empty object or an absent body. JSON scalars
 and arrays are rejected with 422. The existing query confirmation remains valid.
 

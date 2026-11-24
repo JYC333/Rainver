@@ -231,6 +231,12 @@ export interface PluginOperationContext {
   readonly settings?: Readonly<Record<string, unknown>>;
   /** Declared typed core-object ports, executed by the canonical owners in this transaction. */
   readonly core?: PluginCorePorts;
+  /** Host-supplied scope and read attribution for the bundled Applications queries. */
+  readonly applicationRead?: {
+    readonly projectOnly: boolean;
+    record(ids: readonly string[]): void;
+    recordRelatedApplications?(ids: readonly string[]): void;
+  };
 }
 /**
  * Typed core-object host ports. Each runs the owning module's canonical writer
@@ -262,17 +268,20 @@ export interface PluginCorePorts {
    * Project: a Note of this Project, or a Project-free personal Note (a
    * reusable CV or experience note); another Project's Note, or one shared
    * to or from another Project, is refused. `verify` (commands too) answers
-   * only that and the current version number, so a command output carries no
-   * Note content. `read` (queries only) returns one revision — the current one
+   * only that, the current version number and whether the Note is shared in
+   * the bound Project. A command output carries no Note content.
+   * `read` (queries only) returns one revision — the current one
    * unless `version` is given — and its text only with `body: true`; the release
    * gate rechecks and audits the Note before the result leaves.
    */
   notes?: {
-    verify(ref: { note_id: string; version?: number }): Promise<{ current_version: number } | null>;
+    verify(ref: { note_id: string; version?: number }): Promise<{ current_version: number; project_shared?: boolean } | null>;
     read(ref: { note_id: string; version?: number; body?: boolean }): Promise<PluginNoteRevision | null>;
   };
   /**
-   * Generated Note drafts (`notes.draft`), for a person only (an Agent actor is refused).
+   * Generated Note drafts (`notes.draft`) for the person who asks. The bundled
+   * Applications plugin can start and save via a manual Agent turn. Preview
+   * still requires the requester to be the only reader.
    * `start` (commands) queues one private provider-task Run of the person over pinned
    * Note revisions that qualify as for `notes.read` and that the Source egress rules let go
    * to the resolved provider (`egress_denied` otherwise); the revisions are read and
@@ -446,6 +455,9 @@ export interface PluginViewOps {
 export interface PluginViewContext<UI> {
   readonly spaceId: string;
   readonly projectId: string | null;
+  readonly projectCanWrite?: boolean;
+  /** Host live invalidation. Reread through ops without remounting the view. */
+  readonly projectRevision?: number;
   readonly ops: PluginViewOps;
   readonly ui: UI;
 }

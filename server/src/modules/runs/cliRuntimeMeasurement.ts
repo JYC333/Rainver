@@ -31,6 +31,7 @@ export function modelUsageFromAcpQuota(meta: unknown, runtimeKey: string): Canon
       inputTokens: count.inputTokens, outputTokens: count.outputTokens, totalTokens: count.totalTokens,
       cachedReadTokens: count.cachedInputTokens,
       cachedWriteTokens: runtimeKey === "codex_cli" ? count.cacheWriteInputTokens : count.cachedWriteTokens,
+      cachedWrite1hTokens: runtimeKey === "claude_code" ? count.cachedWrite1hTokens : undefined,
       thoughtTokens: count.reasoningOutputTokens,
     }); // Both wrappers have already removed cached input from inputTokens.
     if (!usage) return [];
@@ -47,10 +48,12 @@ export function usageFromAcp(value: Record<string, unknown>): CanonicalUsage | n
     output_tokens: value.outputTokens,
     total_tokens: value.totalTokens,
     cache_creation_input_tokens: value.cachedWriteTokens,
+    cache_creation_1h_input_tokens: value.cachedWrite1hTokens,
     cache_read_input_tokens: value.cachedReadTokens,
     reasoning_tokens: value.thoughtTokens,
   }, ["input_tokens", "output_tokens", "total_tokens"]);
   if (!usage) return null;
+  if ((usage.cache_creation_1h_input_tokens ?? 0) > (usage.cache_creation_input_tokens ?? 0)) return null;
   const buckets = (
     usage.input_tokens ?? 0
   ) + (
@@ -72,6 +75,22 @@ export function usageFromAcp(value: Record<string, unknown>): CanonicalUsage | n
   return usage.total_tokens === buckets + reasoning || usage.total_tokens === buckets
     ? usage
     : null;
+}
+
+/** Numeric usage of a Claude SDK result for the prompt that produced it. */
+export function usageFromClaudeResult(value: Record<string, unknown>): CanonicalUsage | null {
+  const input = nonNegativeInteger(value.input_tokens);
+  const output = nonNegativeInteger(value.output_tokens);
+  const read = nonNegativeInteger(value.cache_read_input_tokens ?? 0);
+  const write = nonNegativeInteger(value.cache_creation_input_tokens ?? 0);
+  if (input === null || output === null || read === null || write === null) return null;
+  const creation = value.cache_creation;
+  const oneHour = creation && typeof creation === "object" && !Array.isArray(creation)
+    ? (creation as Record<string, unknown>).ephemeral_1h_input_tokens : undefined;
+  return usageFromAcp({
+    inputTokens: input, outputTokens: output, cachedReadTokens: read, cachedWriteTokens: write,
+    cachedWrite1hTokens: oneHour, totalTokens: input + output + read + write,
+  });
 }
 
 function strictUsage(

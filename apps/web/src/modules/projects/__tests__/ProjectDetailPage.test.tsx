@@ -140,6 +140,27 @@ function renderPage(search = '') {
  */
 describe('ProjectDetailPage (Pulse)', () => {
   beforeEach(() => vi.clearAllMocks())
+  it.each([new TypeError('Failed to fetch'), new ApiRequestError('Upstream not found', 502)])(
+    'offers retry when the Project request fails temporarily (%s)',
+    async error => {
+      setup()
+      vi.mocked(projectsApi.get).mockRejectedValueOnce(error)
+      renderPage()
+      expect(await screen.findByText('Could not load project')).toBeInTheDocument()
+      expect(screen.queryByText('Project not found')).not.toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+      expect(await screen.findByRole('heading', { name: 'Project One' })).toBeInTheDocument()
+    },
+  )
+
+  it('shows the missing Project state for a 404', async () => {
+    setup()
+    vi.mocked(projectsApi.get).mockRejectedValueOnce(new ApiRequestError('Missing', 404))
+    renderPage()
+    expect(await screen.findByText('Project not found')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
+  })
+
   it('shows an access explanation for a Space member without requesting internal content', async () => {
     setup({ project: { owner_user_id: 'other', current_user_can_read: false, current_user_grantable_member_role: null } })
     renderPage()

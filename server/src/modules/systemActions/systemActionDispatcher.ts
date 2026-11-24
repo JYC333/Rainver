@@ -1,6 +1,6 @@
 import { operationPluginEnabled } from "../plugins/operationEnablement.js";
 import {operationRuntime} from './operations/runtime.js';
-import {dispatchRunOperation} from '../runs/operationToolDispatch.js';
+import {dispatchRunOperation, runOperationInputJsonSchema} from '../runs/operationToolDispatch.js';
 import {OperationError} from "./operations/errors.js";
 import {defaultActionEventSink} from '../runs/actionEvents.js';
 import { createHash, randomUUID } from "node:crypto";
@@ -36,7 +36,7 @@ import { enforceRetrievalToolCallPolicy, type RetrievalToolPolicyAction } from "
 import { loadActionRegistry } from "../policy/actionRegistry.js";
 import { enforce } from "../policy/service.js";
 import { assembleRunInputEnvelope } from "../runs/runInputEnvelope.js";
-import { sensitiveTaintEgressContext } from "../plugins/egress.js";
+import { canWriteGmailDerivedProjectContent, sensitiveTaintEgressContext } from "../plugins/egress.js";
 import { ActionApprovalGrantService } from "../policy/actionApprovalGrantService.js";
 import { registerModuleSystemActionExecutors } from "./executorRegistry.js";
 import { memoryPolicyContext } from "../memory/memoryPolicyContext.js";
@@ -105,7 +105,7 @@ export class SystemActionDispatcher {
           grantedActionIds.has(definition.id),
       );
     const genericDefinitions: CanonicalToolDefinition[] = genericRegistryDefinitions
-      .map((definition) => ({ name: definition.id, description: definition.description, input_schema: systemActionInputJsonSchema(definition) }));
+      .map((definition) => ({ name: definition.id, description: definition.description, input_schema: runOperationInputJsonSchema(run, definition) }));
     const researchRegistryDefinitions = [...registry.values()]
       .filter((definition) => definition.agent_tool_surface === "research" && grantedActionIds.has(definition.id));
     const researchAcquisitionDefinitions: CanonicalToolDefinition[] = researchRegistryDefinitions
@@ -306,7 +306,7 @@ export class SystemActionDispatcher {
         const runtime=await operationRuntime(this.config);
         const result=await dispatchRunOperation(this.config,this.run,
           {id:call.id,name:call.name,arguments:input},definition,
-          actor=>runtime.execute(call.name,input,actor,call.id,call.id),this.actionEvents);
+          (actor, resolvedInput)=>runtime.execute(call.name,resolvedInput,actor,call.id,call.id),this.actionEvents);
         return {modelResult:result.body,summary:result.summary};
       }
       const dispatched = await this.gateway.dispatch(call.name, input, {
@@ -454,6 +454,13 @@ export async function enforceDeclaredResourcePolicy(
   // the proposal applier. Only the canonical owner-created goal chat qualifies.
   const goalSetupRequest = definition.id === "source.channel.propose_activation"
     && await (await import("../sources/index.js")).canRequestGoalSourceActivation(getDbPool(databaseUrl), run);
+  const db = getDbPool(databaseUrl);
+  const origin = (await effectiveRunTrigger(db, run)).origin;
+  const egress = await sensitiveTaintEgressContext(db, run.space_id, run.id, definition);
+  if (definition.id === "task.create_batch" && egress.sensitive_plugin_read_taint &&
+    await canWriteGmailDerivedProjectContent(db, {
+      space_id: run.space_id, run_id: run.id, effective_origin: origin, on_behalf_of_user_id: run.instructed_by_user_id ?? null,
+    }, definition.id, {project_id: run.project_id}, input)) egress.outward_action = false;
   const decision = await enforce({ databaseUrl }, await loadActionRegistry(config), {
     action: definition.policy_action,
     force_record: true,
@@ -477,14 +484,14 @@ export async function enforceDeclaredResourcePolicy(
       // person asked for in a conversation from the same call made by an
       // unattended wake-up. Do not omit this key. Every dispatch would read as
       // `manual` and the rule would never fire.
-      trigger_origin: (await effectiveRunTrigger(getDbPool(databaseUrl), run)).origin,
+      trigger_origin: origin,
       // What a memory write is, resolved by the module that owns the answer
       // rather than taken from the call: `ruleUnattendedProjectWrite`'s one
       // exception is a persona write, and for a revision that fact lives on
       // the target row, not in the arguments.
       ...(await memoryPolicyContext(getDbPool(databaseUrl), definition.id, run.space_id, run.agent_id, input)),
       surface: "managed_run_system_action_gateway",
-      ...(await sensitiveTaintEgressContext(getDbPool(databaseUrl), run.space_id, run.id, definition)),
+      ...egress,
       ...(hasActionGrant !== undefined ? { has_action_approval_grant: hasActionGrant } : {}),
       source_goal_setup_request: goalSetupRequest,
     },

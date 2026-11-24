@@ -15,114 +15,70 @@ before(async()=>{
  browser=await chromium.launch({executablePath:process.env.CHROMIUM_EXECUTABLE})
 })
 after(async()=>{await browser?.close();if(server)await new Promise(resolve=>server.httpServer.close(resolve))})
-test('Project monitoring on phone and desktop keeps configuration, initial results, candidates and private feedback reachable',async()=>{
- const page=await browser.newPage({viewport:{width:380,height:900},serviceWorkers:'block'})
- const writes=[]
- let fixture=state
- try{
-  await page.route('**/api/v1/**',async route=>{
-   const path=new URL(route.request().url()).pathname.replace('/api/v1','')
-   let data
-   if(route.request().method()!=='GET'){
-    writes.push({path,body:route.request().postDataJSON()})
-    if(path.endsWith('/research/area'))return route.fulfill({json:{checklist:[],reports:[]}})
-    if(path.endsWith('/reconcile'))fixture={...fixture,can_reconcile:false,latest_run:{...fixture.latest_run,status:'completed',progress:{phase:'partial',reason:'processing_failed'}}}
-    return route.fulfill({json:{feedback:'read'}})
+test('Project monitoring keeps linked-source settings, candidates and private feedback reachable', async () => {
+ const page = await browser.newPage({ viewport: { width: 390, height: 900 }, serviceWorkers: 'block' })
+ const writes = []
+ const errors = []
+ const space = 'space-monitor', project = 'project-monitor'
+ const root = `/spaces/${space}/projects/${project}`
+ page.on('pageerror', error => errors.push(error.message))
+ try {
+  await page.route('**/api/v1/**', async route => {
+   const request = route.request()
+   const path = new URL(request.url()).pathname.replace('/api/v1', '')
+   const json = data => route.fulfill({ json: data })
+   if (request.method() !== 'GET') {
+    writes.push({ path, body: request.postDataJSON() })
+    if (path === '/actions/project.monitoring.feedback') {
+     assert.ok(request.headers()['idempotency-key'])
+     return json({ status: 'succeeded', data: { space_id: space, user_id: 'user-monitor', feedback: 'not_relevant', item_id: candidate.id, project_id: project } })
+    }
+    return route.fulfill({ status: 404, json: { detail: 'Unexpected write in monitoring fixture' } })
    }
-   if(path==='/me')data={id:'user-monitor',name:'Tester',default_space_id:'space-monitor',instance_role:'member'}
-   else if(path==='/me/spaces')data=[{id:'space-monitor',name:'Monitor Space',type:'personal',role:'owner'}]
-   else if(path==='/plugins/effective')data={plugins:{}}
-   else if(path==='/projects/project-monitor/overview')data={project:{id:'project-monitor',name:'Agent 信息观察',status:'active'},brief:null,attention:[]}
-   else if(path==='/projects/project-monitor')data={id:'project-monitor',space_id:'space-monitor',name:'Agent 信息观察',status:'active'}
-   else if(path.endsWith('/research/standing'))data={enabled:false,enabled_binding_count:0,budget:{daily_limit:20,daily_used:0},batches:[],advice:[],recent_inflow:[]}
-   else if(path.endsWith('/research/reading-list'))data=pageOf([])
-   else if(path.endsWith('/research/workflow')||path.endsWith('/research/evidence-matrix')||path.endsWith('/research/reports')||path.endsWith('/research/scan-summaries')||path.endsWith('/operations')||path==='/providers'||path==='/providers/vendors')data=[]
-   else if(path.endsWith('/inquiry/threads'))data=[{id:'thread-setup',statement:'Boundary fixture setup question',kind:'question',lifecycle_status:'active',attention_state:'focused'}]
-   else if(path==='/sources/project-items')data=pageOf([])
-   else if(path==='/sources/briefings')data=pageOf([])
-   else if(path==='/sources/providers'||path==='/sources/recommendations'||path==='/sources/channels/followed')data=[]
-   else if(path==='/projects')data=pageOf([{id:'project-monitor',name:'Agent 信息观察'}])
-   else if(path.endsWith('/interest-profile'))data=null
-   else if(path.endsWith('/source-annotation/episodes'))data={episodes:[]}
-   else if(path.endsWith('/information-digests/personal'))data={status:'available',digest:{id:'daily-monitor',digest_type:'personal',digest_date:'2026-10-24',timezone:'UTC',period_start_utc:'2026-10-24T00:00:00Z',period_end_utc:'2026-10-25T00:00:00Z',generated_at:'2026-10-25T07:00:00Z',generation_kind:'scheduled',settings:{},team_blind_spot_domains:[],items:[{...candidate,id:'daily-item',source_item_id:candidate.id,section:'interest',position:0,quota_slot:'interest:1',score:0.9,component_scores:{},rationale:candidate.reason,domain_key:'artificial_intelligence',depth:'overview',genre:'paper',anonymous_read_count:null}]}}
-   else if(path.endsWith('/information-monitoring'))data=fixture
-   else if(path==='/sources/channels')data=[{id:'source-monitor',name:'Manual arXiv',status:'active',source_connection_id:'connection-monitor',source_name:'arXiv',channel_type:'search',provider:{key:'arxiv',display_name:'arXiv'},scan_state:{status:'idle',cursor:{},watermark:{}}}]
-   else if(path==='/agents')data=[{id:'agent-monitor',name:'Chosen processor',status:'active'}]
-   else if(path.endsWith('/information-digests'))data={status:'missing',digest_date:'2026-10-23',timezone:'UTC',period_start_utc:'2026-10-23T00:00:00Z',period_end_utc:'2026-10-24T00:00:00Z',reason:'not_generated',backfill_available:false}
-   else if(path.endsWith('/sources/extraction-profiles'))data=[]
-   else if(path.endsWith('/sources/bindings')||path.endsWith('/sources/health')||path.endsWith('/members'))data=[]
-   else if(path.endsWith('/proposals'))data=pageOf([])
-   else return route.fulfill({status:404,json:{detail:'Not part of the browser fixture'}})
-   return route.fulfill({json:data})
+   if (path === '/me') return json({ id: 'user-monitor', name: 'Tester', default_space_id: space, instance_role: 'member' })
+   if (path === '/me/spaces') return json([{ id: space, name: 'Monitor Space', type: 'personal', role: 'owner' }])
+   if (path === '/plugins/effective') return json({ plugins: {} })
+   if (path === `/projects/${project}/overview`) return json({ project: { id: project, name: 'Agent 信息观察', status: 'active' }, brief: null, attention: [] })
+   if (path === `/projects/${project}`) return json({ id: project, space_id: space, name: 'Agent 信息观察', status: 'active' })
+   if (path === '/projects') return json(pageOf([{ id: project, name: 'Agent 信息观察' }]))
+   if (path.endsWith('/information-monitoring')) return json({ ...state, candidates: state.candidates.map((record, index) => index === 0 && writes.length ? { ...record, feedback: 'not_relevant' } : record) })
+   if (path.endsWith('/inquiry/threads')) return json([])
+   if (path === '/sources/goals') return json({ goals: [] })
+   if (path === '/sources/gmail/connections') return json({ configured: false, connections: [] })
+   if (['/sources/project-items', '/sources/evidence', '/sources/post-processing/decisions'].includes(path)) return json(pageOf([]))
+   if (path === '/reader/annotations') return json({ items: [] })
+   if (path === '/sources/channels' || ['/sources/bindings', '/sources/extraction-profiles', '/sources/health', '/members'].some(suffix => path.endsWith(suffix))) return json([])
+   return route.fulfill({ status: 404, json: { detail: 'Not part of the monitoring fixture' } })
   })
-  const errors=[]
-  page.on('pageerror',error=>errors.push(error.message))
-  const researchRequests=[]
-  page.on('request',request=>{if(new URL(request.url()).pathname.includes('/research/'))researchRequests.push(request.url())})
-  await page.goto(baseUrl+'/spaces/space-monitor/projects/project-monitor/research')
-  await page.getByRole('link',{name:'Choose a project question',exact:true}).waitFor()
-  assert.equal(researchRequests.length,0,'Research landing must not initialize the old workflow')
-  assert.equal(writes.length,0)
-  await page.goto(baseUrl+'/spaces/space-monitor/projects/project-monitor/research?research=new&thread=thread-setup&keep=fixture')
-  await page.waitForURL(url=>url.searchParams.get('tab')==='focus'&&!url.searchParams.has('research')&&!url.searchParams.has('thread'))
-  const setup=page.getByRole('dialog')
-  await setup.getByText('Researching: Boundary fixture setup question',{exact:false}).waitFor()
-  await page.setViewportSize({width:800,height:900})
-  await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))))
-  assert.equal(await setup.isVisible(),true)
-  assert.equal(new URL(page.url()).searchParams.get('keep'),'fixture')
-  writes.length=0
-  await page.goto(baseUrl+'/spaces/space-monitor/projects/project-monitor/sources')
-  await page.getByRole('heading',{name:'Worth reading',exact:true}).waitFor()
-  await page.setViewportSize({width:390,height:900})
-  assert.equal(await page.getByRole('link',{name:'Board',exact:true}).isVisible(),false,'Mobile navigation starts collapsed')
-  await page.getByRole('button',{name:'Project navigation',exact:false}).click()
-  assert.equal(await page.getByRole('link',{name:'Board',exact:true}).isVisible(),true)
-  await page.getByRole('button',{name:'Project navigation',exact:false}).click()
-  await page.getByRole('link',{name:candidate.title,exact:true}).waitFor()
-  assert.equal(await page.getByLabel('Direction / objective',{exact:true}).count(),0,'Reading must not mount the configuration form')
-  assert.equal(await page.getByText('An excluded candidate remains inspectable',{exact:true}).count(),0,'Recommendations must not mix in excluded candidates')
-  for(const width of [380,800,1280]){
-    await page.setViewportSize({width,height:1000})
-    const geometry=await page.evaluate(()=>({viewport:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth}))
-    assert.ok(geometry.scroll<=geometry.viewport+1,JSON.stringify(geometry))
+  await page.goto(`${baseUrl}${root}/research`)
+  await page.waitForURL(url => url.pathname.endsWith('/inquiry') && url.searchParams.get('section') === 'research')
+  assert.deepEqual(writes, [], 'opening Research only redirects')
+  await page.goto(`${baseUrl}${root}/sources?tab=candidates`)
+  await page.getByRole('heading', { name: 'All monitoring candidates', exact: true }).waitFor()
+  await page.getByRole('link', { name: candidate.title, exact: true }).waitFor()
+  await page.getByRole('link', { name: 'An excluded candidate remains inspectable', exact: true }).waitFor()
+  assert.equal(await page.getByLabel('Direction / objective', { exact: true }).count(), 0)
+
+  await mkdir('/tmp/rainver-project-monitoring', { recursive: true })
+  for (const width of [390, 800, 1280]) {
+   await page.setViewportSize({ width, height: 900 })
+   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1), `candidate controls fit at ${width}px`)
+   await page.screenshot({ path: `/tmp/rainver-project-monitoring/candidates-${width}.png`, fullPage: true })
   }
-  await Promise.all([page.waitForResponse(r=>r.url().includes('/feedback')),page.getByRole('button',{name:'Read',exact:true}).click()])
-  assert.equal(writes.at(-1).body.feedback,'read')
-  await page.getByRole('button',{name:'Following settings',exact:true}).first().click()
-  await page.getByRole('heading',{name:'Information monitoring',exact:true}).waitFor()
-  await page.getByText('Collection schedule and limits',{exact:true}).click()
-  await page.getByRole('checkbox',{name:'Propose daily acquisition (takes effect only after confirmation)',exact:true}).check()
-  await page.getByLabel('Collection time',{exact:true}).fill('21:30')
-  assert.equal(await page.getByLabel('Collection time',{exact:true}).inputValue(),'21:30')
-  await page.getByRole('button',{name:'Back to updates',exact:true}).click()
-  await page.getByRole('tab',{name:'All material',exact:true}).click()
-  await page.getByRole('heading',{name:'Collected items',exact:true}).waitFor()
-  assert.equal(await page.getByRole('heading',{name:'Source bindings',exact:true}).count(),0)
-  await page.getByRole('button',{name:'All monitoring candidates',exact:true}).click()
-  await page.getByText('An excluded candidate remains inspectable',{exact:true}).waitFor()
-  assert.equal(writes.length,1,'Navigation and opening settings must not activate collection')
-  await page.evaluate(()=>localStorage.setItem('rainver:locale','zh-CN'))
-  await mkdir('/tmp/rainver-reading-v1',{recursive:true})
-  await page.goto(baseUrl+'/spaces/space-monitor/projects/project-monitor/sources')
-  await page.getByRole('heading',{name:'值得一读',exact:true}).waitFor()
-  await page.setViewportSize({width:1440,height:1000})
-  await page.screenshot({path:'/tmp/rainver-reading-v1/project-updates-desktop.png',fullPage:true})
-  await page.setViewportSize({width:390,height:900})
-  await page.screenshot({path:'/tmp/rainver-reading-v1/project-updates-phone.png',fullPage:true})
-  await page.setViewportSize({width:1440,height:1000})
-  await page.goto(baseUrl+'/spaces/space-monitor/projects/project-monitor/research')
-  await page.getByRole('link',{name:'选择项目问题',exact:true}).waitFor()
-  await page.screenshot({path:'/tmp/rainver-reading-v1/research-desktop.png',fullPage:true})
-  await page.goto(baseUrl+'/spaces/space-monitor/library')
-  await page.waitForURL(url=>url.pathname.endsWith('/library/digests'))
-  await page.getByRole('link',{name:candidate.title,exact:true}).waitFor()
-  await page.screenshot({path:'/tmp/rainver-reading-v1/reading-desktop.png',fullPage:true})
-  for(const width of [390,1440]){
-    await page.setViewportSize({width,height:1000})
-    const geometry=await page.evaluate(()=>({viewport:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth}))
-    assert.ok(geometry.scroll<=geometry.viewport+1,JSON.stringify(geometry))
-  }
-  assert.deepEqual(errors,[])
- }finally{await page.close()}
+  const feedback = page.waitForResponse(response => response.url().endsWith('/actions/project.monitoring.feedback'))
+  await page.getByRole('button', { name: 'Not relevant', exact: true }).first().click()
+  assert.equal((await feedback).ok(), true)
+  assert.deepEqual(writes, [{ path: '/actions/project.monitoring.feedback', body: { project_id: project, item_id: candidate.id, feedback: 'not_relevant' } }])
+
+  await page.getByRole('button', { name: 'Following settings', exact: true }).click()
+  await page.getByText('Manage linked sources', { exact: true }).waitFor()
+  assert.equal(await page.getByRole('heading', { name: 'All monitoring candidates', exact: true }).count(), 0)
+  await page.getByRole('button', { name: 'All monitoring candidates', exact: true }).click({ timeout: 8000 })
+  await page.getByRole('link', { name: candidate.title, exact: true }).waitFor()
+  assert.equal(writes.length, 1, 'settings navigation does not activate collection')
+  assert.deepEqual(errors, [])
+ } catch (error) {
+  console.error(page.url(), (await page.locator('body').innerText()).slice(0, 1800))
+  throw error
+ } finally { await page.close() }
 })

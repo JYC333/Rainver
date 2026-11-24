@@ -1,3 +1,5 @@
+import type { HostCommandFrame, HostServerFrameOf } from "@rainver/protocol";
+import { runJournaledHostCommand, resetHostCommandJournalForTest } from "../src/hostCommandJournal.js";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../src/acpProbe.js", () => ({ probeAcpHealth: vi.fn() }));
 
 import { probeAcpHealth } from "../src/acpProbe.js";
-import { installTool, managedToolHome, managedVersionsFor, platformKey, readToolManifestSync, toolsDir } from "../src/tools.js";
+import { confirmedManagedInstall, installTool, managedToolHome, managedVersionsFor, platformKey, readToolManifestSync, toolsDir } from "../src/tools.js";
 
 let configDir: string;
 
@@ -86,7 +88,8 @@ describe("managed runtime health-gated activation", () => {
     const download = stubBinaryDownload();
     vi.mocked(probeAcpHealth).mockResolvedValue(true);
 
-    const installed = await installTool({
+    const frame: HostServerFrameOf<"install_tool"> = {
+      type: "install_tool",
       request_id: "install-good",
       runtime_key: "opencode",
       version: "2.0.0",
@@ -101,8 +104,24 @@ describe("managed runtime health-gated activation", () => {
       } },
       login: null,
       health_check_protocol: "acp",
-    }, () => {}, download);
-
+    };
+    const envelope: HostCommandFrame = {
+      type: "host_command", request_id: frame.request_id, command_id: "install-command",
+      fingerprint: "a".repeat(64), command: frame,
+    };
+    const install = vi.fn(async () => installTool(frame, () => {}, download, envelope.command_id));
+    // Promote the version, then lose the result before the journal can save it.
+    void runJournaledHostCommand(envelope, install, { send: vi.fn() });
+    await vi.waitFor(() => expect(readToolManifestSync("opencode", "managed:2.0.0")).not.toBeNull());
+    const installed = await install.mock.results[0]!.value;
+    await expect(confirmedManagedInstall(frame, "different-command")).resolves.toBe(false);
+    vi.mocked(probeAcpHealth).mockResolvedValue(false);
+    await expect(confirmedManagedInstall(frame, envelope.command_id)).resolves.toBe(false);
+    vi.mocked(probeAcpHealth).mockResolvedValue(true);
+    resetHostCommandJournalForTest();
+    const recovered = await runJournaledHostCommand(envelope, install, { send: vi.fn() });
+    expect(recovered).toMatchObject({ outcome: "completed", replayed: true, result: { ok: true, installation: "managed:2.0.0" } });
+    expect(install).toHaveBeenCalledTimes(1);
     expect(installed.health_check_protocol).toBe("acp");
     expect(readToolManifestSync("opencode", "managed:2.0.0")?.health_check_protocol).toBe("acp");
   });

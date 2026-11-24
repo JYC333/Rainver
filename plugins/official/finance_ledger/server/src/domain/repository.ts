@@ -746,6 +746,7 @@ export const financeLedgerRepository = {
     spaceId: string,
     bookId: string,
     accountId: string,
+    viewerUserId: string,
   ): Promise<FinancePostingRow[]> {
     const result = await db.query<FinancePostingRow>(
       `${POSTING_SELECT}
@@ -754,8 +755,9 @@ export const financeLedgerRepository = {
           AND p.book_id = $2
           AND p.account_id = $3
           AND d.status = 'posted'
+          AND NOT ${transactionTouchesHiddenAccountSql("p.transaction_directive_id", "p.space_id", "$4")}
         ORDER BY d.date ASC, d.sequence ASC, p.sort_order ASC`,
-      [spaceId, bookId, accountId],
+      [spaceId, bookId, accountId, viewerUserId],
     );
     return result.rows;
   },
@@ -764,6 +766,7 @@ export const financeLedgerRepository = {
     db: Queryable,
     spaceId: string,
     bookId: string,
+    viewerUserId: string,
   ): Promise<FinancePostingRow[]> {
     const result = await db.query<FinancePostingRow>(
       `${POSTING_SELECT}
@@ -771,8 +774,9 @@ export const financeLedgerRepository = {
         WHERE p.space_id = $1
           AND p.book_id = $2
           AND d.status = 'posted'
+          AND NOT ${transactionTouchesHiddenAccountSql("p.transaction_directive_id", "p.space_id", "$3")}
         ORDER BY d.date ASC, d.sequence ASC, p.sort_order ASC`,
-      [spaceId, bookId],
+      [spaceId, bookId, viewerUserId],
     );
     return result.rows;
   },
@@ -829,13 +833,13 @@ function transactionTouchesHiddenAccountSql(
 ): string {
   return `EXISTS (
     SELECT 1
-      FROM finance_postings p
+      FROM finance_postings hidden_posting
       JOIN finance_accounts a
-        ON a.id = p.account_id
-       AND a.space_id = p.space_id
-       AND a.book_id = p.book_id
-     WHERE p.transaction_directive_id = ${directiveIdExpr}
-       AND p.space_id = ${spaceIdExpr}
+        ON a.id = hidden_posting.account_id
+       AND a.space_id = hidden_posting.space_id
+       AND a.book_id = hidden_posting.book_id
+     WHERE hidden_posting.transaction_directive_id = ${directiveIdExpr}
+       AND hidden_posting.space_id = ${spaceIdExpr}
        AND NOT (a.visibility = 'space' OR a.owner_user_id = ${viewerParam})
   )`;
 }

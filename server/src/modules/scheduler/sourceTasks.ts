@@ -18,7 +18,8 @@ import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
 import { throwIfAnyFailed, type ScheduledTask } from "./registry.js";
 import type { PgJobQueueRepository } from "../jobs/repository.js";
-import { SourceExtractionWorker } from "../sources/extractionWorker.js";
+import { ORDINARY_EXTRACTION_JOB_SQL, SOURCE_EXTRACTION_LOCK_PREFIX, SourceExtractionWorker } from "../sources/extractionWorker.js";
+import { SourceDispatchBusyError } from "../sources/sourceDispatchExecution.js";
 import { enqueueDueSourceChannelScans } from "../sources/scanSchedule.js";
 import { enqueueDueSourcePostProcessingRules } from "../sources/postProcessing/scheduler.js";
 import { enqueuePendingSourceAnnotationWork } from "../sourceAnnotation/scheduler.js";
@@ -175,18 +176,27 @@ async function processPendingSourceJobs(
   if (!config.databaseUrl) return 0;
   const db = getDbPool(config.databaseUrl);
   const worker = new SourceExtractionWorker(db, config);
+  // Skip keys currently held before applying the batch limit. This is a
+  // scheduling hint only: runPendingJob independently claims each candidate.
   const pending = await db.query<{ id: string; space_id: string }>(
-    `SELECT id, space_id
+    `WITH held_extractions AS MATERIALIZED (
+       SELECT (classid::bigint << 32) | objid::bigint AS lock_key
+         FROM pg_locks
+        WHERE locktype = 'advisory' AND objsubid = 1 AND granted
+          AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+     )
+     SELECT id, space_id
        FROM extraction_jobs
-      WHERE status = 'pending'
-        AND COALESCE(metadata_json->>'implementation', '') <> 'recipe'
+      WHERE status IN ('pending', 'running')
+        AND ${ORDINARY_EXTRACTION_JOB_SQL}
+        AND metadata_json->>'monitoring_operation_id' IS NULL
         AND NOT EXISTS (
-          SELECT 1
-            FROM source_handler_runs shr
-           WHERE shr.extraction_job_id = extraction_jobs.id
+          SELECT 1 FROM held_extractions
+           WHERE lock_key = hashtextextended($1::text || extraction_jobs.space_id || ':' || extraction_jobs.id, 0)
         )
-      ORDER BY created_at ASC
+      ORDER BY created_at ASC, id ASC
       LIMIT 10`,
+    [SOURCE_EXTRACTION_LOCK_PREFIX],
   );
   let count = 0;
   for (const row of pending.rows) {
@@ -195,6 +205,7 @@ async function processPendingSourceJobs(
       await worker.runPendingJob(row.id, row.space_id);
       count += 1;
     } catch (err) {
+      if (err instanceof SourceDispatchBusyError) continue;
       log?.warn(
         `[source-extraction] job ${row.id} failed: ${err instanceof Error ? err.message : String(err)}`,
       );

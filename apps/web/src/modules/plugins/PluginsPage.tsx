@@ -1,8 +1,11 @@
 import { useEffect, useState, useCallback } from 'react'
+import { useSpace } from '../../contexts/SpaceContext'
 import { pluginsApi } from '../../api/client'
 import { useAppTranslation } from '../../i18n'
 import { formatDate } from '../../i18n/format'
 import { Button } from '../../components/ui/button'
+import { Badge } from '../../components/ui/badge'
+import { Card } from '../../components/ui/card'
 import type { OfficialPluginCleanupStatus } from '@rainver/protocol'
 import { announcePluginStateChanged } from './pluginStateEvents'
 
@@ -41,6 +44,12 @@ interface PluginListItem {
 type ActionState = Record<string, 'idle' | 'loading' | 'success' | 'error' | 'cleanup_failed'>
 
 export default function PluginsPage() {
+  const { activeSpaceId, preferredSpaceId, userId } = useSpace()
+  const spaceId = activeSpaceId ?? preferredSpaceId
+  return spaceId ? <ScopedPluginsPage key={JSON.stringify([userId, spaceId])} spaceId={spaceId} /> : null
+}
+
+function ScopedPluginsPage({ spaceId }: { spaceId: string }) {
   const { t } = useAppTranslation()
   const [items, setItems] = useState<PluginListItem[]>([])
   const [loading, setLoading] = useState(true)
@@ -49,7 +58,8 @@ export default function PluginsPage() {
 
   const load = useCallback(() => {
     setLoading(true)
-    pluginsApi.list()
+    setError(null)
+    pluginsApi.list({ spaceId })
       .then((data: { items?: unknown[] }) => {
         setItems((data?.items ?? []) as PluginListItem[])
         setLoading(false)
@@ -58,7 +68,7 @@ export default function PluginsPage() {
         setError(err instanceof Error ? err.message : t('management_ui.plugins.load_failed'))
         setLoading(false)
       })
-  }, [t])
+  }, [spaceId, t])
 
   useEffect(() => { load() }, [load])
 
@@ -70,7 +80,7 @@ export default function PluginsPage() {
   const handleInstall = async (pluginId: string) => {
     setAction(pluginId, 'loading')
     try {
-      await pluginsApi.install(pluginId)
+      await pluginsApi.install(pluginId, undefined, { spaceId })
       setAction(pluginId, 'success')
       load()
       notifyShell()
@@ -82,7 +92,7 @@ export default function PluginsPage() {
   const handleEnable = async (pluginId: string) => {
     setAction(pluginId, 'loading')
     try {
-      await pluginsApi.enable(pluginId)
+      await pluginsApi.enable(pluginId, {}, undefined, { spaceId })
       setAction(pluginId, 'success')
       load()
       notifyShell()
@@ -94,7 +104,7 @@ export default function PluginsPage() {
   const handleDisable = async (pluginId: string) => {
     setAction(pluginId, 'loading')
     try {
-      await pluginsApi.disable(pluginId)
+      await pluginsApi.disable(pluginId, {}, undefined, { spaceId })
       setAction(pluginId, 'success')
       load()
       notifyShell()
@@ -107,7 +117,7 @@ export default function PluginsPage() {
   const handleRetryCleanup = async (pluginId: string) => {
     setAction(pluginId, 'loading')
     try {
-      const out = await pluginsApi.disable(pluginId) as { cleanup_pending?: boolean } | undefined
+      const out = await pluginsApi.disable(pluginId, {}, undefined, { spaceId }) as { cleanup_pending?: boolean } | undefined
       setAction(pluginId, out?.cleanup_pending ? 'cleanup_failed' : 'success')
       load()
       notifyShell()
@@ -117,130 +127,88 @@ export default function PluginsPage() {
   }
 
   return (
-    <div style={{ maxWidth: 720, margin: '32px auto', padding: '0 24px', fontFamily: 'inherit' }}>
-      <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 4 }}>{t('management_ui.plugins.title')}</h1>
-      <p style={{ color: '#666', marginBottom: 28, fontSize: 14 }}>
-        {t('management_ui.plugins.subtitle')}
-      </p>
+    <div className="mx-auto my-8 max-w-3xl space-y-6 px-4 sm:px-6">
+      <header>
+        <h1 className="text-xl font-semibold tracking-tight">{t('management_ui.plugins.title')}</h1>
+        <p className="mt-1 text-sm text-muted-foreground">{t('management_ui.plugins.subtitle')}</p>
+      </header>
 
-      {loading && <p style={{ color: '#888' }}>{t('management_ui.plugins.loading')}</p>}
-      {error && <p style={{ color: '#b71c1c' }}>{t('management_ui.plugins.error', { message: error })}</p>}
+      {loading && <p className="text-sm text-muted-foreground">{t('management_ui.plugins.loading')}</p>}
+      {error && <p role="alert" className="text-sm text-destructive">{t('management_ui.plugins.error', { message: error })}</p>}
 
       {!loading && items.length === 0 && (
-        <p style={{ color: '#888' }}>{t('management_ui.plugins.none')}</p>
+        <p className="text-sm text-muted-foreground">{t('management_ui.plugins.none')}</p>
       )}
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div className="space-y-4">
         {items.map(({ descriptor, effective, cleanup }) => (
-          <div key={descriptor.id} style={{
-            border: '1px solid #e0e0e0', borderRadius: 10, padding: '20px 24px',
-            background: '#fff',
-          }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
-                  <span style={{ fontWeight: 700, fontSize: 16 }}>{descriptor.name}</span>
-                  <span style={{
-                    fontSize: 11, fontWeight: 600, background: '#f5f5f5',
-                    color: '#666', borderRadius: 4, padding: '1px 7px',
-                    textTransform: 'capitalize',
-                  }}>
-                    {descriptor.category}
-                  </span>
-                  <span style={{
-                    fontSize: 11, color: '#999',
-                  }}>
-                    v{descriptor.version}
-                  </span>
+          <Card key={descriptor.id} className="mb-0">
+            <div className="flex flex-col gap-4 sm:flex-row sm:justify-between">
+              <div className="min-w-0 flex-1">
+                <div className="mb-1 flex flex-wrap items-center gap-2">
+                  <h2 className="font-semibold text-foreground">{descriptor.name}</h2>
+                  <Badge variant="muted" className="capitalize">{descriptor.category}</Badge>
+                  <span className="text-xs text-muted-foreground">v{descriptor.version}</span>
                   {descriptor.lifecycle_status === 'deprecated' && (
-                    <span style={{
-                      fontSize: 11, fontWeight: 600, background: '#fff3e0',
-                      color: '#e65100', borderRadius: 4, padding: '1px 7px',
-                    }}>
-                      {t('management_ui.plugins.deprecated')}
-                    </span>
+                    <Badge variant="warning">{t('management_ui.plugins.deprecated')}</Badge>
                   )}
                 </div>
-                <p style={{ margin: 0, color: '#555', fontSize: 14, lineHeight: 1.5 }}>
+                <p className="text-sm text-muted-foreground">
                   {descriptor.description}
                 </p>
-                <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  <span style={{ fontSize: 12, color: '#888' }}>
+                <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted-foreground">
+                  <span>
                     {descriptor.scope === 'user' ? t('management_ui.plugins.scope_account') : t('management_ui.plugins.scope_space')}
                   </span>
                   {effective.installed && (
-                    <span style={{ fontSize: 12, color: '#4caf50' }}>
+                    <span className="text-success">
                       {effective.installed_version ? t('management_ui.plugins.installed_version', { version: effective.installed_version }) : t('management_ui.plugins.installed')}
                     </span>
                   )}
                   {!effective.installed && (
-                    <span style={{ fontSize: 12, color: '#999' }}>{t('management_ui.plugins.not_installed')}</span>
+                    <span>{t('management_ui.plugins.not_installed')}</span>
                   )}
                   {effective.enabled && effective.enabled_at && (
-                    <span style={{ fontSize: 12, color: '#4caf50' }}>
+                    <span className="text-success">
                       {t('management_ui.plugins.enabled_on', { date: formatDate(effective.enabled_at) })}
                     </span>
                   )}
                   {!effective.enabled && effective.disabled_at && (
-                    <span style={{ fontSize: 12, color: '#999' }}>
-                      {t('management_ui.plugins.disabled_on', { date: formatDate(effective.disabled_at) })}
-                    </span>
+                    <span>{t('management_ui.plugins.disabled_on', { date: formatDate(effective.disabled_at) })}</span>
                   )}
                   {!effective.enabled && !effective.disabled_at && (
-                    <span style={{ fontSize: 12, color: '#bbb' }}>{t('management_ui.plugins.not_yet_enabled')}</span>
+                    <span>{t('management_ui.plugins.not_yet_enabled')}</span>
                   )}
                 </div>
               </div>
 
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-                <span style={{
-                  width: 8, height: 8, borderRadius: '50%', display: 'inline-block',
-                  background: effective.enabled ? '#4caf50' : effective.installed ? '#90a4ae' : '#bdbdbd',
-                }} />
-                <span style={{ fontSize: 13, color: effective.enabled ? '#2e7d32' : '#757575', fontWeight: 500 }}>
+              <div className="flex flex-wrap items-center gap-2 self-start sm:max-w-xs">
+                <Badge variant={effective.enabled ? 'success' : 'muted'}>
                   {effective.enabled ? t('management_ui.plugins.state_enabled') : effective.installed ? t('management_ui.plugins.installed') : t('management_ui.plugins.state_available')}
-                </span>
+                </Badge>
                 {!effective.installed ? descriptor.operation_api===1 ? (
                   <span className="text-sm text-muted-foreground">{t('plugin_ui.offline')}</span>
                 ) : (
-                  <button
+                  <Button size="sm" type="button"
                     onClick={() => handleInstall(descriptor.id)}
                     disabled={actions[descriptor.id] === 'loading'}
-                    style={{
-                      padding: '6px 14px', borderRadius: 6, border: 'none',
-                      background: '#1976d2', color: '#fff', cursor: 'pointer',
-                      fontSize: 13, fontWeight: 500,
-                      opacity: actions[descriptor.id] === 'loading' ? 0.6 : 1,
-                    }}
                   >
                     {actions[descriptor.id] === 'loading' ? t('management_ui.plugins.installing') : t('management_ui.plugins.install')}
-                  </button>
+                  </Button>
                 ) : effective.enabled ? (
-                  <button
+                  <Button size="sm" type="button" variant="outline"
                     onClick={() => handleDisable(descriptor.id)}
                     disabled={actions[descriptor.id] === 'loading'}
-                    style={{
-                      padding: '6px 14px', borderRadius: 6, border: '1px solid #e0e0e0',
-                      background: '#fafafa', cursor: 'pointer', fontSize: 13, fontWeight: 500,
-                      opacity: actions[descriptor.id] === 'loading' ? 0.6 : 1,
-                    }}
                   >
                     {actions[descriptor.id] === 'loading' ? t('management_ui.plugins.disabling') : t('management_ui.plugins.disable')}
-                  </button>
+                  </Button>
                 ) : (
-                  <button
+                  <Button size="sm" type="button"
                     onClick={() => handleEnable(descriptor.id)}
                     disabled={actions[descriptor.id] === 'loading' || !!cleanup}
-                    style={{
-                      padding: '6px 14px', borderRadius: 6, border: 'none',
-                      background: '#1976d2', color: '#fff',
-                      fontSize: 13, fontWeight: 500,
-                      opacity: actions[descriptor.id] === 'loading' || cleanup ? 0.6 : 1,
-                      cursor: cleanup ? 'not-allowed' : 'pointer',
-                    }}
                   >
                     {actions[descriptor.id] === 'loading' ? t('management_ui.plugins.enabling') : t('management_ui.plugins.enable')}
-                  </button>
+                  </Button>
                 )}
               </div>
             </div>
@@ -258,15 +226,15 @@ export default function PluginsPage() {
               <p className="mt-2 mb-0 text-xs text-destructive">{t('management_ui.plugins.cleanup_retry_failed')}</p>
             )}
             {actions[descriptor.id] === 'error' && (
-              <p style={{ margin: '8px 0 0', color: '#b71c1c', fontSize: 13 }}>
+              <p className="mt-2 text-sm text-destructive">
                 {t('management_ui.plugins.action_failed')}
               </p>
             )}
-          </div>
+          </Card>
         ))}
       </div>
 
-      <p style={{ marginTop: 32, fontSize: 12, color: '#bbb' }}>
+      <p className="text-xs text-muted-foreground">
         {t('management_ui.plugins.footer')}
       </p>
     </div>

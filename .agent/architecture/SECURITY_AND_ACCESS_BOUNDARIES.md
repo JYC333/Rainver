@@ -186,7 +186,9 @@ A summary viewer is withheld, on these surfaces:
     input, upstream node outputs, attachment manifest, definition of done,
     acceptance criteria); budget, source and policy metadata stay;
   - on `/trace`, the step input/output summaries, event summaries, and
-    error text and metadata;
+    error text and metadata; Artifact and Proposal summaries retain their
+    collection read gates and title withholding. Each collection selects its
+    trace rows in one ordered query, without crossing pagination snapshots;
   - the free-text and JSON detail of attempts, supervisor decisions,
     evaluations, finalizations and verifications;
   - a Task's run list;
@@ -1094,7 +1096,15 @@ read does not mark the conversation for isolation. Every later Run of that
 conversation inherits the read's taint regardless of its Host or isolation, so
 it too refuses outward writes and materializes nothing, and `memory.remember` /
 `memory.revise` refuse outright: mail-derived history never leaves its Project
-through Memory or an outward action. Copies keep it too: a Room reference
+through Memory or an outward action. For a person's explicit request to cancel
+a duplicate, a manual Run may cancel a shared, unstarted Task within the
+verified Gmail Project with current Project-writer authority. Under the Task
+row lock, the core checks for execution and publication dependencies and
+requires the original mailbox owners' live Project consents. The reason
+`Duplicate task` bounds event text. The person's request supplies the intent
+and the server performs no duplicate check. See
+[Core Task lifecycle boundary](PROJECT_WORK.md#core-task-lifecycle-boundary).
+Copies keep the taint too: a Room reference
 from such a conversation is fenced as untrusted and records the reads and the
 source Project in its provenance, the owner's shared excerpt records them on
 its message, and every later Run of the conversation they land in inherits
@@ -1110,7 +1120,33 @@ delivery Run's own audience, rechecked by one rule at start, claim, every
 Gmail send, release and settlement — as a scheduled turn of that same
 conversation; migration `0040_gmail_project_scope_reconfirm` ended the consents
 and cards given before this scope and paused digests until their owner
-confirms them again. A conversation in which a
+confirms them again. An application-update automation
+([ADR 0034](../decisions/0034-gmail-application-updates.md)) is a digest that
+delivers only into the owner's own private conversation (never a Room, whose
+history a later member reads), pinned to the Agent and the model its card showed —
+chosen from what the owner's own conversation offers and launched as that
+conversation launches its turns (ADR 0036, 0037) — applied strictly: an
+unavailable model stops it, and mail is released only to a Run on exactly the
+frozen runtime, Provider, launch-bound lease model and session options, for the
+request's own current launch; no proof of which model answered is required, and
+once the runtime explicitly reports a fallback (its adapter catalog's declared
+notice) the round reads and records nothing more and posts nothing, its owner
+getting one notice that what was handed out before cannot be taken back
+(ADR 0037), counted from the report's receipt and enforced at each release's, fact's
+and flag's commit boundary (a step that committed first stays; nothing sent is
+withdrawn); an automation confirmed under an
+earlier commitment (a ModelProvider isolated to its lease, or a runtime-native one
+gated on proof of the answering model) waits for a new card instead of being
+widened, and none of its queued or running rounds starts, reads, records or settles; the shared vendor-session safety
+of ADR 0036 §11–§16 still applies to every launch) and to the rule version in force
+(a new card ends the earlier version's Run, counting no attempt); its Run may make one write after reading
+the mail, `plugin.applications.mail_fact.apply`, admitted only for a message
+frozen for and released to it, an effect the owner allowed and no sensitive read
+besides the owner's own mail of that Project, and never a person's decision,
+deletion or anything sent. Its ledger (`mail_fact.list`) is answered only to the
+owner or into their private conversation, and a Run that receives it (or the
+automation's `.list`) holds it as a sensitive read of the owner's mail, so its
+outward writes stay refused; only a new card resumes it. A conversation in which a
 Run read sensitive **plugin** data carries it forward: later Runs inherit the
 taint, are owner-only and launch isolated or fail before launch. A direct chat
 that may read is admitted into its own Session's host container (thread,

@@ -273,6 +273,7 @@ describe("restoring a re-added specialist's host state through the real daemon",
       // Upgraded control plane, same daemon process: it journals, but has not drained.
       await db.pool.query(`UPDATE hosts SET capabilities_json = '{"managed_workspace_operations":1,"legacy_archive_drain":1}'::jsonb WHERE id = $1`, [HOST]);
       await readdWithRestore(host);
+      link.nextDrain("timeout");
       expect(await attemptRestore()).toBe("deferred");
       expect(link.sent.filter((item) => item.type === "managed_workspace_restore")).toHaveLength(0);
       // The duplicate finishes (nothing left to move); drained, the restore runs and nothing can undo it.
@@ -344,6 +345,7 @@ describe("restoring a re-added specialist's host state through the real daemon",
       expect(await unfenced()).toBe(true);
       // The disk recovers, but the duplicate still runs: the drain has not answered, so nothing is released.
       await rm(marker, { recursive: true });
+      link.nextDrain("timeout");
       expect(await restoreDirectManagedWorkspace(db.pool, input)).toEqual({ ok: false, changed: false, error: "host_timeout" });
       expect(await unfenced()).toBe(true);
       expect(link.sent.filter((item) => item.type === "managed_workspace_restore")).toHaveLength(0);

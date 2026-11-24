@@ -50,6 +50,10 @@ imports; a Space that already imported it still sees the entry, without the
 snapshot body. Existing target copies and import
 provenance are not deleted or modified.
 
+Import responses for an existing copy withhold the snapshot hash after
+revocation, including responses replayed with an idempotency key. The original
+importer can still see the ID of their private copy.
+
 ## Non-Goals
 
 - no anonymous or public catalog

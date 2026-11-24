@@ -14,11 +14,13 @@ Usage from the repository root:
   ./ops/scripts/db/squash-migrations.sh convert --host --source DIR --target DIR
   ./ops/scripts/db/squash-migrations.sh cutover --mode test [--archive DIR]
 cutover performs build/check, stop, backup, conversion and restore of previously running apps.
-cutover automatically matches source/target archives by migration checksums.
---archive overrides discovery. cutover executes conversion, not a preview.
+cutover matches core archives and discovers merged plugin migrations in the selected image.
+--source can point prepare at a bundled plugin's migrations directory.
+--archive overrides core archive discovery.
+cutover executes conversion, not a preview.
 Convert previews by default. To apply, add --apply --offline --backup FILE.
 Prepare runs locally with Node 24 and the built server libraries (pnpm --dir server run build).
-Convert defaults to a one-shot server container using the selected mode's existing .server.env.
+Convert uses a one-shot server container and the database-owner channel in the selected mode.
 --host uses SERVER_DATABASE_URL (or DATABASE_URL) for any reachable PostgreSQL database.
 prepare/convert do not bootstrap services, generate environment files, back up or stop applications.
 Keep the original chain archive; see server/migrations/README.md before applying.
@@ -79,6 +81,7 @@ if [[ "${ARGS[0]}" == "prepare" || "$HOST_MODE" == true ]]; then
   fi
   if [[ "${ARGS[0]}" == "convert" ]]; then
     export SERVER_DATABASE_URL="${SERVER_DATABASE_URL:-${DATABASE_URL:-}}"
+    export SERVER_OFFICIAL_PLUGINS_DIR="${SERVER_OFFICIAL_PLUGINS_DIR:-$REPO_ROOT/server/dist/official-plugins}"
   fi
   if [[ "${ARGS[0]}" == "prepare" ]]; then
     local_compose_init "$MODE"
@@ -97,6 +100,7 @@ fi
 if [[ ! -d "$SOURCE_DIR" || ! -d "$TARGET_DIR" ]]; then
   echo "ERROR: convert requires existing --source and --target directories" >&2; exit 2
 fi
+local_compose_lock_instance "converting migrations"
 MOUNTS=(-v "$SCRIPT_DIR/migration-squash.mjs:/app/ops/scripts/db/migration-squash.mjs:ro")
 for path in "$SOURCE_DIR" "$TARGET_DIR" "$BACKUP_FILE"; do
   [[ -z "$path" ]] && continue
@@ -107,5 +111,8 @@ for path in "$SOURCE_DIR" "$TARGET_DIR" "$BACKUP_FILE"; do
   fi
   MOUNTS+=(-v "$path:$path:ro")
 done
-exec "${COMPOSE[@]}" run --rm -T --no-deps "${MOUNTS[@]}" \
+command=(run --rm -T --no-deps)
+[[ "$MODE" != prod || ! "${RAINVER_IMAGE_TAG:-}" =~ ^sha-[0-9a-f]{40}$ ]] || command+=(--pull never)
+owner_url="$(local_compose_server_owner_database_url)"
+SERVER_DATABASE_URL="$owner_url" exec "${COMPOSE[@]}" "${command[@]}" -e SERVER_DATABASE_URL "${MOUNTS[@]}" \
   server node /app/ops/scripts/db/migration-squash.mjs "${ARGS[@]}"

@@ -31,7 +31,7 @@ import { PgProposalApplyService } from "../src/modules/proposals/applyService.js
 import { PgSessionRepository } from "../src/modules/sessions/repository.js";
 import { PgRunRepository } from "../src/modules/runs/repository.js";
 import { registerRunLiveInput } from "../src/modules/runs/liveInput.js";
-import { deliverRunLiveInput, liveInputDeliveryState, RUN_LIVE_INPUT_DELIVERY_JOB, settleOrphanedRunLiveInputs } from "../src/modules/runs/liveInputService.js";
+import { deliverRunLiveInput, liveInputDeliveryState, recordRunLiveInput, RUN_LIVE_INPUT_DELIVERY_JOB, settleDeferredRunLiveInputs, settleOrphanedRunLiveInputs, takeDeferredRunLiveInputs } from "../src/modules/runs/liveInputService.js";
 import { operationRuntime } from "../src/modules/systemActions/operations/runtime.js";
 import { sessionActor } from "../src/modules/systemActions/operations/actor.js";
 
@@ -1858,6 +1858,34 @@ describe("Invocation Delivery and Snapshot persistence", () => {
         await expect(deliverRunLiveInput(db.pool, liveConfig, identity, RUN, delivery.id, waiting.message_id)).resolves.toBe("injected");
         expect(received).toHaveLength(3);
         expect(received[2]).toContain("Delivered by the Job");
+
+        // Parking waits for the accepted message and its event to commit. The resume can
+        // collect it even if the original channel still exists and the Job gets there first.
+        const sender = await db.pool.connect();
+        const round = { round_id: randomUUID(), depends_on_run_ids: [randomUUID()] };
+        let park: Promise<unknown> | undefined;
+        try {
+          await sender.query("BEGIN");
+          const pid = (await sender.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
+          const saved = await recordRunLiveInput(sender, liveConfig, identity, RUN, delivery.id, "Accepted before parking");
+          park = db.pool.query(`UPDATE runs SET status='waiting_for_dependency', output_json=jsonb_build_object(
+            'waiting_for_results', $2::jsonb) WHERE id=$1`, [RUN, JSON.stringify({ status: "waiting", ...round })]);
+          await waitForBlockedBy(db.pool, pid);
+          await sender.query("COMMIT");
+          await park;
+          expect(await deliverRunLiveInput(db.pool, liveConfig, identity, RUN, delivery.id, saved.message_id)).toBe("deferred");
+          await withTransaction(db.pool, async tx => {
+            const taken = await takeDeferredRunLiveInputs(tx, { spaceId: SPACE, runId: RUN, projectId: null, roomId: null, round });
+            expect(taken?.carried).toEqual([{ message_id: saved.message_id, content: "Accepted before parking" }]);
+            await settleDeferredRunLiveInputs(new PgRunRepository(tx), SPACE, RUN, taken!);
+          });
+          expect(await liveInputDeliveryState(db.pool, SPACE, RUN, saved.message_id)).toBe("delivered_with_results");
+          expect(received).toHaveLength(3);
+        } finally {
+          await sender.query("ROLLBACK").finally(() => sender.release());
+          await park;
+          await db.pool.query(`UPDATE runs SET status='running', output_json=NULL WHERE id=$1`, [RUN]);
+        }
 
         // A claim with no outcome means an attempt died after handing the input over: it may have
         // arrived, so it is settled unconfirmed and never injected again.

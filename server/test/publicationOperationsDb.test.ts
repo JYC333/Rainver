@@ -71,12 +71,16 @@ describe('Publication operations on PostgreSQL',()=>{
   as(owner,target);const url=`/api/v1/publications/${publication}/import`,key=randomUUID();
   const imported=await send(url,{},key);expect(imported.statusCode,imported.body).toBe(201);
   const copy=imported.json().data;
+  expect(copy.snapshot_hash).toMatch(/^[0-9a-f]{64}$/);
   expect((await db.pool.query('SELECT title,visibility,owner_user_id,space_id FROM tasks WHERE id=$1',[copy.imported_resource_id])).rows[0]).toEqual({title:'Private immutable snapshot',visibility:'private',owner_user_id:owner,space_id:target});
   expect((await send(url,{},key)).json()).toEqual(imported.json());
   as(other,target);const colleague=await send(url);expect(colleague.statusCode,colleague.body).toBe(201);expect(colleague.json().data.imported_resource_id).toBeNull();
   as(owner);const revoked=await send(`/api/v1/publications/${publication}/revoke`);expect(revoked.statusCode,revoked.body).toBe(200);
   as(owner,target);expect((await app.inject({method:'GET',url:`/api/v1/publications/${publication}`})).json().snapshot.payload).toEqual({});
-  expect((await send(url)).json().data.imported_resource_id).toBe(copy.imported_resource_id);
+  expect((await send(url)).json().data).toMatchObject({imported_resource_id:copy.imported_resource_id,snapshot_hash:null});
+  expect((await send(url,{},key)).json().data).toMatchObject({imported_resource_id:copy.imported_resource_id,snapshot_hash:null});
+  as(other,target);
+  expect((await send(url)).json().data).toMatchObject({imported_resource_id:null,snapshot_hash:null});
  });
  it('imports ordinary Memory through its canonical writer with user confirmation provenance and refuses Agent persona types',async()=>{
   const memory=randomUUID();

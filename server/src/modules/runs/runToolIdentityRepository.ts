@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { Queryable } from "../routeUtils/common.js";
 import type { RunRecord } from "./repository.js";
 
@@ -19,6 +19,13 @@ interface RunToolIdentity {
   run_id: string;
   space_id: string;
   expires_at: string;
+  /**
+   * The launch this token was issued for, stored with the token in the same statement (`issue`). It is the
+   * caller's launch for the request's whole life, whichever launch the Run's attempt names meanwhile: a relaunch
+   * issues a new token for its own launch (revoking this one), and launch-bound work compares it with the Run's
+   * current launch (ADR 0034). A token without a launch never resolves.
+   */
+  launch_id: string;
 }
 
 function runToolTokenDigest(token: string): string {
@@ -38,6 +45,7 @@ interface RunToolIdentityPort {
     run: Pick<RunRecord, "id" | "space_id">,
     ttlMs: number,
     skillContentHash?: string | null,
+    launchId?: string,
   ): Promise<string>;
   revoke(runId: string): Promise<void>;
 }
@@ -50,25 +58,33 @@ export class PgRunToolIdentityRepository implements RunToolIdentityPort {
    * behind. A Supervisor retry re-executes the same run id in a fresh
    * process: the new attempt must get a working token, and the old one must
    * stop working the moment it does.
+   *
+   * `launchId` is the launch nonce the token is for, generated before the token so that both are written
+   * together: there is no moment at which the new token exists without its launch, or resolves to the launch
+   * the attempt still names from before (the nonce is bound on the attempt only after this, just before the
+   * frame leaves). Without one the token gets a fresh nonce no attempt is bound to: it serves ordinary tools,
+   * and launch-bound work refuses it.
    */
   async issue(
     run: Pick<RunRecord, "id" | "space_id">,
     ttlMs: number,
     skillContentHash: string | null = null,
+    launchId: string = randomUUID(),
   ): Promise<string> {
     const token = randomBytes(32).toString("base64url");
     const now = new Date();
     const expiresAt = new Date(now.getTime() + Math.max(1, ttlMs));
     await this.db.query(
-      `INSERT INTO run_tool_identities (run_id, space_id, token_digest, skill_content_hash, expires_at, revoked_at, created_at)
-       VALUES ($1, $2, $3, $4, $5::timestamptz, NULL, $6::timestamptz)
+      `INSERT INTO run_tool_identities (run_id, space_id, token_digest, skill_content_hash, launch_id, expires_at, revoked_at, created_at)
+       VALUES ($1, $2, $3, $4, $7, $5::timestamptz, NULL, $6::timestamptz)
        ON CONFLICT (run_id) DO UPDATE
          SET token_digest = EXCLUDED.token_digest,
              skill_content_hash = EXCLUDED.skill_content_hash,
+             launch_id = EXCLUDED.launch_id,
              expires_at = EXCLUDED.expires_at,
              revoked_at = NULL,
              created_at = EXCLUDED.created_at`,
-      [run.id, run.space_id, runToolTokenDigest(token), skillContentHash, expiresAt.toISOString(), now.toISOString()],
+      [run.id, run.space_id, runToolTokenDigest(token), skillContentHash, expiresAt.toISOString(), now.toISOString(), launchId],
     );
     return token;
   }
@@ -77,17 +93,19 @@ export class PgRunToolIdentityRepository implements RunToolIdentityPort {
    * The identity this token names, if it is live and belongs to `runId`.
    *
    * The Run id is matched rather than trusted from the token so a token issued
-   * for one Run cannot be replayed against another's route.
+   * for one Run cannot be replayed against another's route. The launch is the
+   * one stored with the token, never read from the Run's attempt.
    */
   async resolve(token: string, runId: string): Promise<RunToolIdentity | null> {
     if (!token) return null;
     const result = await this.db.query<RunToolIdentity>(
-      `SELECT run_id, space_id, expires_at
-         FROM run_tool_identities
-        WHERE token_digest = $1
-          AND run_id = $2
-          AND revoked_at IS NULL
-          AND expires_at > now()`,
+      `SELECT i.run_id, i.space_id, i.expires_at, i.launch_id
+         FROM run_tool_identities i
+        WHERE i.token_digest = $1
+          AND i.run_id = $2
+          AND i.launch_id IS NOT NULL
+          AND i.revoked_at IS NULL
+          AND i.expires_at > now()`,
       [runToolTokenDigest(token), runId],
     );
     return result.rows[0] ?? null;

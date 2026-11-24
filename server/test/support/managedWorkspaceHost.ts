@@ -45,7 +45,7 @@ export async function loadManagedDaemon(): Promise<ManagedDaemon> {
  */
 export type HostFault = "none" | "offline" | "crash_after_workspace" | "crash_after_profile" | "lost_reply" | "hold" | "in_flight" | "ack_after_duplicate";
 
-/** How long a drain request waits before the registry would answer `host_timeout`. */
+/** Short deadline for a test that deliberately holds an in-flight archive. */
 const DRAIN_TIMEOUT_MS = 200;
 
 /**
@@ -63,7 +63,7 @@ export function connectManagedHost(host: ManagedDaemon) {
   const running: Promise<unknown>[] = [];
   const hold = () => { if (!running.length) gate = new Promise<void>((resolve) => { openGate = resolve; }); return { beforeLegacyMove: () => gate }; };
   const drains: Array<ManagedWorkspaceResult> = [];
-  let drainFault: "none" | "offline" = "none";
+  let drainFault: "none" | "offline" | "timeout" = "none";
   const spy = vi.spyOn(sharedHostConnectionRegistry, "requestManagedWorkspaceAction").mockImplementation(async (_hostId, type, frame) => {
     sent.push({ type, frame: frame as ManagedFrame });
     const action = type === "managed_workspace_archive" ? "archive" as const : "restore" as const;
@@ -105,15 +105,28 @@ export function connectManagedHost(host: ManagedDaemon) {
   // The daemon's own drain: it answers only once every identity-less request it admitted has finished.
   const drain = vi.spyOn(sharedHostConnectionRegistry, "drainLegacyManagedWorkspaceArchives").mockImplementation(async () => {
     const current = drainFault; drainFault = "none";
-    const answer: ManagedWorkspaceResult = current === "offline" ? { ok: false, changed: false, error: "host_offline" }
-      : await Promise.race([
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      let answer: ManagedWorkspaceResult;
+      if (current === "offline") {
+        answer = { ok: false, changed: false, error: "host_offline" };
+      } else {
         // As the daemon's dispatch answers it: a drain that could not make the closure durable is `io_error`.
-        host.drainLegacyArchives().then(() => ({ ok: true, changed: false, error: null }),
-          (error: unknown) => ({ ok: false, changed: false, error: error instanceof Error ? error.message : String(error), error_code: "io_error" as const })),
-        new Promise<ManagedWorkspaceResult>((resolve) => setTimeout(() => resolve({ ok: false, changed: false, error: "host_timeout" }), DRAIN_TIMEOUT_MS)),
-      ]);
-    drains.push(answer);
-    return answer;
+        const response = host.drainLegacyArchives().then<ManagedWorkspaceResult, ManagedWorkspaceResult>(
+          () => ({ ok: true, changed: false, error: null }),
+          (error: unknown) => ({ ok: false, changed: false, error: error instanceof Error ? error.message : String(error), error_code: "io_error" }),
+        );
+        answer = current === "timeout"
+          ? await Promise.race([response, new Promise<ManagedWorkspaceResult>((resolve) => {
+              timer = setTimeout(() => resolve({ ok: false, changed: false, error: "host_timeout" }), DRAIN_TIMEOUT_MS);
+            })])
+          : await response;
+      }
+      drains.push(answer);
+      return answer;
+    } finally {
+      clearTimeout(timer);
+    }
   });
   const online = vi.spyOn(sharedHostConnectionRegistry, "isOnline").mockReturnValue(true);
   return {
@@ -121,7 +134,7 @@ export function connectManagedHost(host: ManagedDaemon) {
     /** Every drain answer, in order. */
     drains,
     next(value: HostFault) { fault = value; },
-    nextDrain(value: "offline") { drainFault = value; },
+    nextDrain(value: "offline" | "timeout") { drainFault = value; },
     /** Delivers requests the network held, after whatever happened since. */
     async release() { const out = []; for (const deliver of held.splice(0)) out.push(await deliver()); return out; },
     /** Lets the requests the daemon is still running finish, and returns what each did. */

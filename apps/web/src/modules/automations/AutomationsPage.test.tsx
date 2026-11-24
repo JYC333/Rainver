@@ -179,7 +179,9 @@ describe('AutomationsPage', () => {
     )
 
     await user.click(await screen.findByRole('button', { name: /Run now/ }))
-    await waitFor(() => expect(automationsApiMock.fire).toHaveBeenCalledWith('automation-1'))
+    await waitFor(() => expect(automationsApiMock.fire).toHaveBeenCalledWith(
+      'automation-1', undefined, undefined, { spaceId: 'space-1', signal: expect.any(AbortSignal) },
+    ))
   })
 
   it("shows another member's automation as stop-only, without its content", async () => {

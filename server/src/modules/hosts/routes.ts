@@ -667,6 +667,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       // (the ACP registry). A heartbeat cannot arrive before hello, so this is
       // always the connected host's own kind by the time it is read.
       let probeHostKind: ProbeHostKind = "remote";
+      let acknowledgesRunCompletion = false;
       const hosts = hostRepositoryFromConfig(context.config);
       const frameSink: HostFrameSink = {
         send: (frame) => socket.send(JSON.stringify(frame)),
@@ -755,8 +756,11 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
               }
               // Revoked while this hello was in flight: the registry has
               // closed the socket; no acknowledgement, no connection.
-              if (!sharedHostConnectionRegistry.registerConnection(host.id, frameSink, frame.capabilities_json.sources_execution === "isolated-v1")) return;
-              frameSink.send({ type: "hello_ack", host_id: host.id, runtime_probes: acpRuntimeProbes(probeHostKind) });
+              acknowledgesRunCompletion = frame.capabilities_json.run_completion_ack === 1;
+              if (!sharedHostConnectionRegistry.registerConnection(host.id, frameSink, frame.capabilities_json.sources_execution === "isolated-v1", acknowledgesRunCompletion)) return;
+              frameSink.send({ type: "hello_ack", host_id: host.id, runtime_probes: acpRuntimeProbes(probeHostKind),
+                ...(acknowledgesRunCompletion ? { run_completion_ack: true as const } : {}) });
+              if (acknowledgesRunCompletion) sharedHostConnectionRegistry.probeReconnectedRuns(host.id, frameSink);
               void reconcilePendingManagedWorkspaceArchives(getDbPool(context.config.databaseUrl!), host.id,context.config.workspaceRoot)
                 .catch(() => undefined);
               void wakeTaskBranchJobs(getDbPool(context.config.databaseUrl!), host.id)
@@ -808,6 +812,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
             case "stderr":
               sharedHostConnectionRegistry.receiveStderr(hostId, frame.run_id, frame.chunk, frame.launch_id);
               return;
+            case "run_reconnect_state":
+              if (acknowledgesRunCompletion) sharedHostConnectionRegistry.receiveReconnectedRun(hostId, frameSink, frame);
+              return;
             case "complete":
               sharedHostConnectionRegistry.receiveComplete(hostId, frame.run_id, {
                 exit_code: frame.exit_code,
@@ -818,6 +825,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
                 time_zone: frame.time_zone,
                 native_runtime_version: frame.native_runtime_version,
               }, frame.launch_id);
+              if (acknowledgesRunCompletion) frameSink.send({type: "run_completion_ack", run_id: frame.run_id, launch_id: frame.launch_id});
               return;
             case "task_run_settle_result":
             case "task_branch_delete_result":

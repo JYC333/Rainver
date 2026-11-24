@@ -85,6 +85,11 @@ export const ProposalOutSchema = z
       .strict()
       .optional(),
     incomplete_patch: z.boolean().optional(),
+    /**
+     * Its Agent and model are chosen on its card (ADR 0036): accepted only where that choice and the card revision are
+     * shown (the conversation card, the Proposal detail), never from a list.
+     */
+    chosen_on_card: z.literal(true).optional(),
     code_patch_decision: CodePatchDecisionReceiptSchema.optional(),
     skipped_changes: z.array(JsonObjectSchema).optional(),
     skipped_count: z.number().int().nonnegative().optional(),
@@ -113,6 +118,8 @@ export const ProposalAcceptResultTypeSchema = z.enum([
   "follow_up_task",
   "gmail_monitor",
   "gmail_digest",
+  "gmail_setup",
+  "gmail_read_delegation",
   "gmail_private_read",
   "gmail_private_check",
   "agent_version",

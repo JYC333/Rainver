@@ -227,7 +227,7 @@ export class DeploymentService {
     // remote result survives heartbeats for a day, and the operator may have
     // changed RAINVER_IMAGE_TAG in between.
     const sameChannel = observations?.remote
-      ? imageTag(server?.image_ref) === observations.remote.tag
+      ? (server?.configured_tag ?? imageTag(server?.image_ref)) === observations.remote.tag
       : false;
     return {
       observations,

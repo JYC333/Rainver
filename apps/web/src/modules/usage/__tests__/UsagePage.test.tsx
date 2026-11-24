@@ -301,8 +301,8 @@ describe('UsagePage', () => {
     render(<UsagePage />)
     expect((await screen.findAllByText('OpenAI')).length).toBeGreaterThan(0)
 
-    fireEvent.change(screen.getByLabelText('From'), { target: { value: '2025-01-01' } })
-    fireEvent.change(screen.getByLabelText('From'), { target: { value: '2026-06-01' } })
+    fireEvent.change(screen.getByLabelText('From (UTC)'), { target: { value: '2025-01-01' } })
+    fireEvent.change(screen.getByLabelText('From (UTC)'), { target: { value: '2026-06-01' } })
     expect((await screen.findAllByText('June Provider')).length).toBeGreaterThan(0)
     await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh usage' })).toBeEnabled())
 

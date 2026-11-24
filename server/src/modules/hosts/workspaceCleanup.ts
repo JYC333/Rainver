@@ -518,6 +518,7 @@ export async function refreshCleanupSummary(db:Queryable,workspaceId:string){
    await db.query(`UPDATE execution_workspaces w SET cleanup_state=CASE
      WHEN (inventory_json ? 'checkpoint_reconciliation_failed_at' OR inventory_json->>'reconciliation_error'='workspace_checkpoint_blocked') AND NOT COALESCE(${closedCheckpointHistorySql('w')},false) THEN 'blocked'
      WHEN EXISTS(SELECT 1 FROM jsonb_each(cleanup_json) r WHERE r.value->>'state'='blocked') THEN 'blocked'
+     WHEN COALESCE((inventory_json->>'quarantined_whole')::int,0)>0 THEN 'blocked'
      WHEN EXISTS(SELECT 1 FROM jsonb_each(cleanup_json) r WHERE r.value->>'state'='retry_wait') THEN 'retry_wait'
      WHEN NOT EXISTS(SELECT 1 FROM jsonb_each(cleanup_json) r WHERE r.value->>'state'<>'cleaned' AND NOT(COALESCE(r.value->>'kind','') IN ('local_preimages','run_history') AND r.value->>'state'='pending')) THEN 'cleaned'
      ELSE 'pending' END WHERE id=$1`,[workspaceId]);

@@ -180,6 +180,24 @@ describe('FinancePage', () => {
     expect(screen.getByText('entry dir-1')).toBeInTheDocument()
   })
 
+  it('loads older import pages and opens an unfinished batch without resetting the history', async () => {
+    const older = { ...importResult().import_source, id: 'older', source_name: 'April imports',
+      summary: { ...emptySummary, pending_mapping: 1 } }
+    const load = vi.fn()
+      .mockResolvedValueOnce({ imports: [], next_offset: 25 })
+      .mockResolvedValueOnce({ imports: [older] })
+    const get = vi.fn().mockResolvedValue(importResult({ import_source: older }))
+    const api = fakeApi({ listImports: load, getImport: get })
+    const Page = createFinancePage(makeHost(api))
+    render(<Page />)
+
+    fireEvent.click(await screen.findByText('Import'))
+    fireEvent.click(await screen.findByRole('button', { name: 'More imports' }))
+    fireEvent.click(await screen.findByRole('button', { name: /April imports/ }))
+    await waitFor(() => expect(get).toHaveBeenCalledWith('book-1', 'older'))
+    expect(load.mock.calls).toEqual([['book-1'], ['book-1', 25]])
+  })
+
   it('imports beancount text as proposed and reports the result', async () => {
     const api = fakeApi()
     await renderLoadedLedger(api)

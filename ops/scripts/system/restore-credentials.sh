@@ -37,30 +37,35 @@ if [[ -z "$ARCHIVE" || ! -f "$ARCHIVE" ]]; then
   echo "ERROR: credential archive not found: ${ARCHIVE:-<missing>}" >&2
   exit 1
 fi
-
 # A fresh replacement host may not have an active .env yet — restoring its
 # reviewed snapshot is one purpose of this command. In that case inspect the
 # Compose labels directly instead of requiring docker compose to parse a
 # missing env file.
-if [[ -f "$ENV_FILE" ]]; then
-  running_services="$("${COMPOSE[@]}" ps --services --filter status=running 2>/dev/null)" || {
-    echo "ERROR: unable to inspect running compose services for mode '$MODE'" >&2
-    exit 1
-  }
-else
-  running_services="$(docker ps \
-    --filter "label=com.docker.compose.project=$COMPOSE_PROJECT" \
-    --format '{{.Label "com.docker.compose.service"}}' 2>/dev/null)" || {
-    echo "ERROR: unable to inspect running Docker services for mode '$MODE'" >&2
-    exit 1
-  }
-fi
-for service in frontend server deployer; do
-  if [[ $'\n'"$running_services"$'\n' == *$'\n'"$service"$'\n'* ]]; then
-    echo "ERROR: app service '$service' is running; stop app services before credential restore" >&2
-    exit 1
+require_credential_restore_idle() {
+  if [[ -e "$ENV_FILE" && ! -f "$ENV_FILE" ]]; then
+    echo "ERROR: active environment path is not a regular file: $ENV_FILE" >&2
+    return 1
   fi
-done
+  if [[ -f "$ENV_FILE" ]]; then
+    local_compose_require_stopped_applications "credential restore"
+    return
+  fi
+
+  local active service
+  if ! active="$(docker ps --all \
+    --filter "label=com.docker.compose.project=$COMPOSE_PROJECT" \
+    --filter status=running --filter status=restarting --filter status=paused \
+    --format '{{.Label "com.docker.compose.service"}}' 2>/dev/null)"; then
+    echo "ERROR: unable to inspect active Docker services for mode '$MODE'" >&2
+    return 1
+  fi
+  for service in "${COMPOSE_APPLICATION_SERVICES[@]}"; do
+    if [[ $'\n'"$active"$'\n' == *$'\n'"$service"$'\n'* ]]; then
+      echo "ERROR: app service '$service' is active; stop app services before credential restore" >&2
+      return 1
+    fi
+  done
+}
 
 staging="$(mktemp -d -t rainver-credential-restore-XXXXXX)"
 trap 'rm -rf "$staging"' EXIT
@@ -87,6 +92,10 @@ if [[ ! -f "$staging/instance.env" || -L "$staging/instance.env" ]]; then
   echo "ERROR: credential archive is missing regular file instance.env" >&2
   exit 1
 fi
+[[ -d "$MODE_ROOT" ]] || install -d -m 700 "$MODE_ROOT"
+local_compose_lock_instance "restoring credential state"
+require_credential_restore_idle
+
 if [[ -e "$MODE_ROOT/secrets" && "$FORCE" != "true" ]]; then
   echo "ERROR: $MODE_ROOT/secrets already exists; re-run with --force to replace it" >&2
   exit 1
@@ -105,12 +114,13 @@ find "$new_secrets" -type d -exec chmod 700 {} +
 find "$new_secrets" -type f -exec chmod 600 {} +
 install -m 600 "$staging/instance.env" "$env_tmp"
 
+require_credential_restore_idle
 python3 "$SCRIPT_DIR/atomic_ops.py" replace-directory "$new_secrets" "$MODE_ROOT/secrets"
 new_secrets=""
 echo "[credential-restore] restored credential state to $MODE_ROOT/secrets"
 
 if [[ "$RESTORE_ENV" == "true" ]]; then
-  mv -f "$env_tmp" "$ENV_FILE"
+  python3 -c 'import os, sys; os.replace(sys.argv[1], sys.argv[2])' "$env_tmp" "$ENV_FILE"
   env_tmp=""
   chmod 600 "$ENV_FILE"
   echo "[credential-restore] explicitly restored active environment to $ENV_FILE"

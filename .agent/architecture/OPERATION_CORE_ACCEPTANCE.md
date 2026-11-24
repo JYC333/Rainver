@@ -4,11 +4,23 @@ Status: Plan 1 is complete within the scope and exclusions below. All four
 stages and the overall code/final documentation passed Claude/Antigravity dual
 review. Reviewed scope is `3e3af010` through `c3156a48` plus this documentation-only
 correction. Review approval is not evidence that reviewers ran these tests.
-This is permanent acceptance evidence, not authorization to deploy or a claim
-that the whole Operation Core Program is complete. Stage 1: `95d61d90`; stage 2:
+This permanent record covers the reviewed Plan 1 candidate. Stage 1: `95d61d90`; stage 2:
 `466f88ef`; stage 3: `2edce778`; stage 4: `c3156a48`. The accepted constraints remain
 [ADR 0028](../decisions/0028-operation-execution-core.md) and its
 [execution contract](OPERATION_EXECUTION_CONTRACT.md).
+
+## Program closeout
+
+The Operation Core implementation program is complete within its accepted
+scope. The execution contract and System Actions guide own P1. The
+[plugin platform contract and acceptance](OFFICIAL_OPTIONAL_MODULES.md#operation-platform-acceptance)
+owns P2, including the later invocation-role correction. P0 and P4 are
+documented in [ADR 0031](../decisions/0031-runtime-database-roles.md) and
+[ADR 0030](../decisions/0030-plugin-agent-data-access.md). Instance activation
+and unsupported sensitive-read paths remain in the
+[deferred register](../tasks/deferred-register.md). P5 and P7 closeout evidence
+is below. Applications product follow-ups and conditional plugin platform
+extensions have independent plans.
 
 ## P5 closeout
 
@@ -41,6 +53,26 @@ accepted for this bounded migration; no scavenger or backup-history rewrite is
 part of P5. Further lifecycle work requires its own scope. P5 completion does
 not authorize deployment or assert all forty protocol implementations are free
 of every possible defect.
+
+## P7 closeout
+
+Diary and Finance shipped as operation-manifest packages with existing pages
+wired to scoped Web operations. Their legacy routes and descriptors were
+removed. The packages retain their ids and existing enablement scopes.
+Diary is user-scoped, with human save/delete and Agent append through a reviewed
+Proposal. Finance is Space-scoped, with owner filtering and separate import
+and posting operations. See the [package contracts](OFFICIAL_OPTIONAL_MODULES.md#diary-package).
+
+The migration landed on dev at `aeb85954` and was included in master at
+`1af12fd38`. The unused legacy table copy was removed at `d1591b6d`; the
+installer creates the package schema and retains existing migration journals.
+The read-only inspection of `rainver-test` found the new schemas and no old
+Diary or Finance public tables. The page redesign remains deferred.
+
+The P7 landing passed 303 targeted server and 67 Web tests, Server and Web
+typechecks, and the Web build. The legacy copy removal passed 131 targeted
+server checks. Finance's test schema cleanup passed 78 targeted checks.
+These are repository checks and do not establish production deployment.
 
 ## Executable matrix
 
@@ -1479,7 +1511,7 @@ All 32 Host-, Location- and execution-host-owned write URLs are settled:
 20 formal core adapters (13 durable Host commands, 7 transactional) and 12
 exact exemptions. Inventory 636 = 327 legacy + 52 exemptions + 257 core. The
 exact list, the fourth-block boundary and the narrowings are in the
-[P5 plan](../plans/operation-core/05-core-module-operation-migration.md);
+[P5 plan](#p5-closeout);
 behaviour in [SYSTEM_ACTIONS](SYSTEM_ACTIONS.md#host-commands) and
 [hosts.md](../modules/hosts.md), section "Host commands".
 
@@ -3916,7 +3948,7 @@ configured; transport only), and that live Channel subscription and the
 connection-scoped Recipe/custom Source read routes stay registered. The
 Reading browser acceptance consumer's expectation changed from 410 to 404
 (not run here). P5 remains open with 100 entries; see the
-[plan front page](../plans/operation-core/05-core-module-operation-migration.md).
+[plan front page](#p5-closeout).
 
 ## P5 group 2 — Task / Board / Plan / Job (source parent `31e3bf58`, private checkpoint `b49c4f77` + three review repairs, final checkpoint `8d8a0e87`; local gate below, not green)
 

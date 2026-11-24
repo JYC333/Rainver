@@ -739,6 +739,7 @@ export const sourceHandlerVersions = pgTable("source_handler_versions", {
 	language: varchar({ length: 32 }).notNull(),
 	entrypoint: varchar({ length: 512 }).notNull(),
 	handlerArtifactId: varchar("handler_artifact_id", { length: 36 }),
+	handlerArtifactCleanupJson: jsonb("handler_artifact_cleanup_json"),
 	manifestJson: jsonb("manifest_json").notNull(),
 	inputSchemaJson: jsonb("input_schema_json"),
 	outputSchemaJson: jsonb("output_schema_json"),

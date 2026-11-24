@@ -24,7 +24,7 @@
  * and the Run that drafted it name what one person waits for in their own
  * mailbox, so no Space-shared visibility, grant or oversight role may read them.
  */
-export const OWNER_ONLY_PROPOSAL_TYPES: readonly string[] = Object.freeze(["gmail_monitor_create", "gmail_digest_create", "gmail_private_read", "gmail_private_check"]);
+export const OWNER_ONLY_PROPOSAL_TYPES: readonly string[] = Object.freeze(["gmail_monitor_create", "gmail_digest_create", "gmail_setup", "gmail_read_delegation", "gmail_private_read", "gmail_private_check"]);
 export const OWNER_ONLY_ALERT_KINDS: readonly string[] = Object.freeze(["gmail_monitor_matches"]);
 /** Agent tools whose pin makes a Run owner-only: they hand the owner's mail to the model (ADR 0032). */
 /**
@@ -32,7 +32,9 @@ export const OWNER_ONLY_ALERT_KINDS: readonly string[] = Object.freeze(["gmail_m
  * private conversation that may read their mail. A Room or mainline Run that may read keeps its
  * conversation's audience (ADR 0033 §6): its reply is for that audience.
  */
-export const OWNER_ONLY_RUN_TOOLS: readonly string[] = Object.freeze(["source.gmail.mail.read", "source.gmail.digest.read"]);
+export const OWNER_ONLY_RUN_TOOLS: readonly string[] = Object.freeze(["source.gmail.mail.read", "source.gmail.digest.read",
+  // A member's private Run reading mail delegated to them (ADR 0035 §4) is theirs alone, like the owner's own.
+  "source.gmail.delegated.read"]);
 
 /**
  * Where a resource's *additional* Project scopes live.

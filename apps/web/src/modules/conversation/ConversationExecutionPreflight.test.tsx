@@ -136,29 +136,28 @@ it('initializes a unique compatible CLI with strict four-field runtime in the so
   expect(body.runtime).toEqual({agent_id:'agent-1',runtime_profile_id:'runtime-1',runtime_key:'claude_cli',runtime_installation:'claude'})
   SESSION_OPERATION_SCHEMAS['conversation.execution.initialize'].input.parse({session_id:id,...body})
 })
-it('preselects an explicit preferred CLI among compatible candidates', async () => {
+it('displays the configured runtime and ignores raw Host installations', async () => {
   const response=draftResponse()
   response.available_runtime_profiles.push({...response.available_runtime_profiles[0]!,runtime_profile_id:null,runtime_key:'codex_cli',runtime_installation:'codex',preferred:false})
   vi.mocked(sessionsApi.executionContext).mockResolvedValue(response)
   panel();await environment()
-  const chooser=await screen.findByRole('button',{name:'CLI installation'})
-  await waitFor(()=>expect(screen.getByRole('button',{name:'Confirm execution context'})).toBeEnabled())
-  expect(chooser).toHaveTextContent('claude_cli')
-  fireEvent.click(chooser);fireEvent.click(screen.getByRole('option',{name:/codex_cli/}))
-  fireEvent.click(screen.getByRole('button',{name:'Confirm execution context'}))
-  await waitFor(()=>expect(sessionsApi.initializeExecution).toHaveBeenCalledOnce())
-  expect(vi.mocked(sessionsApi.initializeExecution).mock.calls[0]![1].runtime.runtime_profile_id).toBeNull()
+  expect(await screen.findByText('claude_cli · claude')).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'CLI installation' })).not.toBeInTheDocument()
+  expect(screen.queryByText(/codex_cli/)).not.toBeInTheDocument()
+  expect(screen.getByRole('link', { name: 'Runtime settings' })).toHaveAttribute('href', '/spaces/space-b/projects/project-1?settings=runtime')
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm execution context' }))
+  await waitFor(() => expect(sessionsApi.initializeExecution).toHaveBeenCalledOnce())
+  expect(vi.mocked(sessionsApi.initializeExecution).mock.calls[0]![1].runtime.runtime_profile_id).toBe('runtime-1')
 })
-it('uses the selected Files Folder without guessing another directory', async () => {
+it('uses the selected Files Folder with a runtime that defaults to a managed workspace', async () => {
   const response=draftResponse([{workspace_location_id:'loc',project_folder_id:'folder',folder_name:'Source',execution_host_id:'host-1',display_path:'/code',execution_ready:true}])
-  response.available_runtime_profiles[0]!.workspace_mode='location'
-  response.available_runtime_profiles[0]!.workspace_location_id='loc'
   vi.mocked(sessionsApi.executionContext).mockResolvedValue(response)
   panel({preferredProjectFolderId:'folder'});await environment()
   await waitFor(()=>expect(screen.getByRole('button',{name:'Working folder'})).toHaveTextContent('Source'))
   fireEvent.click(screen.getByRole('button',{name:'Confirm execution context'}))
   await waitFor(()=>expect(sessionsApi.initializeExecution).toHaveBeenCalledOnce())
   expect(vi.mocked(sessionsApi.initializeExecution).mock.calls[0]![1].selection.primary).toEqual({kind:'location',workspace_location_id:'loc'})
+  expect(vi.mocked(sessionsApi.initializeExecution).mock.calls[0]![1].runtime.runtime_profile_id).toBe('runtime-1')
 })
 it('takes Room defaults into a draft, searches candidates only after Add, and reports an explicit roster', async () => {
   const roster={...detail,room:{...detail.room,conversation_defaults_json:[{agent_id:'optional',participating:false,runtime_profile_id:null,session_config:[]}]},agent_members:[...detail.agent_members,{agent_id:'optional',agent_name:'Codex',role:'member'}]} as RoomDetail
@@ -206,6 +205,27 @@ it.each([true,false])('blocks writes for active run %s or worker identity',async
   await openSettings();await waitFor(()=>expect(screen.getByRole('button',{name:'Add Agent from Room'})).toBeDisabled())
   expect(sessionsApi.initializeExecution).not.toHaveBeenCalled()
 })
+it('allows selecting a model during dispatch while keeping participant edits locked', async () => {
+  const response = initializedResponse()
+  response.summary.dispatch_locked = true
+  vi.mocked(sessionsApi.executionContext).mockResolvedValue(response as never)
+  const onChange = vi.fn()
+  panel({ agentConfigurations: [{
+    id: 'agent-1', name: 'Project Agent', onChange, onSave: vi.fn(),
+    value: [{ id: 'model', category: 'model', type: 'select', value: 'old' }],
+    options: [{ id: 'model', name: 'Model', category: 'model', type: 'select', current_value: 'old', description: null,
+      options: ['old', 'new'].map(value => ({ value, name: value, description: null, group: null })) }],
+  }] })
+  await openSettings()
+  expect(await screen.findByRole('button', { name: 'Add Agent from Room' })).toBeDisabled()
+  const model = screen.getByRole('button', { name: 'Model' })
+  expect(model).toBeEnabled()
+  expect(screen.getByText(/Running and queued work keeps its model/)).toBeVisible()
+  fireEvent.click(model)
+  fireEvent.click(await screen.findByText('new'))
+  expect(onChange).toHaveBeenCalledWith([{ id: 'model', category: 'model', type: 'select', value: 'new' }])
+})
+
 it.each(['snapshot','committed'] as const)('submits a strict %s baseline without changing runtime identity',async mode=>{
   const response=initializedResponse() as ConversationExecutionPreflightResponse
   response.summary.primary={kind:'location',project_folder_id:'folder',workspace_location_id:'loc',display_path:'/code'}
@@ -294,6 +314,14 @@ it.each(['ambiguous', 'unavailable default', 'persisted'] as const)('uses server
     fireEvent.click(confirm)
     await waitFor(() => expect(sessionsApi.initializeExecution).toHaveBeenCalledOnce())
     expect(vi.mocked(sessionsApi.initializeExecution).mock.calls[0]![1].runtime.runtime_profile_id).toBe('runtime-1')
+  } else if (mode === 'ambiguous') {
+    expect(confirm).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: /CLI installation for/ }))
+    fireEvent.click(screen.getByRole('option', { name: 'codex_cli · codex' }))
+    expect(confirm).toBeEnabled()
+    fireEvent.click(confirm)
+    await waitFor(() => expect(sessionsApi.initializeExecution).toHaveBeenCalledOnce())
+    expect(vi.mocked(sessionsApi.initializeExecution).mock.calls[0]![1].runtime.runtime_profile_id).toBe('other')
   } else {
     expect(confirm).toBeDisabled()
     expect(sessionsApi.initializeExecution).not.toHaveBeenCalled()

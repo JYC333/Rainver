@@ -26,6 +26,8 @@ export interface PluginReadTaint {
    * existed (`sensitiveConversationReads` resolves those conservatively).
    */
   owner_user_id?: string | null;
+  /** Project consent verified at direct Gmail release. Inherited reads do not assert this provenance. */
+  gmail_scope?: { project_id: string; grant_id: string };
 }
 
 interface Queryable {
@@ -119,13 +121,20 @@ export function protectiveRunContextTaint(value: unknown, jsonType: string | nul
   };
 }
 
-/** Reads one Run's taint for its protections (`protectiveRunContextTaint`); `forUpdate` locks the Run row. */
+/**
+ * Reads one Run's taint for its protections (`protectiveRunContextTaint`). `forUpdate` locks the Run row
+ * for a taint writer. `forShare` holds it for a check that must stay true until commit: every taint writer
+ * (`persistRunContextTaint`) takes the row `FOR UPDATE`, so none can add a read meanwhile. A check inside an
+ * operation transaction uses `forShare` — the core's actor pin (`assertCurrentActor`) already holds the Run
+ * `FOR SHARE`, and taking it `FOR UPDATE` there would upgrade that lock, which deadlocks against a second
+ * call of the same Run or a release gate waiting for the row.
+ */
 export async function readRunContextTaint(
-  db: Queryable, spaceId: string, runId: string, options: { forUpdate?: boolean } = {},
+  db: Queryable, spaceId: string, runId: string, options: { forUpdate?: boolean; forShare?: boolean } = {},
 ): Promise<RunContextTaintSummary | null> {
   const row = (await db.query<{ taint: unknown; taint_type: string | null }>(
     `SELECT context_taint_json AS taint, jsonb_typeof(context_taint_json) AS taint_type
-       FROM runs WHERE id=$1 AND space_id=$2${options.forUpdate ? " FOR UPDATE" : ""}`,
+       FROM runs WHERE id=$1 AND space_id=$2${options.forUpdate ? " FOR UPDATE" : options.forShare ? " FOR SHARE" : ""}`,
     [runId, spaceId],
   )).rows[0];
   return protectiveRunContextTaint(row?.taint, row?.taint_type);
@@ -162,8 +171,10 @@ function mergePluginReads(values: readonly PluginReadTaint[]): PluginReadTaint[]
   for (const value of values) {
     if (!value || typeof value.plugin_id !== "string" || (value.data_class !== "personal" && value.data_class !== "sensitive")) continue;
     const owner = value.owner_user_id === undefined ? undefined : typeof value.owner_user_id === "string" ? value.owner_user_id : null;
-    seen.set(`${value.plugin_id}\u0000${value.data_class}\u0000${owner === undefined ? "\u0001" : owner ?? ""}`, {
+    const scope = value.gmail_scope;
+    seen.set(`${value.plugin_id}\u0000${value.data_class}\u0000${owner === undefined ? "\u0001" : owner ?? ""}\u0000${scope?.project_id ?? ""}\u0000${scope?.grant_id ?? ""}`, {
       plugin_id: value.plugin_id, data_class: value.data_class, ...(owner === undefined ? {} : { owner_user_id: owner }),
+      ...(scope ? { gmail_scope: scope } : {}),
     });
   }
   return [...seen.values()].sort((a, b) => a.plugin_id.localeCompare(b.plugin_id) || a.data_class.localeCompare(b.data_class)
@@ -234,7 +245,12 @@ function sortedUnique(values: readonly string[]): string[] {
 }
 
 /** One sensitive read a conversation holds: which source and whose data (`null`: unknown, so somebody else's). */
-export interface SensitiveConversationRead { pluginId: string; ownerUserId: string | null }
+export interface SensitiveConversationRead {
+  pluginId: string;
+  ownerUserId: string | null;
+  /** Verified by the original Gmail release. Only carried within its conversation. */
+  gmailScope?: PluginReadTaint["gmail_scope"];
+}
 
 /**
  * What a conversation holds, and whether that answer is complete. `complete`
@@ -261,7 +277,9 @@ const LEGACY_REFERENCE_HOPS_LIMIT = 50;
 /** What an incomplete answer is inherited as: a Project-bound read of unknown owner. */
 export const UNRESOLVED_SENSITIVE_READ: SensitiveConversationRead = Object.freeze({ pluginId: "core:gmail", ownerUserId: null });
 
-const readKey = (read: SensitiveConversationRead) => `${read.pluginId}\u0000${read.ownerUserId ?? "\u0001"}`;
+const readOwnerKey = (read: SensitiveConversationRead) => `${read.pluginId}\u0000${read.ownerUserId ?? "\u0001"}`;
+const readKey = (read: SensitiveConversationRead) =>
+  `${readOwnerKey(read)}\u0000${read.gmailScope?.project_id ?? ""}\u0000${read.gmailScope?.grant_id ?? ""}`;
 
 /**
  * Sensitive reads earlier Runs of this conversation made (merge-only Run taint,
@@ -313,10 +331,15 @@ async function collectConversationReads(
   for (const legacy of own.legacyReferences) {
     const source = legacy.sourceExists ? await collectConversationReads(db, spaceId, legacy.sourceId, state) : null;
     if (!source) state.complete = false;
-    for (const [key, read] of source ?? []) held.set(key, read);
+    const sourceOwners = new Set<string>();
+    for (const { pluginId, ownerUserId } of source?.values() ?? []) {
+      const read = { pluginId, ownerUserId };
+      sourceOwners.add(readOwnerKey(read));
+      held.set(readKey(read), read);
+    }
     // What an old copy says it carried must still be found at its source with the same owner.
     for (const read of legacy.recorded) {
-      if (source?.has(readKey(read))) continue;
+      if (sourceOwners.has(readOwnerKey(read))) continue;
       state.complete = false;
       const unknown = { pluginId: read.pluginId, ownerUserId: null };
       held.set(readKey(unknown), unknown);
@@ -422,7 +445,11 @@ function runReadsFromRows(rows: readonly RunReadsRow[]): SensitiveConversationRe
   for (const row of rows) {
     const entries = sensitiveTaintEntries(row.taint, row.taint_type);
     if (!entries) { complete = false; continue; }
-    for (const entry of entries) reads.push({ pluginId: entry.pluginId, ownerUserId: entry.owner === undefined ? row.proven_owner : entry.owner });
+    for (const entry of entries) reads.push({
+      pluginId: entry.plugin_id,
+      ownerUserId: entry.owner_user_id === undefined ? row.proven_owner : entry.owner_user_id,
+      ...(entry.gmail_scope ? { gmailScope: entry.gmail_scope } : {}),
+    });
   }
   return { reads, complete };
 }
@@ -440,17 +467,17 @@ export async function runSensitiveReads(db: Queryable, spaceId: string, runId: s
  * A Run taint's sensitive entries (owner `undefined`: written before owners were recorded), or `null` when
  * malformed. Only SQL NULL (`jsonType` null) is no taint, as in `protectiveRunContextTaint`; JSON null is malformed.
  */
-function sensitiveTaintEntries(value: unknown, jsonType: string | null): { pluginId: string; owner: string | null | undefined }[] | null {
+function sensitiveTaintEntries(value: unknown, jsonType: string | null): PluginReadTaint[] | null {
   if (jsonType === null) return [];
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const row = value as Record<string, unknown>;
   if (row.schema_version !== 1 || !isVisibility(row.narrowest_visibility)) return null;
   if (row.plugin_reads === undefined) return [];
   if (!Array.isArray(row.plugin_reads)) return null;
-  const out: { pluginId: string; owner: string | null | undefined }[] = [];
+  const out: PluginReadTaint[] = [];
   for (const entry of row.plugin_reads) {
     if (!validPluginReadEntry(entry)) return null;
-    if (entry.data_class === "sensitive") out.push({ pluginId: entry.plugin_id, owner: entry.owner_user_id });
+    if (entry.data_class === "sensitive") out.push(entry);
   }
   return out;
 }
@@ -458,6 +485,9 @@ function sensitiveTaintEntries(value: unknown, jsonType: string | null): { plugi
 function validPluginReadEntry(value: unknown): value is PluginReadTaint {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const entry = value as Record<string, unknown>;
+  const scope = entry.gmail_scope as Partial<PluginReadTaint["gmail_scope"] & object> | undefined;
+  if (scope !== undefined && (!scope || typeof scope.project_id !== "string" || !scope.project_id ||
+    typeof scope.grant_id !== "string" || !scope.grant_id)) return false;
   return typeof entry.plugin_id === "string" && entry.plugin_id.length > 0
     && (entry.data_class === "personal" || entry.data_class === "sensitive")
     && (entry.owner_user_id === undefined || entry.owner_user_id === null || (typeof entry.owner_user_id === "string" && entry.owner_user_id.length > 0));

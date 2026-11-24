@@ -10,7 +10,7 @@ import {
 } from "@rainver/protocol";
 import manifest, { POST_DIRECTIVE_PROPOSAL, POST_IMPORT_PROPOSAL, PLUGIN_ID, inputs, type FinanceOperation } from "../../operationManifest.js";
 import type { FinanceBookRow } from "./domain/directives.js";
-import type { FinanceImportSourceRow } from "./domain/directiveRepository.js";
+import type { FinanceImportSourceSummary } from "./domain/directiveRepository.js";
 import type { FinanceImportEntryRow } from "./domain/importEntries.js";
 import type { ImportBatchResult } from "./domain/importExportService.js";
 import { financeLedgerService } from "./domain/service.js";
@@ -42,7 +42,7 @@ async function requireBook({ db, space }: Call, bookId: string): Promise<Finance
   return book;
 }
 
-function importSourceOut(source: FinanceImportSourceRow) {
+function importSourceOut(source: FinanceImportSourceSummary) {
   return { id: source.id, source_type: source.source_type, source_name: source.source_name, content_hash: source.content_hash, created_at: source.created_at };
 }
 function importEntryOut(entry: FinanceImportEntryRow) {
@@ -201,8 +201,10 @@ const handlers: { [K in FinanceOperation]: (input: In<K>, call: Call) => Promise
   },
   "import.list": async (input, call) => {
     const book = await requireBook(call, input.book_id);
-    const batches = await service.listImportBatches(call.db, call.space, book.id, call.user);
-    return { imports: rows(batches.map(({ importSource, summary }) => ({ ...importSourceOut(importSource), summary }))) };
+    const { items, nextOffset } = await service.listImportBatches(call.db, call.space, book.id, call.user, input.offset);
+    const imports = rows(items.map(({ importSource, summary }) => ({ ...importSourceOut(importSource), summary })));
+    if (nextOffset === undefined) return { imports };
+    return { imports, next_offset: nextOffset };
   },
   "import.get": async (input, call) => {
     const book = await requireBook(call, input.book_id);

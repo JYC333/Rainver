@@ -55,7 +55,8 @@ it('renders the Applications overview card, navigation entry and Area, and write
   const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, FRONTEND_URL: `http://127.0.0.1:${port}` });
   const app = buildModuleServer(config, [projectsModule, pluginsModule, systemActionsModule, proposalsModule, roomsModule, agentsModule, projectFoldersModule, projectWorkModule, agentAttentionModule, focusAreasModule]);
   new PluginHost([plugin]).activate(app, config);
-  __setAuthIdentityForTests(request => ({ spaceId: String(request.headers['x-rainver-space-id'] ?? request.headers['x-space-id'] ?? space), userId: user }));
+  let signedInUser = user;
+  __setAuthIdentityForTests(request => ({ spaceId: String(request.headers['x-rainver-space-id'] ?? request.headers['x-space-id'] ?? space), userId: signedInUser }));
   __setProposalIdentityForTests(() => ({ spaceId: space, userId: user }));
   const api = await app.listen({ host: '127.0.0.1', port: 0 });
   const post = async (path: string, body: unknown) => {
@@ -89,12 +90,13 @@ it('renders the Applications overview card, navigation entry and Area, and write
     await expect.poll(async () => { try { return (await fetch(base)).status; } catch { return 0; } }, { timeout: 30000 }).toBe(200);
     browser = await chromium.launch({ executablePath: process.env.CHROMIUM_EXECUTABLE });
     const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
-    page.setDefaultTimeout(20000);
-    page.setDefaultNavigationTimeout(30000);
+    // Full verification runs this browser beside the database suites.
+    page.setDefaultTimeout(60000);
+    page.setDefaultNavigationTimeout(60000);
     const pageErrors: string[] = [];
     page.on('pageerror', (e: Error) => { pageErrors.push(e.message); });
     page.on('response', async (r: any) => { if (r.url().includes('/actions/plugin.applications') && r.status() >= 400) console.error('Operation response', r.status(), await r.text()); });
-    await page.route('**/api/v1/me', (route: any) => route.fulfill({ json: { id: user, email: 'fixture@test.invalid', display_name: 'Fixture person', default_space_id: space, created_at: new Date().toISOString(), avatar_url: null, last_login_at: null } }));
+    await page.route('**/api/v1/me', (route: any) => route.fulfill({ json: { id: signedInUser, email: 'fixture@test.invalid', display_name: 'Fixture person', default_space_id: space, created_at: new Date().toISOString(), avatar_url: null, last_login_at: null } }));
     await page.route('**/api/v1/me/spaces', (route: any) => route.fulfill({ json: [{ id: space, name: 'Test Space', type: 'team', role: 'owner', status: 'active' }] }));
     const prefs = async (locale: string, theme: string) => page.evaluate(([l, t]: string[]) => { localStorage.setItem('rainver:locale', l!); localStorage.setItem('rainver:theme', t!); }, [locale, theme]);
     await page.addInitScript(() => {
@@ -109,17 +111,17 @@ it('renders the Applications overview card, navigation entry and Area, and write
 
     // Desktop, dark, English: the overview card in its parent Project surface, then the entry and destination.
     await page.goto(pulse);
-    await page.getByText('Upcoming deadlines', { exact: true }).waitFor({ timeout: 30000 });
+    await page.getByText('Upcoming deadlines', { exact: true }).waitFor();
     await page.getByText('ETH Zurich · Application', { exact: false }).first().waitFor();
     await nav('Project navigation').waitFor();
     await shoot('desktop-parent-dark-en');
     // The overview card links straight to its Area.
-    expect(await page.getByRole('link', { name: 'Open applications', exact: true }).getAttribute('href')).toBe(new URL(area).pathname);
-    await nav('Project navigation').click();
+    expect(await page.getByRole('region', { name: 'Applications', exact: true }).getByRole('link', { name: 'Applications', exact: true }).getAttribute('href')).toBe(new URL(area).pathname);
+    await page.getByRole('region', { name: 'Applications', exact: true }).getByRole('link', { name: 'Applications', exact: true }).click();
     await page.waitForURL(area);
     await page.getByRole('button', { name: 'New application', exact: true }).waitFor();
     // Four tabs in the one entry; institution applications are the default, grouped by institution.
-    expect(await page.getByRole('tab').allTextContents()).toEqual(['Programs', 'Scholarships & funding', 'My materials', 'Supervisors & contacts']);
+    expect(await page.getByRole('tab').allTextContents()).toEqual(['Programs', 'Scholarships & funding', 'Material library', 'Supervisors & contacts']);
     expect(await page.getByRole('tab', { name: 'Programs', exact: true }).getAttribute('aria-selected')).toBe('true');
     const group = (name: string) => page.getByRole('region', { name, exact: true });
     await group('ETH Zurich').getByRole('heading', { name: 'PhD in Computer Science', exact: true }).waitFor();
@@ -134,7 +136,9 @@ it('renders the Applications overview card, navigation entry and Area, and write
     await page.getByLabel('Also add to the Project Board as a Task', { exact: true }).check();
     await shoot('desktop-new-dark-en');
     await page.getByRole('button', { name: 'Create application', exact: true }).click();
-    await group('Imperial College London').getByRole('heading', { name: 'PhD in Computing', exact: true }).waitFor();
+    await page.getByRole('heading', { name: 'PhD in Computing', exact: true }).waitFor();
+    expect(new URL(page.url()).searchParams.get('record')).toBeTruthy();
+    expect(await page.getByRole('tablist').count()).toBe(0);
     await page.getByRole('heading', { name: 'Materials', exact: false }).first().waitFor();
     const created = (await db.pool.query(`SELECT id,status,track FROM plugin_applications.applications WHERE space_id=$1 AND institution='Imperial College London'`, [space])).rows;
     expect(created).toEqual([expect.objectContaining({ status: 'planning', track: 'phd' })]);
@@ -159,8 +163,8 @@ it('renders the Applications overview card, navigation entry and Area, and write
     await shoot('desktop-proposed-dark-en');
     await noOverflow();
     // The seeded application's detail shows its related contacts, kept in the contacts tab.
-    await page.getByRole('button', { name: 'Close', exact: true }).first().click();
-    await group('ETH Zurich').getByRole('button', { name: 'Open', exact: true }).click();
+    await page.getByRole('link', {name: 'Back to list', exact: true}).click();
+    await group('ETH Zurich').locator('h3 a').click();
     const related = page.getByRole('region', { name: 'Contacts', exact: true });
     await related.getByText('Prof. Ada Example', { exact: true }).waitFor();
     await related.scrollIntoViewIfNeeded();
@@ -190,45 +194,40 @@ it('renders the Applications overview card, navigation entry and Area, and write
     await shoot('desktop-funding-detail-dark-en');
     await noOverflow();
     await page.getByRole('region', { name: 'Applies to', exact: true }).getByRole('button', { name: 'Open', exact: true }).click();
-    expect(await page.getByRole('tab', { name: 'Programs', exact: true }).getAttribute('aria-selected')).toBe('true');
+    await page.waitForURL((url: URL) => url.searchParams.get('record') === seededId);
     const linkedFunding = page.getByRole('region', { name: 'Funding', exact: true });
     await linkedFunding.getByText('Excellence Scholarship · ETH Foundation', { exact: true }).waitFor();
     await linkedFunding.scrollIntoViewIfNeeded();
     await shoot('desktop-program-funding-dark-en');
 
-    // An edit that moves the open record to another institution group, or out of the funding filter,
-    // keeps that record open where it was, with its save feedback, until it is closed.
+    // Detail stays open across edits and returns to the updated list.
     const card = (name: string) => page.getByRole('listitem').filter({ has: page.getByRole('heading', { name, exact: true }) });
-    const imperial = card('PhD in Computing');
-    await imperial.getByRole('button', { name: 'Open', exact: true }).first().click();
-    const imperialFacts = imperial.getByRole('region', { name: 'Application details', exact: true });
+    const backToList = page.getByRole('link', {name: 'Back to list', exact: true});
+    await backToList.click();
+    await card('PhD in Computing').locator('h3 a').click();
+    const imperialFacts = page.getByRole('region', { name: 'Application details', exact: true });
     await imperialFacts.getByLabel('University or institution', { exact: true }).fill('Imperial College');
-    // The list itself reloads after the save; the assertions below run on that reloaded list.
-    const programsReloaded = page.waitForResponse((r: { url(): string }) => r.url().includes('application.list') && decodeURIComponent(r.url()).includes('"track":"phd"'));
     await imperialFacts.getByRole('button', { name: 'Save', exact: true }).click();
-    await programsReloaded;
     await expect.poll(async () => (await db.pool.query(`SELECT institution FROM plugin_applications.applications WHERE id=$1`, [created[0].id])).rows[0].institution).toBe('Imperial College');
-    await imperial.getByRole('status').filter({ hasText: 'Saved' }).waitFor();
-    expect(await group('Imperial College London').getByRole('button', { name: 'Close', exact: true }).first().getAttribute('aria-expanded')).toBe('true');
+    await page.getByRole('status').filter({ hasText: 'Saved' }).waitFor();
+    await page.reload();
+    await imperialFacts.getByLabel('University or institution', { exact: true }).waitFor();
     expect(await imperialFacts.getByLabel('University or institution', { exact: true }).inputValue()).toBe('Imperial College');
-    await shoot('desktop-moved-group-open-dark-en');
-    await imperial.getByRole('button', { name: 'Close', exact: true }).first().click();
+    await backToList.click();
     await group('Imperial College').getByRole('heading', { name: 'PhD in Computing', exact: true }).waitFor();
     expect(await group('Imperial College London').count()).toBe(0);
     await page.getByRole('tab', { name: 'Scholarships & funding', exact: true }).click();
     const filterBy = async (name: string) => { await page.getByRole('button', { name: 'Filter funding', exact: true }).click(); await page.getByRole('option', { name, exact: true }).click(); };
     const scholarship = card('Excellence Scholarship');
     await filterBy('Linked to a program');
-    await scholarship.getByRole('button', { name: 'Open', exact: true }).first().click();
-    const appliesTo = scholarship.getByRole('region', { name: 'Applies to', exact: true });
+    await scholarship.locator('h3 a').first().click();
+    const appliesTo = page.getByRole('region', { name: 'Applies to', exact: true });
     // Unlinked under "Linked to a program": no longer matches, still open with the feedback.
     await appliesTo.getByRole('button', { name: 'Unlink ETH Zurich · PhD in Computer Science', exact: true }).click();
     await appliesTo.getByText('Not linked to a program application (independent funding).', { exact: true }).waitFor();
-    await scholarship.getByRole('status').filter({ hasText: 'Saved' }).waitFor();
-    expect(await scholarship.getByRole('button', { name: 'Close', exact: true }).first().getAttribute('aria-expanded')).toBe('true');
+    await page.getByRole('status').filter({ hasText: 'Saved' }).waitFor();
     await shoot('desktop-funding-filter-open-dark-en');
     // Linked again under "Independent": the same, in the other direction.
-    await filterBy('Independent');
     // Room below the shared Select's trigger for its menu, as above.
     const linkTo = appliesTo.getByRole('button', { name: 'Link a program application', exact: true });
     await linkTo.evaluate((el: any) => el.scrollIntoView({ block: 'start' }));
@@ -236,22 +235,18 @@ it('renders the Applications overview card, navigation entry and Area, and write
     await page.getByRole('option', { name: 'ETH Zurich · PhD in Computer Science', exact: true }).click();
     await appliesTo.getByRole('button', { name: 'Link', exact: true }).click();
     await appliesTo.getByText('ETH Zurich · PhD in Computer Science', { exact: true }).waitFor();
-    await scholarship.getByRole('status').filter({ hasText: 'Saved' }).waitFor();
+    await page.getByRole('status').filter({ hasText: 'Saved' }).waitFor();
     expect((await db.pool.query(`SELECT application_id FROM plugin_applications.application_funding_links WHERE funding_id=$1`, [funding[0].id])).rows).toEqual([{ application_id: seededId }]);
-    await scholarship.getByRole('button', { name: 'Close', exact: true }).first().click();
-    await page.getByText('No scholarships or funding yet.', { exact: true }).waitFor();
+    await backToList.click();
     await filterBy('All funding');
     await scholarship.waitFor();
     await page.getByRole('tab', { name: 'Programs', exact: true }).click();
-    // Back in Programs, the application opened from the funding record is open again.
-    const eth = card('PhD in Computer Science').locator('button[aria-expanded]').first();
-    await eth.waitFor();
-    if (await eth.getAttribute('aria-expanded') !== 'true') await eth.click();
+    await card('PhD in Computer Science').locator('h3 a').click();
 
     // The contacts tab: a supervisor linked to several applications, with history, edited and made Project-level.
     await related.getByRole('button', { name: 'Open in contacts', exact: true }).click();
     expect(await page.getByRole('tab', { name: 'Supervisors & contacts', exact: true }).getAttribute('aria-selected')).toBe('true');
-    const all = page.getByRole('region', { name: 'All contacts in this Project', exact: true });
+    const all = page.getByRole('region', { name: 'Contacts in this Project', exact: true });
     const ada = all.getByRole('listitem').filter({ hasText: 'Prof. Ada Example' }).first();
     await ada.getByText('Sent CV and a short research statement', { exact: true }).waitFor();
     await ada.getByRole('button', { name: 'Edit Prof. Ada Example', exact: true }).click();
@@ -282,7 +277,7 @@ it('renders the Applications overview card, navigation entry and Area, and write
     await insertInitialNoteRevision(db.pool, { spaceId: space, noteId: cvNote, doc, at, userId: user });
     const statement = (await db.pool.query(`SELECT id FROM plugin_applications.application_materials WHERE application_id=$1 AND kind='statement'`, [seededId])).rows[0].id;
     await post('actions/plugin.applications.material.add_source', { project_id: project, material_id: statement, note_id: cvNote });
-    await page.getByRole('tab', { name: 'My materials', exact: true }).click();
+    await page.getByRole('tab', { name: 'Material library', exact: true }).click();
     await page.getByLabel('Note ID', { exact: true }).fill(cvNote);
     await page.getByRole('button', { name: 'Register', exact: true }).click();
     await page.getByRole('heading', { name: 'Master CV', exact: true }).waitFor();
@@ -291,7 +286,7 @@ it('renders the Applications overview card, navigation entry and Area, and write
     await shoot('desktop-library-dark-en');
     await noOverflow();
     await page.getByRole('tab', { name: 'Programs', exact: true }).click();
-    await group('ETH Zurich').getByRole('button', { name: 'Open', exact: true }).click();
+    await group('ETH Zurich').locator('h3 a').click();
 
     // Archive the open seeded application: its details become read-only and only Restore remains.
     const factsOf = () => page.getByRole('region', { name: 'Application details', exact: true });
@@ -300,7 +295,6 @@ it('renders the Applications overview card, navigation entry and Area, and write
     const archivedNow = async () => (await db.pool.query(`SELECT archived_at IS NOT NULL AS archived FROM plugin_applications.applications WHERE id=$1`, [seededId])).rows[0].archived;
     // With archived applications shown, the detail stays mounted across archiving: a deadline
     // editor and a material link editor are open when the application is archived.
-    await page.getByRole('button', { name: 'Show archived', exact: true }).click();
     await deadlinesOf().getByRole('button', { name: /^Edit deadline / }).first().click();
     await deadlinesOf().getByRole('button', { name: 'Save', exact: true }).waitFor();
     await materialsOf().getByRole('button', { name: /^(Link|Change link)$/ }).first().click();
@@ -323,7 +317,6 @@ it('renders the Applications overview card, navigation entry and Area, and write
     await expect.poll(archivedNow).toBe(false);
     await expect.poll(() => factsOf().getByLabel('University or institution', { exact: true }).isDisabled()).toBe(false);
     await factsOf().getByRole('button', { name: 'Save', exact: true }).waitFor();
-    await page.getByRole('button', { name: 'Hide archived', exact: true }).click();
 
     // Phone, light, Simplified Chinese: entry in the Project navigation, overview and Area.
     await page.setViewportSize({ width: 390, height: 844 });
@@ -341,7 +334,7 @@ it('renders the Applications overview card, navigation entry and Area, and write
     await shoot('phone-area-light-zh');
     await noOverflow();
     expect((await page.getByRole('button', { name: '新建申请', exact: true }).boundingBox())!.height).toBeGreaterThanOrEqual(44);
-    await page.getByRole('button', { name: '打开', exact: true }).first().click();
+    await page.locator('h3 a').first().click();
     await page.getByRole('heading', { name: '截止日', exact: true }).waitFor();
     await shoot('phone-detail-light-zh');
     await noOverflow();
@@ -358,7 +351,7 @@ it('renders the Applications overview card, navigation entry and Area, and write
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(area);
     await page.getByRole('button', { name: 'New application', exact: true }).waitFor();
-    await page.getByRole('button', { name: 'Open', exact: true }).first().click();
+    await page.locator('h3 a').first().click();
     await page.getByRole('heading', { name: 'Deadlines', exact: true }).waitFor();
     await shoot('phone-detail-dark-en');
     await noOverflow();
@@ -386,27 +379,65 @@ it('renders the Applications overview card, navigation entry and Area, and write
     });
     await post('actions/proposal.accept', { proposal_id: requested.proposal_id });
     for (const copy of [
-      { locale: 'en', tab: 'Scholarships & funding', open: 'Open', details: 'Application details', mode: 'How you apply',
+      { locale: 'en', tab: 'Scholarships & funding', details: 'Application details', mode: 'How you apply',
         automatic: 'Considered automatically', save: 'Save',
         error: 'You can’t switch to automatic consideration. This funding has a recorded submission, or its older history cannot rule one out.' },
-      { locale: 'zh-CN', tab: '奖学金与资助', open: '打开', details: '申请详情', mode: '申请方式',
+      { locale: 'zh-CN', tab: '奖学金与资助', details: '申请详情', mode: '申请方式',
         automatic: '随院校申请自动参评', save: '保存', error: '无法改为自动参评。这项资助已有提交记录，或旧版历史无法排除曾经提交。' },
     ]) {
       await prefs(copy.locale, copy.locale === 'en' ? 'dark' : 'light');
       await page.setViewportSize(copy.locale === 'en' ? { width: 1280, height: 900 } : { width: 390, height: 844 });
       await page.goto(area);
       await page.getByRole('tab', { name: copy.tab, exact: true }).click();
-      await scholarship.getByRole('button', { name: copy.open, exact: true }).first().click();
+      await scholarship.locator('h3 a').first().click();
       const facts = page.getByRole('region', { name: copy.details, exact: true });
       await facts.getByRole('button', { name: copy.mode, exact: true }).press('ArrowDown');
       await page.getByRole('option', { name: copy.automatic, exact: true }).press('Enter');
       await facts.getByRole('button', { name: copy.save, exact: true }).click();
-      const alert = scholarship.getByText(copy.error, { exact: true });
+      const alert = page.getByText(copy.error, { exact: true });
       await alert.scrollIntoViewIfNeeded();
       expect(await alert.getAttribute('role')).toBe('alert');
       await noOverflow();
       await shoot(`funding-submission-guard-${copy.locale}`);
     }
+    await post('actions/plugin.applications.contact.update', {
+      project_id: project, contact_id: contact.data.contact_id, application_ids: [seededId],
+    });
+    const reader = randomUUID();
+    await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at,email,registration_source)
+      VALUES ($1,'Project reader','active',now(),now(),$2,'system')`, [reader, `${reader}@test.invalid`]);
+    await db.pool.query(`INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at)
+      VALUES ($1,$2,$3,'member','active',now(),now())`, [randomUUID(), space, reader]);
+    await db.pool.query(`INSERT INTO project_members (id,space_id,project_id,user_id,role,status,created_at,updated_at)
+      VALUES ($1,$2,$3,$4,'viewer','active',now(),now())`, [randomUUID(), space, project, reader]);
+    signedInUser = reader;
+    for (const copy of [
+      {locale: 'en', theme: 'dark', width: 1280, archive: 'Archive', deadline: 'Online portal closes'},
+      {locale: 'zh-CN', theme: 'light', width: 390, archive: '归档', deadline: 'Online portal closes'},
+    ]) {
+      await prefs(copy.locale, copy.theme);
+      await page.setViewportSize({width: copy.width, height: 900});
+      await page.goto(area);
+      const shared = group('ETH Zurich');
+      await shared.locator('h3 a').click();
+      await page.getByText(copy.deadline, {exact: false}).first().waitFor();
+      expect(await page.getByRole('button', {name: copy.archive, exact: true}).isDisabled()).toBe(true);
+      await page.getByText('Prof. Ada Example', {exact: true}).waitFor();
+      await noOverflow();
+      await shoot(`shared-application-${copy.locale}`);
+    }
+    await db.pool.query(`UPDATE project_members SET role='member' WHERE project_id=$1 AND user_id=$2`, [project, reader]);
+    await prefs('en', 'dark');
+    await page.goto(area);
+    await group('ETH Zurich').locator('h3 a').click();
+    const facts = page.getByRole('region', {name: 'Application details'});
+    await expect.poll(() => facts.getByRole('button', {name: 'Archive', exact: true}).isEnabled()).toBe(true);
+    await facts.getByLabel('Notes', {exact: true}).fill('Updated by a Project editor');
+    await facts.getByRole('button', {name: 'Save', exact: true}).click();
+    await expect.poll(async () => (await db.pool.query('SELECT notes FROM plugin_applications.applications WHERE id=$1', [seededId])).rows[0].notes)
+      .toBe('Updated by a Project editor');
+    await shoot('shared-application-editor');
+    signedInUser = user;
     await prefs('en', 'dark');
 
     // Unbinding closes the Area in place and keeps the records.

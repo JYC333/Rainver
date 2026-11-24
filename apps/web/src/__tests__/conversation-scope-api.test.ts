@@ -62,7 +62,7 @@ describe('typed operation transport',()=>{
  });
  it('preserves the nested operation error code/status and performs no automatic retry',async()=>{
   vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({error:{code:'idempotency_in_progress',message:'in progress',metadata:{},retryable:true,request_id:'request',domain:'operations'}}),{status:409,headers:{'Content-Type':'application/json'}}));
-  try{await queryOperation('system.actions.list',{});throw new Error('expected refusal');}catch(error){expect(error).toBeInstanceOf(ApiRequestError);expect(error).toMatchObject({status:409,code:'idempotency_in_progress',message:'in progress'});}
+  try{await queryOperation('system.actions.list',{});throw new Error('expected refusal');}catch(error){expect(error).toBeInstanceOf(ApiRequestError);expect(error).toMatchObject({status:409,code:'idempotency_in_progress',message:'in progress (request id: request)',requestId:'request'});}
   expect(fetch).toHaveBeenCalledTimes(1);
  });
 });
@@ -380,6 +380,51 @@ describe('exact receipt read-backs', () => {
       await vi.runAllTimersAsync()
       await expect(later).resolves.toMatchObject({ state: 'unconfirmed' })
     } finally { vi.useRealTimers() }
+  })
+
+  it('returns an ordinary send added to an active Run with its message, and promotes a choice among several Runs', async () => {
+    vi.mocked(fetch).mockImplementation(async input => {
+      const url = String(input)
+      if (url === '/api/v1/actions/room.message.send') return reply({ status: 'succeeded', data: { id: 'message', space_id: 'source-a', room_id: 'room', session_id: 'session', status: 'live_input', run_id: 'run', message_id: 'message', binding_id: null, delivery_state: 'deferred' } })
+      if (url.startsWith('/api/v1/rooms/room/conversations/session/messages?')) return reply({ items: [{ id: 'message', run_id: 'run' }], conversation: { id: 'session' }, task_group_ids: [], limit: 1, offset: 0 })
+      return reply({})
+    })
+    const sent = await roomsApi.sendMessage('room', 'session', { content: 'Also check it', routing_mode: 'direct', backends: [], live_target: 'auto', queue: true }, { spaceId: 'source-a' })
+    expect(sent).toMatchObject({ message: { id: 'message' }, live: { run_id: 'run', message_id: 'message', state: 'deferred' } })
+    expect(JSON.parse(vi.mocked(fetch).mock.calls[0]![1]!.body as string)).toMatchObject({ live_target: 'auto', queue: true })
+    const candidates = [{ run_id: 'a' }, { run_id: 'b' }]
+    vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({ error: { code: 'operation_conflict', domain: 'rooms', message: 'choose', metadata: { code: 'live_input_target_choice_required', candidates }, retryable: false, request_id: 'r' } }), { status: 409, headers: { 'Content-Type': 'application/json' } }))
+    await expect(roomsApi.sendMessage('room', 'session', { content: 'Also check it', routing_mode: 'direct', backends: [], live_target: 'auto' }, { spaceId: 'source-a' }))
+      .rejects.toMatchObject({ status: 409, code: 'live_input_target_choice_required', payload: { candidates } })
+  })
+
+  it('accepts a replayed queue receipt after the message has left the queue', async () => {
+    const receipt = { id: 'queued-id', queued_id: 'queued-id', space_id: 'source-a', room_id: 'room', session_id: 'session', status: 'queued' }
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(reply({ status: 'succeeded', data: receipt }))
+      .mockResolvedValueOnce(new Response('{}', { status: 503 }))
+      .mockResolvedValueOnce(reply({ status: 'succeeded', data: receipt }))
+      .mockResolvedValueOnce(reply({ items: [{ id: 'posted' }], queued: [], limit: 1, offset: 0 }))
+    const options = { spaceId: 'source-a', idempotencyKey: 'original-send' }
+    const body = { content: 'Send after this turn', queue: true, routing_mode: 'direct' as const, backends: [] }
+    await expect(roomsApi.sendMessage('room', 'session', body, options)).rejects.toMatchObject({ cause: expect.objectContaining({ status: 503 }) })
+    await expect(roomsApi.sendMessage('room', 'session', body, options)).resolves.toEqual({ queued: null })
+    for (const index of [0, 2]) {
+      expect(new Headers(vi.mocked(fetch).mock.calls[index]![1]!.headers).get('Idempotency-Key')).toBe('original-send')
+    }
+  })
+
+  it('keeps a read-back refusal distinct from the accepted Room command', async () => {
+    const receipt = { id: 'message', space_id: 'source-a', room_id: 'room', session_id: 'session', status: 'sent', message_id: 'message', run_ids: [], task_group_ids: [] }
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(reply({ status: 'succeeded', data: receipt }))
+      .mockResolvedValueOnce(new Response('{}', { status: 404 }))
+    const options = { spaceId: 'source-a', idempotencyKey: 'original-send' }
+    const body = { content: 'Also check it', live_target: 'auto' as const, routing_mode: 'direct' as const, backends: [] }
+    await expect(roomsApi.sendMessage('room', 'session', body, options))
+      .rejects.toMatchObject({ cause: expect.objectContaining({ status: 404 }) })
+    expect(fetch).toHaveBeenCalledTimes(2)
+    expect(new Headers(vi.mocked(fetch).mock.calls[0]![1]!.headers).get('Idempotency-Key')).toBe('original-send')
   })
 })
 

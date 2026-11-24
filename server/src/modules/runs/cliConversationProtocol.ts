@@ -11,7 +11,8 @@ import {
 // checked against the SDK's schema types.
 import type { PermissionOption, ContentBlock } from "@agentclientprotocol/sdk";
 export type { ContentBlock } from "@agentclientprotocol/sdk";
-import { modelUsageFromAcpQuota, usageFromAcp } from "./cliRuntimeMeasurement.js";
+import { modelUsageFromAcpQuota, usageFromAcp, usageFromClaudeResult } from "./cliRuntimeMeasurement.js";
+import { runtimeModelFallbackNotice } from "./runtimeModelFallback.js";
 import { decidePermission, type PermissionDecisionRecord } from "./runPermissionPolicy.js";
 import {
   advertisesFormElicitation,
@@ -22,6 +23,7 @@ import {
 } from "./vendorQuestion.js";
 import { getRuntimeAdapterSpec, isAcpRuntimeAdapter } from "../runtimeAdapters/specs.js";
 import { normalizeAcpFailure, type AcpRuntimeFailure } from "../runtimeAdapters/acpFailure.js";
+import { acpModelChoiceNamesAlias } from "./runModelSelection.js";
 
 // Registry adapters have dynamic keys; admission is checked against the catalog.
 type ConversationProtocolAdapter = string;
@@ -96,6 +98,7 @@ export function createCliConversationController(input: {
   local_tool_directory?: boolean;
   session_config?: AcpSessionConfigSelection[];
   runtime_session_id?: string | null;
+  allow_resumed_model_change?: boolean;
   on_text_delta?: (delta: string) => void;
   /**
    * Reasoning, on the channel a runtime uses when it keeps reasoning separate
@@ -116,6 +119,13 @@ export function createCliConversationController(input: {
   attributed_model?: string | null;
   on_protocol_event?: (event: Record<string, unknown>) => void;
   on_model_selected?: (model: string | null) => void;
+  /**
+   * The runtime's own report, on the main session of this launch's prompt, that a response came from another
+   * model than the session's — its adapter's declared fallback notice (`runtimeModelFallback.ts`). Only an
+   * explicit report; never inferred from an echo, a usage row or a model id spelled otherwise, and never from a
+   * resumed session's replay or a child session.
+   */
+  on_model_fallback?: (report: { title: string; description: string | null }) => void;
   /**
    * Fired once per permission request, whatever the outcome, so a caller with
    * a durable event stream can record that this Run was pre-authorized. A
@@ -182,6 +192,8 @@ export class AcpController implements CliStdioController {
   private answerMessageId: string | null = null;
   private answerInterrupted = false;
   private usage: CanonicalUsage | null = null;
+  private claudeReceipts = new Set<string>();
+  private claudePromptUsage: CanonicalUsage | null = null;
   private modelUsage: CanonicalModelUsage[] = [];
   private selectedModel: string | null;
   private reportedUsageModel: string | null = null;
@@ -224,11 +236,13 @@ export class AcpController implements CliStdioController {
     local_tool_directory?: boolean;
     session_config?: AcpSessionConfigSelection[];
     runtime_session_id?: string | null;
+    allow_resumed_model_change?: boolean;
       on_text_delta?: (delta: string) => void;
     on_thought_delta?: (delta: string) => void;
     attributed_model?: string | null;
     on_protocol_event?: (event: Record<string, unknown>) => void;
   on_model_selected?: (model: string | null) => void;
+    on_model_fallback?: (report: { title: string; description: string | null }) => void;
     on_permission_decision?: (record: PermissionDecisionRecord) => void;
   }) {
     this.selectedModel = input.attributed_model ?? null;
@@ -294,6 +308,10 @@ export class AcpController implements CliStdioController {
     }
     if (message.method === "_auth/status_update" && message.id === undefined) {
       this.input.on_protocol_event?.(message);
+      return;
+    }
+    if (message.method === "_claude/sdkMessage" && message.id === undefined) {
+      this.captureClaudeResult(record(message.params));
       return;
     }
     if (message.error) {
@@ -444,13 +462,14 @@ export class AcpController implements CliStdioController {
       // neither guess that mapping nor keep attributing usage to the alias.
       // A picker value alone is not proof: an adapter that ignores an alias
       // it does not know echoes the unchanged default, which is also a picker
-      // value. The alias counts as resolved only when the session moved to
-      // another model, or the model it is on is the one the alias names.
+      // value. A strict selection needs an acknowledgement that names the
+      // alias. For a selection that permits fallback, a changed value also
+      // counts as an acknowledgement.
       const resolvedAlias = this.activeModelAlias && appliedOption
         && typeof appliedOption.currentValue === "string"
         && configChoiceValues(appliedOption).includes(appliedOption.currentValue)
-        && (appliedOption.currentValue !== this.aliasPreviousValue
-          || aliasNamesChoice(appliedOption, appliedOption.currentValue, String(selection.value)));
+        && (aliasNamesChoice(appliedOption, appliedOption.currentValue, String(selection.value))
+          || (selection.fallback_to_default && appliedOption.currentValue !== this.aliasPreviousValue));
       if (!appliedOption || appliedOption.type !== selection.type
         || appliedOption.category !== selection.category
         || (appliedOption.currentValue !== selection.value && !resolvedAlias)) {
@@ -485,28 +504,35 @@ export class AcpController implements CliStdioController {
     if (message.id === 4 + this.promptIndex && this.phase === "prompt") {
       const result = record(message.result);
       const stopReason = stringField(result, "stopReason");
-      if (stopReason !== "end_turn" && !this.askedUser && !this.yieldRequested) {
-        this.fail(
-          `${this.label()} ACP turn ended with stop reason '${stopReason ?? "unknown"}'`,
-          closeStdin,
-        );
-        return;
-      }
       const hasUsage = result.usage !== undefined && result.usage !== null;
       const rawUsage = recordOrNull(result.usage);
-      const usage = rawUsage ? usageFromAcp(rawUsage) : null;
-      if (hasUsage && !usage) {
+      const reportedUsage = rawUsage ? usageFromAcp(rawUsage) : null;
+      if (hasUsage && !reportedUsage) {
         this.fail(`${this.label()} ACP returned invalid token usage`, closeStdin);
         return;
       }
+      const usage = withClaudeCacheTtl(reportedUsage, this.claudePromptUsage);
+      this.claudePromptUsage = null;
       this.usage = addUsage(this.usage, usage);
       const reportedModels = this.input.attributed_model ? [] : modelUsageFromAcpQuota(result._meta, this.input.runtime_key);
       if (reportedModels.length > 0) {
-        for (const row of reportedModels) this.modelUsage = addModelUsage(this.modelUsage, row.model, row.usage);
+        const cacheWriters = reportedModels.filter(({ usage }) => (usage.cache_creation_input_tokens ?? 0) > 0);
+        for (const row of reportedModels) {
+          const ttl = usage?.cache_creation_1h_input_tokens;
+          const modelUsage = ttl !== undefined && row.usage.cache_creation_1h_input_tokens === undefined
+            && cacheWriters.length === 1 && cacheWriters[0] === row
+            && row.usage.cache_creation_input_tokens === usage?.cache_creation_input_tokens
+            ? { ...row.usage, cache_creation_1h_input_tokens: ttl } : row.usage;
+          this.modelUsage = addModelUsage(this.modelUsage, row.model, modelUsage);
+        }
         if (reportedModels.length === 1) this.input.on_model_selected?.(reportedModels[0]!.model);
       } else {
         const model = this.input.attributed_model ?? this.reportedUsageModel ?? this.selectedModel;
         if (model && model !== "default" && usage) this.modelUsage = addModelUsage(this.modelUsage, model, usage);
+      }
+      if (stopReason !== "end_turn" && !this.askedUser && !this.yieldRequested) {
+        this.fail(`${this.label()} ACP turn ended with stop reason '${stopReason ?? "unknown"}'`, closeStdin);
+        return;
       }
       if (this.askedUser || this.yieldRequested) {
         this.completeInterruptedTurn(closeStdin);
@@ -569,6 +595,12 @@ export class AcpController implements CliStdioController {
       if (actualModel && /^[\w./:[\]-]{1,256}$/.test(actualModel) && actualModel !== "default") {
         this.reportedUsageModel = actualModel;
         if (!this.input.attributed_model) this.input.on_model_selected?.(actualModel);
+      }
+      // A fallback the runtime itself reports for this launch's own prompt (or just after its final answer), under the
+      // notice its adapter catalog entry declares — never a restored session's metadata (ADR 0037).
+      if ((this.phase === "prompt" || this.phase === "terminal") && this.prompted) {
+        const fallback = runtimeModelFallbackNotice(this.input.runtime_key, update);
+        if (fallback) this.input.on_model_fallback?.(fallback);
       }
       this.captureContextWindow(update);
       if (update.sessionUpdate === "agent_message_chunk" || update.sessionUpdate === "agent_thought_chunk") {
@@ -653,6 +685,7 @@ export class AcpController implements CliStdioController {
   }
 
   result() {
+    const fallbackModel = this.reportedUsageModel ?? this.selectedModel;
     return {
       completed: this.completed,
       acp: this.acp,
@@ -668,8 +701,9 @@ export class AcpController implements CliStdioController {
       // the durability of an existing session, even before initialize replies.
       external_session_id: this.prompted ? this.sessionId : this.input.runtime_session_id && this.failure
         && SESSION_PRESERVING_FAILURES.has(this.failure.category) ? this.input.runtime_session_id : null,
-      usage: this.usage,
-      model_usage: this.modelUsage,
+      usage: addUsage(this.usage, this.claudePromptUsage),
+      model_usage: this.claudePromptUsage && fallbackModel && fallbackModel !== "default"
+        ? addModelUsage(this.modelUsage, fallbackModel, this.claudePromptUsage) : this.modelUsage,
       subscription_quota: this.subscriptionQuota,
       context_window: this.contextWindow,
       usage_updates: { count: this.usageUpdates, used_total: this.usageUpdatesUsedTotal },
@@ -815,6 +849,24 @@ export class AcpController implements CliStdioController {
       this.fail(`${this.label()} ACP received an invalid boolean for session option '${selection.id}'`, closeStdin);
       return true;
     }
+    // A resumed session already on the one picker choice the requested alias names — the adapter resolved this alias
+    // to that canonical value on an earlier turn, and the picker reports it — is on the requested model: there is
+    // nothing to switch, so a session that may not change models now (a full context, `allow_resumed_model_change:
+    // false`) is resumed as it is instead of failing every turn for a handoff. Only an unambiguous match: an alias that
+    // names no advertised choice, or more than one, is still sent to the adapter or refused below.
+    if (this.activeModelAlias && selection.category === "model" && this.input.runtime_session_id
+      && this.input.allow_resumed_model_change === false && typeof option.currentValue === "string"
+      && aliasNamesOnlyChoice(option, option.currentValue, String(selection.value))) {
+      this.activeModelAlias = false;
+      if (!this.input.attributed_model) this.selectedModel = option.currentValue;
+      this.configIndex += 1;
+      return this.sendNextConfig(send, closeStdin);
+    }
+    if (selection.category === "model" && this.input.runtime_session_id
+      && this.input.allow_resumed_model_change === false) {
+      this.fail("Model not switched. This conversation needs a context handoff before changing models. The existing session is preserved.", closeStdin);
+      return true;
+    }
     this.enterPhase("set_config");
     this.activeConfigRequestId = 3 + this.configIndex / 100;
     send({
@@ -849,6 +901,7 @@ export class AcpController implements CliStdioController {
         cwd: this.input.cwd,
         ...(this.input.local_tool_directory && this.supportsAdditionalDirectories ? { additionalDirectories: [] } : {}),
         mcpServers: [],
+        ...(this.canReadClaudeReceipts() ? { _meta: { claudeCode: { emitRawSDKMessages: [{ type: "result" }] } } } : {}),
       },
     });
   }
@@ -1003,6 +1056,25 @@ export class AcpController implements CliStdioController {
     this.usageUpdatesUsedTotal += used;
   }
 
+  private canReadClaudeReceipts(): boolean {
+    // The pinned wrapper supports a filter for turn-level SDK results.
+    return this.input.runtime_key === "claude_code" && !this.input.attributed_model && this.acp?.version === "0.101.0";
+  }
+
+  /** Consume numeric fields only. Never forward the vendor's raw result to Run events. */
+  private captureClaudeResult(params: Record<string, unknown>): void {
+    if (!this.canReadClaudeReceipts() || this.phase !== "prompt" || this.finishAfterSteer || params.sessionId !== this.sessionId) return;
+    const result = record(params.message);
+    const id = stringField(result, "uuid");
+    const origin = record(result.origin).kind;
+    if (result.type !== "result" || result.session_id !== this.sessionId || !id || id.length > 64 ||
+      (origin !== undefined && origin !== "human") || this.claudeReceipts.has(id)) return;
+    const usage = usageFromClaudeResult(record(result.usage));
+    if (!usage) return;
+    this.claudeReceipts.add(id);
+    this.claudePromptUsage = addUsage(this.claudePromptUsage, usage);
+  }
+
   private captureSubscriptionQuota(
     params: Record<string, unknown>,
     update: Record<string, unknown>,
@@ -1072,17 +1144,26 @@ function configChoiceValues(option: Record<string, unknown>): string[] {
  * adapter made; Rainver still keeps no alias map of its own.
  */
 function aliasNamesChoice(option: Record<string, unknown>, value: string, alias: string): boolean {
-  const wanted = alias.trim().toLowerCase();
-  if (!wanted) return false;
-  const choices = Array.isArray(option.options)
+  const choice = advertisedChoices(option).find((candidate) => stringField(candidate, "value") === value);
+  return acpModelChoiceNamesAlias({ value, name: stringField(choice ?? {}, "name") }, alias);
+}
+
+/** Whether `value` is the one advertised choice the alias names (`aliasNamesChoice`), and no other choice is named by it. */
+function aliasNamesOnlyChoice(option: Record<string, unknown>, value: string, alias: string): boolean {
+  const named = advertisedChoices(option).flatMap((candidate) => {
+    const choice = stringField(candidate, "value");
+    return choice && acpModelChoiceNamesAlias({ value: choice, name: stringField(candidate, "name") }, alias) ? [choice] : [];
+  });
+  return named.length === 1 && named[0] === value;
+}
+
+function advertisedChoices(option: Record<string, unknown>): Record<string, unknown>[] {
+  return Array.isArray(option.options)
     ? option.options.flatMap((entry) => {
       const candidate = record(entry);
       return Array.isArray(candidate.options) ? candidate.options.map(record) : [candidate];
     })
     : [];
-  const choice = choices.find((candidate) => stringField(candidate, "value") === value);
-  const name = stringField(choice ?? {}, "name")?.trim().toLowerCase();
-  return name === wanted || value.toLowerCase().split(/[-_.\s/:]+/).includes(wanted);
 }
 
 function isString(value: string | null): value is string {
@@ -1113,6 +1194,7 @@ function addUsage(
     "output_tokens",
     "total_tokens",
     "cache_creation_input_tokens",
+    "cache_creation_1h_input_tokens",
     "cache_read_input_tokens",
     "reasoning_tokens",
   ] as const) {
@@ -1121,6 +1203,15 @@ function addUsage(
     if (left !== undefined || right !== undefined) result[key] = (left ?? 0) + (right ?? 0);
   }
   return result;
+}
+
+function withClaudeCacheTtl(reported: CanonicalUsage | null, receipt: CanonicalUsage | null): CanonicalUsage | null {
+  if (!reported || !receipt) return reported ?? receipt;
+  const ttl = receipt.cache_creation_1h_input_tokens;
+  return ttl !== undefined && reported.cache_creation_1h_input_tokens === undefined
+    && reported.total_tokens === receipt.total_tokens
+    && reported.cache_creation_input_tokens === receipt.cache_creation_input_tokens
+    ? { ...reported, cache_creation_1h_input_tokens: ttl } : reported;
 }
 
 function addModelUsage(

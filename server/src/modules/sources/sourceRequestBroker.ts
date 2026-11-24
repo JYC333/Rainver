@@ -21,6 +21,8 @@ export interface SourceRequestGrant {
   scopeId:string;
   quotaGroup: string;
   quota: readonly RequestQuotaWindow[];
+  /** Honor upstream Retry-After without counting local request windows. */
+  upstreamCooldownOnly?: boolean;
   endpointQuotas?: readonly { key: string; windows: readonly RequestQuotaWindow[] }[];
   routes: readonly SourceRequestRoute[];
   maxBytes: number;
@@ -102,8 +104,8 @@ export function createSourceRequestBroker(pool: Pool | TransactionRunner, grant:
         beforeSend:async(url)=>{
           check(); routeFor(grant,url,request.method);
           if(grant.beforePhysicalSend){try{grant.beforePhysicalSend(url)}catch(error){throw error instanceof SourceRequestError?error:new SourceRequestError("source_budget_exhausted");}}
-          const admission=await admitSourceRequestGroups(pool,[{key:grant.quotaGroup,windows:grant.quota},...grant.endpointQuotas??[]],combined);
-          check(); if(!admission.allowed) throw new SourceRequestError("source_quota_exhausted",admission.retryAt);
+          const admission=await admitSourceRequestGroups(pool,[{key:grant.quotaGroup,windows:grant.quota},...grant.endpointQuotas??[]],combined,{upstreamCooldownOnly:grant.upstreamCooldownOnly});
+          check(); if(!admission.allowed) throw new SourceRequestError(grant.upstreamCooldownOnly ? "source_upstream_cooldown" : "source_quota_exhausted",admission.retryAt);
           try{await grant.authorize(combined)}catch{throw new SourceRequestError("source_authority_revoked");}
           check();
         },
@@ -129,7 +131,7 @@ export function createSourceRequestBroker(pool: Pool | TransactionRunner, grant:
   };
   const scopeSha256=createHash("sha256").update(JSON.stringify({scope:grant.scopeId,account:grant.quotaGroup,quota:grant.quota,endpoints:grant.endpointQuotas,
     routes:grant.routes.map(r=>({origin:r.origin,path:r.path_prefix,methods:r.methods,query:r.query_keys,credentialed:!!r.credentialHeaders})),maxBytes:grant.maxBytes,deadline:grant.deadlineMs,
-    ...grant.maxRedirects!==undefined?{maxRedirects:grant.maxRedirects}:{},...grant.assertHopUrl?{exactHopUrl:true}:{},...grant.beforePhysicalSend?{sendBudget:true}:{}})).digest("hex");
+    ...grant.upstreamCooldownOnly?{upstreamCooldownOnly:true}:{},...grant.maxRedirects!==undefined?{maxRedirects:grant.maxRedirects}:{},...grant.assertHopUrl?{exactHopUrl:true}:{},...grant.beforePhysicalSend?{sendBudget:true}:{}})).digest("hex");
   const authorizeExecution=async(perCall:AbortSignal)=>{
     const combined=AbortSignal.any([signal,perCall]);
     if(combined.aborted)throw new SourceRequestError("source_cancelled");

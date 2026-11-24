@@ -366,7 +366,7 @@ export class PgAgentGroupRepository {
       `SELECT ${GROUP_COLUMNS}
          FROM agent_run_groups
         WHERE space_id = $1 AND id = $2
-        FOR UPDATE`,
+        FOR NO KEY UPDATE`,
       [spaceId, groupId],
     );
     return result.rows[0] ?? null;

@@ -76,7 +76,7 @@ describe('FloatingQuickCapture outside a Project', () => {
     await waitFor(() => expect(createCapture).toHaveBeenCalledWith({
       text: 'A private thought',
       destination: 'personal_inbox',
-    }))
+    }, undefined, 'team-1'))
   })
 })
 
@@ -113,7 +113,7 @@ describe('FloatingQuickCapture destination inference', () => {
       destination: 'object_marginalia',
       project_id: 'project-1',
       target_id: 'thread-1',
-    }))
+    }, undefined, 'team-1'))
   })
 
   it('defaults to project marginalia when the Area declares no object', () => {
@@ -133,7 +133,7 @@ describe('FloatingQuickCapture destination inference', () => {
       text: 'a passage a teammate sent',
       destination: 'project_raw',
       project_id: 'project-1',
-    }))
+    }, undefined, 'team-1'))
   })
 
   it('defaults a typed URL to project raw material', () => {
@@ -160,7 +160,7 @@ describe('FloatingQuickCapture destination override', () => {
     await waitFor(() => expect(createCapture).toHaveBeenCalledWith({
       text: 'unrelated thought',
       destination: 'personal_inbox',
-    }))
+    }, undefined, 'team-1'))
   })
 
   it('forgets the chosen destination after the capture, rather than remembering it', async () => {
@@ -200,7 +200,7 @@ describe('FloatingQuickCapture in a single-member Space', () => {
       text: '共享的资料',
       destination: 'project_raw',
       project_id: 'project-1',
-    }))
+    }, undefined, 'team-1'))
   })
 
   it('keeps the team wording until the Space list has actually loaded', () => {

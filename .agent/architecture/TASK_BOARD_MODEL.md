@@ -77,7 +77,13 @@ Boards and tasks are scoped by **space** and optionally a **Project** (and Proje
 
 ## Execution boundary
 
-`POST /api/v1/tasks/{id}/runs` (the core `task.run.create` command, explicit Idempotency-Key) creates a **queued** `Run` (plus its initial attempt) through the runs repository inside one transaction with the `max_runs` admission lock, inserts a `task_runs` row (canonical, always role `primary` for a person's Run; role and parent Run are server-owned), and may move the task to `in_progress`. It does **not** call runtime adapters or enqueue infrastructure jobs. Running the same Task again always creates a new Run and a new `task_runs` row; a terminal Run is never reopened by user request.
+`POST /api/v1/tasks/{id}/runs` (the core `task.run.create` command, explicit Idempotency-Key) creates a **queued** `Run` (plus its initial attempt) through the runs repository inside one transaction with the `max_runs` admission lock, inserts a `task_runs` row (canonical, always role `primary` for a person's Run; role and parent Run are server-owned), enqueues its Agent Job, and may move the task to `in_progress`. The Job becomes eligible at `scheduled_at` when provided. Built-in and paired Host Task dispatch accept live execution. They refuse `dry_run` with HTTP 422 because Task worktrees and tools support persistent changes. Older queued Task previews finish with `task_dry_run_unsupported` before dispatch. The runtime adapter runs after the worker claims the Job. Running the same Task again always creates a new Run and a new `task_runs` row; a terminal Run is never reopened by user request.
+
+When a Task has a Project Folder, its selected or active Workspace Location
+determines the execution directory. The Agent Profile selects the CLI installation
+on that Location's Host. The plan and launch snapshot carry the Task Location on
+both the built-in and paired Host; a paired Host thread additionally fixes the
+CLI and installation for subsequent Runs.
 
 `PATCH /api/v1/tasks/{id}` (the core `task.update` command) leaves an omitted nullable column unchanged and
 stores an explicit `null`. For `max_runs`, `max_cost` and

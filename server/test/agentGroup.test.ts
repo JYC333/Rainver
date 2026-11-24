@@ -393,9 +393,11 @@ describe("agentGroupsRuntimeDelegationMaterializer", () => {
 
     it("uses a stable runtime-output idempotency key across physical retries", async () => {
       const keys: Array<string | null | undefined> = [];
+      const sources: Array<string | undefined> = [];
       const materializer = new AgentGroupRuntimeDelegationMaterializer({
         async spawnChildRun(_identity, input) {
           keys.push(input.tool_call_id);
+          sources.push(input.continuation?.previous_run_id);
           return {
             delegation: {
               id: "delegation-1",
@@ -411,6 +413,7 @@ describe("agentGroupsRuntimeDelegationMaterializer", () => {
         delegations: [{ workspace_access: "write" as const,
           target_agent_id: "agent-reader",
           instruction: "Summarize the evidence.",
+          continuation: { previous_run_id: "previous-writer" },
           budget: { max_cost: 2, max_steps: 4 },
         }],
       };
@@ -425,10 +428,15 @@ describe("agentGroupsRuntimeDelegationMaterializer", () => {
           }],
         },
       });
+      await materializer.materialize({ run: run(), output_json: { delegations: [{
+        ...output.delegations[0], continuation: { previous_run_id: "another-writer" },
+      }] } });
 
-      expect(keys).toHaveLength(2);
+      expect(sources).toEqual(["previous-writer", "previous-writer", "another-writer"]);
+      expect(keys).toHaveLength(3);
       expect(keys[0]).toMatch(/^runtime_output:[a-f0-9]{64}$/);
       expect(keys[1]).toBe(keys[0]);
+      expect(keys[2]).not.toBe(keys[0]);
     });
 
     it("spawns child runs from structured runtime delegation output and audits it like the tool call would", async () => {

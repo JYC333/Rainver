@@ -1,8 +1,6 @@
+import { resolveIdentity as resolveRouteIdentity } from "../routeUtils/common.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
-import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
-import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext.js";
-import { introspectIdentity } from "../auth/identity.js";
 import {
   ArtifactNotExportableError,
   ArtifactValidationError,
@@ -96,28 +94,7 @@ async function resolveIdentity(
       ? identityOverride(request)
       : identityOverride;
   }
-  const requestId = resolveRequestId(request);
-  reply.header(REQUEST_ID_HEADER, requestId);
-  const identity = await introspectIdentity(context.config, request, reply);
-  if (identity.ok) return { spaceId: identity.spaceId, userId: identity.userId };
-  if (identity.reason === "denied") {
-    reply.code(identity.statusCode);
-    reply.header("content-type", "application/json");
-    reply.send(identity.body);
-    return null;
-  }
-  await sendErrorEnvelope(
-    reply,
-    502,
-    errorEnvelope(
-      identity.reason === "contract_violation"
-        ? "introspect_contract_violation"
-        : "identity_unavailable",
-      "Identity introspection failed",
-      requestId,
-    ),
-  );
-  return null;
+  return resolveRouteIdentity(context.config, request, reply);
 }
 
 function parseListFilters(request: FastifyRequest):

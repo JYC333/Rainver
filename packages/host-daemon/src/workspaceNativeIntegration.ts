@@ -1,4 +1,4 @@
-import {writeJsonDurable as writeJson} from './durableFile.js';
+import {syncExistingDurable,writeJsonDurable as writeJson} from './durableFile.js';
 import {workspaceDeltaAlreadyApplied} from './appliedWorkspaceDelta.js';
 import {assertWorkspaceCheckoutAllowed} from './workspaceBaseline.js';
 import {join} from 'node:path';
@@ -11,6 +11,7 @@ import {leaseOwnedByRun,isLeaseBusy} from './locationLease.js';
 import {workspaceWorktreeKey,workspaceRunKey} from './worktreeIdentity.js';
 import {checkLocationRepository,gitOrThrow,isAncestor,readJson,writeCommit,taskBranchRef,taskLeaseKey,withTaskHeld,useTaskWorktree,isTaskWorktreeInUse,WORKTREE_TIMEOUT_MS} from './taskWorktree.js';
 import {mergeTrees,publishWorkspaceCommit,overlappingLocalChanges} from './taskMerge.js';
+import {localPublicationJournalPath,readLocalPublication} from './localChangeReconciliation.js';
 import {assertChainUnchanged,assertPublicationTarget,freezePublicationChain,writeMergeCommit,type FrozenChain} from './publicationChain.js';
 import {hasUnresolvedMarkers,pickCommit,rebaseCommits,replayCommits,type RebaseStop} from './nativeRebase.js';
 
@@ -35,6 +36,8 @@ export async function executeNativeWorkspaceIntegration(locationRoot:string|null
  const key=workspaceWorktreeKey(ref),locationId=frame.workspace.workspace_location_id,lease=taskLeaseKey(locationId,key);
  if(!locationRoot||!frame.run_id||!frame.operation_id)return fail('native_integration_identity_required');
  if(frame.action==='native_reconcile'){
+  const checkout=await checkLocationRepository(locationRoot);
+  if(checkout.kind==='repository'&&await readLocalPublication(localPublicationJournalPath(checkout.repo.gitCommonDir,frame.target_ref)))return fail('integration_local_recovery_required');
   const adopted=await workspaceDeltaAlreadyApplied(locationRoot,frame.base_commit,frame.source_commit,await gitOrThrow(['rev-parse',frame.target_ref],locationRoot));
   return adopted?{...empty,ok:true,outcome:'no_changes',error:null}:fail('integration_not_yet_adopted');
  }
@@ -43,6 +46,15 @@ export async function executeNativeWorkspaceIntegration(locationRoot:string|null
   const candidate=journal?.merged??journal?.publishing_commit;
   if(!candidate)return fail('native_publication_not_recorded');
   const adopted=await runLocationGit(['merge-base','--is-ancestor',candidate,frame.target_ref],locationRoot);
+  const checkout=await checkLocationRepository(locationRoot);
+  if(adopted.code===0&&checkout.kind==='repository'){
+   const recovery=await readLocalPublication(localPublicationJournalPath(checkout.repo.gitCommonDir,frame.target_ref));
+   if(recovery){
+    if(recovery.task!==candidate||recovery.onto!==journal!.onto||(await runLocationGit(['rev-parse',frame.target_ref],locationRoot)).stdout.trim()!==candidate)return fail('integration_local_recovery_required');
+    const result=await publishWorkspaceCommit(checkout.repo,locationId,key,empty.main_branch,journal!.onto,candidate);
+    if(!result.ok||result.outcome!=='merged')return fail(result.error??'integration_local_recovery_required');
+   }
+  }
   return adopted.code===0?{...empty,ok:true,outcome:journal?.no_changes?'no_changes':'merged',candidate_commit:candidate,onto_commit:journal!.onto,error:null}:fail('native_publication_not_adopted');
  }
  if(!leaseOwnedByRun(lease,frame.run_id))return fail('native_integration_run_not_active');
@@ -80,9 +92,13 @@ export async function executeNativeWorkspaceIntegration(locationRoot:string|null
     // A busy target has not published anything. Retain its request identity,
     // but recheck the lease and all publication guards on the same retry.
     // This also recovers busy receipts written by older Hosts after restart.
-    if(answer.ok||answer.error!=='location_busy')return answer;
+    if(answer.ok||answer.error!=='location_busy'){
+     if(!await syncExistingDurable(answerPath))return fail('native_integration_receipt_missing');
+     return answer;
+    }
    }
    let stored=await readJson(journalPath) as unknown as Journal|null;
+   if(stored&&!await syncExistingDurable(journalPath))return fail('native_integration_journal_missing');
    const snapshot=async(message:string)=>{
     const head=await gitOrThrow(['rev-parse','HEAD'],root);
     const tree=await captureWorkspaceTree(root,WORKTREE_TIMEOUT_MS,head);
@@ -92,7 +108,15 @@ export async function executeNativeWorkspaceIntegration(locationRoot:string|null
     await gitOrThrow(['update-ref','-m','rainver: live workspace checkpoint',branch,commit,head],repo.root);
     return commit;
    };
-   if(stored?.publishing_commit&&!stored.merged&&(await runLocationGit(['merge-base','--is-ancestor',stored.publishing_commit,frame.target_ref],repo.root)).code===0){stored={...stored,merged:stored.publishing_commit};await writeJson(journalPath,stored);}
+   if(stored?.publishing_commit&&!stored.merged&&(await runLocationGit(['merge-base','--is-ancestor',stored.publishing_commit,frame.target_ref],repo.root)).code===0){
+    const recovery=await readLocalPublication(localPublicationJournalPath(repo.gitCommonDir,frame.target_ref));
+    if(recovery){
+     if(recovery.task!==stored.publishing_commit||recovery.onto!==stored.onto)return fail('integration_local_recovery_required');
+     const result=await publishWorkspaceCommit(repo,locationId,key,empty.main_branch,stored.onto,stored.publishing_commit,{canPublish:()=>leaseOwnedByRun(lease,frame.run_id!)});
+     if(!result.ok||result.outcome!=='merged')return fail(result.error??'integration_local_recovery_required');
+    }
+    stored={...stored,merged:stored.publishing_commit};await writeJson(journalPath,stored);
+   }
    if(stored?.preparing_tree){
     const current=await captureWorkspaceTree(root,WORKTREE_TIMEOUT_MS);
     if(current===await treeOf(stored.source)){
@@ -284,12 +308,12 @@ export async function executeNativeWorkspaceIntegration(locationRoot:string|null
     if(tipPublished&&await committed()!==stored.chain!.tip)return fail('native_publication_chain_changed');
     const commit=await snapshot(frame.message);
     if(await treeOf(commit)!==await treeOf(frame.verified_commit))return fail('native_verified_version_changed');
-    const integrity=await runLocationGit(['diff','--check',stored.onto,commit,'--'],root);
-    if(integrity.code!==0)return fail('native_candidate_has_unresolved_changes');
+    if(await hasUnresolvedMarkers(root,stored.onto,commit,[]))return fail('native_candidate_has_unresolved_changes');
     if(stored.chain)await assertChainUnchanged(repo.root,stored.chain);
     // squash: one new commit on the target tip. fast_forward: the frozen chain tip
     // itself. merge: an ordinary merge commit of the target tip and that chain.
-    const candidate=tipPublished?stored.chain!.tip
+    const recovery=await readLocalPublication(localPublicationJournalPath(repo.gitCommonDir,frame.target_ref));
+    const candidate=recovery && recovery.task===stored.publishing_commit && recovery.onto===stored.onto?recovery.task:tipPublished?stored.chain!.tip
      :stored.chain?.strategy==='merge'?await writeMergeCommit(repo.root,await treeOf(commit),stored.onto,stored.chain.tip,frame.author,frame.message)
      :await writeCommit(repo.root,await treeOf(commit),stored.onto,frame.author,frame.message);
     if(tipPublished&&(await runLocationGit(['merge-base','--is-ancestor',stored.onto,candidate],repo.root)).code!==0)return fail('native_publication_fast_forward_target_moved');

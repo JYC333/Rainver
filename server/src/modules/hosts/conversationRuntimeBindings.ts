@@ -1,14 +1,28 @@
 import {randomUUID} from 'node:crypto';
 import {withQueryableTransaction,HttpError,type Queryable} from '../routeUtils/common.js';
 import {PgConversationRuntimeSessionRepository} from '../sessions/conversationRuntimeSessionRepository.js';
-import {PgConversationExecutionContextRepository,type ExecutionContextRow} from '../sessions/executionContextRepository.js';
+import {PgConversationExecutionContextRepository,type ExecutionContextRow,type RuntimeProfileRow} from '../sessions/executionContextRepository.js';
 import {runtimeAvailability} from '../sessions/executionRuntimeAvailability.js';
 import {PgSessionRepository} from '../sessions/repository.js';
 import {PgHostThreadRepository} from './threadRepository.js';
 
-export function matchesConversationWorkspace(target:{execution_host_id:string|null;workspace_mode?:string|null;workspace_location_id:string|null},context:ExecutionContextRow){
- return target.execution_host_id===context.execution_host_id&&target.workspace_mode===context.primary_workspace_mode
-  &&target.workspace_location_id===context.primary_workspace_location_id;
+function matchesConversationWorkspace(
+  target: Pick<RuntimeProfileRow, 'execution_host_id' | 'workspace_mode' | 'workspace_location_id'>,
+  context: ExecutionContextRow,
+): boolean {
+  return target.execution_host_id === context.execution_host_id
+    && target.workspace_mode === context.primary_workspace_mode
+    && target.workspace_location_id === context.primary_workspace_location_id;
+}
+
+/** A bound Profile may change its CLI on the same Host. The thread supplies its workspace. */
+export function profileForConversationWorkspace(
+  profile: RuntimeProfileRow,
+  thread: Pick<RuntimeProfileRow, 'execution_host_id' | 'workspace_mode' | 'workspace_location_id'>,
+  context: ExecutionContextRow,
+): RuntimeProfileRow | null {
+  if (profile.execution_host_id !== context.execution_host_id || !matchesConversationWorkspace(thread, context)) return null;
+  return {...profile, workspace_mode: thread.workspace_mode, workspace_location_id: thread.workspace_location_id};
 }
 
 /** Adopt an explicit edit to the bound Profile for future turns only. Reads do
@@ -29,10 +43,11 @@ export async function rebindConversationRuntime(db:Queryable,input:{spaceId:stri
   const session=await repository.getVisibleSession(identity,input.sessionId,{forUpdate:true});
   if(!session||!await repository.canAgentParticipate(session,input.agentId,input.userId))throw new HttpError(403,'Conversation Agent is unavailable');
   const context=await repository.lockDraft(session);
-  if(!matchesConversationWorkspace(profile,context)||!matchesConversationWorkspace(thread,context))throw new HttpError(409,'Runtime changes must retain the Conversation Host and Primary Workspace');
+  const pinnedProfile=profileForConversationWorkspace(profile,thread,context);
+  if(!pinnedProfile)throw new HttpError(409,'Runtime changes must retain the Conversation Host and Primary Workspace');
   const host=(await repository.listHosts(input.userId)).find(h=>h.id===context.execution_host_id)??null;
   const location=context.primary_workspace_location_id?(await repository.listProjectLocations(input.spaceId,session.project_id)).find(l=>l.id===context.primary_workspace_location_id)??null:null;
-  const availability=runtimeAvailability(profile,host,location,{allowStaleLocation:true});
+  const availability=runtimeAvailability(pinnedProfile,host,location,{allowStaleLocation:true});
   if(!availability.usable)throw new HttpError(409,availability.reason??'Selected runtime is unavailable');
   const active=await tx.query(`SELECT 1 FROM runs WHERE host_task_thread_id=$1 AND status IN ('queued','running','cancelling','waiting_for_review','waiting_for_dependency') LIMIT 1`,[thread.id]);
   if(thread.dispatch_lock_id||context.dispatch_lock_id||active.rowCount)throw new HttpError(409,'The current Run must settle before switching its runtime');

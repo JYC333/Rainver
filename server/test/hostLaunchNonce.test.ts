@@ -72,6 +72,47 @@ describe("launch nonce routing", () => {
     expect(registry.isOnline("host-1")).toBe(false);
   });
 
+  it("keeps the grace deadline until the reconnected host proves that launch survived", async () => {
+    vi.useFakeTimers();
+    const registry=new HostConnectionRegistry();
+    const first=sink();
+    const second=sink();
+    registry.registerConnection("host-1",first,false,true);
+    const abandoned=registry.dispatchLaunch("host-1","run-1",{argv:["claude"]});
+    const launchId=String(first.sent.at(-1)?.launch_id);
+    registry.unregisterConnection("host-1",first);
+    registry.registerConnection("host-1",second,false,true);
+    registry.probeReconnectedRuns("host-1",second);
+    expect(second.sent).toContainEqual({type:"run_reconnect_probe",run_id:"run-1",launch_id:launchId});
+    registry.receiveReconnectedRun("host-1",first,{type:"run_reconnect_state",run_id:"run-1",launch_id:launchId,phase:"launched"});
+    await vi.advanceTimersByTimeAsync(61_000);
+    await expect(abandoned).resolves.toMatchObject({error:"host_disconnected"});
+    expect(second.sent).toContainEqual({type:"terminate",run_id:"run-1",launch_id:launchId,force:true});
+  });
+
+  it("resumes a surviving launch and flushes offline and replay-generated input in order", async () => {
+    const registry = new HostConnectionRegistry();
+    const first = sink();
+    const second = sink();
+    registry.registerConnection("host-1", first, false, true);
+    const completed = registry.dispatchLaunch("host-1", "run-1", { argv: ["claude"] });
+    const launchId = String(first.sent.at(-1)?.launch_id);
+    registry.unregisterConnection("host-1", first);
+    registry.sendStdin("host-1", "run-1", "offline");
+    registry.registerConnection("host-1", second, false, true);
+    registry.sendStdin("host-1", "run-1", "after replay");
+    registry.sendStdinClose("host-1", "run-1");
+    expect(second.sent).toEqual([]);
+    registry.receiveReconnectedRun("host-1", second, {type: "run_reconnect_state", run_id: "run-1", launch_id: launchId, phase: "launched"});
+    expect(second.sent).toEqual([
+      { type: "stdin", run_id: "run-1", value: "offline" },
+      { type: "stdin", run_id: "run-1", value: "after replay" },
+      { type: "stdin_close", run_id: "run-1" },
+    ]);
+    registry.receiveComplete("host-1", "run-1", { exit_code: 0, timed_out: false, error: null }, launchId);
+    await expect(completed).resolves.toMatchObject({ exit_code: 0 });
+  });
+
   it("marks a launch the host queued for its directory until the host launches it, for its own dispatch only", async () => {
     const registry = new HostConnectionRegistry();
     const connection = sink();

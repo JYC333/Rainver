@@ -119,6 +119,8 @@ export async function buildRunWorkSurface(input: {
   config: ServerConfig;
   run: RunRecord;
   hostId: string;
+  /** The launch nonce the token is issued for (bound on the attempt later, just before the frame leaves). */
+  launchId: string;
   lifetimeSeconds: number;
 }): Promise<RunWorkSurface | null> {
   const host = await workSurfaceHost(input.db, input.hostId);
@@ -132,7 +134,7 @@ export async function buildRunWorkSurface(input: {
   // Run that crashes still has to be explainable, and the fact being recorded
   // is what it was *given*, which is known now.
   const token = await new PgRunToolIdentityRepository(input.db)
-    .issue(input.run, input.lifetimeSeconds * 1000, skillContentHash);
+    .issue(input.run, input.lifetimeSeconds * 1000, skillContentHash, input.launchId);
   return {
     frame: {
       env: {

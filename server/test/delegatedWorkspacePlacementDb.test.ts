@@ -13,6 +13,9 @@ import {ensureExecutionWorkspace,ensurePrimaryExecutionWorkspace} from '../src/m
 import {sharedDelegatedBinding,sharedDelegatedRun} from '../src/modules/projectFolders/delegatedWorkspacePlacement.js';
 import {frozenReview,recordReviewObservation,recordReviewRefusal} from '../src/modules/projectFolders/delegatedWorkspaceReview.js';
 import {reviewBasisLine} from '../src/modules/agentGroups/lifecycleProjector.js';
+import {lockDelegatedContinuation,delegationAudienceDigest} from '../src/modules/agentGroups/delegatedContinuation.js';
+import {PgHostThreadRepository} from '../src/modules/hosts/threadRepository.js';
+import {withQueryableTransaction} from '../src/modules/routeUtils/common.js';
 
 /**
  * Delegated workspace placement on real PostgreSQL (ADR 0029): a serial writer
@@ -886,6 +889,51 @@ describe('delegated workspace placement',()=>{
   await child(c3.parent,'write');
   const beside=await ensurePrimaryExecutionWorkspace(db.pool,await load(await child(c3.parent,'read')),HOST,LOCATION);
   expect(beside).toMatchObject({workspace:{id:c3.workspace},review:{commit:B}});
+ });
+
+ it('continues only the same verified reviewer and freezes a fresh basis for the new Run',async ctx=>{
+  if(!db.available)return ctx.skip();
+  await capabilities({execution_workspaces:{version:2,reclaim:5,shared_review:1},workspace_read_only:{supported:true}});
+  const c=await coordinator(),previous=await child(c.parent,'read');
+  const old=await ensurePrimaryExecutionWorkspace(db.pool,await load(previous),HOST,LOCATION);
+  await recordReviewObservation(db.pool,previous,SPACE,{head:B,tree:A});
+  const profile=randomUUID();
+  await db.pool.query(`INSERT INTO agent_runtime_profiles(id,space_id,agent_id,execution_host_id,workspace_location_id,workspace_mode,runtime_installation,name,runtime_key,backend_mode,created_at,updated_at)
+    VALUES($1,$2,$3,$4,$5,'location','own','reviewer','codex_cli','runtime_native',now(),now())`,[profile,SPACE,AGENT,HOST,LOCATION]);
+  const delegation=(await load(previous)).delegation_id!;
+  const thread=await new PgHostThreadRepository(db.pool).getOrCreateForDelegation({delegationId:delegation,executionHostId:HOST,
+    workspaceLocationId:LOCATION,spaceId:SPACE,sessionId:CONVERSATION,agentId:AGENT,runtimeKey:'codex_cli',createdByUserId:OWNER});
+  const audienceDigest=delegationAudienceDigest([OWNER]);
+  const identityDigest='review-standing-digest';
+  await db.pool.query(`UPDATE runs SET status='succeeded',runtime_profile_id=$2,host_task_thread_id=$3,
+    model_override_json=$4::jsonb WHERE id=$1`,[previous,profile,thread.id,
+    JSON.stringify({delegated_review:{session:'fresh',audience_digest:audienceDigest}})]);
+  await db.pool.query(`UPDATE host_threads SET last_run_id=$2,last_session_id=$3,vendor_session_id='vendor-review',
+    context_tokens=100,context_window_tokens=4000,execution_workspace_json=$4::jsonb,
+    identity_digest=$5,identity_digest_run_id=$2 WHERE id=$1`,
+    [thread.id,previous,CONVERSATION,JSON.stringify({id:c.workspace,generation:old.workspace.generation}),identityDigest]);
+  const request={previousRunId:previous,spaceId:SPACE,parentRunId:c.parent,sessionId:CONVERSATION,agentId:AGENT,agentVersionId:VERSION,
+    userId:OWNER,profileId:profile,hostId:HOST,locationId:LOCATION,runtimeKey:'codex_cli',installation:'own',config:[],granteeIds:[],audienceDigest,identityDigest,access:'read' as const};
+  const continuation=(input:Parameters<typeof lockDelegatedContinuation>[1]=request)=>withQueryableTransaction(db.pool,tx=>lockDelegatedContinuation(tx,input));
+  expect(await continuation()).toMatchObject({thread_id:thread.id,old_commit:B});
+  expect(await continuation({...request,granteeIds:[OWNER]})).toBeNull();
+  expect(await continuation({...request,audienceDigest:delegationAudienceDigest([])})).toBeNull();
+  expect(await continuation({...request,identityDigest:'changed-reviewer-context'})).toBeNull();
+  expect(await continuation({...request,sessionId:OTHER})).toBeNull();
+  expect(await continuation({...request,config:[{id:'model',value:'different'}]})).toBeNull();
+  await db.pool.query("UPDATE host_threads SET context_tokens=2000 WHERE id=$1",[thread.id]);
+  expect(await continuation()).toBeNull();
+  await db.pool.query("UPDATE host_threads SET context_tokens=100 WHERE id=$1",[thread.id]);
+  await db.pool.query("UPDATE runs SET has_context_taint=true WHERE id=$1",[previous]);
+  expect(await continuation()).toBeNull();
+  await db.pool.query("UPDATE runs SET has_context_taint=false WHERE id=$1",[previous]);
+  await db.pool.query('UPDATE execution_workspaces SET head_commit=$2 WHERE id=$1',[c.workspace,A]);
+  await db.pool.query('UPDATE execution_workspace_runs SET checkpoint_commit=$2 WHERE run_id=$1',[c.parent,A]);
+  const next=await child(c.parent,'read');
+  expect(await continuation()).toMatchObject({thread_id:thread.id,old_commit:B});
+  expect(await ensurePrimaryExecutionWorkspace(db.pool,await load(next),HOST,LOCATION)).toMatchObject({review:{commit:A}});
+  expect(await frozenReview(db.pool,previous,SPACE)).toMatchObject({expected_commit:B,state:'verified'});
+  expect(await frozenReview(db.pool,next,SPACE)).toMatchObject({expected_commit:A,state:'pending'});
  });
 });
 

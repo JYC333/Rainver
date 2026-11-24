@@ -1,6 +1,6 @@
 import {admitMaterialization} from './workspaceRetention.js';
 import type {ExecutionWorkspaceRef} from '@rainver/protocol';
-import {reconcileLocalChanges} from './localChangeReconciliation.js';
+import {LocalPublicationChanged,localPublicationJournalPath,readLocalPublication,reconcileLocalChanges,recoverLocalPublication} from './localChangeReconciliation.js';
 import {workspaceDeltaAlreadyApplied} from './appliedWorkspaceDelta.js';
 import {workspaceIdentity} from './worktreeIdentity.js';
 import { lstat, mkdtemp, open, readdir, rm } from "node:fs/promises";
@@ -917,9 +917,28 @@ export async function publishWorkspaceCommit(repo:LocationRepository, locationId
     const moved = (): TaskMergeFinishResult => ({ ok: true, outcome: "main_moved", merged_commit: null, overlapping_files: [], error: null });
     const waiting = (files: string[]): TaskMergeFinishResult => ({ ok: true, outcome: "waiting_local_changes", merged_commit: null, overlapping_files: boundedFiles(files), error: null });
     if(options.canPublish&&!options.canPublish())return finishError("native_integration_run_not_active");
-    const mainTip = await commitOfRef(repo.root, mainRef);
+    let mainTip = await commitOfRef(repo.root, mainRef);
+    const journalPath = localPublicationJournalPath(repo.gitCommonDir, mainRef);
+    const recovery = await readLocalPublication(journalPath);
+    if (recovery) {
+      if (targetRoot !== recovery.root || ontoCommit !== recovery.onto || taskCommit !== recovery.task || (mainTip !== ontoCommit && mainTip !== taskCommit)) {
+        return finishError("integration_local_recovery_required");
+      }
+      const holder = `merge-recovery:${randomUUID()}`;
+      if (!tryAcquireLease(publicationLease, holder)) return finishError("location_busy");
+      try {
+        const head = await runLocationGit(["symbolic-ref", "-q", "HEAD"], targetRoot);
+        if (head.code !== 0 || head.stdout.trim() !== mainRef || await mainIsBusy(repo, mainBranch, true)) return finishError("integration_local_recovery_required");
+        if (options.canPublish && !options.canPublish()) return finishError("native_integration_run_not_active");
+        await recoverLocalPublication(journalPath, recovery, mainTip === taskCommit);
+        if (mainTip === taskCommit) return merged(taskCommit);
+      } finally {
+        releaseLocationLeases([publicationLease], holder);
+      }
+      mainTip = await commitOfRef(repo.root, mainRef);
+    }
     if (mainTip === taskCommit) {
-      // A finish that stopped right after moving main.
+      // A previous publication is complete when no local edit journal remains.
       return merged(taskCommit);
     }
     if (mainTip !== ontoCommit) return moved();
@@ -935,9 +954,13 @@ export async function publishWorkspaceCommit(repo:LocationRepository, locationId
         if (head.code !== 0 || head.stdout.trim() !== mainRef || await commitOfRef(targetRoot, "HEAD") !== ontoCommit) return moved();
         if(options.canPublish&&!options.canPublish())return finishError("native_integration_run_not_active");
         const overlap = await overlappingLocalChanges(targetRoot, ontoCommit, taskCommit);
-        const local = overlap.length ? await reconcileLocalChanges(targetRoot, ontoCommit, taskCommit, overlap) : null;
+        const local = overlap.length ? await reconcileLocalChanges(targetRoot, ontoCommit, taskCommit, overlap, journalPath) : null;
         if (local?.blocked.length) return waiting(local.blocked);
-        await local?.stage();
+        try { await local?.stage(); }
+        catch (error) {
+          if (error instanceof LocalPublicationChanged) return waiting(error.paths);
+          throw error;
+        }
         const merge = await runLocationGit(
           ["merge", "--ff-only", "--no-edit", "--no-overwrite-ignore", "--no-autostash", taskCommit],
           targetRoot,

@@ -168,8 +168,8 @@ a note may sit in more than one folder. Reads and reorder address a placement.
 Do not collapse those rows into one folder:
 
 - `NoteSummary.placements` is `[{ collection_id, sort_order }, …]` in placement
-  order. There is no scalar `collection_id` on a note — a note is not in "the"
-  folder. `NOTE_PLACEMENTS_JOIN` is the single query fragment that produces it.
+  order. `notePlacementsJoin` projects only placements whose inherited Project
+  is readable by the viewer. The same check applies to collection filters.
 - The tree draws one row **per placement**, keyed `${collection_id}:${note_id}`.
   Selection, the context menu and reordering all address that row.
 - `PATCH /knowledge/notes/tree/reorder` note updates carry
@@ -285,7 +285,7 @@ than a missing button.
 ## Owns
 - `Note` model (working-knowledge layer; direct CRUD through `knowledge/noteWriter.ts` `withNoteWrites`)
 - Derived-Note Source lineage: `knowledge/noteSourceLineage.ts` `inheritNoteSourceLineage` copies other Notes' Source provenance (`source_item`/`source_snapshot`/`extracted_evidence`) onto a Note written from them, through the canonical `writeProvenanceLinks`, in the caller's write transaction (used by the plugin `notes.draft` save). Each inherited entry pins the Source connections the text was derived under (`evidence_json.source_connection_ids`, unioned with the live lineage by `loadSourceConnectionIdsForTargets`), so `source.item.update` rebinding or clearing an item's connection does not drop the original Source's policy
-- Note body reads answer to Source lineage: `getNoteRow` (detail, revisions, links, shares and the single-Note mutation gate) returns nothing to a viewer a lineage Source no longer admits (`sourceLineageReadable`); the Reader `research_notebook` resolver and annotation/comment/position gate, Project Research notebook reads and prompt context (`discoverNotebookChat`, rechecked at every provider attempt of a queued Run) apply the same rule (`sourceLineageReadableTargets` per Note); a notebook-chat write-back inherits its context Notes' lineage (`inheritNoteSourceLineage`; an in-place notebook-chat or Ask-AI edit re-pins the target Note's own lineage with `includeTarget`), notebook-chat and Ask-AI edits from directly selected excerpts add pinned `source_item` lineage (`recordNoteSourceItemLineage`; not written when it cannot be kept), and a monitoring comparison excludes any Note with Source lineage as its baseline, also when merging an already terminal result; list summaries are not gated by lineage
+- Note body reads answer to Source lineage: `getNoteRow` (detail, revisions, links, shares and the single-Note mutation gate) returns nothing to a viewer a lineage Source no longer admits (`sourceLineageReadable`); the Reader `research_notebook` resolver and annotation/comment/position gate, Project Research notebook reads and prompt context (`discoverNotebookChat`, rechecked at every provider attempt of a queued Run) apply the same rule (`sourceLineageReadableTargets` per Note); a notebook-chat write-back inherits its context Notes' lineage (`inheritNoteSourceLineage`; an in-place notebook-chat or Ask-AI edit re-pins the target Note's own lineage with `includeTarget`), notebook-chat and Ask-AI edits from directly selected excerpts add pinned `source_item` lineage (`recordNoteSourceItemLineage`; not written when it cannot be kept), and a monitoring comparison excludes any Note with Source lineage as its baseline, also when merging an already terminal result. Lists keep the otherwise visible summaries. Body matches and body hashes require readable Source lineage as well as full Note access.
 - `NoteCollection` / `NoteCollectionItem` models (space-scoped Notes folder tree)
 - `KnowledgeItem` model (canonical wiki layer)
 - `Source` model (independent provenance/evidence layer)
@@ -810,9 +810,10 @@ One read and one write check, and both are the module's own.
   and remove, share revoke, tree reorder, the notebook-chat edit and the capture
   relocation. Knowledge *items* and *claims* keep their own owner-only rule
   (`canMutateKnowledge`), which is stricter, not looser.
-- **Search:** the title is searchable at every access level; a *body* is matched
-  only at `full` (`bodyMatchSql`). A search that matched a withheld body handed
-  it back a character at a time.
+- **Search:** the title is searchable at every access level. A body match
+  requires `full` Note access and readable Source lineage. The lineage prefilter
+  examines body candidates within the requested scope. Lineage, count, page
+  membership, and body hashes use one read snapshot.
 - **Purge:** `purgeDeletedNotes` deletes only notes its caller could have
   deleted themselves. Do not make the purge Space-wide. The candidate query, oldest
   deletion first, prefilters on the same rule — owner or `space_shared`, and
@@ -896,7 +897,7 @@ Memory/Wiki promotion still requires its canonical proposal/provenance path.
 
 ### Ordinary Note objects, collections and placement (basis4cf62800)
 
-Ten human-only core commands now replace the retained create/edit/collection/
+Ten core commands now replace the retained create/edit/collection/
 placement/tree handlers: knowledge.note.create/update, knowledge.collection.
 create/update/delete/ensure_project, knowledge.note.placement.add/remove,
 knowledge.note.share.revoke and knowledge.note.tree.reorder. They dispatch to
@@ -909,8 +910,12 @@ New root drafts use the access-owned private Personal/Project-shared context.
 An explicit existing collection is instead a child context in the authenticated
 request Space: its current authorized Project is inherited, explicit mismatch
 conflicts, and no global id-to-Space lookup or arbitrary actor callback exists.
-The creation flag remains a public-only/ungrantable manual draft; no durable
-creation exception was widened and no Agent action was enabled. The original
+Manual Runs with the matching tool grants can create and edit working Notes,
+create and rename folders, and reorder Note entries in their current Project.
+Normal Project and Note write checks still apply. Agent edits exclude shared
+Notes with cross-Project reach, and cannot change sharing, ownership, role or
+status. Agent creation stays in the Run's Project while the person's creation
+route still uses its existing placement authority. The original
 Source creation guard is regression-tested after this purpose-bound addition.
 
 Admission discovers only addressed ancestors/children, affected placements and

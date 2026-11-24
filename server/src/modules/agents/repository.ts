@@ -445,6 +445,24 @@ export class PgAgentChatRepository {
     );
     return result.rows[0] ?? null;
   }
+
+  /**
+   * The Project's own Assistant, for a turn the server starts in the person's private conversation of that
+   * Project on a standing setup they confirmed there (`queueUnattendedPrivateTurn`, ADR 0036) — never another
+   * Project's Assistant, and never for the person's own direct chat, which `getAgentForChat` keeps closed to it.
+   */
+  async getProjectAssistantForUnattendedTurn(spaceId: string, agentId: string, projectId: string): Promise<AgentChatRecord | null> {
+    const result: QueryResult<AgentChatRecord> = await this.db.query<AgentChatRecord>(
+      `SELECT a.id, a.space_id, a.name, a.current_version_id, COALESCE(av.tool_permissions_json,'{}'::jsonb) AS tool_permissions_json
+         FROM agents a
+         LEFT JOIN agent_versions av ON av.id=a.current_version_id AND av.agent_id=a.id AND av.space_id=a.space_id
+        WHERE a.space_id = $1 AND a.id = $2 AND a.project_id = $3
+          AND a.status = 'active' AND a.agent_kind = 'system_assistant'
+        LIMIT 1`,
+      [spaceId, agentId, projectId],
+    );
+    return result.rows[0] ?? null;
+  }
 }
 
 export class PgAgentRepository {
@@ -638,7 +656,8 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     const result = await this.pool.query<{ agent_kind: string; project_id: string | null }>(
       `SELECT agent_kind, project_id
          FROM agents
-        WHERE space_id = $1 AND id = $2 AND status = 'active'
+        WHERE space_id = $1 AND id = $2
+          AND (status = 'active' OR (status = 'disabled' AND agent_kind <> 'system_assistant'))
         LIMIT 1`,
       [spaceId, agentId],
     );
@@ -654,13 +673,19 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     return Boolean(await this.getVisible(spaceId, userId, agentId));
   }
 
-  async canWriteRuntimeProfiles(spaceId: string, userId: string, agentId: string): Promise<boolean> {
+  async canWriteRuntimeProfiles(
+    spaceId: string,
+    userId: string,
+    agentId: string,
+    options: { allowDisabled?: boolean } = {},
+  ): Promise<boolean> {
     const result = await this.pool.query<{ agent_kind: string; project_id: string | null }>(
       `SELECT agent_kind, project_id
          FROM agents
-        WHERE space_id = $1 AND id = $2 AND status = 'active'
+        WHERE space_id = $1 AND id = $2
+          AND (status = 'active' OR ($3 AND status = 'disabled' AND agent_kind <> 'system_assistant'))
         LIMIT 1`,
-      [spaceId, agentId],
+      [spaceId, agentId, options.allowDisabled ?? false],
     );
     const agent = result.rows[0];
     if (!agent) return false;

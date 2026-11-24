@@ -42,6 +42,7 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -n "$COMMAND" ]] || { echo "Usage: $0 plan|apply|activate|rollback [--mode dev|test|prod] [--yes]" >&2; exit 1; }
 local_compose_init "$MODE"
+local_compose_lock_instance "managing the database roles"
 
 APP_ROLE="$(local_compose_setting_or_default RAINVER_DB_APP_ROLE rainver_app)"
 BACKUP_ROLE="$(local_compose_setting_or_default RAINVER_DB_BACKUP_ROLE rainver_backup)"
@@ -53,21 +54,16 @@ local_compose_validate_pg_identifier "POSTGRES_DB" "$PGDB"
 # Every secret reaches the one-off owner container by inherited name (`-e NAME`), never as
 # `NAME=value` on the docker argv; the owner URL is never written to the server's environment.
 owner_cli() {
+  local command=(run --rm -T --no-deps)
+  [[ "$MODE" != prod ]] || command+=(--pull never)
+  local_compose_prepare_prod_server_image || return
   SERVER_DATABASE_URL="$(local_compose_server_owner_database_url)" \
   RAINVER_DB_APP_ROLE="$APP_ROLE" RAINVER_DB_BACKUP_ROLE="$BACKUP_ROLE" \
-    "${COMPOSE[@]}" run --rm -T --no-deps \
+    "${COMPOSE[@]}" "${command[@]}" \
     -e SERVER_DATABASE_URL -e RAINVER_DB_APP_ROLE -e RAINVER_DB_BACKUP_ROLE \
     "$@"
 }
 require_yes() { $YES || { echo "Refusing to $COMMAND without --yes (see --help)." >&2; exit 1; }; }
-require_stopped() {
-  local running
-  running="$("${COMPOSE[@]}" ps --services --filter status=running 2>/dev/null | grep -vx postgres || true)"
-  if [[ -n "$running" ]]; then
-    echo "ERROR: stop application services first (running: $(echo "$running" | tr '\n' ' '))" >&2
-    exit 1
-  fi
-}
 role_url() {
   printf 'postgresql://%s:%s@postgres:5432/%s\n' "$1" "$(local_compose_urlencode "$2")" "$PGDB"
 }
@@ -90,7 +86,7 @@ case "$COMMAND" in
     ;;
   activate)
     require_yes
-    require_stopped
+    local_compose_require_stopped_applications "database role $COMMAND"
     [[ -n "$(local_compose_setting RAINVER_DB_APP_PASSWORD || true)" ]] || { echo "Run apply first." >&2; exit 1; }
     if [[ "$(local_compose_setting RAINVER_DB_REQUIRE_RUNTIME_ROLE || true)" != "1" ]]; then
       local_compose_set_env_value RAINVER_DB_OWNER_SERVER_DATABASE_URL "$(local_compose_setting SERVER_DATABASE_URL || local_compose_server_owner_database_url)"
@@ -100,11 +96,11 @@ case "$COMMAND" in
     local_compose_set_env_value BACKUP_DATABASE_URL "$(role_url "$BACKUP_ROLE" "$(local_compose_setting RAINVER_DB_BACKUP_PASSWORD)")"
     local_compose_set_env_value RAINVER_DB_REQUIRE_RUNTIME_ROLE 1
     local_compose_generate_server_env
-    echo "Activated. Start with ops/scripts/start.sh --mode $MODE; the server refuses to start unless it connects as $APP_ROLE."
+    echo "Activated. Start with ops/scripts/start.sh --$MODE; the server refuses to start unless it connects as $APP_ROLE."
     ;;
   rollback)
     require_yes
-    require_stopped
+    local_compose_require_stopped_applications "database role $COMMAND"
     local_compose_set_env_value RAINVER_DB_REQUIRE_RUNTIME_ROLE 0
     local_compose_set_env_value SERVER_DATABASE_URL "$(local_compose_setting RAINVER_DB_OWNER_SERVER_DATABASE_URL || local_compose_server_owner_database_url)"
     local_compose_set_env_value BACKUP_DATABASE_URL "$(local_compose_setting RAINVER_DB_OWNER_BACKUP_DATABASE_URL || true)"

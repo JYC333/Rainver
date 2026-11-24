@@ -3,6 +3,11 @@ import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeF
 import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
 import { loadMigrations, requiresMaintenance, type MigrationFile } from "./migrator.js";
+import { mergedPluginMigrationSql } from "../modules/plugins/migrationSql.js";
+
+type MigrationOwner = "server" | "plugin";
+const mergeSql = (files: readonly MigrationFile[], owner: MigrationOwner) =>
+  owner === "plugin" ? mergedPluginMigrationSql(files.map(({ version, name, sql }) => ({ id: `${version}_${name}`, sql }))) : mergedMigrationSql(files);
 
 export function mergedMigrationSql(files: readonly MigrationFile[]): string {
   // The runner resets search_path after each original file. Preserve that
@@ -27,17 +32,17 @@ function chain(dir: string): MigrationFile[] {
 }
 
 /** Only a terminal, unpublished suffix can be replaced; the baseline stays fixed. */
-export function loadSquashPlan(sourceDir: string, targetDir: string) {
+export function loadSquashPlan(sourceDir: string, targetDir: string, owner: MigrationOwner = "server") {
   const source = chain(sourceDir);
   const target = chain(targetDir);
   let common = 0;
   while (common < Math.min(source.length, target.length) && sameFile(source[common], target[common])) common++;
-  if (common < 1 || source.length - common < 2 || target.length !== common + 1) {
-    throw new Error("Squash must preserve the baseline and replace a suffix of at least two migrations with one");
+  if ((owner === "server" && common < 1) || source.length - common < 2 || target.length !== common + 1) {
+    throw new Error(owner === "server" ? "Squash must preserve the baseline and replace a suffix of at least two migrations with one" : "Plugin squash must replace a suffix of at least two migrations with one");
   }
   const suffix = source.slice(common);
   const replacement = target[common];
-  if (replacement.sql !== mergedMigrationSql(suffix)) {
+  if ((owner === "plugin" && replacement.name === suffix[0].name) || replacement.sql !== mergeSql(suffix, owner)) {
     throw new Error("Merged SQL differs from the ordered original SQL; use squash prepare without editing its SQL");
   }
   const identities = (files: MigrationFile[]) => files.map(({ version, name, checksum }) => ({ version, name, checksum }));
@@ -52,10 +57,12 @@ const journalSchema = z.object({
 const snapshotSchema = z.object({ id: z.string(), prevId: z.string() }).passthrough();
 
 /** Write a separate reviewable target directory; never rewrite the source. */
-export function prepareSquash(sourceDir: string, outputDir: string, from: string, name: string): void {
+export function prepareSquash(sourceDir: string, outputDir: string, from: string, name: string, owner: MigrationOwner = "server"): void {
   const source = chain(sourceDir);
   const index = source.findIndex((file) => file.version === from);
-  if (index < 1 || source.length - index < 2) throw new Error("Select at least two terminal migrations after the baseline");
+  if (index < (owner === "server" ? 1 : 0) || source.length - index < 2) {
+    throw new Error(owner === "server" ? "Select at least two terminal migrations after the baseline" : "Select at least two terminal plugin migrations");
+  }
   if (!/^[a-z][a-z0-9_]*$/.test(name)) throw new Error("Migration name must be snake_case");
   const output = resolve(outputDir);
   const input = resolve(sourceDir);
@@ -70,7 +77,7 @@ export function prepareSquash(sourceDir: string, outputDir: string, from: string
   try {
     for (const file of source.slice(0, index)) cpSync(file.path, join(staging, `${file.version}_${file.name}.sql`));
     const tag = `${from}_${name}`;
-    writeFileSync(join(staging, `${tag}.sql`), mergedMigrationSql(source.slice(index)), { flag: "wx" });
+    writeFileSync(join(staging, `${tag}.sql`), mergeSql(source.slice(index), owner), { flag: "wx" });
     const meta = join(input, "meta");
     if (existsSync(meta)) {
       const journal = journalSchema.parse(JSON.parse(readFileSync(join(meta, "_journal.json"), "utf8")));
@@ -85,13 +92,33 @@ export function prepareSquash(sourceDir: string, outputDir: string, from: string
       for (const file of source.slice(0, index)) cpSync(join(meta, `${file.version}_snapshot.json`), join(staging, "meta", `${file.version}_snapshot.json`));
       const last = snapshots.at(-1)!;
       // Keep the final schema, link it to the unchanged prefix's snapshot.
-      writeFileSync(join(staging, "meta", `${from}_snapshot.json`), JSON.stringify({ ...last, prevId: snapshots[index - 1].id }, null, 2));
+      writeFileSync(join(staging, "meta", `${from}_snapshot.json`), JSON.stringify({ ...last, prevId: snapshots[index - 1]?.id ?? snapshots[0].prevId }, null, 2));
       writeFileSync(join(staging, "meta", "_journal.json"), JSON.stringify({ ...journal, entries: [
         ...journal.entries.slice(0, index), { ...journal.entries.at(-1)!, idx: index, tag },
       ] }, null, 2));
     }
-    loadSquashPlan(input, staging);
+    loadSquashPlan(input, staging, owner);
     renameSync(staging, output);
+  } finally {
+    rmSync(staging, { recursive: true, force: true });
+  }
+}
+
+export function preparePluginSquashArchive(sourceDir: string, archiveDir: string, from: string, name: string): void {
+  const source = resolve(sourceDir);
+  const archive = resolve(archiveDir);
+  if (archive === source || archive.startsWith(`${source}/`) || source.startsWith(`${archive}/`)) {
+    throw new Error("Plugin source and archive directories must be separate");
+  }
+  if (existsSync(archive)) throw new Error("Archive directory already exists");
+  const staging = `${archive}.preparing`;
+  mkdirSync(dirname(archive), { recursive: true });
+  mkdirSync(staging);
+  try {
+    const archivedSource = join(staging, "source");
+    cpSync(source, archivedSource, { recursive: true });
+    prepareSquash(archivedSource, join(staging, "target"), from, name, "plugin");
+    renameSync(staging, archive);
   } finally {
     rmSync(staging, { recursive: true, force: true });
   }

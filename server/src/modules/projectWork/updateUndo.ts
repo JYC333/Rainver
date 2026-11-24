@@ -106,9 +106,7 @@ async function undoLocked(
   if (action === "restore_memory") {
     // A persona is the one memory a person cannot simply archive: the Agent
     // has to have some persona, and archiving the head would leave it with
-    // none. So the reversal is two canonical writes in one action — retire the
-    // version the Agent wrote, bring back the one it replaced — which is what
-    // "one-step restore" means for ADR 0003 §5's third row.
+    // none. Use the canonical two-version reversal from ADR 0003 §5.
     const previousId = typeof event.data_json?.restores_memory_id === "string"
       ? event.data_json.restores_memory_id
       : null;
@@ -118,18 +116,13 @@ async function undoLocked(
     // persona again, or after the previous version was restored by hand. Both
     // are refusals the person can act on, not server faults, so the applier's
     // status errors are answered as 409 rather than escaping as a 500.
-    const step = async (memoryId: string, status: "archived" | "active") => {
-      try {
-        return await memory.setOwnStatus(identity.spaceId, identity.userId, memoryId, status);
-      } catch (error) {
-        if (error instanceof MemoryApplyError) throw new ProjectUpdateUndoError(409, error.message);
-        throw error;
-      }
-    };
-    const archived = await step(event.subject_id, "archived");
-    if (!archived) throw new ProjectUpdateUndoError(409, "That memory is no longer the caller's to change");
-    const restored = await step(previousId, "active");
-    if (!restored) throw new ProjectUpdateUndoError(409, "The previous version is no longer there to put back");
+    try {
+      const restored = await memory.revertToPreviousVersion(identity.spaceId, identity.userId, event.subject_id, previousId);
+      if (!restored) throw new ProjectUpdateUndoError(409, "This version is no longer active or owned by the caller");
+    } catch (error) {
+      if (error instanceof MemoryApplyError) throw new ProjectUpdateUndoError(409, error.message);
+      throw error;
+    }
     await recordDomainWorkEvent(db, {
       spaceId: identity.spaceId,
       projectId,

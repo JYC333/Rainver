@@ -1180,3 +1180,36 @@ it('enforces a read-only private attachment while permitting writes to the prima
   expect(await run.complete()).toMatchObject({exit_code:0});expect(existsSync(join(source,'bad.txt'))).toBe(false);expect(existsSync(join(workspaceDir,'primary.txt'))).toBe(false);
  }finally{await rm(source,{recursive:true,force:true});}
 });
+
+
+describe("dependency-only quarantine recovery",()=>{
+  const name="task-cache-2026-11-01T00-00-00-000Z-1234abcd";
+  const quarantine=()=>join(configDir,"task-worktrees-quarantine","folder-1");
+  const sweep=()=>sweepTaskWorktrees({workspaces:{"folder-1":workspaceDir},workspacesRoot:null,now:Date.parse("2026-11-20T00:00:00Z")});
+  it("moves dependency-only removal remnants into the existing retired retention without touching their bytes",async()=>{
+    const dir=join(quarantine(),name);
+    await mkdir(join(dir,"server","node_modules","cache"),{recursive:true});
+    await writeFile(join(dir,"server","node_modules","cache","data"),"dependency bytes");
+    await sweep();
+    expect(await readdir(quarantine())).toEqual([name+"-retired"]);
+    expect(await readFile(join(quarantine(),name+"-retired","server","node_modules","cache","data"),"utf8")).toBe("dependency bytes");
+    await sweepTaskWorktrees({workspaces:{"folder-1":workspaceDir},workspacesRoot:null,now:Date.parse("2026-12-03T00:00:00Z")});
+    expect(await readdir(quarantine())).toEqual([]);
+  });
+  it.each(["source.ts",".env","nested/.git/HEAD","node_modules-link"])("keeps unknown or linked contents (%s) protected",async extra=>{
+    const dir=join(quarantine(),name);
+    await mkdir(join(dir,"node_modules"),{recursive:true});
+    const path=join(dir,extra);await mkdir(join(path,".."),{recursive:true});
+    if(extra==='node_modules-link')await symlink(workspaceDir,path);else await writeFile(path,"unique bytes");
+    await sweep();
+    expect(await readdir(quarantine())).toEqual([name]);
+    if(extra!=='node_modules-link')expect(await readFile(path,"utf8")).toBe("unique bytes");
+  });
+  it("does not inspect or reclassify a quarantine while its workspace lease is held",async()=>{
+    const {withTaskHeld,taskLeaseKey}=await import('../src/taskWorktree.js');
+    await mkdir(join(quarantine(),name,"node_modules"),{recursive:true});
+    await withTaskHeld(taskLeaseKey('folder-1','task-cache'),sweep);
+    expect(await readdir(quarantine())).toEqual([name]);
+    await sweep();expect(await readdir(quarantine())).toEqual([name+'-retired']);
+  });
+});

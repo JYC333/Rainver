@@ -16,6 +16,7 @@ import { seedServerHost } from "./support/domainSeeds.js";
 import { settleTasksForRun } from "../src/modules/projectWork/settlement.js";
 import { RunOrchestrationService } from "../src/modules/runs/orchestrationService.js";
 import { HostConnectionRegistry } from "../src/modules/hosts/connectionRegistry.js";
+import { RUN_CANCELLATION_RECONCILE_JOB } from "../src/modules/jobs/agentRunGeneration.js";
 import { PgJobQueueRepository } from "../src/modules/jobs/repository.js";
 import { loadConfig } from "../src/config.js";
 import { RunRecoveryService, resumeUnsettledRuns } from "../src/modules/runs/recovery.js";
@@ -414,6 +415,28 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
     )).rows[0]?.count).toBe("0");
   });
 
+  it("leaves a refused resume terminal instead of holding it for a review whose resume would repeat it (ADR 0036 §15)", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const repository = new PgRunRepository(db.pool);
+    const finalizer = new PostRunFinalizationService(repository, undefined, undefined, undefined, undefined, new PgRunSupervisor(db.pool));
+    const failWith = async (errorCode: string) => {
+      const runId = await seedRun({ max_attempts: 2 });
+      await repository.markRunRunning({ run_id: runId, space_id: SPACE, started_at: new Date().toISOString() });
+      await repository.markRunTerminal({ run_id: runId, space_id: SPACE, status: "failed",
+        error_json: { error_code: errorCode, error_text: "refused" }, completed_at: new Date().toISOString() });
+      await finalizer.finalize(runId, SPACE);
+      const decisions = await db.pool!.query<{ decision: string }>(
+        "SELECT decision FROM run_supervisor_decisions WHERE space_id = $1 AND run_id = $2", [SPACE, runId]);
+      return { status: (await repository.getRun(SPACE, runId))?.status, decisions: decisions.rows.map((row) => row.decision) };
+    };
+    // A Task Run whose parked session a Host reset retired: every attempt carries that session, so no review.
+    for (const code of ["resume_session_unconfirmed", "isolated_session_resume_refused", "sensitive_resume_unconfirmed"]) {
+      expect(await failWith(code)).toEqual({ status: "failed", decisions: [] });
+    }
+    // Another non-retryable failure of the same Run is still held for a person's review.
+    expect(await failWith("cli_adapter_nonzero_exit")).toEqual({ status: "waiting_for_review", decisions: ["human_review"] });
+  });
+
   it("retries semantic rejection through RunEvaluation and honors the attempt cap", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
     const runId = await seedRun({ max_attempts: 2 });
@@ -656,10 +679,10 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
     });
 
     expect(await repository.getLatestRunFinalization(SPACE, runId)).toBeNull();
-    expect(await repository.listTerminalChatRunsAwaitingCompletion()).toContainEqual({
+    expect(await repository.listTerminalChatRunsAwaitingCompletion()).toContainEqual(expect.objectContaining({
       id: runId,
       space_id: SPACE,
-    });
+    }));
   });
 
   it("serializes concurrent finalization before writing evaluation evidence", async (ctx) => {
@@ -1479,6 +1502,30 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
     )).rows[0]?.count).toBe("0");
   });
 
+  it.each(["reclaim", "fail", "cancel"])("lets %s retire the old job without ending or repositioning the supervisor's successor", async (ending) => {
+    const runId = await seedRun({max_attempts: 2});
+    const runs = new PgRunRepository(db.pool);
+    const jobs = new PgJobQueueRepository(db.pool);
+    const old = new Date(Date.now() - 7_200_000);
+    const job = await jobs.enqueue({job_type:"agent_run", space_id:SPACE, user_id:USER,
+      agent_id:AGENT, payload:{run_id:runId}, max_attempts:1}, old);
+    expect((await jobs.claimNextAgentRun("old-worker", old))?.id).toBe(job.id);
+    expect(await jobs.startJob(job.id, "old-worker", old)).toBe(true);
+    await runs.markRunRunning({run_id:runId,space_id:SPACE,started_at:old.toISOString()});
+    await runs.markRunTerminal({run_id:runId,space_id:SPACE,status:"failed",completed_at:old.toISOString(),
+      error_json:{error_code:"runtime_stall_timeout"}});
+    await new PostRunFinalizationService(runs, undefined, undefined, undefined, undefined, new PgRunSupervisor(db.pool)).finalize(runId,SPACE);
+    expect((await runs.getRun(SPACE, runId))?.status).toBe("queued");
+    expect(await runs.tryAcquireExecutionLock({run_id:runId,worker_id:"old-worker",job_id:job.id})).toBe(false);
+    if (ending === "reclaim") expect(await jobs.reclaimStuckJobs(600)).toMatchObject({reclaimed_count:1, exhausted_jobs:[]});
+    if (ending === "fail") expect(await jobs.failJob(job.id, "late failure", "old-worker")).toBe("cancelled");
+    if (ending === "cancel") expect(await jobs.cancelJob(job.id, "old-worker")).toBe(true);
+    expect((await runs.getRun(SPACE, runId))?.status).toBe("queued");
+    const successor = await jobs.claimNextAgentRun("new-worker");
+    expect(successor?.payload_json).toMatchObject({run_id:runId, supervisor_attempt:2});
+    expect(successor?.id).not.toBe(job.id);
+  });
+
   it.each(["running", "cancelling"])("reclaims a lost %s dispatch only after its Host confirms exit", async (status) => {
     const runId = await seedRun({ max_attempts: 2 });
     const repository = new PgRunRepository(db.pool);
@@ -1599,8 +1646,8 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
     const recovery = new RunRecoveryService(config, repository);
     await recovery.recover();
     await recovery.recover();
-    expect((await db.pool.query("SELECT status FROM jobs WHERE job_type='agent_run' AND payload_json->>'run_id'=$1", [runId])).rows)
-      .toEqual([{ status: "pending" }]);
+    expect((await db.pool.query("SELECT job_type, status FROM jobs WHERE payload_json->>'run_id'=$1", [runId])).rows)
+      .toEqual([{ job_type: RUN_CANCELLATION_RECONCILE_JOB, status: "pending" }]);
     expect((await repository.getRun(SPACE, runId))?.status).toBe("cancelling");
     expect(await repository.listRunFinalizations(SPACE, runId)).toHaveLength(0);
   });

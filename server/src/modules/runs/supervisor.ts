@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { getDbPool } from "../../db/pool.js";
 import type { ServerConfig } from "../../config.js";
-import { withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
+import { objectValue, withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
 import { PgRouteDecisionRepository } from "../routing/repository.js";
 import { EvolutionSignalEmitter } from "../evolution/signalEmitters.js";
@@ -9,7 +9,7 @@ import { contractRecord } from "./contractSnapshot.js";
 import { isManagedFailFastRun } from "../policy/managedExecutionPolicy.js";
 import { PgRunRepository, type RunRecord } from "./repository.js";
 import type { RunEvaluationRecord, RunAttemptRecord } from "./runRepositoryTypes.js";
-import { EXECUTION_CONTROLLER_LOST, isRetryableRunErrorCode, SUBSCRIPTION_QUOTA_EXHAUSTED } from "./retryPolicy.js";
+import { EXECUTION_CONTROLLER_LOST, isRetryableRunErrorCode, RESUME_SESSION_REFUSAL_CODES, SUBSCRIPTION_QUOTA_EXHAUSTED, TASK_DRY_RUN_UNSUPPORTED } from "./retryPolicy.js";
 import { prepareQuotaRecovery } from "../rooms/quotaRecovery.js";
 import { holdInterruptedRun } from "../rooms/quotaGate.js";
 
@@ -58,7 +58,16 @@ export class PgRunSupervisor implements RunSupervisorPort {
     // job and key pool, and is never redispatched as an `agent_run`; the
     // requeue below would hand it to the Agent executor.
     if (input.run.execution_kind === "provider_task") return null;
+    if (errorCodeFromRun(input.run) === TASK_DRY_RUN_UNSUPPORTED) return null;
+    // A refused resume repeats on every attempt of this Run (ADR 0036 §15): left terminal, never parked for review.
+    if ([input.evaluation.failure_reason_code, errorCodeFromRun(input.run)].some((code) => code && RESUME_SESSION_REFUSAL_CODES.has(code))) return null;
     if (!isSupervisableStatus(input.run.status)) return null;
+    // A failed replacement may already have called tools in its new session.
+    // Leave it terminal so thread settlement restores the source session
+    // and the existing conversation recovery surface can show the failure.
+    const override = objectValue(input.run.model_override_json);
+    if (typeof objectValue(override.host_thread).handoff_candidate === "string"
+      || typeof override.automatic_handoff_for === "string") return null;
     const managedFailFast = isManagedFailFastRun(input.run);
     const interactiveChat = isInteractiveChatRun(input.run);
 
@@ -198,9 +207,11 @@ export class PgRunSupervisor implements RunSupervisorPort {
           attempt_number: attemptNumber + 1,
         });
         if (!requeued) throw new Error("Supervisor could not requeue the failed run");
+        const queue = new PgJobQueueRepository(db);
+        await queue.supersedeAgentRunJobs(input.run.space_id, input.run.id);
         if (recovery) {
           await holdInterruptedRun(db, input.run.space_id, input.run.id, recovery);
-        } else await new PgJobQueueRepository(db).enqueue({
+        } else await queue.ensureAgentRunJob({
           job_type: "agent_run",
           space_id: input.run.space_id,
           user_id: userId,

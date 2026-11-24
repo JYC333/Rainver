@@ -1,5 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
 import { useAppTranslation } from '../i18n'
+import { isModuleLoadFailure, ModuleLoadFailurePanel } from './ModuleLoadFailure'
 
 interface Props   { children: ReactNode; fallback?: (retry:()=>void)=>ReactNode }
 interface State   { error: Error | null }
@@ -10,6 +11,8 @@ interface State   { error: Error | null }
  */
 function ErrorPanel({ error, onRetry }: { error: Error; onRetry: () => void }) {
   const { t } = useAppTranslation()
+  // Retrying would rethrow the same failed import; this panel offers a reload.
+  if (isModuleLoadFailure(error)) return <ModuleLoadFailurePanel />
   return (
     <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-6 text-center">
       <p className="text-sm font-medium text-destructive mb-1">{t('core_ui.error_boundary.title')}</p>

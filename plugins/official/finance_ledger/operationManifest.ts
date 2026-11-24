@@ -28,6 +28,7 @@ const Amount = z.object({number: text(64), commodity: text(24)}).strict();
 const Posting = z.object({account_id: id, amount: Amount.nullable().optional(), flag: optionalText(1)}).strict();
 /** Import text bound (the legacy route had none; 5 MB is a large statement export). */
 export const IMPORT_TEXT_MAX = 5_000_000;
+export const FINANCE_IMPORT_HISTORY_PAGE_SIZE = 25;
 
 /** Rows are the ledger's own DTOs (books, accounts, directives, ...). */
 const Row = z.record(z.string(), z.unknown());
@@ -70,7 +71,7 @@ export const inputs = {
     import_source_id: id.optional(),
   }).strict(),
   'directive.propose_post': z.object({...book, directive_id: id}).strict(),
-  'import.list': z.object({...book}).strict(),
+  'import.list': z.object({...book, offset: z.number().int().nonnegative()}).strict(),
   'import.get': z.object({...book, import_source_id: id}).strict(),
   /** Lands every dated entry as `proposed`; nothing in a file posts, opens, closes or declares anything. */
   'import.beancount': z.object({...book, text: z.string().min(1).max(IMPORT_TEXT_MAX), source_type: z.string().trim().min(1).max(64).optional()}).strict(),
@@ -101,7 +102,7 @@ export const outputs = {
   'transaction.create': z.object({directive: Row}).strict(),
   'directive.list': z.object({directives: z.array(Row)}).strict(),
   'directive.propose_post': z.object({directive_id: z.string(), status: z.string()}).strict(),
-  'import.list': z.object({imports: z.array(Row)}).strict(),
+  'import.list': z.object({imports: z.array(Row), next_offset: z.number().int().nonnegative().optional()}).strict(),
   'import.get': ImportBatch,
   'import.beancount': ImportBatch,
   'import.retry': ImportBatch,
@@ -133,7 +134,7 @@ const specs: Record<FinanceOperation, Spec> = {
   'transaction.create': {person_only: true, title: 'Enter a transaction', description: 'Enter a transaction as a draft, or post it at once; it must balance and use open accounts you can see'},
   'directive.list': {kind: 'query', sensitive: true, title: 'List ledger entries', description: 'List a book\'s entries you can see by status, type or import batch'},
   'directive.propose_post': {sensitive: true, proposal: POST_DIRECTIVE_PROPOSAL, title: 'Propose posting an entry', description: 'Propose posting a draft or proposed entry; it is revalidated and posted only after the person approves it'},
-  'import.list': {kind: 'query', sensitive: true, title: 'List your imports', description: 'List the import batches you uploaded to a book'},
+  'import.list': {kind: 'query', sensitive: true, title: 'List your imports', description: 'List a page of the import batches you uploaded to a book, starting at offset zero'},
   'import.get': {kind: 'query', sensitive: true, title: 'Read an import', description: 'Read one of your import batches with its entries and their status'},
   'import.beancount': {person_only: true, title: 'Import Beancount text', description: 'Import a Beancount file as proposed entries; nothing is posted, opened or declared'},
   'import.retry': {person_only: true, title: 'Retry an import', description: 'Retry the unfinished entries of your import batch'},

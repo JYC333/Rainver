@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -50,10 +50,11 @@ describe("host release installer", () => {
     const fakeBin = join(root, "fake-bin");
     const systemctlLog = join(root, "systemctl.log");
     const buildId = "0123456789abcdef0123456789abcdef01234567";
+    const installedDist = join(installRoot, "releases", buildId, "app", "dist");
 
     try {
       await Promise.all([
-        mkdir(join(installRoot, "current", "app", "dist"), { recursive: true }),
+        mkdir(installedDist, { recursive: true }),
         mkdir(binDir, { recursive: true }),
         mkdir(systemdDir, { recursive: true }),
         mkdir(configDir, { recursive: true }),
@@ -71,11 +72,13 @@ describe("host release installer", () => {
           + `${createHash("sha256").update(installer).digest("hex")}  install-host.sh\n`,
       );
 
+      await symlink(`releases/${buildId}`, join(installRoot, "current"));
       await writeFile(join(installRoot, "current", "BUILD_ID"), buildIdFile);
-      await writeFile(join(installRoot, "current", "app", "dist", "cli.js"), "// installed\n");
+      await writeFile(join(installedDist, "cli.js"), "console.log('Read-only parallel review: ready.');\n");
+      await writeFile(join(installedDist, "daemon.js"), "// installed\n");
       await writeFile(join(installRoot, "channel"), "stable\n");
-      await writeFile(join(binDir, "rainver-host"), "#!/bin/sh\necho 'Read-only parallel review: ready.'\n", { mode: 0o755 });
-      await writeFile(join(installRoot, "rainver-host-daemon"), "#!/bin/sh\n", { mode: 0o755 });
+      await writeFile(join(binDir, "rainver-host"), `#!/bin/sh\nexec "${process.execPath}" "${join(installedDist, "cli.js")}" "$@"\n`, { mode: 0o755 });
+      await writeFile(join(installRoot, "rainver-host-daemon"), `#!/bin/sh\nexec "${process.execPath}" "${join(installedDist, "daemon.js")}"\n`, { mode: 0o755 });
       await writeFile(join(systemdDir, "rainver-host.service"), "[Service]\n");
       await writeFile(
         join(fakeBin, "systemctl"),
@@ -351,7 +354,7 @@ describe("host release installer", () => {
       expect(existsSync(join(installRoot, "current"))).toBe(false);
       expect(existsSync(join(systemdDir, "rainver-host.service"))).toBe(false);
 
-      const result = await runCommand("/bin/bash", [installerPath, "--update"], {
+      const env = {
         ...process.env,
         PATH: `${fakeBin}${delimiter}/usr/bin${delimiter}/bin`,
         RAINVER_HOST_UPDATE_CHANNEL: "stable",
@@ -362,12 +365,33 @@ describe("host release installer", () => {
         RAINVER_HOST_SYSTEMD_DIR: systemdDir,
         RAINVER_HOST_CONFIG_DIR: configDir,
         RAINVER_HOST_RELEASE_BASE_URL: `file://${releaseDir}`,
-      });
+      };
+      const candidateAdapter = join(releaseDir, `rainver-host-adapters-linux-${releaseArch}.tar.gz`);
+      await writeFile(join(fakeBin, "codex"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+      await rename(candidateAdapter, `${candidateAdapter}.unavailable`);
+      await expect(runCommand("/bin/bash", [installerPath, "--update"], env)).rejects.toThrow(/installer exited with code/);
+      expect(existsSync(join(installRoot, "current"))).toBe(false);
+      expect(existsSync(join(installRoot, ".activation-pending"))).toBe(false);
+      await rename(`${candidateAdapter}.unavailable`, candidateAdapter);
+
+      const result = await runCommand("/bin/bash", [installerPath, "--update"], env);
 
       expect(result.stdout).toContain("System Node.js v25.2.1 is not usable (Rainver Host needs 24.x); reusing the shared runtime v24.");
       expect(result.stdout).not.toContain("Downloading shared Node.js runtime");
       expect(result.stdout).toContain(`Downloading Rainver Host stable for linux-${releaseArch}...`);
       expect(await readFile(join(installRoot, "current", "BUILD_ID"), "utf8")).toBe(buildIdFile);
+      // A completed download or current pointer alone does not prove activation.
+      const launcher = join(installRoot, "rainver-host-daemon");
+      await writeFile(launcher, "#!/bin/sh\nexit 1\n");
+      const repaired = await runCommand("/bin/bash", [installerPath, "--update"], env);
+      expect(repaired.stdout).not.toContain("already up to date");
+      expect(await readFile(launcher, "utf8")).toContain(`releases/${buildId}/app/dist/daemon.js`);
+      await writeFile(launcher, "#!/bin/sh\nexit 1\n");
+      await writeFile(join(installRoot, ".activation-pending"), "previous-build\n");
+      const recovered = await runCommand("/bin/bash", [installerPath, "--update"], env);
+      expect(recovered.stdout).not.toContain("already up to date");
+      expect(await readFile(launcher, "utf8")).toContain(`releases/${buildId}/app/dist/daemon.js`);
+      expect(existsSync(join(installRoot, ".activation-pending"))).toBe(false);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

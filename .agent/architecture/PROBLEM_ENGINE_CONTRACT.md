@@ -177,7 +177,7 @@ Task 页与问题页分别通过所属读边界读取另一端可见摘要和回
 | 读/写/链接 | 当前落点（相对仓库根） | 后续处理 |
 | --- | --- | --- |
 | 旧阶段词汇/帮助/分类 | `packages/protocol/src/inquiry.ts` | P2 版本化合同，不机械改字符串 |
-| 前端阶段/轮次/推荐计算 | `apps/web/src/modules/projects/problemWorkspace/`（`ProblemAreaPage.tsx`、`ProblemWork.tsx`、`useProblem.ts`）；`InquiryAreaPage.tsx`、`inquiryArea/roundFacts.ts` 消费或构造入口 | P2 服务端投影；P5 UI/推荐使用统一读结果 |
+| 前端阶段/轮次/推荐计算 | `apps/web/src/modules/projects/problemWorkspace/`（`ProblemAreaPage.tsx`、`ProblemWork.tsx`、`useProblem.ts`）；`InquiryAreaPage.tsx` 构造入口 | P2 服务端投影；P5 UI/推荐使用统一读结果 |
 | Step 写入/轮次赋值/焦点投影 | `server/src/modules/inquiry/stepService.ts` | P2 分离方法、工作类型与执行/注意力，保留单 primary 约束 |
 | 认知、工作、定义、生命周期 | `inquiry/iterationService.ts`、`threadService.ts`、`threadRevisionService.ts`、`routes.ts` | P2 收尾和认知路径分离；保留受保护字段与完整内容权限 |
 | 认知撤销 | `server/src/modules/projectWork/updateUndo.ts`、`updatesReadModel.ts`、`domainWorkEvents.ts`；`inquiry/threadWorkEvents.ts` | P2 认知撤销不收尾，新增收尾事件/Updates/补偿按 §4.2 同步落地 |

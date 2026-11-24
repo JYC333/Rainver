@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { delimiter } from "node:path";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -143,6 +143,75 @@ describe("folder-read git operations", () => {
       is_repo: true,
       files: [{ path: "new.txt", status: "untracked" }],
     });
+  });
+
+  it("creates one empty baseline without staging files or requiring an identity", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rainver-managed-baseline-"));
+    roots.push(root);
+    await writeFile(join(root, "summary.md"), "existing work\n");
+    await writeFile(join(root, ".env"), "PRIVATE=value\n");
+    expect(await ensureGitRepository(root)).toBe(true);
+    const before = (await runGit(["rev-parse", "HEAD"], root)).stdout;
+    expect((await runGit(["ls-tree", "-r", "HEAD"], root)).stdout).toBe("");
+    expect(existsSync(join(root, ".git", "index"))).toBe(false);
+    expect(await ensureGitRepository(root)).toBe(true);
+    expect((await runGit(["rev-parse", "HEAD"], root)).stdout).toBe(before);
+    expect(await readFile(join(root, "summary.md"), "utf8")).toBe("existing work\n");
+    expect((await runGit(["status", "--porcelain"], root)).stdout).toContain("?? summary.md");
+  });
+
+  it("creates an empty baseline preserving the staged index and bypassing hooks/signing", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rainver-managed-index-"));
+    roots.push(root);
+    await runGit(["init", "-q"], root);
+    await writeFile(join(root, "staged.txt"), "staged\n");
+    await runGit(["add", "staged.txt"], root);
+    const index = await readFile(join(root, ".git", "index"));
+    await writeFile(join(root, ".git", "hooks", "reference-transaction"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+    await runGit(["config", "commit.gpgSign", "true"], root);
+    await runGit(["config", "gpg.program", "/nonexistent/rainver-signing"], root);
+    expect(await ensureGitRepository(root)).toBe(true);
+    expect(await readFile(join(root, ".git", "index"))).toEqual(index);
+    expect((await runGit(["ls-tree", "-r", "HEAD"], root)).stdout).toBe("");
+    expect((await runGit(["diff", "--cached", "--name-only"], root)).stdout.trim()).toBe("staged.txt");
+    // Existing real history and later user commits remain the selected baseline.
+    await runLocationGit(["-c", "user.name=Person", "-c", "user.email=person@example.invalid", "-c", "commit.gpgSign=false", "commit", "-m", "User work"], root);
+    const tip = (await runGit(["rev-parse", "HEAD"], root)).stdout;
+    expect(await ensureGitRepository(root)).toBe(true);
+    expect((await runGit(["rev-parse", "HEAD"], root)).stdout).toBe(tip);
+    expect((await runGit(["ls-tree", "-r", "--name-only", "HEAD"], root)).stdout.trim()).toBe("staged.txt");
+  });
+
+  it("does not replace corrupt, detached, redirected or previously populated repositories", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rainver-managed-refusal-"));
+    roots.push(root);
+    await runGit(["init", "-q"], root);
+    const headPath = join(root, ".git", "HEAD");
+    await writeFile(headPath, "0".repeat(40) + "\n");
+    expect(await ensureGitRepository(root)).toBe(false);
+    expect(await readFile(headPath, "utf8")).toBe("0".repeat(40) + "\n");
+    await writeFile(headPath, "ref: refs/heads/main\n");
+    await writeFile(join(root, ".git", "refs", "heads", "main"), "a".repeat(40) + "\n");
+    expect(await ensureGitRepository(root)).toBe(false);
+    await rm(join(root, ".git", "refs", "heads", "main"));
+    expect(await ensureGitRepository(root)).toBe(true);
+    await runGit(["symbolic-ref", "HEAD", "refs/heads/new-unborn"], root);
+    expect(await ensureGitRepository(root)).toBe(false);
+    await mkdir(join(root, "redirected"));
+    await writeFile(join(root, "redirected", ".git"), "gitdir: ../.git\n");
+    expect(await ensureGitRepository(join(root, "redirected"))).toBe(false);
+    const alias = root + "-alias";
+    roots.push(alias);
+    await symlink(root, alias);
+    expect(await ensureGitRepository(alias)).toBe(false);
+  });
+
+  it("lets concurrent initializers converge on a single root commit", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rainver-managed-concurrent-"));
+    roots.push(root);
+    await runGit(["init", "-q"], root);
+    expect(await Promise.all(Array.from({ length: 4 }, () => ensureGitRepository(root)))).toEqual([true, true, true, true]);
+    expect((await runGit(["rev-list", "--count", "HEAD"], root)).stdout.trim()).toBe("1");
   });
 
   it("runs nothing an Agent planted in the checkout's own configuration", async () => {

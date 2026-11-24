@@ -5,6 +5,14 @@ export const coreUiZhCN = {
       title: '此页面出错了',
       retry: '重试',
     },
+    module_load: {
+      title: '无法加载 Rainver 的这一部分',
+      offline: '此设备上还没有这部分内容，当前也连不上服务器。恢复网络后再检查。',
+      available: '此标签页打开后 Rainver 已更新，旧版本的这一部分已不可用，需要更新后才能打开。',
+      current: '下载被中断了。重新加载此标签页会重新下载。若之后仍失败，请关闭此标签页或已安装的应用，再重新打开 Rainver。',
+      check_again: '再次检查',
+      reload_tab: '重新加载此标签页',
+    },
     require_role: {
       space_admin_title: '需要空间管理员权限',
       space_admin_message: '只有空间所有者或管理员可以打开此页面。',
@@ -47,6 +55,8 @@ export const coreUiZhCN = {
       restore_description: '如果归档仍在且主机在线，恢复这个 Agent 在主机上留下的内容：CLI 登录和会话，以及它曾有的工作区。',
     },
     date_picker: {
+      today: '今天',
+      clear: '清除',
       placeholder: '选择日期',
       choose_date: '选择日期',
       previous_month: '上个月',

@@ -23,7 +23,8 @@ import {workspaceCheckpointRunSettledSql} from './workspacePolicy.js';
  *
  * The workspace is always the coordinator's own conversation workspace for the
  * same conversation, Location, Project and Host: a child never joins another
- * conversation's work, and keeps its own vendor session and profile container.
+ * conversation's work. Dispatch qualifies any explicitly requested native
+ * session continuation independently of workspace placement.
  */
 export type DelegatedPlacement=
  |{mode:'slot';workspace:ExecutionWorkspaceRow}

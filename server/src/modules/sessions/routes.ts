@@ -1,11 +1,8 @@
 import { registerOperationAdapters } from "../systemActions/operations/routeAdapter.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
-import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
-import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext.js";
-import { introspectIdentity } from "../auth/identity.js";
 import { PgSessionRepository } from "./repository.js";
-import { dbPool, sendRouteError } from "../routeUtils/common.js";
+import { resolveIdentity as resolveRouteIdentity, dbPool, sendRouteError } from "../routeUtils/common.js";
 import { ConversationExecutionContextService } from "./executionContextService.js";
 import { ConversationInputError, ConversationInputService } from "./conversationInputService.js";
 
@@ -106,6 +103,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       const media = await service.getVisibleMedia(identity.spaceId, identity.userId, mediaId);
       if (!media) return reply.code(404).send({ detail: "conversation media not found" });
       const body = await service.readMedia(media);
+      if (media.lifecycle === "pending") reply.header("cache-control", "private, no-store");
       reply.header("content-type", media.media_type);
       reply.header("content-length", String(body.byteLength));
       reply.header("content-disposition", `inline; filename*=UTF-8''${encodeURIComponent(media.filename)}`);
@@ -242,28 +240,7 @@ async function resolveIdentity(
       ? identityOverride(request)
       : identityOverride;
   }
-  const requestId = resolveRequestId(request);
-  reply.header(REQUEST_ID_HEADER, requestId);
-  const identity = await introspectIdentity(context.config, request, reply);
-  if (identity.ok) return { spaceId: identity.spaceId, userId: identity.userId };
-  if (identity.reason === "denied") {
-    reply.code(identity.statusCode);
-    reply.header("content-type", "application/json");
-    reply.send(identity.body);
-    return null;
-  }
-  await sendErrorEnvelope(
-    reply,
-    502,
-    errorEnvelope(
-      identity.reason === "contract_violation"
-        ? "introspect_contract_violation"
-        : "identity_unavailable",
-      "Identity introspection failed",
-      requestId,
-    ),
-  );
-  return null;
+  return resolveRouteIdentity(context.config, request, reply);
 }
 
 function parsePage(

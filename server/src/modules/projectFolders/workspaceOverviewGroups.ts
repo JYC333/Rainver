@@ -43,7 +43,13 @@ export async function listAgentWorkspaceGroups(db:Queryable,identity:{spaceId:st
  await assertProjectReadable(db,identity.spaceId,projectId,identity.userId);
  const params:unknown[]=[identity.spaceId,projectId,identity.userId];
  let keyset='';
- if(input.cursor){const [activity,key]=decodeGroupCursor(input.cursor);params.push(activity,key);keyset=`WHERE (g.activity_at,g.group_key)<($4::timestamptz,$5::text)`;}
+ if(input.cursor){
+  const [activity,key]=decodeGroupCursor(input.cursor);
+  const {rows}=await db.query<{valid:boolean}>("SELECT pg_input_is_valid($1, 'timestamptz') AS valid",[activity]);
+  if(!rows[0]?.valid)throw new HttpError(422,'Invalid cursor');
+  params.push(activity,key);
+  keyset=`WHERE (g.activity_at,g.group_key)<($4::timestamptz,$5::text)`;
+ }
  // A group is current while any of its visible generations is (CURRENT).
  const groups=(await db.query<{group_key:string;activity_key:string}>(`SELECT * FROM (
    SELECT x.group_key,max(x.activity_at) AS activity_at,max(x.activity_at)::text AS activity_key,bool_or(x.is_current) AS is_current

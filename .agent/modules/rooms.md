@@ -128,7 +128,9 @@ A `room_only` Project Agent without a visible Room opens the Rooms index.
   Room list refresh metadata every five seconds while visible, showing a spinner
   while any Agent Run in the conversation (including its collaboration groups)
   is not terminal, including queue, cancellation and review/dependency waits.
-  Provider-only title jobs do not count as Agent execution.
+  Provider-only title jobs do not count as Agent execution. The Room list and
+  Rooms index Recent conversations center the status indicator vertically in
+  each conversation row.
 - Unread dots in the picker, Room conversation lists, recent conversations and
   Project conversation history reuse the personal Agent Attention projection.
   Execution spinners take priority and suppress unread dots until every Agent
@@ -290,6 +292,74 @@ Room's optional Project Folder binding is fixed at creation and remains a
 read-only retrieval/context scope; it is not a Conversation execution
 Location or Primary Workspace (`architecture/EXECUTION_MODEL.md`).
 
+### Conversation list actions
+
+Project writers who can access the Room may delete idle conversations with or
+without messages from either list. Deletion moves the conversation to the
+Room's recycle bin (below) without reclaiming Host files. The legacy
+empty-only command continues to require an unused conversation and also uses
+the bin. Writers can archive idle conversations and restore them from the
+Archived tab. Running work, active discussions, queued turns and active Gmail
+digests must settle or be paused before archive or deletion. These actions take
+the conversation queue lock and recheck Project writer authority under the
+Project mutation lock.
+
+### Conversation recycle bin
+
+The Recycle bin tab follows Archived and is shown only to people who can
+delete in the Room. On narrow screens the four tabs use two rows. Listing
+`GET /api/v1/rooms/:roomId/conversations?status=deleted` requires Room
+visibility and Project writer authority (403 otherwise), and
+`room.conversation.restore_deleted` checks both at initial admission and
+receipt replay (refusals surface as the operation core's 404). The restore
+service rechecks authority under the Project mutation lock and evaluates
+the deadline after acquiring the conversation locks used by deletion.
+
+Deletion records `sessions.deleted_at` and `deleted_from_status`
+(`active`/`archived`). For 30 days
+(`ROOM_CONVERSATION_TRASH_RETENTION_DAYS`, `rooms/conversationTrash.ts`) the
+conversation is listed with `deleted_at` and `purge_after` and can be restored
+to the list it came from, with its transcript, execution binding and workspace
+unchanged. While deleted it cannot receive turns, and a paused Gmail digest
+cannot be reactivated into it. After the window it is neither listed nor
+restorable (409).
+
+The hourly `room_conversation_trash_purge` scheduler task attempts up to 20
+expired conversations per pass. It selects eligible rows by fewest failed
+attempts, then oldest deletion. Each purge runs in its own transaction
+under the queue and runtime locks. A failed attempt is recorded after
+rollback, with retry delays starting at one hour, doubling to a maximum of
+seven days. Removal is limited to content the conversation owns:
+
+- deleted: queued turns, Folder access grants, message input parts, file
+  snapshots, input resources (shared resource blobs stay for the existing
+  unreferenced-blob sweep), discussions no Run group points at, and every
+  message that is not an anchor; message media is marked deleted for the
+  existing media retention sweep, which unlinks the files;
+- kept: Runs and their steps, Run groups, Activity records, execution
+  workspaces, Host threads, Gmail digests and token usage. Proposals, Tasks,
+  Artifacts, Notes and other Project products reference Runs, not the
+  transcript, and are never deleted or rewritten. Messages that a kept Run
+  group, discussion or Gmail private check starts from, and their ancestors,
+  remain as empty rows (content and metadata cleared); kept discussions lose
+  their topic;
+- the session row is deleted, with its execution binding rows by cascade, only
+  when none of the kept tables references it. Otherwise it stays as a
+  tombstone: `purged_at` set, title cleared, still `deleted`.
+  `server/test/roomConversationTrashDb.test.ts` fails when a new foreign key to
+  `sessions` is not classified in `conversationTrash.ts`; an unclassified one
+  that still blocks deletion keeps the tombstone rather than failing the pass.
+
+Provenance that names a purged message by id (for example a Proposal's
+`source_message_ids`) keeps the id but can no longer resolve its text.
+
+**Legacy deleted rows.** Conversations deleted before migration
+`0026_room_conversation_recycle_bin` have `status = 'deleted'` with no
+`deleted_at`. The migration deliberately does not backfill them: their
+deletion time and previous list are unknown. They are not listed, restored or
+purged by the bin and keep all their data. Restoring or purging them is an
+explicit operator decision outside this feature.
+
 ### Host-bound specialists and direct chat
 
 A specialist Agent may bind its runtime profile to one of the caller's own
@@ -302,16 +372,21 @@ replay when it returns.
 
 The Project's own Assistant (the Room manager) is provisioned when a user
 explicitly opens a Conversation draft. The draft's execution preflight shows
-the Agent, Host, CLI installation, Primary Workspace, and attachments. A
+the Agent, Host, configured CLI installation, Primary Workspace, and attachments.
+The draft displays compatible saved runtime profiles. Host-discovered CLI
+installations are configured on the Agent page or in Project settings for the
+Project Assistant before they can be used in a new Room conversation. A
 Project with no Folder connected defaults the Primary Workspace to a managed
 workspace on the Host, and the preflight says so beside the choice with a link
 to Files & Code — the fallback is a visible choice, not something that
 happens quietly while the person believes the Agent is in their code. Runtime
 profile defaults are suggestions only; initialization pins the selected
 Conversation×Agent bindings, including a model/provider and runtime
-configuration/policy snapshot. Later profile/Host changes cannot reconfigure
-or rebind that Conversation; incompatible Host/CLI changes block the Run.
-There is no server fallback to a different Host, CLI, or workspace.
+configuration/policy snapshot. A later edit of the Profile's workspace
+default affects new Conversations. Existing Conversations use their saved
+Primary Workspace at preflight, send and dispatch. An eligible CLI change
+can take effect on the same Host and workspace with a fresh native session.
+Incompatible Host or CLI changes block the Run.
 
 A Room send does not compare the Primary Workspace's current Git state with
 anything: the execution context's `git_*` columns are the state observed at
@@ -614,6 +689,113 @@ the message the same way; a retry keeps the targets still in the Room. A
 selected Skill is checked against the effective recipients — the manager under
 coordination.
 
+## Ordinary send into an active turn
+
+The composer's ordinary Send reaches a running turn
+(`rooms/liveInputRouting.ts`, `RoomService.sendIntoActiveRun`).
+The web client asks for it with `live_target: "auto"` on `room.message.send`;
+other callers (Agents, verification actions) omit the field and keep the
+earlier behaviour. The message's own route still picks the Agent — the
+manager for no mention or a reference-only message without coordination
+targets, or the single Agent one direct segment addresses. The server never
+widens that choice: several recipients, coordination targets, attachments,
+task focus refs, attached references and a joined discussion keep their
+ordinary meaning and are sent or queued as before. A message waiting in
+`room_queued_messages` also keeps the new one ordinary, so it never overtakes
+them.
+
+Candidates are that Agent's `running` or `waiting_for_dependency` Runs in this
+conversation (its own turns and Rainver-delegated child Runs, which share the
+parent's conversation). Each must pass `authorizeRunCommand(..., "steer")`
+(owner or instructing person), and each must be able to take text now. A
+running Run qualifies when its process-local live channel is available here. A
+parked Run qualifies only when it waits on `agent.wait_for_results`: not
+conversation serialization, not an automatic handoff, not a handoff turn
+(`agentGroups/waitInput.ts`).
+
+- **One candidate**, running: `recordRunLiveInput` saves the canonical user
+  message linked to that Run, appends the pending `run.live_input` event and
+  enqueues the delivery Job, in the send's transaction. It checks the live
+  binding and running status under the Run's row lock. Parking waits for that
+  transaction before its resume can collect the message. Delivery and its
+  `pending`/`injected`/`not_injected`/`unconfirmed` outcome are the existing
+  run-live-input path. The receipt is `status: "live_input"`, `delivery_state: "pending"`.
+- **One candidate**, parked: `recordDeferredRunLiveInput` takes the Run's row
+  lock, rechecks the wait, saves the message and appends a pending event with
+  `mode: "with_results"` (`delivery_state: "deferred"`). No Job runs. The
+  resume (`queueWaitingDependencyRunIfReady` → `takeDeferredRunLiveInputs`)
+  joins the lifecycle transaction, which locks the conversation queue,
+  Project audience, Room roster, runtime admission and group before taking
+  the waiting Run rows. It checks the waiting round ID and dependency IDs before
+  reading input and in the requeue update. Older waits without a round ID
+  match by their waiting state and dependencies. It owes the turn every
+  unclaimed, unsettled input of the Run,
+  not only the `with_results` ones: an input sent while the Run still ran and
+  not yet taken by its delivery Job (the last child finished first) is carried
+  too, and its late Job finds the outcome. A claimed input may have been
+  injected and keeps its own outcome. Before carrying an input the resume
+  checks its sender again — `authorizeRunCommand(..., "steer")` and read
+  access to the conversation, for the message's own author, in this Run's
+  conversation. Inputs that pass are appended as "Additional input from the
+  person while you waited" and settled `delivered_with_results`; the others are
+  settled `not_injected` and never enter the prompt. Both in the resume's
+  transaction, so an input recorded concurrently is either carried or refused as
+  no longer waiting; it is never carried twice.
+- **Several candidates**: a 409 with `code: live_input_target_choice_required`
+  and the candidates (Agent, running or waiting, delegated, started). Nothing
+  is recorded. The composer keeps the draft and offers each Run, or "Send as a
+  new message". Candidates that would read alike add their start time, and
+  their place in the list when even that repeats.
+- **An explicitly chosen Run** (`live_target: { run_id }`) is never replaced.
+  If it is no longer a candidate, its channel refuses, the route no longer
+  reaches its Agent (coordination targets, attachments, focus, a joined
+  discussion), or messages already wait in the queue, the send is a 409 with
+  `code: live_input_target_unavailable` and the Runs that still can take it
+  (possibly none). Nothing is recorded, sent or queued; the composer says so,
+  keeps the draft and offers the remaining Runs or "Send as a new message".
+- **None** with `auto`, or the live channel refuses before recording
+  (`LiveInputRefusal`, rolled back to a savepoint): the same request continues
+  as the ordinary send/queue.
+
+Admission, claim, deferral, settlement and recovery take the Run row
+`FOR NO KEY UPDATE` before touching live-input events. That row lock orders
+live-input decisions while allowing event inserts to check the Run foreign
+key with `FOR KEY SHARE`. Delegated completion, grouped completion and
+waiting-Run reconciliation serialize on the enclosing group before resuming
+waiters. They append events after Run and admission writes, so the event lock
+of one waiter is never held while locking another waiter. Delegated completion
+still appends one lifecycle event each to the child and root before appending
+input outcomes, all in the same transaction. An existing waiter suppresses
+the separate Room notification. Where no waiter exists, notification and
+retry use the same conversation scope and the existing savepoint.
+
+A live input still unclaimed when its Run parks on `agent.wait_for_results`
+(the Run was yielding) is converted to a deferred one by its delivery Job or
+the recovery sweep, not dropped. Inputs of a parked Run that is stopped or
+cancelled settle `not_injected`. The sweep excludes inputs a still-parked Run
+keeps for its resume in SQL, before its 200-row limit, so any number of them
+never starves the orphans behind them. For each candidate it rechecks the
+current Run, claim and outcome under their locks. A claim that appeared
+during the scan settles as `unconfirmed` when its outcome is unknown.
+
+The composer shows each addition, with the start of its text, and its actual
+state from `GET /runs/:id/live-input?message_id=` until it is settled: first
+read shortly after the send, then every few seconds. A status that cannot be
+read three times in a row stops being polled and can be dismissed; the
+server's delivery is unaffected. Only a `not_injected` addition offers "Send as
+a new message", and only as the person's explicit new ordinary send: one send
+at a time, only when the conversation can send, with its current backends and
+one idempotency key per attempt. The replacement's body and key stay paired
+after an uncertain outcome. An `unconfirmed` one is never resent
+automatically. A pending choice is dropped whenever anything that decides the
+send changes — text, route, attachments, references, focus or discussion. A
+send whose result was not learned (failed connection, 409
+`idempotency_in_progress`, or failed read-back after the command returned)
+reuses its idempotency key when the identical request is sent again. The
+server can then replay the original receipt. A replayed queue receipt remains
+successful after its entry leaves the queue, and the surface refreshes the
+transcript to reflect the current state.
+
 ## Conversation participants and Room defaults
 
 The Room roster is the available Agent set. A conversation's persistent participants
@@ -638,7 +820,10 @@ can read that Agent’s saved shared model defaults and profile ID even if the p
 or model is unavailable to them. This does not grant use of another person’s Host.
 General Room projections redact profile/model choices. Defaults on another
 Host never move execution there: initialization uses a unique verified compatible
-candidate on the selected Host or requests a selection. Withdrawn model options
+candidate on the selected Host or requests a selection. The Primary Workspace is
+selected separately. The same Profile can run in another
+authorized Folder on its Host, including when its own default is unavailable.
+Withdrawn model options
 are reconciled against that runtime catalog before applying defaults.
 
 The shared full/panel composer exposes **Conversation settings · N** on old and
@@ -659,8 +844,8 @@ with no invented participant count or local draft editor. A failed refresh block
 editing and sending until a new authoritative read succeeds. A successful write
 followed by a failed read says it was saved; its consumed revision is never replayed.
 A CAS 409 requires a fresh read and a new explicit selection. Creating a draft
-keeps settings open. Active dispatch locks mutations while refresh and new-conversation
-navigation remain available.
+keeps settings open. Active dispatch locks participant and environment mutations.
+Saving per-Agent session options, refresh and new-conversation navigation remain available.
 
 Preflight's `available_participant_agents` reports current use-authorized Agents
 and whether each has a retained Host thread, independently of runnable profiles.
@@ -772,8 +957,17 @@ Ordinary Room messages and delegated children load the target member's saved
 options when no explicit request snapshot is supplied. They never inherit a
 coordinator's model. Historical per-member Run selections are a read-only
 fallback until the first explicit save; an explicitly saved empty array resets
-to runtime defaults. Each created Run freezes its own selections. Retry keeps
+to conversation defaults. For Host-native Claude, Rainver uses Opus when
+there is no saved model or the saved choice is the legacy Default option.
+The Host catalog supplies the available choices, but its current Claude model
+does not set Rainver's default. Each created Run freezes its own selections. Retry keeps
 the original Run request; subsequent new runs read current saved settings.
+For a native ACP conversation, a change from the resumed session's current
+model requires a recorded occupancy within both 4,096 tokens and a quarter
+of the reported context window. This bounds the estimated cold-cache history
+cost. If occupancy is missing or over budget, the turn reports that the switch
+needs a handoff and preserves the session without sending a prompt. This check
+runs at execution so it sees the latest settled occupancy.
 
 Only a selection sent with the request itself is strict (422 when the backend
 does not advertise it). A saved, inherited or retried selection the runtime
@@ -784,7 +978,9 @@ not fail until someone re-saves (`sessions/sessionConfig.ts`
 `model_override_json.acp_session_config_dropped`, `RunTurn.model_selection.dropped`
 shows it on the turn, and the settings control marks a saved value its
 backend no longer offers. The saved value itself is kept, and applies again
-if the runtime offers it again.
+if the runtime offers it again. Host-native Claude conversation models are
+preserved for live validation. If Claude cannot confirm that model, the Run
+stops before sending the prompt. The saved choice remains available to edit.
 
 ## Project state context
 
@@ -1175,6 +1371,13 @@ changes no tool permissions, Project-write five-object ceiling, subscription
 gate, spend cap or filesystem serialization; discussions, autonomous and
 scheduled work keep their own bounds.
 
+The Room manager prompt, Work Skill, dependency resume prompt and fallback
+child-completion prompt tell the coordinator to carry authorized work through
+integration, verification, and any necessary repair and re-review. A child
+completion is an input to that workflow. The coordinator reports completion
+after the requested checks, or reports the blocker when no authorized next
+step remains. These prompts do not change workspace placement or server gates.
+
 **Human controls.** `room.collaboration.get` (query; the caller's own newest
 container in a Room conversation: handoff and turn counts, `next_reminder_at`,
 `active` and `stop_reason` from `collaborationStopReason` for the next handoff,
@@ -1459,10 +1662,11 @@ same gates that person's own turn would (memory writes under B10).
 container: by default the person's message that started the turn. When the
 last Run of a wave has completed its chat turn (`finalizeChatTurn` →
 `RoomDiscussionService.afterTurnFinalized`), its replies are parsed for
-`@Name` mentions of roster Agents with the same rule the composer uses
-(`parseAgentMentions` in `packages/protocol/src/roomDiscussions.ts`; see
-"Addressing and routing a message"). Only an address — a mention opening the
-reply or a line — summons anyone; a mention inside a sentence (an explanation,
+`@Name` mentions of roster Agents with the same rule the composer uses.
+The recovery scan also considers completed Room groups before a discussion exists,
+and a failed advance rechecks the group under the session lock before closing it.
+The mention parser (`parseAgentMentions` in `packages/protocol/src/roomDiscussions.ts`; see
+"Addressing and routing a message") treats mentions opening a reply or a line as addresses; a mention inside a sentence (an explanation,
 a quote, an example) and code spans never do. Addresses to another Agent open an
 **emergent** discussion on that message (the group's trigger message; for a
 wave started by a delegation or research result that is the continuation's
@@ -1568,10 +1772,10 @@ delegates nothing and opens nothing new; Agents a late or superseded reply
 addresses are named in a `not_admitted` notice, never silently dropped.
 
 **A person's message during a turn** is queued, not refused: a person must be
-able to steer a running discussion, and a mid-turn injection into the vendor
-session is deferred (deferred register), so the message enters at the next
-turn boundary — the running turn finishes first — and every later turn sees
-it. The queue also covers a message outside a discussion. Do not answer that
+able to steer a running discussion. A message that cannot go into the active
+Run its route reaches ("Ordinary send into an active turn" above) enters at
+the next turn boundary — the running turn finishes first — and every later
+turn sees it. The queue also covers a message outside a discussion. Do not answer that
 with a plain `409`. The queue is its own table rather than a hidden message
 in the tree, so nothing that reads the message tree has to filter it out.
 `POST …/messages` with `queue: true` (the client's default for a message
@@ -1630,7 +1834,7 @@ published, so the next message's context cannot precede that reply. A partial
 chat finalization remains occupied until its retry completes; the worker's
 existing terminal-chat reconciliation supplies that retry after a restart.
 That retry is bounded (`MAX_CHAT_FINALIZATION_ATTEMPTS` in
-`runs/chatTurnFinalizer.ts`): each failed pass records a
+`runs/chatTurnFinalizer.ts`): a failed materialization or reply publication records a
 `chat_finalization_failed` warning on the Run, shown in its turn, and the pass
 that reaches the bound writes a failed `chat_completed` with the last error, so
 a finalization that can never succeed releases the conversation instead of
@@ -1642,6 +1846,9 @@ Already serialized recipients of the same group may still advance from their
 predecessors' terminal results through the group's lifecycle projector,
 including internal summary turns with no visible reply. Quota-held and
 jobless parked Runs retain their existing turn-release exceptions.
+The wave recovery pass waits for every group in the wave to complete, advances
+past busy candidates between passes, and retries earlier candidates after reaching
+the end. A failure in one conversation does not delay the others.
 
 **Cost lines, by funding source.** The two ways a Run is paid for are bounded
 differently because only one of them can be attributed: a priced Run has a
@@ -1804,9 +2011,16 @@ is slow to answer is decided on the cached reading.
 - `POST /api/v1/rooms/:roomId/conversations` — explicitly open a Conversation
   draft and its execution preflight; this is the only way to create a Room
   Conversation
-- `POST /api/v1/rooms/:roomId/conversations/:sessionId/messages` — speak in an
-  initialized Conversation; Host, CLI, Primary, and attachment scope are
-  already pinned
+- `POST /api/v1/rooms/:roomId/conversations/:sessionId/archive` — archive an
+  idle Conversation
+- `POST /api/v1/rooms/:roomId/conversations/:sessionId/restore` — restore an
+  archived Conversation on the same execution setup
+- `DELETE /api/v1/rooms/:roomId/conversations/:sessionId` — move an idle
+  Conversation to the recycle bin
+- `GET /api/v1/rooms/:roomId/conversations?status=deleted` — the recycle bin
+  (Project writers only)
+- `POST /api/v1/rooms/:roomId/conversations/:sessionId/restore-deleted` —
+  restore from the recycle bin to the list it was deleted from, within 30 days
 - `POST /api/v1/rooms/:roomId/conversations/:sessionId/retry` — manually retry
   a failed or degraded turn using its persisted user input and pinned context
 - `POST /api/v1/rooms/:roomId/conversations/:sessionId/references` — copy
@@ -1915,7 +2129,8 @@ is slow to answer is decided on the cached reading.
   message; supports direct `@agent` recipient segmentation or manager
   coordination with optional `coordination_target_agent_ids` (active Agent
   members of the Room), optional explicit per-recipient backend selection, and
-  server-owned `input_parts` for images or authorized text-file snapshots
+  server-owned `input_parts` for images or authorized text-file snapshots.
+  Host, CLI, Primary and attachment scope are pinned before this call.
 - `DELETE /api/v1/rooms/:roomId/conversations/:sessionId/queued-messages/:id` —
   take back one's own message still waiting for the turn, or dismiss one that
   could not be posted
@@ -2002,17 +2217,19 @@ to a Room the viewer left.
 ### Held closing-turn terminal owner
 
 Discussion open/stop/extend discover the session's closing Runs before any
-session/discussion lock. Nonlocking Room/Project writer/member preflight retains
-the locked authoritative checks. Held-group cancellation goes through the same
-canonical Run terminal writer, preserving other output fields while removing
-quota/turn markers; discussion state, Run, Proposal/request publication and Host
-thread lock release commit or roll back together. New Run membership conflicts
-without late key acquisition. No Host IO or new approval authority is introduced.
+session/discussion lock. Open, extend and quota continuation take the conversation
+queue, Project audience, Room and conversation admission locks in that order.
+Lifecycle projection takes the same locks before locking the group. Nonlocking
+Room/Project writer/member preflight retains the locked authoritative checks.
+Held-group cancellation goes through the same canonical Run terminal writer,
+preserving other output fields while removing quota/turn markers. Discussion
+state, Run, Proposal/request publication and Host thread lock release commit or
+roll back together. New Run membership conflicts without late key acquisition.
+No Host IO or new approval authority is introduced.
 
-
-Review correction: open/extend discovery calls `requireWriter(..., false)`;
-`getVisibleRoom`'s fourth parameter really controls `FOR UPDATE`. Only the work
-phase takes the default Room lock and repeats authority. PG tests hold both the
+Open/extend discovery checks writer authority without locking the Room. The
+work phase locks the Room after the queue and Project audience, then reads
+visibility and writer authority again. PG tests hold both the
 Room row and a linked request key, proving key refusal occurs without waiting
 for that Room row; revoked membership/foreign scope remains hidden and unchanged.
 
@@ -2030,9 +2247,21 @@ no prepared port is cast to a PoolClient and no lifecycle methods are granted.
 ### Isolated delegated execution
 
 Delegations of version-1 Location-backed Runs inherit the isolated contract.
-Each delegation owns a workspace and a Host thread (unique by delegation),
-even when several children select the same Agent. The ordinary Conversation ×
-Agent continuity index excludes these scoped threads. Human turns remain ordered.
+Independent delegations have separate scoped Host threads, even when several
+children select the same Agent. The ordinary Conversation × Agent continuity
+index excludes these threads. In an isolated Location-backed Room, an explicit
+read-only code review can request a follow-up on the same coordinator Run via
+`review.previous_run_id`. The server validates the previous verified review,
+audience, runtime, workspace and context before requesting session reuse. Each
+review Run has its own current Git basis. A first review (`review: {}`) or
+an ineligible continuation starts fresh. Placement can share the coordinator's
+worktree under a Host read-only lease. Human turns remain ordered.
+For serial writes to the same open batch, `continuation.previous_run_id`
+requests the same writer's session under the same coordinator Run. The server
+checks the saved checkpoint, audience, Agent version, runtime and recorded
+context. The Host still places the new Run and takes the exclusive lease.
+An oversized context falls back to a fresh session with the previous saved
+commit and bounded result when authorized.
 The group projector admits independent sibling writers together, preserving
 subscription quota and budget checks. Legacy children retain the reader/writer
 FIFO and never silently upgrade an old parent contract.
@@ -2048,7 +2277,11 @@ Independently scoped model/family allowances remain separately visible in Usage
 and do not make other models unavailable. A scoped CLI refusal is retained on
 its interrupted Run rather than treated as account-wide evidence. Native quota
 recovery can explicitly authorize one alternative model from the same installed
-CLI, using the same scheduler, conversation/authority checks and attempt cap;
+CLI, using the same scheduler, conversation/authority checks and attempt cap.
+Choices that only name the current ACP model by an alias are skipped. A retained
+native session needs a matching resume id and known context occupancy of at
+most 4,096 tokens or a quarter of its window, whichever is lower. The scheduler
+rechecks this before admitting an authorized model switch;
 see [runtime adapters](runtime-adapters.md).
 
 ### Retained-Project grant lifecycle
@@ -2067,3 +2300,7 @@ Roster `private_shared_user_ids` and candidate `shared_with_user_ids` filter the
 current owner, unrevoked grant and live execution eligibility consistently.
 There is currently no production Space-member revocation writer; direct database
 membership changes receive the live denial only, not a claimed durable lifecycle.
+
+A recovery pass advances finalized discussion waves whose original completion
+handler did not reach the advance step. The same wave advance lock and
+`advanced_at` receipt prevent duplicate rounds.

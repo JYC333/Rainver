@@ -47,26 +47,33 @@ and [SECURITY_AND_ACCESS_BOUNDARIES](../architecture/SECURITY_AND_ACCESS_BOUNDAR
    scheduled Runs (`background`, default 24 h); always expiring and revocable.
    The database refuses a sensitive row whose grantor is not its owner.
    Requesters, administrators and Space owners cannot write it for them.
-4. **Scenarios** (one pure predicate for snapshot and call time): sensitive
-   tools and every personal/sensitive write need an owner-only audience (Room
+4. **Scenarios** (shared predicates for snapshot and call time): sensitive
+   tools and personal/sensitive proposals need an owner-only audience (Room
    readers by the Rooms owner's `roomAudience` — a mainline is every Project
-   reader — selected-user grantees, every member of a Space-shared Run); writes
-   are proposals from a person's own turn only; delegated Runs and unattended
+   reader — selected-user grantees, every member of a Space-shared Run).
+   Personal/sensitive writes are proposals from a person's own turn. Applications
+   contact create, update and history logging use the same Project write
+   authority as application creation, including in shared Rooms. They work
+   on shared contacts or the caller's own private contacts, return only IDs
+   and send no messages. The host admits reads of shared contacts through
+   the bound Project's live audience and audit checks. A solo Run still
+   needs standing personal consent to also read legacy private contacts.
+   Delegated Runs and unattended
    system wakes never get sensitive tools; scheduled Runs only with the owner's
-   background consent. A shared audience may get personal *reads* only, and
-   only as the readable intersection: the same read-only query runs as each
+   background consent. A shared audience may get personal reads only as
+   the readable intersection: the same read-only query runs as each
    other current reader (active member, plugin enabled) and only rows every
    result contains are released. Every non-row field (a total, cursor or
    summary, at any depth) is released only when it is identical in every
    reader's result; otherwise nothing is released — fields are never stripped
    to fit. A result that is not a list is released only when all results are
    identical. The release rechecks the audience. Refused
-   tool names are absent from the snapshot. The one exception to the
-   owner-only audience is a Project-bound core read
+   tool names are absent from the snapshot. The exception for sensitive data
+   is a Project-bound core read
    ([ADR 0033](0033-gmail-project-consent-and-private-delivery.md) §6): in the
    consent owner's own turn (or their scheduled digest Run) it may answer a
    shared conversation of the consent's Project while every reader still reads
-   that Project; plugin tools keep the rule above.
+   that Project.
 4a. **Isolation for sensitive data.** A person's consent cannot stand in for
    network isolation. Sensitive data is released only to a Run whose live latest
    attempt carries the server-written launch record (with its launch nonce) of
@@ -128,6 +135,36 @@ and [SECURITY_AND_ACCESS_BOUNDARIES](../architecture/SECURITY_AND_ACCESS_BOUNDAR
    outward Agent write is refused by a hard invariant; Memory writes become
    gated proposals carrying at least `sensitive`; persona changes are refused.
    There is no owner-approved egress review path; outward writes stay refused.
+   Current-conversation runtime selections may be saved after a sensitive read
+   when directly instructed by the person and validated against the bound
+   backend's advertised choices. The existing session and Room checks apply.
+   An on-demand Gmail read with server-verified Project and owner provenance
+   may feed Applications record edits, confirmed submission, progress, decision
+   proposals, deadlines, funding links, checklist and material references,
+   library entries and contacts in the same Project. The current operation grant
+   and live Gmail consent are checked. Deadline Tasks still go through the core
+   Task writer and material references go through their own core ACL.
+   The Task create, batch create, and text-update commands may also use the same provenance for
+   their canonical Project destination. Working Note changes in the same Project
+   use the same live Gmail consent and run provenance check. Linked creates remain subject to the
+   outward gate. The same conversation retains verified Gmail Project and grant
+   provenance in later Runs. Each write rechecks that original grant.
+   A Project writer may explicitly ask their Agent to cancel a duplicate in a
+   manual turn with this verified provenance, including a peer's read inherited
+   in the same conversation. The core checks the same Project and original
+   live consents. Under the Task row lock it admits only a Project-shared,
+   unstarted Task with no prior work or execution/publication dependencies.
+   The fixed reason `Duplicate task` bounds event text. The person's request
+   supplies the intent, and the server performs no duplicate check. See
+   [Core Task lifecycle boundary](../architecture/PROJECT_WORK.md#core-task-lifecycle-boundary).
+   Unscoped history and copied excerpts carry sensitivity without granting
+   write authority.
+   A scheduled Run of the owner's application-update automation
+   ([ADR 0034](0034-gmail-application-updates.md)) may make exactly one write after
+   reading their mail: `plugin.applications.mail_fact.apply`, admitted by its own host
+   gate for a message frozen for and released to that Run; nothing else is exempted.
+   A Run may checkpoint its own bound batch before an integration exists.
+   Prepare, publish and integration retries retain their outgoing-data gate.
 8. **Attribution (B11 unchanged).** `content_access_logs` keeps recording only
    cross-person reads. A separate contentAccess-owned `agent_data_read_logs`
    records Agent reads on the owner's behalf — plugin reads, typed references,

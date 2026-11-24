@@ -45,3 +45,20 @@ it("claims and completes independent jobs concurrently without duplicate ownersh
   expect(rows.rows).toHaveLength(2);
   expect(rows.rows.every(row => row.status === "completed" && row.attempts === 1)).toBe(true);
 });
+
+it("ensures one active Agent Run job across concurrent transactions", async ctx => {
+  if (!db.available) return ctx.skip();
+  const space = "fc000000-0000-4000-8000-000000000011";
+  const owner = "fc000000-0000-4000-8000-000000000012";
+  await seedSpaceOwnerProject(db.pool, { space, owner, project: "fc000000-0000-4000-8000-000000000013" });
+  const queue = new PgJobQueueRepository(db.pool);
+  const jobs = await Promise.all(Array.from({ length: 8 }, () => queue.ensureAgentRunJob({
+    space_id: space,
+    user_id: owner,
+    job_type: "agent_run",
+    payload: { run_id: "fc000000-0000-4000-8000-000000000014" },
+  })));
+  expect(new Set(jobs.map(job => job.id)).size).toBe(1);
+  const { rows } = await db.pool.query("SELECT id FROM jobs WHERE space_id = $1 AND job_type = 'agent_run'", [space]);
+  expect(rows).toEqual([{ id: jobs[0]!.id }]);
+});

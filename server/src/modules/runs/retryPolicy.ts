@@ -2,6 +2,19 @@ import { getRuntimeAdapterSpec } from "../runtimeAdapters/specs.js";
 
 // Emitted only after the old, exact Host launch has confirmed its exit.
 export const EXECUTION_CONTROLLER_LOST = "execution_controller_lost";
+export const TASK_DRY_RUN_UNSUPPORTED = "task_dry_run_unsupported";
+/**
+ * The Host launch refused to hand the CLI the vendor session this Run was frozen to resume (`remoteHostCliAdapter`'s
+ * resume check, ADR 0036 §11–§15): retired by a reset, excluded, archived, from a launch before a reset, or not proven to
+ * be in this launch's directory or isolation. Every later attempt of the same Run carries the same session and meets the
+ * same refusal, so the Supervisor leaves the failure terminal rather than parking it for a review whose resume would
+ * only repeat it; a new turn or Task Run starts a new session.
+ */
+export const RESUME_SESSION_REFUSAL_CODES: ReadonlySet<string> = new Set([
+  "resume_session_unconfirmed",
+  "isolated_session_resume_refused",
+  "sensitive_resume_unconfirmed",
+]);
 
 const RETRYABLE_RUN_ERROR_CODES = new Set([
   EXECUTION_CONTROLLER_LOST,

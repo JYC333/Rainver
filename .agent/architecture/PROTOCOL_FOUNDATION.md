@@ -13,6 +13,13 @@ sets.
 It exists so server and client consumers validate the same shapes at runtime and compile time
 instead of re-deriving API payloads in multiple places.
 
+The package declares `"sideEffects": false`, so a web bundle keeps only the
+modules whose exports it uses: the sign-in boot chunk imports API helpers whose
+module graph reaches the whole barrel, and without the flag every schema module
+and zod stayed in it. Module top level therefore holds declarations only
+(schemas, constants, functions); nothing registers into or mutates another
+module's state when imported.
+
 ## Frontend Contract Boundary
 
 `apps/web/src/types/api.ts` forwards every wire type from this package and

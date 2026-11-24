@@ -4,6 +4,8 @@ import type {RainverPlugin} from '@rainver/protocol';
 import {BUILT_IN_PLUGINS} from '../src/modules/plugins/builtInPlugins.js';
 import {PluginHost} from '../src/modules/plugins/host/index.js';
 import {migrateOperationPlugin} from '../src/modules/plugins/operationMigrations.js';
+import {convertBundledPluginMigrationHistory} from '../src/modules/plugins/migrationConversion.js';
+import {originalPluginMigrations} from '../src/modules/plugins/migrationSql.js';
 import {pluginServiceFor} from '../src/modules/plugins/service.js';
 import {withTransaction} from '../src/db/tx.js';
 import {loadConfig} from '../src/config.js';
@@ -42,20 +44,22 @@ const legacyFunding = {submitted: randomUUID(), progressedOnce: randomUUID(), un
  * file's upgrade (which reconciles the roles) can deadlock with another file installing the
  * package at the same moment. A deployment runs the installer alone; here it is retried.
  */
-async function install(p: RainverPlugin) {
+async function withPluginRoleRetry<T>(operation: (attempt: number) => Promise<T>): Promise<T> {
   for (let attempt = 0; ; attempt++) {
-    try { await migrateOperationPlugin(db.pool, p, attempt ? {repairFailed: true} : {}); return; } catch (error) {
+    try { return await operation(attempt); } catch (error) {
       const e = error as {code?: string; message?: string; cause?: {code?: string}};
       if (attempt >= 4 || ![e.code, e.cause?.code].includes('40P01') && !/deadlock detected/.test(e.message ?? '')) throw error;
       await new Promise(resolve => setTimeout(resolve, 250 * (attempt + 1)));
     }
   }
 }
+const install = (p: RainverPlugin) => withPluginRoleRetry(attempt => migrateOperationPlugin(db.pool, p, attempt ? {repairFailed: true} : {}));
 beforeAll(async () => {
   if (!db.available) return;
   expect(plugin?.operationManifest, 'build the official plugins first (server/scripts/build-official-plugins.mjs)').toBeTruthy();
   // An instance that installed the package before this change: migrations 0000–0002 only, with contacts bound through the old column.
-  const before = plugin.migrations!.slice(0, 3);
+  const original = originalPluginMigrations(plugin.migrations![0].sql)!;
+  const before = original.slice(0, 3);
   await install({...plugin, migrations: before, operationManifest: {...plugin.operationManifest!, migrations: before.map(m => m.id)}});
   const own = [legacy.space, legacy.user, legacy.project];
   await db.pool.query(`INSERT INTO plugin_applications.applications(space_id,user_id,project_id,id,track,institution,program,status) VALUES($1,$2,$3,$4,'phd','ETH Zurich','PhD CS','planning')`, [...own, legacy.application]);
@@ -65,7 +69,7 @@ beforeAll(async () => {
   // and every later write advanced the revision: one approved submission moved on by ordinary progress, one
   // submitted and moved back to `preparing` (create, submitted, preparing: revision 3), one only edited twice
   // (indistinguishable from the previous one), and records with at most one write.
-  const through0003 = plugin.migrations!.slice(0, 4);
+  const through0003 = original.slice(0, 4);
   await install({...plugin, migrations: through0003, operationManifest: {...plugin.operationManifest!, migrations: through0003.map(m => m.id)}});
   for (const [id, submission, status, revision] of [
     [legacyFunding.submitted, 'separate', 'submitted', 2], [legacyFunding.underReview, 'separate', 'under_review', 3],
@@ -75,8 +79,8 @@ beforeAll(async () => {
   ] as const) {
     await db.pool.query(`INSERT INTO plugin_applications.applications(space_id,user_id,project_id,id,track,institution,program,submission,status,revision) VALUES($1,$2,$3,$4,'funding','Funder','Grant',$5,$6,$7)`, [...own, id, submission, status, revision]);
   }
-  // Install the original 0004. Its checksum must survive the next install.
-  const through0004 = plugin.migrations!.slice(0, 5);
+  // Install the original 0004. Cutover must preserve its checksum and time in the audit.
+  const through0004 = original.slice(0, 5);
   await install({...plugin, migrations: through0004, operationManifest: {...plugin.operationManifest!, migrations: through0004.map(m => m.id)}});
   const oldMark = await db.pool.query(`SELECT submission_recorded_at IS NOT NULL AS recorded FROM plugin_applications.applications WHERE id=$1`, [legacyFunding.progressedOnce]);
   expect(oldMark.rows).toEqual([{recorded: true}]);
@@ -86,15 +90,20 @@ beforeAll(async () => {
     VALUES($1,$2,$3,$4,'funding','Funder','New grant','separate','preparing',3,NULL),
           ($1,$2,$3,$5,'funding','Funder','New grant','separate','preparing',3,now())`, [...own, legacyFunding.createdAfter0004, legacyFunding.submittedAfter0004]);
   const migrationJournal = async () => (await db.pool.query(
-    `SELECT migration_id,checksum,applied_at FROM plugin_migrations WHERE plugin_id=$1 AND status='applied' ORDER BY migration_id`, [pid])).rows;
+    `SELECT migration_id,checksum,applied_at::text FROM plugin_migrations WHERE plugin_id=$1 AND status='applied' ORDER BY migration_id`, [pid])).rows;
   const originalJournal = await migrationJournal();
   expect(originalJournal.slice(-2).map(row => row.checksum)).toEqual([
     '8f91046ec2ac39e1efbce4251b1f1321fee21fa58031f7c9ebfb05ac3669432c',
     'b3394692260543054fe729a188b87980bb0a19deeed53198d5b4574111b57827',
   ]);
-  await install(plugin);
+  expect(await withPluginRoleRetry(() => convertBundledPluginMigrationHistory(db.pool, plugin, {
+    apply: true, offline: true, backupReference: 'applications-fixture.dump',
+  // Pending: the squashed originals not yet applied, then every package migration after the baseline.
+  }))).toMatchObject({state: 'converted', pending: [...original.slice(5), ...plugin.migrations!.slice(1)].map(({id}) => id)});
   const upgradedJournal = await migrationJournal();
-  expect(upgradedJournal.slice(0, 5)).toEqual(originalJournal);
+  const audit = await db.pool.query(`SELECT metadata_json->'source_records' AS original FROM official_plugin_events
+    WHERE plugin_id=$1 AND event_type='migration_squashed'`, [pid]);
+  expect(audit.rows[0].original).toMatchObject(originalJournal);
   expect(upgradedJournal.map(row => row.migration_id)).toEqual(plugin.operationManifest!.migrations);
   // A further installer run verifies every applied checksum and skips the historical backfill.
   await install(plugin);
@@ -136,10 +145,10 @@ const create = async (input: Record<string, unknown>, project = projectA) => (aw
 const get = (application_id: string) => ok(read('application.get', {application_id}));
 const ids = (rows: {id: string}[]) => rows.map(r => r.id);
 
-async function note(title: string, text: string, opts: {owner?: string; project?: string | null} = {}) {
+async function note(title: string, text: string, opts: {owner?: string; project?: string | null; visibility?: 'space_shared'} = {}) {
   const id = randomUUID(), at = new Date().toISOString(), doc = markdownToPm(text);
-  await db.pool.query(`INSERT INTO space_objects(id,space_id,object_type,title,visibility,owner_user_id,primary_project_id,created_at,updated_at) VALUES($1,$2,'note',$3,'private',$4,$5,now(),now())`,
-    [id, space, title, opts.owner ?? owner, opts.project ?? null]);
+  await db.pool.query(`INSERT INTO space_objects(id,space_id,object_type,title,visibility,owner_user_id,primary_project_id,created_at,updated_at) VALUES($1,$2,'note',$3,$6,$4,$5,now(),now())`,
+    [id, space, title, opts.owner ?? owner, opts.project ?? null, opts.visibility ?? 'private']);
   await db.pool.query(`INSERT INTO notes(object_id,space_id,content_json,content_format,content_schema_version,plain_text) VALUES($1,$2,$3::jsonb,'prosemirror_json',1,$4)`, [id, space, JSON.stringify(doc), text]);
   await insertInitialNoteRevision(db.pool, {spaceId: space, noteId: id, doc, at, userId: opts.owner ?? owner});
   return id;
@@ -424,7 +433,7 @@ describe('Application module: funding, material library and contacts', () => {
     });
   });
 
-  it('funding links stay within the person, Project and tracks, and never newly reach archived work', async () => {
+  it('funding links stay within the Project and tracks, and never newly reach archived work', async () => {
     const cs = await create(phd), other = await create(phd, projectB);
     const fund = await create({track: 'funding', institution: 'Funder', program: 'Grant', submission: 'separate'});
     for (const [input, expected] of [
@@ -437,9 +446,8 @@ describe('Application module: funding, material library and contacts', () => {
     expect(reason(await command('funding.link', {funding_id: cs, application_id: cs}))).toBe('not_funding');
     expect(reason(await command('funding.link', {funding_id: fund, application_id: fund}))).toBe('not_program_application');
     expect(reason(await command('funding.link', {funding_id: fund, application_id: other}))).toBe('application_not_found');
-    // Another member of the Project reaches none of these records.
     as(writer);
-    expect(reason(await command('funding.link', {funding_id: fund, application_id: cs}))).toBe('application_not_found');
+    await ok(command('funding.link', {funding_id: fund, application_id: cs}));
     as(owner);
     // Archived: no new link to it; a funding record can still be moved off an archived application.
     await ok(command('funding.link', {funding_id: fund, application_id: cs}));
@@ -495,6 +503,20 @@ describe('Application module: funding, material library and contacts', () => {
     expect((await ok(read('library.list'))).items).toEqual([]);
     expect((await get(fund)).materials.find((m: {id: string}) => m.id === fundStatement).sources).toEqual([expect.objectContaining({note_id: cv, note_version: 1})]);
     expect((await db.pool.query(`SELECT count(*)::int AS n FROM note_revisions WHERE note_id=$1`, [cv])).rows[0].n).toBe(2);
+  });
+
+  it('Project writers maintain shared library entries through the current Note permissions', async () => {
+    const shared = await note('Project reference', 'Shared material', {project: projectA, visibility: 'space_shared'});
+    const {item_id} = await ok(command('library.add', {note_id: shared, kind: 'other'}));
+    as(writer);
+    expect((await ok(read('library.list'))).items).toMatchObject([{id: item_id, note: {note_id: shared, available: true}}]);
+    await ok(command('library.update', {item_id, label: 'Team reference'}));
+    await db.pool.query(`UPDATE space_objects SET visibility='private' WHERE id=$1`, [shared]);
+    expect((await ok(read('library.list'))).items).toEqual([]);
+    expect(reason(await command('library.remove', {item_id}))).toBe('library_item_not_found');
+    await db.pool.query(`UPDATE space_objects SET visibility='space_shared' WHERE id=$1`, [shared]);
+    await ok(command('library.remove', {item_id}));
+    expect((await db.pool.query('SELECT id FROM space_objects WHERE id=$1', [shared])).rowCount).toBe(1);
   });
 
   it('a supervisor is linked to several applications; the contact stays writable while any linked application is active', async () => {

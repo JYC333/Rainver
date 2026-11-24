@@ -14,9 +14,6 @@ import { Select } from '../../../components/ui/select'
 import { sortRoomConversations, useRoomConversationRefresh } from '../../conversation/useRoomConversationRefresh'
 import { useUnreadConversations } from '../../conversation/useUnreadConversations'
 import { Skeleton } from '../../../components/ui/skeleton'
-import { ConversationSurface } from '../../conversation/ConversationSurface'
-import { ConversationExecutionPreflight } from '../../conversation/ConversationExecutionPreflight'
-import { conversationInputSourcesFromExecutionSummary } from '../../conversation/ConversationInputComposer'
 import { useProjectFolderConversation, type CurrentFileAttachment } from '../ProjectFolderConversationContext'
 
 /**
@@ -41,6 +38,29 @@ import { MobileConversationNavigation, MobileConversationBack } from '../../conv
 import { useConversationOverlay } from '../../conversation/mobile/useConversationOverlay'
 
 const STORAGE_PREFIX = 'project.sidecar'
+
+// The conversation stack (composer editor, message rendering, highlighting)
+// is the heaviest part of the Project shell. A static import made every
+// Project page wait for it before its first paint. The panel shows a skeleton
+// until its Room reads resolve anyway, so the module loads in parallel with
+// them. It is held in state rather than behind <Suspense>: React throttles
+// every Suspense reveal for 300 ms after any fallback commits, so a fallback
+// here would also hold back the Project page beside the panel.
+type SidecarConversation = typeof import('./ProjectSidecarConversation').default
+let loadedConversation: SidecarConversation | null = null
+let conversationLoad: Promise<SidecarConversation> | null = null
+function loadConversation(): Promise<SidecarConversation> {
+  conversationLoad ??= import('./ProjectSidecarConversation').then(module => (loadedConversation = module.default))
+  // A failed chunk can be retried on the next open.
+  conversationLoad.catch(() => { conversationLoad = null })
+  return conversationLoad
+}
+// From `lg` up the panel opens beside the page by default, so start the load
+// with this module rather than after the layout's first commit: it then
+// overlaps React's reveal of the Project page instead of following it.
+if (typeof window !== 'undefined' && !window.matchMedia?.('(max-width: 1023px)').matches) {
+  void loadConversation().catch(() => { /* retried when the panel opens */ })
+}
 
 function readStored(key: string): string | null {
   try { return localStorage.getItem(key) } catch { return null }
@@ -147,6 +167,7 @@ export default function ProjectChatSidecar({ attention = [] }: { attention?: Pro
   useRoomConversationRefresh(open && !onRoomsArea ? room?.id ?? null : null, setConversations, requestScope)
   const [sessionId, setSessionId] = useState<string>('')
   const [loading, setLoading] = useState(true)
+  const [ProjectSidecarConversation, setConversationComponent] = useState<SidecarConversation | null>(() => loadedConversation)
   const [executionReady, setExecutionReady] = useState(false)
   const [executionSummary, setExecutionSummary] = useState<ConversationExecutionSummary | null>(null)
   const { selectedFolderId, setConversationFolderIds, currentFileAttachment } = useProjectFolderConversation()
@@ -178,6 +199,11 @@ export default function ProjectChatSidecar({ attention = [] }: { attention?: Pro
   useEffect(() => {
     if (!projectId || !open || onRoomsArea) return
     let active = true
+    loadConversation().then(component => { if (active) setConversationComponent(() => component) }, error => {
+      if (!active) return
+      setFailure(errMsg(error))
+      toast.error(errMsg(error))
+    })
     setLoading(true)
     setExecutionReady(false)
     setExecutionSummary(null)
@@ -361,64 +387,51 @@ export default function ProjectChatSidecar({ attention = [] }: { attention?: Pro
         </div>
       )}
 
-      {loading ? (
+      {loading || (!ProjectSidecarConversation && !failure) ? (
         <div className="p-3"><Skeleton className="h-24 w-full" /></div>
       ) : failure ? (
         <p className="p-3 text-xs text-destructive">{failure}</p>
-      ) : !room ? null : (
+      ) : !room || !ProjectSidecarConversation ? null : (
         <>
           {/* The same conversation module the full Room page renders: one
               implementation of what a conversation is, two places it is read. */}
-          <ConversationSurface
-            spaceId={spaceId}
-            // Picking works here too: the panel has the Room's other
-            // threads, so a pick has somewhere to go. Starting a new thread is
-            // not one of this surface's affordances, so that action is not
-            // offered and the toolbar hides it.
-            siblingConversations={conversations}
-            roomId={room.id}
-            conversationId={sessionId || null}
-            executionReady={executionReady}
-                  participantAgentIds={executionSummary?.state==='initialized'?(executionSummary.runtimes?.length?executionSummary.runtimes:(executionSummary.runtime?[executionSummary.runtime]:[])).map(pin=>pin.agent_id):executionSummary?.participant_agent_ids}
-            inputFileSources={conversationInputSourcesFromExecutionSummary(executionSummary)}
-            implicitInputResource={implicitInputResource}
-            composerAttachments={onFilesArea && currentFileAttachment && (
-              <CurrentFileBar
-                attachment={currentFileAttachment}
-                included={currentFileIncluded}
-                availability={currentFileAvailability}
-                onToggle={() => setCurrentFileIncluded(value => !value)}
-              />
-            )}
-            executionPreflight={(
-              <ConversationExecutionPreflight
-                projectId={projectId}
-                roomId={room.id}
-                sessionId={sessionId || null}
-                preferredProjectFolderId={selectedFolderId}
-                onConversationCreated={conversation => {
-                  setSessionId(conversation.id)
-                  setConversations(current => [conversation, ...current.filter(item => item.id !== conversation.id)])
-                  writeStored(conversationKey(room.id), conversation.id)
-                }}
-                onNewConversation={startThread}
-                onReadyChange={setExecutionReady}
-                onSummaryChange={setExecutionSummary}
-              />
-            )}
-            variant="panel"
-            focusRefs={focusRefs}
-            onConversationUpdated={conversation => {
-              // Keep the selected Conversation's server metadata current
-              // after a send or an explicit setup action.
-              setSessionId(current => (current === conversation.id ? current : conversation.id))
-              setConversations(current => sortRoomConversations(current.some(item => item.id === conversation.id)
-                ? current.map(item => (item.id === conversation.id ? { ...item, ...conversation } : item))
-                : [conversation, ...current]))
-              writeStored(conversationKey(room.id), conversation.id)
-            }}
-            emptyHint="Ask the Agent about what you are looking at — it already knows which Task that is."
-          />
+          <ProjectSidecarConversation
+              spaceId={spaceId}
+              projectId={projectId}
+              roomId={room.id}
+              sessionId={sessionId}
+              conversations={conversations}
+              executionReady={executionReady}
+              executionSummary={executionSummary}
+              selectedFolderId={selectedFolderId}
+              implicitInputResource={implicitInputResource}
+              composerAttachments={onFilesArea && currentFileAttachment && (
+                <CurrentFileBar
+                  attachment={currentFileAttachment}
+                  included={currentFileIncluded}
+                  availability={currentFileAvailability}
+                  onToggle={() => setCurrentFileIncluded(value => !value)}
+                />
+              )}
+              focusRefs={focusRefs}
+              onConversationCreated={conversation => {
+                setSessionId(conversation.id)
+                setConversations(current => [conversation, ...current.filter(item => item.id !== conversation.id)])
+                writeStored(conversationKey(room.id), conversation.id)
+              }}
+              onNewConversation={startThread}
+              onReadyChange={setExecutionReady}
+              onSummaryChange={setExecutionSummary}
+              onConversationUpdated={conversation => {
+                // Keep the selected Conversation's server metadata current
+                // after a send or an explicit setup action.
+                setSessionId(current => (current === conversation.id ? current : conversation.id))
+                setConversations(current => sortRoomConversations(current.some(item => item.id === conversation.id)
+                  ? current.map(item => (item.id === conversation.id ? { ...item, ...conversation } : item))
+                  : [conversation, ...current]))
+                writeStored(conversationKey(room.id), conversation.id)
+              }}
+            />
         </>
       )}
       <div className="flex items-center justify-start border-t border-border px-3 py-1.5">

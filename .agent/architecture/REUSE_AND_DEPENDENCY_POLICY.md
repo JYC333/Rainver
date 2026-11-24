@@ -241,7 +241,7 @@ what is installed.
 | Concern | Canonical mechanism | Where to look |
 |---|---|---|
 | HTTP calls to the backend | the typed API client — never bare `fetch` in a component | `apps/web/src/api/client.ts` |
-| Routing | `react-router-dom` + the module registry | `apps/web/src/modules/registry.ts`, `apps/web/src/App.tsx` |
+| Routing | `react-router-dom` + the module registry | `apps/web/src/modules/registry.ts`, `apps/web/src/App.tsx` (public routes), `apps/web/src/AuthenticatedApp.tsx` (signed-in routes) |
 | UI localization | `i18next` + `react-i18next`, initialized once with bundled resources; use `useAppTranslation` in rendered components | `apps/web/src/i18n/` |
 | Module/nav registration | module registry with lazy entry points | `apps/web/src/modules/registry.ts` |
 | Form controls and primitives (incl. `Select`, `DatePicker`) | `apps/web/src/components/ui/` over Radix — **never a bare `<select>`** | `apps/web/src/components/ui/` |

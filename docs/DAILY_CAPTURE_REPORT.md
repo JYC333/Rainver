@@ -132,11 +132,11 @@ The scheduler scans immediately on startup, then sleeps between subsequent scans
   (`reportDateForSlot`), so a late or retried run still reports the same day.
 - `next_run_at` is stored in UTC, derived from the prior scheduled local slot plus one
   calendar day (same hour/minute in local time).
-- The local slot is converted to UTC with `Intl.DateTimeFormat` and a bounded offset
-  correction (`zonedLocalToUtc` in `scheduler/localDay.ts`, shared with the digests). On DST transition
-  nights a nonexistent or ambiguous local time resolves to one of the two adjacent
-  offsets, depending on the zone, so the report may run about an hour off its usual
-  UTC time on that night.
+- The local slot is converted to UTC with `Intl.DateTimeFormat` in
+  `scheduler/localDay.ts`, shared with the digests. Offset probes a full day on
+  either side of the wall time encoded as UTC cover zones beyond ±12 hours.
+  A time skipped by a DST jump moves forward by the gap length. A repeated
+  time uses its first occurrence.
 - Jobs are never skipped on DST transition days.
 
 ## Module location

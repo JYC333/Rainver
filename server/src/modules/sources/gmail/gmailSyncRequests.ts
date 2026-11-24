@@ -16,6 +16,15 @@ import { withQueryableTransaction, type Queryable } from "../../routeUtils/commo
 
 export const GMAIL_SYNC_JOB = "gmail_mailbox_sync" as const;
 
+/**
+ * Whether connection `$conn` needs its mailbox sync: an active monitor, or an active application-update
+ * automation (ADR 0034), which records every new inbox message without monitor criteria.
+ */
+export function gmailSyncWantedSql(conn: string): string {
+  return `(EXISTS (SELECT 1 FROM gmail_monitor_rules r WHERE r.gmail_connection_id=${conn} AND r.status='active')
+    OR EXISTS (SELECT 1 FROM gmail_digests d WHERE d.gmail_connection_id=${conn} AND d.kind='application' AND d.status='active'))`;
+}
+
 /** Error codes a reconnect makes stale: they described the connection's authority, not Google's load. */
 const AUTHORITY_ERROR_CODES = ["gmail_authority_revoked", "gmail_reauth_required", "gmail_connection_inactive", "gmail_connection_changed", "gmail_not_configured"];
 
@@ -50,7 +59,7 @@ export async function enqueueDueGmailMailboxSyncs(db: Queryable, limit = 50): Pr
       WHERE (s.next_poll_at<=clock_timestamp() OR s.sync_requested_at IS NOT NULL)
         AND (s.retry_not_before IS NULL OR s.retry_not_before<=clock_timestamp())
         AND (s.lease_until IS NULL OR s.lease_until<clock_timestamp())
-        AND EXISTS (SELECT 1 FROM gmail_monitor_rules r WHERE r.gmail_connection_id=s.gmail_connection_id AND r.status='active')
+        AND ${gmailSyncWantedSql("s.gmail_connection_id")}
       ORDER BY s.next_poll_at LIMIT $1`, [limit])).rows;
   let queued = 0;
   for (const row of due) {
@@ -78,7 +87,7 @@ export async function resumeGmailSyncAfterReconnect(db: Queryable, connectionId:
             watch_retry_at=NULL,lease_id=NULL,lease_until=NULL,
             next_poll_at=LEAST(next_poll_at,clock_timestamp()),updated_at=clock_timestamp()
       WHERE gmail_connection_id=$1
-        AND EXISTS (SELECT 1 FROM gmail_monitor_rules r WHERE r.gmail_connection_id=$1 AND r.status='active')
+        AND ${gmailSyncWantedSql("$1")}
       RETURNING gmail_connection_id`, [connectionId, AUTHORITY_ERROR_CODES])).rows[0];
   if (row) await requestGmailMailboxSync(db, connectionId, "monitor");
 }

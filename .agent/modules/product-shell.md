@@ -99,8 +99,9 @@ Settings ends with Application version: a per-build identifier embedded in the
 running JS and emitted as `/version.json`. Checks fetch the same-origin manifest
 with no-store and compare IDs (not ordering); failures never report current.
 Nginx and Workbox do not cache this manifest. Update requests the existing SW
-registration to update and waits for activation before reloading; main.tsx remains
-the sole registration/automatic reload owner. Development uses a per-Vite-process
+registration to update and waits for activation before reloading. Main.tsx
+registers the worker without listening for activation-triggered reloads, so
+open tabs can finish drafts and recordings. Development uses a per-Vite-process
 ID. Builds have distinct IDs even when made from the same commit.
 An opt-in layout diagnostic text area exposes build, browser, display mode,
 viewport/screen/scroll geometry and resolved safe insets, with no account,

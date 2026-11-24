@@ -259,7 +259,7 @@ export async function grantRunChangeReadTools(
     `SELECT instructed_by_user_id, capabilities_json, permission_snapshot_json, trigger_origin
        FROM runs
       WHERE space_id = $1 AND id = $2 AND status = 'queued'
-      FOR UPDATE`,
+      FOR NO KEY UPDATE`,
     [run.space_id, run.id],
   );
   const row = selected.rows[0];

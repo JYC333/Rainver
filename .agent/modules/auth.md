@@ -35,6 +35,11 @@ reply)`, `getCurrentUser(…, sessionRefreshSink(reply))`). Rainver never
 computes a session expiry or issues a second session cookie of its own. Its OAuth errors return to `/login?error=...` rather than an unmounted
 Better Auth error endpoint.
 
+Browser sign-out clears local authenticated state immediately and records an
+opaque pending intent until Better Auth confirms sign-out. A reload or reconnect
+retries the intent before resolving identity. The browser's sign-in and
+registration entries settle any pending sign-out before requesting a new session.
+
 ## Admission and registration
 
 The first intent is admitted only when its normalized email matches

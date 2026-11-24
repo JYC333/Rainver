@@ -14,10 +14,12 @@ import {
 } from "./evidenceRedaction.js";
 import {PgConversationRuntimeSessionRepository} from '../sessions/conversationRuntimeSessionRepository.js';
 import { lockProjectAudience, assertProjectInSpace } from "../projects/access.js";
-import { artifactReadSql, contentAccessLevelSql, contentReadSql, projectReadAccessSql, proposalReadSql, roomRunReadAccessSql, runReadSql } from "../access/contentAccessSql.js";
+import { contentAccessLevelSql, contentReadSql, projectReadAccessSql, proposalReadSql, roomRunReadAccessSql, runReadSql } from "../access/contentAccessSql.js";
 import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 import { contentDecisionFromDb } from "../access/contentAccessQuery.js";
 import { RUN_TERMINAL_STATUS_VALUES } from "@rainver/protocol";
+import { RUN_CANCELLATION_RECONCILE_JOB, SUPERSEDED_AGENT_RUN_JOB } from "../jobs/agentRunGeneration.js";
+import type { RecoveryCursor } from "./recoveryCursor.js";
 import type { ContentAccessDecision, ContentAccessLevel } from "../access/contentAccessTypes.js";
 
 const RUN_ACCESS = contentResourceDefinition("run")!;
@@ -28,7 +30,6 @@ import {
   validateRunCreateInput,
 } from "./runRepositoryHelpers.js";
 import {
-  type ArtifactSummaryRecord,
   type ModelProviderSummaryRecord,
   type ProposalSummaryRecord,
   type Queryable,
@@ -69,16 +70,24 @@ import {
 } from "./contractSnapshot.js";
 import { assertBudgetSourcesAvailable, checkRunBudget } from "./budgetEnforcement.js";
 import { withQueryableTransaction } from "../routeUtils/common.js";
-import { gmailDigestRunAdmits, gmailDigestRunContext } from "../sources/gmail/gmailDigests.js";
+import { gmailDigestRunAdmits, gmailDigestRunContext, gmailDigestRunTools } from "../sources/gmail/gmailDigests.js";
 import { inheritedReads, persistRunContextTaint, sensitiveConversationReads } from "./contextTaint.js";
-import { projectBoundConsentIds } from "../plugins/coreDataTools.js";
+import { isolatingSensitiveReads } from "./sensitiveRuntimeProfile.js";
 import type { VerificationResultRecord } from "./verification/types.js";
 import { PgUsageRepository } from "../usage/repository.js";
 import { buildRunToolGrants } from "../systemActions/runToolGrants.js";
 import { pluginToolPins, runAudience, scenarioOrigin, type RunScenario } from "../plugins/dataAccess.js";
 import { isHardTerminalRunStatus } from "./orchestrationResults.js";
+import { agentHostResetGenerationSql, agentHostResetLockKey, launchRecordResetSql } from "../hosts/agentHostResetGeneration.js";
 
 /** What a launch frame stated about its isolation; recorded with the launch nonce (ADR 0030). */
+/** A resume judged under the thread's lock together with the launch bind (`bindAttemptLaunchAfterResumeCheck`): null
+ * when the session may be resumed, otherwise the reason to refuse. */
+export interface LaunchResumeGuard<R> {
+  thread_id: string;
+  refusal(db: Queryable): Promise<R | null>;
+}
+
 export interface LaunchIsolationRecord {
   host_id: string;
   host_kind: string;
@@ -89,6 +98,8 @@ export interface LaunchIsolationRecord {
   /** The CLI profile directory key the frame named, so a later resume can prove it is the same one. */
   profile_key?: string;
 }
+// `bindAttemptLaunch` adds `host_reset_generation` (`hosts/agentHostResetGeneration.ts`) to the stored record: the
+// count of resets of the Run's Agent on that Host when the nonce was bound, never stated by the frame itself.
 
 export {
   RunCreateValidationError,
@@ -340,14 +351,12 @@ export class PgRunRepository {
   }
 
   /** Persisted cancellation intent survives loss of its request/worker process. */
-  async listCancellingAgentRuns(limit = 100): Promise<Array<Pick<AgentRunRecord,
-    "id" | "space_id" | "agent_id" | "project_folder_id" | "instructed_by_user_id" | "owner_user_id">>> {
-    const result = await this.db.query<Pick<AgentRunRecord,
-      "id" | "space_id" | "agent_id" | "project_folder_id" | "instructed_by_user_id" | "owner_user_id">>(
-      `SELECT r.id, r.space_id, r.agent_id, r.project_folder_id, r.instructed_by_user_id, r.owner_user_id
+  async listCancellingAgentRuns(limit = 100): Promise<Array<Pick<AgentRunRecord, "id" | "space_id">>> {
+    const result = await this.db.query<Pick<AgentRunRecord, "id" | "space_id">>(
+      `SELECT r.id, r.space_id
          FROM runs r WHERE r.execution_kind = 'agent' AND r.status = 'cancelling'
           AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.space_id = r.space_id
-            AND j.job_type = 'agent_run' AND j.payload_json->>'run_id' = r.id
+            AND j.job_type = '${RUN_CANCELLATION_RECONCILE_JOB}' AND j.payload_json->>'run_id' = r.id
             AND j.status IN ('pending', 'claimed', 'running'))
         ORDER BY r.updated_at, r.id LIMIT $1`, [Math.max(1, Math.min(500, limit))],
     );
@@ -356,12 +365,15 @@ export class PgRunRepository {
 
   async listTerminalChatRunsAwaitingCompletion(
     limit = 100,
-  ): Promise<Array<{ id: string; space_id: string }>> {
-    const result = await this.db.query<{ id: string; space_id: string }>(
-      `SELECT r.id, r.space_id
+    after: RecoveryCursor | null = null,
+  ): Promise<Array<RecoveryCursor & { space_id: string }>> {
+    const result = await this.db.query<RecoveryCursor & { space_id: string }>(
+      `SELECT r.id, r.space_id, r.created_at::text AS created_at
          FROM runs r
         WHERE r.status IN ('succeeded', 'failed', 'degraded', 'cancelled', 'orphaned')
           AND r.model_override_json->'chat_turn'->>'schema_version' = 'chat_turn.v1'
+          AND r.model_override_json->>'automatic_handoff_for' IS NULL
+          AND ($2::timestamptz IS NULL OR (r.created_at, r.id) > ($2::timestamptz, $3::varchar))
           AND NOT EXISTS (
             SELECT 1
               FROM run_events event
@@ -369,9 +381,9 @@ export class PgRunRepository {
                AND event.run_id = r.id
                AND event.event_type = 'chat_completed'
           )
-        ORDER BY r.updated_at ASC, r.id ASC
+        ORDER BY r.created_at ASC, r.id ASC
         LIMIT $1`,
-      [Math.max(1, Math.min(500, Math.trunc(limit)))],
+      [Math.max(1, Math.min(500, Math.trunc(limit))), after?.created_at ?? null, after?.id ?? null],
     );
     return result.rows;
   }
@@ -857,8 +869,8 @@ export class PgRunRepository {
           grant.action_id !== "authorization.request" && !grant.side_effecting
         )
       // A scheduled Gmail digest Run reads its frozen window and nothing else; nobody is there to approve a request.
-      : (contractSnapshot.workflow_input_json as {gmail_digest?:unknown}|undefined)?.gmail_digest
-        ? declaredToolGrants.filter((grant) => grant.action_id === "source.gmail.digest.read")
+      : gmailDigestRunContext({ contract_snapshot_json: contractSnapshot })
+        ? declaredToolGrants.filter((grant) => gmailDigestRunTools(gmailDigestRunContext({ contract_snapshot_json: contractSnapshot })!).includes(grant.action_id))
       // A withdrawn private Gmail check (ADR 0033 §6) never gets a tool; such a Run is refused before dispatch.
       : (contractSnapshot.workflow_input_json as {gmail_private_check?:unknown}|undefined)?.gmail_private_check
         ? []
@@ -875,12 +887,11 @@ export class PgRunRepository {
     // Each read keeps its real owner (never this Run's instructing person); a conversation whose reads cannot
     // all be determined is inherited with an unknown-owner Gmail read, so outward writes stay refused.
     const inheritedSensitiveReads = input.session_id ? inheritedReads(await sensitiveConversationReads(this.db, input.space_id, input.session_id)) : [];
-    const projectBound = new Set(projectBoundConsentIds());
-    const isolatingSensitiveReads = inheritedSensitiveReads.filter((read) => !projectBound.has(read.pluginId));
+    const isolatingReads = isolatingSensitiveReads(inheritedSensitiveReads);
     const permissionSnapshotJson = JSON.stringify({
       tool_grants: toolGrants,
       ...(Object.keys(pluginPins).length ? { plugin_tool_pins: pluginPins } : {}),
-      ...(isolatingSensitiveReads.length ? { sensitive_conversation: true } : {}),
+      ...(isolatingReads.length ? { sensitive_conversation: true } : {}),
       ...(input.scenario_tool_allowance
         ? { scenario_tool_allowance: [...input.scenario_tool_allowance] }
         : {}),
@@ -985,7 +996,12 @@ export class PgRunRepository {
       await persistRunContextTaint(this.db, {
         runId: row.id, spaceId: row.space_id, instructingUserId: input.user_id, runVisibility: runVisibility,
         items: [...new Set(inheritedSensitiveReads.map((read) => read.ownerUserId))].map((ownerUserId) => ({ ownerUserId, visibility: "private" as const })),
-        pluginReads: inheritedSensitiveReads.map((read) => ({ plugin_id: read.pluginId, data_class: "sensitive" as const, owner_user_id: read.ownerUserId })),
+        pluginReads: inheritedSensitiveReads.map((read) => ({
+          plugin_id: read.pluginId,
+          data_class: "sensitive" as const,
+          owner_user_id: read.ownerUserId,
+          ...(read.gmailScope ? { gmail_scope: read.gmailScope } : {}),
+        })),
       });
     }
     recordPreparedRunCreation(this.db,row.space_id,row.id);
@@ -1362,7 +1378,8 @@ export class PgRunRepository {
     return result.rows;
   }
 
-  async listRunEvents(spaceId: string, runId: string): Promise<RunEventDetailRecord[]> {
+  /** Every event of a Run in order, or only those of `eventTypes` (filtered in SQL, so a long history is not read to be discarded). */
+  async listRunEvents(spaceId: string, runId: string, eventTypes?: readonly string[]): Promise<RunEventDetailRecord[]> {
     const result = await this.db.query<RunEventDetailRecord>(
       `SELECT id, space_id, run_id, attempt_number, step_id, actor_id, event_index, event_type,
               status, summary, error_code, error_message, project_folder_id,
@@ -1370,8 +1387,9 @@ export class PgRunRepository {
               metadata_json, created_at
          FROM run_events
         WHERE space_id = $1 AND run_id = $2
+          AND ($3::text[] IS NULL OR event_type = ANY($3::text[]))
         ORDER BY event_index ASC, id ASC`,
-      [spaceId, runId],
+      [spaceId, runId, eventTypes ? [...eventTypes] : null],
     );
     return result.rows;
   }
@@ -1421,33 +1439,18 @@ export class PgRunRepository {
     };
   }
 
-  /** The Artifacts a Run produced that this viewer can read; the rest are not listed. */
-  async listArtifactSummaries(
-    spaceId: string,
-    runId: string,
-    viewerUserId: string,
-  ): Promise<ArtifactSummaryRecord[]> {
-    const result = await this.db.query<ArtifactSummaryRecord>(
-      `SELECT a.id, a.space_id, a.run_id, a.proposal_id, a.artifact_type, a.title,
-              a.mime_type, a.visibility, a.created_at
-         FROM artifacts a
-        WHERE a.space_id = $1 AND a.run_id = $2
-          AND ${artifactReadSql("$3", "a")}
-        ORDER BY a.created_at ASC, a.id ASC`,
-      [spaceId, runId, viewerUserId],
-    );
-    return result.rows;
-  }
-
-  /** The Proposals a finished Run created that this viewer can read. */
+  /**
+   * The non-staged Proposals a finished Run created that this viewer can
+   * read, with the same report-derived title withholding as the Proposal collection.
+   */
   async listProposalSummaries(
     spaceId: string,
     runId: string,
     viewerUserId: string,
   ): Promise<ProposalSummaryRecord[]> {
-    const result = await this.db.query<ProposalSummaryRecord>(
+    const result = await this.db.query<ProposalSummaryRecord & { payload_json: unknown }>(
       `SELECT proposal.id, proposal.space_id, proposal.proposal_type,
-              proposal.status, proposal.title, proposal.visibility,
+              proposal.status, proposal.title, proposal.visibility, proposal.payload_json,
               proposal.created_at, proposal.preview, proposal.urgency,
               proposal.review_deadline, proposal.expires_at,
               proposal.created_by_run_id
@@ -1463,7 +1466,16 @@ export class PgRunRepository {
         ORDER BY proposal.created_at ASC, proposal.id ASC`,
       [spaceId, runId, viewerUserId],
     );
-    return result.rows;
+    if (result.rows.length === 0) return [];
+    const { proposalReportWithheld, withheldProposalTitle } = await import("../retrieval/proposalReportRelease.js");
+    const summaries: ProposalSummaryRecord[] = [];
+    for (const { payload_json, ...summary } of result.rows) {
+      if (await proposalReportWithheld(this.db, { spaceId, userId: viewerUserId }, {
+        proposal_type: summary.proposal_type, payload_json,
+      })) summary.title = withheldProposalTitle(summary.proposal_type);
+      summaries.push(summary);
+    }
+    return summaries;
   }
 
   /**
@@ -2145,7 +2157,7 @@ export class PgRunRepository {
           )
         // A scheduled Gmail digest Run keeps only its frozen read across a rebind, as at creation.
         : gmailDigestRunContext(row)
-          ? grants.filter((grant) => grant.action_id === "source.gmail.digest.read")
+          ? grants.filter((grant) => gmailDigestRunTools(gmailDigestRunContext(row)!).includes(grant.action_id))
           : grants;
       const updated = await db.query<{ id: string }>(
         `UPDATE runs
@@ -2198,8 +2210,14 @@ export class PgRunRepository {
         ? await gmailDigestRunAdmits(this.db, { spaceId: run.space_id, ownerUserId: run.instructed_by_user_id, runId: run.id })
         : { ok: false as const, code: "gmail_digest_unavailable" as const };
       if (!admitted.ok) {
-        return { allowed: false, error_code: admitted.code, error_message: admitted.code === "gmail_digest_audience_outside_project"
+        return { allowed: false, error_code: admitted.code, error_message: admitted.code === "gmail_digest_audience_not_owner"
+          ? "Automatic application updates run only in the mailbox owner's own private conversation, so they were not run here."
+          : admitted.code === "gmail_digest_audience_outside_project"
           ? "Someone who reads this conversation does not work in its Project, so this Gmail digest was not run."
+          : admitted.code === "gmail_digest_rule_changed"
+          ? "This automatic application update was started for an earlier version of its rule or model, so it was not run; its mail waits for the current one."
+          : admitted.code === "gmail_digest_agent_not_in_project"
+          ? "Its Agent is no longer on the Project's Agent list, so this Gmail automation was not run."
           : "This Gmail digest no longer has permission to run." };
       }
     }
@@ -2332,6 +2350,11 @@ export class PgRunRepository {
     const prepared=preparedRunTerminalOwner(db,input.space_id,input.run_id);
     if(prepared)await assertPreparedFreshRunUnlinked(db,input.space_id,input.run_id);
     const transitions=prepared?null:await lockRunProposalTransitions(db,[{id:input.run_id,space_id:input.space_id}],callerOwns);
+    if (input.expected_agent_job_id) {
+      // Read the generation in a fresh statement after acquiring the same Run
+      // lock as the requeue transaction. A wait must see that transaction's Job update.
+      await db.query("SELECT id FROM runs WHERE space_id=$1 AND id=$2 FOR UPDATE", [input.space_id, input.run_id]);
+    }
     const result = await db.query<RunRecord>(
       `WITH candidate AS (
          SELECT id
@@ -2349,6 +2372,10 @@ export class PgRunRepository {
                 SELECT max(a.attempt_number) FROM run_attempts a
                  WHERE a.run_id = runs.id AND a.space_id = runs.space_id
               )
+            ))
+            AND ($12::varchar IS NULL OR NOT EXISTS (
+              SELECT 1 FROM jobs WHERE id=$12 AND job_type='agent_run'
+                AND payload_json ? '${SUPERSEDED_AGENT_RUN_JOB}'
             ))
           FOR UPDATE
        ), updated AS (
@@ -2435,6 +2462,7 @@ export class PgRunRepository {
         terminalErrorCode,
         executionOwner,
         input.expected_attempt_number ?? null,
+        input.expected_agent_job_id ?? null,
       ],
     );
     if(transitions)await transitions.finish();
@@ -2453,7 +2481,15 @@ export class PgRunRepository {
   async bindAttemptLaunch(input: { space_id: string; run_id: string; launch_id: string; expected_launch_id?: string | null; expected_attempt_id?: string; isolation?: LaunchIsolationRecord | null }): Promise<boolean> {
     const result = await this.db.query<{ id: string }>(
       `UPDATE run_attempts a
-          SET launch_id = $3, launch_isolation_json = $6::jsonb, updated_at = now()
+          SET launch_id = $3,
+              -- The reset generation of this Run's Agent on the record's Host, read now (ADR 0036 §15): a later reset
+              -- makes this launch's sessions unresumable however late its report arrives.
+              launch_isolation_json = CASE WHEN $6::jsonb IS NULL THEN NULL
+                ELSE $6::jsonb || jsonb_build_object('host_reset_generation', ${agentHostResetGenerationSql(
+                  "($6::jsonb->>'host_id')", "(SELECT owner.agent_id FROM runs owner WHERE owner.id = a.run_id AND owner.space_id = a.space_id)")}) END,
+              -- Idle column (ADR 0037): an earlier release's proof belongs to its own launch; a rebind clears it so its check holds.
+              model_proof_json = CASE WHEN a.launch_id IS NOT DISTINCT FROM $3 THEN a.model_proof_json END,
+              updated_at = now()
         WHERE a.space_id = $1 AND a.run_id = $2
           AND a.status IN ('queued', 'running')
           AND (a.launch_id IS NULL OR a.launch_id = $3 OR a.launch_id = $4::varchar)
@@ -2468,6 +2504,27 @@ export class PgRunRepository {
         input.isolation ? JSON.stringify({ ...input.isolation, launch_id: input.launch_id }) : null],
     );
     return result.rowCount === 1;
+  }
+
+  /**
+   * `bindAttemptLaunch` after `guard` judged, in the same transaction, whether the vendor session the frame hands
+   * the CLI may still be resumed (ADR 0036 §14). The thread row is share-locked first, so the judgement and the
+   * bind are serialized with every write to that row: a reset, retirement or archive that committed before this
+   * lock is seen by the judgement and nothing is bound; one that comes later waits for this commit and applies to
+   * the launch already bound as to any launch in flight. Lock order: the `host_threads` row, then this Run's
+   * `run_attempts` row; no transaction takes an attempt row and then a thread row (thread settlement share-locks
+   * the `runs` row, never an attempt). Nothing here waits on a Host. `refusal` is the guard's answer when it refused.
+   */
+  async bindAttemptLaunchAfterResumeCheck<R>(
+    input: Parameters<PgRunRepository["bindAttemptLaunch"]>[0],
+    guard: LaunchResumeGuard<R>,
+  ): Promise<{ bound: boolean; refusal: R | null }> {
+    return withQueryableTransaction(this.db, async (tx) => {
+      await tx.query("SELECT 1 FROM host_threads WHERE id = $1 FOR SHARE", [guard.thread_id]);
+      const refusal = await guard.refusal(tx);
+      if (refusal !== null) return { bound: false, refusal };
+      return { bound: await new PgRunRepository(tx, this.config).bindAttemptLaunch(input), refusal: null };
+    });
   }
 
   async getLatestRunAttempt(spaceId: string, runId: string): Promise<RunAttemptRecord | null> {
@@ -2847,6 +2904,9 @@ export class PgRunRepository {
 
       const waitingState = sanitizeEvidenceJson({
         status: "waiting",
+        // This wait, as distinct from the Run's earlier and later ones: a resume
+        // read for one round never wakes the next (`requeueWaitingDependencyRun`).
+        round_id: randomUUID(),
         scope: input.scope,
         reason: input.reason,
         resume_instruction: input.resume_instruction,
@@ -2901,23 +2961,86 @@ export class PgRunRepository {
    * A parked Host-thread Run resumes the ACP session it parked in. Its
    * `host_thread.runtime_session_id` was written at creation; once an attempt
    * has started a session, the next attempt must ask for that one, or the CLI
-   * binding sees a mismatch and starts yet another session.
+   * binding sees a mismatch and starts yet another session. The record of the
+   * launch that reported it (`launch_id`, that launch's nonce) is copied with
+   * it (`runtime_session_launch`: its `run_attempts.launch_isolation_json` and
+   * attempt id) while that attempt still carries the nonce — the Run's own
+   * evidence of which directory and channel the session is in, kept when a
+   * relaunch of the same attempt rewrites the attempt's record. A session the
+   * thread's pointer does not name yet is resumed with network only on it
+   * (`networkedResumeVerdict`, ADR 0036 §11–§13); with no reporting nonce, or
+   * one no attempt of this Run carries now, it is recorded as unknown (null).
    */
   async recordParkedHostThreadSession(input: {
     run_id: string;
     space_id: string;
     vendor_session_id: string;
+    launch_id?: string | null;
   }): Promise<void> {
-    await this.db.query(
-      `UPDATE runs
-          SET model_override_json = jsonb_set(model_override_json, '{host_thread,runtime_session_id}', to_jsonb($3::text)),
-              updated_at = now()
-        WHERE space_id = $1 AND id = $2
-          AND host_task_thread_id IS NOT NULL
-          AND jsonb_typeof(model_override_json->'host_thread') = 'object'
-          AND status IN ('waiting_for_dependency', 'waiting_for_review')`,
-      [input.space_id, input.run_id, input.vendor_session_id],
-    );
+    // Serialized with a reset of this Agent's state on the Host (ADR 0036 §16): the park and its retirement judgement
+    // are one transaction under the reset's advisory lock (`agentHostResetLockKey`), taken shared before any row. The
+    // reset admission holds it exclusively from before its scan of parked sessions until its intent commits, so a park
+    // either commits wholly before that scan (and the reset retires it as it retires what it sees) or runs wholly after
+    // the intent is visible (and the generation below retires it). Without the lock, a park between the scan and the
+    // commit saw neither. Keys: the thread's Host (what the reset matches threads by) and the reporting launch's
+    // recorded Host (what the generation is read on), locked in a stable order. Then the Run row, then the thread row —
+    // the order thread settlement takes them (`settleRunOutcome`).
+    await withQueryableTransaction(this.db, async (tx) => {
+      const fences = await tx.query<{ key_host: string; agent_id: string }>(
+        `SELECT DISTINCT host.id AS key_host, r.agent_id
+           FROM runs r
+           JOIN host_threads thread ON thread.id = r.host_task_thread_id
+           CROSS JOIN LATERAL (VALUES
+             (COALESCE(thread.execution_host_id, (SELECT wl.execution_host_id FROM workspace_locations wl WHERE wl.id = thread.workspace_location_id))),
+             ((SELECT attempt.launch_isolation_json->>'host_id' FROM run_attempts attempt
+                WHERE attempt.space_id = r.space_id AND attempt.run_id = r.id AND attempt.launch_id = $3::varchar))) AS host(id)
+          WHERE r.space_id = $1 AND r.id = $2 AND r.agent_id IS NOT NULL AND host.id IS NOT NULL`,
+        [input.space_id, input.run_id, input.launch_id ?? null],
+      );
+      for (const key of fences.rows.map((row) => agentHostResetLockKey(row.key_host, row.agent_id)).sort()) {
+        await tx.query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))", [key]);
+      }
+      await tx.query(
+        `UPDATE runs
+            SET model_override_json = jsonb_set(
+                  jsonb_set(model_override_json, '{host_thread,runtime_session_id}', to_jsonb($3::text)),
+                  '{host_thread,runtime_session_launch}',
+                  COALESCE((SELECT attempt.launch_isolation_json || jsonb_build_object('attempt_id', attempt.id)
+                              FROM run_attempts attempt
+                             WHERE attempt.space_id = $1 AND attempt.run_id = $2 AND attempt.launch_id = $4::varchar
+                               AND jsonb_typeof(attempt.launch_isolation_json) = 'object'), 'null'::jsonb)),
+                updated_at = now()
+          WHERE space_id = $1 AND id = $2
+            AND host_task_thread_id IS NOT NULL
+            AND jsonb_typeof(model_override_json->'host_thread') = 'object'
+            AND status IN ('waiting_for_dependency', 'waiting_for_review')`,
+        [input.space_id, input.run_id, input.vendor_session_id, input.launch_id ?? null],
+      );
+      // A park reported after a reset of this Agent's state on the launch's Host (the Run waited for review, which the
+      // reset admits, while its launch was still reporting): the session is in a profile the reset archived. Its frozen
+      // record already refuses the resume (`networkedResumeVerdict`, ADR 0036 §15); it is also retired on its thread, as
+      // the reset retires what it saw, so ambient import and every later judgement treat it as the Agent's retired
+      // session. A park with no trusted record (no nonce, or one no attempt carries) is never resumed with network
+      // either; it is retired when any reset of the Agent on the thread's Host was admitted at or after the Run was
+      // created — no evidence places its launch after that reset.
+      await tx.query(
+        `UPDATE host_threads thread
+            SET retired_vendor_session_ids = thread.retired_vendor_session_ids || to_jsonb($3::text), updated_at = now()
+           FROM runs r
+          WHERE r.space_id = $1 AND r.id = $2 AND thread.id = r.host_task_thread_id
+            AND r.model_override_json #>> '{host_thread,runtime_session_id}' = $3::text
+            AND NOT thread.retired_vendor_session_ids ? $3::text
+            AND (${launchRecordResetSql("(r.model_override_json #> '{host_thread,runtime_session_launch}')", "r.agent_id",
+              "(SELECT la.created_at FROM run_attempts la WHERE la.id = r.model_override_json #>> '{host_thread,runtime_session_launch,attempt_id}')")}
+              OR (jsonb_typeof(r.model_override_json #> '{host_thread,runtime_session_launch}') IS DISTINCT FROM 'object'
+                AND EXISTS (SELECT 1 FROM host_command_intents reset_intent
+                             WHERE reset_intent.kind = 'agent_host_state_reset' AND reset_intent.agent_id = r.agent_id
+                               AND reset_intent.created_at >= r.created_at
+                               AND reset_intent.host_id = COALESCE(thread.execution_host_id, (
+                                     SELECT wl.execution_host_id FROM workspace_locations wl WHERE wl.id = thread.workspace_location_id)))))`,
+        [input.space_id, input.run_id, input.vendor_session_id],
+      );
+    });
   }
 
   async requeueWaitingDependencyRun(input: {
@@ -2929,6 +3052,13 @@ export class PgRunRepository {
     model_override_json?: Record<string, unknown> | null;
     /** Every dependency result this Run has now been handed, kept across its next waits. */
     delivered_run_ids?: string[];
+    /**
+     * The wait this resume was decided for. When given, the Run resumes only
+     * while it still parks on exactly that round (same `round_id`, same
+     * dependencies): a resume read from a stale snapshot never wakes the
+     * Run's next wait with the previous round's results.
+     */
+    expected_wait?: { round_id: string | null; depends_on_run_ids: string[] };
   }): Promise<RunRecord | null> {
     const resumeJson = sanitizeEvidenceJson({
       waiting_for_results_resume: {
@@ -2956,6 +3086,10 @@ export class PgRunRepository {
         WHERE space_id = $1
           AND id = $2
           AND status = 'waiting_for_dependency'
+          AND ($8::jsonb IS NULL OR (
+                output_json->'waiting_for_results'->>'status' = 'waiting'
+            AND output_json->'waiting_for_results'->'depends_on_run_ids' = $8::jsonb->'depends_on_run_ids'
+            AND (output_json->'waiting_for_results'->>'round_id') IS NOT DISTINCT FROM ($8::jsonb->>'round_id')))
           AND NOT EXISTS (
             SELECT 1
               FROM run_execution_locks execution_lock
@@ -2994,6 +3128,7 @@ export class PgRunRepository {
         input.resumed_at,
         input.model_override_json ? JSON.stringify(input.model_override_json) : null,
         input.delivered_run_ids ? JSON.stringify(input.delivered_run_ids) : null,
+        input.expected_wait ? JSON.stringify(input.expected_wait) : null,
       ],
     );
     return result.rows[0] ?? null;
@@ -3461,13 +3596,21 @@ export class PgRunRepository {
     worker_id: string;
     job_id?: string | null;
   }): Promise<boolean> {
-    const result = await this.db.query(
-      `INSERT INTO run_execution_locks (run_id, locked_at, worker_id, job_id)
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT (run_id) DO NOTHING`,
-      [input.run_id, new Date().toISOString(), input.worker_id, input.job_id ?? null],
-    );
-    return (result.rowCount ?? 0) === 1;
+    return withQueryableTransaction(this.db, async db => {
+      const current = (await db.query<{ status: string }>("SELECT status FROM runs WHERE id=$1 FOR NO KEY UPDATE", [input.run_id])).rows[0];
+      // A fetched Job can outlive the Run state read before this claim. A
+      // parked or terminal Run may no longer acquire execution for that Job.
+      if (!current || (input.job_id && !["queued", "running", "cancelling"].includes(current.status))) return false;
+      const result = await db.query(
+        `INSERT INTO run_execution_locks (run_id, locked_at, worker_id, job_id)
+         SELECT $1::varchar, $2::timestamptz, $3::varchar, $4::varchar
+          WHERE NOT EXISTS (SELECT 1 FROM jobs WHERE id=$4::varchar AND job_type='agent_run'
+                              AND payload_json ? '${SUPERSEDED_AGENT_RUN_JOB}')
+         ON CONFLICT (run_id) DO NOTHING`,
+        [input.run_id, new Date().toISOString(), input.worker_id, input.job_id ?? null],
+      );
+      return (result.rowCount ?? 0) === 1;
+    });
   }
 
   async releaseExecutionLock(runId: string, workerId?: string): Promise<void> {

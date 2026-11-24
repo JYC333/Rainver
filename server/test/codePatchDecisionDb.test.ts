@@ -281,10 +281,16 @@ describe('standalone code patch durable decision boundary', () => {
   });
   it('runs the production Job consumer and exposes only the deciding user receipt on the existing Proposal read',async()=>{if(!db.available)return;
     const f=await enqueue(),registry=new JobHandlerRegistry();registerCodePatchDecisionHandler(registry,config());
+    await db.pool.query("UPDATE spaces SET snapshot_retention_days_default = 11 WHERE id = $1", [space]);
     expect((await new JobWorker(new PgJobQueueRepository(db.pool),registry,'patch-worker',['code_patch_decision']).processOne()).status).toBe('completed');
     const p=await new PgProposalRepository(db.pool).getVisible(space,owner,f.p.id);
     expect(p?.status).toBe('accepted');expect(p?.code_patch_decision?.status).toBe('succeeded');
     expect((await state(f.id)).result_json.proposal.code_patch_decision.status).toBe('succeeded');
+    const { rows } = await db.pool.query(
+      'SELECT extract(epoch FROM expires_at - created_at)::int AS seconds FROM code_patch_snapshots WHERE proposal_id = $1',
+      [f.p.id],
+    );
+    expect(rows).toEqual([{ seconds: 11 * 86400 }]);
   });
   it('compensates if current authority is revoked between the external effect and final decision',async()=>{if(!db.available)return;
     const f=await enqueue(),original=CodePatchFileTransaction.prototype.applyPrepared;

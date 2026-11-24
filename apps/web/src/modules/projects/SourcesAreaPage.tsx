@@ -8,6 +8,7 @@ import ProjectSourcesPage from './ProjectSourcesPage'
 import {Navigate} from 'react-router-dom'
 import ProjectReadingPage from './reading/ProjectReadingPage'
 import { ProjectGmailThreads } from './sourcesArea/gmail/ProjectGmailThreads'
+import ProjectRawMaterialPage from './ProjectRawMaterialPage'
 
 /** Existing Sources deep links remain valid; reading is a consumer of the unified projection. */
 export default function SourcesAreaPage() {
@@ -16,7 +17,7 @@ export default function SourcesAreaPage() {
   const { t } = useAppTranslation()
   const fromSettings = params.get('from') === 'settings'
   const requested = params.get('tab')
-  const tab = requested === 'sources' ? 'settings' : requested === 'raw' ? 'candidates' : requested
+  const tab = requested === 'sources' ? 'settings' : requested
   const change = (next: string | null) => {
     const updated = new URLSearchParams(params)
     if (next) updated.set('tab', next); else updated.delete('tab')
@@ -24,6 +25,7 @@ export default function SourcesAreaPage() {
     setParams(updated, { replace: true })
   }
   if(tab==='digest'){const next=new URLSearchParams(params);next.set('tab','overview');next.delete('archive');return <Navigate to={`?${next}`} replace/>}
+  if (tab === 'raw') return <ProjectRawMaterialPage />
   // An old materials deep link resolves to the same complete authorized material query.
   if (['materials','following','deep','overview'].includes(tab??'')) return <ProjectReadingPage />
   if (!tab || tab === 'updates') return <ProjectReadingPage />

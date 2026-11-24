@@ -134,7 +134,7 @@ export class CustomSourceMaterializationService {
     if (recordHandlerRun) {
       await this.recordRunResult(input.run, {
         status,
-        validationResult: { warnings: validation.output.diagnostics.warnings, errors: result.errors },
+        validationResult: { warnings: validation.output.diagnostics.warnings, errors: result.errors, items_created: result.itemsCreated, items_updated: result.itemsUpdated },
         outputArtifactId,
       });
       await this.db.query(

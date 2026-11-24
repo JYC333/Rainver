@@ -1621,6 +1621,12 @@
   },
   {
     "method": "POST",
+    "path": "/api/v1/projects/:projectId/folders/:folderId/file/draft/save/close",
+    "classification": "core_entry",
+    "reason": "Migrated adapter for project.folder.draft.close_save"
+  },
+  {
+    "method": "POST",
     "path": "/api/v1/projects/:projectId/folders/:folderId/file/revisions/restore-as-draft",
     "classification": "core_entry",
     "reason": "Migrated adapter for project.folder.revision.restore"
@@ -2670,6 +2676,18 @@
     "reason": "Migrated adapter for room.conversation.create"
   },
   {
+    "method": "DELETE",
+    "path": "/api/v1/rooms/:roomId/conversations/:sessionId",
+    "classification": "core_entry",
+    "reason": "Migrated adapter for room.conversation.delete"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/rooms/:roomId/conversations/:sessionId/archive",
+    "classification": "core_entry",
+    "reason": "Migrated adapter for room.conversation.archive"
+  },
+  {
     "method": "POST",
     "path": "/api/v1/rooms/:roomId/conversations/:sessionId/discussions",
     "classification": "core_entry",
@@ -2716,6 +2734,18 @@
     "path": "/api/v1/rooms/:roomId/conversations/:sessionId/references",
     "classification": "core_entry",
     "reason": "Migrated adapter for room.conversation.attach_references"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/rooms/:roomId/conversations/:sessionId/restore-deleted",
+    "classification": "core_entry",
+    "reason": "Migrated adapter for room.conversation.restore_deleted"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/rooms/:roomId/conversations/:sessionId/restore",
+    "classification": "core_entry",
+    "reason": "Migrated adapter for room.conversation.restore"
   },
   {
     "method": "POST",

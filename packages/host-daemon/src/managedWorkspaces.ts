@@ -375,6 +375,6 @@ export async function ensureManagedWorkspace(
   // A repository from the first Run, so a managed workspace has the same diff
   // and the same undo a Location does. ADR 0016 section 11's undo is git.
   // Do not leave this workspace as a plain directory.
-  await ensureGitRepository(path);
+  if(!await ensureGitRepository(path))throw new Error('managed_workspace_git_initialization_failed');
   return path;
 }

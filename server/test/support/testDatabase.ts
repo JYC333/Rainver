@@ -54,7 +54,7 @@ export function useTestDatabase(
       pool.on("error", () => undefined);
       available = true;
     } catch (error) {
-      if (!isTestPostgresUnavailableError(error)) throw error;
+      if (!isTestPostgresUnavailableError(error) || process.env.REQUIRE_TEST_POSTGRES === "true") throw error;
       const name = fileUrl.split("/").pop()?.replace(/\.test\.ts$/, "") ?? fileUrl;
       console.warn(`[${name}] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
     }

@@ -47,7 +47,7 @@ export function samePin(a: PluginToolPin | undefined, b: PluginToolPin): boolean
 }
 
 export function currentExpansion(meta: Pick<PluginToolMeta, 'manifest'>, toolset: PluginToolset, dataClass: PluginDataClass): PluginToolPin[] {
-  return pluginToolsetExpansion(meta.manifest, toolset, dataClass);
+  return pluginToolsetExpansion(meta.manifest, toolset, dataClass).filter(pin => !usesProjectContactWriteAuthority(pin));
 }
 
 export type ScenarioOrigin = 'manual' | 'scheduled' | 'delegated' | 'system';
@@ -107,16 +107,35 @@ export const UNKNOWN_AUDIENCE = '\u0000unknown-audience';
 
 export type Eligibility = 'normal' | 'needs_space_consent' | 'needs_run_consent' | 'needs_background_consent' | 'refused';
 
+// These Project-bound commands write the caller's records and return only IDs.
+export const applicationContactWrites: ReadonlySet<string> = new Set([
+  'plugin.applications.contact.create',
+  'plugin.applications.contact.update',
+  'plugin.applications.contact.log_event',
+]);
+
+export const applicationProjectContactReads: ReadonlySet<string> = new Set([
+  'plugin.applications.contact.list',
+  'plugin.applications.contact.list_events',
+]);
+
+function usesProjectContactWriteAuthority(pin: PluginToolPin): boolean {
+  return pin.data_class === 'personal' && pin.side_effects === 'durable' && applicationContactWrites.has(pin.action_id);
+}
+
+function usesStandardPluginAuthority(pin: PluginToolPin): boolean {
+  return pin.data_class === 'non_sensitive' || usesProjectContactWriteAuthority(pin);
+}
+
 /**
  * Scenario table of ADR 0030; pure so snapshot and call-time checks cannot drift.
  * A shared audience (multi-person Room, selected users, Space-shared Run) may
- * only get personal reads, and only as the readable intersection the release
- * gate computes and rechecks (`sharedAudience`); sensitive data and any write
- * stay owner-only. The instructing person's authority never stands in for
- * another reader's.
+ * get personal reads only as the readable intersection the release gate computes
+ * and rechecks. Sensitive data and personal proposals stay owner-only. The
+ * instructing person's authority never stands in for another reader's.
  */
 export function pluginDataEligibility(pin: PluginToolPin, scenario: RunScenario): Eligibility {
-  if (pin.data_class === 'non_sensitive') return 'normal';
+  if (usesStandardPluginAuthority(pin)) return 'normal';
   const person = scenario.instructingUserId;
   if (!person || !scenario.audience.includes(person) || scenario.audience.includes(UNKNOWN_AUDIENCE)) return 'refused';
   const write = pin.side_effects !== 'none';
@@ -218,7 +237,7 @@ export async function admitPluginDataTools(db: Queryable, config: ServerConfig |
   for (const id of ids) {
     const meta = pluginToolMeta(config, id);
     if (!meta) continue;
-    if (meta.pin.data_class === 'non_sensitive') { admitted.add(id); continue; }
+    if (usesStandardPluginAuthority(meta.pin) || applicationProjectContactReads.has(id)) { admitted.add(id); continue; }
     if (!context.scenario) continue;
     const current = await resolve();
     if (!current) continue;
@@ -299,9 +318,18 @@ export async function pluginDataFacts(db: Queryable, config: ServerConfig | unde
   const pins = (run.permission_snapshot_json as {plugin_tool_pins?: Record<string, PluginToolPin>} | null)?.plugin_tool_pins;
   const pinned = pins?.[actionId];
   if (pinned ? !samePin(pinned, meta.pin) : meta.pin.data_class !== 'non_sensitive') return 'pin_mismatch';
-  if (meta.pin.data_class === 'non_sensitive') return {dataClass: 'non_sensitive', consent: true, requestable: false, grantId: null, audience: null};
+  // For the Applications contact commands, the result is an ID, which carries no personal fields.
+  if (usesStandardPluginAuthority(meta.pin)) return {dataClass: 'non_sensitive', consent: true, requestable: false, grantId: null, audience: null};
   const scenario = (await runScenario(db, actor))!;
   const eligibility = pluginDataEligibility(meta.pin, scenario);
+  if (applicationProjectContactReads.has(actionId)) {
+    // Project-shared contacts follow Project readability. Only a solo Run with
+    // standing personal consent also sees the person's historical private contacts.
+    const grantId = eligibility === 'needs_space_consent' && !sharedAudience(scenario)
+      ? await findConsent(db, {spaceId: run.space_id, meta, eligibility, ownerUserId: actor.on_behalf_of_user_id, runId: run.id, lock})
+      : null;
+    return {dataClass: grantId ? 'personal' : 'non_sensitive', consent: true, requestable: false, grantId, audience: [...scenario.audience]};
+  }
   if (eligibility === 'refused' || eligibility === 'normal') return {dataClass: meta.pin.data_class, consent: false, requestable: false, grantId: null, audience: [...scenario.audience]};
   const core = coreDataToolByConsentId(meta.pluginId);
   // A person's consent cannot stand in for isolation: a plugin's sensitive data reaches only a Run whose live

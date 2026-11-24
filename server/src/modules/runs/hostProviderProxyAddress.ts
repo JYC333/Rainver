@@ -51,14 +51,15 @@ export async function resolveHostLeaseUrl(input: {
  */
 export function hostProviderProxyBaseUrl(
   host: { provider_proxy_base_url?: string | null; kind: string },
-  config: ServerConfig,
+  /** Needed only to derive a paired Host's address; without it (`null`) a paired Host derives none. */
+  config: ServerConfig | null,
 ): string | null {
   const override = stringValue(host.provider_proxy_base_url);
   if (override) return override.replace(/\/+$/, "");
   if (host.kind === "server") return providerProxyInNetworkBaseUrl();
   const external = stringValue(providerProxyExternalBaseUrl());
   if (external) return external.replace(/\/+$/, "");
-  if (config.providerProxyPort <= 0) return null;
+  if (!config || config.providerProxyPort <= 0) return null;
   const url = new URL(hostControlPlaneUrl(config, host.kind));
   if (url.protocol !== "http:") return null;
   url.port = String(config.providerProxyPort);

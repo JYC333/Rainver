@@ -2,7 +2,7 @@ import { constants, watch } from "node:fs";
 import { lstat, mkdtemp, open, readdir, rename, rm, unlink, writeFile, type FileHandle } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { parseToolRequest, TOOL_REQUEST_LIMIT, TOOL_RESPONSE_LIMIT, type ToolRequest, type ToolResponse } from "./toolHttp.ts";
+import { parseToolRequest, toolHttpTimeoutMs, TOOL_REQUEST_LIMIT, TOOL_RESPONSE_LIMIT, type ToolRequest, type ToolResponse } from "./toolHttp.ts";
 
 const REQUEST_NAME = /^[a-f0-9-]{36}\.request$/;
 const NOFOLLOW = constants.O_NOFOLLOW;
@@ -170,8 +170,9 @@ export async function startLocalToolBridge(
 }
 
 /** One invocation, no automatic retries or fallback to unrestricted networking. */
-export async function localToolRequest(directory: string, input: ToolRequest, timeoutMs = 35_000): Promise<ToolResponse> {
+export async function localToolRequest(directory: string, input: ToolRequest, timeoutMs?: number): Promise<ToolResponse> {
   const request = parseToolRequest(input);
+  const deadlineMs = timeoutMs ?? toolHttpTimeoutMs(request) + 5_000;
   const text = JSON.stringify(request);
   if (Buffer.byteLength(text) > TOOL_REQUEST_LIMIT) throw new Error("Rainver tool request is too large");
   const pinned = await anchor(directory);
@@ -186,7 +187,7 @@ export async function localToolRequest(directory: string, input: ToolRequest, ti
       if((capabilities as {explicit_idempotency_key?:unknown})?.explicit_idempotency_key!==true)throw new Error('This Host does not support explicit idempotency keys; no request was sent');
     }
     await publish(pinned, requestName, request);
-    while (Date.now() - started < timeoutMs) {
+    while (Date.now() - started < deadlineMs) {
       try {
         const response = await readJson(await pinned.at(responseName), TOOL_RESPONSE_LIMIT * 6 + 1024) as Partial<ToolResponse> & { error?: string };
         if (typeof response.error === "string") throw new Error(response.error);

@@ -50,6 +50,7 @@ export interface ManagedHost{id:string;kind:'server'|'remote';owner_user_id:stri
 /** Instance admin, read through the caller's transaction (shared with the settings block). */
 export {isInstanceAdminIn} from '../routeUtils/access.js';
 import {isInstanceAdminIn} from '../routeUtils/access.js';
+import {agentHostResetLockKey} from './agentHostResetGeneration.js';
 
 /**
  * The Host a person may manage, share-locked for the transaction so a revoke
@@ -215,7 +216,7 @@ export function hostCommandStatusView(intent:HostCommandIntent):HostCommandStatu
  * reset, or the reset's own in-flight check sees the launch's Run.
  */
 export async function agentHostResetFence(db:Queryable,hostId:string,agentId:string):Promise<HostCommandIntent|null>{
-  await db.query('SELECT pg_advisory_xact_lock_shared(hashtextextended($1,0))',[`agent-host-reset:${hostId}:${agentId}`]);
+  await db.query('SELECT pg_advisory_xact_lock_shared(hashtextextended($1,0))',[agentHostResetLockKey(hostId,agentId)]);
   const rows=(await db.query<HostCommandIntent>(
     `SELECT * FROM host_command_intents WHERE host_id=$1 AND agent_id=$2 AND kind='agent_host_state_reset'
        AND (status IN ('pending','dispatched') OR (status='needs_attention' AND effect_json ? 'dispatched_at' AND NOT effect_json ? 'receipt'))
@@ -230,5 +231,5 @@ export async function agentHostResetFence(db:Queryable,hostId:string,agentId:str
 /** A reset that may have reached the Host and whose receipt nobody has read. */
 export const owesHostReceipt=(intent:HostCommandIntent)=>intent.status==='needs_attention'&&Boolean(intent.effect_json.dispatched_at)&&!intent.effect_json.receipt;
 export async function lockAgentHostResetAdmission(db:Queryable,hostId:string,agentId:string):Promise<void>{
-  await db.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`agent-host-reset:${hostId}:${agentId}`]);
+  await db.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[agentHostResetLockKey(hostId,agentId)]);
 }

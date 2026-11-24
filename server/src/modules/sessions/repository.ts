@@ -1022,6 +1022,7 @@ export class PgSessionRepository {
          SELECT session_row.id, session_row.head_message_id
            FROM sessions session_row
           WHERE session_row.id = $3 AND session_row.space_id = $2
+            AND (session_row.room_id IS NULL OR session_row.status = 'active')
           FOR UPDATE
        ), inserted AS (
          INSERT INTO messages
@@ -1158,6 +1159,7 @@ export class PgSessionRepository {
     run_id: string;
     content: string;
     metadata?: MessageMetadata | null;
+    reviewPause?: { updatedAt?: string };
   }): Promise<MessageOut | null> {
     const now = new Date().toISOString();
     await this.lockConversationForAppend(input.space_id, input.session_id);
@@ -1185,6 +1187,8 @@ export class PgSessionRepository {
             AND run_row.space_id = $2
             AND run_row.session_id = $3
             AND run_row.agent_id = $4
+            AND (NOT $10::boolean OR (run_row.status = 'waiting_for_review'
+              AND ($11::timestamptz IS NULL OR date_trunc('milliseconds', run_row.updated_at) = $11::timestamptz)))
        ), locked AS (
          SELECT session_row.id, session_row.head_message_id
            FROM sessions session_row
@@ -1232,6 +1236,7 @@ export class PgSessionRepository {
             AND message.role = 'assistant'
             AND message.sender_agent_id = $4
             AND message.run_id = $8
+            AND (NOT $10::boolean OR message.metadata_json->>'status' = 'waiting_for_review')
          RETURNING message.id, message.space_id, message.session_id,
                    message.user_id, message.sender_agent_id, message.role,
                    message.content, message.metadata_json,
@@ -1264,6 +1269,8 @@ export class PgSessionRepository {
         now,
         input.run_id,
         ROOT_BRANCH_PATH,
+        input.reviewPause !== undefined,
+        input.reviewPause?.updatedAt ?? null,
       ],
     ));
     const created = inserted.rows[0];

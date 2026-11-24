@@ -33,29 +33,13 @@ if [[ ! -d "$MODE_ROOT/secrets" ]]; then
   echo "ERROR: credential directory not found: $MODE_ROOT/secrets" >&2
   exit 1
 fi
+local_compose_lock_instance "backing up credential state"
 if [[ ! -f "$ENV_FILE" || -L "$ENV_FILE" ]]; then
   echo "ERROR: mode environment file is missing or not a regular file: $ENV_FILE" >&2
   exit 1
 fi
 
-running_services="$("${COMPOSE[@]}" ps --services --filter status=running 2>/dev/null)" || {
-  echo "ERROR: unable to inspect running compose services for mode '$MODE'" >&2
-  exit 1
-}
-running=()
-for service in frontend server deployer; do
-  if [[ $'\n'"$running_services"$'\n' == *$'\n'"$service"$'\n'* ]]; then
-    running+=("$service")
-  fi
-done
-if (( ${#running[@]} > 0 )) && [[ "$FORCE_RUNNING" != "true" ]]; then
-  echo "ERROR: app service(s) still running for mode '$MODE': ${running[*]}" >&2
-  echo "       Stop app services before copying credential state." >&2
-  exit 1
-fi
-if (( ${#running[@]} > 0 )); then
-  echo "WARNING: credential state may change while being copied: ${running[*]}" >&2
-fi
+local_compose_require_stopped_applications "credential backup" "$FORCE_RUNNING"
 
 [[ -z "$OUTPUT_DIR" ]] && OUTPUT_DIR="$MODE_ROOT/credential-backups"
 install -d -m 700 "$OUTPUT_DIR"

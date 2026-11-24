@@ -153,8 +153,11 @@ export async function settleBriefingRun(db: Queryable, run: RunRecord): Promise<
   const context = briefingRunContext(run);
   if (!context) return;
   const scope = await settleVersion(db, run, context);
-  // The scope is free again: a sealed day held behind this version starts now (in its own transaction).
-  if (scope) {await resumeHeldDays(db, scope);const goalId=goalOfKey(scope.scope.key);if(goalId)await finishThemeRounds(db,run.space_id,goalId);}
+  if (!scope) return;
+  const goalId = goalOfKey(scope.scope.key);
+  if (goalId) await finishThemeRounds(db, run.space_id, goalId);
+  // Personal and Project scopes can have a sealed day held behind this version.
+  else await resumeHeldDays(db, scope);
 }
 
 async function settleVersion(db: Queryable, run: RunRecord, context: NonNullable<ReturnType<typeof briefingRunContext>>): Promise<BriefingScopeAdapter | null> {

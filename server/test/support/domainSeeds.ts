@@ -506,3 +506,21 @@ export async function seedConversationMessages(
   );
   return input.messages.map((message) => message.id);
 }
+
+/**
+ * A conversation's confirmed binding for an Agent, taken from the Agent's default Runtime Profile, as the first
+ * turn in a conversation writes it. Gmail digest and application-update cards freeze it (ADR 0034, ADR 0035 §3).
+ */
+export async function seedConversationBinding(pool: Pool, input: {
+  space: string; session: string; user: string; agent: string;
+  sessionConfig?: { id: string; type: "select" | "boolean"; value: string | boolean; category?: string }[];
+}): Promise<void> {
+  await pool.query(
+    `INSERT INTO session_conversation_backends (id,space_id,session_id,bound_by_user_id,agent_id,runtime_profile_id,runtime_key_snapshot,backend_mode_snapshot,
+       model_name_snapshot,model_provider_id_snapshot,runtime_config_snapshot_json,runtime_policy_snapshot_json,session_config_json,participating,created_at,updated_at)
+     SELECT $1,p.space_id,$2,$3,p.agent_id,p.id,p.runtime_key,p.backend_mode,p.model_name,p.model_provider_id,p.runtime_config_json,p.runtime_policy_json,
+       $4::jsonb,true,now(),now() FROM agent_runtime_profiles p WHERE p.agent_id=$5 AND p.is_default
+     ON CONFLICT ON CONSTRAINT uq_session_conversation_backends_session_agent DO NOTHING`,
+    [randomUUID(), input.session, input.user, input.sessionConfig ? JSON.stringify(input.sessionConfig) : null, input.agent],
+  );
+}

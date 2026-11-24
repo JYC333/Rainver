@@ -15,7 +15,8 @@ import { projectBoundPin } from "../plugins/coreDataTools.js";
  *   (written by the server when the Run was created; a Run without one keeps
  *   its ordinary egress and nothing changes for it). A Project-bound core
  *   tool (ADR 0033 §6, Gmail) does not count: it runs on the conversation's
- *   own selected runtime;
+ *   own selected runtime, as a Gmail application-update automation does too
+ *   (ADR 0037);
  * - the Run is bound to a ModelProvider, so its model is reached through a
  *   lease this server issued and can revoke — a CLI's own vendor login has no
  *   such channel and stays on ordinary egress, where sensitive reads refuse;
@@ -33,13 +34,31 @@ export async function selectModelChannelLaunch(
   run: { permission_snapshot_json?: unknown; contract_snapshot_json?: unknown },
   providerBound: boolean,
 ): Promise<{ loopback_port: number } | null> {
-  if (!providerBound || !runPinsSensitivePluginTool(run)) return null;
+  if (!runSelectsModelChannel(run, providerBound)) return null;
+  if (!await hostServesModelChannel(db, hostId)) return null;
+  return { loopback_port: MODEL_CHANNEL_LOOPBACK_PORT };
+}
+
+/**
+ * The Run's own facts select it for the model-only channel (`selectModelChannelLaunch`, before the Host is asked): it is
+ * provider-bound and pins a sensitive plugin tool.
+ */
+export function runSelectsModelChannel(run: { permission_snapshot_json?: unknown; contract_snapshot_json?: unknown }, providerBound: boolean): boolean {
+  return providerBound && runPinsSensitivePluginTool(run);
+}
+
+/**
+ * The Host is the built-in strict one (`hosts.kind = 'server'`) and its daemon
+ * serves the model-only channel: the only Host a model-channel launch is
+ * composed for.
+ */
+async function hostServesModelChannel(db: Queryable, hostId: string | null): Promise<boolean> {
+  if (!hostId) return false;
   const host = (await db.query<{ kind: string; capabilities_json: unknown }>(
     "SELECT kind, capabilities_json FROM hosts WHERE id = $1 LIMIT 1",
     [hostId],
   )).rows[0];
-  if (host?.kind !== "server" || normalizeHostCapabilities(host.capabilities_json).model_channel !== 1) return null;
-  return { loopback_port: MODEL_CHANNEL_LOOPBACK_PORT };
+  return host?.kind === "server" && normalizeHostCapabilities(host.capabilities_json).model_channel === 1;
 }
 
 /**

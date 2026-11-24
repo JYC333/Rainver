@@ -19,24 +19,31 @@ export async function reclaimStuckCustomSourceHandlerRuns(
   stuckAfterSeconds = STUCK_RUN_AFTER_SECONDS,
 ): Promise<number> {
   const now = new Date().toISOString();
-  const stuck = await db.query<{ id: string; extraction_job_id: string | null }>(
-    `UPDATE source_handler_runs
-        SET status = 'failed', failure_class = 'stuck_reclaimed', completed_at = $1
-      WHERE status = 'running'
-        AND started_at IS NOT NULL
-        AND started_at <= $1::timestamptz - make_interval(secs => $2)
-      RETURNING id, extraction_job_id`,
+  const result = await db.query<{ reclaimed: number }>(
+    `WITH stuck AS (
+       UPDATE source_handler_runs
+          SET status = 'failed', failure_class = 'stuck_reclaimed', completed_at = $1
+        WHERE status = 'running'
+          AND started_at IS NOT NULL
+          AND started_at <= $1::timestamptz - make_interval(secs => $2)
+        RETURNING space_id, extraction_job_id
+     ), paired AS (
+       SELECT space_id, extraction_job_id FROM stuck
+       UNION
+       SELECT space_id, extraction_job_id FROM source_handler_runs
+        WHERE status = 'failed' AND failure_class = 'stuck_reclaimed'
+     ), settled AS (
+       UPDATE extraction_jobs jobs
+          SET status = 'failed', completed_at = $1, error_code = 'stuck_reclaimed'
+         FROM paired
+        WHERE jobs.id = paired.extraction_job_id AND jobs.space_id = paired.space_id
+          AND jobs.status IN ('pending', 'running')
+        RETURNING jobs.id
+     )
+     SELECT count(*)::int AS reclaimed FROM stuck`,
     [now, stuckAfterSeconds],
   );
-  for (const row of stuck.rows) {
-    if (!row.extraction_job_id) continue;
-    await db.query(
-      `UPDATE extraction_jobs SET status = 'failed', completed_at = $2, error_code = 'stuck_reclaimed'
-        WHERE id = $1 AND status IN ('pending', 'running')`,
-      [row.extraction_job_id, now],
-    );
-  }
-  return stuck.rows.length;
+  return result.rows[0]?.reclaimed ?? 0;
 }
 
 /**

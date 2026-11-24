@@ -114,6 +114,9 @@ import {gmailAgentReadSettingRegistration,gmailConnectionRegistrations,gmailDige
 import {gmailAgentReadRegistration} from '../../sources/gmail/gmailAgentReadOperation.js';
 import {gmailSummaryShareRegistration,gmailSummaryPreviewRegistration} from '../../sources/gmail/gmailSummaryShare.js';
 import {gmailDigestReadRegistration} from '../../sources/gmail/gmailDigestReadOperation.js';
+import {gmailDelegatedReadRegistration} from '../../sources/gmail/gmailDelegatedReadOperation.js';
+import {gmailDelegationRevokeRegistration} from '../../sources/gmail/gmailOperations.js';
+import {gmailApplicationExecutionRegistrations} from '../../sources/gmail/gmailApplicationExecution.js';
 import {sourceRecipeCreateRegistration} from '../../sources/sourceRecipeCreateOperation.js';
 import {sourceSubscriptionRegistrations} from '../../sources/sourceSubscriptionOperations.js';
 import {projectSourceRegistrations} from '../../projects/projectSourceOperations.js';
@@ -282,6 +285,9 @@ export function operationRuntime(config: ServerConfig): Promise<OperationExecuto
       gmailAgentReadSettingRegistration(definitions),
       gmailAgentReadRegistration(definitions,config),
       gmailDigestReadRegistration(definitions,config),
+      gmailDelegatedReadRegistration(definitions,config),
+      gmailDelegationRevokeRegistration(definitions),
+      ...gmailApplicationExecutionRegistrations(definitions),
       gmailSummaryShareRegistration(definitions),
       gmailSummaryPreviewRegistration(definitions),
       sourceRecipeCreateRegistration(config,definitions),

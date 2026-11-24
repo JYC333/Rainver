@@ -373,7 +373,9 @@ export class PgConversationExecutionContextRepository {
     return result.rows;
   }
 
-  async listRuntimeProfiles(spaceId: string, agentId: string, projectId: string | null = null): Promise<RuntimeProfileRow[]> {
+  async listRuntimeProfiles(
+    spaceId: string, agentId: string, projectId: string | null, allowOtherDefaultLocations = false,
+  ): Promise<RuntimeProfileRow[]> {
     const result = await this.db.query<RuntimeProfileRow>(
       `SELECT profile.id, profile.agent_id, agent.name AS agent_name,
               profile.runtime_key, profile.runtime_installation,
@@ -384,9 +386,9 @@ export class PgConversationExecutionContextRepository {
          LEFT JOIN workspace_locations location ON location.id = profile.workspace_location_id AND location.space_id = profile.space_id
          LEFT JOIN project_folders folder ON folder.id = location.project_folder_id AND folder.space_id = profile.space_id
         WHERE profile.space_id = $1 AND profile.agent_id = $2 AND profile.enabled = true
-          AND (profile.workspace_mode IS DISTINCT FROM 'location' OR ($3::varchar IS NOT NULL AND folder.project_id = $3))
+          AND ($4 OR profile.workspace_mode IS DISTINCT FROM 'location' OR folder.project_id = $3)
         ORDER BY profile.is_default DESC, profile.created_at ASC, profile.id ASC`,
-      [spaceId, agentId, projectId],
+      [spaceId, agentId, projectId, allowOtherDefaultLocations],
     );
     return result.rows;
   }

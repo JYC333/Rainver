@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useLocation, useParams, useSearchParams } from 'react-router-dom'
+import { useLocation, useMatch, useParams, useSearchParams } from 'react-router-dom'
 import { Folder, GitBranch, FileDiff, Info, Loader, Plus, RefreshCw, Settings as SettingsIcon, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { SpaceLink as Link } from '../../core/spaceNav'
@@ -164,6 +164,7 @@ export default function ProjectFilesPage() {
   const [historyOpen, setHistoryOpen] = useState(false)
   const [revisionPreview, setRevisionPreview] = useState<{ revision: ProjectFileRevision; content: string | null } | null>(null)
   const editorRef = useRef<ProjectFileEditorHandle | null>(null)
+  const previewGeneration = useRef(0)
   const readGeneration = useRef(0)
   const activeFolderId = useRef<string | null>(null)
   const fileSelectionGeneration = useRef(0)
@@ -505,10 +506,13 @@ export default function ProjectFilesPage() {
     setCenterView({ mode: 'new-file' })
   }
 
+  const draftSpaceId = useMatch('/spaces/:spaceId/*')?.params.spaceId
   async function handleDraftUpsert(input: DraftMutationInput): Promise<ProjectFileDraft> {
     if (!selectedFolder || typeof projectFoldersApi.upsertDraft !== 'function') throw new Error('Draft autosave is unavailable')
     try {
-      return await projectFoldersApi.upsertDraft(projectId, selectedFolder.id, input)
+      return await (draftSpaceId
+        ? projectFoldersApi.upsertDraft(projectId, selectedFolder.id, input, undefined, draftSpaceId)
+        : projectFoldersApi.upsertDraft(projectId, selectedFolder.id, input))
     } catch (error) {
       toast.error(errMsg(error))
       throw error
@@ -523,7 +527,7 @@ export default function ProjectFilesPage() {
 
   async function handleDraftSave(
     draft: ProjectFileDraft,
-    options: { confirmMixedLineEndingNormalization?: boolean } = {},
+    options: { confirmMixedLineEndingNormalization?: boolean; retryIntentId?: string } = {},
   ): Promise<ProjectFileDraftSave> {
     if (!selectedFolder || typeof projectFoldersApi.saveDraft !== 'function') throw new Error('Draft save is unavailable')
     setMutationLoading(true)
@@ -534,6 +538,8 @@ export default function ProjectFilesPage() {
         draft.id,
         draft.version,
         options.confirmMixedLineEndingNormalization === true,
+        undefined,
+        { spaceId: draft.space_id, retryIntentId: options.retryIntentId },
       )
       const generation = readGeneration.current
       if (isCurrent(selectedFolder.id, generation)) {
@@ -574,27 +580,52 @@ export default function ProjectFilesPage() {
     }
   }
 
+  async function handleCloseFailedSave(intentId: string, draft: ProjectFileDraft): Promise<void> {
+    try {
+      await projectFoldersApi.closeFailedDraftSave(draft.project_id, draft.project_folder_id, intentId, draft.space_id)
+    } catch (error) {
+      toast.error(errMsg(error))
+      throw error
+    }
+  }
+
   async function handleConvertFile(): Promise<void> {
-    if (!selectedFolder || !selectedFilePath) return
-    const converted = await projectFoldersApi.file(projectId, selectedFolder.id, selectedFilePath, { convertUtf8: true })
+    if (!selectedFolder || centerLoading || centerView.mode !== 'file') return
+    const folderId = selectedFolder.id
+    const path = centerView.data.path
+    const generation = readGeneration.current
+    const selection = fileSelectionGeneration.current
+    const converted = await projectFoldersApi.file(projectId, folderId, path, { convertUtf8: true })
+    if (selection !== fileSelectionGeneration.current || !isCurrent(folderId, generation)) return
     setCenterView({ mode: 'file', data: converted })
-    fileCache.current.set(fileCacheKey(selectedFolder.id, selectedFilePath), converted)
+    fileCache.current.set(fileCacheKey(folderId, path), converted)
     toast.success('UTF-16 preview converted to an editable UTF-8 draft')
   }
 
   async function openRevisionPreview(revision: ProjectFileRevision): Promise<void> {
-    if (!selectedFolder || typeof projectFoldersApi.previewRevision !== 'function') return
+    if (!selectedFolder || centerLoading || typeof projectFoldersApi.previewRevision !== 'function') return
+    const folderId = selectedFolder.id
+    const generation = readGeneration.current
+    const selection = fileSelectionGeneration.current
+    const request = ++previewGeneration.current
+    setRevisionPreview(null)
     try {
-      setRevisionPreview(await projectFoldersApi.previewRevision(projectId, selectedFolder.id, revision.id))
+      const preview = await projectFoldersApi.previewRevision(projectId, folderId, revision.id)
+      if (request === previewGeneration.current && selection === fileSelectionGeneration.current && isCurrent(folderId, generation)) setRevisionPreview(preview)
     } catch (error) {
       toast.error(errMsg(error))
     }
   }
 
   async function restoreRevisionAsDraft(): Promise<void> {
-    if (!selectedFolder || !revisionPreview || typeof projectFoldersApi.restoreRevisionAsDraft !== 'function') return
+    if (!selectedFolder || centerLoading || !revisionPreview || typeof projectFoldersApi.restoreRevisionAsDraft !== 'function') return
+    const folderId = selectedFolder.id
+    const generation = readGeneration.current
+    const selection = fileSelectionGeneration.current
+    const request = ++previewGeneration.current
     try {
-      const draft = await projectFoldersApi.restoreRevisionAsDraft(projectId, selectedFolder.id, revisionPreview.revision.id)
+      const draft = await projectFoldersApi.restoreRevisionAsDraft(projectId, folderId, revisionPreview.revision.id)
+      if (request !== previewGeneration.current || selection !== fileSelectionGeneration.current || !isCurrent(folderId, generation)) return
       setFileDraft(draft)
       setHistoryOpen(false)
       setRevisionPreview(null)
@@ -958,6 +989,7 @@ export default function ProjectFilesPage() {
                   onDraftUpsert={handleDraftUpsert}
                   onDraftDiscard={handleDraftDiscard}
                   onDraftSave={handleDraftSave}
+                  onCloseFailedSave={handleCloseFailedSave}
                   onDraftRebase={handleDraftRebase}
                   onConvert={centerView.data.conversion_available ? handleConvertFile : undefined}
                   onHistory={() => { setHistoryOpen(true); setRevisionPreview(null) }}
@@ -979,8 +1011,9 @@ export default function ProjectFilesPage() {
                   onDraftUpsert={handleDraftUpsert}
                   onDraftDiscard={handleDraftDiscard}
                   onDraftSave={handleDraftSave}
+                  onCloseFailedSave={handleCloseFailedSave}
                   onDraftRebase={handleDraftRebase}
-                  onCancel={() => setCenterView({ mode: 'empty' })}
+                  onCancel={() => void closeFile(null)}
                   projectFolderId={selectedFolder?.id}
                   workspaceLocationId={selectedLocation?.id}
                   workspaceLocationAvailable={Boolean(selectedLocation?.execution_ready && selectedLocation.host_online)}
@@ -1008,7 +1041,7 @@ export default function ProjectFilesPage() {
                 <div role="dialog" aria-label="File history" className="absolute inset-y-2 right-2 z-20 flex w-[min(28rem,calc(100%-1rem))] flex-col overflow-hidden rounded-lg border bg-background shadow-xl">
                   <div className="flex shrink-0 items-center justify-between border-b border-border px-3 py-2">
                     <div><p className="text-xs font-semibold">History</p><p className="text-[10px] text-muted-foreground">Restore a revision as a draft; the Folder file is never changed here.</p></div>
-                    <Button type="button" size="sm" variant="ghost" className="h-6 px-2 text-[10px]" onClick={() => { setHistoryOpen(false); setRevisionPreview(null) }}>Close</Button>
+                    <Button type="button" size="sm" variant="ghost" className="h-6 px-2 text-[10px]" onClick={() => { previewGeneration.current += 1; setHistoryOpen(false); setRevisionPreview(null) }}>Close</Button>
                   </div>
                   <div className="min-h-0 flex-1 overflow-auto p-2">
                     {fileRevisions.length === 0 ? <p className="p-2 text-xs text-muted-foreground">No retained revisions.</p> : (

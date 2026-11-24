@@ -1,6 +1,9 @@
 import { registerProjectReadingTools } from './projectReadingTools.js';
 import { registerGmailMonitorTools } from './gmail/gmailMonitorProposal.js';
 import { registerGmailDigestTools } from './gmail/gmailDigestProposal.js';
+import { registerGmailApplicationUpdateTools } from './gmail/gmailApplicationUpdates.js';
+import { registerGmailSetupTools } from './gmail/gmailSetupProposal.js';
+import { registerGmailDelegationTools } from './gmail/gmailDelegations.js';
 import {submitMaterialResults} from './materialProcessing/submission.js';
 import {SourceProviderCatalogService} from './catalog/sourceProviderCatalogService.js';
 import {CustomSourceCredentialService} from './customSources/customSourceCredentialService.js';
@@ -29,6 +32,9 @@ export function registerSourcesSystemActionExecutors(
   registerProjectReadingTools(executors,config,run);
   registerGmailMonitorTools(executors,config,run);
   registerGmailDigestTools(executors,config,run);
+  registerGmailApplicationUpdateTools(executors,config,run);
+  registerGmailSetupTools(executors,config,run);
+  registerGmailDelegationTools(executors,config,run);
   executors.set('source.material.investigate',async input=>{const {investigateMaterial}=await import('./materialProcessing/investigation.js');return {modelResult:{ok:true,result:await investigateMaterial(config,run,input)},summary:{tool_name:'source.material.investigate',ok:true}}});
   executors.set('source.material.submit',async input=>({modelResult:{ok:true,result:await submitMaterialResults(config,run,input)},summary:{tool_name:'source.material.submit',ok:true}}));
   const db = getDbPool(config.databaseUrl!);

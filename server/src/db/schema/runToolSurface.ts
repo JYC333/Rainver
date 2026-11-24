@@ -38,6 +38,12 @@ export const runToolIdentities = pgTable("run_tool_identities", {
 	 * by git, so the hash identifies it without storing a copy per Run.
 	 */
 	skillContentHash: varchar("skill_content_hash", { length: 64 }),
+	/**
+	 * The launch nonce this token was issued for, written with the token in one statement. A token resolves
+	 * only together with its own launch, so a request is never attributed to whichever launch the attempt
+	 * happens to name when it arrives (ADR 0034). A row without one does not resolve.
+	 */
+	launchId: varchar("launch_id", { length: 36 }),
 	expiresAt: timestamp("expires_at", { withTimezone: true, mode: 'string' }).notNull(),
 	revokedAt: timestamp("revoked_at", { withTimezone: true, mode: 'string' }),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),

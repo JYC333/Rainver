@@ -223,6 +223,8 @@ function DiaryPage({ host }: { host: DiaryWebHost }) {
   const [selectedDate, setSelectedDate] = useState(todayDate())
   const [entry, setEntry] = useState<DiaryEntry | null>(null)
   const [loadingEntry, setLoadingEntry] = useState(true)
+  const [entryError, setEntryError] = useState(false)
+  const [readAttempt, setReadAttempt] = useState(0)
 
   // Read by date for today too: the server's "today" is its UTC day. A read
   // for a day no longer selected is dropped, or the editor would open on the
@@ -230,17 +232,27 @@ function DiaryPage({ host }: { host: DiaryWebHost }) {
   useEffect(() => {
     let current = true
     setLoadingEntry(true)
+    setEntryError(false)
     api.onThisDay(selectedDate)
       .then((r) => {
         if (!current) return
         setEntry(r.entries.find((e) => e.entry_date === selectedDate) ?? null)
         setLoadingEntry(false)
       })
-      .catch(() => { if (current) setLoadingEntry(false) })
+      .catch(() => {
+        if (!current) return
+        setEntryError(true)
+        setLoadingEntry(false)
+      })
     return () => { current = false }
-  }, [api, selectedDate])
+  }, [api, selectedDate, readAttempt])
 
-  const handleSelect = (date: string) => { setSelectedDate(date); setEntry(null) }
+  const handleSelect = (date: string) => {
+    if (date === selectedDate) return
+    setLoadingEntry(true)
+    setSelectedDate(date)
+    setEntry(null)
+  }
 
   return (
     <div style={{ maxWidth: 900, margin: '0 auto', padding: '32px 24px', display: 'flex', gap: 24, alignItems: 'flex-start' }}>
@@ -261,6 +273,11 @@ function DiaryPage({ host }: { host: DiaryWebHost }) {
 
         {loadingEntry ? (
           <div style={{ color: '#bbb', fontSize: 14 }}>{text.loading}</div>
+        ) : entryError ? (
+          <div role="alert">
+            {text.entry_load_failed}{' '}
+            <button type="button" onClick={() => setReadAttempt(attempt => attempt + 1)}>{text.retry}</button>
+          </div>
         ) : (
           <EntryEditor
             key={selectedDate}

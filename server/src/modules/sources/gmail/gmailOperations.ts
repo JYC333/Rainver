@@ -190,3 +190,27 @@ export function gmailDigestRegistrations(definitions: ReadonlyMap<string, Regist
     },
   }));
 }
+
+/**
+ * The owner ends one read delegation (ADR 0035 §4): user principal, `public_api`, owner-only hidden 404;
+ * person → mutex → delegation `FOR UPDATE`. Narrowing: no card. A replay returns the same receipt.
+ */
+export function gmailDelegationRevokeRegistration(definitions: ReadonlyMap<string, RegisteredSystemActionDefinition>): OperationRegistration {
+  return {
+    definition: definitions.get("source.gmail.delegation.revoke")!,
+    async resolve(_db, raw) {
+      const delegationId = (raw as { delegation_id: string }).delegation_id;
+      return { authority: `gmail_delegation:${delegationId}`, targets: { delegation_id: delegationId }, resourceType: "gmail_connection", resourceId: null };
+    },
+    async authorize(db, raw, actor) {
+      if (actor.principal.kind !== "user") throw hidden();
+      const own = (await db.query(`SELECT 1 FROM gmail_read_delegations WHERE id=$1 AND space_id=$2 AND owner_user_id=$3`,
+        [(raw as { delegation_id: string }).delegation_id, actor.space_id, actor.on_behalf_of_user_id])).rows.length > 0;
+      if (!own) throw hidden();
+    },
+    async execute(db, raw, actor) {
+      const { revokeGmailDelegation } = await import("./gmailDelegations.js");
+      return revokeGmailDelegation(db, person(actor), (raw as { delegation_id: string }).delegation_id);
+    },
+  };
+}

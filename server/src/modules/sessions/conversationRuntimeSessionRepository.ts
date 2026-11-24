@@ -1,4 +1,5 @@
 import type { Queryable } from "../routeUtils/common.js";
+import { currentAgentRunJobSql } from "../jobs/agentRunGeneration.js";
 
 /**
  * Whether a chat turn holds the conversation. A turn held at the subscription
@@ -43,6 +44,7 @@ export async function conversationTurnTaken(
              WHERE job.space_id = run.space_id AND job.job_type = 'agent_run'
                AND job.payload_json->>'run_id' = run.id
                AND job.status IN ('pending', 'claimed', 'running')
+               AND ${currentAgentRunJobSql("job")}
           )
      ),
      held AS (
@@ -64,7 +66,11 @@ export async function conversationTurnTaken(
          FROM runs run
         WHERE run.space_id = $1
           AND run.session_id = $2
-          AND run.model_override_json->'chat_turn'->>'schema_version' = 'chat_turn.v1'
+          AND (
+            (run.model_override_json->>'automatic_handoff_for' IS NOT NULL
+              AND run.status IN ('queued', 'running', 'cancelling', 'waiting_for_review', 'waiting_for_dependency'))
+            OR run.model_override_json->'chat_turn'->>'schema_version' = 'chat_turn.v1'
+          )
           AND (
             run.status IN (
               'queued', 'running', 'cancelling',
@@ -72,6 +78,7 @@ export async function conversationTurnTaken(
             )
             OR (
               run.status IN ('succeeded', 'degraded')
+              AND run.model_override_json->>'automatic_handoff_for' IS NULL
               AND NOT EXISTS (
                 SELECT 1 FROM run_events event
                  WHERE event.space_id = run.space_id AND event.run_id = run.id
@@ -85,7 +92,7 @@ export async function conversationTurnTaken(
             AND (run.status = 'waiting_for_dependency' OR run.id IN (SELECT id FROM jobless))
           )
           AND NOT (
-            $4::varchar IS NOT NULL AND run.run_group_id = $4::varchar AND (
+            $4::varchar IS NOT NULL AND run.run_group_id IS NOT NULL AND run.run_group_id = $4::varchar AND (
               run.id = $3::varchar
               OR run.status = 'waiting_for_dependency'
               OR run.status IN ('succeeded', 'degraded')

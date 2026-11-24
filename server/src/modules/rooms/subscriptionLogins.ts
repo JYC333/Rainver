@@ -271,8 +271,8 @@ export async function discussionSubscriptionUsage(db: Queryable, spaceId: string
   const rows = (await db.query<SubscriptionLogin & { tokens: string }>(
     `SELECT thread.execution_host_id AS host_id, host.name AS host_name, thread.runtime_key,
             thread.runtime_installation AS installation,
-            COALESCE(sum(event.input_tokens + event.output_tokens + event.cache_creation_input_tokens
-              + event.cache_read_input_tokens + event.reasoning_tokens), 0)::text AS tokens
+            COALESCE(sum(COALESCE(event.total_tokens, event.input_tokens + event.output_tokens + event.cache_creation_input_tokens
+              + event.cache_read_input_tokens + event.reasoning_tokens)), 0)::text AS tokens
        FROM runs run
        JOIN agent_run_groups grp ON grp.space_id = run.space_id AND grp.id = run.run_group_id
        JOIN host_threads thread ON thread.id = run.host_task_thread_id
