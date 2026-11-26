@@ -30,7 +30,7 @@ import {
 import type { ServerConfig } from "../../config.js";
 import type { Queryable } from "../routeUtils/common.js";
 import { PgProjectFolderRepository } from "../projectFolders/repository.js";
-import { projectReadAccessSql } from "../access/contentAccessSql.js";
+import { projectReadAccessSql, roomConversationAudienceSql } from "../access/contentAccessSql.js";
 import { PgConversationExecutionContextRepository } from "./executionContextRepository.js";
 
 const IMAGE_MEDIA_TYPES = new Set(ConversationImageMediaTypeSchema.options);
@@ -124,15 +124,56 @@ export async function loadConversationInputResourceDescriptors(
   return result.rows.map(inputResourceDescriptor);
 }
 
-/** Canonical current-message text shared by context planning and live authorization. */
+interface ConversationAttachmentDescriptor {
+  part_id: string;
+  kind: "image" | "file_reference";
+  display_name: string;
+  media_type: string;
+  byte_size: number;
+  sha256: string;
+}
+
+/** Load the same persisted message input for context planning and live authorization. */
+export async function loadConversationMessageContext(
+  db: Queryable,
+  input: { spaceId: string; messageId: string; content: string },
+): Promise<{ text: string; inputResourceIds: string[] }> {
+  const resources = await loadConversationInputResourceDescriptors(db, input);
+  const skills = await loadConversationSkillDescriptors(db, input);
+  const attachments = await db.query<ConversationAttachmentDescriptor>(
+    `SELECT part.id AS part_id, part.kind, part.display_name, part.media_type,
+            part.byte_size, part.sha256
+       FROM message_input_parts part
+       LEFT JOIN conversation_input_media media
+         ON media.id = part.media_id AND media.space_id = part.space_id
+        AND media.message_id = part.message_id AND media.lifecycle = 'claimed'
+       LEFT JOIN conversation_file_snapshots snapshot
+         ON snapshot.id = part.file_snapshot_id AND snapshot.space_id = part.space_id
+        AND snapshot.message_id = part.message_id
+      WHERE part.space_id = $1 AND part.message_id = $2
+        AND ((part.kind = 'image' AND media.id IS NOT NULL)
+          OR (part.kind = 'file_reference' AND snapshot.id IS NOT NULL))
+      ORDER BY part.position ASC`,
+    [input.spaceId, input.messageId],
+  );
+  return {
+    text: renderConversationInputMessage(input.content, resources, skills, attachments.rows),
+    inputResourceIds: resources.map((resource) => resource.resource_id),
+  };
+}
+
 export function renderConversationInputMessage(
   content: string,
   descriptors: readonly ConversationInputResourceDescriptor[],
   skills: readonly ConversationInputSkillPart[] = [],
+  attachments: readonly ConversationAttachmentDescriptor[] = [],
 ): string {
   const resources = renderConversationInputResourceDescriptors(descriptors);
   const selected = skills.length ? `[Explicitly selected Skills]\n${skills.map(skill => JSON.stringify(skill)).join("\n")}` : "";
-  return [content, resources, selected].filter(Boolean).join("\n\n").trim();
+  const attached = attachments.length
+    ? `[Current message attachments]\n${attachments.map((part) => JSON.stringify(part)).join("\n")}`
+    : "";
+  return [content, resources, selected, attached].filter(Boolean).join("\n\n").trim();
 }
 
 export async function loadConversationSkillDescriptors(db: Queryable, input: { spaceId: string; messageId: string }): Promise<ConversationInputSkillPart[]> {
@@ -412,7 +453,7 @@ export class ConversationInputService {
                 SELECT 1 FROM room_user_members member
                  WHERE member.space_id = sessions.space_id AND member.room_id = sessions.room_id
                    AND member.user_id = $3 AND member.status = 'active'
-              ))`,
+              ) AND ${roomConversationAudienceSql("sessions.space_id", "sessions.id", "$3")})`,
           [input.sessionId, input.spaceId, input.userId],
         );
         const projectId = session.rows[0]?.project_id;
@@ -552,7 +593,7 @@ export class ConversationInputService {
               SELECT 1 FROM room_user_members member
                WHERE member.space_id = sessions.space_id AND member.room_id = sessions.room_id
                  AND member.user_id = $3 AND member.status = 'active'
-            ))`,
+            ) AND ${roomConversationAudienceSql("sessions.space_id", "sessions.id", "$3")})`,
         [input.sessionId, input.spaceId, input.userId],
       );
       const projectId = session.rows[0]?.project_id;
@@ -837,7 +878,7 @@ export class ConversationInputService {
                    SELECT 1 FROM room_user_members member
                     WHERE member.space_id = session_row.space_id AND member.room_id = session_row.room_id
                       AND member.user_id = $3 AND member.status = 'active'
-                 )
+                 ) AND ${roomConversationAudienceSql("session_row.space_id", "session_row.id", "$3")}
                )
           )))
         LIMIT 1`,
@@ -932,8 +973,10 @@ export class ConversationInputService {
          FROM message_input_parts part
          LEFT JOIN conversation_input_media media
            ON media.id = part.media_id AND media.space_id = part.space_id
+          AND media.message_id = part.message_id AND media.lifecycle = 'claimed'
          LEFT JOIN conversation_file_snapshots snapshot
            ON snapshot.id = part.file_snapshot_id AND snapshot.space_id = part.space_id
+          AND snapshot.message_id = part.message_id
          LEFT JOIN conversation_input_resources resource
            ON resource.id = part.resource_id AND resource.space_id = part.space_id
          LEFT JOIN workspace_locations location

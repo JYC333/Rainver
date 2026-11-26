@@ -1,7 +1,8 @@
 import { Link, useLocation } from 'react-router-dom'
+import { NavLinkOrInert } from '../../core/spaceNav'
 import { PanelLeftOpen, PanelLeftClose, Puzzle, BookOpen, Landmark, type LucideIcon } from 'lucide-react'
 import { cn } from '../../lib/utils'
-import { RAIL_ITEMS, railItemActive, spacePath, stripSpacePrefix, type RailItem } from '../../core/navigation'
+import { RAIL_ITEMS, railItemActive, spaceHref, stripSpacePrefix, type RailItem } from '../../core/navigation'
 import { ReviewAttentionIndicator } from './ReviewAttentionIndicator'
 import { AttentionBadge } from '../../modules/agent_work/AttentionIndicators'
 import { useAppTranslation } from '../../i18n'
@@ -75,9 +76,9 @@ export function GlobalRail({
     const active = railItemActive(item, pathname)
     const label = t(`nav.${item.id.replace(/-/g, '_')}`, { defaultValue: item.label })
     return (
-      <Link
+      <NavLinkOrInert
         key={item.id}
-        to={item.scope === 'space' ? spacePath(spaceId, item.to) : item.to}
+        to={item.scope === 'space' ? spaceHref(spaceId, item.to) : item.to}
         title={label}
         aria-label={label}
         aria-current={active ? 'page' : undefined}
@@ -97,7 +98,7 @@ export function GlobalRail({
         {item.id === 'review' && (
           <ReviewAttentionIndicator count={pendingReviewCount} compact={!expanded} />
         )}
-      </Link>
+      </NavLinkOrInert>
     )
   }
 
@@ -129,9 +130,9 @@ export function GlobalRail({
               const logical = stripSpacePrefix(pathname)
               const active = logical === m.path || logical.startsWith(`${m.path}/`)
               return (
-                <Link
+                <NavLinkOrInert
                   key={m.id}
-                  to={m.scope === 'space' ? spacePath(spaceId, m.path) : m.path}
+                  to={m.scope === 'space' ? spaceHref(spaceId, m.path) : m.path}
                   title={m.label}
                   aria-label={m.label}
                   aria-current={active ? 'page' : undefined}
@@ -145,7 +146,7 @@ export function GlobalRail({
                 >
                   <Icon className="size-[18px] shrink-0" />
                   {expanded && <span className="text-[13px] font-medium truncate">{m.label}</span>}
-                </Link>
+                </NavLinkOrInert>
               )
             })}
           </div>

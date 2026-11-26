@@ -120,7 +120,7 @@ interface FactResult {
 const text = (value: unknown, max: number): string | null => typeof value === "string" ? value.slice(0, max) : null;
 
 /**
- * After `plugin.applications.mail_fact.apply` (already admitted by `gmailApplicationFactAdmitted`), in the same
+ * After `plugin.phd_application.mail_fact.apply` (already admitted by `gmailApplicationFactAdmitted`), in the same
  * transaction: a fact recorded on an application the Project reads, by an automation enabled from a shared
  * conversation, is kept for the automation's next successful notice (this delivery's, or a later one's when this
  * delivery fails after the fact was committed), once per automation and fact. Nothing else is kept — a replay, an
@@ -160,7 +160,7 @@ export function applicationNoticeText(ownerName: string, rows: readonly SharedRe
     if (row.effect === "deadline") return `${label} ${row.deadline_kind ? row.deadline_kind.replaceAll("_", " ") + " " : ""}deadline ${row.before_value ? `moved from ${row.before_value} to ${row.after_value}` : `added for ${row.after_value}`}`;
     return `${label} ${row.effect === "submission_received" ? "submission received" : `status ${row.after_value}`}${row.before_value && row.before_value !== row.after_value ? ` (was ${row.before_value})` : ""}`;
   });
-  return [`Gmail application updates from ${ownerName}'s mailbox recorded:`, ...lines, "Mail text stays with the mailbox owner; see Applications for the records."].join("\n");
+  return [`Gmail application updates from ${ownerName}'s mailbox recorded:`, ...lines, "Mail text stays with the mailbox owner; see PhD Application for the records."].join("\n");
 }
 
 /** The Applications package's own table, resolved in its schema by the package role (as `applicationReadRelease.ts` does). */
@@ -178,7 +178,7 @@ async function currentlySharedApplications(db: Queryable, input: { spaceId: stri
   try {
     // Only the GUCs (Space, person) of the actor are used by the package role; the owner is the person.
     const actor = { space_id: input.spaceId, on_behalf_of_user_id: input.ownerUserId } as OperationActor;
-    const rows = await withPluginDb(transaction.db, "applications", actor, async (pluginDb) => (await pluginDb.query<{ id: string; institution: string; program: string }>(
+    const rows = await withPluginDb(transaction.db, "phd_application", actor, async (pluginDb) => (await pluginDb.query<{ id: string; institution: string; program: string }>(
       `SELECT id,institution,program FROM ${APPLICATIONS_TABLE} WHERE space_id=current_setting('rainver.space_id') AND project_id=$1 AND id=ANY($2::text[]) AND project_shared ORDER BY id FOR SHARE`,
       [input.projectId, [...input.ids]])).rows);
     return new Map(rows.map((row) => [row.id, `${row.institution.slice(0, 290)} · ${row.program.slice(0, 290)}`.slice(0, 600)]));
@@ -224,8 +224,8 @@ export async function postGmailApplicationNotice(db: Queryable, config: ServerCo
   if (!await gmailDigestConversationAdmits(db, { spaceId: digest.space_id, ownerUserId: digest.owner_user_id, projectId: digest.project_id, sessionId: digest.notice_session_id, lock: true })) return false;
   const { operationPluginEnabled } = await import("../../plugins/operationEnablement.js");
   const { isPluginProjectBound } = await import("../../plugins/projectBindings.js");
-  if (!await operationPluginEnabled(db, "applications", digest.space_id, digest.owner_user_id, config)
-    || !await isPluginProjectBound(db, "applications", digest.space_id, digest.project_id, true)) return false;
+  if (!await operationPluginEnabled(db, "phd_application", digest.space_id, digest.owner_user_id, config)
+    || !await isPluginProjectBound(db, "phd_application", digest.space_id, digest.project_id, true)) return false;
   const shared = await currentlySharedApplications(db, { spaceId: digest.space_id, ownerUserId: digest.owner_user_id, projectId: digest.project_id,
     ids: [...new Set(pending.map((row) => row.application_id))] });
   if (!shared) return false;

@@ -125,7 +125,9 @@ export function registerGmailRoutes(app: FastifyInstance, context: ModuleContext
     noStore(reply, requestId);
     const identity = await identityOr(request, reply, requestId);
     if (!identity) return reply;
-    return reply.send(GmailDigestListSchema.parse(await listGmailDigests(dbPool(config), identity)));
+    const reviewProjectId = (request.query as { application_review_project_id?: unknown } | undefined)?.application_review_project_id;
+    if (reviewProjectId !== undefined && (typeof reviewProjectId !== "string" || !ID.test(reviewProjectId))) return invalid(reply, requestId);
+    return reply.send(GmailDigestListSchema.parse(await listGmailDigests(dbPool(config), identity, reviewProjectId)));
   });
 
   // Pub/Sub push: a Google-signed wake-up for the named mailbox, never content and never a cursor.

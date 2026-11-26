@@ -5,7 +5,7 @@ import type { Pool } from "../../db/pool.js";
 import type { RuntimeContextResolvedPolicy, WorkContextSetupWriteRequest } from "@rainver/protocol";
 import { HttpError, dateIso, withQueryableTransaction, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 import { assertProjectReadable, assertProjectReadableLocked } from "../projects/access.js";
-import { contentReadSql } from "../access/contentAccessSql.js";
+import { contentReadSql, roomConversationAudienceSql } from "../access/contentAccessSql.js";
 import { projectFolderReadAccessSql } from "../projectFolders/access.js";
 import { resolveRuntimeContextPolicyForExecution } from "../policy/runtimeContextPolicyRepository.js";
 import { ensureRoomConversationScope } from "../policy/executionControlSnapshots.js";
@@ -245,6 +245,7 @@ export class WorkContextService {
          JOIN room_user_members member
            ON member.room_id=session.room_id AND member.space_id=session.space_id
           AND member.user_id=$4 AND member.status='active'
+          AND ${roomConversationAudienceSql("session.space_id", "session.id", "$4")}
         WHERE session.id=$1 AND session.space_id=$2 AND session.room_id IS NOT NULL
           AND recipient.id=$3 AND recipient.status='active'`,
       [sessionId, identity.spaceId, roomAgentMemberId, identity.userId],
@@ -439,6 +440,7 @@ async function lockWorkContextScopeAuthority(
          JOIN room_user_members member
            ON member.room_id=room.id AND member.space_id=room.space_id
           AND member.user_id=$3 AND member.status='active'
+          AND ${roomConversationAudienceSql("session.space_id", "session.id", "$3")}
         WHERE scope.id=$1 AND scope.space_id=$2
           AND recipient.status='active' AND recipient_agent.status='active'
           AND ${roomAgentUseSql("recipient_agent", "$3", "room.id")}
@@ -525,6 +527,7 @@ async function inferWorkContextScopeKind(
        JOIN room_user_members member
          ON member.room_id=room.id AND member.space_id=room.space_id
         AND member.user_id=$3 AND member.status='active'
+        AND ${roomConversationAudienceSql("session.space_id", "session.id", "$3")}
       WHERE scope.id=$1 AND scope.space_id=$2
         AND recipient.status='active' AND recipient_agent.status='active'
           AND ${roomAgentUseSql("recipient_agent", "$3", "room.id")}
@@ -744,6 +747,7 @@ export async function resolveWorkContextScopeBindings(
          JOIN room_user_members member
            ON member.room_id=s.room_id AND member.space_id=s.space_id
           AND member.user_id=$3 AND member.status='active'
+          AND ${roomConversationAudienceSql("s.space_id", "s.id", "$3")}
         WHERE scope.id=$1 AND scope.space_id=$2
           AND recipient.status='active' AND recipient_agent.status='active'
           AND ${roomAgentUseSql("recipient_agent", "$3", "room.id")}

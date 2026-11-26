@@ -86,12 +86,19 @@ several Agents.
 
 ## Long message drafts
 
-A paste of at least 500 characters or seven lines appears in the attachment
-area next to images, with a dialog for editing and an explicit remove action.
+A paste of at least 1,200 characters or 16 lines after trimming surrounding
+whitespace appears in the attachment area next to images, with a dialog for
+editing and an explicit remove action.
 The inline editor stays available for instructions and mentions. On send,
 the pasted text follows the typed text and, for directly addressed Room
 messages, extends the final addressed segment. Draft storage keeps the pasted
-text separately. The inline Room editor grows to 30% of the dynamic viewport
+text separately. Room sends have no separate character cap on message text.
+The request size and the selected runtime's context capacity still apply.
+Sent and queued user messages that meet the long-paste threshold show a
+compact preview with a read-only full-text dialog. This also applies to
+historical messages. Image attachments remain separately visible alongside
+the message text and are loaded through the authenticated media endpoint.
+The inline Room editor grows to 30% of the dynamic viewport
 height or 10rem, whichever is smaller, and then scrolls within its text area.
 
 Reuse / Dependency Check: reuse the shared attachment area, draft storage
@@ -1226,9 +1233,71 @@ conversation, using the same thread reference and audience as the desktop entry.
 The drawer and Project chat overlay only pop history entries pushed by their
 mounted owner; a direct deep link closes by replacement. Selection/new-thread
 navigation follows the drawer pop, so it does not leave a duplicate closed entry.
+Widening past the phone breakpoint closes the phone Project chat together with
+a drawer open over it (`useConversationOverlay` `close({ with })`): when the
+chat's entry was pushed by its owner and the drawer was pushed directly on it,
+both entries are popped, so Back then leaves the Project page instead of landing
+on a stale `?projectChat=1` entry that closes itself again; a pushed drawer over
+a deep-linked chat is popped and the chat closed in place
+(`conversation-layout.browser.mjs`, real Chromium Back/Forward).
+A chat the person opened and widening carried beside the page stays open when
+the window narrows again on that same page (same transcript, no new history
+entry) and closes in place; closing it at either width, or leaving the page,
+ends the carry. Widening again while a drawer is open over a carried chat pops
+the drawer's entry, so no `?conversationDrawer=1` entry is left behind; a wide
+screen that reaches a drawer entry any other way (Forward onto a pushed one, a
+direct link) pops or closes it the same way. A close whose pop lands on another
+entry than expected (an overlay marker copied onto a later entry) closes what
+is still open there in place instead of staying pending.
 Mobile open/close never changes the remembered desktop sidecar preference.
-Reading positions use source/user/role/Room/conversation and permission-lifetime
-keys, not asynchronous detail hydration. Restoration waits for a successful read
-owned by that conversation. Only ready transcript scroll events save positions;
-spinner/detached DOM cleanup cannot overwrite them. Known permission changes
-still dispose the request scope and protected state (including an initial denial).
+Conversation entry loads the newest message page. The transcript opens at its
+bottom once the selected conversation's messages are ready. The loading indicator
+ends when the message page arrives while Run details hydrate in the background. A reader can scroll
+back and request older messages while the conversation is open. Known permission
+changes still dispose the request scope and protected state (including an initial denial).
+
+### Revisit cache for the latest page
+
+`lib/conversationPageCache.ts` keeps the latest Room message page of at most
+three recently read conversations in this tab's memory only, never in browser
+storage: at most 256 KiB serialized in total (128 KiB per entry), each entry
+expiring one hour after it was stored, with a timer that removes it even
+without a read. Entries are keyed by user, Space, Space role, Room,
+conversation and read-only reading. A page carrying image or file
+attachments, a page too large to hold, or a page with another conversation's
+messages is not stored, and any older copy of it is dropped.
+
+A cached page is a display hint, never authority. On a revisit
+`ConversationSurface` shows it only after a fresh `limit=1` read of the same
+messages endpoint, which applies the same Room and per-user conversation
+gates, has succeeded and returned the same newest message, byte for byte.
+A changed newest message drops the copy, so a changed tail is never painted.
+The full page read starts at the same time; whichever lands first, the full
+page replaces the cached one rather than merging with it. Run state is never
+cached: Runs, live turns, queued messages and discussions hydrate from the
+authoritative page exactly as on a first visit, and the transcript opens at
+its latest message as before.
+
+A 401, 403 or 404 from either read drops the conversation's copy. If the full
+read is refused after the probe passed, the unconfirmed cached messages are
+removed from the screen. Known access changes (a supplied permission
+transition, removing a member, transferring ownership, archiving or unarchiving or
+deleting a conversation), logout, a 401 and another tab's logout
+(`registerInMemoryResidue`) drop entries. Each read carries a ticket of the
+session epoch and an invalidation generation, so a read already in flight when
+any of these happens can neither store nor display a page.
+
+Reuse / Dependency Check: reuses the existing messages endpoint and its gates,
+`sessionResidue` epoch and in-memory residue cleanup, and the surface's
+existing request-lifetime scope. A tiny in-memory map needs no caching
+library. No server, wire type or storage change.
+
+Message headers keep the local clock time and add a localized calendar label
+for older messages. Their time element exposes the original timestamp and a
+full local date and time.
+
+Open conversations refresh while visible and catch up on return to the foreground.
+Foreground and timer refreshes share a minimum interval of 2.5 seconds while
+a Run is active and 5 seconds otherwise. Transient network failures retry quietly.
+Three consecutive refresh failures
+show one localized notice, and a successful message read resets the count.

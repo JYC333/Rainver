@@ -216,7 +216,6 @@ describe("native server auth routes", () => {
     app = server({
       GOOGLE_CLIENT_ID: "google-client",
       GOOGLE_CLIENT_SECRET: "google-secret",
-      GOOGLE_REDIRECT_URI: "http://localhost:5173/api/v1/auth/callback/google",
       SERVER_DEBUG: "true",
     });
     const configured = await app.inject({
@@ -240,7 +239,7 @@ describe("native server auth routes", () => {
     app = server({
       GOOGLE_CLIENT_ID: "google-client",
       GOOGLE_CLIENT_SECRET: "google-secret",
-      FRONTEND_URL: "http://localhost:5173",
+      PUBLIC_BASE_URL: "http://localhost:5173",
       SERVER_DEBUG: "true",
     });
 
@@ -260,7 +259,7 @@ describe("native server auth routes", () => {
     app = server({
       GOOGLE_CLIENT_ID: "google-client",
       GOOGLE_CLIENT_SECRET: "google-secret",
-      FRONTEND_URL: "http://localhost:5173",
+      PUBLIC_BASE_URL: "http://localhost:5173",
       SERVER_DEBUG: "true",
     });
 
@@ -392,7 +391,7 @@ describe("native server auth routes", () => {
     expect(String(res.headers["set-cookie"])).toContain("better-auth.session_token=;");
 
     await app.close();
-    app = server({ FRONTEND_URL: "https://rainver.example.test" });
+    app = server({ PUBLIC_BASE_URL: "https://rainver.example.test" });
     const secure = await app.inject({
       method: "POST",
       url: "/api/v1/auth/logout",

@@ -27,6 +27,8 @@ import {
 } from "./requestContext.js";
 import { csrfOriginAllowed } from "./csrfOrigin.js";
 import { TrustedProxyAddresses } from "./trustedProxy.js";
+import { staleAccountTab } from "../modules/auth/browserAccounts.js";
+import { repairLateSelector } from "../modules/auth/browserAccountSessions.js";
 
 const SERVER_BODY_LIMIT_BYTES = 32 * 1024 * 1024;
 
@@ -110,6 +112,17 @@ export function registerGatewayConventions(app: FastifyInstance, config: ServerC
     reply.header(SERVER_MARKER_HEADER, SERVER_MARKER_VALUE);
     if (!csrfOriginAllowed(request, config.frontendUrl)) {
       return reply.code(403).send({ detail: "Cross-origin request blocked" });
+    }
+    // First undo a late response's write-back of a session a logout revoked,
+    // so the request is judged as the account the browser did select.
+    if (request.url.startsWith("/api/")) {
+      const repaired = repairLateSelector(config, request);
+      if (repaired.length) reply.header("set-cookie", repaired);
+    }
+    // A tab loaded for one of this browser's accounts must not act as another
+    // after a switch elsewhere; signing out stays possible from any tab.
+    if (request.url.startsWith("/api/") && !request.url.startsWith("/api/v1/auth/logout") && staleAccountTab(request)) {
+      return reply.code(409).header("x-rainver-account-switched", "1").send({ code: "account_switched", message: "This browser switched to another account; reload the page" });
     }
   });
   app.addHook("onSend", async (request, reply) => {

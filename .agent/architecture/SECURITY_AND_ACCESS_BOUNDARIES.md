@@ -27,16 +27,17 @@ All durable-data API routes require authentication via `resolveIdentity()`
 | `POST /api/v1/auth/register`, `POST /api/v1/auth/register/google` | Registration completion for an issued intent; authorized by the intent's claim secret (stored hashed), not by a session |
 | `POST /api/v1/auth/recovery/request` | Generic reset request; never returns a raw link |
 | `POST /api/v1/auth/recovery/complete` | Password reset; authorized by the single-use Better Auth reset token |
-| `POST /api/v1/auth/logout` | Better Auth session termination |
+| `POST /api/v1/auth/logout` | Better Auth session termination for every account the browser holds; accepted from a stale tab |
 | `POST /api/v1/hosts/register` | Host pairing; authorized by the short-lived pairing code ([`modules/hosts.md`](../modules/hosts.md)) |
 
 All other routes, including system-metadata endpoints, are auth-gated:
 
+- `GET /api/v1/auth/browser-accounts`, `POST /api/v1/auth/browser-accounts/switch` — the accounts this browser is signed in to and the choice of the active one, judged by Better Auth per HttpOnly cookie; responses name people only, never a session id or token ([auth guide](../modules/auth.md#several-accounts-in-one-browser)). Any API request whose `X-Rainver-Account` names another account than the browser's selected one is refused with 409 `account_switched` before its route runs.
 - `GET /api/v1/auth/reauth/status` — reports only whether the current user's signed recent-auth grant remains valid and when it expires; the browser uses it to gate Security-page controls, while each sensitive mutation still enforces the grant server-side.
 - `POST /api/v1/auth/admin/invitations` — instance-admin only; creates an email-bound account invitation, never a shared-Space membership or administrator grant.
 - `POST /api/v1/invitations/accept` (core `space.invitation.accept`) — an active account may consume only an unexpired, available invitation addressed to its own normalized email; Space membership (if present) and token consumption commit together. Instance-only invitations grant no membership. The token reaches the idempotency store only as a keyed digest, and a replayed receipt is released only while the person is still an active member of that Space.
 - `GET /api/v1/skill-packages`, its content/binding reads, and `/api/v1/skills/*` selection/overlay APIs
-- `GET /api/v1/server/catalog`, `/catalog/capabilities`, `/catalog/agent-templates`
+- `GET /api/v1/server/catalog`, `/catalog/capabilities`, `/catalog/agent-roles`
 - `GET /api/v1/server/notifications/webhooks/policy`, `POST .../webhooks/dispatch` (`notification.webhook.dispatch`: a keyed system command; the send runs after commit and its result is the issuer's status read)
 - `GET /api/v1/jobs/handlers`
 - `GET /api/v1/system/backups`, `POST /api/v1/system/backups/manual` — instance-admin gated (the manual backup is `system.backup.create`, a keyed system command; non-admins get the hidden 404)
@@ -107,7 +108,7 @@ origin, checks request and effective memberships, and records the browsed Space
 only as audit metadata. It does not authorize cross-Space existing-content
 reads/transfers or allow Agent/Run/approval commands to change their Space.
 
-This rule applies across root resource types, including Agent/template
+This rule applies across root resource types, including Agent/role
 creation, Runs and conversations, Activity, Tasks/Boards, Memory,
 Knowledge/Notes, Sources, and relation/academic objects. System materialization
 and child-resource writes, including Reader annotations, do not invent a new
@@ -493,7 +494,9 @@ the `highly_restricted` exception above. A Room is a visibility boundary
 because oversight sits *inside* the visibility disjunction it would otherwise
 admit an admin who is a member of the Project but not the Room. Every read of
 Room-derived output therefore carries `roomRunReadAccessSql` alongside
-the content predicate, so a list cannot show what its detail page then 404s
+the content predicate (which also ANDs the Run's conversation audience,
+`roomConversationAudienceSql`, for a conversation frozen when someone joined
+without its history, [ADR 0038](../decisions/0038-conversation-audience-on-room-join.md)), so a list cannot show what its detail page then 404s
 on. It is applied by `runs.listRuns` and `runs.getVisibleRun`; the Home and
 cross-space Run lists and the failed-run count, and the Home Proposal and
 Artifact lists (`access/contentAccessSql.ts`'s `runReadSql`,
@@ -898,7 +901,13 @@ Visibility filters are applied to tasks and proposals. No raw
 artifact payloads or full memory content is returned — pointer metadata only in timeline.
 
 `GET /me/agent-attention` and `/me/agent-attention/item` are also intentional
-user-level cross-Space readers, as are `GET /me/agent-attention/stream` and
+user-level cross-Space readers, as are `GET /me/agents` (My Agents: each Agent through its own Space's
+Agent content gate or Room execution gate in an active Project; a Room-only entry carries only its
+name and the person's admitting Rooms, with no description, plugin source or plugin state, and every
+Project/Room named is one they read; the route resolves only the session person (`resolvePerson`),
+ignores the browsed Space header/query, answers a person with no active Space an empty page (a
+missing, invalid or expired session is still 401) and grants only reads; see [agents](../modules/agents.md),
+"My Agents"), `GET /me/agent-attention/stream` and
 `GET /me/agent-attention/snapshot`. Stream/snapshot windows may include authorized
 work titles and use the same source visibility gates below.
 `PATCH /me/agent-attention/read-state` and `POST /me/agent-attention/views` write only
@@ -1140,7 +1149,7 @@ gated on proof of the answering model) waits for a new card instead of being
 widened, and none of its queued or running rounds starts, reads, records or settles; the shared vendor-session safety
 of ADR 0036 §11–§16 still applies to every launch) and to the rule version in force
 (a new card ends the earlier version's Run, counting no attempt); its Run may make one write after reading
-the mail, `plugin.applications.mail_fact.apply`, admitted only for a message
+the mail, `plugin.phd_application.mail_fact.apply`, admitted only for a message
 frozen for and released to it, an effect the owner allowed and no sensitive read
 besides the owner's own mail of that Project, and never a person's decision,
 deletion or anything sent. Its ledger (`mail_fact.list`) is answered only to the
@@ -1460,12 +1469,12 @@ paths, the extract/snapshot paths, and the declarative interpreters'
   docker.sock or a registry.
 - The instance must not be exposed directly to the public internet. Production TLS
   termination is a deployment concern. Mutating cookie-authenticated requests refuse
-  any explicit `Origin` other than the configured frontend (`FRONTEND_URL`); there
+  any explicit `Origin` other than the configured frontend (`PUBLIC_BASE_URL`); there
   is no request-derived same-host fallback. Session cookies are always
-  `HttpOnly` and `SameSite=Lax`, and carry `Secure` whenever `FRONTEND_URL` is
+  `HttpOnly` and `SameSite=Lax`, and carry `Secure` whenever `PUBLIC_BASE_URL` is
   HTTPS; a loopback HTTP instance (the development default) issues them
   without `Secure`, since production refuses any non-loopback HTTP
-  `FRONTEND_URL` ([`modules/auth.md`](../modules/auth.md)). The server believes `X-Forwarded-*`
+  `PUBLIC_BASE_URL` ([`modules/auth.md`](../modules/auth.md)). The server believes `X-Forwarded-*`
   only from the frontend proxy (`SERVER_TRUSTED_PROXY_HOST`, resolved by name,
   one hop), so `request.ip` is the client that proxy saw; a direct peer such as
   a Run on the built-in host cannot choose it. The request Rainver builds for
@@ -1485,11 +1494,10 @@ paths, the extract/snapshot paths, and the declarative interpreters'
   The host WebSocket upgrade requires a
   host bearer; a pairing code is not a bearer, and an upgrade without one is
   answered 401.
-  The Run tool surface lives at `/api/v1/runs/:runId/tools…`, gated by the Run's
-  own bearer token: a paired host's children reach the instance through
-  `FRONTEND_URL`, and nginx forwards `/api/` and `/internal/hosts/ws` and
-  nothing else. The dev Vite proxy forwards that one WebSocket path rather than
-  all of `/internal`, so dev exposes exactly what production does.
+  Run tool frames are accepted only on that Host's current socket for a
+  matching launch and live Run tool token. The daemon keeps the token out of
+  the runtime and submits only typed tool requests from the private local
+  bridge. Every request uses the existing Run-scoped grants and policy.
   A GET whose effects reach past its response — the host and subscription login
   streams, which start a vendor login on the owner's machine, the four
   Project Folder reads, which spawn `git` there and write a policy-audit row
@@ -1497,7 +1505,7 @@ paths, the extract/snapshot paths, and the declarative interpreters'
   (`GET /api/v1/runs/:runId/file-preview`), which reads through the same
   Project Folder path — goes through `stateChangingReadAllowed`. It reads
   three terms **in order**, and **fails closed**. An explicit `Origin` decides
-  it, judged against `FRONTEND_URL`: that is the browser naming who caused the
+  it, judged against `PUBLIC_BASE_URL`: that is the browser naming who caused the
   request, and it comes first so that a frontend served from a sibling host of
   the API still works. With no `Origin`, `Sec-Fetch-Site` is what is left, and
   only `same-origin` or `none` — the person's own address bar — is accepted;

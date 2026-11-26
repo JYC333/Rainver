@@ -35,7 +35,7 @@ describe("maintenance-only migrations", () => {
     expect(requiresMaintenance(late)).toBe(false);
   });
 
-  it("keeps the current epoch as one ordinary baseline migration", async () => {
+  it("keeps the baseline ordinary and marks migrations that require stopped writers", () => {
     const chain = loadMigrations(join(import.meta.dirname, "..", "migrations"));
     expect(chain[0]).toMatchObject({ version: "0000", name: "baseline" });
     // 0004 drops the capability tables a pre-0004 release still reads, so it,
@@ -45,8 +45,9 @@ describe("maintenance-only migrations", () => {
     // ON CONFLICT, and its backfill must see no older server claiming meanwhile.
     // Consolidated 0019 retains the former 0020 standard-Agent cutover marker; old writers must stop.
     // Consolidated 0020 rewrites stored task collaborations and Gmail grant constraints.
-    expect(chain.map((migration) => requiresMaintenance(migration.sql)))
-      .toEqual(chain.map((migration) => ["0004","0009","0010","0017","0019","0020"].includes(migration.version)));
+    // 0022 renames Agent Role provenance columns still used by the previous release.
+    expect(chain.filter((migration) => requiresMaintenance(migration.sql)).map((migration) => migration.version))
+      .toEqual(["0004", "0009", "0010", "0017", "0019", "0020", "0022"]);
     expect(chain[0]!.sql).not.toContain("cli_credential_profiles");
     expect(chain[0]!.sql).toContain('CREATE TABLE "auth_accounts"');
     expect(chain[0]!.sql).toContain('CREATE TABLE "registration_intents"');

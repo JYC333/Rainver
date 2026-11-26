@@ -218,7 +218,7 @@ async function draftContract(project:string,by:string){
  await db.pool.query(`INSERT INTO space_objects(id,space_id,object_type,title,visibility,owner_user_id,primary_project_id,created_at,updated_at) VALUES($1,$2,'note','Input','private',$3,$4,now(),now())`,[note,space,by,project]);
  await db.pool.query(`INSERT INTO notes(object_id,space_id,content_json,content_format,content_schema_version,plain_text) VALUES($1,$2,$3::jsonb,'prosemirror_json',1,'Draft input')`,[note,space,JSON.stringify(doc)]);
  await insertInitialNoteRevision(db.pool,{spaceId:space,noteId:note,doc,at:new Date().toISOString(),userId:by});
- return {source:{kind:'direct',id:null},risk_level:'low',workflow_input_json:{plugin_note_draft:{plugin_id:'applications',project_id:project,inputs:[{note_id:note,version:1}],instruction:'Draft'}}};
+ return {source:{kind:'direct',id:null},risk_level:'low',workflow_input_json:{plugin_note_draft:{plugin_id:'phd_application',project_id:project,inputs:[{note_id:note,version:1}],instruction:'Draft'}}};
 }
 
 it('lists a plugin Note draft child in the trace and derives from it only for its starter while they still read every input',async()=>{

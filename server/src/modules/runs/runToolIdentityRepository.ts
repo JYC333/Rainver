@@ -3,7 +3,7 @@ import type { Queryable } from "../routeUtils/common.js";
 import type { RunRecord } from "./repository.js";
 
 /**
- * The bearer identity a dispatched agent uses to call back into Rainver.
+ * The bearer identity the Host uses for a dispatched Run's tool requests.
  *
  * Durable. A remote run's CLI keeps running across a server restart. Do not
  * keep the identity only in memory: after a restart the callback comes back

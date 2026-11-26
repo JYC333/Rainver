@@ -1,4 +1,5 @@
 import { agentMentionRoute, agentMentionSegments, parseAgentMentions } from "../src/roomDiscussions.js";
+import { ROOM_OPERATION_SCHEMAS } from "../src/roomOperations.js";
 import { describe, expect, it } from "vitest";
 import {
   ContinueRoomAfterProposalRequestSchema,
@@ -56,6 +57,22 @@ const roomDetail = {
 };
 
 describe("Room contracts", () => {
+  it("accepts long Room messages with and without a direct recipient", () => {
+    const content = `Please review this.\n\n${"长文本".repeat(4000)}`;
+    const send = ROOM_OPERATION_SCHEMAS["room.message.send"].input;
+    const conversation = { room_id: "room-1", session_id: "session-1" };
+
+    expect(send.parse({ ...conversation, content }).content).toBe(content);
+    const segment = { recipient_agent_ids: ["agent-1"], content };
+    const addressed = send.parse({
+      ...conversation,
+      content: `@Manager ${content}`,
+      recipient_segments: [segment],
+    });
+    expect(addressed.content).toBe(`@Manager ${content}`);
+    expect(addressed.recipient_segments).toEqual([segment]);
+  });
+
   it("keeps Host archive and restore outcomes out of a roster change's response", () => {
     // Host work runs after the roster commits (a restore Job, an archive retried
     // until settled); the response cannot claim an outcome that has not happened.

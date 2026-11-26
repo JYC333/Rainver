@@ -5,6 +5,7 @@ import { Readable } from "node:stream";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
 import { ConversationInputService } from "../src/modules/sessions/conversationInputService.js";
+import { PgSessionRepository } from "../src/modules/sessions/repository.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 
 const db = useTestDatabase(import.meta.filename, { max: 4 });
@@ -50,10 +51,44 @@ async function seedConversation(): Promise<{ spaceId: string; userId: string; ou
      ) VALUES ($1, $2, $3, $4, 'user', '', 0, '/', $5)`,
     [messageId, spaceId, sessionId, userId, now],
   );
+  await db.pool.query("UPDATE sessions SET head_message_id = $1 WHERE id = $2", [messageId, sessionId]);
   return { spaceId, userId, outsiderId, sessionId, messageId };
 }
 
 describe("conversation input persistence on real Postgres", () => {
+  it("keeps a claimed image visible in history alongside an unreadable legacy attachment", async () => {
+    const ids = await seedConversation();
+    const service = new ConversationInputService(db.pool, loadConfig({
+      SERVER_DATABASE_URL: db.connectionUri,
+      RAINVER_HOME: testRoot!,
+    }));
+    const images = await Promise.all(["visible.png", "legacy.png"].map(filename => service.uploadImage({
+      spaceId: ids.spaceId,
+      userId: ids.userId,
+      filename,
+      mediaType: "image/png",
+      stream: Readable.from([pngBytes()]),
+    })));
+    const parts = await service.prepareMessageParts({
+      spaceId: ids.spaceId,
+      userId: ids.userId,
+      sessionId: ids.sessionId,
+      parts: images.map(({ expires_at: _, ...media }) => ({ kind: "image", ...media })),
+    });
+    await service.attachMessageParts({
+      spaceId: ids.spaceId, userId: ids.userId, sessionId: ids.sessionId, messageId: ids.messageId, parts,
+    });
+    await db.pool.query("UPDATE message_input_parts SET display_name = '' WHERE media_id = $1", [images[1]!.media_id]);
+
+    const history = await new PgSessionRepository(db.pool).listMessages(ids.spaceId, ids.userId, ids.sessionId, 20, 0);
+    expect(history?.find(message => message.id === ids.messageId)?.input_parts).toEqual([
+      expect.objectContaining({ kind: "image", media_id: images[0]!.media_id, filename: "visible.png" }),
+    ]);
+    const media = await service.getVisibleMedia(ids.spaceId, ids.userId, images[0]!.media_id);
+    expect(media).toMatchObject({ message_id: ids.messageId, lifecycle: "claimed" });
+    await expect(service.readMedia(media!)).resolves.toEqual(pngBytes());
+  });
+
   it("claims media for a message and enforces the message audience", async () => {
     const ids = await seedConversation();
     const service = new ConversationInputService(db.pool, loadConfig({

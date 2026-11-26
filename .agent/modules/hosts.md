@@ -561,7 +561,7 @@ The proxy address is resolved in this order (`hostProviderProxyBaseUrl` in
 `runs/hostProviderProxyAddress.ts`): the Host's owner-set
 `provider_proxy_base_url` override, then the in-network listener for the
 built-in host, then `PROVIDER_PROXY_EXTERNAL_BASE_URL` for a paired Host, then
-that Host's control-plane address (`FRONTEND_URL`) with the proxy port when it
+that Host's control-plane address (`PUBLIC_BASE_URL`) with the proxy port when it
 is `http:`. It never comes from a daemon-reported URL or an untrusted request
 header. `PROVIDER_PROXY_PORT` and any externally published
 port remain deployment settings. Host revocation removes its active leases;
@@ -2307,14 +2307,13 @@ heartbeat is marked `execution_ready = false`. On socket close, the host is
 marked `offline` immediately; Host liveness remains distinct from Location
 readiness.
 A `hello` reporting a daemon older than `MIN_HOST_DAEMON_VERSION`
-(`hosts/daemonCompatibility.ts`, `0.4.4`) is refused with `daemon_outdated`.
+(`hosts/daemonCompatibility.ts`, `0.4.10`) is refused with `daemon_outdated`.
 The daemon still checks the installer's `update-restart-requested` marker every
 thirty seconds during its fifteen-minute offline backoff. An installed update
 therefore restarts an idle daemon without a successful handshake; an active Run
 keeps the marker pending. Docker instance rebuilds replace the built-in Host,
 not a paired machine's separate systemd service.
-Older daemons do not preserve the original Skill base64 bytes, content hashes
-and structured resource links required by current launches. The reported version is recorded and
+Older daemons use the retired Run tool HTTP transport. The reported version is recorded and
 the host stays offline rather than accepting Runs it would fail one at a time,
 so a paired host must update before it can execute again. The refused daemon
 recognises that close (`isOutdatedDaemonClose` in `commands/run.ts`), logs the
@@ -2699,9 +2698,9 @@ A daemon Run that carries tool grants is given a way to call Rainver back:
 two files and a few environment variables. Do not add a second surface that
 depends on which runtime is executing.
 
-The launch frame gains `work_surface` — `{ env, files, dir_env }`, the same
-shape `provider_binding` uses and for the same reason (the control plane names
-relative paths; only the machine knows absolute ones). The launch frame is
+The launch frame carries `work_surface` with the authorized files, their
+relative paths and an optional launch-scoped Run tool token. The daemon
+resolves the paths and keeps the token in its own process. The launch frame is
 `HostLaunchFrameSchema` on the shared wire contract (see the WebSocket
 section): the server's `dispatchLaunch` is typed against it and the daemon
 hands the parsed frame to execution by spread, tested against a
@@ -2745,58 +2744,27 @@ as `work_skill.content_hash` (see
 credential and selects no model backend, so ADR 0008 and B67 — both about
 upstream credentials — are untouched by it.
 
-`RAINVER_API_URL` is the address *this host* reaches the control plane at:
-`hostControlPlaneUrl`, which is `FRONTEND_URL` for a paired host (origin and
-path, so a control plane behind a path prefix is not truncated) and the
-in-network address for the built-in host. It is configuration: neither the
-daemon's report nor the request that carried it can move where a Run's bearer
-token is sent; `hosts` stores no daemon-reported server address. Production nginx forwards `/api/`
-and `/internal/hosts/ws` and nothing else. The tool surface a
-paired host's children call lives at `/api/v1/runs/:runId/tools…`: it is gated
-by the Run's own bearer token, not by the instance token `/internal` carries,
-and a Run reaches the instance through `FRONTEND_URL` like any other client.
-The vendor's command sandbox can still deny network on a trusted Host.
-In particular, the pinned Codex ACP `agent` mode sends `networkAccess: false`
-on each turn, regardless of workspace-network settings in its config file.
-For `RAINVER_TOOL_BRIDGE_PROTOCOL=file-v1` work surfaces, the Linux or macOS daemon
-keeps the Run bearer outside the runtime and exports `RAINVER_TOOL_BRIDGE`, a
-private directory unique to that launch. The server sends `file-v1` only to a
-Host that can serve it (`selectToolBridgeProtocol` in `runs/runWorkSurface.ts`):
-the daemon advertises `capabilities_json.tool_bridge_protocols`, and a daemon
-predating that report is assumed to support it only on Linux, the one platform
-it was implemented on. Any other Host (Windows, or an older macOS daemon) keeps
-the direct-HTTP channel, where the Run bearer is in the Run's environment. That
-token is Run-scoped and not a provider credential; no provider key or OAuth
-material ever enters the environment on any channel (ADR 0008). The CLI exchanges bounded atomic
-request/response files there; the Host forwards only the existing tool REST
-requests with the fixed Run identity. No command network permission or MCP is
-needed. The server negotiates ACP `additionalDirectories` support, and the Host
-adds only this directory to the explicitly requested setup field, including
-on resume. It leaves prompts and vendor network/model settings untouched.
-Both sides pin the directory with an open descriptor. On Linux every child
-operation resolves through `/proc/self/fd/<fd>`, so a renamed or replaced
-directory cannot redirect Host I/O. macOS has no such path and Node has no
-`openat`, so the held descriptor fixes the inode and the path is re-checked
-against its device/inode with `lstat` before every child operation; a
-replacement fails closed, and close never removes a path that no longer names
-the pinned directory. The residual check-then-use window needs write access to
-the bridge directory's parent (the daemon's run directory), which a
-vendor-sandboxed command does not have, and an unsandboxed trusted-Host command
-already holds the owner's full authority. Child entries are read with
-`O_NOFOLLOW`, created with `O_EXCL`, and renamed/unlinked as links, so planted
-links inside the directory are never followed. Symbolic/hard links
-and oversized payloads are rejected, and at most eight calls are in flight.
-A request path is `tools` or `tools/<one action segment>`; dot segments
-(`.`, `..`, `%2e`) and encoded separators (`%2f`, `%5c`) are refused, since the
-URL parser would normalize them into another Run route carrying the bearer.
-Runtime exit or failed launch closes the bridge and aborts pending HTTP.
-An uncertain write is never retried automatically. Each attempt has its own
-directory, so an older attempt's cleanup cannot close the newer one's channel.
-Older server/Host combinations retain direct HTTP; update both components to
-enable this path. The CLI reports DNS, connection, permission, timeout and TLS codes
-without printing credentials from nested errors; HTTP refusals retain the
-server response and status. Requests use a 30-second network timeout and do
-not follow redirects. A transport error alone never proves Host liveness.
+The CLI uses the launch's private local bridge. Linux and macOS use a pinned
+file directory. Windows uses a named pipe and a separate per-launch local
+capability. The daemon retains the Run token and sends typed list, describe
+and call frames over its authenticated outbound Host WebSocket. Each request
+matches the connected Host, current dispatch and live Run token. The server
+uses the existing tool grants, policy and idempotency authority.
+
+The file bridge grants ACP `additionalDirectories` only when negotiated,
+including on resume. Linux addresses the open directory through
+`/proc/self/fd`. macOS compares its held device and inode before each operation.
+The bridge refuses replaced directories, symlinks, hardlinks and oversized
+messages. On Windows the named pipe is passed as an IPC endpoint, without
+adding an ACP directory. Each local bridge admits up to eight active calls.
+
+The Host settles in-flight calls when its connection closes and can send new
+calls after reconnect. A transport failure leaves an interrupted write's
+outcome unknown. Requests are never automatically replayed. The Host
+acknowledges a dependency-wait receipt after publishing it to the local
+bridge, so the server can yield the Run. Update both server and Host to use
+this channel. Tool calls need no separately routable callback URL.
+
 The dev Vite proxy forwards that one WebSocket path rather than all of
 `/internal`, so dev exposes exactly what production does.
 

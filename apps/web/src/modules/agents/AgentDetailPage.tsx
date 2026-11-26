@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
 import { useParams } from 'react-router-dom'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { FileCode2, Loader2, MessageSquare, Ban, Power } from 'lucide-react'
@@ -6,6 +6,7 @@ import { toast } from 'sonner'
 import { agentsApi, hostsApi } from '../../api/client'
 import type { AgentOut, AgentRuntimeProfileOut, AgentVersionOut, Host, HostRuntimeDefinitionOption, Run, Proposal } from '../../types/api'
 import { useSpace } from '../../contexts/SpaceContext'
+import { useAppTranslation } from '../../i18n'
 import { Button } from '../../components/ui/button'
 import { ConfirmDialog } from '../../components/ui/dialog'
 import { Card, CardTitle } from '../../components/ui/card'
@@ -36,9 +37,23 @@ import { promptLibraryPath } from '../prompts/paths'
 import { ContentAccessControl } from '../../components/ContentAccessControl'
 import HostExecutionTargetPicker, { type HostExecutionSelection } from '../command_center/HostExecutionTargetPicker'
 
+
+/**
+ * Whether this viewer may change the Agent (the server's `can_manage`). A viewer
+ * who cannot still reads every tab and uses its view controls (switching
+ * Profiles, raw JSON, version configs, catalog retry); only write controls,
+ * grouped in `WriteGroup`, are disabled. The server refuses every write anyway.
+ */
+const AgentEditable = createContext(true)
+function WriteGroup({ children, className = 'space-y-4' }: { children: ReactNode; className?: string }) {
+  const editable = useContext(AgentEditable)
+  return <fieldset disabled={!editable} className={`m-0 min-w-0 border-0 p-0 ${className}`}>{children}</fieldset>
+}
+
 export default function AgentDetailPage() {
   const { agentId } = useParams()
-  const { userId } = useSpace()
+  const { userId, activeSpaceId, spaces = [] } = useSpace()
+  const { t } = useAppTranslation()
   const [agent, setAgent] = useState<AgentOut | null>(null)
   const [version, setVersion] = useState<AgentVersionOut | null>(null)
   const [versions, setVersions] = useState<AgentVersionOut[]>([])
@@ -49,6 +64,7 @@ export default function AgentDetailPage() {
   const [loading, setLoading] = useState(true)
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false)
   const [statusBusy, setStatusBusy] = useState(false)
+  const [stopConfirmOpen, setStopConfirmOpen] = useState(false)
   // A link may open a specific tab (the Project Agents page opens Runs as the
   // Agent's work history). Read once from the address on arrival.
   const [activeTab, setActiveTab] = useState<string | null>(() =>
@@ -88,18 +104,26 @@ export default function AgentDetailPage() {
 
   const isAssistant = agent.agent_kind === 'system_assistant'
   const isActive = agent.status === 'active'
+  // The server's answer to "may this viewer change it" (`canChangeAgent`, the rule every mutation enforces).
+  const canManage = agent.can_manage === true
+  const readOnlyReason = t(agent.created_by_user_id ? 'my_agents_ui.manage_owner_only' : 'my_agents_ui.manage_space_admin_only')
+  // A Space owner/admin manages who reads another person's Agent (Access), not its configuration.
+  const viewerSpaceRole = spaces.find(space => space.id === activeSpaceId)?.role
+  const accessOnly = !canManage && Boolean(agent.created_by_user_id) && (viewerSpaceRole === 'owner' || viewerSpaceRole === 'admin')
   const hostProfile = runtimeProfiles.find(profile => profile.is_default && profile.execution_host_id)
     ?? runtimeProfiles.find(profile => profile.execution_host_id)
   const boundHost = hostProfile?.execution_host_id ? hosts.find(host => host.id === hostProfile.execution_host_id) : null
   const canResetHostContext = Boolean(hostProfile?.execution_host_id && boundHost?.owner_user_id === userId && boundHost.status === 'online')
 
+  // Stop is recoverable: only the status changes, so configuration, Project
+  // and Room places and history stay; Restore follows whatever access holds now.
   const toggleStatus = async () => {
     const next = isActive ? 'disabled' : 'active'
     setStatusBusy(true)
     try {
       const updated = await agentsApi.update(agent.id, { status: next })
-      setAgent(updated)
-      toast.success(next === 'disabled' ? 'Agent disabled — new runs are blocked by policy' : 'Agent enabled')
+      setAgent({ ...updated, can_manage: updated.can_manage ?? agent.can_manage })
+      toast.success(t(next === 'disabled' ? 'my_agents_ui.detail.stopped_toast' : 'my_agents_ui.detail.restored_toast'))
     } catch (err) {
       toast.error(errMsg(err))
     } finally {
@@ -108,10 +132,10 @@ export default function AgentDetailPage() {
   }
 
   return (
-    <div className="p-6 max-w-3xl space-y-5">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-xl font-semibold flex items-center gap-2">
+    <div className="p-4 md:p-6 max-w-3xl space-y-5">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="min-w-0">
+          <h1 className="text-xl font-semibold flex flex-wrap items-center gap-2 break-words [overflow-wrap:anywhere]">
             {agent.name} <StatusBadge status={agent.status} />
             {isAssistant && <Badge variant="secondary">System-managed</Badge>}
             {hostProfile && <Badge variant={boundHost?.status === 'online' ? 'secondary' : 'destructive'}>
@@ -121,12 +145,14 @@ export default function AgentDetailPage() {
           </h1>
           <p className="text-sm text-muted-foreground">{agent.description ?? 'No description'}</p>
         </div>
-        <div className="flex gap-2 shrink-0">
+        <div className="flex flex-wrap gap-2">
           <ContentAccessControl resourceType="agent" resourceId={agent.id} ownerUserId={agent.created_by_user_id} />
-          {/* Chat works for any agent: the chat turn runs the agent's current
-              version through the same execution path (a disabled agent's turn
-              is correctly blocked by policy). */}
-          <Button asChild size="sm"><Link to={`/agents/${agent.id}/chat`}><MessageSquare className="size-3.5 mr-1" />Open chat</Link></Button>
+          {/* Direct chat is offered only where it can start a turn: a stopped
+              Agent accepts no new request, and a plugin's assistant works only
+              in its plugin's Project Rooms (the server refuses both anyway). */}
+          {isActive && !agent.source_role_id?.includes('.') && (
+            <Button asChild size="sm"><Link to={`/agents/${agent.id}/chat`}><MessageSquare className="size-3.5 mr-1" />Open chat</Link></Button>
+          )}
           {canResetHostContext && (
             <>
               <Button size="sm" variant="outline" onClick={() => setResetConfirmOpen(true)}>Reset context</Button>
@@ -145,24 +171,40 @@ export default function AgentDetailPage() {
               />
             </>
           )}
-          {!isAssistant && (
-            <Button
-              size="sm"
-              variant={isActive ? 'destructive' : 'success'}
-              disabled={statusBusy}
-              onClick={toggleStatus}
-              title={isActive ? 'Disable this agent — blocks new run execution' : 'Enable this agent'}
-            >
-              {statusBusy
-                ? <Loader2 className="size-3.5 animate-spin" />
-                : isActive
-                  ? <><Ban className="size-3.5 mr-1" />Disable</>
-                  : <><Power className="size-3.5 mr-1" />Enable</>}
-            </Button>
+          {!isAssistant && canManage && (
+            <>
+              <Button
+                size="sm"
+                variant={isActive ? 'destructive' : 'success'}
+                disabled={statusBusy}
+                onClick={() => { if (isActive) setStopConfirmOpen(true); else void toggleStatus() }}
+                title={t(isActive ? 'my_agents_ui.detail.stop_hint' : 'my_agents_ui.detail.restore_hint')}
+              >
+                {statusBusy
+                  ? <Loader2 className="size-3.5 animate-spin" />
+                  : isActive
+                    ? <><Ban className="size-3.5 mr-1" />{t('my_agents_ui.detail.stop')}</>
+                    : <><Power className="size-3.5 mr-1" />{t('my_agents_ui.detail.restore')}</>}
+              </Button>
+              <ConfirmDialog
+                open={stopConfirmOpen}
+                onOpenChange={setStopConfirmOpen}
+                title={t('my_agents_ui.detail.stop_title')}
+                description={t('my_agents_ui.detail.stop_text')}
+                confirmLabel={t('my_agents_ui.detail.stop')}
+                onConfirm={() => void toggleStatus()}
+              />
+            </>
           )}
-          <Button asChild size="sm" variant="outline"><Link to="/agents">All agents</Link></Button>
+          <Button asChild size="sm" variant="outline"><Link to="/my-agents">{t('my_agents_ui.detail.all_agents')}</Link></Button>
         </div>
       </div>
+      {!isActive && !isAssistant && (
+        <p role="status" className="rounded-md border border-border bg-muted px-3 py-2 text-sm text-muted-foreground">{t('my_agents_ui.detail.stopped_banner')}</p>
+      )}
+      {!canManage && !isAssistant && (
+        <p role="note" className="rounded-md border border-border bg-muted px-3 py-2 text-sm text-muted-foreground">{t('my_agents_ui.detail.read_only', { reason: readOnlyReason })}{accessOnly ? ` ${t('my_agents_ui.detail.access_admin')}` : ''}</p>
+      )}
 
       <Tabs value={activeTab ?? (isAssistant ? 'preferences' : 'overview')} onValueChange={setActiveTab}>
         <TabsList className="w-full flex-wrap justify-start gap-1 h-auto">
@@ -178,39 +220,42 @@ export default function AgentDetailPage() {
           <TabsTrigger value="runs">Runs</TabsTrigger>
         </TabsList>
 
-        {isAssistant && (
-          <TabsContent value="preferences">
-            <AssistantSettingsPanel />
-          </TabsContent>
-        )}
+        {/* Editing follows management; a viewer who cannot change it keeps every view control. */}
+        <AgentEditable.Provider value={canManage || isAssistant}>
+          {isAssistant && (
+            <TabsContent value="preferences">
+              <AssistantSettingsPanel />
+            </TabsContent>
+          )}
 
-        <TabsContent value="overview">
-          <OverviewTab agent={agent} version={version} runs={runs} proposals={proposals} onSaved={reload} />
-        </TabsContent>
-        <TabsContent value="inputs">
-          {version ? <InputsTab version={version} /> : <Card><NoVersion /></Card>}
-        </TabsContent>
-        <TabsContent value="outputs">
-          <Card>{version ? <OutputsView version={version} /> : <NoVersion />}</Card>
-        </TabsContent>
-        <TabsContent value="schedule">
-          {version ? <ScheduleTab agentId={agent.id} version={version} onSaved={reload} /> : <Card><NoVersion /></Card>}
-        </TabsContent>
-        <TabsContent value="model">
-          {version ? <ModelTab agentId={agent.id} projectId={agent.project_id} version={version} profiles={runtimeProfiles} hosts={hosts} onSaved={reload} /> : <Card><NoVersion /></Card>}
-        </TabsContent>
-        <TabsContent value="tools">
-          {version ? <ToolsTab agentId={agent.id} version={version} onSaved={reload} /> : <Card><NoVersion /></Card>}
-        </TabsContent>
-        <TabsContent value="safety">
-          <Card>{version ? <SafetyView version={version} /> : <NoVersion />}</Card>
-        </TabsContent>
-        <TabsContent value="versions">
-          <VersionsTab agentId={agent.id} versions={versions} currentId={agent.current_version_id} onSaved={reload} />
-        </TabsContent>
-        <TabsContent value="runs">
-          <RunsTab runs={runs} />
-        </TabsContent>
+          <TabsContent value="overview">
+            <OverviewTab agent={agent} version={version} runs={runs} proposals={proposals} onSaved={reload} />
+          </TabsContent>
+          <TabsContent value="inputs">
+            {version ? <InputsTab version={version} /> : <Card><NoVersion /></Card>}
+          </TabsContent>
+          <TabsContent value="outputs">
+            <Card>{version ? <OutputsView version={version} /> : <NoVersion />}</Card>
+          </TabsContent>
+          <TabsContent value="schedule">
+            {version ? <ScheduleTab agentId={agent.id} version={version} onSaved={reload} /> : <Card><NoVersion /></Card>}
+          </TabsContent>
+          <TabsContent value="model">
+            {version ? <ModelTab agentId={agent.id} projectId={agent.project_id} version={version} profiles={runtimeProfiles} hosts={hosts} onSaved={reload} /> : <Card><NoVersion /></Card>}
+          </TabsContent>
+          <TabsContent value="tools">
+            {version ? <ToolsTab agentId={agent.id} version={version} onSaved={reload} /> : <Card><NoVersion /></Card>}
+          </TabsContent>
+          <TabsContent value="safety">
+            <Card>{version ? <SafetyView version={version} /> : <NoVersion />}</Card>
+          </TabsContent>
+          <TabsContent value="versions">
+            <VersionsTab agentId={agent.id} versions={versions} currentId={agent.current_version_id} onSaved={reload} />
+          </TabsContent>
+          <TabsContent value="runs">
+            <RunsTab runs={runs} />
+          </TabsContent>
+        </AgentEditable.Provider>
       </Tabs>
     </div>
   )
@@ -251,10 +296,12 @@ function ToolsTab({ agentId, version, onSaved }: {
           These Agent permissions are immutable version policy shared by all selected Runtime Profiles. Runtime configuration cannot grant itself additional tools.
         </p>
       </div>
-      <RetrievalToolDomainControls value={domains} onChange={setDomains} />
-      <Button size="sm" onClick={save} disabled={saving}>
-        {saving ? <Loader2 className="size-4 animate-spin" /> : 'Save tool settings'}
-      </Button>
+      <WriteGroup>
+        <RetrievalToolDomainControls value={domains} onChange={setDomains} />
+        <Button size="sm" onClick={save} disabled={saving}>
+          {saving ? <Loader2 className="size-4 animate-spin" /> : 'Save tool settings'}
+        </Button>
+      </WriteGroup>
     </Card>
   )
 }
@@ -282,6 +329,7 @@ function InputsTab({ version }: {
 function OverviewTab({ agent, version, runs, proposals, onSaved }: {
   agent: AgentOut; version: AgentVersionOut | null; runs: Run[]; proposals: Proposal[]; onSaved: () => Promise<void>
 }) {
+  const editable = useContext(AgentEditable)
   const [editing, setEditing] = useState(false)
   const [name, setName] = useState(agent.name)
   const [description, setDescription] = useState(agent.description ?? '')
@@ -317,7 +365,7 @@ function OverviewTab({ agent, version, runs, proposals, onSaved }: {
       <Card>
         <div className="flex items-center justify-between">
           <CardTitle>Identity &amp; role</CardTitle>
-          {!editing && <Button size="sm" variant="outline" onClick={() => setEditing(true)}>Edit</Button>}
+          {!editing && <Button size="sm" variant="outline" disabled={!editable} onClick={() => setEditing(true)}>Edit</Button>}
         </div>
         {editing ? (
           <div className="mt-3 space-y-3">
@@ -343,14 +391,17 @@ function OverviewTab({ agent, version, runs, proposals, onSaved }: {
         <CardTitle className="mb-2">Provenance</CardTitle>
         {agent.agent_kind === 'system_assistant' ? (
           <p className="text-sm text-muted-foreground">System-managed default assistant — the space's Chat identity. Its core prompt and safety policy are managed by the system; you can adjust preferences and configurable settings.</p>
-        ) : agent.source_template_id ? (
+        ) : agent.source_role_id ? (
           <div className="text-sm space-y-1">
-            <p>Created from template <Link className="underline" to={`/agents/templates/${agent.source_template_id}`}>{agent.source_template_id}</Link></p>
-            {agent.source_template_version_id && <p className="text-xs text-muted-foreground">Template version: <span className="font-mono">{agent.source_template_version_id}</span></p>}
-            <p className="text-xs text-muted-foreground">Configuration is an independent snapshot — later template updates do not change this agent.</p>
+            {/* A plugin's Role is offered only on its plugin's Project page, never in the Role library. */}
+            {agent.source_role_id.indexOf('.') > 0
+              ? <p>Created from plugin role <span className="font-mono">{agent.source_role_id}</span></p>
+              : <p>Created from role <Link className="underline" to={`/agents/roles/${agent.source_role_id}`}>{agent.source_role_id}</Link></p>}
+            {agent.source_role_version_id && <p className="text-xs text-muted-foreground">Role version: <span className="font-mono">{agent.source_role_version_id}</span></p>}
+            <p className="text-xs text-muted-foreground">Configuration is an independent snapshot — later role updates do not change this agent.</p>
           </div>
         ) : (
-          <p className="text-sm text-muted-foreground">Created directly (not from a template).</p>
+          <p className="text-sm text-muted-foreground">Created directly (not from a role).</p>
         )}
         <p className="text-xs text-muted-foreground mt-2">Current version: <span className="font-mono">{version?.version_label ?? '—'}</span></p>
         {promptRef && (
@@ -364,11 +415,11 @@ function OverviewTab({ agent, version, runs, proposals, onSaved }: {
         )}
       </Card>
 
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <Card>
           <CardTitle className="mb-2">Last run</CardTitle>
           {lastRun
-            ? <div className="text-sm flex items-center gap-2"><StatusBadge status={lastRun.status} /><span className="text-muted-foreground">{new Date(lastRun.created_at).toLocaleString()}</span></div>
+            ? <div className="text-sm flex flex-wrap items-center gap-2"><StatusBadge status={lastRun.status} /><span className="text-muted-foreground">{new Date(lastRun.created_at).toLocaleString()}</span></div>
             : <p className="text-sm text-muted-foreground">No runs yet.</p>}
           <p className="text-xs text-muted-foreground mt-2">Next run is scheduler-driven and not yet surfaced.</p>
         </Card>
@@ -407,12 +458,12 @@ function ScheduleTab({ agentId, version, onSaved }: { agentId: string; version: 
   return (
     <Card className="space-y-4">
       <ScheduleView version={version} />
-      <div className="border-t border-border pt-4 space-y-3">
+      <WriteGroup className="border-t border-border pt-4 space-y-3">
         <CardTitle>Edit schedule</CardTitle>
         <ScheduleEditorFields value={schedule} onChange={setSchedule} />
         <p className="text-xs text-muted-foreground">Stored on the agent version. Actual scheduled execution is wired separately and not driven from here.</p>
         <Button size="sm" onClick={save} disabled={saving || !isScheduleEditorValueValid(schedule)}>{saving ? <Loader2 className="size-4 animate-spin" /> : 'Save schedule'}</Button>
-      </div>
+      </WriteGroup>
     </Card>
   )
 }
@@ -434,6 +485,7 @@ function ModelTab({
   hosts: Host[]
   onSaved: () => Promise<void>
 }) {
+  const editable = useContext(AgentEditable)
   const defaultProfile = profiles.find(profile => profile.is_default) ?? profiles[0] ?? null
   const [selectedProfileId, setSelectedProfileId] = useState(defaultProfile?.id ?? '')
   const selectedProfile = selectedProfileId
@@ -621,7 +673,7 @@ function ModelTab({
             : selectedHost?.name ?? 'Execution Host'}
           {selectedHost?.kind === 'remote' ? ' · owner-managed' : ''}
         </Badge>
-        <Button size="sm" variant="outline" onClick={newProfile}>New profile</Button>
+        <WriteGroup className=""><Button size="sm" variant="outline" onClick={newProfile}>New profile</Button></WriteGroup>
       </div>
       {selectedProfile?.execution_host_id && selectedHost?.kind === 'remote' && (
         <p className="text-xs text-muted-foreground rounded-md border border-border bg-muted/20 px-3 py-2">
@@ -649,6 +701,7 @@ function ModelTab({
           />
         </div>
       )}
+      <WriteGroup>
       <div className="space-y-1.5">
         <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Name</label>
         <Input value={name} onChange={e => setName(e.target.value)} placeholder="Default" />
@@ -670,12 +723,14 @@ function ModelTab({
           disabled={saving}
         />
       </div>
+      </WriteGroup>
       {catalogError && (
         <div role="alert" className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs">
           <span>The runtime catalog could not be loaded, so backend-mode support is unknown: {catalogError}</span>
           <Button size="sm" variant="outline" onClick={loadCatalog}>Retry catalog</Button>
         </div>
       )}
+      <WriteGroup>
       {providerModeNotice && (
         <p role="status" className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs">{providerModeNotice}</p>
       )}
@@ -718,6 +773,8 @@ function ModelTab({
         <ProviderSelector
           value={providerSelection}
           onChange={changeProviderSelection}
+          // A viewer who does not manage the Agent is offered no path to define a provider here.
+          disabled={!editable}
           required={false}
           requireClaudeCompatible={requireClaudeCompatible}
           requireOpenAiCompatible={requireOpenAiCompatible}
@@ -735,6 +792,7 @@ function ModelTab({
           disabled={supportsProviderSelection && !providerSelection?.provider_id}
         />
       </div>}
+      </WriteGroup>
       <div>
         <button type="button" onClick={() => setShowAdvanced(s => !s)} className="text-xs text-muted-foreground underline">
           {showAdvanced ? 'Hide' : 'Show'} advanced (raw JSON)
@@ -746,6 +804,7 @@ function ModelTab({
           }, null, 2)}</pre>
         )}
       </div>
+      <WriteGroup>
       <div className="flex flex-wrap gap-4">
         <label className="flex items-center gap-2 text-sm">
           <input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} /> Enabled
@@ -755,6 +814,7 @@ function ModelTab({
         </label>
       </div>
       <Button size="sm" onClick={save} disabled={saving}>{saving ? <Loader2 className="size-4 animate-spin" /> : 'Save runtime profile'}</Button>
+      </WriteGroup>
     </Card>
   )
 }
@@ -783,6 +843,7 @@ function hostExecutionSelection(profile: AgentRuntimeProfileOut | null): HostExe
 function VersionsTab({ agentId, versions, currentId, onSaved }: {
   agentId: string; versions: AgentVersionOut[]; currentId: string | null; onSaved: () => Promise<void>
 }) {
+  const editable = useContext(AgentEditable)
   const [busy, setBusy] = useState<string | null>(null)
   const [open, setOpen] = useState<string | null>(null)
 
@@ -813,7 +874,7 @@ function VersionsTab({ agentId, versions, currentId, onSaved }: {
             <div className="flex gap-2">
               <Button size="sm" variant="ghost" onClick={() => setOpen(open === v.id ? null : v.id)}>{open === v.id ? 'Hide' : 'View config'}</Button>
               {v.id !== currentId && (
-                <Button size="sm" variant="outline" disabled={busy === v.id} onClick={() => restore(v.id)}>
+                <Button size="sm" variant="outline" disabled={!editable || busy === v.id} onClick={() => restore(v.id)}>
                   {busy === v.id ? <Loader2 className="size-4 animate-spin" /> : 'Restore'}
                 </Button>
               )}

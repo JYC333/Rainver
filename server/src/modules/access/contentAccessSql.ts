@@ -340,6 +340,33 @@ export function projectReadAccessSql(
 }
 
 /**
+ * Who reads a Room now, as one predicate over a `users` row: every Project
+ * reader for the **mainline** (an active Space member, on its roster or not),
+ * the active roster for a limited Room, and in both cases an active user who
+ * still reads the Project. A conversation is frozen to exactly this audience
+ * (`freezeConversationAudiences` through `roomAudience`), and every label
+ * names it (`conversationAudienceColumnsSql`, `ROOM_AUDIENCE_SQL`), so a label
+ * can neither omit somebody the freeze kept nor name somebody who lost the
+ * Project.
+ */
+export function roomAudienceMemberSql(roomAlias: string, userAlias: string): string {
+  return `(${userAlias}.status = 'active'
+    AND CASE WHEN ${roomAlias}.is_mainline THEN EXISTS (
+        SELECT 1 FROM space_memberships audience_space_member
+         WHERE audience_space_member.space_id = ${roomAlias}.space_id
+           AND audience_space_member.user_id = ${userAlias}.id
+           AND audience_space_member.status = 'active'
+      ) ELSE EXISTS (
+        SELECT 1 FROM room_user_members audience_roster_member
+         WHERE audience_roster_member.space_id = ${roomAlias}.space_id
+           AND audience_roster_member.room_id = ${roomAlias}.id
+           AND audience_roster_member.user_id = ${userAlias}.id
+           AND audience_roster_member.status = 'active'
+      ) END
+    AND ${projectReadAccessSql(`${roomAlias}.space_id`, `${roomAlias}.project_id`, `${userAlias}.id`)})`;
+}
+
+/**
  * Who may read what happens in a Room — the predicate behind ADR 0018's
  * "the roster answers who may see these conversations", asked rather than
  * described (`modules/rooms.md`, Thread References).
@@ -375,6 +402,50 @@ export function roomConversationReadAccessSql(
        )
        AND ${projectReadAccessSql("audience_room.space_id", "audience_room.project_id", userExpr)}
   )`;
+}
+
+/**
+ * Whether a viewer is inside one Room conversation's own audience
+ * (`.agent/modules/rooms.md`, "Conversation audience"). A conversation is
+ * normally visible to its whole Room; one frozen when someone joined without
+ * its history (`room_conversation_audiences`) is visible only to the people
+ * recorded for it. This term is ANDed with the Room's read gate, never used
+ * alone: being recorded for a conversation does not survive leaving its Room
+ * or its Project.
+ */
+export function roomConversationAudienceSql(
+  spaceExpr: string,
+  sessionExpr: string,
+  userExpr: string,
+): string {
+  return `(
+    NOT EXISTS (
+      SELECT 1 FROM room_conversation_audiences conversation_audience
+       WHERE conversation_audience.session_id = ${sessionExpr}
+         AND conversation_audience.space_id = ${spaceExpr}
+    )
+    OR EXISTS (
+      SELECT 1 FROM room_conversation_audience_members conversation_audience_member
+       WHERE conversation_audience_member.session_id = ${sessionExpr}
+         AND conversation_audience_member.space_id = ${spaceExpr}
+         AND conversation_audience_member.user_id = ${userExpr}
+    )
+  )`;
+}
+
+/**
+ * Who may read one Room conversation: the Room's read gate and the
+ * conversation's own audience. A null session (a Room-level question such as
+ * a Room without conversations) reduces to the Room gate.
+ */
+export function roomSessionReadAccessSql(
+  spaceExpr: string,
+  roomExpr: string,
+  sessionExpr: string,
+  userExpr: string,
+): string {
+  return `(${roomConversationReadAccessSql(spaceExpr, roomExpr, userExpr)}
+    AND (${sessionExpr} IS NULL OR ${roomConversationAudienceSql(spaceExpr, sessionExpr, userExpr)}))`;
 }
 
 /**
@@ -421,6 +492,11 @@ export function roomRunReadAccessSql(
          AND room_read_run.space_id=${spaceExpr}
          AND room_scope.status='active'
          AND ${projectReadAccessSql("room_scope.space_id", "room_scope.project_id", userExpr)}
+         -- A Run of a conversation frozen to an earlier audience stays inside it.
+         AND (
+           COALESCE(room_read_group.session_id, room_read_session.id) IS NULL
+           OR ${roomConversationAudienceSql("room_read_run.space_id", "COALESCE(room_read_group.session_id, room_read_session.id)", userExpr)}
+         )
     )
   )`;
 }

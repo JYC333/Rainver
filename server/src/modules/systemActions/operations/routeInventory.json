@@ -115,9 +115,9 @@
   },
   {
     "method": "POST",
-    "path": "/api/v1/agent-templates/:templateId/agents",
+    "path": "/api/v1/agent-roles/:roleId/agents",
     "classification": "core_entry",
-    "reason": "Migrated adapter for agent.template.instantiate"
+    "reason": "Migrated adapter for agent.role.instantiate"
   },
   {
     "method": "POST",
@@ -242,6 +242,12 @@
   {
     "method": "POST",
     "path": "/api/v1/auth/admin/users/:userId/reset-link",
+    "classification": "transport_exempt",
+    "reason": "Existing authentication/session protocol owned by auth"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/auth/browser-accounts/switch",
     "classification": "transport_exempt",
     "reason": "Existing authentication/session protocol owned by auth"
   },
@@ -2824,12 +2830,6 @@
     "path": "/api/v1/runs/:runId/stop",
     "classification": "core_entry",
     "reason": "Migrated adapter for run.stop"
-  },
-  {
-    "method": "POST",
-    "path": "/api/v1/runs/:runId/tools/:actionId",
-    "classification": "transport_exempt",
-    "reason": "Run bearer-token Agent tool transport; each action is admitted by its own core registration or inventoried legacy executor"
   },
   {
     "method": "PUT",

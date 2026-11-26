@@ -39,7 +39,7 @@
  */
 import { randomUUID } from "node:crypto";
 import {
-  GMAIL_DIGEST_LIMITS, GmailDigestProposalPayloadSchema, gmailDigestPayloadConsistent, gmailDigestPurpose, type GmailApplicationUpdateEffect, type GmailDigest, type GmailDigestKind, type GmailDigestList,
+  GMAIL_APPLICATION_REVIEW_PAGE_SIZE, GMAIL_DIGEST_LIMITS, GmailDigestProposalPayloadSchema, gmailDigestPayloadConsistent, gmailDigestPurpose, type GmailApplicationUpdateEffect, type GmailDigest, type GmailDigestKind, type GmailDigestList,
   type GmailDigestRuntimeBinding,
 } from "@rainver/protocol";
 import type { ServerConfig } from "../../../config.js";
@@ -56,6 +56,7 @@ import { ConversationSessionConfigError } from "../../sessions/sessionConfig.js"
 import { gmailLockedNow, lockGmailOwnerSpace } from "./gmailConnections.js";
 import { liveGmailConsentSql } from "./gmailAgentReadGrants.js";
 import { GMAIL_PROJECT_CONVERSATION_SQL } from "./gmailAgentReadAvailability.js";
+import { gmailWebUrl } from "./gmailMessageText.js";
 import { gmailDigestDailyWindow, gmailDigestRetryDelayMs, nextGmailDigestSlot, validGmailDigestTimeZone } from "./gmailDigestSchedule.js";
 import { applyConflict, ensureApplicationExecutionConversation, gmailCardAudienceCovers, postGmailApplicationNotice } from "./gmailApplicationSharedConversation.js";
 import { applicationExecutionCheck, applicationExecutionReasonText, savedExecutionChoice } from "./gmailApplicationExecution.js";
@@ -697,12 +698,13 @@ async function stopDigestDelivery(db: Queryable, digestId: string, code = "gmail
 }
 
 /** The caller's digests, content-free, with the last delivery's window and outcome. Ended ones stay listed for 30 days. */
-export async function listGmailDigests(db: Queryable, identity: Identity): Promise<GmailDigestList> {
-  const rows = (await db.query<DigestRow & { consent_live: boolean; project_name: string | null; room_id: string | null }>(
-    `SELECT d.*,p.name AS project_name,(SELECT s.room_id FROM sessions s WHERE s.id=d.session_id AND s.space_id=d.space_id) AS room_id,
+export async function listGmailDigests(db: Queryable, identity: Identity, reviewProjectId?: string): Promise<GmailDigestList> {
+  const rows = (await db.query<DigestRow & { consent_live: boolean; project_name: string; room_id: string | null; mailbox_email: string }>(
+    `SELECT d.*,p.name AS project_name,mailbox.mailbox_email,(SELECT s.room_id FROM sessions s WHERE s.id=d.session_id AND s.space_id=d.space_id) AS room_id,
             EXISTS (SELECT 1 FROM plugin_data_grants g JOIN gmail_connections c ON c.id=g.connection_id AND c.space_id=g.space_id AND c.owner_user_id=g.data_owner_user_id
                      WHERE g.id=d.grant_id AND ${LIVE_SQL}) AS consent_live
        FROM gmail_digests d JOIN projects p ON p.id=d.project_id AND p.space_id=d.space_id
+       JOIN gmail_connections mailbox ON mailbox.id=d.gmail_connection_id AND mailbox.space_id=d.space_id AND mailbox.owner_user_id=d.owner_user_id
       WHERE d.space_id=$1 AND d.owner_user_id=$2 AND (d.status<>'ended' OR d.ended_at>now()-interval '30 days')
       ORDER BY d.created_at DESC,d.id LIMIT 200`, [identity.spaceId, identity.userId])).rows;
   const digests: GmailDigest[] = [];
@@ -712,14 +714,18 @@ export async function listGmailDigests(db: Queryable, identity: Identity): Promi
     // its owner's re-confirmation, which keeps its schedule until they confirm it in its conversation.
     const ended = row.status === "ended" || (!row.consent_live && row.last_error_code !== GMAIL_DIGEST_RECONFIRM_CODE);
     const application = row.kind === "application";
+    const projectReadable = await canReadProject(db, identity.spaceId, row.project_id, identity.userId);
+    const mailItems = application ? await gmailApplicationMailCounts(db, row.id) : null;
+    const showReview = row.project_id === reviewProjectId && projectReadable && row.consent_live && !ended && !!mailItems?.review;
     digests.push({
-      ...(application ? {
+      ...(mailItems ? {
         effects: row.effects ?? [],
         runtime: row.runtime_binding ? { agent_name: row.runtime_binding.agent_name, model_label: row.runtime_binding.model_label } : null,
-        mail_items: await gmailApplicationMailCounts(db, row.id),
+        mail_items: mailItems,
+        ...(showReview ? { review_items: await gmailApplicationReviewItems(db, row.id, row.mailbox_email) } : {}),
       } : {}),
       id: row.id, connection_id: row.gmail_connection_id, project_id: row.project_id,
-      project_name: await canReadProject(db, identity.spaceId, row.project_id, identity.userId) ? row.project_name : null,
+      project_name: projectReadable ? row.project_name : null,
       session_id: row.session_id, room_id: row.room_id, agent_id: row.agent_id, kind: row.kind, local_time: row.local_time, time_zone: row.time_zone, status: ended ? "ended" : row.status,
       covered_until: iso(row.covered_until), next_run_at: ended ? null : isoOrNull(row.next_run_at), retry_at: ended ? null : isoOrNull(row.retry_not_before),
       last_delivered_at: isoOrNull(row.last_delivered_at), failure_count: row.failure_count,
@@ -732,6 +738,14 @@ export async function listGmailDigests(db: Queryable, identity: Identity): Promi
     });
   }
   return { digests };
+}
+
+async function gmailApplicationReviewItems(db: Queryable, digestId: string, mailboxEmail: string): Promise<NonNullable<GmailDigest["review_items"]>> {
+  const rows = (await db.query<{ google_message_id: string; received_at: Date | string; reason: NonNullable<GmailDigest["review_items"]>[number]["reason"] }>(
+    `SELECT google_message_id,received_at,reason FROM gmail_digest_mail_items
+      WHERE digest_id=$1 AND status='review' ORDER BY received_at DESC,google_message_id DESC LIMIT $2`,
+    [digestId, GMAIL_APPLICATION_REVIEW_PAGE_SIZE])).rows;
+  return rows.map(row => ({ message_id: row.google_message_id, gmail_url: gmailWebUrl(mailboxEmail, row.google_message_id), received_at: iso(row.received_at), reason: row.reason }));
 }
 
 /** An application automation's messages that wait, were kept for the owner, or were given up. */
@@ -840,7 +854,7 @@ export async function startGmailDigestDelivery(pool: Pool, config: ServerConfig,
     // The fact writer takes plugin scope before the Gmail mutex.
     if (head.kind === "application") {
       const { lockOperationPluginScope } = await import("../../plugins/operationEnablement.js");
-      await lockOperationPluginScope(tx, "applications", head.space_id, head.owner_user_id, config);
+      await lockOperationPluginScope(tx, "phd_application", head.space_id, head.owner_user_id, config);
     }
     await lockGmailOwnerSpace(tx, { spaceId: head.space_id, userId: head.owner_user_id });
     await tx.query(`SELECT id FROM gmail_connections WHERE id=$1 FOR SHARE`, [head.gmail_connection_id]);
@@ -1048,7 +1062,7 @@ export async function settleGmailDigestRun<T>(
     }
     if (ownerCanRead && head.kind === "application") {
       const { lockOperationPluginScope } = await import("../../plugins/operationEnablement.js");
-      await lockOperationPluginScope(db, "applications", head.space_id, head.owner_user_id, config);
+      await lockOperationPluginScope(db, "phd_application", head.space_id, head.owner_user_id, config);
     }
     await lockGmailOwnerSpace(db, { spaceId: head.space_id, userId: head.owner_user_id });
     await db.query(`SELECT id FROM gmail_connections WHERE id=$1 FOR SHARE`, [head.gmail_connection_id]);

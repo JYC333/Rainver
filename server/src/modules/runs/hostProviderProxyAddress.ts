@@ -36,10 +36,10 @@ export async function resolveHostLeaseUrl(input: {
  *    internal network;
  * 3. for a paired host, the instance-wide `PROVIDER_PROXY_EXTERNAL_BASE_URL`;
  * 4. for a paired host, its control-plane address (`hostControlPlaneUrl`,
- *    `FRONTEND_URL`) with the proxy's own port, when that address is `http:`.
+ *    `PUBLIC_BASE_URL`) with the proxy's own port, when that address is `http:`.
  *
  * Configuration outranks derivation: the derived address is inferred from
- * `FRONTEND_URL`, and an operator who published the proxy elsewhere said so.
+ * `PUBLIC_BASE_URL`, and an operator who published the proxy elsewhere said so.
  * The listener is plaintext HTTP, so an `https:` control plane is not derived
  * from — its TLS terminates somewhere this port is not behind, and the
  * derived URL would fail the handshake or quietly drop TLS. Null when nothing

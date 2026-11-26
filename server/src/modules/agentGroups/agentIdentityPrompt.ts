@@ -43,6 +43,8 @@ interface AgentIdentityPromptInput {
   agentId: string;
   /** The Room this turn speaks in, or null for a direct chat. */
   roomId: string | null;
+  /** The Room conversation this turn speaks in, when known. */
+  sessionId?: string | null;
   /** The direct chat's person, which is the audience there. */
   directUserId?: string | null;
 }
@@ -63,6 +65,7 @@ export async function renderAgentIdentityPrompt(
       spaceId: input.spaceId,
       agentId: input.agentId,
       roomId: input.roomId,
+      sessionId: input.sessionId ?? null,
       directUserId: input.directUserId ?? null,
     }),
   ]);

@@ -19,7 +19,7 @@ import { isStale } from "../hosts/liveness.js";
 import { TASK_CONTRACT_POLICY } from "../systemActions/conversationPolicy.js";
 
 const MANAGED_ASSISTANT_NAME = "Space Assistant";
-const MANAGED_ASSISTANT_PROMPT_KEY = "agent_template.personal_assistant.system";
+const MANAGED_ASSISTANT_PROMPT_KEY = "agent_role.personal_assistant.system";
 // Builtin CLI adapters only. A `remote_host_only` adapter has no server-side
 // runtime tool or credential profile for this provisioning. Do not include one.
 //
@@ -601,7 +601,7 @@ async function listChatProviderDefinitions(
 }
 
 async function loadManagedAssistantSeed(config: ServerConfig): Promise<ManagedAssistantSeed> {
-  const path = join(config.catalogRoot, "agent_templates", "personal_assistant", "template.yaml");
+  const path = join(config.catalogRoot, "agent_roles", "personal_assistant", "role.yaml");
   let parsed: unknown;
   try {
     parsed = parse(await readFile(path, "utf8"));

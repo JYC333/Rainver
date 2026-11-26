@@ -46,6 +46,27 @@ export function roomVisibilityLabel(
   return audienceLabel({ otherMemberNames: input.otherMemberNames, agentCount: 0 }, t)
 }
 
+/**
+ * Who actually reads one conversation. Usually its Room's audience; a
+ * conversation frozen when someone joined without its history
+ * ([ADR 0038](../../../../.agent/decisions/0038-conversation-audience-on-room-join.md))
+ * names its own, narrower audience and says why.
+ */
+export function conversationAudienceLabel(
+  input: {
+    isMainline: boolean
+    roomOtherMemberNames: string[]
+    audience?: { restricted: boolean; other_member_names: string[] } | null
+  },
+  t: (key: string, options?: Record<string, unknown>) => string,
+): string {
+  if (input.audience?.restricted) {
+    return `${audienceLabel({ otherMemberNames: input.audience.other_member_names, agentCount: 0 }, t)} · ${t('collab_ui.audience.earlier_members')}`
+  }
+  if (input.isMainline) return t('collab_ui.audience.everyone')
+  return audienceLabel({ otherMemberNames: input.audience?.other_member_names ?? input.roomOtherMemberNames, agentCount: 0 }, t)
+}
+
 /** "2 people · 1 agent", pluralized per locale. */
 export function rosterCountsLabel(
   input: { people: number; agents: number },

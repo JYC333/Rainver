@@ -835,7 +835,6 @@ async function runRemoteHostCliAdapter(
     try {
       workSurface = await buildRunWorkSurface({
         db: deps.db ?? getDbPool(config.databaseUrl),
-        config,
         run: input.run,
         hostId,
         launchId,
@@ -854,19 +853,17 @@ async function runRemoteHostCliAdapter(
   if (workSurface) {
     const identities = new PgRunToolIdentityRepository(deps.db ?? getDbPool(config!.databaseUrl!));
     const renewal = setInterval(() => {
-      void identities.renew(input.run.id, workSurface!.frame.env.RAINVER_TOOL_TOKEN!, credentialLifetimeSeconds * 1000)
+      void identities.renew(input.run.id, workSurface!.frame.run_tool_token!, credentialLifetimeSeconds * 1000)
         .catch(() => undefined);
     }, 60_000);
     renewal.unref?.();
     leases.push(() => clearInterval(renewal));
-    // An empty prompt stays empty. A pointer on its own would start a turn
-    // nobody asked for. A resumed vendor session already holds the pointer
-    // from its first turn and is sent nothing about it again.
-    // The daemon substitutes the placeholder with the file's absolute path on
-    // that machine (only it knows one); an unexpanded `$RAINVER_SKILL_PATH`
-    // is a path a read_file tool cannot open.
-    if (prompt && !input.resume_session_id) {
-      const pointer = workSkillPromptPointer(WORK_SKILL_PATH_PLACEHOLDER, workSurface.options);
+    // Send the current Run's pointer even on resume: the runtime can compact
+    // its history, and each launch gets its own file and tool identity. The
+    // Host replaces the placeholder with the current file's absolute path.
+    // The pointer alone must never start an otherwise empty turn.
+    if (input.invocation_delivery ? input.invocation_delivery.message_blocks.length > 0 : Boolean(prompt)) {
+      const pointer = workSkillPromptPointer(WORK_SKILL_PATH_PLACEHOLDER, workSurface.options, Boolean(input.resume_session_id));
       if (input.invocation_delivery) addRunControl("work_surface", pointer);
       else prompt = `${prompt}\n\n${pointer}`;
     }
@@ -1838,7 +1835,7 @@ function stderrTail(stderr: string | null | undefined): string | null {
 export function skillWorkSurface(delivery: InvocationDelivery | undefined, base: RunWorkSurfaceFrame | null): RunWorkSurfaceFrame | null {
   const skills = delivery?.skill_packages ?? [];
   if (skills.length === 0) return base;
-  const surface: RunWorkSurfaceFrame = { env: { ...base?.env }, files: [...(base?.files ?? [])],
+  const surface: RunWorkSurfaceFrame = { ...base, files: [...(base?.files ?? [])],
     dir_env: { ...base?.dir_env, RAINVER_SKILL_ROOT: "rainver/skills" } };
   for (const skill of skills) {
     for (const file of skill.content.files) {

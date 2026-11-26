@@ -248,6 +248,8 @@ conversation:
     - apps/web/src/modules/agent_groups/RoomMessageComposer.test.tsx
     - apps/web/src/lib/mergeAbortSignals.ts
     - apps/web/src/lib/mergeAbortSignals.test.ts
+    - apps/web/src/lib/conversationPageCache.ts
+    - apps/web/src/lib/conversationPageCache.test.ts
     - apps/web/src/modules/projects/sidecar/ProjectChatSidecar.tsx
     - apps/web/src/modules/runs
     - apps/web/src/hooks/useRun.ts

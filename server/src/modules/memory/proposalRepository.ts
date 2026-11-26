@@ -222,6 +222,7 @@ export class PgMemoryProposalRepository {
     // deciding needs to see, and dropping it would leave the proposal saying
     // less than the Agent knew.
     if (command.origin_room_id) payload.origin_room_id = command.origin_room_id;
+    if (command.origin_session_id) payload.origin_session_id = command.origin_session_id;
     if (scope === "agent") {
       if (!command.agent_id) {
         throw new MemoryProposalValidationError("agent memory requires the owning agent_id");
@@ -367,6 +368,10 @@ export class PgMemoryProposalRepository {
       }
       payload.agent_id = target.agent_id;
       payload.origin_room_id = target.origin_room_id;
+      // No origin conversation for a revision: what it adds may come from
+      // another conversation of the Room, so delivery holds the revised note
+      // to the Room-wide rule (`agentMemoryDelivery.ts`).
+      payload.origin_session_id = null;
       // Who asked, when that differs from who decides. A persona that already
       // exists is revised rather than created, so this is the common path, not
       // the rare one — and without it the owner's review surface shows a

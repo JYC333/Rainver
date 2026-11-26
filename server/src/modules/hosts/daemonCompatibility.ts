@@ -19,6 +19,9 @@
  * negotiated the same way: without it no Run is launched that way, and sensitive plugin
  * data stays unreleased to that Host's Runs (ADR 0030 §4a).
  *
+ * 0.4.10 moves Run tools onto the authenticated Host socket. Earlier daemons
+ * only know the retired HTTP tool transport.
+ *
  * 0.4.0 was the oldest daemon that merges a done Task's branch (ADR 0016 §11): `task_merge_prepare`,
  * `_continue`, `_abort` and `_finish`, and a conflict-resolution Run launched
  * into the Task worktree as a merge left it (`worktree.merge_id`). An older
@@ -32,7 +35,7 @@
  * depend on a field an older daemon does not read, and bump the daemon's own
  * `package.json` version with it.
  */
-export const MIN_HOST_DAEMON_VERSION = "0.4.4";
+export const MIN_HOST_DAEMON_VERSION = "0.4.10";
 
 const RELEASE_TRIPLE = /^(\d+)\.(\d+)\.(\d+)/;
 

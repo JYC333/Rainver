@@ -23,7 +23,7 @@ const runCreate={
 };
 export const AGENT_OPERATION_SCHEMAS={
  'agent.create':{input:z.object({project_id:id.nullable().optional(),name:z.string(),role_instruction:text,capabilities_json:z.array(z.unknown()).nullable().optional(),tool_permissions_json:record,...definition}).strict(),output:AgentReceiptSchema},
- 'agent.template.instantiate':{input:z.object({template_id:z.string().trim().min(1).max(128),template_version_id:z.string().nullable().optional(),project_id:id.nullable().optional(),name:z.string().nullable().optional(),...definition}).strict(),output:AgentReceiptSchema},
+ 'agent.role.instantiate':{input:z.object({role_id:z.string().trim().min(1).max(128),role_version_id:z.string().nullable().optional(),project_id:id.nullable().optional(),name:z.string().nullable().optional(),...definition}).strict(),output:AgentReceiptSchema},
  'agent.update':{input:z.object({...agent,name:z.string().optional(),role_instruction:text,status:z.string().optional(),...definition}).strict(),output:AgentReceiptSchema},
  'agent.config.update':{input:z.object({...agent,name:z.string().nullable().optional(),...definition}).strict(),output:AgentReceiptSchema},
  'agent.version.restore':{input:z.object({...agent,version_id:id}).strict(),output:AgentReceiptSchema.extend({version_id:id}).strict()},
@@ -41,7 +41,7 @@ export const AGENT_OPERATION_SCHEMAS={
 } as const;
 export const AGENT_OPERATION_TITLES:Record<keyof typeof AGENT_OPERATION_SCHEMAS,string>={
  'agent.create':'Create an Agent',
- 'agent.template.instantiate':'Create an Agent from a template',
+ 'agent.role.instantiate':'Create an Agent from a role',
  'agent.update':'Edit an Agent',
  'agent.config.update':'Append an Agent configuration version',
  'agent.version.restore':'Restore an earlier Agent configuration version',

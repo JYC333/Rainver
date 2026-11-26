@@ -22,14 +22,16 @@ import {PgAgentChatRepository,PgAgentRepository} from './repository.js';
 import {AgentMutationError} from './agentMutationError.js';
 import {canChangeAgent} from './agentAccess.js';
 import {applyAgentIdentityPatch,configPatch,hasConfigPatch,optionalArrayBody,optionalRecordBody,parseExecutionConstraints} from './agentRouteInputs.js';
-import {instantiateAgentTemplate} from '../agentTemplates/instantiate.js';
+import {instantiateAgentRole} from '../agentRoles/instantiate.js';
+import {pluginOfAgentRole} from '../plugins/agentRoleAdmission.js';
+import {lockOperationPluginScope} from '../plugins/operationEnablement.js';
 
 type Id=keyof typeof AGENT_OPERATION_SCHEMAS;
-type Input=Record<string,unknown>&{agent_id?:string;project_id?:string|null;profile_id?:string;version_id?:string;session_id?:string;template_id?:string};
+type Input=Record<string,unknown>&{agent_id?:string;project_id?:string|null;profile_id?:string;version_id?:string;session_id?:string;role_id?:string};
 const person=(a:OperationActor)=>({spaceId:a.space_id,userId:a.on_behalf_of_user_id!});
-const CREATED=new Set<Id>(['agent.create','agent.template.instantiate','agent.runtime_profile.create','agent.run.create']);
+const CREATED=new Set<Id>(['agent.create','agent.role.instantiate','agent.runtime_profile.create','agent.run.create']);
 /** Personal/Project placement is the access owner's, as for the retained REST adapters. */
-const PLACEMENT=new Set<Id>(['agent.create','agent.template.instantiate','agent.run.create']);
+const PLACEMENT=new Set<Id>(['agent.create','agent.role.instantiate','agent.run.create']);
 const DEFINITION_FIELDS=['name','description','role_instruction','status'];
 
 class ResetContextConflict extends OperationBusinessError {constructor(){super('operation_conflict',409,'agents');}}
@@ -58,7 +60,7 @@ export function agentOperationRegistrations(definitions:ReadonlyMap<string,Regis
   ...(PLACEMENT.has(id)?{userContentCreation:true as const}:{}),
   async resolve(_db,raw,a){const i=raw as Input;
    switch(id){
-    case 'agent.create':case 'agent.template.instantiate':return {authority:`space:${a.space_id}`,targets:{project_id:i.project_id??null,template_id:i.template_id??null},resourceType:'agent',resourceId:null};
+    case 'agent.create':case 'agent.role.instantiate':return {authority:`space:${a.space_id}`,targets:{project_id:i.project_id??null,role_id:i.role_id??null},resourceType:'agent',resourceId:null};
     case 'agent.runtime_default.set':return {authority:`space:${a.space_id}`,targets:{space_id:a.space_id},resourceType:'space',resourceId:a.space_id};
     case 'agent.assistant_settings.update':return {authority:`space:${a.space_id}`,targets:{project_id:i.project_id??null},resourceType:i.project_id?'project':'space',resourceId:i.project_id??a.space_id};
     default:return {authority:`agent:${i.agent_id}`,targets:{agent_id:i.agent_id,profile_id:i.profile_id??null,version_id:i.version_id??null,session_id:i.session_id??null,...(id==='agent.run.create'?{project_id:i.project_id??null}:{})},resourceType:'agent',resourceId:i.agent_id!};
@@ -66,7 +68,15 @@ export function agentOperationRegistrations(definitions:ReadonlyMap<string,Regis
   },
   async authorize(db,raw,a,scope){const i=raw as Input,p=person(a),repo=new PgAgentRepository(db);
    switch(id){
-    case 'agent.create':case 'agent.template.instantiate':await lockProjectPlacement(db,a,i.project_id);return;
+    case 'agent.create':await lockProjectPlacement(db,a,i.project_id);return;
+    case 'agent.role.instantiate':{
+     // A plugin's Role takes bind's order: the plugin scope (shared), then the Project, then its
+     // binding (`findSpec`), and is re-read after them, so a disable or unbind either commits
+     // first and the Role is gone, or waits until this Agent exists.
+     const plugin=pluginOfAgentRole(typeof i.role_id==='string'?i.role_id:null);
+     if(plugin&&i.project_id)await lockOperationPluginScope(db,plugin,a.space_id,p.userId,config);
+     await lockProjectPlacement(db,a,i.project_id);return;
+    }
     case 'agent.runtime_default.set':{
      const role=(await db.query<{role:string}>("SELECT role FROM space_memberships WHERE space_id=$1 AND user_id=$2 AND status='active' FOR SHARE",[a.space_id,p.userId])).rows[0]?.role;
      if(!isSpaceOwnerOrAdmin(role))throw hidden();return;
@@ -145,7 +155,7 @@ export function agentOperationRegistrations(definitions:ReadonlyMap<string,Regis
       contextPolicyJson:optionalRecordBody(i,'context_policy_json'),memoryPolicyJson:optionalRecordBody(i,'memory_policy_json'),capabilitiesJson:optionalArrayBody(i,'capabilities_json'),toolPermissionsJson:optionalRecordBody(i,'tool_permissions_json'),
       toolPolicyJson:optionalRecordBody(i,'tool_policy_json'),outputPolicyJson:optionalRecordBody(i,'output_policy_json'),scheduleConfigJson:optionalRecordBody(i,'schedule_config_json'),outputSchemaJson:optionalRecordBody(i,'output_schema_json')}));
     }
-    case 'agent.template.instantiate':return receipt(await instantiateAgentTemplate(db,config,{spaceId:a.space_id,userId:p.userId,projectId:i.project_id??null,visibility:i.project_id?'space_shared':'private'},String(i.template_id),i));
+    case 'agent.role.instantiate':return receipt(await instantiateAgentRole(db,config,{spaceId:a.space_id,userId:p.userId,projectId:i.project_id??null,visibility:i.project_id?'space_shared':'private'},String(i.role_id),i));
     case 'agent.update':{
      const {agent_id:_agent,...body}=i;
      // Parse the whole body before the first write: identity and config land in two statements.

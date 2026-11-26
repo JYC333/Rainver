@@ -14,7 +14,8 @@ import { Button } from '../../components/ui/button'
 import { Skeleton } from '../../components/ui/skeleton'
 import { EmptyState } from '../../components/ui/empty-state'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../../components/ui/dropdown-menu'
-import { audienceLabel } from '../agent_groups/audience'
+import { audienceLabel, conversationAudienceLabel } from '../agent_groups/audience'
+import { useAppTranslation } from '../../i18n'
 import { useSpace } from '../../contexts/SpaceContext'
 import { useUnreadConversations } from '../conversation/useUnreadConversations'
 import { ConversationStatusIndicator } from '../conversation/ConversationUnreadDot'
@@ -278,6 +279,7 @@ function Section({ title, rosterHref, items, projectId }: {
   projectId: string
 }) {
   const { activeSpaceId } = useSpace()
+  const { t } = useAppTranslation()
   const unreadConversations = useUnreadConversations(activeSpaceId ?? undefined, projectId)
   if (items.length === 0) return null
   return (
@@ -311,6 +313,13 @@ function Section({ title, rosterHref, items, projectId }: {
                   <span className="text-sm font-medium">{item.title ?? 'Untitled conversation'}</span>
                   <ConversationStatusIndicator running={item.is_running} unread={unreadConversations.has(item.id)} />
                 </div>
+                {/* A conversation frozen when someone joined without its
+                    history is read by fewer people than its section names. */}
+                {item.audience?.restricted && (
+                  <p className="mt-0.5 truncate text-[11px] text-muted-foreground" data-testid={`conversation-audience-${item.id}`}>
+                    {conversationAudienceLabel({ isMainline: item.room_is_mainline, roomOtherMemberNames: item.room_other_member_names, audience: item.audience }, t)}
+                  </p>
+                )}
                 {item.last_message_preview ? (
                   <p className="mt-0.5 truncate text-xs text-muted-foreground">
                     <span className="uppercase">{item.last_message_role === 'user' ? 'You' : 'Agent'}</span>

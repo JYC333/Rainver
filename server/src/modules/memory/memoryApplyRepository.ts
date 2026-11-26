@@ -185,6 +185,8 @@ interface DirectWriteInput {
  */
 export interface AgentWriteContext {
   ownerUserId: string | null;
+  /** The Room conversation the Run speaks in; null outside a Room. */
+  sessionId?: string | null;
   /**
    * The **effective** origin — a delegated Run's root's, the same value the
    * policy gate uses. Reading the raw column instead would make one hop of
@@ -290,6 +292,7 @@ export interface AppliedMemoryRow {
   version: number;
   agent_id: string | null;
   origin_room_id: string | null;
+  origin_session_id: string | null;
 }
 
 interface MemoryApplyResult {
@@ -305,12 +308,12 @@ const INSERT_COLUMNS = `id, space_id, scope_type, memory_type, content, status,
   title, visibility, confidence, importance, source_id,
   created_by, approved_by, version, access_count, tags, memory_layer,
   created_from_proposal_id, root_memory_id, supersedes_memory_id, source_trust, agent_id,
-  project_id, origin_room_id`;
+  project_id, origin_room_id, origin_session_id`;
 
 const RETURNING_COLUMNS = `id, space_id, scope_type, namespace, memory_type, title,
   content, status, visibility, access_level, sensitivity_level, owner_user_id, subject_user_id,
   project_id, source_trust,
-  root_memory_id, supersedes_memory_id, memory_layer, version, agent_id, origin_room_id`;
+  root_memory_id, supersedes_memory_id, memory_layer, version, agent_id, origin_room_id, origin_session_id`;
 
 /** Columns + values needed for one new active memory version. */
 interface NewMemoryFields {
@@ -328,6 +331,8 @@ interface NewMemoryFields {
   agentId: string | null;
   /** The Room an agent-scope note was learned in; null everywhere else. */
   originRoomId?: string | null;
+  /** The Room conversation such a note was learned in, when known. */
+  originSessionId?: string | null;
   memoryLayer: string | null;
   sourceTrust: string | null;
   rootMemoryId: string | null;
@@ -523,6 +528,7 @@ export class PgMemoryApplyRepository {
       // whoever created the proposal.
       agentId: (scope === "agent" ? strOr(payload.agent_id) : null) ?? proposal.created_by_agent_id ?? null,
       originRoomId: scope === "agent" ? strOr(payload.origin_room_id) : null,
+      originSessionId: scope === "agent" ? strOr(payload.origin_session_id) : null,
       memoryLayer: memoryLayer(payload),
       sourceTrust: dominantSourceTrust(entries),
       rootMemoryId: null,
@@ -665,6 +671,8 @@ export class PgMemoryApplyRepository {
       // may receive it is a fact about where it came from, not about who
       // revised it.
       originRoomId: scope === "agent" ? (strOr(payload.origin_room_id) ?? old.origin_room_id) : null,
+      // A revision's origin conversation is unknown (`proposalRepository`).
+      originSessionId: null,
       memoryLayer: layer,
       sourceTrust: dominantSourceTrust(entries) ?? old.source_trust,
       rootMemoryId: rootId,
@@ -929,6 +937,7 @@ export class PgMemoryApplyRepository {
       ownerUserId: agentWrite ? agentWrite.ownerUserId : input.actingUserId,
       subjectUserId,
       originRoomId: agentWrite ? agentWrite.originRoomId : null,
+      originSessionId: agentWrite ? agentWrite.originSessionId : null,
       // User-scoped and unattached to the Project, even when a Project run
       // wrote it: what an Agent learns about the person is the person's, and
       // `ck_memory_entries_scope_placement` says a user-scoped entry carries
@@ -1101,7 +1110,7 @@ export class PgMemoryApplyRepository {
     input: DirectWriteInput,
     memoryType: string,
     old: DirectWriteTarget | null,
-  ): { ownerUserId: string; originRoomId: string | null } {
+  ): { ownerUserId: string; originRoomId: string | null; originSessionId: string | null } {
     const context = input.agentScope;
     if (!context) {
       throw new MemoryApplyError("an agent-scope memory write must carry the Run's trigger and the Agent's owner");
@@ -1131,7 +1140,7 @@ export class PgMemoryApplyRepository {
         );
       }
       // Delivered in every Room, so it has no origin Room to be filtered by.
-      return { ownerUserId: context.ownerUserId, originRoomId: null };
+      return { ownerUserId: context.ownerUserId, originRoomId: null, originSessionId: null };
     }
     // A note carries the Room it was learned in. Without one the conversation
     // is a direct chat, whose audience is the owner alone — so the acting
@@ -1151,7 +1160,14 @@ export class PgMemoryApplyRepository {
         "it was learned somewhere else, and revising it here would carry this conversation into that audience",
       );
     }
-    return { ownerUserId: context.ownerUserId, originRoomId };
+    // Its conversation, kept only while every version came from the same one:
+    // a revision from another conversation of the Room loses it, and delivery
+    // then holds the note to the Room-wide rule (`agentMemoryDelivery.ts`).
+    const contextSessionId = originRoomId ? context.sessionId ?? null : null;
+    const originSessionId = old
+      ? (old.origin_session_id && old.origin_session_id === contextSessionId ? old.origin_session_id : null)
+      : contextSessionId;
+    return { ownerUserId: context.ownerUserId, originRoomId, originSessionId };
   }
 
   /**
@@ -1357,6 +1373,7 @@ export class PgMemoryApplyRepository {
       projectId: old.project_id,
       agentId: old.agent_id,
       originRoomId: old.origin_room_id,
+      originSessionId: old.origin_session_id,
       memoryLayer: old.memory_layer,
       sourceTrust: old.source_trust,
       rootMemoryId: old.root_memory_id ?? old.id,
@@ -1505,7 +1522,7 @@ export class PgMemoryApplyRepository {
          $9, $10, NULL, $11,
          $12, $13, 1.0, 0.5, NULL,
          $14, $15, $23, 0, NULL, $16,
-         $17, $18, $19, $20, $21, $22, $24
+         $17, $18, $19, $20, $21, $22, $24, $25
        )
        RETURNING ${RETURNING_COLUMNS}`,
       [
@@ -1533,6 +1550,7 @@ export class PgMemoryApplyRepository {
         f.projectId, // $22
         f.version ?? 1, // $23
         f.originRoomId ?? null, // $24
+        f.originSessionId ?? null, // $25
       ],
     );
     return result.rows[0]!;

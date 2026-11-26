@@ -42,7 +42,7 @@ import {seedRoomManager} from './support/domainSeeds.js';
  * Location is given no Rainver tools at all.
  */
 const db = useTestDatabase(import.meta.filename);
-const pid = 'applications';
+const pid = 'phd_application';
 const opId = (name: string) => `plugin.${pid}.${name}`;
 const plugin = BUILT_IN_PLUGINS.find(p => p.id === pid) as RainverPlugin;
 let space: string, owner: string, projectA: string, projectB: string, config: ReturnType<typeof loadConfig>, app: ReturnType<typeof buildModuleServer>;
@@ -150,7 +150,7 @@ describe('Application tools in the Runs Rainver creates', () => {
     const {application_id} = (created.body as {data: {application_id: string}}).data;
     const replay = await transport().call(run, {...create, arguments: {...create.arguments, project_id: projectA}}) as OperationToolResponse;
     expect(replay.body).toMatchObject({replayed: true, data: {application_id}});
-    expect((await db.pool.query(`SELECT user_id,project_id FROM plugin_applications.applications WHERE id=$1`, [application_id])).rows).toEqual([{user_id: owner, project_id: projectA}]);
+    expect((await db.pool.query(`SELECT user_id,project_id FROM plugin_phd_application.applications WHERE id=$1`, [application_id])).rows).toEqual([{user_id: owner, project_id: projectA}]);
     const read = await call(run, 'application.list', {});
     expect((read.body as {data: {items: {id: string}[]}}).data.items.map(i => i.id)).toEqual([application_id]);
     const dispatcher = await SystemActionDispatcher.create(config, run, {actionEventSink: async () => {}});
@@ -163,7 +163,7 @@ describe('Application tools in the Runs Rainver creates', () => {
     // A draft cannot be generated for a missing material.
     const generated = await call(run, 'material.generate', {project_id: projectA, material_id: randomUUID(), requirements: 'x'});
     expect(generated.httpStatus).not.toBe(200);
-    expect((await db.pool.query(`SELECT count(*)::int AS n FROM plugin_applications.applications WHERE space_id=$1`, [space])).rows[0].n).toBe(1);
+    expect((await db.pool.query(`SELECT count(*)::int AS n FROM plugin_phd_application.applications WHERE space_id=$1`, [space])).rows[0].n).toBe(1);
   });
 
   // Interleaved deterministically: a reader holds the Run FOR SHARE, so the first call's release (Project FOR SHARE
@@ -198,7 +198,7 @@ describe('Application tools in the Runs Rainver creates', () => {
       await blocker.query('ROLLBACK').catch(() => undefined);
       blocker.release();
     }
-    expect((await db.pool.query(`SELECT notes,revision FROM plugin_applications.applications WHERE id=$1`, [ids[1]])).rows[0]).toMatchObject({notes: 'Ask about funding', revision: 2});
+    expect((await db.pool.query(`SELECT notes,revision FROM plugin_phd_application.applications WHERE id=$1`, [ids[1]])).rows[0]).toMatchObject({notes: 'Ask about funding', revision: 2});
     return ids;
   }
 
@@ -208,7 +208,7 @@ describe('Application tools in the Runs Rainver creates', () => {
 
   it('two application.update calls of one Run, one releasing while the other starts, never deadlock', async () => {
     const ids = await raceReleaseAgainstUpdate((run, [eth]) => call(run, 'application.update', {project_id: projectA, application_id: eth, revision: 1, notes: 'Deadline moved'}));
-    expect((await db.pool.query(`SELECT notes FROM plugin_applications.applications WHERE id=$1`, [ids[0]])).rows[0]).toMatchObject({notes: 'Deadline moved'});
+    expect((await db.pool.query(`SELECT notes FROM plugin_phd_application.applications WHERE id=$1`, [ids[0]])).rows[0]).toMatchObject({notes: 'Deadline moved'});
   });
 
   // The core Task commands an Agent calls in its Run's Project take that Project before the core pins person and
@@ -253,7 +253,7 @@ describe('Application tools in the Runs Rainver creates', () => {
     // The Project's Assistant manages its Rooms; a specialist is on the roster for a delegation.
     const manager = randomUUID(), specialist = randomUUID();
     await db.pool.query(`INSERT INTO agents (id,space_id,project_id,owner_user_id,name,status,agent_kind,current_version_id,visibility,created_at,updated_at) VALUES ($1,$2,$3,NULL,'Assistant','active','system_assistant',NULL,'space_shared',$4,$4)`, [manager, space, projectA, now]);
-    await db.pool.query(`INSERT INTO agent_versions (id,agent_id,space_id,version_label,system_prompt,context_policy_json,memory_policy_json,capabilities_json,tool_permissions_json,risk_level,follows_seed_key,created_at) VALUES ($1,$2,$3,'v1','Coordinate.','{}','{}','[]','{}','low','agent_template.personal_assistant.system',$4)`, [randomUUID(), manager, space, now]);
+    await db.pool.query(`INSERT INTO agent_versions (id,agent_id,space_id,version_label,system_prompt,context_policy_json,memory_policy_json,capabilities_json,tool_permissions_json,risk_level,follows_seed_key,created_at) VALUES ($1,$2,$3,'v1','Coordinate.','{}','{}','[]','{}','low','agent_role.personal_assistant.system',$4)`, [randomUUID(), manager, space, now]);
     await db.pool.query(`UPDATE agents SET current_version_id=(SELECT id FROM agent_versions WHERE agent_id=$1) WHERE id=$1`, [manager]);
     await seedAgentWithVersion(db.pool, {agent: specialist, version: randomUUID(), space, owner, name: 'Specialist', seedDefaultRuntimeProfile: false, now});
     for (const [agent, name] of [[manager, 'Assistant'], [specialist, 'Specialist']]) {
@@ -339,7 +339,7 @@ describe('Application tools in the Runs Rainver creates', () => {
       expect((await call(run, 'application.list', {project_id: projectB})).httpStatus, kind).not.toBe(200);
       expect((await call(run, 'material.generate', {project_id: projectA, material_id: randomUUID(), requirements: 'x'})).httpStatus, kind).not.toBe(200);
     }
-    expect((await db.pool.query(`SELECT count(*)::int AS n FROM plugin_applications.applications WHERE space_id=$1`, [space])).rows[0].n).toBe(4);
+    expect((await db.pool.query(`SELECT count(*)::int AS n FROM plugin_phd_application.applications WHERE space_id=$1`, [space])).rows[0].n).toBe(4);
     // A Project reader can see the Project's shared applications.
     for (const run of [roomRun, childRun]) {
       const shared = await call(run, 'application.list', {});
@@ -347,7 +347,7 @@ describe('Application tools in the Runs Rainver creates', () => {
       expect((shared.body as {data: {items: unknown[]}}).data.items).toHaveLength(4);
     }
     const {id: applicationId} = (await db.pool.query<{id: string}>(
-      `SELECT id FROM plugin_applications.applications WHERE space_id=$1 AND program='PhD via room'`, [space],
+      `SELECT id FROM plugin_phd_application.applications WHERE space_id=$1 AND program='PhD via room'`, [space],
     )).rows[0]!;
     const project_id = projectA;
     const supervisor = await call(roomRun, 'contact.create', {project_id, application_ids: [applicationId], name: 'Example Supervisor', role: 'supervisor'});
@@ -384,7 +384,7 @@ describe('Application tools in the Runs Rainver creates', () => {
     expect(options.statusCode, options.body).toBe(200);
     expect(options.json().data.consentable.map((option: {toolset: string}) => option.toolset)).toEqual(['read']);
     const legacyContact = randomUUID();
-    await db.pool.query(`INSERT INTO plugin_applications.application_contacts(space_id,user_id,project_id,id,name,role) VALUES ($1,$2,$3,$4,'Legacy private contact','supervisor')`,
+    await db.pool.query(`INSERT INTO plugin_phd_application.application_contacts(space_id,user_id,project_id,id,name,role) VALUES ($1,$2,$3,$4,'Legacy private contact','supervisor')`,
       [space, owner, projectA, legacyContact]);
     const before = await startRun(conversationToolGrantInput({project_id: projectA}), projectA);
     expect((await call(before, 'contact.list', {project_id: projectA})).body.data).toEqual({items: []});

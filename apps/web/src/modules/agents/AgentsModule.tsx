@@ -1,20 +1,20 @@
-import { Routes, Route } from 'react-router-dom'
-import AgentsPage from './AgentsPage'
+import { Navigate, Routes, Route } from 'react-router-dom'
 import AgentFormPage from './AgentFormPage'
 import AgentDetailPage from './AgentDetailPage'
 import AssistantChatPage from './AssistantChatPage'
-import TemplateLibraryPage from './TemplateLibraryPage'
-import TemplateDetailPage from './TemplateDetailPage'
-import CreateFromTemplatePage from './CreateFromTemplatePage'
+import RoleLibraryPage from './RoleLibraryPage'
+import RoleDetailPage from './RoleDetailPage'
+import CreateFromRolePage from './CreateFromRolePage'
 
 export default function AgentsModule() {
   return (
     <Routes>
-      <Route index element={<AgentsPage />} />
+      {/* The Agent list is My Agents, across Spaces; an old in-Space link lands there. */}
+      <Route index element={<Navigate to="/my-agents" replace />} />
       <Route path="new" element={<AgentFormPage />} />
-      <Route path="templates" element={<TemplateLibraryPage />} />
-      <Route path="templates/:templateId" element={<TemplateDetailPage />} />
-      <Route path="templates/:templateId/use" element={<CreateFromTemplatePage />} />
+      <Route path="roles" element={<RoleLibraryPage />} />
+      <Route path="roles/:roleId" element={<RoleDetailPage />} />
+      <Route path="roles/:roleId/use" element={<CreateFromRolePage />} />
       <Route path=":agentId/chat" element={<AssistantChatPage />} />
       <Route path=":agentId" element={<AgentDetailPage />} />
     </Routes>

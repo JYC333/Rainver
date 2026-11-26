@@ -1,3 +1,4 @@
+import { invalidateConversationPages } from '../lib/conversationPageCache'
 import type {
   ContinueRoomAfterProposalRequest,
   ConversationRetryResponse,
@@ -108,7 +109,7 @@ export const roomsApi = {
     const page = await roomsApi.messages(receipt.room_id, receipt.session_id, { limit: 50 }, { ...options, spaceId: receipt.space_id })
     return { items: page.items, task_group_ids: page.task_group_ids, conversation: page.conversation ?? null, limit: page.limit, offset: page.offset }
   },
-  agentCandidates: (roomId: string, params: { q?: string; limit?: number; offset?: number } = {}) =>
+  agentCandidates: (roomId: string, params: { q?: string; limit?: number; offset?: number; source_role_id?: string } = {}) =>
     get<RoomAgentCandidatesResponse>(`/rooms/${roomId}/agent-candidates?${pageQuery(params)}`),
   // Host restore/archive happen after the roster commits; the receipt says whether a restore was requested.
   addAgent: async (roomId: string, body: RoomAgentAddRequest, key: string = crypto.randomUUID()): Promise<RoomAgentMutationResponse> =>
@@ -131,11 +132,15 @@ export const roomsApi = {
     roomInvitationAfter(await commandReceipt('room.invitation.decide', { ...body, room_id: roomId, invitation_id: invitationId }, key)),
   removeUser: async (roomId: string, userId: string, key: string = crypto.randomUUID()): Promise<RoomAgentMutationResponse | null> => {
     const receipt = await commandReceipt('room.member.remove', { room_id: roomId, user_id: userId }, key)
+    invalidateConversationPages({ roomId })
     // Leaving may end the person's own access; the roster is then simply no longer theirs to read.
     return roomMutationAfter(receipt).catch(() => null)
   },
-  transferOwner: async (roomId: string, body: RoomOwnerTransferRequest, key: string = crypto.randomUUID()): Promise<RoomAgentMutationResponse> =>
-    roomMutationAfter(await commandReceipt('room.owner.transfer', { ...body, room_id: roomId }, key)),
+  transferOwner: async (roomId: string, body: RoomOwnerTransferRequest, key: string = crypto.randomUUID()): Promise<RoomAgentMutationResponse> => {
+    const receipt = await commandReceipt('room.owner.transfer', { ...body, room_id: roomId }, key)
+    invalidateConversationPages({ roomId })
+    return roomMutationAfter(receipt)
+  },
   claimOwner: async (roomId: string, key: string = crypto.randomUUID()): Promise<RoomAgentMutationResponse> =>
     roomMutationAfter(await commandReceipt('room.owner.claim', { room_id: roomId }, key)),
   resetAgentContext: async (roomId: string, agentId: string, sessionId?: string, options: RequestOptions = {}): Promise<RoomAgentMutationResponse> =>
@@ -162,12 +167,14 @@ export const roomsApi = {
   setConversationArchived: async (roomId: string, sessionId: string, archived: boolean, options: RequestOptions = {}) => {
     await commandReceipt(archived ? 'room.conversation.archive' : 'room.conversation.restore',
       { room_id: roomId, session_id: sessionId }, options.idempotencyKey ?? crypto.randomUUID(), options)
+    invalidateConversationPages({ roomId, conversationId: sessionId })
   },
   restoreDeletedConversation: async (roomId: string, sessionId: string, options: RequestOptions = {}) => {
     await commandReceipt('room.conversation.restore_deleted', { room_id: roomId, session_id: sessionId }, options.idempotencyKey ?? crypto.randomUUID(), options)
   },
   deleteConversation: async (roomId: string, sessionId: string, options: RequestOptions = {}) => {
     await commandReceipt('room.conversation.delete', { room_id: roomId, session_id: sessionId }, options.idempotencyKey ?? crypto.randomUUID(), options)
+    invalidateConversationPages({ roomId, conversationId: sessionId })
   },
   createConversation: async (roomId: string, options: RequestOptions = {}): Promise<RoomConversation> => {
     const receipt = await commandReceipt('room.conversation.create', { room_id: roomId }, options.idempotencyKey ?? crypto.randomUUID(), options)
@@ -238,14 +245,12 @@ export const roomsApi = {
     const { space_id: _space, room_id: _room, ...retry } = await commandReceipt('room.message.retry', { room_id: roomId, session_id: sessionId, run_id: runId }, options.idempotencyKey ?? crypto.randomUUID(), options)
     return retry
   },
-  continueAfterProposal: async (
+  /** The receipt identifies the Runs; its internal instruction is hidden from the transcript. */
+  continueAfterProposal: (
     roomId: string,
     sessionId: string,
     body: ContinueRoomAfterProposalRequest, options: RequestOptions = {},
-  ): Promise<{ message: RoomMessage; conversation: RoomConversation; task_group_ids: string[]; run_ids: string[] }> => {
-    const receipt = await commandReceipt('room.message.continue_after_proposal', { ...body, room_id: roomId, session_id: sessionId }, options.idempotencyKey ?? crypto.randomUUID(), options)
-    return { ...await turnAfter(receipt, options), task_group_ids: receipt.task_group_ids, run_ids: receipt.run_ids }
-  },
+  ) => commandReceipt('room.message.continue_after_proposal', { ...body, room_id: roomId, session_id: sessionId }, options.idempotencyKey ?? crypto.randomUUID(), options),
   /** Posts the topic as the person's message and dispatches the first wave; 409 while another discussion is active. */
   openDiscussion: async (roomId: string, sessionId: string, body: OpenRoomDiscussionRequest, options: RequestOptions = {}): Promise<OpenRoomDiscussionResponse> => {
     const receipt = await commandReceipt('room.discussion.start', { ...body, room_id: roomId, session_id: sessionId }, options.idempotencyKey ?? crypto.randomUUID(), options)

@@ -6,7 +6,7 @@ import type {
   ConversationExecutionHostSummary,
   ConversationPrimarySummary,
 } from "@rainver/protocol";
-import { projectReadAccessSql } from "../access/contentAccessSql.js";
+import { projectReadAccessSql, roomConversationAudienceSql } from "../access/contentAccessSql.js";
 import { contentReadSql } from "../access/contentAccessSql.js";
 import { isStale } from "../hosts/liveness.js";
 import { withQueryableTransaction, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
@@ -155,7 +155,7 @@ export class PgConversationExecutionContextRepository {
                  AND member.room_id = s.room_id
                  AND member.user_id = $3
                  AND member.status = 'active'
-            ))
+            ) AND ${roomConversationAudienceSql("s.space_id", "s.id", "$3")})
           )
           AND (
             s.project_id IS NULL

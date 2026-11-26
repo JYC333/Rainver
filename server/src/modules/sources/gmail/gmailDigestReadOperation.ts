@@ -38,7 +38,7 @@
  *   only that launch's facts and flags may cite it.
  * - **One budget**: the model-proof wait, the Gmail page and the release share
  *   `GMAIL_DIGEST_READ_BUDGET_MS` from the request's arrival, inside the
- *   caller's 65-second HTTP timeout (`packages/agent-cli/src/toolHttp.ts`): the
+ *   caller's 65-second tool request deadline (`packages/agent-cli/src/toolRequest.ts`): the
  *   release holds that absolute deadline up to its commit boundary — each
  *   statement's lock wait and run time are cut to what is left when it starts,
  *   the statement in progress is cancelled at the deadline or when the caller
@@ -74,8 +74,8 @@ const FACTS = Symbol("rainver.gmail.digest_read_facts");
 
 /**
  * One digest read end to end — an automation's model-proof wait, the Gmail page and the release — from the
- * request's arrival. The caller's HTTP timeout for this tool is 65 s (`toolHttpTimeoutMs`,
- * `packages/agent-cli/src/toolHttp.ts`); the 10 s left cover the commit and the response, so the server
+ * request's arrival. The caller's tool request deadline for this tool is 65 s (`toolRequestTimeoutMs`,
+ * `packages/agent-cli/src/toolRequest.ts`); the 10 s left cover the commit and the response, so the server
  * answers before the caller gives up: a page the budget ended is 504 `gmail_upstream_timeout`, a release it
  * ended is withheld (503) with nothing committed.
  */
@@ -92,6 +92,7 @@ interface ReleaseFacts {
   deliveryId: string;
   messageIds: string[];
   sentIds?: string[];
+  automaticReplyIds?: string[];
   /**
    * Frozen ids of the page found ineligible when fetched (`readGmailDigestPage`). Recorded only on the
    * automation's mail items as settled (`done`, `not_eligible`), never in the Agent-read log, so no fact or flag
@@ -277,7 +278,10 @@ export function gmailDigestReadRegistration(definitions: ReadonlyMap<string, Reg
         enumerable: false,
         value: {
           v: 1, snapshot: page.snapshot, grantId, projectId: digest.project_id, digestId: digest.id, deliveryId: delivery.id,
-          messageIds: page.items.map((item) => item.id), sentIds: page.items.filter((item) => item.direction === "sent").map((item) => item.id), excludedIds: page.excludedIds, goneIds: page.goneIds, pageIndex, complete: page.nextPageToken === null,
+          messageIds: page.items.map((item) => item.id),
+          sentIds: page.items.filter((item) => item.direction === "sent").map((item) => item.id),
+          automaticReplyIds: page.items.filter((item) => item.automatic_reply).map((item) => item.id),
+          excludedIds: page.excludedIds, goneIds: page.goneIds, pageIndex, complete: page.nextPageToken === null,
           truncated: page.truncated, requestId: invocation?.requestId ?? "", launchId, deadlineAt,
         } satisfies ReleaseFacts,
       });
@@ -428,6 +432,12 @@ async function releaseWithin(db: Queryable, config: ServerConfig, actor: Operati
     await recordAgentDataRead(db, {
       spaceId: actor.space_id, ownerUserId: person, runId: run.id, agentId: actor.agent_id, actionId: GMAIL_DIGEST_READ_ACTION,
       resourceType: "gmail_sent_message", resourceIds: facts.sentIds, dataClass: "sensitive", grantId: facts.grantId, launchId: facts.launchId,
+    });
+  }
+  if (kind === "application" && facts.automaticReplyIds?.length) {
+    await recordAgentDataRead(db, {
+      spaceId: actor.space_id, ownerUserId: person, runId: run.id, agentId: actor.agent_id, actionId: GMAIL_DIGEST_READ_ACTION,
+      resourceType: "gmail_automatic_reply", resourceIds: facts.automaticReplyIds, dataClass: "sensitive", grantId: facts.grantId, launchId: facts.launchId,
     });
   }
   await db.query(

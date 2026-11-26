@@ -77,6 +77,28 @@ describe('Project conversations', () => {
     expect(screen.queryByText('Tax season')).not.toBeInTheDocument()
   })
 
+  it('names a frozen conversation by its own, narrower audience', async () => {
+    vi.mocked(projectsApi.conversations).mockResolvedValue({
+      items: [
+        { id: 'conv-old', room_id: 'room-tax', room_title: 'Tax season', room_is_mainline: false,
+          room_other_member_names: ['Bob', 'Carol'], room_agent_count: 2, title: 'Before Carol joined',
+          created_at: '2026-08-26T08:00:00.000Z', last_message_at: null,
+          last_message_role: null, last_message_preview: null, message_count: 0,
+          audience: { restricted: true, other_member_names: ['Bob'] } },
+        { id: 'conv-new', room_id: 'room-tax', room_title: 'Tax season', room_is_mainline: false,
+          room_other_member_names: ['Bob', 'Carol'], room_agent_count: 2, title: 'Shared conversation',
+          created_at: '2026-08-27T08:00:00.000Z', last_message_at: null,
+          last_message_role: null, last_message_preview: null, message_count: 0,
+          audience: { restricted: false, other_member_names: ['Bob', 'Carol'] } },
+      ],
+      total: 2, limit: 100, offset: 0, viewer_can_write: true,
+    } as never)
+    renderPage()
+    expect(await screen.findByTestId('conversation-audience-conv-old')).toHaveTextContent('With Bob · earlier members only')
+    // The shared conversation is read by its whole section; it says nothing extra.
+    expect(screen.queryByTestId('conversation-audience-conv-new')).not.toBeInTheDocument()
+  })
+
   it('renders a Project with only its own conversations as a plain list', async () => {
     vi.mocked(projectsApi.conversations).mockResolvedValue({
       items: [
@@ -137,12 +159,24 @@ describe('Project conversations', () => {
       expect.any(String),
     ))
     await waitFor(() => expect(roomsApi.inviteUser).toHaveBeenCalledWith('room-new', {
-      user_id: 'user-2', confirm_owned_private_agent_shares: false,
+      user_id: 'user-2', confirm_owned_private_agent_shares: false, share_history: false,
     }))
     // The Room exists and no conversation was created with it, because sending
     // is what creates one (ADR 0018 decision 5) — and the reader lands in that
     // Room's composer, not in some other conversation.
     await waitFor(() => expect(navigated).toContain('/projects/project-1/rooms?room=room-new&new=1'))
+  })
+  it('opens a Room of one when nobody else is picked', async () => {
+    const user = userEvent.setup({ delay: null })
+    vi.mocked(roomsApi.create).mockResolvedValue({ room: { id: 'room-solo' } } as never)
+    renderPage()
+    await user.click(await screen.findByRole('button', { name: /New conversation/ }))
+    await user.click(await screen.findByRole('menuitem', { name: 'With a limited group…' }))
+    expect(await screen.findByText(/only you, and the Agents you add, will see it/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+    await waitFor(() => expect(roomsApi.create).toHaveBeenCalledWith({ project_id: 'project-1', title: 'Limited group' }, expect.any(String)))
+    expect(roomsApi.inviteUser).not.toHaveBeenCalled()
+    await waitFor(() => expect(navigated).toContain('/projects/project-1/rooms?room=room-solo&new=1'))
   })
 })
 

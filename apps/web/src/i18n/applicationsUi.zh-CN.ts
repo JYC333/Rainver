@@ -1,6 +1,6 @@
-/** 内置申请管理插件（plugins/official/applications）的界面文案。 */
+/** 内置博士申请插件（plugins/official/phd_application）的界面文案。 */
 export const applicationsUiZhCN = {
-  plugin_applications: {
+  plugin_phd_application: {
     area_hint: '新建的申请和资助记录对有项目读取权限的成员可见。个人材料库和联系人按各自的权限显示。',
     new: '新建申请', new_title: '新建博士申请', track_phd: '博士申请',
     track_phd_hint: '自动带出博士申请清单：简历、个人陈述、研究计划、成绩单、推荐信及可选材料。',
@@ -32,7 +32,7 @@ export const applicationsUiZhCN = {
     log_hint: '记录已经发生的联系；这里不会发送任何内容。', log_event: '记录联系',
     occurred_on: '日期', channel_label: '方式', direction_label: '方向', response_label: '回应', summary_label: '经过', next_step: '下一步',
     back_to_list: '返回列表',
-    summary_title: '申请', summary_empty: '还没有申请或资助。打开此 Project 的“申请”添加。',
+    summary_title: '博士申请', summary_empty: '还没有申请或资助。打开此 Project 的“博士申请”添加。',
     open_board: '打开申请', summary_open: '进行中', summary_closed: '已定', upcoming: '即将到来的截止日', no_upcoming: '暂无即将到来的截止日。',
     status: {planning: '计划中', preparing: '准备中', ready: '可提交', submitted: '已提交', under_review: '审核中', interview: '面试', offer: '录取通知', waitlisted: '候补', rejected: '未录取', accepted: '已接受', declined: '已拒绝', withdrawn: '已撤回'},
     deadline_kind: {application: '申请', funding: '奖学金/资助', references: '推荐信', supervisor_contact: '联系导师', interview: '面试', decision: '答复', other: '其他'},
@@ -61,7 +61,7 @@ export const applicationsUiZhCN = {
     save_hint: '保存的草稿是仅你可见的笔记，可在笔记中继续修改；满意后标记该版本已审阅。',
     save_new_unavailable: '在共享空间中，草稿只能保存为关联笔记的下一版本，且该笔记不能有其他人可读（包括通过空间监督可读的所有者或管理员）。本空间的内容不会被移到你的个人空间。',
     draft_started: '已开始起草', draft_saved: '已保存到笔记', review_recorded: '已记录审阅',
-    tabs_label: '申请模块', tab: {programs: '院校申请', funding: '奖学金与资助', library: '材料库', contacts: '导师与联系人'},
+    tabs_label: '博士申请分区', tab: {programs: '院校申请', funding: '奖学金与资助', library: '材料库', contacts: '导师与联系人'},
     programs_hint: '按院校分组；同一院校的每个项目各是一条独立申请，有自己的截止日、材料和进度。', group_count_one: '{{count}} 个项目', group_count_other: '{{count}} 个项目',
     funding_hint: '需要单独提交的奖学金有自己的截止日、材料、审阅和进度；随院校申请自动参评的只记录结果。可以关联到一条或多条院校申请，也可以先独立登记。',
     new_funding: '新建资助', new_funding_title: '新建奖学金或资助', funder: '资助方', funding_name: '资助名称',

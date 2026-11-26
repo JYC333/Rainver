@@ -275,21 +275,11 @@ or similar model utterance never infers retry. The CLI never automatically
 reinvokes a write on a timeout, 409, lost response or restart. Core durable dedupe
 applies only to migrated commands; legacy families keep their own semantics.
 
-The implemented chain is CLI option → distinct `ToolRequest.idempotency_key` →
-direct HTTP or file bridge/Host forwarding → `Idempotency-Key` header →
-Run route/CanonicalToolCall.id → executor scoped key. `ToolRequest.id` remains a
-fresh transport correlation UUID per attempt, including explicit-key retries,
-so bridge filenames and in-flight response correlation never collide. The parser
-and Host bridge validate/preserve the explicit key independently of that id.
-The additive bridge capability file advertises explicit-key support. With an
-older Host lacking that capability, the CLI refuses before sending the write;
-it never silently substitutes a UUID for the explicit key.
+An explicit CLI key travels through the local tool bridge and Host WebSocket
+frame to `CanonicalToolCall.id` and the executor's scoped idempotency key.
+The transport uses fresh correlation identities independently of that key.
+A command invocation without an explicit key gets its own fresh key.
 
-With no explicit key, the CLI uses its fresh correlation UUID for that invocation;
-the legacy Run route also generates a UUID if the header is absent. Running the
-command again is therefore a new call, not a response-loss retry. New generic
-command entries require the header. No existing grant or legacy retry contract
-is widened by this transport option.
 
 [Operation core acceptance](OPERATION_CORE_ACCEPTANCE.md) links actual CLI/HTTP/
 file-bridge response-loss and process-death evidence for the cancellation pilot,

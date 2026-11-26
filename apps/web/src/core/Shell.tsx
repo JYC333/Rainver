@@ -1,12 +1,14 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Outlet, useLocation, useNavigate } from 'react-router-dom'
+import { Outlet, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { Sun, Moon, LogOut, Menu, Globe } from 'lucide-react'
-import { Toaster } from 'sonner'
+import { Toaster, toast } from 'sonner'
 import { useAuth } from '../contexts/AuthContext'
 import { useTheme } from '../contexts/ThemeContext'
 import { useSpace } from '../contexts/SpaceContext'
 import { SpaceSwitcher } from '../components/SpaceSwitcher'
 import { UserAvatar } from '../components/UserAvatar'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../components/ui/dropdown-menu'
+import { AddAccountDialog, BrowserAccountSection, useBrowserAccounts } from '../components/shell/BrowserAccounts'
 import { GlobalRail, type PluginNavItem } from '../components/shell/GlobalRail'
 import { SceneSidebar, SceneTabs } from '../components/shell/SceneSidebar'
 import { SettingsNavigation } from '../components/shell/SettingsNavigation'
@@ -49,19 +51,30 @@ function ThemeToggle() {
 
 /* ── User menu ─────────────────────────────────────────────────────────────── */
 function UserMenu() {
-  const { currentUser, logout } = useAuth()
+  const { currentUser, logout, accountAddReturned, acknowledgeAccountAdd } = useAuth()
   const { t } = useAppTranslation()
   const navigate = useNavigate()
+  const [params, setParams] = useSearchParams()
   const [open, setOpen] = useState(false)
-  const ref = useRef<HTMLDivElement>(null)
+  const [adding, setAdding] = useState(false)
+  // The menu returns focus to its trigger on close; not when it opened the dialog.
+  const openingDialog = useRef(false)
+  const accounts = useBrowserAccounts(open)
 
+  // Back from Google without a new account: say why, once, and drop the reason from the address.
   useEffect(() => {
-    function handler(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
-    }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
-  }, [])
+    if (!accountAddReturned) return
+    acknowledgeAccountAdd()
+    const reason = params.get('error')
+    if (reason === null) return
+    // After this commit: the shell's Toaster, mounted beside this menu, subscribes in its own effect.
+    const message = reason === 'account_limit' ? t('shell.account_limit') : t('shell.add_account_failed')
+    setTimeout(() => toast.error(message), 0)
+    const next = new URLSearchParams(params)
+    next.delete('error')
+    next.delete('error_description')
+    setParams(next, { replace: true })
+  }, [accountAddReturned, acknowledgeAccountAdd, params, setParams, t])
 
   if (!currentUser) {
     return (
@@ -74,33 +87,42 @@ function UserMenu() {
     )
   }
 
+  // Sign-out ends every account of this browser; it is plain "Sign out" only when that is one.
+  const signOutLabel = accounts.status === 'ready' && accounts.accounts.length <= 1 ? t('shell.sign_out') : t('shell.sign_out_all')
   return (
-    <div className="relative" ref={ref}>
-      <button
-        type="button"
-        onClick={() => setOpen(o => !o)}
-        className="flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-full border border-border hover:opacity-90 transition-opacity"
-        title={currentUser.display_name}
-      >
-        <UserAvatar avatarUrl={currentUser.avatar_url} displayName={currentUser.display_name} email={currentUser.email} />
-      </button>
-
-      {open && (
-        <div className="absolute top-[calc(100%+6px)] right-0 w-56 bg-card border border-border rounded-lg shadow-lg z-50 py-1 overflow-hidden">
+    <>
+      <DropdownMenu open={open} onOpenChange={setOpen}>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            className="flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-full border border-border hover:opacity-90 transition-opacity"
+            title={currentUser.display_name}
+            aria-label={t('shell.account_menu', { name: currentUser.display_name })}
+          >
+            <UserAvatar avatarUrl={currentUser.avatar_url} displayName={currentUser.display_name} email={currentUser.email} />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent
+          align="end"
+          className="w-56 overflow-hidden p-0 py-1"
+          onCloseAutoFocus={event => { if (openingDialog.current) { event.preventDefault(); openingDialog.current = false } }}
+        >
           <div className="px-3 py-2 border-b border-border">
             <div className="text-[13px] font-medium text-foreground truncate">{currentUser.display_name}</div>
             <div className="text-[11px] text-muted-foreground truncate">{currentUser.email}</div>
           </div>
-          <button
-            onClick={() => { setOpen(false); logout() }}
-            className="w-full flex items-center gap-2 px-3 py-2 text-left text-[13px] text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+          <BrowserAccountSection state={accounts} onAdd={() => { openingDialog.current = true; setAdding(true) }} />
+          <DropdownMenuItem
+            onSelect={() => { void logout() }}
+            className="w-full rounded-none gap-2 px-3 py-2 text-[13px] text-muted-foreground hover:text-foreground"
           >
             <LogOut size={13} />
-            {t('shell.sign_out')}
-          </button>
-        </div>
-      )}
-    </div>
+            {signOutLabel}
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      {adding && <AddAccountDialog onOpenChange={setAdding} />}
+    </>
   )
 }
 
@@ -166,8 +188,11 @@ function ShellContent() {
   const { modules: effectiveModules } = useEffectiveModules()
 
   const scope = routeScopeForPath(location.pathname)
-  const scene = scope === 'home' ? null : sceneForPath(location.pathname)
   const logicalPath = stripSpacePrefix(location.pathname)
+  // Home-scope pages have no scene, except user-scoped My Agents: it keeps the Agents scene
+  // (desktop sidebar and mobile tabs), whose in-Space items link through the preferred Space.
+  const userScopedScene = logicalPath === '/my-agents' || logicalPath.startsWith('/my-agents/')
+  const scene = scope === 'home' && !userScopedScene ? null : sceneForPath(location.pathname)
   const isHome = logicalPath === '/home' || logicalPath.startsWith('/home/') || logicalPath === '/'
 
   const [railExpanded, setRailExpanded] = useState(() => readBool(RAIL_KEY, false))

@@ -18,7 +18,7 @@
  *   scheduler starts one automation-origin Run in the owner's private execution conversation on the chosen runtime, launched as
  *   that conversation launches its turns (ADR 0037), whose only
  *   tools read its frozen messages and the Project's applications, record one fact
- *   (`plugin.applications.mail_fact.apply`) or keep a message for review (`.flag`). Its reply — the
+ *   (`plugin.phd_application.mail_fact.apply`) or keep a message for review (`.flag`). Its reply — the
  *   reminder — is stored only in that private execution conversation, which only the owner ever reads.
  * - **The fact gate** (`gmailApplicationFactAdmitted`, called by the operation host for that command):
  *   the caller is the running delivery's Run of an active automation of the owner in the targeted
@@ -28,7 +28,7 @@
  *   sensitive read it holds is the owner's own mail of this Project released under a live consent (an
  *   earlier on-demand read in the same private conversation; `onlyOwnProjectMail`). The plugin then decides
  *   uniqueness of the deadline, revision, ordering and replay. No other write is admitted from such a Run.
- * - **The ledger** (`plugin.applications.mail_fact.list`) reaches the owner directly, or an Agent only in
+ * - **The ledger** (`plugin.phd_application.mail_fact.list`) reaches the owner directly, or an Agent only in
  *   their own Run of their private conversation of that Project (`gmailApplicationFactsAudienceAdmitted`).
  * - **Narrowing in conversation.** `.list` (content-free; per-message outcomes only where the owner alone
  *   reads) and `.set_status` (pause or end) run in the owner's own turn in a conversation of the Project whose
@@ -120,7 +120,7 @@ export const ownerOnlyConversation = (turn: OwnerTurn) => !turn.conversation.roo
 
 const EFFECT_LABEL: Record<GmailApplicationUpdateEffect, string> = {
   under_review: "under review", interview: "interview invitations", waitlisted: "waitlist notices", offer: "offers", rejected: "rejections",
-  submission_received: "received submissions", deadline: "new or moved deadlines", contact: "application email correspondence",
+  submission_received: "received submissions", deadline: "new or moved deadlines", contact: "application email correspondence, including replies without a status change and out-of-office replies",
 };
 
 /** What the one card tells the owner before they decide (shown only to them). */
@@ -160,9 +160,9 @@ export async function proposeGmailApplicationUpdates(db: Queryable, config: Serv
     // The automation writes through the Applications package bound to this Project, as the owner.
     const { operationPluginEnabled } = await import("../../plugins/operationEnablement.js");
     const { isPluginProjectBound } = await import("../../plugins/projectBindings.js");
-    const bound = await isPluginProjectBound(tx, "applications", spaceId, projectId);
-    if (!bound || !await operationPluginEnabled(tx, "applications", spaceId, owner, config) || !await canWriteProject(tx, spaceId, projectId, owner))
-      return refusal(PROPOSE, "gmail_digest_applications_unavailable", "Application management is not enabled and bound to this Project for the owner, or they cannot edit it. They turn it on in the Project's plugin settings first.");
+    const bound = await isPluginProjectBound(tx, "phd_application", spaceId, projectId);
+    if (!bound || !await operationPluginEnabled(tx, "phd_application", spaceId, owner, config) || !await canWriteProject(tx, spaceId, projectId, owner))
+      return refusal(PROPOSE, "gmail_digest_applications_unavailable", "PhD Application is not enabled and bound to this Project for the owner, or they cannot edit it. They turn it on in the Project's plugin settings first.");
     const connections = (await tx.query<{ id: string; mailbox_email: string; generation: number }>(
       `SELECT id,mailbox_email,generation FROM gmail_connections WHERE space_id=$1 AND owner_user_id=$2 AND status='active' AND agent_read_enabled ORDER BY connected_at FOR SHARE`,
       [spaceId, owner])).rows;
@@ -274,7 +274,7 @@ export async function listGmailApplicationUpdates(db: Queryable, runId: string, 
       });
     }
     return result(LIST, { ok: true, automations, next_step: detailed
-      ? "For what was recorded on each application, call plugin.applications.mail_fact.list for this Project. To change or resume an automation, draft a new card with source.gmail.application_updates.propose."
+      ? "For what was recorded on each application, call plugin.phd_application.mail_fact.list for this Project. To change or resume an automation, draft a new card with source.gmail.application_updates.propose."
       : "This conversation is read by others, so per-message outcomes are not listed here; the owner sees them in their private conversation of this Project. To change or resume an automation, draft a new card with source.gmail.application_updates.propose." });
   });
 }
@@ -350,16 +350,20 @@ async function recordGmailDerivedRead(db: Queryable, input: { spaceId: string; r
 }
 
 /**
- * Direction of a frozen message released to this request's launch. A new
+ * Direction and automatic-reply marker of a frozen message released to this request's launch. A new
  * launch can cite only mail it read itself (ADR 0034).
  */
-async function releasedMessageDirection(db: Queryable, input: { spaceId: string; runId: string; launchId: string | null | undefined; messageId: string; frozen: readonly string[] | null }): Promise<"inbound" | "outbound" | null> {
+async function releasedMessage(db: Queryable, input: { spaceId: string; runId: string; launchId: string | null | undefined; messageId: string; frozen: readonly string[] | null }): Promise<{ direction: "inbound" | "outbound"; automaticReply: boolean } | null> {
   if (!input.launchId || !input.frozen?.includes(input.messageId)) return null;
-  const row = (await db.query<{ resource_type: "gmail_message" | "gmail_sent_message" }>(`SELECT resource_type FROM agent_data_read_logs
-      WHERE space_id=$1 AND run_id=$2 AND action_id=$3 AND resource_type IN ('gmail_message','gmail_sent_message')
-        AND launch_id=$5 AND resource_ids_json ? $4 ORDER BY accessed_at DESC, id DESC LIMIT 1`,
+  const row = (await db.query<{ resource_type: "gmail_message" | "gmail_sent_message" | "gmail_automatic_reply"; automatic_reply: boolean }>(`
+    SELECT resource_type,bool_or(resource_type='gmail_automatic_reply') OVER () AS automatic_reply
+      FROM agent_data_read_logs
+     WHERE space_id=$1 AND run_id=$2 AND action_id=$3 AND resource_type IN ('gmail_message','gmail_sent_message','gmail_automatic_reply')
+       AND launch_id=$5 AND resource_ids_json ? $4
+     ORDER BY (resource_type='gmail_automatic_reply'),accessed_at DESC,id DESC LIMIT 1`,
     [input.spaceId, input.runId, GMAIL_DIGEST_READ_ACTION, input.messageId, input.launchId])).rows[0];
-  return row ? (row.resource_type === "gmail_sent_message" ? "outbound" : "inbound") : null;
+  if (!row || row.resource_type === "gmail_automatic_reply") return null;
+  return { direction: row.resource_type === "gmail_sent_message" ? "outbound" : "inbound", automaticReply: row.automatic_reply };
 }
 
 /**
@@ -400,7 +404,7 @@ function factEffect(input: unknown): GmailApplicationUpdateEffect | null {
 }
 
 /**
- * The host gate of `plugin.applications.mail_fact.apply` (ADR 0034): true only for the running
+ * The host gate of `plugin.phd_application.mail_fact.apply` (ADR 0034): true only for the running
  * delivery's Run of the owner's active automation, in the Project the call targets, while its consent
  * and owner-only audience admit it, for a message frozen for that delivery, released to this Run,
  * received exactly at `source.received_at` and still waiting, for an effect the rule allows, and with no
@@ -408,7 +412,7 @@ function factEffect(input: unknown): GmailApplicationUpdateEffect | null {
  */
 export async function gmailApplicationFactAdmitted(db: Queryable, actor: Pick<OperationActor, "space_id" | "run_id" | "effective_origin" | "on_behalf_of_user_id" | "principal">, input: unknown): Promise<boolean> {
   if (actor.principal.kind !== "agent" || actor.effective_origin !== "automation" || !actor.run_id || !actor.on_behalf_of_user_id) return false;
-  const call = input as { project_id?: unknown; source?: { kind?: unknown; message_id?: unknown; received_at?: unknown }; effect?: { direction?: unknown } } | null;
+  const call = input as { project_id?: unknown; source?: { kind?: unknown; message_id?: unknown; received_at?: unknown }; effect?: { direction?: unknown; automatic_reply?: unknown } } | null;
   const messageId = call?.source?.message_id, receivedAt = call?.source?.received_at;
   if (call?.source?.kind !== "gmail" || typeof messageId !== "string" || typeof receivedAt !== "string" || typeof call.project_id !== "string") return false;
   const owner = actor.on_behalf_of_user_id;
@@ -422,8 +426,11 @@ export async function gmailApplicationFactAdmitted(db: Queryable, actor: Pick<Op
   const admitted = await gmailDigestRunAdmits(db, { spaceId: actor.space_id, ownerUserId: owner, runId: actor.run_id });
   if (!admitted.ok || admitted.grantId !== digest.grant_id) return false;
   const expectedDirection = effect === "contact" ? call.effect?.direction : "inbound";
-  const direction = await releasedMessageDirection(db, { spaceId: actor.space_id, runId: actor.run_id, launchId, messageId, frozen: digest.message_ids });
-  if (!direction || direction !== expectedDirection) return false;
+  const message = await releasedMessage(db, { spaceId: actor.space_id, runId: actor.run_id, launchId, messageId, frozen: digest.message_ids });
+  if (!message || message.direction !== expectedDirection) return false;
+  const automaticReply = call.effect?.automatic_reply === true;
+  if (automaticReply && message.direction !== "inbound") return false;
+  if (message.automaticReply && (effect !== "contact" || !automaticReply)) return false;
   const item = (await db.query<{ received_at: Date }>(`SELECT received_at FROM gmail_digest_mail_items WHERE digest_id=$1 AND google_message_id=$2 AND status IN ('pending','review')`,
     [digest.id, messageId])).rows[0];
   if (!item || new Date(item.received_at).getTime() !== Date.parse(receivedAt)) return false;
@@ -431,7 +438,7 @@ export async function gmailApplicationFactAdmitted(db: Queryable, actor: Pick<Op
 }
 
 /**
- * The host gate of `plugin.applications.mail_fact.list` (ADR 0034): the ledger of what the owner's mail
+ * The host gate of `plugin.phd_application.mail_fact.list` (ADR 0034): the ledger of what the owner's mail
  * changed is the owner's alone. A person reads their own rows directly; an Agent only in a Run of the
  * owner's own private conversation of that Project whose whole audience is the owner
  * (`gmailDigestConversationAdmits` with `ownerOnly`), so the answer is never stored where anyone else reads
@@ -462,7 +469,7 @@ export async function flagGmailApplicationMessage(db: Queryable, run: RunRecord,
     const digest = await lockedAutomationDelivery(tx, { spaceId: run.space_id, ownerUserId: owner, runId: run.id, launchId, fallbackAtCommit: () => new FlagStoppedAtCommit() });
     const admitted = digest ? await gmailDigestRunAdmits(tx, { spaceId: run.space_id, ownerUserId: owner, runId: run.id }) : null;
     if (!digest || !admitted?.ok || admitted.grantId !== digest.grant_id) return stopped;
-    if (!await releasedMessageDirection(tx, { spaceId: run.space_id, runId: run.id, launchId, messageId: input.message_id, frozen: digest.message_ids }))
+    if (!await releasedMessage(tx, { spaceId: run.space_id, runId: run.id, launchId, messageId: input.message_id, frozen: digest.message_ids }))
       return refusal(tool, "gmail_digest_message_unknown", "Flag only a message id that source.gmail.digest.read returned to you since this Run last started.");
     const updated = await tx.query(`UPDATE gmail_digest_mail_items SET status='review',reason=$3,candidate_application_ids=$4::jsonb,updated_at=clock_timestamp()
         WHERE digest_id=$1 AND google_message_id=$2 AND status IN ('pending','review')`,

@@ -60,6 +60,7 @@ export * from "./relations.js";
 export * from "./routeDecisions.js";
 export * from "./rooms.js";
 export * from "./roomDiscussions.js";
+export * from "./roomConversationAudiences.js";
 export * from "./roomCreationIdempotency.js";
 export * from "./retrieval.js";
 export * from "./runs.js";

@@ -23,6 +23,7 @@ import { hostRegisterRateLimited } from "./pairingRateLimit.js";
 import { MIN_HOST_DAEMON_VERSION, hostDaemonMeetsMinimumVersion } from "./daemonCompatibility.js";
 import type { Pool } from "../../db/pool.js";
 import { sharedHostConnectionRegistry, type HostFrameSink } from "./connectionRegistry.js";
+import { HostRunToolChannel } from "./runToolChannel.js";
 import { parseFolderReadResultFrame } from "./folderReadFrames.js";
 import { parseFolderWriteResultFrame } from "./folderWriteFrames.js";
 import { hostProviderProxyBaseUrl } from "../runs/hostProviderProxyAddress.js";
@@ -678,6 +679,12 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         return;
       }
       const hostId = upgradeHostId;
+      const runTools = new HostRunToolChannel(
+        context.config,
+        (ref) => !socketGone() && sharedHostConnectionRegistry.acceptsRunToolRequest(hostId, frameSink, ref.run_id, ref.launch_id),
+        (frame) => { if (socketGone()) throw new Error("Host socket closed"); frameSink.send(frame); },
+        (error) => request.log.warn({ err: error, host_id: hostId }, "Host Run tool request failed"),
+      );
 
       socket.on("message", (raw: Buffer) => {
         // Every frame from every paired host lands here, and each one awaits
@@ -780,6 +787,15 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
             return;
           }
           switch (frame.type) {
+            case "run_tool_request":
+              runTools.request(frame);
+              return;
+            case "run_tool_cancel":
+              runTools.cancel(frame);
+              return;
+            case "run_tool_result_ack":
+              runTools.acknowledge(frame);
+              return;
             case "heartbeat": {
               // A revoke this process did not see (or whose immediate cut-off was lost) is
               // enforced here: the row is revoked, so the connection ends.
@@ -947,6 +963,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
 
       socket.on("close", () => {
         socketClosed = true;
+        runTools.close();
         if (!helloCompleted) return;
         const wasLive = sharedHostConnectionRegistry.unregisterConnection(hostId, frameSink);
         // Superseded by this host's newer connection, which is still live:

@@ -12,7 +12,7 @@
 | `server/src/db/schema/` | Drizzle schema authoring source for database table/constraint/index shape. |
 | `server/migrations/` | The append-only migration chain applied by the server migration runner — the frozen `0000_baseline.sql` plus one numbered file per schema change, generated from `src/db/schema/`. See `server/migrations/README.md`. |
 | `apps/web/` | Web client. It consumes APIs and shared protocol types; it is not a business-rule authority. |
-| `catalog/` | Built-in definitions, including agent templates and capabilities. |
+| `catalog/` | Built-in definitions, including agent roles and capabilities. |
 | `packages/protocol/` | Shared TypeScript protocol package only. No handlers, persistence, routing, or authority. |
 | `packages/reader-document/` | The Reader document tree shared by the server's canonical reading writer and the web Reader: the node/mark whitelist, `normalizeReaderDocument` (an unsupported or misplaced node, or nesting deeper than `READER_MAX_NESTING_DEPTH`, degrades to its text instead of hiding the document or exhausting the stack; one normalization, degraded text included, visits at most `READER_MAX_NODES` input nodes and `normalizeReaderDocumentBounded` reports `truncated` past it) and the one markdown-it Markdown converter. Browser-safe; no product logic, no I/O. |
 | `packages/outbound-guard/` | The one outbound HTTP boundary. The control plane's Source fetches use all of it through `server/src/modules/sources/outboundUrlSafety.ts`: the private-address block list, the address a connection is pinned to, the redirect and credential rules, and the body ceiling. The host daemon's egress proxy uses the block list alone — it resolves and dials the address itself, so it has no pinning race to close. No product logic. |
@@ -89,7 +89,7 @@ The Module column is each entry's `ServerModule.name`; where it differs from the
 | `contentAccess` | kernel | `/content-access/*` | empty | Resource visibility, access logs, demotion disclosures, and publication-proposal writes. |
 | `proposals` | kernel | `/proposals*` | yes | Proposal approval/apply orchestration and applier registry; unsupported proposal types fail closed. |
 | `sessions` | product | `/sessions*` (including `/sessions/{sessionId}/execution-context*`), `/conversation-inputs/media*` | empty | Conversation identity, canonical messages, destination-scoped drafts at the web edge, execution-context preflight/initialization and attachment mutations, user × session backend bindings, idempotent manual retry linkage, and serialized turn claims. The execution-context row is the sole Host/Primary/attachment admission authority; the vendor session a Conversation × Agent continues lives on its Host thread (`hosts`), and canonical messages remain the record. |
-| `agentTemplates` | product | `/agent-templates*` | empty | Catalog-backed template list/read/create-agent surfaces. |
+| `agentRoles` | product | `/agent-roles*` | empty | Catalog-backed role list/read/create-agent surfaces. |
 | `agents` | product | `/agents*` | empty | Agent profiles, versions, assistant chat/settings, direct conversation Host admission and retry routes, template services, agent-scoped run/proposal reads. |
 | `agentGroups` | product | `/agent-groups*` | empty | One-task collaboration records opened by Room messages: timeline, trace, pause/resume/cancel. Not a second conversation UI. |
 | `rooms` | product | `/rooms*`, `/projects/{projectId}/mainline-room`, `/projects/{projectId}/conversations` | empty | Project-bound Rooms, rosters, conversations, Room retry and recipient capability admission. See [modules/rooms.md](../modules/rooms.md). |
@@ -142,7 +142,7 @@ These routes are not `ServerModule` entries. They are mounted by `PluginHost` af
 | `diary` | product (operation package) | none (`plugin.diary.*` P1 operations) | Personal, user-level diary: entries, same-day history, reflection Job; every operation `sensitive`, save/delete person-only, Agent writes only append Proposals. Entries are editor-owned user documents, not raw ActivityRecord input. See OFFICIAL_OPTIONAL_MODULES "Diary package". |
 | `finance_ledger` | product (operation package) | none (`plugin.finance_ledger.*` P1 operations) | Space-scoped double-entry finance ledger with owner-only private accounts and uploader-only import batches. Posting uses canonical Proposals. See [Finance ledger package](OFFICIAL_OPTIONAL_MODULES.md#finance-ledger-package). |
 
-The Project-level operation package `applications` (application management, PhD track) mounts no routes: it is reached only through `/api/v1/actions` and `/api/v1/queries` and the Agent tool entry; see [OFFICIAL_OPTIONAL_MODULES](OFFICIAL_OPTIONAL_MODULES.md#application-management-package).
+The Project-level operation package `phd_application` (PhD Application, formerly `applications`) mounts no routes: it is reached only through `/api/v1/actions` and `/api/v1/queries` and the Agent tool entry; see [OFFICIAL_OPTIONAL_MODULES](OFFICIAL_OPTIONAL_MODULES.md#phd-application-package).
 
 ## Code-Only Support Surfaces
 

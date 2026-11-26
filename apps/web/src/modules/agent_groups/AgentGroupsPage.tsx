@@ -34,7 +34,7 @@ import { RoomRosterPanel } from './RoomRosterPanel'
 import { RoomsIndex } from './RoomsIndex'
 import { RoomConversationTrash } from './RoomConversationTrash'
 import { LIST_PAGE_SIZE, loadAllPages } from './loadAllPages'
-import { audienceLabel, rosterCountsLabel, roomVisibilityLabel } from './audience'
+import { audienceLabel, conversationAudienceLabel, rosterCountsLabel, roomVisibilityLabel } from './audience'
 import { displayRoomTitle as roomTitle } from './roomTitle'
 import { CREATED_AGENT_PARAM } from '../projects/agentCreationReturn'
 import { ConversationSurface } from '../conversation/ConversationSurface'
@@ -395,6 +395,7 @@ export default function AgentGroupsPage() {
             <div>
               <p>{t('collab_ui.room.approval_line', { agent: item.agent_name, room: item.room_title })}</p>
               <p className="text-xs text-muted-foreground">{t('collab_ui.room.approval_detail', { project: item.project_name, person: item.invitee_display_name || item.invitee_email || item.invitee_user_id })}</p>
+              <p className="text-xs text-muted-foreground">{t(item.share_history ? 'collab_ui.room.approval_history_shared' : 'collab_ui.room.approval_history_kept')}</p>
             </div>
             <div className="flex gap-2">
               <Button size="sm" onClick={() => void decidePendingApproval(item, 'approved')}>{t('collab_ui.room.approve')}</Button>
@@ -574,11 +575,16 @@ export default function AgentGroupsPage() {
   // The server computes the audience once, with the definition the Project's
   // conversation list uses; this only words it.
   const roomAudience = audienceLabel({ otherMemberNames: detail.other_member_names, agentCount: detail.agent_count }, t)
+  // Who reads the open conversation — narrower than the Room when it was
+  // frozen — said the same way in the mobile header and the desktop heading.
+  const conversationAudience = currentConversation?.audience?.restricted
+    ? conversationAudienceLabel({ isMainline: detail.room.is_mainline, roomOtherMemberNames: detail.other_member_names, audience: currentConversation.audience }, t)
+    : detail.room.is_mainline ? visibility : roomAudience
   return (
     <div className="project-room-conversation flex min-w-0 flex-col gap-4 p-4 md:p-6 lg:h-full lg:min-h-0 lg:overflow-hidden">
       {mobile && <MobileConversationNavigation
         title={currentConversation?.title || t('collab_ui.conversation.new')}
-        room={titleOf(detail.room)} audience={visibility}
+        room={titleOf(detail.room)} audience={visibility} conversationAudience={conversationAudience}
         conversations={conversations} selected={conversationId} unread={unreadConversations}
         onSelect={openConversation} onNew={() => startConversation()}
         onCarry={currentConversation ? () => startConversation([{ kind: 'thread', id: currentConversation.id }]) : undefined}
@@ -653,7 +659,7 @@ export default function AgentGroupsPage() {
                           asked is a separate, per-message choice below. */}
                       <p className="mt-0.5 text-xs text-muted-foreground">
                         {t('collab_ui.conversation.in_room', { room: titleOf(detail.room) })}
-                        {' · '}{detail.room.is_mainline ? visibility : roomAudience}
+                        {' · '}{conversationAudience}
                       </p>
                       <p className="mt-0.5 text-[11px] text-muted-foreground">{t('collab_ui.conversation.recipients_hint')}</p>
                     </div>

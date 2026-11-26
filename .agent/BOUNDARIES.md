@@ -13,8 +13,8 @@ Load this file for any task that changes structure, models, APIs, or agent behav
 **B3** — One deployment instance can host many spaces. Do not create one instance per user or one instance per space.
 
 **B4** — Space is the product-level isolation boundary. Data in space A must
-never be accessible to code running in the context of space B. Two enumerated,
-user-centred exceptions carry content across it, both recorded in
+never be accessible to code running in the context of space B. The enumerated,
+user-centred exceptions that carry content across it are recorded in
 [SECURITY_AND_ACCESS_BOUNDARIES §8](architecture/SECURITY_AND_ACCESS_BOUNDARIES.md):
 ADR 0013's `/me/retrieval*` path, which has no request-Space authority, applies
 each source Space's read gate independently, persists retrieved content only as
@@ -23,7 +23,11 @@ re-authorized pointers, and grants no write authority to another Space; and ADR
 which reads a capture the caller can already read as an active member of its
 Space, without oversight, and writes it only where the caller holds Project
 write access, under the source Space's copy-out setting for another member's
-content.
+content; and the person-scoped readers listed there (for example `GET /me/agents`,
+My Agents), which have no request-Space authority (the browsed Space is ignored),
+answer each Agent only through its own Space's active membership and its content or
+Room execution gate, name only Projects and Rooms the person reads there, and grant
+no write or execution authority in any Space.
 
 **B5** — `space_id` is required on every core data entity. Runtime Context acquisition and Delivery persistence require an explicit Space and reject cross-Space authority drift.
 
@@ -620,7 +624,7 @@ translate transport-specific request/response shapes and assemble which
 actions to expose, but it must not itself decide grants, evaluate policy,
 mutate a domain table, or otherwise define action semantics — that belongs to
 the single `SystemActionGateway`/`SystemActionDispatcher` path
-(`CliAgentToolTransport`'s Run-scoped REST tool surface calls it directly).
+(The Run-scoped `CliAgentToolTransport` calls it directly).
 Runtime delegation materialization
 (`AgentGroupRuntimeDelegationMaterializer`) is a documented exception, not a
 model to copy: it runs after the Run has already terminated and so cannot go

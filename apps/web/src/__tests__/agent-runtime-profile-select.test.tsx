@@ -76,9 +76,9 @@ const AGENT: AgentOut = {
   id: 'a1', space_id: 's1', project_id: null, created_by_user_id: 'u1', name: 'My Agent',
   description: 'desc', visibility: 'private', access_level: 'full', role_instruction: null,
   status: 'active', agent_kind: 'standard', current_version_id: 'v1',
-  source_template_id: null, source_template_version_id: null, model: null,
+  source_role_id: null, source_role_version_id: null, model: null,
   runtime_key: 'opencode',
-  system_prompt: null, created_at: '', updated_at: '',
+  system_prompt: null, created_at: '', updated_at: '', can_manage: true,
 }
 const VERSION = {
   id: 'v1', agent_id: 'a1', space_id: 's1', version_label: 'v1',

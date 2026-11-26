@@ -411,8 +411,30 @@ export interface PluginMigration {
  * server/dist/official-plugins before the server loads them at startup.
  * Remote package download is not implemented.
  */
+/**
+ * A stable official Agent Role a plugin contributes. The core loads it into the
+ * Agent Role library beside the catalog's Roles while the plugin is enabled for
+ * the viewer; an Agent created from it is an ordinary Agent with that source
+ * Role. Kept off the operation manifest so it never changes the admitted
+ * operation contract.
+ */
+export interface PluginAgentRole {
+  /** Stable within the plugin; the Role id is `<pluginId>.<key>`. */
+  readonly key: string;
+  readonly name: string;
+  readonly description: string;
+  readonly category?: string;
+  /** The Role's system prompt, owned by the plugin release. */
+  readonly system_prompt: string;
+  readonly tool_policy?: Record<string, unknown>;
+  readonly memory_policy?: Record<string, unknown>;
+  readonly execution_constraints?: { risk_level?: string; max_run_time_seconds?: number };
+}
+
 export interface RainverPlugin {
   readonly operationManifest?: import("./pluginOperations.js").PluginOperationManifest;
+  /** Official Agent Roles this plugin contributes (`PluginAgentRole`). */
+  readonly agentRoles?: readonly PluginAgentRole[];
   /** Must match OfficialPluginDescriptor.id. */
   readonly id: string;
   /** Must match OfficialPluginDescriptor.version for built-in official plugins. */

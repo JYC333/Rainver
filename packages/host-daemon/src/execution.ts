@@ -38,7 +38,7 @@ import { egressProxyEnv, proxyBypassHosts, type EgressProfile, type EgressProxyH
 import { startModelChannel, type ModelChannelHandle } from "./modelChannel.js";
 import { ensureCodexStrictSandboxConfig } from "./codexStrictSandbox.js";
 import { startLocalToolBridge, type LocalToolBridge } from "@rainver/agent-cli/local-bridge";
-import { toolHttpRequest } from "@rainver/agent-cli/tool-http";
+import type { RunToolChannel } from "./runToolChannel.js";
 
 export interface LaunchWorkspace {
   kind: "location" | "managed";
@@ -696,7 +696,7 @@ async function materializeWorkSurface(
     if (file.content_hash && createHash("sha256").update(bytes).digest("hex") !== file.content_hash) throw new Error("Skill file hash mismatch");
     await writeFile(target, bytes, { mode: 0o600 });
   }
-  const env: Record<string, string> = { ...surface.env };
+  const env: Record<string, string> = {};
   for (const [key, relativePath] of Object.entries(surface.dir_env)) {
     env[key] = relativePath === "." ? root : resolveInsideDir(root, relativePath);
   }
@@ -1097,6 +1097,7 @@ export async function handleLaunch(
   frame: LaunchFrame,
   send: (frame: HostDaemonFrame) => void,
   log: (line: string) => void,
+  runTools?: RunToolChannel,
 ): Promise<void> {
   if (registrationRevoked) {
     send({ type: "complete", run_id: frame.run_id, launch_id: frame.launch_id, exit_code: 1, timed_out: false, error: "This host registration was revoked." });
@@ -1131,7 +1132,7 @@ export async function handleLaunch(
   launchingRuns.set(frame.launch_id, frame.run_id);
   const hold: LaunchHold = { leases: [], worktree: null, resolution: null, spawned: false, toolBridge: null, ordinaryTools: null };
   try {
-    await launchRun(frame, send, log, hold);
+    await launchRun(frame, send, log, hold, runTools);
   } catch(error){
     log(`Launch preparation failed: ${String(error)}`);
     if(hold.spawned)handleTerminate({run_id:frame.run_id,launch_id:frame.launch_id,force:true},log);
@@ -1232,6 +1233,7 @@ async function launchRun(
   send: (frame: HostDaemonFrame) => void,
   log: (line: string) => void,
   hold: LaunchHold,
+  runTools?: RunToolChannel,
 ): Promise<void> {
   const config = await requireConfig();
   const personalRead=config.trust!=='strict'&&frame.isolation?.sandbox_mode==='read_only';
@@ -1658,21 +1660,18 @@ async function launchRun(
 
   // Never inherit another Run's tool channel from the daemon's shell/profile.
   for (const environment of [baseEnv, bindingEnv, acpAdapterEnv]) {
-    for (const name of ["RAINVER_API_URL", "RAINVER_RUN_ID", "RAINVER_TOOL_TOKEN", "RAINVER_TOOL_BRIDGE", "RAINVER_TOOL_BRIDGE_PROTOCOL", "RAINVER_CLI", "RAINVER_SKILL_PATH", "RAINVER_SKILL_ROOT"]) {
+    for (const name of ["RAINVER_TOOL_TOKEN", "RAINVER_TOOL_BRIDGE", "RAINVER_CLI", "RAINVER_SKILL_PATH", "RAINVER_SKILL_ROOT"]) {
       delete environment[name];
     }
   }
-  if (frame.work_surface?.env.RAINVER_TOOL_BRIDGE_PROTOCOL === "file-v1") {
+  const toolToken = frame.work_surface?.run_tool_token;
+  if (toolToken) {
     try {
-      const { RAINVER_API_URL: apiUrl, RAINVER_RUN_ID: runId, RAINVER_TOOL_TOKEN: token } = workSurfaceEnv;
-      if (!apiUrl || runId !== frame.run_id || !token) throw new Error("Incomplete or mismatched Run tool identity");
+      if (!runTools) throw new Error("The Host tool channel is unavailable");
+      const launch = { run_id: frame.run_id, launch_id: frame.launch_id, token: toolToken };
       hold.toolBridge = await startLocalToolBridge(runDir(frame.run_id),
-        (request, signal) => toolHttpRequest({ apiUrl, runId, token }, request, signal));
-      workSurfaceEnv.RAINVER_TOOL_BRIDGE = hold.toolBridge.directory;
-      // The runtime uses only its local directory. The server bearer stays in
-      // the Host closure and never enters a command's environment.
-      delete workSurfaceEnv.RAINVER_TOOL_TOKEN;
-      delete baseEnv.RAINVER_TOOL_TOKEN;
+        (request, signal) => runTools.invoke(launch, request, signal));
+      workSurfaceEnv.RAINVER_TOOL_BRIDGE = hold.toolBridge.endpoint;
     } catch (error) {
       send({ type: "complete", run_id: frame.run_id, launch_id: frame.launch_id, exit_code: 1, timed_out: false,
         error: `Could not prepare this Run's local tool bridge: ${error instanceof Error ? error.message : String(error)}` });
@@ -1694,7 +1693,6 @@ async function launchRun(
       return;
     }
   }
-  if (hold.toolBridge) delete derivedEnv.RAINVER_TOOL_TOKEN;
 
   let spawnCommand = command;
   let spawnCommandArgs = spawnArgs;
@@ -1876,7 +1874,7 @@ async function launchRun(
   }
   const active: ActiveRun = {
     child,
-    toolBridgeDirectory: hold.toolBridge?.directory,
+    toolBridgeDirectory: hold.toolBridge?.mountDirectory,
     cwd,
     launchId: frame.launch_id,
     placeholders: {
@@ -1904,7 +1902,7 @@ async function launchRun(
   if(!personalNamespace)send({ type: "launched", run_id: frame.run_id, launch_id: frame.launch_id });
 
   if (frame.stdin) {
-    const translated = substituteAcpInput(frame.stdin, active.placeholders, active.inputResourcePaths, hold.toolBridge?.directory);
+    const translated = substituteAcpInput(frame.stdin, active.placeholders, active.inputResourcePaths, hold.toolBridge?.mountDirectory);
     child.stdin?.write(translated);
   }
   if (!frame.keep_stdin_open) child.stdin?.end();

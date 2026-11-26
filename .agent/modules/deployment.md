@@ -77,7 +77,7 @@ and runs watchers; test runs fixed local builds using the server `runtime`
 and frontend Nginx `prod` targets, with no application source mounts. Update
 test explicitly with `./ops/scripts/start.sh --test --build --detach` when no
 work is in flight; runtime data remains under `$RAINVER_ROOT/test`. Its browser
-entrypoint remains port 3100, with `FRONTEND_URL` set to the actual local or
+entrypoint remains port 3100, with `PUBLIC_BASE_URL` set to the actual local or
 Tailscale HTTPS URL. Test migrations and official plugin artifacts come from
 the built server image; its build enforces the schema check, as production does.
 The server image copies runtime dependencies for each workspace package it
@@ -391,7 +391,7 @@ block every later update.
   input are never compressed. The image's own `nginx.conf` leaves gzip off;
   before this, every JS and CSS response, including the service worker's
   precache, went out uncompressed (`apps/web/nginx.conf`).
-- Nginx accepts any Host name (`server_name _`); `FRONTEND_URL` controls auth
+- Nginx accepts any Host name (`server_name _`); `PUBLIC_BASE_URL` controls auth
   redirects, not a Host allowlist. Domain deployments therefore enforce the
   public hostname and TLS at their reverse-proxy edge.
 - The dev, test, and production env templates contain deployment inputs only. Backup

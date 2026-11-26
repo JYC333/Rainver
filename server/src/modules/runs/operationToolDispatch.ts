@@ -13,7 +13,7 @@ import { loadActionRegistry } from '../policy/actionRegistry.js';
 type EventSink = (event: 'action_invoked' | 'action_completed', call: CanonicalToolCall, metadata?: Record<string, unknown>) => Promise<void>;
 
 function applicationsProject(run: AgentRunRecord, definition: SystemActionDefinition): string | null {
-  return definition.id.startsWith('plugin.applications.') ? run.project_id : null;
+  return definition.id.startsWith('plugin.phd_application.') ? run.project_id : null;
 }
 
 export function runOperationInputJsonSchema(run: AgentRunRecord, definition: SystemActionDefinition): Record<string, unknown> {

@@ -17,6 +17,8 @@ function Fixture() {
     <button onClick={() => drawer.close(() => navigate('/new'))}>New</button>
     <button onClick={() => drawer.close()}>Dismiss</button>
     <button onClick={() => navigate('/project?projectChat=1&detail=1', { state: location.state })}>Copy state</button>
+    <button onClick={() => overlay.close(undefined, { with: ['conversationDrawer'] })}>Close both</button>
+    <button onClick={() => navigate('/project?conversationDrawer=1&detail=1', { state: location.state })}>Copy drawer</button>
     <button onClick={() => navigate(-1)}>Back</button>
   </>
 }
@@ -45,6 +47,15 @@ describe('owned conversation overlay history', () => {
     click('Copy state'); await at('/project?projectChat=1&detail=1')
     click('Close'); await at('/project?detail=1')
     click('Back'); await at('/project?projectChat=1')
+    click('Close'); await at('/project')
+  })
+  it('closes in place what is still open when its pop lands on another entry, and stays usable', async () => {
+    render(<MemoryRouter initialEntries={['/previous', '/project']} initialIndex={1}><Fixture /></MemoryRouter>)
+    click('Drawer'); await at('/project?conversationDrawer=1')
+    // A later entry carries the drawer's marker (parent: /project), one entry above the drawer's own.
+    click('Copy drawer'); await at('/project?conversationDrawer=1&detail=1')
+    click('Close both'); await at('/project')
+    click('Open'); await at('/project?projectChat=1')
     click('Close'); await at('/project')
   })
   it('closes a direct deep link in place without leaving the page', async () => {

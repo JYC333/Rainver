@@ -24,7 +24,7 @@ async function disconnect() {
 }
 const view = (entry = '/spaces/space-a/sources/access') => <MemoryRouter initialEntries={[entry]}><GmailConnectionsCard /><Location /></MemoryRouter>
 
-const projectView = () => <MemoryRouter initialEntries={['/spaces/space-a/projects/p1/plugins/applications/board']}>
+const projectView = () => <MemoryRouter initialEntries={['/spaces/space-a/projects/p1/plugins/phd_application/board']}>
   <ProjectGmailUpdates projectId="p1" spaceId="space-a" scopeKey="user-a|space-a|p1" />
 </MemoryRouter>
 
@@ -138,6 +138,7 @@ describe('Personal Gmail connections', () => {
   it('shows an application-update automation with its Agent, model and message counts, and why it waits for a new card', async () => {
     const digest = { id: 'd3', connection_id: 'c1', project_id: 'p1', project_name: 'Thesis', session_id: 's3', room_id: null, agent_id: 'a1', kind: 'application' as const,
       effects: ['interview' as const, 'deadline' as const], runtime: { agent_name: 'Claude', model_label: 'synthetic-model (Default)' }, mail_items: { pending: 2, review: 1, failed: 0 },
+      review_items: [{ message_id: 'abc123', received_at: now, reason: 'no_matching_application' as const, gmail_url: 'https://mail.google.com/mail/u/0/#all/abc123' }],
       local_time: null, time_zone: null, status: 'active' as const, covered_until: now, next_run_at: null, retry_at: now, last_delivered_at: null,
       failure_count: 1, last_error_code: 'gmail_digest_runtime_changed', last_delivery: null, created_at: now }
     vi.mocked(gmailApi.connections).mockResolvedValue({ configured: true, connections: [{ ...connection('c1'), agent_read_enabled: true }] })
@@ -148,6 +149,8 @@ describe('Personal Gmail connections', () => {
     expect(screen.getByText('No mail processed yet.')).toBeInTheDocument()
     expect(screen.getByText('Claude on synthetic-model (Default)')).toBeInTheDocument()
     expect(screen.getByText('2 waiting · 1 kept for your review · 0 not processed')).toBeInTheDocument()
+    expect(screen.getByText('No matching application')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Open in Gmail' })).toHaveAttribute('href', digest.review_items[0]?.gmail_url)
     expect(screen.getByText(/uses another Agent runtime or model than the one you confirmed/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Change summary time' })).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Open private conversation' }).getAttribute('href')).toMatch(/\/projects\/p1\/agents\/a1\/chat\?session=s3$/)
@@ -196,7 +199,7 @@ describe('Personal Gmail connections', () => {
       last_delivered_at: null, failure_count: 0, last_error_code: null, last_delivery: null, created_at: now,
     }])
     render(view())
-    expect(await screen.findByRole('link', { name: 'Open Thesis applications' })).toHaveAttribute('href', '/spaces/space-a/projects/p1/plugins/applications/board')
+    expect(await screen.findByRole('link', { name: 'Open Thesis applications' })).toHaveAttribute('href', '/spaces/space-a/projects/p1/plugins/phd_application/board')
     expect(screen.getByRole('button', { name: 'Revoke digest access' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Pause' })).not.toBeInTheDocument()
   })

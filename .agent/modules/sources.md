@@ -1785,9 +1785,10 @@ DTOs `packages/protocol/src/gmail.ts`.
   does: the conversation tools that draft a monitor, digest or application
   automation, and the automation's fact gate (Run `FOR SHARE` from the actor pin;
   its taint is read `FOR SHARE`, never upgraded).
-- **Configuration.** Optional `GMAIL_OAUTH_CLIENT_ID/SECRET/REDIRECT_URI`
-  (all or none; the redirect URI must be the instance origin plus exactly
-  `/api/v1/sources/gmail/oauth/callback`; https in prod unless loopback). Server process only.
+- **Configuration.** Set both `GMAIL_OAUTH_CLIENT_ID` and `GMAIL_OAUTH_CLIENT_SECRET`
+  to enable Gmail OAuth. The callback defaults to `PUBLIC_BASE_URL` plus
+  `/api/v1/sources/gmail/oauth/callback`. An explicit `GMAIL_OAUTH_REDIRECT_URI`
+  must use that path and HTTPS in production unless loopback. Server process only.
   A dedicated Web OAuth client is recommended. The Google sign-in client ID
   and secret can also be reused by registering the Gmail callback alongside the
   sign-in callback. Unset → start
@@ -2208,9 +2209,10 @@ reconnect resume), `gmailSyncContract.ts` (sync allowlist),
   and queue a sync — `historyId` is never trusted or stored. 401 on any
   authentication failure, 204 otherwise, 404 when push is not configured.
 - **Push configuration: what is checked where.** Static configuration
-  (`loadGmailPushConfig`, at start-up) can check only what the four strings
-  say: all four `GMAIL_PUBSUB_*` set together with a `GMAIL_OAUTH_CLIENT_ID`;
-  full Pub/Sub resource names; topic and subscription naming the *same*
+  (`loadGmailPushConfig`, at start-up) checks the topic, subscription, push service account and Gmail OAuth configuration.
+  The audience defaults to `PUBLIC_BASE_URL` plus the push path and can be
+  overridden with `GMAIL_PUBSUB_PUSH_AUDIENCE`. Validation checks
+  full Pub/Sub resource names, topic and subscription naming the *same*
   project id; the push audience is exactly this instance's push path (https
   outside local dev); the service account has a service-account address form.
   It cannot check which Google Cloud project the OAuth client belongs to (a
@@ -2561,13 +2563,13 @@ Decision: [ADR 0034](../decisions/0034-gmail-application-updates.md). Code:
 `application` branches of `gmailDigests.ts`, `gmailMailboxSync.ts` and
 `gmailDigestReadOperation.ts`; table `gmail_digest_mail_items` and the `gmail_digests` columns
 `effects` and `runtime_binding` (migration `0021_application_correspondence_and_workspace`); the package side in
-[Application management package](../architecture/OFFICIAL_OPTIONAL_MODULES.md#application-management-package) (*Gmail application updates*).
+[PhD Application package](../architecture/OFFICIAL_OPTIONAL_MODULES.md#phd-application-package) (*Gmail application updates*).
 
 - **Setting up in conversation.** `source.gmail.application_updates.propose` (conversation allowance)
   drafts the owner-only `gmail_digest_create` card (`kind: application`, `effects`, `runtime_binding`)
   in the mailbox owner's own `manual` turn of a conversation of the Project whose readers all read it —
   their private conversation, or a Room or the mainline (ADR 0035 §1, below: the card then names its
-  `audience` and the automation runs in the owner's private execution conversation) — when Application management is enabled for them, bound to the Project and they can edit it.
+  `audience` and the automation runs in the owner's private execution conversation) — when PhD Application is enabled for them, bound to the Project and they can edit it.
   Use this tool to update an existing automation for the same Project and mailbox on its
   existing connection. The owner confirms `contact` along with the allowed effects on the
   same card. Both incoming and outgoing correspondence can then create an email event for
@@ -2599,6 +2601,11 @@ Decision: [ADR 0034](../decisions/0034-gmail-application-updates.md). Code:
   application automation for that Project using the existing owner-scoped Gmail
   digest API. It shows processing status, counts, the last delivery or error,
   Pause, and a link to the private execution conversation for records or changes.
+  The board requests `application_review_project_id` on the digest list. While
+  the owner can still read that Project and the consent is live, the card
+  lists the latest 20 messages kept for review, with a fixed reason,
+  receipt time and Gmail link. The list comes from the existing review ledger
+  and carries no sender, subject or message content.
   Sources → Access and Gmail keeps the mailbox connection, revocation and a
   compact link back to the Project's Applications board.
 - **Recording new mail.** The sync claims active automations with an active consent beside the
@@ -2609,6 +2616,17 @@ Decision: [ADR 0034](../decisions/0034-gmail-application-updates.md). Code:
   counts new items as matches so the Job starts due digests for the connection. The heartbeat, push
   intake and reconnect resume treat an active automation like an active monitor
   (`gmailSyncWantedSql`).
+  Once the rule includes `contact`, the delivery handles correspondence before
+  independent application facts. A prospective supervisor's reply can be a
+  correspondence event even when it does not change the status or a deadline.
+  Relevant mail with no unique application goes to review, including these
+  correspondence-only replies. The read exposes reply hints from the headers,
+  and attests an incoming `Auto-Submitted: auto-replied` message to its specific
+  launch. An attested automatic reply can only be recorded as an automatic
+  contact event or kept for review. An unambiguous out-of-office reply can also
+  be classified by the Agent when that header is absent. Unrelated automated
+  mail is still skipped. The change uses the existing contact effect, applies
+  to later Runs where it is enabled, and does not replay settled mail.
 - **Delivery.** `startGmailDigestDelivery` for this kind needs pending items and a passed
   `next_run_at` (10 minutes after the previous delivery), refuses a conversation other than the owner's
   private one (`gmail_digest_audience_not_owner`), a changed binding or a model that no longer resolves to
@@ -2688,7 +2706,7 @@ Decision: [ADR 0034](../decisions/0034-gmail-application-updates.md). Code:
   unisolated ModelProvider launch made go back to `pending` (ADR 0036 §11, ADR 0037 §10). A path that ends such a Run's
   delivery before it settles — a start, a new card, a pause, an end, all through `stopDigestDelivery` — applies the
   repair in that same transaction, since the later settlement finds the delivery failed and settles nothing (ADR 0037 §14).
-- **Writes.** Only `plugin.applications.mail_fact.apply`, through `gmailApplicationFactAdmitted` in both
+- **Writes.** Only `plugin.phd_application.mail_fact.apply`, through `gmailApplicationFactAdmitted` in both
   the operation host's `authorize` and the egress check: the running delivery's Run, the targeted
   Project, live consent and owner-only audience, the pinned runtime and current rule version, a frozen
   message released to the request's own launch (`agent_data_read_logs.launch_id`) with exactly its `received_at`, an allowed effect,
@@ -2713,7 +2731,7 @@ Decision: [ADR 0034](../decisions/0034-gmail-application-updates.md). Code:
   `task.move_to_column`) take their Run's Project before the pin the same way, after the idempotency
   reservation (`lockBeforeActor`, `PROJECT_WORK.md`). A person's
   command holds no Run and a query no lock before its release. The ledger
-  `plugin.applications.mail_fact.list` answers the owner directly, or an Agent only in a Run of the
+  `plugin.phd_application.mail_fact.list` answers the owner directly, or an Agent only in a Run of the
   owner's private conversation of that Project (`gmailApplicationFactsAudienceAdmitted` in the operation
   host's `authorize` and again in the release gate); its release records a `core:gmail_digest` sensitive
   read of the owner in the Run's taint, so a Run that read only the ledger still makes no outward write,

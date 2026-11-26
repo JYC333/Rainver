@@ -7,6 +7,7 @@ import type {OperationRegistration} from '../systemActions/operations/types.js';
 import {OperationRefusal,hidden} from '../systemActions/operations/errors.js';
 import {registerOperationAdapters} from '../systemActions/operations/routeAdapter.js';
 import {PgSessionRepository} from '../sessions/repository.js';
+import {roomConversationAudienceSql} from '../access/contentAccessSql.js';
 import {WorkContextService,assertActiveWorkContextReadable} from './workContextService.js';
 import {RuntimeContextContinuityService} from './continuity/service.js';
 
@@ -50,7 +51,7 @@ async function lockRoomConversation(db:Queryable,a:OperationActor,sessionId:stri
  const room=(await db.query<{room_id:string}>('SELECT room_id FROM sessions WHERE id=$1 AND space_id=$2 AND room_id IS NOT NULL',[sessionId,a.space_id])).rows[0];
  if(!room)throw hidden();
  const held=await db.query(`SELECT room.id FROM rooms room JOIN room_user_members member ON member.room_id=room.id AND member.space_id=room.space_id AND member.user_id=$3 AND member.status='active'
-   WHERE room.id=$1 AND room.space_id=$2 AND room.status='active' FOR SHARE OF room,member`,[room.room_id,a.space_id,a.on_behalf_of_user_id]);
+   WHERE room.id=$1 AND room.space_id=$2 AND room.status='active' AND ${roomConversationAudienceSql("room.space_id","$4::varchar","$3")} FOR SHARE OF room,member`,[room.room_id,a.space_id,a.on_behalf_of_user_id,sessionId]);
  if(!held.rows.length)throw hidden();
  await assertRoomConversation(db,a,sessionId);
 }

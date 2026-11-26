@@ -150,7 +150,7 @@ function stubUploads() {
     upload: { onprogress: ((event: ProgressEvent) => void) | null } = { onprogress: null }
     onload: (() => void) | null = null; onerror: (() => void) | null = null; onabort: (() => void) | null = null
     private loadend: Array<() => void> = []
-    open() {} setRequestHeader() {}
+    open() {} setRequestHeader() {} getResponseHeader() { return null }
     addEventListener(type: string, listener: () => void) { if (type === 'loadend') this.loadend.push(listener) }
     send() {
       const entry = { answer: (status: number) => {

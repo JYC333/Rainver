@@ -35,11 +35,13 @@ describe('Agent Attention transport', () => {
       const boundary = body.indexOf('\r') + 1
       controller.enqueue(encoder.encode(body.slice(0, boundary))); controller.enqueue(encoder.encode(body.slice(boundary))); controller.close()
     } }), { headers: { 'Content-Type': 'text/event-stream' } }))
-    const received: unknown[] = []; const signal = new AbortController().signal
-    await expect(agentAttentionApi.stream(frame => received.push(frame), { signal })).rejects.toThrow('disconnected')
+    const received: unknown[] = []; const caller = new AbortController()
+    await expect(agentAttentionApi.stream(frame => received.push(frame), { signal: caller.signal })).rejects.toThrow('disconnected')
     expect(received).toEqual([frame])
     const [url, options] = vi.mocked(fetch).mock.calls[0]!
-    expect(url).toBe('/api/v1/me/agent-attention/stream'); expect(options?.signal).toBe(signal)
+    // The caller's cancellation reaches the request, joined with the tab's account lifetime.
+    expect(url).toBe('/api/v1/me/agent-attention/stream'); expect(options?.signal?.aborted).toBe(false)
+    caller.abort(); expect(options?.signal?.aborted).toBe(true)
     expect(new Headers(options?.headers).has('X-Rainver-Space-Id')).toBe(false)
   })
   it('sends the exact displayed revision and exposes the authoritative conflict state', async () => {

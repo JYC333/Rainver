@@ -177,6 +177,13 @@ export const RoomInvitationSchema = z.object({
   invited_by_user_id: IdSchema,
   status: z.enum(["pending", "active", "rejected", "expired", "cancelled", "invalidated"]),
   required_roster_revision: z.number().int().nonnegative(),
+  /** Whether the invitee is given the Room's existing conversations. */
+  share_history: z.boolean().optional(),
+  /**
+   * The conversation an activation without history opened for the whole new
+   * audience; shown to the inviter and invitee only.
+   */
+  shared_conversation_id: IdSchema.nullish(),
   expires_at: ISODateTimeSchema,
   created_at: ISODateTimeSchema,
   updated_at: ISODateTimeSchema,
@@ -207,6 +214,12 @@ export const RoomPendingApprovalSchema = z.object({
   invitee_email: z.string().nullish(),
   agent_id: IdSchema,
   agent_name: z.string(),
+  /**
+   * Whether the invitation gives the invitee the Room's existing
+   * conversations — the Agent's owner approves knowing whether its earlier
+   * work becomes readable to them.
+   */
+  share_history: z.boolean(),
   expires_at: ISODateTimeSchema,
   ...SecretResponseGuards,
 }).strict();
@@ -224,6 +237,12 @@ export type RoomPendingApprovalListResponse = z.infer<typeof RoomPendingApproval
 export const RoomInvitationCreateRequestSchema = z.object({
   user_id: IdSchema,
   confirm_owned_private_agent_shares: z.boolean().default(false),
+  /**
+   * Give the invitee the Room's existing conversations. Off by default: the
+   * existing conversations then stay with the people who could read them, and
+   * a new conversation everyone reads is opened when the invitation activates.
+   */
+  share_history: z.boolean().default(false),
 }).strict();
 export type RoomInvitationCreateRequest = z.infer<typeof RoomInvitationCreateRequestSchema>;
 
@@ -238,6 +257,18 @@ export const RoomOwnerTransferRequestSchema = z.object({
 }).strict();
 export type RoomOwnerTransferRequest = z.infer<typeof RoomOwnerTransferRequestSchema>;
 
+/**
+ * One conversation's actual audience. `restricted` when it was frozen to an
+ * earlier audience because someone joined the Room without its history;
+ * `other_member_names` is who besides the viewer reads it, by the same rule
+ * the freeze snapshot uses (ADR 0038).
+ */
+export const ConversationAudienceSchema = z.object({
+  restricted: z.boolean(),
+  other_member_names: z.array(z.string()),
+}).strict();
+export type ConversationAudience = z.infer<typeof ConversationAudienceSchema>;
+
 export const RoomConversationSchema = z.object({
   id: IdSchema,
   space_id: IdSchema,
@@ -251,6 +282,12 @@ export const RoomConversationSchema = z.object({
   can_delete_empty: z.boolean().optional(),
   last_message_at: ISODateTimeSchema.nullable().optional(),
   is_running: z.boolean().optional(),
+  /**
+   * The conversation's actual audience. `restricted` when it was frozen to an
+   * earlier audience because someone joined the Room without its history;
+   * `other_member_names` is who besides the viewer reads it.
+   */
+  audience: ConversationAudienceSchema.optional(),
   /** Recycle bin list only: when it was deleted and when it stops being restorable. */
   deleted_at: ISODateTimeSchema.optional(),
   purge_after: ISODateTimeSchema.optional(),
@@ -288,6 +325,8 @@ export const ProjectConversationSchema = z.object({
   last_message_preview: z.string().nullable(),
   message_count: z.number().int().nonnegative(),
   is_running: z.boolean().optional(),
+  /** This conversation's own audience; narrower than its Room's when frozen. */
+  audience: ConversationAudienceSchema.optional(),
 }).strict();
 export type ProjectConversation = z.infer<typeof ProjectConversationSchema>;
 
@@ -470,7 +509,7 @@ export const RoomLiveInputCandidateSchema = z.object({
 export type RoomLiveInputCandidate = z.infer<typeof RoomLiveInputCandidateSchema>;
 
 export const SendRoomMessageRequestSchema = z.object({
-  content: z.string().trim().max(8000).default(""),
+  content: z.string().trim().default(""),
   input_parts: ConversationInputPartsSchema.default([]),
   focus_refs: z.array(RoomMessageFocusRefSchema).max(4).nullish(),
   /** Join this exact active discussion; omitted means an ordinary Room message. */

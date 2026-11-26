@@ -17,7 +17,7 @@ ProviderTask        — separate bounded server-side model invocation authority
 See [`runtime-adapters.md`](runtime-adapters.md) for the ACP registry and
 execution boundary.
 
-User-created Agents and template instances use the access-owned creation
+User-created Agents and role instances use the access-owned creation
 resolver. A Project entry point writes `agents.project_id` and
 `visibility=space_shared` in that Project's Space; an unbound creation lands
 private in Personal Space. Direct Run and chat creation applies the same rule,
@@ -29,11 +29,11 @@ resources and keep their explicitly declared scope.
 - `Agent` ORM model and CRUD
 - `AgentVersion` model (immutable Agent behavior/constraint snapshot per Run)
 - `AgentRuntimeProfile` model (Agent-scoped runtime/backend/Host deployment)
-- Agent templates — read-only file specs in `catalog/agent_templates/<key>/template.yaml`
-  (NOT runtime objects), served by `server/src/modules/agentTemplates/routes.ts` with
-  copy-on-create `POST /api/v1/agent-templates/{id}/agents`
+- Agent roles — read-only file specs in `catalog/agent_roles/<key>/role.yaml`
+  (NOT runtime objects), served by `server/src/modules/agentRoles/routes.ts` with
+  copy-on-create `POST /api/v1/agent-roles/{id}/agents`
 - `Run` rows persisted through `PgRunRepository` (`server/src/modules/runs/repository.ts`: queued work, lifecycle, delegation links)
-- Built-in template catalog (factories; concrete system agents are provisioned on demand)
+- Built-in role catalog (factories; concrete system agents are provisioned on demand)
 - Agent seeding and product-level agent configuration
 
 ### Project Research execution defaults
@@ -53,11 +53,11 @@ ModelProvider-backed Profile. Provider mode materializes a Run-scoped
 `opencode.json` pointing at the expiring provider-proxy lease. Raw provider API
 keys never enter the runtime process.
 
-## Agent Template Model (factory → instance)
+## Agent Role Model (factory → instance)
 
 ```
-Agent template           — reusable factory; a catalog file spec; NOT a runtime object
-    → template version       — the spec's config, exposed read-only as its single version
+Agent role           — reusable factory; a catalog file spec; NOT a runtime object
+    → role version       — the spec's config, exposed read-only as its single version
         ⇒ (copy-on-create)
 Agent                    — the runtime instance
     → AgentVersion           — immutable prompt/policy/base config snapshot
@@ -65,37 +65,37 @@ Agent                    — the runtime instance
 ```
 
 Rules:
-- A **template is a factory**, never executed. No `Run` / model-call path reads a
-  template spec.
+- A **role is a factory**, never executed. No `Run` / model-call path reads a
+  role spec.
 - **Agent behavior always comes from** `Agent.current_version_id` →
   `AgentVersion`; runtime deployment is independently selected from the Agent's
   `AgentRuntimeProfile` rows.
-- Creating an Agent from a template **copies** the template's config into a
-  new `AgentVersion` (copy-on-create). The `agents` table has no template
-  provenance columns; the template is never used to assemble runtime config.
-- **Template updates never mutate existing Agents.** Changing a catalog spec has no
+- Creating an Agent from a role **copies** the role's config into a
+  new `AgentVersion` (copy-on-create). The `agents` table records role
+  provenance columns; the role is never used to assemble runtime config.
+- **Role updates never mutate existing Agents.** Changing a catalog spec has no
   effect on already-created agents.
 - **Version objects are immutable runtime snapshots.**
-- No template inheritance, no runtime merging, no dynamic parent-template lookup.
-- Allowed create-from-template overrides apply to the copied `AgentVersion` only:
+- No role inheritance, no runtime merging, no dynamic parent-role lookup.
+- Allowed create-from-role overrides apply to the copied `AgentVersion` only:
   `name`, `description`, `schedule_config_json` (merge), and `system_prompt`.
   Runtime/backend selection is provisioned independently as a default Runtime
   Profile; it is not copied from AgentVersion.
-- Allowed create-from-template overrides apply to the copied `AgentVersion` only and are
+- Allowed create-from-role overrides apply to the copied `AgentVersion` only and are
   **safety-clamped** server-side in the agents module: a memory override can never grant
   `writable_scopes` or drop `requires_proposal`; an output override can never expand
-  `allowed_output_types` beyond the template ceiling, drop `proposal_only`, or drop a
+  `allowed_output_types` beyond the role ceiling, drop `proposal_only`, or drop a
   `required_run_outputs` entry; a context override can never expand `allowed_input_contexts`
   (and `default_input_contexts` is clamped to that ceiling). The same clamps apply to the owner
   config edit path.
-- Seeded system templates (idempotent, global, no space/owner) —
+- Seeded system roles (idempotent, global, no space/owner) —
   five **public** reusable specialized factories, plus the `personal_assistant` **internal** seed
   spec (`visibility=system_internal`, hidden from the library; see below). **There is no
-  `general_chat` template** and no product-level DirectChat.
+  `general_chat` role** and no product-level DirectChat.
   - `personal_assistant` (category `assistant`, `visibility=system_internal`) — NOT a normal
-    reusable template. It is the provenance seed spec for a space's `system_assistant`-kind
+    reusable role. It is the provenance seed spec for a space's `system_assistant`-kind
     Agent, the anchor for Assistant preferences settings (see below). It is excluded from the
-    public Template Library and from user create-from-template; a space is not guaranteed to
+    public Role Library and from user create-from-role; a space is not guaranteed to
     have an instance.
   - `activity_reflector` (category `reflection`) — processes captures/activity into typed
     proposals + a reflection summary; `classification_mode: model_selects`.
@@ -211,7 +211,7 @@ preserve history after a specialist or human member is removed.
   or edit the core system prompt. Per-invocation selection stays dynamic through
   Runtime Context typed acquisition, Delivery, and safe Invocation Snapshot and
   never mutates an `AgentVersion`.
-- **Templates do not select a runtime or model.** New Agents receive a default
+- **Roles do not select a runtime or model.** New Agents receive a default
   Runtime Profile from the Space provisioning template when present, otherwise
   Server Runtime + OpenCode + `runtime_native`. A ModelProvider is used only
   when an explicit provisioning template selects `model_provider`.
@@ -661,7 +661,7 @@ public config-proposal route:
    requirements, so an Agent definition edit cannot directly grant tools or
    write authority.
 
-Every Agent definition, Runtime Profile, template, Run-start and direct-chat
+Every Agent definition, Runtime Profile, role, Run-start and direct-chat
 write URL is an operation-core command (`agents/operations.ts`,
 `agents/chatOperations.ts`; SYSTEM_ACTIONS "Agent and Room commands"): a required
 `Idempotency-Key`, identity receipts re-read through the Agent/Profile/Run GETs,
@@ -698,8 +698,8 @@ workspace. This choice pins that conversation without changing the Agent default
    Also:
    `GET /agents/{id}/proposals?status=pending` (proposals linked to the agent — config updates
    plus run-emitted proposals), `GET /agents/{id}/runs` (run history),
-   `GET /agent-templates/{id}/versions/{version_id}` (template version config for the library
-   cards and the create-from-template summary).
+   `GET /agent-roles/{id}/versions/{version_id}` (role version config for the library
+   cards and the create-from-role summary).
 
 All edit paths preserve the version-immutability invariant (append, never mutate). Direct
 version creation via `POST /agents/{id}/versions` remains disabled.
@@ -821,28 +821,122 @@ validated `return_to` (`projects/agentCreationReturn.ts`) and comes back with
 the new Agent named for one explicit add; `/agents/:id?tab=runs` opens the
 Agent's Runs as its work history.
 
+## My Agents (cross-Space list)
+
+`GET /api/v1/me/agents` (`agents/myAgents.ts`, DTO `MyAgentsPageSchema` in
+`packages/protocol/src/myAgents.ts`) is one person's Agents across every
+Space they are an active member of; the web page is the user-scoped
+`/my-agents` (`MyAgentsPage`), reached from the rail, and an in-Space
+`/agents` index redirects there. It is person-scoped: the route ignores the
+browsed Space (`X-Rainver-Space-Id` or `?space_id=`) and the web call sends
+none, so a direct open, a refresh or a Space the person left never refuses it;
+a signed-in person with no active Space gets an empty page (`resolvePerson`),
+while a missing, invalid or expired session is still refused.
+The page keeps the Agents scene navigation (desktop sidebar, mobile tabs); while
+no Space is known its in-Space entries and the Roles/New agent buttons are
+inert rather than links that land on Home. It refreshes quietly while visible:
+the refresh re-reads the whole loaded range in server-sized pages (so more
+than 200 loaded entries are never cut back). Each page carries the `revision`
+of the whole filtered list, computed in the same statement as the page and
+its total: the SHA-256 of one JSON array per entry, in list order, of exactly
+the values the response shows (`agent_id`, Space id and name, name, status,
+description, `access`, `management`, `plugin_id`, home Project id and name —
+not its Rooms, read per page after it). `access`, `management` and `plugin_id`
+are projected once in SQL and returned as they were digested, so a Room-only
+entry's hidden role source, description, home Project or ownership never
+reaches the revision, and a null, an empty string and a field boundary stay
+distinct. The pages are stitched only when they all carry one revision, so
+they were cut from one list and repeat or skip nothing, whatever moved, and an
+access change between the reads also counts. Otherwise the refresh starts
+over, at most three times, then keeps the current answer
+(`myAgentsPaging.ts`). Every page still runs the live gates. Only the latest
+refresh writes: one is dropped if a newer refresh, a reload or "Show more"
+started or finished meanwhile for the current filters. Earlier filters’
+pending requests do not block or invalidate a refresh. "Show more" (`readMore`) reads the page at the
+server position after the last entry and appends it only when it carries the
+shown list's revision; otherwise the list moved since it was shown (an entry
+added, removed or moved across the pages), and the shown range together with
+the new page is read again through the same bounded `readRange` and replaces
+it, so it repeats and skips nothing. A list that never settles keeps what is
+shown and offers Retry; a reload or filter change meanwhile drops the answer.
+Rooms and plugin states are read live per page and change on the next
+refresh. It adds no authority:
+
+- An Agent is listed when the ordinary Agent content gate (`contentReadSql`)
+  admits the person, or when `roomAgentUseSql` admits them in one of its
+  Space's Rooms of an active Project (`access`: `owner`, `shared` or
+  `room_only`); an archived Project's Room admits no entry. The listing
+  form of that predicate (`anyAgentStatus`) ignores only the Agent's own
+  status, so a stopped Agent stays listed for the people its Rooms admit; it
+  never decides execution. Archived and managed Assistant Agents are not
+  listed.
+- A Room-only entry carries its name and the person's admitting Rooms only:
+  no description, home Project, detail, direct chat or plugin source
+  (`plugin_id`, `plugin_state` and the plugin page are omitted, only Rooms that
+  work for the person now are named, and `source=plugin` never matches it). Every Project and Room
+  named passes the person's own read/membership gates; a Room in a Project
+  they do not read is never named.
+- `management` is `canChangeAgent`'s rule (owner; Space owner/admin for an
+  unowned Agent). `GET /agents/:id` returns the same answer as `can_manage`;
+  the detail page disables every editing control otherwise and says who
+  manages it.
+- The Room summary counts Rooms where it works for the person now: the
+  Agent is active, `roomAgentUseSql` admits them, the Project is active and,
+  for a plugin's Agent, the companion admission's plugin conditions hold for
+  that Project (`plugin_state`: `ready`, `unbound`, `disabled`). Zero shows
+  "no Room available" and keeps the entry; one names its Room; several
+  expand by Project. Each link opens the Room, detail, direct chat or the
+  plugin's Project page in the Agent's own Space.
+- Filters are server-side: `manage=all|manageable` and
+  `source=all|mine|shared|room_only|plugin`.
+
+### Stopping an Agent
+
+A manager stops an Agent from its detail page (`agent.update` with
+`status: "disabled"`, after a confirmation) and restores it the same way.
+Only the status changes: configuration, versions, Runtime Profiles, Project
+links, Room seats, grants and history stay. A stopped Agent accepts no new
+request from any entry: direct chat (`getAgentForChat`), Room dispatch and
+Run claim (`roomAgentUseSql`, `checkRunExecutionAuthorization`), Room
+candidates, delegation, and every new Run (`createQueuedRun` refuses a
+non-active Agent with 409). Stop shares one row-lock boundary with Run
+admission: enqueue reads the Agent `FOR SHARE` in the Run's own transaction,
+and every claim (direct, Room or plugin) re-reads its status `FOR SHARE` as its
+own statement after the Room, conversation and plugin locks, refusing a stopped
+Agent (`agent_not_active`) before the Run is `running`. A stop that commits
+first is seen by both; one that does not waits until the Run is queued or
+running. A Run already `running` is not interrupted. Restoring re-admits it wherever current access
+holds at that time. Removing it from one Room only ends that Room seat; it
+is not a stop. Archiving a Project takes the same kind of boundary for Room Runs: every Room claim (ordinary or plugin) share-locks the Room's own Project row (never the Project the Run names), re-reads it as its own statement, and refuses (`project_not_active`) when it is no longer active, so an archive that commits first starts nothing there and one that does not waits until the Run is `running`. A Room Run works in its Room's Project: enqueue refuses one naming another Project (409; a Run Group's scope key already ties it), and a stored Run that names another is refused at claim (`run_project_mismatch`). A Room Run naming no Project keeps the Room's Project as its authority; a plugin's companion Agent still requires its Run's Project and is refused without one. Reading an archived Project's history is unchanged. Tests: `server/test/myAgentsDb.test.ts`.
+
 ## Frontend Agent Configuration Surfaces
 
 The React `agents` module (`apps/web/src/modules/agents/`) renders the product-level UI over
-the backend template → AgentVersion model. No mock/hardcoded template or agent data
+the backend role → AgentVersion model. No mock/hardcoded role or agent data
 remains; every card is backed by an API call.
 
-- **Template Library** (`TemplateLibraryPage.tsx`, `/agents/templates`) — lists the
-  system catalog templates from `GET /agent-templates`. Each card shows name, description,
+- **My Agents** (`MyAgentsPage.tsx`, `/my-agents`) — the cross-Space list
+  described in "My Agents" above.
+- **Role Library** (`RoleLibraryPage.tsx`, `/agents/roles`) — lists the
+  system catalog roles from `GET /agent-roles` (no plugin Roles). Each card shows name, description,
   category, scope, visibility, status, current version, and input/output/safety summaries
-  (derived from the current template version config). Actions: **Use template**, **View details**.
-  Templates are presented by their own identity (e.g. *Activity Reflector* = the reflection
-  factory). "Daily Reflector" is not a template — it is simply a name a user might give an
+  (derived from the current role version config). Actions: **Create agent**, **View details**.
+  Roles are presented by their own identity (e.g. *Activity Reflector* = the reflection
+  factory). "Daily Reflector" is not a role — it is simply a name a user might give an
   Agent created from *Activity Reflector* and scheduled daily; scheduling is an instance choice,
-  not a template property, so the library does not conflate the two.
-- **Template Detail** (`TemplateDetailPage.tsx`, `/agents/templates/:id`) — read-only Inputs/
-  Outputs/Schedule/Safety views of the current template version; deployment
-  backend is provisioned separately from the template.
-- **Create from Template** (`CreateFromTemplatePage.tsx`, `/agents/templates/:id/use`) — shows
-  the selected template-version summary, lets the user set name/description and
+  not a role property, so the library does not conflate the two.
+- **Role Detail** (`RoleDetailPage.tsx`, `/agents/roles/:id`) — read-only Inputs/
+  Outputs/Schedule/Safety views of the current role version; deployment
+  backend is provisioned separately from the role.
+- **Create from Role** (`CreateFromRolePage.tsx`, `/agents/roles/:id/use`) — shows
+  the selected role-version summary, lets the user set name/description and
   Agent-definition overrides (including prompt and schedule settings), then calls
-  `POST /agent-templates/{id}/agents` and navigates to the new Agent detail page.
-- **Agent Detail** (`AgentDetailPage.tsx`, `/agents/:id`) — tabbed view: **Overview**
+  `POST /agent-roles/{id}/agents` and navigates to the new Agent detail page.
+- **Agent Detail** (`AgentDetailPage.tsx`, `/agents/:id`) — Stop/Restore and every
+  editing control only when `can_manage`, otherwise read-only with who manages it
+  (view controls such as Profile switching, raw JSON, version configs and catalog
+  retry stay usable; a Space owner/admin is told Access remains theirs);
+  direct chat only for an active non-plugin Agent. Tabbed view: **Overview**
   (identity/role edit, provenance, current version, last run, pending proposals), **Preferences**
   (the managed Assistant only), **Inputs**, **Outputs**, **Schedule** (editable), **Runtime**
   (runtime profiles), **Tools**, **Review & Safety**, **Versions**
@@ -859,23 +953,27 @@ remains; every card is backed by an API call.
   tab, Versions view).
 
 Not built on this surface: full scheduled reflection execution, marketplace /
-sharing / import / export, template inheritance, runtime use of templates,
-direct memory writes, or faked frontend data. There are no template
-create/publish endpoints; templates are catalog files and the Agents UI does
-not author custom templates.
+sharing / import / export, role inheritance, runtime use of roles,
+direct memory writes, or faked frontend data. There are no role
+create/publish endpoints; roles are catalog files and the Agents UI does
+not author custom roles.
 
 
-## Built-in Templates (no built-in concrete agents)
+## Creating an Agent (one flow)
+
+Every user-initiated creation goes through `/agents/new` (`AgentFormPage`). It is reached from My Agents, a Project's Agents page and a Room's "Create a new Agent…" with `?project=&return_to=`. A **Start from** card offers **Blank** or an official catalog Role. A plugin's Role is a Project-specific assistant: it is offered and created only from that plugin's page in a Project where the plugin is bound and enabled, never from New Agent or the Role library, and the server refuses it without a Project, in an archived Project (which also lists no plugin Role), unbound, not enabled or without Project write. Creation takes bind's lock order (plugin scope shared, then the Project, then the binding row) and re-reads enablement and binding after those locks, so a concurrent disable or unbind either commits first and the Role is gone, or waits until the Agent exists ([OFFICIAL_OPTIONAL_MODULES](../architecture/OFFICIAL_OPTIONAL_MODULES.md), Agent Roles). Choosing a Role keeps the Project and the return path (`/agents/roles/:roleId/use`); Cancel, like Create, goes back to an accepted `return_to`. The Role form reads the Project list like the blank one (a Role page opened directly keeps its carried Project) and sends `project_id`; "start blank instead" returns to the same component with every Role-derived field and policy cleared. A Role that cannot be read here (removed, or a plugin's) shows that it is unavailable with a link to the blank form, never a form that would submit to it. An Agent created from a plugin's Role runs only where that plugin is set up ([OFFICIAL_OPTIONAL_MODULES](../architecture/OFFICIAL_OPTIONAL_MODULES.md), Companion Agent admission). A plugin's own setup (`PluginAgentSetup`) lists its Role with its Project (`?project_id=`) and uses the same `agent.role.instantiate` with that Project, reusing an authorized Agent and the ordinary Room add with its share confirmation; there is no separate form. There are no per-Project×Agent settings, sub-agents or custom Role publication. A Project preference an Agent learns is proposed as Project memory through the existing approval.
+
+## Built-in Roles (no built-in concrete agents)
 
 There are no eagerly seeded per-space concrete Agents. Built-in product behavior comes from system
-templates (factories), while a Project's hidden managed Assistant is provisioned lazily
+roles (factories), while a Project's hidden managed Assistant is provisioned lazily
 and only when someone first opens a Conversation draft in one of its Rooms. Keeping it off Room
 creation is what lets a Project be created with its mainline Room without a
 Space's backend configuration being able to fail the Project
 ([ADR 0018](../decisions/0018-room-as-visibility-boundary.md) decision 4).
 
-Built-in **templates** (global factories read from
-`catalog/agent_templates/<key>/template.yaml`; nothing is seeded into the database). Five are **public** reusable specialized factories; the sixth,
+Built-in **roles** (global factories read from
+`catalog/agent_roles/<key>/role.yaml`; nothing is seeded into the database). Five are **public** reusable specialized factories; the sixth,
 `personal_assistant`, is an **internal seed spec** (`visibility=system_internal`) for the
 per-Project `system_assistant`-kind Agent — hidden from the public library and not
 user-instantiable.
@@ -886,7 +984,7 @@ than a space-wide default:
 - `personal_assistant` (`assistant`, `system_internal`) — provenance seed spec for the
   per-Project `system_assistant`-kind Agent; dynamic per-invocation selection via Runtime
   Context; `chat_message` + proposal-only task/idea/memory/knowledge. Not a reusable
-  template. A Project's concrete Assistant is created transactionally when the first
+  role. A Project's concrete Assistant is created transactionally when the first
   Conversation draft is opened in one of that Project's Rooms; a boot-time reconcile brings every
   seed-following instance up to a changed seed afterwards.
 - `activity_reflector` (`reflection`) — model-only; processes captures/activity into typed
@@ -906,7 +1004,7 @@ host-bound direct chat, instead targets an explicit, space-scoped `Agent` — ca
 context policy and proposal-only output policy — resolved through the conversation backend
 binding (`modules/rooms.md`). Host-bound direct chat is owner-only, uses one direct container per
 Agent × owner, and exposes reset/archive/opt-in restore semantics; it does not make arbitrary
-Agents into a global default. These template ids are not seeded:
+Agents into a global default. These role ids are not seeded:
 `coding_task_agent`, `research_scout`, `source_processor`,
 `weekly_planner`, `finance_reviewer`, `health_reviewer`, `task_manager`.
 
@@ -924,7 +1022,7 @@ or hard policy.
 
 Memory reflection (`POST /api/v1/sessions/:sessionId/reflect`) writes a
 `memory_create` proposal from the recent transcript. It does not run a
-capability or a built-in Agent. The `memory_reflector` template is the factory
+capability or a built-in Agent. The `memory_reflector` role is the factory
 for a standalone reflection Agent. Do not route that request through
 `memory.reflect`.
 
@@ -960,7 +1058,7 @@ by routing and the Host daemon.
   config-proposal route, and these writes do not record proposal provenance.
 - Agent configuration is loaded from the immutable AgentVersion path; it is not
   represented by a Memory row or Runtime Context checkpoint.
-- The owner config UI (`POST /agents/{id}/config`) and create-from-template overrides
+- The owner config UI (`POST /agents/{id}/config`) and create-from-role overrides
   cannot loosen hard-safety snapshots (tool/runtime policy copied verbatim) and cannot
   expand memory `writable_scopes`, disable memory `requires_proposal`, or turn off output
   `proposal_only` — those are re-stamped from the source version.
@@ -976,9 +1074,9 @@ by routing and the Host daemon.
 - `server/src/modules/agents/` — AgentVersion behavior
 - `server/src/modules/agents/routes.ts` — agent HTTP API incl. `/config`, `/current-version`,
   `/versions/{id}/restore`, `/proposals`
-- `server/src/modules/agentTemplates/routes.ts` — template HTTP API over `catalog/agent_templates/`
+- `server/src/modules/agentRoles/routes.ts` — role HTTP API over `catalog/agent_roles/`
 - `apps/web/src/modules/agents/policyMap.ts` + `ConfigCards.tsx` — policy/config JSON → product cards
-- `apps/web/src/modules/agents/{TemplateLibraryPage,TemplateDetailPage,CreateFromTemplatePage,AgentDetailPage}.tsx`
+- `apps/web/src/modules/agents/{RoleLibraryPage,RoleDetailPage,CreateFromRolePage,AgentDetailPage}.tsx`
 
 ## Related Decisions
 

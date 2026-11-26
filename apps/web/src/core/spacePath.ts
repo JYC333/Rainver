@@ -2,7 +2,7 @@
  * Top-level paths that are NOT inside a Space, so they never get a `/spaces/:id` prefix.
  * Home is user-scoped (cross-space); Settings/Time/Cards are neutral system surfaces.
  */
-const USER_SCOPED_PREFIXES = ['/home', '/agent-work', '/settings', '/instance-settings', '/time', '/cards', '/evolution', '/login']
+const USER_SCOPED_PREFIXES = ['/home', '/agent-work', '/my-agents', '/settings', '/instance-settings', '/time', '/cards', '/evolution', '/login']
 
 function isUserScopedPath(path: string): boolean {
   // A query or fragment (`/evolution?asset=…`) does not move a path into a Space.
@@ -22,4 +22,14 @@ export function spacePath(spaceId: string | null | undefined, to: string): strin
   if (isUserScopedPath(to)) return to
   if (!spaceId) return to
   return `/spaces/${spaceId}${to}`
+}
+
+/**
+ * The href for a logical path, or `null` when it is an in-space path and no Space is known
+ * (a cold start before `/me/spaces` answers, or a person with no active Space). An unscoped
+ * in-space path matches no route and lands on Home, so navigation renders it inert instead.
+ */
+export function spaceHref(spaceId: string | null | undefined, to: string): string | null {
+  if (!spaceId && typeof to === 'string' && to.startsWith('/') && !to.startsWith('/spaces/') && !isUserScopedPath(to)) return null
+  return spacePath(spaceId, to)
 }

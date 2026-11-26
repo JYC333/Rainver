@@ -64,8 +64,8 @@ describe("deterministic route selector", () => {
     // Project conversations and Task Runs declare package operations (`plugin.<package>.<entity>.<operation>`);
     // the dispatcher executes them, so no runtime is filtered out for them.
     await expect(runtimeRequiredCapabilities([
-      "plugin.applications.application.create",
-      "plugin.applications.contact.list",
+      "plugin.phd_application.application.create",
+      "plugin.phd_application.contact.list",
       "task.create",
       "runtime.custom_capability",
     ])).resolves.toEqual(["runtime.custom_capability"]);

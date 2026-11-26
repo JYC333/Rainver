@@ -1,3 +1,5 @@
+import { runTool as callRunTool } from "./support/runTool.js";
+import { startLocalToolBridge } from "../../packages/agent-cli/dist/localBridge.js";
 import {getPluginControlPool,getOperationAuditPool} from '../src/db/pool.js';
 import { pluginsModule } from '../src/modules/plugins/index.js';
 import { proposalsModule, __setProposalIdentityForTests } from '../src/modules/proposals/index.js';
@@ -424,15 +426,7 @@ describe('operation package lifecycle through canonical consumers', () => {
       id: runId,
       space_id: space
     }, 60000);
-    const invoke = (tool: string, payload: object) => app.inject({
-      method: 'POST',
-      url: `/api/v1/runs/${runId}/tools/${tool}`,
-      headers: {
-        authorization: `Bearer ${token}`,
-        'idempotency-key': randomUUID()
-      },
-      payload
-    });
+    const invoke = (tool: string, payload: object) => callRunTool(config, runId, token, tool, payload);
     const submitted = await invoke(allowed[0]!, {
       value: 'agent-approved'
     });
@@ -1856,7 +1850,7 @@ describe('operation package lifecycle through canonical consumers', () => {
     expect((await records()).rows.map(r => r.value)).toEqual(['restored']);
     expect((await call('write')).statusCode).toBe(200);
   });
-  it('uses an actual Agent Run bearer HTTP call with the same lifecycle operation', async () => {
+  it('uses the Agent tool service and replays a deliberate CLI write', async () => {
     const allowed = ['plugin.operation_probe.record.write'];
     const grants = await buildRunToolGrants(allowed, {
       allowed_tools: allowed
@@ -1881,37 +1875,24 @@ describe('operation package lifecycle through canonical consumers', () => {
       id: runId,
       space_id: space
     }, 60000);
-    const response = await app.inject({
-      method: 'POST',
-      url: `/api/v1/runs/${runId}/tools/${allowed[0]}`,
-      headers: {
-        authorization: `Bearer ${token}`,
-        'idempotency-key': randomUUID()
-      },
-      payload: {
-        value: 'agent'
-      }
-    });
+    const response = await callRunTool(config, runId, token, allowed[0], { value: 'agent' });
     expect(response.statusCode, response.body).toBe(200);
     expect((await records()).rows.map(r => r.value)).toEqual(['agent']);
-    const address = await app.listen({
-      host: '127.0.0.1',
-      port: 0
+    const root = await mkdtemp(join(tmpdir(), 'rainver-plugin-agent-tool-'));
+    const bridge = await startLocalToolBridge(root, async request => {
+      const reply = await callRunTool(config, runId, token, allowed[0], request.body, request.idempotency_key ?? request.id);
+      return { status: reply.statusCode, text: reply.body };
     });
-    const key = randomUUID();
-    const argv = [join(import.meta.dirname, '../../packages/agent-cli/dist/rainver.js'), 'call', allowed[0]!, '--idempotency-key', key, JSON.stringify({
-      value: 'cli'
-    })];
-    const options = {
-      env: {
-        PATH: process.env.PATH,
-        RAINVER_API_URL: address,
-        RAINVER_RUN_ID: runId,
-        RAINVER_TOOL_TOKEN: token
-      }
-    };
-    expect(JSON.parse((await promisify(execFile)(process.execPath, argv, options)).stdout).ok).toBe(true);
-    expect(JSON.parse((await promisify(execFile)(process.execPath, argv, options)).stdout).replayed).toBe(true);
+    try {
+      const key = randomUUID();
+      const argv = [join(import.meta.dirname, '../../packages/agent-cli/dist/rainver.js'), 'call', allowed[0]!, '--idempotency-key', key, JSON.stringify({ value: 'cli' })];
+      const options = { env: { PATH: process.env.PATH, RAINVER_TOOL_BRIDGE: bridge.endpoint } };
+      expect(JSON.parse((await promisify(execFile)(process.execPath, argv, options)).stdout).ok).toBe(true);
+      expect(JSON.parse((await promisify(execFile)(process.execPath, argv, options)).stdout).replayed).toBe(true);
+    } finally {
+      await bridge.close();
+      await rm(root, { recursive: true, force: true });
+    }
     expect((await records()).rows.map(r => r.value)).toEqual(['cli']);
   });
 });

@@ -50,14 +50,18 @@ vi.mock('./manifestCatalog', async () => {
     manifestModules: []
   };
 });
-vi.mock('../../api/client', () => ({
+// The assistant setup card is the host's own and tested beside it.
+vi.mock('./PluginAgentSetup', () => ({ PluginAgentSetup: () => null }))
+vi.mock('../../api/client', async () => ({
+  ApiRequestError: (await import('../../api/transport')).ApiRequestError,
   pluginsApi: {
     list: vi.fn()
   },
   projectsApi: {
     get: vi.fn(async () => ({
       current_user_can_read: true
-    }))
+    })),
+    streamUpdates: vi.fn()
   },
   queryPluginOperation: vi.fn(),
   callPluginOperation: vi.fn()
@@ -69,6 +73,7 @@ function Harness() {
 const mount = () => render(<StrictMode><MemoryRouter initialEntries={['/spaces/space/projects/project']}><Harness /></MemoryRouter></StrictMode>);
 beforeEach(() => {
   vi.resetAllMocks();
+  vi.mocked(projectsApi.streamUpdates).mockResolvedValue(undefined);
   vi.mocked(projectsApi.get).mockResolvedValue({
     current_user_can_read: true,
     current_user_can_write: true
@@ -104,9 +109,10 @@ it('hosts a declared local component in StrictMode with only scoped ops/ui ports
   mount();
   await screen.findByText('Bundled records');
   const ctx = captured.context!;
-  expect(Object.keys(ctx).sort()).toEqual(['ops', 'projectCanWrite', 'projectId', 'spaceId', 'ui']);
+  expect(Object.keys(ctx).sort()).toEqual(['ops', 'projectCanWrite', 'projectId', 'projectRevision', 'spaceId', 'ui']);
   expect(ctx.projectId).toBe('project');
   expect(ctx.projectCanWrite).toBe(true);
+  expect(ctx.projectRevision).toBe(0);
   await expect(ctx.ops.query('plugin.operation_probe.record.list', {})).resolves.toEqual({
     status: 'succeeded',
     data: {

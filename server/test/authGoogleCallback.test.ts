@@ -6,9 +6,40 @@ import { registerRoutes } from "../src/modules/auth/routes.js";
 import { consumeGoogleReauth, issueGoogleReauth } from "../src/modules/auth/googleReauth.js";
 import { hashOpaqueToken } from "../src/modules/auth/securityPolicy.js";
 
+describe("Google sign-in destination", () => {
+  it("returns to home or the requested local destination after sign-in", async () => {
+    const config = loadConfig({ PUBLIC_BASE_URL: "https://rainver.example.test", GOOGLE_CLIENT_ID: "client", GOOGLE_CLIENT_SECRET: "secret" });
+    const app = createServerApp(config, { logger: false });
+    let callbackURL: string | undefined;
+    const runtime = {
+      auth: {
+        options: { baseURL: config.frontendUrl, basePath: "/api/v1/auth" },
+        handler: async (request: Request) => {
+          ({ callbackURL } = await request.json());
+          return Response.json({ url: "https://accounts.google.example/authorize" });
+        },
+      },
+    } as unknown as AuthRuntime;
+    registerRoutes(app, { config, snapshot: createConfigSnapshot(config), authRuntime: runtime });
+    try {
+      for (const [next, expected] of [
+        ["", "/home"],
+        ["/projects?tab=active#recent", "/projects?tab=active#recent"],
+        ["//other.example/path", "/home"],
+      ]) {
+        const reply = await app.inject({ url: `/api/v1/auth/google?next=${encodeURIComponent(next)}` });
+        expect(reply.statusCode).toBe(307);
+        expect(callbackURL).toBe(`${config.frontendUrl}${expected}`);
+      }
+    } finally {
+      await app.close();
+    }
+  });
+});
+
 describe("Google reauthentication callback", () => {
   it("recognizes only a successful OAuth callback that issues the replacement session", async () => {
-    const config = loadConfig({ FRONTEND_URL: "https://rainver.example.test" });
+    const config = loadConfig({ PUBLIC_BASE_URL: "https://rainver.example.test" });
     const app = createServerApp(config, { logger: false });
     registerGatewayConventions(app, config);
     let callbackResponse = new Response(null, { status: 302 });
@@ -16,6 +47,8 @@ describe("Google reauthentication callback", () => {
       auth: {
         options: { baseURL: config.frontendUrl, basePath: "/api/v1/auth" },
         handler: async () => callbackResponse,
+        // No session behind the fake token: the browser account jar passes the cookie through.
+        api: { getSession: async () => null },
       },
     } as unknown as AuthRuntime;
     registerRoutes(app, { config, snapshot: createConfigSnapshot(config), authRuntime: runtime });

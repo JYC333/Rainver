@@ -94,6 +94,8 @@ export function LimitedRoomDialog({ open, projectId, onClose, onOpened }: {
           await roomsApi.inviteUser(room.room.id, {
             user_id: memberId,
             confirm_owned_private_agent_shares: false,
+            // A Room created a moment ago has no conversation to share.
+            share_history: false,
           })
         } catch (error) {
           const who = personLabel(candidates.find(reader => reader.user_id === memberId) ?? { user_id: memberId })
@@ -135,6 +137,8 @@ export function LimitedRoomDialog({ open, projectId, onClose, onOpened }: {
             value={selected}
             onChange={setSelected}
           />
+          {/* Nobody picked is a Room of one: just the person and the Agents they add. */}
+          {selected.length === 0 && <p className="text-xs text-muted-foreground">{t('collab_ui.limited_room.only_you')}</p>}
           <Input
             aria-label={t('collab_ui.limited_room.name')}
             placeholder={t('collab_ui.limited_room.name')}
@@ -144,7 +148,7 @@ export function LimitedRoomDialog({ open, projectId, onClose, onOpened }: {
         </div>
         <DialogFooter>
           <Button size="sm" variant="outline" onClick={onClose} disabled={creating}>{t('collab_ui.common.cancel')}</Button>
-          <Button size="sm" onClick={() => void create()} disabled={creating || selected.length === 0}>
+          <Button size="sm" onClick={() => void create()} disabled={creating}>
             {creating ? t('collab_ui.limited_room.creating') : t('collab_ui.limited_room.create')}
           </Button>
         </DialogFooter>

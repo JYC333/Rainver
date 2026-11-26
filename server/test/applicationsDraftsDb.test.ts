@@ -55,7 +55,7 @@ import {seedArxivSourceChain, seedRelevantCorpusItem} from './support/researchSe
  */
 // Lock-race cases hold three sessions while the pool still watches for waiters.
 const db = useTestDatabase(import.meta.filename, {max: 6});
-const pid = 'applications';
+const pid = 'phd_application';
 const opId = (name: string) => `plugin.${pid}.${name}`;
 const plugin = BUILT_IN_PLUGINS.find(p => p.id === pid) as RainverPlugin;
 let space: string, owner: string, member: string, projectA: string, projectB: string, config: ReturnType<typeof providerTaskTestConfig>, app: ReturnType<typeof buildModuleServer>;

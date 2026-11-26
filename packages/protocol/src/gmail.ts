@@ -326,12 +326,12 @@ export const GMAIL_APPLICATION_UPDATE_EFFECTS=['under_review','interview','waitl
 export const GmailApplicationUpdateEffectSchema=z.enum(GMAIL_APPLICATION_UPDATE_EFFECTS);
 export type GmailApplicationUpdateEffect=z.infer<typeof GmailApplicationUpdateEffectSchema>;
 /** The action an automation Run records one fact with; only that Run may call it (ADR 0034). */
-export const GMAIL_APPLICATION_FACT_ACTION='plugin.applications.mail_fact.apply' as const;
+export const GMAIL_APPLICATION_FACT_ACTION='plugin.phd_application.mail_fact.apply' as const;
 /**
  * The owner's ledger of what their mail recorded (ADR 0034): answered only to the owner, or to an Agent in
  * their own private conversation of the Project, where it taints the Run as the owner's mail does.
  */
-export const GMAIL_APPLICATION_FACTS_LIST_ACTION='plugin.applications.mail_fact.list' as const;
+export const GMAIL_APPLICATION_FACTS_LIST_ACTION='plugin.phd_application.mail_fact.list' as const;
 /**
  * The Agent and model the owner confirmed for an automation, frozen from the conversation's
  * binding when the card was drafted. A delivery starts only while the conversation still binds
@@ -527,6 +527,12 @@ export type GmailPrivateCheckProposalPayload=z.infer<typeof GmailPrivateCheckPro
 export const GmailDigestStatusSchema=z.enum(['active','paused','ended']);
 export const GmailDigestDeliveryStatusSchema=z.enum(['running','delivered','failed']);
 const gmailCode=z.string().regex(/^gmail_[a-z_]{1,58}$/);
+const gmailItemReason=z.enum(['ambiguous_application','no_matching_application','unclear_fact','conflict']);
+export const GMAIL_APPLICATION_REVIEW_PAGE_SIZE=20;
+const gmailApplicationReviewItem=z.object({
+  message_id:GmailGoogleIdSchema,gmail_url:z.string().url().max(300),received_at:iso,reason:gmailItemReason.nullable(),
+}).strict();
+
 export const GmailDigestSchema=z.object({
   id,connection_id:id,project_id:id,project_name:z.string().max(512).nullable(),session_id:id,agent_id:id,kind:GmailDigestKindSchema,
   /** Application updates: the facts it records and the Agent and model it runs on (absent for summaries). */
@@ -534,6 +540,8 @@ export const GmailDigestSchema=z.object({
   runtime:z.object({agent_name:z.string().max(200),model_label:z.string().max(300)}).strict().nullable().optional(),
   /** Application updates: messages waiting, kept for the owner's review, and given up after repeated failures. */
   mail_items:z.object({pending:z.number().int().min(0),review:z.number().int().min(0),failed:z.number().int().min(0)}).strict().nullable().optional(),
+  /** Mailbox-owner-only review pointers, newest first. No sender, subject or message text. */
+  review_items:z.array(gmailApplicationReviewItem).max(GMAIL_APPLICATION_REVIEW_PAGE_SIZE).optional(),
   /** The Room (or Project mainline) the digest delivers into; null for the owner's private conversation. */
   room_id:id.nullable().optional(),
   /** Application updates enabled in a Room or the mainline (ADR 0035 §1): that conversation, where structured results are posted. */
@@ -569,7 +577,11 @@ export const GmailDigestReadInputSchema=z.object({
 export type GmailDigestReadInput=z.infer<typeof GmailDigestReadInputSchema>;
 export const GmailDigestReadOutputSchema=z.object({
   mailbox_email:z.string().max(320),kind:GmailDigestKindSchema,window_start:iso,window_end:iso,gap_before:z.boolean(),
-  items:z.array(GmailAgentMessageSchema.extend({direction:z.literal('sent').optional()})).max(GMAIL_DIGEST_LIMITS.messagesPerCall),
+  items:z.array(GmailAgentMessageSchema.extend({
+    direction:z.literal('sent').optional(),
+    reply:z.literal(true).optional(),
+    automatic_reply:z.literal(true).optional(),
+  })).max(GMAIL_DIGEST_LIMITS.messagesPerCall),
   next_page_token:z.string().max(1024).nullable(),more_in_window:z.boolean(),truncated:z.boolean(),
 }).strict();
 export type GmailDigestReadOutput=z.infer<typeof GmailDigestReadOutputSchema>;
@@ -586,7 +598,6 @@ export type GmailDigestReadOutput=z.infer<typeof GmailDigestReadOutputSchema>;
  *   the owner's review (no unique application, unclear fact) instead of recording anything.
  */
 export const GmailApplicationMailItemStatusSchema=z.enum(['pending','done','review','failed']);
-const gmailItemReason=z.enum(['ambiguous_application','no_matching_application','unclear_fact','conflict']);
 export const GmailApplicationUpdatesListInputSchema=z.object({}).strict();
 export const GmailApplicationUpdatesListOutputSchema=z.object({
   automations:z.array(z.object({

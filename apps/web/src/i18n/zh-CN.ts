@@ -84,6 +84,7 @@ export const zhCN = {
     registration_failed: '无法完成 Google 注册，请从邀请链接重试。',
     unknown_error: '发生错误，请重试。', invalid_credentials: '邮箱或密码错误。',
     logout_pending: '退出请求未能送达服务器。请在连接恢复后重试登录。',
+    signed_out: '登录期间此浏览器已退出登录，请重新登录。',
     reset_sent: '如果此邮箱存在，实例管理员会准备重置链接。',
     email: '邮箱', password: '密码', remember: '保持登录状态',
     signing_in: '正在登录…', sign_in: '登录', forgot_password: '忘记密码？',

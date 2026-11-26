@@ -1,4 +1,4 @@
-import { assertSqlIdentifier, projectReadAccessSql } from "../access/contentAccessSql.js";
+import { assertSqlIdentifier, projectReadAccessSql, roomConversationAudienceSql } from "../access/contentAccessSql.js";
 
 /** The Session reader's source gate for aggregate projections. Run visibility
  * alone does not grant access to another person's direct conversation.
@@ -12,5 +12,5 @@ export function attentionSessionReadSql(alias: string, user: string): string {
         ON session_member.space_id=session_room.space_id AND session_member.room_id=session_room.id
         AND session_member.user_id=${user} AND session_member.status='active'
       WHERE session_room.id=${alias}.room_id AND session_room.space_id=${alias}.space_id AND session_room.status='active'
-    ))`;
+    ) AND ${roomConversationAudienceSql(`${alias}.space_id`, `${alias}.id`, user)})`;
 }

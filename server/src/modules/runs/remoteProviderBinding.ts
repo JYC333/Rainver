@@ -636,7 +636,7 @@ export async function buildRemoteProviderBinding(input: {
       "provider_proxy_not_reachable",
       "No provider proxy address this host can reach. The built-in host needs the proxy listener "
         + "running. A paired host needs its proxy address set in the Command Center, "
-        + "PROVIDER_PROXY_EXTERNAL_BASE_URL for the whole instance, or an http: FRONTEND_URL with a "
+        + "PROVIDER_PROXY_EXTERNAL_BASE_URL for the whole instance, or an http: PUBLIC_BASE_URL with a "
         + "fixed PROVIDER_PROXY_PORT to derive one from.",
     );
   }

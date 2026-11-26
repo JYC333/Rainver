@@ -158,7 +158,11 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       return reply.send(await service(context).listAgentCandidates(
         identity,
         roomId(request),
-        { ...parsePage(query(request), 50), q: optionalString(query(request).q) ?? null },
+        {
+          ...parsePage(query(request), 50),
+          q: optionalString(query(request).q) ?? null,
+          source_role_id: optionalString(query(request).source_role_id) ?? null,
+        },
       ));
     } catch (error) {
       return sendRoomError(reply, error);

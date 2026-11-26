@@ -2,13 +2,14 @@ import type { ConversationInputPart } from '@rainver/protocol'
 import { readConversationDraft, writeConversationDraft } from '../../conversation/conversationDraft'
 import { ConversationSurface } from '../../conversation/ConversationSurface'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { useEffect } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import ProjectChatSidecar, { focusRefsFor } from '../sidecar/ProjectChatSidecar'
 import { ProjectFolderConversationProvider, useProjectFolderConversation, type CurrentFileAttachment } from '../ProjectFolderConversationContext'
 import { conversationInputApi, projectsApi, proposalsApi, roomsApi, runsApi, sessionsApi } from '../../../api/client'
 import { projectTaskHref } from '../taskHref'
+import { openProjectChat } from '../sidecar/projectChatOpen'
 import { subscribeProjectFolderContentChanged } from '../../../core/projectFolderEvents'
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), dismiss: vi.fn() } }))
@@ -65,7 +66,7 @@ vi.mock('../../../api/client', async () => {
     retrievalSwitch: vi.fn(async () => ({ work_context_scope_id: 'scope-1', enabled: false, preferred_domains: [], setup_version: null })),
     setRetrievalSwitch: vi.fn(),
   },
-  projectsApi: { mainlineRoom: vi.fn() },
+  projectsApi: { mainlineRoom: vi.fn(), rooms: vi.fn() },
   agentWorkspacesApi: { conversationChanges: vi.fn(async () => ({ items: [], next_cursor: null })) },
   proposalsApi: { get: vi.fn(), accept: vi.fn(), reject: vi.fn() },
   runsApi: { get: vi.fn(), streamTurn: vi.fn(), turn: vi.fn(), authorizationRequests: vi.fn().mockResolvedValue([]) },
@@ -187,6 +188,7 @@ beforeEach(() => {
   localStorage.clear()
   sessionStorage.clear()
   viewport(true)
+  vi.mocked(projectsApi.rooms).mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0, viewer_can_write: true } as never)
   vi.mocked(projectsApi.mainlineRoom).mockResolvedValue({
     room: { id: 'room-1', title: 'Project Room', is_mainline: true }, joined: false, viewer_can_write: true,
   } as never)
@@ -236,18 +238,146 @@ describe('focus refs', () => {
 })
 
 describe('Project chat sidecar', () => {
-  it('sorts the picker by message activity and marks the running thread without disabling it', async () => {
+  it('sorts the switcher by message activity and marks the running thread without disabling it', async () => {
     vi.mocked(roomsApi.conversations).mockResolvedValue({ items: [
       { id: 'conv-2', title: 'Newer empty', created_at: '2026-01-02T00:00:00Z' },
       { id: 'conv-1', title: 'Older active', created_at: '2026-01-01T00:00:00Z', last_message_at: '2026-01-03T00:00:00Z', is_running: true },
     ], total: 2, limit: 50, offset: 0 } as never)
     renderAt(`/spaces/space-1/projects/${PROJECT}/board`)
-    fireEvent.click(await screen.findByRole('button', { name: 'Conversation' }))
-    const options = screen.getAllByRole('option')
-    expect(options[0]).toHaveTextContent('Older active')
-    expect(within(options[0]).getByRole('status', { name: 'Conversation running' })).toBeInTheDocument()
-    expect(options[0]).not.toBeDisabled()
+    fireEvent.click(await screen.findByTestId('sidecar-switcher'))
+    // Two fixed tabs; the current Room's conversations are the default.
+    expect(screen.getByRole('tab', { name: 'Conversations' })).toHaveAttribute('data-state', 'active')
+    expect(screen.getByRole('tab', { name: 'Rooms' })).toBeInTheDocument()
+    const rows = within(screen.getByRole('list', { name: 'Conversations' })).getAllByRole('button')
+    expect(rows[0]).toHaveTextContent('Older active')
+    expect(within(rows[0]).getByRole('status', { name: 'Conversation running' })).toHaveClass('animate-spin')
+    expect(rows[0]).not.toBeDisabled()
   })
+
+  it('searches the list, switches Rooms and restores the last conversation the viewer had there', async () => {
+    vi.mocked(projectsApi.rooms).mockResolvedValue({ items: [
+      { room: { id: 'room-1', title: 'Project Room', is_mainline: true }, other_member_names: [], person_count: 1, agent_count: 1, conversation_count: 2, last_activity_at: null },
+      { room: { id: 'room-2', title: 'Design review', is_mainline: false }, other_member_names: ['Alice'], person_count: 2, agent_count: 1, conversation_count: 2, last_activity_at: null },
+    ], total: 2, limit: 100, offset: 0, viewer_can_write: true } as never)
+    vi.mocked(roomsApi.get).mockResolvedValue({ room: { id: 'room-2', project_id: PROJECT, title: 'Design review', is_mainline: false }, other_member_names: ['Alice'] } as never)
+    vi.mocked(roomsApi.conversations).mockImplementation(async (roomId: string) => (roomId === 'room-2'
+      ? { items: [
+        { id: 'conv-b2', title: 'Latest review', created_at: '2026-01-04T00:00:00Z', audience: { restricted: false, other_member_names: ['Alice'] } },
+        { id: 'conv-b1', title: 'Before Alice joined', created_at: '2026-01-01T00:00:00Z', audience: { restricted: true, other_member_names: [] } },
+      ], total: 2, limit: 50, offset: 0 }
+      : { items: [
+        { id: 'conv-2', title: 'Newer empty', created_at: '2026-01-02T00:00:00Z' },
+        { id: 'conv-1', title: 'Older thread', created_at: '2026-01-01T00:00:00Z' },
+      ], total: 2, limit: 50, offset: 0 }) as never)
+    // The viewer last read the earlier thread in the Design review Room.
+    localStorage.setItem('project.sidecar.room.room-2.conversation', 'conv-b1')
+    renderAt(`/spaces/space-1/projects/${PROJECT}/board`)
+    expect(await screen.findByTestId('sidecar-audience')).toHaveTextContent('Everyone in this Project')
+
+    fireEvent.click(screen.getByTestId('sidecar-switcher'))
+    fireEvent.change(screen.getByLabelText('Search conversations'), { target: { value: 'older' } })
+    expect(within(screen.getByRole('list', { name: 'Conversations' })).getAllByRole('button').map(row => row.textContent)).toEqual(['Older thread'])
+
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Rooms' }))
+    fireEvent.click(await screen.findByRole('button', { name: /Design review/ }))
+    await waitFor(() => expect(roomsApi.conversations).toHaveBeenCalledWith('room-2', { limit: 50 }, expect.any(Object)))
+    // Restored, and its real audience is stated: frozen to the earlier members.
+    await waitFor(() => expect(screen.getByTestId('sidecar-switcher')).toHaveTextContent('Before Alice joined'))
+    expect(screen.getByTestId('sidecar-audience')).toHaveTextContent('Just you · earlier members only')
+    expect(localStorage.getItem(`project.sidecar.${PROJECT}.room`)).toBe('room-2')
+  })
+  it('closes the switcher when a new conversation is started, so the new one is what shows', async () => {
+    renderAt(`/spaces/space-1/projects/${PROJECT}/board`)
+    fireEvent.click(await screen.findByTestId('sidecar-switcher'))
+    expect(screen.getByRole('list', { name: 'Conversations' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Start a separate thread' }))
+    expect(screen.queryByRole('list', { name: 'Conversations' })).not.toBeInTheDocument()
+    expect(screen.getByTestId('sidecar-switcher')).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('gives the switcher reached from the phone menu its own way back to the conversation', async () => {
+    viewport(false)
+    vi.mocked(projectsApi.rooms).mockResolvedValue({ items: [
+      { room: { id: 'room-1', title: 'Project Room', is_mainline: true }, other_member_names: [], person_count: 1, agent_count: 1, conversation_count: 2, last_activity_at: null },
+    ], total: 1, limit: 100, offset: 0, viewer_can_write: true } as never)
+    renderAt(`/spaces/space-1/projects/${PROJECT}/board`)
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Project chat' }))
+    await waitFor(() => expect(roomsApi.messages).toHaveBeenCalled())
+    fireEvent.click(screen.getByRole('button', { name: 'Conversations and Room details' }))
+    fireEvent.click(await screen.findByTestId('sidecar-mobile-rooms'))
+    expect(await screen.findByRole('tab', { name: 'Rooms' })).toHaveAttribute('data-state', 'active')
+    fireEvent.click(screen.getByTestId('sidecar-mobile-back-to-conversation'))
+    expect(screen.queryByRole('tab', { name: 'Rooms' })).not.toBeInTheDocument()
+    expect(screen.queryByTestId('sidecar-mobile-back-to-conversation')).not.toBeInTheDocument()
+  })
+
+  it('on a phone names the open conversation in the header and the Room in its drawer', async () => {
+    viewport(false)
+    vi.mocked(projectsApi.rooms).mockResolvedValue({ items: [
+      { room: { id: 'room-1', title: 'Project Room', is_mainline: true }, other_member_names: [], person_count: 1, agent_count: 1, conversation_count: 2, last_activity_at: null },
+    ], total: 1, limit: 100, offset: 0, viewer_can_write: true } as never)
+    vi.mocked(roomsApi.conversations).mockResolvedValue({ items: [
+      { id: 'conv-2', title: 'Before Alice joined', audience: { restricted: true, other_member_names: [] } },
+      { id: 'conv-1', title: 'Main', audience: { restricted: false, other_member_names: ['Alice'] } },
+    ], total: 2, limit: 50, offset: 0 } as never)
+    renderAt(`/spaces/space-1/projects/${PROJECT}/board`)
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Project chat' }))
+    await waitFor(() => expect(screen.getByTestId('mobile-conversation-audience')).toHaveTextContent('Just you · earlier members only'))
+    fireEvent.click(screen.getByRole('button', { name: 'Conversations and Room details' }))
+    // The drawer lists every conversation of the Room, so it says who reads the Room.
+    expect(await screen.findByText('Everyone in this Project', { selector: '#mobile-room-audience' })).toBeInTheDocument()
+  })
+
+  it.each([
+    ['the phone chat', '?projectChat=1'],
+    ['the phone chat and its conversation drawer', '?projectChat=1&conversationDrawer=1&tab=board'],
+  ])('drops the overlay entries of %s and keeps the chat open beside the page once the screen is wide', async (_label, search) => {
+    localStorage.setItem(`project.sidecar.${PROJECT}.open`, 'false')
+    const Probe = () => <output data-testid="location-search">{useLocation().search}</output>
+    render(
+      <MemoryRouter initialEntries={[`/spaces/space-1/projects/${PROJECT}/board${search}`]}>
+        <Routes>
+          <Route path="/spaces/:spaceId/projects/:projectId/*" element={<><ProjectChatSidecar /><Probe /></>} />
+        </Routes>
+      </MemoryRouter>,
+    )
+    await waitFor(() => expect(screen.getByTestId('location-search')).not.toHaveTextContent('projectChat'))
+    expect(screen.getByTestId('location-search')).not.toHaveTextContent('conversationDrawer')
+    // Unrelated parameters stay.
+    if (search.includes('tab=board')) expect(screen.getByTestId('location-search')).toHaveTextContent('tab=board')
+    expect(await screen.findByTestId('sidecar-switcher')).toBeInTheDocument()
+  })
+
+  it.each([
+    ['Forward lands on an entry the phone drawer pushed', 'base'],
+    ['a link opens a drawer entry directly', 'drawer'],
+  ])('on a wide screen leaves no phone drawer entry when %s', async (_label, expected) => {
+    viewport(true)
+    const page = `/spaces/space-1/projects/${PROJECT}/files`
+    const Probe = () => { const location = useLocation(); return <output data-testid="location">{location.key}{location.search}</output> }
+    const marker = expected === 'base' ? { 'conversation-overlay:conversationDrawer': { owner: 'base:conversationDrawer', parent: 'base' } } : null
+    render(
+      <MemoryRouter initialEntries={[{ pathname: page, key: 'base' }, { pathname: page, search: '?conversationDrawer=1', key: 'drawer', state: marker }]} initialIndex={1}>
+        <Routes>
+          <Route path="/spaces/:spaceId/projects/:projectId/*" element={<><ProjectChatSidecar /><Probe /></>} />
+        </Routes>
+      </MemoryRouter>,
+    )
+    // The pushed entry is popped, so Back leaves the page; a direct one is closed in place.
+    await waitFor(() => expect(screen.getByTestId('location')).not.toHaveTextContent('conversationDrawer'))
+    if (expected === 'base') expect(screen.getByTestId('location').textContent).toBe('base')
+    else expect(screen.getByTestId('location').textContent).not.toBe('base')
+  })
+
+  it('reads the Room again when asked to open the one already shown', async () => {
+    renderAt(`/spaces/space-1/projects/${PROJECT}/board`)
+    await waitFor(() => expect(roomsApi.conversations).toHaveBeenCalledTimes(1))
+    // A plugin setup just added an Agent to this Room and opens the panel on it.
+    act(() => openProjectChat({ projectId: PROJECT, roomId: 'room-1' }))
+    await waitFor(() => expect(roomsApi.conversations).toHaveBeenCalledTimes(2))
+    expect(projectsApi.mainlineRoom).toHaveBeenCalledTimes(2)
+  })
+
   it('binds to the mainline Room and its newest conversation', async () => {
     renderAt(`/spaces/space-1/projects/${PROJECT}/board`)
     // The mainline is the server's answer, not "whichever Room I am in that
@@ -596,7 +726,10 @@ describe('Project chat sidecar', () => {
     } as never)
     vi.mocked(proposalsApi.get).mockResolvedValue({ id: 'proposal-1', status: 'pending' } as never)
     vi.mocked(proposalsApi.accept).mockResolvedValue({} as never)
-    vi.mocked(roomsApi.continueAfterProposal).mockResolvedValue({ run_ids: ['run-2'], conversation: null } as never)
+    vi.mocked(roomsApi.continueAfterProposal).mockResolvedValue({
+      id: 'continuation-message', space_id: 'space-1', room_id: 'room-1', session_id: 'conv-2',
+      message_id: 'continuation-message', task_group_ids: ['group-2'], run_ids: ['run-2'],
+    })
 
     renderAt(`/spaces/space-1/projects/${PROJECT}/board`)
     const previews = await screen.findByTestId('previews-m2')

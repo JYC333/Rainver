@@ -1451,6 +1451,11 @@ export class HostConnectionRegistry {
     return pending;
   }
 
+  acceptsRunToolRequest(hostId: string, sink: HostFrameSink, runId: string, launchId: string): boolean {
+    return this.connections.get(hostId)?.sink === sink
+      && this.currentDispatch(hostId, runId, launchId) !== null;
+  }
+
   receiveLaunched(hostId: string, runId: string, launchId: string): void {
     const pending = this.currentDispatch(hostId, runId, launchId);
     if (!pending) return;

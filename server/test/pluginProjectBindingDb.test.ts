@@ -31,6 +31,9 @@ import {waitForBlockedBy, waitForLockWaiter} from './support/lockWait.js';
 import {pruneOperationRequests} from '../src/modules/systemActions/operations/retention.js';
 import {operationProposalDecisionHooks} from '../src/modules/systemActions/operations/approvals.js';
 import {pluginOperations} from '../src/modules/plugins/operationRegistry.js';
+import {PgSessionRepository} from '../src/modules/sessions/repository.js';
+import {RoomRosterService} from '../src/modules/rooms/rosterService.js';
+import {RoomService} from '../src/modules/rooms/service.js';
 
 /**
  * Project-level operation packages (manifest `project_binding: 'required'`):
@@ -522,5 +525,178 @@ describe('Project-level plugin binding', () => {
       await removing;
     } finally { await holder.end(); }
     await expect(withTransaction(db.pool, audit => release(audit, [owner, viewer]))).rejects.toMatchObject({httpStatus: 503});
+  });
+
+  it('a cross-Project Agent result, fresh or replayed, is not released past a Room revocation that commits meanwhile', async () => {
+    await bind(projectA);
+    // The writer's Agent, from Project B, used in a Room of Project A under the writer's own Room grant.
+    const runId = await agentRun(writer, projectA);
+    const agent = (await db.pool.query<{agent_id: string}>('SELECT agent_id FROM runs WHERE id=$1', [runId])).rows[0]!.agent_id;
+    await db.pool.query('UPDATE agents SET access_project_id=$2 WHERE id=$1', [agent, projectB]);
+    const room = randomUUID();
+    await db.pool.query(`INSERT INTO rooms (id,space_id,project_id,created_by_user_id,title,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'Applications','active',now(),now())`, [room, space, projectA, writer]);
+    await db.pool.query(`INSERT INTO room_user_members (id,space_id,room_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'owner','active',now(),now())`, [randomUUID(), space, room, writer]);
+    await db.pool.query(`INSERT INTO room_agent_members (id,space_id,room_id,agent_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'member','active',now(),now())`, [randomUUID(), space, room, agent]);
+    const grant = () => db.pool.query(`INSERT INTO room_agent_access_grants (id,space_id,room_id,agent_id,grantee_user_id,granted_by_user_id,created_at) VALUES ($1,$2,$3,$4,$5,$5,now())`, [randomUUID(), space, room, agent, writer]);
+    await grant();
+    const session = await new PgSessionRepository(db.pool).createRoomConversation({space_id: space, room_id: room, project_id: projectA, project_folder_id: null, title: 'Applications', metadata: {}});
+    await db.pool.query('UPDATE runs SET session_id=$2 WHERE id=$1', [runId, session.id]);
+    { const first = await call(runId, listId, {project_id: projectA}); expect(first.httpStatus, JSON.stringify(first.body)).toBe(200); }
+    const actor = await runActor(db.pool, (await db.pool.query<AgentRunRecord>('SELECT * FROM runs WHERE id=$1', [runId])).rows[0] as never);
+    const item = (await operationRuntime(config)).registrations.get(listId)!;
+    // A fresh result and a stored receipt's replay are both released through this gate, in their own transaction.
+    const release = (audit: Parameters<NonNullable<typeof item.releaseGate>>[0], replayed: boolean) =>
+      item.releaseGate!(audit, {input: {project_id: projectA}, data: {keys: []}, facts: {v: 1, references: []}, actor, replayed});
+    const pidOf = async (client: pg.Client) => (await client.query<{pid: number}>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
+
+    // The revocation is first: it holds the Room row as every Room writer does, and has not committed
+    // when the release asks. The release waits for it and then sees the grant gone.
+    for (const replayed of [false, true]) {
+      await withTransaction(db.pool, audit => release(audit, replayed));
+      const revoker = new pg.Client({connectionString: db.connectionUri});
+      await revoker.connect();
+      try {
+        await revoker.query('BEGIN');
+        await revoker.query('SELECT id FROM rooms WHERE id=$1 FOR NO KEY UPDATE', [room]);
+        await revoker.query('UPDATE room_agent_access_grants SET revoked_at=now() WHERE room_id=$1 AND revoked_at IS NULL', [room]);
+        let settled = false;
+        const releasing = withTransaction(db.pool, audit => release(audit, replayed)).then(() => 'released', (error: unknown) => error).finally(() => { settled = true; });
+        await waitForBlockedBy(db.pool, await pidOf(revoker), {settled: () => settled});
+        expect(settled, `replayed=${replayed}: the release did not wait for the Room`).toBe(false);
+        await revoker.query('COMMIT');
+        expect(await releasing).toMatchObject({httpStatus: 503});
+      } finally { await revoker.end(); }
+      await grant();
+    }
+    // The same through the Agent tool entry: the call waits, then withholds.
+    const revoker = new pg.Client({connectionString: db.connectionUri});
+    await revoker.connect();
+    try {
+      await revoker.query('BEGIN');
+      await revoker.query('SELECT id FROM rooms WHERE id=$1 FOR NO KEY UPDATE', [room]);
+      await revoker.query('UPDATE room_agent_access_grants SET revoked_at=now() WHERE room_id=$1 AND revoked_at IS NULL', [room]);
+      let settled = false;
+      const calling = call(runId, listId, {project_id: projectA}).finally(() => { settled = true; });
+      await waitForBlockedBy(db.pool, await pidOf(revoker), {settled: () => settled});
+      expect(settled).toBe(false);
+      await revoker.query('COMMIT');
+      const response = await calling;
+      expect(response.httpStatus).not.toBe(200);
+      expect(JSON.stringify(response.body)).not.toContain('"keys"');
+    } finally { await revoker.end(); }
+    await grant();
+    expect((await call(runId, listId, {project_id: projectA})).httpStatus).toBe(200);
+
+    // The release is first: removing the Agent from the Room waits for it, and every later release refuses.
+    const holder = new pg.Client({connectionString: db.connectionUri});
+    await holder.connect();
+    try {
+      await holder.query('BEGIN');
+      await release(holder, false);
+      let settled = false;
+      const removing = new RoomRosterService(db.pool).removeAgent({spaceId: space, userId: writer}, room, agent).finally(() => { settled = true; });
+      await waitForBlockedBy(db.pool, await pidOf(holder), {settled: () => settled});
+      expect(settled, 'the removal did not wait for the open release').toBe(false);
+      await holder.query('COMMIT');
+      expect((await removing).detail.revoked_grant_count).toBe(1);
+    } finally { await holder.end(); }
+    for (const replayed of [false, true]) await expect(withTransaction(db.pool, audit => release(audit, replayed))).rejects.toMatchObject({httpStatus: 503});
+    expect((await call(runId, listId, {project_id: projectA})).httpStatus).toBe(404);
+  });
+
+  /** A cross-Project Agent's running Run in a Room conversation of Project A, the writer's grant letting it work there. */
+  async function crossProjectRoomRun() {
+    await bind(projectA);
+    const runId = await agentRun(writer, projectA);
+    const agent = (await db.pool.query<{agent_id: string}>('SELECT agent_id FROM runs WHERE id=$1', [runId])).rows[0]!.agent_id;
+    await db.pool.query('UPDATE agents SET access_project_id=$2 WHERE id=$1', [agent, projectB]);
+    const room = randomUUID();
+    await db.pool.query(`INSERT INTO rooms (id,space_id,project_id,created_by_user_id,title,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'Applications','active',now(),now())`, [room, space, projectA, writer]);
+    await db.pool.query(`INSERT INTO room_user_members (id,space_id,room_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'owner','active',now(),now())`, [randomUUID(), space, room, writer]);
+    await db.pool.query(`INSERT INTO room_agent_members (id,space_id,room_id,agent_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'manager','active',now(),now())`, [randomUUID(), space, room, agent]);
+    await db.pool.query(`INSERT INTO room_agent_access_grants (id,space_id,room_id,agent_id,grantee_user_id,granted_by_user_id,created_at) VALUES ($1,$2,$3,$4,$5,$5,now())`, [randomUUID(), space, room, agent, writer]);
+    const session = await new PgSessionRepository(db.pool).createRoomConversation({space_id: space, room_id: room, project_id: projectA, project_folder_id: null, title: 'Applications', metadata: {}});
+    await db.pool.query('UPDATE runs SET session_id=$2 WHERE id=$1', [runId, session.id]);
+    return {runId, agent, room, session};
+  }
+
+  /**
+   * Holds a Room writer at a row it locks after the Room (`hold`), then sends the Agent's
+   * command, which takes the Project FOR UPDATE and then needs the Room. A writer holding the
+   * Room before the Project would then need the Project key lock for its insert, and the two
+   * would deadlock; Project before Room, the command waits for the writer and both complete.
+   */
+  async function raceRoomWriterWithCommand(runId: string, hold: (holder: pg.Client) => Promise<unknown>, writing: () => Promise<unknown>, key: string) {
+    const holder = new pg.Client({connectionString: db.connectionUri});
+    await holder.connect();
+    try {
+      await holder.query('BEGIN');
+      await hold(holder);
+      const holderPid = (await holder.query<{pid: number}>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
+      let writerSettled = false;
+      const written = writing().then(value => ({value}), (error: unknown) => ({error})).finally(() => { writerSettled = true; });
+      await waitForBlockedBy(db.pool, holderPid, {settled: () => writerSettled});
+      expect(writerSettled, 'the Room writer did not reach the held row').toBe(false);
+      let commandSettled = false;
+      const commanding = call(runId, writeId, {project_id: projectA, key}).finally(() => { commandSettled = true; });
+      await waitForLockWaiter(db.pool, {settled: () => commandSettled, waiters: 2});
+      await holder.query('COMMIT');
+      const outcome = await written;
+      expect('error' in outcome ? String(outcome.error) : 'written').toBe('written');
+      const response = await commanding;
+      expect(response.httpStatus, JSON.stringify(response.body)).toBe(200);
+      return (outcome as {value: unknown}).value;
+    } finally { await holder.end(); }
+  }
+
+  it('a cross-Project Agent command and a first Agent add to its Room take Project before Room and both complete', async () => {
+    const {runId, room} = await crossProjectRoomRun();
+    // Another of the writer's Agents, not yet in the Room or the Project: its add links it to the Project.
+    const newcomer = randomUUID();
+    await seedRun(db.pool, {id: randomUUID(), space, owner: writer, agent: newcomer, version: randomUUID()});
+    expect((await db.pool.query('SELECT 1 FROM project_agent_links WHERE project_id=$1 AND agent_id=$2', [projectA, newcomer])).rows).toHaveLength(0);
+
+    // Held at the Agent row the add locks after the Room; its Project link then needs the Project key lock.
+    await raceRoomWriterWithCommand(runId, holder => holder.query('SELECT id FROM agents WHERE id=$1 FOR SHARE', [newcomer]),
+      () => new RoomRosterService(db.pool).addExistingAgent({spaceId: space, userId: writer}, room, {agent_id: newcomer}), 'raced');
+    expect((await db.pool.query(`SELECT status FROM project_agent_links WHERE project_id=$1 AND agent_id=$2`, [projectA, newcomer])).rows[0]?.status).toBe('active');
+    expect(await keys(projectA)).toContain('raced');
+  });
+
+  it('an approval that activates a share_history=false invitation and the Agent command take Project before Room', async () => {
+    const {runId, room, session} = await crossProjectRoomRun();
+    // A private Agent of another member: the invitation waits on its owner's approval.
+    const approver = randomUUID(); const invitee = randomUUID(); const specialist = randomUUID();
+    await addPerson(approver, 'member');
+    await addPerson(invitee, 'member');
+    await db.pool.query(`INSERT INTO room_user_members (id,space_id,room_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'member','active',now(),now())`, [randomUUID(), space, room, approver]);
+    await db.pool.query(`INSERT INTO agents (id,space_id,owner_user_id,name,status,agent_kind,visibility,created_at,updated_at) VALUES ($1,$2,$3,'Specialist','active','standard','private',now(),now())`, [specialist, space, approver]);
+    await db.pool.query(`INSERT INTO room_agent_members (id,space_id,room_id,agent_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'member','active',now(),now())`, [randomUUID(), space, room, specialist]);
+    const roster = new RoomRosterService(db.pool);
+    const invitation = await roster.inviteUser({spaceId: space, userId: writer}, room, {user_id: invitee, share_history: false, confirm_owned_private_agent_shares: true}) as {id: string; status: string};
+    expect(invitation.status).toBe('pending');
+
+    // Held at the invitation row the decision locks after the Room; activation then freezes the
+    // existing conversation and opens a draft, both Project-scoped rows.
+    const decided = await raceRoomWriterWithCommand(runId, holder => holder.query('SELECT id FROM room_user_invitations WHERE id=$1 FOR SHARE', [invitation.id]),
+      () => roster.decideInvitation({spaceId: space, userId: approver}, room, invitation.id, {agent_id: specialist, decision: 'approved'}), 'approved') as {status: string; shared_conversation_id?: string | null};
+    expect(decided.status).toBe('active');
+    expect((await db.pool.query('SELECT 1 FROM room_conversation_audiences WHERE session_id=$1', [session.id])).rows).toHaveLength(1);
+    expect((await db.pool.query(`SELECT 1 FROM sessions WHERE room_id=$1 AND metadata_json->>'opened_for_invitation_id'=$2`, [room, invitation.id])).rows).toHaveLength(1);
+    expect(await keys(projectA)).toContain('approved');
+  });
+
+  it('opening a conversation draft and the Agent command take Project before Room', async () => {
+    const {runId, room} = await crossProjectRoomRun();
+    const rooms = new RoomService(config, db.pool);
+    const writerIdentity = {spaceId: space, userId: writer};
+    const stale = await rooms.createConversationDraft(writerIdentity, room) as {id: string};
+    // Held at the open draft the creation locks after the Room; that draft is then used up,
+    // so the creation inserts a new conversation, a Project-scoped row.
+    const created = await raceRoomWriterWithCommand(runId,
+      holder => holder.query(`UPDATE sessions SET metadata_json=metadata_json-'execution_setup_started' WHERE id=$1`, [stale.id]),
+      () => rooms.createConversationDraft(writerIdentity, room), 'drafted') as {id: string};
+    expect(created.id).not.toBe(stale.id);
+    expect(await keys(projectA)).toContain('drafted');
   });
 });

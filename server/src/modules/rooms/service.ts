@@ -21,7 +21,7 @@ import {
   ConversationTurnInProgressError,
   PgConversationRuntimeSessionRepository,
 } from "../sessions/conversationRuntimeSessionRepository.js";
-import { PgRoomRepository, ROOM_AUDIENCE_SQL, conversationHasUnfinishedAgentsSql, type RoomConversationListStatus, type RoomRecord } from "./repository.js";
+import { PgRoomRepository, ROOM_AUDIENCE_SQL, audienceOut, conversationAudienceColumnsSql, conversationHasUnfinishedAgentsSql, type RoomConversationListStatus, type RoomRecord } from "./repository.js";
 import { restoreConversationFromTrash } from "./conversationTrash.js";
 import { RoomReferenceService } from "./referenceService.js";
 import { ProjectOverviewService } from "../projects/overviewService.js";
@@ -30,7 +30,7 @@ import type { UnattendedTurn } from "../agents/chatOperations.js";
 import type { ConversationInputPart, RoomAgentPresetRequest, RoomDetail, RoomLiveTarget, RuntimeSessionConfigSelection, ThreadReferencePick } from "@rainver/protocol";
 import { liveInputRecipient, liveTargetUnavailable, recordRoomLiveInput, roomLiveInputCandidates, type RoomLiveInputReceipt } from "./liveInputRouting.js";
 import { LiveInputRefusal } from "../runs/liveInputService.js";
-import { contentReadSql } from "../access/contentAccessSql.js";
+import { contentReadSql, roomConversationAudienceSql } from "../access/contentAccessSql.js";
 import { RoomRosterService, lockConversationAgentThread } from "./rosterService.js";
 import { requestRoomConversationTitle } from "./conversationTitleService.js";
 import { PgProposalRepository } from "../proposals/repository.js";
@@ -198,7 +198,7 @@ export class RoomService {
     return { ...result, limit: input.limit, offset: input.offset };
   }
 
-  listAgentCandidates(identity: RoomIdentity, roomId: string, input: { limit: number; offset: number; q?: string | null }) {
+  listAgentCandidates(identity: RoomIdentity, roomId: string, input: { limit: number; offset: number; q?: string | null; source_role_id?: string | null }) {
     return this.rosterService().listAgentCandidates(identity, roomId, input);
   }
 
@@ -362,7 +362,7 @@ export class RoomService {
       room_other_member_names: string[]; room_agent_count: number;
       title: string | null; created_at: string; last_message_at: string | null;
       last_message_role: string | null; last_message_preview: string | null; message_count: number;
-      is_running: boolean;
+      is_running: boolean; audience: { restricted: boolean; other_member_names: string[] };
     }>;
     empty_rooms: Array<{
       room_id: string; room_is_mainline: boolean;
@@ -380,7 +380,8 @@ export class RoomService {
         AND member.user_id = $2 AND member.status = 'active'`;
     const visible = `
       WHERE s.space_id = $1 AND s.project_id = $3 AND s.status = 'active'
-        AND room.status = 'active'`;
+        AND room.status = 'active'
+        AND ${roomConversationAudienceSql("s.space_id", "s.id", "$2")}`;
     const total = await this.pool.query<{ total: string }>(
       `SELECT count(*)::text AS total ${fromRooms} ${visible}`,
       params,
@@ -390,9 +391,10 @@ export class RoomService {
       room_other_member_names: string[] | null; room_agent_count: string;
       title: string | null; created_at: string; last_message_at: string | null;
       last_message_role: string | null; last_message_preview: string | null; message_count: string;
-      is_running: boolean;
+      is_running: boolean; audience_restricted: boolean; audience_other_member_names: string[] | null;
     }>(
       `SELECT s.id, s.room_id, room.title AS room_title, room.is_mainline AS room_is_mainline,
+              ${conversationAudienceColumnsSql("s", "$2")},
               roster.other_member_names AS room_other_member_names,
               roster.agent_count AS room_agent_count,
               s.title, s.created_at,
@@ -443,14 +445,16 @@ export class RoomService {
           AND NOT EXISTS (
             SELECT 1 FROM sessions s
              WHERE s.space_id = room.space_id AND s.room_id = room.id
+               AND ${roomConversationAudienceSql("s.space_id", "s.id", "$2")}
           )
         ORDER BY room.is_mainline DESC, room.updated_at DESC, room.id DESC`,
       params,
     );
 
     return {
-      items: rows.rows.map((row) => ({
+      items: rows.rows.map(({ audience_restricted, audience_other_member_names, ...row }) => ({
         ...row,
+        audience: audienceOut({ audience_restricted, audience_other_member_names }),
         room_other_member_names: row.room_other_member_names ?? [],
         room_agent_count: Number(row.room_agent_count),
         created_at: dateIso(row.created_at)!,
@@ -513,6 +517,7 @@ export class RoomService {
     const result = await repository.listConversations({
       space_id: identity.spaceId,
       room_id: roomId,
+      viewer_user_id: identity.userId,
       limit: input.limit,
       offset: input.offset,
       status,
@@ -537,7 +542,7 @@ export class RoomService {
       const room = await requireRoom(rooms, identity, roomId, true);
       if (preparation) await this.ensureRoomManager(client, rooms, room, identity, preparation);
       const sessions = new PgSessionRepository(client);
-      const existing = await sessions.findOpenRoomDraft({ space_id: identity.spaceId, room_id: room.id });
+      const existing = await sessions.findOpenRoomDraft({ space_id: identity.spaceId, room_id: room.id, viewer_user_id: identity.userId });
       if (existing) return existing;
       return sessions.createRoomConversation({
         space_id: identity.spaceId,
@@ -562,6 +567,7 @@ export class RoomService {
       await assertProjectWriterForMutation(client, identity.spaceId, visible.project_id, identity.userId);
       await requireRoom(rooms, identity, roomId, true);
       await new PgConversationRuntimeSessionRepository(client).lockConversation(identity.spaceId, sessionId);
+      await requireConversationAudience(rooms, identity, sessionId, "Room conversation not found");
       const result = await rooms.setConversationArchived(identity.spaceId, roomId, sessionId, archive);
       if (result === "missing") throw new HttpError(404, "Room conversation not found");
       if (result === "busy") throw new RoomMutationError(409, "Finish running or queued work and pause scheduled Gmail digests before archiving");
@@ -579,6 +585,7 @@ export class RoomService {
       await assertProjectWriterForMutation(client, identity.spaceId, visible.project_id, identity.userId);
       await requireRoom(rooms, identity, roomId, true);
       await new PgConversationRuntimeSessionRepository(client).lockConversation(identity.spaceId, sessionId);
+      await requireConversationAudience(rooms, identity, sessionId, "Deleted Room conversation not found");
       const result = await restoreConversationFromTrash(client, identity.spaceId, roomId, sessionId);
       if (result === "missing") throw new HttpError(404, "Deleted Room conversation not found");
       if (result === "expired") throw new RoomMutationError(409, "This conversation is past its restore window and is being permanently removed");
@@ -606,6 +613,7 @@ export class RoomService {
         }
         return;
       }
+      await requireConversationAudience(rooms, identity, sessionId, "Room conversation not found");
       const result = await rooms.deleteConversation(identity.spaceId, roomId, sessionId);
       if (result === "missing") throw new HttpError(404, "Room conversation not found");
       if (result === "busy") throw new RoomMutationError(409, "Finish running or queued work and pause scheduled Gmail digests before deleting");
@@ -995,7 +1003,7 @@ export class RoomService {
       const messages = await new PgSessionRepository(client).listRoomMessages(
         identity.spaceId, identity.userId, roomId, sessionId, 50, 0,
       );
-      const conversation = await rooms.getConversation(identity.spaceId, roomId, sessionId);
+      const conversation = await rooms.getConversation(identity.spaceId, roomId, sessionId, identity.userId);
       return {
         items: messages ?? [],
         task_group_ids: await rooms.listConversationTaskGroupIds(identity.spaceId, roomId, sessionId),
@@ -1805,13 +1813,24 @@ async function requireRoom(
   return room;
 }
 
+async function requireConversationAudience(
+  repository: PgRoomRepository,
+  identity: RoomIdentity,
+  sessionId: string,
+  notFound: string,
+): Promise<void> {
+  if (!await repository.conversationAudienceAdmits(identity.spaceId, sessionId, identity.userId)) {
+    throw new HttpError(404, notFound);
+  }
+}
+
 async function requireConversation(
   repository: PgRoomRepository,
   identity: RoomIdentity,
   roomId: string,
   sessionId: string,
 ) {
-  const conversation = await repository.getConversation(identity.spaceId, roomId, sessionId);
+  const conversation = await repository.getConversation(identity.spaceId, roomId, sessionId, identity.userId);
   if (!conversation) throw new HttpError(404, "Room conversation not found");
   return conversation;
 }

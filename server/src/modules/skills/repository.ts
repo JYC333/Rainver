@@ -1,4 +1,5 @@
 import {lockSkillReviewProposals} from '../systemActions/operations/proposalTransitions.js';
+import { roomConversationAudienceSql } from "../access/contentAccessSql.js";
 import { randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
@@ -203,7 +204,8 @@ export class PgSkillsRepository {
       const session = (await this.db.query<{ project_id: string | null; agent_id: string | null; room_id: string | null }>(
         `SELECT project_id,agent_id,room_id FROM sessions WHERE id=$1 AND space_id=$2 AND status='active'
           AND ((room_id IS NULL AND user_id=$3) OR EXISTS (SELECT 1 FROM room_user_members m
-            WHERE m.room_id=sessions.room_id AND m.space_id=sessions.space_id AND m.user_id=$3 AND m.status='active'))`,
+            WHERE m.room_id=sessions.room_id AND m.space_id=sessions.space_id AND m.user_id=$3 AND m.status='active')
+            AND ${roomConversationAudienceSql("sessions.space_id", "sessions.id", "$3")})`,
         [input.session_id, identity.spaceId, identity.userId],
       )).rows[0];
       if (!session) throw new HttpError(404, "Conversation not found");

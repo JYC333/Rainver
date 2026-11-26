@@ -14,8 +14,11 @@ import { consumeManualResetLink } from "./recovery.js";
 import { clearReauthCookie, consumeReauthGrant, issueReauthGrant, reauthGrantExpiresAt, revokeSessionReauthGrants, type ReauthOperation } from "./reauth.js";
 import { withTransaction } from "../../db/tx.js";
 import { guardedHibpRangeTransport, isPasswordCompromised, type HibpRangeTransport } from "./hibp.js";
-import { consumeGoogleReauth, issueGoogleReauth, markGoogleReauthVerified } from "./googleReauth.js";
+import { consumeGoogleReauth, issueGoogleReauth, markGoogleReauthVerified, peekGoogleReauth } from "./googleReauth.js";
 import { authCookieHeader } from "./authCookie.js";
+import { createCookieGetter, getCookies } from "better-auth/cookies";
+import { ACCOUNT_ADD_COOKIE, betterAuthCookieHeader, browserAccountHandle } from "./browserAccounts.js";
+import { browserAccountClears, browserAccountsFull, browserSessionTokens, deadEntryClears, endBrowserAccounts, registerBrowserAccountRoutes, settleSessionCookies, type SettleMode } from "./browserAccountSessions.js";
 
 type LoginLimit = { failures: number; blockedUntil: number; lastSeen: number };
 const loginLimits = new Map<string, LoginLimit>();
@@ -60,14 +63,14 @@ function authSetCookies(headers: Headers): string[] {
   return cookies?.length ? cookies : headers.get("set-cookie") ? [headers.get("set-cookie")!] : [];
 }
 
-async function sendAuthResult(reply: FastifyReply, result: { status: number; body: Record<string, unknown>; headers: Headers }): Promise<void> {
-  const setCookie = authSetCookies(result.headers);
+async function sendAuthResult(reply: FastifyReply, result: { status: number; body: Record<string, unknown>; headers: Headers }, cookies: readonly string[] = authSetCookies(result.headers), extra: Record<string, unknown> = {}): Promise<void> {
+  const setCookie = [...cookies];
   if (setCookie.length) reply.header("set-cookie", setCookie);
   if (result.status === 204) { reply.code(204).send(); return; }
   // Better Auth answers sign-in and change-password with the raw session
   // token in the body as well as in the HttpOnly cookie. The browser needs
   // only the cookie; handing the token to page script defeats HttpOnly.
-  reply.code(result.status).send({ ok: true, ...(result.body.user !== undefined ? { user: result.body.user } : {}) });
+  reply.code(result.status).send({ ok: true, ...(result.body.user !== undefined ? { user: result.body.user } : {}), ...extra });
 }
 
 function body(request: FastifyRequest): Record<string, unknown> {
@@ -83,7 +86,20 @@ function body(request: FastifyRequest): Record<string, unknown> {
 }
 function query(request: FastifyRequest): Record<string, unknown> { return (request.query ?? {}) as Record<string, unknown> }
 function isFailure(value: unknown): value is AuthFailure { return Boolean(value && typeof value === "object" && "statusCode" in value) }
-function safeNext(value: unknown): string { return typeof value === "string" && value.startsWith("/") && !value.startsWith("//") ? value : "/" }
+function safeNext(value: unknown): string {
+  return typeof value === "string" && value.startsWith("/") && !value.startsWith("//") && !value.includes("\\")
+    ? value : "/home";
+}
+function safeFrontendUrl(config: ModuleContext["config"], value: string): string {
+  const base = config.frontendUrl.replace(/\/$/, "");
+  return value.startsWith(`${base}/`) ? value : `${base}/home`;
+}
+/** Back where an account addition started, with the reason it did not happen. */
+function addAccountErrorUrl(url: string, error: string): string {
+  const target = new URL(url);
+  target.searchParams.set("error", error);
+  return target.toString();
+}
 function runtimeOrError(context: ModuleContext, reply: FastifyReply): ModuleContext["authRuntime"] | null {
   if (context.authRuntime) return context.authRuntime;
   reply.code(503).send({ code: "auth_unavailable", message: "Authentication is unavailable" });
@@ -168,22 +184,35 @@ function setClientAddress(headers: Headers, request: FastifyRequest): void {
   headers.set("x-forwarded-for", request.ip);
 }
 
-async function forwardBetterAuth(runtime: NonNullable<ModuleContext["authRuntime"]>, request: FastifyRequest, reply: FastifyReply, path: string, method = request.method, overrideBody?: Record<string, unknown>, onResponse?: (response: Response) => void, extraSetCookies: readonly string[] = []): Promise<void> {
+/**
+ * Better Auth sees the browser's *selected* account as its own session cookie
+ * and none of the account jar, so sign-out, password change and linking act
+ * on the account the request is acting as.
+ */
+function setBetterAuthCookie(runtime: NonNullable<ModuleContext["authRuntime"]>, headers: Headers, request: FastifyRequest): void {
+  const cookie = betterAuthCookieHeader(request, getCookies(runtime.auth.options).sessionToken.name);
+  if (cookie) headers.set("cookie", cookie); else headers.delete("cookie");
+}
+
+type ForwardSettle = (response: Response, setCookies: string[]) => Promise<{ setCookies: string[]; location?: string }>;
+async function forwardBetterAuth(runtime: NonNullable<ModuleContext["authRuntime"]>, request: FastifyRequest, reply: FastifyReply, path: string, method = request.method, overrideBody?: Record<string, unknown>, onResponse?: (response: Response) => void, extraSetCookies: readonly string[] = [], settle?: ForwardSettle): Promise<void> {
   const headers = new Headers();
   for (const [key, value] of Object.entries(request.headers)) {
     if (value !== undefined && key.toLowerCase() !== "content-length") headers.set(key, Array.isArray(value) ? value[0]! : value);
   }
   setClientAddress(headers, request);
+  setBetterAuthCookie(runtime, headers, request);
   const payload = overrideBody ?? (request.body as Record<string, unknown> | undefined);
   const init: RequestInit = { method, headers, redirect: "manual" };
   if (payload !== undefined && method !== "GET" && method !== "HEAD") { headers.set("content-type", "application/json"); init.body = JSON.stringify(payload) }
   const response = await runtime.auth.handler(new Request(`${runtime.auth.options.baseURL}${runtime.auth.options.basePath}${path}`, init));
   onResponse?.(response);
   reply.code(response.status);
-  const setCookie = [...authSetCookies(response.headers), ...extraSetCookies];
+  const settled = settle ? await settle(response, authSetCookies(response.headers)) : { setCookies: authSetCookies(response.headers) };
+  const setCookie = [...settled.setCookies, ...extraSetCookies];
   if (setCookie.length) reply.header("set-cookie", setCookie);
   const contentType = response.headers.get("content-type"); if (contentType) reply.header("content-type", contentType);
-  const location = response.headers.get("location"); if (location) reply.header("location", location);
+  const location = settled.location ?? response.headers.get("location"); if (location) reply.header("location", location);
   if (response.status === 204) { reply.send(); return }
   reply.send(Buffer.from(await response.arrayBuffer()));
 }
@@ -192,6 +221,7 @@ async function authResponse(runtime: NonNullable<ModuleContext["authRuntime"]>, 
   const headers = new Headers();
   for (const [key, value] of Object.entries(request.headers)) if (value !== undefined) headers.set(key, Array.isArray(value) ? value[0]! : value);
   setClientAddress(headers, request);
+  setBetterAuthCookie(runtime, headers, request);
   headers.set("content-type", "application/json");
   const response = await runtime.auth.handler(new Request(`${runtime.auth.options.baseURL}${runtime.auth.options.basePath}${path}`, { method: "POST", headers, body: JSON.stringify(bodyValue ?? body(request)) }));
   let parsed: Record<string, unknown> = {};
@@ -208,6 +238,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   if (runtime && !context.authRuntime) setAuthRuntimeForComposition(runtime);
   const registration = runtime ? new RegistrationService(runtime.pool, context.config) : null;
   const minimumPasswordLength = passwordMinimumLength(context.config.rainverEnv);
+  registerBrowserAccountRoutes(app, context.config, runtime);
 
   app.get("/api/v1/auth/config", async (_request, reply) => {
     let bootstrapRegistrationAvailable = false;
@@ -243,7 +274,12 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
     loginSuccess(key);
     await recordAuthSecurityEvent(runtime.pool, { eventType: "password_login", outcome: "success", requestId: resolveRequestId(request), sourceIp: clientIp(request), details: { route: "/auth/sign-in/email", email_domain: normalizedEmail.split("@").pop() ?? "" } }).catch(() => {});
-    return sendAuthResult(reply, result);
+    // The new session joins this browser's accounts; the ones already signed in stay.
+    const settled = await settleSessionCookies(runtime, context.config, request, authSetCookies(result.headers), { add: input.add_account === true });
+    if (settled.refused === "signed_out") return reply.code(409).send({ code: "signed_out", message: "This browser signed out while signing in; sign in again" });
+    if (settled.refused) return reply.code(409).send({ code: "account_limit", message: "This browser is signed in to as many accounts as it can hold" });
+    // The tab that signed in acts as the new session from its next request.
+    return sendAuthResult(reply, result, settled.setCookies, settled.accountHandle ? { account_handle: settled.accountHandle } : {});
   });
 
   app.post("/api/v1/auth/logout", async (request, reply) => {
@@ -257,23 +293,42 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       ]);
       return reply.code(204).send();
     }
+    // First, before anything awaits: a sign-in, addition or password rotation
+    // still in flight for this browser is revoked or refused when it settles,
+    // so its late response cannot sign the browser back in.
+    await endBrowserAccounts(runtime, context.config, request);
     // The grant goes with the session: revoked here before Better Auth
     // deletes the session row, and its cookie cleared beside the session's.
     const session = await currentSession(context, request, reply);
     if (session) await revokeSessionReauthGrants(runtime.pool, session.id);
+    // Signing out signs this browser out of every account it holds: each
+    // other session is revoked as logout revokes one, then Better Auth ends
+    // the active one and every jar cookie is cleared with its own.
+    const active = sessionTokenFromRequest(request);
+    for (const token of browserSessionTokens(request)) if (token !== active) await runtime.repository.logout(token);
     return forwardBetterAuth(runtime, request, reply, "/sign-out", "POST", {}, undefined, [
       authCookieHeader(context.config, { name: "rainver.reauth", value: "", maxAgeSeconds: 0 }),
+      ...browserAccountClears(context.config, request),
+      // A Google sign-in or addition begun before this logout fails its callback.
+      authCookieHeader(context.config, { name: createCookieGetter(runtime.auth.options)("state").name, value: "", maxAgeSeconds: 0 }),
     ]);
   });
 
   app.get("/api/v1/auth/google", async (request, reply) => {
     if (!runtime || !googleAuthConfigured(context.config)) return reply.code(501).send({ code: "google_unavailable", message: "Google OAuth is not configured" });
     const next = safeNext(query(request).next);
-    const callbackURL = `${context.config.frontendUrl.replace(/\/$/, "")}/login?redirect=${encodeURIComponent(next)}`;
-    const result = await authResponse(runtime, request, "/sign-in/social", { provider: "google", callbackURL });
+    const callbackURL = `${context.config.frontendUrl.replace(/\/$/, "")}${next}`;
+    // Adding an account returns to the page it started from on failure or
+    // cancellation, still signed in as before; it never lands on Login.
+    const adding = query(request).add_account === "1";
+    if (adding && await browserAccountsFull(runtime, context.config, request)) return reply.redirect(addAccountErrorUrl(callbackURL, "account_limit"), 303);
+    const result = await authResponse(runtime, request, "/sign-in/social", { provider: "google", callbackURL, ...(adding ? { errorCallbackURL: callbackURL } : {}) });
     if (result.status >= 400 || typeof result.body.url !== "string") return reply.code(502).send({ code: "google_unavailable", message: "Google OAuth is unavailable" });
     const setCookie = authSetCookies(result.headers);
-    if (setCookie.length) reply.header("set-cookie", setCookie);
+    reply.header("set-cookie", [
+      ...setCookie,
+      authCookieHeader(context.config, { name: ACCOUNT_ADD_COOKIE, value: adding ? callbackURL : "", maxAgeSeconds: adding ? 600 : 0 }),
+    ]);
     return reply.redirect(result.body.url, 307);
   });
   app.post("/api/v1/auth/register/google", async (request, reply) => {
@@ -293,8 +348,29 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   app.get("/api/v1/auth/callback/google", async (request, reply) => {
     if (!runtime) return runtimeOrError(context, reply);
     const queryString = new URLSearchParams(Object.entries(query(request)).filter((entry): entry is [string, string] => typeof entry[1] === "string")).toString();
+    const reauthUrl = `${context.config.frontendUrl.replace(/\/$/, "")}/settings/security?google_reauth=1`;
+    const addReturn = requestCookie(request, ACCOUNT_ADD_COOKIE);
+    const settle: ForwardSettle = async (response, setCookies) => {
+      const location = response.headers.get("location");
+      const mode: SettleMode = { add: Boolean(addReturn) };
+      // Reauthentication proves again the person who started it, from the
+      // session that started it. A Google account of anyone else, or a browser
+      // that switched account meanwhile, neither joins nor switches anything:
+      // checked here, before any cookie is written, not only at completion.
+      if (location === reauthUrl) {
+        const nonce = requestCookie(request, "rainver.google_reauth");
+        const started = nonce ? peekGoogleReauth(nonce) : null;
+        const active = await currentSession(context, request, reply);
+        mode.requireUserId = started && active && active.id === started.previousSessionId && active.user_id === started.userId ? started.userId : null;
+        // It replaces the session it proved again, keeping that session's remember-me choice.
+        mode.inheritRemember = true;
+      }
+      const settled = await settleSessionCookies(runtime, context.config, request, setCookies, mode);
+      const cleared = [...settled.setCookies, authCookieHeader(context.config, { name: ACCOUNT_ADD_COOKIE, value: "", maxAgeSeconds: 0 })];
+      if (settled.refused === "account_limit" && addReturn) return { setCookies: cleared, location: addAccountErrorUrl(safeFrontendUrl(context.config, addReturn), "account_limit") };
+      return { setCookies: cleared };
+    };
     return forwardBetterAuth(runtime, request, reply, `/callback/google${queryString ? `?${queryString}` : ""}`, "GET", undefined, (response) => {
-      const reauthUrl = `${context.config.frontendUrl.replace(/\/$/, "")}/settings/security?google_reauth=1`;
       if (response.status < 300 || response.status >= 400 || response.headers.get("location") !== reauthUrl) return;
       const nonce = requestCookie(request, "rainver.google_reauth");
       const cookieName = sessionCookieName(context.config);
@@ -302,7 +378,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       const encodedToken = sessionCookie?.slice(cookieName.length + 1).split(";", 1)[0];
       if (!nonce || !encodedToken) return;
       try { markGoogleReauthVerified(nonce, hashOpaqueToken(decodeURIComponent(encodedToken).split(".", 1)[0]!)); } catch { /* invalid cookie */ }
-    });
+    }, [], settle);
   });
 
   app.get("/api/v1/auth/introspect", async (request, reply) => {
@@ -315,8 +391,18 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   app.get("/api/v1/me", async (request, reply) => {
     const requestId = resolveRequestId(request); reply.header(REQUEST_ID_HEADER, requestId);
     const repository = authRepositoryFromConfig(context.config); if (!repository) return sendErrorEnvelope(reply, 502, errorEnvelope("identity_db_unavailable", "Identity database is unavailable", requestId));
-    const user = await repository.getCurrentUser(sessionTokenFromRequest(request), sessionRefreshSink(reply)); if (isFailure(user)) return reply.code(user.statusCode).send({ detail: user.detail });
-    return reply.send(user);
+    const user = await repository.getCurrentUser(sessionTokenFromRequest(request), sessionRefreshSink(reply));
+    if (isFailure(user)) {
+      // A page that finds no account drops the revoked sessions its browser still sends (`deadEntryClears`), so the next sign-in is not refused for them.
+      if (user.statusCode === 401 && runtime) {
+        const clears = await deadEntryClears(runtime, context.config, request).catch(() => []);
+        if (clears.length) reply.header("set-cookie", clears);
+      }
+      return reply.code(user.statusCode).send({ detail: user.detail });
+    }
+    // The tab keeps this handle and sends it back: any request from it after
+    // another tab switched account is refused rather than run as the new one.
+    return reply.send({ ...user, account_handle: browserAccountHandle(request) });
   });
   app.get("/api/v1/me/spaces", async (request, reply) => {
     const requestId = resolveRequestId(request); reply.header(REQUEST_ID_HEADER, requestId);
@@ -444,7 +530,13 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const result = await authResponse(runtime, request, "/change-password", { currentPassword, newPassword, revokeOtherSessions: input.revoke_other_sessions !== false });
     if (result.status >= 400) return genericAuthFailure(reply, 400);
     clearReauthCookie(reply, context.config);
-    return sendAuthResult(reply, result);
+    // A rotated session replaces the active account's entry and keeps its
+    // remember-me choice. The tab adopts the new handle, so its own next
+    // request is not refused as a tab of another account. The session
+    // proved above is gone by now; it still ties the new one to this
+    // browser, so a logout carrying its cookie revokes the new one too.
+    const settled = await settleSessionCookies(runtime, context.config, request, authSetCookies(result.headers), { inheritRemember: true, rotatedFrom: session.id });
+    return sendAuthResult(reply, result, settled.setCookies, settled.accountHandle ? { account_handle: settled.accountHandle } : {});
   });
 
   app.get("/api/v1/auth/accounts", async (request, reply) => {
@@ -593,7 +685,11 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     try {
       await registration.complete({ intentId, claimSecret, userId, displayName: name });
     } catch { return reply.code(503).send({ code: "registration_pending", message: "Registration is pending; please retry" }) }
-    reply.code(201); if (result.headers.get("set-cookie")) reply.header("set-cookie", result.headers.get("set-cookie")!); return reply.send({ ok: true, user_id: userId });
+    const settled = await settleSessionCookies(runtime, context.config, request, authSetCookies(result.headers), {});
+    if (settled.setCookies.length) reply.header("set-cookie", settled.setCookies);
+    // The account exists; only this browser's session was refused.
+    if (settled.refused === "signed_out") return reply.code(409).send({ code: "signed_out", message: "This browser signed out while signing in; sign in again" });
+    reply.code(201); return reply.send({ ok: true, user_id: userId, ...(settled.accountHandle ? { account_handle: settled.accountHandle } : {}) });
   });
 
   app.post("/api/v1/auth/register/complete", async (request, reply) => {

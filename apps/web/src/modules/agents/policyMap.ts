@@ -1,12 +1,12 @@
 import { scheduleEditorFromConfig } from './scheduleEditorState'
 
 /**
- * Translate an AgentVersion / template-version policy + config JSON into the
+ * Translate an AgentVersion / role-version policy + config JSON into the
  * product-level cards the Agent configuration UI renders. This is the single
  * source of truth for "what the agent reads / can create / cannot do", so the
  * tabs never show raw JSON by default.
  *
- * It reads the same fields the backend copies verbatim from a template version
+ * It reads the same fields the backend copies verbatim from a role version
  * into an AgentVersion:
  *   - context_policy_json.allowed_input_contexts / default_input_contexts
  *   - output_policy_json.allowed_output_types / default_review_mode / proposal_only

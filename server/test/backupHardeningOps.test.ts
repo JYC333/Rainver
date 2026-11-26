@@ -146,7 +146,7 @@ describe("backup credential separation", () => {
       });
       writeFileSync(
         join(sourceMode, ".env"),
-        "POSTGRES_PASSWORD=test-password\nFRONTEND_URL=http://old-ip\n",
+        "POSTGRES_PASSWORD=test-password\nPUBLIC_BASE_URL=http://old-ip\n",
         { mode: 0o600 },
       );
       runScript("backup-credentials.sh", ["--mode", "prod", "--output", output], sourceRoot, fakeBin);
@@ -162,7 +162,7 @@ describe("backup credential separation", () => {
         readFileSync(join(reviewedRoot, "prod", "secrets", "provider_keys.key"), "utf8"),
       ).toBe("test-master-key\n");
       expect(readFileSync(join(reviewedRoot, "prod", ".env.restored"), "utf8")).toContain(
-        "FRONTEND_URL=http://old-ip",
+        "PUBLIC_BASE_URL=http://old-ip",
       );
       expect(() => statSync(join(reviewedRoot, "prod", ".env"))).toThrow();
       expect(statSync(join(reviewedRoot, "prod", ".env.restored")).mode & 0o777).toBe(0o600);

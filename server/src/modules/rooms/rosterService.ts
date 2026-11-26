@@ -36,6 +36,7 @@ import { sendPendingManagedWorkspaceArchive } from "../hosts/managedWorkspaceOpe
 import { PgSessionRepository } from "../sessions/repository.js";
 import { latestSummaryArtifactId, loadHandoffText } from "../agentGroups/sessionHandoff.js";
 import { roomAudience } from "./threadReferences.js";
+import { freezeConversationAudiences, sharedConversationForInvitation } from "./conversationAudience.js";
 
 const INVITATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -56,6 +57,7 @@ export class RoomRosterService {
     limit: number;
     offset: number;
     q?: string | null;
+    source_role_id?: string | null;
   }) {
     const room = await this.requireRoomMember(identity, roomId);
     const candidates = await new PgRoomRosterRepository(this.pool).listAgentCandidates({
@@ -65,6 +67,7 @@ export class RoomRosterService {
       limit: input.limit,
       offset: input.offset,
       q: input.q ?? null,
+      source_role_id: input.source_role_id ?? null,
     });
     return {
       agents: candidates.items,
@@ -147,6 +150,8 @@ export class RoomRosterService {
             detail: "This private Agent stays private outside the Room. Confirm the exact Room members who will receive a Room-only grant.",
             agent_id: agent.id,
             member_ids: requiredGrantees,
+            // The same people by name, read in this transaction: who the owner confirms.
+            members: await granteeNames(client, requiredGrantees),
           });
         }
       }
@@ -212,6 +217,7 @@ export class RoomRosterService {
           code: "private_agent_share_confirmation_required",
           detail: "This preset creates a private Agent owned by you and shares it with current Room members only.",
           member_ids: sharedMemberIds,
+          members: await granteeNames(client, sharedMemberIds),
         });
       }
       const agentRepository = new PgAgentRepository(this.pool);
@@ -452,6 +458,12 @@ export class RoomRosterService {
   async inviteUser(identity: RoomIdentity, roomId: string, input: {
     user_id: string;
     confirm_owned_private_agent_shares?: boolean;
+    /**
+     * Give the invitee the Room's existing conversations. Off by default:
+     * activation then freezes them to their current audience and opens a new
+     * conversation everyone can read (`freezeConversationAudiences`).
+     */
+    share_history?: boolean;
   }) {
     try {
       return await this.withRoomWriter(identity, roomId, async (client, room) => {
@@ -469,7 +481,7 @@ export class RoomRosterService {
         const roster = new PgRoomRosterRepository(client);
         const prior = await client.query<RoomInvitationRecord>(
           `SELECT id, space_id, room_id, invitee_user_id, invited_by_user_id, status,
-                  required_roster_revision::int AS required_roster_revision,
+                  required_roster_revision::int AS required_roster_revision, share_history,
                   expires_at, created_at, updated_at, resolved_at
              FROM room_user_invitations
             WHERE space_id = $1 AND room_id = $2 AND invitee_user_id = $3 AND status = 'pending'
@@ -480,6 +492,7 @@ export class RoomRosterService {
           if (
             new Date(prior.rows[0].expires_at).getTime() > Date.now()
             && Number(prior.rows[0].required_roster_revision) === Number(room.roster_revision)
+            && prior.rows[0].share_history === (input.share_history === true)
           ) {
             return this.invitationResponse(client, identity, prior.rows[0]);
           }
@@ -508,6 +521,7 @@ export class RoomRosterService {
           invitee_user_id: input.user_id,
           invited_by_user_id: identity.userId,
           required_roster_revision: room.roster_revision,
+          share_history: input.share_history === true,
           expires_at: new Date(Date.now() + INVITATION_TTL_MS).toISOString(),
         });
         for (const privateAgent of privateAgents) {
@@ -588,7 +602,7 @@ export class RoomRosterService {
                 project.id AS project_id, project.name AS project_name,
                 invitation.invitee_user_id, invitee.display_name AS invitee_display_name,
                 invitee.email AS invitee_email, agent.id AS agent_id, agent.name AS agent_name,
-                invitation.expires_at
+                invitation.share_history, invitation.expires_at
            FROM room_invitation_agent_approvals approval
            JOIN room_user_invitations invitation
              ON invitation.id=approval.invitation_id AND invitation.space_id=approval.space_id
@@ -903,6 +917,12 @@ export class RoomRosterService {
         });
       }
     }
+    // Before the invitee is a member, under the Room lock every conversation
+    // writer takes: the frozen audience is exactly who could read each
+    // conversation until now.
+    if (!invitation.share_history) {
+      await freezeConversationAudiences(client, { spaceId: identity.spaceId, room, invitationId: invitation.id });
+    }
     await client.query(
       `INSERT INTO room_user_members (
          id, space_id, room_id, user_id, role, status, created_at, updated_at
@@ -957,8 +977,14 @@ export class RoomRosterService {
     }));
     const isPrimaryParty = current.invited_by_user_id === identity.userId
       || current.invitee_user_id === identity.userId;
+    // The conversation an activation without history opened, so the inviter
+    // and invitee can go straight to where they now talk together.
+    const sharedConversationId = current.status === "active" && !current.share_history
+      ? await sharedConversationForInvitation(client, identity.spaceId, current.room_id, current.id)
+      : null;
     return {
       ...current,
+      shared_conversation_id: isPrimaryParty ? sharedConversationId : null,
       // A pending owner-only approver gets a narrow view of their own Agent
       // approval; the inviter/invitee can see the complete decision state.
       approvals: isPrimaryParty
@@ -1031,6 +1057,8 @@ export class RoomRosterService {
     return withQueryableTransaction(this.pool, async (client) => {
       const actor = await client.query(`SELECT id FROM users WHERE id=$1 AND status='active' FOR SHARE`, [identity.userId]);
       if (!actor.rows.length) throw new HttpError(404, "Room not found in this space");
+      // The locked read takes the Room's Project key lock before the Room row
+      // (`PgRoomRepository.lockRoomProjectKey`).
       const room = await new PgRoomRepository(client).getVisibleRoom(identity.spaceId, identity.userId, roomId, true);
       if (!room) throw new HttpError(404, "Room not found in this space");
       try {
@@ -1327,4 +1355,14 @@ export async function lockConversationAgentThread(
   const current = thread.rows[0];
   if (!current) throw new HttpError(404, "Host-bound Conversation Agent thread not found");
   return current;
+}
+
+/** The display names of the people a Room-only share would cover, in the given order. */
+async function granteeNames(db: Queryable, userIds: readonly string[]): Promise<Array<{ user_id: string; display_name: string }>> {
+  if (!userIds.length) return [];
+  const rows = (await db.query<{ id: string; display_name: string | null; email: string | null }>(
+    "SELECT id, display_name, email FROM users WHERE id = ANY($1::varchar[])", [userIds],
+  )).rows;
+  const byId = new Map(rows.map((row) => [row.id, row.display_name?.trim() || row.email || row.id]));
+  return userIds.map((user_id) => ({ user_id, display_name: byId.get(user_id) ?? user_id }));
 }

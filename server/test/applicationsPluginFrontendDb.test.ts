@@ -42,7 +42,7 @@ afterEach(() => {
 const day = (days: number) => new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10);
 
 it('renders the Applications overview card, navigation entry and Area, and writes through the Operation Core from the UI', async () => {
-  const plugin = BUILT_IN_PLUGINS.find(p => p.id === 'applications') as RainverPlugin;
+  const plugin = BUILT_IN_PLUGINS.find(p => p.id === 'phd_application') as RainverPlugin;
   expect(plugin?.operationManifest).toBeTruthy();
   const space = randomUUID(), user = randomUUID(), project = randomUUID();
   await seedSpaceOwnerProject(db.pool, { space, owner: user, project, projectName: 'PhD applications 2027', spaceType: 'team' });
@@ -52,7 +52,7 @@ it('renders the Applications overview card, navigation entry and Area, and write
     const s = createServer();
     s.listen(0, '127.0.0.1', () => { const address = s.address() as { port: number }; s.close(() => resolve(address.port)); });
   });
-  const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, FRONTEND_URL: `http://127.0.0.1:${port}` });
+  const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, PUBLIC_BASE_URL: `http://127.0.0.1:${port}` });
   const app = buildModuleServer(config, [projectsModule, pluginsModule, systemActionsModule, proposalsModule, roomsModule, agentsModule, projectFoldersModule, projectWorkModule, agentAttentionModule, focusAreasModule]);
   new PluginHost([plugin]).activate(app, config);
   let signedInUser = user;
@@ -68,12 +68,12 @@ it('renders the Applications overview card, navigation entry and Area, and write
   await post(`plugins/${plugin.id}/enable`, {});
   await post('actions/official_plugin.project_binding.bind', { plugin_id: plugin.id, project_id: project });
   // One application recorded beforehand, as an Agent or another tab would have, so the overview has content.
-  const seeded = await post('actions/plugin.applications.application.create', {
+  const seeded = await post('actions/plugin.phd_application.application.create', {
     project_id: project, institution: 'ETH Zurich', program: 'PhD in Computer Science', department: 'Systems Group', intake: 'Fall 2027',
     source: { label: 'Department call', url: 'https://example.edu/phd' }, deadlines: [{ kind: 'application', due_on: day(21) }, { kind: 'funding', due_on: day(45) }],
   });
-  const contact = await post('actions/plugin.applications.contact.create', { project_id: project, application_ids: [seeded.data.application_id], name: 'Prof. Ada Example', role: 'supervisor', email: 'ada@example.edu', affiliation: 'Systems Group' });
-  await post('actions/plugin.applications.contact.log_event', { project_id: project, contact_id: contact.data.contact_id, occurred_on: day(-2), channel: 'email', direction: 'outbound', summary: 'Sent CV and a short research statement', response: 'awaiting', next_step: 'Follow up in two weeks' });
+  const contact = await post('actions/plugin.phd_application.contact.create', { project_id: project, application_ids: [seeded.data.application_id], name: 'Prof. Ada Example', role: 'supervisor', email: 'ada@example.edu', affiliation: 'Systems Group' });
+  await post('actions/plugin.phd_application.contact.log_event', { project_id: project, contact_id: contact.data.contact_id, occurred_on: day(-2), channel: 'email', direction: 'outbound', summary: 'Sent CV and a short research statement', response: 'awaiting', next_step: 'Follow up in two weeks' });
 
   const web = join(import.meta.dirname, '../../apps/web'), shots = process.env.APPLICATIONS_VISUAL_OUT ?? '/tmp/rainver-applications-visual';
   await mkdir(shots, { recursive: true });
@@ -95,7 +95,7 @@ it('renders the Applications overview card, navigation entry and Area, and write
     page.setDefaultNavigationTimeout(60000);
     const pageErrors: string[] = [];
     page.on('pageerror', (e: Error) => { pageErrors.push(e.message); });
-    page.on('response', async (r: any) => { if (r.url().includes('/actions/plugin.applications') && r.status() >= 400) console.error('Operation response', r.status(), await r.text()); });
+    page.on('response', async (r: any) => { if (r.url().includes('/actions/plugin.phd_application') && r.status() >= 400) console.error('Operation response', r.status(), await r.text()); });
     await page.route('**/api/v1/me', (route: any) => route.fulfill({ json: { id: signedInUser, email: 'fixture@test.invalid', display_name: 'Fixture person', default_space_id: space, created_at: new Date().toISOString(), avatar_url: null, last_login_at: null } }));
     await page.route('**/api/v1/me/spaces', (route: any) => route.fulfill({ json: [{ id: space, name: 'Test Space', type: 'team', role: 'owner', status: 'active' }] }));
     const prefs = async (locale: string, theme: string) => page.evaluate(([l, t]: string[]) => { localStorage.setItem('rainver:locale', l!); localStorage.setItem('rainver:theme', t!); }, [locale, theme]);
@@ -104,10 +104,10 @@ it('renders the Applications overview card, navigation entry and Area, and write
       if (!localStorage.getItem('rainver:theme')) localStorage.setItem('rainver:theme', 'dark');
     });
     const pulse = `${base}/spaces/${space}/projects/${project}`;
-    const area = `${pulse}/plugins/applications/board`;
+    const area = `${pulse}/plugins/phd_application/board`;
     const shoot = (name: string) => page.screenshot({ path: join(shots, `${name}.png`), fullPage: true });
     const noOverflow = async () => expect(await page.evaluate(() => (globalThis as any).document.documentElement.scrollWidth <= (globalThis as any).window.innerWidth)).toBe(true);
-    const nav = (name: string) => page.getByRole('navigation', { name }).getByRole('link', { name: name === 'Project navigation' ? 'Applications' : '申请', exact: true });
+    const nav = (name: string) => page.getByRole('navigation', { name }).getByRole('link', { name: name === 'Project navigation' ? 'PhD Application' : '博士申请', exact: true });
 
     // Desktop, dark, English: the overview card in its parent Project surface, then the entry and destination.
     await page.goto(pulse);
@@ -116,8 +116,8 @@ it('renders the Applications overview card, navigation entry and Area, and write
     await nav('Project navigation').waitFor();
     await shoot('desktop-parent-dark-en');
     // The overview card links straight to its Area.
-    expect(await page.getByRole('region', { name: 'Applications', exact: true }).getByRole('link', { name: 'Applications', exact: true }).getAttribute('href')).toBe(new URL(area).pathname);
-    await page.getByRole('region', { name: 'Applications', exact: true }).getByRole('link', { name: 'Applications', exact: true }).click();
+    expect(await page.getByRole('region', { name: 'PhD Application', exact: true }).getByRole('link', { name: 'PhD Application', exact: true }).getAttribute('href')).toBe(new URL(area).pathname);
+    await page.getByRole('region', { name: 'PhD Application', exact: true }).getByRole('link', { name: 'PhD Application', exact: true }).click();
     await page.waitForURL(area);
     await page.getByRole('button', { name: 'New application', exact: true }).waitFor();
     // Four tabs in the one entry; institution applications are the default, grouped by institution.
@@ -140,14 +140,14 @@ it('renders the Applications overview card, navigation entry and Area, and write
     expect(new URL(page.url()).searchParams.get('record')).toBeTruthy();
     expect(await page.getByRole('tablist').count()).toBe(0);
     await page.getByRole('heading', { name: 'Materials', exact: false }).first().waitFor();
-    const created = (await db.pool.query(`SELECT id,status,track FROM plugin_applications.applications WHERE space_id=$1 AND institution='Imperial College London'`, [space])).rows;
+    const created = (await db.pool.query(`SELECT id,status,track FROM plugin_phd_application.applications WHERE space_id=$1 AND institution='Imperial College London'`, [space])).rows;
     expect(created).toEqual([expect.objectContaining({ status: 'planning', track: 'phd' })]);
     expect((await db.pool.query(`SELECT count(*)::int AS n FROM tasks WHERE space_id=$1 AND project_id=$2 AND title LIKE 'Application deadline — Imperial%'`, [space, project])).rows[0].n).toBe(1);
     await shoot('desktop-detail-dark-en');
     // A consequential decision is a proposal with a review link, not a direct write.
     await page.getByRole('button', { name: 'Propose decision', exact: true }).click();
     await page.getByRole('link', { name: 'Review proposal', exact: true }).waitFor();
-    expect((await db.pool.query(`SELECT status FROM plugin_applications.applications WHERE id=$1`, [created[0].id])).rows[0].status).toBe('planning');
+    expect((await db.pool.query(`SELECT status FROM plugin_phd_application.applications WHERE id=$1`, [created[0].id])).rows[0].status).toBe('planning');
     // Mark a checklist item through the shared Select.
     // Room below the trigger for the shared Select's menu, then choose with the pointer.
     const cvStatus = page.getByRole('button', { name: 'Status of CV', exact: true }).first();
@@ -159,7 +159,7 @@ it('renders the Applications overview card, navigation entry and Area, and write
     }).toBeLessThan(200);
     await cvStatus.click();
     await page.getByRole('option', { name: 'Ready', exact: true }).click();
-    await expect.poll(async () => (await db.pool.query(`SELECT status FROM plugin_applications.application_materials WHERE application_id=$1 AND kind='cv'`, [created[0].id])).rows[0]?.status).toBe('ready');
+    await expect.poll(async () => (await db.pool.query(`SELECT status FROM plugin_phd_application.application_materials WHERE application_id=$1 AND kind='cv'`, [created[0].id])).rows[0]?.status).toBe('ready');
     await shoot('desktop-proposed-dark-en');
     await noOverflow();
     // The seeded application's detail shows its related contacts, kept in the contacts tab.
@@ -177,7 +177,7 @@ it('renders the Applications overview card, navigation entry and Area, and write
     await shoot('desktop-deadline-edit-dark-en');
     await page.getByRole('button', { name: 'Save', exact: true }).first().click();
     await page.getByText('Online portal closes', { exact: false }).first().waitFor();
-    expect((await db.pool.query(`SELECT label,to_char(due_on,'YYYY-MM-DD') AS due_on FROM plugin_applications.application_deadlines WHERE application_id=$1 AND kind='application'`, [seededId])).rows).toEqual([{ label: 'Online portal closes', due_on: day(23) }]);
+    expect((await db.pool.query(`SELECT label,to_char(due_on,'YYYY-MM-DD') AS due_on FROM plugin_phd_application.application_deadlines WHERE application_id=$1 AND kind='application'`, [seededId])).rows).toEqual([{ label: 'Online portal closes', due_on: day(23) }]);
 
     // Funding created for this application from its detail opens in the funding tab, pre-linked; the detail shows the same record.
     await page.getByRole('button', { name: 'New funding for this application', exact: true }).click();
@@ -188,9 +188,9 @@ it('renders the Applications overview card, navigation entry and Area, and write
     await shoot('desktop-funding-new-dark-en');
     await page.getByRole('button', { name: 'Create application', exact: true }).click();
     await page.getByRole('region', { name: 'Applies to', exact: true }).getByText('ETH Zurich · PhD in Computer Science', { exact: true }).waitFor();
-    const funding = (await db.pool.query(`SELECT id,submission FROM plugin_applications.applications WHERE space_id=$1 AND track='funding'`, [space])).rows;
+    const funding = (await db.pool.query(`SELECT id,submission FROM plugin_phd_application.applications WHERE space_id=$1 AND track='funding'`, [space])).rows;
     expect(funding).toEqual([{ id: expect.any(String), submission: 'separate' }]);
-    expect((await db.pool.query(`SELECT application_id FROM plugin_applications.application_funding_links WHERE funding_id=$1`, [funding[0].id])).rows).toEqual([{ application_id: seededId }]);
+    expect((await db.pool.query(`SELECT application_id FROM plugin_phd_application.application_funding_links WHERE funding_id=$1`, [funding[0].id])).rows).toEqual([{ application_id: seededId }]);
     await shoot('desktop-funding-detail-dark-en');
     await noOverflow();
     await page.getByRole('region', { name: 'Applies to', exact: true }).getByRole('button', { name: 'Open', exact: true }).click();
@@ -208,7 +208,7 @@ it('renders the Applications overview card, navigation entry and Area, and write
     const imperialFacts = page.getByRole('region', { name: 'Application details', exact: true });
     await imperialFacts.getByLabel('University or institution', { exact: true }).fill('Imperial College');
     await imperialFacts.getByRole('button', { name: 'Save', exact: true }).click();
-    await expect.poll(async () => (await db.pool.query(`SELECT institution FROM plugin_applications.applications WHERE id=$1`, [created[0].id])).rows[0].institution).toBe('Imperial College');
+    await expect.poll(async () => (await db.pool.query(`SELECT institution FROM plugin_phd_application.applications WHERE id=$1`, [created[0].id])).rows[0].institution).toBe('Imperial College');
     await page.getByRole('status').filter({ hasText: 'Saved' }).waitFor();
     await page.reload();
     await imperialFacts.getByLabel('University or institution', { exact: true }).waitFor();
@@ -236,7 +236,7 @@ it('renders the Applications overview card, navigation entry and Area, and write
     await appliesTo.getByRole('button', { name: 'Link', exact: true }).click();
     await appliesTo.getByText('ETH Zurich · PhD in Computer Science', { exact: true }).waitFor();
     await page.getByRole('status').filter({ hasText: 'Saved' }).waitFor();
-    expect((await db.pool.query(`SELECT application_id FROM plugin_applications.application_funding_links WHERE funding_id=$1`, [funding[0].id])).rows).toEqual([{ application_id: seededId }]);
+    expect((await db.pool.query(`SELECT application_id FROM plugin_phd_application.application_funding_links WHERE funding_id=$1`, [funding[0].id])).rows).toEqual([{ application_id: seededId }]);
     await backToList.click();
     await filterBy('All funding');
     await scholarship.waitFor();
@@ -254,9 +254,9 @@ it('renders the Applications overview card, navigation entry and Area, and write
     await ada.getByLabel('Excellence Scholarship · ETH Foundation', { exact: true }).check();
     await shoot('desktop-contact-edit-dark-en');
     await ada.getByRole('button', { name: 'Save', exact: true }).click();
-    const links = async () => (await db.pool.query(`SELECT application_id FROM plugin_applications.application_contact_links WHERE contact_id=$1 ORDER BY application_id`, [contact.data.contact_id])).rows.map(r => r.application_id);
+    const links = async () => (await db.pool.query(`SELECT application_id FROM plugin_phd_application.application_contact_links WHERE contact_id=$1 ORDER BY application_id`, [contact.data.contact_id])).rows.map(r => r.application_id);
     await expect.poll(links).toEqual([seededId, funding[0].id].sort());
-    expect((await db.pool.query(`SELECT note FROM plugin_applications.application_contacts WHERE id=$1`, [contact.data.contact_id])).rows[0].note).toBe('Prefers short emails');
+    expect((await db.pool.query(`SELECT note FROM plugin_phd_application.application_contacts WHERE id=$1`, [contact.data.contact_id])).rows[0].note).toBe('Prefers short emails');
     await ada.getByRole('button', { name: 'Edit Prof. Ada Example', exact: true }).click();
     for (const name of ['ETH Zurich · PhD in Computer Science', 'Excellence Scholarship · ETH Foundation']) await ada.getByLabel(name, { exact: true }).uncheck();
     await ada.getByRole('button', { name: 'Save', exact: true }).click();
@@ -266,7 +266,7 @@ it('renders the Applications overview card, navigation entry and Area, and write
     await all.getByLabel('Name', { exact: true }).fill('Graduate funding office');
     await all.getByRole('button', { name: 'Save', exact: true }).click();
     await all.getByText('Graduate funding office', { exact: true }).waitFor();
-    expect((await db.pool.query(`SELECT count(*)::int AS n FROM plugin_applications.application_contact_links l JOIN plugin_applications.application_contacts c ON c.id=l.contact_id WHERE c.space_id=$1 AND c.name='Graduate funding office'`, [space])).rows[0].n).toBe(0);
+    expect((await db.pool.query(`SELECT count(*)::int AS n FROM plugin_phd_application.application_contact_links l JOIN plugin_phd_application.application_contacts c ON c.id=l.contact_id WHERE c.space_id=$1 AND c.name='Graduate funding office'`, [space])).rows[0].n).toBe(0);
     await shoot('desktop-project-contacts-dark-en');
     await noOverflow();
 
@@ -275,14 +275,14 @@ it('renders the Applications overview card, navigation entry and Area, and write
     await db.pool.query(`INSERT INTO space_objects(id,space_id,object_type,title,visibility,owner_user_id,primary_project_id,created_at,updated_at) VALUES($1,$2,'note','Master CV','private',$3,NULL,now(),now())`, [cvNote, space, user]);
     await db.pool.query(`INSERT INTO notes(object_id,space_id,content_json,content_format,content_schema_version,plain_text) VALUES($1,$2,$3::jsonb,'prosemirror_json',1,'Master CV: systems research, teaching.')`, [cvNote, space, JSON.stringify(doc)]);
     await insertInitialNoteRevision(db.pool, { spaceId: space, noteId: cvNote, doc, at, userId: user });
-    const statement = (await db.pool.query(`SELECT id FROM plugin_applications.application_materials WHERE application_id=$1 AND kind='statement'`, [seededId])).rows[0].id;
-    await post('actions/plugin.applications.material.add_source', { project_id: project, material_id: statement, note_id: cvNote });
+    const statement = (await db.pool.query(`SELECT id FROM plugin_phd_application.application_materials WHERE application_id=$1 AND kind='statement'`, [seededId])).rows[0].id;
+    await post('actions/plugin.phd_application.material.add_source', { project_id: project, material_id: statement, note_id: cvNote });
     await page.getByRole('tab', { name: 'Material library', exact: true }).click();
     await page.getByLabel('Note ID', { exact: true }).fill(cvNote);
     await page.getByRole('button', { name: 'Register', exact: true }).click();
     await page.getByRole('heading', { name: 'Master CV', exact: true }).waitFor();
     await page.getByText('ETH Zurich · PhD in Computer Science — Statement of purpose: source pinned at version 1', { exact: true }).waitFor();
-    expect((await db.pool.query(`SELECT note_id,kind FROM plugin_applications.application_library_items WHERE space_id=$1`, [space])).rows).toEqual([{ note_id: cvNote, kind: 'cv' }]);
+    expect((await db.pool.query(`SELECT note_id,kind FROM plugin_phd_application.application_library_items WHERE space_id=$1`, [space])).rows).toEqual([{ note_id: cvNote, kind: 'cv' }]);
     await shoot('desktop-library-dark-en');
     await noOverflow();
     await page.getByRole('tab', { name: 'Programs', exact: true }).click();
@@ -292,7 +292,7 @@ it('renders the Applications overview card, navigation entry and Area, and write
     const factsOf = () => page.getByRole('region', { name: 'Application details', exact: true });
     const deadlinesOf = () => page.getByRole('region', { name: 'Deadlines', exact: true });
     const materialsOf = () => page.getByRole('region', { name: 'Materials', exact: true });
-    const archivedNow = async () => (await db.pool.query(`SELECT archived_at IS NOT NULL AS archived FROM plugin_applications.applications WHERE id=$1`, [seededId])).rows[0].archived;
+    const archivedNow = async () => (await db.pool.query(`SELECT archived_at IS NOT NULL AS archived FROM plugin_phd_application.applications WHERE id=$1`, [seededId])).rows[0].archived;
     // With archived applications shown, the detail stays mounted across archiving: a deadline
     // editor and a material link editor are open when the application is archived.
     await deadlinesOf().getByRole('button', { name: /^Edit deadline / }).first().click();
@@ -374,7 +374,7 @@ it('renders the Applications overview card, navigation entry and Area, and write
     await nav('Project navigation').waitFor({ timeout: 10000 });
 
     // The funding editor explains the guard without presenting inferred history as an approval.
-    const requested = await post('actions/plugin.applications.application.propose_status', {
+    const requested = await post('actions/plugin.phd_application.application.propose_status', {
       project_id: project, application_id: funding[0].id, status: 'submitted',
     });
     await post('actions/proposal.accept', { proposal_id: requested.proposal_id });
@@ -400,7 +400,7 @@ it('renders the Applications overview card, navigation entry and Area, and write
       await noOverflow();
       await shoot(`funding-submission-guard-${copy.locale}`);
     }
-    await post('actions/plugin.applications.contact.update', {
+    await post('actions/plugin.phd_application.contact.update', {
       project_id: project, contact_id: contact.data.contact_id, application_ids: [seededId],
     });
     const reader = randomUUID();
@@ -434,7 +434,7 @@ it('renders the Applications overview card, navigation entry and Area, and write
     await expect.poll(() => facts.getByRole('button', {name: 'Archive', exact: true}).isEnabled()).toBe(true);
     await facts.getByLabel('Notes', {exact: true}).fill('Updated by a Project editor');
     await facts.getByRole('button', {name: 'Save', exact: true}).click();
-    await expect.poll(async () => (await db.pool.query('SELECT notes FROM plugin_applications.applications WHERE id=$1', [seededId])).rows[0].notes)
+    await expect.poll(async () => (await db.pool.query('SELECT notes FROM plugin_phd_application.applications WHERE id=$1', [seededId])).rows[0].notes)
       .toBe('Updated by a Project editor');
     await shoot('shared-application-editor');
     signedInUser = user;
@@ -444,7 +444,7 @@ it('renders the Applications overview card, navigation entry and Area, and write
     await post('actions/official_plugin.project_binding.unbind', { plugin_id: plugin.id, project_id: project });
     await page.goto(area);
     await page.getByText('This module is disabled or you no longer have access.', { exact: true }).waitFor();
-    expect((await db.pool.query(`SELECT count(*)::int AS n FROM plugin_applications.applications WHERE space_id=$1`, [space])).rows[0].n).toBe(3);
+    expect((await db.pool.query(`SELECT count(*)::int AS n FROM plugin_phd_application.applications WHERE space_id=$1`, [space])).rows[0].n).toBe(3);
     expect(pageErrors).toEqual([]);
   } catch (error) {
     console.error(viteLog.slice(-4000));

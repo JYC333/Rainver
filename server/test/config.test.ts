@@ -28,7 +28,6 @@ describe("loadConfig", () => {
     expect(c.betterAuthSecret).toBeNull();
     expect(c.googleClientId).toBe("");
     expect(c.googleClientSecret).toBe("");
-    expect(c.googleRedirectUri).toBe("http://localhost:5173/api/v1/auth/callback/google");
     expect(c.frontendUrl).toBe("http://localhost:5173");
     expect(c.instanceAdminEmail).toBeNull();
     expect(c.sessionExpireDays).toBe(30);
@@ -52,8 +51,7 @@ describe("loadConfig", () => {
       BETTER_AUTH_SECRET: "auth-secret",
       GOOGLE_CLIENT_ID: "google-client",
       GOOGLE_CLIENT_SECRET: "google-secret",
-      GOOGLE_REDIRECT_URI: "http://localhost:8010/api/v1/auth/callback/google",
-      FRONTEND_URL: "http://localhost:5173/",
+      PUBLIC_BASE_URL: "http://localhost:5173/",
       INSTANCE_ADMIN_EMAIL: "Owner@Example.COM ",
       SESSION_EXPIRE_DAYS: "7",
       SERVER_DEBUG: "true",
@@ -78,7 +76,6 @@ describe("loadConfig", () => {
     expect(c.betterAuthSecret).toBe("auth-secret");
     expect(c.googleClientId).toBe("google-client");
     expect(c.googleClientSecret).toBe("google-secret");
-    expect(c.googleRedirectUri).toBe("http://localhost:8010/api/v1/auth/callback/google");
     expect(c.frontendUrl).toBe("http://localhost:5173");
     expect(c.instanceAdminEmail).toBe("owner@example.com");
     expect(c.sessionExpireDays).toBe(7);
@@ -93,27 +90,45 @@ describe("loadConfig", () => {
     expect(loadConfig({ SERVER_DEBUG: "false", DEBUG: "true" }).debug).toBe(false);
   });
 
-  it("fails fast on a malformed FRONTEND_URL", () => {
-    expect(() => loadConfig({ FRONTEND_URL: "not a url" })).toThrow(ConfigError);
-    expect(() => loadConfig({ FRONTEND_URL: "ftp://x:1" })).toThrow(ConfigError);
+  it("fails fast on a malformed PUBLIC_BASE_URL", () => {
+    expect(() => loadConfig({ PUBLIC_BASE_URL: "not a url" })).toThrow(ConfigError);
+    expect(() => loadConfig({ PUBLIC_BASE_URL: "ftp://x:1" })).toThrow(ConfigError);
+  });
+
+  it("normalizes the public origin and rejects credentials, paths, queries and fragments", () => {
+    expect(loadConfig({ PUBLIC_BASE_URL: "https://APP.example.com:443/" }).frontendUrl)
+      .toBe("https://app.example.com");
+    for (const suffix of ["/subpath", "?", "#"]) {
+      expect(() => loadConfig({ PUBLIC_BASE_URL: `https://app.example.com${suffix}` })).toThrow(ConfigError);
+    }
+    expect(() => loadConfig({ PUBLIC_BASE_URL: "https://user:pass@app.example.com" })).toThrow(ConfigError);
+  });
+
+  it("derives only enabled Gmail endpoints from the public origin", () => {
+    const origin = "https://new.example.com";
+    const env = { PUBLIC_BASE_URL: origin };
+    expect(loadConfig(env).gmailOAuth).toBeNull();
+    expect(loadConfig(env).gmailPush).toBeNull();
+    const oauth = { ...env, GMAIL_OAUTH_CLIENT_ID: "client", GMAIL_OAUTH_CLIENT_SECRET: "secret" };
+    expect(loadConfig(oauth).gmailOAuth?.redirectUri).toBe(`${origin}/api/v1/sources/gmail/oauth/callback`);
+    expect(loadConfig({
+      ...oauth,
+      GMAIL_PUBSUB_TOPIC: "projects/rainver-mail/topics/gmail",
+      GMAIL_PUBSUB_SUBSCRIPTION: "projects/rainver-mail/subscriptions/gmail-push",
+      GMAIL_PUBSUB_PUSH_SERVICE_ACCOUNT: "gmail-push@rainver-mail.iam.gserviceaccount.com",
+    }).gmailPush?.audience).toBe(`${origin}/api/v1/sources/gmail/push`);
   });
 
   it("requires secure non-loopback auth origins in production", () => {
     expect(() => loadConfig({
       RAINVER_ENV: "prod",
       BETTER_AUTH_SECRET: "auth-secret",
-      FRONTEND_URL: "http://app.example.com",
+      PUBLIC_BASE_URL: "http://app.example.com",
     })).toThrowError(/https in production/);
-    expect(() => loadConfig({
-      RAINVER_ENV: "prod",
-      BETTER_AUTH_SECRET: "auth-secret",
-      GOOGLE_REDIRECT_URI: "http://auth.example.com/callback",
-    })).toThrowError(/GOOGLE_REDIRECT_URI must use https/);
     expect(loadConfig({
       RAINVER_ENV: "prod",
       BETTER_AUTH_SECRET: "auth-secret",
-      FRONTEND_URL: "http://localhost:5173",
-      GOOGLE_REDIRECT_URI: "http://localhost:8010/callback",
+      PUBLIC_BASE_URL: "http://localhost:5173",
     }).frontendUrl).toBe("http://localhost:5173");
   });
 
@@ -194,8 +209,7 @@ describe("loadConfig", () => {
       "https://u:p@rainver.example/api/v1/sources/gmail/oauth/callback", "ftp://rainver.example/api/v1/sources/gmail/oauth/callback", "not a url"]) {
       expect(codeOf({ ...gmail, GMAIL_OAUTH_REDIRECT_URI: uri })).toBe("invalid_gmail_oauth_redirect_uri");
     }
-    expect(codeOf({ ...gmail, RAINVER_ENV: "prod", BETTER_AUTH_SECRET: "s", FRONTEND_URL: "https://rainver.example",
-      GOOGLE_REDIRECT_URI: "https://rainver.example/api/v1/auth/callback/google",
+    expect(codeOf({ ...gmail, RAINVER_ENV: "prod", BETTER_AUTH_SECRET: "s", PUBLIC_BASE_URL: "https://rainver.example",
       GMAIL_OAUTH_REDIRECT_URI: "http://rainver.example/api/v1/sources/gmail/oauth/callback" })).toBe("insecure_gmail_oauth_redirect_uri");
     expect(describeConfig(loadConfig(gmail))).toContain("gmailOAuthConfigured=true");
     expect(describeConfig(loadConfig(gmail))).not.toContain("gmail-secret-value");
@@ -236,8 +250,8 @@ describe("loadConfig", () => {
       }
       throw new Error("expected ConfigError");
     };
-    expect(codeOf({ FRONTEND_URL: "not a url" })).toBe("invalid_base_url");
-    expect(codeOf({ FRONTEND_URL: "ftp://x:1" })).toBe("invalid_url_protocol");
+    expect(codeOf({ PUBLIC_BASE_URL: "not a url" })).toBe("invalid_base_url");
+    expect(codeOf({ PUBLIC_BASE_URL: "ftp://x:1" })).toBe("invalid_url_protocol");
     expect(codeOf({ SERVER_LOG_LEVEL: "loud" })).toBe("invalid_log_level");
     expect(codeOf({ SERVER_RUN_EVENT_STREAM_PAGE_LIMIT: "999" })).toBe(
       "invalid_bounded_integer",

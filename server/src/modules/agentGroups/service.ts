@@ -1106,7 +1106,7 @@ export class AgentGroupRunService {
       group
       && (
         group.room_id
-          ? await repo.isActiveRoomUser(identity.spaceId, group.room_id, identity.userId)
+          ? await repo.isActiveRoomUser(identity.spaceId, group.room_id, identity.userId, group.session_id ?? null)
           : group.manager_user_id === identity.userId
       )
     );
@@ -1122,7 +1122,7 @@ export class AgentGroupRunService {
     group: AgentRunGroupRecord,
   ): Promise<boolean> {
     if (group.manager_user_id !== identity.userId) return false;
-    if (group.room_id && !(await repo.isActiveRoomUser(identity.spaceId, group.room_id, identity.userId))) return false;
+    if (group.room_id && !(await repo.isActiveRoomUser(identity.spaceId, group.room_id, identity.userId, group.session_id ?? null))) return false;
     if (!group.project_id) return true;
     return repo.canReadProject(
       identity.spaceId,
@@ -1426,7 +1426,7 @@ export class AgentGroupRunService {
           user_id: group.manager_user_id,
         }))?.agent_current_version_id ?? null;
         const standing = await renderRoomStandingContext(repos.db, {
-          spaceId: input.space_id, agentId: input.target_agent_id, roomId: group.room_id, review: Boolean(input.review),
+          spaceId: input.space_id, agentId: input.target_agent_id, roomId: group.room_id, sessionId: group.session_id ?? null, review: Boolean(input.review),
         });
         if (previousRunId && targetVersionId && delegatedAudience
           && delegatedBackend.workspace_mode === "location" && delegatedBackend.workspace_location_id
@@ -2379,6 +2379,7 @@ async function prepareRoomConversationBackends(input: {
         spaceId: input.identity.spaceId,
         agentId,
         roomId: input.roomId,
+        sessionId: input.sessionId,
       });
       const sendStanding = standingContextRequired({
         resumingVendorSession: hostResumeAttempted,

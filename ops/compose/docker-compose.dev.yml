@@ -55,8 +55,8 @@ services:
       # declared, because an `environment:` entry would override `.server.env`
       # — set it in the instance `.env`, which `.server.env` is generated from
       # (e.g. http://<this-machine>:8021), when paired hosts should reach the
-      # proxy somewhere other than FRONTEND_URL's host. Unset, a paired host
-      # gets one derived from an http: FRONTEND_URL plus this port.
+      # proxy somewhere other than PUBLIC_BASE_URL's host. Unset, a paired host
+      # gets one derived from an http: PUBLIC_BASE_URL plus this port.
       - PROVIDER_PROXY_LISTEN_HOST=0.0.0.0
       - PROVIDER_PROXY_PORT=${PROVIDER_PROXY_PORT:-8021}
     ports:

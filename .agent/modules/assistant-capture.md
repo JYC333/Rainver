@@ -112,7 +112,7 @@ The dedicated Capture page uploads a recording only after Stop & save.
 - `server/src/modules/capture/` — the capture entry and its destinations
 - `server/src/modules/knowledge/noteMarginalia.ts` — the note projection
 - `server/src/modules/captureFiling/` — filing a personal capture into a Project
-- `server/src/modules/agents/` — assistant agent/template behavior
+- `server/src/modules/agents/` — assistant agent/role behavior
 - `server/src/modules/memory/` — memory proposal/reflection behavior
 - `apps/web/src/components/FloatingQuickCapture.tsx` — the floating composer
 - `apps/web/src/modules/capture/CapturePage.tsx` — the Capture page, including file and voice upload

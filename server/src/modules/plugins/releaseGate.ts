@@ -117,11 +117,11 @@ export async function referenceReadable(db: Queryable, actor: OperationActor, re
   return {ownerUserId: row.owner, visibility};
 }
 
-export const APPLICATION_DRAFT_PREVIEW = 'plugin.applications.material.get_generation';
+export const APPLICATION_DRAFT_PREVIEW = 'plugin.phd_application.material.get_generation';
 
 export function isApplicationDraftAction(id: string): boolean {
-  return id === 'plugin.applications.material.generate' || id === APPLICATION_DRAFT_PREVIEW ||
-    id === 'plugin.applications.material.apply_generation';
+  return id === 'plugin.phd_application.material.generate' || id === APPLICATION_DRAFT_PREVIEW ||
+    id === 'plugin.phd_application.material.apply_generation';
 }
 
 /** Readers an actor's output reaches: the person alone, or an Agent Run's live audience. */

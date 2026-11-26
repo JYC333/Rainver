@@ -38,7 +38,7 @@ rainver/
 ├── packages/         # Shared packages
 │   └── protocol/     # Wire contract types — single public entry point
 ├── catalog/          # Built-in system definitions
-│   ├── agent_templates/
+│   ├── agent_roles/
 │   └── capabilities/
 ├── plugins/official/ # Official optional plugins (installed via PluginHost)
 │   ├── diary/
@@ -135,9 +135,17 @@ Production binds the web UI to `127.0.0.1:28400` and the provider proxy to
 `127.0.0.1:28421` by default, avoiding the development ports. Override
 `RAINVER_WEB_BIND`, `RAINVER_WEB_PORT`, `PROVIDER_PROXY_BIND`, or
 `PROVIDER_PROXY_PORT` in `$RAINVER_ROOT/prod/.env` when the deployment needs a
-different host mapping. Keep loopback binding for local WSL use. For domain access
-on a private network, use a TLS reverse proxy and set `FRONTEND_URL` (plus
-`GOOGLE_REDIRECT_URI` when OAuth is enabled) to the browser-facing origin.
+different host mapping. Keep loopback binding for local WSL use. For domain access,
+use a TLS reverse proxy or tunnel and set `PUBLIC_BASE_URL` to the
+browser-facing origin.
+
+For Google login or Gmail authorization, register the corresponding callback URL
+with Google. The paths are `/api/v1/auth/callback/google` and
+`/api/v1/sources/gmail/oauth/callback`, respectively, on `PUBLIC_BASE_URL`.
+Gmail OAuth and push support explicit URL overrides. If Gmail push is enabled,
+configure the subscription endpoint and audience to match Rainver's push URL,
+which defaults to `PUBLIC_BASE_URL` plus `/api/v1/sources/gmail/push`.
+
 Docker-native `ops/scripts/db/migrate.sh`, DB-only `ops/scripts/db/{dump,restore,reset-postgres}.sh`,
 and offline `ops/scripts/system/{backup,restore,verify-restore}.sh` start PostgreSQL
 when needed and stop it after completion only when that script had to start it;
@@ -218,13 +226,13 @@ Persisted API keys are feature-gated and not enabled in the current build.
 
 ## Built-in Templates
 
-No concrete agents are seeded. Built-in behavior comes from system **AgentTemplates**
+No concrete agents are seeded. Built-in behavior comes from system **Agent Roles**
 (reusable factories, seeded once globally); a concrete Agent is created on demand via
 copy-on-create, and runtime always loads config from its `AgentVersion` — never a template.
 
 There is no `general_chat` template and no DirectChat — chat is the per-space **system-managed
 default Assistant** (`agent_kind=system_assistant`), minted from the internal `personal_assistant`
-seed spec. That seed spec is `visibility=system_internal`: hidden from the public Template Library
+seed spec. That seed spec is `visibility=system_internal`: hidden from the public Role Library
 and not user-instantiable (at most one active Assistant per space). The reusable specialized
 templates below are the public library:
 

@@ -102,6 +102,15 @@ export const gmailUiEn = { gmail_ui: {
     "application": "Automatic application updates",
     "runtime": "{{agent}} on {{model}}",
     "mail_items": "{{pending}} waiting · {{review}} kept for your review · {{failed}} not processed",
+    "review_title": "Mail to review",
+    "review_open_gmail": "Open in Gmail",
+    "review_limit": "Showing the latest {{shown}} of {{total}} messages to review.",
+    "review_reason": {
+      "no_matching_application": "No matching application",
+      "ambiguous_application": "More than one possible application",
+      "unclear_fact": "Needs review",
+      "conflict": "Could not record the update"
+    },
     "pause": "Pause",
     "resume": "Resume",
     "resume_scope_daily": "Resume starts a new inbox window from the time you resume. Earlier mail is skipped.",

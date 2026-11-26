@@ -59,7 +59,7 @@ function usageAreaLabel(area: string): string {
 function usageArea(assetKey: string, type: PromptType | null): string {
   if (isAutoResearchAsset(assetKey)) return 'research'
   if (assetKey.startsWith('retrieval.')) return 'retrieval'
-  if (assetKey.startsWith('agent_template.') || assetKey.startsWith('agent.')) return 'agents'
+  if (assetKey.startsWith('agent_role.') || assetKey.startsWith('agent.')) return 'agents'
   if (type === 'workflow') return 'workflow'
   return 'prompt'
 }

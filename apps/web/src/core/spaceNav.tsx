@@ -2,6 +2,7 @@ import { forwardRef, useCallback } from 'react'
 import { Link, useNavigate, type LinkProps, type NavigateOptions, type To } from 'react-router-dom'
 import { useSpace } from '../contexts/SpaceContext'
 import { safeAppPath } from '../lib/safeHttpUrl'
+import { cn } from '../lib/utils'
 import { spacePath } from './navigation'
 
 /**
@@ -47,4 +48,18 @@ export const SpaceLink = forwardRef<HTMLAnchorElement, LinkProps>(function Space
     return <Link ref={ref} to={spacePath(spaceId, safe)} {...rest} />
   }
   return <Link ref={ref} to={to} {...rest} />
+})
+
+/**
+ * A navigation target that may not resolve yet (`spaceHref` → `null`): inert and marked
+ * unavailable until a Space is known, never a link that silently lands on Home.
+ */
+export const NavLinkOrInert = forwardRef<HTMLAnchorElement, Omit<LinkProps, 'to'> & { to: string | null }>(function NavLinkOrInert({ to, ...rest }, ref) {
+  if (to !== null) return <Link ref={ref} to={to} {...rest} />
+  return (
+    <span aria-disabled="true" title={rest.title} aria-label={rest['aria-label']}
+      className={cn(typeof rest.className === 'string' ? rest.className : undefined, 'pointer-events-none opacity-50')}>
+      {rest.children}
+    </span>
+  )
 })

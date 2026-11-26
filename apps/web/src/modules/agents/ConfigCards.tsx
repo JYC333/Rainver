@@ -5,7 +5,7 @@ import {
   OUTPUT_MODE_LABEL,
 } from './policyMap'
 
-/** Minimal shape shared by AgentVersionOut and AgentTemplateVersionOut. */
+/** Minimal shape shared by AgentVersionOut and AgentRoleVersionOut. */
 interface VersionLike {
   context_policy_json?: unknown
   memory_policy_json?: unknown

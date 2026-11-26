@@ -170,7 +170,7 @@ still `PROVIDER_PROXY_BIND` (loopback by default). Reaching it from a paired
 execution host additionally requires `PROVIDER_PROXY_PORT` (a fixed port, since
 an OS-assigned one moves on restart) and an address that host can use: its
 per-host override, else `PROVIDER_PROXY_EXTERNAL_BASE_URL`, else one derived
-from an `http:` `FRONTEND_URL`. With none, a bound remote run fails with a
+from an `http:` `PUBLIC_BASE_URL`. With none, a bound remote run fails with a
 stated reason rather than receiving a URL it cannot resolve. The built-in host
 always uses the in-network listener. A remote run's
 lease carries the Host it was issued for, so revoking that Host revokes the

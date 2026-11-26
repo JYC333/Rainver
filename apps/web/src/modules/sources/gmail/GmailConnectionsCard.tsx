@@ -289,7 +289,7 @@ export function GmailConnectionsCard() {
                 <span className="font-medium">{t('gmail_ui.digests.application')}</span>
                 <StatusBadge status={digest.status === 'active' ? 'active' : 'inactive'} label={t(`gmail_ui.digests.status.${digest.status}`)} />
                 {digest.project_name && <Button asChild size="sm" variant="outline">
-                  <Link to={`/projects/${seg(digest.project_id)}/plugins/applications/board`}>
+                  <Link to={`/projects/${seg(digest.project_id)}/plugins/phd_application/board`}>
                     {t('gmail_ui.digests.open_project_applications', { project: digest.project_name })}
                   </Link>
                 </Button>}

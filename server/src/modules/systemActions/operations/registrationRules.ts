@@ -4,7 +4,7 @@ import type {OperationRegistration} from './types.js';
 
 /** Durable new-content commands whose Personal/Project placement the access owner chooses
  * exactly as their retained REST adapters always did. Never an arbitrary Space resolver. */
-const DURABLE_PLACEMENT_COMMANDS = new Set(['activity.upload','activity.create','capture.create','source.channel.create', 'source.item.save_url', 'source.evidence.create', 'source.custom.draft.create', 'source.goal.setup.begin', 'source.goal.create', 'agent.create', 'agent.template.instantiate', 'agent.run.create', 'agent.chat.send', 'session.create', 'board.create', 'task.create']);
+const DURABLE_PLACEMENT_COMMANDS = new Set(['activity.upload','activity.create','capture.create','source.channel.create', 'source.item.save_url', 'source.evidence.create', 'source.custom.draft.create', 'source.goal.setup.begin', 'source.goal.create', 'agent.create', 'agent.role.instantiate', 'agent.run.create', 'agent.chat.send', 'session.create', 'board.create', 'task.create']);
 /** One create shared by a person's REST call and an Agent Run tool: placement applies to the person
  * principal only; an Agent keeps its Run's Space and Project. */
 const PERSON_PLACEMENT_SHARED_COMMANDS = new Set(['task.create', 'knowledge.note.create']);

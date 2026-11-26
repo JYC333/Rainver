@@ -36,7 +36,7 @@ function authConfig(instanceAdminEmail = "owner@example.test", google = false): 
   return loadConfig({
     SERVER_DATABASE_URL: db.connectionUri,
     BETTER_AUTH_SECRET: "registration-test-secret-that-is-long-enough",
-    FRONTEND_URL: "http://localhost:5173",
+    PUBLIC_BASE_URL: "http://localhost:5173",
     INSTANCE_ADMIN_EMAIL: instanceAdminEmail,
     ...(google ? { GOOGLE_CLIENT_ID: "test-google-client-id", GOOGLE_CLIENT_SECRET: "test-google-client-secret" } : {}),
   });
@@ -269,7 +269,7 @@ describe("registration and Better Auth facade primitives", () => {
     const config = loadConfig({
       SERVER_DATABASE_URL: db.connectionUri,
       BETTER_AUTH_SECRET: "registration-test-secret-that-is-long-enough",
-      FRONTEND_URL: "https://rainver.example.test",
+      PUBLIC_BASE_URL: "https://rainver.example.test",
       INSTANCE_ADMIN_EMAIL: "owner@example.test",
     });
     const intent = await new RegistrationService(db.pool, config).issueIntent({ email: "owner@example.test" });

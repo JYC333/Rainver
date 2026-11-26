@@ -34,7 +34,6 @@ function sourcesConfig(): ServerConfig {
     instanceAdminEmail: null,
     googleClientId: "",
     googleClientSecret: "",
-    googleRedirectUri: "",
     gmailOAuth: null,
     gmailPush: null,
     frontendUrl: "http://localhost:5173",

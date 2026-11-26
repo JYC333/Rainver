@@ -18,21 +18,21 @@ afterEach(() => {
   document.documentElement.removeAttribute('style')
   document.documentElement.removeAttribute('data-iphone-pwa')
 })
-it('keeps C at rest, fits keyboard, respects pinch zoom and cleans only owned state', () => {
+it('keeps Flow B at rest, fits keyboard, respects pinch zoom and cleans only owned state', () => {
   const root = document.documentElement
   root.style.setProperty('--unrelated', 'kept')
   const { unmount } = renderHook(() => useIPhonePwaViewport())
   expect(root.hasAttribute('data-iphone-pwa')).toBe(true)
-  expect(root.style.getPropertyValue('--app-pwa-height')).toBe('100vh')
+  expect(root.style.getPropertyValue('--app-pwa-height')).toBe('100dvh')
   act(() => { viewport.height = 350; viewport.offsetTop = 24; viewport.dispatchEvent(new Event('resize')) })
   expect(root.style.getPropertyValue('--app-pwa-height')).toBe('350px')
   expect(root.style.getPropertyValue('--app-pwa-top')).toBe('24px')
   act(() => { viewport.scale = 1.5; viewport.dispatchEvent(new Event('scroll')) })
-  expect(root.style.getPropertyValue('--app-pwa-height')).toBe('100vh')
+  expect(root.style.getPropertyValue('--app-pwa-height')).toBe('100dvh')
   expect(root.style.getPropertyValue('--app-pwa-keyboard-inset')).toBe('0px')
   expect(viewport.scale).toBe(1.5)
   act(() => { viewport.height = 812; viewport.offsetTop = 0; viewport.scale = 1; viewport.dispatchEvent(new Event('resize')) })
-  expect(root.style.getPropertyValue('--app-pwa-height')).toBe('100vh')
+  expect(root.style.getPropertyValue('--app-pwa-height')).toBe('100dvh')
   act(() => { media.matches = false; media.dispatchEvent(new Event('change')) })
   expect(root.hasAttribute('data-iphone-pwa')).toBe(false)
   expect(root.style.getPropertyValue('--app-pwa-height')).toBe('')
@@ -43,15 +43,15 @@ it('keeps C at rest, fits keyboard, respects pinch zoom and cleans only owned st
   expect(root.style.getPropertyValue('--app-pwa-height')).toBe('')
   expect(root.style.getPropertyValue('--unrelated')).toBe('kept')
 })
-it('uses the same C geometry for Room/sidecar overlays rather than restoring 812px', () => {
+it('uses the same Flow B geometry for Room/sidecar overlays rather than restoring 812px', () => {
   const { unmount } = renderHook(() => { useIPhonePwaViewport(); useMobileConversation(true) })
   const root = document.documentElement
-  expect(root.style.getPropertyValue('--conversation-visual-height')).toBe('100vh')
+  expect(root.style.getPropertyValue('--conversation-visual-height')).toBe('100dvh')
   act(() => { viewport.height = 350; viewport.dispatchEvent(new Event('resize')) })
   expect(root.style.getPropertyValue('--conversation-visual-height')).toBe('350px')
   expect(root.style.getPropertyValue('--app-pwa-height')).toBe('350px')
   act(() => { viewport.height = 812; viewport.dispatchEvent(new Event('resize')) })
-  expect(root.style.getPropertyValue('--conversation-visual-height')).toBe('100vh')
+  expect(root.style.getPropertyValue('--conversation-visual-height')).toBe('100dvh')
   unmount()
   expect(root.hasAttribute('data-mobile-conversation')).toBe(false)
 })
@@ -67,7 +67,7 @@ it('recognizes installed touch iOS in desktop-request mode without an iPhone UA'
   vi.stubGlobal('navigator', { userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X)', platform: 'MacIntel', maxTouchPoints: 5, standalone: true })
   const { unmount } = renderHook(() => useIPhonePwaViewport())
   expect(document.documentElement.hasAttribute('data-iphone-pwa')).toBe(true)
-  expect(document.documentElement.style.getPropertyValue('--app-pwa-height')).toBe('100vh')
+  expect(document.documentElement.style.getPropertyValue('--app-pwa-height')).toBe('100dvh')
   unmount()
 })
 it('never forces root scrolling and ignores idle offsets without a document scroll lock', () => {
@@ -79,7 +79,7 @@ it('never forces root scrolling and ignores idle offsets without a document scro
   for (const offset of [-120, -24, 24, 120, -8, 0]) {
     act(() => { viewport.offsetTop = offset; viewport.dispatchEvent(new Event('scroll')); window.dispatchEvent(new Event('scroll')) })
     expect(root.style.getPropertyValue('--app-pwa-top')).toBe('0px')
-    expect(root.style.getPropertyValue('--app-pwa-height')).toBe('100vh')
+    expect(root.style.getPropertyValue('--app-pwa-height')).toBe('100dvh')
   }
   act(() => { viewport.height = 350; viewport.offsetTop = 24; viewport.dispatchEvent(new Event('resize')) })
   expect(root.style.getPropertyValue('--app-pwa-top')).toBe('24px')
@@ -87,7 +87,7 @@ it('never forces root scrolling and ignores idle offsets without a document scro
   expect(viewport.scale).toBe(1.5)
   act(() => { viewport.height = 788; viewport.offsetTop = 24; viewport.scale = 1; viewport.dispatchEvent(new Event('resize')) })
   expect(root.style.getPropertyValue('--app-pwa-top')).toBe('0px')
-  expect(root.style.getPropertyValue('--app-pwa-height')).toBe('100vh')
+  expect(root.style.getPropertyValue('--app-pwa-height')).toBe('100dvh')
   expect(scrollTo).not.toHaveBeenCalled()
   unmount()
   act(() => { viewport.dispatchEvent(new Event('scroll')); window.dispatchEvent(new Event('scroll')) })

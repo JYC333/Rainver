@@ -46,16 +46,16 @@ beforeAll(async () => {
   await writeFile(join(fixtureRoot, "capabilities", "__init__.py"), "");
   await mkdir(join(fixtureRoot, "capabilities", "__pycache__"), { recursive: true });
 
-  const tmplDir = join(fixtureRoot, "agent_templates", "beta_tmpl");
+  const tmplDir = join(fixtureRoot, "agent_roles", "beta_tmpl");
   await mkdir(tmplDir, { recursive: true });
   await writeFile(
-    join(tmplDir, "template.yaml"),
+    join(tmplDir, "role.yaml"),
     [
       "key: beta_tmpl",
-      "name: Beta Template",
+      "name: Beta Role",
       "category: assistant",
       "visibility: system_internal",
-      "description: A template.",
+      "description: A role.",
     ].join("\n"),
   );
 });
@@ -100,7 +100,7 @@ describe("catalog summary", () => {
     expect(res.json()).toEqual({
       catalog_available: true,
       capabilities_count: 2,
-      agent_templates_count: 1,
+      agent_roles_count: 1,
     });
   });
 
@@ -112,7 +112,7 @@ describe("catalog summary", () => {
     expect(res.json()).toEqual({
       catalog_available: false,
       capabilities_count: 0,
-      agent_templates_count: 0,
+      agent_roles_count: 0,
     });
 
     const list = await app.inject({
@@ -150,23 +150,23 @@ describe("catalog capabilities listing", () => {
   });
 });
 
-describe("catalog agent templates listing", () => {
-  it("lists template summaries with declared visibility passed through verbatim", async () => {
+describe("catalog agent roles listing", () => {
+  it("lists role summaries with declared visibility passed through verbatim", async () => {
     __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     app = buildApp(fixtureRoot);
     const res = await app.inject({
       method: "GET",
-      url: "/api/v1/server/catalog/agent-templates",
+      url: "/api/v1/server/catalog/agent-roles",
     });
     expect(res.statusCode).toBe(200);
     const body = res.json() as { items: Array<Record<string, unknown>> };
     expect(body.items).toEqual([
       {
         key: "beta_tmpl",
-        name: "Beta Template",
+        name: "Beta Role",
         category: "assistant",
         visibility: "system_internal",
-        description: "A template.",
+        description: "A role.",
       },
     ]);
   });
@@ -207,7 +207,7 @@ describe("catalog manifest reads", () => {
       { id: "huge", name: null, version: null, description: null, enabled: null, parse_error: true },
       { id: "plain", name: "Plain", version: null, description: null, enabled: null },
     ]);
-    await expect(catalogSummary(root)).resolves.toEqual({ catalog_available: true, capabilities_count: 2, agent_templates_count: 0 });
+    await expect(catalogSummary(root)).resolves.toEqual({ catalog_available: true, capabilities_count: 2, agent_roles_count: 0 });
   });
 
   it("reports a missing catalog as unavailable but an unreadable one as an error", async () => {

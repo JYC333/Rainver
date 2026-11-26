@@ -12,7 +12,7 @@ const paired = { provider_proxy_base_url: null, kind: "remote" };
 const builtin = { provider_proxy_base_url: null, kind: "server" };
 
 const config = (env: Record<string, string> = {}) =>
-  loadConfig({ FRONTEND_URL: "http://space.example.com/app/", PROVIDER_PROXY_PORT: "8021", ...env });
+  loadConfig({ PUBLIC_BASE_URL: "http://space.example.com:8010", PROVIDER_PROXY_PORT: "8021", ...env });
 
 // Files share a worker: the proxy addresses live in module state, so anything
 // left here would follow whichever file runs next.
@@ -21,11 +21,11 @@ afterAll(() => {
 });
 
 describe("where a host reaches the provider proxy", () => {
-  it("derives a paired host's address from FRONTEND_URL, never from what a daemon reports", () => {
+  it("derives a paired host's address from PUBLIC_BASE_URL, never from what a daemon reports", () => {
     setProviderProxyBaseUrlForProcess("http://server:8021", null);
     // `http://server:8021` is the in-network listener a daemon reports; a
-    // paired machine cannot resolve a Compose service name. A path on the
-    // control-plane address is not part of the proxy's address either.
+    // paired machine cannot resolve a Compose service name. Use the public
+    // hostname with the proxy's own port instead of the control-plane port.
     expect(hostProviderProxyBaseUrl(paired, config())).toBe("http://space.example.com:8021");
   });
 
@@ -34,7 +34,7 @@ describe("where a host reaches the provider proxy", () => {
     // The listener is plaintext: TLS terminates somewhere this port is not
     // behind, so a derived `https:` URL would fail the handshake or quietly
     // drop TLS around the lease token.
-    expect(hostProviderProxyBaseUrl(paired, config({ FRONTEND_URL: "https://space.example.com" }))).toBeNull();
+    expect(hostProviderProxyBaseUrl(paired, config({ PUBLIC_BASE_URL: "https://space.example.com" }))).toBeNull();
   });
 
   it("keeps the built-in host on the in-network listener even when an external address is published", () => {
@@ -58,6 +58,6 @@ describe("where a host reaches the provider proxy", () => {
     setProviderProxyBaseUrlForProcess("http://server:8021", null);
     // PROVIDER_PROXY_PORT unset is the OS-assigned case (port 0): there is no
     // port to put in a derived URL, so no address applies.
-    expect(hostProviderProxyBaseUrl(paired, loadConfig({ FRONTEND_URL: "http://space.example.com" }))).toBeNull();
+    expect(hostProviderProxyBaseUrl(paired, loadConfig({ PUBLIC_BASE_URL: "http://space.example.com" }))).toBeNull();
   });
 });

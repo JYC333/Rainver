@@ -6,6 +6,7 @@ import { RUN_TERMINAL_STATUS_VALUES } from "@rainver/protocol";
 import { isStale } from "../hosts/liveness.js";
 import { visibleRoomTranscriptSql } from "../sessions/messagePath.js";
 import { restorableFromTrashSql, TRASH_RETENTION_INTERVAL_SQL } from "./conversationTrash.js";
+import { roomAudienceMemberSql, roomConversationAudienceSql } from "../access/contentAccessSql.js";
 
 /** Any unfinished Agent keeps the conversation in its executing presentation. */
 export function conversationHasUnfinishedAgentsSql(session: string): string {
@@ -114,16 +115,40 @@ export const ROOM_AUDIENCE_SQL = `
   SELECT
     COALESCE((
       SELECT array_agg(u.display_name ORDER BY u.display_name)
-        FROM room_user_members rm
-        JOIN users u ON u.id = rm.user_id
-       WHERE rm.space_id = room.space_id AND rm.room_id = room.id
-         AND rm.status = 'active' AND rm.user_id <> $2
+        FROM users u
+       WHERE u.id <> $2 AND ${roomAudienceMemberSql("room", "u")}
     ), ARRAY[]::varchar[]) AS other_member_names,
     (
       SELECT count(*) FROM room_agent_members ram
        WHERE ram.space_id = room.space_id AND ram.room_id = room.id
          AND ram.status = 'active'
     ) AS agent_count`;
+
+/**
+ * One conversation's actual audience for the viewer named by `viewerParam`:
+ * whether it is frozen to an earlier audience, and who besides the viewer
+ * reads it — the Room's audience (`roomAudienceMemberSql`, the predicate the
+ * freeze snapshot uses: every Project reader for the mainline, roster and
+ * Project readability otherwise), narrowed by the conversation's own.
+ */
+export function conversationAudienceColumnsSql(session: string, viewerParam: string): string {
+  return `EXISTS (
+      SELECT 1 FROM room_conversation_audiences frozen_audience
+       WHERE frozen_audience.session_id = ${session}.id AND frozen_audience.space_id = ${session}.space_id
+    ) AS audience_restricted,
+    COALESCE((
+      SELECT array_agg(audience_user.display_name ORDER BY audience_user.display_name)
+        FROM rooms audience_room
+        JOIN users audience_user ON ${roomAudienceMemberSql("audience_room", "audience_user")}
+       WHERE audience_room.space_id = ${session}.space_id AND audience_room.id = ${session}.room_id
+         AND audience_user.id <> ${viewerParam}
+         AND ${roomConversationAudienceSql(`${session}.space_id`, `${session}.id`, "audience_user.id")}
+    ), ARRAY[]::varchar[]) AS audience_other_member_names`;
+}
+
+export function audienceOut(row: { audience_restricted?: boolean | null; audience_other_member_names?: string[] | null }) {
+  return { restricted: row.audience_restricted === true, other_member_names: row.audience_other_member_names ?? [] };
+}
 
 export class PgRoomRepository {
   constructor(private readonly db: Queryable) {}
@@ -311,7 +336,26 @@ export class PgRoomRepository {
 
   /** Lock roster mutations before reading membership in a fresh statement. */
   async lockRoomForTurn(spaceId: string, roomId: string): Promise<void> {
+    await this.lockRoomProjectKey(spaceId, roomId);
     await this.db.query("SELECT id FROM rooms WHERE space_id = $1 AND id = $2 FOR NO KEY UPDATE", [spaceId, roomId]);
+  }
+
+  /**
+   * Project before Room (`lockRoomExecutionAuthority`). An Agent's command holds
+   * its Project `FOR UPDATE` and then waits for the Room, and a Room write that
+   * inserts a Project-scoped row (a conversation draft, an Agent's Project link,
+   * a Run) takes the Project `FOR KEY SHARE` through its foreign key. Taken after
+   * the Room, the two would wait on each other, so every locked Room read takes
+   * that key lock first. A Room's Project never changes.
+   */
+  private async lockRoomProjectKey(spaceId: string, roomId: string): Promise<void> {
+    await this.db.query(
+      `SELECT project.id FROM rooms room
+         JOIN projects project ON project.space_id = room.space_id AND project.id = room.project_id
+        WHERE room.space_id = $1 AND room.id = $2
+        FOR KEY SHARE OF project`,
+      [spaceId, roomId],
+    );
   }
 
   async getVisibleRoom(
@@ -320,6 +364,11 @@ export class PgRoomRepository {
     roomId: string,
     lock = false,
   ): Promise<RoomRecord | null> {
+    // Unlocked first, so a non-member never holds the Project's key lock.
+    if (lock) {
+      if (!await this.getVisibleRoom(spaceId, userId, roomId)) return null;
+      await this.lockRoomProjectKey(spaceId, roomId);
+    }
     const result = await this.db.query<RoomRecord>(
       `SELECT ${ROOM_SELECT}
          FROM rooms room
@@ -339,6 +388,7 @@ export class PgRoomRepository {
   }
 
   async getRoomById(spaceId: string, roomId: string, lock = false): Promise<RoomRecord | null> {
+    if (lock) await this.lockRoomProjectKey(spaceId, roomId);
     const result = await this.db.query<RoomRecord>(
       `SELECT ${ROOM_COLUMNS}
          FROM rooms
@@ -445,17 +495,18 @@ export class PgRoomRepository {
     }>(
       `SELECT ${ROOM_SELECT},
               roster.other_member_names, roster.agent_count::text AS agent_count,
-              (SELECT count(*) FROM room_user_members people
-                WHERE people.space_id = room.space_id AND people.room_id = room.id
-                  AND people.status = 'active')::text AS person_count,
+              -- Counted with the predicate the audience names use (roomAudienceMemberSql), the viewer included.
+              (SELECT count(*) FROM users people WHERE ${roomAudienceMemberSql("room", "people")})::text AS person_count,
               (SELECT count(*) FROM sessions conversation
                 WHERE conversation.space_id = room.space_id AND conversation.room_id = room.id
-                  AND conversation.status = 'active')::text AS conversation_count,
+                  AND conversation.status = 'active'
+                  AND ${roomConversationAudienceSql("conversation.space_id", "conversation.id", "$2")})::text AS conversation_count,
               (SELECT max(message.created_at) FROM messages message
                  JOIN sessions conversation
                    ON conversation.id = message.session_id AND conversation.space_id = message.space_id
                 WHERE conversation.space_id = room.space_id AND conversation.room_id = room.id
-                  AND conversation.status = 'active') AS last_activity_at
+                  AND conversation.status = 'active'
+                  AND ${roomConversationAudienceSql("conversation.space_id", "conversation.id", "$2")}) AS last_activity_at
          FROM rooms room
          LEFT JOIN LATERAL (${ROOM_AUDIENCE_SQL}) roster ON true
          ${visible}
@@ -537,10 +588,16 @@ export class PgRoomRepository {
     }));
   }
 
+  /**
+   * One Room conversation as the viewer may read it. The Room's own read gate
+   * is the caller's (`requireRoom`); this adds the conversation's audience, so
+   * a conversation frozen before the viewer joined is absent, not forbidden.
+   */
   async getConversation(
     spaceId: string,
     roomId: string,
     sessionId: string,
+    viewerUserId: string,
   ): Promise<SessionOut | null> {
     const result = await this.db.query<{
       id: string;
@@ -552,24 +609,43 @@ export class PgRoomRepository {
       status: string;
       created_at: string;
       updated_at: string;
+      audience_restricted: boolean;
+      audience_other_member_names: string[] | null;
     }>(
       `SELECT id, space_id, room_id, project_id, project_folder_id,
-              title, status, created_at, updated_at
+              title, status, created_at, updated_at,
+              ${conversationAudienceColumnsSql("sessions", "$4")}
          FROM sessions
         WHERE space_id = $1
           AND room_id = $2
           AND id = $3
-          AND status = 'active'`,
-      [spaceId, roomId, sessionId],
+          AND status = 'active'
+          AND ${roomConversationAudienceSql("sessions.space_id", "sessions.id", "$4")}`,
+      [spaceId, roomId, sessionId, viewerUserId],
     );
     const row = result.rows[0];
-    return row
-      ? {
-          ...row,
-          user_id: null,
-          project_folder_id: row.project_folder_id,
-        }
-      : null;
+    if (!row) return null;
+    const { audience_restricted, audience_other_member_names, ...conversation } = row;
+    return {
+      ...conversation,
+      user_id: null,
+      project_folder_id: conversation.project_folder_id,
+      audience: audienceOut({ audience_restricted, audience_other_member_names }),
+    } as SessionOut;
+  }
+
+  /**
+   * Whether this conversation's own audience admits the viewer, whatever its
+   * list (active, archived, recycle bin). Lifecycle commands that address a
+   * conversation by id call it, so a frozen conversation answers 404 to
+   * someone outside it exactly as a missing one does.
+   */
+  async conversationAudienceAdmits(spaceId: string, sessionId: string, viewerUserId: string): Promise<boolean> {
+    const result = await this.db.query<{ admitted: boolean }>(
+      `SELECT ${roomConversationAudienceSql("$1::varchar", "$2::varchar", "$3::varchar")} AS admitted`,
+      [spaceId, sessionId, viewerUserId],
+    );
+    return result.rows[0]?.admitted === true;
   }
 
   async deleteEmptyConversation(spaceId: string, roomId: string, sessionId: string): Promise<boolean> {
@@ -620,6 +696,8 @@ export class PgRoomRepository {
   async listConversations(input: {
     space_id: string;
     room_id: string;
+    /** Conversations frozen to an audience without this person are not listed or counted. */
+    viewer_user_id: string;
     limit: number;
     offset: number;
     status?: RoomConversationListStatus;
@@ -634,8 +712,9 @@ export class PgRoomRepository {
     const total = await this.db.query<{ total: string }>(
       `SELECT count(*)::text AS total
          FROM sessions s
-        WHERE s.space_id = $1 AND s.room_id = $2 AND ${listed("$3")}`,
-      [input.space_id, input.room_id, status],
+        WHERE s.space_id = $1 AND s.room_id = $2 AND ${listed("$3")}
+          AND ${roomConversationAudienceSql("s.space_id", "s.id", "$4")}`,
+      [input.space_id, input.room_id, status, input.viewer_user_id],
     );
     const rows = await this.db.query<{
       id: string;
@@ -651,9 +730,12 @@ export class PgRoomRepository {
       can_delete_empty: boolean;
       deleted_at: string | null;
       purge_after: string | null;
+      audience_restricted: boolean;
+      audience_other_member_names: string[] | null;
     }>(
       `SELECT s.id, s.space_id, s.room_id, s.project_id, s.title, s.status, s.created_at, s.updated_at,
               last.created_at AS last_message_at,
+              ${conversationAudienceColumnsSql("s", "$6")},
               s.deleted_at,
               s.deleted_at + ${TRASH_RETENTION_INTERVAL_SQL} AS purge_after,
               (s.status = 'active' AND ${roomConversationEmptySql()}) AS can_delete_empty,
@@ -667,13 +749,15 @@ export class PgRoomRepository {
             ORDER BY m.created_at DESC, m.id DESC LIMIT 1
          ) last ON true
         WHERE s.space_id = $1 AND s.room_id = $2 AND ${listed("$5")}
+          AND ${roomConversationAudienceSql("s.space_id", "s.id", "$6")}
         ORDER BY ${status === "deleted" ? "s.deleted_at DESC," : ""} COALESCE(last.created_at, s.created_at) DESC, s.id DESC
         LIMIT $3 OFFSET $4`,
-      [input.space_id, input.room_id, input.limit, input.offset, status],
+      [input.space_id, input.room_id, input.limit, input.offset, status, input.viewer_user_id],
     );
     return {
-      items: rows.rows.map(({ deleted_at, purge_after, ...row }) => ({
+      items: rows.rows.map(({ deleted_at, purge_after, audience_restricted, audience_other_member_names, ...row }) => ({
         ...row,
+        audience: audienceOut({ audience_restricted, audience_other_member_names }),
         ...(status === "deleted" && deleted_at && purge_after
           ? { deleted_at: new Date(deleted_at).toISOString(), purge_after: new Date(purge_after).toISOString() }
           : {}),
@@ -710,6 +794,7 @@ type RoomConversationListExtras = {
   can_delete_empty: boolean;
   deleted_at?: string;
   purge_after?: string;
+  audience: { restricted: boolean; other_member_names: string[] };
 };
 
 /** Both delete commands move the conversation to the recycle bin, remembering its list. */

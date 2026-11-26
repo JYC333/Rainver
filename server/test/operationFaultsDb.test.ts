@@ -153,38 +153,35 @@ it('runs the pre-core server code against the additive schema and interleaves ol
 });
 
 
-it.each(['http','file-bridge'])('real CLI explicit-key replay after %s response loss keeps old Run grants and one Job',async transport=>{
+it('real CLI explicit-key replay after a bridge response is lost keeps Run grants and one Job',async()=>{
   const run=randomUUID(),agent=randomUUID(),key=randomUUID();
   await seedRun(db.pool,{id:run,space,owner,agent,version:randomUUID()});
   await db.pool.query("UPDATE runs SET status='running',project_id=$2,instructed_by_user_id=$3,permission_snapshot_json=$4::jsonb WHERE id=$1",[run,project,owner,JSON.stringify({tool_grants:[{action_id:'research.cancel_acquisition'}]})]);
   const identities=new PgRunToolIdentityRepository(db.pool),token=await identities.issue({id:run,space_id:space},60000);
-  const server=child({tools:true,holdResponse:transport==='http'}),ready=await server.next('ready');
-  const identity={apiUrl:ready.address!,runId:run,token};
+  const identity={runId:run,token};
   const launch=(environment:Record<string,string>)=>{
     const cli=spawn(process.execPath,[fileURLToPath(new URL('../../packages/agent-cli/dist/rainver.js',import.meta.url)),'call','research.cancel_acquisition','--idempotency-key',key,JSON.stringify({operation_id:operation,reason:'fault'})],{env:{PATH:process.env.PATH,...environment},stdio:['ignore','pipe','pipe']});
     let output='';cli.stdout.on('data',data=>{output+=String(data);});
     return {cli,done:once(cli,'exit').then(([code])=>({code,output}))};
   };
-  let bridge:ReturnType<typeof child>|undefined;
-  if(transport==='file-bridge')bridge=child({bridge:true,toolIdentity:identity,holdBridge:true});
-  const first=launch(bridge?{RAINVER_TOOL_BRIDGE:(await bridge.next('ready')).address!}:{RAINVER_API_URL:identity.apiUrl,RAINVER_RUN_ID:run,RAINVER_TOOL_TOKEN:token});
+  const bridge=child({bridge:true,toolIdentity:identity,holdBridge:true});
+  const first=launch({RAINVER_TOOL_BRIDGE:(await bridge.next('ready')).address!});
   try {
-    await (bridge??server).next(bridge?'bridgeResponseHeld':'responseHeld');
-    await (bridge??server).kill();
+    await bridge.next('bridgeResponseHeld');
+    await bridge.kill();
     // A Host killed before publishing its response leaves the CLI uncertain; it never resends the write.
-    if(bridge)first.cli.kill('SIGKILL');
+    first.cli.kill('SIGKILL');
     expect((await first.done).code).not.toBe(0);
     expect((await db.pool.query("SELECT id FROM jobs WHERE space_id=$1 AND job_type='research_operation_cancel'",[space])).rows).toHaveLength(1);
-    const replacement=transport==='http'?child({tools:true}):server;
-    const api=(await replacement.next('ready')).address!;
-    const retryBridge=transport==='file-bridge'?child({bridge:true,toolIdentity:{...identity,apiUrl:api}}):undefined;
-    const repeated=launch(retryBridge?{RAINVER_TOOL_BRIDGE:(await retryBridge.next('ready')).address!}:{RAINVER_API_URL:api,RAINVER_RUN_ID:run,RAINVER_TOOL_TOKEN:token});
+    const retryBridge=child({bridge:true,toolIdentity:identity});
+    const bridgeDir=(await retryBridge.next('ready')).address!;
+    const repeated=launch({RAINVER_TOOL_BRIDGE:bridgeDir});
     const receipt=await repeated.done;expect(receipt.code,receipt.output).toBe(0);expect(JSON.parse(receipt.output)).toMatchObject({operation_id:operation,already_terminal:false});
     expect((await db.pool.query("SELECT id FROM jobs WHERE space_id=$1 AND job_type='research_operation_cancel'",[space])).rows).toHaveLength(1);
     expect((await db.pool.query('SELECT id FROM operation_idempotency WHERE idempotency_key=$1',[key])).rows).toHaveLength(1);
     // The restarted server still enforces expiry/revocation, rather than treating its replay as authority.
     await db.pool.query("UPDATE run_tool_identities SET expires_at=now()-interval '1 second' WHERE run_id=$1",[run]);
-    const expired=launch({RAINVER_API_URL:api,RAINVER_RUN_ID:run,RAINVER_TOOL_TOKEN:token});
+    const expired=launch({RAINVER_TOOL_BRIDGE:bridgeDir});
     expect((await expired.done).code).not.toBe(0);
   } finally {if(first.cli.exitCode===null&&first.cli.signalCode===null)first.cli.kill('SIGKILL');await first.done;}
 });

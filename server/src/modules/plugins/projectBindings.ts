@@ -5,6 +5,8 @@ import type {Queryable} from '../routeUtils/common.js';
 import {hidden, OperationRefusal} from '../systemActions/operations/errors.js';
 import {assertProjectReadableLocked, canReadProject, canWriteProject, isProjectOwnerLevel, lockProjectAudience} from '../projects/access.js';
 import {getOfficialPlugin} from './registry.js';
+import {lockRoomExecutionAuthority, roomAgentUseSql, runExecutionPlacement} from '../rooms/agentUsageSql.js';
+import {roomConversationAudienceSql} from '../access/contentAccessSql.js';
 import {operationPackageFacts, operationPackages} from './operationRegistry.js';
 import {lockOperationPluginScope, operationPluginEnabled} from './operationEnablement.js';
 
@@ -79,7 +81,14 @@ export async function assertPluginProjectTarget(db: Queryable, manifest: PluginO
   if (actor.principal.kind === 'agent') {
     const run = (await db.query<{project_id: string | null}>('SELECT project_id FROM runs WHERE id=$1 AND space_id=$2', [actor.run_id, actor.space_id])).rows[0];
     const agent = (await db.query<{access_project_id: string | null}>('SELECT access_project_id FROM agents WHERE id=$1 AND space_id=$2', [actor.agent_id, actor.space_id])).rows[0];
-    if (!run?.project_id || run.project_id !== projectId || agent?.access_project_id && agent.access_project_id !== projectId) throw hidden();
+    if (!run?.project_id || run.project_id !== projectId) throw hidden();
+    // An Agent whose home Project is another reaches this one only where its
+    // Room authorizes it now (`roomAuthorizesAgent`, the Room execution
+    // predicate, live at each entry and release). Its data stay this
+    // Project's (every operation is keyed by `project_id`), and its sessions and
+    // memory stay isolated as for any retained-Project Agent.
+    if (agent?.access_project_id && agent.access_project_id !== projectId
+      && !await roomAuthorizesAgent(db, actor.space_id, actor.run_id!, actor.agent_id!, projectId, person, kind === 'command' || options.lockBinding === true)) throw hidden();
   }
   // Unlocked first: a person who cannot reach the Project never waits on (or blocks) its row.
   if (!await canReadProject(db, actor.space_id, projectId, person)) throw hidden();
@@ -92,6 +101,51 @@ export async function assertPluginProjectTarget(db: Queryable, manifest: PluginO
     if (status !== 'active') throw archived();
   }
   if (!await isPluginProjectBound(db, manifest.id, actor.space_id, projectId, kind === 'command' || options.lockBinding)) throw hidden();
+}
+
+/**
+ * The Room's own live execution authority (`roomAgentUseSql`), asked again at
+ * every plugin entry and result release rather than trusted from Run claim:
+ * the Agent is active and an active member of the Run's Room in this Project;
+ * the instructing person is still an active Room member, Space member and
+ * Project reader, and inside the Run conversation's own audience (a
+ * conversation frozen before they joined does not admit them); and the grant
+ * is the current owner's, unrevoked, from an owner who still manages the Room
+ * in this Project. Leaving the Room, an ownership transfer, a revoked grant or
+ * the issuer losing Project management each refuse the next call.
+ *
+ * It is decided at the boundary Run claim decides it at (`lockRoomExecutionAuthority`):
+ * the Project audience, then the Room row `FOR SHARE`, then the Agent row, and
+ * only then the predicate, in its own statement so it reads a snapshot taken
+ * after those locks. Every Room writer that withdraws this authority (Agent or
+ * member removal, grant revocation, ownership transfer, an audience freeze)
+ * holds the Room row, and a lost Project role holds the Project audience, so a
+ * withdrawal either commits first and this refuses, or waits until the
+ * entry or release that already passed has committed. A read-only query
+ * entry cannot lock and answers from its snapshot; its body still reaches
+ * nobody except through the locked release.
+ */
+async function roomAuthorizesAgent(db: Queryable, spaceId: string, runId: string, agentId: string, projectId: string, person: string, lock: boolean): Promise<boolean> {
+  const run = (await db.query<{run_group_id: string | null; session_id: string | null}>(
+    'SELECT run_group_id, session_id FROM runs WHERE id=$1 AND space_id=$2', [runId, spaceId])).rows[0];
+  // The Run's Room and conversation, as Run claim and companion admission resolve them.
+  const placement = run ? await runExecutionPlacement(db, spaceId, run) : null;
+  if (!placement?.room_id) return false;
+  if (lock) {
+    await lockRoomExecutionAuthority(db, spaceId, projectId, placement.room_id);
+    await db.query('SELECT id FROM agents WHERE id=$1 AND space_id=$2 FOR SHARE', [agentId, spaceId]);
+  }
+  const result = await db.query(
+    `SELECT 1
+       FROM agents a
+       JOIN rooms room ON room.id = $3 AND room.space_id = a.space_id AND room.project_id = $4 AND room.status = 'active'
+      WHERE a.id = $2 AND a.space_id = $1
+        AND ${roomAgentUseSql("a", "$5::varchar", "room.id")}
+        AND ($6::varchar IS NULL OR ${roomConversationAudienceSql("a.space_id", "$6::varchar", "$5::varchar")})
+      LIMIT 1`,
+    [spaceId, agentId, placement.room_id, projectId, person, placement.session_id],
+  );
+  return Boolean(result.rows.length);
 }
 
 /** Bind: the package is Project-level and enabled for the person, the Project is active, and the person is Project owner level. */

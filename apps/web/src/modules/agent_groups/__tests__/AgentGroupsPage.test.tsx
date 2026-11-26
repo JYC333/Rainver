@@ -7,6 +7,7 @@ import AgentGroupsPage from '../AgentGroupsPage'
 import {
   ApiRequestError,
   agentsApi,
+  conversationInputApi,
   hostsApi,
   projectFoldersApi,
   projectsApi,
@@ -56,6 +57,7 @@ vi.mock('../../../api/client', async () => {
   const { ApiRequestError } = await import('../../../test/apiClientMock')
   return {
   ApiRequestError,
+  conversationInputApi: { imageBlob: vi.fn() },
   // One shared knowledge retrieval switch per Conversation, initially off.
   runtimeContextApi: {
     retrievalSwitch: vi.fn(async () => ({ work_context_scope_id: 'scope-1', enabled: false, preferred_domains: [], setup_version: null })),
@@ -432,6 +434,7 @@ describe('Rooms page', () => {
     await waitFor(() => expect(roomsApi.inviteUser).toHaveBeenCalledWith('room-2', {
       user_id: 'user-2',
       confirm_owned_private_agent_shares: false,
+      share_history: false,
     }))
     // It lands in the new Room's conversation list, not inside a conversation.
     await waitFor(() => expect(roomsApi.get).toHaveBeenCalledWith('room-2'))
@@ -454,6 +457,56 @@ describe('Rooms page', () => {
     // decides. Under `spacesApi.members` they would be offered and the server
     // would then refuse them.
     expect(offered).not.toContain('Outsider')
+  })
+
+  it('keeps the person and the history choice when a confirmed invitation does not go through', async () => {
+    const { ApiRequestError } = await import('../../../test/apiClientMock')
+    vi.mocked(projectsApi.readers).mockResolvedValue({
+      readers: [{ user_id: 'user-3', display_name: 'Reader', email: null, avatar_url: null }],
+    })
+    vi.mocked(roomsApi.inviteUser)
+      .mockRejectedValueOnce(new ApiRequestError('Confirm', 409, 'operation_conflict', {
+        error: { code: 'operation_conflict', metadata: { code: 'private_agent_share_confirmation_required' } },
+      }))
+      .mockRejectedValueOnce(new Error('The Room changed'))
+    renderRooms('/spaces/space-1/projects/project-1/rooms?room=room-1&view=members')
+    fireEvent.click(await screen.findByLabelText('Invite a person'))
+    fireEvent.click(await screen.findByRole('option', { name: 'Reader' }))
+    fireEvent.click(screen.getByRole('checkbox', { name: /Share earlier conversations/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Invite' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Share and invite' }))
+    await waitFor(() => expect(roomsApi.inviteUser).toHaveBeenLastCalledWith('room-1', {
+      user_id: 'user-3', confirm_owned_private_agent_shares: true, share_history: true,
+    }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Invite' })).toBeEnabled())
+    expect(screen.getByLabelText('Invite a person')).toHaveTextContent('Reader')
+    expect(screen.getByRole('checkbox', { name: /Share earlier conversations/ })).toBeChecked()
+  })
+
+  it('tells an approving Agent owner whether the invitee is given the earlier conversations', async () => {
+    const api = roomsApi as unknown as { pendingApprovals?: unknown }
+    api.pendingApprovals = vi.fn().mockResolvedValue({ items: [
+      { invitation_id: 'inv-1', room_id: 'room-1', room_title: 'Design', project_id: 'project-1', project_name: 'Project', invitee_user_id: 'user-3', invitee_display_name: 'Reader', agent_id: 'agent-2', agent_name: 'Critical Reviewer', share_history: true, expires_at: '2026-12-01T00:00:00Z' },
+    ], total: 1, limit: 100, offset: 0 })
+    try {
+      renderRooms('/spaces/space-1/projects/project-1/rooms')
+      expect(await screen.findByText('They will also read the Room’s earlier conversations.')).toBeInTheDocument()
+    } finally {
+      delete api.pendingApprovals
+    }
+  })
+
+  it('tells the Agent owner in the Members view whether a pending invitee is given the earlier conversations', async () => {
+    const invitation = (share_history: boolean) => ({
+      id: `inv-${share_history}`, space_id: 'space-1', room_id: 'room-1', invitee_user_id: 'user-3', invited_by_user_id: 'user-2',
+      status: 'pending', required_roster_revision: 1, share_history, expires_at: '2026-12-01T00:00:00Z',
+      created_at: '2026-11-01T00:00:00Z', updated_at: '2026-11-01T00:00:00Z', can_decide: true,
+      approvals: [{ agent_id: 'agent-2', owner_user_id: 'user-1', status: 'pending' }],
+    })
+    vi.mocked(roomsApi.invitations).mockResolvedValue({ items: [invitation(true), invitation(false)], total: 2, limit: 100, offset: 0 } as never)
+    renderRooms('/spaces/space-1/projects/project-1/rooms?room=room-1&view=members')
+    expect(await screen.findByText('They will also read the Room’s earlier conversations.')).toBeInTheDocument()
+    expect(screen.getByText('Earlier conversations stay with the current members; a new shared conversation opens.')).toBeInTheDocument()
   })
 
   it('shows a reader the roster and none of the controls that would 403', async () => {
@@ -1843,18 +1896,11 @@ describe('Rooms page', () => {
     vi.mocked(proposalsApi.get).mockResolvedValue({ status: 'pending' } as Awaited<ReturnType<typeof proposalsApi.get>>)
     vi.mocked(proposalsApi.accept).mockResolvedValue({} as Awaited<ReturnType<typeof proposalsApi.accept>>)
     vi.mocked(roomsApi.continueAfterProposal).mockResolvedValue({
-      message: {
-        id: 'message-continue',
-        session_id: 'session-1',
-        space_id: 'space-1',
-        user_id: null,
-        sender_agent_id: null,
-        role: 'system',
-        content: 'I accepted “Record conclusion: Does caching help?”. Continue now: confirm what was completed in one sentence, then begin the next step.',
-        metadata_json: { run_ids: ['run-continue'] },
-        created_at: '2026-07-26T00:00:04.000Z',
-      },
-      conversation: initialConversation,
+      id: 'message-continue',
+      room_id: 'room-1',
+      session_id: 'session-1',
+      space_id: 'space-1',
+      message_id: 'message-continue',
       task_group_ids: ['group-continue'],
       run_ids: ['run-continue'],
     })
@@ -1874,9 +1920,9 @@ describe('Rooms page', () => {
         proposal_id: 'proposal-1',
       }), expect.any(Object),
     ))
-    expect(screen.queryByText('I accepted “Record conclusion: Does caching help?”. Continue now: confirm what was completed in one sentence, then begin the next step.')).not.toBeInTheDocument()
     expect(await screen.findByText('Accepted')).toBeInTheDocument()
     expect(await screen.findByText('Promoted to Space knowledge. The assistant is continuing below.')).toBeInTheDocument()
+    expect(runsApi.streamTurn).toHaveBeenCalledWith('run-continue', expect.any(Object))
     expect(screen.queryByRole('button', { name: 'Accept' })).not.toBeInTheDocument()
   })
 
@@ -2006,18 +2052,11 @@ describe('Rooms page', () => {
 
   it('lets an already accepted proposal resume the conversation visibly', async () => {
     const continuationResult = {
-      message: {
-        id: 'message-resume',
-        session_id: 'session-1',
-        space_id: 'space-1',
-        user_id: null,
-        sender_agent_id: null,
-        role: 'system' as const,
-        content: 'I accepted the definition. Continue.',
-        metadata_json: { run_ids: ['run-resume'] },
-        created_at: '2026-07-26T00:00:04.000Z',
-      },
-      conversation: initialConversation,
+      id: 'message-resume',
+      room_id: 'room-1',
+      session_id: 'session-1',
+      space_id: 'space-1',
+      message_id: 'message-resume',
       task_group_ids: ['group-resume'],
       run_ids: ['run-resume'],
     }
@@ -2072,7 +2111,6 @@ describe('Rooms page', () => {
       }), expect.any(Object),
     ))
     await act(async () => resolveContinuation(continuationResult))
-    expect(screen.queryByText('I accepted the definition. Continue.')).not.toBeInTheDocument()
     expect(await screen.findByText('Accepted. The assistant is working…')).toBeInTheDocument()
     expect(await screen.findByText('Project goal, scope, and success criteria saved. The assistant is continuing below.')).toBeInTheDocument()
 
@@ -2176,21 +2214,57 @@ describe('Rooms page', () => {
     }), expect.any(Object)))
   })
 
-  it('sends typed instructions together with separately pasted text', async () => {
+  it('sends the full paste and keeps its transcript preview collapsed until opened', async () => {
+    const pasted = 'Example text '.repeat(100).trim()
+    const content = `Please summarize this\n\n${pasted}`
     vi.mocked(roomsApi.sendMessage).mockResolvedValueOnce({
-      message: { id: 'm-pasted', session_id: 'session-1', role: 'user', content: 'Please summarize this' },
+      message: { id: 'm-pasted', session_id: 'session-1', role: 'user', content },
       conversation: initialConversation, run_ids: [], task_group_ids: [],
     } as never)
     renderRooms('/rooms?room=room-1&conversation=session-1')
     const editor = await screen.findByLabelText('Room message')
-    const pasted = 'Example text '.repeat(50).trim()
+    const shortPaste = 'A short line\n'.repeat(10).trim()
+    expect(fireEvent.paste(editor, { clipboardData: { getData: () => shortPaste, files: [] } })).toBe(true)
+    expect(screen.queryByRole('button', { name: 'Edit message draft' })).not.toBeInTheDocument()
     fireEvent.paste(editor, { clipboardData: { getData: () => pasted, files: [] } })
     fireEvent.change(editor, { target: { value: 'Please summarize this' } })
     expect(screen.getByRole('button', { name: 'Edit message draft' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
     await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledWith('room-1', 'session-1',
-      expect.objectContaining({ content: `Please summarize this\n\n${pasted}` }), expect.any(Object)))
+      expect.objectContaining({ content }), expect.any(Object)))
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Edit message draft' })).not.toBeInTheDocument())
+    const preview = await screen.findByRole('button', { name: 'View full message' })
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.queryByText(pasted)).not.toBeInTheDocument()
+    fireEvent.click(preview)
+    const dialog = screen.getByRole('dialog', { name: 'View full message' })
+    expect(within(dialog).getByRole('textbox')).toHaveValue(content)
+    expect(within(dialog).getByRole('textbox')).toHaveAttribute('readonly')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('shows a saved image when reopening a Room conversation', async () => {
+    const originalURL = URL
+    vi.stubGlobal('URL', class extends originalURL {
+      static createObjectURL() { return 'blob:history-image' }
+      static revokeObjectURL() {}
+    })
+    try {
+      vi.mocked(conversationInputApi.imageBlob).mockResolvedValueOnce(new Blob(['image'], { type: 'image/png' }))
+      vi.mocked(roomsApi.messages).mockResolvedValue({
+        items: [{ id: 'm-image', session_id: 'session-1', role: 'user', content: '', input_parts: [{
+          kind: 'image', media_id: 'media-history', filename: 'history.png', media_type: 'image/png', byte_size: 5,
+        }] }],
+        conversation: initialConversation, limit: 20, offset: 0, task_group_ids: [],
+      } as never)
+      renderRooms('/rooms?room=room-1&conversation=session-1')
+      expect(await screen.findByAltText('history.png')).toHaveAttribute('src', 'blob:history-image')
+      expect(conversationInputApi.imageBlob).toHaveBeenCalledWith('media-history', expect.objectContaining({ spaceId: 'space-1' }))
+    } finally {
+      cleanup()
+      vi.unstubAllGlobals()
+    }
   })
 
   it('asks which active Run takes an ordinary send when several could, keeping the draft, then shows its delivery', async () => {

@@ -333,17 +333,11 @@ the legacy `stall_timeout_seconds` option) produces one neutral waiting notice
 per Run. It never terminates execution, reports failure, or invalidates a stored
 session. Both stdout and stderr count as output; queued processes do not trigger
 this notice. The observation timer is cleared on completion or failure.
-Linux Run work surfaces use the Host's private file tool channel when both
-server and Host support `file-v1`. Commands need no network permission for
-Rainver actions. The controller negotiates ACP `additionalDirectories`; the
-Host resolves only the current launch's IPC directory into session setup,
-including resume. This uses the shared controller, adds no vendor protocol,
-and changes no model or command-network setting. See
-[System Actions](../architecture/SYSTEM_ACTIONS.md) for identity, request bounds
-and older-Host behavior.
-Provider leases and work-surface identities use renewable 15-minute lifetimes,
-refreshed every minute while execution is active and revoked when it ends.
-Renewal cannot revive an expired/revoked identity or another attempt's token.
+Run tools use the private Host bridge and the existing authenticated Host
+WebSocket. On file-bridge platforms, the Host adds only the current launch's
+directory to negotiated ACP `additionalDirectories`, including on resume.
+See [System Actions](../architecture/SYSTEM_ACTIONS.md) for authority and
+limits.
 
 ## Credentials and backend modes
 

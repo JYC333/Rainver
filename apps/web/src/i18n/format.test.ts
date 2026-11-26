@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import i18n from './index'
-import { formatBytes, formatDate, formatDateTime, formatNumber, formatRelativeTime } from './format'
+import { formatBytes, formatConversationTimestamp, formatDate, formatDateTime, formatNumber, formatRelativeTime, formatTime } from './format'
 
 afterEach(async () => { await i18n.changeLanguage('en') })
 
@@ -12,6 +12,24 @@ describe('locale-aware formatting', () => {
     expect(formatDate(moment, { timeZone: 'UTC' })).toBe('2026年10月14日')
     // The business time zone decides the day, not the locale.
     expect(formatDate(moment, { timeZone: 'Asia/Shanghai' })).toBe('2026年10月15日')
+  })
+
+  it('adds calendar context to older conversation messages while keeping their clock time', async () => {
+    const now = new Date(2026, 10, 25, 0, 5)
+    expect(formatConversationTimestamp(now, now)).toBe(formatTime(now))
+    for (const [date, label] of [
+      [new Date(2026, 10, 24, 23, 55), 'yesterday'],
+      [new Date(2026, 10, 23, 23, 55), '2 days ago'],
+      [new Date(2026, 10, 11, 23, 55), '2 weeks ago'],
+      [new Date(2026, 8, 25, 23, 55), '2 months ago'],
+    ] as const) {
+      expect(formatConversationTimestamp(date, now)).toBe(`${label} · ${formatTime(date)}`)
+    }
+    const old = new Date(2025, 10, 25, 12)
+    expect(formatConversationTimestamp(old, now)).toBe(formatDateTime(old))
+    await i18n.changeLanguage('zh-CN')
+    const yesterday = new Date(2026, 10, 24, 23, 55)
+    expect(formatConversationTimestamp(yesterday, now)).toBe(`昨天 · ${formatTime(yesterday)}`)
   })
 
   it('formats numbers, sizes and relative times per locale, and empty input as a dash', async () => {

@@ -1,0 +1,12 @@
+{
+  "id": "phd_application",
+  "name": "PhD Application",
+  "version": "1.0.0",
+  "kind": "official_plugin",
+  "server": {
+    "main": "server/src/index.js"
+  },
+  "migrations": {
+    "dir": "migrations"
+  }
+}

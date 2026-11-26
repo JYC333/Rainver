@@ -103,7 +103,11 @@ async function mockApi(page) {
       { agent_id: 'agent-scout', name: 'Literature Scout', agent_kind: 'standard', owner_user_id: 'user-collab', visibility: 'space_shared', in_room: false, in_project: true, member_status: null, private: true, shared_with_user_ids: [] },
       { agent_id: 'agent-analyst', name: 'Data Analyst', agent_kind: 'standard', owner_user_id: null, visibility: 'space_shared', in_room: false, in_project: false, member_status: null, private: false, shared_with_user_ids: [] },
     ], presets: [{ preset_id: 'reviewer', name: 'Reviewer', description: 'Reviews the work' }], total: 2, limit: 100, offset: 0 }
-    else if (path.endsWith('/invitations')) data = pageOf([])
+    // One invitation waiting on this person's private Agent, without the Room's history.
+    else if (path.endsWith('/invitations')) data = pageOf(path === `/rooms/${mainline.id}/invitations` ? [{ id: 'inv-1', space_id: space.id, room_id: mainline.id,
+      invitee_user_id: 'user-dana', invited_by_user_id: 'user-dana', status: 'pending', required_roster_revision: 1, share_history: false,
+      expires_at: '2026-12-10T09:00:00.000Z', created_at: now, updated_at: now, can_decide: true,
+      approvals: [{ agent_id: 'agent-room-only', owner_user_id: 'user-collab', status: 'pending' }] }] : [])
     else if (path === '/agents') data = []
     else if (path.endsWith('/members')) data = [{ user_id: 'user-collab', display_name: 'Avery', email: 'avery@example.test' }, { user_id: 'user-dana', display_name: 'Dana Li', email: null }]
     else if (path.endsWith('/quota')) data = { warn_pct: 80, reserve_pct: 90, logins: [], holds: [] }
@@ -309,6 +313,13 @@ for (const locale of ['en', 'zh-CN']) {
               await page.screenshot({ path: `${shots}/room-recycle-bin-${locale}-${theme}-${width}.png` })
               await tabs.first().click()
               await rows.first().waitFor()
+            }
+            if (surface.name === 'room-members') {
+              // The Members view's own approval says whether the invitee is given the earlier conversations.
+              const notice = page.getByText(locale === 'en' ? 'Earlier conversations stay with the current members; a new shared conversation opens.' : '之前的对话仍只对现有成员可见；将开启一个新的共享对话。')
+              await notice.waitFor()
+              await notice.scrollIntoViewIfNeeded()
+              await page.screenshot({ path: `${shots}/room-members-approval-${locale}-${theme}-${width}.png`, fullPage: false })
             }
             // An Agent on the Project's list (answered by its single-entry read) gets no "not on the list" notice.
             if (surface.noWarning) assert.equal(await page.getByTestId('not-in-project').count(), 0, `${surface.name} ${locale} ${theme} ${width}`)
@@ -820,6 +831,66 @@ for (const [locale, theme, width] of [['en', 'dark', 1280], ['zh-CN', 'light', 3
       assert.match(await status.innerText(), /2025 preprints/)
       assert.equal(await page.getByText('Run turn stream failed', { exact: false }).count(), 0)
       await page.screenshot({ path: `${shots}/live-input-status-${locale}-${theme}-${width}.png`, animations: 'disabled' })
+    } finally { await page.close() }
+  })
+}
+
+for (const [locale, theme, width] of [['en', 'dark', 1280], ['zh-CN', 'light', 1280], ['en', 'light', 390], ['zh-CN', 'dark', 390]]) {
+  test(`Project chat switcher shows Conversations and Rooms and the real audience (${locale}, ${theme}, ${width})`, async () => {
+    const page = await browser.newPage({ viewport: { width, height: 900 }, serviceWorkers: 'block' })
+    page.setDefaultTimeout(7000)
+    try {
+      await page.addInitScript(([nextLocale, nextTheme, projectId]) => {
+        localStorage.setItem('rainver:locale', nextLocale)
+        if (nextTheme === 'light') localStorage.setItem('rainver:theme', 'light')
+        localStorage.setItem(`project.sidecar.${projectId}.open`, 'true')
+      }, [locale, theme, project.id])
+      await mockApi(page)
+      // The frozen conversation names its narrower audience.
+      await page.route(`**/api/v1/rooms/${mainline.id}/conversations?*`, route => route.fulfill({ json: pageOf([
+        { ...conversation, audience: { restricted: true, other_member_names: [] } },
+        { ...runningConversation, title: 'Shared conversation', audience: { restricted: false, other_member_names: ['Dana Li'] } },
+      ]) }))
+      await page.goto(`${baseUrl}${base}/board`)
+      if (width < 1024) {
+        // Below lg the panel is an overlay opened from its one toggle.
+        await page.getByRole('button', { name: locale === 'en' ? 'Open Project chat' : /打开/ }).first().click()
+      }
+      const switcher = page.getByTestId('sidecar-switcher')
+      if (width >= 1024) {
+        await switcher.waitFor()
+        await page.getByTestId('sidecar-audience').waitFor()
+        await page.screenshot({ path: `${shots}/sidecar-audience-${locale}-${theme}-${width}.png`, animations: 'disabled' })
+        await switcher.click()
+        await page.getByTestId('sidecar-navigator').waitFor()
+        await page.screenshot({ path: `${shots}/sidecar-conversations-${locale}-${theme}-${width}.png`, animations: 'disabled' })
+        await page.getByRole('tab', { name: locale === 'en' ? 'Rooms' : '房间' }).click()
+        await page.getByText(limited.title).first().waitFor()
+        const aside = page.getByTestId('project-chat-sidecar')
+        assert.ok(await aside.evaluate(el => el.scrollWidth <= el.clientWidth + 1), 'sidecar has no horizontal overflow')
+        await page.screenshot({ path: `${shots}/sidecar-rooms-${locale}-${theme}-${width}.png`, animations: 'disabled' })
+        // New opens the draft in front, closing the switcher.
+        await page.getByRole('button', { name: locale === 'en' ? 'Start a separate thread' : '另开一个对话' }).first().click()
+        await page.getByTestId('sidecar-navigator').waitFor({ state: 'detached' })
+      } else {
+        await page.getByTestId('project-chat-sidecar').waitFor()
+        assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), 'no horizontal overflow on mobile')
+        await page.screenshot({ path: `${shots}/sidecar-mobile-${locale}-${theme}-${width}.png`, animations: 'disabled' })
+        // The Rooms tab is reached from the mobile menu too.
+        await page.getByRole('button', { name: locale === 'en' ? 'Conversations and Room details' : '对话与 Room 详情' }).click()
+        const roomsEntry = page.getByTestId('sidecar-mobile-rooms')
+        {
+          await roomsEntry.click()
+          await page.getByText(limited.title).first().waitFor()
+          assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), 'no horizontal overflow with the Rooms tab open')
+          await page.screenshot({ path: `${shots}/sidecar-mobile-rooms-${locale}-${theme}-${width}.png`, animations: 'disabled' })
+          // The switcher reached from the phone menu has its own way back.
+          await page.getByTestId('sidecar-mobile-back-to-conversation').click()
+          await page.getByTestId('sidecar-navigator').waitFor({ state: 'detached' })
+          assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), 'no horizontal overflow back in the conversation')
+          await page.screenshot({ path: `${shots}/sidecar-mobile-back-${locale}-${theme}-${width}.png`, animations: 'disabled' })
+        }
+      }
     } finally { await page.close() }
   })
 }

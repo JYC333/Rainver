@@ -1,11 +1,11 @@
 /**
  * Catalog module service — reads built-in definitions from the top-level
- * `catalog/` directory (capability manifests and agent template specs).
+ * `catalog/` directory (capability manifests and agent role specs).
  *
  * This is the raw catalog read surface: which definition files exist on disk
  * and their declared summary fields. The parser applies no business policy
  * beyond skipping missing directories. The Skill library does not read
- * this catalog. `/api/v1/agent-templates` reads `catalog/agent_templates`
+ * this catalog. `/api/v1/agent-roles` reads `catalog/agent_roles`
  * on its own.
  *
  * Read-only. A missing catalog directory is reported as
@@ -29,7 +29,7 @@ export interface CatalogCapabilitySummary {
   parse_error?: true;
 }
 
-export interface CatalogAgentTemplateSummary {
+export interface CatalogAgentRoleSummary {
   key: string;
   name: string | null;
   category: string | null;
@@ -46,7 +46,7 @@ export interface CatalogListBody<TItem> {
 export interface CatalogSummaryBody {
   catalog_available: boolean;
   capabilities_count: number;
-  agent_templates_count: number;
+  agent_roles_count: number;
 }
 
 function asOptionalString(value: unknown): string | null {
@@ -153,14 +153,14 @@ export async function listCapabilities(
   return { catalog_available: available, items };
 }
 
-export async function listAgentTemplates(
+export async function listAgentRoles(
   catalogRoot: string,
-): Promise<CatalogListBody<CatalogAgentTemplateSummary>> {
+): Promise<CatalogListBody<CatalogAgentRoleSummary>> {
   const { available, dirs } = await listManifestDirs(
-    join(catalogRoot, "agent_templates"),
-    "template.yaml",
+    join(catalogRoot, "agent_roles"),
+    "role.yaml",
   );
-  const items: CatalogAgentTemplateSummary[] = [];
+  const items: CatalogAgentRoleSummary[] = [];
   for (const { dirName, manifestPath } of dirs) {
     try {
       const doc = await parseManifest(manifestPath);
@@ -188,13 +188,13 @@ export async function listAgentTemplates(
 
 /** Counts entries exactly as the lists do (a parse error still lists), without parsing them. */
 export async function catalogSummary(catalogRoot: string): Promise<CatalogSummaryBody> {
-  const [capabilities, templates] = await Promise.all([
+  const [capabilities, roles] = await Promise.all([
     listManifestDirs(join(catalogRoot, "capabilities"), "capability.yaml"),
-    listManifestDirs(join(catalogRoot, "agent_templates"), "template.yaml"),
+    listManifestDirs(join(catalogRoot, "agent_roles"), "role.yaml"),
   ]);
   return {
-    catalog_available: capabilities.available || templates.available,
+    catalog_available: capabilities.available || roles.available,
     capabilities_count: capabilities.dirs.length,
-    agent_templates_count: templates.dirs.length,
+    agent_roles_count: roles.dirs.length,
   };
 }

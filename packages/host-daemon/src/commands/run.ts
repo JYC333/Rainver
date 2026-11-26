@@ -45,6 +45,7 @@ import {
   type LaunchWorkspace,
 } from "../execution.js";
 import { ReconnectableFrameSink } from "../reconnectableFrameSink.js";
+import { RunToolChannel } from "../runToolChannel.js";
 import { OWN_INSTALLATION, installTool, managedInstallationId, rollbackTool, uninstallTool } from "../tools.js";
 import { manageCli } from "../managedCli.js";
 import { invalidateOwnCopy } from "../ownCopies.js";
@@ -271,10 +272,11 @@ async function runServiceHeld(options: { log?: (line: string) => void } = {}): P
       .catch((error) => log(`branch align recovery failed: ${errorMessage(error)}`));
   }
   const sink = new ReconnectableFrameSink();
+  const runTools = new RunToolChannel();
 
   for (;;) {
     try {
-      const result = await connectOnce(config.server_url, config.token, log, sink, config.workspaces);
+      const result = await connectOnce(config.server_url, config.token, log, sink, runTools, config.workspaces);
       if (result === "update") {
         log("latest release is installed and the host is idle; restarting into it");
         process.exit(UPDATE_RESTART_EXIT_CODE);
@@ -345,7 +347,7 @@ export function isOutdatedDaemonClose(code: number, reason: string): boolean {
   return code === 1008 && reason === "daemon_outdated";
 }
 
-function connectOnce(serverUrl: string, token: string, log: (line: string) => void, sink: ReconnectableFrameSink, workspaces: Record<string, string>): Promise<"disconnected" | "update" | "revoked" | "outdated"> {
+function connectOnce(serverUrl: string, token: string, log: (line: string) => void, sink: ReconnectableFrameSink, runTools: RunToolChannel, workspaces: Record<string, string>): Promise<"disconnected" | "update" | "revoked" | "outdated"> {
   return new Promise((resolve, reject) => {
     const endpoint = wsUrl(serverUrl);
     log(`connecting to ${endpoint}`);
@@ -502,9 +504,13 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
         case "source_response":
         case "source_cancel":
           sourceChannel.handle(frame); return;
+        case "run_tool_result":
+          runTools.receive(sendOnThisConnection, frame);
+          return;
         case "hello_ack": {
           helloAcked = true;
           sink.bind(sendOnThisConnection, frame.run_completion_ack === true);
+          runTools.bind(sendOnThisConnection);
           log(`connected as host ${frame.host_id}`);
           // The hello went out before the server could say how to ask each
           // runtime for its options, so report them now rather than a
@@ -555,7 +561,7 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
           // Always routed through `sink`, never `sendOnThisConnection`
           // directly — this run's `complete` frame may need to go out on a
           // later reconnect, not this connection.
-          void handleLaunch(launchFrame, (payload) => sink.send(payload), log).catch((error) => {
+          void handleLaunch(launchFrame, (payload) => sink.send(payload), log, runTools).catch((error) => {
             log(`run ${launchFrame.run_id}: launch failed: ${error instanceof Error ? error.message : String(error)}`);
             sink.send({
               type: "complete",
@@ -1073,6 +1079,7 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
       helloAcked = false;
       if (updateRestartTimer) clearInterval(updateRestartTimer);
       sourceChannel.disconnect();
+      runTools.disconnect(sendOnThisConnection);
       for (const controller of folderReadControllers.values()) controller.abort();
       folderReadControllers.clear();
       // A device-flow login nobody can see any more must not stay pending.

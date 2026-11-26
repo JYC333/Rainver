@@ -298,7 +298,7 @@ describe("plugin installation", () => {
   it("admits no bundled package: every one installs offline, and nothing is written", async (ctx) => {
     if (!db.available || !app) return ctx.skip();
     as(OWNER);
-    for (const id of ["finance_ledger", "diary", "applications"]) {
+    for (const id of ["finance_ledger", "diary", "phd_application"]) {
       expect(refused(await keyed(app, { method: "POST", url: `/api/v1/plugins/${id}/install`, payload: {} }), 404)).toBe("operation_not_found");
     }
     expect((await db.pool.query(`SELECT count(*)::int AS n FROM system_command_intents WHERE kind='plugin_install'`)).rows[0].n).toBe(0);

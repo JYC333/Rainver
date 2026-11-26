@@ -48,6 +48,8 @@ const KEEP_SESSION_PREFIXES: string[] = []
 /** Tells the other tabs of this browser that the session is over. */
 const LOGOUT_CHANNEL = 'rainver:auth'
 const LOGOUT_MESSAGE = 'logged-out'
+const ACCOUNT_CHANGED_MESSAGE = 'account-changed'
+const SIGNED_OUT_MESSAGE = 'signed-out'
 
 function keptKeys(exact: string[], prefixes: string[]): (key: string) => boolean {
   return (key: string) => exact.includes(key) || prefixes.some(prefix => key.startsWith(prefix))
@@ -92,6 +94,15 @@ function pendingLogout(): string | null {
 
 export function hasPendingLogout(): boolean { return pendingLogout() !== null }
 
+/**
+ * Advanced each time this tab learns a sign-out reached the server (its own
+ * or another tab's). A response to a request sent before then may still
+ * write back a session that sign-out revoked; see `authApi.changePassword`.
+ */
+let signOuts = 0
+export function signOutCount(): number { return signOuts }
+export function noteSignedOut(): void { signOuts += 1 }
+
 export function beginPendingLogout(): void {
   const intent = crypto.getRandomValues(new Uint32Array(4)).join('-')
   try { localStorage.setItem(PENDING_LOGOUT, intent) } catch { unstoredLogout = intent }
@@ -118,24 +129,35 @@ export function finishPendingLogout(send: () => Promise<unknown>): Promise<void>
   return logoutRequest
 }
 
-export function clearSessionResidue(): void {
+/**
+ * What only this tab holds: its `sessionStorage` (drafts, open panes), its
+ * in-memory residue (which also closes its live streams), and its epoch.
+ * Run by a tab told that the browser became another account. The shared
+ * `localStorage` is left to the tab that switched, which clears it before it
+ * tells anyone, so a reload here cannot race it and lose the new account's state.
+ */
+export function clearTabResidue(): void {
   epoch += 1
-  try { clearExcept(window.localStorage, keptKeys(KEEP_LOCAL_EXACT, KEEP_LOCAL_PREFIXES)) } catch { /* private mode */ }
   try { clearExcept(window.sessionStorage, keptKeys(KEEP_SESSION_EXACT, KEEP_SESSION_PREFIXES)) } catch { /* private mode */ }
   for (const clear of inMemoryResidue) {
     try { clear() } catch { /* one owner's failure must not keep the rest */ }
   }
 }
 
+export function clearSessionResidue(): void {
+  try { clearExcept(window.localStorage, keptKeys(KEEP_LOCAL_EXACT, KEEP_LOCAL_PREFIXES)) } catch { /* private mode */ }
+  clearTabResidue()
+}
+
 /** Removes the API response cache, whatever state the app thinks it is in. */
-async function dropApiCache(): Promise<void> {
+export async function clearApiCache(): Promise<void> {
   if (typeof caches === 'undefined') return
   try { await caches.delete(API_CACHE_NAME) } catch { /* unsupported */ }
 }
 
 export async function clearAuthenticatedBrowserState(): Promise<void> {
   clearSessionResidue()
-  await dropApiCache()
+  await clearApiCache()
 }
 
 /**
@@ -147,7 +169,7 @@ export async function clearAuthenticatedBrowserState(): Promise<void> {
  * should not be there.
  */
 export function dropApiCacheAtBoot(): void {
-  void dropApiCache()
+  void clearApiCache()
 }
 
 /**
@@ -190,6 +212,97 @@ export function watchCrossTabLogout(onRemote: () => void): () => void {
 /** Tells this browser's other tabs that the session is over. */
 export function announceLogout(): void {
   openLogoutChannel()?.postMessage(LOGOUT_MESSAGE)
+}
+
+/**
+ * Runs `onRemote` once another tab's sign-out has reached the server: the
+ * browser now holds no account. A sign-out announced (`announceLogout`) may
+ * still be on its way, and a session that merely expired leaves the browser's
+ * account selected, so only this says the browser has none.
+ */
+export function watchCrossTabSignedOut(onRemote: () => void): () => void {
+  const channel = openLogoutChannel()
+  if (!channel) return () => {}
+  const handler = (event: MessageEvent) => {
+    if (event.data !== SIGNED_OUT_MESSAGE) return
+    noteSignedOut()
+    onRemote()
+  }
+  channel.addEventListener('message', handler)
+  return () => channel.removeEventListener('message', handler)
+}
+
+/** Tells this browser's other tabs that its sign-out reached the server. */
+export function announceSignedOut(): void {
+  openLogoutChannel()?.postMessage(SIGNED_OUT_MESSAGE)
+}
+
+/**
+ * This tab made the browser act as another account (a switch, an addition,
+ * or a sign-in or registration from a public page). The shared storage is
+ * cleared before the other tabs are told, so a tab that reloads on the
+ * message never reads the previous person's state nor loses the next one's.
+ */
+export async function becameAnotherAccountHere(): Promise<void> {
+  clearSessionResidue()
+  announceAccountChange()
+  await clearApiCache()
+}
+
+/**
+ * Runs `onRemote` when another tab of this browser switches or adds an
+ * account. The browser now acts as someone else for every tab; this one must
+ * not keep rendering, streaming or writing as the person it was loaded for.
+ */
+export function watchCrossTabAccountChange(onRemote: () => void): () => void {
+  const channel = openLogoutChannel()
+  if (!channel) return () => {}
+  const handler = (event: MessageEvent) => {
+    if (event.data === ACCOUNT_CHANGED_MESSAGE) onRemote()
+  }
+  channel.addEventListener('message', handler)
+  return () => channel.removeEventListener('message', handler)
+}
+
+/**
+ * Tells this browser's other tabs that it now acts as another account: after
+ * a switch, an addition, or a sign-in or registration from a public page
+ * while other tabs were signed in.
+ */
+export function announceAccountChange(): void {
+  openLogoutChannel()?.postMessage(ACCOUNT_CHANGED_MESSAGE)
+}
+
+/**
+ * The handle of the account an "add with Google" left from, kept for the one
+ * load that returns from Google. Per tab and never a credential.
+ */
+const ACCOUNT_ADD_ORIGIN = 'rainver:account-add-origin'
+export function rememberAccountAddOrigin(handle: string): void {
+  try { sessionStorage.setItem(ACCOUNT_ADD_ORIGIN, handle) } catch { /* private mode */ }
+}
+export function takeAccountAddOrigin(): string | null {
+  try {
+    const handle = sessionStorage.getItem(ACCOUNT_ADD_ORIGIN)
+    sessionStorage.removeItem(ACCOUNT_ADD_ORIGIN)
+    return handle
+  } catch { return null }
+}
+
+/**
+ * Marks this tab as leaving for a sign-in on Google's page, so the load that
+ * returns signed in tells the other tabs (`announceAccountChange`). Per tab.
+ */
+const SIGN_IN_PENDING = 'rainver:sign-in-pending'
+export function rememberSignInPending(): void {
+  try { sessionStorage.setItem(SIGN_IN_PENDING, '1') } catch { /* private mode */ }
+}
+export function takeSignInPending(): boolean {
+  try {
+    const pending = sessionStorage.getItem(SIGN_IN_PENDING) !== null
+    sessionStorage.removeItem(SIGN_IN_PENDING)
+    return pending
+  } catch { return false }
 }
 
 /** Exported for tests: forget the channel so the next open makes a new one. */

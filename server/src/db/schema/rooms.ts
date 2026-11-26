@@ -196,6 +196,13 @@ export const roomUserInvitations = pgTable("room_user_invitations", {
   invitedByUserId: varchar("invited_by_user_id", { length: 36 }).notNull(),
   status: varchar({ length: 32 }).notNull(),
   requiredRosterRevision: bigint("required_roster_revision", { mode: "number" }).notNull(),
+  /**
+   * Whether the invitee may read the Room's existing conversations. Off by
+   * default: activation then freezes every existing conversation to the
+   * audience it had and opens a new conversation everyone can read
+   * (`room_conversation_audiences`).
+   */
+  shareHistory: boolean("share_history").default(false).notNull(),
   expiresAt: timestamp("expires_at", { withTimezone: true, mode: "string" }).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" }).notNull(),

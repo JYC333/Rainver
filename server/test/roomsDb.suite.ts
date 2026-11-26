@@ -322,7 +322,7 @@ beforeEach(async () => {
        '[]'::jsonb,
        '{}'::jsonb,
        'low',
-       'agent_template.personal_assistant.system',
+       'agent_role.personal_assistant.system',
        $1
      )`,
     [now],
@@ -947,7 +947,7 @@ describe("Room workflow (real Postgres)", () => {
 
     await service.deleteEmptyConversation(owner, room.id, empty.id);
     await expect(service.listConversations(owner, room.id, page)).resolves.toMatchObject({ items: [], total: 0 });
-    await expect(new PgRoomRepository(db.pool).getConversation(owner.spaceId, room.id, empty.id)).resolves.toBeNull();
+    await expect(new PgRoomRepository(db.pool).getConversation(owner.spaceId, room.id, empty.id, owner.userId)).resolves.toBeNull();
 
     const replacement = await service.createConversationDraft(owner, room.id);
     expect(replacement.id).not.toBe(empty.id);
@@ -8760,7 +8760,7 @@ describe("Room workflow (real Postgres)", () => {
           SELECT d.version_id
             FROM prompt_deployment_refs d
             JOIN evolvable_assets asset ON asset.id = d.asset_id
-           WHERE asset.asset_key = 'agent_template.personal_assistant.system'
+           WHERE asset.asset_key = 'agent_role.personal_assistant.system'
              AND d.status = 'active'
         )`,
     );
@@ -8893,7 +8893,7 @@ describe("Room workflow (real Postgres)", () => {
       );
       return row.rows[0]?.follows_seed_key ?? null;
     };
-    expect(await markOf()).toBe("agent_template.personal_assistant.system");
+    expect(await markOf()).toBe("agent_role.personal_assistant.system");
 
     // Same content, no mark. It is provably untouched, so it is adopted
     // rather than treated as somebody's work and abandoned.
@@ -8903,7 +8903,7 @@ describe("Room workflow (real Postgres)", () => {
       [agentId],
     );
     await speakInNewRoom(owner, "project-3", "Adopt again");
-    expect(await markOf()).toBe("agent_template.personal_assistant.system");
+    expect(await markOf()).toBe("agent_role.personal_assistant.system");
 
     // An unmarked version whose content differs cannot be told apart from a
     // person's edit, so it is left alone. The unmarked column is itself the
@@ -9556,7 +9556,7 @@ describe("Room workflow (real Postgres)", () => {
         WHERE id IN (
           SELECT d.version_id FROM prompt_deployment_refs d
             JOIN evolvable_assets asset ON asset.id = d.asset_id
-           WHERE asset.asset_key = 'agent_template.personal_assistant.system' AND d.status = 'active')`,
+           WHERE asset.asset_key = 'agent_role.personal_assistant.system' AND d.status = 'active')`,
     );
     expect(await promptOf()).not.toContain("New rule from a release.");
 
@@ -9754,11 +9754,11 @@ describe("Room workflow (real Postgres)", () => {
 describe("Room commands through the operation core", () => {
   const owner = { spaceId: "space-1", userId: "user-1" };
   const config = () => loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot });
-  async function withApp<T>(identity: { spaceId: string; userId: string }, work: (call: (method: "POST" | "DELETE" | "PATCH", url: string, payload?: object, key?: string) => Promise<{ statusCode: number; body: string; json(): any }>, app: FastifyInstance) => Promise<T>) {
+  async function withApp<T>(identity: { spaceId: string; userId: string }, work: (call: (method: "GET" | "POST" | "DELETE" | "PATCH", url: string, payload?: object, key?: string) => Promise<{ statusCode: number; body: string; json(): any }>, app: FastifyInstance) => Promise<T>) {
     const app = buildModuleServer(config(), [roomsModule, agentGroupsModule, systemActionsModule]);
     __setAuthIdentityForTests(identity);
     try {
-      return await work((method, url, payload = {}, key = randomUUID()) => app.inject({ method, url, payload, headers: { "idempotency-key": key } }), app);
+      return await work((method, url, payload = {}, key = randomUUID()) => app.inject({ method, url, ...(method === "GET" ? {} : { payload }), headers: { "idempotency-key": key } }), app);
     } finally { __setAuthIdentityForTests(null); await app.close(); }
   }
 
@@ -9796,7 +9796,17 @@ describe("Room commands through the operation core", () => {
       const url = `/api/v1/rooms/${created.room.id}/agents`;
       const refused = await call("POST", url, { agent_id: "agent-core-private" });
       expect(refused.statusCode).toBe(409);
-      expect(refused.json().error).toMatchObject({ domain: "rooms", metadata: { code: "private_agent_share_confirmation_required" } });
+      // The people to confirm, by id and by name.
+      expect(refused.json().error).toMatchObject({ domain: "rooms", metadata: {
+        code: "private_agent_share_confirmation_required", member_ids: ["user-2"],
+        members: [{ user_id: "user-2", display_name: "Room Member" }],
+      } });
+      // Candidates from one Role only, filtered by the server over the whole eligible set.
+      await db.pool.query(`UPDATE agents SET source_role_id='phd_application.assistant', source_role_version_id='phd_application.assistant:v1' WHERE id='agent-core-private'`);
+      const fromRole = await call("GET", `/api/v1/rooms/${created.room.id}/agent-candidates?source_role_id=phd_application.assistant&limit=1`);
+      expect(fromRole.statusCode, fromRole.body).toBe(200);
+      expect(fromRole.json()).toMatchObject({ total: 1, agents: [{ agent_id: "agent-core-private", name: "Private Core" }] });
+      expect((await call("GET", `/api/v1/rooms/${created.room.id}/agent-candidates?source_role_id=research_reader`)).json()).toMatchObject({ total: 0, agents: [] });
       const added = await call("POST", url, { agent_id: "agent-core-private", share_private_with_member_ids: ["user-2"], confirm_room_share: true });
       expect(added.statusCode, added.body).toBe(201);
       expect(added.json().data).toEqual({ id: created.room.id, space_id: "space-1", room_id: created.room.id, agent_id: "agent-core-private", restore_requested: false });

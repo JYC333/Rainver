@@ -16,7 +16,7 @@
     ".": "./dist/rainver.js",
     "./source": "./src/rainver.ts",
     "./local-bridge": { "types": "./dist/localBridge.d.ts", "default": "./dist/localBridge.js" },
-    "./tool-http": { "types": "./dist/toolHttp.d.ts", "default": "./dist/toolHttp.js" }
+    "./tool-request": { "types": "./dist/toolRequest.d.ts", "default": "./dist/toolRequest.js" }
   },
   "files": [
     "src",

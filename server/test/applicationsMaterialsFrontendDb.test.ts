@@ -49,7 +49,7 @@ afterEach(() => {
 });
 
 it('drafts a material from pinned sources, previews it and saves it to Notes from the Area', async () => {
-  const plugin = BUILT_IN_PLUGINS.find(p => p.id === 'applications') as RainverPlugin;
+  const plugin = BUILT_IN_PLUGINS.find(p => p.id === 'phd_application') as RainverPlugin;
   expect(plugin?.operationManifest).toBeTruthy();
   const space = randomUUID(), user = randomUUID(), project = randomUUID();
   // A Personal Space first: there the ordinary creation rule keeps a new private Note in this Space.
@@ -59,7 +59,7 @@ it('drafts a material from pinned sources, previews it and saves it to Notes fro
     const s = createServer();
     s.listen(0, '127.0.0.1', () => { const address = s.address() as { port: number }; s.close(() => resolve(address.port)); });
   });
-  const config = loadConfig({ ...process.env, SERVER_DEBUG: 'false', SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: await mkdtemp(join(tmpdir(), 'rainver-materials-')), FRONTEND_URL: `http://127.0.0.1:${port}` });
+  const config = loadConfig({ ...process.env, SERVER_DEBUG: 'false', SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: await mkdtemp(join(tmpdir(), 'rainver-materials-')), PUBLIC_BASE_URL: `http://127.0.0.1:${port}` });
   await seedTestModelProvider(db.pool, { space, owner: user, config });
   const app = buildModuleServer(config, [projectsModule, pluginsModule, systemActionsModule, proposalsModule, roomsModule, agentsModule, projectFoldersModule, projectWorkModule, agentAttentionModule, focusAreasModule, knowledgeModule]);
   new PluginHost([plugin]).activate(app, config);
@@ -80,13 +80,13 @@ it('drafts a material from pinned sources, previews it and saves it to Notes fro
   await migrateOperationPlugin(db.pool, plugin);
   await post(`plugins/${plugin.id}/enable`, {});
   await post('actions/official_plugin.project_binding.bind', { plugin_id: plugin.id, project_id: project });
-  const created = await post('actions/plugin.applications.application.create', { project_id: project, institution: 'ETH Zurich', program: 'PhD in Computer Science' });
+  const created = await post('actions/plugin.phd_application.application.create', { project_id: project, institution: 'ETH Zurich', program: 'PhD in Computer Science' });
   const applicationId = created.data.application_id as string;
-  const statement = (await db.pool.query(`SELECT id FROM plugin_applications.application_materials WHERE application_id=$1 AND kind='statement'`, [applicationId])).rows[0].id as string;
+  const statement = (await db.pool.query(`SELECT id FROM plugin_phd_application.application_materials WHERE application_id=$1 AND kind='statement'`, [applicationId])).rows[0].id as string;
   // A reusable master CV in the person's own Notes, pinned to this material and edited afterwards.
   const masterText = 'Alice Example. MSc ETH 2024, thesis on proof-carrying code.';
   const master = await post('actions/knowledge.note.create', { title: 'Master CV', primary_project_id: project, content_json: markdownToPm(masterText), plain_text: masterText, content_format: 'prosemirror_json' });
-  await post('actions/plugin.applications.material.add_source', { project_id: project, material_id: statement, note_id: master.data.id });
+  await post('actions/plugin.phd_application.material.add_source', { project_id: project, material_id: statement, note_id: master.data.id });
   const edited = 'Alice Example. MSc ETH 2024, thesis on proof-carrying code. Now at a startup.';
   await post('actions/knowledge.note.update', { note_id: master.data.id, changes: { content_json: markdownToPm(edited), plain_text: edited, expect_version: 1 } });
 
@@ -110,7 +110,7 @@ it('drafts a material from pinned sources, previews it and saves it to Notes fro
     page.setDefaultNavigationTimeout(60000);
     const pageErrors: string[] = [];
     page.on('pageerror', (e: Error) => { pageErrors.push(e.message); });
-    page.on('response', async (r: any) => { if (r.url().includes('/actions/plugin.applications') && r.status() >= 400) console.error('Operation response', r.status(), await r.text()); });
+    page.on('response', async (r: any) => { if (r.url().includes('/actions/plugin.phd_application') && r.status() >= 400) console.error('Operation response', r.status(), await r.text()); });
     await page.route('**/api/v1/me', (route: any) => route.fulfill({ json: { id: user, email: 'fixture@test.invalid', display_name: 'Fixture person', default_space_id: space, created_at: new Date().toISOString(), avatar_url: null, last_login_at: null } }));
     let spaceType = 'personal';
     await page.route('**/api/v1/me/spaces', (route: any) => route.fulfill({ json: [{ id: space, name: 'Test Space', type: spaceType, role: 'owner', status: 'active' }] }));
@@ -119,7 +119,7 @@ it('drafts a material from pinned sources, previews it and saves it to Notes fro
       if (!localStorage.getItem('rainver:theme')) localStorage.setItem('rainver:theme', 'dark');
     });
     const prefs = async (locale: string, theme: string) => page.evaluate(([l, t]: string[]) => { localStorage.setItem('rainver:locale', l!); localStorage.setItem('rainver:theme', t!); }, [locale, theme]);
-    const area = `${base}/spaces/${space}/projects/${project}/plugins/applications/board`;
+    const area = `${base}/spaces/${space}/projects/${project}/plugins/phd_application/board`;
     const shoot = (name: string) => page.screenshot({ path: join(shots, `materials-${name}.png`), fullPage: true });
     const noOverflow = async () => expect(await page.evaluate(() => (globalThis as any).document.documentElement.scrollWidth <= (globalThis as any).window.innerWidth)).toBe(true);
     const openPanel = async (entry: string) => {
@@ -148,7 +148,7 @@ it('drafts a material from pinned sources, previews it and saves it to Notes fro
     await drafts.getByText('Writing the draft… this can take a minute.', { exact: true }).waitFor();
     await shoot('desktop-running-dark-en');
     // The worker performs the queued private Run; the open preview follows it without a reload.
-    const generation = (await db.pool.query(`SELECT id,run_id FROM plugin_applications.application_material_generations WHERE material_id=$1`, [statement])).rows[0];
+    const generation = (await db.pool.query(`SELECT id,run_id FROM plugin_phd_application.application_material_generations WHERE material_id=$1`, [statement])).rows[0];
     expect((await db.pool.query(`SELECT visibility,status FROM runs WHERE id=$1`, [generation.run_id])).rows[0]).toEqual({ visibility: 'private', status: 'queued' });
     await performQueuedProviderTaskJob(db.pool, config, generation.run_id);
     const preview = page.getByRole('region', { name: 'Draft with AI', exact: true });
@@ -160,7 +160,7 @@ it('drafts a material from pinned sources, previews it and saves it to Notes fro
     await noOverflow();
     await preview.getByRole('button', { name: 'Save as a new private Note', exact: true }).click();
     await preview.getByText('Saved to Notes as version 1.', { exact: true }).waitFor();
-    const saved = (await db.pool.query(`SELECT applied_note_id FROM plugin_applications.application_material_generations WHERE id=$1`, [generation.id])).rows[0].applied_note_id as string;
+    const saved = (await db.pool.query(`SELECT applied_note_id FROM plugin_phd_application.application_material_generations WHERE id=$1`, [generation.id])).rows[0].applied_note_id as string;
     expect((await db.pool.query(`SELECT visibility,owner_user_id,primary_project_id,title FROM space_objects WHERE id=$1`, [saved])).rows[0])
       .toEqual({ visibility: 'private', owner_user_id: user, primary_project_id: null, title: 'Statement of purpose — ETH Zurich' });
     // The material now shows its Note, not yet reviewed; the person records the review.
@@ -170,7 +170,7 @@ it('drafts a material from pinned sources, previews it and saves it to Notes fro
     await text.getByText('Reviewed', { exact: true }).waitFor();
     await text.scrollIntoViewIfNeeded();
     await shoot('desktop-saved-dark-en');
-    expect((await db.pool.query(`SELECT note_id,note_version FROM plugin_applications.application_material_reviews WHERE material_id=$1`, [statement])).rows).toEqual([{ note_id: saved, note_version: 1 }]);
+    expect((await db.pool.query(`SELECT note_id,note_version FROM plugin_phd_application.application_material_reviews WHERE material_id=$1`, [statement])).rows).toEqual([{ note_id: saved, note_version: 1 }]);
     // Opening it lands in the shared Notes editor with the saved text.
     await text.getByRole('link', { name: 'Open in Notes', exact: true }).click();
     await page.waitForURL(`${base}/spaces/${space}/knowledge/notes/${saved}`);
@@ -196,7 +196,7 @@ it('drafts a material from pinned sources, previews it and saves it to Notes fro
     // (it would have to move to the Personal Space), and the panel says so instead of offering it.
     await db.pool.query(`UPDATE spaces SET type='team' WHERE id=$1`, [space]);
     spaceType = 'team';
-    const second = await post('actions/plugin.applications.material.generate', { project_id: project, material_id: statement, requirements: 'Second draft', include_linked: false });
+    const second = await post('actions/plugin.phd_application.material.generate', { project_id: project, material_id: statement, requirements: 'Second draft', include_linked: false });
     await performQueuedProviderTaskJob(db.pool, config, second.data.run_id);
     await prefs('en', 'dark');
     await (await openPanel('Notes and drafts for Statement of purpose')).click();

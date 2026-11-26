@@ -8,7 +8,6 @@ import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { buildModuleServer } from "./support/moduleServer.js";
 import { hostsModule } from "../src/modules/hosts/index.js";
-import { resolveHostApiBaseUrl } from "../src/modules/runs/runWorkSurface.js";
 import { loadConfig } from "../src/config.js";
 import { __setAuthIdentityForTests, __setAuthRepositoryForTests, type AuthRepository } from "../src/modules/auth/identity.js";
 import type { CurrentUser } from "../src/modules/auth/identity.js";
@@ -767,52 +766,6 @@ describe("hosts routes", () => {
       payload: { diff: "diff --git a/x b/x\n" },
     });
     expect(noAuth.statusCode).toBe(401);
-  });
-
-  it("hands a paired host FRONTEND_URL whatever the daemon or the request claims", async (ctx) => {
-    // Where a Run's children send their bearer token is configuration. A
-    // daemon's own `server_url` and a request's forwarded host are attested by
-    // someone else; neither may move it.
-    if (!db.available || !app || !db.pool) return ctx.skip();
-    __setAuthRepositoryForTests(stubAuth());
-    const issue = await app.inject({
-      method: "POST",
-      url: "/api/v1/hosts/pairing-codes",
-      headers: { cookie: authCookie(OWNER_TOKEN) },
-      payload: { name: "Reporting Box" },
-    });
-    const { host_id: hostId, pairing_code: pairingCode } = issue.json();
-    const register = await app.inject({
-      method: "POST",
-      url: "/api/v1/hosts/register",
-      headers: { "x-forwarded-host": "evil.example", "x-forwarded-proto": "https" },
-      payload: { pairing_code: pairingCode, ...HELLO_INFO, platform: "linux", arch: "x64" },
-    });
-    const { token } = register.json();
-
-    const socket = hostSocket(token);
-    await new Promise<void>((resolve, reject) => {
-      socket.addEventListener("open", () => {
-        socket.send(JSON.stringify({
-          type: "hello",
-          token,
-          ...HELLO_INFO,
-          platform: "linux",
-          arch: "x64",
-          server_url: "http://laptop.local:3000",
-        }));
-      });
-      socket.addEventListener("message", () => resolve(), { once: true });
-      socket.addEventListener("error", (event) => reject(event));
-      setTimeout(() => reject(new Error("timed out waiting for hello_ack")), 5000);
-    });
-
-    const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri });
-    expect(await resolveHostApiBaseUrl(db.pool, config, hostId)).toBe(new URL(config.frontendUrl).origin);
-
-    const closed = new Promise<void>((resolve) => socket.addEventListener("close", () => resolve()));
-    socket.close();
-    await closed;
   });
 
   it("authenticates a real WebSocket hello and records a heartbeat", async (ctx) => {

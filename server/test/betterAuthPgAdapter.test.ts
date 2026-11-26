@@ -17,7 +17,7 @@ describe("Rainver Better Auth PostgreSQL adapter", () => {
     const config = loadConfig({
       SERVER_DATABASE_URL: db.connectionUri,
       BETTER_AUTH_SECRET: "phase-two-adapter-secret-that-is-long-enough",
-      FRONTEND_URL: "http://localhost:5173",
+      PUBLIC_BASE_URL: "http://localhost:5173",
       INSTANCE_ADMIN_EMAIL: "owner@example.test",
     });
     const auth = createBetterAuth(config, db.pool);
@@ -122,7 +122,7 @@ describe("Rainver Better Auth PostgreSQL adapter", () => {
     const config = loadConfig({
       SERVER_DATABASE_URL: db.connectionUri,
       BETTER_AUTH_SECRET: "development-auth-secret-that-is-long-enough",
-      FRONTEND_URL: "http://localhost:5173",
+      PUBLIC_BASE_URL: "http://localhost:5173",
       RAINVER_ENV: "dev",
     });
     const auth = createBetterAuth(config, db.pool);

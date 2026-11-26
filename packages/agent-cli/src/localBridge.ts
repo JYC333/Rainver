@@ -2,7 +2,8 @@ import { constants, watch } from "node:fs";
 import { lstat, mkdtemp, open, readdir, rename, rm, unlink, writeFile, type FileHandle } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { parseToolRequest, toolHttpTimeoutMs, TOOL_REQUEST_LIMIT, TOOL_RESPONSE_LIMIT, type ToolRequest, type ToolResponse } from "./toolHttp.ts";
+import { parseToolRequest, toolRequestTimeoutMs, TOOL_REQUEST_LIMIT, TOOL_RESPONSE_LIMIT, type ToolRequest, type ToolResponse } from "./toolRequest.ts";
+import { pipeToolRequest, startPipeToolBridge } from "./pipeBridge.ts";
 
 const REQUEST_NAME = /^[a-f0-9-]{36}\.request$/;
 const NOFOLLOW = constants.O_NOFOLLOW;
@@ -35,7 +36,7 @@ async function publish(pinned: PinnedDirectory, name: string, value: unknown): P
 }
 
 /** Host platforms whose bridge directory can be pinned; others are offered no file channel. */
-export function localToolBridgeSupported(platform: NodeJS.Platform = process.platform): boolean {
+function fileToolBridgeSupported(platform: NodeJS.Platform = process.platform): boolean {
   return platform === "linux" || platform === "darwin";
 }
 
@@ -63,7 +64,7 @@ interface PinnedDirectory {
  */
 async function anchor(root: string): Promise<PinnedDirectory> {
   const platform = process.platform;
-  if (!localToolBridgeSupported(platform)) throw new Error("The Rainver local tool bridge requires a Linux or macOS Host");
+  if (!fileToolBridgeSupported(platform)) throw new Error("The Rainver file tool bridge requires a Linux or macOS Host");
   const file = await open(root, constants.O_RDONLY | constants.O_DIRECTORY | NOFOLLOW);
   try {
     const pinned = await file.stat();
@@ -86,17 +87,18 @@ async function anchor(root: string): Promise<PinnedDirectory> {
   }
 }
 
-export interface LocalToolBridge { directory: string; close(): Promise<void> }
+export interface LocalToolBridge { endpoint: string; mountDirectory?: string; close(): Promise<void> }
 
 /**
  * File IPC deliberately survives a shell sandbox that prohibits every socket.
  * No domain code, credential, URL, or Run identity is accepted from the caller.
- * The Host supplies a handler bound to this launch's existing REST identity.
+ * The Host supplies a handler bound to this launch's authenticated connection.
  */
 export async function startLocalToolBridge(
   parent: string,
   invoke: (request: ToolRequest, signal: AbortSignal) => Promise<ToolResponse>,
 ): Promise<LocalToolBridge> {
+  if (process.platform === "win32") return startPipeToolBridge(invoke);
   const directory = await mkdtemp(join(parent, "tools-"));
   const pinned = await anchor(directory);
   const abort = new AbortController();
@@ -105,7 +107,6 @@ export async function startLocalToolBridge(
   let scanning = false;
   let closed = false;
   await writeFile(await pinned.at("active"), "1", { flag: "wx", mode: 0o600 });
-  await writeFile(await pinned.at("capabilities"), JSON.stringify({explicit_idempotency_key:true}), {flag:"wx",mode:0o600});
   async function execute(name: string): Promise<void> {
     processing.add(name);
     const claimed = `${name}.working`;
@@ -116,7 +117,8 @@ export async function startLocalToolBridge(
       if (`${request.id}.request` !== name) throw new Error("Bridge request id mismatch");
       if (closed) throw new Error("This Run's tool bridge has stopped");
       const response = await invoke(request, abort.signal);
-      await publish(pinned, responseName, response);
+      await publish(pinned, responseName, { status: response.status, text: response.text });
+      response.acknowledge?.();
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         await publish(pinned, responseName, { error: error instanceof Error ? error.message : "Tool bridge failed" }).catch(() => {});
@@ -152,7 +154,8 @@ export async function startLocalToolBridge(
   const timer = setInterval(() => { void scan(); }, 250);
   timer.unref();
   return {
-    directory,
+    endpoint: directory,
+    mountDirectory: directory,
     async close() {
       if (closed) return;
       closed = true;
@@ -171,8 +174,9 @@ export async function startLocalToolBridge(
 
 /** One invocation, no automatic retries or fallback to unrestricted networking. */
 export async function localToolRequest(directory: string, input: ToolRequest, timeoutMs?: number): Promise<ToolResponse> {
+  if (process.platform === "win32") return pipeToolRequest(directory, input, timeoutMs);
   const request = parseToolRequest(input);
-  const deadlineMs = timeoutMs ?? toolHttpTimeoutMs(request) + 5_000;
+  const deadlineMs = timeoutMs ?? toolRequestTimeoutMs(request) + 5_000;
   const text = JSON.stringify(request);
   if (Buffer.byteLength(text) > TOOL_REQUEST_LIMIT) throw new Error("Rainver tool request is too large");
   const pinned = await anchor(directory);
@@ -181,11 +185,6 @@ export async function localToolRequest(directory: string, input: ToolRequest, ti
   const started = Date.now();
   try {
     await readJson(await pinned.at("active"), 16);
-    if(request.idempotency_key!==undefined){
-      let capabilities:unknown;
-      try{capabilities=await readJson(await pinned.at('capabilities'),1024);}catch{throw new Error('This Host does not support explicit idempotency keys; no request was sent');}
-      if((capabilities as {explicit_idempotency_key?:unknown})?.explicit_idempotency_key!==true)throw new Error('This Host does not support explicit idempotency keys; no request was sent');
-    }
     await publish(pinned, requestName, request);
     while (Date.now() - started < deadlineMs) {
       try {

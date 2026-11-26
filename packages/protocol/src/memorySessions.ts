@@ -520,6 +520,8 @@ const MemoryCreateFieldsSchema = z.object({
   /** `agent` scope only: the owning Agent, and the Room a note was learned in. */
   agent_id: IdSchema.nullish(),
   origin_room_id: IdSchema.nullish(),
+  /** `agent` scope only: the Room conversation a note was learned in, when known. */
+  origin_session_id: IdSchema.nullish(),
 });
 
 const MemoryUpdateFieldsSchema = z.object({

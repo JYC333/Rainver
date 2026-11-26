@@ -8,7 +8,7 @@
  * there are restorable or purgeable; a legacy `deleted` row (no `deleted_at`)
  * is left exactly as it is.
  */
-import type { Pool } from "pg";
+import type { Pool } from "../../db/pool.js";
 import { withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
 import { PgConversationRuntimeSessionRepository } from "../sessions/conversationRuntimeSessionRepository.js";
 import { lockRoomConversationQueue } from "./messageQueue.js";
@@ -62,6 +62,8 @@ export const SESSION_BINDING_REFERENCES = [
   "conversation_execution_contexts",
   "room_conversation_recipients",
   "conversation_turn_idempotencies",
+  // A tombstone keeps who could read it; nothing is readable once it is gone.
+  "room_conversation_audiences",
 ] as const;
 
 /**

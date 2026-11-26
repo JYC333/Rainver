@@ -1,10 +1,11 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
-import { getCookies, getSessionCookie } from "better-auth/cookies";
+import { getCookies } from "better-auth/cookies";
 import type { ServerConfig } from "../../config.js";
 import type { AuthenticatedIdentity } from "../../gateway/requestContext.js";
 import { getDbPool, type Pool } from "../../db/pool.js";
 import { createBetterAuth } from "./betterAuth.js";
 import { hashOpaqueToken } from "./securityPolicy.js";
+import { activeBrowserSession, refreshCookiesForBrowser } from "./browserAccounts.js";
 
 const API_KEYS_NOT_IMPLEMENTED = "API key storage is not in the canonical schema (ApiKey is deferred).";
 
@@ -21,7 +22,12 @@ export type IntrospectionResult =
 /** Receives Better Auth's refreshed session cookies for a response that carries no `resolveIdentity`. */
 export type SessionRefreshSink = (setCookies: readonly string[]) => void;
 export function sessionRefreshSink(reply: FastifyReply): SessionRefreshSink {
-  return (setCookies) => { if (setCookies.length) reply.header("set-cookie", [...setCookies]); };
+  return (setCookies) => {
+    // With a browser account jar the refresh lands on the active entry's own
+    // cookie only, so a late response cannot switch the browser's account.
+    const cookies = reply.request ? refreshCookiesForBrowser(reply.request, setCookies) : [...setCookies];
+    if (cookies.length) reply.header("set-cookie", cookies);
+  };
 }
 /** `default_space_id`: the Space a session lands in when it names none — the person's own personal Space, else their oldest active membership. */
 export interface CurrentUser { id: string; email: string | null; display_name: string; avatar_url: string | null; is_instance_admin: boolean; default_space_id: string | null; created_at: string; last_login_at: string | null }
@@ -89,22 +95,28 @@ export async function introspectIdentity(config: ServerConfig, request: FastifyR
   if (identity.ok && reply) sessionRefreshSink(reply)(identity.setCookies ?? []);
   return identity;
 }
-/** Session identity for the named person-scoped operations; ignores browsed Space. */
-export async function introspectPersonIdentity(config:ServerConfig,request:FastifyRequest,reply:FastifyReply):Promise<IntrospectionResult>{
+/** The signed-in person by session alone, with the Space a session lands in, or none when they have no active Space. */
+export async function introspectSessionPerson(config:ServerConfig,request:FastifyRequest,reply:FastifyReply):Promise<{ok:true;userId:string;spaceId:string|null}|Extract<IntrospectionResult,{ok:false}>>{
   if(identityOverride){const value=typeof identityOverride==='function'?await identityOverride(request):identityOverride;if(value)return {ok:true,userId:value.userId,spaceId:value.spaceId};}
   const repository=authRepositoryFromConfig(config);
   if(!repository)return {ok:false,reason:'unavailable',statusCode:502,body:''};
   if(headerValue(request.headers.authorization)?.startsWith('Bearer '))return {ok:false,reason:'denied',statusCode:501,body:authFailureBody(API_KEYS_NOT_IMPLEMENTED)};
   const user=await repository.getCurrentUser(sessionTokenFromRequest(request),sessionRefreshSink(reply));
   if('statusCode' in user)return {ok:false,reason:'denied',statusCode:user.statusCode,body:authFailureBody(user.detail)};
+  return {ok:true,userId:user.id,spaceId:user.default_space_id??null};
+}
+/** Session identity for the named person-scoped operations; ignores browsed Space. */
+export async function introspectPersonIdentity(config:ServerConfig,request:FastifyRequest,reply:FastifyReply):Promise<IntrospectionResult>{
+  const person=await introspectSessionPerson(config,request,reply);
+  if(!person.ok)return person;
   // This is only the transport's locator. Core independently resolves canonical storage.
-  if(!user.default_space_id)return {ok:false,reason:'denied',statusCode:404,body:authFailureBody('Not found')};
-  return {ok:true,userId:user.id,spaceId:user.default_space_id};
+  if(!person.spaceId)return {ok:false,reason:'denied',statusCode:404,body:authFailureBody('Not found')};
+  return {ok:true,userId:person.userId,spaceId:person.spaceId};
 }
 export function sessionCookieName(config: ServerConfig): string { return getCookies({ baseURL: config.frontendUrl }).sessionToken.name }
+/** The signed session cookie value this request acts as: the browser's selected account (`browserAccounts.ts`). */
 export function sessionTokenFromRequest(request: FastifyRequest): string | undefined {
-  const cookie = headerValue(request.headers.cookie);
-  return cookie ? getSessionCookie(new Headers({ cookie })) ?? undefined : undefined;
+  return activeBrowserSession(request)?.token;
 }
 function authFailureBody(detail: string): string { return JSON.stringify({ detail }) }
 function headerValue(value: string | string[] | undefined): string | undefined { return Array.isArray(value) ? value[0] : value }

@@ -1,3 +1,4 @@
+import { runTool as callRunTool } from "./support/runTool.js";
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -46,10 +47,12 @@ const TASK = "70000000-0000-4000-8000-000000000002";
 
 const db = useTestDatabase(import.meta.filename);
 let app: FastifyInstance | undefined;
+let config: ReturnType<typeof loadConfig>;
 
 beforeAll(async () => {
   if (!db.available) return;
-  app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: db.connectionUri }), [runsModule]);
+  config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri });
+  app = buildModuleServer(config, [runsModule]);
 });
 
 afterAll(async () => {
@@ -257,12 +260,7 @@ describe("a strict-Host Task Run's collected outputs", () => {
       .toEqual(expect.arrayContaining(["task.list", "task.report", "artifact.submit"]));
     const token = await new PgRunToolIdentityRepository(db.pool).issue({ id: runId, space_id: SPACE }, 60_000, "hash");
 
-    const response = await app!.inject({
-      method: "POST",
-      url: `/api/v1/runs/${runId}/tools/artifact.submit`,
-      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-      payload: { task_id: TASK, path: "report.md", artifact_type: "report" },
-    });
+    const response = await callRunTool(config, runId, token, "artifact.submit", { task_id: TASK, path: "report.md", artifact_type: "report" });
 
     expect(response.json()).toMatchObject({ ok: true });
     const declarations = await db.pool.query(
@@ -287,12 +285,7 @@ describe("a strict-Host Task Run's collected outputs", () => {
     const { runId } = await admitStrictRun();
     const token = await new PgRunToolIdentityRepository(db.pool).issue({ id: runId, space_id: SPACE }, 60_000, "hash");
 
-    const response = await app!.inject({
-      method: "POST",
-      url: `/api/v1/runs/${runId}/tools/memory.remember`,
-      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-      payload: { content: "remember this", rationale: "because" },
-    });
+    const response = await callRunTool(config, runId, token, "memory.remember", { content: "remember this", rationale: "because" });
 
     expect(response.json()).toMatchObject({ ok: false, error_code: "system_action_not_granted" });
   });

@@ -79,8 +79,6 @@ export interface ServerConfig {
   googleClientId: string;
   /** Google OAuth client secret. Redacted from diagnostics and snapshots. */
   googleClientSecret: string;
-  /** Redirect URI registered with Google. */
-  googleRedirectUri: string;
   /**
    * Google OAuth settings for personal read-only Gmail connections
    * (`GMAIL_OAUTH_*`), or null when the feature is not configured. They use a
@@ -202,7 +200,6 @@ const KNOWN_ENV_KEYS = new Set([
   "BETTER_AUTH_SECRET",
   "GOOGLE_CLIENT_ID",
   "GOOGLE_CLIENT_SECRET",
-  "GOOGLE_REDIRECT_URI",
   "GMAIL_OAUTH_CLIENT_ID",
   "GMAIL_OAUTH_CLIENT_SECRET",
   "GMAIL_OAUTH_REDIRECT_URI",
@@ -210,7 +207,7 @@ const KNOWN_ENV_KEYS = new Set([
   "GMAIL_PUBSUB_SUBSCRIPTION",
   "GMAIL_PUBSUB_PUSH_AUDIENCE",
   "GMAIL_PUBSUB_PUSH_SERVICE_ACCOUNT",
-  "FRONTEND_URL",
+  "PUBLIC_BASE_URL",
   "SERVER_TRUSTED_PROXY_HOST",
   "INSTANCE_ADMIN_EMAIL",
   "SESSION_EXPIRE_DAYS",
@@ -442,21 +439,21 @@ export interface GmailOAuthClientConfig {
 
 export const GMAIL_OAUTH_CALLBACK_PATH = "/api/v1/sources/gmail/oauth/callback";
 
-/** All three `GMAIL_OAUTH_*` values or none; a partial configuration is refused. */
-function loadGmailOAuthConfig(env: RawEnv, rainverEnv: string): GmailOAuthClientConfig | null {
+/** Both client credentials are required when Gmail OAuth is configured. */
+function loadGmailOAuthConfig(env: RawEnv, rainverEnv: string, publicOrigin: string): GmailOAuthClientConfig | null {
   const clientId = env.GMAIL_OAUTH_CLIENT_ID?.trim() || "";
   const clientSecret = env.GMAIL_OAUTH_CLIENT_SECRET?.trim() || "";
-  const redirectUri = env.GMAIL_OAUTH_REDIRECT_URI?.trim() || "";
-  if (!clientId && !clientSecret && !redirectUri) return null;
-  if (!clientId || !clientSecret || !redirectUri) {
+  const redirectOverride = env.GMAIL_OAUTH_REDIRECT_URI?.trim();
+  if (!clientId && !clientSecret && !redirectOverride) return null;
+  if (!clientId || !clientSecret) {
     throw new ConfigError(
-      "GMAIL_OAUTH_CLIENT_ID, GMAIL_OAUTH_CLIENT_SECRET and GMAIL_OAUTH_REDIRECT_URI must be set together",
+      "GMAIL_OAUTH_CLIENT_ID and GMAIL_OAUTH_CLIENT_SECRET must be set together",
       "incomplete_gmail_oauth_config",
     );
   }
   let callback: URL;
   try {
-    callback = new URL(redirectUri);
+    callback = new URL(redirectOverride || `${publicOrigin}${GMAIL_OAUTH_CALLBACK_PATH}`);
   } catch {
     throw new ConfigError("GMAIL_OAUTH_REDIRECT_URI is not a valid URL", "invalid_gmail_oauth_redirect_uri");
   }
@@ -492,20 +489,20 @@ const PUBSUB_PROJECT = "[a-z][a-z0-9-]{4,28}[a-z0-9]";
 const PUBSUB_NAME = "[A-Za-z][A-Za-z0-9._~%+-]{2,254}";
 
 /**
- * All four `GMAIL_PUBSUB_*` values or none, and the Gmail OAuth client set. Statically this checks only
+ * Topic, subscription and push service account are required alongside the Gmail OAuth client. Statically this checks only
  * shape, that topic and subscription name the same project id, and that an OAuth client id exists; it
  * cannot see which project the OAuth client belongs to (that, and Gmail accepting the topic, is shown only
  * by a real `users.watch` success — see Sources guide, "Push configuration: what is checked where").
  */
-function loadGmailPushConfig(env: RawEnv, rainverEnv: string): GmailPushConfig | null {
+function loadGmailPushConfig(env: RawEnv, rainverEnv: string, publicOrigin: string): GmailPushConfig | null {
   const topicName = env.GMAIL_PUBSUB_TOPIC?.trim() || "";
   const subscriptionName = env.GMAIL_PUBSUB_SUBSCRIPTION?.trim() || "";
-  const audience = env.GMAIL_PUBSUB_PUSH_AUDIENCE?.trim() || "";
+  const audienceOverride = env.GMAIL_PUBSUB_PUSH_AUDIENCE?.trim();
   const serviceAccountEmail = env.GMAIL_PUBSUB_PUSH_SERVICE_ACCOUNT?.trim().toLowerCase() || "";
-  if (!topicName && !subscriptionName && !audience && !serviceAccountEmail) return null;
-  if (!topicName || !subscriptionName || !audience || !serviceAccountEmail) {
+  if (!topicName && !subscriptionName && !audienceOverride && !serviceAccountEmail) return null;
+  if (!topicName || !subscriptionName || !serviceAccountEmail) {
     throw new ConfigError(
-      "GMAIL_PUBSUB_TOPIC, GMAIL_PUBSUB_SUBSCRIPTION, GMAIL_PUBSUB_PUSH_AUDIENCE and GMAIL_PUBSUB_PUSH_SERVICE_ACCOUNT must be set together",
+      "GMAIL_PUBSUB_TOPIC, GMAIL_PUBSUB_SUBSCRIPTION and GMAIL_PUBSUB_PUSH_SERVICE_ACCOUNT must be set together",
       "incomplete_gmail_push_config",
     );
   }
@@ -521,7 +518,7 @@ function loadGmailPushConfig(env: RawEnv, rainverEnv: string): GmailPushConfig |
     throw new ConfigError("GMAIL_PUBSUB_TOPIC and GMAIL_PUBSUB_SUBSCRIPTION must be in the same Google Cloud project", "invalid_gmail_push_config");
   }
   let target: URL;
-  try { target = new URL(audience); } catch { throw new ConfigError("GMAIL_PUBSUB_PUSH_AUDIENCE is not a valid URL", "invalid_gmail_push_config"); }
+  try { target = new URL(audienceOverride || `${publicOrigin}${GMAIL_PUSH_PATH}`); } catch { throw new ConfigError("GMAIL_PUBSUB_PUSH_AUDIENCE is not a valid URL", "invalid_gmail_push_config"); }
   if ((target.protocol !== "https:" && target.protocol !== "http:") || target.username || target.password || target.hash || target.search
     || target.pathname !== GMAIL_PUSH_PATH) {
     throw new ConfigError(`GMAIL_PUBSUB_PUSH_AUDIENCE must be an http(s) origin followed by exactly ${GMAIL_PUSH_PATH}`, "invalid_gmail_push_config");
@@ -554,29 +551,8 @@ function validateConfigSemantics(config: ServerConfig): void {
   const frontend = new URL(config.frontendUrl);
   if (config.rainverEnv === "prod" && frontend.protocol === "http:" && !isLocalHttpWebhookHost(frontend.hostname)) {
     throw new ConfigError(
-      "FRONTEND_URL must use https in production unless it is loopback-bound",
+      "PUBLIC_BASE_URL must use https in production unless it is loopback-bound",
       "insecure_frontend_url",
-    );
-  }
-  let callback: URL;
-  try {
-    callback = new URL(config.googleRedirectUri);
-  } catch {
-    throw new ConfigError("GOOGLE_REDIRECT_URI is not a valid URL", "invalid_google_redirect_uri");
-  }
-  if (callback.protocol !== "http:" && callback.protocol !== "https:") {
-    throw new ConfigError("GOOGLE_REDIRECT_URI must be http(s)", "invalid_google_redirect_uri_protocol");
-  }
-  if (callback.username || callback.password || callback.hash) {
-    throw new ConfigError(
-      "GOOGLE_REDIRECT_URI must not include credentials or a fragment",
-      "unsafe_google_redirect_uri",
-    );
-  }
-  if (config.rainverEnv === "prod" && callback.protocol === "http:" && !isLocalHttpWebhookHost(callback.hostname)) {
-    throw new ConfigError(
-      "GOOGLE_REDIRECT_URI must use https in production unless it is loopback-bound",
-      "insecure_google_redirect_uri",
     );
   }
 }
@@ -695,13 +671,11 @@ export function loadConfig(env: RawEnv = process.env): ServerConfig {
   const betterAuthSecret = env.BETTER_AUTH_SECRET?.trim() || null;
   const googleClientId = env.GOOGLE_CLIENT_ID?.trim() || "";
   const googleClientSecret = env.GOOGLE_CLIENT_SECRET?.trim() || "";
-  const googleRedirectUri =
-    env.GOOGLE_REDIRECT_URI?.trim() ||
-    "http://localhost:5173/api/v1/auth/callback/google";
-  const frontendUrl = validateHttpBaseUrl(
-    env.FRONTEND_URL?.trim() || "http://localhost:5173",
-    "FRONTEND_URL",
-  );
+  const publicBaseUrl = env.PUBLIC_BASE_URL?.trim() || "http://localhost:5173";
+  const frontendUrl = new URL(validateHttpBaseUrl(publicBaseUrl, "PUBLIC_BASE_URL")).origin;
+  if (!/^https?:\/\/[^\s/?#@\\]+\/?$/i.test(publicBaseUrl)) {
+    throw new ConfigError("PUBLIC_BASE_URL must be an http(s) origin", "invalid_public_base_url");
+  }
   const trustedProxyHost = env.SERVER_TRUSTED_PROXY_HOST?.trim() || null;
   const instanceAdminEmail = normalizeEmail(env.INSTANCE_ADMIN_EMAIL);
   const sessionExpireDays = parseIntStrict(
@@ -935,9 +909,8 @@ export function loadConfig(env: RawEnv = process.env): ServerConfig {
     betterAuthSecret,
     googleClientId,
     googleClientSecret,
-    googleRedirectUri,
-    gmailOAuth: loadGmailOAuthConfig(env, rainverEnv),
-    gmailPush: loadGmailPushConfig(env, rainverEnv),
+    gmailOAuth: loadGmailOAuthConfig(env, rainverEnv, frontendUrl),
+    gmailPush: loadGmailPushConfig(env, rainverEnv, frontendUrl),
     frontendUrl,
     trustedProxyHost,
     instanceAdminEmail,

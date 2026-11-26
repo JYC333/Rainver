@@ -55,7 +55,12 @@ export function roomExecutionRules(): string {
 
 export async function renderRoomStandingContext(
   db: Queryable,
-  input: { spaceId: string; agentId: string; roomId: string; review?: boolean },
+  /**
+   * `sessionId`: the conversation this turn speaks in. Its audience can be
+   * narrower than the Room's (`room_conversation_audiences`), and notes are
+   * delivered against the audience actually present.
+   */
+  input: { spaceId: string; agentId: string; roomId: string; sessionId?: string | null; review?: boolean },
 ): Promise<RoomStandingContext> {
   const identity = await renderAgentIdentityPrompt(db, input);
   const rules = input.review ? [

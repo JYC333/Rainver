@@ -66,7 +66,7 @@ async function visibleOrStanding(db:Queryable,a:OperationActor,roomId:string,sta
 }
 async function visibleConversation(db:Queryable,a:OperationActor,roomId:string,sessionId:string){
  const room=await visibleRoom(db,a,roomId);
- if(!await new PgRoomRepository(db).getConversation(a.space_id,room.id,sessionId))throw hidden();
+ if(!await new PgRoomRepository(db).getConversation(a.space_id,room.id,sessionId,a.on_behalf_of_user_id!))throw hidden();
  return room;
 }
 
@@ -179,7 +179,7 @@ export function roomOperationRegistrations(definitions:ReadonlyMap<string,Regist
      // Continuing past the quota is a decision to spend: Project writer authority, as for adding rounds.
      const room=await lockRoomConversationWriter(db,p,i.room_id!,i.session_id!);
      if(!room)throw hidden();
-     if(!await new PgRoomRepository(db).getConversation(a.space_id,room.id,i.session_id!))throw hidden();
+     if(!await new PgRoomRepository(db).getConversation(a.space_id,room.id,i.session_id!,p.userId))throw hidden();
      await continueHeldRuns(db,{spaceId:a.space_id,sessionId:i.session_id!,userId:p.userId});
      return {...base,id:i.session_id!,session_id:i.session_id!};
     }

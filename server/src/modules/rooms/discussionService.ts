@@ -79,7 +79,7 @@ export class RoomDiscussionService {
       // its session id: the active-discussion check below would otherwise
       // answer 409 with another Room's discussion id for a session the caller
       // cannot see, and 404 for one that has none.
-      if (!(await new PgRoomRepository(client).getConversation(identity.spaceId, roomId, sessionId))) {
+      if (!(await new PgRoomRepository(client).getConversation(identity.spaceId, roomId, sessionId, identity.userId))) {
         throw new HttpError(404, "Room conversation not found");
       }
       const discussions = new PgRoomDiscussionRepository(client);
@@ -966,7 +966,7 @@ export class RoomDiscussionService {
     const rooms = new PgRoomRepository(client);
     const room = await rooms.getVisibleRoom(identity.spaceId, identity.userId, roomId, false);
     if (!room) throw new HttpError(404, "Room not found in this space");
-    const conversation = await rooms.getConversation(identity.spaceId, roomId, sessionId);
+    const conversation = await rooms.getConversation(identity.spaceId, roomId, sessionId, identity.userId);
     if (!conversation) throw new HttpError(404, "Room conversation not found");
     return room;
   }

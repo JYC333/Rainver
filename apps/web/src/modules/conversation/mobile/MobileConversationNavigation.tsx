@@ -10,8 +10,9 @@ import { useAppTranslation } from '../../../i18n'
 import type { RoomConversation } from '../../../types/api'
 
 /** Navigation only: the transcript stays mounted across drawer/viewport changes. */
-export function MobileConversationNavigation({ title, room, audience, conversations, selected, unread, onSelect, onNew, back, children, onCarry, carryLabel }: {
-  title: string; room: string; audience: string; conversations: RoomConversation[]; selected: string | null
+export function MobileConversationNavigation({ title, room, audience, conversationAudience, conversations, selected, unread, onSelect, onNew, back, children, onCarry, carryLabel }: {
+  /** `audience` is the Room's (the drawer lists its conversations); `conversationAudience`, when given, is the open conversation's own. */
+  title: string; room: string; audience: string; conversationAudience?: string; conversations: RoomConversation[]; selected: string | null
   unread: ReadonlySet<string>; onSelect: (id: string) => void; onNew: () => void
   back: ReactNode; children?: ReactNode; onCarry?: () => void; carryLabel?: string
 }) {
@@ -32,7 +33,7 @@ export function MobileConversationNavigation({ title, room, audience, conversati
     {back}
     <div className="min-w-0 flex-1">
       <p className="truncate text-sm font-semibold">{title}</p>
-      <p className="truncate text-xs text-muted-foreground">{room} · {audience}</p>
+      <p className="truncate text-xs text-muted-foreground" data-testid="mobile-conversation-audience">{room} · {conversationAudience ?? audience}</p>
     </div>
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild><Button size="sm" variant="ghost" className="min-h-11 min-w-11" aria-label={t('collab_ui.mobile.conversations')}><Menu className="size-5" /></Button></DialogTrigger>

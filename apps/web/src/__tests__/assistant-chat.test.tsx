@@ -10,8 +10,8 @@ const { agent, getMock, messagesMock, backendsMock, hostsMock, turnMock, runGetM
   agent: {
     id: 'a1', space_id: 'personal-1', created_by_user_id: 'u1', name: 'Assistant',
     description: null, visibility: 'private', role_instruction: null, status: 'active',
-    agent_kind: 'system_assistant', current_version_id: 'v1', source_template_id: null,
-    source_template_version_id: null, model: null, runtime_key: 'opencode',
+    agent_kind: 'system_assistant', current_version_id: 'v1', source_role_id: null,
+    source_role_version_id: null, model: null, runtime_key: 'opencode',
     system_prompt: null, created_at: '', updated_at: '',
   },
   getMock: vi.fn(),

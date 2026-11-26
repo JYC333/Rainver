@@ -12,7 +12,7 @@ import type {
 import { operationAt } from './operations'
 import { readServerSentEvents } from './streams'
 import type { RequestOptions } from './transport'
-import { ApiRequestError, BASE, get, streamRefusal } from './transport'
+import { accountFetch, accountHeaders, ApiRequestError, BASE, get, streamRefusal } from './transport'
 import type {
   AgentAttentionPage,
   AgentAttentionQueryInput,
@@ -35,9 +35,9 @@ import {
 export const agentAttentionApi = {
   snapshot: (options: RequestOptions = {}) => get<import('@rainver/protocol').AgentAttentionStreamFrame>('/me/agent-attention/snapshot', { ...options, includeSpaceContext: false }),
   stream: async (onFrame: (frame: import('@rainver/protocol').AgentAttentionStreamFrame) => void, options: RequestOptions = {}) => {
-    const headers: Record<string, string> = { Accept: 'text/event-stream' }
+    const headers: Record<string, string> = { Accept: 'text/event-stream', ...accountHeaders() }
     const startedIn = sessionEpoch()
-    const response = await fetch(`${BASE}/me/agent-attention/stream`, { headers, signal: options.signal })
+    const response = await accountFetch(`${BASE}/me/agent-attention/stream`, { headers, signal: options.signal })
     if (options.signal?.aborted) { await response.body?.cancel().catch(() => {}); return }
     if (!response.ok || !response.body) throw await streamRefusal(response, 'Attention stream failed', startedIn, options.signal)
     for await (const event of readServerSentEvents(response)) {

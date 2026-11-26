@@ -30,7 +30,7 @@ export async function authorizedCollaborationContainer(db: Queryable, groupId: s
   const member = await db.query(`SELECT id FROM room_user_members WHERE space_id=$1 AND room_id=$2 AND user_id=$3 AND status='active' FOR SHARE`, [actor.space_id, group.room_id, actor.principal.id]);
   if (!room.rows.length || !member.rows.length
     || !await canWriteProject(db, actor.space_id, container.project_id, actor.principal.id, {lockAuthority:true})
-    || !await repo.isActiveRoomUser(actor.space_id, group.room_id, actor.principal.id)) throw hidden();
+    || !await repo.isActiveRoomUser(actor.space_id, group.room_id, actor.principal.id, group.session_id ?? null)) throw hidden();
   if (container.collaboration_invalid) {
     throw new OperationRefusal(409, 'agentGroups', 'This task collaboration record is invalid; it cannot be changed here', { code: 'collaboration_budget_invalid' });
   }

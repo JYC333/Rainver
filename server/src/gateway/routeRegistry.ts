@@ -47,7 +47,7 @@ import { runtimeContextModule } from "../modules/runtimeContext/index.js";
 import { contentAccessModule } from "../modules/contentAccess/index.js";
 import { proposalsModule } from "../modules/proposals/index.js";
 import { sessionsModule } from "../modules/sessions/index.js";
-import { agentTemplatesModule } from "../modules/agentTemplates/index.js";
+import { agentRolesModule } from "../modules/agentRoles/index.js";
 import { agentsModule } from "../modules/agents/index.js";
 import { agentGroupsModule } from "../modules/agentGroups/index.js";
 import { roomsModule } from "../modules/rooms/index.js";
@@ -143,7 +143,7 @@ export const SERVER_MODULES: readonly ServerModule[] = [
   contentAccessModule,
   proposalsModule,
   sessionsModule,
-  agentTemplatesModule,
+  agentRolesModule,
   agentsModule,
   agentGroupsModule,
   roomsModule,

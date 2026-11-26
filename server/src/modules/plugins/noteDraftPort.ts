@@ -239,7 +239,7 @@ function savedOutput(row: DraftRunRow) {
 /** The `drafts` port for one plugin invocation; `invocation` is the same object the other ports fill. */
 export function noteDraftPort(host: <T>(fn: (db: Queryable) => Promise<T>) => Promise<T>, config: ServerConfig, manifest: PluginOperationManifest, actor: Readonly<OperationActor>, invocation: {kind: 'query' | 'command'; references: {type: 'task' | 'artifact' | 'space_object'; id: string}[]; projectId?: string}): NonNullable<PluginCorePorts['drafts']> {
   // Agent drafts use the same private slot and keep the outer operation's Agent audit.
-  const agentDraft = manifest.id === 'applications' && actor.principal.kind === 'agent' &&
+  const agentDraft = manifest.id === 'phd_application' && actor.principal.kind === 'agent' &&
     actor.origin === 'manual' && actor.effective_origin === 'manual';
   const person = actor.principal.kind === 'user' || agentDraft ? actor.on_behalf_of_user_id : null;
   const identity = person ? {spaceId: actor.space_id, userId: person} : null;

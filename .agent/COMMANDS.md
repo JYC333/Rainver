@@ -263,8 +263,8 @@ PRE_MIGRATION_BACKUP=1 ./ops/scripts/db/migrate.sh --mode dev
 # them against production without explicit operational authorization. Both restore
 # scripts call plugin-reconcile after --no-owner --no-acl restore. Legacy plugin
 # public migrations are excluded from the operation-package installer/reconcile.
-# The bundled `applications` package is such a change: an existing database
-# reports it pending until that maintenance path installs `plugin_applications`.
+# The bundled `phd_application` package is such a change: a database without it
+# reports it pending until that maintenance path installs `plugin_phd_application`.
 # The rebuilt `diary` package (Plan 7) is one too; on a database that had the
 # legacy Diary, that install also adopts `public.diary_*` rows once (kept in place).
 
@@ -273,7 +273,7 @@ PRE_MIGRATION_BACKUP=1 ./ops/scripts/db/migrate.sh --mode dev
 # config resolve drizzle from server/node_modules; generated SQL must not create
 # the schema (the offline installer provisions it). Example:
 NODE_PATH=node_modules node node_modules/drizzle-kit/bin.cjs generate \
-  --config ../plugins/official/applications/drizzle.config.ts --name <name>
+  --config ../plugins/official/phd_application/drizzle.config.ts --name <name>
 # List the new id in the manifest's `migrations`, then rebuild packages:
 node scripts/build-official-plugins.mjs
 
@@ -998,6 +998,13 @@ From `apps/web`, run the owning workspace card/summary tests, build, then
 The browser fixture uses real Chromium with synthetic API data in both themes,
 English/Chinese and 390/1280 widths. `AGENT_WORKSPACE_SHOTS` selects an external
 screenshot directory. It does not establish live multi-Agent resource convergence.
+
+My Agents (cross-Space list, Agent stop/restore, Project-only plugin assistants):
+from `server`, `REQUIRE_TEST_POSTGRES=true node node_modules/vitest/vitest.mjs run test/myAgentsDb.test.ts test/pluginAgentRolesDb.test.ts`;
+from `apps/web`, `src/modules/agents src/__tests__/agent-disable.test.tsx src/__tests__/my-agents-api.test.ts src/__tests__/shell.test.tsx src/modules/plugins/PluginAgentSetup.test.tsx`,
+then build and `node --test src/__tests__/my-agents.browser.mjs` (real Chromium, synthetic APIs, both
+themes, English/Chinese, 390/1280; `MY_AGENTS_SHOTS` selects the screenshot directory, default
+`/tmp/rainver-my-agents-shots`).
 
 
 Focused bounded-slot lifecycle verification (Node 24, owning package cwd):

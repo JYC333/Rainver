@@ -1,3 +1,4 @@
+import { runTool as callRunTool } from "./support/runTool.js";
 import {randomUUID} from 'node:crypto';
 import {afterEach, beforeAll, beforeEach, describe, expect, it} from 'vitest';
 import type {RainverPlugin} from '@rainver/protocol';
@@ -25,13 +26,13 @@ import {loadProjectChatActionPreviews} from '../src/modules/agents/projectChatAc
 import {pluginToolPins} from '../src/modules/plugins/dataAccess.js';
 
 /**
- * The bundled application management package (`plugins/official/applications`,
+ * The bundled application management package (`plugins/official/phd_application`,
  * PhD first track) as shipped: the compiled artifact admitted by the package
  * loader, installed by the offline installer, reached through the real P1 HTTP
  * and Agent tool entries on real PostgreSQL.
  */
 const db = useTestDatabase(import.meta.filename);
-const pid = 'applications';
+const pid = 'phd_application';
 const opId = (name: string) => name.startsWith('task.') || name.startsWith('knowledge.') ? name : `plugin.${pid}.${name}`;
 const plugin = BUILT_IN_PLUGINS.find(p => p.id === pid) as RainverPlugin;
 let host: PluginHost, space: string, owner: string, writer: string, viewer: string, projectA: string, projectB: string, config: ReturnType<typeof loadConfig>, app: ReturnType<typeof buildModuleServer>;
@@ -74,7 +75,7 @@ const ok = async <T = any>(response: Promise<{statusCode: number; body: string; 
 };
 const bind = (project: string) => ok(action('official_plugin.project_binding.bind', {plugin_id: pid, project_id: project}));
 const future = (days: number) => new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10);
-const rows = async (table: string) => (await db.pool.query(`SELECT * FROM plugin_applications.${table} WHERE space_id=$1 ORDER BY created_at,id`, [space])).rows;
+const rows = async (table: string) => (await db.pool.query(`SELECT * FROM plugin_phd_application.${table} WHERE space_id=$1 ORDER BY created_at,id`, [space])).rows;
 async function agentRun(user: string, project: string | null, tools: string[], session: string | null = null) {
   const runId = randomUUID();
   await seedRun(db.pool, {id: runId, space, owner: user, agent: randomUUID(), version: randomUUID()});
@@ -100,7 +101,7 @@ const reason = (r: {json(): any}) => r.json().error?.metadata?.reason;
 const proposalStatus = async (id: string) => (await db.pool.query<{status: string}>('SELECT status FROM proposals WHERE id=$1', [id])).rows[0]?.status;
 const phd = {institution: 'ETH Zurich', program: 'PhD in Computer Science', department: 'Systems Group', intake: 'Fall 2027', source: {label: 'Department call', url: 'https://example.edu/phd'}};
 
-describe('Application management package (PhD track)', () => {
+describe('PhD Application package (PhD track)', () => {
   it('ships as a disabled-by-default Project-level package; contacts are personal, applications normal', async () => {
     const descriptor = getOfficialPlugin(pid, config)!;
     expect(descriptor).toMatchObject({project_binding: 'required', default_enabled: false, scope: 'space'});
@@ -186,7 +187,7 @@ describe('Application management package (PhD track)', () => {
     await bind(projectA);
     const mine = await ok(command('application.create', phd));
     const privateRecord = await ok(command('application.create', {...phd, program: 'Private legacy record'}));
-    await db.pool.query('UPDATE plugin_applications.applications SET project_shared=false WHERE id=$1', [privateRecord.application_id]);
+    await db.pool.query('UPDATE plugin_phd_application.applications SET project_shared=false WHERE id=$1', [privateRecord.application_id]);
     const contact = await ok(command('contact.create', {name: 'Project supervisor', role: 'supervisor', application_ids: [mine.application_id]}));
     as(writer);
     const theirs = await ok(command('application.create', {...phd, institution: 'EPFL'}));
@@ -221,7 +222,7 @@ describe('Application management package (PhD track)', () => {
     expect((await command('deadline.add', {application_id, kind: 'interview', due_on: future(9)})).statusCode).toBe(404);
     expect((await command('contact.update', {contact_id: contact.contact_id, name: 'Denied'})).statusCode).toBe(404);
     expect((await read('application.list', {}, projectB)).statusCode).toBe(404);
-    expect((await db.pool.query(`SELECT owner_user_id,viewer_user_id FROM content_access_logs WHERE space_id=$1 AND resource_type='plugin_applications' AND resource_id=$2`,
+    expect((await db.pool.query(`SELECT owner_user_id,viewer_user_id FROM content_access_logs WHERE space_id=$1 AND resource_type='plugin_phd_application' AND resource_id=$2`,
       [space, mine.application_id])).rows).toEqual(expect.arrayContaining([
         {owner_user_id: owner, viewer_user_id: writer}, {owner_user_id: owner, viewer_user_id: viewer},
       ]));
@@ -238,7 +239,7 @@ describe('Application management package (PhD track)', () => {
     expect((await ok(read('contact.list_events', {contact_id}))).items.map((e: {summary: string}) => e.summary)).toEqual(['Invited to a call', 'Sent CV and research interests']);
     expect((await command('contact.create', {name: 'Bad', role: 'referee', email: 'not-an-email'})).statusCode).toBe(422);
     const legacy = await ok(command('contact.create', {name: 'Legacy private referee', role: 'referee'}));
-    await db.pool.query('UPDATE plugin_applications.application_contacts SET project_shared=false WHERE id=$1', [legacy.contact_id]);
+    await db.pool.query('UPDATE plugin_phd_application.application_contacts SET project_shared=false WHERE id=$1', [legacy.contact_id]);
     const run = await agentRun(owner, projectA, ['contact.list', 'contact.log_event', 'application.list']);
     const listed = await agentCall(run, 'contact.list', {project_id: projectA});
     expect(listed.httpStatus, JSON.stringify(listed.body)).toBe(200);
@@ -268,7 +269,7 @@ describe('Application management package (PhD track)', () => {
     await bind(projectA);
     const {application_id} = await ok(command('application.create', {...phd, notes: 'Legacy funding plan', deadlines: [{kind: 'application', due_on: future(9)}]}));
     const other = await ok(command('application.create', {...phd, institution: 'Another legacy application'}));
-    await db.pool.query(`UPDATE plugin_applications.applications SET project_shared=false WHERE space_id=$1 AND id=ANY($2::text[])`,
+    await db.pool.query(`UPDATE plugin_phd_application.applications SET project_shared=false WHERE space_id=$1 AND id=ANY($2::text[])`,
       [space, [application_id, other.application_id]]);
     as(writer);
     const theirs = await ok(command('application.create', {...phd, institution: 'EPFL'}));
@@ -292,7 +293,7 @@ describe('Application management package (PhD track)', () => {
     expect(detail.body).toMatchObject({data: {application: {id: application_id, notes: 'Legacy funding plan'}, deadlines: [{due_on: future(9)}]}});
     expect(publicError(await get(other.application_id))).toEqual(hidden);
     expect((await agentCall(room, 'application.summary', {project_id: projectA})).body).toMatchObject({data: {total: 2}});
-    expect((await db.pool.query(`SELECT viewer_user_id,owner_user_id FROM content_access_logs WHERE space_id=$1 AND run_id=$2 AND resource_id=$3 AND resource_type='plugin_applications'`,
+    expect((await db.pool.query(`SELECT viewer_user_id,owner_user_id FROM content_access_logs WHERE space_id=$1 AND run_id=$2 AND resource_id=$3 AND resource_type='plugin_phd_application'`,
       [space, room, application_id])).rows).toContainEqual({viewer_user_id: writer, owner_user_id: owner});
   });
 
@@ -406,9 +407,9 @@ describe('Application management package (PhD track)', () => {
     const session = await sharedRoom([owner]);
     const run = await agentRun(owner, projectA, ['application.propose_status'], session);
     await db.pool.query(`UPDATE runs SET permission_snapshot_json=jsonb_set(permission_snapshot_json,'{tool_grants}',permission_snapshot_json->'tool_grants' || '[{"action_id":"proposal.decide"},{"action_id":"proposal.list_pending"}]'::jsonb) WHERE id=$1`, [run]);
-    // The actual Run tool HTTP route the CLI calls, with this Run's own token.
+    // The Run tool service validates this Run's own token.
     const token = await new PgRunToolIdentityRepository(db.pool).issue({id: run, space_id: space}, 60_000);
-    const tool = (name: string, args: Record<string, unknown>) => app.inject({method: 'POST', url: `/api/v1/runs/${run}/tools/${name}`, headers: {authorization: `Bearer ${token}`, 'idempotency-key': randomUUID()}, payload: args});
+    const tool = (name: string, args: Record<string, unknown>) => callRunTool(config, run, token, name, args);
     const propose = async (status: string) => {
       const r = await agentCall(run, 'application.propose_status', {project_id: projectA, application_id, status});
       expect(r.httpStatus, JSON.stringify(r.body)).toBe(202);
@@ -648,9 +649,9 @@ describe('Application management package (PhD track)', () => {
     expect(fromAgent.httpStatus, JSON.stringify(fromAgent.body)).toBe(200);
     const agentData = (fromAgent.body as {data: {application_id: string; task_ids: string[]}}).data;
     const shape = (r: Record<string, unknown>) => { const {id: _id, created_at: _c, updated_at: _u, date_changed_at: _d, application_id: _a, task_id: _t, ...rest} = r; return rest; };
-    const [ui, agent] = [fromUi.application_id, agentData.application_id].map(id => db.pool.query(`SELECT * FROM plugin_applications.applications WHERE id=$1`, [id]));
+    const [ui, agent] = [fromUi.application_id, agentData.application_id].map(id => db.pool.query(`SELECT * FROM plugin_phd_application.applications WHERE id=$1`, [id]));
     expect(shape((await agent).rows[0])).toEqual(shape((await ui).rows[0]));
-    const byApp = async (table: string, id: string) => (await db.pool.query(`SELECT * FROM plugin_applications.${table} WHERE application_id=$1 ORDER BY kind,label`, [id])).rows.map(shape);
+    const byApp = async (table: string, id: string) => (await db.pool.query(`SELECT * FROM plugin_phd_application.${table} WHERE application_id=$1 ORDER BY kind,label`, [id])).rows.map(shape);
     for (const table of ['application_deadlines', 'application_materials']) expect(await byApp(table, agentData.application_id)).toEqual(await byApp(table, fromUi.application_id));
     // Both created their Board Task through the same core port, in the same Project.
     const tasks = (await db.pool.query(`SELECT title,project_id,due_at FROM tasks WHERE id=ANY($1::varchar[]) ORDER BY id`, [[...fromUi.task_ids, ...agentData.task_ids]])).rows;
@@ -733,7 +734,7 @@ describe('Application management package (PhD track)', () => {
     await bind(projectA);
     const {application_id, task_ids} = await ok(command('application.create', {...phd, deadlines: [{kind: 'application', due_on: future(10)}], create_tasks: true}));
     await ok(command('contact.create', {application_ids: [application_id], name: 'Referee', role: 'referee'}));
-    expect((await db.pool.query(`SELECT 1 FROM plugin_applications.application_contact_links WHERE space_id=$1`, [space])).rows).toHaveLength(1);
+    expect((await db.pool.query(`SELECT 1 FROM plugin_phd_application.application_contact_links WHERE space_id=$1`, [space])).rows).toHaveLength(1);
     await withTransaction(db.pool, tx => pluginServiceFor(config).disablePlugin(tx, pid, space, owner));
     expect((await read('application.list')).statusCode).toBe(404);
     expect((await read('contact.list')).statusCode).toBe(404);

@@ -4,7 +4,7 @@
  *
  * `/api/v1/server/catalog*` lists diagnostic manifests. The original-package
  * Skill library in `modules/skills` does not use catalog manifests as an
- * authority. `/api/v1/agent-templates` reads `catalog/agent_templates` separately.
+ * authority. `/api/v1/agent-roles` reads `catalog/agent_roles` separately.
  */
 
 import type { ServerModule } from "../../gateway/routeRegistry.js";
@@ -17,9 +17,9 @@ export const catalogModule: ServerModule = {
 
 export {
   catalogSummary,
-  listAgentTemplates,
+  listAgentRoles,
   listCapabilities,
-  type CatalogAgentTemplateSummary,
+  type CatalogAgentRoleSummary,
   type CatalogCapabilitySummary,
   type CatalogListBody,
   type CatalogSummaryBody,

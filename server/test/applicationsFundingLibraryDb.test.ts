@@ -11,6 +11,7 @@ import {withTransaction} from '../src/db/tx.js';
 import {loadConfig} from '../src/config.js';
 import {waitForBlockedBy} from './support/lockWait.js';
 import {useTestDatabase} from './support/testDatabase.js';
+import {retiredApplicationsRelease} from './support/retiredApplicationsRelease.js';
 import {seedRun, seedSpaceOwnerProject} from './support/domainSeeds.js';
 import {buildModuleServer} from './support/moduleServer.js';
 import {systemActionsModule} from '../src/modules/systemActions/index.js';
@@ -31,9 +32,11 @@ import {markdownToPm} from '../src/modules/knowledge/noteDocument.js';
  * every existing contact binding.
  */
 const db = useTestDatabase(import.meta.filename);
-const pid = 'applications';
+const pid = 'phd_application';
 const opId = (name: string) => `plugin.${pid}.${name}`;
 const plugin = BUILT_IN_PLUGINS.find(p => p.id === pid) as RainverPlugin;
+/** The retired `applications` release whose original chain earlier instances applied. */
+const legacyRelease = retiredApplicationsRelease();
 let space: string, owner: string, writer: string, projectA: string, projectB: string, config: ReturnType<typeof loadConfig>, app: ReturnType<typeof buildModuleServer>;
 const legacy = {space: randomUUID(), user: randomUUID(), project: randomUUID(), application: randomUUID(), bound: randomUUID(), general: randomUUID(), event: randomUUID()};
 /** Funding records written under 0003, before an approved submission was kept as history (0004). */
@@ -58,9 +61,9 @@ beforeAll(async () => {
   if (!db.available) return;
   expect(plugin?.operationManifest, 'build the official plugins first (server/scripts/build-official-plugins.mjs)').toBeTruthy();
   // An instance that installed the package before this change: migrations 0000–0002 only, with contacts bound through the old column.
-  const original = originalPluginMigrations(plugin.migrations![0].sql)!;
+  const original = originalPluginMigrations(legacyRelease.migrations![0].sql)!.flatMap(step => originalPluginMigrations(step.sql) ?? [step]);
   const before = original.slice(0, 3);
-  await install({...plugin, migrations: before, operationManifest: {...plugin.operationManifest!, migrations: before.map(m => m.id)}});
+  await install({...legacyRelease, migrations: before, operationManifest: {...legacyRelease.operationManifest!, migrations: before.map(m => m.id)}});
   const own = [legacy.space, legacy.user, legacy.project];
   await db.pool.query(`INSERT INTO plugin_applications.applications(space_id,user_id,project_id,id,track,institution,program,status) VALUES($1,$2,$3,$4,'phd','ETH Zurich','PhD CS','planning')`, [...own, legacy.application]);
   await db.pool.query(`INSERT INTO plugin_applications.application_contacts(space_id,user_id,project_id,id,application_id,name,role) VALUES($1,$2,$3,$4,$5,'Prof. Ada','supervisor'),($1,$2,$3,$6,NULL,'Funding office','admissions')`, [...own, legacy.bound, legacy.application, legacy.general]);
@@ -70,7 +73,7 @@ beforeAll(async () => {
   // submitted and moved back to `preparing` (create, submitted, preparing: revision 3), one only edited twice
   // (indistinguishable from the previous one), and records with at most one write.
   const through0003 = original.slice(0, 4);
-  await install({...plugin, migrations: through0003, operationManifest: {...plugin.operationManifest!, migrations: through0003.map(m => m.id)}});
+  await install({...legacyRelease, migrations: through0003, operationManifest: {...legacyRelease.operationManifest!, migrations: through0003.map(m => m.id)}});
   for (const [id, submission, status, revision] of [
     [legacyFunding.submitted, 'separate', 'submitted', 2], [legacyFunding.underReview, 'separate', 'under_review', 3],
     [legacyFunding.progressedOnce, 'separate', 'under_review', 2],
@@ -81,7 +84,7 @@ beforeAll(async () => {
   }
   // Install the original 0004. Cutover must preserve its checksum and time in the audit.
   const through0004 = original.slice(0, 5);
-  await install({...plugin, migrations: through0004, operationManifest: {...plugin.operationManifest!, migrations: through0004.map(m => m.id)}});
+  await install({...legacyRelease, migrations: through0004, operationManifest: {...legacyRelease.operationManifest!, migrations: through0004.map(m => m.id)}});
   const oldMark = await db.pool.query(`SELECT submission_recorded_at IS NOT NULL AS recorded FROM plugin_applications.applications WHERE id=$1`, [legacyFunding.progressedOnce]);
   expect(oldMark.rows).toEqual([{recorded: true}]);
   // Rows created with the history column already present can prove whether approval applied,
@@ -90,25 +93,46 @@ beforeAll(async () => {
     VALUES($1,$2,$3,$4,'funding','Funder','New grant','separate','preparing',3,NULL),
           ($1,$2,$3,$5,'funding','Funder','New grant','separate','preparing',3,now())`, [...own, legacyFunding.createdAfter0004, legacyFunding.submittedAfter0004]);
   const migrationJournal = async () => (await db.pool.query(
-    `SELECT migration_id,checksum,applied_at::text FROM plugin_migrations WHERE plugin_id=$1 AND status='applied' ORDER BY migration_id`, [pid])).rows;
+    `SELECT migration_id,checksum,applied_at::text FROM plugin_migrations WHERE plugin_id=$1 AND status='applied' ORDER BY migration_id`, [legacyRelease.id])).rows;
   const originalJournal = await migrationJournal();
   expect(originalJournal.slice(-2).map(row => row.checksum)).toEqual([
     '8f91046ec2ac39e1efbce4251b1f1321fee21fa58031f7c9ebfb05ac3669432c',
     'b3394692260543054fe729a188b87980bb0a19deeed53198d5b4574111b57827',
   ]);
-  expect(await withPluginRoleRetry(() => convertBundledPluginMigrationHistory(db.pool, plugin, {
+  expect(await withPluginRoleRetry(() => convertBundledPluginMigrationHistory(db.pool, legacyRelease, {
     apply: true, offline: true, backupReference: 'applications-fixture.dump',
   // Pending: the squashed originals not yet applied, then every package migration after the baseline.
-  }))).toMatchObject({state: 'converted', pending: [...original.slice(5), ...plugin.migrations!.slice(1)].map(({id}) => id)});
+  }))).toMatchObject({state: 'converted', pending: [...original.slice(5), ...legacyRelease.migrations!.slice(1)].map(({id}) => id)});
   const upgradedJournal = await migrationJournal();
   const audit = await db.pool.query(`SELECT metadata_json->'source_records' AS original FROM official_plugin_events
-    WHERE plugin_id=$1 AND event_type='migration_squashed'`, [pid]);
+    WHERE plugin_id=$1 AND event_type='migration_squashed'`, [legacyRelease.id]);
   expect(audit.rows[0].original).toMatchObject(originalJournal);
-  expect(upgradedJournal.map(row => row.migration_id)).toEqual(plugin.operationManifest!.migrations);
+  expect(upgradedJournal.map(row => row.migration_id)).toEqual(legacyRelease.operationManifest!.migrations);
   // A further installer run verifies every applied checksum and skips the historical backfill.
-  await install(plugin);
+  await install(legacyRelease);
   expect(await migrationJournal()).toEqual(upgradedJournal);
+  // Verify that the current package serves the upgraded rows copied from the historical fixture.
+  await install(plugin);
+  await copyLegacyRows();
 });
+/** Every upgraded row of the retired schema, column by name, into the renamed package's schema. */
+async function copyLegacyRows() {
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query("SET LOCAL session_replication_role = replica");
+    const tables = (await client.query<{table_name: string}>(`SELECT table_name FROM information_schema.tables WHERE table_schema='plugin_applications' ORDER BY 1`)).rows;
+    for (const {table_name: table} of tables) {
+      const columns = (await client.query<{list: string}>(`SELECT string_agg(quote_ident(column_name), ',' ORDER BY column_name) AS list
+        FROM information_schema.columns WHERE table_schema='plugin_applications' AND table_name=$1`, [table])).rows[0]!.list;
+      await client.query(`INSERT INTO plugin_phd_application.${table} (${columns}) SELECT ${columns} FROM plugin_applications.${table}`);
+    }
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally { client.release(); }
+}
 async function addPerson(user: string, projectRole: 'member') {
   await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at,email,registration_source) VALUES ($1,'Person','active',now(),now(),lower(gen_random_uuid()::text||'@test.invalid'),'system')`, [user]);
   await db.pool.query(`INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'member','active',now(),now())`, [randomUUID(), space, user]);
@@ -171,16 +195,16 @@ const phd = {institution: 'ETH Zurich', program: 'PhD in Computer Science'};
 describe('Application module: funding, material library and contacts', () => {
   it('the upgrade keeps every contact binding as a link, Project-level contacts unlinked, and their history', async () => {
     const own = [legacy.space, legacy.user, legacy.project];
-    expect((await db.pool.query(`SELECT contact_id,application_id FROM plugin_applications.application_contact_links WHERE space_id=$1 AND user_id=$2 AND project_id=$3`, own)).rows)
+    expect((await db.pool.query(`SELECT contact_id,application_id FROM plugin_phd_application.application_contact_links WHERE space_id=$1 AND user_id=$2 AND project_id=$3`, own)).rows)
       .toEqual([{contact_id: legacy.bound, application_id: legacy.application}]);
-    expect((await db.pool.query(`SELECT id,name FROM plugin_applications.application_contacts WHERE space_id=$1 ORDER BY name`, [legacy.space])).rows.map(r => r.name)).toEqual(['Funding office', 'Prof. Ada']);
-    expect((await db.pool.query(`SELECT id FROM plugin_applications.application_contact_events WHERE space_id=$1`, [legacy.space])).rows).toEqual([{id: legacy.event}]);
-    expect((await db.pool.query(`SELECT 1 FROM information_schema.columns WHERE table_schema='plugin_applications' AND table_name='application_contacts' AND column_name='application_id'`)).rows).toEqual([]);
-    expect((await db.pool.query(`SELECT submission FROM plugin_applications.applications WHERE id=$1`, [legacy.application])).rows).toEqual([{submission: null}]);
+    expect((await db.pool.query(`SELECT id,name FROM plugin_phd_application.application_contacts WHERE space_id=$1 ORDER BY name`, [legacy.space])).rows.map(r => r.name)).toEqual(['Funding office', 'Prof. Ada']);
+    expect((await db.pool.query(`SELECT id FROM plugin_phd_application.application_contact_events WHERE space_id=$1`, [legacy.space])).rows).toEqual([{id: legacy.event}]);
+    expect((await db.pool.query(`SELECT 1 FROM information_schema.columns WHERE table_schema='plugin_phd_application' AND table_name='application_contacts' AND column_name='application_id'`)).rows).toEqual([]);
+    expect((await db.pool.query(`SELECT submission FROM plugin_phd_application.applications WHERE id=$1`, [legacy.application])).rows).toEqual([{submission: null}]);
   });
 
   it('the upgrade keeps confirmed and ambiguous history while unlocking records that could not have been submitted', async () => {
-    const recorded = async (id: string) => (await db.pool.query<{r: boolean}>(`SELECT submission_recorded_at IS NOT NULL AS r FROM plugin_applications.applications WHERE id=$1`, [id])).rows[0]!.r;
+    const recorded = async (id: string) => (await db.pool.query<{r: boolean}>(`SELECT submission_recorded_at IS NOT NULL AS r FROM plugin_phd_application.applications WHERE id=$1`, [id])).rows[0]!.r;
     expect(await recorded(legacyFunding.submitted)).toBe(true);
     // Its status no longer says so, and the old rows kept no history: treated as submitted (fail closed).
     expect(await recorded(legacyFunding.underReview)).toBe(true);
@@ -197,7 +221,7 @@ describe('Application module: funding, material library and contacts', () => {
     expect(await recorded(legacyFunding.createdAfter0004)).toBe(false);
     expect(await recorded(legacyFunding.submittedAfter0004)).toBe(true);
     // The table itself refuses an automatic record with a recorded submission, whichever writer tries.
-    await expect(db.pool.query(`UPDATE plugin_applications.applications SET submission='automatic' WHERE id=$1`, [legacyFunding.underReview])).rejects.toMatchObject({code: '23514'});
+    await expect(db.pool.query(`UPDATE plugin_phd_application.applications SET submission='automatic' WHERE id=$1`, [legacyFunding.underReview])).rejects.toMatchObject({code: '23514'});
   });
 
   it('after the upgrade the real update entry refuses automatic for a record submitted and moved back, and allows it for one never submitted', async () => {
@@ -206,7 +230,7 @@ describe('Application module: funding, material library and contacts', () => {
     await withTransaction(db.pool, tx => pluginServiceFor(config).enablePlugin(tx, pid, legacy.space, legacy.user, {}));
     __setAuthIdentityForTests({spaceId: legacy.space, userId: legacy.user});
     await ok(action('official_plugin.project_binding.bind', {plugin_id: pid, project_id: legacy.project}));
-    const row = async (id: string) => (await db.pool.query(`SELECT submission,status,revision,submission_recorded_at IS NOT NULL AS recorded FROM plugin_applications.applications WHERE id=$1`, [id])).rows[0];
+    const row = async (id: string) => (await db.pool.query(`SELECT submission,status,revision,submission_recorded_at IS NOT NULL AS recorded FROM plugin_phd_application.applications WHERE id=$1`, [id])).rows[0];
     const switchToAutomatic = async (id: string) => command('application.update', {application_id: id, revision: (await row(id)).revision, submission: 'automatic'}, legacy.project);
     for (const id of [legacyFunding.movedBack, legacyFunding.underReview, legacyFunding.submitted, legacyFunding.submittedAfter0004]) {
       const before = await row(id);
@@ -284,12 +308,12 @@ describe('Application module: funding, material library and contacts', () => {
     const cs = await create(phd);
     // `cs` already has FUNDING_LINKS_MAX - 1 funding records, written directly to keep the test fast.
     const seeded = Array.from({length: 49}, () => randomUUID());
-    await db.pool.query(`INSERT INTO plugin_applications.applications(space_id,user_id,project_id,id,track,institution,program,submission,status)
+    await db.pool.query(`INSERT INTO plugin_phd_application.applications(space_id,user_id,project_id,id,track,institution,program,submission,status)
       SELECT $1,$2,$3,unnest($4::text[]),'funding','Funder','Grant','separate','planning'`, [space, owner, projectA, seeded]);
-    await db.pool.query(`INSERT INTO plugin_applications.application_funding_links(space_id,user_id,project_id,funding_id,application_id)
+    await db.pool.query(`INSERT INTO plugin_phd_application.application_funding_links(space_id,user_id,project_id,funding_id,application_id)
       SELECT $1,$2,$3,unnest($4::text[]),$5`, [space, owner, projectA, seeded, cs]);
-    const linked = async () => (await db.pool.query<{n: number}>(`SELECT count(*)::int AS n FROM plugin_applications.application_funding_links WHERE space_id=$1 AND application_id=$2`, [space, cs])).rows[0]!.n;
-    const fundingCount = async () => (await db.pool.query<{n: number}>(`SELECT count(*)::int AS n FROM plugin_applications.applications WHERE space_id=$1 AND track='funding'`, [space])).rows[0]!.n;
+    const linked = async () => (await db.pool.query<{n: number}>(`SELECT count(*)::int AS n FROM plugin_phd_application.application_funding_links WHERE space_id=$1 AND application_id=$2`, [space, cs])).rows[0]!.n;
+    const fundingCount = async () => (await db.pool.query<{n: number}>(`SELECT count(*)::int AS n FROM plugin_phd_application.applications WHERE space_id=$1 AND track='funding'`, [space])).rows[0]!.n;
     const existing = await create({track: 'funding', institution: 'Funder', program: 'Open call', submission: 'separate'});
     // The 50th link is taken by whichever of a new linked record and funding.link commits first; the other is refused.
     const results = await Promise.all([
@@ -385,7 +409,7 @@ describe('Application module: funding, material library and contacts', () => {
     const requests = [];
     try {
       await holder.query('BEGIN');
-      const {pid} = (await holder.query<{pid: number}>(`SELECT pg_backend_pid() AS pid FROM plugin_applications.applications WHERE id=$1 FOR UPDATE`, [fund])).rows[0]!;
+      const {pid} = (await holder.query<{pid: number}>(`SELECT pg_backend_pid() AS pid FROM plugin_phd_application.applications WHERE id=$1 FOR UPDATE`, [fund])).rows[0]!;
       requests.push(run[first]());
       await waitForBlockedBy(db.pool, pid);
       const front = (await db.pool.query<{pid: number}>(`SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND $1::int=ANY(pg_blocking_pids(pid))`, [pid])).rows[0]!;
@@ -403,7 +427,7 @@ describe('Application module: funding, material library and contacts', () => {
     const state = (await db.pool.query(`SELECT p.status AS proposal, r.state AS request, r.terminal_at IS NOT NULL AS terminal,
       a.submission, a.status, a.revision, a.result_note, a.submission_recorded_at IS NOT NULL AS recorded
       FROM proposals p JOIN operation_idempotency r ON r.proposal_id=p.id
-      CROSS JOIN plugin_applications.applications a WHERE a.id=$1 AND p.id=$2`, [fund, proposalId])).rows[0];
+      CROSS JOIN plugin_phd_application.applications a WHERE a.id=$1 AND p.id=$2`, [fund, proposalId])).rows[0];
     if (first === 'approve') {
       expect(receipt).toMatchObject({proposal: {id: proposalId, status: 'accepted'}, result_type: 'plugin_proposal',
         result: {application_id: fund, status: 'submitted', revision: 2}});

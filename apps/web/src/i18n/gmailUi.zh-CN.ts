@@ -102,6 +102,15 @@ export const gmailUiZhCN = { gmail_ui: {
     "application": "申请自动更新",
     "runtime": "{{agent}} · {{model}}",
     "mail_items": "等待处理 {{pending}} 封 · 留待你核对 {{review}} 封 · 未能处理 {{failed}} 封",
+    "review_title": "待复核邮件",
+    "review_open_gmail": "在 Gmail 中打开",
+    "review_limit": "显示 {{total}} 封待复核邮件中最新的 {{shown}} 封。",
+    "review_reason": {
+      "no_matching_application": "待关联申请",
+      "ambiguous_application": "可能对应多条申请",
+      "unclear_fact": "需要复核",
+      "conflict": "无法写入更新"
+    },
     "pause": "暂停",
     "resume": "恢复",
     "resume_scope_daily": "恢复后从恢复时刻开始新的收件箱窗口，跳过此前的邮件。",

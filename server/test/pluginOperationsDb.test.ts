@@ -1,3 +1,4 @@
+import { runTool as callRunTool } from "./support/runTool.js";
 import {operationPackageIdentity} from '../src/modules/plugins/packageIdentity.js';
 import { randomUUID } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
@@ -354,15 +355,7 @@ describe('manifest plugin through real P1 HTTP and Agent consumers', () => {
     });
     const token = await new PgRunToolIdentityRepository(db.pool).issue(run, 60_000);
     const key = randomUUID();
-    const wire = () => app.inject({
-      method: 'POST',
-      url: `/api/v1/runs/${run.id}/tools/${id('write')}`,
-      headers: {
-        authorization: `Bearer ${token}`,
-        'idempotency-key': key
-      },
-      payload: {}
-    });
+    const wire = () => callRunTool(config, run.id, token, id("write"), {}, key);
     expect((await wire()).statusCode).toBe(200);
     const replay = await wire();
     expect(replay.statusCode, replay.body).toBe(200);

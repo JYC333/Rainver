@@ -34,7 +34,7 @@ import { callOperation, commandReceipt, projectManagementCall } from './operatio
 import { sourcesApi } from './sources'
 import { readServerSentEvents } from './streams'
 import type { RequestOptions } from './transport'
-import { ApiRequestError, BASE, _spaceId, get, pageQuery, streamRefusal } from './transport'
+import { _spaceId, accountFetch, accountHeaders, ApiRequestError, BASE, get, pageQuery, streamRefusal } from './transport'
 import type {
   OperationInput,
   ProjectAgent,
@@ -54,9 +54,9 @@ async function currentProjectVersion<T extends {id:string}>(kind:'brief'|'instru
 
 export const projectsApi = {
   streamUpdates: async(id:string,onFrame:(frame:import('@rainver/protocol').ProjectUpdateFrame)=>void,options:RequestOptions={})=>{
-    const headers:Record<string,string>={Accept:'text/event-stream','X-Rainver-Space-Id':options.spaceId??_spaceId}
+    const headers:Record<string,string>={Accept:'text/event-stream','X-Rainver-Space-Id':options.spaceId??_spaceId,...accountHeaders()}
     const startedIn=sessionEpoch()
-    const response=await fetch(`${BASE}/projects/${encodeURIComponent(id)}/updates/stream`,{headers,signal:options.signal})
+    const response=await accountFetch(`${BASE}/projects/${encodeURIComponent(id)}/updates/stream`,{headers,signal:options.signal})
     if(!response.ok||!response.body)throw await streamRefusal(response,'Project stream unavailable',startedIn,options.signal)
     for await(const frame of readServerSentEvents(response)){
       if(options.signal?.aborted)return

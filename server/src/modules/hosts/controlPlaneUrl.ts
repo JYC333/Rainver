@@ -1,15 +1,13 @@
 import type { ServerConfig } from "../../config.js";
 
 /**
- * The control-plane address a host's child processes call back on
- * (`RAINVER_API_URL`), and the one a host's provider-proxy address is derived
- * from.
+ * The control-plane origin used to derive a Host's provider-proxy address.
  *
  * Configuration only — never the request and never the daemon's report. A
  * request's Host and `X-Forwarded-*` and a daemon's own account of where it
  * connected are all attested by someone other than the instance, and none of
  * them may choose where a Run's bearer token is sent. A paired host is handed
- * `FRONTEND_URL`, the one address the instance declares; the built-in host is
+ * `PUBLIC_BASE_URL`, the one address the instance declares; the built-in host is
  * handed its in-network address.
  */
 export function hostControlPlaneUrl(config: ServerConfig, hostKind: string): string {

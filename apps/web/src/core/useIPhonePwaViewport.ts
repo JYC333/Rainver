@@ -9,17 +9,17 @@ export function isIPhonePwa() {
   return ios && (legacyStandalone || Boolean(window.matchMedia?.('(display-mode: standalone)').matches))
 }
 
-/** Shared with full-screen conversation overlays so they do not undo C at rest.
+/** Shared with full-screen conversation overlays so they do not change the installed layout at rest.
  * A status-bar-sized discrepancy is not a keyboard; pinch zoom is never one.
  */
-export function mobileViewportGeometry(viewport: VisualViewport | null, largeViewport = false) {
+export function mobileViewportGeometry(viewport: VisualViewport | null, installedPwa = false) {
   const unzoomed = viewport && Math.abs(viewport.scale - 1) < 0.01
   // Negative edge-bounce offsets are not lost keyboard space.
   const overlap = unzoomed ? Math.max(0, innerHeight - viewport.height - Math.max(0, viewport.offsetTop)) : 0
   const keyboard = overlap > 80
-  const useVisual = unzoomed && (!largeViewport || keyboard)
-  return { height: useVisual ? `${viewport.height}px` : largeViewport ? '100vh' : '100dvh',
-    top: useVisual ? Math.max(0, viewport?.offsetTop ?? 0) : 0, overlap: largeViewport && !keyboard ? 0 : overlap }
+  const useVisual = unzoomed && (!installedPwa || keyboard)
+  return { height: useVisual ? `${viewport.height}px` : '100dvh',
+    top: useVisual ? Math.max(0, viewport?.offsetTop ?? 0) : 0, overlap: installedPwa && !keyboard ? 0 : overlap }
 }
 
 export function useIPhonePwaViewport() {

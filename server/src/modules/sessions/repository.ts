@@ -11,9 +11,9 @@ import {
   type SessionOut,
   type SessionPage,
   type ConversationInputPart,
-  ConversationMessageInputPartsSchema,
+  ConversationMessageInputPartSchema,
 } from "@rainver/protocol";
-import { projectReadAccessSql } from "../access/contentAccessSql.js";
+import { projectReadAccessSql, roomConversationAudienceSql } from "../access/contentAccessSql.js";
 import { sensitiveConversationReads } from "../runs/contextTaint.js";
 import { ROOT_BRANCH_PATH, visibleRoomTranscriptSql } from "./messagePath.js";
 import {
@@ -198,6 +198,7 @@ export class PgSessionRepository {
           AND s.room_id IS NOT NULL
           AND ($4::varchar IS NULL OR s.room_id = $4)
           AND ${projectReadAccessSql("s.space_id", "s.project_id", "$3")}
+          AND ${roomConversationAudienceSql("s.space_id", "s.id", "$3")}
           AND s.status = 'active'`,
       [sessionId, spaceId, userId, roomId ?? null],
     );
@@ -588,6 +589,8 @@ export class PgSessionRepository {
   async findOpenRoomDraft(input: {
     space_id: string;
     room_id: string;
+    /** A draft frozen to an audience without this person is never reused for them. */
+    viewer_user_id: string;
   }): Promise<SessionOut | null> {
     const result = await this.db.query<SessionRow>(
       `SELECT s.id, s.space_id, s.user_id, s.project_folder_id, s.project_id,
@@ -601,10 +604,11 @@ export class PgSessionRepository {
             SELECT 1 FROM messages m
              WHERE m.space_id = s.space_id AND m.session_id = s.id
           )
+          AND ${roomConversationAudienceSql("s.space_id", "s.id", "$3")}
         ORDER BY s.created_at DESC, s.id DESC
         LIMIT 1
         FOR UPDATE`,
-      [input.space_id, input.room_id],
+      [input.space_id, input.room_id, input.viewer_user_id],
     );
     return result.rows[0] ? sessionToOut(result.rows[0]) : null;
   }
@@ -1466,9 +1470,11 @@ function messageToOut(row: MessageRow): MessageOut {
     parent_message_id: row.parent_message_id,
     run_id: row.run_id,
     discussion_id: row.discussion_id ?? null,
-    input_parts: ConversationMessageInputPartsSchema.safeParse(row.input_parts ?? []).success
-      ? ConversationMessageInputPartsSchema.parse(row.input_parts ?? [])
-      : [],
+    // Each attachment is independently usable when reading older messages.
+    input_parts: Array.isArray(row.input_parts) ? row.input_parts.flatMap((part: unknown) => {
+      const parsed = ConversationMessageInputPartSchema.safeParse(part);
+      return parsed.success ? [parsed.data] : [];
+    }) : [],
     created_at: dateValue(row.created_at) ?? new Date(0).toISOString(),
   };
 }

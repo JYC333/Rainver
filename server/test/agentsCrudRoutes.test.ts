@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../src/config.js";
 import { getDbPool } from "../src/db/pool.js";
 import { buildModuleServer } from "./support/moduleServer.js";
-import { agentTemplatesModule } from "../src/modules/agentTemplates/index.js";
+import { agentRolesModule } from "../src/modules/agentRoles/index.js";
 import { __setAgentChatIdentityForTests } from "../src/modules/agents/routes.js";
 import { agentsModule } from "../src/modules/agents/index.js";
 import { __setAuthIdentityForTests, __setAuthRepositoryForTests } from "../src/modules/auth/identity.js";
@@ -115,7 +115,7 @@ describe("agents CRUD routes", () => {
   it("lists agents with the public response shape", async () => {
     const query = vi.fn(async () => ({ rows: [], rowCount: 0 }));
     vi.mocked(getDbPool).mockReturnValue({ query } as never);
-    app = buildModuleServer(config(), [agentsModule, agentTemplatesModule]);
+    app = buildModuleServer(config(), [agentsModule, agentRolesModule]);
 
     const res = await app.inject({
       method: "GET",
@@ -170,7 +170,7 @@ describe("agents CRUD routes", () => {
       return { rows: [], rowCount: 0 };
     });
     vi.mocked(getDbPool).mockReturnValue({ query } as never);
-    app = buildModuleServer(config(), [agentsModule, agentTemplatesModule]);
+    app = buildModuleServer(config(), [agentsModule, agentRolesModule]);
 
     const res = await app.inject({
       method: "GET",

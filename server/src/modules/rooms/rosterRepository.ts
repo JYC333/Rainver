@@ -26,6 +26,8 @@ export interface RoomInvitationRecord {
   invited_by_user_id: string;
   status: "pending" | "active" | "rejected" | "expired" | "cancelled" | "invalidated";
   required_roster_revision: number;
+  /** Whether the invitee may read the Room's existing conversations. */
+  share_history: boolean;
   expires_at: string;
   created_at: string;
   updated_at: string;
@@ -46,14 +48,14 @@ export interface RoomInvitationApprovalRecord {
 
 const INVITATION_COLUMNS = `
   id, space_id, room_id, invitee_user_id, invited_by_user_id, status,
-  required_roster_revision::int AS required_roster_revision,
+  required_roster_revision::int AS required_roster_revision, share_history,
   expires_at, created_at, updated_at, resolved_at
 `;
 
 const INVITATION_COLUMNS_ALIASED = `
   invitation.id, invitation.space_id, invitation.room_id,
   invitation.invitee_user_id, invitation.invited_by_user_id, invitation.status,
-  invitation.required_roster_revision::int AS required_roster_revision,
+  invitation.required_roster_revision::int AS required_roster_revision, invitation.share_history,
   invitation.expires_at, invitation.created_at, invitation.updated_at,
   invitation.resolved_at
 `;
@@ -74,6 +76,8 @@ export class PgRoomRosterRepository {
     offset: number;
     /** Case-insensitive name filter over the whole eligible set, not one page. */
     q?: string | null;
+    /** Only Agents created from this Role (a plugin's assistant setup), over the whole eligible set. */
+    source_role_id?: string | null;
   }): Promise<{ items: RoomRosterAgentCandidate[]; total: number }> {
     const params: unknown[] = [input.space_id, input.user_id, input.room_id];
     const term = input.q?.trim();
@@ -88,7 +92,8 @@ export class PgRoomRosterRepository {
       AND (a.access_project_id IS NULL OR a.access_project_id = room.project_id OR a.owner_user_id = $2)
       AND (a.visibility <> 'selected_users' OR a.owner_user_id = $2)
       AND ${contentReadSql("agent", "a", "$2")}
-      ${search}`;
+      ${search}
+      ${input.source_role_id ? `AND a.source_role_id = $${params.push(input.source_role_id)}` : ""}`;
     const total = await this.db.query<{ total: string }>(
       `SELECT count(*)::text AS total
          FROM agents a
@@ -399,15 +404,16 @@ export class PgRoomRosterRepository {
     invitee_user_id: string;
     invited_by_user_id: string;
     required_roster_revision: number;
+    share_history: boolean;
     expires_at: string;
   }): Promise<RoomInvitationRecord> {
     const result = await this.db.query<RoomInvitationRecord>(
       `INSERT INTO room_user_invitations (
          id, space_id, room_id, invitee_user_id, invited_by_user_id, status,
-         required_roster_revision, expires_at, created_at, updated_at
-       ) VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, now(), now())
+         required_roster_revision, share_history, expires_at, created_at, updated_at
+       ) VALUES ($1, $2, $3, $4, $5, 'pending', $6, $8, $7, now(), now())
        RETURNING ${INVITATION_COLUMNS}`,
-      [randomUUID(), input.space_id, input.room_id, input.invitee_user_id, input.invited_by_user_id, input.required_roster_revision, input.expires_at],
+      [randomUUID(), input.space_id, input.room_id, input.invitee_user_id, input.invited_by_user_id, input.required_roster_revision, input.expires_at, input.share_history],
     );
     return required(result.rows[0], "Room invitation insert returned no row");
   }

@@ -1,9 +1,8 @@
+import { PgRunToolIdentityRepository } from "./runToolIdentityRepository.js";
 import {isolatedWorkspaceContract} from '../projectFolders/executionWorkspaces.js';
 import {workspaceChangesForRun} from '../projectFolders/workspaceReadModel.js';
-import {OperationToolResponse} from "../systemActions/operations/agentResult.js";
 import { stateChangingReadAllowed } from "../../gateway/csrfOrigin.js";
 import { readRunFilePreview } from "./filePreview.js";
-import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import { checkInternalToken } from "../../gateway/internalAuth.js";
@@ -11,7 +10,7 @@ import { PgActivityRepository } from "../activity/repository.js";
 import { PgArtifactRepository } from "../artifacts/repository.js";
 import { PgProposalRepository } from "../proposals/repository.js";
 import { resolveIdentity as resolveRouteIdentity, dbPool, page, sendRouteError } from "../routeUtils/common.js";
-import { PgRunRepository, type AgentRunRecord, type VisibleRunRecord } from "./repository.js";
+import { PgRunRepository, type VisibleRunRecord } from "./repository.js";
 import { bodyWithheld } from "../access/contentAccessTypes.js";
 import { authorizeRunCommand } from "./runCommandAuthority.js";
 import type { RunOrchestrationService } from "./orchestrationService.js";
@@ -21,8 +20,6 @@ import { loadRunTurn } from "./turnReadModel.js";
 import { liveInputChannel } from "./liveInput.js";
 import { liveInputDeliveryState } from "./liveInputService.js";
 import { registerOperationAdapters } from "../systemActions/operations/routeAdapter.js";
-import { CliAgentToolTransport } from "./cliToolTransport.js";
-import { PgRunToolIdentityRepository } from "./runToolIdentityRepository.js";
 import { assembleRunInputEnvelope, logicalRunInput } from "./runInputEnvelope.js";
 import {
   artifactSummaryToOut,
@@ -141,121 +138,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       return reply.send(await readRunFilePreview(dbPool(context.config), context.config, identity, params(request).runId!, query(request).path ?? ""));
     } catch (error) { return sendRouteError(reply, error); }
   });
-  /**
-   * The tool surface a dispatched agent calls back on.
-   *
-   * One vendor-neutral surface for every runtime: the agent holds this Run's
-   * bearer token and reaches `SystemActionDispatcher` — the same grant
-   * computation, the same policy enforcement, the same executors the managed
-   * loop uses. Nothing here decides what an agent may do; the Run's persisted
-   * `permission_snapshot_json.tool_grants` did that at creation, and the
-   * dispatcher enforces it call by call.
-   *
-   * `runToolRequest` repeats the transport's own liveness check before every
-   * call: a Run that stopped running has no tool surface, whatever token the
-   * caller still holds.
-   */
-  async function runToolRequest(
-    request: FastifyRequest,
-    reply: FastifyReply,
-  ): Promise<{ run: AgentRunRecord; transport: CliAgentToolTransport; launchId: string | null; startedAt: number } | null> {
-    const startedAt = Date.now();
-    const runId = params(request).runId ?? "";
-    const authorization = request.headers.authorization ?? "";
-    const token = authorization.startsWith("Bearer ") ? authorization.slice(7).trim() : "";
-    const identity = await new PgRunToolIdentityRepository(dbPool(context.config))
-      .resolve(token, runId);
-    if (!identity) {
-      await reply.code(401).send({ detail: "Invalid or expired Run tool identity" });
-      return null;
-    }
-    const run = await PgRunRepository.fromConfig(context.config)
-      .getAgentRun(identity.space_id, runId);
-    if (!run || run.space_id !== identity.space_id || run.status !== "running") {
-      await reply.code(403).send({ detail: "Run tool identity is no longer active" });
-      return null;
-    }
-    return { run, transport: new CliAgentToolTransport(context.config), launchId: identity.launch_id, startedAt };
-  }
-
-  // Under `/api/v1`, not `/internal`, because a Run's children call it from
-  // wherever they execute — including a paired machine, which reaches the
-  // instance through its public URL. Production nginx forwards `/api/` and the
-  // host WebSocket and nothing else, so the `/internal` spelling worked only in
-  // dev, where Vite proxied all of `/internal`. The gate is the Run's own
-  // bearer token, which is what `/internal` never was: that prefix carries the
-  // instance token, and no Run has it.
-  app.get("/api/v1/runs/:runId/tools", async (request, reply) => {
-    const scope = await runToolRequest(request, reply);
-    if (!scope) return reply;
-    const tools = await scope.transport.list(scope.run);
-    return reply.send({
-      run_id: scope.run.id,
-      tools: tools.map((tool) => ({ name: tool.name, description: tool.description })),
-    });
-  });
-
-  app.get("/api/v1/runs/:runId/tools/:actionId", async (request, reply) => {
-    const scope = await runToolRequest(request, reply);
-    if (!scope) return reply;
-    const actionId = params(request).actionId ?? "";
-    const tool = (await scope.transport.list(scope.run)).find((entry) => entry.name === actionId);
-    // Same answer for "no such action" and "granted to some other Run": the
-    // token holder learns only about its own surface.
-    if (!tool) {
-      return reply.code(403).send({ok:false,error_code:"system_action_not_granted",detail:"This action is not available to this Run. Read rainver list; do not guess another name."});
-    }
-    return reply.send({
-      name: tool.name,
-      description: tool.description,
-      input_schema: tool.input_schema ?? { type: "object" },
-    });
-  });
-
-  app.post("/api/v1/runs/:runId/tools/:actionId", async (request, reply) => {
-    const scope = await runToolRequest(request, reply);
-    if (!scope) return reply;
-    const actionId = params(request).actionId ?? "";
-    // The caller's own key for this call. Side-effecting actions dedupe on it,
-    // so a retried POST advances the work once. A caller that sends none gets a
-    // fresh one rather than the action id: a constant per action would make a
-    // second `task.report` in the same attempt collide with the first and be
-    // swallowed by the event writer's `ON CONFLICT DO NOTHING`, losing a report
-    // while answering `ok: true`.
-    const idempotencyKey = stringValue(request.headers["idempotency-key"]) ?? randomUUID();
-    const executionChannel = liveInputChannel(scope.run.id);
-    const client = new AbortController();
-    reply.raw.once("close", () => { if (!reply.raw.writableFinished) client.abort(); });
-    try {
-      const result = await scope.transport.call(scope.run, {
-        id: idempotencyKey,
-        name: actionId,
-        arguments: jsonBody(request),
-      }, client.signal, { launchId: scope.launchId, startedAt: scope.startedAt });
-      if(result instanceof OperationToolResponse)return reply.code(result.httpStatus).send(result.body);
-      const receipt = result as { ok?: boolean; status?: string } | null;
-      if (actionId === "agent.wait_for_results" && receipt?.ok === true && receipt.status === "waiting") {
-        // Deliver the durable wait receipt before cancelling its enclosing runtime tool call.
-        reply.raw.once("finish", () => {
-          try { executionChannel?.yield(); }
-          catch (error) { request.log.warn({ err: error, run_id: scope.run.id }, "Dependency yield request failed"); }
-        });
-      }
-      return reply.send(result);
-    } catch (error) {
-      // A failing action is a result the agent must be able to read and act
-      // on, not a transport fault: the dispatcher already returns refusals as
-      // `ok: false` bodies, and this covers what it throws instead.
-      return reply.code(422).send({
-        ok: false,
-        tool: actionId,
-        error_code: "system_action_failed",
-        error: "Run tool call failed. Check the current action list and visible state before deciding the next step.",
-      });
-    }
-  });
-
-
   // Service-authenticated internal execute for synchronous server callers
   // (currently the agents chat turn). Same orchestration authority as the
   // public route; identity is the internal service token, and the caller

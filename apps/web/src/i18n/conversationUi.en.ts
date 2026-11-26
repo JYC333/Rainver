@@ -119,6 +119,7 @@ export const conversationUiEn = {
     composer: {
       remove_pasted_text: 'Remove pasted text',
       edit_draft: 'Edit message draft',
+      view_long_text: 'View full message',
       done_editing: 'Done',
       image_unsupported: 'Images are not supported by the selected runtime/model. Remove the affected image or choose another target.',
       send: 'Send',
@@ -487,6 +488,7 @@ export const conversationUiEn = {
       drop_pick: 'Do not carry this in',
       execution: 'Execution',
       images_unsupported_by: 'Images are not supported by {{agents}}. Remove the affected image or choose another target.',
+      refresh_unavailable: 'Could not refresh this conversation. Retrying…',
       load_older: 'Load older',
       loading: 'Loading conversation…',
       loading_result: 'Loading result…',

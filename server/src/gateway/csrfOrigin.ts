@@ -10,7 +10,7 @@
  * There is no same-host fallback. Behind the frontend proxy the Host header
  * carries no port and the scheme is the proxy's, so a derived origin does not
  * match a real browser origin. Do not allow a request-derived allowlist.
- * `FRONTEND_URL` is the allowlist.
+ * `PUBLIC_BASE_URL` is the allowlist.
  *
  * Do not require `application/json` on writes. The
  * property it would buy — that a cross-origin HTML form cannot send the body,
@@ -64,7 +64,7 @@ function firstHeader(value: string | string[] | undefined): string | undefined {
  * Three terms, in order, and it fails closed.
  *
  * An explicit `Origin` decides it: that is the browser naming who caused the
- * request, and judging it against `FRONTEND_URL` is the rule mutating requests
+ * request, and judging it against `PUBLIC_BASE_URL` is the rule mutating requests
  * already use. It comes first because it is the more specific answer — a
  * frontend served from a sibling host of the API is `Sec-Fetch-Site:
  * same-site`, which would otherwise be indistinguishable from a navigation

@@ -6,7 +6,7 @@ import type { ServerConfig } from "../../config.js";
 import { getDbPool, type Pool, type PoolClient } from "../../db/pool.js";
 import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
 import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext.js";
-import { introspectIdentity } from "../auth/identity.js";
+import { introspectIdentity, introspectSessionPerson } from "../auth/identity.js";
 import { redactSecretPatterns } from "../runs/evidenceRedaction.js";
 
 export type { Pool };
@@ -57,6 +57,32 @@ export async function resolveIdentity(
   // the reply puts the refreshed cookie on this response.
   const identity = await introspectIdentity(config, request, reply);
   if (identity.ok) return { spaceId: identity.spaceId, userId: identity.userId };
+  return sendIdentityFailure(reply, identity, requestId);
+}
+
+/**
+ * The signed-in person for a person-scoped (cross-Space) reader. The browsed
+ * Space header/query is ignored entirely and no active Space is required, so a
+ * stale or left Space, or none at all, never refuses it; a missing or invalid
+ * session is refused exactly as `resolveIdentity` refuses it.
+ */
+export async function resolvePerson(
+  config: ServerConfig,
+  request: FastifyRequest,
+  reply: FastifyReply,
+): Promise<{ userId: string } | null> {
+  const requestId = resolveRequestId(request);
+  reply.header(REQUEST_ID_HEADER, requestId);
+  const person = await introspectSessionPerson(config, request, reply);
+  if (person.ok) return { userId: person.userId };
+  return sendIdentityFailure(reply, person, requestId);
+}
+
+async function sendIdentityFailure(
+  reply: FastifyReply,
+  identity: { reason: "denied" | "unavailable" | "contract_violation"; statusCode: number; body: string },
+  requestId: string,
+): Promise<null> {
   if (identity.reason === "denied") {
     reply.code(identity.statusCode);
     reply.header("content-type", "application/json");

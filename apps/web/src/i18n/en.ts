@@ -81,6 +81,7 @@ export const en = {
     registration_failed: 'Google registration could not be completed. Please retry from the invitation.',
     unknown_error: 'An error occurred. Please try again.', invalid_credentials: 'Invalid email or password.',
     logout_pending: 'Sign-out could not reach the server. Try signing in again when you are connected.',
+    signed_out: 'This browser signed out while you were signing in. Sign in again.',
     reset_sent: 'If this email exists, a reset link will be prepared by the instance administrator.',
     email: 'Email', password: 'Password', remember: 'Keep me signed in',
     signing_in: 'Signing in…', sign_in: 'Sign in', forgot_password: 'Forgot password?',

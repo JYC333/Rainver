@@ -43,7 +43,7 @@ is the single entry check for both CLI operation branches and ACP dispatch.
 This includes binding/profile/plugin enablement, not just the grant snapshot.
 `list` and `describe` expose only that catalogue. Describe and call return the
 same permission refusal for an unknown name and an unavailable registered name
-(HTTP 403 `system_action_not_granted` on the Run REST surface); neither confirms
+(status 403 and `system_action_not_granted` on the Run tool channel); neither confirms
 what another Run can use. A live grant revoked after discovery returns
 `operation_not_granted` / 403 from Operation Core. Object visibility failures
 remain uniform `operation_not_found` / 404.
@@ -92,45 +92,23 @@ HTTP routes continue to call their owning application services and
 `PolicyGateway` enforcement points directly; they do not go through
 `SystemActionDispatcher`. Server jobs may use internal/system-job actions.
 
-ACP Agent Runs reach `SystemActionDispatcher` through a Run-scoped REST
-surface: `GET /api/v1/runs/:runId/tools`, `GET
-/api/v1/runs/:runId/tools/:actionId` and `POST
-/api/v1/runs/:runId/tools/:actionId` (`runs/routes.ts`), in front of
-`runs/cliToolTransport.ts`'s `CliAgentToolTransport`. The agent calls them
-with the `rainver` command (`packages/agent-cli`), which the executing side
-puts in front of it — the host daemon on a paired machine, the server for a
-sandboxed Run — as an absolute path in `RAINVER_CLI`, never on `PATH`
-(ADR 0016 §7). The command is a pass-through (`list`, `describe`, `call`):
-action names and input schemas come from the server at run time, so a new
-System Action needs nothing added to it.
+ACP Agent Runs reach `SystemActionDispatcher` through the `rainver` command
+(`packages/agent-cli`) and the Host's authenticated WebSocket. The command
+lists, describes and calls server-defined actions. The Host binds the local
+bridge to the launch and retains the Run bearer. The server checks the Host,
+launch and token, then runs `runs/cliToolTransport.ts`'s
+`CliAgentToolTransport`. An explicit idempotency key travels in the tool frame.
 
-On Linux Hosts the server requests `RAINVER_TOOL_BRIDGE_PROTOCOL=file-v1` in
-the work surface. The daemon creates a private directory per launch, exports
-`RAINVER_TOOL_BRIDGE`, and retains the Run bearer in its own request-handler
-closure instead of the runtime environment. CLI requests use atomic local
-files; the Host forwards only the existing tool REST verbs using that fixed
-identity and endpoint. Socket-disabled commands therefore need no network
-escalation. Directory handles are pinned through `/proc/self/fd` so replacing
-a directory cannot redirect Host reads/writes; payloads reject symlinks,
-hardlinks and oversized files. The channel admits eight in-flight calls,
-never automatically retries a write, aborts requests on runtime exit or failed
-launch, and removes its private directory. It is not a general proxy.
+The file bridge on Linux and macOS and the named pipe on Windows are private
+to one launch. The local and remote channels enforce size and concurrency
+bounds. Connection loss cancels pending calls without replaying uncertain
+writes. The shared ACP controller exposes only the file bridge directory
+through negotiated `additionalDirectories`.
 
-The shared ACP controller requests an empty `additionalDirectories` list only
-when a work surface exists and the Agent advertises that capability. The Host
-adds its own launch directory to that field in session setup frames, never to
-prompts or user text. This grants local IPC access without changing the
-Agent's network policy; it also works on session resume. No vendor config file
-or model selection is changed. An older Host ignores the protocol marker and
-continues direct CLI HTTP; an updated Host receiving an older work surface
-does the same. Both server and Host must be updated to enable file IPC.
-
-Reuse / Dependency Check: reuse `CliAgentToolTransport`, Run identities and
-the existing REST actions. Node's filesystem API supplies local transport;
-HTTP and Unix sockets cannot carry calls from a fully socket-disabled command,
-and subprocess stdio cannot be inherited by arbitrary nested CLI invocations.
-The bounded file exchange is a narrowly scoped extension of `@rainver/agent-cli`,
-with no new dependency, action registry, policy evaluator or MCP surface.
+Reuse / Dependency Check. Reuse the Host WebSocket, Run identity repository,
+idempotency receipts and `CliAgentToolTransport`. Node filesystem and IPC
+APIs provide the launch-local bridge. The Host protocol adds typed tool
+messages and uses the existing action registry and policy.
 
 The identity is a `run_tool_identities` row: a bearer token stored only as a
 digest, issued for one Run, matched against the Run id rather than trusted
@@ -164,8 +142,13 @@ variables and the files behind them — the command, reachable at `RAINVER_CLI`
 directory), the Rainver Work Skill
 (`skills/workSkill.ts`, rendered from `systemActions/conversationPolicy.ts`
 constants the conversational surfaces share),
-and a pointer to the Skill appended to the prompt the runtime is actually
-sent. There is no per-vendor branch anywhere in that path. Do not add a
+and a pointer to the Skill in the prompt the runtime is sent. Every launch
+with a prompt supplies its current pointer, including resumed sessions,
+because vendor compaction can discard the previous instructions. A resumed
+prompt carries a short reminder for tool discovery and, when the Run has the
+grant, formal Room delegation through `agent.delegate`. The live action list
+and call-time authorization still decide what is available. There is no
+per-vendor branch anywhere in that path. Do not add a
 generated MCP configuration file per vendor. A newly
 registered ACP agent needs nothing added.
 
@@ -1130,6 +1113,27 @@ Missing/inactive authority remains hidden as 404; SQL failures propagate.
 Nonlocking preflight/query checks, Agent/Run/grant checks and replay stay intact.
 This local lock order does not move actor admission ahead of a registration's
 Project/Source authorization closure (see DATABASE_AND_TRANSACTIONS).
+Admission (`OperationExecutor.admit`) also refuses, before any operation of
+an Agent's Run, a plugin's companion Agent whose plugin is no longer set up for
+that Run's Project and Room (`plugins/agentRoleAdmission.ts`, see
+[OFFICIAL_OPTIONAL_MODULES](OFFICIAL_OPTIONAL_MODULES.md)); it is an unlocked
+read, and is imported statically so it adds no module load inside a call. A
+command repeats it inside its transaction, before the core pins the person and
+the Run (where `lockBeforeActor` runs): the Run's Project `FOR UPDATE`, the
+Room execution boundary, the plugin scope and binding `FOR SHARE`, then the
+decision (`assertPluginRoleAgentAdmittedLocked`), so an unbind, disable or Room
+withdrawal that committed after `admit` refuses the command and a later one
+waits for it. A result that passes a `releaseGate` (fresh query or command
+result and receipt replay alike) is decided once more in the release
+transaction, before the gate: the Run's Project `FOR SHARE` (the strength every
+release gate takes it at next), the Room boundary, the plugin locks, then the
+decision (`assertPluginRoleAgentAdmittedLocked(…, 'release')`). A query's own
+transaction is read-only and cannot lock, so a Room removal or conversation
+audience freeze committed after the query ran is seen here: the result is
+withheld with the admission's 409 refusal, and a Room write that leaves the
+Agent authorized is waited for and then released. The same decision is asked first by
+`SystemActionDispatcher.dispatch` for every tool call, gateway actions
+included, which refuses with the admission's `error_code`.
 
 Stage-1 contracts were reviewed and committed. The stage-2 source now composes
 `systemActions/operations/` as an opt-in execution path over the same protocol
@@ -1593,7 +1597,7 @@ delivers into, and it reads no mail
 Agent-only conversation tools in `CONVERSATION_TOOL_ALLOWANCE` whose executors admit only the
 mailbox owner's own turn in a conversation only they read; `.flag` exists only in the
 automation's own Run (`APPLICATION_UPDATE_RUN_TOOLS`), as does
-`plugin.applications.mail_fact.apply`, which no allowance names
+`plugin.phd_application.mail_fact.apply`, which no allowance names
 ([ADR 0034](../decisions/0034-gmail-application-updates.md)).
 
 ## Monitor management and manual scan enqueue
@@ -1886,14 +1890,14 @@ require verification and CAS before publication. See
 
 ## Agent and Room commands
 
-Every Agent, Agent-template, Room, Agent-group, Run and direct-session write
+Every Agent, Agent-role, Room, Agent-group, Run and direct-session write
 URL is a formal adapter (`systemActions/operations/routeAdapter.ts`) for one
 human-only core command; the generic `/api/v1/actions/:opId` entry reaches the
 same registrations. Families and owners:
 
 | Family | Operations | Owner |
 |---|---|---|
-| Agent definition | `agent.create`, `agent.template.instantiate`, `agent.update`, `agent.config.update`, `agent.version.restore`, `agent.runtime_profile.create` / `.update` / `.ensure_host`, `agent.runtime_default.set`, `agent.assistant_settings.update` | `agents/operations.ts` |
+| Agent definition | `agent.create`, `agent.role.instantiate`, `agent.update`, `agent.config.update`, `agent.version.restore`, `agent.runtime_profile.create` / `.update` / `.ensure_host`, `agent.runtime_default.set`, `agent.assistant_settings.update` | `agents/operations.ts` |
 | Direct conversation | `agent.run.create`, `agent.chat.send`, `agent.chat.retry`, `agent.chat.reset_context`, `conversation.session_config.save` | `agents/operations.ts`, `agents/chatOperations.ts` |
 | Room | `room.create`, `room.agent.add` / `.add_preset` / `.remove` / `.reset_context` / `.summarize_context` / `.restart_from_summary`, `room.invitation.create` / `.decide`, `room.member.remove`, `room.owner.transfer` / `.claim`, `room.conversation.create` / `.attach_references`, `room.message.send` / `.withdraw_queued` / `.retry` / `.continue_after_proposal`, `room.quota.continue`, `room.discussion.start` / `.stop` / `.extend` | `rooms/operations.ts` |
 | Project Agent list | `project.agent.add`, `project.agent.remove` (policy action `project.management.write`; Project writer under the archive fence; the add accepts only an Agent the person may link) | `projects/projectAgentOperations.ts` |
@@ -1902,7 +1906,7 @@ same registrations. Families and owners:
 | Session | `session.create`, `session.delete`, `session.message.add`, `session.reflect` (`memory_create` Proposal), `conversation.execution.initialize`, `conversation.execution.attachment.mutate`; query `conversation.execution.preflight` | `sessions/operations.ts` |
 
 Behavior kept from the retained routes: Personal/Project placement for
-`agent.create`, `agent.template.instantiate`, `agent.run.create`,
+`agent.create`, `agent.role.instantiate`, `agent.run.create`,
 `agent.chat.send` and `session.create` is the access owner's (the executor's
 durable-placement allowlist); owner, configurer, Room writer/member, Host-owner
 and Run command standing are rechecked under the transaction; Room sends are
@@ -1991,9 +1995,7 @@ domain locks. The transport-only replay tables written by the old routes
 covers every caller. Domain uniqueness (one personal Room per Project, one
 retry per failed Run, dispatch locks, turn claims) is unchanged.
 
-`POST /api/v1/runs/:runId/tools/:actionId` is a reviewed transport exemption:
-the Run bearer-token Agent tool transport, where each action is admitted by its
-own core registration or inventoried legacy executor. `POST
+Run tool frames use the shared Agent action admission and receipts. `POST
 /agents/:agentId/host-state/reset` moved with the Host block to the journaled
 `agent.host_state.reset` Host command (see "Host commands" below); Agent
 Attention's two write markers are person-scoped core commands, described below.

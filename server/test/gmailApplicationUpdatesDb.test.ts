@@ -1,9 +1,10 @@
+import { runTool as callRunTool } from "./support/runTool.js";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
-import { ProposalOutSchema, type RainverPlugin } from "@rainver/protocol";
+import { GmailDigestListSchema, ProposalOutSchema, type RainverPlugin } from "@rainver/protocol";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { seedAgentWithVersion, seedRun, seedServerHost, seedSpaceMember, seedSpaceOwnerProject } from "./support/domainSeeds.js";
@@ -69,12 +70,12 @@ const CLIENT_ID = "gmail-client.apps.googleusercontent.com";
 const READONLY = "https://www.googleapis.com/auth/gmail.readonly";
 const SUBJECT_MARK = "SUBJECT-MARK-7f2a";
 const BODY_MARK = "BODY-MARK-91c3";
-const plugin = BUILT_IN_PLUGINS.find((p) => p.id === "applications") as RainverPlugin;
+const plugin = BUILT_IN_PLUGINS.find((p) => p.id === "phd_application") as RainverPlugin;
 
 let config: ServerConfig, app: ReturnType<typeof buildModuleServer>;
 let space: string, owner: string, peer: string, admin: string, project: string;
 
-type Mail = { id: string; at: number; subject: string; body: string; labels: string[]; from?: string; to?: string };
+type Mail = { id: string; at: number; subject: string; body: string; labels: string[]; from?: string; to?: string; headers?: { name: string; value: string }[] };
 const google = { calls: [] as { url: string; method: string }[], historyId: 1000, history: [] as { id: string; messageIds: string[] }[], messages: new Map<string, Mail>(), nextSub: "1001",
   /** A status Gmail answers instead for a message's own get (a transient 5xx), by message id. */
   failing: new Map<string, number>() };
@@ -83,7 +84,7 @@ const json = (value: unknown, status = 200) => new Response(JSON.stringify(value
 const idToken = (sub: string) => `e30.${Buffer.from(JSON.stringify({ iss: "https://accounts.google.com", aud: CLIENT_ID, sub, iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 600 })).toString("base64url")}.sig`;
 /** A synthetic message arriving now (its receipt time at whole seconds, as Gmail reports milliseconds). */
 function deliver(input: Partial<Mail> = {}): Mail {
-  const mail: Mail = { id: (nextMessage++).toString(16), at: input.at ?? Date.now(), subject: input.subject ?? `${SUBJECT_MARK} Quick chat`, body: input.body ?? `${BODY_MARK} Are you free next week to talk about your application?`, labels: input.labels ?? ["INBOX", "UNREAD"], from: input.from, to: input.to };
+  const mail: Mail = { id: (nextMessage++).toString(16), at: input.at ?? Date.now(), subject: input.subject ?? `${SUBJECT_MARK} Quick chat`, body: input.body ?? `${BODY_MARK} Are you free next week to talk about your application?`, labels: input.labels ?? ["INBOX", "UNREAD"], from: input.from, to: input.to, headers: input.headers };
   google.messages.set(mail.id, mail);
   google.historyId += 1;
   google.history.push({ id: String(google.historyId), messageIds: [mail.id] });
@@ -122,7 +123,7 @@ async function stub(url: string, init?: RequestInit): Promise<Response> {
     const m = google.messages.get(message[1]!);
     if (!m) return json({ error: { code: 404 } }, 404);
     return json({ id: m.id, threadId: m.id, labelIds: m.labels, internalDate: String(m.at), snippet: "",
-      payload: { ...(full ? { mimeType: "text/plain", body: { data: Buffer.from(m.body).toString("base64url") } } : {}), headers: [{ name: "Subject", value: m.subject }, { name: "From", value: m.from ?? "Admissions <office@uni.example>" }, { name: "To", value: m.to ?? "owner@gmail.example" }] } });
+      payload: { ...(full ? { mimeType: "text/plain", body: { data: Buffer.from(m.body).toString("base64url") } } : {}), headers: [{ name: "Subject", value: m.subject }, { name: "From", value: m.from ?? "Admissions <office@uni.example>" }, { name: "To", value: m.to ?? "owner@gmail.example" }, ...(full ? m.headers ?? [] : [])] } });
   }
   throw new Error(`unexpected Google request ${url}`);
 }
@@ -148,7 +149,7 @@ beforeEach(async () => {
   app = buildModuleServer(config, [sourcesModule, systemActionsModule, proposalsModule, runsModule, contentAccessModule]);
   new PluginHost([plugin]).activate(app, config);
   await app.ready();
-  await withTransaction(db.pool, (tx) => pluginServiceFor(config).enablePlugin(tx, "applications", space, owner, {}));
+  await withTransaction(db.pool, (tx) => pluginServiceFor(config).enablePlugin(tx, "phd_application", space, owner, {}));
   as(owner);
   for (const set of [__setGmailOAuthGuardForTests, __setGmailProfileGuardForTests, __setGmailSyncGuardForTests, __setGmailReadGuardForTests]) set(publicAddressGuard);
   Object.assign(google, { calls: [], historyId: 1000, history: [], messages: new Map(), nextSub: "1001", failing: new Map() });
@@ -318,14 +319,14 @@ async function launch(sourceRun: string | null, runId: string, hostId: string, e
 }
 
 const application = async (institution: string, program: string) =>
-  (await ok(action("plugin.applications.application.create", { project_id: project, institution, program, checklist: "empty" }))).application_id as string;
-const appRow = async (id: string) => (await db.pool.query(`SELECT status,revision,status_changed_at FROM plugin_applications.applications WHERE id=$1`, [id])).rows[0];
+  (await ok(action("plugin.phd_application.application.create", { project_id: project, institution, program, checklist: "empty" }))).application_id as string;
+const appRow = async (id: string) => (await db.pool.query(`SELECT status,revision,status_changed_at FROM plugin_phd_application.applications WHERE id=$1`, [id])).rows[0];
 const items = async (digestId: string) => (await db.pool.query(`SELECT google_message_id,status,reason,attempts,candidate_application_ids FROM gmail_digest_mail_items WHERE digest_id=$1 ORDER BY received_at`, [digestId])).rows;
 const iso = (ms: number) => new Date(ms).toISOString();
 
 async function confirmedAutomation(effects?: string[]) {
   const connectionId = await connect();
-  await ok(action("official_plugin.project_binding.bind", { plugin_id: "applications", project_id: project }));
+  await ok(action("official_plugin.project_binding.bind", { plugin_id: "phd_application", project_id: project }));
   const conversation = await ownerConversation();
   const drafted = await proposeGmailApplicationUpdates(db.pool, config, conversation.run, space, effects ? { effects: effects as never } : {}, randomUUID());
   expect(drafted.modelResult.ok, JSON.stringify(drafted)).toBe(true);
@@ -346,15 +347,15 @@ it("is offered in conversation and exempt from the mail-read write refusal only 
     expect(isOutwardAfterSensitiveRead({ id, side_effects: "durable" })).toBe(false);
   }
   // General Applications writes stay outward after a mail read: only the dedicated fact command has a gate.
-  expect(isOutwardAfterSensitiveRead({ id: "plugin.applications.application.update_status", side_effects: "durable" })).toBe(true);
-  expect(isOutwardAfterSensitiveRead({ id: "plugin.applications.mail_fact.apply", side_effects: "durable" })).toBe(true);
+  expect(isOutwardAfterSensitiveRead({ id: "plugin.phd_application.application.update_status", side_effects: "durable" })).toBe(true);
+  expect(isOutwardAfterSensitiveRead({ id: "plugin.phd_application.mail_fact.apply", side_effects: "durable" })).toBe(true);
 });
 
 it("confirms one rule in the owner's private conversation on its Agent and model, then records only checked external facts from new inbox mail", async () => {
   // A conversation read by someone outside the Project is refused before anything is drafted (ADR 0035 §1 lets
   // the owner enable it from a Room or the mainline only while every reader works in the Project).
   const connectionId = await connect();
-  await ok(action("official_plugin.project_binding.bind", { plugin_id: "applications", project_id: project }));
+  await ok(action("official_plugin.project_binding.bind", { plugin_id: "phd_application", project_id: project }));
   const roomRun = randomUUID();
   await seedRun(db.pool, { id: roomRun, space, owner, agent: randomUUID(), version: randomUUID() });
   const outside = await roomConversation([owner, admin]);
@@ -410,11 +411,11 @@ it("confirms one rule in the owner's private conversation on its Agent and model
   const mail = (read.body as { data: { items: { id: string; internal_date: string; text: string }[] } }).data.items;
   expect(mail.map((item) => item.id)).toEqual([chat.id, moved.id, rejection.id]);
   expect(mail[0]!.text).toContain("talk about your application");
-  const listed = await call("plugin.applications.application.list", { project_id: project });
+  const listed = await call("plugin.phd_application.application.list", { project_id: project });
   expect(listed.httpStatus, JSON.stringify(listed.body)).toBe(200);
 
   const apply = (applicationId: string, message: { id: string; at: number }, effect: Record<string, unknown>, revision: number, receivedAt = iso(message.at)) =>
-    call("plugin.applications.mail_fact.apply", { project_id: project, application_id: applicationId, expected_revision: revision, source: { kind: "gmail", message_id: message.id, received_at: receivedAt }, effect });
+    call("plugin.phd_application.mail_fact.apply", { project_id: project, application_id: applicationId, expected_revision: revision, source: { kind: "gmail", message_id: message.id, received_at: receivedAt }, effect });
   const factOf = (response: OperationToolResponse) => (response.body as { data: Record<string, unknown> }).data;
   // "Quick chat" is an interview invitation by meaning: recorded once, replayed thereafter.
   let r = await apply(eth, chat, { kind: "status", status: "interview" }, (await appRow(eth)).revision);
@@ -442,7 +443,7 @@ it("confirms one rule in the owner's private conversation on its Agent and model
   expect(factOf(r)).toMatchObject({ outcome: "conflict", reason: "newer_status", before: "rejected" });
   expect(await appRow(oxford)).toMatchObject({ status: "rejected" });
   // The person's own later change wins over mail received before it.
-  await ok(action("plugin.applications.application.update_status", { project_id: project, application_id: eth, status: "offer" }));
+  await ok(action("plugin.phd_application.application.update_status", { project_id: project, application_id: eth, status: "offer" }));
   r = await apply(eth, rejection, { kind: "status", status: "rejected" }, (await appRow(eth)).revision);
   expect(factOf(r)).toMatchObject({ outcome: "conflict", reason: "newer_status", before: "offer" });
   // An unclear message is kept for the owner instead of guessed.
@@ -455,7 +456,7 @@ it("confirms one rule in the owner's private conversation on its Agent and model
   expect((await flagGmailApplicationMessage(db.pool, await loadRun(), { message_id: chat.id, reason: "unclear_fact" })).modelResult).toMatchObject({ ok: false, error: "gmail_digest_unavailable" });
 
   // A person and the owner's ordinary turn never reach the fact command.
-  expect((await action("plugin.applications.mail_fact.apply", { project_id: project, application_id: eth, expected_revision: 1, source: { kind: "gmail", message_id: chat.id, received_at: iso(chat.at) }, effect: { kind: "status", status: "interview" } })).statusCode).toBe(404);
+  expect((await action("plugin.phd_application.mail_fact.apply", { project_id: project, application_id: eth, expected_revision: 1, source: { kind: "gmail", message_id: chat.id, received_at: iso(chat.at) }, effect: { kind: "status", status: "interview" } })).statusCode).toBe(404);
   await db.pool.query(`UPDATE runs SET status='succeeded' WHERE id=$1`, [delivery.run_id]);
   const reply = await settleGmailDigestRun(db.pool, config, await loadRun(), "Recorded an interview at ETH Zurich; kept one message for you.", (tx, content) =>
     new PgSessionRepository(tx).addAssistantMessageForRun(space, owner, digest.session_id, delivery.run_id, { content }));
@@ -467,11 +468,11 @@ it("confirms one rule in the owner's private conversation on its Agent and model
   const listing = await listGmailApplicationUpdates(db.pool, run, space);
   expect(listing.modelResult).toMatchObject({ ok: true, automations: [expect.objectContaining({ digest_id: digest.id, status: "active", effects: ["interview", "rejected", "deadline"], mail_items: { pending: 0, review: 1, failed: 0 } })] });
   expect(JSON.stringify(listing.modelResult)).not.toContain(SUBJECT_MARK);
-  const facts = await app.inject({ method: "GET", url: `/api/v1/queries/plugin.applications.mail_fact.list?input=${encodeURIComponent(JSON.stringify({ project_id: project }))}` });
+  const facts = await app.inject({ method: "GET", url: `/api/v1/queries/plugin.phd_application.mail_fact.list?input=${encodeURIComponent(JSON.stringify({ project_id: project }))}` });
   expect(facts.statusCode, facts.body).toBe(200);
   expect(facts.json().data.items.filter((item: { outcome: string }) => item.outcome === "recorded")).toHaveLength(3);
   as(peer);
-  const peerFacts = await app.inject({ method: "GET", url: `/api/v1/queries/plugin.applications.mail_fact.list?input=${encodeURIComponent(JSON.stringify({ project_id: project }))}` });
+  const peerFacts = await app.inject({ method: "GET", url: `/api/v1/queries/plugin.phd_application.mail_fact.list?input=${encodeURIComponent(JSON.stringify({ project_id: project }))}` });
   expect(peerFacts.statusCode === 200 ? peerFacts.json().data.items : []).toEqual([]);
   as(owner);
 });
@@ -558,7 +559,7 @@ it("an earlier on-demand read in the same private conversation does not block th
   expect((await loadRunRow(runId)).context_taint_json).toMatchObject({ plugin_reads: [expect.objectContaining({ plugin_id: "core:gmail", owner_user_id: owner, gmail_scope: { project_id: project, grant_id: onDemand } })] });
   const { call } = await launch(run, runId, hostId);
   expect((await call("source.gmail.digest.read", {})).httpStatus).toBe(200);
-  const apply = async (message: Mail) => call("plugin.applications.mail_fact.apply", { project_id: project, application_id: eth, expected_revision: (await appRow(eth)).revision,
+  const apply = async (message: Mail) => call("plugin.phd_application.mail_fact.apply", { project_id: project, application_id: eth, expected_revision: (await appRow(eth)).revision,
     source: { kind: "gmail", message_id: message.id, received_at: iso(message.at) }, effect: { kind: "status", status: "interview" } });
   // That consent ended: the earlier read is no longer verified, and nothing is recorded.
   await db.pool.query(`UPDATE plugin_data_grants SET status='revoked',revoked_at=now() WHERE id=$1`, [onDemand]);
@@ -604,7 +605,7 @@ it("binds each delivery to the rule version it was started for: a changed rule e
   expect((await loadRunRow(oldDelivery.run_id)).contract_snapshot_json).toMatchObject({ workflow_input_json: { gmail_digest: { kind: "application", rule_version: proposalId } } });
   const { call, tool, loadRun } = await launch(run, oldDelivery.run_id, hostId);
   expect((await call("source.gmail.digest.read", {})).httpStatus).toBe(200);
-  const apply = async (message: Mail, status: string) => call("plugin.applications.mail_fact.apply", { project_id: project, application_id: eth, expected_revision: (await appRow(eth)).revision,
+  const apply = async (message: Mail, status: string) => call("plugin.phd_application.mail_fact.apply", { project_id: project, application_id: eth, expected_revision: (await appRow(eth)).revision,
     source: { kind: "gmail", message_id: message.id, received_at: iso(message.at) }, effect: { kind: "status", status } });
   expect((await apply(first!, "interview")).httpStatus).toBe(200);
   // The owner changes the rule while that Run is still going (a new card, accepted in their conversation).
@@ -644,8 +645,8 @@ it("delivers only into the owner's private conversation: never a Room, even one 
 
 it("answers the mail-fact ledger to an Agent only in the owner's own private conversation, never into a Room", async () => {
   const { run, session } = await confirmedAutomation(["interview"]);
-  const turn = await ownerTurn(run, session, ["plugin.applications.mail_fact.list"]);
-  const privateRead = await toolCall(await loadRunRow(turn), "plugin.applications.mail_fact.list", { project_id: project });
+  const turn = await ownerTurn(run, session, ["plugin.phd_application.mail_fact.list"]);
+  const privateRead = await toolCall(await loadRunRow(turn), "plugin.phd_application.mail_fact.list", { project_id: project });
   expect(privateRead instanceof OperationToolResponse ? privateRead.httpStatus : privateRead, JSON.stringify(privateRead)).toBe(200);
   // The same owner turn in a Room — with a peer, or with nobody else yet — gets the hidden 404 from the host gate.
   for (const members of [[owner, peer], [owner]]) {
@@ -654,11 +655,11 @@ it("answers the mail-fact ledger to an Agent only in the owner's own private con
     const { gmailApplicationFactsAudienceAdmitted } = await import("../src/modules/sources/gmail/gmailApplicationUpdates.js");
     const actor = { space_id: space, run_id: turn, on_behalf_of_user_id: owner, principal: { kind: "agent" as const, id: "agent" } };
     expect(await gmailApplicationFactsAudienceAdmitted(db.pool, actor, { project_id: project })).toBe(false);
-    const roomRead = await toolCall(await loadRunRow(turn), "plugin.applications.mail_fact.list", { project_id: project });
+    const roomRead = await toolCall(await loadRunRow(turn), "plugin.phd_application.mail_fact.list", { project_id: project });
     expect(roomRead instanceof OperationToolResponse ? roomRead.httpStatus : 0).not.toBe(200);
   }
   // The owner reads it directly; another person never gets the owner's rows.
-  expect((await app.inject({ method: "GET", url: `/api/v1/queries/plugin.applications.mail_fact.list?input=${encodeURIComponent(JSON.stringify({ project_id: project }))}` })).statusCode).toBe(200);
+  expect((await app.inject({ method: "GET", url: `/api/v1/queries/plugin.phd_application.mail_fact.list?input=${encodeURIComponent(JSON.stringify({ project_id: project }))}` })).statusCode).toBe(200);
 });
 
 it("never resumes an application automation through the generic digest status command: resuming is a new card", async () => {
@@ -701,7 +702,7 @@ const assistantMessages = async (runId: string) => (await db.pool.query<{ conten
 
 it("ADR 0037: offers exactly what the conversation's picker offers — aliases and `default` too, or the runtime's own default without a picker — and reads and settles with no proof of the answering model", async () => {
   const connectionId = await connect();
-  await ok(action("official_plugin.project_binding.bind", { plugin_id: "applications", project_id: project }));
+  await ok(action("official_plugin.project_binding.bind", { plugin_id: "phd_application", project_id: project }));
   const conversation = await ownerConversation();
   const select = (value: string) => db.pool.query(`UPDATE session_conversation_backends SET session_config_json=$2::jsonb WHERE session_id=$1`,
     [conversation.session, JSON.stringify([{ id: "model", type: "select", value, category: "model" }])]);
@@ -755,7 +756,7 @@ it("ADR 0037: offers exactly what the conversation's picker offers — aliases a
 
 it("ADR 0037: a non-Claude runtime-native configuration the owner's conversation can run (Codex CLI on its own login) is chosen on the card, accepted, scheduled, routed, reads mail, records a fact and settles", async () => {
   const connectionId = await connect();
-  await ok(action("official_plugin.project_binding.bind", { plugin_id: "applications", project_id: project }));
+  await ok(action("official_plugin.project_binding.bind", { plugin_id: "phd_application", project_id: project }));
   const conversation = await ownerConversation();
   const codex = await nativeAgent(conversation.hostId, "codex_cli", ["gpt-6.1", "gpt-6.1-mini"]);
   const eth = await application("ETH Zurich", "PhD in Computer Science");
@@ -785,7 +786,7 @@ it("ADR 0037: a non-Claude runtime-native configuration the owner's conversation
   const { call } = await launch(null, delivery.run_id, conversation.hostId, "gpt-6.1-mini");
   const read = await call("source.gmail.digest.read", {});
   expect(read.httpStatus, JSON.stringify(read.body)).toBe(200);
-  const fact = await call("plugin.applications.mail_fact.apply", { project_id: project, application_id: eth, expected_revision: (await appRow(eth)).revision,
+  const fact = await call("plugin.phd_application.mail_fact.apply", { project_id: project, application_id: eth, expected_revision: (await appRow(eth)).revision,
     source: { kind: "gmail", message_id: mail!.id, received_at: iso(mail!.at) }, effect: { kind: "status", status: "interview" } });
   expect(fact.httpStatus, JSON.stringify(fact.body)).toBe(200);
   expect((await appRow(eth)).status).toBe("interview");
@@ -839,9 +840,9 @@ it("ADR 0037: only the runtime's explicit fallback report stops a round — late
   const { call, tool, fallBack } = await launch(run, delivery.run_id, hostId, "synthetic-model-z");
   await db.pool.query(`UPDATE runs SET model_override_json=model_override_json||'{"runtime_reported_model":"synthetic-model-z"}'::jsonb WHERE id=$1`, [delivery.run_id]);
   expect((await call("source.gmail.digest.read", {})).httpStatus).toBe(200);
-  const apply = async (applicationId: string, message: { id: string; at: number }, status: string) => call("plugin.applications.mail_fact.apply", { project_id: project, application_id: applicationId,
+  const apply = async (applicationId: string, message: { id: string; at: number }, status: string) => call("plugin.phd_application.mail_fact.apply", { project_id: project, application_id: applicationId,
     expected_revision: (await appRow(applicationId)).revision, source: { kind: "gmail", message_id: message.id, received_at: iso(message.at) }, effect: { kind: "status", status } });
-  const recorded = await call("plugin.applications.mail_fact.apply", { project_id: project, application_id: eth, expected_revision: (await appRow(eth)).revision,
+  const recorded = await call("plugin.phd_application.mail_fact.apply", { project_id: project, application_id: eth, expected_revision: (await appRow(eth)).revision,
     source: { kind: "gmail", message_id: first!.id, received_at: iso(first!.at) }, effect: { kind: "status", status: "interview" } });
   expect(recorded.httpStatus, JSON.stringify(recorded.body)).toBe(200);
   // Then the runtime reports a fallback — after mail was handed out and one fact recorded.
@@ -969,7 +970,7 @@ it("ADR 0037 review: an earlier authorization with no new confirmation — Model
   expect(await new PgRunRepository(db.pool, config).checkRunExecutionAuthorization(await loadRunRow(running.run_id))).toMatchObject({ allowed: false, error_code: "gmail_digest_rule_changed" });
   expect((await call("source.gmail.digest.read", {})).httpStatus).not.toBe(200);
   expect(await readLogs(running.run_id)).toBe(0);
-  expect((await call("plugin.applications.mail_fact.apply", { project_id: project, application_id: eth, expected_revision: (await appRow(eth)).revision,
+  expect((await call("plugin.phd_application.mail_fact.apply", { project_id: project, application_id: eth, expected_revision: (await appRow(eth)).revision,
     source: { kind: "gmail", message_id: mail!.id, received_at: iso(mail!.at) }, effect: { kind: "status", status: "interview" } })).httpStatus).not.toBe(200);
   expect((await appRow(eth)).status).not.toBe("interview");
   expect(JSON.stringify(await tool("source.gmail.application_updates.flag", { message_id: mail!.id, reason: "unclear_fact" }))).toContain("gmail_digest_unavailable");
@@ -1235,7 +1236,7 @@ it("ADR 0037 §11: a fallback this process receives while a release, a fact or a
   expect((await two.call("source.gmail.digest.read", {})).httpStatus).toBe(200);
   const before = await appRow(eth);
   const freeConnection = await hold(`SELECT id FROM gmail_connections WHERE id=$1 FOR UPDATE`, [connectionId]);
-  const applying = two.call("plugin.applications.mail_fact.apply", { project_id: project, application_id: eth, expected_revision: before.revision,
+  const applying = two.call("plugin.phd_application.mail_fact.apply", { project_id: project, application_id: eth, expected_revision: before.revision,
     source: { kind: "gmail", message_id: two.mail.id, received_at: iso(two.mail.at) }, effect: { kind: "status", status: "interview" } });
   await waitingOn("FROM gmail_connections WHERE id=$1 FOR SHARE");
   const writingTwo = two.fallBack();
@@ -1244,7 +1245,7 @@ it("ADR 0037 §11: a fallback this process receives while a release, a fact or a
   await writingTwo;
   await reported(two.delivery.run_id);
   expect(await appRow(eth)).toEqual(before);
-  expect((await db.pool.query(`SELECT count(*)::int AS n FROM plugin_applications.application_mail_facts WHERE project_id=$1`, [project])).rows[0].n).toBe(0);
+  expect((await db.pool.query(`SELECT count(*)::int AS n FROM plugin_phd_application.application_mail_facts WHERE project_id=$1`, [project])).rows[0].n).toBe(0);
   // The release committed before the report: it stays, and the notice names it (this round's mail and round 1's, still waiting).
   expect(await readLogs(two.delivery.run_id)).toBe(1);
   expect(await finish(two.delivery.run_id)).toContain("2 messages had already been given to the Agent before the report");
@@ -1281,7 +1282,7 @@ async function providerReviewRound(automation: { connectionId: string; hostId: s
   expect(JSON.stringify(await round.tool("source.gmail.application_updates.flag", { message_id: mail!.id, reason: "unclear_fact", candidate_application_ids: [applicationId] })))
     .toContain('"status":"review"');
   if (factMail) {
-    const recorded = await round.call("plugin.applications.mail_fact.apply", { project_id: project, application_id: applicationId, expected_revision: (await appRow(applicationId)).revision,
+    const recorded = await round.call("plugin.phd_application.mail_fact.apply", { project_id: project, application_id: applicationId, expected_revision: (await appRow(applicationId)).revision,
       source: { kind: "gmail", message_id: factMail.id, received_at: iso(factMail.at) }, effect: { kind: "status", status: "interview" } });
     expect(recorded.httpStatus, JSON.stringify(recorded.body)).toBe(200);
   }
@@ -1330,7 +1331,7 @@ it("ADR 0037 §10 review: a scheduled start that ends a previous-release round b
   const earlier = await providerReviewRound(automation, eth, true);
   const runId = earlier.delivery.run_id;
   await asPreviousReleaseRound(runId, digest.id);
-  const facts = async () => (await db.pool.query(`SELECT count(*)::int AS n FROM plugin_applications.application_mail_facts WHERE application_id=$1`, [eth])).rows[0].n as number;
+  const facts = async () => (await db.pool.query(`SELECT count(*)::int AS n FROM plugin_phd_application.application_mail_facts WHERE application_id=$1`, [eth])).rows[0].n as number;
   const kept = async () => ({ fact: await item(earlier.factMail!.id), facts: await facts(), audits: await auditRows(runId), logs: await readLogs(runId), application: await appRow(eth) });
   const before = await kept();
   // The fact is recorded; its message settles only with the round (it stays as it is, and a later read replays it).
@@ -1411,15 +1412,15 @@ it("ADR 0037 §7 review: the combined Gmail card never lists an earlier authoriz
 
 it("taints a Run that only reads the ledger or the automation's outcomes, and keeps its arguments and results out of event logs", async () => {
   const { PRIVATE_TOOL_CALL_ACTIONS } = await import("../src/modules/runtimeAdapters/privateToolCalls.js");
-  expect(PRIVATE_TOOL_CALL_ACTIONS).toEqual(expect.arrayContaining(["plugin.applications.mail_fact.list", "source.gmail.application_updates.list"]));
+  expect(PRIVATE_TOOL_CALL_ACTIONS).toEqual(expect.arrayContaining(["plugin.phd_application.mail_fact.list", "source.gmail.application_updates.list"]));
   const { run, session } = await confirmedAutomation(["interview"]);
   const plugins = async (id: string) => ((await loadRunRow(id)).context_taint_json as { plugin_reads?: unknown[] } | null)?.plugin_reads ?? [];
   // A fresh private conversation of the Project that never read Gmail and holds no earlier read.
   const other = randomUUID();
   await db.pool.query(`INSERT INTO sessions (id,space_id,user_id,project_id,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'active',now(),now())`, [other, space, owner, project]);
-  const ledgerTurn = await ownerTurn(run, other, ["plugin.applications.mail_fact.list"]);
+  const ledgerTurn = await ownerTurn(run, other, ["plugin.phd_application.mail_fact.list"]);
   expect(await plugins(ledgerTurn)).toEqual([]);
-  const read = await toolCall(await loadRunRow(ledgerTurn), "plugin.applications.mail_fact.list", { project_id: project });
+  const read = await toolCall(await loadRunRow(ledgerTurn), "plugin.phd_application.mail_fact.list", { project_id: project });
   expect(read instanceof OperationToolResponse ? read.httpStatus : read, JSON.stringify(read)).toBe(200);
   expect(await plugins(ledgerTurn)).toEqual([{ plugin_id: "core:gmail_digest", data_class: "sensitive", owner_user_id: owner }]);
   // The conversation tool listing per-message outcomes holds the same.
@@ -1428,7 +1429,7 @@ it("taints a Run that only reads the ledger or the automation's outcomes, and ke
   expect(await plugins(listTurn)).toEqual(expect.arrayContaining([{ plugin_id: "core:gmail_digest", data_class: "sensitive", owner_user_id: owner }]));
   // From then on that Run's outward writes are refused (ADR 0030 §7): here, an ordinary Applications write.
   const { sensitiveTaintEgressContext } = await import("../src/modules/plugins/egress.js");
-  expect(await sensitiveTaintEgressContext(db.pool, space, ledgerTurn, { id: "plugin.applications.application.create", side_effects: "durable" }))
+  expect(await sensitiveTaintEgressContext(db.pool, space, ledgerTurn, { id: "plugin.phd_application.application.create", side_effects: "durable" }))
     .toEqual({ sensitive_plugin_read_taint: true, outward_action: true });
   void session;
 });
@@ -1473,7 +1474,7 @@ it("admits concurrent facts of one Run and a disconnect racing them without a de
   const { run_id: runId } = await runningDelivery(digest.id);
   const { call } = await launch(run, runId, hostId);
   expect((await call("source.gmail.digest.read", {})).httpStatus).toBe(200);
-  const apply = async (applicationId: string, message: Mail, status: string) => call("plugin.applications.mail_fact.apply", { project_id: project, application_id: applicationId,
+  const apply = async (applicationId: string, message: Mail, status: string) => call("plugin.phd_application.mail_fact.apply", { project_id: project, application_id: applicationId,
     expected_revision: (await appRow(applicationId)).revision, source: { kind: "gmail", message_id: message.id, received_at: iso(message.at) }, effect: { kind: "status", status } });
   // Two facts of the same Run at once: each holds the Run FOR SHARE and reads its taint without upgrading.
   const [a, b] = await Promise.all([apply(eth, first!, "interview"), apply(oxford, second!, "rejected")]);
@@ -1517,15 +1518,14 @@ async function until(condition: () => Promise<boolean>, what: string, ms = 5000)
   }
 }
 
-it("stores each Run tool token with the launch it is issued for: in a relaunch's window, over real HTTP auth, the new token is its own launch and never the earlier one", async () => {
+it("stores each Run tool token with the launch it is issued for: in a relaunch's window, with real Run token authentication, the new token is its own launch and never the earlier one", async () => {
   const { connectionId, run, hostId, digest } = await confirmedAutomation(["interview"]);
   await newMail(connectionId, digest.id, 1);
   expect(await startGmailDigestDelivery(db.pool, config, digest.id)).toBe("started");
   const { run_id: runId } = await runningDelivery(digest.id);
   const { launchId } = await launch(run, runId, hostId);
   const identities = new PgRunToolIdentityRepository(db.pool);
-  const read = (token: string) => app.inject({ method: "POST", url: `/api/v1/runs/${runId}/tools/source.gmail.digest.read`,
-    headers: { authorization: `Bearer ${token}`, "idempotency-key": randomUUID() }, payload: {} });
+  const read = (token: string) => callRunTool(config, runId, token, "source.gmail.digest.read", {});
   // The first launch's token, issued with its nonce (bound on the attempt).
   const l1 = launchId();
   const first = await identities.issue({ id: runId, space_id: space }, 60_000, null, l1);
@@ -1579,7 +1579,7 @@ it("binds a mail read, its release, facts and flags to the launch the request ca
   expect((await call("source.gmail.digest.read", {}, first)).httpStatus).toBe(409);
   const current = await call("source.gmail.digest.read", {}, second);
   expect(current.httpStatus, JSON.stringify(current.body)).toBe(200);
-  const fact = (from: string) => call("plugin.applications.mail_fact.apply", { project_id: project, application_id: eth, expected_revision: 1,
+  const fact = (from: string) => call("plugin.phd_application.mail_fact.apply", { project_id: project, application_id: eth, expected_revision: 1,
     source: { kind: "gmail", message_id: mail!.id, received_at: iso(mail!.at) }, effect: { kind: "status", status: "interview" } }, from);
   expect((await fact(first)).httpStatus).toBe(404);
   expect(JSON.stringify(await tool("source.gmail.application_updates.flag", { message_id: mail!.id, reason: "unclear_fact" }, first))).toContain("gmail_digest_unavailable");
@@ -1588,7 +1588,7 @@ it("binds a mail read, its release, facts and flags to the launch the request ca
 });
 
 it("holds the Gmail page to the read's one end-to-end budget, inside the caller's 65-second timeout", async () => {
-  // `toolHttpTimeoutMs` (packages/agent-cli/src/toolHttp.ts) gives this tool 65 s; 10 s stay for the release and response.
+  // `toolRequestTimeoutMs` (packages/agent-cli/src/toolRequest.ts) gives this tool 65 s; 10 s stay for the release and response.
   expect(GMAIL_DIGEST_READ_BUDGET_MS).toBeLessThanOrEqual(65_000 - 10_000);
   const { connectionId, run, hostId, digest } = await confirmedAutomation(["interview"]);
   await newMail(connectionId, digest.id, 1);
@@ -1628,7 +1628,7 @@ it("takes the Project before the Run for a fact as the next page's release does:
     await blocker.query("SELECT id FROM runs WHERE id=$1 FOR SHARE", [runId]);
     const page2 = call("source.gmail.digest.read", { page_token: token });
     await until(async () => await lockWaiters() >= 1, "page 2's release to wait for the Run");
-    const fact = call("plugin.applications.mail_fact.apply", { project_id: project, application_id: eth, expected_revision: 1,
+    const fact = call("plugin.phd_application.mail_fact.apply", { project_id: project, application_id: eth, expected_revision: 1,
       source: { kind: "gmail", message_id: mails[0]!.id, received_at: iso(mails[0]!.at) }, effect: { kind: "status", status: "interview" } });
     await until(async () => await lockWaiters() >= 2, "the fact to wait");
     await blocker.query("COMMIT");
@@ -1689,7 +1689,7 @@ it("counts a failed delivery against its mail only when a launch of its Run actu
 
 it("ADR 0036: opens the card although the conversation's own binding cannot run it, names each candidate's reason, and lets only the owner choose another Agent and model, frozen in their private execution conversation", async () => {
   await connect();
-  await ok(action("official_plugin.project_binding.bind", { plugin_id: "applications", project_id: project }));
+  await ok(action("official_plugin.project_binding.bind", { plugin_id: "phd_application", project_id: project }));
   const conversation = await ownerConversation();
   // This conversation's Agent runs on a runtime its Host has no installation of: its private conversation cannot run it now.
   await useRuntime(conversation.agent, conversation.run, "codex_cli");
@@ -1760,7 +1760,7 @@ it("ADR 0036: opens the card although the conversation's own binding cannot run 
 
 it("ADR 0036: the combined card's application part is chosen the same way, its line redrawn in the one card, and accepted on the choice", async () => {
   await connect();
-  await ok(action("official_plugin.project_binding.bind", { plugin_id: "applications", project_id: project }));
+  await ok(action("official_plugin.project_binding.bind", { plugin_id: "phd_application", project_id: project }));
   const conversation = await ownerConversation();
   const drafted = await proposeGmailSetup(db.pool, config, conversation.run, space, { read: true, application_updates: { effects: ["offer"] } }, randomUUID());
   expect(drafted.modelResult, JSON.stringify(drafted)).toMatchObject({ ok: true });
@@ -1800,7 +1800,7 @@ const removeFromProject = (agent: string) =>
 
 it("ADR 0036 review: the Project's Assistant chosen on the card is confirmed, scheduled and read for end to end in the owner's private execution conversation", async () => {
   const connectionId = await connect();
-  await ok(action("official_plugin.project_binding.bind", { plugin_id: "applications", project_id: project }));
+  await ok(action("official_plugin.project_binding.bind", { plugin_id: "phd_application", project_id: project }));
   const conversation = await ownerConversation();
   await makeProjectAssistant(conversation.agent);
   const drafted = await proposeGmailApplicationUpdates(db.pool, config, conversation.run, space, { effects: ["interview"] }, randomUUID());
@@ -1837,7 +1837,7 @@ it("ADR 0036 review: the Project's Assistant chosen on the card is confirmed, sc
 
 it("ADR 0036 review: another Project's Assistant is never admitted to the owner's automation turn", async () => {
   const connectionId = await connect();
-  await ok(action("official_plugin.project_binding.bind", { plugin_id: "applications", project_id: project }));
+  await ok(action("official_plugin.project_binding.bind", { plugin_id: "phd_application", project_id: project }));
   const conversation = await ownerConversation();
   await makeProjectAssistant(conversation.agent);
   const drafted = await proposeGmailApplicationUpdates(db.pool, config, conversation.run, space, { effects: ["interview"] }, randomUUID());
@@ -1876,7 +1876,7 @@ it("ADR 0036 review: an Agent removed from the Project starts nothing and has no
 
 it("ADR 0036 review: acceptance is bound to the card revision the owner saw — never one changed in another tab, nor one without a revision", async () => {
   await connect();
-  await ok(action("official_plugin.project_binding.bind", { plugin_id: "applications", project_id: project }));
+  await ok(action("official_plugin.project_binding.bind", { plugin_id: "phd_application", project_id: project }));
   const conversation = await ownerConversation();
   const drafted = await proposeGmailApplicationUpdates(db.pool, config, conversation.run, space, { effects: ["interview"] }, randomUUID());
   const proposalId = String(drafted.modelResult.proposal_id);
@@ -1908,7 +1908,7 @@ it("ADR 0036 review: acceptance is bound to the card revision the owner saw — 
 
 it("ADR 0036 review: a card freezes the rule it changes — an older card never overwrites a newer rule or revives an ended one", async () => {
   const connectionId = await connect();
-  await ok(action("official_plugin.project_binding.bind", { plugin_id: "applications", project_id: project }));
+  await ok(action("official_plugin.project_binding.bind", { plugin_id: "phd_application", project_id: project }));
   const conversation = await ownerConversation();
   const draft = async () => String((await proposeGmailApplicationUpdates(db.pool, config, conversation.run, space, { effects: ["interview"] }, randomUUID())).modelResult.proposal_id);
   const first = await draft(), second = await draft();
@@ -1940,7 +1940,7 @@ it("ADR 0036 review: a card freezes the rule it changes — an older card never 
 
 it("ADR 0036 review: of two first cards, the second never starts the rule again once the first was accepted and ended; one drafted after the end still does", async () => {
   const connectionId = await connect();
-  await ok(action("official_plugin.project_binding.bind", { plugin_id: "applications", project_id: project }));
+  await ok(action("official_plugin.project_binding.bind", { plugin_id: "phd_application", project_id: project }));
   const conversation = await ownerConversation();
   const draft = async () => String((await proposeGmailApplicationUpdates(db.pool, config, conversation.run, space, { effects: ["interview"] }, randomUUID())).modelResult.proposal_id);
   const a = await draft(), b = await draft();
@@ -1963,7 +1963,7 @@ it("ADR 0036 review: of two first cards, the second never starts the rule again 
 
 it("ADR 0036 review: a card whose choice is made on it says so on every Proposal entry; an ordinary summary card does not", async () => {
   await connect();
-  await ok(action("official_plugin.project_binding.bind", { plugin_id: "applications", project_id: project }));
+  await ok(action("official_plugin.project_binding.bind", { plugin_id: "phd_application", project_id: project }));
   const conversation = await ownerConversation();
   const card = String((await proposeGmailApplicationUpdates(db.pool, config, conversation.run, space, { effects: ["interview"] }, randomUUID())).modelResult.proposal_id);
   const combined = await proposeGmailSetup(db.pool, config, conversation.run, space, { read: true, application_updates: { effects: ["offer"] } }, randomUUID());
@@ -1999,7 +1999,7 @@ it("ADR 0036 review: a card whose choice is made on it says so on every Proposal
 
 it("ADR 0036 review: past 200 available candidates the Project's Assistant is still on the first page and chosen there, and a candidate on a later page is reached by its cursor, chosen and accepted", async () => {
   await connect();
-  await ok(action("official_plugin.project_binding.bind", { plugin_id: "applications", project_id: project }));
+  await ok(action("official_plugin.project_binding.bind", { plugin_id: "phd_application", project_id: project }));
   const conversation = await ownerConversation();
   // Every model below is available: 9 Agents × 25 models = 225 rows of ordinary Agents (226 with the model saved in the
   // drafting conversation, offered for its Agent too) before the Assistant would come.
@@ -2056,7 +2056,7 @@ it("ADR 0036 review: past 200 available candidates the Project's Assistant is st
 });
 it("ADR 0036 review: a long Agent list never displaces the Project's Assistant or hides a configuration silently, and a choice is checked by itself", async () => {
   await connect();
-  await ok(action("official_plugin.project_binding.bind", { plugin_id: "applications", project_id: project }));
+  await ok(action("official_plugin.project_binding.bind", { plugin_id: "phd_application", project_id: project }));
   const conversation = await ownerConversation();
   // Fifty Agents on the Project's list first, none of which can run it; then one that can, past what the card lists.
   for (let index = 0; index < 50; index += 1) {
@@ -2107,7 +2107,7 @@ it("ADR 0036 review: a long Agent list never displaces the Project's Assistant o
 
 it("two levels: a configuration's reason is given once and every model its picker offers is listed under it; the saved choice is echoed on both levels by acceptance's own check, and concurrent choices bind acceptance to the revision that won", async () => {
   await connect();
-  await ok(action("official_plugin.project_binding.bind", { plugin_id: "applications", project_id: project }));
+  await ok(action("official_plugin.project_binding.bind", { plugin_id: "phd_application", project_id: project }));
   const conversation = await ownerConversation();
   await advertiseModels(conversation.hostId, ["default", "opus", "synthetic-model-a", "synthetic-model-b", "synthetic-model-c"]);
   // Another Agent of the Project on the owner's own paired Host, which is offline: its picker would offer the same models,
@@ -2176,7 +2176,7 @@ it("two levels: a configuration's reason is given once and every model its picke
 
 it("ADR 0036 §9: past 200 models of one configuration every model is reached by its keyed cursor, and the saved one is always listed with its configuration", async () => {
   await connect();
-  await ok(action("official_plugin.project_binding.bind", { plugin_id: "applications", project_id: project }));
+  await ok(action("official_plugin.project_binding.bind", { plugin_id: "phd_application", project_id: project }));
   const conversation = await ownerConversation();
   // 205 full model ids in the Host's picker; the asking conversation's saved model (synthetic-model-a) comes after them.
   const models = Array.from({ length: 205 }, (_, index) => `synthetic-model-${String(index).padStart(3, "0")}`);
@@ -2226,7 +2226,7 @@ it("ADR 0036 §9: past 200 models of one configuration every model is reached by
 
 it("a non-Claude configuration admitted through the public paths: OpenCode on a ModelProvider is chosen, accepted and run in the background on the conversation's own launch, its lease held to the chosen model; Codex CLI on a Provider is never offered", async () => {
   const connectionId = await connect();
-  await ok(action("official_plugin.project_binding.bind", { plugin_id: "applications", project_id: project }));
+  await ok(action("official_plugin.project_binding.bind", { plugin_id: "phd_application", project_id: project }));
   const conversation = await ownerConversation();
   const hostId = conversation.hostId;
   // The built-in strict Host (seeded `kind = 'server'`) reports an OpenCode copy and its daemon's model-only channel —
@@ -2350,7 +2350,7 @@ it("a non-Claude configuration admitted through the public paths: OpenCode on a 
 /** An OpenCode-on-ModelProvider automation on the built-in strict Host, confirmed through the public paths (as the §9 case). */
 async function providerAutomation() {
   const connectionId = await connect();
-  await ok(action("official_plugin.project_binding.bind", { plugin_id: "applications", project_id: project }));
+  await ok(action("official_plugin.project_binding.bind", { plugin_id: "phd_application", project_id: project }));
   const conversation = await ownerConversation();
   const hostId = conversation.hostId;
   await db.pool.query(`UPDATE hosts SET capabilities_json=jsonb_set(capabilities_json,'{installations,opencode}',$2::jsonb)||'{"model_channel":1}'::jsonb WHERE id=$1`,
@@ -2609,7 +2609,7 @@ it("lets a launch cite only mail released to it: after a relaunch an earlier lau
   expect((await call("source.gmail.digest.read", {})).httpStatus).toBe(200);
   // The Run is relaunched; the new launch runs on the chosen configuration but never read the mail itself.
   await relaunch();
-  const fact = await call("plugin.applications.mail_fact.apply", { project_id: project, application_id: eth, expected_revision: 1,
+  const fact = await call("plugin.phd_application.mail_fact.apply", { project_id: project, application_id: eth, expected_revision: 1,
     source: { kind: "gmail", message_id: mail!.id, received_at: iso(mail!.at) }, effect: { kind: "status", status: "interview" } });
   expect(fact.httpStatus).toBe(404);
   expect(JSON.stringify(await tool("source.gmail.application_updates.flag", { message_id: mail!.id, reason: "unclear_fact" }))).toContain("gmail_digest_message_unknown");
@@ -2780,7 +2780,7 @@ it("cancels a release whose caller went away while its backend marker was being 
   expect(await auditRows(runId)).toBe(0);
 });
 
-it("updates the same rule and records incoming and sent correspondence through the same fact command", async () => {
+it("records ordinary and automatic correspondence without a status update and keeps unmatched replies for the owner", async () => {
   const { connectionId, run, hostId, digest } = await confirmedAutomation(["interview"]);
   const change = await proposeGmailApplicationUpdates(db.pool, config, run, space, { effects: ["interview", "contact"] }, randomUUID());
   const changeId = String(change.modelResult.proposal_id);
@@ -2793,22 +2793,27 @@ it("updates the same rule and records incoming and sent correspondence through t
   expect(sentFrom).toBe(new Date(digest.covered_until).getTime());
   const email = "supervisor@uni.example";
   const contactId = randomUUID();
-  await db.pool.query(`INSERT INTO plugin_applications.application_contacts(space_id,user_id,project_id,id,name,role,email,project_shared)
+  await db.pool.query(`INSERT INTO plugin_phd_application.application_contacts(space_id,user_id,project_id,id,name,role,email,project_shared)
     VALUES ($1,$2,$3,$4,'Existing supervisor','supervisor',$5,false)`, [space, owner, project, contactId, email]);
   deliver({ at: sentFrom - 1000, labels: ["SENT"] });
   const sent = deliver({ at: sentFrom, labels: ["SENT", "INBOX"], from: "owner@gmail.example", to: email });
-  const reply = deliver({ at: sentFrom + 1, from: email });
+  const reply = deliver({ at: sentFrom + 1, from: email, body: "Our funded places are filled this year.", headers: [{ name: "In-Reply-To", value: "<inquiry@example.test>" }] });
+  const automatic = deliver({ at: sentFrom + 2, from: email, body: "I am out of the office.", headers: [{ name: "Auto-Submitted", value: "auto-replied; owner-email=supervisor@uni.example" }] });
+  const unmatched = deliver({ at: sentFrom + 3, from: "researcher@other.example", subject: "Re: prospective PhD", body: "Please check our funding website." });
   deliver({ at: sentFrom, labels: ["SENT", "DRAFT"] });
   expect(await syncGmailMailbox(config, db.pool, connectionId)).toMatchObject({ status: "synced" });
-  expect((await items(digest.id)).map((item) => item.google_message_id)).toEqual([sent.id, reply.id]);
+  expect((await items(digest.id)).map((item) => item.google_message_id)).toEqual([sent.id, reply.id, automatic.id, unmatched.id]);
   expect(await startGmailDigestDelivery(db.pool, config, digest.id)).toBe("started");
   const { run_id: runId } = await runningDelivery(digest.id);
-  const { call, loadRun } = await launch(run, runId, hostId);
+  const { call, tool, loadRun } = await launch(run, runId, hostId);
   const read = await call("source.gmail.digest.read", {});
   expect(read.httpStatus, JSON.stringify(read.body)).toBe(200);
-  expect(read.body).toMatchObject({ data: { items: [{ id: sent.id, direction: "sent", to: email }, { id: reply.id, from: email }] } });
+  expect(read.body).toMatchObject({ data: { items: [
+    { id: sent.id, direction: "sent", to: email }, { id: reply.id, from: email, reply: true },
+    { id: automatic.id, automatic_reply: true }, { id: unmatched.id },
+  ] } });
   const before = await appRow(appId);
-  const apply = (message: Mail, effect: Record<string, unknown>, revision: number) => call("plugin.applications.mail_fact.apply", {
+  const apply = (message: Mail, effect: Record<string, unknown>, revision: number) => call("plugin.phd_application.mail_fact.apply", {
     project_id: project, application_id: appId, expected_revision: revision,
     source: { kind: "gmail", message_id: message.id, received_at: iso(message.at) }, effect,
   });
@@ -2822,14 +2827,22 @@ it("updates the same rule and records incoming and sent correspondence through t
   expect(replay.body).toMatchObject({ data: { id: (first.body.data as { id: string }).id, replayed: true } });
   expect((await apply(reply, { kind: "contact", email: email.toUpperCase(), direction: "inbound" }, before.revision + 1)).body)
     .toMatchObject({ data: { effect: "contact", outcome: "recorded", after: "inbound", revision: before.revision + 2 } });
+  const inbound = { kind: "contact", email, direction: "inbound" };
+  expect((await apply(automatic, { kind: "status", status: "interview" }, before.revision + 2)).httpStatus).toBe(404);
+  expect((await apply(automatic, inbound, before.revision + 2)).httpStatus).toBe(404);
+  expect((await apply(automatic, { ...inbound, automatic_reply: true }, before.revision + 2)).body)
+    .toMatchObject({ data: { effect: "contact", outcome: "recorded", after: "inbound", revision: before.revision + 3 } });
+  expect(await tool("source.gmail.application_updates.flag", { message_id: unmatched.id, reason: "no_matching_application" }))
+    .toMatchObject({ ok: true, status: "review" });
   const events = (await db.pool.query(`SELECT c.id AS contact_id,c.email,c.role,c.project_shared,l.application_id,e.channel,e.direction,e.summary
-    FROM plugin_applications.application_contact_events e
-    JOIN plugin_applications.application_contacts c ON c.id=e.contact_id
-    JOIN plugin_applications.application_contact_links l ON l.contact_id=c.id
+    FROM plugin_phd_application.application_contact_events e
+    JOIN plugin_phd_application.application_contacts c ON c.id=e.contact_id
+    JOIN plugin_phd_application.application_contact_links l ON l.contact_id=c.id
     WHERE l.application_id=$1 ORDER BY e.created_at`, [appId])).rows;
   expect(events).toEqual([
     { contact_id: contactId, email, role: "supervisor", project_shared: false, application_id: appId, channel: "email", direction: "outbound", summary: "Email sent" },
     { contact_id: contactId, email, role: "supervisor", project_shared: false, application_id: appId, channel: "email", direction: "inbound", summary: "Email received" },
+    { contact_id: contactId, email, role: "supervisor", project_shared: false, application_id: appId, channel: "email", direction: "inbound", summary: "Automatic email reply received" },
   ]);
   expect(await appRow(appId)).toMatchObject({ status: before.status, status_changed_at: before.status_changed_at });
   await db.pool.query(`UPDATE runs SET status='succeeded' WHERE id=$1`, [runId]);
@@ -2839,7 +2852,22 @@ it("updates the same rule and records incoming and sent correspondence through t
   expect(await items(digest.id)).toMatchObject([
     { google_message_id: sent.id, status: "done", attempts: 0 },
     { google_message_id: reply.id, status: "done", attempts: 0 },
+    { google_message_id: automatic.id, status: "done", attempts: 0 },
+    { google_message_id: unmatched.id, status: "review", reason: "no_matching_application" },
   ]);
+  const list = (query = "") => app.inject({ method: "GET", url: `/api/v1/sources/gmail/digests${query}` });
+  const reviewQuery = `?application_review_project_id=${project}`;
+  const ownerList = await list(reviewQuery);
+  expect(ownerList.statusCode, ownerList.body).toBe(200);
+  expect(GmailDigestListSchema.parse(ownerList.json()).digests[0]?.review_items).toEqual([{
+    message_id: unmatched.id, received_at: iso(unmatched.at), reason: "no_matching_application",
+    gmail_url: expect.stringMatching(new RegExp(`#all/${unmatched.id}$`)),
+  }]);
+  expect(GmailDigestListSchema.parse((await list()).json()).digests[0]?.review_items).toBeUndefined();
+  for (const user of [peer, admin]) {
+    as(user);
+    expect(GmailDigestListSchema.parse((await list(reviewQuery)).json()).digests).toEqual([]);
+  }
 });
 
 it("settles frozen mail that turned spam, trash, sent or draft before it was read as examined and not eligible, never as citable released mail", async () => {
@@ -2868,7 +2896,7 @@ it("settles frozen mail that turned spam, trash, sent or draft before it was rea
   // None of them can be cited: no fact, no flag.
   const before = await appRow(eth);
   for (const mail of [spam, sent]) {
-    const fact = await call("plugin.applications.mail_fact.apply", { project_id: project, application_id: eth, expected_revision: before.revision,
+    const fact = await call("plugin.phd_application.mail_fact.apply", { project_id: project, application_id: eth, expected_revision: before.revision,
       source: { kind: "gmail", message_id: mail.id, received_at: iso(mail.at) }, effect: { kind: "status", status: "interview" } });
     expect(fact.httpStatus).toBe(404);
     expect(JSON.stringify(await tool("source.gmail.application_updates.flag", { message_id: mail.id, reason: "unclear_fact" }))).toContain("gmail_digest_message_unknown");
@@ -2904,7 +2932,7 @@ it("gives up a frozen message Gmail answers with 404 at its read, uncitable, whi
   const byId = async () => new Map((await items(digest.id)).map((item: { google_message_id: string }) => [item.google_message_id, item]));
   expect((await byId()).get(gone.id)).toMatchObject({ status: "failed", reason: "read_failed", attempts: 0 });
   expect((await byId()).get(kept.id)).toMatchObject({ status: "pending" });
-  const fact = (mail: Mail, revision: number) => call("plugin.applications.mail_fact.apply", { project_id: project, application_id: eth, expected_revision: revision,
+  const fact = (mail: Mail, revision: number) => call("plugin.phd_application.mail_fact.apply", { project_id: project, application_id: eth, expected_revision: revision,
     source: { kind: "gmail", message_id: mail.id, received_at: iso(mail.at) }, effect: { kind: "status", status: "interview" } });
   const before = await appRow(eth);
   expect((await fact(gone, before.revision)).httpStatus).toBe(404);
@@ -2971,10 +2999,10 @@ it("takes the Project first for an application read's release too: mail_fact.app
   try {
     await blocker.query("BEGIN");
     await blocker.query("SELECT id FROM projects WHERE id=$1 FOR UPDATE", [project]);
-    const fact = call("plugin.applications.mail_fact.apply", { project_id: project, application_id: eth, expected_revision: 1,
+    const fact = call("plugin.phd_application.mail_fact.apply", { project_id: project, application_id: eth, expected_revision: 1,
       source: { kind: "gmail", message_id: mail!.id, received_at: iso(mail!.at) }, effect: { kind: "status", status: "interview" } });
     await until(async () => await lockWaiters() >= 1, "the fact to wait for the Project");
-    const get = call("plugin.applications.application.get", { project_id: project, application_id: eth });
+    const get = call("plugin.phd_application.application.get", { project_id: project, application_id: eth });
     await until(async () => await lockWaiters() >= 2, "the read's release to wait");
     await blocker.query("COMMIT");
     const [recorded, read] = await Promise.all([fact, get]);
@@ -2988,7 +3016,7 @@ it("takes the Project first for an application read's release too: mail_fact.app
 
 it("takes the Project first for an ordinary application.update too: it races the owner's on-demand Gmail read release in one Run without a deadlock", async () => {
   const connectionId = await connect();
-  await ok(action("official_plugin.project_binding.bind", { plugin_id: "applications", project_id: project }));
+  await ok(action("official_plugin.project_binding.bind", { plugin_id: "phd_application", project_id: project }));
   const { run: source, session } = await ownerConversation();
   const eth = await application("ETH Zurich", "PhD in Computer Science");
   const generation = (await db.pool.query(`SELECT generation FROM gmail_connections WHERE id=$1`, [connectionId])).rows[0].generation;
@@ -2997,7 +3025,7 @@ it("takes the Project first for an ordinary application.update too: it races the
     { consentId: "core:gmail", projectId: project, connectionId, generation, purpose: "on_demand_read" });
   deliver({ subject: "Interview invitation" });
   // An ordinary turn of the owner's private conversation with both tools, as the conversation grants them, launched isolated.
-  const tools = ["source.gmail.mail.read", "plugin.applications.application.update"];
+  const tools = ["source.gmail.mail.read", "plugin.phd_application.application.update"];
   const turnId = await ownerTurn(source, session, tools);
   const { buildRunToolGrants } = await import("../src/modules/systemActions/runToolGrants.js");
   const { pluginToolPins } = await import("../src/modules/plugins/dataAccess.js");
@@ -3017,7 +3045,7 @@ it("takes the Project first for an ordinary application.update too: it races the
     await blocker.query("SELECT id FROM runs WHERE id=$1 FOR SHARE", [turn.id]);
     const read = toolCall(turn, "source.gmail.mail.read", { query: "interview", max_messages: 1 }) as Promise<OperationToolResponse>;
     await until(async () => await lockWaiters() >= 1, "the mail read's release to wait for the Run");
-    const update = toolCall(turn, "plugin.applications.application.update", { project_id: project, application_id: eth, revision: 1, notes: "Ask about funding" }) as Promise<OperationToolResponse>;
+    const update = toolCall(turn, "plugin.phd_application.application.update", { project_id: project, application_id: eth, revision: 1, notes: "Ask about funding" }) as Promise<OperationToolResponse>;
     await until(async () => await lockWaiters() >= 2, "the update to wait");
     await blocker.query("COMMIT");
     const [mail, updated] = await Promise.all([read, update]);
@@ -3028,7 +3056,7 @@ it("takes the Project first for an ordinary application.update too: it races the
     await blocker.query("ROLLBACK").catch(() => undefined);
     blocker.release();
   }
-  expect((await db.pool.query(`SELECT notes,revision FROM plugin_applications.applications WHERE id=$1`, [eth])).rows[0]).toMatchObject({ notes: "Ask about funding", revision: 2 });
+  expect((await db.pool.query(`SELECT notes,revision FROM plugin_phd_application.applications WHERE id=$1`, [eth])).rows[0]).toMatchObject({ notes: "Ask about funding", revision: 2 });
 });
 
 it("refuses a flag once the runtime reported a fallback to another model", async () => {
@@ -3087,7 +3115,7 @@ async function ownerRoomTurn(privateRun: string, privateSession: string, members
 
 it("ADR 0035 §1: enabled from a Room on one card naming its readers, runs privately and posts only structured results on applications the Project reads", async () => {
   const connectionId = await connect();
-  await ok(action("official_plugin.project_binding.bind", { plugin_id: "applications", project_id: project }));
+  await ok(action("official_plugin.project_binding.bind", { plugin_id: "phd_application", project_id: project }));
   const { run: privateRun, session: privateSession, hostId } = await ownerConversation();
   const room = await ownerRoomTurn(privateRun, privateSession, [owner, peer]);
   const drafted = await proposeGmailApplicationUpdates(db.pool, config, room.run, space, { effects: ["interview", "rejected", "contact"] }, randomUUID());
@@ -3133,7 +3161,7 @@ it("ADR 0035 §1: enabled from a Room on one card naming its readers, runs priva
   const eth = await application("ETH Zurich", "PhD in Computer Science");
   const oxford = await application("University of Oxford", "DPhil in Engineering");
   // New records are shared with the Project; an older record only its owner reads stays private.
-  await db.pool.query(`UPDATE plugin_applications.applications SET project_shared=false WHERE id=$1`, [oxford]);
+  await db.pool.query(`UPDATE plugin_phd_application.applications SET project_shared=false WHERE id=$1`, [oxford]);
   const recipient = "private-supervisor@uni.example";
   const sent = deliver({ at: Date.parse(digest.runtime_binding.sent_from), labels: ["SENT"], to: recipient, from: "owner@gmail.example" });
   const [invite, rejection] = await newMail(connectionId, digest.id, 2);
@@ -3142,12 +3170,12 @@ it("ADR 0035 §1: enabled from a Room on one card naming its readers, runs priva
   expect(delivery).toMatchObject({ session_id: digest.session_id, visibility: "private" });
   const { loadRun, call } = await launch(privateRun, delivery.run_id, hostId);
   expect((await call("source.gmail.digest.read", {})).httpStatus).toBe(200);
-  const apply = async (applicationId: string, message: Mail, status: string) => call("plugin.applications.mail_fact.apply", {
+  const apply = async (applicationId: string, message: Mail, status: string) => call("plugin.phd_application.mail_fact.apply", {
     project_id: project, application_id: applicationId, expected_revision: (await appRow(applicationId)).revision,
     source: { kind: "gmail", message_id: message.id, received_at: iso(message.at) }, effect: { kind: "status", status } });
   expect((await apply(eth, invite!, "interview")).httpStatus).toBe(200);
   expect((await apply(oxford, rejection!, "rejected")).httpStatus).toBe(200);
-  const correspondence = await call("plugin.applications.mail_fact.apply", {
+  const correspondence = await call("plugin.phd_application.mail_fact.apply", {
     project_id: project, application_id: eth, expected_revision: (await appRow(eth)).revision,
     source: { kind: "gmail", message_id: sent.id, received_at: iso(sent.at) }, effect: { kind: "contact", direction: "outbound", email: recipient },
   });
@@ -3183,7 +3211,7 @@ it("ADR 0035 §1: enabled from a Room on one card naming its readers, runs priva
 
 it("ADR 0035 §2: one card in a Room confirms reading, a rule digest and application updates together, each kept, paused and ended on its own; what is allowed is reused", async () => {
   const connectionId = await connect();
-  await ok(action("official_plugin.project_binding.bind", { plugin_id: "applications", project_id: project }));
+  await ok(action("official_plugin.project_binding.bind", { plugin_id: "phd_application", project_id: project }));
   const { run: privateRun, session: privateSession } = await ownerConversation();
   const room = await ownerRoomTurn(privateRun, privateSession, [owner, peer]);
   const proposals = async () => (await db.pool.query(`SELECT count(*)::int AS n FROM proposals WHERE proposal_type='gmail_setup'`)).rows[0].n as number;
@@ -3334,7 +3362,7 @@ it("ADR 0035 §4: the owner lets one Project member read within a scope on one c
 
 it("ADR 0035 §1: continues facts unlocked by a later successful delivery using live application visibility and Room audience", async () => {
   const connectionId = await connect();
-  await ok(action("official_plugin.project_binding.bind", { plugin_id: "applications", project_id: project }));
+  await ok(action("official_plugin.project_binding.bind", { plugin_id: "phd_application", project_id: project }));
   const { run: privateRun, session: privateSession, hostId } = await ownerConversation();
   const room = await ownerRoomTurn(privateRun, privateSession, [owner, peer]);
   const drafted = await proposeGmailApplicationUpdates(db.pool, config, room.run, space, { effects: ["interview", "rejected"] }, randomUUID());
@@ -3353,7 +3381,7 @@ it("ADR 0035 §1: continues facts unlocked by a later successful delivery using 
     const row = (await db.pool.query(`SELECT id,run_id FROM gmail_digest_deliveries WHERE digest_id=$1 AND status='running'`, [digest.id])).rows[0];
     const { loadRun, call } = await launch(privateRun, row.run_id, hostId);
     expect((await call("source.gmail.digest.read", {})).httpStatus).toBe(200);
-    const apply = async (applicationId: string, message: Mail, status: string) => expect((await call("plugin.applications.mail_fact.apply", {
+    const apply = async (applicationId: string, message: Mail, status: string) => expect((await call("plugin.phd_application.mail_fact.apply", {
       project_id: project, application_id: applicationId, expected_revision: (await appRow(applicationId)).revision,
       source: { kind: "gmail", message_id: message.id, received_at: iso(message.at) }, effect: { kind: "status", status } })).httpStatus).toBe(200);
     const settle = async (status: "succeeded" | "failed") => {
@@ -3382,7 +3410,7 @@ it("ADR 0035 §1: continues facts unlocked by a later successful delivery using 
   // Oxford is made private before any notice: its committed result is never posted. B retries the same mail (the
   // earlier fact is a replay and keeps nothing twice) and records a new one; then a reader outside the Project joins
   // the Room before B settles, so B's success posts nothing and every result waits.
-  await db.pool.query(`UPDATE plugin_applications.applications SET project_shared=false WHERE id=$1`, [oxford]);
+  await db.pool.query(`UPDATE plugin_phd_application.applications SET project_shared=false WHERE id=$1`, [oxford]);
   const b = await delivery();
   await b.apply(eth, m1!, "interview");
   await b.apply(mit, m3!, "interview");
@@ -3397,7 +3425,7 @@ it("ADR 0035 §1: continues facts unlocked by a later successful delivery using 
   // The outsider leaves and ETH is renamed. The scheduler continues B's notice using current labels
   // for ETH and MIT and drops the result for Oxford, which is now private.
   await db.pool.query(`DELETE FROM room_user_members WHERE id=$1`, [outsiderRow]);
-  await db.pool.query(`UPDATE plugin_applications.applications SET program='PhD in Informatics' WHERE id=$1`, [eth]);
+  await db.pool.query(`UPDATE plugin_phd_application.applications SET program='PhD in Informatics' WHERE id=$1`, [eth]);
   await newMail(connectionId, digest.id, 1);
   await db.pool.query(`UPDATE gmail_digests SET next_run_at=NULL WHERE id=$1`, [digest.id]);
   expect(await startDueGmailDigests(db.pool, config)).toBe(0);
@@ -3417,7 +3445,7 @@ it("ADR 0035 §1: continues facts unlocked by a later successful delivery using 
 
 it("ADR 0035 §1: continues settled notices under live authority before new Runs can fail and pause the automation", async () => {
   const connectionId = await connect();
-  await ok(action("official_plugin.project_binding.bind", { plugin_id: "applications", project_id: project }));
+  await ok(action("official_plugin.project_binding.bind", { plugin_id: "phd_application", project_id: project }));
   const { run, session, hostId } = await ownerConversation();
   const room = await ownerRoomTurn(run, session, [owner, peer]);
   const drafted = await proposeGmailApplicationUpdates(db.pool, config, room.run, space, { effects: ["interview", "deadline"] }, randomUUID());
@@ -3430,7 +3458,7 @@ it("ADR 0035 §1: continues settled notices under live authority before new Runs
   const { call, loadRun } = await launch(run, delivery.run_id, hostId);
   expect((await call("source.gmail.digest.read", {})).httpStatus).toBe(200);
   const apply = async (applicationId: string, effect: Record<string, string>) => {
-    const result = await call("plugin.applications.mail_fact.apply", {
+    const result = await call("plugin.phd_application.mail_fact.apply", {
       project_id: project, application_id: applicationId, expected_revision: (await appRow(applicationId)).revision,
       source: { kind: "gmail", message_id: mail!.id, received_at: iso(mail!.at) }, effect,
     });
@@ -3468,7 +3496,7 @@ it("ADR 0035 §1: continues settled notices under live authority before new Runs
   const settledRun = await loadRun();
   const settle = () => settleGmailDigestRun(db.pool, config, settledRun, "Checked the new mail.", (tx, content) =>
     new PgSessionRepository(tx).addAssistantMessageForRun(space, owner, digest.session_id, delivery.run_id, { content }));
-  await ok(action("official_plugin.project_binding.unbind", { plugin_id: "applications", project_id: project }));
+  await ok(action("official_plugin.project_binding.unbind", { plugin_id: "phd_application", project_id: project }));
   expect(await settle()).not.toBeNull();
   await settle();
   expect((await rows()).filter(row => row.posted_delivery_id === null)).toHaveLength(52);
@@ -3484,16 +3512,16 @@ it("ADR 0035 §1: continues settled notices under live authority before new Runs
   expect(await notices()).toHaveLength(0);
   expect((await db.pool.query(`SELECT next_run_at > now() AS deferred FROM gmail_digests WHERE id=$1`, [digest.id])).rows[0].deferred).toBe(true);
 
-  await ok(action("official_plugin.project_binding.bind", { plugin_id: "applications", project_id: project }));
+  await ok(action("official_plugin.project_binding.bind", { plugin_id: "phd_application", project_id: project }));
   await tick();
   expect((await notices()).map(row => row.metadata_json.execution_details.results)).toEqual([50]);
 
-  await withTransaction(db.pool, (tx) => pluginServiceFor(config).disablePlugin(tx, "applications", space, owner));
+  await withTransaction(db.pool, (tx) => pluginServiceFor(config).disablePlugin(tx, "phd_application", space, owner));
   await tick();
   expect(await notices()).toHaveLength(1);
   expect((await rows()).filter(row => row.posted_delivery_id === null)).toHaveLength(2);
   expect((await db.pool.query(`SELECT next_run_at > now() AS deferred FROM gmail_digests WHERE id=$1`, [digest.id])).rows[0].deferred).toBe(true);
-  await withTransaction(db.pool, (tx) => pluginServiceFor(config).enablePlugin(tx, "applications", space, owner, {}));
+  await withTransaction(db.pool, (tx) => pluginServiceFor(config).enablePlugin(tx, "phd_application", space, owner, {}));
   const outsider = randomUUID(), membership = randomUUID();
   await seedSpaceMember(db.pool, { space, user: outsider });
   await db.pool.query(`INSERT INTO room_user_members (id,space_id,room_id,user_id,role,status,created_at,updated_at)
@@ -3690,7 +3718,7 @@ it("ADR 0035 §2: two cards changing one digest in place are bound to the versio
 
 it("ADR 0035 §1: a result waiting from a failed delivery is posted only to the conversation and card it was recorded under; re-carded to another Room it is deleted, never carried there", async () => {
   const connectionId = await connect();
-  await ok(action("official_plugin.project_binding.bind", { plugin_id: "applications", project_id: project }));
+  await ok(action("official_plugin.project_binding.bind", { plugin_id: "phd_application", project_id: project }));
   const { run: privateRun, session: privateSession, hostId } = await ownerConversation();
   const first = await ownerRoomTurn(privateRun, privateSession, [owner, peer]);
   const drafted = await proposeGmailApplicationUpdates(db.pool, config, first.run, space, { effects: ["interview", "rejected"] }, randomUUID());
@@ -3707,7 +3735,7 @@ it("ADR 0035 §1: a result waiting from a failed delivery is posted only to the 
     const row = (await db.pool.query(`SELECT id,run_id FROM gmail_digest_deliveries WHERE digest_id=$1 AND status='running'`, [digestId])).rows[0];
     const { loadRun, call } = await launch(privateRun, row.run_id, hostId);
     expect((await call("source.gmail.digest.read", {})).httpStatus).toBe(200);
-    const apply = async (applicationId: string, message: Mail) => expect((await call("plugin.applications.mail_fact.apply", {
+    const apply = async (applicationId: string, message: Mail) => expect((await call("plugin.phd_application.mail_fact.apply", {
       project_id: project, application_id: applicationId, expected_revision: (await appRow(applicationId)).revision,
       source: { kind: "gmail", message_id: message.id, received_at: iso(message.at) }, effect: { kind: "status", status: "interview" } })).httpStatus).toBe(200);
     const settle = async (status: "succeeded" | "failed") => {

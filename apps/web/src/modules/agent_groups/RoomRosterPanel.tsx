@@ -3,7 +3,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { personLabel } from './audience'
 import { Loader2, NotebookPen, RefreshCw, RotateCcw, Settings2, UserPlus, UserRoundMinus, UserRoundX } from 'lucide-react'
 import { toast } from 'sonner'
-import { agentsApi, ApiRequestError, roomsApi } from '../../api/client'
+import { agentsApi, roomsApi } from '../../api/client'
+import { refusalCode } from '../../api/transport'
 import { errMsg } from '../../lib/utils'
 import type {
   ProjectReader,
@@ -60,6 +61,9 @@ export function RoomRosterPanel({
   const [candidates, setCandidates] = useState<RoomAgentCandidate[]>([])
   const [invitations, setInvitations] = useState<RoomInvitation[]>([])
   const [invitee, setInvitee] = useState('')
+  // Off unless chosen: earlier conversations stay with the people who could
+  // read them, and the invitation opens a new conversation for everyone.
+  const [shareHistory, setShareHistory] = useState(false)
   const [busy, setBusy] = useState(false)
   const [loading, setLoading] = useState(false)
   const [adding, setAdding] = useState(false)
@@ -224,7 +228,7 @@ export function RoomRosterPanel({
         idempotencyKey,
       ), { notify: false, rethrow: true })
     } catch (error) {
-      if (error instanceof ApiRequestError && error.code === 'private_agent_share_confirmation_required') {
+      if (refusalCode(error) === 'private_agent_share_confirmation_required') {
         if (!await ask({
           title: t('collab_ui.roster.preset_title'),
           description: t('collab_ui.roster.preset_text'),
@@ -296,23 +300,28 @@ export function RoomRosterPanel({
       await roomsApi.inviteUser(detail.room.id, {
         user_id: invitee,
         confirm_owned_private_agent_shares: false,
+        share_history: shareHistory,
       })
       setInvitee('')
+      setShareHistory(false)
       await Promise.all([refresh(), onChanged()])
     } catch (error) {
-      if (error instanceof ApiRequestError && error.code === 'private_agent_share_confirmation_required') {
+      if (refusalCode(error) === 'private_agent_share_confirmation_required') {
         const accepted = await ask({
           title: t('collab_ui.roster.invite_share_title'),
           description: t('collab_ui.roster.invite_share_text'),
           confirmLabel: t('collab_ui.roster.invite_share_confirm'),
           variant: 'default',
         })
-        if (accepted) {
-          await mutate(() => roomsApi.inviteUser(detail.room.id, {
-            user_id: invitee,
-            confirm_owned_private_agent_shares: true,
-          }))
+        // The person and the history choice stay until an invitation is
+        // actually sent: a refused or failed confirmation keeps both.
+        if (accepted && await mutate(() => roomsApi.inviteUser(detail.room.id, {
+          user_id: invitee,
+          confirm_owned_private_agent_shares: true,
+          share_history: shareHistory,
+        }))) {
           setInvitee('')
+          setShareHistory(false)
         }
       } else {
         toast.error(errMsg(error))
@@ -406,6 +415,21 @@ export function RoomRosterPanel({
               </div>
               <Button size="sm" disabled={busy || !invitee} onClick={() => void inviteUser()}>{t('collab_ui.roster.invite_submit')}</Button>
             </div>
+            <label className="flex items-start gap-2 text-sm">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={shareHistory}
+                onChange={event => setShareHistory(event.target.checked)}
+                data-testid="invite-share-history"
+              />
+              <span>
+                <span className="font-medium">{t('collab_ui.roster.invite_share_history')}</span>
+                <span className="block text-xs text-muted-foreground">
+                  {shareHistory ? t('collab_ui.roster.invite_share_history_on') : t('collab_ui.roster.invite_share_history_off')}
+                </span>
+              </span>
+            </label>
           </div>
         )}
 
@@ -524,6 +548,8 @@ export function RoomRosterPanel({
                     agent: candidates.find(candidate => candidate.agent_id === approval.agent_id)?.name ?? approval.agent_id,
                     person: nameOf(invitation.invitee_user_id),
                   })}
+                  {/* Before approving, its owner knows whether the invitee is given the earlier conversations. */}
+                  <p className="text-muted-foreground">{t(invitation.share_history ? 'collab_ui.room.approval_history_shared' : 'collab_ui.room.approval_history_kept')}</p>
                 </div>
                 <div className="flex gap-2">
                   <Button size="sm" disabled={busy} onClick={() => void decide(invitation, approval.agent_id, 'approved')}>{t('collab_ui.roster.approve')}</Button>

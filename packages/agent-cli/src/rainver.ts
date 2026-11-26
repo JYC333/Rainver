@@ -15,10 +15,10 @@
  * decides what that run may do.
  */
 import { readFile } from "node:fs/promises";
-import { toolHttpRequest, type ToolIdentity, type ToolResponse } from "./toolHttp.ts";
+import type { ToolResponse } from "./toolRequest.ts";
 import { localToolRequest } from "./localBridge.ts";
 
-type Environment = { bridge: string } | ToolIdentity;
+type Environment = { bridge: string };
 
 const USAGE = `rainver — report to Rainver about the work you were given
 
@@ -29,8 +29,7 @@ const USAGE = `rainver — report to Rainver about the work you were given
 Use --help or -h after a subcommand or action for that subcommand's usage.
 Use rainver describe <action> for that action's input schema.
 
-Uses this Run's Host tool bridge when supplied. Direct callers use
-RAINVER_API_URL, RAINVER_RUN_ID and RAINVER_TOOL_TOKEN.`;
+Uses this Run's Host tool bridge (RAINVER_TOOL_BRIDGE).`;
 
 const SUBCOMMAND_USAGE = {
   list: `Usage: rainver list
@@ -145,15 +144,7 @@ function isHelpFlag(value: string | undefined): boolean {
 function readEnvironment(): Environment {
   const bridge = process.env.RAINVER_TOOL_BRIDGE?.trim();
   if (bridge) return { bridge };
-  const apiUrl = process.env.RAINVER_API_URL?.trim();
-  const runId = process.env.RAINVER_RUN_ID?.trim();
-  const token = process.env.RAINVER_TOOL_TOKEN?.trim();
-  if (!apiUrl || !runId || !token) {
-    throw new Error(
-      "This run has no Rainver tool surface: RAINVER_API_URL, RAINVER_RUN_ID and RAINVER_TOOL_TOKEN must all be set.",
-    );
-  }
-  return { apiUrl: apiUrl.replace(/\/+$/, ""), runId, token };
+  throw new Error("This run has no Rainver tool surface: RAINVER_TOOL_BRIDGE is missing.");
 }
 
 async function readInput(argument: string | undefined): Promise<string> {
@@ -193,9 +184,7 @@ async function request(
   const input = { id: idempotencyKey(), method, path, ...(body ? { body } : {}), ...(explicitKey === undefined ? {} : {idempotency_key:explicitKey}) };
   let response: ToolResponse;
   try {
-    response = "bridge" in env
-      ? await localToolRequest(env.bridge, input)
-      : await toolHttpRequest(env, input);
+    response = await localToolRequest(env.bridge, input);
   } catch (error) {
     process.stderr.write(`${message(error)}\n`);
     return 1;
@@ -204,7 +193,7 @@ async function request(
   if(response.status===422)process.stderr.write("Read rainver describe for the listed action and correct only the safe field errors. Writes are not automatically retried.\n");
   const text = response.text;
   const ok = response.status >= 200 && response.status < 300;
-  if (!ok) process.stderr.write(`Rainver returned HTTP ${response.status}${response.status === 401 || response.status === 403 ? "; the Run identity may have expired, been revoked, or lack permission" : ""}.\n`);
+  if (!ok) process.stderr.write(`Rainver returned status ${response.status}${response.status === 401 || response.status === 403 ? "; the Run identity may have expired, been revoked, or lack permission" : ""}.\n`);
   process.stdout.write(text.endsWith("\n") ? text : `${text}\n`);
   if (ok) {
     // An action can refuse inside a 200 body; the agent must see that as a

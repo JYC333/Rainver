@@ -20,7 +20,7 @@ import { getDbPool } from "../../db/pool.js";
 import type { RunRecord } from "../runs/repository.js";
 import type { SystemActionExecutor } from "../systemActions/gateway.js";
 import type { Queryable } from "../routeUtils/common.js";
-import { contentAccessLevelSql, contentReadSql, projectReadAccessSql, roomRunReadAccessSql } from "../access/contentAccessSql.js";
+import { contentAccessLevelSql, contentReadSql, projectReadAccessSql, roomConversationAudienceSql, roomRunReadAccessSql } from "../access/contentAccessSql.js";
 import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 import { bodyWithheld, type ContentAccessLevel } from "../access/contentAccessTypes.js";
 import { ContentAccessAuditService } from "../contentAccess/audit.js";
@@ -296,6 +296,7 @@ function liveRunInConversationSql(run: string, session: string): string {
                    AND resource_room_member.user_id = ${run}.instructed_by_user_id
                    AND resource_room_member.status = 'active'
               )
+              AND ${roomConversationAudienceSql(`${session}.space_id`, `${session}.id`, `${run}.instructed_by_user_id`)}
             )
           )
           AND (${session}.project_id IS NULL OR ${projectReadAccessSql(

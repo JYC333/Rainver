@@ -4,6 +4,7 @@ import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import {seedServerHost,seedSpaceMember} from './support/domainSeeds.js';
 import {lockProjectAudienceForChange} from '../src/modules/projects/access.js';
 import {sharedHostConnectionRegistry} from '../src/modules/hosts/connectionRegistry.js';
+import {MIN_HOST_DAEMON_VERSION} from '../src/modules/hosts/daemonCompatibility.js';
 import {SKILL_IO_JOB} from '@rainver/protocol';
 import {useTestDatabase} from './support/testDatabase.js';
 import {buildModuleServer} from './support/moduleServer.js';
@@ -45,7 +46,7 @@ describe('Skills operations on real PostgreSQL',()=>{
  });
  it('queues owned-Host IO once and withholds completed results and replay after revocation',async()=>{
   const host=randomUUID();await seedServerHost(db.pool,{id:host});
-  await db.pool.query("UPDATE hosts SET kind='remote',owner_user_id=$2,daemon_version='0.4.4' WHERE id=$1",[host,owner]);
+  await db.pool.query("UPDATE hosts SET kind='remote',owner_user_id=$2,daemon_version=$3 WHERE id=$1",[host,owner,MIN_HOST_DAEMON_VERSION]);
   const scanned={items:[],truncated:false,warnings:[]};
   const spy=vi.spyOn(sharedHostConnectionRegistry,'scanHostSkills').mockResolvedValue({ok:true,error:null,result:scanned});
   const key=randomUUID(),accepted=await send(`/api/v1/skill-sources/hosts/${host}/scan`,{},key);expect(accepted.statusCode,accepted.body).toBe(202);expect(spy).not.toHaveBeenCalled();
@@ -60,7 +61,7 @@ describe('Skills operations on real PostgreSQL',()=>{
  });
  it('refuses Host content changed or revoked during IO without storing a releasable receipt',async()=>{
   const host=randomUUID();await seedServerHost(db.pool,{id:host});
-  await db.pool.query("UPDATE hosts SET kind='remote',owner_user_id=$2,daemon_version='0.4.4' WHERE id=$1",[host,owner]);
+  await db.pool.query("UPDATE hosts SET kind='remote',owner_user_id=$2,daemon_version=$3 WHERE id=$1",[host,owner,MIN_HOST_DAEMON_VERSION]);
   vi.spyOn(sharedHostConnectionRegistry,'scanHostSkills').mockImplementationOnce(async()=>{
    await db.pool.query("UPDATE hosts SET status='revoked' WHERE id=$1",[host]);
    return {ok:true,error:null,result:{items:[],truncated:false,warnings:[]}};

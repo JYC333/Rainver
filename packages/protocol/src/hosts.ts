@@ -188,12 +188,6 @@ export const HostCapabilitiesSchema = z.object({
   /** Every copy of every adapter, keyed by adapter type. */
   installations: z.record(z.string(), z.array(RuntimeInstallationSchema)),
   /**
-   * Run tool-bridge protocols this daemon can host (`file-v1`). Absent from
-   * daemons that predate the report; the control plane then assumes `file-v1`
-   * only on Linux, the one platform those daemons implemented it on.
-   */
-  tool_bridge_protocols: z.array(z.string()).optional(),
-  /**
    * Ordinary CLI tools (`ordinaryTools.ts`). Absent from daemons that predate
    * the report: the control plane shows those Hosts as needing an update and
    * sends them no ordinary-tool request, without refusing their Runtimes.

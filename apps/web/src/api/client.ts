@@ -1,5 +1,5 @@
 /** Public API facade. Transport and domain implementations live in their owning modules. */
-export { setSpaceContext, ApiRequestError } from './transport'
+export { setSpaceContext, ApiRequestError, refusalCode, refusalMetadata } from './transport'
 export type { RequestOptions } from './transport'
 export { agentAttentionApi, homeApi, meApi, spaceEgressApi } from './attention'
 export { conversationInputApi, streamTurnParts, sessionsApi } from './conversation'
@@ -36,7 +36,7 @@ export { apiTransport, queryOperation, callOperation, queryPluginOperation, call
 export { personalMemoryGrantsApi, artifactsApi, proposalsApi } from './artifacts'
 export { EvolutionRunNotSelected, evolutionApi } from './evolution'
 export type { SaveWorkflowFromRunResult } from './evolution'
-export { agentsApi, agentTemplatesApi, skillsApi, contextOpsApi, askSpaceApi, usageApi } from './agents'
+export { agentsApi, agentRolesApi, skillsApi, contextOpsApi, askSpaceApi, usageApi } from './agents'
 export type { UsageApiQuery } from './agents'
 export { automationsApi, dailyReportApi } from './automations'
 export { agentWorkspacesApi, projectFoldersApi } from './folders'

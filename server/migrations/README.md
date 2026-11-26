@@ -340,7 +340,7 @@ can be included when that entire plan is unpublished.
 
 ```bash
 ./ops/scripts/db/squash-migrations.sh prepare --mode dev \
-  --source plugins/official/applications/migrations --from 0000 --name applications_plan
+  --source plugins/official/<id>/migrations --from 0000 --name <id>_plan
 ```
 
 Preparation copies the original SQL and Drizzle metadata into `source/` and
@@ -370,6 +370,13 @@ missing files under its DDL role, and preserves the actual predecessor
 install contract and `migration_squashed` audit event commit together. An exact
 target is a no-op. Unexpected, failed or divergent records refuse conversion.
 Fresh databases use normal `migrate up` with the merged package.
+
+## PhD Application migration history
+
+The one-time Applications rename was completed. The cutover release
+(`14aca2f61`) contains the original command and rollback procedure. Fresh
+installations use the PhD Application baseline through normal `up`. The former
+package’s published SQL remains archived in `plugins/retired/applications/`.
 
 ## Squashes after 0002
 
@@ -629,3 +636,21 @@ Preparation did not apply or convert an instance database.
 
 Reuse / Dependency Check: both chains use the existing managed squash tooling,
 ordered SQL and Drizzle snapshots. No regeneration or dependency changes.
+
+### Agent Role naming and Room conversation audiences
+
+`0022_agent_roles_and_room_conversation_audiences.sql` composes the unpublished
+Agent Role naming and Room conversation audience migrations in that order.
+The published chain through `0021` is unchanged. The merged migration retains
+both data transitions and the offline maintenance requirement. Upgrade the
+server and web together. The bundled `phd_application` package already has one
+new migration, `0000_phd_application_baseline`, in its own chain.
+
+The managed core archive identity is
+`45bfcae7ffe149e55866dfc6c2148b61bd62db77894791c9d4f08ed6f550911a`.
+Instances that applied either original development file use the ADR 0025
+offline cutover. Instances through `0021` can apply the formal chain through
+the maintenance upgrade. Preparation did not change any database.
+
+Reuse / Dependency Check: the managed squash tool preserves ordered SQL,
+maintenance markers and Drizzle metadata. No new migration dependencies.

@@ -284,7 +284,11 @@ GET/POST/PATCH /api/v1/projects/{projectId}/folders/{folderId}/execution-config
   middle, so long filenames and close controls remain inside the outline.
   Each segment has an independently positioned SVG viewport matching the tab's
   height; the middle ends at the cap boundary so its fill cannot cover the curve.
-  The file toolbar uses the shared control sizes; size, encoding and
+  The Files & Code header stays on one line as its pane narrows. The Folder
+  selector truncates, long Host and branch labels truncate with their full names
+  available on hover, location metadata yields space, and creation actions
+  switch to labeled icons at compact widths. The file toolbar uses the shared
+  control sizes; size, encoding and
   line-ending details live in a bottom status bar. CodeMirror uses application
   color tokens and a color-mode compartment from the global Theme Context,
   including conflict comparisons. Theme changes preserve edits, selection and

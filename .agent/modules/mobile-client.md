@@ -138,22 +138,21 @@ also setting `100dvh` height. Browser emulation does not reproduce installed
 iOS PWA viewport bugs; passing those checks does not establish physical screen
 coverage on affected iOS releases.
 
-Exception: narrow installed iPhone PWAs now use the phone-verified C layout
-(normal-flow Shell, `100vh` at rest), with one shared geometry decision for
+Exception: narrow installed iPhone PWAs now use the Flow B layout
+(normal-flow Shell, `100dvh` at rest), with one shared geometry decision for
 keyboard-sized overlap and conversation overlays. See
 [Frontend Layout](frontend-layout.md) for platform gating and inset ownership.
 The labelled bottom boundary belongs only to the independent diagnostic probe.
 
 Desktop-request iOS touch UAs are included in that installation check. The Room
 drawer avoids search autofocus, retains a focus trap, and has keyboard-adjusted
-safe bounds. Its shared dialog backdrop covers the same large height as C.
+safe bounds. Its shared dialog backdrop covers the dynamic viewport and keyboard offset.
 Narrow coarse-pointer fields use actual 16px focus text independently of the
 installation check, including portal searches and ordinary browser tabs.
 
 The installed iOS Shell has no document scroll lock and allows native outer
 edge movement; main/Reader/transcript retain their internal scrolling. The old
 forced scroll-to-origin correction remains removed. Idle viewport offsets do
-not move C, while real keyboard overlap still follows the visible viewport.
+not move the Shell, while real keyboard overlap still follows the visible viewport.
 The idle CSS lock introduced for jitter was removed after the person reported
-that dragging stopped. Formal mobile iOS content retains a separate 10px trial
-clearance beyond the dynamic safe inset, without changing bottom C coverage.
+that dragging stopped. The installed Shell uses the system safe-area inset at the top.

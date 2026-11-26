@@ -112,7 +112,10 @@ skipping. Do not start a
 second container or create ad-hoc databases. A clone already carries the
 baseline, so never call `migrate()` on it; tests of the migration runner,
 plugin migrations, or a hand-authored schema pass `{ empty: true }` and
-migrate themselves.
+migrate themselves. Such a test checks data at the migration stage it targets,
+then applies the remaining real migrations before calling current repositories
+or services: production code runs only on the head schema and carries no
+compatibility for intermediate stages (`reusableAgentMigrationDb.test.ts`).
 
 **Unavailable is narrow.** Only an unreachable container or a connection
 error (`isTestPostgresUnavailableError`) makes `db.available` false; the

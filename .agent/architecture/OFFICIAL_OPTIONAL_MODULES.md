@@ -275,8 +275,13 @@ An official optional module may contribute to these extension points:
 | Activity sources | Not wired | No registration point |
 | Memory proposal generators | Not wired | No registration point |
 | Artifacts | Core port only | `artifacts.create` typed core port for operation plugins; no contribution type |
+| Agent Roles | Implemented | `RainverPlugin.agentRoles` (`PluginAgentRole`: key, name, description, system prompt, optional tool/memory policy and execution constraints). Kept off the operation manifest, so the admitted operation contract hash is unchanged. The core lists each Role as `<pluginId>.<key>` (`source_plugin_id`) only for an active Project (`GET /agent-roles?project_id=`, `agentRoles/routes.ts`) the viewer reads, while `operationPluginEnabled` holds for them and, for a Project-bound package, the plugin is bound to that Project. It is a Project-specific assistant: the global Role library and New Agent never offer it, and only the plugin's own page in that Project (`PluginAgentSetup`) creates or reuses it and picks its Room, through the ordinary Room add and its share confirmation. `agent.role.instantiate` creates an ordinary Agent with that source Role and the plugin's prompt; it refuses a plugin Role without a Project (422), in a Project where the plugin is unbound or not enabled for the person, re-read after the plugin scope (shared), Project and binding locks in bind's order (404, the binding read `FOR SHARE`), and without Project write authority. Agents already created from it are kept and managed from My Agents ([agents](../modules/agents.md), "My Agents"). PhD Application contributes exactly one Role, `phd_application.assistant`. |
+| Assistant setup | Implemented (host UI) | For a bound Project-level plugin that contributes a Role, `PluginSlot` renders the host's `PluginAgentSetup` above the `project.area` view. The person picks one of their Rooms in the Project, then reuses an Agent from that Role that the Room's own candidate list offers them (`GET /rooms/:id/agent-candidates?source_role_id=`, the server's filter over the whole eligible set, read to its last page), or creates one from the Role with the Project prefilled (a created Agent is reused if the add is retried). Until that list for the chosen Room has loaded nothing is offered and Set up stays off; a failed read says so and offers Retry, so a slow or failed read never falls through to creating a second assistant. An explicit choice to create a new one survives a Room change. The ordinary Room add follows and completes the Project link. When the add needs its owner's Room-only share (a private Agent, or one whose home is another Project, including a Room of one), the server refuses with `private_agent_share_confirmation_required`, the exact `member_ids` and the same people by name (`members`, read in the refusing transaction); the dialog names them and the confirmation sends that list back unchanged, as the Room roster does. If the Room's people changed meanwhile (even to the same number) the server refuses again with the new list and the dialog says the people changed. On success the chat panel opens on that Room (`openProjectChat`, which re-reads a Room already shown) and the card names the Room it was just set up in. Once set up the card offers only Change; it never creates a Room, and there is no chat button of its own. Whether it is already set up is decided before the card shows anything: from every Agent of the Role the viewer reads (`GET /agents?source_role_id=`, read to its last page) and the Project's Rooms, so a Project already set up never flashes the setup form. With no such Agent no Room is read. A Role list or Room that cannot be read leaves the answer unknown: the card says so and offers Retry, never the setup form or nothing, and a reload after setup keeps the card. A reload keeps the chosen Room only while it is still one of the Project's. Only the latest check applies, so one that finishes late (another Project, a reload after setup) never overwrites it. |
+| Companion Agent admission | Implemented | An Agent created from a plugin's Role (`source_role_id` = `<pluginId>.<key>`; catalog Role keys carry no dot) exists for that plugin's work, so it runs only where that work is set up now, whether or not a turn calls a plugin tool (`plugins/agentRoleAdmission.ts`): its Run has an active Project the instructing person reads, the plugin is enabled for that person (`operationPluginEnabled`, fail-closed when the package is no longer composed) and bound to that Project, and the Run is in a Room of that Project that authorizes the Agent for this person now (`roomAgentUseSql`, inside the Run conversation's audience). The Room and conversation are the Run's placement (`runExecutionPlacement`, `rooms/agentUsageSql.ts`: the Run Group's Room, else its conversation's; its own conversation, else the Group's), the one resolution Run claim and cross-Project plugin entry also use, so a Run with or without a Run Group is decided alike. It is asked when a Run is dispatched and claimed (`checkRunExecutionAuthorization`, refusals `plugin_agent_project_required` / `_project_unavailable` / `_plugin_disabled` / `_project_unbound` / `_room_unauthorized` settle the Run with a readable message), at every tool call of its Run (`SystemActionDispatcher.dispatch`, gateway actions such as retrieval, delegation and conversation history included, refused with that `error_code`) and at every operation it invokes (`OperationExecutor.admit`, a 409 with that reason), so a direct chat or Run outside a Project is not run and an unbind stops a Run already going on at its next action. Where the decision leads to an effect it is taken under locks (`lockPluginRoleAgentAdmission`: the plugin scope `FOR SHARE`, which a disable holds for update, and the Project binding `FOR SHARE`, which an unbind holds for update): Run claim takes them after the Room execution boundary and holds them until the Run is `running`, every operation command takes them inside its transaction before the person/Run pin, after its Project `FOR UPDATE` and the Room boundary (`assertPluginRoleAgentAdmittedLocked`), and every gated result release (`OperationExecutor`, before the operation's `releaseGate`; fresh query or command results and receipt replays, same-Project and cross-Project Agents alike) takes them in its release transaction after the Project `FOR SHARE` and the Room boundary, so a Room removal or audience freeze committed between a read-only query and its release withholds the result with the 409 refusal. An unbind, disable or Room withdrawal either commits first and refuses the claim or command, or waits for it. It only admits: once admitted the Agent keeps the ordinary assistant capabilities its Role and Run grant, and every other Agent is unaffected (`server/test/pluginAgentRolesDb.test.ts`). A turn already streaming with no further action is not interrupted. |
 
 Any other contribution type preserves the same fail-closed enablement rule.
+
+**Agent execution across Projects.** A plugin operation called by an Agent always targets its Run's Project, which must be bound, with the plugin enabled for the person (`assertPluginProjectTarget`). An Agent whose retained home Project (`access_project_id`) is another Project reaches this one only while the Room's own execution authority holds (`roomAgentUseSql`, the predicate Room execution admission uses when a Run is claimed), asked again at every plugin entry, receipt replay, proposal apply and result release: the Agent is active and an active member of the Run's Room in this Project; the instructing person is an active Room, Space and Project member and inside the Run conversation's own audience (`roomConversationAudienceSql`); and the Room-only grant (`room_agent_access_grants`) is unrevoked and issued by the Agent's current owner, who still manages the Room in this Project. Leaving the Room, an ownership transfer, a revoked grant, the issuer losing Project management, or unbinding the plugin each refuse the next call as not found (`server/test/pluginAgentRolesDb.test.ts`). A command entry, a proposal apply, a fresh result's release and a stored receipt's replay decide it at the boundary Run claim uses (`lockRoomExecutionAuthority`, `rooms/agentUsageSql.ts`): the Project audience, then the Room row `FOR SHARE`, then the Agent row, and only then the predicate in its own statement, so it reads a snapshot taken after those locks. Every Room writer that withdraws the authority holds the Room row and a Project role change holds the Project, so a revocation either commits first and the body is withheld, or waits until the release that already passed commits (`server/test/pluginProjectBindingDb.test.ts`, both orders on two connections). The order is Project before Room for Room writers too: an Agent's command already holds its Project `FOR UPDATE` when it asks for the Room, and a first Agent add's `project_agent_links` row takes the Project key lock through its foreign key, so every locked Room read takes the Project `FOR KEY SHARE` before the Room row (`PgRoomRepository.lockRoomProjectKey`) and a concurrent command serializes with a first add, an invitation approval that activates (`share_history=false` freezing an existing conversation and opening its draft) or a conversation draft instead of deadlocking (same test file, the real command against each on two connections). The Room and conversation are the Run's placement (`runExecutionPlacement`), as in Run claim. A read-only query entry cannot lock and answers from its snapshot; its body reaches nobody except through that locked release. Its data stay keyed by the target Project, and its sessions (per conversation) and memory (retained-Project isolation) stay separate. A personal Agent (no home Project) is used in a Project only after it is added explicitly.
 
 ## Operation manifest platform
 
@@ -977,7 +982,7 @@ DDL, data and subprocesses in these tests belong to isolated test databases.
 |---|---|---|---|---|---|
 | `diary` | `user` | `/plugins/diary/journal` (manifest `navigation` entry) | none (P1 actions/queries only) | Operations (all `sensitive`), one append proposal type, the reflection Job | Plugin-owned entries/reflections in `plugin_diary`, keyed by person only (user-level across Spaces); see [Diary package](#diary-package) |
 | `finance_ledger` | `space` | `/plugins/finance_ledger/ledger` (manifest navigation) | none (P1 actions/queries only) | Operations and two posting proposal types | Space ledger in `plugin_finance_ledger`; see [Finance ledger package](#finance-ledger-package) |
-| `applications` | `space`, Project-level | Project Area `/projects/:id/plugins/applications/board` and Pulse card | none (P1 actions/queries only) | Operations, one proposal type, core ports `tasks.create`/`references.resolve`/`notes.read`/`notes.draft` | Plugin-owned application records in `plugin_applications`, keyed by Space, person and Project; see [Application management package](#application-management-package) |
+| `phd_application` | `space`, Project-level | Project Area `/projects/:id/plugins/phd_application/board` and Pulse card | none (P1 actions/queries only) | Operations, one proposal type, core ports `tasks.create`/`references.resolve`/`notes.read`/`notes.draft` | Plugin-owned application records in `plugin_phd_application`, keyed by Space, person and Project; see [PhD Application package](#phd-application-package) |
 
 ---
 
@@ -1021,7 +1026,7 @@ The following are out of scope for the current implementation:
 | `server/src/modules/plugins/index.ts` | Module facade: exports pluginsModule + guard |
 | `plugins/official/diary/` | Diary operation package: `operationManifest.ts`, `schema.ts` + `drizzle.config.ts`, migrations, `server/src/index.ts`, `web/src/operationViews.tsx` (the editor page over `opsApi.ts`) |
 | `plugins/official/finance_ledger/` | Bundled finance ledger plugin package source, manifest, server runtime, web page, and migrations |
-| `plugins/official/applications/` | Application management package: `operationManifest.ts`, `domain.ts`, `schema.ts` + `drizzle.config.ts`, migrations, `server/src/index.ts`, `web/src/operationViews.tsx` |
+| `plugins/official/phd_application/` | PhD Application package: `operationManifest.ts`, `domain.ts`, `schema.ts` + `drizzle.config.ts`, migrations, `server/src/index.ts`, `web/src/operationViews.tsx` |
 | `server/dist/official-plugins/diary/` | diary build output loaded by the server at startup |
 | `server/dist/official-plugins/finance_ledger/` | finance_ledger build output loaded by the server at startup |
 | `server/migrations/0000_baseline.sql` | DB migration — plugin control-plane and install tracking only |
@@ -1105,7 +1110,7 @@ process browser/plugin code is not a malicious sandbox.
 Implemented 2026-11-18 as the first stage of the Project-level application
 plugin work ([Applications Plugin Plan](../plans/applications-plugin-plan.md)). The
 first bundled package declaring it is the
-[Application management package](#application-management-package). It adds a
+[PhD Application package](#phd-application-package). It adds a
 Project layer on top of install and enablement; it does not replace either.
 
 **Manifest contract.** `project_binding: 'required'` marks a Project-level
@@ -1255,12 +1260,12 @@ release recheck blocking a membership change), protocol
 web `modules/plugins/__tests__/ProjectPluginBinding.test.tsx` (navigation, slot,
 independent slot on a binding change, settings card incl. the admin hint).
 
-## Application management package
+## PhD Application package
 
 Implemented 2026-11-18 as stage 2 of
 [Applications Plugin Plan](../plans/applications-plugin-plan.md): the first bundled
-Project-level operation package, `plugins/official/applications/` (id
-`applications`, "Application management"). PhD application (one program at one
+Project-level operation package, `plugins/official/phd_application/` (id
+`phd_application`, "PhD Application"). PhD application (one program at one
 institution) is its first *track* and `funding` (a scholarship, studentship or
 grant) its second (`domain.ts`: `APPLICATION_TRACKS`, `TRACK_CONFIG`,
 `FUNDING_SUBMISSIONS`); both use the same records and operations, and a later
@@ -1273,15 +1278,18 @@ contacts tab; below) was implemented 2026-11-18 and is privately saved, not depl
 core ports `tasks.create`, `references.resolve`, `notes.read` and `notes.draft`. The browser-safe
 declaration (`operationManifest.ts`, with `domain.ts`) is shared by the server
 runtime (`server/src/index.ts`, compiled to
-`dist/official-plugins/applications/server/src/index.js`, its `plugin.json`
+`dist/official-plugins/phd_application/server/src/index.js`, its `plugin.json`
 `server.main`) and the bundled views (`web/src/operationViews.tsx`). Schema
-`plugin_applications` is authored in `schema.ts` and generated by drizzle-kit
-(command in [COMMANDS](../COMMANDS.md)). `migrations/0000_applications_and_mail_facts.sql`
-contains the Applications chain, including the original contact-link adoption,
-submission-history backfills and Project collaboration changes, followed by the
-mail fact ledger and its status and deadline timestamp backfills. It retains
-the original SQL boundaries and IDs so the offline migration cutover can adopt
-older journal entries. A fresh installation records one migration. The schema retains original owner keys,
+`plugin_phd_application` is authored in `schema.ts` and generated by drizzle-kit
+(command in [COMMANDS](../COMMANDS.md)). `migrations/0000_phd_application_baseline.sql`
+is a plain drizzle-kit baseline of that schema; a fresh installation records that
+one migration. The former package's published migration
+`0000_applications_and_mail_facts.sql` (the original Applications chain, contact-link
+adoption, submission-history backfills, Project collaboration changes and the mail
+fact ledger, with its original SQL boundaries and IDs) is frozen byte for byte in
+`plugins/retired/applications/migrations/`; it is not built or installed and exists
+as migration history and a regression fixture. Its final
+snapshot equals the baseline's apart from the schema name. The schema retains original owner keys,
 lets funding and contact links cross owners inside a Project, and records the
 requester of each new draft.
 Deadlines, checklist items and contact events retain their parent's storage
@@ -1305,7 +1313,7 @@ Applications role and records cross-person reads before returning the result.
 Note and task references use their own read gates. Draft text and requirements
 are visible only to the person who requested the draft.
 
-**Operations** (`plugin.applications.<entity>.<verb>`). The public API requires
+**Operations** (`plugin.phd_application.<entity>.<verb>`). The public API requires
 `project_id`. The Agent tool schema lets a Project-bound Run omit it. The shared
 Run adapter fills it from that Run before validating the operation input. The
 host checks the current Run's Project, its live binding, and the caller's
@@ -1567,7 +1575,9 @@ person's change, the message's receipt time, or the epoch for a new record's ini
 funding; later statuses are `unchanged`); `deadline` adds one without a Task, or moves the one deadline
 of that kind unless its date was set after the message (`newer_deadline`, `date_changed_at`); several of
 that kind is `ambiguous_deadline`. `contact` records an email event in either direction using a matching
-linked contact. A new contact learned from mail stays private to the mailbox owner. Multiple matches
+linked contact, independently of application status or deadlines. Inbound correspondence with the
+`automatic_reply` marker uses fixed automatic-reply event text. A new contact learned from mail stays private
+to the mailbox owner. Multiple matches
 return `ambiguous_contact` for review. The event and its deduplication entry commit together. Shared
 notices use the application label and fixed event text. Every recorded change advances the revision. Each outcome is kept in
 `application_mail_facts` (unique per mailbox owner, Project, message, effect key and application; ids,
@@ -1657,10 +1667,9 @@ Artifacts created or referenced stay with their core owners. Uninstall and data
 deletion are not provided. A hard-deleted Project cascades its binding but not
 plugin rows, which no entry can reach afterwards.
 
-**Deployment note.** A bundled operation package changes `migrate
-maintenance-pending` for an existing database: the next deployment needs the
-stopped-writer maintenance path that installs `plugin_applications` (offline
-installer). Nothing was deployed or installed on a live instance.
+**Installation.** Fresh databases install the baseline via the normal offline
+operation-package installer. The completed rename is recorded in the
+[migration history](../../server/migrations/README.md#phd-application-migration-history).
 
 **Evidence.** `server/test/applicationsPluginDb.test.ts` (real PG; the compiled,
 loader-admitted artifact installed by the offline installer; HTTP and Agent

@@ -30,7 +30,7 @@ export function hasSubscriptionQuota(runtimeKey: string): boolean {
  *
  * Normalized once when a daemon's hello/heartbeat is recorded. Readers see
  * `runtimes`, `versions`, `installations`, `workspace_read_only`,
- * `tool_bridge_protocols`, `ordinary_tools`, `ordinary_tool_accounts` and
+ * `ordinary_tools`, `ordinary_tool_accounts` and
  * `ordinary_tools_runs` only. An installation entry
  * that does not parse is dropped. Do not add a second parser for another
  * layout.
@@ -193,7 +193,6 @@ export function normalizeHostCapabilities(raw: unknown): HostCapabilities {
       : [];
     if (parsed.length > 0) installations[runtimeKey] = parsed;
   }
-  const toolBridges = Array.isArray(source.tool_bridge_protocols) ? strings(source.tool_bridge_protocols) : undefined;
   const workspaces = workspaceCapabilities(source.execution_workspaces);
   return HostCapabilitiesSchema.parse({
     runtimes, versions, installations,
@@ -203,7 +202,6 @@ export function normalizeHostCapabilities(raw: unknown): HostCapabilities {
     ...(source.managed_cli_updates === true ? { managed_cli_updates: true } : {}),
     ...(HostCapabilitiesSchema.shape.workspace_read_only.safeParse(source.workspace_read_only).success?{workspace_read_only:source.workspace_read_only}:{}),
     ...(workspaces ? { execution_workspaces: workspaces } : {}),
-    ...(toolBridges ? { tool_bridge_protocols: toolBridges } : {}),
     // Kept whole or not at all: a report that does not parse reads as a daemon
     // without ordinary-tool support, never as tools that are missing.
     ...(HostCapabilitiesSchema.shape.ordinary_tools.safeParse(source.ordinary_tools).success && source.ordinary_tools

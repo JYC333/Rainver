@@ -1,3 +1,4 @@
+import { runTool as callRunTool } from "./support/runTool.js";
 import { DUPLICATE_TASK_CANCELLATION_REASON } from "@rainver/protocol";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -57,10 +58,10 @@ import { AuthorizationRequestService } from "../src/modules/policy/authorization
  *
  * Stand-ins: the Host daemon process and CLI/ACP adapter (`SyntheticAcpHost`
  * answers the wire frames and makes the tool calls a CLI would make with what
- * its launch frame held); the file-v1 tool bridge (tool calls are injected into
- * the Run tool route with the Run's token); Google (a `fetch` stub with a
+ * its launch frame held); the Host socket (tool calls exercise
+ * the shared Run tool service with the Run's token); Google (a `fetch` stub with a
  * synthetic mailbox). Real: Room service, queue/worker and handlers, Gateway
- * and snapshot, dispatcher, run tool identity and route, system actions,
+ * and snapshot, dispatcher, Run tool identity and service, system actions,
  * consent request/approval, release gate, Room message writer.
  */
 const db = useTestDatabase(import.meta.filename, { max: 6 });
@@ -234,11 +235,9 @@ async function roomConversation(options: { room?: "mainline" | "limited" | strin
   return { room, conversationId: conversation.id };
 }
 
-/** One tool call the way a CLI makes it: the Run's tool route with the token its launch frame carried. */
+/** One tool call using the Run token in the synthetic Host's launch frame. */
 async function runTool(frame: Record<string, any>, action: string, args: Record<string, unknown> = {}) {
-  const env = frame.work_surface.env as Record<string, string>;
-  const response = await app!.inject({ method: "POST", url: `/api/v1/runs/${env.RAINVER_RUN_ID ?? frame.run_id}/tools/${action}`,
-    headers: { authorization: `Bearer ${env.RAINVER_TOOL_TOKEN}`, "idempotency-key": randomUUID() }, payload: args });
+  const response = await callRunTool(config, frame.run_id, frame.work_surface.run_tool_token, action, args);
   return { status: response.statusCode, body: response.json() as Record<string, any>, raw: response.body };
 }
 
@@ -278,7 +277,7 @@ describe("ADR 0033 §6 Gmail read in place in a Room, from the queue to the Room
       recent?: { status: number; body: Record<string, any> }; search?: { status: number; body: Record<string, any> } } = { frames: [] };
     const { room, conversationId, launched, execute } = await roomQueue(async (frame) => {
       seen.frames.push(frame);
-      const tools = await app!.inject({ method: "GET", url: `/api/v1/runs/${frame.run_id ?? frame.work_surface.env.RAINVER_RUN_ID}/tools`, headers: { authorization: `Bearer ${frame.work_surface.env.RAINVER_TOOL_TOKEN}` } });
+      const tools = await callRunTool(config, frame.run_id, frame.work_surface.run_tool_token);
       seen.tools = (tools.json().tools as Array<{ name: string }>).map((tool) => tool.name);
       const first = await runTool(frame, READ_TOOL);
       if (first.status === 403) {
@@ -772,7 +771,7 @@ describe("ADR 0033 phase B: a Gmail digest set up and delivered in a Room conver
     host = new SyntheticAcpHost(sharedHostConnectionRegistry, hostId, async (prompt: SyntheticAcpPrompt): Promise<SyntheticAcpAnswer> => {
       const frame = host!.launchFrames.get(prompt.runId) as Record<string, any>;
       seen.frames.push(frame);
-      const tools = await app!.inject({ method: "GET", url: `/api/v1/runs/${prompt.runId}/tools`, headers: { authorization: `Bearer ${frame.work_surface.env.RAINVER_TOOL_TOKEN}` } });
+      const tools = await callRunTool(config, prompt.runId, frame.work_surface.run_tool_token);
       seen.tools[phase] = (tools.json().tools as Array<{ name: string }>).map((tool) => tool.name);
       if (phase === "setup") {
         seen.drafted = await runTool(frame, "source.gmail.digest.propose", { kind: "daily", local_time: "08:00", time_zone: "Europe/London" });
@@ -906,7 +905,7 @@ describe("Room and mainline Gmail digests: one audience rule from start to settl
     host = new SyntheticAcpHost(sharedHostConnectionRegistry, hostId, async (prompt: SyntheticAcpPrompt): Promise<SyntheticAcpAnswer> => {
       const frame = host!.launchFrames.get(prompt.runId) as Record<string, any>;
       state.launched.push(prompt.runId);
-      const tools = await app!.inject({ method: "GET", url: `/api/v1/runs/${prompt.runId}/tools`, headers: { authorization: `Bearer ${frame.work_surface.env.RAINVER_TOOL_TOKEN}` } });
+      const tools = await callRunTool(config, prompt.runId, frame.work_surface.run_tool_token);
       state.tools.push((tools.json().tools as Array<{ name: string }>).map((tool) => tool.name));
       const script = state.script;
       if (script.mode === "propose") {

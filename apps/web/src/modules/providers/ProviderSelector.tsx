@@ -144,12 +144,12 @@ export default function ProviderSelector({
             : 'No selectable model providers for this runtime.'}
         </p>
         <div className="flex items-center gap-3">
-          <Link
+          {!disabled && <Link
             to="/providers"
             className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:opacity-90"
           >
             <Plus className="size-3.5" /> Define a provider
-          </Link>
+          </Link>}
           <button type="button" onClick={loadProviders} className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
             <RefreshCw className="size-3" /> Refresh
           </button>

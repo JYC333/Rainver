@@ -22,6 +22,7 @@ import { useProjectPluginReach } from './ProjectPluginNavigation';
 import { onProjectPluginBindingsChanged } from './useProjectPluginBindings';
 import { useProjectLiveRefresh } from '../../hooks/useProjectLiveRefresh';
 import { onPluginStateChanged } from './pluginStateEvents';
+import { PluginAgentSetup } from './PluginAgentSetup';
 type Placement = 'navigation' | 'project.area' | 'project.overview.card';
 export function PluginSlot({
   pluginId,
@@ -269,8 +270,10 @@ function ScopedSlot({
   {state === 'loading' && <p role="status" className="text-sm text-muted-foreground">{t('plugin_ui.loading')}</p>}
   {state === 'disabled' && <p role="status" className="text-sm text-muted-foreground">{t('plugin_ui.disabled')}</p>}
   {state === 'error' && <Card><CardContent className="space-y-3"><p role="alert">{t('plugin_ui.error')}</p><Button className="max-md:min-h-[44px]" variant="outline" onClick={() => setVersion(v => v + 1)}>{t('plugin_ui.retry')}</Button></CardContent></Card>}
-  {state === 'enabled' && View && placement === 'project.area' && pluginId === 'applications' && entryId === 'board' && projectId &&
-    <ProjectGmailUpdates projectId={projectId} spaceId={spaceId} scopeKey={scope} />}
+  {state === 'enabled' && View && placement === 'project.area' && projectId &&
+    <PluginAgentSetup pluginId={pluginId} projectId={projectId} canWrite={projectCanWrite} />}
+  {state === 'enabled' && View && placement === 'project.area' && pluginId === 'phd_application' && entryId === 'board' && projectId &&
+    <ProjectGmailUpdates key={scope} projectId={projectId} spaceId={spaceId} scopeKey={scope} />}
   {state === 'enabled' && View && <ErrorBoundary key={`${scope}:${version}`} fallback={retry => <Card><CardContent className="space-y-3"><p role="alert">{t('plugin_ui.error')}</p><Button className="max-md:min-h-[44px]" variant="outline" onClick={retry}>{t('plugin_ui.retry')}</Button></CardContent></Card>}><View ctx={ctx} /></ErrorBoundary>}
  </section>;
 }

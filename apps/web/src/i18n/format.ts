@@ -53,6 +53,23 @@ export function formatTime(value: DateInput, options: { timeZone?: string; fallb
   }).format(date)
 }
 
+/** Keep the clock time and add calendar context for older transcript messages. */
+export function formatConversationTimestamp(value: DateInput, now = new Date()): string {
+  const date = toDate(value)
+  if (!date) return '—'
+  // Compare local calendar days rather than elapsed hours across midnight or DST.
+  const calendarDay = (at: Date) => Date.UTC(at.getFullYear(), at.getMonth(), at.getDate())
+  const daysAgo = (calendarDay(now) - calendarDay(date)) / 86_400_000
+  if (daysAgo < 0 || daysAgo >= 365) return formatDateTime(date)
+  const time = formatTime(date)
+  if (daysAgo === 0) return time
+  const relative = new Intl.RelativeTimeFormat(currentLocale(), { numeric: daysAgo === 1 ? 'auto' : 'always' })
+  const dayLabel = daysAgo < 7 ? relative.format(-daysAgo, 'day')
+    : daysAgo < 30 ? relative.format(-Math.floor(daysAgo / 7), 'week')
+    : relative.format(-Math.floor(daysAgo / 30), 'month')
+  return `${dayLabel} · ${time}`
+}
+
 /** A moment written with explicit parts, e.g. `{ month: 'short', day: 'numeric' }`. */
 export function formatDateParts(value: DateInput, options: Intl.DateTimeFormatOptions, fallback = '—'): string {
   const date = toDate(value)

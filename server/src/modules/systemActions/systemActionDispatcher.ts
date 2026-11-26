@@ -1,4 +1,5 @@
 import { operationPluginEnabled } from "../plugins/operationEnablement.js";
+import { pluginRoleAgentRefusal } from "../plugins/agentRoleAdmission.js";
 import {operationRuntime} from './operations/runtime.js';
 import {dispatchRunOperation, runOperationInputJsonSchema} from '../runs/operationToolDispatch.js';
 import {OperationError} from "./operations/errors.js";
@@ -292,6 +293,18 @@ export class SystemActionDispatcher {
           ok: false,
           error_code: "system_action_not_granted",
         },
+      };
+    }
+    // A plugin's companion Agent acts only where its plugin's work is set up now, through
+    // every action, gateway ones (retrieval, delegation) included (`plugins/agentRoleAdmission.ts`).
+    const companion = this.config.databaseUrl
+      ? await pluginRoleAgentRefusal(getDbPool(this.config.databaseUrl), this.config, this.run)
+      : null;
+    if (companion) {
+      await this.recordRefusedAction(call, companion.error_code, companion.error_message);
+      return {
+        modelResult: { ok: false, tool: call.name, error_code: companion.error_code, error: companion.error_message },
+        summary: { tool_name: call.name, ok: false, error_code: companion.error_code },
       };
     }
     let input: unknown;

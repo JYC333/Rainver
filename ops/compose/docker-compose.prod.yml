@@ -53,7 +53,7 @@ services:
       # silently blank out the generated `.server.env` value. Set it in the
       # instance `.env`, which is what `.server.env` is generated from.
       # Unset, a paired host gets an address derived from an http:
-      # FRONTEND_URL plus this port; an https: FRONTEND_URL needs it set.
+      # PUBLIC_BASE_URL plus this port; an https: PUBLIC_BASE_URL needs it set.
     ports:
       # Loopback by default: reachable from this machine only. Widening this
       # bind is the deliberate step that exposes lease traffic to the local

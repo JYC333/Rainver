@@ -90,7 +90,7 @@ export async function runAudience(db: Queryable, input: {
       WHERE s.id=$1 AND s.space_id=$2`, [input.sessionId, input.spaceId])).rows[0];
     if (room?.id && room.project_id) {
       const {roomAudience} = await import('../rooms/threadReferences.js');
-      for (const id of await roomAudience(db, input.spaceId, {id: room.id, project_id: room.project_id, is_mainline: !!room.is_mainline})) people.add(id);
+      for (const id of await roomAudience(db, input.spaceId, {id: room.id, project_id: room.project_id, is_mainline: !!room.is_mainline}, input.sessionId)) people.add(id);
     } else if (room?.room_id) people.add(UNKNOWN_AUDIENCE);
   }
   if (input.visibility === 'space_shared') {
@@ -109,14 +109,14 @@ export type Eligibility = 'normal' | 'needs_space_consent' | 'needs_run_consent'
 
 // These Project-bound commands write the caller's records and return only IDs.
 export const applicationContactWrites: ReadonlySet<string> = new Set([
-  'plugin.applications.contact.create',
-  'plugin.applications.contact.update',
-  'plugin.applications.contact.log_event',
+  'plugin.phd_application.contact.create',
+  'plugin.phd_application.contact.update',
+  'plugin.phd_application.contact.log_event',
 ]);
 
 export const applicationProjectContactReads: ReadonlySet<string> = new Set([
-  'plugin.applications.contact.list',
-  'plugin.applications.contact.list_events',
+  'plugin.phd_application.contact.list',
+  'plugin.phd_application.contact.list_events',
 ]);
 
 function usesProjectContactWriteAuthority(pin: PluginToolPin): boolean {

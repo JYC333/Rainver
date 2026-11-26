@@ -1,7 +1,7 @@
 import { useConversationScope } from './ConversationScope'
 import { useEffect, useState } from 'react'
 import { proposalsApi } from '../../api/client'
-import { ApiRequestError } from '../../api/transport'
+import { refusalCode } from '../../api/transport'
 import { Button } from '../../components/ui/button'
 import { ConversationLink as SpaceLink } from './ConversationScope'
 import { errMsg } from '../../lib/utils'
@@ -9,13 +9,6 @@ import { useAppTranslation } from '../../i18n'
 import { acceptRefusalKey } from '../memory/acceptOutcome'
 import type { ChatActionPreview } from '../../types/api'
 import { GmailApplicationExecutionChoice, gmailApplicationExecutionAcceptable, type GmailApplicationExecutionState } from '../sources/gmail/GmailApplicationExecutionChoice'
-
-/** The domain code of a refused operation (`error.metadata.code`), else its operation code. */
-function refusalCode(error: unknown): string | undefined {
-  if (!(error instanceof ApiRequestError)) return undefined
-  const metadata = (error.payload?.error as { metadata?: { code?: unknown } } | undefined)?.metadata
-  return typeof metadata?.code === 'string' ? metadata.code : error.code
-}
 
 export type ActionDecision = 'accept' | 'reject'
 /**

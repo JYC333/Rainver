@@ -49,7 +49,7 @@ async function requireConversation(
   const room = await rooms.getVisibleRoom(identity.spaceId, identity.userId, roomId(request), writer);
   if (!room) throw new HttpError(404, "Room not found in this space");
   if (writer) await assertProjectWriter(client, identity.spaceId, room.project_id, identity.userId);
-  const conversation = await rooms.getConversation(identity.spaceId, room.id, sessionId(request));
+  const conversation = await rooms.getConversation(identity.spaceId, room.id, sessionId(request), identity.userId);
   if (!conversation) throw new HttpError(404, "Room conversation not found");
 }
 

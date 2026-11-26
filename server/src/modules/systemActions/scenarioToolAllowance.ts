@@ -185,7 +185,7 @@ const ROOM_PROJECT_TOOL_ALLOWANCE: readonly SystemActionId[] = [
 ];
 
 /**
- * The application management package's Agent tools (`plugins/official/applications`),
+ * The PhD Application package's Agent tools (`plugins/official/phd_application`),
  * named one by one: a Run opened in a Project — a direct chat, a Room message, a
  * delegation from one, or a dispatched Task — may call them there. This is not a
  * plugin wildcard; another package's operations stay out until they are listed the
@@ -206,42 +206,42 @@ const ROOM_PROJECT_TOOL_ALLOWANCE: readonly SystemActionId[] = [
  * Agent-eligible operations.
  */
 export const PROJECT_APPLICATIONS_TOOL_ALLOWANCE: readonly PluginOperationId[] = [
-  "plugin.applications.application.list",
-  "plugin.applications.application.get",
-  "plugin.applications.application.summary",
-  "plugin.applications.application.create",
-  "plugin.applications.application.update",
-  "plugin.applications.application.update_status",
-  "plugin.applications.application.record_submission",
-  "plugin.applications.application.propose_status",
-  "plugin.applications.funding.link",
-  "plugin.applications.funding.unlink",
-  "plugin.applications.deadline.add",
-  "plugin.applications.deadline.update",
-  "plugin.applications.deadline.remove",
-  "plugin.applications.material.add",
-  "plugin.applications.material.update",
-  "plugin.applications.material.remove",
-  "plugin.applications.material.link_note",
-  "plugin.applications.material.add_source",
-  "plugin.applications.material.remove_source",
-  "plugin.applications.material.read_note",
-  "plugin.applications.material.generate",
-  "plugin.applications.material.get_generation",
-  "plugin.applications.material.apply_generation",
-  "plugin.applications.library.list",
-  "plugin.applications.library.add",
-  "plugin.applications.library.update",
-  "plugin.applications.library.remove",
-  "plugin.applications.contact.list",
-  "plugin.applications.contact.list_events",
-  "plugin.applications.contact.create",
-  "plugin.applications.contact.update",
-  "plugin.applications.contact.log_event",
+  "plugin.phd_application.application.list",
+  "plugin.phd_application.application.get",
+  "plugin.phd_application.application.summary",
+  "plugin.phd_application.application.create",
+  "plugin.phd_application.application.update",
+  "plugin.phd_application.application.update_status",
+  "plugin.phd_application.application.record_submission",
+  "plugin.phd_application.application.propose_status",
+  "plugin.phd_application.funding.link",
+  "plugin.phd_application.funding.unlink",
+  "plugin.phd_application.deadline.add",
+  "plugin.phd_application.deadline.update",
+  "plugin.phd_application.deadline.remove",
+  "plugin.phd_application.material.add",
+  "plugin.phd_application.material.update",
+  "plugin.phd_application.material.remove",
+  "plugin.phd_application.material.link_note",
+  "plugin.phd_application.material.add_source",
+  "plugin.phd_application.material.remove_source",
+  "plugin.phd_application.material.read_note",
+  "plugin.phd_application.material.generate",
+  "plugin.phd_application.material.get_generation",
+  "plugin.phd_application.material.apply_generation",
+  "plugin.phd_application.library.list",
+  "plugin.phd_application.library.add",
+  "plugin.phd_application.library.update",
+  "plugin.phd_application.library.remove",
+  "plugin.phd_application.contact.list",
+  "plugin.phd_application.contact.list_events",
+  "plugin.phd_application.contact.create",
+  "plugin.phd_application.contact.update",
+  "plugin.phd_application.contact.log_event",
   // What the owner's Gmail application updates recorded (their own rows). The command that records such a
-  // fact, `plugin.applications.mail_fact.apply`, is never offered here: only the automation's own Run has it
+  // fact, `plugin.phd_application.mail_fact.apply`, is never offered here: only the automation's own Run has it
   // (ADR 0034, `APPLICATION_UPDATE_RUN_TOOLS`), and the host refuses it to every other caller.
-  "plugin.applications.mail_fact.list",
+  "plugin.phd_application.mail_fact.list",
 ];
 
 /**

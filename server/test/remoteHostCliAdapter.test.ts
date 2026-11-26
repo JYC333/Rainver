@@ -109,12 +109,12 @@ describe("selected Skill work-surface transport", () => {
       skill_package_id: "package-1", package_hash: "a".repeat(64), package_name: "Audit",
       files: [{ path: "assets/data.bin", content_base64: "AP+A", content_hash: "b".repeat(64), executable: false }],
     } }];
-    expect(skillWorkSurface(delivery, null)).toEqual({ env: {}, dir_env: { RAINVER_SKILL_ROOT: "rainver/skills" },
+    expect(skillWorkSurface(delivery, null)).toEqual({ dir_env: { RAINVER_SKILL_ROOT: "rainver/skills" },
       files: [{ relative_path: "rainver/skills/package-1/assets/data.bin", contents: "AP+A", encoding: "base64", content_hash: "b".repeat(64) }],
     });
     expect(skillWorkSurface(undefined, null)).toBeNull();
-    const base = { env: { EXISTING: "yes" }, files: [], dir_env: {} };
-    expect(skillWorkSurface(delivery, base)?.env).toEqual(base.env);
+    const base = { run_tool_token: "a".repeat(43), files: [], dir_env: {} };
+    expect(skillWorkSurface(delivery, base)?.run_tool_token).toEqual(base.run_tool_token);
     expect(base.files).toEqual([]);
   });
 });
@@ -1178,7 +1178,7 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
   it("carries the binding on the launch frame and revokes its lease at terminal", async () => {
     const leases = new ProviderProxyLeaseRegistry();
     // No instance-wide external URL: this exercises the common path, where the
-    // address is derived from FRONTEND_URL plus the proxy's port.
+    // address is derived from PUBLIC_BASE_URL plus the proxy's port.
     setProviderProxyBaseUrlForProcess("http://server:8021", null);
     const hostRow = {
       query: async () => ({ rows: [{ provider_proxy_base_url: null, kind: "remote" }], rowCount: 1 }),
@@ -1202,7 +1202,7 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
           connectionRegistry: connections,
           // Derivation needs a fixed port: an OS-assigned one moves on
           // restart, so there would be nothing stable to hand a host.
-          config: loadConfig({ PROVIDER_PROXY_PORT: "8021", FRONTEND_URL: "http://192.168.1.5:3000" }),
+          config: loadConfig({ PROVIDER_PROXY_PORT: "8021", PUBLIC_BASE_URL: "http://192.168.1.5:3000" }),
           db: hostRow as never,
           bindings: {
             resolve: async () => ({ provider_id: "prov-1", model: "M2" }),
@@ -1253,7 +1253,7 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
         "folder-1",
         {
           connectionRegistry: connections,
-          config: loadConfig({ PROVIDER_PROXY_PORT: "8021", FRONTEND_URL: "http://192.168.1.5:3000" }),
+          config: loadConfig({ PROVIDER_PROXY_PORT: "8021", PUBLIC_BASE_URL: "http://192.168.1.5:3000" }),
           db: { query: async () => ({ rows: [{ provider_proxy_base_url: null, kind: "remote" }], rowCount: 1 }) } as never,
           bindings: {
             resolve: async () => ({ provider_id: "prov-1", model: "M2" }),

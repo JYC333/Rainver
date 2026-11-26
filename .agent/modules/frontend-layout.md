@@ -39,6 +39,15 @@ the form can extend over the chat to keep the left navigation clear. The chat ke
 reopen button sits on the same row, left of the control. Phone placement is
 unchanged, and the full-screen mobile conversation still hides it.
 
+The user menu (avatar) is the shared Radix `DropdownMenu`: a named menu
+button with keyboard, Escape and focus return. It lists this browser's other
+signed-in accounts to switch to, with distinct loading and failure states;
+opens "Add another account" (password or Google, shared Dialog, mounted only
+while open); and signs out — "Sign out" for a single account, "Sign out of all
+accounts" otherwise. It reads the account list each time it opens. Switching
+reloads every tab as the new account
+([auth guide](auth.md#several-accounts-in-one-browser)).
+
 There is no app-level right inspector, bottom log panel, or shared
 `EntityCard` / `ReviewCard` primitive set. Per-page inspectors (Run
 detail, Room sidecar) are owned by those pages.
@@ -159,6 +168,13 @@ above a shrinkable, internally scrolling list; the transcript owns its separate
 scroller. Long conversation lists do not extend the Area or document. On smaller
 screens the stacked navigation keeps a bounded conversation-list scroller.
 
+The desktop Project chat sidecar uses one compact header aligned with the
+Files & Code toolbar. The conversation title opens a bounded popover above the transcript, with equal
+top and side insets from the sidebar. The second line
+shows the Room and the current conversation audience, and the new and close
+buttons share the same header. A check mark identifies the current Room and
+conversation in the switcher. Hovering the trigger or a row shows the pointer cursor.
+
 Panel conversation setup has its own scroller capped at half the available conversation
 height, keeping execution confirmation reachable without pushing the message
 composer out of the Project chat sidecar. The composer can also scroll on very
@@ -237,100 +253,20 @@ font size without its value. These are probe-only changes: neither native
 edge-blur removal nor real iPhone keyboard behavior is established by desktop
 browser geometry tests.
 
-The authenticated Shell now applies this C geometry to narrow installed iPhone
-PWAs as well (including Home and Settings), via `core/useIPhonePwaViewport`.
-It uses normal document flow and `100vh` at rest, not screen-height arithmetic.
-The shared viewport calculation switches to the unzoomed visible rectangle for
-a keyboard-sized overlap (>80px), then restores C on dismissal; pinch zoom is
-not interpreted as a keyboard. Room, drawer and Project sidecar geometry reuse
-the same calculation so their existing 812px readout cannot undo C. The hook
-cleans up its root attribute/CSS variables on exit or a desktop breakpoint.
-Browser tabs, other devices and desktop PWAs retain their original Shell.
-Shell top padding and an opaque, pointer-transparent safe-strip backing protect
-the notch; bottom navigation still owns one bottom inset (reduced for keyboard
-overlap), while full-screen conversation Shell owns it when navigation is hidden.
-Native form fields and conversation editors use actual 16px focus text in this
-mode. The test page's labelled boundary is never mounted in ordinary pages.
-The affected phone confirmed C in the probe; deployed Home/Room behavior and
-native edge blur/keyboard still require phone acceptance.
+The authenticated Shell uses Flow B for narrow installed iPhone PWAs, including
+Home, Rooms and Settings. The Shell stays in document flow at `100dvh` while
+the keyboard is closed. The existing shared geometry follows the unzoomed
+visible rectangle for keyboard-sized overlap (>80px). Room, drawer and Project
+chat use the same height and keyboard offset. The root marker and CSS variables
+are cleared when leaving the Shell or switching to a wide viewport. Native
+edge dragging and inner scrolling remain available.
 
-The iOS PWA no longer installs a document scroll lock. The person confirmed
-that removing the old forced scroll correction stopped jitter, but the idle
-root `overflow: hidden`/overscroll lock prevented normal dragging on the phone.
-That lock and its marker are removed. The PWA Shell overrides its desktop
-overscroll suppression with `auto` so native edge movement remains possible;
-inner main/transcript/Reader scrollers keep their existing ownership.
-
-The earlier scroll-event `scrollTo(0, 0)` correction stays removed, with no window
-scroll listener. Idle VisualViewport offsets do not reposition C. Only an
-unzoomed keyboard-sized height overlap consumes its nonnegative offset; negative
-edge-bounce offsets cannot create false keyboard space. C, the 10px trial,
-keyboard fitting, pinch zoom and cleanup remain unchanged.
-
-Browser checks now require actual Chromium touch input to move inner content,
-wheel input to move the outer document, and no application scrollTo calls.
-The test returns to origin explicitly only as fixture setup for subsequent
-idle-offset checks. Desktop WebKit uses wheel input because its mobile
-automation has no wheel API. Neither engine establishes native iPhone bounce.
-
-The backdrop includes positive keyboard top compensation in its coverage; idle
-offsets are ignored. This does not change C's physical height or bottom inset.
-
-The installation check also accepts touch iOS desktop-request user agents
-(MacIntel/Macintosh or the iOS legacy standalone signal); it must not depend on
-the literal `iPhone` UA token. Narrow coarse-pointer inputs and conversation
-editors have a separate 16px focus guard even in browser tabs or portalled dialogs,
-so failure to recognize an installation cannot re-enable focus zoom. Mouse/wide
-desktop typography is unchanged. The mobile Room drawer initially focuses its
-labelled dialog container, not the search field; typing starts on explicit tap.
-Its background extends to the bottom, with the keyboard-adjusted safe inset
-inside its padding rather than subtracted from its height. Shared Dialog overlays
-carry a marker and, in this PWA mode, explicitly cover C's large height instead
-of relying on fixed `inset: 0`. Tests keep a larger layout-owner height stable
-across viewport/screenshot events and inspect
-bottom screenshot pixels, not just DOM rects; it is not a native iOS emulator.
-
-Reuse / Dependency Check: reuses the existing Shell, mobile conversation
-VisualViewport subscription pattern and shared controls. A small shared geometry
-function keeps their height decisions aligned; no dependency or second chat UI.
-
-Reuse / Dependency Check: reuses Vite multi-page build, existing theme/control/
-i18n components and layout diagnostics, plus the platform web-app manifest.
-No dependency, second diagnostics collector or application layout framework.
-
-Below `lg`, the Room drawer includes the existing whole-thread carry action and
-its Room audience. At desktop widths there is one carry action in the heading.
-Drawer selection/new/close consume only owned history; direct links close in
-place. Mobile Project chat state is separate from desktop localStorage preference.
-
-### Initial iOS PWA top-edge blur
-
-The user separately reports blur at launch with no scrolling. The document-pan
-repair above does not diagnose that static symptom. The main HTML now has an
-empty, aria-hidden `.pwa-top-color-surface` outside React's clipped Shell. Only
-our narrow installed-iOS root marker and text-background-clipping support enable
-it. It is fixed at the viewport top, full width, 11px high, and uses the live
-background token. Its empty-text background clip paints nothing, cannot take
-focus or intercept input, and adds no padding or layout height. Existing top
-safe-area ownership, C height, bottom safe inset, keyboard and pinch behavior
-remain unchanged; the independent probe has not been changed by this patch.
-
-Why 11px: the pinned [WebKit edge sampler](https://github.com/WebKit/WebKit/blob/d620932d8ce37cf83f60d5c50dace2d50fed4f80/Source/WebCore/page/LocalFrameView.cpp#L2088)
-looks for viewport-constrained backgrounds, at least 90% wide, thicker than its
-10px thin-border threshold, and not hidden/nearly transparent. The prior Shell
-pseudo-element is safe-area backing, not this independent empty-text surface.
-[First-person experiments](https://tips.ojapp.app/en/ios-27-pwa-top-blur-workaround-2/)
-and [nanobot's implementation and native simulator report](https://github.com/HKUDS/nanobot/pull/5942)
-support this compatibility experiment. They do not prove this phone's WebKit
-revision or establish its root cause. This is not an Apple-supported status-bar
-API. Do not increase guessed inset values or disable zoom to hide the symptom.
-
-Browser checks cover initial Home, Room and drawer geometry, themes, hit testing,
-portal layering and desktop/browser exclusion. They cannot render iOS's native
-system blur. Physical acceptance remains: quit/reopen the updated installed PWA,
-check the first stationary frame and Room drawer in both themes, navigate,
-open/dismiss the keyboard, rotate and verify bottom coverage and manual zoom.
-Do not mark the native blur resolved until that phone comparison succeeds.
+The Shell and mobile conversation surfaces use the system top safe-area inset.
+Bottom navigation owns the bottom inset when visible. The conversation Shell
+owns it when navigation is hidden. The Room drawer keeps its keyboard-adjusted
+insets and dialog focus behavior. Narrow coarse-pointer input retains the 16px
+focus guard. Browser geometry checks cover these bounds and keyboard transitions.
+Native iPhone behavior requires an installed-device check.
 
 ### TOP-TEST-2 comparison probe
 
@@ -363,17 +299,3 @@ Reuse / Dependency Check: extends the independent Vite probe, existing theme and
 Button/Textarea, bounded layout collector and application-version fetch/reload.
 No third-party dependency or alternate app updater is needed for this small
 comparison surface. Formal Shell/C/input behavior is unchanged by this work.
-
-### Formal iPhone PWA 10px clearance trial
-
-After the TOP-TEST-2 phone comparison, the person reported that only the extra
-16px choice cleared the first ruler; the independent color surfaces did not.
-They first requested 10px in the formal application, then 12px alongside the
-edge-drag repair, then asked to return to 10px for comparison while retaining
-that repair. Narrow installed iOS mode now sets `--app-top-clearance: 10px`; `--app-content-top` adds it to the
-dynamic `--app-safe-top`. Shell padding/backing, Project chat and portalled Room
-drawer bounds all consume that effective top once. Their heights subtract the
-same value, preserving the existing bottom and keyboard coverage. The physical
-safe-area diagnostic remains unchanged. Desktop/browser defaults remain zero.
-This is a user-requested compatibility trial, not a measured system inset or a
-claim of success on all iPhones. The independent TOP-TEST-2 choices remain intact.

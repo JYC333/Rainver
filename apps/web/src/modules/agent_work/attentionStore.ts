@@ -4,7 +4,8 @@ import { agentAttentionApi, ApiRequestError } from '../../api/client'
 import { sameReadingRevision } from './readingSubjectKey'
 export type AttentionError = 'denied' | 'offline' | 'failed'
 export function failureKind(error: unknown): AttentionError {
-  if (error instanceof ApiRequestError && [401, 403, 404].includes(error.status)) return 'denied'
+  // 409 is `account_switched`: this tab's account is no longer the browser's, and retrying cannot change that.
+  if (error instanceof ApiRequestError && [401, 403, 404, 409].includes(error.status)) return 'denied'
   return !navigator.onLine || error instanceof TypeError ? 'offline' : 'failed'
 }
 export const queryKey = (query: AgentAttentionQueryInput) => JSON.stringify(AgentAttentionQuerySchema.parse(query))

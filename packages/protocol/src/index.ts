@@ -44,12 +44,14 @@ export * from "./networkProfiles.js";
 export * from "./hosts.js";
 export * from "./acp.js";
 export * from "./hostWire.js";
+export * from "./hostRunTools.js";
 export * from "./ordinaryTools.js";
 export * from "./ordinaryToolAccounts.js";
 export * from "./conversationExecution.js";
 
 // Agent runtime profile contracts
 export * from "./agents.js";
+export * from "./myAgents.js";
 export * from "./runtimeAuthority.js";
 
 // Ambient CLI session import contracts

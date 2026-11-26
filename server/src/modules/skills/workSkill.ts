@@ -51,6 +51,8 @@ export interface WorkSkillOptions {
    * tell a Room agent its reply reached nobody.
    */
   conversation?: boolean;
+  /** Whether the Run was granted the Room delegation action. */
+  canDelegate?: boolean;
   /** Exact grants for a headless domain Run without Task/Artifact reporting. */
   domainActions?: readonly string[];
   materialProcessing?: boolean;
@@ -202,14 +204,12 @@ $RAINVER_CLI call <action> '<json>'    # invoke it; prints the JSON result
 argument, which is what to use when the payload contains quotes or newlines.
 It exits non-zero and prints the reason when an action is refused or fails.
 
-When \`RAINVER_TOOL_BRIDGE\` is set, this command uses a Run-local file channel;
-the Host calls the control plane. Run it inside the ordinary command sandbox:
-it does not need command networking or escalation. Do not change or reuse the
-bridge directory from another Run. If the bridge is unavailable, report that
-failure rather than retrying with broader permissions.
-Older Hosts without this channel use direct HTTP and may need their command
-tool's approved network access. Updating the Host enables the local channel.
-A DNS or connection failure alone does not mean the Host daemon is offline.
+The command uses this Run's private local bridge (\`RAINVER_TOOL_BRIDGE\`).
+The Host forwards requests over its authenticated Rainver connection. Run
+the command inside the ordinary command sandbox. It needs no command
+networking or escalation. If the bridge is unavailable, keep the current
+permissions and report the failure.
+If a write was interrupted, check its status before submitting it again.
 
 **Start by running \`list\`.** It is authoritative: an action absent from it is
 not available to you in this run, whatever this document mentions. Run
@@ -329,12 +329,13 @@ or a concrete blocker prevents further authorized work.
  * to make a runtime discover a file on its own: every mechanism that would
  * (a vendor's skills directory) also moves that vendor's login state, which
  * for an unbound run is the machine's own and must stay where it is
- * (ADR 0016 §5). Keeping a few lines inline rather than only the path means an
- * agent that never opens the file still reports back.
+ * (ADR 0016 §5). A continued session gets the current path and the short
+ * reminder, so entry to the work surface does not depend on retained history.
  */
 export function workSkillPromptPointer(
   skillPath: string,
   options: WorkSkillOptions = { deliverOutputs: true },
+  resumed = false,
 ): string {
   return [
     "## Reporting back to Rainver",
@@ -343,7 +344,11 @@ export function workSkillPromptPointer(
     "In short: `$RAINVER_CLI list` shows the actions you may call,",
     "`$RAINVER_CLI describe <action>` gives one its input schema, and",
     "`$RAINVER_CLI call <action> '<json>'` invokes it.",
-    ...(options.domainActions
+    ...(options.canDelegate ? [
+      "When asked to consult another Room Agent, use `agent.delegate` through `$RAINVER_CLI` if listed. Use `workspace_access: \"read\"` for independent research or review.",
+      "If delegation is unavailable or refused, report the reason. Do not launch a vendor CLI to stand in for the Room Agent.",
+    ] : []),
+    ...(resumed ? [] : options.domainActions
       ? ["Use only this Run’s listed domain actions; finish through the bound domain write.","Do not call Task, artifact or delegation actions that are absent from list."]
       : options.conversation
       ? [
@@ -365,7 +370,6 @@ export function workSkillPromptPointer(
   ].join("\n");
 }
 
-/** The pointer for a continued session that already read the full one. */
 /**
  * Which Skill a Run received.
  *

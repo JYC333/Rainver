@@ -179,8 +179,12 @@ export async function readGmailDigestPage(config: ServerConfig, pool: Pool, inpu
     // Gmail's after:/before: are second-granular: a daily window keeps exactly its own mail.
     if (input.kind === "daily" && (!labels.includes("INBOX") || Date.parse(at) < startMs || Date.parse(at) >= endMs)) continue;
     const headers = full.payload?.headers;
+    const incomingApplication = input.kind === "application" && !sent;
+    const reply = incomingApplication && (headerValue(headers, "In-Reply-To") || headerValue(headers, "References"));
+    const automaticReply = incomingApplication && /^auto-replied(?:\s*;|\s*$)/i.test(headerValue(headers, "Auto-Submitted") ?? "");
     items.push({
       id, internal_date: at, ...(sent ? { direction: "sent" as const } : {}),
+      ...(reply ? { reply: true as const } : {}), ...(automaticReply ? { automatic_reply: true as const } : {}),
       subject: headerValue(headers, "Subject"), from: headerValue(headers, "From"), to: headerValue(headers, "To"),
       cc: headerValue(headers, "Cc"), date_header: headerValue(headers, "Date"),
       ...normalizeMessageBody(full.payload, GMAIL_DIGEST_LIMITS.textBytesPerMessage),

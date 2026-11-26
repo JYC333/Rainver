@@ -450,6 +450,16 @@ export const MODULE_REGISTRY: Module[] = [
     component: lazy(() => import('./skills/SkillsPage')),
   },
   {
+    // One person's Agents across every Space; each entry opens in its own Space.
+    id: 'my_agents', label: 'My agents', path: '/my-agents',
+    section: 'agents', group: 'agents', icon: 'bot',
+    description: 'Every agent you can use, across all your Spaces.',
+    source: 'built_in',
+    enabled: true, visible: true, planned: false,
+    perspectiveType: 'personal',
+    component: lazy(() => import('./agents/MyAgentsPage')),
+  },
+  {
     id: 'agents_mgmt', label: 'Agents', path: '/agents',
     section: 'agents', group: 'agents', icon: 'bot',
     description: 'Create agents and configure default model providers.',

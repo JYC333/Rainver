@@ -211,6 +211,7 @@ export function registerMemoryDirectWriteExecutors(
         owner_user_id: scope.ownerUserId,
         agent_id: run.agent_id,
         origin_room_id: persona ? null : scope.roomId,
+        origin_session_id: persona ? null : scope.sessionId,
       }),
       {
         agentId: run.agent_id,
@@ -273,6 +274,7 @@ export function registerMemoryDirectWriteExecutors(
       triggerOrigin: trigger.origin,
       instructedByUserId: trigger.instructedByUserId,
       roomId: room?.rows[0]?.room_id ?? null,
+      sessionId: room?.rows[0]?.room_id ? run.session_id ?? null : null,
       activePersonaExists: await hasActivePersona(db, run),
     };
   };

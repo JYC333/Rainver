@@ -80,6 +80,12 @@ it("cuts over old Agents once without widening ACLs, transporting policy or movi
     expect((await db.pool.query("SELECT * FROM agent_runtime_profiles WHERE agent_id=$1", [agent])).rows).toEqual(profilesBefore);
     expect((await db.pool.query("SELECT * FROM runs WHERE id=$1", [run])).rows).toEqual(historyBefore);
     expect((await db.pool.query("SELECT * FROM sessions WHERE id=$1", [session])).rows).toEqual(sessionBefore);
+    // The cutover is verified at its own stage; the current repositories below need the head schema,
+    // so the real migrations after 0019 follow the stages.
+    const later = readdirSync(actualMigrations).filter(file => /^\d{4}_.*\.sql$/.test(file) && file >= "0020").sort();
+    for (const [index, file] of later.entries()) cpSync(join(actualMigrations, file), join(migrations, `${String(19 + stages.length + index).padStart(4, "0")}_${file.slice(5)}`));
+    expect((await migrate(db.pool, migrations)).applied).toHaveLength(later.length);
+    expect((await db.pool.query("SELECT project_id,access_project_id FROM agents WHERE id=$1", [agent])).rows[0]).toEqual({project_id: null, access_project_id: projectA});
     // Same Agent can be referenced in B by someone entitled to A. B-only readers gain nothing.
     expect(await links.linkableAgent({spaceId: space, userId: owner, projectId: projectB, agentId: agent})).toEqual({id: agent});
     await links.upsertActive({spaceId: space, projectId: projectB, agentId: agent, userId: owner});

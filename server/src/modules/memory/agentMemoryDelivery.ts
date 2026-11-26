@@ -1,5 +1,5 @@
 import type { Queryable } from "../routeUtils/common.js";
-import { roomConversationReadAccessSql } from "../access/contentAccessSql.js";
+import { roomConversationAudienceSql, roomConversationReadAccessSql } from "../access/contentAccessSql.js";
 
 /**
  * What an Agent is given back of its own Memory when it is dispatched
@@ -21,6 +21,15 @@ import { roomConversationReadAccessSql } from "../access/contentAccessSql.js";
  * enumerated over the Space's active members, which is what
  * `projectReaderIds` does for Thread References.
  *
+ * A Room conversation can be narrower than its Room: one frozen when someone
+ * joined without its history (`room_conversation_audiences`). So the dispatch
+ * audience is the target conversation's, and a note's origin is its own
+ * conversation when known (`origin_session_id`); one whose recorded
+ * conversation is gone reaches no audience. A note whose conversation is
+ * unknown is held to the conservative rule: every person in the
+ * audience must be able to read every restricted conversation its Room had
+ * when the note was written — it could have come from any of them.
+ *
  * The test is computed here, at dispatch, and not at write time: a Room whose
  * roster or Project changed must change what is delivered into it, and ADR
  * 0018 makes the *current* answer the answer. It runs inside the candidate
@@ -41,6 +50,8 @@ interface AgentMemoryAudience {
   agentId: string;
   /** The Room this dispatch is speaking in, or null for a direct chat. */
   roomId: string | null;
+  /** The Room conversation this dispatch is speaking in, when known. */
+  sessionId?: string | null;
   /**
    * The direct chat's person, which *is* the audience there. The same subset
    * test applies: a note reaches this chat when that person may still read its
@@ -54,8 +65,35 @@ export async function listAgentMemoryForDispatch(
   audience: AgentMemoryAudience,
   limit = 50,
 ): Promise<AgentMemoryEntry[]> {
-  const targetCanRead = roomConversationReadAccessSql("$1", "$3::varchar", "u.id");
-  const originCanRead = roomConversationReadAccessSql("m.space_id", "m.origin_room_id", "audience.user_id");
+  const targetCanRead = `${roomConversationReadAccessSql("$1", "$3::varchar", "u.id")}
+            AND ($6::varchar IS NULL OR ${roomConversationAudienceSql("$1", "$6::varchar", "u.id")})`;
+  // The note's own conversation, when it still exists; otherwise every
+  // restricted conversation its Room had when the note was written.
+  // A note's conversation that no longer exists admits nobody: its audience
+  // went with it, so nothing can say who may hear the note (fail closed).
+  // Notes come from Runs, which keep their conversation as a tombstone.
+  const originConversationCanRead = `(CASE
+      WHEN m.origin_session_id IS NOT NULL THEN EXISTS (
+        SELECT 1 FROM sessions origin_session
+         WHERE origin_session.id = m.origin_session_id AND origin_session.space_id = m.space_id
+      ) AND ${roomConversationAudienceSql("m.space_id", "m.origin_session_id", "audience.user_id")}
+      ELSE NOT EXISTS (
+        SELECT 1 FROM room_conversation_audiences origin_frozen
+          JOIN sessions origin_frozen_session
+            ON origin_frozen_session.id = origin_frozen.session_id
+           AND origin_frozen_session.space_id = origin_frozen.space_id
+         WHERE origin_frozen.space_id = m.space_id
+           AND origin_frozen.room_id = m.origin_room_id
+           AND origin_frozen_session.created_at <= m.created_at
+           AND NOT EXISTS (
+             SELECT 1 FROM room_conversation_audience_members origin_frozen_member
+              WHERE origin_frozen_member.session_id = origin_frozen.session_id
+                AND origin_frozen_member.user_id = audience.user_id
+           )
+      )
+    END)`;
+  const originCanRead = `(${roomConversationReadAccessSql("m.space_id", "m.origin_room_id", "audience.user_id")}
+            AND ${originConversationCanRead})`;
   const result = await db.query<AgentMemoryEntry>(
     `WITH audience AS (
        -- Who this dispatch speaks in front of: everyone who may read this
@@ -106,8 +144,10 @@ export async function listAgentMemoryForDispatch(
         AND (
           -- Delivered everywhere: no origin Room to be filtered by.
           m.memory_type = 'persona'
-          -- A note learned in this very Room always reaches it.
-          OR ($3::varchar IS NOT NULL AND m.origin_room_id = $3::varchar)
+          -- A note learned in this very Room reaches it, unless the
+          -- conversation it was learned in is narrower than this audience.
+          OR ($3::varchar IS NOT NULL AND m.origin_room_id = $3::varchar
+            AND NOT EXISTS (SELECT 1 FROM audience WHERE NOT ${originConversationCanRead}))
           -- A note learned in another Room reaches this audience only when
           -- nobody in it is someone that Room's audience did not already
           -- contain. An audience with nobody in it receives nothing across:
@@ -128,7 +168,7 @@ export async function listAgentMemoryForDispatch(
         )
       ORDER BY (m.memory_type = 'persona') DESC, m.updated_at DESC, m.id ASC
       LIMIT $5`,
-    [audience.spaceId, audience.agentId, audience.roomId, audience.directUserId ?? null, limit],
+    [audience.spaceId, audience.agentId, audience.roomId, audience.directUserId ?? null, limit, audience.sessionId ?? null],
   );
   return result.rows;
 }

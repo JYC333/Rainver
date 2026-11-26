@@ -1,3 +1,4 @@
+import { roomConversationAudienceSql } from "../access/contentAccessSql.js";
 import { ConversationInputSkillPartSchema, type SkillPackageContent } from "@rainver/protocol";
 import { HttpError, type Queryable } from "../routeUtils/common.js";
 import { lockSkillPackage, resolveSkillBindingsForScopes } from "./skillBindings.js";
@@ -108,7 +109,8 @@ export async function loadSelectedSkills(db: Queryable, input: {
     SELECT part.skill_package_id,part.sha256,message.user_id AS author_user_id,
       ((session.room_id IS NULL AND session.user_id=$4) OR EXISTS (
         SELECT 1 FROM room_user_members member WHERE member.room_id=session.room_id
-          AND member.space_id=session.space_id AND member.user_id=$4 AND member.status='active')) AS viewer_can_read
+          AND member.space_id=session.space_id AND member.user_id=$4 AND member.status='active')
+        AND ${roomConversationAudienceSql("session.space_id", "session.id", "$4")}) AS viewer_can_read
     FROM message_input_parts part
     JOIN messages message ON message.id=part.message_id AND message.space_id=part.space_id
     JOIN sessions session ON session.id=message.session_id AND session.space_id=message.space_id

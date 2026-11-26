@@ -10,6 +10,7 @@ import { runToOut } from "../runs/runReadModel.js";
 import { resolveRunRemoteness } from "../runs/runRemoteness.js";
 import {
   resolveIdentity as resolveRouteIdentity,
+  resolvePerson as resolveRoutePerson,
   dbPool,
   parsePage,
   query as routeQuery,
@@ -18,6 +19,8 @@ import {
 import { PgProposalRepository } from "../proposals/repository.js";
 import { PgAgentChatRepository, PgAgentRepository } from "./repository.js";
 import { assertProjectReadable } from "../projects/access.js";
+import { canChangeAgent } from "./agentAccess.js";
+import { listMyAgents } from "./myAgents.js";
 import {
   params,
   stringValue,
@@ -197,6 +200,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         createdByUserId: q.created_by_user_id ?? null,
         visibility: q.visibility ?? null,
         status: q.status ?? "active",
+        sourceRoleId: q.source_role_id ?? null,
         limit: page.limit,
         offset: page.offset,
       });
@@ -206,6 +210,25 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
+
+  // Cross-Space "My Agents" (SECURITY_AND_ACCESS_BOUNDARIES §8b): every Space
+  // the caller is an active member of, each Agent through its own Space's gates.
+  // Person-scoped: the browsed Space (header or query) is ignored, never checked,
+  // and a person with no active Space gets an empty page, not a refusal.
+  app.get("/api/v1/me/agents", async (request, reply) => {
+    const identity = await resolvePerson(context, request, reply);
+    if (!identity) return reply;
+    try {
+      const q = routeQuery(request);
+      const filters = protocol.MyAgentsQuerySchema.safeParse({ manage: q.manage || undefined, source: q.source || undefined });
+      if (!filters.success) return reply.code(422).send({ detail: "Unknown My Agents filter" });
+      const page = parsePage(q);
+      reply.header("cache-control", "private, no-store");
+      return reply.send(await listMyAgents(dbPool(context.config), context.config, identity.userId, { ...filters.data, ...page }));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
 
   app.get("/api/v1/agents/runtime-default", async (request, reply) => {
     const identity = await resolveIdentity(context, request, reply);
@@ -247,7 +270,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     try {
       const agent = await agentRepository().getVisible(identity.spaceId, identity.userId, params(request).agentId ?? "");
       if (!agent) return reply.code(404).send({ detail: "Agent not found" });
-      return reply.send(agent);
+      // The same rule every Agent mutation enforces, so the page disables what would be refused.
+      return reply.send({ ...agent, can_manage: await canChangeAgent(dbPool(context.config), identity, agent.id) });
     } catch (error) {
       return sendRouteError(reply, error);
     }
@@ -408,6 +432,19 @@ async function resolveIdentity(
       : identityOverride;
   }
   return resolveRouteIdentity(context.config, request, reply);
+}
+
+async function resolvePerson(
+  context: ModuleContext,
+  request: FastifyRequest,
+  reply: FastifyReply,
+): Promise<{ userId: string } | null> {
+  if (identityOverride) {
+    return typeof identityOverride === "function"
+      ? identityOverride(request)
+      : identityOverride;
+  }
+  return resolveRoutePerson(context.config, request, reply);
 }
 
 /** The Assistant a settings request is about, from its explicit `project_id` query. */

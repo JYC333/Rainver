@@ -74,7 +74,7 @@ it('renders the real Project entry and bundled slot against actual PG/HTTP/propo
   });
   const config = loadConfig({
       SERVER_DATABASE_URL: db.connectionUri,
-      FRONTEND_URL: `http://127.0.0.1:${port}`
+      PUBLIC_BASE_URL: `http://127.0.0.1:${port}`
     }),
     plugin = createLifecycleProbe(),
     host = new PluginHost([plugin]);

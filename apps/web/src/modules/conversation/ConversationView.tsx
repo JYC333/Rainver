@@ -14,6 +14,7 @@ import { Textarea } from '../../components/ui/textarea'
 import { EmptyState } from '../../components/ui/empty-state'
 import { ConversationTurn } from './ConversationTurn'
 import { ConversationComposer } from './ConversationComposer'
+import { ConversationUserText } from './ConversationDraftEditor'
 import { KnowledgeRetrievalToggle } from './KnowledgeRetrievalToggle'
 import type { ConversationInputPart, ConversationInputSkillPart, RuntimePromptCapabilities } from '@rainver/protocol'
 import { ConversationInputPartsView, useConversationInputSendGuard, type ConversationInputFileSource } from './ConversationInputComposer'
@@ -326,7 +327,9 @@ function ConversationEntryView({ entry, runHref }: { entry: ConversationEntry; r
             </span>
           )}
           <ConversationInputPartsView parts={entry.inputParts} text={entry.content} />
-          {entry.systemMessage&&isWorkspaceIntegrationNotice(entry.systemMessage)?<WorkspaceIntegrationNotice message={entry.systemMessage}/>:entry.content && (entry.role === 'assistant' && entry.runId ? <ConversationFilePreview key={entry.runId} runId={entry.runId}><MessageResponse>{entry.content}</MessageResponse></ConversationFilePreview> : <MessageResponse>{entry.content}</MessageResponse>)}
+          {entry.role === 'user' ? <ConversationUserText text={entry.content} />
+            : entry.systemMessage && isWorkspaceIntegrationNotice(entry.systemMessage) ? <WorkspaceIntegrationNotice message={entry.systemMessage} />
+            : entry.content && (entry.runId ? <ConversationFilePreview key={entry.runId} runId={entry.runId}><MessageResponse>{entry.content}</MessageResponse></ConversationFilePreview> : <MessageResponse>{entry.content}</MessageResponse>)}
           {entry.extra}
         </MessageContent>
       </Message>

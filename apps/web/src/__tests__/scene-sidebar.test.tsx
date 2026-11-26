@@ -41,7 +41,7 @@ describe('SceneSidebar changes by scene', () => {
     render(<MemoryRouter initialEntries={['/spaces/personal-1/agents']} future={routerFuture}><SceneSidebar scene={agents} onCollapse={() => {}} spaceId="personal-1" /></MemoryRouter>)
     expect(screen.getByText('My agents')).toBeInTheDocument()
     expect(screen.getByText('Runs')).toBeInTheDocument()
-    expect(screen.getByText('Templates')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Roles' })).toHaveAttribute('href', '/spaces/personal-1/agents/roles')
     expect(screen.queryByText('Capabilities')).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Skills' })).toHaveAttribute('href', '/spaces/personal-1/skills')
     expect(screen.queryByText('Projects')).toBeNull()

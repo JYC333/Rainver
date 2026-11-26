@@ -27,7 +27,7 @@ import {markdownToPm} from '../src/modules/knowledge/noteDocument.js';
  * the bound Project's closure.
  */
 const db = useTestDatabase(import.meta.filename);
-const pid = 'applications';
+const pid = 'phd_application';
 const opId = (name: string) => `plugin.${pid}.${name}`;
 const plugin = BUILT_IN_PLUGINS.find(p => p.id === pid) as RainverPlugin;
 let space: string, owner: string, member: string, viewer: string, projectA: string, projectB: string, config: ReturnType<typeof loadConfig>, app: ReturnType<typeof buildModuleServer>;
@@ -174,7 +174,7 @@ describe('Application materials in Notes', () => {
       expect(reason(await command('material.link_note', {material_id: cv, note_id: noteId}))).toBe('note_unavailable');
       expect(reason(await command('material.add_source', {material_id: cv, note_id: noteId}))).toBe('note_unavailable');
     }
-    expect(await db.pool.query(`SELECT note_id FROM plugin_applications.application_materials WHERE id=$1`, [cv]).then(r => r.rows[0].note_id)).toBeNull();
+    expect(await db.pool.query(`SELECT note_id FROM plugin_phd_application.application_materials WHERE id=$1`, [cv]).then(r => r.rows[0].note_id)).toBeNull();
     // A Project-free Note linked here and later bound to another Project shows as unavailable and is not read.
     const personal = await note('Experience', 'Teaching assistant, two terms.');
     await ok(command('material.link_note', {material_id: cv, note_id: personal}));
@@ -233,8 +233,8 @@ describe('Application materials in Notes', () => {
     expect(reason(await command('material.remove_source', {source_id}))).toBe('source_not_found');
     await ok(command('material.add_source', {material_id: cv, note_id: master}));
     await ok(command('material.remove', {material_id: cv}));
-    expect((await db.pool.query(`SELECT count(*)::int AS n FROM plugin_applications.application_material_sources WHERE space_id=$1`, [space])).rows[0].n).toBe(0);
-    expect((await db.pool.query(`SELECT count(*)::int AS n FROM plugin_applications.application_material_reviews WHERE space_id=$1`, [space])).rows[0].n).toBe(0);
+    expect((await db.pool.query(`SELECT count(*)::int AS n FROM plugin_phd_application.application_material_sources WHERE space_id=$1`, [space])).rows[0].n).toBe(0);
+    expect((await db.pool.query(`SELECT count(*)::int AS n FROM plugin_phd_application.application_material_reviews WHERE space_id=$1`, [space])).rows[0].n).toBe(0);
     const notes = (await db.pool.query(`SELECT n.object_id,n.version,n.status FROM notes n WHERE n.object_id=ANY($1::varchar[]) ORDER BY n.object_id`, [[master, draft]])).rows;
     expect(notes).toEqual(expect.arrayContaining([{object_id: master, version: 1, status: 'active'}, {object_id: draft, version: 1, status: 'active'}]));
   });
@@ -252,7 +252,7 @@ describe('Application materials in Notes', () => {
     // Recording a review is the person's own act: it is no Agent tool.
     const review = await agentCall(run, 'material.mark_reviewed', {project_id: projectA, material_id: cv, note_id: privateCv, note_version: 1});
     expect(review.httpStatus).not.toBe(200);
-    expect((await db.pool.query(`SELECT count(*)::int AS n FROM plugin_applications.application_material_reviews WHERE space_id=$1`, [space])).rows[0].n).toBe(0);
+    expect((await db.pool.query(`SELECT count(*)::int AS n FROM plugin_phd_application.application_material_reviews WHERE space_id=$1`, [space])).rows[0].n).toBe(0);
     // In a Room another member also reads, the private Note never reaches the shared output.
     const shared = await agentRun(owner, ['material.read_note', 'material.link_note'], await sharedRoom([owner, member]));
     const refused = await agentCall(shared, 'material.read_note', {project_id: projectA, material_id: cv, note_id: privateCv});

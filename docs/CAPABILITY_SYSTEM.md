@@ -25,7 +25,7 @@ separate decision. Builtin library packages are not implemented by this cleanup.
 
 `catalog/capabilities/` retains read-only manifest metadata. Its routes are
 `GET /api/v1/server/catalog`, `/server/catalog/capabilities` and
-`/server/catalog/agent-templates`. It is not a callable registry or marketplace;
+`/server/catalog/agent-roles`. It is not a callable registry or marketplace;
 no catalog manifest is executed. Session reflection writes a Memory proposal
 through its own service rather than executing the `memory.reflect` manifest.
 

@@ -62,18 +62,20 @@ instruction is another `user_input` item. The ACP adapter preserves that
 Gateway-owned order.
 
 For an ordinary `chat_turn.v1` Run, the current input is the canonical user
-message. Acquisition includes that message's text and immutable
-`input_resource` descriptors in Delivery. Planning and transaction-time authorization
-use the same message renderer; authorization reloads the message-owned descriptors
-in the source Space and compares the complete text, including attachment metadata.
+message. Delivery includes the message text and descriptors for its claimed
+images, file snapshots, immutable input resources and explicitly selected
+Skills. A message that contains only an image or file still has current input
+from its persisted attachment. Planning and transaction-time authorization
+use the same message renderer. Authorization reloads the message-owned
+descriptors in the source Space and compares the complete rendered input.
 A direct-chat message authorizes the Run it started and each retry of that
 turn: the retry route reuses the message and records the new Run in its
 `retry_run_ids`, which `loadAuthorizedCurrentContextMessage` and the
 Gateway's message check both accept. A Room retry reuses its message the same
 way. Conversation continuity excludes
 the same current message. At ACP dispatch, conversation-input hydration adds
-images and resource links, but does not add a second descriptor text block when
-Delivery already contains it. The adapter sends Delivery instead of the raw
+native image blocks and resource links. Input resource descriptors already in
+Delivery are sent once. The adapter sends Delivery instead of the raw
 Run prompt. A session handoff uses its own Run request as current input and
 does not hydrate the pending user's message attachments. A delegated child
 Run (`runs.delegation_id` set) also uses its own Run request — its delegation

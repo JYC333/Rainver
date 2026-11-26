@@ -23,7 +23,9 @@ export async function operationPluginsPending(pool: Pool): Promise<string[]> {
 }
 export async function offlineOperationPlugins(pool: Pool, command: 'migrate' | 'reconcile', repairFailed = false) {
   const known = new Set(BUILT_IN_PLUGINS.filter(p => p.operationManifest).map(p => p.id));
-  for (const row of await pluginRepository.findAllInstalls(pool)) if (row.manifest_json?.operation_api === 1 && !known.has(row.plugin_id)) throw new Error('Installed operation package missing from this image; restore/migrate requires its matching package');
+  for (const row of await pluginRepository.findAllInstalls(pool)) if (row.manifest_json?.operation_api === 1 && !known.has(row.plugin_id)) {
+    throw new Error('Installed operation package missing from this image; restore/migrate requires its matching package');
+  }
   if (command === 'migrate') await migrateOperationPlugins(pool, BUILT_IN_PLUGINS, {
     repairFailed
   });

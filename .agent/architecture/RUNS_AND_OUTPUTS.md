@@ -48,12 +48,11 @@ ACP controller consumes protocol messages as they arrive; stdout/stderr
 chunks, raw token deltas, and unknown vendor payloads are not persisted as
 RunEvent rows.
 
-ACP Agent runtimes receive an opaque, short-lived, Run-scoped bearer identity
-(`run_tool_identities`) and only the intersection of the Run's declared grants
-and the System Action Registry. The Run-scoped REST tool surface
-(`/api/v1/runs/:runId/tools`) re-loads the Run and space boundary for every
-call; the caller's `Idempotency-Key` header is the action idempotency key, and
-a caller that sends none gets a fresh one per request. See
+The Host daemon holds an opaque, short-lived Run tool bearer
+(`run_tool_identities`). Tool requests use its authenticated Host WebSocket.
+Each call is bound to its live Run and launch, and uses the intersection of
+the Run's grants and the System Action Registry. The transport carries the
+call's idempotency key. See
 [`SYSTEM_ACTIONS.md`](SYSTEM_ACTIONS.md) for the surface and how it is
 delivered. A
 `require_approval` policy result moves the Run and current Attempt to

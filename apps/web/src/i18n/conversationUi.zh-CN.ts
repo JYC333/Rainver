@@ -119,6 +119,7 @@ export const conversationUiZhCN = {
     composer: {
       remove_pasted_text: '移除粘贴文本',
       edit_draft: '编辑消息草稿',
+      view_long_text: '查看完整消息',
       done_editing: '完成',
       image_unsupported: '所选运行时/模型不支持图片。请移除相关图片或选择其他目标。',
       send: '发送',
@@ -487,6 +488,7 @@ export const conversationUiZhCN = {
       drop_pick: '不要带入这些内容',
       execution: '执行',
       images_unsupported_by: '{{agents}} 不支持图片。请移除相关图片或选择其他目标。',
+      refresh_unavailable: '暂时无法刷新对话，正在重试…',
       load_older: '加载更早的消息',
       loading: '正在加载对话…',
       loading_result: '正在加载结果…',

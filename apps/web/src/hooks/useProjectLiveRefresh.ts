@@ -26,7 +26,8 @@ function subscribe(key:string,project:string,space:string|undefined,listener:()=
    },{spaceId:space,signal:current.signal})}
    catch(error){
     if(closed||current.signal.aborted)return
-    if(error instanceof ApiRequestError&&[401,403,404].includes(error.status)){denied=true;invalidate();return}
+    // 409 is account_switched: the tab is reloading as another account; never reconnect as this one.
+    if(error instanceof ApiRequestError&&[401,403,404,409].includes(error.status)){denied=true;invalidate();return}
     const backoff=Math.min(60000,1000*2**Math.min(failures++,6))
     retry=setTimeout(()=>{retry=undefined;void connect()},backoff*(0.75+Math.random()*0.5))
    }

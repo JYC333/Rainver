@@ -67,5 +67,5 @@ async function readableConversation(db: Queryable, input: GetInput, actor: Opera
   if (actor.principal.kind !== 'user' || actor.principal.id !== actor.on_behalf_of_user_id) throw hidden();
   const session = await db.query(`SELECT s.id FROM sessions s JOIN rooms r ON r.space_id=s.space_id AND r.id=s.room_id AND r.status='active'
     WHERE s.space_id=$1 AND s.id=$2 AND s.room_id=$3`, [actor.space_id, input.session_id, input.room_id]);
-  if (!session.rows.length || !await new PgAgentGroupRepository(db).isActiveRoomUser(actor.space_id, input.room_id, actor.principal.id)) throw hidden();
+  if (!session.rows.length || !await new PgAgentGroupRepository(db).isActiveRoomUser(actor.space_id, input.room_id, actor.principal.id, input.session_id)) throw hidden();
 }

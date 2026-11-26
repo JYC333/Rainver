@@ -78,8 +78,10 @@ export const gmailApi = {
   /** The owner's choice on their pending card; the server rechecks it and redraws the card. Nothing runs until they accept. */
   selectApplicationExecution: async (proposalId: string, selection: GmailApplicationExecutionSelection, key: string, o: CardCallOptions): Promise<GmailApplicationExecutionOptions> =>
     GmailApplicationExecutionOptionsOutputSchema.parse(await operationAt('POST', '/actions/source.gmail.application_updates.select_execution', { proposal_id: proposalId, ...selection }, key, o)),
-  digests: async (o: GmailCallOptions) =>
-    GmailDigestListSchema.parse(await request('GET', '/sources/gmail/digests', undefined, at(o))).digests,
+  digests: async (o: GmailCallOptions & { reviewProjectId?: string }) => {
+    const query = o.reviewProjectId ? `?application_review_project_id=${seg(o.reviewProjectId)}` : ''
+    return GmailDigestListSchema.parse(await request('GET', `/sources/gmail/digests${query}`, undefined, at(o))).digests
+  },
   setDigestStatus: async (id: string, status: 'active' | 'paused', key: string, o: GmailCallOptions) =>
     GmailDigestSetStatusOutputSchema.parse(await operationAt('POST', `/sources/gmail/digests/${seg(id)}/status`, { status }, key, at(o))),
   setDigestTime: async (id: string, localTime: string, key: string, o: GmailCallOptions) =>

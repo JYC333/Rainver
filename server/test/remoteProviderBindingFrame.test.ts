@@ -75,7 +75,7 @@ function bind(input: {
 }) {
   __setProvidersDbPortForTests({ async getProvider() { return input.provider; } } as never);
   return buildRemoteProviderBinding({
-    config: loadConfig({ PROVIDER_PROXY_PORT: "8021", FRONTEND_URL: "http://192.168.1.5:3000" }),
+    config: loadConfig({ PROVIDER_PROXY_PORT: "8021", PUBLIC_BASE_URL: "http://192.168.1.5:3000" }),
     run: { ...run(), ...input.run } as AgentRunRecord,
     hostId: "host-1",
     runtimeKey: input.runtimeKey,

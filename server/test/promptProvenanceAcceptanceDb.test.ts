@@ -229,7 +229,7 @@ describe("joined prompt provenance: direct chat", () => {
     // A fresh session opens with the Agent's standing instruction, once, before the message.
     expect(opened.deliveredContents.filter((content) => content === MANAGER_INSTRUCTION)).toHaveLength(1);
     expect(opened.snapshot.sourceRefs.filter((ref) => ref.type === "agent_version")).toHaveLength(1);
-    // The image is hydrated at the ACP edge, once, and never described as text.
+    // The image bytes arrive in exactly one native ACP block.
     expect(opened.attachments).toEqual([imageBlock]);
     expect(occurrences(opened.text, PNG.toString("base64"))).toBe(0);
 
@@ -249,10 +249,13 @@ describe("joined prompt provenance: direct chat", () => {
     expect(resumed.snapshot.sourceRefs.filter((ref) => ref.type === "agent_version")).toHaveLength(0);
   });
 
-  it("retries a failed turn with its own message and attachment once, as the same canonical input", async () => {
+  it.each([
+    { kind: "captioned", content: "Summarize this screenshot." },
+    { kind: "image-only", content: "" },
+  ])("retries a $kind direct turn with the same canonical input", async ({ content }) => {
     const w = await directChatWorld();
     host!.answer = () => ({ error: "Synthetic runtime failure" });
-    const failed = await w.send({ message: "Summarize this screenshot.", input_parts: [await w.upload()] });
+    const failed = await w.send({ message: content, input_parts: [await w.upload()] });
     expect(await w.execute(failed.run_id)).toMatchObject({ status: "failed" });
     const original = await joinedInvocation(db.pool, host!, failed.run_id);
 
@@ -270,6 +273,9 @@ describe("joined prompt provenance: direct chat", () => {
     // The same canonical message is the retry's own current input — its own
     // Delivery and Snapshot, the message once, its image hydrated once.
     expect(retried.current.ref).toEqual({ type: "message", id: failed.user_message_id });
+    expect(retried.current.text).toBe(content);
+    expect(retried.currentUserContent).toBe(original.currentUserContent);
+    expect(retried.currentUserContent).toContain('"display_name":"diagram.png"');
     expect(retried.delivery.id).not.toBe(original.delivery.id);
     expect(retried.snapshot.sourceRefs.filter((ref) => ref.type === "message")).toEqual([{ type: "message", id: failed.user_message_id }]);
     expect(retried.attachments).toEqual([imageBlock]);
@@ -341,10 +347,13 @@ describe("joined prompt provenance: Room", () => {
     expect(resumed.attachments).toEqual([]);
   });
 
-  it("retries a failed Room turn with the same message and image once", async () => {
+  it.each([
+    { kind: "captioned", content: "Draft the launch email from this mockup." },
+    { kind: "image-only", content: "" },
+  ])("retries a $kind Room turn with the same message and image once", async ({ content }) => {
     const w = await roomWorld("server");
     host!.answer = () => ({ error: "Synthetic runtime failure" });
-    const sent = await w.send({ content: "Draft the launch email from this mockup.", input_parts: [await w.upload()] });
+    const sent = await w.send({ content, input_parts: [await w.upload()] });
     expect(await w.execute(sent.run_ids[0]!)).toMatchObject({ status: "failed" });
     const original = await joinedInvocation(db.pool, host!, sent.run_ids[0]!);
 
@@ -360,7 +369,10 @@ describe("joined prompt provenance: Room", () => {
     expect(retry.current.ref).toEqual({ type: "message", id: sent.message.id });
     expect(retry.delivery.id).not.toBe(original.delivery.id);
     expect(retry.snapshot.sourceRefs.filter((ref) => ref.type === "message")).toEqual([{ type: "message", id: sent.message.id }]);
-    expect(retry.currentUserContent).toBe("Draft the launch email from this mockup.");
+    expect(retry.current.text).toBe(content);
+    expect(retry.currentUserContent).toBe(original.currentUserContent);
+    expect(retry.currentUserContent).toContain('"display_name":"diagram.png"');
+    expect(original.attachments).toEqual([imageBlock]);
     expect(retry.attachments).toEqual([imageBlock]);
     expect(retry.acp).toMatchObject({ sessionMethod: "session/resume", sessionId: original.acp.sessionId });
     expect(retry.deliveredContents.filter((content) => content === MANAGER_INSTRUCTION)).toHaveLength(1);

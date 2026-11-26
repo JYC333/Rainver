@@ -7,7 +7,7 @@ import {buildModuleServer} from './support/moduleServer.js';
 import {loadConfig} from '../src/config.js';
 import {__setAuthIdentityForTests} from '../src/modules/auth/identity.js';
 import {agentsModule} from '../src/modules/agents/index.js';
-import {agentTemplatesModule} from '../src/modules/agentTemplates/index.js';
+import {agentRolesModule} from '../src/modules/agentRoles/index.js';
 import {systemActionsModule} from '../src/modules/systemActions/index.js';
 
 const db=useTestDatabase(import.meta.filename,{max:6});
@@ -26,7 +26,7 @@ beforeEach(async()=>{
  await db.pool.query("INSERT INTO projects(id,space_id,owner_user_id,name,status,created_at,updated_at) VALUES($1,$2,$3,'Team project','active',now(),now())",[project,team,user]);
  await db.pool.query("INSERT INTO project_members(id,space_id,project_id,user_id,role,created_at,updated_at) VALUES($1,$2,$3,$4,'owner',now(),now()) ON CONFLICT DO NOTHING",[randomUUID(),team,project,user]).catch(()=>undefined);
  await seedSpaceMember(db.pool,{space:team,user:member});
- app=buildModuleServer(loadConfig({SERVER_DATABASE_URL:db.connectionUri}),[agentsModule,agentTemplatesModule,systemActionsModule]);
+ app=buildModuleServer(loadConfig({SERVER_DATABASE_URL:db.connectionUri}),[agentsModule,agentRolesModule,systemActionsModule]);
  as(team,user);
 });
 afterEach(async()=>{__setAuthIdentityForTests(null);await app.close();});
@@ -153,7 +153,7 @@ describe('Agent definition operations (real PostgreSQL)',()=>{
   expect((await inject('PATCH',`/api/v1/agents/default-assistant/settings?project_id=${project}`,{verbosity:'detailed'})).statusCode).toBe(404);
  });
 
- it('queues a person-started Run with the server-owned origin and creates from a template',async()=>{
+ it('queues a person-started Run with the server-owned origin and creates from a role',async()=>{
   const agent=randomUUID();
   await seedAgentWithVersion(db.pool,{agent,version:randomUUID(),space:team,owner:user});
   // The same request that succeeds below, plus a body origin: refused, and no Run is stored.
@@ -165,10 +165,14 @@ describe('Agent definition operations (real PostgreSQL)',()=>{
   const run=await inject('POST',`/api/v1/agents/${agent}/runs`,{prompt:'Summarize',project_id:project});
   expect(run.statusCode,run.body).toBe(201);
   expect(await rows('SELECT trigger_origin,status,project_id,space_id FROM runs WHERE id=$1',[run.json().data.run_id])).toEqual([{trigger_origin:'manual',status:'queued',project_id:project,space_id:team}]);
-  const template=await inject('POST','/api/v1/agent-templates/research_reader/agents',{name:'Reader',system_prompt:'Read carefully.'});
-  expect(template.statusCode,template.body).toBe(201);
-  expect(await rows('SELECT name,space_id,source_template_id FROM agents WHERE id=$1',[template.json().data.id])).toEqual([{name:'Reader',space_id:personal,source_template_id:'research_reader'}]);
-  expect((await inject('POST','/api/v1/agent-templates/absent/agents',{name:'None'})).statusCode).toBe(404);
+  const role=await inject('POST','/api/v1/agent-roles/research_reader/agents',{name:'Reader',system_prompt:'Read carefully.'});
+  expect(role.statusCode,role.body).toBe(201);
+  expect(await rows(
+   'SELECT name,space_id,source_role_id,source_role_version_id FROM agents WHERE id=$1',
+   [role.json().data.id],
+  )).toEqual([{name:'Reader',space_id:personal,source_role_id:'research_reader',source_role_version_id:'research_reader:v1'}]);
+  expect((await inject('POST','/api/v1/agent-roles/absent/agents',{name:'None'})).statusCode).toBe(404);
+  expect((await inject('POST','/api/v1/agent-templates/research_reader/agents',{name:'Legacy'})).statusCode).toBe(404);
  });
 
  it('resets a direct context only for its person and refuses during a dispatch',async()=>{

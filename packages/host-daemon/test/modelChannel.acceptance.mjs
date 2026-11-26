@@ -15,7 +15,7 @@ import { randomUUID } from 'node:crypto';
 import { planStrictLaunch } from '../dist/execution.js';
 import { startModelChannel } from '../dist/modelChannel.js';
 import { startLocalToolBridge } from '@rainver/agent-cli/local-bridge';
-import { toolHttpRequest } from '@rainver/agent-cli/tool-http';
+import { RunToolChannel } from '../dist/runToolChannel.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const agentCliDist = resolve(here, '../../agent-cli/dist');
@@ -25,7 +25,8 @@ const OTHER_LEASE = randomUUID();
 const LEASE_TOKEN = 'lease-token-' + randomUUID();
 const UPSTREAM_KEY = 'UPSTREAM-SECRET-' + randomUUID(); // held only by the synthetic proxy
 const RUN = randomUUID();
-const TOOL_TOKEN = 'run-tool-token-' + randomUUID();
+const TOOL_TOKEN = 't'.repeat(43);
+const LAUNCH = randomUUID();
 
 const root = await mkdtemp(join(tmpdir(), 'rv-mc-'));
 const external = Object.values(networkInterfaces()).flat().find(a => a && a.family === 'IPv4' && !a.internal)?.address;
@@ -51,20 +52,26 @@ const proxy = createHttpServer((req, res) => {
     setTimeout(() => res.end(`data: {"turn":${turn.turn},"part":2,"saw_tool_result":${JSON.stringify(turn.tool_result ?? null)}}\n\n`), 50);
   });
 });
-// Synthetic control plane: the Run's tool API, reached by the Host-side tool bridge only.
+// The synthetic Host socket accepts the Run tool frame. Shell networking stays disabled.
 const toolLog = [];
-const api = createHttpServer((req, res) => {
-  toolLog.push({ url: req.url, auth: req.headers.authorization === `Bearer ${TOOL_TOKEN}` });
-  if (req.url === `/api/v1/runs/${RUN}/tools/demo_sensitive.read` && req.headers.authorization === `Bearer ${TOOL_TOKEN}`) {
-    res.writeHead(200, { 'content-type': 'application/json' }).end('{"data_class":"sensitive","rows":["SENSITIVE-ROW-1"]}');
-  } else res.writeHead(404).end();
-});
+const tools = new RunToolChannel();
+const sendTool = (frame) => {
+  if (frame.type !== 'run_tool_request') return true;
+  const auth = frame.token === TOOL_TOKEN && frame.run_id === RUN && frame.launch_id === LAUNCH;
+  toolLog.push({ auth });
+  const allowed = auth && frame.request.kind === 'call' && frame.request.action_id === 'demo_sensitive.read';
+  queueMicrotask(() => tools.receive(sendTool, {
+    type: 'run_tool_result', request_id: frame.request_id, run_id: frame.run_id, launch_id: frame.launch_id,
+    status: allowed ? 200 : 404, text: allowed ? '{"data_class":"sensitive","rows":["SENSITIVE-ROW-1"]}' : '{}',
+  }));
+  return true;
+};
+tools.bind(sendTool);
 // Decoy: anything reaching it is a breach.
 let decoyHits = 0;
 const decoy = createTcpServer(socket => { decoyHits += 1; socket.on('error', () => {}); socket.end('HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\nreached'); });
 const listen = (server, host) => new Promise(r => server.listen(0, host, () => r(server.address().port)));
 const proxyPort = await listen(proxy, '0.0.0.0');
-const apiPort = await listen(api, '127.0.0.1');
 const decoyPort = await listen(decoy, '0.0.0.0');
 
 const FIXTURE = String.raw`
@@ -132,7 +139,7 @@ console.log(JSON.stringify(out));
 async function launch(mode, egress, channel, extra = {}) {
   const runDir = join(root, `run-${mode}-${egress}`), cwd = join(root, `ws-${mode}-${egress}`);
   await Promise.all([mkdir(runDir, { recursive: true }), mkdir(cwd, { recursive: true })]);
-  const bridge = extra.bridge ? await startLocalToolBridge(runDir, (request, signal) => toolHttpRequest({ apiUrl: `http://127.0.0.1:${apiPort}`, runId: RUN, token: TOOL_TOKEN }, request, signal)) : null;
+  const bridge = extra.bridge ? await startLocalToolBridge(runDir, (request, signal) => tools.invoke({ run_id: RUN, launch_id: LAUNCH, token: TOOL_TOKEN }, request, signal)) : null;
   const handle = channel ? await startModelChannel(runDir, channel) : null;
   const cfg = { mode, port: PORT, external, decoyPort, proxyPort, lease: LEASE, otherLease: OTHER_LEASE, upstreamMarker: 'UPSTREAM-SECRET-', signal: join(runDir, 'signal') };
   const plan = planStrictLaunch({
@@ -141,7 +148,7 @@ async function launch(mode, egress, channel, extra = {}) {
       // What a provider binding composed for the channel looks like: the loopback forwarder plus the lease token.
       ANTHROPIC_BASE_URL: channel ? `http://127.0.0.1:${PORT}/anthropic/${LEASE}` : `http://${external}:${proxyPort}/anthropic/${LEASE}`,
       ANTHROPIC_AUTH_TOKEN: LEASE_TOKEN,
-      ...(bridge ? { RAINVER_TOOL_BRIDGE: bridge.directory } : {}),
+      ...(bridge ? { RAINVER_TOOL_BRIDGE: bridge.endpoint } : {}),
     },
     ambient: { PATH: process.env.PATH, UPSTREAM_PROVIDER_KEY: UPSTREAM_KEY },
     isolation: { sandbox_mode: 'read_write', egress_profile: egress }, egress: {},
@@ -217,6 +224,6 @@ try {
   assert.match(noChannel.hostExternal, /^BLOCKED /); assert.ok(noChannel.model.error);
   console.log(`model channel acceptance passed (bwrap, host ${external}; forwarded ${stats.forwarded}, refused ${stats.refused}; decoy hits ${decoyHits})`);
 } finally {
-  proxy.close(); api.close(); decoy.close();
+  proxy.close(); decoy.close();
   await rm(root, { recursive: true, force: true });
 }

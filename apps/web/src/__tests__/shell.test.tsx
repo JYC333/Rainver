@@ -61,6 +61,21 @@ describe('Shell scene sidebar collapse', () => {
     expect(screen.getByLabelText('Agents navigation')).toBeInTheDocument()
   })
 
+  it('keeps the Agents scene on user-scoped My Agents, linking its in-Space areas through the preferred Space', () => {
+    render(<MemoryRouter initialEntries={['/my-agents']} future={routerFuture}><Shell /></MemoryRouter>)
+    const sidebar = screen.getByLabelText('Agents navigation')
+    expect(within(sidebar).getByRole('link', { name: 'My agents' })).toHaveAttribute('href', '/my-agents')
+    expect(within(sidebar).getByRole('link', { name: 'My agents' })).toHaveAttribute('aria-current', 'page')
+    for (const [name, href] of [['Chat history', '/sessions'], ['Runs', '/runs'], ['Plans', '/plans'], ['Automations', '/automations'], ['Skills', '/skills']]) {
+      expect(within(sidebar).getByRole('link', { name })).toHaveAttribute('href', `/spaces/personal-1${href}`)
+    }
+  })
+
+  it('keeps Home-scope pages other than My Agents without a scene', () => {
+    render(<MemoryRouter initialEntries={['/home']} future={routerFuture}><Shell /></MemoryRouter>)
+    expect(screen.queryByLabelText('Agents navigation')).toBeNull()
+  })
+
   it('renders Library item type routes and digests in the scene sidebar', () => {
     render(<MemoryRouter initialEntries={['/spaces/personal-1/library/items/pdfs']} future={routerFuture}><Shell /></MemoryRouter>)
 

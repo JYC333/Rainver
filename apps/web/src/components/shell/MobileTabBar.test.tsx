@@ -39,4 +39,12 @@ describe('mobile navigation', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Close' }))
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
+
+  it('keeps an in-Space destination inert while no Space is known, never a link that lands on Home', () => {
+    render(<MemoryRouter initialEntries={['/my-agents']}><MobileTabBar spaceId={null} /></MemoryRouter>)
+    const nav = screen.getByRole('navigation', { name: 'Primary' })
+    expect(within(nav).getByRole('link', { name: 'Agent Work' })).toHaveAttribute('href', '/agent-work')
+    expect(within(nav).queryByRole('link', { name: 'Projects' })).toBeNull()
+    expect(within(nav).getByText('Projects').closest('[aria-disabled="true"]')).not.toBeNull()
+  })
 })

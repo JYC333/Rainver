@@ -2,8 +2,8 @@ import type { PromptResolveResult } from "@rainver/protocol";
 import type { Queryable } from "../routeUtils/common.js";
 import { resolvePrompt } from "../prompts/resolver.js";
 
-export function agentTemplateSystemPromptKey(templateKey: string): string {
-  return `agent_template.${templateKey}.system`;
+export function agentRoleSystemPromptKey(roleKey: string): string {
+  return `agent_role.${roleKey}.system`;
 }
 
 export interface ResolvedAgentSystemPrompt {

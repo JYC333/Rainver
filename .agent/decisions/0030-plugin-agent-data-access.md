@@ -1,5 +1,10 @@
 # ADR 0030 — Plugin data classes, data-owner consent and Agent read attribution
 
+> The former `applications` package is now
+> [PhD Application](../architecture/OFFICIAL_OPTIONAL_MODULES.md#phd-application-package)
+> (`phd_application`). This ADR uses the package, tool and schema names from
+> the time of the decision.
+
 Date: 2026-11-16
 Status: accepted; platform contract implemented as stated below. Decision 4a's
 isolated launch exists for ModelProvider-bound Runs on the built-in strict Host

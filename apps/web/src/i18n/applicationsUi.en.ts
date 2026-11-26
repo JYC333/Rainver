@@ -1,6 +1,6 @@
-/** Copy of the bundled application management package (plugins/official/applications). */
+/** Copy of the bundled PhD Application package (plugins/official/phd_application). */
 export const applicationsUiEn = {
-  plugin_applications: {
+  plugin_phd_application: {
     area_hint: 'New applications and funding records are visible to Project readers. Your personal material library and contacts are linked here where you have access.',
     new: 'New application', new_title: 'New PhD application', track_phd: 'PhD application',
     track_phd_hint: 'Starts with the PhD checklist: CV, statement, research proposal, transcripts, references and optional items.',
@@ -32,7 +32,7 @@ export const applicationsUiEn = {
     log_hint: 'Records a contact that already happened; nothing is sent from here.', log_event: 'Record contact',
     occurred_on: 'Date', channel_label: 'Channel', direction_label: 'Direction', response_label: 'Response', summary_label: 'What happened', next_step: 'Next step',
     back_to_list: 'Back to list',
-    summary_title: 'Applications', summary_empty: 'No applications or funding yet. Open Applications in this Project to add one.',
+    summary_title: 'PhD Application', summary_empty: 'No applications or funding yet. Open PhD Application in this Project to add one.',
     open_board: 'Open applications', summary_open: 'In progress', summary_closed: 'Decided', upcoming: 'Upcoming deadlines', no_upcoming: 'No upcoming deadlines.',
     status: {planning: 'Planning', preparing: 'Preparing', ready: 'Ready to submit', submitted: 'Submitted', under_review: 'Under review', interview: 'Interview', offer: 'Offer', waitlisted: 'Waitlisted', rejected: 'Rejected', accepted: 'Accepted', declined: 'Declined', withdrawn: 'Withdrawn'},
     deadline_kind: {application: 'Application', funding: 'Funding', references: 'References', supervisor_contact: 'Contact supervisor', interview: 'Interview', decision: 'Decision', other: 'Other'},
@@ -61,7 +61,7 @@ export const applicationsUiEn = {
     save_hint: 'Saved drafts are private Notes you can edit in Notes; mark the version reviewed when you are satisfied.',
     save_new_unavailable: 'In a shared Space a draft is saved only as the next version of a linked Note that no one else can read, including Space owners or admins through oversight. Text from this Space is not moved to your Personal Space.',
     draft_started: 'Draft started', draft_saved: 'Saved to Notes', review_recorded: 'Review recorded',
-    tabs_label: 'Applications module', tab: {programs: 'Programs', funding: 'Scholarships & funding', library: 'Material library', contacts: 'Supervisors & contacts'},
+    tabs_label: 'PhD Application sections', tab: {programs: 'Programs', funding: 'Scholarships & funding', library: 'Material library', contacts: 'Supervisors & contacts'},
     programs_hint: 'Grouped by institution; each program at an institution is its own application with its own deadlines, materials and progress.', group_count_one: '{{count}} program', group_count_other: '{{count}} programs',
     funding_hint: 'A scholarship you apply for separately has its own deadlines, materials, reviews and progress; one you are considered for automatically only tracks its result. Link it to one or more program applications, or record it on its own first.',
     new_funding: 'New funding', new_funding_title: 'New scholarship or funding', funder: 'Funder', funding_name: 'Funding name',

@@ -411,7 +411,12 @@ export interface CurrentUser {
   default_space_id: string | null
   created_at: string
   last_login_at: string | null
+  /** Which of this browser's accounts the tab was loaded for; sent back on every request. */
+  account_handle?: string
 }
+
+export interface BrowserAccount { user_id: string; email: string | null; display_name: string; avatar_url: string | null; active: boolean; remembered: boolean }
+export interface BrowserAccountsResponse { accounts: BrowserAccount[]; limit: number }
 
 export interface AuthConfiguration { google_auth_available: boolean; bootstrap_registration_available: boolean; password_min_length: number; password_max_length: number }
 export interface AuthAccount { id: string; provider: string; account_id: string; created_at: string }
@@ -2772,8 +2777,8 @@ export interface AgentOut {
   agent_kind: string
   current_version_id: string | null
   // Provenance only — never used to assemble runtime config.
-  source_template_id: string | null
-  source_template_version_id: string | null
+  source_role_id: string | null
+  source_role_version_id: string | null
   model: AgentModelSummary | null
   // Effective runtime adapter. Every ACP runtime manages its own account or
   // takes an optional Rainver-proxied Provider binding per Profile, so there
@@ -2782,6 +2787,8 @@ export interface AgentOut {
   system_prompt: string | null
   created_at: string
   updated_at: string
+  /** On the single-Agent read: whether this viewer may change it (edit, stop/restore, versions, profiles). */
+  can_manage?: boolean
 }
 
 export interface AgentVersionOut {
@@ -2808,8 +2815,10 @@ export interface AgentVersionOut {
   archived_at: string | null
 }
 
-export interface AgentTemplateOut {
+export interface AgentRoleOut {
   id: string
+  /** The plugin that contributes this Role; null or absent for a catalog Role. */
+  source_plugin_id?: string | null
   key: string
   name: string
   description: string | null
@@ -2856,9 +2865,9 @@ export interface SpaceAssistantSettingsUpdate {
   model_preferences_json?: Record<string, unknown>
 }
 
-export interface AgentTemplateVersionOut {
+export interface AgentRoleVersionOut {
   id: string
-  template_id: string
+  role_id: string
   version: string
   system_prompt: string | null
   context_policy_json: Record<string, unknown>
@@ -2887,8 +2896,8 @@ export interface AgentConfigUpdateBody {
   execution_constraints?: { risk_level?: 'low' | 'medium' | 'high' | 'critical'; max_run_time_seconds?: number }
 }
 
-export interface CreateAgentFromTemplateBody {
-  template_version_id?: string | null
+export interface CreateAgentFromRoleBody {
+  role_version_id?: string | null
   project_id?: string | null
   name?: string | null
   description?: string | null

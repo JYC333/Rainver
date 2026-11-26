@@ -12,7 +12,7 @@ import type {
 } from '../types/api'
 import { operationAt } from './operations'
 import type { RequestOptions } from './transport'
-import { ApiRequestError, BASE, _spaceId, formatApiErrorMessage, get, signalAuthRequired } from './transport'
+import { _spaceId, ACCOUNT_SWITCHED_HEADER, accountFetch, accountHeaders, ApiRequestError, BASE, formatApiErrorMessage, get, noteAccountSwitched, signalAuthRequired } from './transport'
 import type { OperationOutput } from '@rainver/protocol'
 
 // ── Personal Memory Grants ─────────────────────────────────────────────────
@@ -72,7 +72,7 @@ async function downloadArtifactExport(
       throw new DOMException('Download cancelled', 'AbortError')
     }
   }
-  const headers: Record<string, string> = {}
+  const headers: Record<string, string> = { ...accountHeaders() }
   headers['X-Rainver-Space-Id'] = options.spaceId ?? _spaceId
   const sep = '/artifacts/' + artifactId + '/export'
   const query = new URLSearchParams()
@@ -80,9 +80,10 @@ async function downloadArtifactExport(
   const artifactParams = query.toString()
   const url = BASE + sep + (artifactParams ? `?${artifactParams}` : '')
   const startedIn = sessionEpoch()
-  const r = await fetch(url, { method: 'GET', headers, signal: options.signal })
+  const r = await accountFetch(url, { method: 'GET', headers, signal: options.signal })
   assertCurrent()
   if (r.status === 401) signalAuthRequired(startedIn)
+  noteAccountSwitched(r.status, r.headers.get(ACCOUNT_SWITCHED_HEADER), startedIn, options.signal)
   if (r.status === 404) throw new ApiRequestError('Artifact not found or not exportable', 404)
   if (!r.ok) {
     let msg = `${r.status} ${r.statusText}`

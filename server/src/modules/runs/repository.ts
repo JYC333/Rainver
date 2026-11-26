@@ -1,4 +1,4 @@
-import { roomAgentUseSql, conversationAgentParticipatesSql } from "../rooms/agentUsageSql.js";
+import { roomAgentUseSql, conversationAgentParticipatesSql, lockRoomExecutionAuthority, runExecutionPlacement } from "../rooms/agentUsageSql.js";
 import {OperationError} from '../systemActions/operations/errors.js';
 import {recordPreparedRunCreation,assertPreparedFreshRunUnlinked,preparedRunTerminalOwner,lockRunProposalTransitions} from '../systemActions/operations/proposalTransitions.js';
 import { randomUUID } from "node:crypto";
@@ -13,8 +13,8 @@ import {
   sanitizeEvidenceJson,
 } from "./evidenceRedaction.js";
 import {PgConversationRuntimeSessionRepository} from '../sessions/conversationRuntimeSessionRepository.js';
-import { lockProjectAudience, assertProjectInSpace } from "../projects/access.js";
-import { contentAccessLevelSql, contentReadSql, projectReadAccessSql, proposalReadSql, roomRunReadAccessSql, runReadSql } from "../access/contentAccessSql.js";
+import { assertProjectInSpace } from "../projects/access.js";
+import { contentAccessLevelSql, contentReadSql, projectReadAccessSql, proposalReadSql, roomConversationAudienceSql, roomRunReadAccessSql, runReadSql } from "../access/contentAccessSql.js";
 import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 import { contentDecisionFromDb } from "../access/contentAccessQuery.js";
 import { RUN_TERMINAL_STATUS_VALUES } from "@rainver/protocol";
@@ -77,6 +77,7 @@ import type { VerificationResultRecord } from "./verification/types.js";
 import { PgUsageRepository } from "../usage/repository.js";
 import { buildRunToolGrants } from "../systemActions/runToolGrants.js";
 import { pluginToolPins, runAudience, scenarioOrigin, type RunScenario } from "../plugins/dataAccess.js";
+import { lockPluginRoleAgentAdmission, pluginOfAgentRole, pluginRoleAgentRefusal } from "../plugins/agentRoleAdmission.js";
 import { isHardTerminalRunStatus } from "./orchestrationResults.js";
 import { agentHostResetGenerationSql, agentHostResetLockKey, launchRecordResetSql } from "../hosts/agentHostResetGeneration.js";
 
@@ -159,6 +160,16 @@ export type GroupedRunTrigger =
   /** A scheduled turn the server starts on a setup its owner confirmed (a Room's Gmail digest). */
   | { origin: "automation" }
   | { origin: "continuation"; cause_run_id: string | null };
+
+type RunCreateLinks = {
+  root_run_id?: string | null;
+  run_group_id?: string | null;
+  delegation_id?: string | null;
+  instructed_by_agent_id?: string | null;
+  budget_json?: Record<string, unknown> | null;
+  context_policy_json?: Record<string, unknown> | null;
+  run_role?: "execution" | "coordinator";
+};
 
 export class PgRunRepository {
   private readonly usageRepository: PgUsageRepository;
@@ -759,17 +770,23 @@ export class PgRunRepository {
     return result.rows[0] ?? null;
   }
 
+  /**
+   * Admit a new Run in one transaction with a share lock on its Agent row, so
+   * a stop (`agent.update` holds that row FOR UPDATE) either commits first
+   * and is seen here as "not active", or waits until this Run is queued; the
+   * claim then re-reads the status under the same lock before it starts.
+   */
   private async createQueuedRunInternal(
     input: RunCreateInput,
-    links: {
-      root_run_id?: string | null;
-      run_group_id?: string | null;
-      delegation_id?: string | null;
-      instructed_by_agent_id?: string | null;
-      budget_json?: Record<string, unknown> | null;
-      context_policy_json?: Record<string, unknown> | null;
-      run_role?: "execution" | "coordinator";
-    } = {},
+    links: RunCreateLinks = {},
+  ): Promise<AgentRunRecord> {
+    return withQueryableTransaction(this.db, (db) =>
+      (db === this.db ? this : new PgRunRepository(db, this.config)).createQueuedRunLocked(input, links));
+  }
+
+  private async createQueuedRunLocked(
+    input: RunCreateInput,
+    links: RunCreateLinks,
   ): Promise<AgentRunRecord> {
     const isCoordinator = links.run_role === "coordinator";
     const agent = await this.getAgentForRun(input.space_id, input.agent_id);
@@ -812,6 +829,19 @@ export class PgRunRepository {
     await this.assertOptionalSpaceRef("workspace_locations", input.workspace_location_id, input.space_id, "Workspace Location");
     await this.assertOptionalSpaceRef("sessions", input.session_id, input.space_id, "Session");
     await this.assertOptionalSpaceRef("projects", input.project_id, input.space_id, "Project");
+    // A Run in a Room works in that Room's Project (a Run Group's scope key already
+    // ties it there): naming another would authorize it against one Project while it
+    // works in another's Room. A Run naming none keeps the Room's Project as its authority.
+    if (input.project_id && (input.session_id || links.run_group_id)) {
+      const placement = await runExecutionPlacement(this.db, input.space_id, { run_group_id: links.run_group_id ?? null, session_id: input.session_id ?? null });
+      if (placement.room_id) {
+        const roomProject = (await this.db.query<{ project_id: string }>(
+          "SELECT project_id FROM rooms WHERE space_id=$1 AND id=$2", [input.space_id, placement.room_id])).rows[0]?.project_id;
+        if (roomProject !== input.project_id) {
+          throw new RunCreateValidationError("This Run's Project is not its Room's Project", 409);
+        }
+      }
+    }
     if (input.parent_run_id) {
       // A child reads its parent's context, so the parent must be a Run the
       // creator can read — naming an id is not enough.
@@ -1064,7 +1094,8 @@ export class PgRunRepository {
     }>(
       `SELECT id, status, agent_kind, current_version_id, visibility, access_level
          FROM agents
-        WHERE space_id = $1 AND id = $2`,
+        WHERE space_id = $1 AND id = $2
+          FOR SHARE`,
       [spaceId, agentId],
     );
     return result.rows[0] ?? null;
@@ -1978,14 +2009,48 @@ export class PgRunRepository {
         }
         return current;
       };
-      const candidate=(await db.query<AgentRunRecord & {room_id:string|null}>(`SELECT r.*,g.room_id FROM runs r LEFT JOIN agent_run_groups g ON g.space_id=r.space_id AND g.id=r.run_group_id WHERE r.space_id=$1 AND r.id=$2`,[input.space_id,input.run_id])).rows[0];
-      if(candidate?.room_id){
+      const candidate=(await db.query<AgentRunRecord & {source_role_id:string|null}>(`SELECT r.*,a.source_role_id FROM runs r LEFT JOIN agents a ON a.space_id=r.space_id AND a.id=r.agent_id WHERE r.space_id=$1 AND r.id=$2`,[input.space_id,input.run_id])).rows[0];
+      // The Room the Run executes in, with or without a Run Group: the placement its
+      // companion-Agent admission and plugin entry resolve (`runExecutionPlacement`).
+      const placement=candidate?await runExecutionPlacement(db,input.space_id,candidate):null;
+      const companionPlugin=pluginOfAgentRole(candidate?.source_role_id);
+      let roomProjectId:string|null=null;
+      if(candidate&&(placement?.room_id||companionPlugin)){
         // Separate lock/read statements get a fresh READ COMMITTED snapshot after
         // a concurrent revocation commits. A predicate in the UPDATE alone can
         // still read the pre-revocation snapshot while waiting on a row lock.
-        if(candidate.project_id)await lockProjectAudience(db,input.space_id,candidate.project_id);
-        await db.query('SELECT id FROM rooms WHERE space_id=$1 AND id=$2 FOR SHARE',[input.space_id,candidate.room_id]);
-        if(candidate.session_id)await new PgConversationRuntimeSessionRepository(db).lockConversation(input.space_id,candidate.session_id);
+        if(placement?.room_id){
+          // The Room's own Project, never the Run's: that is the row an archive locks, and
+          // its lock precedes the Room's as everywhere. A Run naming another one is refused below.
+          roomProjectId=(await db.query<{project_id:string}>(`SELECT project_id FROM rooms WHERE space_id=$1 AND id=$2`,[input.space_id,placement.room_id])).rows[0]?.project_id??null;
+          await lockRoomExecutionAuthority(db,input.space_id,roomProjectId,placement.room_id);
+          if(placement.session_id)await new PgConversationRuntimeSessionRepository(db).lockConversation(input.space_id,placement.session_id);
+        }
+        // A companion Agent's plugin scope and binding stay as decided until this Run is `running`.
+        if(companionPlugin)await lockPluginRoleAgentAdmission(db,this.config,companionPlugin,candidate);
+      }
+      // Every Room entry (ordinary, plugin): the Room's Project must still be active, read as its
+      // own statement while its row is share-locked above. Reading an archived Project's history
+      // stays open (`projectReadAccessSql`), but an archive (`FOR UPDATE`) that committed first
+      // starts nothing there; one that did not waits until this Run is `running`.
+      if(candidate&&placement?.room_id){
+        // A Run that names a Project other than its Room's (a record from before enqueue refused
+        // that) would be authorized against one Project while working in another's Room.
+        if(candidate.project_id&&candidate.project_id!==roomProjectId){
+          return refused({error_code:"run_project_mismatch",error_message:"This Run names a different Project from its Room, so it was not started."});
+        }
+        const active=(await db.query(`SELECT 1 FROM rooms r JOIN projects p ON p.space_id=r.space_id AND p.id=r.project_id
+           WHERE r.space_id=$1 AND r.id=$2 AND p.status='active' AND p.deleted_at IS NULL`,[input.space_id,placement.room_id])).rowCount;
+        if(!active)return refused({error_code:"project_not_active",error_message:"This Project was archived, so the Run was not started."});
+      }
+      // Every entry (direct, Room, plugin): the Agent row is share-locked last, after the
+      // Room/conversation/plugin locks, as its own statement. A stop (`agent.update`, FOR UPDATE)
+      // that committed first is read here; one that did not waits until this Run is `running`.
+      if(candidate?.agent_id&&candidate.execution_kind==="agent"){
+        const agentStatus=(await db.query<{status:string}>(`SELECT status FROM agents WHERE space_id=$1 AND id=$2 FOR SHARE`,[input.space_id,candidate.agent_id])).rows[0]?.status;
+        if(agentStatus!=="active")return refused({error_code:"agent_not_active",error_message:"This Agent was stopped, so the Run was not started."});
+      }
+      if(candidate&&(placement?.room_id||companionPlugin)){
         const authorization=await new PgRunRepository(db,this.config).checkRunExecutionAuthorization(candidate);
         if(!authorization.allowed)return refused(authorization);
       }
@@ -2221,7 +2286,18 @@ export class PgRunRepository {
           : "This Gmail digest no longer has permission to run." };
       }
     }
+    // A plugin's companion Agent runs only in a Project and Room where its plugin is set up now.
+    const pluginAgent = await pluginRoleAgentRefusal(this.db, this.config, run);
+    if (pluginAgent) return { allowed: false, ...pluginAgent };
     if (!run.instructed_by_user_id) return { allowed: true };
+    // Where the Run executes: the one resolution claim, companion admission and
+    // plugin entry use, so a Run with or without a Run Group is decided by the
+    // same Room and conversation. Inside a Room the instructing person must be an
+    // active member who reads that conversation (its frozen audience) and the
+    // Agent usable there (`roomAgentUseSql`: an active Room Agent, through the
+    // person's content read of it or a live Room grant). Reading the Agent
+    // alone never admits it into a Room, and a Room grant never reads it.
+    const placement = await runExecutionPlacement(this.db, run.space_id, run);
     const result = await this.db.query<{ allowed: boolean }>(
       `SELECT (
           EXISTS (
@@ -2237,25 +2313,16 @@ export class PgRunRepository {
           )
           AND (
             $4::varchar IS NULL
-            OR NOT EXISTS (
-              SELECT 1
-                FROM agent_run_groups candidate_group
-               WHERE candidate_group.id = $4
-                 AND candidate_group.space_id = $1
-                 AND candidate_group.room_id IS NOT NULL
-            )
             OR EXISTS (
               SELECT 1
-                FROM agent_run_groups room_group
-                JOIN room_user_members room_member
-                  ON room_member.room_id = room_group.room_id
-                 AND room_member.space_id = room_group.space_id
+                FROM room_user_members room_member
+               WHERE room_member.room_id = $4
+                 AND room_member.space_id = $1
                  AND room_member.user_id = $2
                  AND room_member.status = 'active'
-               WHERE room_group.id = $4
-                 AND room_group.space_id = $1
             )
           )
+          AND ($7::varchar IS NULL OR ${roomConversationAudienceSql("$1", "$7", "$2")})
           AND (
             $5::varchar IS NULL
             OR EXISTS (
@@ -2267,39 +2334,23 @@ export class PgRunRepository {
                  AND execution_folder.status = 'active'
             )
           )
-          AND ($6::varchar IS NULL OR ${conversationAgentParticipatesSql("$1", "$7", "$6")})
+          AND ($6::varchar IS NULL OR $7::varchar IS NULL OR ${conversationAgentParticipatesSql("$1", "$7", "$6")})
           AND ($6::varchar IS NULL OR EXISTS (
             SELECT 1 FROM agents execution_agent
              WHERE execution_agent.id = $6 AND execution_agent.space_id = $1
                AND execution_agent.status = 'active'
-               AND ($4::varchar IS NULL OR EXISTS (SELECT 1 FROM agent_run_groups usage_group
-                 WHERE usage_group.space_id=$1 AND usage_group.id=$4
-                   AND (usage_group.room_id IS NULL OR ${roomAgentUseSql("execution_agent", "$2", "usage_group.room_id")})))
-               AND (${contentReadSql("agent", "execution_agent", "$2")}
-                 OR EXISTS (
-                   SELECT 1 FROM sessions execution_session
-                   JOIN agent_run_groups execution_group
-                     ON execution_group.id = $4 AND execution_group.space_id = execution_session.space_id
-                    AND execution_group.room_id = execution_session.room_id
-                   JOIN room_agent_members execution_member
-                     ON execution_member.space_id = execution_session.space_id AND execution_member.room_id = execution_session.room_id
-                    AND execution_member.agent_id = execution_agent.id AND execution_member.status = 'active'
-                   JOIN room_agent_access_grants agent_grant
-                     ON agent_grant.space_id = execution_session.space_id AND agent_grant.room_id = execution_session.room_id
-                    AND agent_grant.agent_id = execution_agent.id AND agent_grant.grantee_user_id = $2
-                    AND agent_grant.revoked_at IS NULL
-                   WHERE execution_session.space_id = $1 AND execution_session.id = $7
-                 ))
+               AND (($4::varchar IS NULL AND ${contentReadSql("agent", "execution_agent", "$2")})
+                 OR ($4::varchar IS NOT NULL AND ${roomAgentUseSql("execution_agent", "$2", "$4")}))
           ))
         ) AS allowed`,
       [
         run.space_id,
         run.instructed_by_user_id,
         run.project_id,
-        run.run_group_id,
+        placement.room_id,
         run.project_folder_id,
         run.agent_id ?? null,
-        run.session_id ?? null,
+        placement.session_id,
       ],
     );
     return result.rows[0]?.allowed
@@ -3429,7 +3480,7 @@ export class PgRunRepository {
 
   async appendRunEvent(input: RunEventInput): Promise<RunEventRecord | null> {
     // Two writers append to one Run at once — the runtime event sink and a
-    // tool call's own HTTP request — and MAX()+1 computed on two connections
+    // tool call's own connection — and MAX()+1 computed on two connections
     // collides on `uq_run_events_space_run_event_index`, dropping one event.
     // Serialize the index allocation per Run; inside a caller's transaction
     // the lock is simply held to its commit.

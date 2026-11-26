@@ -3,7 +3,7 @@ import { sessionEpoch } from '../lib/sessionResidue'
 import type { SubscriptionQuotaPolicy, SubscriptionQuotaPolicyUpdate } from '../types/api'
 import { systemCommand } from './jobReads'
 import { operationAt } from './operations'
-import { BASE, _spaceId, get, post, streamRefusal } from './transport'
+import { _spaceId, accountFetch, accountHeaders, BASE, get, post, streamRefusal } from './transport'
 import type { ApiPlanUsageProvider, ApiPlanUsageSnapshot } from '@rainver/protocol'
 
 // ── Providers ─────────────────────────────────────────────────────────────
@@ -221,10 +221,10 @@ export const providersApi = {
   // as hostsApi.loginStream's callers do.
   async *subscriptionLoginStream(type: ManagedSubscriptionType, signal?: AbortSignal): AsyncGenerator<ManagedSubscriptionLoginEvent> {
     const url = `${BASE}/providers/subscriptions/login/stream?type=${encodeURIComponent(type)}`
-    const headers: Record<string, string> = {}
+    const headers: Record<string, string> = { ...accountHeaders() }
     headers['X-Rainver-Space-Id'] = _spaceId
     const startedIn = sessionEpoch()
-    const response = await fetch(url, { headers, signal })
+    const response = await accountFetch(url, { headers, signal })
     if (!response.ok || !response.body) throw await streamRefusal(response, 'Subscription login stream failed', startedIn, signal)
     yield* readLoginEvents<ManagedSubscriptionLoginEvent>(response)
   },

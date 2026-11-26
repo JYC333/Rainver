@@ -4,13 +4,37 @@ import { Button } from '../../components/ui/button'
 import { Dialog, DialogContent, DialogFooter, DialogTitle, DialogTrigger } from '../../components/ui/dialog'
 import { Textarea } from '../../components/ui/textarea'
 import { useAppTranslation } from '../../i18n'
+import { MessageResponse } from '../../components/ai-elements/message'
 
 export function isLongPaste(text: string): boolean {
-  return text.length >= 500 || text.split(/\r?\n/, 7).length >= 7
+  const content = text.trim()
+  return content.length >= 1_200 || content.split(/\r\n|\r|\n/, 16).length >= 16
 }
 
 export function withPastedText(text: string, paste: string): string {
   return [text.trim(), paste.trim()].filter(Boolean).join('\n\n')
+}
+
+export function ConversationUserText({ text }: { text: string }) {
+  const { t } = useAppTranslation()
+  if (!text) return null
+  if (!isLongPaste(text)) return <MessageResponse>{text}</MessageResponse>
+
+  const label = t('conversation_ui.composer.view_long_text')
+  return (
+    <Dialog>
+      <DialogTrigger asChild>
+        <Button type="button" variant="outline" className="max-w-full justify-start gap-2 bg-background text-foreground hover:bg-accent" aria-label={label}>
+          <FileText className="size-4 shrink-0" aria-hidden="true" />
+          <span className="min-w-0 truncate">{text.trim().slice(0, 120)}</span>
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="w-[calc(100%-2rem)] max-w-3xl p-4 sm:p-6" aria-describedby={undefined}>
+        <DialogTitle>{label}</DialogTitle>
+        <Textarea aria-label={label} value={text} readOnly className="h-[min(52dvh,28rem)] resize-none" />
+      </DialogContent>
+    </Dialog>
+  )
 }
 
 export function ConversationDraftEditor({ text, onChange, disabled }: {

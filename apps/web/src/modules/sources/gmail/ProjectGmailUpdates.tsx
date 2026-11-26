@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { GmailDigest } from '@rainver/protocol'
 import { gmailApi } from '../../../api/gmail'
+import { SafeExternalLink } from '../../../components/SafeExternalLink'
 import { StatusBadge } from '../../../components/ui/badge'
 import { Button } from '../../../components/ui/button'
 import { Card, CardTitle } from '../../../components/ui/card'
@@ -22,7 +23,7 @@ export function ProjectGmailUpdates({ projectId, spaceId, scopeKey }: {
   const [busy, setBusy] = useState(false)
   const [pauseFailed, setPauseFailed] = useState(false)
   const load = useCallback(async () => {
-    const result = await run(signal => gmailApi.digests({ spaceId, signal }), 'digests')
+    const result = await run(signal => gmailApi.digests({ spaceId, signal, reviewProjectId: projectId }), 'digests')
     if (!result) return
     setItems(result.ok ? result.value.filter(d => d.kind === 'application' && d.project_id === projectId && d.project_name !== null) : [])
     setFailed(!result.ok)
@@ -84,6 +85,20 @@ export function ProjectGmailUpdates({ projectId, spaceId, scopeKey }: {
             {t('gmail_ui.digests.pause')}
           </Button>}
         </div>
+        {!!digest.review_items?.length && <div className="space-y-2 border-t border-border pt-2">
+          <p className="font-medium">{t('gmail_ui.digests.review_title')}</p>
+          <ul className="space-y-1">
+            {digest.review_items.map(item => <li key={item.message_id} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+              <p className="text-muted-foreground">{formatDateTime(item.received_at)} · <span className="text-foreground">{t(`gmail_ui.digests.review_reason.${item.reason ?? 'unclear_fact'}`)}</span></p>
+              <Button asChild size="sm" variant="outline" className="max-md:min-h-[44px]"><SafeExternalLink href={item.gmail_url}>
+                {t('gmail_ui.digests.review_open_gmail')}
+              </SafeExternalLink></Button>
+            </li>)}
+          </ul>
+          {(digest.mail_items?.review ?? 0) > digest.review_items.length && <p className="text-xs text-muted-foreground">
+            {t('gmail_ui.digests.review_limit', { shown: digest.review_items.length, total: digest.mail_items?.review })}
+          </p>}
+        </div>}
       </li>)}
     </ul>
   </Card>

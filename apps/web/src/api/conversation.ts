@@ -22,7 +22,7 @@ import type {
 import { commandReceipt, queryOperation } from './operations'
 import { readServerSentEvents } from './streams'
 import type { RequestOptions } from './transport'
-import { ApiRequestError, BASE, _spaceId, del, formatApiErrorMessage, get, signalAuthRequired, streamRefusal } from './transport'
+import { _spaceId, accountFetch, accountHeaders, ApiRequestError, BASE, del, formatApiErrorMessage, get, noteAccountSwitched, signalAuthRequired, streamRefusal } from './transport'
 import type { ConversationInputFileSearchResponse, ConversationInputMediaOut, OperationInput } from '@rainver/protocol'
 import { ConversationInputMediaOutSchema, TurnStreamErrorSchema } from '@rainver/protocol'
 
@@ -37,6 +37,7 @@ export const conversationInputApi = {
       xhr.open('POST', `${BASE}/conversation-inputs/media`)
       xhr.withCredentials = true
       xhr.setRequestHeader('X-Rainver-Space-Id', options.spaceId ?? _spaceId)
+      for (const [name, value] of Object.entries(accountHeaders())) xhr.setRequestHeader(name, value)
       xhr.upload.onprogress = event => {
         if (event.lengthComputable) onProgress?.(Math.round((event.loaded / event.total) * 100))
       }
@@ -44,6 +45,7 @@ export const conversationInputApi = {
       xhr.onabort = () => reject(new ApiRequestError('Image upload cancelled', 0))
       xhr.onload = () => {
         if (xhr.status === 401 && !options.signal?.aborted) signalAuthRequired(startedIn)
+        noteAccountSwitched(xhr.status, xhr.getResponseHeader('x-rainver-account-switched'), startedIn, options.signal)
         let payload: unknown = null
         try { payload = xhr.responseText ? JSON.parse(xhr.responseText) : null } catch { /* use status text */ }
         if (xhr.status < 200 || xhr.status >= 300) {
@@ -70,9 +72,9 @@ export const conversationInputApi = {
   },
   deletePendingImage: (mediaId: string, options: RequestOptions = {}) => del<null>(`/conversation-inputs/media/${encodeURIComponent(mediaId)}`, options),
   imageBlob: async (mediaId: string, options: RequestOptions = {}): Promise<Blob> => {
-    const headers: Record<string, string> = { 'X-Rainver-Space-Id': options.spaceId ?? _spaceId }
+    const headers: Record<string, string> = { 'X-Rainver-Space-Id': options.spaceId ?? _spaceId, ...accountHeaders() }
     const startedIn = sessionEpoch()
-    const response = await fetch(`${BASE}/conversation-inputs/media/${encodeURIComponent(mediaId)}`, { headers, signal: options.signal })
+    const response = await accountFetch(`${BASE}/conversation-inputs/media/${encodeURIComponent(mediaId)}`, { headers, signal: options.signal })
     if (!response.ok) throw await streamRefusal(response, 'Could not load image', startedIn, options.signal)
     return response.blob()
   },
@@ -98,7 +100,7 @@ function turnStreamUrl(runId: string): string {
 }
 
 function streamHeaders(spaceId?: string): Record<string, string> {
-  const headers: Record<string, string> = {}
+  const headers: Record<string, string> = { ...accountHeaders() }
   headers['X-Rainver-Space-Id'] = spaceId ?? _spaceId
   return headers
 }
@@ -174,7 +176,7 @@ export async function streamTurnParts(
   },
 ): Promise<void> {
   const startedIn = sessionEpoch()
-  const response = await fetch(turnStreamUrl(runId), {
+  const response = await accountFetch(turnStreamUrl(runId), {
     headers: streamHeaders(options.spaceId),
     signal: options.signal,
   })
@@ -218,7 +220,7 @@ export async function postChatTurn(
   if (options.signal?.aborted) throw new DOMException('Request aborted', 'AbortError')
   options.onAccepted?.(accepted)
   const startedIn = sessionEpoch()
-  const response = await fetch(accepted.event_stream_url, { headers: streamHeaders(options.spaceId), signal: options.signal })
+  const response = await accountFetch(accepted.event_stream_url, { headers: streamHeaders(options.spaceId), signal: options.signal })
   if (!response.ok || !response.body) throw await streamRefusal(response, 'Run turn stream failed', startedIn, options.signal)
 
   let turn: RunTurn | null = null

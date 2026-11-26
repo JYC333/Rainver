@@ -27,6 +27,13 @@ export function markGoogleReauthVerified(nonce: string, sessionTokenHash: string
   if (value && value.issuedAt + TTL_MS > Date.now()) value.verifiedSessionTokenHash = sessionTokenHash;
 }
 
+/** The live reauthentication `nonce` names, without spending it: who started it, from which session. */
+export function peekGoogleReauth(nonce: string): Readonly<Pick<PendingGoogleReauth, "userId" | "previousSessionId">> | null {
+  const value = pending.get(nonce);
+  if (!value || value.issuedAt + TTL_MS <= Date.now()) return null;
+  return { userId: value.userId, previousSessionId: value.previousSessionId };
+}
+
 export function consumeGoogleReauth(nonce: string): PendingGoogleReauth | null {
   const value = pending.get(nonce);
   pending.delete(nonce);

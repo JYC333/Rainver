@@ -71,6 +71,7 @@ const SOURCES_TRANSPORT_EXEMPTIONS: ReadonlyArray<{ method: string; path: string
 const BASELINE_TRANSPORT_EXEMPTIONS: ReadonlyArray<{ method: string; path: string; reason: string }> = [
   { method: "POST", path: "/api/v1/auth/admin/invitations", reason: "Existing authentication/session protocol owned by auth" },
   { method: "POST", path: "/api/v1/auth/admin/users/:userId/reset-link", reason: "Existing authentication/session protocol owned by auth" },
+  { method: "POST", path: "/api/v1/auth/browser-accounts/switch", reason: "Existing authentication/session protocol owned by auth" },
   { method: "POST", path: "/api/v1/auth/google/link", reason: "Existing authentication/session protocol owned by auth" },
   { method: "POST", path: "/api/v1/auth/google/unlink", reason: "Existing authentication/session protocol owned by auth" },
   { method: "POST", path: "/api/v1/auth/keys", reason: "Existing authentication/session protocol owned by auth" },
@@ -105,12 +106,6 @@ function classification(method: string, path: string): InventoryRow {
     path,
     classification: 'core_entry',
     reason: 'Generic operation adapter; enabled registrations only'
-  };
-  if (method === 'POST' && path === '/api/v1/runs/:runId/tools/:actionId') return {
-    method,
-    path,
-    classification: 'transport_exempt',
-    reason: 'Run bearer-token Agent tool transport; each action is admitted by its own core registration or inventoried legacy executor'
   };
   const hostTransport = HOST_TRANSPORT_EXEMPTIONS.find(row => row.method === method && row.path === path);
   if (hostTransport) return { method, path, classification: 'transport_exempt', reason: hostTransport.reason };

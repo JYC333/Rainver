@@ -878,8 +878,7 @@ html[data-reader-focus] :has(> [data-project-navigation]) { grid-template-column
    must consume the same values rather than putting padding on their buttons. */
 :root {
   --app-safe-top: env(safe-area-inset-top, 0px);
-  --app-top-clearance: 0px;
-  --app-content-top: calc(var(--app-safe-top) + var(--app-top-clearance));
+  --app-content-top: var(--app-safe-top);
   --app-safe-right: env(safe-area-inset-right, 0px);
   --app-safe-bottom: env(safe-area-inset-bottom, 0px);
   --app-safe-left: env(safe-area-inset-left, 0px);
@@ -927,12 +926,7 @@ html[data-reader-focus] :has(> [data-project-navigation]) { grid-template-column
    of a horizontally scrolling table/code area. Vertical pan and pinch remain. */
 .reader-swipe-enabled .reader-surface > :is(p, h1, h2, h3, h4, h5, h6) { touch-action: pan-y pinch-zoom; }
 
-/* C, verified on the affected iPhone: normal flow + large viewport at rest.
-   No screen.height arithmetic; bottom navigation still owns its safe inset.
-   The root attribute belongs only to the authenticated iPhone PWA Shell. */
-/* User-requested phone trial: dynamic device inset plus 10px content clearance.
-   Keep this separate from --app-safe-top so diagnostics remain truthful. */
-html[data-iphone-pwa] { --app-top-clearance: 10px; }
+/* Installed iPhone PWA uses Flow B with one system safe inset per edge. */
 html[data-iphone-pwa], html[data-iphone-pwa] body, html[data-iphone-pwa] #root {
   height: auto;
 }
@@ -942,41 +936,12 @@ html[data-iphone-pwa] .app-safe-shell {
   position: relative;
   inset: auto;
   top: var(--app-pwa-top, 0px);
-  height: var(--app-pwa-height, 100vh);
+  height: var(--app-pwa-height, 100dvh);
 }
-html[data-iphone-pwa] .app-safe-shell::before {
-  content: '';
-  position: fixed;
-  top: 0; left: 0; right: 0;
-  height: var(--app-content-top);
-  background: var(--background);
-  z-index: 45;
-  pointer-events: none;
-}
-/* Native WebKit can blur the initial header even at scrollY=0. Give its
-   top-edge sampler a real viewport-fixed box outside the clipped Shell.
-   11px exceeds WebKit's 10px thin-background cutoff; it is NOT extra spacing.
-   Empty-text clipping keeps the opaque style without painting over controls.
-   Compatibility experiment, not a supported API or a device-verified fix.
-   See frontend-layout.md for source/evidence and phone acceptance. */
-.pwa-top-color-surface { display: none; }
-@supports ((-webkit-background-clip: text) or (background-clip: text)) {
-  html[data-iphone-pwa] .pwa-top-color-surface {
-    display: block;
-    position: fixed;
-    inset: 0 0 auto;
-    height: 11px;
-    background-color: var(--background);
-    -webkit-background-clip: text;
-    background-clip: text;
-    pointer-events: none;
-    z-index: 60;
-  }
-}
-/* Portal layers are outside Shell and must explicitly cover C's large height. */
+/* Portal backdrops cover the dynamic viewport and any keyboard offset. */
 html[data-iphone-pwa] [data-dialog-overlay] {
   bottom: auto;
-  height: calc(max(100vh, var(--app-pwa-height, 100vh)) + max(0px, var(--app-pwa-top, 0px)));
+  height: calc(max(100dvh, var(--app-pwa-height, 100dvh)) + max(0px, var(--app-pwa-top, 0px)));
 }
 html[data-iphone-pwa] :is(input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=color]), textarea),
 html[data-iphone-pwa] [data-conversation-input] [contenteditable=true] {
@@ -998,7 +963,7 @@ html[data-iphone-pwa] [data-conversation-input] [contenteditable=true] {
     padding-bottom: max(0px, calc(var(--app-safe-bottom) - var(--conversation-keyboard-inset, 0px)));
   }
   html[data-iphone-pwa][data-mobile-conversation] .app-safe-shell {
-    height: var(--app-pwa-height, 100vh);
+    height: var(--app-pwa-height, 100dvh);
     top: var(--app-pwa-top, 0px);
   }
   html[data-mobile-conversation] [data-app-chrome],

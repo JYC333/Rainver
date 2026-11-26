@@ -1,4 +1,5 @@
 import {workspaceSensitiveReadBlocker} from '../../projectFolders/workspaceSensitiveReadBlocker.js';
+import {assertPluginRoleAgentAdmitted,assertPluginRoleAgentAdmittedLocked} from '../../plugins/agentRoleAdmission.js';
 import {assertDaemonWorkspaceActor} from '../../hosts/workspaceActor.js';
 import {safeInputErrors} from '../inputErrors.js';
 import {assertCurrentPerson,personalReceiptSpace} from './personAdmission.js';
@@ -56,6 +57,8 @@ export class OperationExecutor {
     if(personScoped)await assertCurrentPerson(this.pool,actor);
     else if(item.admission?.kind==='daemon_workspace')await assertDaemonWorkspaceActor(this.pool,actor);
     else await assertCurrentActor(this.pool,actor);
+    // A plugin's companion Agent acts only where its plugin's work is set up now (`plugins/agentRoleAdmission.ts`).
+    await assertPluginRoleAgentAdmitted(this.pool, this.config, actor);
     await assertOperationGrant(this.pool, actor, id);
     const parsed = d.input_schema.safeParse(raw);
     if (!parsed.success) throw new OperationInputError(safeInputErrors(d,parsed.error));
@@ -123,6 +126,9 @@ export class OperationExecutor {
             const current = await resolveUserCreationActor(tx.db, input, requestActor,id);
             if (current.space_id !== actor.space_id) throw new OperationError('operation_conflict', 409);
           }
+          // A plugin's companion Agent again, under its Project, Room, plugin scope and binding locks, before
+          // the person and Run pin: an unbind, disable or Room withdrawal since `admit` refuses this command.
+          if(command&&actor.principal.kind==='agent')await runOperationWork(()=>assertPluginRoleAgentAdmittedLocked(tx.db,this.config,actor));
           if(item.lockBeforeActor&&actor.principal.kind==='agent')await runOperationWork(()=>item.lockBeforeActor!(tx.db,input,actor,scope));
           if(item.domainAuthorizationFirst){
             if(item.approval||placing||item.runTerminalOwner)throw new OperationError('operation_internal_error',500);
@@ -275,9 +281,21 @@ export class OperationExecutor {
         // Nothing leaves the server before its release gate commits; a command's committed
         // receipt stays and a retry with the same key is released through this same gate.
         const pending = release;
+        let unadmitted: OperationRefusal | undefined;
         try {
-          await withTransaction(getOperationAuditPool(this.config.databaseUrl!), audit => item.releaseGate!(audit, {input, data: pending.data, facts: pending.facts, actor, replayed: pending.replayed}));
+          await withTransaction(getOperationAuditPool(this.config.databaseUrl!), async audit => {
+            // A plugin's companion Agent is admitted again under its Project, Room and plugin locks, so a Room
+            // removal or audience freeze committed since the query or command ran withholds the result.
+            if (actor.principal.kind === 'agent') {
+              await assertPluginRoleAgentAdmittedLocked(audit, this.config, actor, 'release').catch(error => {
+                if (error instanceof OperationRefusal) unadmitted = error;
+                throw error;
+              });
+            }
+            await item.releaseGate!(audit, {input, data: pending.data, facts: pending.facts, actor, replayed: pending.replayed});
+          });
         } catch {
+          if (unadmitted) return response(unadmitted.body(requestId), unadmitted.httpStatus);
           return response(new OperationError('operation_audit_unavailable', 503, true).body(requestId), 503);
         }
       }

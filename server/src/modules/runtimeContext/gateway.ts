@@ -6,7 +6,7 @@ import type { ContextEvent, ContextItem, ExecutionControlSnapshot, InvocationDel
 import type { ServerConfig } from "../../config.js";
 import type { Pool, Queryable } from "../routeUtils/common.js";
 import { HttpError } from "../routeUtils/common.js";
-import { contentReadSql } from "../access/contentAccessSql.js";
+import { contentReadSql, roomConversationAudienceSql } from "../access/contentAccessSql.js";
 import { isExplicitReferenceType, roomScopedAgentReadSql } from "./workContextService.js";
 import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 import { projectFolderReadAccessSql } from "../projectFolders/access.js";
@@ -61,11 +61,7 @@ import { classifyRunDestination, loadRunProvider } from "./runDestination.js";
 import { assertProjectHeld, holdProjects, lockProjectAudience } from "../projects/access.js";
 import type { ReleaseGroup } from "../retrieval/releaseClosure.js";
 import { assertRoomsHeld, discoverEnvelopeProjects, readingRunAuthority, type EnvelopeRun } from "./envelopeAuthority.js";
-import {
-  loadConversationInputResourceDescriptors,
-  loadConversationSkillDescriptors,
-  renderConversationInputMessage,
-} from "../sessions/conversationInputService.js";
+import { loadConversationMessageContext } from "../sessions/conversationInputService.js";
 
 const deliverySourceRegistry = new RetrievalRegistry();
 for (const adapter of [
@@ -1008,17 +1004,20 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
       userId: input.viewerUserId,
       runId: input.invocationId,
     });
-    const descriptors = await loadConversationInputResourceDescriptors(db, {
-      spaceId: input.spaceId,
-      messageId: item.source_ref.id,
-    });
     const canonicalMessageId = chatTurnMessageId(run.model_override_json);
     const liveInput = canonicalMessageId !== item.source_ref.id
       && await new (await import("../runs/repository.js")).PgRunRepository(db).isPendingLiveInputMessage(input.spaceId, input.invocationId, item.source_ref.id, input.viewerUserId);
-    const skills = await loadConversationSkillDescriptors(db, { spaceId: input.spaceId, messageId: item.source_ref.id });
-    if (!row || (canonicalMessageId !== item.source_ref.id && !liveInput) || contextItemText(item) !== renderConversationInputMessage(row.content, descriptors, skills)
+    if (!row || (canonicalMessageId !== item.source_ref.id && !liveInput)
       || item.trust !== (row.role === "system" ? "system_approved" : "user_confirmed")
       || (session.roomId === null && row.linked_run_id !== input.invocationId)) {
+      throw new HttpError(409, "Invocation Delivery Message changed or is no longer authoritative");
+    }
+    const messageContext = await loadConversationMessageContext(db, {
+      spaceId: input.spaceId,
+      messageId: item.source_ref.id,
+      content: row.content,
+    });
+    if (contextItemText(item) !== messageContext.text) {
       throw new HttpError(409, "Invocation Delivery Message changed or is no longer authoritative");
     }
   }
@@ -1142,8 +1141,9 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
            ON member.room_id=room.id AND member.space_id=room.space_id
         WHERE room.id=$1 AND room.space_id=$2 AND room.status='active'
           AND member.user_id=$3 AND member.status='active'
+          AND ${roomConversationAudienceSql("room.space_id", "$4::varchar", "$3")}
         FOR SHARE OF room,member`,
-      [row.room_id, input.spaceId, input.viewerUserId],
+      [row.room_id, input.spaceId, input.viewerUserId, sessionId],
     );
     if (!membership.rows[0]) {
       throw new HttpError(404, "Invocation Delivery Room membership is no longer active");

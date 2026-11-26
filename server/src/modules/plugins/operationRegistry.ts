@@ -81,7 +81,7 @@ export function composePluginOperations(config: ServerConfig, plugin: RainverPlu
   const m = validateOperationPlugin(plugin);
   if (executors.size !== m.operations.length || m.operations.some(o => !executors.has(o.id))) throw new Error('Declared/registered operation mismatch');
   return m.operations.map(o => {
-    const applicationProjectRead = m.id === 'applications' && m.project_binding && applicationProjectQueries.has(o.id);
+    const applicationProjectRead = m.id === 'phd_application' && m.project_binding && applicationProjectQueries.has(o.id);
     const definition: SystemActionDefinition = {
       id: o.id,
       version: o.version,
@@ -261,7 +261,7 @@ export function composePluginOperations(config: ServerConfig, plugin: RainverPlu
           }
         }
         const raw = await run(actor, references);
-        if (m.id === 'applications' && o.side_effects === 'durable' && bound.project_id) {
+        if (m.id === 'phd_application' && o.side_effects === 'durable' && bound.project_id) {
           await notifyProjectChanged(db, actor.space_id, bound.project_id);
         }
         // A fact recorded on an application the Project reads, by an automation enabled from a shared conversation

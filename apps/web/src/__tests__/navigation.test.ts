@@ -2,7 +2,7 @@
 import { describe, it, expect } from 'vitest'
 import { MODULE_REGISTRY } from '../modules/registry'
 import {
-  routeScopeForPath, sceneForPath, spacePath, stripSpacePrefix,
+  routeScopeForPath, sceneForPath, spaceHref, spacePath, stripSpacePrefix,
   RAIL_ITEMS, MOBILE_TAB_ITEMS,
   settingsSectionForPath, railItemActive,
 } from '../core/navigation'
@@ -133,6 +133,14 @@ describe('spacePath / stripSpacePrefix', () => {
     expect(spacePath('team-1', '/evolution')).toBe('/evolution')
     expect(spacePath('team-1', '/spaces/other/today')).toBe('/spaces/other/today')
     expect(spacePath(null, '/proposals')).toBe('/proposals')
+  })
+
+  it('gives an in-Space path no href while no Space is known, leaving user-scoped and scoped paths', () => {
+    expect(spaceHref(null, '/skills')).toBeNull()
+    expect(spaceHref(undefined, '/agents/new')).toBeNull()
+    expect(spaceHref(null, '/my-agents')).toBe('/my-agents')
+    expect(spaceHref(null, '/spaces/team-1/skills')).toBe('/spaces/team-1/skills')
+    expect(spaceHref('team-1', '/skills')).toBe('/spaces/team-1/skills')
   })
 
   it('strips a leading /spaces/:id for matching', () => {

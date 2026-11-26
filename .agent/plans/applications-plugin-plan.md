@@ -13,7 +13,7 @@ A separate new-product pilot, not unfinished core entry infrastructure or
 legacy migration. Uses the plugin operation platform and the typed host ports and permission gates of
 [ADR 0030](../decisions/0030-plugin-agent-data-access.md). Current behaviour lives in
 [Project binding](../architecture/OFFICIAL_OPTIONAL_MODULES.md#project-binding)
-and [Application management package](../architecture/OFFICIAL_OPTIONAL_MODULES.md#application-management-package);
+and [PhD Application package](../architecture/OFFICIAL_OPTIONAL_MODULES.md#phd-application-package);
 this plan keeps only the remaining work.
 
 Direction agreed 2026-11-18: one Project-level *application management*
@@ -29,11 +29,11 @@ removes them.
 | Stage | Scope | Status |
 | --- | --- | --- |
 | 1. Project-level platform | Manifest `project_binding`, binding table and person-only bind/unbind/list operations, host Project gate on every entry (Agent Run Project, Project ACL, replay, proposal apply, release), core-port confinement, binding-aware Project entries and settings card, unbind/disable retention | Implemented |
-| 2. Application domain package | `plugins/official/applications/` (PhD first track): records, multiple deadlines, checklist, progress/results, approved decisions, contacts and contact events, opportunity source; Project Area and overview card; Tasks and references through core ports; real-PG and Chromium acceptance | Implemented |
+| 2. Application domain package | `plugins/official/phd_application/` (PhD first track): records, multiple deadlines, checklist, progress/results, approved decisions, contacts and contact events, opportunity source; Project Area and overview card; Tasks and references through core ports; real-PG and Chromium acceptance | Implemented |
 | 3. Materials and Notes | Text materials in Notes linked to application requirements; reviewed generation | Implemented: Notes links, revision reads, reviewed versions, source pins through the `notes.read` port, [generated drafts](../architecture/OFFICIAL_OPTIONAL_MODULES.md#generated-drafts) (private Run over pinned versions, preview, save through the Note writer with `expect_version`, `notes.draft` port) and the Area's material view |
 | Four-area revision | One *Applications* entry with four tabs: program applications grouped by institution, scholarships and funding (`funding` track with `submission: separate\|automatic` and funding links), material library over Notes, supervisors and contacts linked to applications; submission history guard | Implemented |
 
-Stage 2 resolved: package `applications` ("Application management", PhD as
+Stage 2 resolved: package `phd_application` ("PhD Application", PhD as
 first track); application/deadline/material operations `non_sensitive` (ADR 0030
 mapping), contacts and contact events `personal`; deadlines become core Tasks
 only on request. New application records are visible to Project readers and
@@ -91,7 +91,7 @@ remain reachable, collapsed.
 | | CV, SoP, outreach email versions (Artifacts) | Reused for papers and job search |
 | | Deadlines and to-dos (Tasks) | Generic capability |
 | | Agent conversation (Project Room) | Generic capability |
-| Plugin schema `plugin_applications` | Application record (university × program × supervisor, deadline, status pipeline, requirement checklist, result) | Domain-specific structure |
+| Plugin schema `plugin_phd_application` | Application record (university × program × supervisor, deadline, status pipeline, requirement checklist, result) | Domain-specific structure |
 | | Opportunity reference (pointer to an external opportunity) | Domain-specific |
 
 Check: with the plugin disabled, supervisors, documents, background and tasks are
@@ -100,14 +100,14 @@ all still present and useful.
 ## Operations
 
 Implemented operations, classes and refusals are in the
-[owner guide](../architecture/OFFICIAL_OPTIONAL_MODULES.md#application-management-package).
+[owner guide](../architecture/OFFICIAL_OPTIONAL_MODULES.md#phd-application-package).
 Still open from the first cut: an outreach send (`send_email`, always a
 person-approved proposal) only once a governed send capability exists.
 
 ## Work items
 
 - [x] Project binding platform (stage 1): bindings, host gate, entries, settings.
-- [x] Manifest with `project_binding: 'required'`, migrations in `plugin_applications` keyed by Space, person and Project, operations as documented in the owner guide.
+- [x] Manifest with `project_binding: 'required'`, migrations in `plugin_phd_application` keyed by Space, person and Project, operations as documented in the owner guide.
 - [x] Core-object references through host ports (Tasks, Artifacts/Tasks references). Relations not used.
 - [x] Area and overview views (applications with deadlines, checklist, progress, decisions, contacts). Timeline view and opportunity inbox remain open.
 - [ ] Optional bundled Skill describing the PhD application method; procedural
@@ -123,3 +123,10 @@ person-approved proposal) only once a governed send capability exists.
 - Pulling opportunities from phd_detect (later extensions).
 - The "offer accepted → start PhD research Project" transition (later extensions).
 - Any public sign-up or acquisition flow.
+
+## PhD Application rename and single-instance cutover
+
+Completed. The package now uses the `phd_application` ID and the
+**PhD Application** display name. The maintainer confirmed the production
+cutover and observed a subsequent Gmail automation update. See the
+[migration history](../../server/migrations/README.md#phd-application-migration-history).

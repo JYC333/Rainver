@@ -1,16 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
 import { useLocation, useParams } from 'react-router-dom'
-import { Check, FileCode2, MessageSquare, PanelRightClose, Plus, X } from 'lucide-react'
+import { ArrowLeft, Check, ChevronDown, ChevronUp, FileCode2, MessageSquare, PanelRightClose, Plus, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { CONVERSATION_MAX_FILE_SNAPSHOT_BYTES } from '@rainver/protocol'
 import { projectsApi, roomsApi } from '../../../api/client'
 import { errMsg } from '../../../lib/utils'
 import { useAppTranslation } from '../../../i18n'
 import { SpaceLink as Link } from '../../../core/spaceNav'
-import type { ConversationExecutionSummary, ProjectOverview, Room, RoomConversation as RoomConversationRecord } from '../../../types/api'
+import type { ConversationExecutionSummary, ProjectOverview, ProjectRoomSummary, Room, RoomConversation as RoomConversationRecord } from '../../../types/api'
 import { Button } from '../../../components/ui/button'
-import { Select } from '../../../components/ui/select'
+import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from '../../../components/ui/popover'
+import { DialogClose } from '../../../components/ui/dialog'
+import { conversationAudienceLabel, roomVisibilityLabel } from '../../agent_groups/audience'
+import { SidecarNavigator, sidecarRoomName, type SidecarTab } from './SidecarNavigator'
+import { PROJECT_CHAT_OPEN_EVENT, type ProjectChatOpenDetail } from './projectChatOpen'
 import { sortRoomConversations, useRoomConversationRefresh } from '../../conversation/useRoomConversationRefresh'
 import { useUnreadConversations } from '../../conversation/useUnreadConversations'
 import { Skeleton } from '../../../components/ui/skeleton'
@@ -20,9 +24,10 @@ import { useProjectFolderConversation, type CurrentFileAttachment } from '../Pro
  * Talking to the Project's Agent without leaving what you are looking at.
  * The sidecar carries the current focus — see `focusRefsFor`.
  *
- * It binds to the Project's **mainline** Room — the one every Project member
- * belongs to. Do not bind whichever Room the viewer was most recently on:
- * that switches Rooms under people and is empty for anyone not invited.
+ * It opens on the Project's **mainline** Room — the one every Project member
+ * belongs to — unless the viewer chose another of their Rooms here (the Rooms
+ * tab), which is remembered per Project. Nothing else switches the Room under
+ * them: a stored Room they can no longer read falls back to the mainline.
  * It renders the Room's
  * own conversation, not a private one: a teammate opening the full Room sees
  * what was said here. The rich Room surface (run progress,
@@ -102,13 +107,14 @@ export default function ProjectChatSidecar({ attention = [] }: { attention?: Pro
   const { t } = useAppTranslation()
   const { projectId = '', spaceId } = useParams()
   const requestScope = useMemo(() => ({ spaceId }), [spaceId])
-  const { pathname } = useLocation()
+  const { pathname, search } = useLocation()
   // The Rooms Area is already a Room, usually this one. Do not show two live
   // views of the same conversation side by side.
   const onRoomsArea = /\/rooms(\/|$)/.test(pathname)
   const onFilesArea = /\/files(\/|$)/.test(pathname)
 
   const openKey = `${STORAGE_PREFIX}.${projectId}.open`
+  const roomKey = `${STORAGE_PREFIX}.${projectId}.room`
   const conversationKey = (roomId: string) => `${STORAGE_PREFIX}.room.${roomId}.conversation`
   // Open unless this person closed it for this Project: conversation is the
   // way in, so the panel is there on first arrival rather than a button —
@@ -117,12 +123,39 @@ export default function ProjectChatSidecar({ attention = [] }: { attention?: Pro
   const mobileChat = useConversationOverlay('projectChat')
   const [desktopOpen, setDesktopOpen] = useState(() => defaultOpen(openKey))
   const mobile = useMobileBreakpoint()
-  const open = mobile ? mobileChat.open : desktopOpen
+  // The page (pathname) on which a phone chat the person opened was carried
+  // beside the page by widening. Narrowed again on that page, the chat is
+  // still the one they opened: it stays open, without a history entry, and
+  // closes in place. Closing it at either width, or leaving the page, ends it.
+  const [carried, setCarried] = useState<string | null>(null)
+  const carriedOpen = carried === pathname
+  const open = mobile ? mobileChat.open || carriedOpen : desktopOpen
   const setOpen = (value: boolean) => {
+    if (!value) setCarried(null)
     if (!mobile) setDesktopOpen(value)
     else if (value) mobileChat.show()
-    else mobileChat.close()
+    else if (mobileChat.open) mobileChat.close()
   }
+  useEffect(() => { if (carried && carried !== pathname) setCarried(null) }, [carried, pathname])
+  // Widened past the phone breakpoint while the phone chat is open: the panel
+  // carries on beside the page and the overlay's `?projectChat=1` entry goes,
+  // together with the phone conversation drawer's `?conversationDrawer=1` if
+  // it was open over it (the drawer unmounts with the phone layout, so it
+  // cannot close its own). No overlay entry is left for Back or Forward to land on.
+  // A carried chat has no entry of its own, but a drawer opened over it does.
+  // The drawer exists only in the phone layout, so a wide screen that reaches
+  // a drawer entry any other way (Forward, a link) closes it too.
+  const drawerOpen = new URLSearchParams(search).get('conversationDrawer') === '1'
+  useEffect(() => {
+    if (mobile) return
+    if (mobileChat.open) {
+      writeStored(openKey, 'true')
+      setDesktopOpen(true)
+      setCarried(pathname)
+      mobileChat.close(undefined, { with: ['conversationDrawer'] })
+    } else if (drawerOpen) mobileChat.close(undefined, { with: ['conversationDrawer'] })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mobile, mobileChat.open, openKey, drawerOpen])
   // Remembered per browser, not per Project: how wide you like the panel is
   // about your screen, not about the work.
   useMobileConversation(open && !onRoomsArea)
@@ -161,6 +194,19 @@ export default function ProjectChatSidecar({ attention = [] }: { attention?: Pro
     document.addEventListener('pointerup', stop)
   }, [width])
   const [room, setRoom] = useState<Room | null>(null)
+  // The Room the viewer chose in the Rooms tab; null is the mainline.
+  const [chosenRoomId, setChosenRoomId] = useState<string | null>(() => readStored(roomKey))
+  // A conversation a caller asked to open (`openProjectChat`), consumed once.
+  const pendingConversation = useRef<string | null>(null)
+  const [roomOtherMembers, setRoomOtherMembers] = useState<string[]>([])
+  const [navigatorOpen, setNavigatorOpen] = useState(false)
+  // Bumped by `openProjectChat` naming the Room already shown: its roster or
+  // conversations may just have changed (a plugin setup added an Agent), and
+  // an unchanged Room id alone would not read them again.
+  const [reloadToken, setReloadToken] = useState(0)
+  const [navigatorTab, setNavigatorTab] = useState<SidecarTab>('conversations')
+  const [rooms, setRooms] = useState<ProjectRoomSummary[] | null>(null)
+  const [roomsFailure, setRoomsFailure] = useState<string | null>(null)
   const [failure, setFailure] = useState<string | null>(null)
   const [conversations, setConversations] = useState<RoomConversationRecord[]>([])
   const unreadConversations = useUnreadConversations(spaceId, projectId, open && !onRoomsArea)
@@ -193,7 +239,39 @@ export default function ProjectChatSidecar({ attention = [] }: { attention?: Pro
 
   // Per Project: whether you want the Agent alongside one Project says nothing
   // about whether you want it alongside another.
-  useEffect(() => { setDesktopOpen(defaultOpen(openKey)) }, [openKey])
+  useEffect(() => { setDesktopOpen(defaultOpen(openKey)); setCarried(null) }, [openKey])
+  useEffect(() => { setChosenRoomId(readStored(roomKey)) }, [roomKey])
+
+  // A setup elsewhere (a plugin page) may open the panel on a Room it just
+  // authorized. It names the Room; the panel still reads it as the viewer.
+  useEffect(() => {
+    const listener = (event: Event) => {
+      const detail = (event as CustomEvent<ProjectChatOpenDetail>).detail
+      if (!detail || detail.projectId !== projectId) return
+      pendingConversation.current = detail.conversationId ?? null
+      writeStored(roomKey, detail.roomId)
+      setChosenRoomId(detail.roomId)
+      setReloadToken(value => value + 1)
+      setNavigatorOpen(false)
+      if (!mobile) setDesktopOpen(true)
+      else mobileChat.show()
+    }
+    window.addEventListener(PROJECT_CHAT_OPEN_EVENT, listener)
+    return () => window.removeEventListener(PROJECT_CHAT_OPEN_EVENT, listener)
+  }, [projectId, roomKey, mobile, mobileChat])
+
+  // The Rooms tab's list, read when the navigator opens on it.
+  useEffect(() => {
+    if (!projectId || !open || onRoomsArea || !navigatorOpen) return
+    let active = true
+    setRoomsFailure(null)
+    projectsApi.rooms(projectId, { limit: 100 }, requestScope).then(page => {
+      if (active) setRooms(page.items)
+    }, error => {
+      if (active) setRoomsFailure(errMsg(error))
+    })
+    return () => { active = false }
+  }, [projectId, requestScope, open, onRoomsArea, navigatorOpen])
   useEffect(() => { if (!mobile) writeStored(openKey, String(desktopOpen)) }, [openKey, desktopOpen, mobile])
 
   useEffect(() => {
@@ -215,15 +293,33 @@ export default function ProjectChatSidecar({ attention = [] }: { attention?: Pro
         // Opening the Project enrols the viewer in its mainline if they were
         // not yet; the server does that, so a member who joined the Project
         // after the Room was started is not looking at an empty panel.
-        setRoom(mainline.room)
+        let current: Room = mainline.room
+        let otherMembers: string[] = []
+        if (chosenRoomId && chosenRoomId !== mainline.room.id) {
+          // A chosen Room is read as the viewer; one they left, or that was
+          // archived, falls back to the mainline rather than failing.
+          const detail = await roomsApi.get(chosenRoomId, requestScope).catch(() => null)
+          if (!active) return
+          if (detail && detail.room.project_id === projectId) {
+            current = detail.room
+            otherMembers = detail.other_member_names ?? []
+          } else {
+            writeStored(roomKey, '')
+          }
+        }
+        setRoom(current)
+        setRoomOtherMembers(otherMembers)
         setConversations([])
         setSessionId('')
-        const page = await roomsApi.conversations(mainline.room.id, { limit: 50 }, requestScope)
+        const page = await roomsApi.conversations(current.id, { limit: 50 }, requestScope)
         if (!active) return
         setConversations(sortRoomConversations(page.items))
         // Remembered per Room, not per Project: the id names a conversation
-        // *in* a Room. Do not fall back when a stale id matches nothing.
-        const remembered = readStored(conversationKey(mainline.room.id))
+        // *in* a Room. A remembered id the viewer can no longer see matches
+        // nothing in their list, and the newest visible one is shown instead.
+        const requested = pendingConversation.current
+        pendingConversation.current = null
+        const remembered = requested ?? readStored(conversationKey(current.id))
         const chosen = page.items.find(item => item.id === remembered) ?? page.items[0]
         setSessionId(chosen?.id ?? '')
       } catch (error) {
@@ -239,7 +335,32 @@ export default function ProjectChatSidecar({ attention = [] }: { attention?: Pro
       }
     })()
     return () => { active = false }
-  }, [projectId, requestScope, open, onRoomsArea])
+  }, [projectId, requestScope, open, onRoomsArea, chosenRoomId, roomKey, reloadToken])
+
+  const selectConversation = useCallback((id: string) => {
+    setExecutionReady(false)
+    setSessionId(id)
+    setNavigatorOpen(false)
+    if (room) writeStored(conversationKey(room.id), id)
+  }, [room])
+
+  const selectRoom = useCallback((roomId: string) => {
+    setNavigatorOpen(false)
+    setNavigatorTab('conversations')
+    if (roomId === room?.id) return
+    writeStored(roomKey, roomId)
+    setChosenRoomId(roomId)
+  }, [room, roomKey])
+
+  const selectedConversation = conversations.find(item => item.id === sessionId) ?? null
+  const audienceText = room ? conversationAudienceLabel({
+    isMainline: room.is_mainline,
+    roomOtherMemberNames: roomOtherMembers,
+    audience: selectedConversation?.audience ?? null,
+  }, t) : ''
+  // The phone drawer lists the Room's conversations, so it names the Room's
+  // audience; its header names the open conversation's (narrower once frozen).
+  const roomAudienceText = room ? roomVisibilityLabel({ isMainline: room.is_mainline, otherMemberNames: roomOtherMembers }, t) : ''
 
   const focusRefs = useMemo(() => focusRefsFor(pathname), [pathname])
 
@@ -268,6 +389,8 @@ export default function ProjectChatSidecar({ attention = [] }: { attention?: Pro
    */
   const startThread = useCallback(() => {
     if (!room) return
+    // A new conversation is shown at once, not behind the open switcher.
+    setNavigatorOpen(false)
     setSessionId('')
     setExecutionReady(false)
   }, [room])
@@ -290,6 +413,22 @@ export default function ProjectChatSidecar({ attention = [] }: { attention?: Pro
       </Button>
     )
   }
+
+  const navigator = room && (
+    <SidecarNavigator
+      projectName={null}
+      currentRoomId={room.id}
+      conversations={conversations}
+      selectedConversationId={sessionId}
+      unread={unreadConversations}
+      rooms={rooms}
+      roomsFailure={roomsFailure}
+      tab={navigatorTab}
+      onTabChange={setNavigatorTab}
+      onSelectConversation={selectConversation}
+      onSelectRoom={selectRoom}
+    />
+  )
 
   return (
     <aside
@@ -330,11 +469,14 @@ export default function ProjectChatSidecar({ attention = [] }: { attention?: Pro
       {mobile && <MobileConversationNavigation
         title={conversations.find(item => item.id === sessionId)?.title || t('collab_ui.conversation.new')}
         room={room?.is_mainline ? t('collab_ui.rooms.default_room') : room?.title ?? t('collab_ui.sidecar.title')}
-        audience={t('collab_ui.audience.everyone')}
+        audience={roomAudienceText} conversationAudience={audienceText}
         conversations={conversations} selected={sessionId} unread={unreadConversations}
-        onSelect={id => { setExecutionReady(false); setSessionId(id); if (room) writeStored(conversationKey(room.id), id) }} onNew={startThread}
+        onSelect={selectConversation} onNew={startThread}
         back={<MobileConversationBack label={t('collab_ui.mobile.back')} onClick={() => setOpen(false)} />}
       >
+        <DialogClose asChild>
+          <Button variant="ghost" size="sm" disabled={!room} onClick={() => { setNavigatorTab('rooms'); setNavigatorOpen(true) }} data-testid="sidecar-mobile-rooms">{t('collab_ui.sidecar.tab_rooms')}</Button>
+        </DialogClose>
         <Button asChild variant="ghost" size="sm"><Link to={room ? `/projects/${projectId}/rooms?room=${room.id}&view=members` : `/projects/${projectId}/rooms`}>{t('collab_ui.conversation.members_link')}</Link></Button>
       </MobileConversationNavigation>}
       {mobile && attention.length > 0 && <div className="max-h-[20dvh] shrink-0 overflow-y-auto border-b border-border px-3 py-2">
@@ -346,53 +488,73 @@ export default function ProjectChatSidecar({ attention = [] }: { attention?: Pro
             : <p key={item.id} className="text-xs">{item.title}</p>
         })}
       </div>}
-      <div className="hidden shrink-0 items-center justify-between gap-2 border-b border-border p-3 lg:flex">
-        {/* The Project's default Room, named: this panel is a Room
-            conversation, not a Project Agent's independent work. */}
-        <span className="min-w-0">
-          <span className="block text-sm font-medium">{t('collab_ui.sidecar.title')}</span>
-          {room && (
-            <span className="block truncate text-[11px] text-muted-foreground">
-              {t('collab_ui.sidecar.in_room', { room: room.is_mainline ? t('collab_ui.rooms.default_room') : room.title })}
-            </span>
-          )}
-        </span>
-        <div className="flex items-center gap-1">
-          <Button size="sm" variant="ghost" disabled={!room} onClick={startThread} aria-label={t('collab_ui.sidecar.new_thread')}>
-            <Plus className="size-4" />
-          </Button>
-          <Button size="sm" variant="ghost" className="min-h-[44px] min-w-[44px] shrink-0 lg:min-h-0 lg:min-w-0" onClick={() => setOpen(false)} aria-label={t('collab_ui.sidecar.close_label')}>
-            <PanelRightClose className="size-4" />
-          </Button>
-        </div>
-      </div>
+      {!mobile && (
+        <Popover open={navigatorOpen && Boolean(room)} onOpenChange={value => {
+          if (value) setNavigatorTab('conversations')
+          setNavigatorOpen(value)
+        }}>
+          <PopoverAnchor asChild>
+            <div className="hidden shrink-0 items-center gap-2 border-b border-border bg-card px-3 py-2.5 lg:flex" data-testid="sidecar-desktop-header">
+              <div className="flex h-8 min-w-0 flex-1 flex-col">
+                <PopoverTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-[1.125rem] w-full shrink-0 justify-start gap-1.5 px-0 text-left text-base font-semibold leading-none text-foreground hover:bg-transparent hover:text-foreground"
+                    aria-label={navigatorOpen ? t('collab_ui.sidecar.hide_switcher') : t('collab_ui.sidecar.switch')}
+                    disabled={!room}
+                    data-testid="sidecar-switcher"
+                  >
+                    <span className="min-w-0 truncate">{selectedConversation?.title || t('collab_ui.conversation.new')}</span>
+                    {navigatorOpen ? <ChevronUp className="size-3.5 shrink-0" /> : <ChevronDown className="size-3.5 shrink-0" />}
+                  </Button>
+                </PopoverTrigger>
+                <p className="h-3.5 shrink-0 truncate text-[11px] leading-[0.875rem] text-muted-foreground" data-testid="sidecar-audience">
+                  {room && <>
+                    {sidecarRoomName(room, null, t)} · {t('collab_ui.sidecar.visible_to', { audience: audienceText })}
+                  </>}
+                </p>
+              </div>
+              <div className="flex shrink-0 items-center gap-1">
+                <Button size="icon-sm" variant="ghost" disabled={!room} onClick={startThread} aria-label={t('collab_ui.sidecar.new_thread')}>
+                  <Plus className="size-4" />
+                </Button>
+                <Button size="icon-sm" variant="ghost" onClick={() => setOpen(false)} aria-label={t('collab_ui.sidecar.close_label')}>
+                  <PanelRightClose className="size-4" />
+                </Button>
+              </div>
+            </div>
+          </PopoverAnchor>
+          <PopoverContent
+            sideOffset={8}
+            collisionPadding={8}
+            aria-label={t('collab_ui.sidecar.switch')}
+            className="flex w-[calc(var(--radix-popover-trigger-width)-16px)] max-w-[calc(100vw-16px)] max-h-[min(32rem,var(--radix-popover-content-available-height))] flex-col overflow-hidden p-0"
+          >
+            {navigator}
+          </PopoverContent>
+        </Popover>
+      )}
 
-      {conversations.length > 1 && (
-        <div className="hidden shrink-0 border-b border-border p-2 lg:block">
-          <Select
-            ariaLabel="Conversation"
-            value={sessionId}
-            onChange={value => {
-              setExecutionReady(false)
-              setSessionId(value)
-              if (room) writeStored(conversationKey(room.id), value)
-            }}
-            options={conversations.map((item, index) => ({
-              value: item.id,
-              label: item.title ?? `Thread ${conversations.length - index}`,
-              busyLabel: item.is_running ? t('collab_ui.room.running') : undefined,
-              unreadLabel: !item.is_running && unreadConversations.has(item.id) ? t('collab_ui.room.unread') : undefined,
-            }))}
-          />
+      {/* The phone switcher is reached from the conversation menu. */}
+      {mobile && navigatorOpen && room && (
+        <div className="shrink-0 border-b border-border px-2 py-1">
+          <Button variant="ghost" size="sm" className="min-h-11" onClick={() => setNavigatorOpen(false)} data-testid="sidecar-mobile-back-to-conversation">
+            <ArrowLeft className="size-4" />{t('collab_ui.sidecar.hide_switcher')}
+          </Button>
         </div>
       )}
+      {mobile && navigatorOpen && navigator}
 
       {loading || (!ProjectSidecarConversation && !failure) ? (
         <div className="p-3"><Skeleton className="h-24 w-full" /></div>
       ) : failure ? (
         <p className="p-3 text-xs text-destructive">{failure}</p>
       ) : !room || !ProjectSidecarConversation ? null : (
-        <>
+        // Kept mounted under the switcher, so a draft and the scroll position
+        // survive a look at the other conversations.
+        <div className={mobile && navigatorOpen ? 'hidden' : 'flex min-h-0 flex-1 flex-col'}>
           {/* The same conversation module the full Room page renders: one
               implementation of what a conversation is, two places it is read. */}
           <ProjectSidecarConversation
@@ -432,7 +594,7 @@ export default function ProjectChatSidecar({ attention = [] }: { attention?: Pro
                 writeStored(conversationKey(room.id), conversation.id)
               }}
             />
-        </>
+        </div>
       )}
       <div className="flex items-center justify-start border-t border-border px-3 py-1.5">
         <Link

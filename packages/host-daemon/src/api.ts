@@ -16,7 +16,6 @@ import { listManagedWorkspaces } from "./managedWorkspaces.js";
 import { daemonVersion } from "./version.js";
 import { ensurePackagedAdapter } from "./adapterInstallation.js";
 import { loggedIn, OWN_INSTALLATION, readToolManifestSync } from "./tools.js";
-import { localToolBridgeSupported } from "@rainver/agent-cli/local-bridge";
 import { ordinaryToolsReport } from "./ordinaryTools.js";
 import { ordinaryToolAccountsCapability } from "./ordinaryToolAccounts.js";
 import { ordinaryToolsRunCapability } from "./ordinaryToolRunAccess.js";
@@ -152,8 +151,7 @@ async function helloInfo(
     arch: arch(),
     daemon_version: daemonVersion(),
     environment_kind,
-    // The control plane offers the file tool bridge only where this daemon can pin it.
-    capabilities_json: { ...capabilities, ...(currentPlatform !== "win32" ? { managed_cli_updates: true, antigravity_own_updates: true } : {}), sources_execution:await sourceExecutionOffer(), tool_bridge_protocols: localToolBridgeSupported(currentPlatform) ? ["file-v1"] : [],
+    capabilities_json: { ...capabilities, ...(currentPlatform !== "win32" ? { managed_cli_updates: true, antigravity_own_updates: true } : {}), sources_execution:await sourceExecutionOffer(),
       // Separate from `installations`: ordinary CLIs are not ACP Runtimes.
       ordinary_tools: await ordinaryToolsReport(log),
       ordinary_tool_accounts: ordinaryToolAccountsCapability(),

@@ -488,7 +488,7 @@ function openUpstreamTunnel(
  * Every hostname the control plane tells this Run to talk to.
  *
  * A Run is handed the instance's own addresses — the work surface's
- * `RAINVER_API_URL`, a provider lease's base URL — and those resolve into this
+ * a provider lease's base URL — and those resolve into this
  * instance's network, which the proxy refuses by design. Proxying them would
  * break the Run on the *default* path and log a refusal for every attempt, so
  * they bypass the proxy rather than being blocked by it.

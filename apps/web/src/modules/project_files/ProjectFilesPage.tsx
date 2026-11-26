@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useMatch, useParams, useSearchParams } from 'react-router-dom'
-import { Folder, GitBranch, FileDiff, Info, Loader, Plus, RefreshCw, Settings as SettingsIcon, Trash2 } from 'lucide-react'
+import { Folder, FolderPlus, FilePlus, GitBranch, FileDiff, Info, Loader, RefreshCw, Settings as SettingsIcon, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { projectFoldersApi } from '../../api/client'
@@ -749,84 +749,87 @@ export default function ProjectFilesPage() {
           if (target) void unregisterFolder(target, true)
         }}
       />
-      <div className="shrink-0 flex items-center gap-3 px-4 py-2.5 border-b border-border bg-card">
-        <div
-          className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0"
-          style={{ background: 'color-mix(in oklch, var(--primary) 12%, transparent)', border: '1px solid color-mix(in oklch, var(--primary) 30%, transparent)' }}
-        >
-          <Folder className="size-4 text-primary" />
-        </div>
-        <h1 className="text-sm font-semibold">Files &amp; Code</h1>
-
-        {folders.length > 0 && (
-          <div className="flex items-center gap-1.5 ml-2">
-            <Select
-              size="sm"
-              value={selectedFolder?.id ?? ''}
-              onChange={id => { void handleFolderChange(id) }}
-              options={folders.map(f => ({ value: f.id, label: f.name }))}
-              className="w-40"
-            />
+      <div className="@container/files-toolbar shrink-0 border-b border-border bg-card" data-testid="files-toolbar">
+        <div className="flex min-h-[3.25rem] min-w-0 items-center gap-2 px-3 py-2.5 @lg/files-toolbar:gap-3 @lg/files-toolbar:px-4">
+          <div
+            className="hidden size-8 shrink-0 items-center justify-center rounded-lg @lg/files-toolbar:flex"
+            style={{ background: 'color-mix(in oklch, var(--primary) 12%, transparent)', border: '1px solid color-mix(in oklch, var(--primary) 30%, transparent)' }}
+          >
+            <Folder className="size-4 text-primary" />
           </div>
-        )}
+          <h1 className="min-w-0 shrink-0 whitespace-nowrap text-sm font-semibold">Files &amp; Code</h1>
 
-        {((selectedLocation?.root_path ?? selectedLocation?.display_path) || selectedLocation?.execution_host_kind === 'remote') && (
-          <div className="flex items-center gap-1.5 min-w-0">
-            {(selectedLocation?.root_path ?? selectedLocation?.display_path) && (
-              <span className="text-[10px] text-muted-foreground font-mono hidden sm:block truncate max-w-[260px]">
-                {selectedLocation?.root_path ?? selectedLocation?.display_path}
-              </span>
+          {folders.length > 0 && (
+            <div className="min-w-0 w-40 shrink @lg/files-toolbar:ml-2 @2xl/files-toolbar:shrink-0">
+              <Select
+                size="sm"
+                value={selectedFolder?.id ?? ''}
+                onChange={id => { void handleFolderChange(id) }}
+                options={folders.map(f => ({ value: f.id, label: f.name }))}
+                className="w-full"
+              />
+            </div>
+          )}
+
+          {((selectedLocation?.root_path ?? selectedLocation?.display_path) || selectedLocation?.execution_host_kind === 'remote') && (
+            <div className="hidden min-w-0 items-center gap-1.5 @2xl/files-toolbar:flex">
+              {(selectedLocation?.root_path ?? selectedLocation?.display_path) && (
+                <span className="text-[10px] text-muted-foreground font-mono truncate max-w-[260px]">
+                  {selectedLocation?.root_path ?? selectedLocation?.display_path}
+                </span>
+              )}
+              {selectedLocation?.execution_host_kind === 'remote' && (
+                <Badge variant="muted" className="min-w-0 max-w-40 px-1.5 text-[10px]" title={selectedLocation.host_name ?? 'remote host'}>
+                  <span className="min-w-0 truncate">on {selectedLocation.host_name ?? 'remote host'}</span>
+                </Badge>
+              )}
+            </div>
+          )}
+
+          <div className="ml-auto flex shrink-0 items-center gap-1.5">
+            <Button size="sm" variant="outline" className="px-1.5 @lg/files-toolbar:px-2.5" aria-label="New Folder" title="New Folder" onClick={() => setCreateFolderOpen(true)}>
+              <FolderPlus className="size-3.5" />
+              <span className="hidden @lg/files-toolbar:inline">New Folder</span>
+            </Button>
+            {selectedFolder && (
+              <Button size="sm" variant="outline" className="px-1.5 @lg/files-toolbar:px-2.5" aria-label="New File" title="New File" onClick={handleNewFile} disabled={mutationLoading}>
+                <FilePlus className="size-3.5" />
+                <span className="hidden @lg/files-toolbar:inline">New File</span>
+              </Button>
             )}
-            {selectedLocation?.execution_host_kind === 'remote' && (
-              <Badge variant="muted" className="text-[10px] px-1.5 shrink-0">
-                on {selectedLocation.host_name ?? 'remote host'}
+            {selectedFolder && (
+              <button
+                onClick={() => setFolderToUnregister(selectedFolder)}
+                title={`Unregister ${selectedFolder.name}`}
+                className="flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-destructive"
+              >
+                <Trash2 className="size-3" />
+              </button>
+            )}
+            {selectedFolder && (
+              <Link
+                to={`/projects/${projectId}/folders/${selectedFolder.id}`}
+                className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <SettingsIcon className="size-3" />
+              </Link>
+            )}
+            {selectedFolder && isReadErrorRetryable(readError) && (
+              <button
+                onClick={retryReads}
+                className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                aria-label="Retry Folder reads"
+              >
+                <RefreshCw className="size-3" />
+              </button>
+            )}
+            {gitStatus?.branch && (
+              <Badge variant="muted" className="max-w-24 gap-1 px-1.5 text-[10px]" title={gitStatus.branch}>
+                <GitBranch className="size-2.5 shrink-0" />
+                <span className="hidden truncate @lg/files-toolbar:inline">{gitStatus.branch}</span>
               </Badge>
             )}
           </div>
-        )}
-
-        <div className="ml-auto flex items-center gap-1.5">
-          <Button size="sm" variant="outline" className="gap-1.5" onClick={() => setCreateFolderOpen(true)}>
-            <Plus className="size-3.5" />
-            New Folder
-          </Button>
-          {selectedFolder && (
-            <Button size="sm" variant="outline" className="gap-1.5" onClick={handleNewFile} disabled={mutationLoading}>
-              <Plus className="size-3.5" />
-              New File
-            </Button>
-          )}
-          {selectedFolder && (
-            <button
-              onClick={() => setFolderToUnregister(selectedFolder)}
-              title={`Unregister ${selectedFolder.name}`}
-              className="flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-destructive"
-            >
-              <Trash2 className="size-3" />
-            </button>
-          )}
-          {selectedFolder && (
-            <Link
-              to={`/projects/${projectId}/folders/${selectedFolder.id}`}
-              className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
-            >
-              <SettingsIcon className="size-3" />
-            </Link>
-          )}
-          {selectedFolder && isReadErrorRetryable(readError) && (
-            <button
-              onClick={retryReads}
-              className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
-              aria-label="Retry Folder reads"
-            >
-              <RefreshCw className="size-3" />
-            </button>
-          )}
-          {gitStatus?.branch && (
-            <Badge variant="muted" className="text-[10px] px-1.5">
-              <GitBranch className="size-2.5 mr-1" />{gitStatus.branch}
-            </Badge>
-          )}
         </div>
       </div>
 

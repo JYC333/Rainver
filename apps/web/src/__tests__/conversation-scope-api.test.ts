@@ -348,16 +348,31 @@ describe('exact receipt read-backs', () => {
       const url = String(input)
       if (url === '/api/v1/actions/room.invitation.decide') return reply({ status: 'succeeded', data: { id: 'old-invitation', space_id: 'source-a', room_id: 'room', invitation_id: 'old-invitation' } })
       if (url.startsWith('/api/v1/rooms/room/invitations?')) return reply({ items: [{ id: 'old-invitation', status: 'active' }], total: 1, limit: 1, offset: 0 })
-      if (url === '/api/v1/actions/room.message.continue_after_proposal') return reply({ status: 'succeeded', data: { id: 'old-message', space_id: 'source-a', room_id: 'room', session_id: 'session', message_id: 'old-message', task_group_ids: [], run_ids: [] } })
+      if (url === '/api/v1/actions/room.message.send') return reply({ status: 'succeeded', data: { id: 'old-message', space_id: 'source-a', room_id: 'room', session_id: 'session', status: 'sent', message_id: 'old-message', task_group_ids: ['group'], run_ids: ['run'] } })
       if (url.startsWith('/api/v1/rooms/room/conversations/session/messages?')) return reply({ items: [{ id: 'old-message' }], conversation: { id: 'session' }, task_group_ids: [], limit: 1, offset: 0 })
       return reply({})
     })
     await expect(roomsApi.decideInvitation('room', 'old-invitation', { agent_id: 'agent', decision: 'approved' })).resolves.toMatchObject({ id: 'old-invitation' })
-    await expect(roomsApi.continueAfterProposal('room', 'session', { proposal_id: 'proposal' } as never, { spaceId: 'source-a' })).resolves.toMatchObject({ message: { id: 'old-message' } })
+    await expect(roomsApi.sendMessage('room', 'session', { content: 'Reply', routing_mode: 'direct', backends: [] }, { spaceId: 'source-a' })).resolves.toMatchObject({ message: { id: 'old-message' } })
     const urls = vi.mocked(fetch).mock.calls.map(([url]) => String(url))
     expect(urls).toContain('/api/v1/rooms/room/invitations?limit=1&invitation_id=old-invitation')
     expect(urls).toContain('/api/v1/rooms/room/conversations/session/messages?limit=1&message_id=old-message')
     expect(urls.some(url => url.includes('limit=200'))).toBe(false)
+  })
+
+  it('tracks a successful Proposal continuation whose internal message is hidden from the transcript', async () => {
+    const commandUrl = '/api/v1/actions/room.message.continue_after_proposal'
+    const receipt = {
+      id: 'internal-message', space_id: 'source-a', room_id: 'room', session_id: 'session',
+      message_id: 'internal-message', task_group_ids: ['continuation-group'], run_ids: ['continuation-run'],
+    }
+    vi.mocked(fetch).mockImplementation(async input => String(input) === commandUrl
+      ? reply({ status: 'succeeded', data: receipt })
+      : reply({ items: [], conversation: { id: 'session' }, task_group_ids: [], limit: 1, offset: 0 }))
+
+    await expect(roomsApi.continueAfterProposal('room', 'session', { proposal_id: 'proposal', backends: [] }, { spaceId: 'source-a' }))
+      .resolves.toMatchObject({ run_ids: ['continuation-run'] })
+    expect(vi.mocked(fetch).mock.calls.map(([url]) => String(url))).toEqual([commandUrl])
   })
 
   it('keeps a live input pending while its delivery is still owed, instead of reporting it undelivered', async () => {

@@ -8,6 +8,7 @@ import {
   proposalReadSql,
   runInheritedReadSql,
   runReadSql,
+  roomConversationAudienceSql,
 } from "../access/contentAccessSql.js";
 import { canReadProject } from "../projects/access.js";
 import { collaborationLimits } from "./collaborationBudgetRepository.js";
@@ -195,6 +196,10 @@ const ACTIVE_ROOM_MEMBER_OR_NO_ROOM_SQL = `(
        AND room_member.user_id = $2
        AND room_member.status = 'active'
        AND room.status = 'active'
+       AND (
+         agent_run_groups.session_id IS NULL
+         OR ${roomConversationAudienceSql("agent_run_groups.space_id", "agent_run_groups.session_id", "$2")}
+       )
   )
 )`;
 
@@ -372,10 +377,16 @@ export class PgAgentGroupRepository {
     return result.rows[0] ?? null;
   }
 
+  /**
+   * With a conversation, also that conversation's own audience
+   * (`roomConversationAudienceSql`): a Room task of a conversation frozen before
+   * the viewer joined is not theirs to read.
+   */
   async isActiveRoomUser(
     spaceId: string,
     roomId: string,
     userId: string,
+    sessionId: string | null = null,
   ): Promise<boolean> {
     const result = await this.db.query<{ allowed: boolean }>(
       `SELECT EXISTS (
@@ -399,6 +410,7 @@ export class PgAgentGroupRepository {
             AND room_member.room_id = $2
             AND room_member.user_id = $3
             AND room_member.status = 'active'
+            AND ($4::varchar IS NULL OR ${roomConversationAudienceSql("room_member.space_id", "$4::varchar", "$3")})
             AND room.status = 'active'
             AND (
               space.type = 'personal'
@@ -406,7 +418,7 @@ export class PgAgentGroupRepository {
               OR project_member.user_id IS NOT NULL
             )
        ) AS allowed`,
-      [spaceId, roomId, userId],
+      [spaceId, roomId, userId, sessionId],
     );
     return result.rows[0]?.allowed === true;
   }
@@ -596,6 +608,10 @@ export class PgAgentGroupRepository {
                  AND room_user.room_id = group_row.room_id
                  AND room_user.user_id = $4
                  AND room_user.status = 'active'
+            )
+            AND (
+              group_row.session_id IS NULL
+              OR ${roomConversationAudienceSql("group_row.space_id", "group_row.session_id", "$4")}
             )
           )
           AND (group_row.room_id::varchar IS NOT NULL OR ${contentReadSql("agent", "a", "$4")})`,

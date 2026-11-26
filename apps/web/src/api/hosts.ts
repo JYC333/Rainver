@@ -21,7 +21,7 @@ import type {
 import { hostCommand, hostPath, waitForJobResult } from './jobReads'
 import { commandReceipt, operationAt } from './operations'
 import type { RequestOptions } from './transport'
-import { ApiRequestError, BASE, _spaceId, get, post, streamRefusal } from './transport'
+import { _spaceId, ACCOUNT_SWITCHED_HEADER, accountFetch, accountHeaders, ApiRequestError, BASE, get, post, streamRefusal } from './transport'
 
 
 
@@ -144,10 +144,10 @@ export const hostsApi = {
       : target?.kind === 'cli' ? '?login_action=cli'
       : target?.kind === 'logout' ? '?login_action=logout' : ''
     const url = `${BASE}/hosts/${encodeURIComponent(hostId)}/installations/${encodeURIComponent(runtimeKey)}/${encodeURIComponent(installation)}/login/stream${query}`
-    const headers: Record<string, string> = {}
+    const headers: Record<string, string> = { ...accountHeaders() }
     headers['X-Rainver-Space-Id'] = _spaceId
     const startedIn = sessionEpoch()
-    const response = await fetch(url, { headers, signal })
+    const response = await accountFetch(url, { headers, signal })
     if (!response.ok || !response.body) throw await streamRefusal(response, 'Login stream failed', startedIn, signal)
     yield* readLoginEvents<RuntimeLoginEvent>(response)
   },
@@ -202,11 +202,11 @@ export const ordinaryToolsApi = {
    */
   async *sessionStream(hostId: string, toolId: string, flow: 'init' | 'login', signal?: AbortSignal): AsyncGenerator<OrdinaryAccountStreamEvent> {
     const url = `${BASE}/hosts/${encodeURIComponent(hostId)}/ordinary-tools/${encodeURIComponent(toolId)}/account/session/stream?flow=${flow}`
-    const headers: Record<string, string> = {}
+    const headers: Record<string, string> = { ...accountHeaders() }
     headers['X-Rainver-Space-Id'] = _spaceId
     const startedIn = sessionEpoch()
-    const response = await fetch(url, { headers, signal })
-    if (response.status === 401) throw await streamRefusal(response, 'Account session stream failed', startedIn, signal)
+    const response = await accountFetch(url, { headers, signal })
+    if (response.status === 401 || (response.status === 409 && response.headers.get(ACCOUNT_SWITCHED_HEADER))) throw await streamRefusal(response, 'Account session stream failed', startedIn, signal)
     if (!response.ok) {
       let detail = `${response.status} ${response.statusText}`
       try {

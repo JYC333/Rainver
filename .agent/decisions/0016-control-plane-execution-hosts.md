@@ -265,8 +265,7 @@ into; the control plane supplies the rendered task prompt and an approval
 preset (headless mode requires one).
 
 **A Run-scoped tool surface does.** A Run that carries tool grants receives a
-bearer identity for itself, the address this host reaches the control plane
-at, and the `rainver` command with the Skill that explains it — materialized
+bearer identity for itself and the `rainver` command with the Skill that explains it — materialized
 by the daemon into the Run's own directory and removed with the Run. It is
 what makes a dispatched agent able to say what it did; without it a Run is a
 black box until it exits, which is not an execution-host property but an
@@ -279,15 +278,13 @@ therefore outside ADR 0008's channel isolation and B67's mutual exclusion,
 which both govern what the *upstream* sees. Nothing is installed onto `PATH`
 (§7): the command is named by absolute path in the Run's environment.
 
-Linux and macOS Hosts now keep that bearer in their own process for `file-v1` work
-surfaces and give the runtime a private, per-launch file IPC directory; the
-server offers `file-v1` only to a Host that advertises it. It
-forwards the fixed CLI tool verbs to the same Run-scoped REST routes. ACP
-directory-capable runtimes receive only that directory through negotiated
-`additionalDirectories`, including on resume. This keeps command networking
-disabled and needs neither MCP nor an inbound Host listener. Older components
-retain direct HTTP until both server and Host have been updated. Identity,
-policy, approval and tool semantics remain server-owned.
+Hosts keep the Run bearer inside the daemon. Linux and macOS use a pinned
+file bridge, and Windows uses a named pipe with a separate local capability.
+The daemon sends fixed tool verbs over its existing authenticated outbound
+Host WebSocket. The server verifies Host and launch ownership and the live
+Run token on every request, then applies the same tool grants and policy.
+The local bridge keeps shell network permissions independent of tool access.
+A broken connection does not automatically replay writes.
 
 **An explicit ModelProvider binding does.** A Run may carry a binding chosen
 by the control plane, in which case the server-side provider proxy and its

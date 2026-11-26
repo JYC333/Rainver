@@ -87,7 +87,7 @@ export function computeFeatures(config: ServerConfig): string[] {
     "runs_child_resources_server_authority",
     "artifacts_server_authority",
     "projects_server_authority",
-    "agent_templates_server_authority",
+    "agent_roles_server_authority",
     "skills_server_authority",
     "personal_memory_grants_server_authority",
     "evolution_server_authority",

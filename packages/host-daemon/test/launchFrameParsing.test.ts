@@ -33,7 +33,7 @@ describe("the launch frame across the wire", () => {
       login_link: null,
     },
     work_surface: {
-      env: { RAINVER_API_URL: "http://control-plane:8021", RAINVER_RUN_ID: "run-1", RAINVER_TOOL_TOKEN: "t" },
+      run_tool_token: "a".repeat(43),
       files: [{ relative_path: "skills/rainver/SKILL.md", contents: "# skill" }],
       dir_env: { RAINVER_SKILL_PATH: "skills/rainver/SKILL.md" },
     },
@@ -81,8 +81,8 @@ describe("the launch frame across the wire", () => {
 
   it("names the run it rejects, so the server can fail it rather than wait for a timeout", () => {
     for (const malformed of [
-      { ...wire, work_surface: { env: {}, files: [] } },                                 // no dir_env
-      { ...wire, work_surface: { env: { RAINVER_RUN_ID: 1 }, files: [], dir_env: {} } }, // non-string env
+      { ...wire, work_surface: { files: [] } },                                          // no dir_env
+      { ...wire, work_surface: { run_tool_token: "invalid", files: [], dir_env: {} } }, // invalid Run token
       { ...wire, provider_binding: { env: {}, profile_env: {}, files: [] } },            // no profile key
       { ...wire, provider_binding: { profile_key: "a/b", env: {}, profile_env: {}, files: [{ contents: "x" }] } },
       { ...wire, argv: "claude" },

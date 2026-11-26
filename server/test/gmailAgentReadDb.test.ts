@@ -623,7 +623,7 @@ describe("ADR 0032 on-demand Gmail reads for an Agent", () => {
     const { canWriteGmailDerivedProjectContent } = await import("../src/modules/plugins/egress.js");
     const actor = { space_id: space, run_id: next.id, on_behalf_of_user_id: member, effective_origin: "manual" as const };
     const mayWrite = () => canWriteGmailDerivedProjectContent(
-      db.pool, actor, "plugin.applications.application.create", { project_id: project }, {},
+      db.pool, actor, "plugin.phd_application.application.create", { project_id: project }, {},
     );
     expect(await mayWrite()).toBe(true);
     expect((await setAgentRead(connectionId, false)).statusCode).toBe(200);

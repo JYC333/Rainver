@@ -54,7 +54,7 @@ export class ContentAccessAuditService {
     await this.db.query(
       `INSERT INTO content_access_logs (id,space_id,resource_type,resource_id,owner_user_id,
         viewer_user_id,agent_id,run_id,access_type,accessed_at)
-       SELECT gen_random_uuid()::text,$1,'plugin_applications', application.id, application.owner,
+       SELECT gen_random_uuid()::text,$1,'plugin_phd_application', application.id, application.owner,
         reader,$5,$6,'plugin_query',now()
        FROM unnest($2::varchar[],$3::varchar[]) AS application(id,owner)
        CROSS JOIN unnest($4::varchar[]) AS viewers(reader)

@@ -1,7 +1,65 @@
 import { contentReadSql, projectReadAccessSql } from "../access/contentAccessSql.js";
+import { lockProjectAudience } from "../projects/access.js";
+import type { Queryable } from "../routeUtils/common.js";
 
-/** Execution-only authority. This predicate must never authorize Agent content reads. */
-export function roomAgentUseSql(agent: string, user: string, room: string): string {
+/**
+ * The synchronization boundary a decision resting on `roomAgentUseSql` takes,
+ * in this order: the Project audience (Project row, its membership, people and
+ * Space memberships `FOR SHARE`), then the Room row `FOR SHARE`. Room writers
+ * that withdraw execution authority hold the Room row (`FOR NO KEY UPDATE` or
+ * `FOR UPDATE`) and Project membership writers the Project
+ * (`lockProjectAudienceForChange`), so each either commits before the decision
+ * or waits for it. Ask the predicate in a later statement: under READ
+ * COMMITTED it then reads a snapshot taken after these locks, not one taken
+ * while it waited. Run claim (`claimRunExecution`), plugin entry/release
+ * (`plugins/projectBindings.ts`) and a plugin companion Agent's command
+ * (`plugins/agentRoleAdmission.ts`) share it.
+ *
+ * The same order, Project before Room, binds the Room writers: an Agent's
+ * command holds its Project `FOR UPDATE` before it reaches this Room lock, and
+ * a Room writer's first Agent add inserts a `project_agent_links` row whose
+ * foreign key takes the Project `FOR KEY SHARE`, as does any other Project-scoped
+ * row a Room write inserts. So every locked Room read (`PgRoomRepository`,
+ * `lockRoomProjectKey`) takes that Project key lock before the Room row, never
+ * after it.
+ */
+export async function lockRoomExecutionAuthority(db: Queryable, spaceId: string, projectId: string | null, roomId: string): Promise<void> {
+  if (projectId) await lockProjectAudience(db, spaceId, projectId);
+  await db.query("SELECT id FROM rooms WHERE space_id=$1 AND id=$2 FOR SHARE", [spaceId, roomId]);
+}
+
+/**
+ * Where a Run executes, the one resolution every Room execution decision uses
+ * (Run claim, a plugin companion Agent's admission, a cross-Project plugin
+ * entry): the Room is its Run Group's, else its conversation's; the
+ * conversation whose audience bounds it is its own, else its Run Group's. A
+ * Run with neither has no Room. Takes the Run's fields, so a proposed Run not
+ * yet stored resolves the same way.
+ */
+export async function runExecutionPlacement(
+  db: Queryable,
+  spaceId: string,
+  run: { run_group_id?: string | null; session_id?: string | null },
+): Promise<{ room_id: string | null; session_id: string | null }> {
+  const row = (await db.query<{ room_id: string | null; session_id: string | null }>(
+    `SELECT COALESCE(g.room_id, s.room_id) AS room_id, COALESCE($3::varchar, g.session_id) AS session_id
+       FROM (SELECT 1) one
+       LEFT JOIN agent_run_groups g ON g.id = $2::varchar AND g.space_id = $1
+       LEFT JOIN sessions s ON s.id = COALESCE($3::varchar, g.session_id) AND s.space_id = $1`,
+    [spaceId, run.run_group_id ?? null, run.session_id ?? null],
+  )).rows[0];
+  return { room_id: row?.room_id ?? null, session_id: row?.session_id ?? null };
+}
+
+/**
+ * Execution-only authority. This predicate must never authorize Agent content reads.
+ *
+ * `anyAgentStatus` drops only the Agent's own `active` condition, for the one
+ * listing that keeps a stopped Agent visible to the people its Rooms still
+ * admit (`agents/myAgents.ts`): every Room, membership, Project and grant
+ * condition stays. It never decides execution.
+ */
+export function roomAgentUseSql(agent: string, user: string, room: string, options: { anyAgentStatus?: boolean } = {}): string {
   return `EXISTS (
     SELECT 1 FROM rooms usage_room
     JOIN room_agent_members usage_agent ON usage_agent.space_id=usage_room.space_id
@@ -9,7 +67,7 @@ export function roomAgentUseSql(agent: string, user: string, room: string): stri
     JOIN room_user_members usage_user ON usage_user.space_id=usage_room.space_id
       AND usage_user.room_id=usage_room.id AND usage_user.user_id=${user} AND usage_user.status='active'
     WHERE usage_room.id=${room} AND usage_room.space_id=${agent}.space_id AND usage_room.status='active'
-      AND ${agent}.status='active'
+      ${options.anyAgentStatus ? "" : `AND ${agent}.status='active'`}
       AND EXISTS (SELECT 1 FROM space_memberships usage_space_member
         WHERE usage_space_member.space_id=${agent}.space_id AND usage_space_member.user_id=${user}
           AND usage_space_member.status='active')

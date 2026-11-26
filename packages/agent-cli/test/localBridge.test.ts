@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { localToolBridgeSupported, localToolRequest, startLocalToolBridge, type LocalToolBridge } from "../src/localBridge.ts";
-import { parseToolRequest, TOOL_REQUEST_LIMIT, type ToolRequest } from "../src/toolHttp.ts";
+import { localToolRequest, startLocalToolBridge, type LocalToolBridge } from "../src/localBridge.ts";
+import { parseToolRequest, TOOL_REQUEST_LIMIT, type ToolRequest } from "../src/toolRequest.ts";
 
 let root: string;
 const bridges: LocalToolBridge[] = [];
@@ -34,10 +34,10 @@ describe("Run-local CLI bridge", () => {
     const first = await bridge(async (r) => ({ status: 200, text: r.id }));
     const second = await bridge(async () => ({ status: 403, text: "other Run" }));
     const inputs = Array.from({ length: 20 }, request);
-    const responses = await Promise.all(inputs.map((input) => localToolRequest(first.directory, input)));
+    const responses = await Promise.all(inputs.map((input) => localToolRequest(first.endpoint, input)));
     expect(responses.map((r) => r.text)).toEqual(inputs.map((r) => r.id));
     await first.close();
-    await expect(localToolRequest(second.directory, request())).resolves.toEqual({ status: 403, text: "other Run" });
+    await expect(localToolRequest(second.endpoint, request())).resolves.toEqual({ status: 403, text: "other Run" });
   });
 
   it("refuses symlink and hardlink payloads without dispatching them", async () => {
@@ -47,10 +47,10 @@ describe("Run-local CLI bridge", () => {
       const input = request();
       const outside = join(root, `${kind}.json`);
       await writeFile(outside, JSON.stringify(input));
-      const path = join(host.directory, `${input.id}.request`);
+      const path = join(host.endpoint, `${input.id}.request`);
       if (kind === "symlink") await symlink(outside, path);
       else await link(outside, path);
-      expect(await responseFile(host.directory, input.id)).toHaveProperty("error");
+      expect(await responseFile(host.endpoint, input.id)).toHaveProperty("error");
       expect(await readFile(outside, "utf8")).toBe(JSON.stringify(input));
     }
     expect(invoke).not.toHaveBeenCalled();
@@ -59,10 +59,10 @@ describe("Run-local CLI bridge", () => {
   it("pins the directory instead of following a replacement symlink", async () => {
     const invoke = vi.fn(async () => ({ status: 200, text: "pinned" }));
     const host = await bridge(invoke);
-    const moved = `${host.directory}-moved`;
-    await rename(host.directory, moved);
+    const moved = `${host.endpoint}-moved`;
+    await rename(host.endpoint, moved);
     const outside = await mkdtemp(join(root, "outside-"));
-    await symlink(outside, host.directory);
+    await symlink(outside, host.endpoint);
     const input = request();
     await writeFile(join(moved, `${input.id}.request`), JSON.stringify(input));
     expect(await responseFile(moved, input.id)).toEqual({ status: 200, text: "pinned" });
@@ -74,8 +74,8 @@ describe("Run-local CLI bridge", () => {
     const invoke = vi.fn(async () => ({ status: 200, text: "unexpected" }));
     const host = await bridge(invoke);
     const input = request();
-    await writeFile(join(host.directory, `${input.id}.request`), "x".repeat(TOOL_REQUEST_LIMIT + 1));
-    expect(await responseFile(host.directory, input.id)).toHaveProperty("error");
+    await writeFile(join(host.endpoint, `${input.id}.request`), "x".repeat(TOOL_REQUEST_LIMIT + 1));
+    expect(await responseFile(host.endpoint, input.id)).toHaveProperty("error");
     expect(invoke).not.toHaveBeenCalled();
   });
 
@@ -89,13 +89,13 @@ describe("Run-local CLI bridge", () => {
     });
     const host = await bridge(invoke);
     const input: ToolRequest = { id: randomUUID(), method: "POST", path: "tools/task.report", body: {} };
-    const result = localToolRequest(host.directory, input);
+    const result = localToolRequest(host.endpoint, input);
     const assertion = expect(result).rejects.toThrow();
     await ready;
     await host.close();
     await assertion;
     expect(invoke).toHaveBeenCalledTimes(1);
-    await expect(localToolRequest(host.directory, request())).rejects.toThrow();
+    await expect(localToolRequest(host.endpoint, request())).rejects.toThrow();
   });
 
   it("reports uncertainty on a response timeout without resubmitting", async () => {
@@ -104,7 +104,7 @@ describe("Run-local CLI bridge", () => {
       return { status: 200, text: "done" };
     });
     const host = await bridge(invoke);
-    await expect(localToolRequest(host.directory, request(), 80)).rejects.toThrow("outcome is unknown");
+    await expect(localToolRequest(host.endpoint, request(), 80)).rejects.toThrow("outcome is unknown");
     expect(invoke).toHaveBeenCalledTimes(1);
   });
 
@@ -137,29 +137,21 @@ describe("Run-local CLI bridge on macOS", () => {
   function platform(value: NodeJS.Platform) { Object.defineProperty(process, "platform", { ...original, value }); }
   afterEach(() => { Object.defineProperty(process, "platform", original); });
 
-  it("is offered on Linux and macOS only", async () => {
-    expect(localToolBridgeSupported("linux")).toBe(true);
-    expect(localToolBridgeSupported("darwin")).toBe(true);
-    expect(localToolBridgeSupported("win32")).toBe(false);
-    platform("win32");
-    await expect(startLocalToolBridge(root, async () => ({ status: 200, text: "" }))).rejects.toThrow("Linux or macOS");
-  });
-
   it("serves calls without procfs", async () => {
     platform("darwin");
     const host = await bridge(async (r) => ({ status: 200, text: r.id }));
     const input = request();
-    await expect(localToolRequest(host.directory, input)).resolves.toEqual({ status: 200, text: input.id });
+    await expect(localToolRequest(host.endpoint, input)).resolves.toEqual({ status: 200, text: input.id });
   });
 
   it("fails closed when the directory is replaced, never writing through the replacement", async () => {
     platform("darwin");
     const invoke = vi.fn(async () => ({ status: 200, text: "pinned" }));
     const host = await bridge(invoke);
-    const moved = `${host.directory}-moved`;
-    await rename(host.directory, moved);
+    const moved = `${host.endpoint}-moved`;
+    await rename(host.endpoint, moved);
     const outside = await mkdtemp(join(root, "outside-"));
-    await symlink(outside, host.directory);
+    await symlink(outside, host.endpoint);
     const input = request();
     await writeFile(join(outside, `${input.id}.request`), JSON.stringify(input));
     await writeFile(join(moved, `${input.id}.request`), JSON.stringify(input));
@@ -167,7 +159,7 @@ describe("Run-local CLI bridge on macOS", () => {
     expect(invoke).not.toHaveBeenCalled();
     await expect(readFile(join(outside, `${input.id}.response`))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(readFile(join(moved, `${input.id}.response`))).rejects.toMatchObject({ code: "ENOENT" });
-    await expect(localToolRequest(host.directory, request())).rejects.toThrow();
+    await expect(localToolRequest(host.endpoint, request())).rejects.toThrow();
     await host.close();
     // Cleanup never recurses through a path that no longer names the bridge.
     await expect(readFile(join(outside, `${input.id}.request`), "utf8")).resolves.toBe(JSON.stringify(input));
@@ -178,14 +170,9 @@ describe("Run-local CLI bridge on macOS", () => {
 describe('explicit keys through Host bridge',()=>{
  it('retains one logical key while each attempt uses a fresh correlation id',async()=>{
   const seen:ToolRequest[]=[];const host=await bridge(async r=>{seen.push(r);return {status:200,text:'{}'};});
-  await localToolRequest(host.directory,{...request(),idempotency_key:'retained'});
-  await localToolRequest(host.directory,{...request(),idempotency_key:'retained'});
+  await localToolRequest(host.endpoint,{...request(),idempotency_key:'retained'});
+  await localToolRequest(host.endpoint,{...request(),idempotency_key:'retained'});
   expect(seen.map(r=>r.idempotency_key)).toEqual(['retained','retained']);expect(seen[0].id).not.toBe(seen[1].id);
  });
- it('refuses an older Host before dispatching any explicit-key write',async()=>{
-  let calls=0;const host=await bridge(async()=>{calls++;return {status:200,text:'{}'};});
-  await rm(join(host.directory,'capabilities'));
-  await expect(localToolRequest(host.directory,{...request(),idempotency_key:'retained'})).rejects.toThrow('no request was sent');
-  expect(calls).toBe(0);
- });
+;
 });

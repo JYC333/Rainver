@@ -28,7 +28,7 @@ import { projectRetrievalAdapter } from "../projects/retrievalAdapter.js";
 import { sourceRetrievalAdapter } from "../sources/retrievalAdapter.js";
 import { inquiryRetrievalAdapter } from "../inquiry/retrievalAdapter.js";
 import { isContentVisibility } from "../access/contentAccessTypes.js";
-import { contentReadSql } from "../access/contentAccessSql.js";
+import { contentReadSql, roomConversationAudienceSql } from "../access/contentAccessSql.js";
 import {
   loadSourcePolicySnapshots,
   sourceEgressPoliciesForSnapshots,
@@ -76,11 +76,7 @@ import { acpSessionConfigFromRunOverride } from "../runs/cliConversationProtocol
 import { ACP_RUNTIME_MANAGED_WINDOW } from "../usage/modelCatalog.js";
 import { effectiveRunProviderModel } from "../runs/remoteProviderBinding.js";
 import { availableModels } from "../providers/dbReader.js";
-import {
-  loadConversationInputResourceDescriptors,
-  loadConversationSkillDescriptors,
-  renderConversationInputMessage,
-} from "../sessions/conversationInputService.js";
+import { loadConversationMessageContext } from "../sessions/conversationInputService.js";
 
 type SetupRow = {
   id: string;
@@ -192,14 +188,13 @@ class PgDirectProvider implements RuntimeContextChannelProvider {
           runId: run.id,
         });
     if (!current) throw new Error("Current input is missing or outside the Work Context scope");
-    const skillDescriptors = request.turn.current_message_ref.type === "message"
-      ? await loadConversationSkillDescriptors(this.db, { spaceId: request.identity.spaceId, messageId: request.turn.current_message_ref.id }) : [];
-    const inputResourceDescriptors = request.turn.current_message_ref.type === "message"
-      ? await loadConversationInputResourceDescriptors(this.db, {
+    const messageContext = request.turn.current_message_ref.type === "message"
+      ? await loadConversationMessageContext(this.db, {
           spaceId: request.identity.spaceId,
           messageId: request.turn.current_message_ref.id,
+          content: current.content,
         })
-      : [];
+      : null;
     const project = await this.context.loadPublishedProjectContext(
       request.identity.spaceId,
       authority.projectId,
@@ -221,10 +216,10 @@ class PgDirectProvider implements RuntimeContextChannelProvider {
       selection: "required",
       semanticRole: "user_input",
       trust: current.role === "system" ? "system_approved" : "user_confirmed",
-      text: renderConversationInputMessage(current.content, inputResourceDescriptors, skillDescriptors),
+      text: messageContext?.text ?? current.content,
       revalidation: {
         message_created_at: String(current.created_at ?? ""),
-        input_resource_ids: inputResourceDescriptors.map((descriptor) => descriptor.resource_id),
+        input_resource_ids: messageContext?.inputResourceIds ?? [],
         ...(request.turn.current_message_ref.type === "run_request"
           ? { run_instruction_in_request: instructionInRunRequest(run) }
           : {}),
@@ -543,6 +538,7 @@ export async function loadAuthorizedCurrentContextMessage(
        LEFT JOIN room_user_members room_member
          ON room_member.room_id=session.room_id AND room_member.space_id=session.space_id
         AND room_member.user_id=$4 AND room_member.status='active'
+        AND ${roomConversationAudienceSql("session.space_id", "session.id", "$4")}
       WHERE message.id=$1 AND message.space_id=$2
         AND message.session_id=$3
         AND (

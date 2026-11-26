@@ -462,7 +462,7 @@ Vector recall is halfvec HNSW at the default dimension.
 
 ---
 
-## 24. Claim, Memory, ontology, and template leftovers
+## 24. Claim, Memory, ontology, and role leftovers
 
 Extracted from `CLAIM_FACT_ATOM_MODEL.md`, `MEMORY_MODEL.md`,
 `ONTOLOGY.md`, `agents.md`, `EVOLUTION_SIGNAL_SYSTEM.md`,
@@ -470,8 +470,7 @@ Extracted from `CLAIM_FACT_ATOM_MODEL.md`, `MEMORY_MODEL.md`,
 
 **Current fact:** Object Schema Registry exists; dynamic schema packs
 are rejected. `memory_relations` has a live CHECK, one writer, no
-reader. Agent template create/publish endpoints exist; the Agents UI
-does not author custom templates. Plugin settings are opaque JSON.
+reader. Agent roles are catalog-owned; the Agents UI does not author custom roles. Plugin settings are opaque JSON.
 The proposal lifecycle has no `request_changes` status.
 
 **Extracted design**

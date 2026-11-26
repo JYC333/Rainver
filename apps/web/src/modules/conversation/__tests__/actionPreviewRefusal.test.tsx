@@ -7,7 +7,7 @@ vi.mock('../../../core/spaceNav',async()=>({SpaceLink:(await import('react-route
 import {ActionPreviewCards} from '../ActionPreviewCard'
 import {ConversationScope} from '../ConversationScope'
 
-const card=(next:()=>Promise<void>)=>render(<MemoryRouter><ConversationScope spaceId="space-1"><ActionPreviewCards previews={[{action_id:'plugin.applications.application.propose_status',proposal_id:'p',proposal_type:'plugin_proposal',status:'proposed',title:'Mark submitted'}]} viewerUserId="owner" onDecision={next}/></ConversationScope></MemoryRouter>)
+const card=(next:()=>Promise<void>)=>render(<MemoryRouter><ConversationScope spaceId="space-1"><ActionPreviewCards previews={[{action_id:'plugin.phd_application.application.propose_status',proposal_id:'p',proposal_type:'plugin_proposal',status:'proposed',title:'Mark submitted'}]} viewerUserId="owner" onDecision={next}/></ConversationScope></MemoryRouter>)
 beforeEach(()=>{vi.resetAllMocks()})
 
 it.each([

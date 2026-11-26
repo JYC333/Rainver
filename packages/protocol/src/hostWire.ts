@@ -1,5 +1,6 @@
 import { ExecutionWorkspaceRefSchema } from "./executionWorkspaces.js";
 import { HostSourceRejectedFrameSchema, HostSourceExecuteFrameSchema, HostSourceCancelFrameSchema, HostSourceResponseFrameSchema, HostSourceRequestFrameSchema, HostSourceResultFrameSchema } from "./sourceExecution.js";
+import { HostRunToolRequestFrameSchema, HostRunToolResultFrameSchema, HostRunToolCancelFrameSchema, HostRunToolResultAckFrameSchema } from "./hostRunTools.js";
 /**
  * The execution-host WebSocket wire, both directions, as one contract.
  *
@@ -289,8 +290,8 @@ export const HostLaunchProviderBindingSchema = z.object({
 export type HostLaunchProviderBinding = z.infer<typeof HostLaunchProviderBindingSchema>;
 
 export const HostLaunchWorkSurfaceSchema = z.object({
-  /** Literal values: the API base URL, the run id, and the run's tool token. */
-  env: z.record(z.string()),
+  /** The Host keeps this launch-scoped token outside the runtime environment. */
+  run_tool_token: z.string().regex(/^[A-Za-z0-9_-]{43}$/).optional(),
   files: z.array(z.object({ relative_path: z.string().min(1), contents: z.string(),
     encoding: z.enum(["utf8", "base64"]).optional(), content_hash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   })),
@@ -451,9 +452,8 @@ export const HostLaunchFrameSchema = z.object({
   runtime_key: RuntimeKeySchema.optional(),
   provider_binding: HostLaunchProviderBindingSchema.optional(),
   /**
-   * How this run calls back into Rainver: its identity, the control-plane
-   * address to use it at, and the Skill that says how. Runtime-agnostic on
-   * purpose — environment and one file, with no branch on which agent runs.
+   * How this Run calls Rainver over the Host socket, and the authorized files
+   * it can read. The daemon keeps the Run tool token outside the runtime.
    */
   work_surface: HostLaunchWorkSurfaceSchema.optional(),
   /** Namespace policy for a strict host; ignored by a trusted one. */
@@ -1057,6 +1057,7 @@ export type HostCommandOutcome = z.infer<typeof HostCommandOutcomeSchema>;
 
 export const HostServerFrameSchema = z.discriminatedUnion("type", [
   HostSourceExecuteFrameSchema, HostSourceCancelFrameSchema, HostSourceResponseFrameSchema,
+  HostRunToolResultFrameSchema,
   z.object({ type: z.literal("hello_ack"), host_id: IdSchema, runtime_probes: z.array(RuntimeProbeSchema), run_completion_ack: z.literal(true).optional() }),
   // The catalog can change while a daemon stays connected (for example when
   // an ACP registry agent is enabled), so every acknowledgement refreshes the
@@ -1154,6 +1155,7 @@ export const HostDaemonFrameSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("run_reconnect_state"), run_id: IdSchema, launch_id: IdSchema,
     phase: z.enum(["starting", "waiting_for_workspace", "launched", "missing"]) }),
   HostSourceRequestFrameSchema, HostSourceResultFrameSchema, HostSourceRejectedFrameSchema,
+  HostRunToolRequestFrameSchema, HostRunToolCancelFrameSchema, HostRunToolResultAckFrameSchema,
   HostHelloFrameSchema,
   HostHeartbeatFrameSchema,
   /** The child process is registered; `stdin` frames may follow. */

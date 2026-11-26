@@ -41,7 +41,7 @@ const APPLICATION_PROJECT_WRITES = new Set([
   'funding.link', 'funding.unlink', 'material.add', 'material.update', 'material.remove',
   'material.link_note', 'material.add_source', 'material.remove_source',
   'library.add', 'library.update', 'library.remove',
-].map(action => `plugin.applications.${action}`));
+].map(action => `plugin.phd_application.${action}`));
 
 /** These write paths resolve their Project and check the actor's write authority
  * before policy evaluation. Only include operations whose effects stay in that Project. */

@@ -185,6 +185,10 @@ class RunCreateSqlShapeDb implements Queryable {
     if (sql.includes("UPDATE runs") && sql.includes("context_taint_json")) {
       return { rows: [], rowCount: 1 };
     }
+    // The claimed Run's placement (`runExecutionPlacement`): this fake's Run is in no Room.
+    if (sql.includes("COALESCE(g.room_id, s.room_id) AS room_id")) {
+      return { rows: [{ room_id: null, session_id: null }] as Row[], rowCount: 1 };
+    }
     throw new Error(`Unexpected SQL: ${sql}`);
   }
 }

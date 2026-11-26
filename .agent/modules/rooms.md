@@ -148,7 +148,27 @@ A `room_only` Project Agent without a visible Room opens the Rooms index.
   `<Project name> Room` (`agent_groups/roomTitle.ts`).
 - Roster controls follow the authority each one needs, not one flag. Invite,
   remove, transfer and the specialist controls go through the server's
-  `withRoomWriter` and are shown only to a Project writer. Deciding a
+  `withRoomWriter` and are shown only to a Project writer. Every locked Room
+  read (`PgRoomRepository.getVisibleRoom(…, true)`, `getRoomById(…, true)`,
+  `lockRoomForTurn`) first takes the Room's Project `FOR KEY SHARE`
+  (`lockRoomProjectKey`): the Project before the Room, as Run claim and an
+  Agent's command do (`lockRoomExecutionAuthority`), since a Room write that
+  inserts a Project-scoped row (an Agent's Project link, a conversation, a
+  frozen audience, a Run) takes that key lock through its foreign key. So the
+  roster writers, invitation decision and activation
+  (`decideInvitation`, `share_history=false` freezing and the "Shared
+  conversation" draft), `createConversationDraft`, send, retry and
+  continuation all keep that order; a concurrent cross-Project Agent command
+  waits instead of deadlocking (`server/test/pluginProjectBindingDb.test.ts`,
+  two connections each). Run claim and dispatch resolve the Room a Run
+  executes in with or without a Run Group (`runExecutionPlacement`);
+  `checkRunExecutionAuthorization` then requires, for an ordinary or a plugin
+  Agent alike, an active Room member inside that conversation's frozen
+  audience and an Agent usable there (`roomAgentUseSql`: active in the Room,
+  through the person's in-Project content read or a live Room grant). A Room
+  grant alone admits a cross-Project caller with or without a Run Group;
+  reading the Agent without the Room or the audience never does, and the grant
+  never reads the Agent (`server/test/pluginAgentRolesDb.test.ts`). Deciding a
   private-Agent share is the Agent owner's, who may be a reader and is exactly
   who a blocked invitation waits on; claiming a suspended Room is the Project
   owner's or a Space owner/admin's. Folding those two under write authority is
@@ -611,6 +631,14 @@ scoped to one Room, can be revoked independently, and are never imported by
 generic Agent visibility checks. A member removal revokes their future grant
 while preserving historical output.
 
+The refusal that asks for this confirmation
+(`private_agent_share_confirmation_required`) carries the exact `member_ids` and
+the same people by name (`members: [{ user_id, display_name }]`, read in the
+refusing transaction), so a confirmation names who is covered; a stale list is
+refused again with the current one. `agent-candidates` also takes
+`source_role_id`, a server filter over the whole eligible set (the plugin
+assistant setup reads it to its last page).
+
 A standard Agent retaining another Project's `access_project_id` uses that same
 explicit Room-only authorization, even when `space_shared`. Only its owner can
 add it; confirmation is required even in a one-person Room, and concurrent
@@ -631,6 +659,72 @@ The current owner may transfer ownership to an active Room member with Project
 writer authority. If the owner loses Project-writer authority, a Project owner
 or Space owner/admin may atomically claim the suspended Room; this reactivates
 or inserts the claimant's Room membership without deleting history.
+
+### Conversation audience
+
+A Room's audience can grow; an existing conversation's does not grow with it
+unless the invitation says so ([ADR 0038](../decisions/0038-conversation-audience-on-room-join.md)).
+A Room is one person's or several people's by its human audience; how many
+Agents it holds is independent of that.
+
+- **Invitation.** `POST /api/v1/rooms/:roomId/invitations` accepts
+  `share_history` (default `false`). A pending invitation with the other
+  choice is replaced. The invitation response carries `share_history` and,
+  for the inviter and invitee once active, `shared_conversation_id`.
+- **Activation** (`rosterService.activateInvitation`, under the Room lock,
+  before the member row): when `share_history` is false,
+  `freezeConversationAudiences` (`rooms/conversationAudience.ts`) records every
+  unfrozen conversation of the Room (active, archived and recycle bin) in
+  `room_conversation_audiences`, plus one `room_conversation_audience_members`
+  row per person `roomAudience` returns. That is the read gate's audience, so a
+  mainline's is every Project reader. It then opens a draft titled
+  "Shared conversation" (`metadata_json.opened_for_invitation_id`). A Room with
+  no conversation freezes and opens nothing. Already-frozen conversations are
+  never widened, whatever a later invitation chooses.
+- **Reads.** `roomConversationAudienceSql` (`access/contentAccessSql.ts`) is
+  ANDed into every conversation-scoped read the Room gate covers:
+  - `getConversation(…, viewer)`, `listConversations` (with counts), the
+    Project conversation list, Rooms index counts and last activity, and draft
+    reuse;
+  - archive, restore and delete by id (404);
+  - `getRoomConversation` (messages, references, live input), attachments,
+    media, input resources and Skills;
+  - attention reads, Run groups (`isActiveRoomUser(…, sessionId)`), and Runs and
+    their work products (`roomRunReadAccessSql`, which covers Run streams too);
+  - Run execution admission;
+  - Runtime Context work-context scopes and delivery locks.
+
+  `roomAudience(db, space, room, sessionId)` answers "who already read this
+  conversation" for Thread References and plugin data audiences.
+- **Display.** `RoomConversation.audience` and `ProjectConversation.audience`
+  are `{ restricted, other_member_names }` (`ConversationAudienceSchema`) on
+  the Room list, detail and the Project conversation list, so a conversation
+  always names who actually reads it. Every label reads the freeze's own
+  predicate, `roomAudienceMemberSql` (`access/contentAccessSql.ts`): every
+  Project reader for the mainline, enrolled on its roster or not; the active
+  roster for a limited Room; in both cases an active user who still reads the
+  Project. `roomAudience`, `conversationAudienceColumnsSql` and
+  `ROOM_AUDIENCE_SQL` (Room list, detail, Project list sections) all use it,
+  so a label never omits an unenrolled mainline reader and never names
+  somebody who lost the Project. The Rooms index `person_count` counts with the
+  same predicate (the viewer included), so its number matches the names. The web names a frozen conversation's own
+  audience in the desktop and mobile Room headers, the Project chat panel and
+  the Project conversation list; a phone drawer that lists a Room's
+  conversations names the Room's audience.
+- **Approvals.** `RoomPendingApproval.share_history` (the Rooms page) and
+  `RoomInvitation.share_history` (the Members view's own approvals) tell a
+  private Agent's owner, before approving, whether the invitee is given the
+  Room's earlier conversations. The roster keeps the chosen person and history choice when an
+  invitation fails, including after its share confirmation.
+- **A Room of one.** The limited-Room dialog creates a Room with nobody else
+  picked: the creator and the Agents they add.
+- **Agent notes.** A note records `memory_entries.origin_session_id`. The
+  dispatch audience is the target conversation's (`renderRoomStandingContext`
+  takes `sessionId`). A note reaches a dispatch only if that audience can read
+  its conversation. A note without one is held to every frozen conversation
+  of its Room created no later than the note.
+- **Lifecycle.** Frozen audience rows stay on a recycle-bin tombstone
+  (`SESSION_BINDING_REFERENCES`) and go with the session row.
 
 ## Per-message identity
 
@@ -927,8 +1021,9 @@ and attached Folder Locations. Each File result shows its source and relative
 path, and selecting it creates a structured file reference shown as a path chip
 inside the message input; the server
 re-authorizes and snapshots the text file before dispatch. Image-only messages
-are valid when every selected runtime/model supports images, otherwise the
-composer names the incompatible Agent and blocks send. For a Host-owned ACP
+are valid when every selected runtime/model supports images. The current-turn
+Delivery uses descriptors from the persisted attachments, including on retry.
+The composer blocks incompatible sends and names the incompatible Agent. For a Host-owned ACP
 profile, support comes from the selected installation's initialize capability;
 Provider/model metadata is part of the decision only when the profile has a
 server Provider binding. A normal Host Run receives the managed file as a
@@ -2027,7 +2122,9 @@ is slow to answer is decided on the cached reading.
   picked content into a thread that already exists
 - `POST /api/v1/rooms/:roomId/conversations/:sessionId/proposal-continuations`
   — continue the conversation after a Proposal it produced was decided; the
-  body names the Proposal id, never instruction text
+  body names the Proposal id.
+  The web client follows the `run_ids` in the command receipt and refreshes
+  visible replies through the normal Room transcript read.
 - `GET /api/v1/projects/:projectId/conversations` — the Project's list of
   conversations across the viewer's Rooms, with `empty_rooms`; enrols the
   viewer in the mainline
@@ -2175,6 +2272,9 @@ is slow to answer is decided on the cached reading.
   Assistant; roster mutation cannot replace or remove it.
 - Invitation activation is atomic with member insertion and grant creation;
   any roster revision, owner, or Agent-status mismatch invalidates approvals.
+- An invitation without history freezes every existing conversation to its
+  current audience in that same transaction; a frozen conversation is never
+  widened, and every conversation-scoped read ANDs its audience term.
 - There is at most one active Room owner. Removing an owner requires transfer;
   claim is permitted only while the previous owner can no longer write the
   bound Project.

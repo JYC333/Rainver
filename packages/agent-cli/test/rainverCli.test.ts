@@ -1,13 +1,12 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createServer, type Server } from "node:http";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startLocalToolBridge } from "../src/localBridge.ts";
-import { toolHttpRequest } from "../src/toolHttp.ts";
+import type { ToolRequest } from "../src/toolRequest.ts";
 
 /**
  * The `rainver` command, run as the agent runs it.
@@ -30,44 +29,24 @@ const CLI = existsSync(BUILT)
   ? BUILT
   : fileURLToPath(new URL("../src/rainver.ts", import.meta.url));
 
-interface Received {
-  method: string;
-  url: string;
-  authorization: string | undefined;
-  idempotencyKey: string | undefined;
-  body: string;
-}
-
-let server: Server;
-let baseUrl: string;
+type Received = ToolRequest;
+let root: string;
+let bridge: Awaited<ReturnType<typeof startLocalToolBridge>>;
 let received: Received[] = [];
 let respond: (received: Received) => { status: number; body: string } = () => ({ status: 200, body: "{}" });
 
 beforeAll(async () => {
-  server = createServer((request, response) => {
-    let body = "";
-    request.on("data", (chunk) => { body += String(chunk); });
-    request.on("end", () => {
-      const entry: Received = {
-        method: request.method ?? "",
-        url: request.url ?? "",
-        authorization: request.headers.authorization,
-        idempotencyKey: request.headers["idempotency-key"] as string | undefined,
-        body,
-      };
-      received.push(entry);
-      const answer = respond(entry);
-      response.writeHead(answer.status, { "content-type": "application/json" });
-      response.end(answer.body);
-    });
+  root = await mkdtemp(join(tmpdir(), "rainver-cli-test-"));
+  bridge = await startLocalToolBridge(root, async (request) => {
+    received.push(request);
+    const answer = respond(request);
+    return { status: answer.status, text: answer.body };
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
-  baseUrl = typeof address === "object" && address ? `http://127.0.0.1:${address.port}` : "";
 });
 
 afterAll(async () => {
-  await new Promise<void>((resolve) => server.close(() => resolve()));
+  await bridge.close();
+  await rm(root, { recursive: true, force: true });
 });
 
 async function runCli(
@@ -81,11 +60,7 @@ async function runCli(
     const child = spawn(process.execPath, ["--experimental-strip-types", entry, ...args], {
       env: {
         ...process.env,
-        RAINVER_API_URL: baseUrl,
-        RAINVER_RUN_ID: "run-1",
-        RAINVER_TOOL_TOKEN: "token-1",
-        // Hermetic when the suite itself runs inside a Rainver Run.
-        RAINVER_TOOL_BRIDGE: undefined,
+        RAINVER_TOOL_BRIDGE: bridge.endpoint,
         ...env,
       } as NodeJS.ProcessEnv,
       stdio: ["pipe", "pipe", "pipe"],
@@ -107,7 +82,7 @@ describe("rainver list / describe", () => {
     expect(result.code).toBe(0);
     expect(JSON.parse(result.stdout)).toEqual({ tools: [] });
   });
-  it("reads the run's tool surface with its own bearer token", async () => {
+  it("reads the run's tool surface through its private local bridge", async () => {
     respond = () => ({ status: 200, body: JSON.stringify({ tools: [{ name: "task.list" }] }) });
 
     const result = await runCli(["list"]);
@@ -116,8 +91,7 @@ describe("rainver list / describe", () => {
     expect(JSON.parse(result.stdout)).toEqual({ tools: [{ name: "task.list" }] });
     expect(received[0]).toMatchObject({
       method: "GET",
-      url: "/api/v1/runs/run-1/tools",
-      authorization: "Bearer token-1",
+      path: "tools",
     });
   });
 
@@ -126,14 +100,14 @@ describe("rainver list / describe", () => {
 
     await runCli(["describe", "task.report"]);
 
-    expect(received[0]!.url).toBe("/api/v1/runs/run-1/tools/task.report");
+    expect(received[0]!.path).toBe("tools/task.report");
   });
 
   it("refuses to run without the run's environment", async () => {
-    const result = await runCli(["list"], { RAINVER_TOOL_TOKEN: "" });
+    const result = await runCli(["list"], { RAINVER_TOOL_BRIDGE: "" });
 
     expect(result.code).toBe(2);
-    expect(result.stderr).toContain("RAINVER_TOOL_TOKEN");
+    expect(result.stderr).toContain("RAINVER_TOOL_BRIDGE");
   });
 });
 
@@ -147,7 +121,7 @@ describe("rainver help", () => {
     ["call", "source.material.submit", "--help"],
     ["call", "source.material.submit", "-h"],
   ].map((args) => ({ args })))("prints local usage for $args without a tool identity", async ({ args }) => {
-    const result = await runCli(args, { RAINVER_TOOL_TOKEN: "" });
+    const result = await runCli(args, { RAINVER_TOOL_BRIDGE: "" });
     expect(result).toMatchObject({ code: 0, stderr: "" });
     if (["list", "describe", "call"].includes(args[0]!)) {
       expect(result.stdout).toMatch(new RegExp(`^Usage: rainver ${args[0]}(?: |\\n)`));
@@ -172,7 +146,7 @@ describe("rainver help", () => {
     expect(received).toHaveLength(0);
   });
 
-  it("does not dispatch call --help through either configured transport", async () => {
+  it("does not dispatch call --help through the local tool bridge", async () => {
     respond = () => ({ status: 200, body: JSON.stringify({ ok: false, error_code: "system_action_not_granted" }) });
     const direct = await runCli(["call", "--help"]);
     expect(direct).toMatchObject({ code: 0, stderr: "" });
@@ -185,7 +159,7 @@ describe("rainver help", () => {
       return { status: 200, text: JSON.stringify({ ok: false, error_code: "system_action_not_granted" }) };
     });
     try {
-      const bridged = await runCli(["call", "--help"], { RAINVER_TOOL_BRIDGE: host.directory });
+      const bridged = await runCli(["call", "--help"], { RAINVER_TOOL_BRIDGE: host.endpoint });
       expect(bridged).toMatchObject({ code: 0, stderr: "" });
       expect(bridged.stdout).toContain("rainver call <action>");
       expect(calls).toBe(0);
@@ -202,29 +176,26 @@ describe("rainver call", () => {
     const input = { summary: "Use --help or -h to read command help" };
     const result = await runCli(["call", "task.report", JSON.stringify(input)]);
     expect(result.code).toBe(0);
-    expect(JSON.parse(received[0]!.body)).toEqual(input);
+    expect(received[0]!.body).toEqual(input);
   });
 
   it("uses the Host bridge with command networking disabled and no server credential", async () => {
     const root = await mkdtemp(join(tmpdir(), "rainver-cli-bridge-"));
     const denyNetwork = join(root, "deny-network.mjs");
     await writeFile(denyNetwork, 'globalThis.fetch = () => { throw new Error("command networking disabled"); };');
-    const host = await startLocalToolBridge(root, (request, signal) =>
-      toolHttpRequest({ apiUrl: baseUrl, runId: "run-1", token: "host-only" }, request, signal));
     try {
       respond = () => ({ status: 200, body: JSON.stringify({ ok: true }) });
-      const env = { RAINVER_TOOL_BRIDGE: host.directory, RAINVER_TOOL_TOKEN: "", RAINVER_API_URL: "http://127.0.0.1:1", NODE_OPTIONS: `--import=${denyNetwork}` };
+      const env = { NODE_OPTIONS: `--import=${denyNetwork}` };
       const result = await runCli(["call", "task.report", '{"summary":"done"}'], env);
       expect(result).toMatchObject({ code: 0, stderr: "" });
-      expect(received[0]).toMatchObject({ authorization: "Bearer host-only", method: "POST", body: '{"summary":"done"}' });
-      expect(received[0]!.idempotencyKey).toMatch(/^[0-9a-f-]{36}$/);
+      expect(received[0]).toMatchObject({ method: "POST", body: { summary: "done" } });
+      expect(received[0]!.id).toMatch(/^[0-9a-f-]{36}$/);
       respond = () => ({ status: 403, body: JSON.stringify({ ok: false, error: "not granted" }) });
       const denied = await runCli(["list"], env);
       expect(denied.code).toBe(1);
-      expect(denied.stderr).toContain("HTTP 403");
+      expect(denied.stderr).toContain("status 403");
       expect(JSON.parse(denied.stdout)).toMatchObject({ error: "not granted" });
     } finally {
-      await host.close();
       await rm(root, { recursive: true, force: true });
     }
   });
@@ -235,10 +206,10 @@ describe("rainver call", () => {
     const result = await runCli(["call", "task.report", '{"task_id":"task-1","summary":"done"}']);
 
     expect(result.code).toBe(0);
-    expect(received[0]).toMatchObject({ method: "POST", url: "/api/v1/runs/run-1/tools/task.report" });
-    expect(JSON.parse(received[0]!.body)).toEqual({ task_id: "task-1", summary: "done" });
+    expect(received[0]).toMatchObject({ method: "POST", path: "tools/task.report" });
+    expect(received[0]!.body).toEqual({ task_id: "task-1", summary: "done" });
     // A retried call must advance the work once, which is what the key is for.
-    expect(received[0]!.idempotencyKey).toMatch(/^[0-9a-f-]{36}$/);
+    expect((received[0]!.idempotency_key ?? received[0]!.id)).toMatch(/^[0-9a-f-]{36}$/);
   });
 
   it("reads the input from a file and from stdin", async () => {
@@ -248,10 +219,10 @@ describe("rainver call", () => {
     await writeFile(file, JSON.stringify({ task_id: "from-file" }), "utf8");
 
     await runCli(["call", "task.report", `@${file}`]);
-    expect(JSON.parse(received[0]!.body)).toEqual({ task_id: "from-file" });
+    expect(received[0]!.body).toEqual({ task_id: "from-file" });
 
     await runCli(["call", "task.report", "-"], {}, JSON.stringify({ task_id: "from-stdin" }));
-    expect(JSON.parse(received[0]!.body)).toEqual({ task_id: "from-stdin" });
+    expect(received[0]!.body).toEqual({ task_id: "from-stdin" });
   });
 
   it("sends an empty object when no input is given", async () => {
@@ -259,7 +230,7 @@ describe("rainver call", () => {
 
     await runCli(["call", "task.list"]);
 
-    expect(JSON.parse(received[0]!.body)).toEqual({});
+    expect(received[0]!.body).toEqual({});
   });
 
   it("fails without calling the server when the input is not a JSON object", async () => {
@@ -292,11 +263,11 @@ describe("rainver call", () => {
     expect(JSON.parse(result.stdout)).toMatchObject({ error: "bad input" });
   });
 
-  it("reports an unreachable control plane instead of hanging", async () => {
-    const result = await runCli(["list"], { RAINVER_API_URL: "http://127.0.0.1:1" });
+  it("reports a closed local tool bridge instead of hanging", async () => {
+    const result = await runCli(["list"], { RAINVER_TOOL_BRIDGE: root });
 
     expect(result.code).toBe(1);
-    expect(result.stderr).toContain("Could not reach Rainver");
+    expect(result.stderr).toContain("no longer available");
   });
 
   it("needs an action name", async () => {
@@ -312,11 +283,11 @@ describe('explicit logical retry keys',()=>{
  it('forwards a deliberate key across separate CLI invocations while default calls remain distinct',async()=>{
   respond=()=>({status:200,body:'{}'});
   expect((await runCli(['call','task.report','--idempotency-key','retained-key','{}'])).code).toBe(0);
-  expect(received[0].idempotencyKey).toBe('retained-key');
+  expect((received[0]!.idempotency_key ?? received[0]!.id)).toBe('retained-key');
   expect((await runCli(['call','task.report','--idempotency-key','retained-key','{}'])).code).toBe(0);
-  expect(received[0].idempotencyKey).toBe('retained-key');
-  await runCli(['call','task.report','{}']);const first=received[0].idempotencyKey;
-  await runCli(['call','task.report','{}']);expect(received[0].idempotencyKey).not.toBe(first);
+  expect((received[0]!.idempotency_key ?? received[0]!.id)).toBe('retained-key');
+  await runCli(['call','task.report','{}']);const first=(received[0]!.idempotency_key ?? received[0]!.id);
+  await runCli(['call','task.report','{}']);expect((received[0]!.idempotency_key ?? received[0]!.id)).not.toBe(first);
  });
  it('does not retry a retryable conflict automatically',async()=>{
   respond=()=>({status:409,body:JSON.stringify({error:{code:'idempotency_in_progress',retryable:true}})});

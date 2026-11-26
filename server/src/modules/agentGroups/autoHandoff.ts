@@ -75,7 +75,7 @@ export async function enqueueAutomaticHandoff(
     || estimateModelTokens(original.prompt ?? "") > plan.budget_tokens) return false;
   const roomId = objectValue(override.chat_turn).room_id;
   if (typeof roomId !== "string") return false;
-  const standing = await renderRoomStandingContext(db, { spaceId: original.space_id, roomId, agentId: original.agent_id });
+  const standing = await renderRoomStandingContext(db, { spaceId: original.space_id, roomId, sessionId: original.session_id, agentId: original.agent_id });
   const seedOverhead = estimateModelTokens([standing.text, handoffPromptBlock(""), original.prompt].join("\n\n"));
   if (seedOverhead > plan.budget_tokens) return false;
   const summaryPrompt = await renderHandoffPrompt(db, {
@@ -222,7 +222,7 @@ export async function settleAutomaticHandoff(db: Queryable, summary: RunRecord):
     const text = artifact && actor && audience.includes(actor)
       ? await loadHandoffText(tx, summary.space_id, artifact, audience) : null;
     const standing = text && room && original.agent_id ? await renderRoomStandingContext(tx, {
-      spaceId: original.space_id, roomId: room.id, agentId: original.agent_id,
+      spaceId: original.space_id, roomId: room.id, sessionId: summary.session_id ?? null, agentId: original.agent_id,
     }) : null;
     const prompt = text ? [standing?.text, handoffPromptBlock(text), original.prompt].filter(Boolean).join("\n\n") : null;
     const runs = new PgRunRepository(tx);

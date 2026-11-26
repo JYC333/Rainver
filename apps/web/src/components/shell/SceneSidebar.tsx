@@ -1,17 +1,19 @@
-import { Link, useLocation, useSearchParams } from 'react-router-dom'
+import { useLocation, useSearchParams } from 'react-router-dom'
+import { NavLinkOrInert } from '../../core/spaceNav'
 import { PanelLeftClose } from 'lucide-react'
 import { cn } from '../../lib/utils'
-import { spacePath, stripSpacePrefix, type RouteSceneItem, type Scene } from '../../core/navigation'
+import { spaceHref, stripSpacePrefix, type RouteSceneItem, type Scene } from '../../core/navigation'
 import { useAppTranslation } from '../../i18n'
 
 /** Build the in-space destination for a filter-scene item (value '' clears the filter). */
-function filterItemTo(spaceId: string | null, base: string, filterKey: string, value: string): string {
+function filterItemTo(spaceId: string | null, base: string, filterKey: string, value: string): string | null {
   const logical = value ? `${base}?${filterKey}=${encodeURIComponent(value)}` : base
-  return spacePath(spaceId, logical)
+  return spaceHref(spaceId, logical)
 }
 
 interface ActiveItem {
-  to: string
+  /** `null` while no Space is known: shown inert (`NavLinkOrInert`). */
+  to: string | null
   label: string
   active: boolean
   depth: number
@@ -56,7 +58,7 @@ function sceneItems(
   }
   const bestLen = Math.max(-1, ...routeItems.filter(it => matches(it.to)).map(it => it.to.length))
   return routeItems.map(it => ({
-    to: spacePath(spaceId, it.to), label: it.label, depth: it.depth,
+    to: spaceHref(spaceId, it.to), label: it.label, depth: it.depth,
     active: matches(it.to) && it.to.length === bestLen,
   }))
 }
@@ -97,7 +99,7 @@ export function SceneSidebar({
       </div>
       <div className="flex flex-col gap-0.5 p-2 overflow-y-auto">
         {items.map(it => (
-          <Link
+          <NavLinkOrInert
             key={it.label}
             to={it.to}
             aria-current={it.active ? 'page' : undefined}
@@ -110,7 +112,7 @@ export function SceneSidebar({
             )}
           >
             {t(`scene.${it.label.toLowerCase().replace(/ /g, '_')}`, { defaultValue: it.label })}
-          </Link>
+          </NavLinkOrInert>
         ))}
       </div>
     </aside>
@@ -134,7 +136,7 @@ export function SceneTabs({
   return (
     <div className="md:hidden flex gap-1.5 overflow-x-auto border-b border-border bg-card px-3 py-2">
       {items.map(it => (
-        <Link
+        <NavLinkOrInert
           key={it.label}
           to={it.to}
           aria-current={it.active ? 'page' : undefined}
@@ -147,7 +149,7 @@ export function SceneTabs({
           )}
         >
           {t(`scene.${it.label.toLowerCase().replace(/ /g, '_')}`, { defaultValue: it.label })}
-        </Link>
+        </NavLinkOrInert>
       ))}
     </div>
   )

@@ -7,16 +7,20 @@ import { promisify } from "node:util";
 import type { RainverPlugin } from "@rainver/protocol";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { preparePluginSquashArchive } from "../src/db/migrationSquash.js";
-import { BUILT_IN_PLUGINS } from "../src/modules/plugins/builtInPlugins.js";
 import { convertBundledPluginMigrationHistory, convertPluginMigrationHistory } from "../src/modules/plugins/migrationConversion.js";
 import { migrateOperationPlugin } from "../src/modules/plugins/operationMigrations.js";
 import { operationPackageIdentity } from "../src/modules/plugins/packageIdentity.js";
 import { mergedPluginMigrationSql, originalPluginMigrations, type PluginMigrationSql } from "../src/modules/plugins/migrationSql.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { buildServerDist } from "./support/briefingWorkerHarness.js";
+import { retiredApplicationsRelease } from "./support/retiredApplicationsRelease.js";
 
 const db = useTestDatabase(import.meta.filename);
-const shipped = BUILT_IN_PLUGINS.find(({ id }) => id === "applications")!;
+/**
+ * The retired `applications` release (now `phd_application`): its frozen published
+ * migration is a nested squash, so it stays the converter's real-world fixture.
+ */
+const shipped = retiredApplicationsRelease();
 const COMBINED_ID = "0000_applications_baseline";
 const TARGET_ID = "0000_applications_and_mail_facts";
 const shippedSources = originalPluginMigrations(shipped.migrations![0].sql)!;
@@ -154,7 +158,7 @@ it.for([0, 1, 2, 3])("converts Applications development journal variant %i to th
     .toEqual([{ id: "existing", project_shared: false }]);
 });
 
-it("previews through the shell entrypoint against the actual bundled Applications baseline", async () => {
+it("previews through the shell entrypoint: a renamed package is not a squash conversion in the current image", async () => {
   prepare();
   await buildServerDist();
   await migrateOperationPlugin(db.pool, withMigrations(predecessors));
@@ -166,13 +170,12 @@ it("previews through the shell entrypoint against the actual bundled Application
     SERVER_DATABASE_URL: db.connectionUri,
     SERVER_OFFICIAL_PLUGINS_DIR: fileURLToPath(new URL("../dist/official-plugins/", import.meta.url)),
   };
-  // The archive targets the baseline-only chain; the shipped image appends a migration after it, so only the
-  // bundled conversion (below) applies to it.
+  // This image bundles only the new package. The retired ID is excluded from bundled conversion.
   await expect(run("bash", [script, "convert", "--host", "--source", sourceDir, "--target", targetDir], { env }))
     .rejects.toThrow(/must match exactly one bundled plugin in the selected image/);
   const helper = fileURLToPath(new URL("../../ops/scripts/db/migration-artifacts.mjs", import.meta.url));
   const automatic = await run(process.execPath, [helper, "preview-plugins", "--home", root], { env });
-  expect(automatic.stdout.trim()).toBe("1");
+  expect(automatic.stdout.trim()).toBe("0");
   expect(await journal()).toHaveLength(predecessors.length);
 }, 90_000);
 

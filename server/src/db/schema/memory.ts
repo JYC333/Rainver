@@ -60,6 +60,12 @@ export const memoryEntries = pgTable("memory_entries", {
 	// the owner, and always null for a persona, which has no origin Room and is
 	// delivered everywhere.
 	originRoomId: varchar("origin_room_id", { length: 36 }),
+	// The Room conversation the note was learned in, when known. A conversation
+	// can be narrower than its Room (`room_conversation_audiences`); delivery
+	// then asks that conversation's audience. No foreign key: a purged
+	// conversation leaves the id, and delivery treats a note whose conversation
+	// is gone as if its origin were unknown (the conservative Room-wide rule).
+	originSessionId: varchar("origin_session_id", { length: 36 }),
 }, (table): PgTableExtraConfigValue[] => [
 	index("ix_memory_entries_agent_id").using("btree", table.agentId.asc().nullsLast()),
 	index("ix_memory_entries_created_from_proposal_id").using("btree", table.createdFromProposalId.asc().nullsLast()),

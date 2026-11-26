@@ -6,8 +6,8 @@ import type {
   AgentRuntimeProfileCreateBody,
   AgentRuntimeProfileOut,
   AgentRuntimeProfileUpdateBody,
-  AgentTemplateOut,
-  AgentTemplateVersionOut,
+  AgentRoleOut,
+  AgentRoleVersionOut,
   AgentUpdateBody,
   AgentVersionOut,
   AskSpaceRequest,
@@ -24,7 +24,7 @@ import type {
   ConversationBackendBinding,
   ConversationBackendCatalog,
   ConversationRetryResponse,
-  CreateAgentFromTemplateBody,
+  CreateAgentFromRoleBody,
   Page,
   Proposal,
   Run,
@@ -46,6 +46,8 @@ import type { RequestOptions } from './transport'
 import { ApiRequestError, get } from './transport'
 import type {
   ConversationInputPart,
+  MyAgentsPage,
+  MyAgentsQuery,
   UsageAccuracy,
   UsageBudgetPreviewResponse,
   UsageDimensionsResponse,
@@ -69,6 +71,13 @@ async function runtimeProfile(receipt:{agent_id:string;profile_id:string;space_i
 export const agentsApi = {
   list: (params: Record<string, string> = {}, options: { spaceId?: string } = {}) =>
     get<AgentOut[]>('/agents?' + new URLSearchParams(params), { spaceId: options.spaceId }),
+  /** My Agents across every Space the person is in (`GET /me/agents`); each entry carries its own Space. */
+  listMine: (params: { manage?: 'all' | 'manageable'; source?: MyAgentsQuery['source']; limit?: number; offset?: number } = {}, options: RequestOptions = {}) => {
+    const query = new URLSearchParams()
+    for (const [key, value] of Object.entries(params)) if (value !== undefined) query.set(key, String(value))
+    // Person-scoped: never carries the browsed Space, which may be stale or not yet resolved.
+    return get<MyAgentsPage>(`/me/agents?${query}`, { ...options, includeSpaceContext: false })
+  },
   get: (agentId: string, options: RequestOptions = {}) => get<AgentOut>(`/agents/${agentId}`, options),
   /** The managed Assistant instance for a scope: the Space's own, or a Project's (null before its first Room message). */
   getSystemAssistant: (projectId?: string | null) =>
@@ -184,17 +193,17 @@ export const agentsApi = {
   listRunsForAgent:  (agentId: string, options: RequestOptions = {})   => get<Run[]>(`/agents/${agentId}/runs`, options),
 }
 
-// ── Agent Templates (reusable factories) ────────────────────────────────────
-export const agentTemplatesApi = {
+// ── Agent Roles (reusable factories) ────────────────────────────────────
+export const agentRolesApi = {
   list: (params: Record<string, string> = {}) =>
-    get<AgentTemplateOut[]>('/agent-templates?' + new URLSearchParams(params)),
-  get: (templateId: string) => get<AgentTemplateOut>(`/agent-templates/${templateId}`),
-  listVersions: (templateId: string) =>
-    get<AgentTemplateVersionOut[]>(`/agent-templates/${templateId}/versions`),
-  getVersion: (templateId: string, versionId: string) =>
-    get<AgentTemplateVersionOut>(`/agent-templates/${templateId}/versions/${versionId}`),
-  createAgent: async (templateId: string, body: CreateAgentFromTemplateBody = {}, key: string = crypto.randomUUID()) => {
-    const receipt = await commandReceipt('agent.template.instantiate', { ...body, template_id: templateId }, key)
+    get<AgentRoleOut[]>('/agent-roles?' + new URLSearchParams(params)),
+  get: (roleId: string) => get<AgentRoleOut>(`/agent-roles/${roleId}`),
+  listVersions: (roleId: string) =>
+    get<AgentRoleVersionOut[]>(`/agent-roles/${roleId}/versions`),
+  getVersion: (roleId: string, versionId: string) =>
+    get<AgentRoleVersionOut>(`/agent-roles/${roleId}/versions/${versionId}`),
+  createAgent: async (roleId: string, body: CreateAgentFromRoleBody = {}, key: string = crypto.randomUUID()) => {
+    const receipt = await commandReceipt('agent.role.instantiate', { ...body, role_id: roleId }, key)
     return get<AgentOut>(`/agents/${encodeURIComponent(receipt.agent_id)}`, { spaceId: receipt.space_id })
   },
 }

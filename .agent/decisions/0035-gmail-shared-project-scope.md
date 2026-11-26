@@ -1,5 +1,10 @@
 # ADR 0035 — Gmail: one authorization across a shared Project
 
+> The former `applications` package is now
+> [PhD Application](../architecture/OFFICIAL_OPTIONAL_MODULES.md#phd-application-package)
+> (`phd_application`). This ADR uses the package, tool and schema names from
+> the time of the decision.
+
 Date: 2026-11-22
 Status: accepted. Implemented in the workspace branch with synthetic mail on real PostgreSQL;
 no real mailbox, Google project or live rule has been used, and Google access stays read-only.

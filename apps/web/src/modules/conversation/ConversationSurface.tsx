@@ -1,3 +1,5 @@
+import { usePeriodicRefresh } from '../../hooks/usePeriodicRefresh'
+import { sessionEpoch } from '../../lib/sessionResidue'
 import { useConversationSettings } from './useConversationSettings'
 import type { ConversationExecutionPreflightProps } from './ConversationExecutionPreflight'
 import {ConversationUsage} from './ConversationUsage'
@@ -10,13 +12,23 @@ import { ConversationFilePreview } from "./ConversationFilePreview"
 import { useAttentionViewing } from '../agent_work/AgentAttentionProvider'
 import { mergeAbortSignals } from '../../lib/mergeAbortSignals'
 import { ConversationScope, useConversationScope } from './ConversationScope'
+import {
+  conversationPageTicket,
+  invalidateConversationPages,
+  isConversationAccessRefusal,
+  isCurrentConversationPageTicket,
+  messageFingerprint,
+  readConversationPage,
+  storeConversationPage,
+  type ConversationPageScope,
+} from '../../lib/conversationPageCache'
 import { cloneElement, isValidElement, Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Bot, Loader2, MessagesSquare, Quote, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { agentsApi, ApiRequestError, roomsApi, runsApi } from '../../api/client'
 import { useSpace } from '../../contexts/SpaceContext'
 import i18n, { useAppTranslation } from '../../i18n'
-import { formatTime } from '../../i18n/format'
+import { formatConversationTimestamp, formatDateTime } from '../../i18n/format'
 import { errMsg } from '../../lib/utils'
 import type {
   ThreadReferencePick,
@@ -58,7 +70,7 @@ import { RoomLiveInputChoice, RoomLiveInputStatus, type RoomLiveDelivery } from 
 import { ConversationInputPartsView, type ConversationInputFileSource } from './ConversationInputComposer'
 import type { CurrentFileAttachment } from '../projects/ProjectFolderConversationContext'
 import { clearConversationDraft } from './conversationDraft'
-import { withPastedText } from './ConversationDraftEditor'
+import { ConversationUserText, isLongPaste, withPastedText } from './ConversationDraftEditor'
 import { useConversationDraft } from './useConversationDraft'
 import { ConversationRunControls } from './ConversationRunControls'
 import { ConversationActivity } from './ConversationActivity'
@@ -106,6 +118,11 @@ type PendingProposalContinuation = {
   phase: 'submitting' | 'running' | 'failed'
   runIds: string[]
   error?: string
+}
+
+function isTransientNetworkFailure(error: unknown): boolean {
+  return error instanceof TypeError
+    && /^(?:FetchEvent\.respondWith received an error: )?(?:Load failed|Failed to fetch|NetworkError when attempting to fetch resource\.?)$/i.test(error.message)
 }
 
 const MESSAGE_PAGE_SIZE = 50
@@ -217,6 +234,14 @@ export function ConversationSurface(props: ConversationSurfaceProps) {
   const changedPermission = suppliedPermission !== undefined && permission.value !== suppliedPermission
   const permissionEpoch = permission.epoch + (changedPermission && (permission.value !== undefined || suppliedPermission === false) ? 1 : 0)
   if (changedPermission) setPermission({ value: suppliedPermission, epoch: permissionEpoch })
+  // A known access change for this Room: no cached page of it is shown again,
+  // and reads already in flight cannot store or display one.
+  const invalidatedPermission = useRef(permissionEpoch)
+  useEffect(() => {
+    if (invalidatedPermission.current === permissionEpoch) return
+    invalidatedPermission.current = permissionEpoch
+    invalidateConversationPages({ roomId: props.roomId })
+  }, [permissionEpoch, props.roomId])
   return <ConversationScope key={`${props.spaceId ?? ''}:${props.roomId}:${destination.epoch}:${userId}:${actionRole}:${props.readOnly}:${props.detail?.viewer_can_write}`} spaceId={props.spaceId} actionUserId={userId} actionRole={actionRole}>
     <ConversationSurfaceContent {...props} permissionEpoch={permissionEpoch} />
   </ConversationScope>
@@ -291,6 +316,18 @@ function ConversationSurfaceContent({
   const fetchedTurns = useRef(new Set<string>())
   const streamControllers = useRef(new Map<string, AbortController>())
   const requestSequence = useRef(0)
+  const refreshFailures = useRef(0)
+  const lastRefreshStartedAt = useRef(-Infinity)
+  // Whether an authoritative latest page has landed in this lifetime, and
+  // whether what is on screen is still the unconfirmed cached copy.
+  const authoritativePageRef = useRef(false)
+  const cachedDisplayRef = useRef(false)
+  const cacheUserId = scope.actionUserId ?? userId
+  const cacheScope = useMemo<ConversationPageScope | null>(() => (
+    conversationId && cacheUserId && quotaSpaceId
+      ? { userId: cacheUserId, spaceId: quotaSpaceId, role: scope.actionRole ?? '', roomId, conversationId, readOnly }
+      : null
+  ), [cacheUserId, conversationId, quotaSpaceId, readOnly, roomId, scope.actionRole])
   const scrolling = useConversationScroll(conversationId ? `${scope.spaceId}:${scope.actionUserId}:${scope.actionRole}:${roomId}:${conversationId}:${permissionEpoch}:${readOnly}` : null, messagesReady)
   const previousConversationId = useRef<string | null | undefined>(undefined)
   const [resetToken, setResetToken] = useState(0)
@@ -473,8 +510,30 @@ function ConversationSurfaceContent({
     // unaware that a conversation can be absent.
     if (!conversationId) return
     const sequence = ++requestSequence.current
-    const page = await roomsApi.messages(roomId, conversationId, { limit: MESSAGE_PAGE_SIZE, offset: 0 }, scope)
-    if (scope.signal?.aborted || sequence !== requestSequence.current) return
+    const ticket = conversationPageTicket()
+    let page: Awaited<ReturnType<typeof roomsApi.messages>>
+    try {
+      page = await roomsApi.messages(roomId, conversationId, { limit: MESSAGE_PAGE_SIZE, offset: 0 }, scope)
+    } catch (error) {
+      if (isConversationAccessRefusal(error)) {
+        // Refused: no cached copy survives, and a page shown from it before
+        // any authoritative read is withdrawn rather than left on screen.
+        invalidateConversationPages({ roomId, conversationId })
+        if (cachedDisplayRef.current && !scope.signal?.aborted) {
+          cachedDisplayRef.current = false
+          setMessages([])
+          setHasOlderMessages(false)
+          setMessagesOwner(null)
+        }
+      }
+      throw error
+    }
+    if (scope.signal?.aborted || ticket.epoch !== sessionEpoch() || sequence !== requestSequence.current) return
+    refreshFailures.current = 0
+    authoritativePageRef.current = true
+    const replaceCached = cachedDisplayRef.current
+    cachedDisplayRef.current = false
+    if (cacheScope) storeConversationPage(cacheScope, { items: page.items, hasOlder: page.items.length === MESSAGE_PAGE_SIZE }, ticket)
     // Only the conversation this instance is reading. A poll issued before the
     // reader switched conversations lands after the switch — this component is
     // keyed by id, so the new instance's sequence guard does not cover the old
@@ -484,12 +543,13 @@ function ConversationSurfaceContent({
       conversationUpdatedRef.current?.(page.conversation)
     }
     setMessages(current =>
-      !options.replace && current.length > 0 && current.every(message => message.session_id === conversationId)
+      !options.replace && !replaceCached && current.length > 0 && current.every(message => message.session_id === conversationId)
         ? mergeMessages(current, page.items)
         : page.items)
     setMessagesOwner(conversationId)
     setHasOlderMessages(page.items.length === MESSAGE_PAGE_SIZE)
     setQueued(page.queued ?? [])
+    setMessagesLoading(false)
     refreshDiscussions(page.items)
     const runIds = uniqueIds([
       ...page.items.flatMap(message => messageRunIds(message)),
@@ -505,7 +565,7 @@ function ConversationSurfaceContent({
     // its turn would simply vanish along with the only account of what went
     // wrong, and a succeeded one would blink out until the next poll brought
     // the message back.
-  }, [conversationId, refreshDiscussions, refreshRuns, roomId, variant, scope])
+  }, [cacheScope, conversationId, refreshDiscussions, refreshRuns, roomId, variant, scope])
 
   const loadOlderMessages = useCallback(async () => {
     if (!hasOlderMessages || !conversationId) return
@@ -534,11 +594,11 @@ function ConversationSurfaceContent({
           controller.abort()
           streamControllers.current.delete(runId)
           notifyProjectFolderContentChanged(inputFileSourcesRef.current.map(source => source.projectFolderId))
-          void loadMessages()
+          void loadMessages().catch(() => undefined)
         },
       }).catch(error => {
-        if (controller.signal.aborted) return
-        toast.error(errMsg(error))
+        if (controller.signal.aborted || scope.signal?.aborted) return
+        if (!isTransientNetworkFailure(error)) toast.error(errMsg(error))
         // A stream that dies before the turn settles must not leave a turn on
         // screen saying the Agent is still working. Nothing else would ever
         // correct it — the stream is gone, and the read-once effect skips any
@@ -590,22 +650,60 @@ function ConversationSurfaceContent({
     setLiveDeliveries([])
     fetchedTurns.current.clear()
     referencesAttachedRef.current = false
+    refreshFailures.current = 0
+    lastRefreshStartedAt.current = -Infinity
+    authoritativePageRef.current = false
+    cachedDisplayRef.current = false
+    if (cacheScope && conversationId && readConversationPage(cacheScope)) {
+      // A revisit paints the held latest page only once a fresh read through
+      // the same Room/conversation gates has succeeded and still ends at the
+      // same newest message. The full page read below starts at the same
+      // time and replaces it; whichever lands first, the full page wins.
+      const ticket = conversationPageTicket()
+      roomsApi.messages(roomId, conversationId, { limit: 1, offset: 0 }, scope)
+        .then(probe => {
+          if (cancelled || scope.signal?.aborted || authoritativePageRef.current || !isCurrentConversationPageTicket(ticket)) return
+          const cached = readConversationPage(cacheScope)
+          if (!cached) return
+          if (probe.conversation?.id !== conversationId || messageFingerprint(probe.items.at(-1)) !== cached.newest) {
+            invalidateConversationPages({ roomId, conversationId })
+            return
+          }
+          cachedDisplayRef.current = true
+          setMessages(cached.items)
+          setMessagesOwner(conversationId)
+          setMessagesLoading(false)
+        })
+        .catch(error => { if (isConversationAccessRefusal(error)) invalidateConversationPages({ roomId, conversationId }) })
+    }
     loadMessages()
-      .catch(error => { if (!cancelled) { toast.error(errMsg(error)); readErrorRef.current?.(error) } })
+      .catch(error => {
+        if (!cancelled && !scope.signal?.aborted && !isTransientNetworkFailure(error)) {
+          toast.error(errMsg(error))
+          readErrorRef.current?.(error)
+        }
+      })
       .finally(() => { if (!cancelled) setMessagesLoading(false) })
     return () => { cancelled = true }
-  }, [conversationId, loadMessages, roomId])
+  }, [cacheScope, conversationId, loadMessages, roomId, scope])
 
   // Poll faster while a Run is live; never while a send is in flight, or a
   // poll issued before the send can land after it and hide the message just
   // written.
-  useEffect(() => {
-    const activeRunIds = Object.values(runs).filter(run => !isTerminalRunStatus(run.status)).map(run => run.id)
-    const timer = window.setInterval(() => {
-      if (!sendingRef.current) loadMessages().catch(() => undefined)
-    }, activeRunIds.length > 0 ? 2500 : 5000)
-    return () => window.clearInterval(timer)
-  }, [conversationId, loadMessages, roomId, runs])
+  const hasRunningRuns = Object.values(runs).some(run => !isTerminalRunStatus(run.status))
+  const refreshIntervalMs = hasRunningRuns ? 2500 : 5000
+  const refreshVisibleConversation = useCallback(async () => {
+    const now = performance.now()
+    if (sendingRef.current || now - lastRefreshStartedAt.current < refreshIntervalMs) return
+    lastRefreshStartedAt.current = now
+    try {
+      await loadMessages()
+    } catch (error) {
+      if (scope.signal?.aborted || document.visibilityState !== 'visible' || !isTransientNetworkFailure(error)) return
+      if (++refreshFailures.current === 3) toast.error(t('conversation_ui.surface.refresh_unavailable'))
+    }
+  }, [loadMessages, refreshIntervalMs, scope, t])
+  usePeriodicRefresh(refreshVisibleConversation, refreshIntervalMs, Boolean(conversationId))
 
   useEffect(() => {
     const controllers = streamControllers.current
@@ -1015,16 +1113,15 @@ function ConversationSurfaceContent({
       if (action === 'accept') await onBeforeContinue?.(action)
       if (scope.signal?.aborted) return
       if (!conversationId) throw new Error(t('conversation_ui.surface.unavailable'))
-      const dispatched = await roomsApi.continueAfterProposal(roomId, conversationId, {
+      const receipt = await roomsApi.continueAfterProposal(roomId, conversationId, {
         proposal_id: preview.proposal_id,
         backends: configuredBackendsFor(managerAgentId ? [managerAgentId] : []),
       }, scope)
       if (scope.signal?.aborted) return
       setContinuation(current => current && current.proposalId === preview.proposal_id
-        ? { ...current, phase: 'running', runIds: dispatched.run_ids }
+        ? { ...current, phase: 'running', runIds: receipt.run_ids }
         : current)
-      watchRuns(dispatched.run_ids)
-      if (dispatched.conversation) conversationUpdatedRef.current?.(dispatched.conversation)
+      watchRuns(receipt.run_ids)
     } catch (error) {
       setContinuation(current => current && current.proposalId === preview.proposal_id
         ? { ...current, phase: 'failed', error: errMsg(error) }
@@ -1599,7 +1696,8 @@ function RoomMessageView({
     <ConversationInputPartsView parts={message.input_parts} text={message.content} />
     {isWorkspaceIntegrationNotice(message)?<WorkspaceIntegrationNotice message={message}/>:turn
       ? <ConversationTurn turn={settledTurn(turn, turn.state, message.content)!} runHref={`/runs/${turn.run_id}`} className="max-w-none" />
-      : message.content && (previewRunId && !mine && !system ? <ConversationFilePreview key={previewRunId} runId={previewRunId}><MessageResponse>{message.content}</MessageResponse></ConversationFilePreview> : <MessageResponse>{message.content}</MessageResponse>)}
+      : mine ? <ConversationUserText text={message.content} />
+      : message.content && (previewRunId && !system ? <ConversationFilePreview key={previewRunId} runId={previewRunId}><MessageResponse>{message.content}</MessageResponse></ConversationFilePreview> : <MessageResponse>{message.content}</MessageResponse>)}
   </>
   return (
     // Who said it has to be readable at a glance in a column of mixed-language
@@ -1630,7 +1728,9 @@ function RoomMessageView({
           <div className={`mb-1 flex min-w-0 items-center gap-2 text-[11px] font-medium ${mine ? 'text-primary-foreground/70' : 'text-muted-foreground'}`}>
             {!mine && <Bot className="size-3.5 shrink-0" />}
             <span className="truncate">{label}</span>
-            <span className="shrink-0">{formatTime(message.created_at)}</span>
+            <time dateTime={message.created_at} title={formatDateTime(message.created_at)} className="min-w-0">
+              {formatConversationTimestamp(message.created_at)}
+            </time>
           </div>
           {/*
             An Agent reply is its turn, when one is held: the reply with the
@@ -1801,7 +1901,9 @@ function QueuedMessageCard({ message, author, canWithdraw, onWithdraw }: {
       role="status"
       data-testid={`queued-${message.id}`}
     >
-      <p className="whitespace-pre-wrap">{message.content}</p>
+      {isLongPaste(message.content)
+        ? <ConversationUserText text={message.content} />
+        : <p className="whitespace-pre-wrap">{message.content}</p>}
       <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
         <span className={failed ? 'text-destructive' : undefined}>
           {author} · {message.discussion_id ? t('conversation_ui.surface.queued_card.joining') : t('conversation_ui.surface.queued_card.ordinary')} · {failed ? t('conversation_ui.surface.queued_card.failed', { reason: message.failure_reason ?? t('conversation_ui.surface.queued_card.unknown_reason') }) : t('conversation_ui.surface.queued_card.pending')}

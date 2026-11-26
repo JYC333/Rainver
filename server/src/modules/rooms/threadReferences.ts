@@ -24,9 +24,8 @@ import {
   fitRoomSummaryToBudget,
 } from "./conversationContext.js";
 import { randomUUID } from "node:crypto";
-import { projectReaderIds } from "../projects/access.js";
 import { HttpError, dateIso, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
-import { contentAccessLevelSql, contentAccessSql, projectReadAccessSql } from "../access/contentAccessSql.js";
+import { contentAccessLevelSql, contentAccessSql, roomAudienceMemberSql, roomConversationAudienceSql } from "../access/contentAccessSql.js";
 import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 import { PgSessionRepository } from "../sessions/repository.js";
 import { PgRoomRepository } from "./repository.js";
@@ -235,25 +234,47 @@ export async function roomAudience(
   db: Queryable,
   spaceId: string,
   room: { id: string; project_id: string; is_mainline: boolean },
+  /**
+   * The conversation, when the question is about one: a conversation frozen
+   * to an earlier audience (`room_conversation_audiences`) is read by fewer
+   * people than its Room. Omitting it answers for the Room, which is never
+   * narrower — safe for "who would see this", wrong for "who already saw it".
+   */
+  sessionId: string | null = null,
 ): Promise<string[]> {
-  if (room.is_mainline) return projectReaderIds(db, spaceId, room.project_id);
-  const roster = await db.query<{ user_id: string }>(
-    // Roster **and** Project readability, which is what the conversation read
-    // itself requires — not the roster alone. Removing somebody from a
-    // Project deletes their `project_members` row and leaves every
-    // `room_user_members` row active, so a roster-only audience counts people
-    // who can no longer read anything here. A roster-only count over-warns
-    // while same-Project containment also keeps that person out of the target.
-    // Do not drop the predicate. One rule change would turn the warning into
-    // a missed disclosure.
-    `SELECT member.user_id
-       FROM room_user_members member
-       JOIN users u ON u.id = member.user_id AND u.status = 'active'
-      WHERE member.space_id = $1 AND member.room_id = $2 AND member.status = 'active'
-        AND ${projectReadAccessSql("$1", "$3", "member.user_id")}`,
+  const audience = await roomAudienceOfRoom(db, spaceId, room);
+  if (!sessionId || !audience.length) return audience;
+  const admitted = await db.query<{ user_id: string }>(
+    `SELECT candidate.user_id
+       FROM unnest($3::varchar[]) AS candidate(user_id)
+      WHERE ${roomConversationAudienceSql("$1::varchar", "$2::varchar", "candidate.user_id")}`,
+    [spaceId, sessionId, audience],
+  );
+  const kept = new Set(admitted.rows.map((row) => row.user_id));
+  return audience.filter((userId) => kept.has(userId));
+}
+
+async function roomAudienceOfRoom(
+  db: Queryable,
+  spaceId: string,
+  room: { id: string; project_id: string; is_mainline: boolean },
+): Promise<string[]> {
+  // `roomAudienceMemberSql`: every Project reader for the mainline; for a
+  // limited Room the roster **and** Project readability, which is what the
+  // conversation read itself requires — not the roster alone. Removing
+  // somebody from a Project deletes their `project_members` row and leaves
+  // every `room_user_members` row active, so a roster-only audience counts
+  // people who can no longer read anything here. Do not drop the predicate:
+  // one rule change would turn the warning into a missed disclosure. The
+  // audience labels read the same predicate.
+  const members = await db.query<{ user_id: string }>(
+    `SELECT audience_user.id AS user_id
+       FROM rooms audience_room
+       JOIN users audience_user ON ${roomAudienceMemberSql("audience_room", "audience_user")}
+      WHERE audience_room.space_id = $1 AND audience_room.id = $2 AND audience_room.project_id = $3`,
     [spaceId, room.id, room.project_id],
   );
-  return roster.rows.map((row) => row.user_id);
+  return members.rows.map((row) => row.user_id);
 }
 
 /**
@@ -287,7 +308,7 @@ async function resolveConversationPick(
 
   const room = await new PgRoomRepository(db).getRoomById(identity.spaceId, source.room_id);
   if (!room) throw new HttpError(404, "Referenced conversation not found", SOURCE_UNAVAILABLE);
-  const sourceAudienceUserIds = await roomAudience(db, identity.spaceId, room);
+  const sourceAudienceUserIds = await roomAudience(db, identity.spaceId, room, source.id);
   const label = source.title ?? room.title;
 
   // Trust follows provenance, and provenance is the whole conversation, not
